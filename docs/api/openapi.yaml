@@ -987,7 +987,7 @@ paths:
 
         Servers that are not in service are dropped from the client
         configuration thinC generates -- concretely, an unhealthy LDAP server
-        stops being handed to `ldap_login` containers. If health filtering
+        stops being handed to `ldap_client` containers. If health filtering
         would leave NOTHING, the unfiltered list is used instead: handing a
         client a possibly-down server beats handing it none at all.
       operationId: getServerHealth
@@ -2992,7 +2992,7 @@ paths:
         container-recipe add (validated at publish time) and apply.
 
 
-        ldap_login (boolean, issue #66): when true, the daemon stages
+        ldap_client (boolean, issue #66): when true, the daemon stages
         /etc/nsswitch.conf and /etc/nslcd.conf into the container,
         rendered from GET/PUT /ldap/config's own client settings -- so a
         container that authenticates against this platform's LDAP
@@ -3003,6 +3003,19 @@ paths:
         container still provides its own PAM/service config and startup
         (which must run nslcd); a container needing a custom nslcd.conf
         uses {{LDAP:*}} recipe tokens instead and leaves this unset.
+
+
+        ldap_allow_groups (array of strings, issue #76): with
+        ldap_client, restricts login to members of these LDAP groups by
+        rendering a pam_authz_search into the staged /etc/nslcd.conf --
+        nslcd runs it after authenticating and refuses a login it does
+        not match. Omitted (the default) stages no pam_authz_search at
+        all and any valid directory account may log in, which is what an
+        ldap_client container has always done. Each name must already
+        exist as an LDAP group (400 naming the offending one otherwise)
+        and must be a plain group name -- a name that would change the
+        filter's meaning is refused, never escaped. Refused (400)
+        without ldap_client, since there is nothing to restrict.
       operationId: createContainer
       requestBody:
         required: true
@@ -10999,7 +11012,7 @@ components:
         effective_client_uri:
           type: [string, "null"]
           description: >
-            What ldap_login containers are actually handed right now,
+            What ldap_client containers are actually handed right now,
             after derivation from registered servers and after health
             filtering -- a different question from client_uri, which is
             only what was configured. Drained or confirmed-unhealthy

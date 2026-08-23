@@ -5,7 +5,7 @@
  * dispatch(). Covers the local backend (ldap_user_check_password()/
  * ldap_user_is_in_group()) in full, plus the live-LDAP backend's own
  * config validation and its unreachable-server-falls-back-to-local
- * path (daemon/src/hostauth.c's try_ldap_login()). A real successful
+ * path (daemon/src/hostauth.c's try_ldap_client()). A real successful
  * bind against a genuinely running glauth server is NOT exercised here
  * -- this project doesn't build/vendor a glauth binary as part of its
  * own toolchain (it's a separate Go project, only ever run as a

@@ -129,7 +129,7 @@ container run --name=NAME --image=IMAGE
     [--memory-max=BYTES] [--pids-max=N] [--cpu-max="QUOTA PERIOD"] [--cpuset=0-1,3]
     [--disk-quota=BYTES] [--disk=NAME]
     [--network=NAME[:IP] ...] [--ip-forward]
-    [--userns] [--ldap-login] [--capture-output]
+    [--userns] [--ldap-client] [--ldap-allow-group=NAME ...] [--capture-output]
     [--dns-register]
     [--pki-issue] [--pki-cert-dir=PATH] [--pki-days=N]
     [--ldap-provision] [--ldap-user=NAME] [--ldap-group=NAME] [--ldap-uid=N] [--ldap-secret-dir=PATH]
@@ -265,7 +265,7 @@ Attach one at container creation with `--volume=NAME:/path[:ro]`. The volume mus
 | `ldap user add --name=NAME [--uidnumber=N] --primarygroup=N [--secondary-groups=N,N,...] [--givenname=S] [--sn=S] [--mail=S] [--loginshell=S] [--homedirectory=S] [--password=S] [--disabled] [--ssh-key=S] [--can-search]` | Create a user -- `--uidnumber=` optional, auto-allocated if omitted (task #748); `--ssh-key=` optional, rendered as glauth's own `sshkeys` LDAP attribute, queried live by a container's own `AuthorizedKeysCommand` (task #731/ADR-0144 task #838); `--can-search` grants glauth's own minimal search capability, needed for a real bind/service account (`nslcd`, a live `AuthorizedKeysCommand`, ADR-0144 task #838), off by default |
 | `ldap user update --name=NAME [--new-name=NEWNAME] ...` | Edit an existing user in place -- full field replacement, same fields as `add` (task #731); `--new-name=` renames it (ADR-0147) |
 | `ldap user ls` / `ldap user rm NAME` | List / remove |
-| `ldap config show` | Show the current `start_uid`/`start_gid` auto-allocation floor (task #748), the client-login settings, and `effective_client_uri` — what `ldap_login` containers are actually handed right now, after derivation from registered servers and after dropping any that are drained or unhealthy (issue #84) |
+| `ldap config show` | Show the current `start_uid`/`start_gid` auto-allocation floor (task #748), the client-login settings, and `effective_client_uri` — what `ldap_client` containers are actually handed right now, after derivation from registered servers and after dropping any that are drained or unhealthy (issue #84) |
 | `ldap config set --start-uid=N --start-gid=N` | Set the floor -- takes effect for future auto-allocations only, does not renumber existing users/groups |
 
 ## PKI

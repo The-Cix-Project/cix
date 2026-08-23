@@ -7803,7 +7803,8 @@ document.getElementById("run-form").addEventListener("submit", async (event) => 
 	const dnsRegister = document.getElementById("f-dns-register").checked;
 	/* Issue #77 surface parity -- REST-only until now. */
 	const userns = document.getElementById("f-userns").checked;
-	const ldapLogin = document.getElementById("f-ldap-login").checked;
+	const ldapClient = document.getElementById("f-ldap-client").checked;
+	const ldapAllowGroupsText = document.getElementById("f-ldap-allow-groups").value.trim();
 	const captureOutput = document.getElementById("f-capture-output").checked;
 	const routesText = document.getElementById("f-routes").value.trim();
 	const dnsServersText = document.getElementById("f-dns-servers").value.trim();
@@ -7859,8 +7860,14 @@ document.getElementById("run-form").addEventListener("submit", async (event) => 
 		body.dns_register = true;
 	if (userns)
 		body.userns = true;
-	if (ldapLogin)
-		body.ldap_login = true;
+	if (ldapClient)
+		body.ldap_client = true;
+	if (ldapAllowGroupsText !== "") {
+		body.ldap_allow_groups = ldapAllowGroupsText
+			.split(",")
+			.map((s) => s.trim())
+			.filter((s) => s.length > 0);
+	}
 	if (captureOutput)
 		body.capture_output = true;
 	if (routesText !== "") {

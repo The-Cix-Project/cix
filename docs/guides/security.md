@@ -101,6 +101,16 @@ thincctl ldap user add --name=j_doe --primarygroup=5501 --mail=j.doe@thinc.inter
 
 `sshd` queries LDAP live at connection time — real password auth via `pam_ldap.so`'s own bind-as-user check, real pubkey auth via a live `AuthorizedKeysCommand` `ldapsearch` for the user's `sshPublicKey` attribute. Not a `thincctl` one-liner: the target container needs `openssh` built `--with-pam` plus `linux-pam`/`nss-pam-ldapd` already installed, and real per-container config (`/etc/nslcd.conf`, `/etc/nsswitch.conf`, `/etc/pam.d/sshd`, `UsePAM yes`/`AuthorizedKeysCommand` in `sshd_config`) staged via `files[]` at creation time — see [`docs/api/README.md`'s "Real, live-LDAP SSH login"](../api/README.md#real-live-ldap-ssh-login-adr-0144-task-838) for the full field-by-field setup, and [ADR-0144](../adr/0144-host-authentication-and-real-ldap.md)/[ADR-0145](../adr/0145-retire-file-rendered-ssh-target-sync.md) for why it's built this way.
 
+**Which users may log into which container is a per-container decision** (issue #76). A container created with `ldap_client` accepts every account in the directory unless you say otherwise; `--ldap-allow-group=` narrows it to named groups, enforced by `nslcd` itself via a `pam_authz_search` in the staged `/etc/nslcd.conf`:
+
+```sh
+thincctl container run --name=jumpbox1 --image=jumpbox \
+  --ldap-client --ldap-allow-group=jumpusers --ldap-allow-group=admins \
+  -- /usr/sbin/sshd -D
+```
+
+Every named group must already exist, or creation is refused naming the offending one — a typo there would otherwise render a filter matching nobody and lock the container out completely. See [`docs/api/README.md`'s "Who may log in here"](../api/README.md#who-may-log-in-here-ldap_allow_groups-issue-76) for the rendered filter and the full rule set.
+
 `nslcd` and the `AuthorizedKeysCommand` script both need a real bind identity with search capability — grant one via `--can-search` on a dedicated service account, never a human login account:
 
 ```sh
