@@ -7,48 +7,51 @@
 #include <sys/types.h>
 
 /*
- * DHCP as a REST resource, served by the same dnsmasq that already
- * serves this platform's DNS.
+ * DHCP as a self-contained service (ADR-0197).
  *
- * That pairing is the whole design, not an implementation convenience:
- * a lease handed out by an instance that is also the resolver is
- * resolvable the instant it is handed out, with no glue between the two
- * and nothing to fall out of step. So DHCP is served by EVERY
- * registered DNS server (dns_server_register()) -- "plays nice with
- * DNS" is enforced by construction rather than left to configuration.
+ * Contained is the design constraint, not a tidiness preference: a
+ * service that reaches into another service's registry can never be
+ * lifted out and made optional. So DHCP registers its OWN servers,
+ * owns its own ranges and reservations, and every endpoint it has lives
+ * under /v1/dhcp. Nothing DHCP-shaped hangs off another resource.
  *
- * Redundancy is SPLIT SCOPE, and it has to be, because dnsmasq
- * implements no failover protocol -- there is no equivalent of ISC
- * dhcpd's peer relationship for it to join. The standard, real
- * technique in its absence is to give each server a disjoint slice of
- * one range: both answer, a client takes whichever offer arrives
- * first, and handing the same address to two machines is impossible
- * because no two servers hold it. Either server alone keeps serving
- * from its own slice, which is what redundancy has to mean here.
+ * It still pairs with DNS, and that pairing is still what makes a lease
+ * resolvable the moment it is issued -- dnsmasq answers for the names
+ * of clients it has itself leased addresses to. But the pairing is now
+ * a REPORTED fact rather than an enforced coupling: register the same
+ * container as both a DNS server and a DHCP server and leases resolve;
+ * register different ones and they do not. `resolves_leases` on each
+ * server says which of those is true, so the operator can see it
+ * instead of the daemon quietly requiring it.
  *
- * The slices are computed by this daemon, not configured: an operator
- * setting them by hand would be maintaining, in two places, a division
- * that has exactly one correct answer given the range and the number of
- * servers.
- *
- * A lease is NOT a DNS record here. A record is durable operator intent
+ * A lease is not a DNS record. A record is durable operator intent
  * (dns.c, persisted, survives every server); a lease is short-lived
  * state owned by the server that issued it. Copying leases into the
  * record store would put two writers in one namespace and leave a
  * record pointing at an address someone else now holds the moment a
- * lease expired uncleanly. Leases are read back from the server's own
- * lease file instead -- GET /v1/dhcp/leases -- and resolve through that
- * same dnsmasq regardless.
+ * lease expired uncleanly. Leases are read back from each server's own
+ * lease file instead.
+ *
+ * Redundancy is SPLIT SCOPE, because dnsmasq implements no failover
+ * protocol -- there is no equivalent of ISC dhcpd's peer relationship
+ * for it to join, and two instances share no lease database. Each range
+ * names the servers that serve it, and thinC divides it into one
+ * disjoint slice per named server: all of them answer, a client takes
+ * whichever offer reaches it first, and handing one address to two
+ * machines is impossible because no two servers hold it. Any one of
+ * them alone keeps serving from its own slice.
  *
  * Two rendered files, because dnsmasq treats them differently and
  * pretending otherwise would mean silently-inert settings:
  *   - the hosts file (static MAC->IP reservations) is re-read on
- *     SIGHUP, so it updates live exactly like the DNS hosts file;
+ *     SIGHUP, so it updates live;
  *   - the conf file (ranges, lease time, options) is read only at
  *     startup, so changing a range restarts the serving container.
  */
 
 #define DHCP_MAX_NETWORKS 32
+#define DHCP_MAX_SERVERS 16
+#define DHCP_MAX_RANGE_SERVERS 8
 #define DHCP_MAX_STATIC 128
 #define DHCP_NETWORK_NAME_MAX 64  /* matches NETWORK_NAME_MAX by value, no header dependency */
 #define DHCP_SERVER_NAME_MAX 64   /* matches REGISTRY_NAME_MAX by value */
@@ -74,6 +77,15 @@ struct dhcp_network {
 	uint32_t range_end_be;
 	int lease_seconds;
 	uint32_t router_be; /* 0 = advertise no default route */
+	/*
+	 * Which registered DHCP servers serve this range. Named rather
+	 * than inferred: how many servers a wire should have is an
+	 * operator's decision, and one, three or all of them are equally
+	 * valid answers. The range is split into one disjoint slice per
+	 * name here, in this order.
+	 */
+	char servers[DHCP_MAX_RANGE_SERVERS][DHCP_SERVER_NAME_MAX];
+	int server_count;
 };
 
 struct dhcp_static {
@@ -114,9 +126,14 @@ enum dhcp_error dhcp_static_delete(const char *mac);
  */
 int dhcp_render_conf(const char *server_name, char *out, size_t out_size);
 
-/* The registered DNS servers attached to this network -- who actually
- * serves DHCP here, and therefore how many ways the range is split. */
-int dhcp_servers_on_network(const char *network, char out[][64], int max);
+/* ---- Servers: DHCP registers its own, like every other service ---- */
+
+enum dhcp_error dhcp_server_register(const char *container);
+enum dhcp_error dhcp_server_unregister(const char *container);
+int dhcp_server_is_registered(const char *container);
+int dhcp_server_list(char out[][DHCP_SERVER_NAME_MAX], int max);
+void dhcp_server_forget(const char *container);
+void dhcp_servers_write_json(struct json_writer *w);
 
 /* The slice server_index of server_count would be given, for reporting
  * it back. Returns -1 if the range cannot be divided that many ways. */
@@ -132,7 +149,8 @@ int dhcp_render_hosts(char *out, size_t out_size);
  * against -- only those need restarting, so a change on one network
  * never disturbs a server on another.
  */
-void dhcp_sync_all(char changed[][64], int max_changed, int *out_changed_count);
+void dhcp_sync_all(char changed[][DHCP_SERVER_NAME_MAX], int max_changed,
+                    int *out_changed_count);
 
 /* Whether any network currently has DHCP enabled. */
 int dhcp_any_enabled(void);

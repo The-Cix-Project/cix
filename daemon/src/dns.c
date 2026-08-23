@@ -453,6 +453,12 @@ enum dns_server_error dns_server_register(const char *container_name, pid_t pid,
 	return DNS_SERVER_OK;
 }
 
+int dns_server_is_registered(const char *container_name)
+{
+	return container_name != NULL && container_name[0] != '\0' &&
+	       binding_find(container_name) != NULL;
+}
+
 enum dns_server_error dns_server_unregister(const char *container_name)
 {
 	struct dns_server_binding *b = binding_find(container_name);

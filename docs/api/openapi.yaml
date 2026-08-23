@@ -1960,29 +1960,200 @@ paths:
                 $ref: "#/components/schemas/Error"
   /dhcp:
     get:
-      summary: Every DHCP-configured network and every static reservation (ADR-0197)
+      summary: Every DHCP range and reservation (ADR-0197)
       operationId: getDhcp
       responses:
         "200":
-          description: The whole DHCP configuration
+          description: Ranges and reservations
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Dhcp"
+  /dhcp/servers:
+    get:
+      summary: Registered DHCP servers (ADR-0197)
+      description: >
+        DHCP registers its own servers. It is a self-contained service:
+        every endpoint it has lives under /dhcp, and it reads no other
+        service's registry -- which is what has to be true for it to be
+        made optional later rather than tangled through everything.
+
+        `resolves_leases` reports whether that same container is also a
+        registered DNS server. dnsmasq answers for the names of clients
+        it has itself leased addresses to, so a server that is both
+        makes leases resolve the instant they are issued. Reported, not
+        required.
+      operationId: getDhcpServers
+      responses:
+        "200":
+          description: Every registered DHCP server
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  servers:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/DhcpServer"
+    post:
+      summary: Register a container as a DHCP server (ADR-0197)
+      operationId: registerDhcpServer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [container]
+              properties:
+                container:
+                  type: string
+      responses:
+        "201":
+          description: Registered
+        "404":
+          description: No such container
+        "409":
+          description: Already registered
+  /dhcp/servers/{container}:
+    delete:
+      summary: Unregister a DHCP server (ADR-0197)
+      description: >
+        Also drops it from every range that named it, and disables any
+        range left with no servers at all -- a range naming a server
+        nobody serves from is a slice of addresses handed to nothing,
+        which looks like coverage and is not.
+      operationId: unregisterDhcpServer
+      parameters:
+        - name: container
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Unregistered
+        "404":
+          description: Not a DHCP server
+  /dhcp/networks/{network}:
+    get:
+      summary: A network's DHCP range (ADR-0197)
+      description: >
+        A network with no range is reported as DHCP-off rather than as a
+        404 -- that is a real answer, and the one every network starts
+        with. The `lease_seconds` reported for such a network is the
+        same default a PUT would start from.
+      operationId: getDhcpNetwork
+      parameters:
+        - name: network
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The range
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DhcpNetwork"
+        "404":
+          description: No such network
+    put:
+      summary: Set a network's DHCP range (ADR-0197)
+      description: >
+        Partial update -- absent fields keep what is configured now.
+
+        `servers` names which registered DHCP servers serve this range,
+        and the range is split into one **disjoint slice** per name, in
+        that order. dnsmasq implements no failover protocol and the
+        servers share no lease database, so disjoint pools are the only
+        thing preventing two of them handing one address to two
+        machines. Any one of them alone keeps serving from its own
+        slice. Naming one server is equally valid; how many a wire
+        should have is an operator's decision, not this daemon's.
+
+        The order matters and is preserved: it is the slice order, so a
+        derived order would move every client's address whenever
+        something unrelated changed.
+
+        Refused for anything that could not serve: a range outside the
+        network's own subnet, a range covering the network's own address
+        (a conflict, not a lease), a range that runs backwards, a lease
+        time outside 60s..30d, no servers named, a server that is not
+        registered, a server not attached to this network (it has no
+        interface in the subnet), or a range with fewer addresses than
+        servers to split it between.
+
+        **Changing a range restarts the servers that serve it.** dnsmasq
+        reads ranges only at startup, so rendering without restarting
+        would leave a setting that says it is in force and is not. Only
+        the servers whose own rendered conf changed are restarted.
+      operationId: setDhcpNetwork
+      parameters:
+        - name: network
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled:
+                  type: boolean
+                range_start:
+                  type: string
+                range_end:
+                  type: string
+                lease_seconds:
+                  type: integer
+                router:
+                  type: string
+                servers:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        "200":
+          description: Saved and rendered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DhcpNetwork"
+        "400":
+          description: A configuration that could not serve
+        "404":
+          description: No such network
+    delete:
+      summary: Remove a network's DHCP range (ADR-0197)
+      operationId: deleteDhcpNetwork
+      parameters:
+        - name: network
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Removed
+        "404":
+          description: This network had no range
   /dhcp/leases:
     get:
-      summary: Current leases, read from the serving container's own lease file (ADR-0197)
+      summary: Current leases, read from each server's own lease file (ADR-0197)
       description: >
-        Read from each running DNS/DHCP server's lease file every time,
-        never cached: these are the server's own record of what it
-        handed out, and a copy kept here would be a second answer to a
-        question only the server can answer.
+        Read every time, never cached: these are the server's own record
+        of what it handed out, and a copy here would be a second answer
+        to a question only the server can answer.
 
         A lease is deliberately **not** a DNS record. Records are
         durable operator intent (`/dns/records`); a lease is short-lived
-        state owned by its server. It resolves anyway, because the
-        instance that issued the address is the same dnsmasq that
-        answers for the name.
+        state owned by its server.
       operationId: getDhcpLeases
       responses:
         "200":
@@ -2000,7 +2171,7 @@ paths:
     post:
       summary: Reserve an address for a MAC (ADR-0197)
       description: >
-        Live: the reservations file is re-read by the server on SIGHUP,
+        Live: the reservations file is re-read by the servers on SIGHUP,
         so this takes effect without restarting anything.
 
         Refused rather than sanitised. The MAC must be lower-case
@@ -2008,9 +2179,7 @@ paths:
         DNS label -- both are written into a file dnsmasq parses, and
         the hostname additionally becomes a name it answers for. A MAC
         that already has a reservation, or an address already reserved
-        for a different MAC, is a `409`: two reservations for one
-        address is a conflict waiting for both machines to be on at
-        once.
+        for a different MAC, is a `409`.
       operationId: addDhcpReservation
       requestBody:
         required: true
@@ -2029,10 +2198,6 @@ paths:
       responses:
         "201":
           description: Reserved
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Dhcp"
         "400":
           description: Malformed MAC, address, or hostname
         "409":
@@ -4322,114 +4487,6 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
-  /networks/{name}/dhcp:
-    get:
-      summary: This network's DHCP configuration (ADR-0197)
-      description: >
-        A network with no configuration is reported as DHCP-off rather
-        than as a 404 -- that is a real answer, and the one every
-        network starts with. The `lease_seconds` reported for such a
-        network is the same default a PUT would start from, so reading
-        it and enabling it agree on the number.
-      operationId: getNetworkDhcp
-      parameters:
-        - name: name
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        "200":
-          description: This network's DHCP configuration
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/DhcpNetwork"
-        "404":
-          description: No such network
-    put:
-      summary: Configure DHCP on this network (ADR-0197)
-      description: >
-        Partial update -- absent fields keep what is configured now.
-
-        Served by **every registered DNS server**, with the range split
-        into one disjoint slice each. dnsmasq implements no failover
-        protocol and the servers share no lease database, so disjoint
-        pools are the only thing preventing two of them handing one
-        address to two machines -- which is what makes them redundant
-        rather than merely plural. Either server alone keeps serving,
-        from its own slice. The split is computed here, never
-        configured: it has exactly one correct answer given the range
-        and the number of servers.
-
-        Refused with no DNS server registered at all (nothing would
-        answer), and refused when the range holds fewer addresses than
-        there are servers -- rounding a server's slice down to nothing
-        would quietly make it not a server.
-
-        Everything that could not actually serve is refused here rather
-        than discovered by a client that never got an address: a range
-        outside this network's own subnet, a range covering the
-        network's own address (that is a conflict, not a lease), a range
-        that runs backwards, a lease time outside 60s..30d, or enabling
-        with no addresses at all.
-
-        **Changing a range restarts the serving containers.** dnsmasq
-        reads ranges only at startup, so rendering without restarting
-        would leave a setting that says it is in force and is not. The
-        restart goes through the same jittered rolling-restart timer a
-        rolling image update uses. Static reservations are unaffected --
-        they are live via SIGHUP.
-      operationId: setNetworkDhcp
-      parameters:
-        - name: name
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                enabled:
-                  type: boolean
-                range_start:
-                  type: string
-                range_end:
-                  type: string
-                lease_seconds:
-                  type: integer
-                router:
-                  type: string
-                  description: Default route to advertise (DHCP option 3). Omit to advertise none.
-      responses:
-        "200":
-          description: Saved and rendered to the serving container
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/DhcpNetwork"
-        "400":
-          description: A configuration that could not serve
-        "404":
-          description: No such network
-    delete:
-      summary: Remove this network's DHCP configuration (ADR-0197)
-      operationId: deleteNetworkDhcp
-      parameters:
-        - name: name
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        "204":
-          description: Removed
-        "404":
-          description: This network had no DHCP configuration
   /networks/{name}/ports:
     get:
       summary: What is plugged into this network's bridge right now (issue #26)
@@ -10493,6 +10550,11 @@ components:
         router:
           type: string
           nullable: true
+        servers:
+          type: array
+          description: The registered DHCP servers this range names, in slice order.
+          items:
+            type: string
         slices:
           type: array
           description: >
@@ -10526,6 +10588,19 @@ components:
               hostname:
                 type: string
                 nullable: true
+    DhcpServer:
+      type: object
+      properties:
+        container:
+          type: string
+        running:
+          type: boolean
+        resolves_leases:
+          type: boolean
+          description: >
+            Whether this same container is also a registered DNS server,
+            which is what makes a lease resolve the moment it is issued.
+            Reported, not required.
     DhcpLease:
       type: object
       properties:

@@ -165,11 +165,14 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | DELETE | `/networks/{name}` | Remove a network (refused if any container is still attached, or if it's the management network) |
 | POST | `/networks/{name}/interfaces` | Attach a real host network interface to this network's bridge |
 | DELETE | `/networks/{name}/interfaces/{ifname}` | Detach a previously-attached interface (refused for the management network) |
-| GET | `/networks/{name}/dhcp` | This network's DHCP configuration (ADR-0197) |
-| PUT | `/networks/{name}/dhcp` | Enable/disable DHCP here, with its range, lease time and serving container |
-| DELETE | `/networks/{name}/dhcp` | Remove this network's DHCP configuration |
-| GET | `/dhcp` | Every DHCP-configured network and every static reservation |
-| GET | `/dhcp/leases` | Current leases, read from the serving container's own lease file |
+| GET | `/dhcp` | Every DHCP range and reservation (ADR-0197) |
+| GET | `/dhcp/servers` | Registered DHCP servers, and whether each also resolves its own leases |
+| POST | `/dhcp/servers` | Register a container as a DHCP server |
+| DELETE | `/dhcp/servers/{container}` | Unregister one -- also drops it from every range that named it |
+| GET | `/dhcp/networks/{network}` | A network's DHCP range |
+| PUT | `/dhcp/networks/{network}` | Set it: enabled, range, lease time, router, and which servers serve it |
+| DELETE | `/dhcp/networks/{network}` | Remove it |
+| GET | `/dhcp/leases` | Current leases, read from each server's own lease file |
 | POST | `/dhcp/static` | Reserve an address for a MAC (live -- no restart) |
 | DELETE | `/dhcp/static/{mac}` | Remove a reservation |
 | GET | `/networks/{name}/ports` | What is plugged into this network's bridge right now, per port, with each port's own counters (issue #26) |
@@ -1761,46 +1764,51 @@ Validation refuses rather than escapes. A console is a bare tty name with option
 `thincctl boot-console show|set --console=… --extra="…"` is the CLI surface; the dashboard has a **Boot Console** tab under System > Host.
 
 
-## DHCP, served by the DNS server (ADR-0197)
+## DHCP: a self-contained service (ADR-0197)
 
 ```
-GET    /v1/networks/lab/dhcp
-PUT    /v1/networks/lab/dhcp   {"enabled": true, "range_start": "172.30.7.100",
-                                "range_end": "172.30.7.200", "lease_seconds": 3600,
-                                "router": "172.30.7.1"}
-POST   /v1/dhcp/static         {"mac": "aa:bb:cc:dd:ee:01", "ip": "172.30.7.50", "hostname": "printer"}
-DELETE /v1/dhcp/static/aa:bb:cc:dd:ee:01
+GET    /v1/dhcp/servers
+POST   /v1/dhcp/servers          {"container": "dns-1"}
+PUT    /v1/dhcp/networks/lab     {"enabled": true, "range_start": "172.30.7.100",
+                                  "range_end": "172.30.7.200", "lease_seconds": 3600,
+                                  "router": "172.30.7.1", "servers": ["dns-1", "dns-2"]}
+POST   /v1/dhcp/static           {"mac": "aa:bb:cc:dd:ee:01", "ip": "172.30.7.50", "hostname": "printer"}
 GET    /v1/dhcp/leases
 ```
 
-**Every registered DNS server serves DHCP**, and that pairing is the design rather than a convenience. dnsmasq resolves the names of clients it has itself leased addresses to, so when the instance handing out the address is the instance answering for the name, a lease is resolvable the moment it exists — no synchronisation between two systems, and no window where they disagree.
+**Contained is the design constraint.** DHCP registers its own servers, owns its own ranges and reservations, and every endpoint it has lives under `/v1/dhcp`. It reads no other service's registry and nothing DHCP-shaped hangs off another resource — which is what has to be true for a service to be made optional later rather than tangled through everything.
 
-**Redundancy is split scope, because with dnsmasq it has to be.** dnsmasq implements no failover protocol — there is no equivalent of ISC dhcpd's primary/backup peer relationship for it to join, so two instances share no lease database and cannot coordinate. The standard technique in its absence is to give each server a disjoint slice of one range: both answer, a client takes whichever offer reaches it first, and handing one address to two machines is impossible because no two servers hold it. Either server alone keeps serving, from its own slice. The response reports the split:
+**It still pairs with DNS, and the pairing is reported rather than enforced.** dnsmasq answers for the names of clients it has itself leased addresses to, so registering the *same* container as both a DNS server and a DHCP server makes a lease resolvable the instant it is issued. `resolves_leases` on each server says whether that is true:
+
+```json
+{"servers": [{"container": "dns-1", "running": true, "resolves_leases": true},
+             {"container": "dns-2", "running": true, "resolves_leases": true}]}
+```
+
+Enforcing it would mean one service reaching into another's table; reporting it means an operator can see what they have.
+
+**A lease is not a DNS record.** A record is durable operator intent — persisted, surviving every server, listed at `/v1/dns/records`. A lease is short-lived state owned by the server that issued it. Mirroring leases into the record store would put two writers in one namespace and leave a record pointing at an address another machine now holds the first time a lease expired uncleanly. `GET /v1/dhcp/leases` reads them from each server's own lease file, every time.
+
+**Redundancy is split scope, because with dnsmasq it has to be.** dnsmasq implements no failover protocol — there is no equivalent of ISC dhcpd's primary/backup peer relationship for it to join, so two instances share no lease database and cannot coordinate. A range names the servers that serve it, and thinC divides it into one disjoint slice each: all of them answer, a client takes whichever offer reaches it first, and handing one address to two machines is impossible because no two servers hold it. Any one alone keeps serving from its own slice.
 
 ```json
 {"network": "lab", "enabled": true, "range_start": "172.30.7.100", "range_end": "172.30.7.200",
+ "servers": ["dns-1", "dns-2"],
  "slices": [{"server": "dns-1", "range_start": "172.30.7.100", "range_end": "172.30.7.150"},
             {"server": "dns-2", "range_start": "172.30.7.151", "range_end": "172.30.7.200"}]}
 ```
 
-The split is computed, never configured: given a range and a number of servers it has exactly one correct answer, and asking an operator to maintain it in two places would be asking them to keep two copies of one fact in step. Adding or removing a DNS server re-splits and restarts, since every other server's slice changes too.
+One server, three, or more are all valid — how many a wire should have is an operator's decision. The **order** is preserved because it is the slice order: a derived order would move every client's address whenever something unrelated changed. Unregistering a server drops it from every range that named it, and disables any range left with no servers at all — a range naming a server nobody serves from is a slice handed to nothing, which looks like coverage and is not.
 
-If you need true primary/backup with a failover protocol — a hot standby that takes over the *whole* pool and knows what its peer has leased — that needs a DHCP server that implements one (ISC Kea or dhcpd), which is a package this platform does not have.
+If you need true primary/backup with a failover protocol — a hot standby that takes over the *whole* pool knowing what its peer has leased — that needs a DHCP server implementing one (ISC Kea or dhcpd), which this platform does not package.
 
-**A lease is not a DNS record.** A record is durable operator intent — persisted, surviving every server, listed at `/v1/dns/records`. A lease is short-lived state owned by the server that issued it. Mirroring leases into the record store would put two writers in one namespace and leave a record pointing at an address another machine now holds the first time a lease expired uncleanly. `GET /v1/dhcp/leases` reads them back from the server's own lease file, every time:
+**Static reservations are live; range changes are not.** dnsmasq re-reads the reservations file on `SIGHUP`, so `POST /v1/dhcp/static` takes effect immediately. It reads ranges only at startup — so **changing a range restarts the servers that serve it**, through the same jittered rolling-restart timer a rolling image update uses, and only those whose own rendered conf actually changed.
 
-```json
-{"leases": [{"server": "dns-1", "mac": "aa:bb:cc:dd:ee:01", "ip": "172.30.7.101",
-             "hostname": "laptop", "expires_at": 1787500000}]}
-```
+Everything that could not serve is refused at the point of asking: a range outside the network's own subnet, a range covering the network's own address, a range that runs backwards, a lease time outside 60s–30d, no servers named, a server that is not registered, a server not attached to that network, or a range with fewer addresses than servers to split it between. Two reservations for one address is a `409`. MACs and hostnames are refused, never sanitised.
 
-**Static reservations are live; range changes are not.** dnsmasq re-reads the reservations file on `SIGHUP`, so `POST /v1/dhcp/static` takes effect immediately, exactly like a DNS record. It reads ranges only at startup — so **changing a range restarts the serving containers**, through the same jittered rolling-restart timer a rolling image update uses. Rendering a range without restarting would leave a setting that reports itself in force and is not.
+### Setting up a serving container
 
-Everything that could not actually serve is refused at the point of asking rather than discovered by a client that never got an address: a range outside the network's own subnet, a range covering the network's own address (a conflict, not a lease), a range that runs backwards, a lease time outside 60s–30d, enabling with no addresses. Two reservations for one address is a `409` — that is a conflict waiting for both machines to be powered on at once. MACs and hostnames are refused, never sanitised: both go into a file dnsmasq parses, and a hostname becomes a name it answers for.
-
-### Setting up the serving container
-
-DHCP is rendered into three well-known paths, so the dnsmasq container must be started against them, with the first two staged (even empty) at creation — dnsmasq refuses to start on a `--conf-file` that does not exist:
+The rendered files live at three well-known paths, so the dnsmasq container is started against them:
 
 ```
 --conf-file=/etc/dnsmasq-dhcp.conf
@@ -1808,13 +1816,11 @@ DHCP is rendered into three well-known paths, so the dnsmasq container must be s
 --dhcp-leasefile=/run/dnsmasq.leases
 ```
 
-Add them to the `dnsmasq` command in the [DNS server setup](#dns) above, create the container with `files[]` entries for the two config paths, then register it with `POST /v1/dns/servers` as usual. One container serves both.
+Create the container with `files[]` entries for the first two (empty is fine — dnsmasq refuses to start on a `--conf-file` that does not exist), then `POST /v1/dhcp/servers`. From then on thinC stages the **rendered** files into the container at creation, before its process starts, so the file dnsmasq opens is always the current one. Register the same container with `POST /v1/dns/servers` as well and its leases resolve.
 
 > **Enabling DHCP on a network that reaches a real LAN will answer requests from machines that are not this platform's.** A home or office LAN almost certainly already has a DHCP server, and a second one is not a redundant pair — it is two servers with separate lease databases handing out overlapping addresses. Nothing here prevents it, because nothing here can tell a lab bridge from an uplinked one. Use an isolated network unless you own the LAN's addressing.
 
-Enabling is refused when no DNS server is registered at all (nothing would answer) and when the range holds fewer addresses than there are servers — rounding a server's slice down to nothing would quietly make it not a server.
-
-`thincctl dhcp show|leases|enable|disable|static add|static rm` is the CLI surface; the dashboard has DHCP on each network's own page.
+`thincctl dhcp server ls|add|rm`, `thincctl dhcp enable --network=… --range=… --server=… [--server=…]`, `thincctl dhcp static add|rm`, `thincctl dhcp show|leases` is the CLI surface; the dashboard has DHCP under Services (Servers / Ranges / Reservations / Leases), with each network's own page showing the leases on it.
 
 ## Compressed swap cache: zswap (issue #51)
 

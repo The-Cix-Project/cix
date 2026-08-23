@@ -11653,6 +11653,45 @@ static int create_container_from_body(const char *body, size_t body_len,
 		snprintf(file_paths[file_count], sizeof(file_paths[file_count]), "%s", "/etc/nslcd.conf");
 		file_count++;
 	}
+	/*
+	 * ADR-0197: a container that is already a registered DNS server is
+	 * also a DHCP server, so it gets its own rendered DHCP files staged
+	 * HERE, before its process starts.
+	 *
+	 * That timing is the whole point, and it was found the hard way on
+	 * the real box: dnsmasq reads its conf file only at startup, and a
+	 * restart re-stages the container's own creation-time files[] --
+	 * so a conf written into the running container was overwritten by
+	 * the empty placeholder on the very next restart, and the range
+	 * silently never took effect. Staging it as part of creation means
+	 * the file dnsmasq opens is the rendered one, every time.
+	 *
+	 * Staged after the caller's own files[] deliberately, so the
+	 * rendered content wins over the placeholder an operator staged to
+	 * let dnsmasq start the first time.
+	 */
+	if (dhcp_server_is_registered(name)) {
+		char conf[4096];
+		char hosts[8192];
+
+		if (dhcp_render_conf(name, conf, sizeof(conf)) >= 0 &&
+		    dhcp_render_hosts(hosts, sizeof(hosts)) >= 0) {
+			if (stage_container_file(stage_dir, DHCP_CONF_PATH, conf, 0644, (uid_t)-1,
+			                          (gid_t)-1) == 0 &&
+			    file_count < CONTAINER_MAX_FILES) {
+				snprintf(file_paths[file_count], sizeof(file_paths[file_count]), "%s",
+				         DHCP_CONF_PATH);
+				file_count++;
+			}
+			if (stage_container_file(stage_dir, DHCP_HOSTS_PATH, hosts, 0644, (uid_t)-1,
+			                          (gid_t)-1) == 0 &&
+			    file_count < CONTAINER_MAX_FILES) {
+				snprintf(file_paths[file_count], sizeof(file_paths[file_count]), "%s",
+				         DHCP_HOSTS_PATH);
+				file_count++;
+			}
+		}
+	}
 	if (dns_server_count > 0) {
 		char content[RESOLV_MAX_NAMESERVERS * (RESOLV_IP_STRLEN + 16)];
 		size_t content_len = 0;
@@ -12320,6 +12359,7 @@ static void handle_delete(int fd, const char *name)
 	 */
 	if (e != NULL && e->running && e->teardown_kind == REGISTRY_TEARDOWN_NONE) {
 		dns_server_forget(name);
+		dhcp_server_forget(name);
 		dns_record_forget_owner(name);
 		ldap_server_forget(name);
 		ldap_user_forget_owner(name);
@@ -12482,6 +12522,7 @@ static void handle_delete(int fd, const char *name)
 	 * mid-crash at the moment of the DELETE call.
 	 */
 	dns_server_forget(name);
+	dhcp_server_forget(name);
 	dns_record_forget_owner(name);
 	ldap_server_forget(name);
 	ldap_user_forget_owner(name);
@@ -17238,14 +17279,6 @@ static void handle_dns_server_create(int fd, const char *body, size_t body_len)
 		return;
 	}
 	/*
-	 * A DNS server is a DHCP server (ADR-0197), so one arriving changes
-	 * how every range on its networks is split -- and it has no DHCP
-	 * config of its own yet at all. Re-render and restart whoever is
-	 * affected, which is exactly the set whose own conf changed.
-	 */
-	dhcp_apply_and_maybe_restart();
-
-	/*
 	 * container_name/hosts_path still point into root -- build the
 	 * response before freeing it, not after (freeing first and then
 	 * reading through these pointers would be a use-after-free).
@@ -17283,10 +17316,6 @@ static void handle_dns_server_delete(int fd, const char *name)
 		respond_dns_server_error(fd, serr);
 		return;
 	}
-	/* One fewer server means a wider slice for each that remains, so
-	 * the survivors have to be re-rendered and restarted -- otherwise
-	 * the departed server's addresses are served by nobody. */
-	dhcp_apply_and_maybe_restart();
 	http_set_blocking(fd);
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
 }
@@ -19437,6 +19466,87 @@ static void dhcp_apply_and_maybe_restart(void)
 	               count);
 }
 
+static void handle_dhcp_servers_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "servers");
+	dhcp_servers_write_json(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_dhcp_server_register(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root = json_parse(body, body_len);
+	const char *container;
+	struct registry_entry *e;
+	enum dhcp_error err;
+	struct json_writer w;
+
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	container = json_as_string(json_object_get(root, "container"));
+	if (container == NULL || container[0] == '\0') {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "container is required");
+		return;
+	}
+	e = registry_find(container);
+	if (e == NULL) {
+		json_free(root);
+		respond_error(fd, 404, "Not Found", "no such container");
+		return;
+	}
+	err = dhcp_server_register(container);
+	json_free(root);
+	if (err == DHCP_ERR_DUPLICATE) {
+		respond_error(fd, 409, "Conflict", "that container is already a DHCP server");
+		return;
+	}
+	if (err == DHCP_ERR_FULL) {
+		respond_error(fd, 507, "Insufficient Storage", "too many DHCP servers");
+		return;
+	}
+	if (err != DHCP_OK) {
+		respond_error(fd, 500, "Internal Server Error", "failed to persist the registration");
+		return;
+	}
+	/* It has no DHCP files yet and every range it joins re-splits, so
+	 * render and roll whoever that affected -- which is exactly the set
+	 * whose own conf changed. */
+	dhcp_apply_and_maybe_restart();
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "servers");
+	dhcp_servers_write_json(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 201, "Created", &w);
+	jw_free(&w);
+}
+
+static void handle_dhcp_server_unregister(int fd, const char *container)
+{
+	enum dhcp_error err = dhcp_server_unregister(container);
+
+	if (err == DHCP_ERR_NOT_FOUND) {
+		respond_error(fd, 404, "Not Found", "that container is not a DHCP server");
+		return;
+	}
+	if (err != DHCP_OK) {
+		respond_error(fd, 500, "Internal Server Error", "failed to persist the removal");
+		return;
+	}
+	dhcp_apply_and_maybe_restart();
+	http_set_blocking(fd);
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}
+
 static void handle_dhcp_get(int fd)
 {
 	struct json_writer w;
@@ -19610,6 +19720,24 @@ static void handle_network_dhcp_put(int fd, const char *network, const char *bod
 		cfg.router_be = addr.s_addr;
 	if (json_object_get(root, "lease_seconds") != NULL)
 		cfg.lease_seconds = (int)json_as_number(json_object_get(root, "lease_seconds"));
+	{
+		const struct json_value *jsrv = json_object_get(root, "servers");
+
+		if (jsrv != NULL && jsrv->type == JSON_ARRAY) {
+			size_t k;
+
+			cfg.server_count = 0;
+			memset(cfg.servers, 0, sizeof(cfg.servers));
+			for (k = 0; k < jsrv->u.array.count && cfg.server_count < DHCP_MAX_RANGE_SERVERS; k++) {
+				const char *nm = json_as_string(jsrv->u.array.items[k]);
+
+				if (nm == NULL || nm[0] == '\0')
+					continue;
+				snprintf(cfg.servers[cfg.server_count], DHCP_SERVER_NAME_MAX, "%s", nm);
+				cfg.server_count++;
+			}
+		}
+	}
 	json_free(root);
 
 	if (cfg.enabled) {
@@ -19640,18 +19768,44 @@ static void handle_network_dhcp_put(int fd, const char *network, const char *bod
 		 * will ever answer for.
 		 */
 		{
-			char names[DNS_SERVER_MAX][DNS_SERVER_NAME_MAX];
-			int servers = dhcp_servers_on_network(network, names, DNS_SERVER_MAX);
+			int servers = cfg.server_count;
 			uint32_t first = ntohl(cfg.range_start_be);
 			uint32_t last = ntohl(cfg.range_end_be);
+			int si;
 
 			if (servers == 0) {
 				respond_error(fd, 400, "Bad Request",
-				               "no registered DNS server is attached to this network -- DHCP is "
-				               "served by the same dnsmasq that serves DNS, and only a server "
-				               "on this wire can answer here. Attach one and register it with "
-				               "POST /v1/dns/servers");
+				               "name at least one server to serve this range -- register one "
+				               "with POST /v1/dhcp/servers first");
 				return;
+			}
+			/* Every named server must be registered and on this
+			 * network: one that is neither would be a slice of
+			 * addresses handed to something that cannot answer for
+			 * them, which looks like coverage and is not. */
+			for (si = 0; si < servers; si++) {
+				struct registry_entry *se;
+				int on_net = 0;
+				int j;
+
+				if (!dhcp_server_is_registered(cfg.servers[si])) {
+					snprintf(errbuf, sizeof(errbuf),
+					         "\"%s\" is not a registered DHCP server", cfg.servers[si]);
+					respond_error(fd, 400, "Bad Request", errbuf);
+					return;
+				}
+				se = registry_find(cfg.servers[si]);
+				for (j = 0; se != NULL && j < se->net_count; j++)
+					if (strcmp(se->nets[j].name, network) == 0)
+						on_net = 1;
+				if (!on_net) {
+					snprintf(errbuf, sizeof(errbuf),
+					         "\"%s\" is not attached to network \"%s\" -- it has no interface "
+					         "in this subnet, so it could not answer here",
+					         cfg.servers[si], network);
+					respond_error(fd, 400, "Bad Request", errbuf);
+					return;
+				}
 			}
 			/*
 			 * The range is split into one disjoint slice per server
@@ -19663,9 +19817,9 @@ static void handle_network_dhcp_put(int fd, const char *network, const char *bod
 			 */
 			if (last - first + 1 < (uint32_t)servers) {
 				snprintf(errbuf, sizeof(errbuf),
-				         "the range holds %u address(es) but %d DNS servers on this network "
-				         "must split it -- each needs at least one, since they have no shared "
-				         "lease database and only disjoint pools keep them from colliding",
+				         "the range holds %u address(es) but %d servers must split it -- each "
+				         "needs at least one, since they have no shared lease database and "
+				         "only disjoint pools keep them from colliding",
 				         last - first + 1, servers);
 				respond_error(fd, 400, "Bad Request", errbuf);
 				return;
@@ -21442,6 +21596,38 @@ static void dispatch(int fd, const struct http_request *req)
 			return;
 		}
 	}
+	if (strcmp(req->path, "/v1/dhcp/servers") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_dhcp_servers_get(fd);
+			return;
+		}
+		if (strcmp(req->method, "POST") == 0) {
+			handle_dhcp_server_register(fd, req->body, req->body_len);
+			return;
+		}
+	}
+	if (strncmp(req->path, "/v1/dhcp/servers/", 17) == 0 && strcmp(req->method, "DELETE") == 0) {
+		handle_dhcp_server_unregister(fd, req->path + 17);
+		return;
+	}
+	if (strncmp(req->path, "/v1/dhcp/networks/", 18) == 0) {
+		const char *net_name = req->path + 18;
+
+		if (net_name[0] != '\0') {
+			if (strcmp(req->method, "GET") == 0) {
+				handle_network_dhcp_get(fd, net_name);
+				return;
+			}
+			if (strcmp(req->method, "PUT") == 0) {
+				handle_network_dhcp_put(fd, net_name, req->body, req->body_len);
+				return;
+			}
+			if (strcmp(req->method, "DELETE") == 0) {
+				handle_network_dhcp_delete(fd, net_name);
+				return;
+			}
+		}
+	}
 	if (strcmp(req->path, "/v1/dhcp") == 0 && strcmp(req->method, "GET") == 0) {
 		handle_dhcp_get(fd);
 		return;
@@ -21595,6 +21781,16 @@ static void dispatch(int fd, const struct http_request *req)
 				memcpy(container_name, name, nlen - 6);
 				container_name[nlen - 6] = '\0';
 				handle_start(fd, container_name);
+				/*
+				 * ADR-0197: a server that has just come back gets the
+				 * current DHCP files. Creation already stages them, so
+				 * this covers the narrow window where a reservation
+				 * changed while the container was still starting --
+				 * during which dhcp_sync_all() skips it for not being
+				 * running yet, and nothing would otherwise revisit it.
+				 * No restart: the conf it started with is this one.
+				 */
+				dhcp_sync_all(NULL, 0, NULL);
 				return;
 			}
 			if (nlen > 5 && strcmp(name + nlen - 5, "/stop") == 0 &&
@@ -21973,24 +22169,6 @@ static void dispatch(int fd, const struct http_request *req)
 				net_name[nlen - 11] = '\0';
 				handle_network_attach_interface(fd, net_name, req->body, req->body_len);
 				return;
-			}
-			if (nlen > 5 && strcmp(name + nlen - 5, "/dhcp") == 0 && nlen - 5 < NETWORK_NAME_MAX) {
-				char net_name[NETWORK_NAME_MAX];
-
-				memcpy(net_name, name, nlen - 5);
-				net_name[nlen - 5] = '\0';
-				if (strcmp(req->method, "GET") == 0) {
-					handle_network_dhcp_get(fd, net_name);
-					return;
-				}
-				if (strcmp(req->method, "PUT") == 0) {
-					handle_network_dhcp_put(fd, net_name, req->body, req->body_len);
-					return;
-				}
-				if (strcmp(req->method, "DELETE") == 0) {
-					handle_network_dhcp_delete(fd, net_name);
-					return;
-				}
 			}
 			if (nlen > 6 && strcmp(name + nlen - 6, "/ports") == 0 &&
 			    strcmp(req->method, "GET") == 0 && nlen - 6 < NETWORK_NAME_MAX) {
