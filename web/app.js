@@ -1199,6 +1199,7 @@ const CATEGORY_VIEWS = {
 	"tls-throttle": "view-daemon-config",
 	"control-plane-reservation": "view-daemon-config",
 	"boot-console": "view-daemon-config",
+	"kernel-policy": "view-daemon-config",
 	logs: "view-monitoring",
 	kmsg: "view-monitoring",
 	"server-health": "view-monitoring",
@@ -1278,6 +1279,7 @@ const SERVICE_TAB_VIEWS = {
 	"tls-throttle": "view-daemon-config",
 	"control-plane-reservation": "view-daemon-config",
 	"boot-console": "view-daemon-config",
+	"kernel-policy": "view-daemon-config",
 	backup: "view-daemon-config",
 	"volume-backup-config": "view-daemon-config",
 	"factory-reset": "view-daemon-config",
@@ -1360,6 +1362,8 @@ function renderCurrentView() {
 			refreshControlPlaneReservation();
 		else if (route.category === "boot-console")
 			refreshBootConsole();
+		else if (route.category === "kernel-policy")
+			refreshKernelPolicy();
 		else if (route.category === "logs")
 			renderLogsList();
 		else if (route.category === "kmsg")
@@ -5901,6 +5905,87 @@ async function refreshStalls() {
 		/* Best-effort, same as every other panel here. */
 	}
 }
+
+/* ---------- Kernel Line (issue #65) ---------- */
+
+let kernelPolicyDirty = false;
+
+function renderKernelPolicy(data) {
+	const grid = document.getElementById("kpf-status");
+
+	if (!kernelPolicyDirty)
+		document.getElementById("kpf-channel").value = data.channel || "pinned";
+
+	grid.textContent = "";
+	grid.appendChild(fieldBlock("Running", data.running_version +
+	                             (data.running_series ? " (line " + data.running_series + ")" : "")));
+	/*
+	 * Three states, not two: a channel that has never been resolved is
+	 * not the same as one you are up to date on, and rendering the
+	 * unresolved case as "up to date" would be the one wrong answer
+	 * that reads as reassuring.
+	 */
+	if (data.channel === "pinned")
+		grid.appendChild(fieldBlock("Channel is at", "nothing — pinned proposes no version"));
+	else if (data.resolved_version === null)
+		grid.appendChild(fieldBlock("Channel is at", "not resolved yet — refresh from kernel.org"));
+	else
+		grid.appendChild(fieldBlock("Channel is at", data.resolved_version +
+		                             (data.behind ? " — you are behind it" : " — you are on it")));
+	if (data.channel === "longterm" && data.running_series_maintained === false &&
+	    data.newest_longterm !== null) {
+		grid.appendChild(fieldBlock("Note", data.running_series +
+		                             " is not a longterm line kernel.org still lists; the newest is " +
+		                             data.newest_longterm));
+	}
+	grid.appendChild(fieldBlock("Release data",
+	                             data.releases_fetched_at === null
+	                                 ? "never fetched"
+	                                 : "fetched " + new Date(data.releases_fetched_at * 1000).toLocaleString()));
+	if (data.refreshing)
+		grid.appendChild(fieldBlock("Refresh", "running now"));
+	if (data.last_refresh_error !== null)
+		grid.appendChild(fieldBlock("Last refresh error", data.last_refresh_error));
+}
+
+async function refreshKernelPolicy() {
+	try {
+		renderKernelPolicy(await apiRequest("GET", "/v1/system/kernel-policy"));
+	} catch (e) {
+		/* Best-effort, same as every other panel here. */
+	}
+}
+
+document.getElementById("kpf-channel").addEventListener("change", () => {
+	kernelPolicyDirty = true;
+});
+
+document.getElementById("kpf-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+	try {
+		const res = await apiRequest("PUT", "/v1/system/kernel-policy", {
+			channel: document.getElementById("kpf-channel").value,
+		});
+
+		kernelPolicyDirty = false;
+		showStatus("Kernel channel set to " + res.channel + ".", false);
+		renderKernelPolicy(res);
+	} catch (e) {
+		showStatus("Failed to set kernel channel: " + e.message, true);
+	}
+});
+
+document.getElementById("kpf-refresh").addEventListener("click", async () => {
+	try {
+		renderKernelPolicy(await apiRequest("POST", "/v1/system/kernel-policy/refresh", {}));
+		showStatus("Asking kernel.org what each channel is at…", false);
+		/* The fetch is a forked curl, not this request -- so the answer
+		 * lands a moment after the 202 does. */
+		window.setTimeout(refreshKernelPolicy, 3000);
+	} catch (e) {
+		showStatus("Could not start a refresh: " + e.message, true);
+	}
+});
 
 /* ---------- Boot Console (issue #24) ---------- */
 

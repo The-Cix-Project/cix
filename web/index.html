@@ -735,6 +735,7 @@
 				<button type="button" class="tab-button" data-tab="tls-throttle">TLS Throttle</button>
 				<button type="button" class="tab-button" data-tab="control-plane-reservation">Control Plane</button>
 				<button type="button" class="tab-button" data-tab="boot-console">Boot Console</button>
+				<button type="button" class="tab-button" data-tab="kernel-policy">Kernel Line</button>
 				<button type="button" class="tab-button" data-tab="backup">Backup</button>
 				<button type="button" class="tab-button" data-tab="volume-backup-config">Volume Backups</button>
 				<button type="button" class="tab-button" data-tab="factory-reset">Factory Reset</button>
@@ -968,6 +969,39 @@
 						<tr><td colspan="2" class="empty">Loading&hellip;</td></tr>
 					</tbody>
 				</table>
+			</div>
+		</div>
+			<div class="tab-panel" data-tab="kernel-policy" hidden>
+			<div class="view-list">
+				<h2>Kernel Line</h2>
+				<p class="hint">
+					Which kernel line this box tracks (issue #65). The platform used to make that
+					judgment call for you &mdash; one pinned version in the kernel recipe, and
+					nothing anywhere saying which <em>line</em> it belonged to or how far behind
+					that line it had drifted. A cautious box tracks <code>longterm</code>, an
+					aggressive one <code>stable</code> or <code>mainline</code>.
+				</p>
+				<p class="hint">
+					The channels are kernel.org's own monikers, resolved from its own
+					<code>releases.json</code> &mdash; there is no copy of kernel.org's state in
+					this repo to go stale. Choosing a channel changes what is <strong>reported</strong>
+					here; it never moves the pin on its own. <code>pinned</code> is the default and
+					means no version is proposed at all.
+				</p>
+				<form id="kpf-form">
+					<label>
+						Channel
+						<select id="kpf-channel">
+							<option value="pinned">pinned &mdash; stay where the recipe says</option>
+							<option value="longterm">longterm</option>
+							<option value="stable">stable</option>
+							<option value="mainline">mainline</option>
+						</select>
+					</label>
+					<button type="submit">Save</button>
+					<button type="button" id="kpf-refresh">Refresh from kernel.org</button>
+				</form>
+				<div class="detail-grid" id="kpf-status"></div>
 			</div>
 		</div>
 			<div class="tab-panel" data-tab="control-plane-reservation" hidden>

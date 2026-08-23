@@ -6453,6 +6453,117 @@ static int cmd_boot_console(const struct thinc_client *c, int json_mode, int arg
 
 
 /*
+ * Issue #65: thincctl kernel-policy show|set|refresh -- which kernel
+ * line this box tracks. Prints the gap rather than just the two
+ * versions: "you are on X, your channel is at Y" is the question, and
+ * leaving the reader to compare two version strings themselves is
+ * leaving them to make the mistake.
+ */
+static void fmt_kernel_policy(const struct json_value *v)
+{
+	const struct json_value *behind = json_object_get(v, "behind");
+	const struct json_value *maintained = json_object_get(v, "running_series_maintained");
+	const char *channel = json_str_field(v, "channel");
+	const char *running = json_str_field(v, "running_version");
+	const char *series = json_str_field(v, "running_series");
+	const char *resolved = json_str_field(v, "resolved_version");
+	const char *newest_lt = json_str_field(v, "newest_longterm");
+	const char *err = json_str_field(v, "last_refresh_error");
+	const struct json_value *fetched = json_object_get(v, "releases_fetched_at");
+	const struct json_value *refreshing = json_object_get(v, "refreshing");
+
+	printf("channel:  %s\n", channel != NULL ? channel : "-");
+	printf("running:  %s (line %s)\n", running != NULL ? running : "-",
+	       series != NULL && series[0] != '\0' ? series : "?");
+	if (resolved != NULL)
+		printf("channel is at: %s%s\n", resolved,
+		       behind != NULL && behind->type == JSON_BOOL && behind->u.boolean
+		           ? "  -- you are behind it"
+		           : "  -- you are on it");
+	else if (channel != NULL && strcmp(channel, "pinned") == 0)
+		printf("channel is at: (nothing -- pinned means no version is proposed)\n");
+	else
+		printf("channel is at: (unknown -- run `thincctl kernel-policy refresh` first)\n");
+	/* Only says anything on the longterm channel: on stable or mainline
+	 * whether your line is a longterm one is not a fact you asked
+	 * about, and printing it there is noise dressed as a warning. */
+	if (channel != NULL && strcmp(channel, "longterm") == 0 && maintained != NULL &&
+	    maintained->type == JSON_BOOL && !maintained->u.boolean && newest_lt != NULL)
+		printf("note:     %s is not a longterm line kernel.org still lists; the newest is %s\n",
+		       series != NULL ? series : "your line", newest_lt);
+	if (fetched != NULL && fetched->type == JSON_NUMBER)
+		printf("resolved from %s at unix %lld\n",
+		       json_str_field(v, "source") != NULL ? json_str_field(v, "source") : "kernel.org",
+		       (long long)json_as_number(fetched));
+	else
+		printf("never resolved -- no kernel.org release data fetched yet\n");
+	if (refreshing != NULL && refreshing->type == JSON_BOOL && refreshing->u.boolean)
+		printf("a refresh is running right now\n");
+	if (err != NULL)
+		printf("last refresh error: %s\n", err);
+}
+
+static int cmd_kernel_policy(const struct thinc_client *c, int json_mode, int argc, char **argv)
+{
+	struct thinc_response r;
+	const char *sub = argc > 0 ? argv[0] : "show";
+	const char *channel = NULL;
+	int i;
+	struct json_writer w;
+
+	if (strcmp(sub, "show") == 0) {
+		if (thinc_client_request(c, "GET", "/v1/system/kernel-policy", NULL, &r) != 0) {
+			fprintf(stderr, "thincctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_kernel_policy);
+	}
+	if (strcmp(sub, "refresh") == 0) {
+		if (thinc_client_request(c, "POST", "/v1/system/kernel-policy/refresh", "{}", &r) != 0) {
+			fprintf(stderr, "thincctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_kernel_policy);
+	}
+	if (strcmp(sub, "set") != 0) {
+		fprintf(stderr, "usage: thincctl kernel-policy show\n"
+		                "       thincctl kernel-policy set --channel=pinned|longterm|stable|mainline\n"
+		                "       thincctl kernel-policy refresh\n"
+		                "  channels are kernel.org's own monikers; pinned (the default) means\n"
+		                "  the version stays where it is, in the kernel recipe\n");
+		return 2;
+	}
+	for (i = 1; i < argc; i++) {
+		if (strncmp(argv[i], "--channel=", 10) == 0)
+			channel = argv[i] + 10;
+		else {
+			fprintf(stderr, "thincctl: unknown kernel-policy set option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (channel == NULL) {
+		fprintf(stderr, "usage: thincctl kernel-policy set "
+		                "--channel=pinned|longterm|stable|mainline\n");
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "channel");
+	jw_str(&w, channel);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (thinc_client_request(c, "PUT", "/v1/system/kernel-policy", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "thincctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+	return emit(&r, json_mode, fmt_kernel_policy);
+}
+
+/*
  * Issue #86: thincctl control-plane-reservation show|set -- how much of
  * the machine is held back for the daemon itself. Reported with the
  * derived workload ceiling, because a percentage on its own is not
@@ -12075,6 +12186,8 @@ static int dispatch_command(const struct thinc_client *client, int json_mode, co
 		return cmd_tls_throttle(client, json_mode, argc, argv);
 	if (strcmp(cmd, "control-plane-reservation") == 0)
 		return cmd_cpreserve(client, json_mode, argc, argv);
+	if (strcmp(cmd, "kernel-policy") == 0)
+		return cmd_kernel_policy(client, json_mode, argc, argv);
 	if (strcmp(cmd, "boot-console") == 0)
 		return cmd_boot_console(client, json_mode, argc, argv);
 	if (strcmp(cmd, "stalls") == 0)
@@ -12280,7 +12393,7 @@ static const char *const SHELL_COMMANDS[] = {
 	"resolv",
 	"restore", "rm",       "rolling-config", "routes",        "run",      "shutdown",  "site",
 	"start",  "stats",     "stop",          "storage",  "swap",     "sysctl",   "syslog",    "time",      "tls-throttle", "unpause",   "update",
-	"control-plane-reservation", "boot-console", "stalls",
+	"control-plane-reservation", "boot-console", "kernel-policy", "stalls",
 	NULL
 };
 
