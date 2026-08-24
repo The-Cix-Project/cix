@@ -13,6 +13,10 @@
 	--error-bg: #fce8e6;
 	--unknown-bg: #eeeeee;
 	--tree-active-bg: rgba(0, 0, 0, 0.06);
+	/* Banding for alternate rows in a detail table. An overlay rather
+	 * than a fixed colour, so it composites correctly over whatever
+	 * --panel is in this theme. */
+	--row-alt: rgba(0, 0, 0, 0.035);
 	/* Standard 16-color ANSI SGR palette (30-37/90-97), for rendering
 	 * a container's own real terminal-colored log output (e.g.
 	 * glauth's zerolog) instead of showing raw escape sequences --
@@ -48,6 +52,7 @@
 		--error-bg: #3a1615;
 		--unknown-bg: #2c2c2e;
 		--tree-active-bg: rgba(255, 255, 255, 0.09);
+		--row-alt: rgba(255, 255, 255, 0.05);
 		--ansi-black: #6e6e73;
 		--ansi-red: #ff6b60;
 		--ansi-green: #5cd67a;
@@ -88,6 +93,7 @@
 	--error-bg: #fce8e6;
 	--unknown-bg: #eeeeee;
 	--tree-active-bg: rgba(0, 0, 0, 0.06);
+	--row-alt: rgba(0, 0, 0, 0.035);
 	--ansi-black: #3a3a3c;
 	--ansi-red: #c5221f;
 	--ansi-green: #1e8e3e;
@@ -117,6 +123,7 @@
 	--error-bg: #3a1615;
 	--unknown-bg: #2c2c2e;
 	--tree-active-bg: rgba(255, 255, 255, 0.09);
+	--row-alt: rgba(255, 255, 255, 0.05);
 	--ansi-black: #6e6e73;
 	--ansi-red: #ff6b60;
 	--ansi-green: #5cd67a;
@@ -1219,14 +1226,65 @@ td.empty {
 	padding: 1.5rem;
 }
 
-.detail-grid {
-	display: grid;
-	grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-	gap: 0.75rem;
+/*
+ * A detail panel: one labelled value per row, banded.
+ *
+ * This replaced a responsive grid of cells. The grid packed more into
+ * the same height, but it reflowed into a different arrangement at
+ * every window width, so a value was never in the same place twice and
+ * there was no line joining a label to its value across the gap. Rows
+ * read the same at every size, and can be banded -- which is what
+ * makes a twenty-value panel scannable.
+ *
+ * overflow: hidden so the banding stops at the rounded corners instead
+ * of squaring them off; border-collapse alone would paint a row's
+ * background straight over the radius.
+ */
+.detail-table {
+	width: 100%;
+	border-collapse: collapse;
+	table-layout: fixed;
 	background: var(--panel);
 	border: 1px solid var(--border);
 	border-radius: 8px;
-	padding: 1rem 1.25rem;
+	overflow: hidden;
+}
+
+.detail-table tbody tr:nth-child(odd) {
+	background: var(--row-alt);
+}
+
+/* The panel's own border already closes the bottom edge. */
+.detail-table tbody tr:last-child > * {
+	border-bottom: none;
+}
+
+.detail-table th.field-label {
+	width: 34%;
+	font-size: 0.75rem;
+	font-weight: 600;
+	color: var(--muted);
+	text-transform: uppercase;
+	letter-spacing: 0.03em;
+	vertical-align: top;
+	padding: 0.55rem 0.75rem;
+}
+
+/* Values are the one thing here with no length bound -- a command
+ * line, a capability list, a dependency set -- so they wrap inside
+ * their cell rather than forcing the panel wider than the page. */
+.detail-table td {
+	font-size: 0.9rem;
+	vertical-align: top;
+	padding: 0.55rem 0.75rem;
+	overflow-wrap: anywhere;
+}
+
+/* Narrow screens: the label column stops earning a third of the width. */
+@media (max-width: 720px) {
+	.detail-table th.field-label {
+		width: 42%;
+	}
 }
 
 /*
@@ -1268,18 +1326,6 @@ td.empty {
 
 .stats-card .hint {
 	margin-top: 0.4rem;
-}
-
-.detail-grid div {
-	font-size: 0.9rem;
-}
-
-.detail-grid .field-label {
-	display: block;
-	font-size: 0.75rem;
-	color: var(--muted);
-	text-transform: uppercase;
-	letter-spacing: 0.03em;
 }
 
 .detail-actions {
