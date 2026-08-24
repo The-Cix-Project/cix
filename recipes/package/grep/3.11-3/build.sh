@@ -37,12 +37,15 @@ pkg_depends=""
 #             header for a pattern
 #   gawk      AC_PROG_AWK, and config.status falls back to awk whenever a
 #             substitution list outgrows what sed can take in one pass
+#   binutils  gnulib is built as a static convenience archive first
+#             (lib/lib*.a), which needs ar and ranlib, even though
+#             nothing static is installed
 #
 # Sufficiency is enforced by the build itself -- an environment
 # holding exactly these either produces the package or does not.
 # Minimality is review, not enforcement (ADR-0199 is explicit that
 # this is the honest limit).
-pkg_build_depends="tcc make libc-dev bash coreutils sed grep gawk"
+pkg_build_depends="tcc make libc-dev bash coreutils sed grep gawk binutils"
 
 
 # 3.11's own bare `CC=tcc ./configure` failed the same, already
