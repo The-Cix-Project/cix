@@ -990,6 +990,57 @@ static int copy_file_simple(const char *src, const char *dst)
 	return n < 0 ? -1 : 0;
 }
 
+/*
+ * One file of a package's own recorded manifest, copied into a rootfs
+ * being composed (issue #109). Unlike copy_file_simple() above this has
+ * to reproduce the thing faithfully rather than just move bytes: a
+ * build environment whose compiler lost its executable bit, or whose
+ * `cc` symlink became a copy of `gcc`, is not the environment the
+ * package declared.
+ *
+ * Missing parents are created, because a manifest lists files and not
+ * the directories on the way to them.
+ */
+static int copy_one_file_preserving(const char *src, const char *dst)
+{
+	struct stat st;
+	char parent[PATH_MAX];
+	char *slash;
+
+	if (lstat(src, &st) != 0)
+		return -1;
+
+	snprintf(parent, sizeof(parent), "%s", dst);
+	slash = strrchr(parent, '/');
+	if (slash != NULL) {
+		*slash = '\0';
+		if (persist_mkdir_p(parent) != 0)
+			return -1;
+	}
+
+	if (S_ISLNK(st.st_mode)) {
+		char target[PATH_MAX];
+		ssize_t n = readlink(src, target, sizeof(target) - 1);
+
+		if (n < 0)
+			return -1;
+		target[n] = '\0';
+		unlink(dst);
+		return symlink(target, dst);
+	}
+	if (S_ISDIR(st.st_mode))
+		return persist_mkdir_p(dst);
+	if (!S_ISREG(st.st_mode)) {
+		/* Device nodes and the like come from pkg_seed_image_baseline(),
+		 * not from a package's manifest -- one arriving here is a
+		 * surprise worth failing on rather than silently skipping. */
+		return -1;
+	}
+	if (copy_file_simple(src, dst) != 0)
+		return -1;
+	return chmod(dst, st.st_mode & 07777);
+}
+
 static int run_subprocess(const char *bin, char *const argv[])
 {
 	pid_t pid;
@@ -2141,12 +2192,6 @@ static void pkg_migrate_flat_sandbox(const char *images_dir)
  * real state (a box that has never run `pkg bootstrap`) and not an
  * error to paper over with a path that does not exist.
  */
-/* Forward-declared here rather than only at their existing site further
- * down: the build-environment composition below is the first caller,
- * and it sits above them. */
-static int pkg_cache_has(const char *name, const char *version);
-static int pkg_cache_extract(const char *name, const char *version, const char *out_dir);
-
 /*
  * ---- Issue #109: a build environment composed from a recipe's own
  * ---- declared build tools, and nothing else (ADR-0199)
@@ -2157,11 +2202,18 @@ static int pkg_cache_extract(const char *name, const char *version, const char *
  * no extras to accidentally depend on, and nothing missing that the
  * build will not immediately name.
  *
- * Composed from each declared package's own CACHED build output -- the
- * files that package itself produced, which is the only honest
- * definition of "what this package contributes". Not from an image
- * (an image is a union of whatever was installed into it), and not
- * from the shared sandbox (which is the problem).
+ * Composed from each declared package's own RECORDED FILE LIST -- the
+ * exact paths that package contributed, which is the only honest
+ * definition of "what this package provides". Not the image it lives in
+ * (that is a union of whatever was installed into it), and not the
+ * shared sandbox (which is the problem).
+ *
+ * Deliberately the manifest and not the build cache, though the cache
+ * holds the same bytes: the cache is a cache, prunable by size, so
+ * composing from it would mean a build environment could become
+ * unbuildable because an entry aged out. The file list is durable state
+ * -- it is what an upgrade already unlinks against -- so an environment
+ * stays reproducible for as long as the packages are installed.
  *
  * The result is an ordinary image named for the hash of the declared
  * set, so the same set is composed once and reused forever, and two
@@ -2175,6 +2227,9 @@ static int pkg_cache_extract(const char *name, const char *version, const char *
 struct buildenv_tool {
 	char name[PKG_NAME_MAX];
 	char version[PKG_VERSION_MAX];
+	/* The installed entry it resolved to -- its file list is what gets
+	 * copied, and its image is where those files currently live. */
+	struct pkg_entry *entry;
 };
 
 struct buildenv_ctx {
@@ -2226,15 +2281,16 @@ static int buildenv_resolve_tools(const char *declared, struct buildenv_tool *ou
 			         tok);
 			return -1;
 		}
-		if (!pkg_cache_has(found->name, found->version)) {
+		if (found->file_count <= 0) {
 			snprintf(err, err_size,
-			         "declared build tool \"%s@%s\" has no cached build output, so it cannot be "
-			         "composed into a build environment -- rebuild it",
+			         "declared build tool \"%s@%s\" has no recorded files, so there is nothing "
+			         "to compose from -- reinstall it",
 			         found->name, found->version);
 			return -1;
 		}
 		snprintf(out[n].name, sizeof(out[n].name), "%s", found->name);
 		snprintf(out[n].version, sizeof(out[n].version), "%s", found->version);
+		out[n].entry = found;
 		n++;
 	}
 	if (n == 0) {
@@ -2263,9 +2319,30 @@ static int buildenv_mutate(const char *staging_rootfs, void *ctx_v)
 	 * something a recipe should have to declare. */
 	if (pkg_seed_image_baseline(staging_rootfs) != PKG_OK)
 		return -1;
-	for (i = 0; i < ctx->tool_count; i++)
-		if (pkg_cache_extract(ctx->tools[i].name, ctx->tools[i].version, staging_rootfs) != 0)
+	for (i = 0; i < ctx->tool_count; i++) {
+		const struct pkg_entry *e = ctx->tools[i].entry;
+		char src_rootfs[PATH_MAX];
+		char version[IMAGE_VERSION_MAX];
+		int f;
+
+		if (image_current_version(normalize_image(e->image), version, sizeof(version)) != IMAGE_OK)
 			return -1;
+		image_version_rootfs_path(normalize_image(e->image), version, src_rootfs,
+		                           sizeof(src_rootfs));
+		for (f = 0; f < e->file_count; f++) {
+			char src[PATH_MAX];
+			char dst[PATH_MAX];
+
+			snprintf(src, sizeof(src), "%s/%s", src_rootfs, e->files[f]);
+			snprintf(dst, sizeof(dst), "%s/%s", staging_rootfs, e->files[f]);
+			/* One file of one declared package. A path that has gone
+			 * missing from the image is a real inconsistency and fails
+			 * the composition rather than producing a quietly
+			 * incomplete environment. */
+			if (copy_one_file_preserving(src, dst) != 0)
+				return -1;
+		}
+	}
 	return 0;
 }
 

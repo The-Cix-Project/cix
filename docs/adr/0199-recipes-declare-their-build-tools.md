@@ -38,7 +38,11 @@ Both halves of "no extras and no less" are then enforced by something real rathe
 - **no less** — the build fails, naming exactly what is missing
 - **no extras** — nothing else is present to accidentally depend on
 
-**Composed from each declared package's own cached build output**, not from an image. An image is a union of whatever was installed into it; a package's cache entry is the files that package itself produced, which is the only honest definition of what it contributes.
+**Composed from each declared package's own recorded file list**, not from the image it happens to live in. An image is a union of whatever was installed into it; a package's manifest is the exact set of paths *that package* contributed, which is the only honest definition of what it provides.
+
+Deliberately the manifest and not the build cache, although the cache holds the same bytes. The cache is a cache — prunable by size — so composing from it would let a build environment become unbuildable because an entry aged out, which was not hypothetical: the first live attempt failed with *"declared build tool `tcc@0.9.27` has no cached build output"* on a box where tcc was installed and working. The file list is durable state (it is already what an upgrade unlinks against), so an environment stays reproducible for as long as its packages are installed.
+
+Files are copied faithfully rather than merely read and written: mode preserved, symlinks recreated as symlinks, parent directories created. A build environment whose compiler lost its executable bit, or whose `cc` symlink became a copy of `gcc`, is not the environment the recipe declared.
 
 **The composed environment is an ordinary image named for the hash of the declared set** (`__buildenv-<hash>`), so the same set is composed once and reused, two different sets can never collide, and the set is sorted before hashing so order of declaration is not part of identity. That reuse is not an optimisation bolted on afterwards — it is what makes declaring tools cheap enough to do everywhere.
 
