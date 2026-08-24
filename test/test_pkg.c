@@ -1277,6 +1277,26 @@ int main(void)
 							        "empty-manifest version) -- created but never filled\n",
 							        nm);
 							ok = 0;
+						} else {
+							/*
+							 * And it must actually contain the declared
+							 * tool's own file. "Not empty" only proves
+							 * the baseline was seeded; this proves the
+							 * tool arrived.
+							 */
+							char tool_path[PATH_MAX];
+							struct stat tst;
+
+							snprintf(tool_path, sizeof(tool_path),
+							         "%s/rebuildable/images/%s/%s/rootfs/usr/bin/greeter",
+							         g_data_dir, nm, v);
+							if (stat(tool_path, &tst) != 0) {
+								fprintf(stderr,
+								        "FAIL: #109 composed env %s does not contain its "
+								        "declared tool (%s missing)\n",
+								        nm, tool_path);
+								ok = 0;
+							}
 						}
 					}
 					thinc_response_free(&ir);

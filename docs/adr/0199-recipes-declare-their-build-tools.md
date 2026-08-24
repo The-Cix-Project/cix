@@ -91,3 +91,35 @@ Both were invisible to the test suite, because only the *refusal* path
 had a test. A composition that failed for every possible input would
 have looked green. The success path is covered now, along with an
 assertion that a composed environment is not empty.
+
+## A declared tool means the tool *and what it needs to run*
+
+The first real build after composition started working failed twice more,
+each one a layer deeper, and the second changed the design rather than
+just the recipe.
+
+`zlib` declared `binutils` for `ar`, having failed once already with
+`make: ar: No such file or directory`. With binutils in the environment
+it failed again: `ar: error while loading shared libraries: libz.so.1`.
+binutils links against libz for compressed-section support and had
+always declared `pkg_depends=""`, which was true only in the sense that
+the shared sandbox happened to have libz lying around.
+
+So a build environment is composed from each declared tool **plus that
+tool's own runtime dependency closure**, resolved from what was recorded
+when the tool was installed. This is not a relaxation of "exactly what
+the recipe declares" -- a tool that cannot start is not a leaner
+environment, it is a broken one, and no recipe author should have to
+enumerate the shared libraries of a tool they named. What the recipe
+declares is *what it uses*; what those things need in order to run is
+the platform's problem, and now the platform actually solves it.
+
+The failure messages distinguish the two, because the fix is different:
+an undeclared tool is the recipe's to fix, while a tool whose runtime
+dependency is missing names the tool that pulled it in.
+
+One consequence worth stating plainly rather than hiding: building zlib
+now needs `ar`, and `ar` needs libz, so a zlib build runs against a
+previously built zlib. That is ordinary for a self-hosting toolchain --
+the same shape as building a compiler with a compiler -- and it is only
+visible at all because the environment is declared instead of ambient.
