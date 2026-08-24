@@ -1423,6 +1423,36 @@ static int merge_tree(const char *src_root, const char *dst_root, const char *re
 				*slash = '\0';
 				persist_mkdir_p(dst_parent);
 			}
+			/*
+			 * A symlink in the source landing where the destination
+			 * already has a real DIRECTORY is not a conflict about
+			 * content -- it is the two trees disagreeing about
+			 * merged-/usr shape (a flat sandbox seeded from a
+			 * merged-/usr host has /lib as a symlink to usr/lib; an
+			 * image built up by this project's own recipes has a real
+			 * /lib directory). unlink() cannot remove a directory, so
+			 * the symlink() that followed failed EEXIST and took the
+			 * whole migration down with it -- issue #40's own
+			 * confirmed, previously unattributed failure.
+			 *
+			 * Keeping the directory is the answer that loses nothing:
+			 * everything reachable through the source symlink is
+			 * reachable through its target path too, which this same
+			 * walk merges on its own. Replacing it would discard
+			 * whatever the destination already had there.
+			 */
+			{
+				struct stat dst_st;
+
+				if (lstat(dst_path, &dst_st) == 0 && S_ISDIR(dst_st.st_mode)) {
+					logstore_write("thincd", "info",
+					               "merge: keeping the existing directory at %s rather than "
+					               "replacing it with a symlink to %s (merged-/usr shape "
+					               "difference, not a content conflict)",
+					               child_rel, target);
+					continue;
+				}
+			}
 			unlink(dst_path); /* EEXIST tolerance for a re-install/upgrade,
 			                    * same spirit copy_file_simple()'s own
 			                    * O_CREAT|O_TRUNC already has for regular files */
@@ -2429,10 +2459,32 @@ static int buildenv_image_for(const char *declared, char *out_image, size_t out_
 	{
 		char existing[IMAGE_VERSION_MAX];
 
-		/* Already composed: the set is the identity, so an existing
-		 * one is by construction the right one. */
+		/*
+		 * Already composed: the tool set IS the image's name, so an
+		 * existing one is by construction the right one -- but only if
+		 * it was ever actually filled. image_create() gives a brand-new
+		 * image a current version immediately (the hash of its own empty
+		 * manifest), so "has a current version" is not the same question
+		 * as "has been composed", and treating them as one is how this
+		 * shipped broken: a failed composition left a created-but-empty
+		 * image behind, and every later build silently accepted it as
+		 * ready. That is exactly what happened on the first real box --
+		 * the environment reported composed, then the build died at
+		 * execve(/usr/bin/bash) because there was nothing in it at all.
+		 *
+		 * The empty-manifest hash is the marker for that state, and
+		 * skipping it means an image poisoned by an earlier daemon
+		 * heals itself on the next build rather than needing a manual
+		 * delete.
+		 */
+		char empty[IMAGE_VERSION_MAX];
+
+		if (image_empty_manifest_version(empty, sizeof(empty)) != 0) {
+			snprintf(err, err_size, "could not determine the empty-image version");
+			return -1;
+		}
 		if (image_current_version(out_image, existing, sizeof(existing)) == IMAGE_OK &&
-		    existing[0] != '\0')
+		    existing[0] != '\0' && strcmp(existing, empty) != 0)
 			return 0;
 	}
 	{
@@ -2441,6 +2493,13 @@ static int buildenv_image_for(const char *declared, char *out_image, size_t out_
 		ctx.tools = tools;
 		ctx.tool_count = count;
 		if (image_produce_new_version(out_image, buildenv_mutate, &ctx, canonical) != 0) {
+			/*
+			 * Leave nothing half-built behind. image_produce_new_version()
+			 * creates the image before it can fail, and a created-but-
+			 * empty one is indistinguishable from a real environment by
+			 * name alone -- see the guard above for what that cost.
+			 */
+			image_delete(out_image);
 			snprintf(err, err_size, "could not compose a build environment from the declared "
 			                        "tools");
 			return -1;

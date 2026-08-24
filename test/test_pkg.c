@@ -284,6 +284,14 @@ static int write_recipe(const char *name, const char *version, const char *tarba
 }
 
 /*
+ * The version image_create() gives a brand-new image: SHA-256 of the
+ * empty string, because a new image's manifest is empty. Spelled out
+ * here rather than derived, so this test would still catch a composed
+ * environment sitting at it even if the daemon's own derivation broke.
+ */
+#define EMPTY_MANIFEST_VERSION "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+/*
  * Issue #109: a recipe that DECLARES its build tools. The build
  * container is then composed from exactly those packages and nothing
  * else, so what this build ran against is a property of the recipe
@@ -1215,6 +1223,67 @@ int main(void)
 				        "FAIL: #109 a declared tool that IS installed still failed to compose "
 				        "a build environment: %s\n",
 				        err);
+				ok = 0;
+			}
+		}
+		thinc_response_free(&r);
+	}
+
+	/*
+	 * ...and the environment it composed must not be EMPTY. image_create()
+	 * gives every new image a current version straight away, so an image
+	 * that exists is not the same thing as an image that was filled --
+	 * conflating the two shipped a build environment holding nothing at
+	 * all, which then failed at execve() of a shell that was supposed to
+	 * be in it. Asserting the version moved off the empty-manifest one is
+	 * what tells those two states apart.
+	 */
+	{
+		memset(&r, 0, sizeof(r));
+		if (thinc_client_request(&client, "GET", "/v1/images", NULL, &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: #109 could not list images to check the composed env\n");
+			ok = 0;
+		} else {
+			const struct json_value *arr = json_object_get(r.json, "images");
+			int found = 0;
+			size_t n = (arr != NULL && arr->type == JSON_ARRAY) ? arr->u.array.count : 0;
+			size_t k;
+
+			for (k = 0; k < n; k++) {
+				const struct json_value *im = arr->u.array.items[k];
+				const char *nm = im != NULL ? json_str_field(im, "name") : NULL;
+
+				if (nm != NULL && strncmp(nm, "__buildenv-", 11) == 0) {
+					struct thinc_response ir;
+					char ipath[256];
+					const char *v;
+
+					found = 1;
+					snprintf(ipath, sizeof(ipath), "/v1/images/%s", nm);
+					memset(&ir, 0, sizeof(ir));
+					if (thinc_client_request(&client, "GET", ipath, NULL, &ir) != 0 ||
+					    ir.status != 200) {
+						fprintf(stderr, "FAIL: #109 could not GET composed env %s\n", nm);
+						ok = 0;
+					} else {
+						v = json_str_field(ir.json, "current_version");
+						if (v == NULL || v[0] == '\0') {
+							fprintf(stderr, "FAIL: #109 composed env %s has no version\n", nm);
+							ok = 0;
+						} else if (strcmp(v, EMPTY_MANIFEST_VERSION) == 0) {
+							fprintf(stderr,
+							        "FAIL: #109 composed env %s is EMPTY (still at the "
+							        "empty-manifest version) -- created but never filled\n",
+							        nm);
+							ok = 0;
+						}
+					}
+					thinc_response_free(&ir);
+				}
+			}
+			if (!found) {
+				fprintf(stderr, "FAIL: #109 no composed build environment image exists\n");
 				ok = 0;
 			}
 		}

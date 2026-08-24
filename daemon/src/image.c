@@ -203,6 +203,11 @@ static int save_state(const char *name, const struct image_state *st)
 	return rc;
 }
 
+int image_empty_manifest_version(char *out, size_t out_size)
+{
+	return image_hash_manifest_string("", out, out_size);
+}
+
 enum image_error image_create(const char *name)
 {
 	char path[PATH_MAX];
