@@ -97,7 +97,7 @@ pkg_build_depends="tcc make libc-dev bash coreutils sed"
 - **no less** — a tool you did not declare is not there, and the build fails naming what it wanted
 - **no extras** — nothing else is present for the build to accidentally depend on
 
-A declared tool that cannot be provided (not installed anywhere, or with no cached build output to compose from) **fails the build and names it**. There is deliberately no fallback to a fuller environment: falling back would let the build succeed against something it never declared, which is the exact problem this replaces.
+A declared tool that cannot be provided (not installed anywhere, or with no recorded files to compose from) **fails the build and names it**. There is deliberately no fallback to a fuller environment: falling back would let the build succeed against something it never declared, which is the exact problem this replaces.
 
 Write the list by building and reading the failures. Each one names precisely the next thing to add, and it converges quickly — `zlib` needs six packages and its declaration says why each one earns its place.
 
