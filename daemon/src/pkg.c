@@ -2319,6 +2319,45 @@ struct buildenv_ctx {
  * `via` names whatever pulled this in, so a failure three levels down
  * still reports which declared tool the operator actually wrote.
  */
+/*
+ * Orders two package version strings the way a person reads them:
+ * digit runs compare numerically, everything else lexically. So
+ * "2.36-3" is newer than "2.36", and "1.3.2-10" is newer than
+ * "1.3.2-9" -- which a plain strcmp() gets exactly backwards.
+ *
+ * This exists because a build environment has to pick ONE version of a
+ * declared tool, and the same package is routinely installed at
+ * different versions in different images. Taking whichever the registry
+ * happened to list first made the environment depend on install order,
+ * which is precisely the non-determinism ADR-0199 exists to remove --
+ * and it failed a real build: `libc-dev` resolved to 2.36, which does
+ * not stage libm.so, while 2.36-3, which does, sat installed in two
+ * other images. Newest wins, and it is the same answer every time.
+ */
+static int pkg_version_cmp(const char *a, const char *b)
+{
+	while (*a != '\0' && *b != '\0') {
+		if (isdigit((unsigned char)*a) && isdigit((unsigned char)*b)) {
+			long na = 0, nb = 0;
+
+			while (isdigit((unsigned char)*a))
+				na = na * 10 + (*a++ - '0');
+			while (isdigit((unsigned char)*b))
+				nb = nb * 10 + (*b++ - '0');
+			if (na != nb)
+				return na < nb ? -1 : 1;
+			continue;
+		}
+		if (*a != *b)
+			return (unsigned char)*a < (unsigned char)*b ? -1 : 1;
+		a++;
+		b++;
+	}
+	if (*a == *b)
+		return 0;
+	return *a == '\0' ? -1 : 1;
+}
+
 static int buildenv_add_tool(const char *name, const char *via, struct buildenv_tool *out, int max,
                               int *n, char *err, size_t err_size, int depth)
 {
@@ -2366,8 +2405,10 @@ static int buildenv_add_tool(const char *name, const char *via, struct buildenv_
 			unusable = img;
 			continue;
 		}
-		found = &g_packages[i];
-		break;
+		/* Newest usable copy wins, wherever it lives -- never
+		 * whichever the registry listed first. */
+		if (found == NULL || pkg_version_cmp(g_packages[i].version, found->version) > 0)
+			found = &g_packages[i];
 	}
 	if (found == NULL && unusable != NULL) {
 		snprintf(err, err_size,
