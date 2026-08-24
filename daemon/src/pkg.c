@@ -2319,15 +2319,45 @@ static int buildenv_resolve_tools(const char *declared, struct buildenv_tool *ou
 			snprintf(err, err_size, "more than %d declared build tools", max);
 			return -1;
 		}
-		/* Any image will do: a package's own built files are the same
-		 * files whichever image it was installed into. */
-		for (i = 0; i < PKG_MAX_PACKAGES; i++) {
-			if (!g_packages[i].in_use || g_packages[i].state != PKG_STATE_INSTALLED)
-				continue;
-			if (strcmp(g_packages[i].name, tok) != 0)
-				continue;
-			found = &g_packages[i];
-			break;
+		/*
+		 * Any image will do -- a package's own built files are the same
+		 * files whichever image it was installed into -- but only if
+		 * that image can still be resolved to a real rootfs to copy
+		 * them out of. A stale image left behind by an earlier era of
+		 * this project ("kanxeo-builder", on the first real box) still
+		 * carries INSTALLED package rows while having no current
+		 * version at all, and taking the first name match regardless
+		 * meant a perfectly healthy tool installed in three good images
+		 * resolved to the one broken one. Checked here rather than
+		 * during the copy so the failure names the tool and the
+		 * image, not a file path.
+		 */
+		{
+			const char *unusable = NULL;
+			char version[IMAGE_VERSION_MAX];
+
+			for (i = 0; i < PKG_MAX_PACKAGES; i++) {
+				const char *img;
+
+				if (!g_packages[i].in_use || g_packages[i].state != PKG_STATE_INSTALLED)
+					continue;
+				if (strcmp(g_packages[i].name, tok) != 0)
+					continue;
+				img = normalize_image(g_packages[i].image);
+				if (image_current_version(img, version, sizeof(version)) != IMAGE_OK) {
+					unusable = img;
+					continue;
+				}
+				found = &g_packages[i];
+				break;
+			}
+			if (found == NULL && unusable != NULL) {
+				snprintf(err, err_size,
+				         "declared build tool \"%s\" is installed only in image \"%s\", which "
+				         "has no current version to copy it out of",
+				         tok, unusable);
+				return -1;
+			}
 		}
 		if (found == NULL) {
 			snprintf(err, err_size,
