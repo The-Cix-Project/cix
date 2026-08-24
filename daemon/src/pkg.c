@@ -1586,6 +1586,30 @@ static const char *build_image_manifest_string(const char *image)
  * itself becomes the new version's permanent rootfs (a same-filesystem
  * rename(2), not a second copy). Returns 0 on success.
  */
+/*
+ * Every failure exit of image_produce_new_version() goes through this,
+ * so a caller's own "could not produce a new image version" never
+ * again has to stand alone as the whole explanation. Two of this
+ * project's own real investigations (issue #40's flat-sandbox
+ * migration, and #109's first live build-environment composition) both
+ * stalled on exactly that: a bare -1 from a nine-exit function, with
+ * the caller left to guess which step and which errno. The step name
+ * and errno are the two things that make it a one-read diagnosis.
+ */
+static int produce_fail(const char *image, const char *staging, const char *step, int use_errno)
+{
+	if (use_errno)
+		logstore_write("thincd", "error",
+		               "image %s: could not produce a new version -- %s failed: %s", image,
+		               step, strerror(errno));
+	else
+		logstore_write("thincd", "error",
+		               "image %s: could not produce a new version -- %s failed", image, step);
+	if (staging != NULL)
+		persist_remove_tree(staging);
+	return -1;
+}
+
 static int image_produce_new_version(const char *image,
                                       int (*mutate)(const char *staging_rootfs, void *ctx),
                                       void *ctx, const char *extra_identity)
@@ -1602,26 +1626,22 @@ static int image_produce_new_version(const char *image,
 
 	ierr = image_create(image);
 	if (ierr != IMAGE_OK && ierr != IMAGE_ERR_DUPLICATE)
-		return -1;
+		return produce_fail(image, NULL, "image_create", 0);
 
 	if (image_current_version(image, old_version, sizeof(old_version)) != IMAGE_OK)
-		return -1;
+		return produce_fail(image, NULL, "resolving the current version", 0);
 	image_version_rootfs_path(image, old_version, old_rootfs, sizeof(old_rootfs));
 
 	snprintf(staging, sizeof(staging), "%s/%s/.staging.%d", g_images_dir, image, (int)getpid());
 	persist_remove_tree(staging); /* clear any leftover from a prior crashed attempt */
 	if (persist_mkdir_p(staging) != 0)
-		return -1;
+		return produce_fail(image, NULL, "creating the staging directory", 1);
 
-	if (copy_tree_hardlink(old_rootfs, staging) != 0) {
-		persist_remove_tree(staging);
-		return -1;
-	}
+	if (copy_tree_hardlink(old_rootfs, staging) != 0)
+		return produce_fail(image, staging, "hardlink-copying the current rootfs forward", 1);
 
-	if (mutate(staging, ctx) != 0) {
-		persist_remove_tree(staging);
-		return -1;
-	}
+	if (mutate(staging, ctx) != 0)
+		return produce_fail(image, staging, "the caller's own mutate step", 0);
 
 	manifest_str = build_image_manifest_string(image);
 	/*
@@ -1645,13 +1665,10 @@ static int image_produce_new_version(const char *image,
 
 		snprintf(identity, sizeof(identity), "%s\n%s\n%s", manifest_str, old_version,
 		         extra_identity);
-		if (image_hash_manifest_string(identity, new_version, sizeof(new_version)) != 0) {
-			persist_remove_tree(staging);
-			return -1;
-		}
+		if (image_hash_manifest_string(identity, new_version, sizeof(new_version)) != 0)
+			return produce_fail(image, staging, "hashing the chained version identity", 0);
 	} else if (image_hash_manifest_string(manifest_str, new_version, sizeof(new_version)) != 0) {
-		persist_remove_tree(staging);
-		return -1;
+		return produce_fail(image, staging, "hashing the manifest identity", 0);
 	}
 
 	image_version_rootfs_path(image, new_version, new_rootfs, sizeof(new_rootfs));
@@ -1664,13 +1681,15 @@ static int image_produce_new_version(const char *image,
 		slash = strrchr(version_dir, '/'); /* drop the trailing "/rootfs" component */
 		if (slash != NULL)
 			*slash = '\0';
-		if (persist_mkdir_p(version_dir) != 0 || rename(staging, new_rootfs) != 0) {
-			persist_remove_tree(staging);
-			return -1;
-		}
+		if (persist_mkdir_p(version_dir) != 0)
+			return produce_fail(image, staging, "creating the new version directory", 1);
+		if (rename(staging, new_rootfs) != 0)
+			return produce_fail(image, staging, "renaming staging into place", 1);
 	}
 
-	return image_record_version(image, new_version) == IMAGE_OK ? 0 : -1;
+	if (image_record_version(image, new_version) != IMAGE_OK)
+		return produce_fail(image, NULL, "recording the new version", 0);
+	return 0;
 }
 
 static void write_pkg_json(const struct pkg_entry *e, struct json_writer *w)
@@ -2132,7 +2151,13 @@ static int sandbox_migrate_mutate(const char *staging_rootfs, void *ctx_v)
 {
 	struct sandbox_migrate_ctx *ctx = ctx_v;
 
-	return merge_tree(ctx->flat_rootfs, staging_rootfs, "", NULL);
+	if (merge_tree(ctx->flat_rootfs, staging_rootfs, "", NULL) != 0) {
+		logstore_write("thincd", "error",
+		               "build sandbox migration: merging %s into the staging tree failed: %s",
+		               ctx->flat_rootfs, strerror(errno));
+		return -1;
+	}
+	return 0;
 }
 
 void pkg_migrate_build_sandbox(void)
@@ -2317,16 +2342,24 @@ static int buildenv_mutate(const char *staging_rootfs, void *ctx_v)
 	/* The same baseline every image gets: device nodes and the handful
 	 * of files a process needs to start at all. Not a "tool", and not
 	 * something a recipe should have to declare. */
-	if (pkg_seed_image_baseline(staging_rootfs) != PKG_OK)
+	if (pkg_seed_image_baseline(staging_rootfs) != PKG_OK) {
+		logstore_write("thincd", "error",
+		               "build environment: seeding the image baseline failed");
 		return -1;
+	}
 	for (i = 0; i < ctx->tool_count; i++) {
 		const struct pkg_entry *e = ctx->tools[i].entry;
 		char src_rootfs[PATH_MAX];
 		char version[IMAGE_VERSION_MAX];
 		int f;
 
-		if (image_current_version(normalize_image(e->image), version, sizeof(version)) != IMAGE_OK)
+		if (image_current_version(normalize_image(e->image), version, sizeof(version)) != IMAGE_OK) {
+			logstore_write("thincd", "error",
+			               "build environment: declared tool %s@%s lives in image \"%s\", "
+			               "which has no current version", e->name, e->version,
+			               normalize_image(e->image));
 			return -1;
+		}
 		image_version_rootfs_path(normalize_image(e->image), version, src_rootfs,
 		                           sizeof(src_rootfs));
 		for (f = 0; f < e->file_count; f++) {
@@ -2339,8 +2372,13 @@ static int buildenv_mutate(const char *staging_rootfs, void *ctx_v)
 			 * missing from the image is a real inconsistency and fails
 			 * the composition rather than producing a quietly
 			 * incomplete environment. */
-			if (copy_one_file_preserving(src, dst) != 0)
+			if (copy_one_file_preserving(src, dst) != 0) {
+				logstore_write("thincd", "error",
+				               "build environment: copying %s from declared tool %s@%s "
+				               "(image %s) failed: %s", e->files[f], e->name, e->version,
+				               normalize_image(e->image), strerror(errno));
 				return -1;
+			}
 		}
 	}
 	return 0;
@@ -4749,13 +4787,13 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 
 			logstore_write("thincd", "error", "pkg %s@%s: build container setup failed (%s)",
 			                e->name, g_chains[chain_idx].image, step);
-			snprintf(e->error, sizeof(e->error), "build container setup failed (%s)", step);
+			pkg_fail(e, is_upgrade, PKG_FAILURE_BUILD, "build container setup failed (%s)", step);
 		} else if (exit_status >= 130 && exit_status <= 136) {
 			const char *step = overlay_step_names[exit_status - 130];
 
 			logstore_write("thincd", "error", "pkg %s@%s: build container setup failed (%s)",
 			                e->name, g_chains[chain_idx].image, step);
-			snprintf(e->error, sizeof(e->error), "build container setup failed (%s)", step);
+			pkg_fail(e, is_upgrade, PKG_FAILURE_BUILD, "build container setup failed (%s)", step);
 		} else if (exit_status >= 141 && exit_status <= 255) {
 			/*
 			 * A real errno (encoded by src/container.c/src/overlay.c,
@@ -4780,7 +4818,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 			logstore_write("thincd", "error",
 			                "pkg %s@%s: build container setup/exec failed: %s", e->name,
 			                g_chains[chain_idx].image, strerror(real_errno));
-			snprintf(e->error, sizeof(e->error), "build container setup/exec failed: %s",
+			pkg_fail(e, is_upgrade, PKG_FAILURE_BUILD, "build container setup/exec failed: %s",
 			         strerror(real_errno));
 		} else if (exit_status == 127) {
 			/*

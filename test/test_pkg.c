@@ -1169,6 +1169,58 @@ int main(void)
 		thinc_response_free(&r);
 	}
 
+	/*
+	 * Issue #109, the other half: a recipe declaring a tool that IS
+	 * available must actually compose an environment from it.
+	 *
+	 * "greeter" is a real package installed earlier in this test, so it
+	 * has a real recorded file list -- which is precisely what a build
+	 * environment is composed from. The build itself is still expected
+	 * to fail (a composed environment holds the declared tools and
+	 * nothing else, and greeter is not a C compiler) -- the point is
+	 * WHICH failure: reaching a real build error proves the
+	 * composition ran, where "could not compose" would mean it never
+	 * got that far. Without this case only the refusal path was
+	 * covered, and a composition that failed for every input would
+	 * still have looked green.
+	 */
+	if (write_builddeps_recipe("declaredpresent", "1.0", tarball_path, sha256, "greeter") != 0) {
+		fprintf(stderr, "FAIL: could not write the available-build-deps recipe\n");
+		ok = 0;
+	}
+	memset(&r, 0, sizeof(r));
+	if (thinc_client_request(&client, "POST", "/v1/pkg/install",
+	                       "{\"name\":\"declaredpresent\"}", &r) != 0 ||
+	    r.status != 202) {
+		fprintf(stderr, "FAIL: #109 install of an available-declared-tools recipe, status=%d\n",
+		        r.status);
+		ok = 0;
+	}
+	thinc_response_free(&r);
+	if (poll_pkg_state(&client, "declaredpresent", state, sizeof(state), 600) != 0) {
+		fprintf(stderr, "FAIL: #109 available-declared-tools install never settled (last state '%s')\n", state);
+		ok = 0;
+	} else {
+		const char *err;
+
+		memset(&r, 0, sizeof(r));
+		if (thinc_client_request(&client, "GET", "/v1/pkg/declaredpresent", NULL, &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: #109 could not read back the available-declared-tools pkg\n");
+			ok = 0;
+		} else {
+			err = json_str_field(r.json, "error");
+			if (err != NULL && strstr(err, "compose") != NULL) {
+				fprintf(stderr,
+				        "FAIL: #109 a declared tool that IS installed still failed to compose "
+				        "a build environment: %s\n",
+				        err);
+				ok = 0;
+			}
+		}
+		thinc_response_free(&r);
+	}
+
 	/* 6. duplicate install of an already-installed package -> 409 */
 	memset(&r, 0, sizeof(r));
 	if (thinc_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"greeter\"}", &r) != 0 ||
