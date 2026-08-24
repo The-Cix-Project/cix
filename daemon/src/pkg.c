@@ -2302,6 +2302,118 @@ struct buildenv_ctx {
  * to something fuller would reintroduce exactly the fungibility this
  * exists to remove.
  */
+/*
+ * Adds one package -- a declared build tool, or something a declared
+ * build tool needs in order to RUN -- to the environment being
+ * resolved, then does the same for whatever it depends on.
+ *
+ * The recursion is not decoration. A build environment holds exactly
+ * what the recipe declares and nothing else, so a tool arriving without
+ * the libraries it links against is not a lean environment, it is a
+ * broken one. Confirmed on the real box the first time this was
+ * exercised: zlib declared `binutils` for `ar`, the environment
+ * received binutils' own files alone, and `ar` died with "error while
+ * loading shared libraries: libz.so.1". Under the old shared sandbox
+ * that library merely happened to be lying around.
+ *
+ * `via` names whatever pulled this in, so a failure three levels down
+ * still reports which declared tool the operator actually wrote.
+ */
+static int buildenv_add_tool(const char *name, const char *via, struct buildenv_tool *out, int max,
+                              int *n, char *err, size_t err_size, int depth)
+{
+	struct pkg_entry *found = NULL;
+	const char *unusable = NULL;
+	char version[IMAGE_VERSION_MAX];
+	char deps_copy[PKG_DEPENDS_MAX];
+	char *tok, *save = NULL;
+	int i;
+
+	for (i = 0; i < *n; i++) {
+		if (strcmp(out[i].name, name) == 0)
+			return 0; /* already in the environment */
+	}
+	if (depth > PKG_BUILDENV_MAX_TOOLS) {
+		snprintf(err, err_size, "dependency chain under build tool \"%s\" is too deep", via);
+		return -1;
+	}
+	if (*n >= max) {
+		snprintf(err, err_size, "more than %d packages in the composed build environment", max);
+		return -1;
+	}
+
+	/*
+	 * Any image will do -- a package's own built files are the same
+	 * files whichever image it was installed into -- but only if that
+	 * image can still be resolved to a real rootfs to copy them out of.
+	 * A stale image left behind by an earlier era of this project
+	 * ("kanxeo-builder", on the first real box) still carries INSTALLED
+	 * package rows while having no current version at all, and taking
+	 * the first name match regardless meant a perfectly healthy tool
+	 * installed in three good images resolved to the one broken one
+	 * (issue #111). Checked here rather than during the copy so the
+	 * failure names the package and the image, not a file path.
+	 */
+	for (i = 0; i < PKG_MAX_PACKAGES; i++) {
+		const char *img;
+
+		if (!g_packages[i].in_use || g_packages[i].state != PKG_STATE_INSTALLED)
+			continue;
+		if (strcmp(g_packages[i].name, name) != 0)
+			continue;
+		img = normalize_image(g_packages[i].image);
+		if (image_current_version(img, version, sizeof(version)) != IMAGE_OK) {
+			unusable = img;
+			continue;
+		}
+		found = &g_packages[i];
+		break;
+	}
+	if (found == NULL && unusable != NULL) {
+		snprintf(err, err_size,
+		         "%s \"%s\" is installed only in image \"%s\", which has no current version to "
+		         "copy it out of",
+		         via == NULL ? "declared build tool" : "runtime dependency", name, unusable);
+		return -1;
+	}
+	if (found == NULL) {
+		if (via == NULL)
+			snprintf(err, err_size,
+			         "declared build tool \"%s\" is not installed anywhere, so there is nothing "
+			         "to compose a build environment from -- install it first",
+			         name);
+		else
+			snprintf(err, err_size,
+			         "\"%s\" needs \"%s\" to run, but that is not installed anywhere -- the "
+			         "build environment would hold a tool that cannot start",
+			         via, name);
+		return -1;
+	}
+	if (found->file_count <= 0) {
+		snprintf(err, err_size,
+		         "%s \"%s@%s\" has no recorded files, so there is nothing to compose from -- "
+		         "reinstall it",
+		         via == NULL ? "declared build tool" : "runtime dependency", found->name,
+		         found->version);
+		return -1;
+	}
+
+	snprintf(out[*n].name, sizeof(out[*n].name), "%s", found->name);
+	snprintf(out[*n].version, sizeof(out[*n].version), "%s", found->version);
+	out[*n].entry = found;
+	(*n)++;
+
+	/* What this package needs in order to run, as recorded when it was
+	 * installed -- not as the current recipe now says, since the
+	 * environment is built from the installed copy. */
+	snprintf(deps_copy, sizeof(deps_copy), "%s", found->depends);
+	for (tok = strtok_r(deps_copy, " \t", &save); tok != NULL; tok = strtok_r(NULL, " \t", &save)) {
+		if (buildenv_add_tool(tok, found->name, out, max, n, err, err_size, depth + 1) != 0)
+			return -1;
+	}
+	return 0;
+}
+
 static int buildenv_resolve_tools(const char *declared, struct buildenv_tool *out, int max,
                                    char *err, size_t err_size)
 {
@@ -2312,71 +2424,8 @@ static int buildenv_resolve_tools(const char *declared, struct buildenv_tool *ou
 
 	snprintf(buf, sizeof(buf), "%s", declared);
 	for (tok = strtok_r(buf, " \t", &save); tok != NULL; tok = strtok_r(NULL, " \t", &save)) {
-		struct pkg_entry *found = NULL;
-		int i;
-
-		if (n >= max) {
-			snprintf(err, err_size, "more than %d declared build tools", max);
+		if (buildenv_add_tool(tok, NULL, out, max, &n, err, err_size, 0) != 0)
 			return -1;
-		}
-		/*
-		 * Any image will do -- a package's own built files are the same
-		 * files whichever image it was installed into -- but only if
-		 * that image can still be resolved to a real rootfs to copy
-		 * them out of. A stale image left behind by an earlier era of
-		 * this project ("kanxeo-builder", on the first real box) still
-		 * carries INSTALLED package rows while having no current
-		 * version at all, and taking the first name match regardless
-		 * meant a perfectly healthy tool installed in three good images
-		 * resolved to the one broken one. Checked here rather than
-		 * during the copy so the failure names the tool and the
-		 * image, not a file path.
-		 */
-		{
-			const char *unusable = NULL;
-			char version[IMAGE_VERSION_MAX];
-
-			for (i = 0; i < PKG_MAX_PACKAGES; i++) {
-				const char *img;
-
-				if (!g_packages[i].in_use || g_packages[i].state != PKG_STATE_INSTALLED)
-					continue;
-				if (strcmp(g_packages[i].name, tok) != 0)
-					continue;
-				img = normalize_image(g_packages[i].image);
-				if (image_current_version(img, version, sizeof(version)) != IMAGE_OK) {
-					unusable = img;
-					continue;
-				}
-				found = &g_packages[i];
-				break;
-			}
-			if (found == NULL && unusable != NULL) {
-				snprintf(err, err_size,
-				         "declared build tool \"%s\" is installed only in image \"%s\", which "
-				         "has no current version to copy it out of",
-				         tok, unusable);
-				return -1;
-			}
-		}
-		if (found == NULL) {
-			snprintf(err, err_size,
-			         "declared build tool \"%s\" is not installed anywhere, so there is nothing "
-			         "to compose a build environment from -- install it first",
-			         tok);
-			return -1;
-		}
-		if (found->file_count <= 0) {
-			snprintf(err, err_size,
-			         "declared build tool \"%s@%s\" has no recorded files, so there is nothing "
-			         "to compose from -- reinstall it",
-			         found->name, found->version);
-			return -1;
-		}
-		snprintf(out[n].name, sizeof(out[n].name), "%s", found->name);
-		snprintf(out[n].version, sizeof(out[n].version), "%s", found->version);
-		out[n].entry = found;
-		n++;
 	}
 	if (n == 0) {
 		snprintf(err, err_size, "pkg_build_depends is set but names no packages");
