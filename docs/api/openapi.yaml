@@ -10811,7 +10811,7 @@ components:
                 type: integer
     HostProcess:
       type: object
-      required: [pid, ppid, comm, command_line, container, user_id, group_id]
+      required: [pid, ppid, comm, command_line, container, state, wchan, user_id, group_id]
       properties:
         pid:
           type: integer
@@ -10826,6 +10826,20 @@ components:
         container:
           type: string
           description: The container this pid belongs to (by a real host ppid-chain walk, ADR-0131), or empty string if none.
+        state:
+          type: string
+          description: >
+            /proc/<pid>/stat's single-character state -- R running, S
+            sleeping, D uninterruptible sleep, Z zombie, T stopped.
+        wchan:
+          type: string
+          description: >
+            The kernel symbol this process is blocked in, from
+            /proc/<pid>/wchan; empty when it is running. This is what
+            turns "stuck" into a diagnosis: a stalled build shows every
+            process at do_wait -- waiting for a child, which says
+            nothing -- except the one at __futex_wait or similar, which
+            says where the work actually stopped.
         user_id:
           type: integer
           description: Real (not effective/saved/filesystem) uid.

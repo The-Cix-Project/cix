@@ -113,6 +113,9 @@ static pid_t start_daemon(void)
 		return -1;
 	}
 	if (pid == 0) {
+		/* A stall is 10 minutes in production, which no test should
+		 * sit through to check that the reporting works. */
+		setenv("THINC_BUILD_STALL_SECONDS", "15", 1);
 		execve("build/thincd", dargv, environ);
 		perror("execve build/thincd");
 		_exit(127);
@@ -290,6 +293,38 @@ static int write_recipe(const char *name, const char *version, const char *tarba
  * environment sitting at it even if the daemon's own derivation broke.
  */
 #define EMPTY_MANIFEST_VERSION "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+/*
+ * A recipe that goes quiet: it produces one line of output and then
+ * sleeps. That is exactly what a stalled build looks like from the
+ * daemon's side -- no exit, no error, no further output -- and it is
+ * what a real gcc build did for an hour while reporting nothing.
+ */
+static int write_stalling_recipe(const char *name, const char *version, const char *tarball_path,
+                                  const char *sha256)
+{
+	char name_dir[256];
+	char path[300];
+	FILE *f;
+
+	snprintf(name_dir, sizeof(name_dir), "%s/recipes/%s", g_pkg_state_dir, name);
+	mkdir(name_dir, 0755);
+	snprintf(path, sizeof(path), "%s/%s", name_dir, version);
+	mkdir(path, 0755);
+	snprintf(path, sizeof(path), "%s/recipes/%s/%s/build.sh", g_pkg_state_dir, name, version);
+	f = fopen(path, "w");
+	if (f == NULL)
+		return -1;
+	fprintf(f, "pkg_name=%s\n", name);
+	fprintf(f, "pkg_version=%s\n", version);
+	fprintf(f, "pkg_source=file://%s\n", tarball_path);
+	fprintf(f, "pkg_sha256=%s\n", sha256);
+	fprintf(f, "pkg_depends=\"\"\n\n");
+	fprintf(f, "pkg_build() {\n\techo starting\n\tsleep 90\n}\n\n");
+	fprintf(f, "pkg_install() {\n\ttrue\n}\n");
+	fclose(f);
+	return 0;
+}
 
 /*
  * A recipe whose pkg_install() has a failing command in the MIDDLE,
@@ -3620,6 +3655,71 @@ skip_resume:
 
 	/* cleanup */
 	run_cmd("rm -rf '%s'", scratch_dir);
+
+	/*
+	 * A build that goes quiet must be REPORTED, with what its processes
+	 * are blocked on. Nothing acted on last_output_seconds_ago before
+	 * this: a stalled build sat in "building" looking exactly like a
+	 * working one, and the only thing that ever noticed was a person
+	 * wondering why the machine was idle.
+	 */
+	{
+		int saw_stall = 0;
+		int attempt;
+		char stall_tarball[600];
+		char stall_sha[80];
+
+		/* Stage this block's own source rather than reusing the one
+		 * from the top of the test: by the time this runs, the cache
+		 * and scratch tests have been and gone, and that tarball is no
+		 * longer on disk. A fixture that quietly disappears makes this
+		 * look like a detector that does not fire. */
+		if (stage_fixture_tarball(scratch_dir, "stallsrc", "1.0", stall_tarball,
+		                          sizeof(stall_tarball), stall_sha, sizeof(stall_sha)) != 0) {
+			fprintf(stderr, "FAIL: could not stage the stall fixture tarball\n");
+			ok = 0;
+		}
+		if (write_stalling_recipe("stallpkg", "1.0", stall_tarball, stall_sha) != 0) {
+			fprintf(stderr, "FAIL: could not write the stalling recipe\n");
+			ok = 0;
+		}
+		memset(&r, 0, sizeof(r));
+		if (thinc_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"stallpkg\"}",
+		                       &r) != 0 ||
+		    r.status != 202) {
+			fprintf(stderr, "FAIL: POST install stallpkg, status=%d\n", r.status);
+			ok = 0;
+		}
+		thinc_response_free(&r);
+
+		for (attempt = 0; attempt < 120 && !saw_stall; attempt++) {
+			usleep(500000);
+			memset(&r, 0, sizeof(r));
+			if (thinc_client_request(&client, "GET",
+			                       "/v1/system/logs?source=thincd&tail=200", NULL, &r) == 0 &&
+			    r.status == 200 && r.body != NULL &&
+			    strstr(r.body, "no build output for") != NULL &&
+			    strstr(r.body, "stallpkg") != NULL)
+				saw_stall = 1;
+			thinc_response_free(&r);
+		}
+		if (!saw_stall) {
+			fprintf(stderr,
+			        "FAIL: a build that produced no output was never reported as stalled\n");
+			memset(&r, 0, sizeof(r));
+			if (thinc_client_request(&client, "GET", "/v1/pkg/stallpkg", NULL, &r) == 0)
+				fprintf(stderr, "  stallpkg: status=%d %s\n", r.status,
+				        r.body != NULL ? r.body : "(no body)");
+			thinc_response_free(&r);
+			memset(&r, 0, sizeof(r));
+			if (thinc_client_request(&client, "GET", "/v1/system/logs?source=thincd&tail=12",
+			                       NULL, &r) == 0 && r.body != NULL)
+				fprintf(stderr, "  last logs: %.1200s\n", r.body);
+			thinc_response_free(&r);
+			ok = 0;
+		}
+	}
+
 
 	if (stop_daemon(daemon_pid) != 0) {
 		fprintf(stderr, "FAIL: daemon did not exit cleanly on SIGTERM\n");

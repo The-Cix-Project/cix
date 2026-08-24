@@ -27,6 +27,7 @@
 
 #define HOSTPROC_COMM_MAX 256
 #define HOSTPROC_CMDLINE_MAX 1024
+#define HOSTPROC_WCHAN_MAX 64
 
 struct hostproc_entry {
 	pid_t pid;
@@ -34,6 +35,8 @@ struct hostproc_entry {
 	char comm[HOSTPROC_COMM_MAX];
 	char cmdline[HOSTPROC_CMDLINE_MAX]; /* argv, space-joined; "[comm]" for a kernel thread */
 	char container[64];                 /* empty if this pid isn't inside any known container */
+	char state;                         /* R running, S sleeping, D uninterruptible, Z zombie */
+	char wchan[HOSTPROC_WCHAN_MAX];     /* kernel symbol it is blocked in; empty if running */
 	uid_t uid;
 	gid_t gid;
 };
@@ -55,6 +58,13 @@ enum hostproc_error {
 	                            * where the process exited between the existence check and the
 	                            * kill() call is reported as NOT_FOUND, not this) */
 };
+
+/*
+ * A point-in-time snapshot of every process, as an array the caller
+ * owns and frees. Same walk the JSON listing uses -- deliberately not
+ * a second implementation.
+ */
+enum hostproc_error hostproc_snapshot(struct hostproc_entry **out, size_t *count_out);
 
 /*
  * A real, immediate SIGKILL -- no grace period, unlike container stop

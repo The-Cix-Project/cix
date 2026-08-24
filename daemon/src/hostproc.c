@@ -18,7 +18,8 @@
  * contains ')'), then walk past exactly one more field (the single-
  * character state) to reach ppid.
  */
-static int read_proc_stat(pid_t pid, char *comm_out, size_t comm_size, pid_t *ppid_out)
+static int read_proc_stat(pid_t pid, char *comm_out, size_t comm_size, pid_t *ppid_out,
+                           char *state_out)
 {
 	char path[64];
 	char buf[512];
@@ -52,10 +53,43 @@ static int read_proc_stat(pid_t pid, char *comm_out, size_t comm_size, pid_t *pp
 	p = close_paren + 1;
 	while (*p == ' ')
 		p++;
-	p += 1; /* skip the single-character state field */
+	if (state_out != NULL)
+		*state_out = *p; /* R running, S sleeping, D uninterruptible, Z zombie... */
+	p += 1; /* step over the single-character state field */
 	if (ppid_out != NULL)
 		*ppid_out = (pid_t)strtol(p, NULL, 10);
 	return 0;
+}
+
+/*
+ * /proc/<pid>/wchan -- the kernel symbol a sleeping process is blocked
+ * in, or empty when it is running.
+ *
+ * This is the single field that turns "the build is stuck" into a
+ * diagnosis. A stalled gcc build showed every process at do_wait --
+ * waiting for a child, which says nothing -- except one cc1 sitting in
+ * __futex_wait, which said everything: a single-threaded process
+ * waiting forever on a lock. Reading it required exec'ing into the
+ * container by hand, because this daemon collected everything about a
+ * process except what it was waiting for.
+ */
+static void read_proc_wchan(pid_t pid, char *out, size_t out_size)
+{
+	char path[64];
+	FILE *fp;
+	size_t n;
+
+	out[0] = '\0';
+	snprintf(path, sizeof(path), "/proc/%d/wchan", (int)pid);
+	fp = fopen(path, "r");
+	if (fp == NULL)
+		return;
+	n = fread(out, 1, out_size - 1, fp);
+	fclose(fp);
+	out[n] = '\0';
+	/* "0" is the kernel's own way of saying "not blocked anywhere". */
+	if (strcmp(out, "0") == 0)
+		out[0] = '\0';
 }
 
 /* /proc/<pid>/status's "Uid:"/"Gid:" lines -- four values each (real,
@@ -138,47 +172,53 @@ static int pid_belongs_to_container(pid_t pid, const struct hostproc_container_r
 				return 1;
 			}
 		}
-		if (read_proc_stat(cur, NULL, 0, &cur) != 0)
+		if (read_proc_stat(cur, NULL, 0, &cur, NULL) != 0)
 			break; /* ancestor already exited -- chain ends here, no match */
 	}
 	return 0;
 }
 
-void hostproc_write_json_list(struct json_writer *w)
+/*
+ * One /proc walk, two consumers: the JSON listing and the stall
+ * reporter. Written once here rather than twice -- the second copy is
+ * exactly where the two would drift, and the fields that matter for a
+ * stall (state, wchan) are the ones a second implementation would be
+ * most likely to omit, which is how they came to be missing in the
+ * first place.
+ *
+ * Caller owns the array and frees it.
+ */
+enum hostproc_error hostproc_snapshot(struct hostproc_entry **out, size_t *count_out)
 {
 	struct hostproc_container_root roots[REGISTRY_MAX_CONTAINERS];
-	int root_count = 0;
 	char names[REGISTRY_MAX_CONTAINERS][REGISTRY_NAME_MAX];
-	int n, i;
+	int root_count = 0;
+	int n, r;
+	struct hostproc_entry *list = NULL;
+	size_t count = 0, cap = 0;
 	DIR *d;
 	struct dirent *de;
 
-	n = registry_list_names(names, REGISTRY_MAX_CONTAINERS);
-	for (i = 0; i < n; i++) {
-		struct registry_entry *e = registry_find(names[i]);
+	*out = NULL;
+	*count_out = 0;
 
-		if (e != NULL && e->running) {
-			roots[root_count].pid = e->handle.pid;
-			snprintf(roots[root_count].name, sizeof(roots[root_count].name), "%s", names[i]);
+	n = registry_list_names(names, REGISTRY_MAX_CONTAINERS);
+	for (r = 0; r < n; r++) {
+		struct registry_entry *re = registry_find(names[r]);
+
+		if (re != NULL && re->running) {
+			roots[root_count].pid = re->handle.pid;
+			snprintf(roots[root_count].name, sizeof(roots[root_count].name), "%s", names[r]);
 			root_count++;
 		}
 	}
 
-	jw_arr_open(w);
-
 	d = opendir("/proc");
-	if (d == NULL) {
-		jw_arr_close(w);
-		return;
-	}
+	if (d == NULL)
+		return HOSTPROC_ERR_NOT_FOUND;
 	while ((de = readdir(d)) != NULL) {
+		struct hostproc_entry ent;
 		pid_t pid;
-		pid_t ppid = 0;
-		char comm[HOSTPROC_COMM_MAX];
-		char cmdline[HOSTPROC_CMDLINE_MAX];
-		char container[REGISTRY_NAME_MAX];
-		uid_t uid;
-		gid_t gid;
 		char *endptr;
 
 		if (de->d_name[0] < '0' || de->d_name[0] > '9')
@@ -187,32 +227,74 @@ void hostproc_write_json_list(struct json_writer *w)
 		if (*endptr != '\0' || pid <= 0)
 			continue;
 
-		if (read_proc_stat(pid, comm, sizeof(comm), &ppid) != 0)
-			continue; /* exited between readdir() and here -- not an error, just gone */
+		memset(&ent, 0, sizeof(ent));
+		ent.pid = pid;
+		ent.state = '?';
+		if (read_proc_stat(pid, ent.comm, sizeof(ent.comm), &ent.ppid, &ent.state) != 0)
+			continue; /* exited between readdir() and here -- gone, not an error */
+		read_proc_cmdline(pid, ent.comm, ent.cmdline, sizeof(ent.cmdline));
+		read_proc_wchan(pid, ent.wchan, sizeof(ent.wchan));
+		read_proc_ids(pid, &ent.uid, &ent.gid);
+		pid_belongs_to_container(pid, roots, root_count, ent.container, sizeof(ent.container));
 
-		read_proc_cmdline(pid, comm, cmdline, sizeof(cmdline));
-		read_proc_ids(pid, &uid, &gid);
-		container[0] = '\0';
-		pid_belongs_to_container(pid, roots, root_count, container, sizeof(container));
+		if (count == cap) {
+			size_t new_cap = cap == 0 ? 128 : cap * 2;
+			struct hostproc_entry *grown = realloc(list, new_cap * sizeof(*grown));
+
+			if (grown == NULL) {
+				free(list);
+				closedir(d);
+				return HOSTPROC_ERR_NOT_FOUND;
+			}
+			list = grown;
+			cap = new_cap;
+		}
+		list[count++] = ent;
+	}
+	closedir(d);
+	*out = list;
+	*count_out = count;
+	return HOSTPROC_OK;
+}
+
+void hostproc_write_json_list(struct json_writer *w)
+{
+	struct hostproc_entry *procs = NULL;
+	size_t count = 0;
+	size_t i;
+
+	jw_arr_open(w);
+	if (hostproc_snapshot(&procs, &count) != HOSTPROC_OK) {
+		jw_arr_close(w);
+		return;
+	}
+	for (i = 0; i < count; i++) {
+		char state_str[2];
 
 		jw_obj_open(w);
 		jw_key(w, "pid");
-		jw_int(w, (long long)pid);
+		jw_int(w, (long long)procs[i].pid);
 		jw_key(w, "ppid");
-		jw_int(w, (long long)ppid);
+		jw_int(w, (long long)procs[i].ppid);
 		jw_key(w, "comm");
-		jw_str(w, comm);
+		jw_str(w, procs[i].comm);
 		jw_key(w, "command_line");
-		jw_str(w, cmdline);
+		jw_str(w, procs[i].cmdline);
 		jw_key(w, "container");
-		jw_str(w, container);
+		jw_str(w, procs[i].container);
+		jw_key(w, "state");
+		state_str[0] = procs[i].state;
+		state_str[1] = '\0';
+		jw_str(w, state_str);
+		jw_key(w, "wchan");
+		jw_str(w, procs[i].wchan);
 		jw_key(w, "user_id");
-		jw_int(w, (long long)uid);
+		jw_int(w, (long long)procs[i].uid);
 		jw_key(w, "group_id");
-		jw_int(w, (long long)gid);
+		jw_int(w, (long long)procs[i].gid);
 		jw_obj_close(w);
 	}
-	closedir(d);
+	free(procs);
 	jw_arr_close(w);
 }
 

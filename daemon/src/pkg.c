@@ -1,5 +1,6 @@
 #include "pkg.h"
 #include "pkgpolicy.h"
+#include "hostproc.h"
 #include "image.h"
 #include "ldap.h"
 #include "linux_compat.h"
@@ -126,6 +127,8 @@ struct pkg_entry {
 	 * one real mistaken kill of a healthy 71-minute build, and one
 	 * real wedge going unnoticed). 0 until the first byte. */
 	time_t last_output_at;
+	time_t build_started_at;
+	int stall_reported;   /* so a stall is reported once, not every tick */
 	/* ADR-0175/issue #35: non-empty exactly when the most recent build
 	 * attempt failed with keep_on_failure requested and its build
 	 * container was deliberately left registered/mounted instead of
@@ -1350,6 +1353,31 @@ int pkg_run_capture_sha256(const char *path, char *out, size_t out_size)
  * anticipated up front. unlink_manifest_files()'s existing unlink()
  * call already removes a symlink correctly (removes the link itself,
  * never follows it), so no separate removal-path change was needed. */
+/*
+ * Every failure exit of merge_tree() goes through this. It used to
+ * return a bare -1 from eight different places, so "failed to merge
+ * installed files into the target image" was the entire diagnosis --
+ * no path, no errno, no indication of which of the eight. Installing a
+ * freshly fixed gcc into the shared build sandbox failed exactly that
+ * way (issue #118), and the same shape of silence cost hours on #40
+ * and #109 before those were instrumented.
+ *
+ * The path is relative to the tree being merged, which is what a
+ * reader can actually act on -- an absolute staging path names a
+ * scratch directory that will not exist by the time anyone looks.
+ */
+static int merge_fail(const char *relpath, const char *step, int use_errno)
+{
+	if (use_errno)
+		logstore_write("thincd", "error", "merge: %s failed for \"%s\": %s", step,
+		               relpath != NULL && relpath[0] != '\0' ? relpath : "(tree root)",
+		               strerror(errno));
+	else
+		logstore_write("thincd", "error", "merge: %s failed for \"%s\"", step,
+		               relpath != NULL && relpath[0] != '\0' ? relpath : "(tree root)");
+	return -1;
+}
+
 static int merge_tree(const char *src_root, const char *dst_root, const char *relpath,
                        struct pkg_entry *e)
 {
@@ -1359,8 +1387,14 @@ static int merge_tree(const char *src_root, const char *dst_root, const char *re
 
 	snprintf(src_dir, sizeof(src_dir), "%s%s%s", src_root, relpath[0] ? "/" : "", relpath);
 	d = opendir(src_dir);
-	if (d == NULL)
-		return relpath[0] == '\0' ? 0 : -1;
+	if (d == NULL) {
+		/* A missing tree root is "nothing to merge", not a failure --
+		 * a package that installed no files at all is legitimate. Any
+		 * other level going missing mid-walk is not. */
+		if (relpath[0] == '\0')
+			return 0;
+		return merge_fail(relpath, "opendir", 1);
+	}
 
 	while ((de = readdir(d)) != NULL) {
 		char child_rel[PATH_MAX];
@@ -1375,7 +1409,7 @@ static int merge_tree(const char *src_root, const char *dst_root, const char *re
 
 		if (lstat(src_path, &st) != 0) {
 			closedir(d);
-			return -1;
+			return merge_fail(child_rel, "lstat", 1);
 		}
 
 		if (S_ISDIR(st.st_mode)) {
@@ -1383,7 +1417,7 @@ static int merge_tree(const char *src_root, const char *dst_root, const char *re
 			persist_mkdir_p(dst_path);
 			if (merge_tree(src_root, dst_root, child_rel, e) != 0) {
 				closedir(d);
-				return -1;
+				return -1; /* already reported, one level down */
 			}
 		} else if (S_ISREG(st.st_mode)) {
 			char dst_parent[PATH_MAX], *slash;
@@ -1397,12 +1431,12 @@ static int merge_tree(const char *src_root, const char *dst_root, const char *re
 			}
 			if (copy_file_simple(src_path, dst_path) != 0) {
 				closedir(d);
-				return -1;
+				return merge_fail(child_rel, "copying a regular file", 1);
 			}
 			chmod(dst_path, st.st_mode & 0777);
 			if (pkg_entry_add_file(e, child_rel) != 0) {
 				closedir(d);
-				return -1;
+				return merge_fail(child_rel, "recording the file in the package manifest", 0);
 			}
 		} else if (S_ISLNK(st.st_mode)) {
 			char target[PATH_MAX];
@@ -1412,7 +1446,7 @@ static int merge_tree(const char *src_root, const char *dst_root, const char *re
 			len = readlink(src_path, target, sizeof(target) - 1);
 			if (len < 0) {
 				closedir(d);
-				return -1;
+				return merge_fail(child_rel, "readlink", 1);
 			}
 			target[len] = '\0';
 
@@ -1458,11 +1492,11 @@ static int merge_tree(const char *src_root, const char *dst_root, const char *re
 			                    * O_CREAT|O_TRUNC already has for regular files */
 			if (symlink(target, dst_path) != 0) {
 				closedir(d);
-				return -1;
+				return merge_fail(child_rel, "creating a symlink", 1);
 			}
 			if (pkg_entry_add_file(e, child_rel) != 0) {
 				closedir(d);
-				return -1;
+				return merge_fail(child_rel, "recording the file in the package manifest", 0);
 			}
 		}
 	}
@@ -3892,6 +3926,12 @@ static int start_build_container_spec(int chain_idx, struct pkg_entry *e,
 	}
 
 	e->state = PKG_STATE_BUILDING;
+	/* The clock a stall is measured against before any output arrives.
+	 * Without this a build that produces NOTHING -- the worst kind to
+	 * be blind to -- would never be reported, because there would be
+	 * no "last output" to be old. */
+	e->build_started_at = time(NULL);
+	e->stall_reported = 0;
 	return 1;
 }
 
@@ -4721,6 +4761,115 @@ static void pkg_build_output_append(struct pkg_entry *e, const char *data, int l
 	memcpy(e->build_output_captured + e->build_output_captured_len, data + (len - take), take);
 	e->build_output_captured_len += take;
 	e->last_output_at = time(NULL);
+	e->stall_reported = 0;
+}
+
+/*
+ * Issue #58 gave every in-flight build a last_output_seconds_ago, and
+ * nothing ever acted on it. This does.
+ *
+ * A build that stops producing output has not failed -- nothing exits,
+ * no status is reported, and the package sits in "building" looking
+ * exactly like one that is working. A real gcc build sat like that for
+ * an hour: cc1 deadlocked in __futex_wait on a single conftest, with
+ * every other process waiting on it, and the only reason anyone
+ * noticed was a human wondering why the box was idle.
+ *
+ * So this says so, once per stall, and says WHERE: the whole diagnosis
+ * that time was one process's wchan. Everything in the build container
+ * was at do_wait -- waiting for a child, which tells you nothing --
+ * except one cc1 at __futex_wait, which told you everything.
+ *
+ * It reports and does not kill. A long quiet stretch is not always a
+ * stall (a large link, mksquashfs on a big tree), and killing a build
+ * that was about to finish is worse than letting an operator decide
+ * with the evidence in front of them. Recipes that genuinely want a
+ * hard timeout can still have one; what they should not have to do is
+ * re-implement the detection, which is what three gcc recipes were
+ * each doing separately.
+ */
+#define PKG_BUILD_STALL_SECONDS_DEFAULT 600
+
+/*
+ * How long a build may produce nothing before it is reported as
+ * possibly stalled. Overridable through THINC_BUILD_STALL_SECONDS
+ * because the honest default is ten minutes -- a legitimately quiet
+ * stretch (a large link, mksquashfs over a big tree) can run for
+ * several -- and no test should have to sit through that to check that
+ * the reporting works at all. Read once, on first use.
+ */
+static long pkg_build_stall_seconds(void)
+{
+	static long cached = -1;
+
+	if (cached < 0) {
+		const char *env = getenv("THINC_BUILD_STALL_SECONDS");
+		long v = env != NULL ? strtol(env, NULL, 10) : 0;
+
+		cached = v > 0 ? v : PKG_BUILD_STALL_SECONDS_DEFAULT;
+	}
+	return cached;
+}
+
+static void pkg_report_stalled_build(struct pkg_entry *e)
+{
+	struct hostproc_entry *procs = NULL;
+	size_t count = 0;
+	size_t i;
+	int shown = 0;
+
+	{
+		time_t quiet_since = e->last_output_at > 0 ? e->last_output_at : e->build_started_at;
+
+		logstore_write("thincd", "error",
+		               "pkg %s@%s: no build output for %ld seconds -- the build may be stalled",
+		               e->name, e->image, (long)(time(NULL) - quiet_since));
+	}
+
+	if (e->build_container_name[0] == '\0')
+		return;
+	if (hostproc_snapshot(&procs, &count) != HOSTPROC_OK)
+		return;
+	for (i = 0; i < count; i++) {
+		if (strcmp(procs[i].container, e->build_container_name) != 0)
+			continue;
+		/* do_wait is every parent in the tree waiting on a child; the
+		 * process blocked on anything else is where the build actually
+		 * is. Both are printed -- the contrast is the signal. */
+		logstore_write("thincd", "error", "  pkg %s: pid %d %s state=%c wchan=%s", e->name,
+		               (int)procs[i].pid, procs[i].comm, procs[i].state,
+		               procs[i].wchan[0] != '\0' ? procs[i].wchan : "(running)");
+		shown++;
+		if (shown >= 24)
+			break;
+	}
+	free(procs);
+}
+
+void pkg_check_build_stalls(void)
+{
+	time_t now = time(NULL);
+	time_t quiet_since;
+	int i;
+
+	for (i = 0; i < PKG_MAX_PACKAGES; i++) {
+		struct pkg_entry *e = &g_packages[i];
+
+		if (!e->in_use || e->state != PKG_STATE_BUILDING)
+			continue;
+		/* Silence is measured from the last output, or from the start
+		 * of the build when there has never been any. */
+		quiet_since = e->last_output_at > 0 ? e->last_output_at : e->build_started_at;
+		if (quiet_since <= 0 || now - quiet_since < pkg_build_stall_seconds())
+			continue;
+		/* Once per stall, not once per tick -- re-armed by any new
+		 * output, so a build that recovers and stalls again is
+		 * reported again. */
+		if (e->stall_reported)
+			continue;
+		e->stall_reported = 1;
+		pkg_report_stalled_build(e);
+	}
 }
 
 int pkg_build_output_readable(int chain_idx, char *new_data, int new_data_cap, int *new_data_len)
@@ -4993,7 +5142,8 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 			logstore_write("thincd", "error", "pkg %s@%s: build container setup failed (%s)",
 			                e->name, g_chains[chain_idx].image, step);
 			pkg_fail(e, is_upgrade, PKG_FAILURE_BUILD, "build container setup failed (%s)", step);
-		} else if (exit_status >= 141 && exit_status <= 255) {
+		} else if (exit_status >= 141 && exit_status <= 255 &&
+		           e->build_output_captured_len == 0) {
 			/*
 			 * A real errno (encoded by src/container.c/src/overlay.c,
 			 * 140 + errno, deliberately one single shared range --
@@ -5019,6 +5169,38 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 			                g_chains[chain_idx].image, strerror(real_errno));
 			pkg_fail(e, is_upgrade, PKG_FAILURE_BUILD, "build container setup/exec failed: %s",
 			         strerror(real_errno));
+		} else if (exit_status >= 128 && exit_status <= 128 + 64) {
+			/*
+			 * The build ran (it produced output), so this is the
+			 * recipe shell's own exit status, not the 140+errno
+			 * encoding above -- and 128+N is the shell's convention
+			 * for "the command I ran was killed by signal N".
+			 *
+			 * The two ranges overlap, which produced a genuinely
+			 * misleading report: a gcc build that compiled an entire
+			 * compiler and then died in its cleanup exited 143, and
+			 * 143 is both 128+SIGTERM and 140+ESRCH. It was reported
+			 * as "overlay mount or exec failed: No such process" -- a
+			 * finished build described as a container that never
+			 * started.
+			 *
+			 * Captured output is what tells them apart, and it is
+			 * decisive rather than a heuristic: the 140+errno encoding
+			 * is only ever emitted BEFORE execve() succeeds (see
+			 * src/container.c), so a single byte of build output
+			 * proves the setup path was left behind long ago.
+			 */
+			int sig = exit_status - 128;
+			const char *name = container_signal_name(sig);
+
+			if (name != NULL)
+				pkg_fail(e, is_upgrade, PKG_FAILURE_BUILD,
+				         "build killed by signal %d (%s)", sig, name);
+			else
+				pkg_fail(e, is_upgrade, PKG_FAILURE_BUILD, "build killed by signal %d", sig);
+			logstore_write("thincd", "error", "pkg %s@%s: build killed by signal %d%s%s%s",
+			                e->name, g_chains[chain_idx].image, sig, name != NULL ? " (" : "",
+			                name != NULL ? name : "", name != NULL ? ")" : "");
 		} else if (exit_status == 127) {
 			/*
 			 * Genuinely ambiguous by exit status alone: either

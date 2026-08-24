@@ -798,7 +798,7 @@ ssize_t container_read_diag(struct container_handle *h, char *buf, size_t bufsiz
  * common crash signals. Not exhaustive: an unlisted signal just prints
  * as its bare number, which is still unambiguous next to term_signal.
  */
-static const char *container_signal_name(int sig)
+const char *container_signal_name(int sig)
 {
 	switch (sig) {
 	case 2:  return "SIGINT";

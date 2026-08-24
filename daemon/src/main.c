@@ -942,6 +942,7 @@ enum conn_kind {
 	CONN_PING,              /* GET/POST /v1/system/ping -- the raw ICMP socket half */
 	CONN_PING_TIMER,        /* same job's paired timeout -- see ping_job_teardown() */
 	CONN_NTP_PERIODIC_TIMER, /* permanent, re-arms itself -- fires ntp_sync_start() periodically (task #751) */
+	CONN_BUILD_STALL_TIMER,  /* permanent, re-arms itself -- reports in-flight builds that have gone quiet */
 	CONN_NTP_SYNC,           /* one in-flight SNTP sync attempt's own UDP socket */
 	CONN_NTP_SYNC_TIMER,     /* same job's per-candidate timeout -- see ntp_job_teardown() */
 	/*
@@ -4273,6 +4274,7 @@ static void handle_ping_get(int fd)
 static struct conn *g_ntp_sync_conn;
 static struct conn *g_ntp_timer_conn;
 static struct conn g_ntp_periodic_conn; /* permanent -- registered once at startup */
+static struct conn g_build_stall_conn;  /* permanent -- registered once at startup */
 
 static void ntp_job_teardown(void)
 {
@@ -4775,6 +4777,56 @@ static void handle_serverhealth_probe_event(struct conn *cc)
 		serverhealth_record_result(cc->probe_kind, cc->probe_container, cc->probe_desc, 0, err);
 	}
 	serverhealth_probe_teardown(cc);
+}
+
+/*
+ * How often to LOOK for a stalled build, not how long a build may be
+ * quiet -- that threshold lives in pkg.c. A minute is far more often
+ * than needed to notice a ten-minute silence, and costs a /proc walk
+ * only when something is actually stalled.
+ */
+#define BUILD_STALL_CHECK_INTERVAL_SEC 60
+
+static void arm_build_stall_timer(void)
+{
+	struct itimerspec its;
+
+	memset(&its, 0, sizeof(its));
+	its.it_value.tv_sec = BUILD_STALL_CHECK_INTERVAL_SEC;
+	if (timerfd_settime(g_build_stall_conn.fd, 0, &its, NULL) != 0)
+		perror("timerfd_settime (build stall re-arm)");
+}
+
+static void handle_build_stall_timer_event(struct conn *cc)
+{
+	uint64_t expirations;
+
+	if (read(cc->fd, &expirations, sizeof(expirations)) < 0)
+		perror("read (build stall timerfd)");
+	pkg_check_build_stalls();
+	arm_build_stall_timer();
+}
+
+static void start_build_stall_timer(void)
+{
+	struct thinc_epoll_event ev;
+	int fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+
+	if (fd < 0) {
+		perror("timerfd_create (build stall)");
+		return;
+	}
+	g_build_stall_conn.kind = CONN_BUILD_STALL_TIMER;
+	g_build_stall_conn.fd = fd;
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = &g_build_stall_conn;
+	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
+		close(fd);
+		g_build_stall_conn.fd = -1;
+		return;
+	}
+	arm_build_stall_timer();
 }
 
 static void start_ntp_periodic_timer(void)
@@ -25125,6 +25177,7 @@ int main(int argc, char **argv)
 	start_kmsg_watch(); /* needs g_epfd, only just created above -- best-effort, see its own comment */
 	start_uevent_watch(); /* ADR-0161 Phase C -- same g_epfd/best-effort posture as start_kmsg_watch() */
 	start_ntp_periodic_timer(); /* same g_epfd/best-effort posture, task #751 */
+	start_build_stall_timer();  /* reports an in-flight build that has gone quiet */
 	start_pkg_sync_periodic_timer(); /* same posture, ADR-0121 -- no-op until an interval is configured */
 	start_serverhealth_timer(); /* issue #81 -- probes every registered server on an interval */
 	start_backup_periodic_timer(); /* same posture, ADR-0141 Phase 5 -- no-op until enabled+interval configured */
@@ -25289,6 +25342,8 @@ int main(int argc, char **argv)
 				handle_ntp_sync_timer_event(cc);
 			else if (cc->kind == CONN_NTP_PERIODIC_TIMER)
 				handle_ntp_periodic_timer_event(cc);
+			else if (cc->kind == CONN_BUILD_STALL_TIMER)
+				handle_build_stall_timer_event(cc);
 			else if (cc->kind == CONN_RESTART_TIMER)
 				handle_restart_timer_event(cc);
 			else if (cc->kind == CONN_ROLLING_RESTART_TIMER)

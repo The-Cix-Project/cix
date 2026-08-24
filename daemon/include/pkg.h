@@ -221,6 +221,13 @@ int pkg_init(const char *pkg_dir, const char *installed_state_path, const char *
  * deliberately not a parameter -- it never moves as part of this
  * migration.
  */
+/*
+ * Called periodically: reports any in-flight build that has produced no
+ * output for a long time, with what every process in its build
+ * container is blocked on. Reports only -- never kills.
+ */
+void pkg_check_build_stalls(void);
+
 void pkg_repoint(const char *pkg_dir, const char *installed_state_path, const char *images_dir,
                   const char *artifacts_dir);
 
