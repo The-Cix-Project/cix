@@ -292,6 +292,44 @@ static int write_recipe(const char *name, const char *version, const char *tarba
 #define EMPTY_MANIFEST_VERSION "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 /*
+ * A recipe whose pkg_install() has a failing command in the MIDDLE,
+ * followed by one that succeeds. Without `set -e` the function returns
+ * the status of the last command and the package is recorded as
+ * installed with whatever happened to make it into $PKG_DESTDIR --
+ * which is how a real libcap shipped missing four of its binaries.
+ */
+static int write_midfail_recipe(const char *name, const char *version, const char *tarball_path,
+                                 const char *sha256)
+{
+	char name_dir[256];
+	char path[300];
+	FILE *f;
+
+	snprintf(name_dir, sizeof(name_dir), "%s/recipes/%s", g_pkg_state_dir, name);
+	mkdir(name_dir, 0755);
+	snprintf(path, sizeof(path), "%s/%s", name_dir, version);
+	mkdir(path, 0755);
+	snprintf(path, sizeof(path), "%s/recipes/%s/%s/build.sh", g_pkg_state_dir, name, version);
+	f = fopen(path, "w");
+	if (f == NULL)
+		return -1;
+	fprintf(f, "pkg_name=%s\n", name);
+	fprintf(f, "pkg_version=%s\n", version);
+	fprintf(f, "pkg_source=file://%s\n", tarball_path);
+	fprintf(f, "pkg_sha256=%s\n", sha256);
+	fprintf(f, "pkg_depends=\"\"\n\n");
+	fprintf(f, "pkg_build() {\n\ttrue\n}\n\n");
+	fprintf(f, "pkg_install() {\n"
+	           "\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n"
+	           "\t/nonexistent/command/that/fails\n"
+	           "\techo late > \"$PKG_DESTDIR/usr/bin/%s\"\n"
+	           "}\n",
+	        name);
+	fclose(f);
+	return 0;
+}
+
+/*
  * Like write_recipe(), but the installed file records which version
  * produced it -- so a test can tell WHICH of several installed copies
  * of a package ended up in a composed build environment.
@@ -1341,6 +1379,35 @@ int main(void)
 			}
 		}
 		thinc_response_free(&r);
+	}
+
+	/*
+	 * A command that fails in the middle of pkg_install() must fail the
+	 * package. Without `set -e` -- and with `&&` between pkg_build and
+	 * pkg_install, which POSIX says suspends set -e inside them -- the
+	 * function simply carries on and returns the last command's status.
+	 * A real libcap was recorded as installed that way with four of its
+	 * binaries missing, which nothing downstream could detect.
+	 */
+	if (write_midfail_recipe("midfail", "1.0", tarball_path, sha256) != 0) {
+		fprintf(stderr, "FAIL: could not write the mid-failure recipe\n");
+		ok = 0;
+	}
+	memset(&r, 0, sizeof(r));
+	if (thinc_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"midfail\"}", &r) !=
+	        0 ||
+	    r.status != 202) {
+		fprintf(stderr, "FAIL: POST install midfail, status=%d\n", r.status);
+		ok = 0;
+	}
+	thinc_response_free(&r);
+	if (poll_pkg_state(&client, "midfail", state, sizeof(state), 200) != 0 ||
+	    strcmp(state, "failed") != 0) {
+		fprintf(stderr,
+		        "FAIL: a recipe whose pkg_install() failed midway ended '%s', expected failed "
+		        "-- a partially installed package must not be recorded as installed\n",
+		        state);
+		ok = 0;
 	}
 
 	/* 6. duplicate install of an already-installed package -> 409 */
