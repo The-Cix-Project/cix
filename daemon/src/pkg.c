@@ -4252,8 +4252,28 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 	if (e->cache_hit)
 		snprintf(e->build_argv_cmd, sizeof(e->build_argv_cmd), ":");
 	else
+		/*
+		 * `set -e`, and semicolons rather than `&&`, both deliberately.
+		 *
+		 * Without set -e a command that fails partway through
+		 * pkg_build() or pkg_install() does not fail the package: the
+		 * function keeps going and returns the status of whatever ran
+		 * last. libcap 2.78-3 shipped that way -- `make install` died
+		 * with Error 2, the `rm -rf` after it succeeded, and the
+		 * package was recorded as installed with four of its binaries
+		 * missing. A package that quietly contains less than it should
+		 * is worse than one that fails, because nothing downstream can
+		 * tell.
+		 *
+		 * The separators matter as much as the flag. POSIX suspends
+		 * set -e for any command that is part of an && list except the
+		 * last, and that suspension applies inside a function called
+		 * from there too -- so `pkg_build && pkg_install` would leave
+		 * every failure inside pkg_build() ignored, which is precisely
+		 * the case that needs catching.
+		 */
 		snprintf(e->build_argv_cmd, sizeof(e->build_argv_cmd),
-		         ". /build/recipe.sh; cd /build/src && pkg_build && pkg_install");
+		         "set -e; . /build/recipe.sh; cd /build/src; pkg_build; pkg_install");
 	/*
 	 * /usr/bin/bash, not /bin/sh -- caught empirically (ADR-0056) the
 	 * first time a hostbuild job's own build_image was one of this
@@ -4393,7 +4413,7 @@ enum pkg_error pkg_resume_build(const char *name, const char *image, const char 
 	e->kept_build_container[0] = '\0';
 
 	snprintf(e->build_argv_cmd, sizeof(e->build_argv_cmd), "%s",
-	         ". /build/recipe.sh; cd /build/src && pkg_build && pkg_install");
+	         "set -e; . /build/recipe.sh; cd /build/src; pkg_build; pkg_install");
 	e->build_argv[0] = "/usr/bin/bash";
 	e->build_argv[1] = "-c";
 	e->build_argv[2] = e->build_argv_cmd;
