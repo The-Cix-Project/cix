@@ -1,19 +1,24 @@
 pkg_name="kernel"
-pkg_version="6.18.40-10"
+pkg_version="6.18.40-14"
 pkg_source="https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.40.tar.xz https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/thinc/raw/image/kernel/qemu-part1.config?ref=e49bbbe193a23eff35d48fb1a085a23a474a2eb6"
 pkg_sha256="3712fc1ec839e4daac981176c8518912e8f452650aaedfe4381da4419613a431 3258cfcd6bcde1cc1cc252c00c00344cd772aa3dec1c8791b7c65d931ee5b1c8"
 pkg_depends=""
 
-# Re-pinned to -10 (issue #114): CONFIG_BINFMT_SCRIPT=y. Without it
-# the kernel does not understand "#!" at all, so execve() of any script
+# Re-pinned to -14 (issue #114): CONFIG_BINFMT_SCRIPT=y. Without it the
+# kernel does not understand "#!" at all, so execve() of any script
 # returns ENOEXEC -- and because POSIX makes a shell whose execve()
 # returns ENOEXEC run the file itself, every shell script kept working
 # by coincidence while every script with any other interpreter was
 # quietly handed to bash. Found when diffutils' bundled help2man Perl
 # script produced bash syntax errors with a working /usr/bin/perl
-# sitting right there. Same allnoconfig trap the config file already
-# documents above CONFIG_BINFMT_ELF; ELF was caught because nothing
-# boots without it, SCRIPT was not because it degrades instead.
+# sitting right there in the build container. Same allnoconfig trap the
+# config file already documents above CONFIG_BINFMT_ELF: ELF was caught
+# because nothing boots without it, SCRIPT was not because its absence
+# degrades rather than fails.
+#
+# (-10 through -13 were published straight to the box's catalog and
+# never committed here; -14 is the next free number rather than a
+# thirteenth revision of anything.)
 #
 # Re-pinned to -9: -8's own fix (wholesale-replace gcc's
 # include-fixed/limits.h with a bare passthrough) got the kernel's own
