@@ -109,6 +109,30 @@ The composed environment is cached as an image named for the hash of your declar
 
 **A recipe declaring nothing** falls back to the shared build sandbox — the old behaviour, which is fungible by construction and on its way out. Prefer declaring.
 
+### Recipes run under `set -e`
+
+`pkg_build()` and `pkg_install()` are executed as `set -e; . recipe.sh; cd src; pkg_build; pkg_install`. **Any command that fails ends the build**, and the package is recorded as failed rather than installed with whatever happened to make it into `$PKG_DESTDIR`.
+
+That matters because the alternative was worse: without it, a `make install` could die halfway, the `rm -rf` after it succeed, and the package be recorded **installed** while missing binaries. A real `libcap` shipped that way, and nothing downstream could tell.
+
+The semicolons matter as much as the flag. POSIX suspends `set -e` for any command in an `&&` list except the last — *including inside functions called from there* — so `pkg_build && pkg_install` would have left every failure inside `pkg_build()` ignored.
+
+Two consequences to write for:
+
+- **A command whose failure is expected must say so**, with `|| true` or an `if`. The common case is stopping a helper you started yourself: `kill` on a job that already exited returns 1, and `wait` on a job you just `kill`ed returns 143. Both are normal, and both end the build unless you mark them:
+
+  ```sh
+  ( while true; do keep_fixing_things; sleep 2; done ) &
+  helper=$!
+  make -j"$(nproc)"
+  kill "$helper" 2>/dev/null || true
+  wait "$helper" 2>/dev/null || true
+  ```
+
+  Skipping those `|| true`s produces a spectacularly misleading failure: the package builds completely, then the recipe dies cleaning up, and the daemon reports exit 143 as *"overlay mount or exec failed: No such process"* — because 143 is both `128+SIGTERM` and, in the daemon's own errno encoding, `140+ESRCH`. A finished build reported as a container that never started.
+
+- **A grep or test used for its answer, not its success**, needs the same treatment — `grep -q pattern file || true` if not matching is a legitimate outcome.
+
 ### `pkg_depends` — runtime dependencies
 
 `pkg_depends` is resolved automatically and recursively, before your own recipe's `pkg_build()` ever runs:
