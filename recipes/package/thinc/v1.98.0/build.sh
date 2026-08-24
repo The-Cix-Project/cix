@@ -133,7 +133,7 @@
 pkg_name="thinc"
 pkg_version="v1.98.0"
 pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/thinc/archive/v1.98.0.tar.gz"
-pkg_sha256="0127d71f6b9ee459d5631c08890028fa901bb8842d4e75cb4939b55577ada6e8"
+pkg_sha256="625acceceb8f40096774ff5b3f907b8c492e638871cdff64954bb02687b59fef"
 pkg_depends=""
 
 #
