@@ -1429,6 +1429,26 @@ static int merge_tree(const char *src_root, const char *dst_root, const char *re
 				*slash = '\0';
 				persist_mkdir_p(dst_parent);
 			}
+			/*
+			 * Replace whatever is there; never write through it.
+			 *
+			 * copy_file_simple() opens the destination O_CREAT|O_TRUNC,
+			 * which FOLLOWS an existing symlink. Installing a package
+			 * file onto a path that is currently a symlink therefore
+			 * wrote to the symlink's target instead of replacing the
+			 * link -- and the visible failure was the lucky case:
+			 * gcc's own usr/bin/c++ landed on a Debian-alternatives
+			 * symlink left in the build sandbox
+			 * (usr/bin/c++ -> /etc/alternatives/c++, which does not
+			 * exist there), so the open failed ENOENT and the merge
+			 * stopped. Had that target existed, the install would have
+			 * silently overwritten an unrelated file and reported
+			 * success.
+			 *
+			 * The symlink branch below has always unlinked first for
+			 * the same reason. This one should have too.
+			 */
+			unlink(dst_path);
 			if (copy_file_simple(src_path, dst_path) != 0) {
 				closedir(d);
 				return merge_fail(child_rel, "copying a regular file", 1);

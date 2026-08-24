@@ -1445,6 +1445,108 @@ int main(void)
 		ok = 0;
 	}
 
+	/*
+	 * A package file landing where a SYMLINK already exists must
+	 * replace it, not write through it.
+	 *
+	 * copy_file_simple() opens the destination O_CREAT|O_TRUNC, which
+	 * follows a symlink -- so installing over one used to write to the
+	 * link's target instead. The visible failure was the lucky case (a
+	 * dangling link, so the open failed and the merge stopped); a link
+	 * pointing at a real file would have silently overwritten
+	 * something unrelated and reported success. Real gcc hit this on a
+	 * Debian-alternatives symlink left in a build sandbox.
+	 *
+	 * The staged symlink points at a decoy this test owns, so if the
+	 * write goes through the link instead of replacing it, the decoy
+	 * changes and that is detectable.
+	 */
+	{
+		char link_path[PATH_MAX];
+		char decoy_path[PATH_MAX];
+		FILE *df;
+		struct stat lst;
+
+		snprintf(decoy_path, sizeof(decoy_path), "%s/decoy.txt", scratch_dir);
+		df = fopen(decoy_path, "w");
+		if (df != NULL) {
+			fputs("untouched\n", df);
+			fclose(df);
+		}
+		/* base image's own usr/bin, where greeter installs */
+		snprintf(link_path, sizeof(link_path), "%s/rebuildable/images/base/%s/rootfs/usr/bin/relinked",
+		         g_data_dir, "current");
+		/* Resolve "current" the way the daemon does: ask for the image. */
+		memset(&r, 0, sizeof(r));
+		if (thinc_client_request(&client, "GET", "/v1/images/base", NULL, &r) == 0 &&
+		    r.status == 200 && json_str_field(r.json, "current_version") != NULL) {
+			snprintf(link_path, sizeof(link_path),
+			         "%s/rebuildable/images/base/%s/rootfs/usr/bin/relinked", g_data_dir,
+			         json_str_field(r.json, "current_version"));
+			unlink(link_path);
+			if (symlink(decoy_path, link_path) != 0)
+				fprintf(stderr, "WARN: could not stage the symlink fixture\n");
+		}
+		thinc_response_free(&r);
+
+		if (write_recipe("relinked", "1.0", tarball_path, sha256, NULL) != 0)
+			ok = 0;
+		memset(&r, 0, sizeof(r));
+		if (thinc_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"relinked\"}",
+		                       &r) != 0 ||
+		    r.status != 202) {
+			fprintf(stderr, "FAIL: POST install relinked, status=%d\n", r.status);
+			ok = 0;
+		}
+		thinc_response_free(&r);
+		if (poll_pkg_state(&client, "relinked", state, sizeof(state), 200) != 0 ||
+		    strcmp(state, "installed") != 0) {
+			fprintf(stderr,
+			        "FAIL: installing over an existing symlink ended '%s', expected installed\n",
+			        state);
+			ok = 0;
+		} else {
+			char decoy_buf[64];
+			FILE *cf = fopen(decoy_path, "r");
+
+			decoy_buf[0] = '\0';
+			if (cf != NULL) {
+				if (fgets(decoy_buf, sizeof(decoy_buf), cf) == NULL)
+					decoy_buf[0] = '\0';
+				fclose(cf);
+			}
+			if (strncmp(decoy_buf, "untouched", 9) != 0) {
+				fprintf(stderr,
+				        "FAIL: installing over a symlink wrote THROUGH it -- the decoy the link "
+				        "pointed at was overwritten\n");
+				ok = 0;
+			}
+			/* An install produces a NEW image version, so the file
+			 * landed in that one -- the path staged above belongs to
+			 * the version that was current beforehand. */
+			memset(&r, 0, sizeof(r));
+			if (thinc_client_request(&client, "GET", "/v1/images/base", NULL, &r) == 0 &&
+			    r.status == 200 && json_str_field(r.json, "current_version") != NULL) {
+				char new_path[PATH_MAX];
+
+				snprintf(new_path, sizeof(new_path),
+				         "%s/rebuildable/images/base/%s/rootfs/usr/bin/relinked", g_data_dir,
+				         json_str_field(r.json, "current_version"));
+				memset(&lst, 0, sizeof(lst));
+				if (lstat(new_path, &lst) != 0) {
+					fprintf(stderr, "FAIL: the package file is missing from the new image "
+					                "version (%s)\n", new_path);
+					ok = 0;
+				} else if (S_ISLNK(lst.st_mode)) {
+					fprintf(stderr,
+					        "FAIL: the symlink survived; the package file did not replace it\n");
+					ok = 0;
+				}
+			}
+			thinc_response_free(&r);
+		}
+	}
+
 	/* 6. duplicate install of an already-installed package -> 409 */
 	memset(&r, 0, sizeof(r));
 	if (thinc_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"greeter\"}", &r) != 0 ||
