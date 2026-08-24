@@ -2457,6 +2457,19 @@ Tracked issue by issue in the repo's own Gitea tracker rather than restated here
 
 **Reproducible builds** (#109 with [ADR-0199](../adr/0199-recipes-declare-their-build-tools.md)): a recipe declares its build tools and its build container is composed from exactly those packages' own recorded file lists -- what a build ran against becomes a property of the recipe rather than of the box's install history. Supersedes the direction of ADR-0198 after measurement showed 67% of the shared sandbox was an undeclared Rust/Go toolchain. Verified on 192.168.15.95, which is where both of its real bugs were found: composing from the prunable build cache instead of the durable file list, and accepting a created-but-empty environment image as ready (the build then died at `execve(/usr/bin/bash)` on an environment holding nothing). Both were the same mistake -- treating existence as proof of readiness -- and both were invisible to a test suite that only covered the refusal path.
 
+Twenty-three packages converted and verified by building each one on 192.168.15.95 in an environment composed from exactly what it declares: `zlib`, `binutils`, `sed`, `grep`, `make`, `tcc`, `libc-dev`, `bash`, `m4`, `flex`, `diffutils`, `elfutils`, `libcap`, `xz`, `bzip2`, `gzip`, `tar`, `patch`, `findutils`, `bc`, `psmisc`, `pkgconf`, `ncurses`.
+
+What the audit found matters more than the count, because none of it was visible while builds ran in a shared sandbox:
+
+- **Three packages had never been compiled by the compiler their recipe names.** `tcc` (its hand-written configure ignores `CC=` and takes `--cc=`), `flex` (a second probe, `AX_PROG_CC_FOR_BUILD`, that does not read `CC` at all), and `ncurses` (a customised autoconf 2.52-era script that ignores a preset `CC`). Every one of them was silently built by ambient GCC.
+- **Every `libz.so.1` was built by GCC too, and under TCC zlib silently degrades to static-only** — configure *probes* for shared-library support and does not treat a failed probe as an error (#113).
+- **`m4` declared a build tool as a runtime dependency**, which became an install-refusing cycle the moment `binutils` and `flex` declared theirs honestly. The cycle was in the mislabelling, not the relationships.
+- **The kernel could not run scripts at all** (#114): no `CONFIG_BINFMT_SCRIPT`, so every non-shell `#!` script was quietly handed to bash.
+- **A failing command inside a recipe did not fail the package** — `libcap` was recorded as installed with four binaries missing.
+- **Our gcc segfaults compiling `rol64()`** (#116), so no kernel can currently be built; traced to a bootstrap seed below GCC's documented minimum.
+
+Three fixes moved into the compiler rather than being repeated per recipe: the `__atomic_*` builtins, the `__ATOMIC_*` order macros, and `__dso_handle` (which seven recipes each carried their own copy of) now come from `libtcc1.a`, which is where a compiler's runtime belongs.
+
 **Build sandbox** (#40 with [ADR-0198](../adr/0198-build-sandbox-is-a-real-image.md)): the shared package-build lowerdir becomes the ordinary `thinc-builder` image with real version history, resolved the same way a hostbuild's own `--build-image=` already is, with existing flat content migrated in rather than dropped. The migration itself failed on the real box with a bare `File exists` for several attempts before the shared copy-forward path was made to name its failing step: the flat sandbox carries `/lib` as a symlink to `usr/lib` while the image has a real `/lib` directory, and `unlink()` cannot remove a directory. The directory is kept, since everything reachable through the symlink is reachable through its target.
 
 **DHCP** ([ADR-0197](../adr/0197-dhcp-served-by-the-dns-server.md)): per-network ranges, static reservations and leases, served by the same dnsmasq that serves DNS -- so a lease resolves the moment it is issued, structurally rather than by synchronisation. A lease is deliberately not a DNS record.
