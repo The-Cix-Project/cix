@@ -208,7 +208,7 @@
 				<button type="button" class="tab-button" data-tab="console" id="cd-tab-console">Console</button>
 			</div>
 			<div class="tab-panel" id="cd-panel-summary" data-tab="summary">
-				<div class="detail-grid" id="cd-fields"></div>
+				<table class="detail-table"><tbody id="cd-fields"></tbody></table>
 				<div class="stats-grid">
 					<div class="stats-card">
 						<h3>CPU</h3>
@@ -251,7 +251,7 @@
 			</div>
 			<div class="tab-panel" id="cd-panel-hardware" data-tab="hardware" hidden>
 				<h3>Resources</h3>
-				<div class="detail-grid" id="cd-hardware-resources"></div>
+				<table class="detail-table"><tbody id="cd-hardware-resources"></tbody></table>
 				<h3>Devices</h3>
 				<table id="cd-devices"><tbody></tbody></table>
 				<h3>Interfaces</h3>
@@ -266,7 +266,7 @@
 				</table>
 			</div>
 			<div class="tab-panel" id="cd-panel-options" data-tab="options" hidden>
-				<div class="detail-grid" id="cd-options-fields"></div>
+				<table class="detail-table"><tbody id="cd-options-fields"></tbody></table>
 				<h3>Storage placement</h3>
 				<p class="hint" id="cd-storage-current">Storage: unknown</p>
 				<p class="hint" id="cd-storage-migrate-status" hidden></p>
@@ -329,7 +329,7 @@
 					<button type="button" id="nd-remove" class="button-danger">Remove network</button>
 				</div>
 			</div>
-			<div class="detail-grid" id="nd-fields"></div>
+			<table class="detail-table"><tbody id="nd-fields"></tbody></table>
 			<div class="tab-bar">
 				<button type="button" class="tab-button active" data-tab="ports">Switch Panel</button>
 				<button type="button" class="tab-button" data-tab="containers">Containers</button>
@@ -719,7 +719,7 @@
 			</div>
 			<div class="tab-panel" data-tab="dd-overview">
 				<div id="dd-usage"></div>
-				<div class="detail-grid" id="dd-fields"></div>
+				<table class="detail-table"><tbody id="dd-fields"></tbody></table>
 			</div>
 			<div class="tab-panel" data-tab="dd-role" hidden>
 				<p class="hint" id="dd-role-note"></p>
@@ -936,7 +936,7 @@
 				</label>
 				<button type="submit">Save</button>
 			</form>
-			<div class="detail-grid" id="zswap-kernel"></div>
+			<table class="detail-table"><tbody id="zswap-kernel"></tbody></table>
 		</div>
 			<div class="tab-panel" data-tab="rolling-restart" hidden>
 			<h2>Rolling Restart</h2>
@@ -1039,7 +1039,7 @@
 					<button type="submit">Save</button>
 				</form>
 				<h3>In effect</h3>
-				<div class="detail-grid" id="bcf-effect"></div>
+				<table class="detail-table"><tbody id="bcf-effect"></tbody></table>
 				<table id="boot-entries">
 					<thead><tr><th>Loader entry</th><th>options</th></tr></thead>
 					<tbody id="boot-entries-body">
@@ -1078,7 +1078,7 @@
 					<button type="submit">Save</button>
 					<button type="button" id="kpf-refresh">Refresh from kernel.org</button>
 				</form>
-				<div class="detail-grid" id="kpf-status"></div>
+				<table class="detail-table"><tbody id="kpf-status"></tbody></table>
 			</div>
 		</div>
 			<div class="tab-panel" data-tab="control-plane-reservation" hidden>
@@ -1116,7 +1116,7 @@
 					<button type="submit">Save</button>
 				</form>
 				<h3>In effect now</h3>
-				<div class="detail-grid" id="cpr-effect"></div>
+				<table class="detail-table"><tbody id="cpr-effect"></tbody></table>
 			</div>
 		</div>
 			<div class="tab-panel" data-tab="tls-throttle" hidden>
@@ -1411,7 +1411,7 @@
 				is never dropped, and if filtering would leave nothing the full list
 				stands: a client with a possibly-down server beats a client with none.
 			</p>
-			<div class="detail-grid" id="ldap-client-delivery"></div>
+			<table class="detail-table"><tbody id="ldap-client-delivery"></tbody></table>
 		</div>
 		</section>
 
@@ -1997,7 +1997,7 @@
 					only installed-package history remains (removing a recipe never touches what's
 					already installed).</div>
 				<div id="pkgd-recipe-present">
-					<div class="detail-grid" id="pkgd-recipe-fields"></div>
+					<table class="detail-table"><tbody id="pkgd-recipe-fields"></tbody></table>
 					<h3>Content</h3>
 					<pre id="pkgd-recipe-content" class="recipe-content"></pre>
 				</div>
@@ -2238,7 +2238,7 @@
 		<!-- One volume: where its data lives, who mounts it, and moving it. -->
 		<section class="view" id="view-volume-detail" hidden>
 			<h2 id="vd-title"></h2>
-			<div class="detail-grid" id="vd-fields"></div>
+			<table class="detail-table"><tbody id="vd-fields"></tbody></table>
 			<h3>Owner</h3>
 			<p class="hint" id="vd-owner-note"></p>
 			<form id="vd-owner-form">

@@ -2192,18 +2192,36 @@ async function unpauseContainer(name) {
 	}
 }
 
+/*
+ * One labelled value, as a table row: <th> for the label, <td> for the
+ * value. Every detail panel on every page is built from this one
+ * helper -- 65 call sites across containers, networks, disks, zswap,
+ * kernel policy, LDAP, packages, volumes and the rest -- so the panels
+ * cannot drift apart from each other, and changing how a labelled
+ * value looks is a change in exactly one place.
+ *
+ * A row per value rather than a responsive grid of cells: a grid
+ * reflows into a different shape at every window width, which means
+ * nothing sits where it did a moment ago and there is no line to
+ * follow from a label to its value. Rows always read the same way, and
+ * being rows they can be banded -- which is what makes a panel of
+ * twenty values scannable rather than a wall.
+ *
+ * <th> and not a styled <td>, because that is what these are: the
+ * label is the header for its row. Screen readers announce it as one.
+ */
 function fieldBlock(label, value) {
-	const div = document.createElement("div");
-	const labelSpan = document.createElement("span");
+	const row = document.createElement("tr");
+	const labelCell = document.createElement("th");
+	const valueCell = document.createElement("td");
 
-	labelSpan.className = "field-label";
-	labelSpan.textContent = label;
-	div.appendChild(labelSpan);
-	const valueDiv = document.createElement("div");
-
-	valueDiv.textContent = value;
-	div.appendChild(valueDiv);
-	return div;
+	labelCell.className = "field-label";
+	labelCell.scope = "row";
+	labelCell.textContent = label;
+	row.appendChild(labelCell);
+	valueCell.textContent = value;
+	row.appendChild(valueCell);
+	return row;
 }
 
 function simpleTableRows(bodyEl, columns, colCount, emptyText) {
@@ -5525,14 +5543,16 @@ function renderDiskRoleTab(d, role) {
 		? "Assigning a role is non-destructive and reversible. Formatting wipes every byte on this device."
 		: "A role says what this device is for. It has to be assigned before the device can be formatted or mounted, and assigning one changes nothing on disk.";
 
-	const summary = document.createElement("div");
+	const summary = document.createElement("table");
+	const summaryBody = document.createElement("tbody");
 
-	summary.className = "detail-grid";
-	summary.appendChild(fieldBlock("Role", role ? role.role : "none"));
-	summary.appendChild(fieldBlock("Filesystem", d.fs_type || "unformatted"));
-	summary.appendChild(fieldBlock("Mounted at", d.mounted ? d.mount_path : "not mounted"));
+	summary.className = "detail-table";
+	summary.appendChild(summaryBody);
+	summaryBody.appendChild(fieldBlock("Role", role ? role.role : "none"));
+	summaryBody.appendChild(fieldBlock("Filesystem", d.fs_type || "unformatted"));
+	summaryBody.appendChild(fieldBlock("Mounted at", d.mounted ? d.mount_path : "not mounted"));
 	if (formatStatus && formatStatus.state !== "none")
-		summary.appendChild(
+		summaryBody.appendChild(
 			fieldBlock("Last format", formatStatus.state === "failed" ? "failed: " + formatStatus.error : formatStatus.state)
 		);
 	current.appendChild(summary);
