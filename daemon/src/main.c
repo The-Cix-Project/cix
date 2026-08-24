@@ -4063,6 +4063,23 @@ static void handle_container_exec_post(int fd, const char *name, const char *bod
 			respond_error(fd, 400, "Bad Request", "every argv entry must be a string");
 			return;
 		}
+		/*
+		 * Refuse an over-long argument rather than silently cutting
+		 * it. snprintf() truncates happily, and what came out the
+		 * other side was a mangled command that ran: a shell script
+		 * passed to `bash -c` was cut mid-word, producing
+		 * "unexpected EOF while looking for matching quote" and
+		 * "missing filename after '-o'" -- errors that describe the
+		 * damage and give no hint that the request was altered
+		 * between being accepted and being run. A 400 naming the
+		 * limit is the only honest answer.
+		 */
+		if (strlen(a) >= sizeof(argv_buf[argc])) {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request",
+			              "argv entry is too long (limit is 511 bytes per argument)");
+			return;
+		}
 		snprintf(argv_buf[argc], sizeof(argv_buf[argc]), "%s", a);
 		argv_storage[argc] = argv_buf[argc];
 		argc++;
