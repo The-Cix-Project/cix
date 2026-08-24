@@ -1,20 +1,21 @@
 pkg_name="kernel"
 pkg_version="6.18.40-10"
-pkg_source="https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.40.tar.xz https://osakka:REPLACE_WITH_REAL_TOKEN@git.home.arpa/api/v1/repos/itdlabs/thinc/raw/image/kernel/qemu-part1.config?ref=473858954a927611fed6ccccc6ec346d4aec821d"
-pkg_sha256="3712fc1ec839e4daac981176c8518912e8f452650aaedfe4381da4419613a431 71bb10a4615edbfd4f1d2d65e6d8c4d78ab215280f3a26707519f31783ee1f22"
+pkg_source="https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.40.tar.xz https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/thinc/raw/image/kernel/qemu-part1.config?ref=e49bbbe193a23eff35d48fb1a085a23a474a2eb6"
+pkg_sha256="3712fc1ec839e4daac981176c8518912e8f452650aaedfe4381da4419613a431 3258cfcd6bcde1cc1cc252c00c00344cd772aa3dec1c8791b7c65d931ee5b1c8"
 pkg_depends=""
 
-# Re-pinned to -10: pkg sync silently skips re-fetching an
-# already-seen name@version even after its content is fixed on Gitea
-# (confirmed again this session, same as kernel 6.18.40-4 -> -5
-# earlier) -- -9's own recipe content already carries the correct fix
-# below (dropped its own invalid pkg_depends="elfutils", which
-# pkg_hostbuild_start() rejects outright since a hostbuild's
-# dependencies must already be baked into --build-image, not declared),
-# this re-pin exists purely to force a real re-sync onto a version
-# number the daemon hasn't cached yet.
+# Re-pinned to -10 (issue #114): CONFIG_BINFMT_SCRIPT=y. Without it
+# the kernel does not understand "#!" at all, so execve() of any script
+# returns ENOEXEC -- and because POSIX makes a shell whose execve()
+# returns ENOEXEC run the file itself, every shell script kept working
+# by coincidence while every script with any other interpreter was
+# quietly handed to bash. Found when diffutils' bundled help2man Perl
+# script produced bash syntax errors with a working /usr/bin/perl
+# sitting right there. Same allnoconfig trap the config file already
+# documents above CONFIG_BINFMT_ELF; ELF was caught because nothing
+# boots without it, SCRIPT was not because it degrades instead.
 #
-# -8's own fix (wholesale-replace gcc's
+# Re-pinned to -9: -8's own fix (wholesale-replace gcc's
 # include-fixed/limits.h with a bare passthrough) got the kernel's own
 # HOSTCC past its PATH_MAX gap, but was later proven incomplete while
 # root-causing a DIFFERENT, unrelated package's build failure
