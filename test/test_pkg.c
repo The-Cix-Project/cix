@@ -292,6 +292,39 @@ static int write_recipe(const char *name, const char *version, const char *tarba
 #define EMPTY_MANIFEST_VERSION "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 /*
+ * Like write_recipe(), but the installed file records which version
+ * produced it -- so a test can tell WHICH of several installed copies
+ * of a package ended up in a composed build environment.
+ */
+static int write_stamped_recipe(const char *name, const char *version, const char *tarball_path,
+                                 const char *sha256)
+{
+	char name_dir[256];
+	char path[300];
+	FILE *f;
+
+	snprintf(name_dir, sizeof(name_dir), "%s/recipes/%s", g_pkg_state_dir, name);
+	mkdir(name_dir, 0755);
+	snprintf(path, sizeof(path), "%s/%s", name_dir, version);
+	mkdir(path, 0755);
+	snprintf(path, sizeof(path), "%s/recipes/%s/%s/build.sh", g_pkg_state_dir, name, version);
+	f = fopen(path, "w");
+	if (f == NULL)
+		return -1;
+	fprintf(f, "pkg_name=%s\n", name);
+	fprintf(f, "pkg_version=%s\n", version);
+	fprintf(f, "pkg_source=file://%s\n", tarball_path);
+	fprintf(f, "pkg_sha256=%s\n", sha256);
+	fprintf(f, "pkg_depends=\"\"\n\n");
+	fprintf(f, "pkg_build() {\n\ttrue\n}\n\n");
+	fprintf(f, "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/share\"\n"
+	           "\techo %s > \"$PKG_DESTDIR/usr/share/%s.version\"\n}\n",
+	        version, name);
+	fclose(f);
+	return 0;
+}
+
+/*
  * Issue #109: a recipe that DECLARES its build tools. The build
  * container is then composed from exactly those packages and nothing
  * else, so what this build ran against is a property of the recipe
@@ -1834,6 +1867,131 @@ int main(void)
 			}
 		}
 	}
+
+	/*
+	 * Issue #109: when the same package is installed at different
+	 * versions in different images, the composed environment must take
+	 * the NEWEST -- deterministically, not whichever the registry
+	 * happened to list first.
+	 *
+	 * Not a theoretical tidiness. A real build failed exactly here:
+	 * `libc-dev` resolved to 2.36, which does not stage libm.so, while
+	 * 2.36-3, which does, sat installed in two other images. And plain
+	 * string ordering is not enough either -- "2.36-3" sorts before
+	 * "2.36" by strcmp, and "1.3.2-10" before "1.3.2-9".
+	 *
+	 * "stamped" installs a file naming the version that produced it,
+	 * which is how this reads back which copy actually won.
+	 */
+	{
+		char stamp_path[PATH_MAX];
+		FILE *sf;
+		char line[64];
+
+		if (write_stamped_recipe("stamped", "1.9", tarball_path, sha256) != 0 ||
+		    write_stamped_recipe("stamped", "1.10", tarball_path, sha256) != 0) {
+			fprintf(stderr, "FAIL: could not write the stamped recipes\n");
+			ok = 0;
+		}
+		/* 1.10 into one image, 1.9 into another -- 1.10 is newer, and
+		 * is also the one a plain strcmp() would rank lower. */
+		memset(&r, 0, sizeof(r));
+		if (thinc_client_request(&client, "POST", "/v1/pkg/install",
+		                       "{\"name\":\"stamped\",\"version\":\"1.10\","
+		                       "\"image\":\"vnew\"}",
+		                       &r) != 0 ||
+		    r.status != 202)
+			ok = 0;
+		thinc_response_free(&r);
+		if (poll_pkg_state(&client, "stamped@vnew", state, sizeof(state), 200) != 0 ||
+		    strcmp(state, "installed") != 0) {
+			fprintf(stderr, "FAIL: #109 stamped 1.10 ended '%s'\n", state);
+			ok = 0;
+		}
+		memset(&r, 0, sizeof(r));
+		if (thinc_client_request(&client, "POST", "/v1/pkg/install",
+		                       "{\"name\":\"stamped\",\"version\":\"1.9\","
+		                       "\"image\":\"vold\"}",
+		                       &r) != 0 ||
+		    r.status != 202)
+			ok = 0;
+		thinc_response_free(&r);
+		if (poll_pkg_state(&client, "stamped@vold", state, sizeof(state), 200) != 0 ||
+		    strcmp(state, "installed") != 0) {
+			fprintf(stderr, "FAIL: #109 stamped 1.9 ended '%s'\n", state);
+			ok = 0;
+		}
+
+		if (write_builddeps_recipe("usesstamped", "1.0", tarball_path, sha256, "stamped") != 0)
+			ok = 0;
+		memset(&r, 0, sizeof(r));
+		if (thinc_client_request(&client, "POST", "/v1/pkg/install",
+		                       "{\"name\":\"usesstamped\"}", &r) != 0 ||
+		    r.status != 202)
+			ok = 0;
+		thinc_response_free(&r);
+		if (poll_pkg_state(&client, "usesstamped", state, sizeof(state), 400) != 0) {
+			fprintf(stderr, "FAIL: #109 usesstamped never settled\n");
+			ok = 0;
+		}
+
+		/* Which copy landed in the composed environment? */
+		memset(&r, 0, sizeof(r));
+		if (thinc_client_request(&client, "GET", "/v1/images", NULL, &r) == 0 &&
+		    r.status == 200) {
+			const struct json_value *arr = json_object_get(r.json, "images");
+			size_t n = (arr != NULL && arr->type == JSON_ARRAY) ? arr->u.array.count : 0;
+			size_t k;
+			int checked = 0;
+
+			for (k = 0; k < n; k++) {
+				const struct json_value *im = arr->u.array.items[k];
+				const char *nm = im != NULL ? json_str_field(im, "name") : NULL;
+				struct thinc_response ir;
+				const char *v;
+
+				if (nm == NULL || strncmp(nm, "__buildenv-", 11) != 0)
+					continue;
+				memset(&ir, 0, sizeof(ir));
+				snprintf(stamp_path, sizeof(stamp_path), "/v1/images/%s", nm);
+				if (thinc_client_request(&client, "GET", stamp_path, NULL, &ir) != 0 ||
+				    ir.status != 200) {
+					thinc_response_free(&ir);
+					continue;
+				}
+				v = json_str_field(ir.json, "current_version");
+				if (v != NULL && v[0] != '\0') {
+					snprintf(stamp_path, sizeof(stamp_path),
+					         "%s/rebuildable/images/%s/%s/rootfs/usr/share/stamped.version",
+					         g_data_dir, nm, v);
+					sf = fopen(stamp_path, "r");
+					if (sf != NULL) {
+						checked = 1;
+						line[0] = '\0';
+						if (fgets(line, sizeof(line), sf) == NULL)
+							line[0] = '\0';
+						fclose(sf);
+						line[strcspn(line, "\r\n")] = '\0';
+						if (strcmp(line, "1.10") != 0) {
+							fprintf(stderr,
+							        "FAIL: #109 composed env took stamped '%s', expected the "
+							        "newest (1.10) -- resolution is not version-ordered\n",
+							        line);
+							ok = 0;
+						}
+					}
+				}
+				thinc_response_free(&ir);
+			}
+			if (!checked) {
+				fprintf(stderr,
+				        "FAIL: #109 no composed environment contained the stamped package\n");
+				ok = 0;
+			}
+		}
+		thinc_response_free(&r);
+	}
+
 
 	/* 15. multi-source recipes (ADR-0036): a real install with one main
 	 * tarball plus two extra plain files, proving (a) the whole thing
