@@ -911,6 +911,8 @@ A real, direct `/proc` scan — every process on the box, not just ones this dae
 ```
 
 `container` is populated by walking the process's own real host ppid chain against every currently-running container's own root pid — every container's own init is a direct `clone3()` child of `thincd` itself, so this reaches either a known container root (a match) or `thincd`'s own pid / pid 1 (empty string, a plain host-level process) for every case that matters. `command_line` is `/proc/<pid>/cmdline`'s own space-joined argv, or `"[comm]"` for a kernel thread (or a process caught between `execve()` calls) — the same convention `ps(1)` itself uses for an empty cmdline. `user_id`/`group_id` are the real (not effective/saved/filesystem) uid/gid from `/proc/<pid>/status`.
+`state` and `wchan` (added alongside the build-stall reporter) are `/proc/<pid>/stat`'s state character and `/proc/<pid>/wchan` -- the kernel symbol a sleeping process is blocked in, empty while it is running. `wchan` is the field that turns "it is stuck" into a diagnosis, and it is worth knowing how to read: in a stalled build every process shows `do_wait`, which only means "waiting for a child" and says nothing, *except* the one process blocked on something else -- `__futex_wait` for a lock that will never be released, a filesystem symbol for I/O that never returns. That one is where the work actually stopped. Diagnosing a real gcc deadlock this way previously required `exec`ing into the container by hand, because this daemon collected everything about a process except what it was waiting for.
+
 
 ```
 DELETE /v1/system/processes/{pid}

@@ -711,6 +711,14 @@ ssize_t container_read_diag(struct container_handle *h, char *buf, size_t bufsiz
  * a genuinely exhausted diag pipe -- where it isn't). Always fills
  * buf with something non-empty; never fails.
  */
+/*
+ * "SIGTERM" for 15, and so on; NULL for a signal this does not name.
+ * Public because the package builder needs it too: a build that exits
+ * 128+N was killed by signal N, and saying which one is the difference
+ * between a useful report and a number.
+ */
+const char *container_signal_name(int sig);
+
 void container_decode_exit_status(int exit_status, int term_signal, char *buf, size_t bufsize);
 
 #endif /* CONTAINER_H */
