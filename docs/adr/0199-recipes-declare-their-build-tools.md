@@ -59,3 +59,35 @@ Recipes that declare nothing keep the old shared sandbox. That is the migration 
 **The bootstrap remains.** Something has to compile the first compiler, and it cannot itself be composed from cached packages. That is unchanged, and it is issues #36–#38's subject.
 
 **There is a real chicken-and-egg during rollout**: composing clean environments needs tools that the *current* contaminated sandbox can no longer rebuild — `bash` and `grep` both fail in it today. Converting recipes is therefore gated on having buildable tools, not merely on writing declarations.
+
+## What the first live run cost, and what it changed
+
+The design above survived contact with a real box. Two things in its
+implementation did not, and both are worth recording because they are
+the same mistake wearing different clothes: treating *existence* as
+proof of *readiness*.
+
+**Composing from the build cache.** The first live attempt refused with
+*"declared build tool `tcc@0.9.27` has no cached build output"* on a box
+where tcc was installed and working perfectly. The refusal was correct
+behaviour asking the wrong source: a cache is prunable by size, so an
+environment could become unbuildable because an entry aged out.
+Composition now reads each package's recorded file list, which is
+durable state and already what an upgrade unlinks against.
+
+**Accepting a created-but-empty environment.** `image_create()` gives a
+brand-new image a current version immediately -- the hash of its own
+empty manifest -- so "this environment image exists" and "this
+environment has been filled" are different questions. The first
+implementation asked the first and believed it had answered the second.
+A composition that failed left the created shell behind, and the very
+next build accepted it as ready: the daemon reported a composed
+environment, and the build then died at `execve(/usr/bin/bash)` because
+there was nothing in it at all. The guard now skips an image still
+sitting at its empty-manifest version, and a failed composition deletes
+what it created rather than leaving a trap for the next run.
+
+Both were invisible to the test suite, because only the *refusal* path
+had a test. A composition that failed for every possible input would
+have looked green. The success path is covered now, along with an
+assertion that a composed environment is not empty.

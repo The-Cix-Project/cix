@@ -115,6 +115,18 @@ enum image_error image_create(const char *name);
  */
 enum image_error image_delete(const char *name);
 
+/*
+ * The version every image is born with: the hash of its own empty
+ * manifest, written by image_create() before anything has been put in
+ * it. Callers that need to tell "this image exists" apart from "this
+ * image has been filled" compare against this rather than against a
+ * hardcoded digest -- the two questions are genuinely different, and
+ * conflating them is how a failed build-environment composition once
+ * left behind an empty image that every later build accepted as ready
+ * (issue #109).
+ */
+int image_empty_manifest_version(char *out, size_t out_size);
+
 /* Upper bound for image_list_names() -- a real deployment having more
  * than this many distinct images at once is a future problem, the same
  * pragmatic bound every other daemon-owned array in this codebase
