@@ -2,7 +2,7 @@
  * Issue #100: proof that the control plane stopped answering, written
  * by something that is not the control plane.
  *
- * The real incident this comes from: `thincd` on the production host
+ * The real incident this comes from: `cixd` on the production host
  * accepted TCP while answering nothing for minutes, then recovered on
  * its own, and the log store had NOTHING from inside the window --
  * because the loop that would record its own silence is the loop that
@@ -34,14 +34,14 @@ extern char **environ;
 
 static char g_data_dir[PATH_MAX];
 
-static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
+static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 {
 	int i;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			thinc_response_free(&r);
+		if (cix_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			cix_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -56,7 +56,7 @@ static pid_t start_daemon(void)
 	static char data_dir_arg[PATH_MAX + 11];
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
-	dargv[0] = "build/thincd";
+	dargv[0] = "build/cixd";
 	dargv[1] = PORT_ARG;
 	dargv[2] = data_dir_arg;
 	dargv[3] = NULL;
@@ -67,8 +67,8 @@ static pid_t start_daemon(void)
 		return -1;
 	}
 	if (pid == 0) {
-		execve("build/thincd", dargv, environ);
-		perror("execve build/thincd");
+		execve("build/cixd", dargv, environ);
+		perror("execve build/cixd");
 		_exit(127);
 	}
 	return pid;
@@ -87,8 +87,8 @@ static int stop_daemon(pid_t pid)
 int main(void)
 {
 	pid_t daemon_pid;
-	struct thinc_client client;
-	struct thinc_response r;
+	struct cix_client client;
+	struct cix_response r;
 	int ok = 1;
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
@@ -99,7 +99,7 @@ int main(void)
 		test_data_dir_cleanup(g_data_dir);
 		return 1;
 	}
-	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
+	cix_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
@@ -112,7 +112,7 @@ int main(void)
 	 * ticks on its own so silence means something. */
 	sleep(2);
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/system/stalls", NULL, &r) != 0 || r.status != 200) {
+	if (cix_client_request(&client, "GET", "/v1/system/stalls", NULL, &r) != 0 || r.status != 200) {
 		fprintf(stderr, "FAIL: GET /v1/system/stalls, status=%d\n", r.status);
 		ok = 0;
 	} else {
@@ -127,7 +127,7 @@ int main(void)
 			ok = 0;
 		}
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 2. Freeze it. This is the real thing, not a simulation: the
 	 * process stops running, the kernel keeps completing TCP handshakes
@@ -138,7 +138,7 @@ int main(void)
 	sleep(2);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/system/stalls", NULL, &r) != 0 || r.status != 200) {
+	if (cix_client_request(&client, "GET", "/v1/system/stalls", NULL, &r) != 0 || r.status != 200) {
 		fprintf(stderr, "FAIL: GET stalls after the freeze, status=%d\n", r.status);
 		ok = 0;
 	} else {
@@ -188,16 +188,16 @@ int main(void)
 			}
 		}
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 3. And the daemon is fine afterwards -- the watchdog observes,
 	 * it does not interfere. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/health", NULL, &r) != 0 || r.status != 200) {
+	if (cix_client_request(&client, "GET", "/v1/health", NULL, &r) != 0 || r.status != 200) {
 		fprintf(stderr, "FAIL: daemon not healthy after the freeze, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	stop_daemon(daemon_pid);
 
@@ -213,7 +213,7 @@ int main(void)
 		return 1;
 	}
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/system/stalls", NULL, &r) != 0 || r.status != 200) {
+	if (cix_client_request(&client, "GET", "/v1/system/stalls", NULL, &r) != 0 || r.status != 200) {
 		fprintf(stderr, "FAIL: GET stalls after restart, status=%d\n", r.status);
 		ok = 0;
 	} else {
@@ -224,7 +224,7 @@ int main(void)
 			ok = 0;
 		}
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	stop_daemon(daemon_pid);
 	test_data_dir_cleanup(g_data_dir);

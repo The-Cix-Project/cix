@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-Raised directly by the user, correcting a wrong assumption made this session: 192.168.15.95 (the real, live deployed thinC install) serves on both port 80 (HTTP) and port 443 (HTTPS), confirmed directly via `GET /v1/system/daemon-config` (`http_enabled=true https_enabled=true https_port=443`) after an earlier connectivity check mistakenly polled ports 8085/8443 (a different, unrelated project's own boilerplate port numbers, confused in with this one) and wrongly concluded the box was down.
+Raised directly by the user, correcting a wrong assumption made this session: 192.168.15.95 (the real, live deployed Cix install) serves on both port 80 (HTTP) and port 443 (HTTPS), confirmed directly via `GET /v1/system/daemon-config` (`http_enabled=true https_enabled=true https_port=443`) after an earlier connectivity check mistakenly polled ports 8085/8443 (a different, unrelated project's own boilerplate port numbers, confused in with this one) and wrongly concluded the box was down.
 
 `daemon_config.c`'s own `DEFAULT_PORT` (`main.c`) and `DEFAULT_HTTPS_PORT` (`daemon_config.c`) were already `80`/`443` — the port *numbers* already matched. The actual gap: `daemon_config_init()` set `g_https_enabled = 0` on a fresh install (`g_http_enabled = 1`), meaning a brand-new install starts HTTP-only, with HTTPS an explicit operator opt-in (`PUT /v1/system/daemon-config {"https_enabled": true}`) rather than the out-of-the-box default — not matching 192.168.15.95's own real, already-configured state.
 

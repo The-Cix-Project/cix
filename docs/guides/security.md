@@ -5,7 +5,7 @@ Bootstrapping and operating this platform's internal certificate authority, turn
 ## Bootstrapping the CA
 
 ```sh
-thincctl pki ca bootstrap --common-name="thinC Root CA" --days=3650
+cixctl pki ca bootstrap --common-name="Cix Root CA" --days=3650
 ```
 
 One-shot — a second call is refused (`409`); see [Rotating the whole chain](#rotating-the-whole-chain) below for the real "start over" operation. **The CA private key is never returned over this API, ever, on any endpoint** — it's the root of trust and stays on the host. Real cryptography (keypair generation, CSR signing) runs through the system's own real, unmodified `openssl` binary as a short-lived subprocess, not a hand-rolled implementation.
@@ -13,7 +13,7 @@ One-shot — a second call is refused (`409`); see [Rotating the whole chain](#r
 Optionally add a second, intermediate tier — requires the root to already exist:
 
 ```sh
-thincctl pki intermediate bootstrap --common-name="thinC Intermediate CA" --days=1825
+cixctl pki intermediate bootstrap --common-name="Cix Intermediate CA" --days=1825
 ```
 
 Once bootstrapped, every future leaf certificate is signed by the intermediate instead of the root automatically, transparent to the issuing call — no separate opt-in, and every fetched cert then carries the full chain (leaf + intermediate).
@@ -21,15 +21,15 @@ Once bootstrapped, every future leaf certificate is signed by the intermediate i
 ## Issuing certificates
 
 ```sh
-thincctl pki cert create --name=svc.internal --sans=svc.internal,svc --days=365
+cixctl pki cert create --name=svc.internal --sans=svc.internal,svc --days=365
 ```
 
-`name` becomes the cert's CN and this resource's identifier — a bare name (no `.`) gets this install's own site suffix appended automatically, the same rule DNS records use. The response is the **only** place the leaf's private key is ever returned — `thincctl pki cert ls`/`pki cert rm NAME` never include it again, so save it now if you're issuing by hand. `pki cert rm` deletes the key and cert files from disk, not just the index entry.
+`name` becomes the cert's CN and this resource's identifier — a bare name (no `.`) gets this install's own site suffix appended automatically, the same rule DNS records use. The response is the **only** place the leaf's private key is ever returned — `cixctl pki cert ls`/`pki cert rm NAME` never include it again, so save it now if you're issuing by hand. `pki cert rm` deletes the key and cert files from disk, not just the index entry.
 
 **Automatic issuance straight into a container**, instead of issuing separately and figuring out delivery:
 
 ```sh
-thincctl container run --name=web --image=myapp --pki-issue --pki-cert-dir=/etc/thinc-tls --pki-days=365 -- /usr/bin/some-binary
+cixctl container run --name=web --image=myapp --pki-issue --pki-cert-dir=/etc/cix-tls --pki-days=365 -- /usr/bin/some-binary
 ```
 
 Issues a cert named after the container and writes `tls.crt`/`tls.key` (mode `0600`) directly into its filesystem at creation time — one-time delivery, no live resync, since a cert doesn't change after a container starts (a chain rotation, below, explicitly redelivers). Deleting the container automatically removes its cert too. Requires the CA to already be bootstrapped.
@@ -38,10 +38,10 @@ This install also always keeps its own `"host"` leaf current, auto-reissued when
 
 ## Turning on HTTPS for the daemon itself
 
-Requires a bootstrapped root CA first (`thincctl pki ca bootstrap`, above) — the daemon reuses its own already-issued `"host"` leaf rather than a separate certificate:
+Requires a bootstrapped root CA first (`cixctl pki ca bootstrap`, above) — the daemon reuses its own already-issued `"host"` leaf rather than a separate certificate:
 
 ```sh
-thincctl daemon-config set --enable-https
+cixctl daemon-config set --enable-https
 ```
 
 Starts a second, independent listener on `--https-port=` (default `443`), live immediately. See [`networking.md`](networking.md#the-management-network) for the rest of `daemon-config`'s own contract (port, management-network repoint, a dedicated bind IP) — this is one field of that same live-reconfigurable resource, not a separate mechanism.
@@ -53,7 +53,7 @@ This install's root CA is private and self-signed — nothing trusts it by defau
 **Get the certificate**: web dashboard's System > PKI > Root CA page has a "Download certificate (.crt)" button once the CA is bootstrapped — or fetch it directly:
 
 ```sh
-thincctl pki ca show --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["cert_pem"])' > thinc-root-ca.crt
+cixctl pki ca show --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["cert_pem"])' > cix-root-ca.crt
 ```
 
 Trusting the **root** is enough even if you've also bootstrapped an intermediate CA (System > PKI > Intermediate CA has its own download button too, but you don't need to separately trust it) — the HTTPS listener sends the full leaf+intermediate chain on every handshake (ADR-0136), so a client that trusts only the root can validate the whole path.
@@ -62,7 +62,7 @@ Trusting the **root** is enough even if you've also bootstrapped an intermediate
 
 - **Windows**: double-click the downloaded `.crt` file → **Install Certificate** → **Local Machine** (needs admin, trusts it for every user) or **Current User** → **Place all certificates in the following store** → **Trusted Root Certification Authorities**.
 - **macOS**: open **Keychain Access** → **File > Import Items** → select the file (imports to the login keychain by default) → find it in the list, double-click it → expand **Trust** → set **When using this certificate** to **Always Trust** → close (prompts for your password).
-- **Linux, system-wide** (curl, most non-browser tools): `sudo cp thinc-root-ca.crt /usr/local/share/ca-certificates/ && sudo update-ca-certificates` (Debian/Ubuntu); `sudo cp thinc-root-ca.crt /etc/pki/ca-trust/source/anchors/ && sudo update-ca-trust` (Fedora/RHEL).
+- **Linux, system-wide** (curl, most non-browser tools): `sudo cp cix-root-ca.crt /usr/local/share/ca-certificates/ && sudo update-ca-certificates` (Debian/Ubuntu); `sudo cp cix-root-ca.crt /etc/pki/ca-trust/source/anchors/ && sudo update-ca-trust` (Fedora/RHEL).
 - **Firefox** (any OS — it keeps its own trust store, independent of the OS one above): **Settings > Privacy & Security > Certificates > View Certificates > Authorities tab > Import** → select the file → check **Trust this CA to identify websites**.
 - **Chrome/Edge**: uses the OS-level trust store on Windows/macOS (the steps above cover it) and, on Linux, typically the same NSS database Firefox uses — the Linux system-wide step above is usually enough, but if it still isn't trusted, import it the same way as the Firefox step, into Chrome's own **Settings > Privacy and security > Security > Manage certificates**.
 
@@ -75,7 +75,7 @@ Once trusted, no further action is needed — the same cert (or its successor af
 `pki ca bootstrap`/`pki intermediate bootstrap` are deliberately one-shot and refuse a second call — this is the real, explicit "start over":
 
 ```sh
-thincctl pki reset --root-common-name="thinC Root CA - lab.internal" --intermediate-common-name="thinC Intermediate CA - lab.internal"
+cixctl pki reset --root-common-name="Cix Root CA - lab.internal" --intermediate-common-name="Cix Intermediate CA - lab.internal"
 ```
 
 Destructive: deletes the root (and intermediate, if any) and every leaf's on-disk key/cert, re-bootstraps them fresh, then reissues every leaf that was tracked beforehand — same name/SANs/owner, a genuinely new keypair and validity period each. Any leaf owned by a still-live, auto-delivered container is automatically redelivered afterward so a running service's `tls.crt`/`tls.key` don't go stale.
@@ -85,26 +85,26 @@ Destructive: deletes the root (and intermediate, if any) and every leaf's on-dis
 Register a running LDAP server container (`glauth`, this platform's standard integrable provider — real `fsnotify` config-watching, no signal needed on every write) so the user/group CRUD below has somewhere to render into:
 
 ```sh
-thincctl ldap server register --container=ldap1 --config-path=/etc/glauth/glauth.cfg
+cixctl ldap server register --container=ldap1 --config-path=/etc/glauth/glauth.cfg
 ```
 
-thinC itself stays the source of truth for every user and group — a create/update/delete re-renders the full current set into every currently-registered, currently-running server's config file, preserving everything above the managed section (the operator's own backend/TLS settings) byte-for-byte.
+Cix itself stays the source of truth for every user and group — a create/update/delete re-renders the full current set into every currently-registered, currently-running server's config file, preserving everything above the managed section (the operator's own backend/TLS settings) byte-for-byte.
 
 ```sh
-thincctl ldap group add --name=superheros --gidnumber=5501
-thincctl ldap user add --name=j_doe --primarygroup=5501 --mail=j.doe@thinc.internal --password=dogood
+cixctl ldap group add --name=superheros --gidnumber=5501
+cixctl ldap user add --name=j_doe --primarygroup=5501 --mail=j.doe@cix.internal --password=dogood
 ```
 
-`uidnumber`/`gidnumber` are optional — auto-allocated from a configurable floor (`thincctl ldap config show`/`set --start-uid=N --start-gid=N`, default `10000`, changing it only affects future allocations). A password, if given, is bcrypt-hashed on the daemon side (ADR-0144) — never stored or returned in plaintext, only a `has_password` boolean is exposed.
+`uidnumber`/`gidnumber` are optional — auto-allocated from a configurable floor (`cixctl ldap config show`/`set --start-uid=N --start-gid=N`, default `10000`, changing it only affects future allocations). A password, if given, is bcrypt-hashed on the daemon side (ADR-0144) — never stored or returned in plaintext, only a `has_password` boolean is exposed.
 
 ### Real SSH accounts on a jump box (ADR-0144 task #838)
 
-`sshd` queries LDAP live at connection time — real password auth via `pam_ldap.so`'s own bind-as-user check, real pubkey auth via a live `AuthorizedKeysCommand` `ldapsearch` for the user's `sshPublicKey` attribute. Not a `thincctl` one-liner: the target container needs `openssh` built `--with-pam` plus `linux-pam`/`nss-pam-ldapd` already installed, and real per-container config (`/etc/nslcd.conf`, `/etc/nsswitch.conf`, `/etc/pam.d/sshd`, `UsePAM yes`/`AuthorizedKeysCommand` in `sshd_config`) staged via `files[]` at creation time — see [`docs/api/README.md`'s "Real, live-LDAP SSH login"](../api/README.md#real-live-ldap-ssh-login-adr-0144-task-838) for the full field-by-field setup, and [ADR-0144](../adr/0144-host-authentication-and-real-ldap.md)/[ADR-0145](../adr/0145-retire-file-rendered-ssh-target-sync.md) for why it's built this way.
+`sshd` queries LDAP live at connection time — real password auth via `pam_ldap.so`'s own bind-as-user check, real pubkey auth via a live `AuthorizedKeysCommand` `ldapsearch` for the user's `sshPublicKey` attribute. Not a `cixctl` one-liner: the target container needs `openssh` built `--with-pam` plus `linux-pam`/`nss-pam-ldapd` already installed, and real per-container config (`/etc/nslcd.conf`, `/etc/nsswitch.conf`, `/etc/pam.d/sshd`, `UsePAM yes`/`AuthorizedKeysCommand` in `sshd_config`) staged via `files[]` at creation time — see [`docs/api/README.md`'s "Real, live-LDAP SSH login"](../api/README.md#real-live-ldap-ssh-login-adr-0144-task-838) for the full field-by-field setup, and [ADR-0144](../adr/0144-host-authentication-and-real-ldap.md)/[ADR-0145](../adr/0145-retire-file-rendered-ssh-target-sync.md) for why it's built this way.
 
 **Which users may log into which container is a per-container decision** (issue #76). A container created with `ldap_client` accepts every account in the directory unless you say otherwise; `--ldap-allow-group=` narrows it to named groups, enforced by `nslcd` itself via a `pam_authz_search` in the staged `/etc/nslcd.conf`:
 
 ```sh
-thincctl container run --name=jumpbox1 --image=jumpbox \
+cixctl container run --name=jumpbox1 --image=jumpbox \
   --ldap-client --ldap-allow-group=jumpusers --ldap-allow-group=admins \
   -- /usr/sbin/sshd -D
 ```
@@ -114,9 +114,9 @@ Every named group must already exist, or creation is refused naming the offendin
 `nslcd` and the `AuthorizedKeysCommand` script both need a real bind identity with search capability — grant one via `--can-search` on a dedicated service account, never a human login account:
 
 ```sh
-thincctl ldap group add --name=service-accounts --gidnumber=10001
-thincctl ldap user add --name=svc-nslcd --primarygroup=10001 --password=<a-real-secret> --can-search
-thincctl ldap user add --name=j_doe --primarygroup=5501 --ssh-key="ssh-ed25519 AAAA..." --password=dogood --loginshell=/usr/bin/bash
+cixctl ldap group add --name=service-accounts --gidnumber=10001
+cixctl ldap user add --name=svc-nslcd --primarygroup=10001 --password=<a-real-secret> --can-search
+cixctl ldap user add --name=j_doe --primarygroup=5501 --ssh-key="ssh-ed25519 AAAA..." --password=dogood --loginshell=/usr/bin/bash
 ```
 
 `--ssh-key=` is rendered as glauth's own real `sshkeys` LDAP attribute, queried live rather than copied to a file. `--loginshell=` matters here in a way it didn't before: an empty one renders as glauth's own default, which doesn't resolve on this project's own minimal images (`/usr/bin/bash` is the real path, not `/bin/bash`) — `sshd` rejects the login outright if it can't find the configured shell.
@@ -128,19 +128,19 @@ Two more real, non-obvious gotchas confirmed live re-provisioning this from scra
 A container can provision its own LDAP bind account at creation time, separate from the human accounts above:
 
 ```sh
-thincctl container run --name=svc1 --image=myapp --ldap-provision --ldap-group=svcaccts -- /usr/bin/some-binary
+cixctl container run --name=svc1 --image=myapp --ldap-provision --ldap-group=svcaccts -- /usr/bin/some-binary
 ```
 
-Delivers a freshly-generated `bind.secret` (never persisted in plaintext anywhere in thinC's own state — only its hash survives) into `/etc/thinc-ldap/` inside the container by default. `--ldap-group=` must already exist; `--ldap-user=` defaults to the container's own name. The account is removed automatically when the container is.
+Delivers a freshly-generated `bind.secret` (never persisted in plaintext anywhere in Cix's own state — only its hash survives) into `/etc/cix-ldap/` inside the container by default. `--ldap-group=` must already exist; `--ldap-user=` defaults to the container's own name. The account is removed automatically when the container is.
 
 ### Break-glass recovery (ADR-0146)
 
 Host-auth write-gating (`GET`/`PUT /system/hostauth-config`, [`docs/api/README.md`'s "Host authentication"](../api/README.md#host-authentication-adr-0144)) has no in-band bypass once active, by design — nothing reachable over the REST API can turn it off from the outside. If every login genuinely stops working (every configured admin-group user's credential rejected, or the LDAP backend serving stale/empty config after a reboot — see [ADR-0146](../adr/0146-ldap-startup-resync-and-break-glass-recovery.md) for the real incident that motivated this tool), the only way back in is physical or hypervisor console access to the machine itself:
 
 1. Attach the same installer ISO used to originally install this system (`docs/guides/installing.md`) as boot media, and force a reboot.
-2. At the GRUB menu, select **"thinC Recovery"** instead of the normal install entry.
+2. At the GRUB menu, select **"Cix Recovery"** instead of the normal install entry.
 3. The tool mounts the already-installed system's own containers partition, shows the current host-auth config for confirmation, and requires typing `RESET` (all capitals) before changing anything.
 4. Confirming resets **only** `admin_groups` back to empty — the same state a fresh install starts in, where every write is open with no login required. Every other setting (LDAP backend config, session idle timeout, every container, every LDAP user/group record) is left completely untouched.
-5. Remove the recovery media and reboot into the normal installed system. Every API write is open again — reconfigure a real admin group (`thincctl hostauth-config set --admin-group=...`) before anyone relies on gating again.
+5. Remove the recovery media and reboot into the normal installed system. Every API write is open again — reconfigure a real admin group (`cixctl hostauth-config set --admin-group=...`) before anyone relies on gating again.
 
 This is deliberately **not** a network-reachable escape hatch: reaching this tool at all requires the same level of access needed to attach different boot media and power-cycle the machine, which a remote attacker manipulating the REST API alone can never do. The typed confirmation is a second, independent gate on top of that physical-access requirement — a stray or accidental boot into this entry can't silently disable write-gating.

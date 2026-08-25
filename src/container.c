@@ -292,7 +292,7 @@ int container_create(const struct container_spec *spec, struct container_handle 
 		const char *fail_step = NULL;
 		int prep_ret = 0;
 
-		overlay_lower_fd = (int)thinc_open_tree(-1, spec->ov.userns_rootfs, OPEN_TREE_CLONE);
+		overlay_lower_fd = (int)cix_open_tree(-1, spec->ov.userns_rootfs, OPEN_TREE_CLONE);
 		if (overlay_lower_fd < 0) {
 			saved_errno = errno;
 			fail_step = "container_create: open_tree(userns_rootfs)";
@@ -441,7 +441,7 @@ int container_create(const struct container_spec *spec, struct container_handle 
 		 * of this.
 		 */
 		if (spec->userns_enabled) {
-			if (thinc_move_mount(overlay_lower_fd, "", -1, spec->ov.merged,
+			if (cix_move_mount(overlay_lower_fd, "", -1, spec->ov.merged,
 			                  MOVE_MOUNT_F_EMPTY_PATH) != 0) {
 				child_diag(diag_pipe[1], "child: move_mount userns rootfs");
 				_exit(122);
@@ -562,7 +562,7 @@ int container_create(const struct container_spec *spec, struct container_handle 
 		/*
 		 * ADR-0179 phase 2c: drop into the namespace's mapped root before
 		 * exec. Every privileged setup step above ran as real host root
-		 * (host uid 0 -- the child inherits thincd's uid, which is unmapped
+		 * (host uid 0 -- the child inherits cixd's uid, which is unmapped
 		 * in this new userns), which is why it could mount/mknod/pivot. Now
 		 * that setup is done, become userns uid/gid 0 -- i.e. host <base> --
 		 * so the workload runs genuinely unprivileged on the host, the whole

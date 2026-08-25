@@ -16,7 +16,7 @@
  *    clock via clock_settime() needs CAP_SYS_TIME from the host's own
  *    namespace, which no container can do without either breaking
  *    container isolation (granting it host-level capabilities) or
- *    thincd doing the actual clock_settime() call itself anyway --
+ *    cixd doing the actual clock_settime() call itself anyway --
  *    so this can never be delegated to a containerized workload the
  *    way DNS/dnsmasq or LDAP/glauth are. GET/PUT /v1/system/ntp: the
  *    upstream server address list, persisted the same way resolv.c's
@@ -29,7 +29,7 @@
  *    server_* below). Simpler than either: NTP is itself a live
  *    query/response protocol, the same reasoning that already let
  *    LDAP registration skip pid/pidfd entirely (task #725) -- no
- *    config-file push, no signal needed. thincd resolves the
+ *    config-file push, no signal needed. cixd resolves the
  *    registered container's own live IP (registry_find()'s
  *    nets[0].ip_be) fresh at every sync attempt and queries it
  *    directly with the exact same SNTP client as (1) -- a registered
@@ -40,7 +40,7 @@
  * matching this project's own established "one job of this kind in
  * flight at a time" v1 constraint (ping/disk-format/ISO-build/pkg-
  * fetch all already work this way) -- never a blocking syscall in
- * thincd's own single-threaded epoll loop (ADR-0005/0007).
+ * cixd's own single-threaded epoll loop (ADR-0005/0007).
  */
 
 #define NTP_MAX_UPSTREAM 3     /* matches RESOLV_MAX_NAMESERVERS's own convention */

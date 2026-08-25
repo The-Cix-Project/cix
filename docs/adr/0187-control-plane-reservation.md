@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-On an installed thinC host the REST daemon is not one management path among several — it is the only one. There is no SSH and no general shell (ADR-0034). A `thincd` that stops answering is therefore not a degraded box; it is a box nobody can reach until someone walks to the hypervisor.
+On an installed Cix host the REST daemon is not one management path among several — it is the only one. There is no SSH and no general shell (ADR-0034). A `cixd` that stops answering is therefore not a degraded box; it is a box nobody can reach until someone walks to the hypervisor.
 
 That is exactly what happened on 192.168.15.95. Four concurrent package builds oversubscribed a 2-CPU machine and the daemon stopped answering HTTP. The kernel was healthy throughout — ping 0% loss, 0.26ms — so nothing had crashed and nothing had run out of memory. The control plane had simply been pushed off the run queue by workloads it was supposed to be managing, and the machine needed a hypervisor-level reset.
 
@@ -18,7 +18,7 @@ Two of issue #86's three parts were already done: `nice -20` and `oom_score_adj 
 
 **Bound everything that is not the control plane, rather than prioritising the control plane.**
 
-Every container and every package build is created as a leaf under one `thinc-workload` cgroup, whose ceiling is the machine minus a configured reservation. Builds nest one level deeper (`thinc-workload/thinc-pkgbuild`) so that the build budget sits *inside* the workload budget rather than beside it — beside it would be two ceilings that add up to more than the machine, which is the same mistake #85 was in a different place. What the control plane has left is then a kernel-enforced remainder rather than a hope.
+Every container and every package build is created as a leaf under one `cix-workload` cgroup, whose ceiling is the machine minus a configured reservation. Builds nest one level deeper (`cix-workload/cix-pkgbuild`) so that the build budget sits *inside* the workload budget rather than beside it — beside it would be two ceilings that add up to more than the machine, which is the same mistake #85 was in a different place. What the control plane has left is then a kernel-enforced remainder rather than a hope.
 
 **The reservation is expressed as what the control plane keeps** — `cpu_percent` and `memory_bytes` — not as what workloads may have. An operator reasons about "leave the daemon a tenth of the box", and that reasoning stays correct when the box is replaced by a bigger one. The ceiling is derived from live host totals on every apply, so the same configuration means the same thing on a 2-CPU VM and on a 32-core machine. This matters immediately: this project's next install is real hardware, and every number here was first chosen against a small VM.
 
@@ -40,7 +40,7 @@ Changes apply to the live cgroup immediately, not at the next container creation
 
 A runaway workload can now make the box slow, and cannot make it unreachable. That is the property this platform actually needs, given that losing the daemon means losing every way in.
 
-Container cgroups moved from `/sys/fs/cgroup/<name>` to `/sys/fs/cgroup/thinc-workload/<name>`. Anything reading those paths directly had to move with them — two test helpers did. The daemon itself never rebuilds that path (it holds an open `cgroup_fd` from creation), which is why pause/unpause, stats and device policy needed no change at all.
+Container cgroups moved from `/sys/fs/cgroup/<name>` to `/sys/fs/cgroup/cix-workload/<name>`. Anything reading those paths directly had to move with them — two test helpers did. The daemon itself never rebuilds that path (it holds an open `cgroup_fd` from creation), which is why pause/unpause, stats and device policy needed no change at all.
 
 Controllers are now delegated to a parent's subtree one at a time rather than in a single write. A single write is all-or-nothing: one controller the kernel does not offer at that level fails the whole line and silently delegates nothing. That is what made containers requesting a `cpuset` fail with a bare 500 the moment they moved under a parent — the child had no controller to write to.
 

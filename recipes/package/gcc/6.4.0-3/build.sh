@@ -246,7 +246,7 @@ EOF
 	fixup_pid=$!
 	# Re-pinned to -3: -2's own real failure (past the limits.h fix,
 	# gmp's own configure genuinely succeeded this time) never actually
-	# showed its real cause -- thincd's own 3800-byte tail-capture
+	# showed its real cause -- cixd's own 3800-byte tail-capture
 	# window was entirely swamped by gmp's own extremely verbose
 	# configure output (hundreds of "config.status: linking ..." lines),
 	# pushing the actual failing command/error out of the captured

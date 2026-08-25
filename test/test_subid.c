@@ -39,7 +39,7 @@ static int ok = 1;
 
 int main(void)
 {
-	char tmpl[] = "/tmp/thinc_subid_test_XXXXXX";
+	char tmpl[] = "/tmp/cix_subid_test_XXXXXX";
 	int fd = mkstemp(tmpl);
 	long long a, a2, b, c;
 

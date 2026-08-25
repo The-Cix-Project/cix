@@ -4,7 +4,7 @@
 # passwords, all through the browser -- "LDAP made easy," chosen
 # specifically for this over glauth, which has no web UI at all).
 #
-# Read by thincd's own non-executing metadata scanner (pkg_name=/
+# Read by cixd's own non-executing metadata scanner (pkg_name=/
 # pkg_version=/pkg_source=/pkg_sha256=/pkg_depends=, daemon/src/pkg.c's
 # parse_recipe()) AND sourced as a real POSIX shell script inside the
 # isolated, network-less build container (". /build/recipe.sh" --
@@ -18,7 +18,7 @@
 # image-build time -- Bootstrap CSS/JS, Bootstrap Icons, Font Awesome,
 # and 3 font files -- that the isolated, network-less build container
 # can't reach itself. Every one of those 8 files is verified two ways
-# below: the recipe's own pkg_sha256 (thincd's real check before the
+# below: the recipe's own pkg_sha256 (cixd's real check before the
 # build ever starts) AND, independently, their Subresource Integrity
 # (SRI) sha384 hashes already hardcoded into lldap's own
 # app/index_local.html -- confirmed directly, byte for byte, that
@@ -83,7 +83,7 @@ pkg_build() {
 	   /build/extra/JTUSjIg69CK48gW7PXoo9Wlhyw.woff2 app/static/fonts/
 }
 
-# PKG_DESTDIR is set by thincd itself (daemon/src/pkg.c) -- everything
+# PKG_DESTDIR is set by cixd itself (daemon/src/pkg.c) -- everything
 # written under it is what actually gets merged into the target image
 # once this build container exits successfully. Installed as one
 # self-contained directory under /opt/lldap -- lldap resolves its own

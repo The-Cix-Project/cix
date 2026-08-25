@@ -12,19 +12,19 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-void thinc_client_init(struct thinc_client *c, const char *host, int port)
+void cix_client_init(struct cix_client *c, const char *host, int port)
 {
 	memset(c, 0, sizeof(*c));
 	snprintf(c->host, sizeof(c->host), "%s", host);
 	c->port = port;
 }
 
-void thinc_client_set_token(struct thinc_client *c, const char *token)
+void cix_client_set_token(struct cix_client *c, const char *token)
 {
 	snprintf(c->token, sizeof(c->token), "%s", token != NULL ? token : "");
 }
 
-int thinc_client_connect_raw(const struct thinc_client *c)
+int cix_client_connect_raw(const struct cix_client *c)
 {
 	int fd;
 	struct sockaddr_in addr;
@@ -152,15 +152,15 @@ static void find_header_value(const char *headers, size_t headers_len, const cha
 	}
 }
 
-int thinc_client_request(const struct thinc_client *c, const char *method, const char *path,
-                       const char *body, struct thinc_response *out)
+int cix_client_request(const struct cix_client *c, const char *method, const char *path,
+                       const char *body, struct cix_response *out)
 {
-	return thinc_client_request_with_auth(c, method, path, c->token[0] != '\0' ? c->token : NULL, body,
+	return cix_client_request_with_auth(c, method, path, c->token[0] != '\0' ? c->token : NULL, body,
 	                                    out);
 }
 
-static int do_one_request(const struct thinc_client *c, const char *method, const char *path,
-                           const char *token, const char *body, struct thinc_response *out)
+static int do_one_request(const struct cix_client *c, const char *method, const char *path,
+                           const char *token, const char *body, struct cix_response *out)
 {
 	int fd;
 	char header[512];
@@ -171,7 +171,7 @@ static int do_one_request(const struct thinc_client *c, const char *method, cons
 	int status;
 	size_t json_len;
 
-	fd = thinc_client_connect_raw(c);
+	fd = cix_client_connect_raw(c);
 	if (fd < 0)
 		return -1;
 
@@ -193,11 +193,11 @@ static int do_one_request(const struct thinc_client *c, const char *method, cons
 		return -1;
 	}
 
-	if (thinc_write_all(fd, header, (size_t)header_len) != 0) {
+	if (cix_write_all(fd, header, (size_t)header_len) != 0) {
 		close(fd);
 		return -1;
 	}
-	if (body != NULL && thinc_write_all(fd, body, strlen(body)) != 0) {
+	if (body != NULL && cix_write_all(fd, body, strlen(body)) != 0) {
 		close(fd);
 		return -1;
 	}
@@ -256,36 +256,36 @@ static int do_one_request(const struct thinc_client *c, const char *method, cons
  * failure (connect/write/read error, or a malformed status line) -- a
  * momentary blip (the daemon mid-restart, a dropped packet) used to be
  * indistinguishable from a genuinely down daemon, both surfacing as
- * "thincctl: could not reach daemon" on the very first failed attempt.
- * Retries up to THINC_CLIENT_MAX_ATTEMPTS times with a short, fixed
+ * "cixctl: could not reach daemon" on the very first failed attempt.
+ * Retries up to CIX_CLIENT_MAX_ATTEMPTS times with a short, fixed
  * backoff between attempts -- only ever on a transport failure, never
  * after a real HTTP response (even an error status like a 404/500 is a
  * real, deterministic answer, not a transient connectivity problem, and
  * is returned immediately on the first attempt). Total added latency in
  * the worst case (every attempt fails) is small and bounded
- * (THINC_CLIENT_RETRY_DELAY_MS * (THINC_CLIENT_MAX_ATTEMPTS - 1)), not an
+ * (CIX_CLIENT_RETRY_DELAY_MS * (CIX_CLIENT_MAX_ATTEMPTS - 1)), not an
  * open-ended hang -- this is deliberately just enough tolerance for a
  * real transient blip, not a substitute for a genuinely down daemon
  * eventually still failing.
  */
-#define THINC_CLIENT_MAX_ATTEMPTS 3
-#define THINC_CLIENT_RETRY_DELAY_MS 250
+#define CIX_CLIENT_MAX_ATTEMPTS 3
+#define CIX_CLIENT_RETRY_DELAY_MS 250
 
-int thinc_client_request_with_auth(const struct thinc_client *c, const char *method, const char *path,
-                                 const char *token, const char *body, struct thinc_response *out)
+int cix_client_request_with_auth(const struct cix_client *c, const char *method, const char *path,
+                                 const char *token, const char *body, struct cix_response *out)
 {
 	int attempt;
 
-	for (attempt = 1; attempt <= THINC_CLIENT_MAX_ATTEMPTS; attempt++) {
+	for (attempt = 1; attempt <= CIX_CLIENT_MAX_ATTEMPTS; attempt++) {
 		if (do_one_request(c, method, path, token, body, out) == 0)
 			return 0;
-		if (attempt < THINC_CLIENT_MAX_ATTEMPTS)
-			usleep(THINC_CLIENT_RETRY_DELAY_MS * 1000);
+		if (attempt < CIX_CLIENT_MAX_ATTEMPTS)
+			usleep(CIX_CLIENT_RETRY_DELAY_MS * 1000);
 	}
 	return -1;
 }
 
-void thinc_response_free(struct thinc_response *r)
+void cix_response_free(struct cix_response *r)
 {
 	json_free(r->json);
 	r->json = NULL;

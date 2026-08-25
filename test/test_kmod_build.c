@@ -4,7 +4,7 @@
  * pkg_hostbuild_start() mechanism test_pkg.c's own step 17 already
  * proves generically) gaining an optional config_symbols parameter
  * threaded through as the build container's own real
- * THINC_KMOD_EXTRA_SYMBOLS environment variable.
+ * CIX_KMOD_EXTRA_SYMBOLS environment variable.
  *
  * Not a real kernel build (far too slow for this suite, and the real
  * 6.18.40 kernel.recipe lives in this project's own git-tracked
@@ -48,7 +48,7 @@ static pid_t start_daemon(void)
 	static char data_dir_arg[PATH_MAX + 11];
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
-	dargv[0] = "build/thincd";
+	dargv[0] = "build/cixd";
 	dargv[1] = PORT_ARG;
 	dargv[2] = data_dir_arg;
 	dargv[3] = NULL;
@@ -59,8 +59,8 @@ static pid_t start_daemon(void)
 		return -1;
 	}
 	if (pid == 0) {
-		execve("build/thincd", dargv, environ);
-		perror("execve build/thincd");
+		execve("build/cixd", dargv, environ);
+		perror("execve build/cixd");
 		_exit(127);
 	}
 	return pid;
@@ -76,14 +76,14 @@ static int stop_daemon(pid_t pid)
 	return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
 }
 
-static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
+static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 {
 	int i;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			thinc_response_free(&r);
+		if (cix_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			cix_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -165,7 +165,7 @@ static int stage_fixture_tarball(const char *scratch_dir, char *out_tarball_path
 	return compute_file_sha256(out_tarball_path, out_sha256, sha256_size);
 }
 
-/* pkg_build() writes $THINC_KMOD_EXTRA_SYMBOLS to symbols.txt --
+/* pkg_build() writes $CIX_KMOD_EXTRA_SYMBOLS to symbols.txt --
  * unset/empty just produces an empty file, exactly mirroring the real
  * kernel.recipe's own "strictly additive, unset changes nothing" shape
  * (its own merge_config.sh branch is skipped the same way). */
@@ -185,7 +185,7 @@ static int write_kernel_fixture_recipe(const char *tarball_path, const char *sha
 		return -1;
 	fprintf(f, "pkg_name=kernel\npkg_version=1.0\npkg_source=file://%s\n", tarball_path);
 	fprintf(f, "pkg_sha256=%s\npkg_depends=\"\"\n\n", sha256);
-	fprintf(f, "pkg_build() {\n\tgcc -o hello hello.c\n\techo -n \"$THINC_KMOD_EXTRA_SYMBOLS\" "
+	fprintf(f, "pkg_build() {\n\tgcc -o hello hello.c\n\techo -n \"$CIX_KMOD_EXTRA_SYMBOLS\" "
 	           "> symbols.txt\n}\n\n");
 	fprintf(f, "pkg_install() {\n\tcp hello \"$PKG_DESTDIR/hello\"\n\tcp symbols.txt "
 	           "\"$PKG_DESTDIR/symbols.txt\"\n}\n");
@@ -209,10 +209,10 @@ static int read_file_string(const char *path, char *out, size_t out_size)
 int main(void)
 {
 	pid_t daemon_pid;
-	struct thinc_client client;
+	struct cix_client client;
 	int ok = 1;
-	struct thinc_response r;
-	char scratch_dir[] = "/tmp/thinc_test_kmod_build_XXXXXX";
+	struct cix_response r;
+	char scratch_dir[] = "/tmp/cix_test_kmod_build_XXXXXX";
 	char tarball_path[512], sha256[128];
 	char artifact_path[PATH_MAX] = "";
 	char state[32];
@@ -270,7 +270,7 @@ int main(void)
 		test_data_dir_cleanup(g_data_dir);
 		return 1;
 	}
-	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
+	cix_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
@@ -281,16 +281,16 @@ int main(void)
 
 	/* 1. Error paths first (no job in flight yet for any of these). */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/system/kmod-build", "{}", &r) != 0 ||
+	if (cix_client_request(&client, "POST", "/v1/system/kmod-build", "{}", &r) != 0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: POST kmod-build with no build_image: expected 400, got %d\n",
 		        r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/system/kmod-build",
+	if (cix_client_request(&client, "POST", "/v1/system/kmod-build",
 	                       "{\"build_image\":\"hbimage\",\"config_symbols\":[\"not_a_config_symbol\"]}",
 	                       &r) != 0 ||
 	    r.status != 400) {
@@ -300,10 +300,10 @@ int main(void)
 		        r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/system/kmod-build",
+	if (cix_client_request(&client, "POST", "/v1/system/kmod-build",
 	                       "{\"build_image\":\"hbimage\",\"config_symbols\":\"CONFIG_FOO\"}", &r) !=
 	        0 ||
 	    r.status != 400) {
@@ -312,22 +312,22 @@ int main(void)
 		        r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/system/kmod-build",
+	if (cix_client_request(&client, "POST", "/v1/system/kmod-build",
 	                       "{\"build_image\":\"no-such-image\"}", &r) != 0 ||
 	    r.status != 404) {
 		fprintf(stderr, "FAIL: POST kmod-build with unknown build_image: expected 404, got %d\n",
 		        r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 2. The real payoff: config_symbols actually reaches the build
-	 * container as THINC_KMOD_EXTRA_SYMBOLS, space-joined. */
+	 * container as CIX_KMOD_EXTRA_SYMBOLS, space-joined. */
 	memset(&r, 0, sizeof(r));
-	if (ok && (thinc_client_request(&client, "POST", "/v1/system/kmod-build",
+	if (ok && (cix_client_request(&client, "POST", "/v1/system/kmod-build",
 	                              "{\"build_image\":\"hbimage\","
 	                              "\"config_symbols\":[\"CONFIG_FOO\",\"CONFIG_BAR\"]}",
 	                              &r) != 0 ||
@@ -335,25 +335,25 @@ int main(void)
 		fprintf(stderr, "FAIL: POST kmod-build hbimage: expected 202, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	state[0] = '\0';
 	for (i = 0; ok && i < 30; i++) {
 		const char *s;
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/pkg/hostbuild/kernel", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "GET", "/v1/pkg/hostbuild/kernel", NULL, &r) != 0 ||
 		    r.status != 200) {
-			thinc_response_free(&r);
+			cix_response_free(&r);
 			break;
 		}
 		s = json_as_string(json_object_get(r.json, "state"));
 		if (s == NULL) {
-			thinc_response_free(&r);
+			cix_response_free(&r);
 			break;
 		}
 		snprintf(state, sizeof(state), "%s", s);
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		if (strcmp(state, "fetching") != 0 && strcmp(state, "building") != 0)
 			break;
 		usleep(300000);
@@ -365,7 +365,7 @@ int main(void)
 
 	if (ok) {
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/pkg/hostbuild/kernel", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "GET", "/v1/pkg/hostbuild/kernel", NULL, &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: GET hostbuild/kernel after completion, status=%d\n", r.status);
 			ok = 0;
@@ -379,7 +379,7 @@ int main(void)
 				snprintf(artifact_path, sizeof(artifact_path), "%s", ap);
 			}
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 	}
 
 	if (ok && artifact_path[0] != '\0') {
@@ -401,7 +401,7 @@ int main(void)
 			ok = 0;
 		} else if (strcmp(symbols_content, "CONFIG_FOO CONFIG_BAR") != 0) {
 			fprintf(stderr,
-			        "FAIL: THINC_KMOD_EXTRA_SYMBOLS did not reach the build container "
+			        "FAIL: CIX_KMOD_EXTRA_SYMBOLS did not reach the build container "
 			        "correctly -- got '%s', expected 'CONFIG_FOO CONFIG_BAR'\n",
 			        symbols_content);
 			ok = 0;

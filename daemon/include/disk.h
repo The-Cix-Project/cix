@@ -108,8 +108,8 @@ struct discovered_disk {
 	unsigned long long start_sector;
 	/*
 	 * Partitions only: the partition's own name in the GPT. This is
-	 * what created it called it -- thinc-install.c writes thinc-esp,
-	 * thinc-root-a, thinc-root-b, thinc-config and thinc-containers,
+	 * what created it called it -- cix-install.c writes cix-esp,
+	 * cix-root-a, cix-root-b, cix-config and cix-containers,
 	 * and POST /disks/{d}/partitions writes the caller's own `name`.
 	 * That field was write-only before this: accepted, stored in the
 	 * table, and never readable, which left the fixed OS layout showing

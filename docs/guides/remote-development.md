@@ -1,10 +1,10 @@
 # Developing against a real remote box, with no SSH
 
-How to push local (or even entirely server-compiled) changes onto a real, already-installed thinC host and verify they actually took effect — without SSH, without a general shell, and without reinstalling from an ISO each time. This is the operational counterpart to [`building-thinc.md`](building-thinc.md) (which covers compiling) and [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md)/[`staying-updated.md`](staying-updated.md) (which cover the update endpoints themselves) — this page is the "how do I actually get a file onto the box in the first place, and prove it landed" walkthrough neither of those needed to be, because a real thinC install genuinely has no other way in.
+How to push local (or even entirely server-compiled) changes onto a real, already-installed Cix host and verify they actually took effect — without SSH, without a general shell, and without reinstalling from an ISO each time. This is the operational counterpart to [`building-cix.md`](building-cix.md) (which covers compiling) and [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md)/[`staying-updated.md`](staying-updated.md) (which cover the update endpoints themselves) — this page is the "how do I actually get a file onto the box in the first place, and prove it landed" walkthrough neither of those needed to be, because a real Cix install genuinely has no other way in.
 
 ## Why this needs a trick at all
 
-A real installed thinC host has no SSH server and no general shell (ADR-0034, confirmed directly — `nc -z <box> 22` closed on a fresh install). `POST /system/update`'s `image_path`/`kernel_path` fields, and `thincctl update --image=PATH`, are **paths the daemon reads from its own local disk** — not an upload endpoint. `thincctl`'s `update` subcommand just forwards whatever string you give it straight into the JSON body (`cli/src/main.c`'s `cmd_update()`); it never reads the file itself. So a locally-built artifact needs a real way to land on the *remote* daemon's own filesystem before `system/update` has anything to point at.
+A real installed Cix host has no SSH server and no general shell (ADR-0034, confirmed directly — `nc -z <box> 22` closed on a fresh install). `POST /system/update`'s `image_path`/`kernel_path` fields, and `cixctl update --image=PATH`, are **paths the daemon reads from its own local disk** — not an upload endpoint. `cixctl`'s `update` subcommand just forwards whatever string you give it straight into the JSON body (`cli/src/main.c`'s `cmd_update()`); it never reads the file itself. So a locally-built artifact needs a real way to land on the *remote* daemon's own filesystem before `system/update` has anything to point at.
 
 ## The core trick: reuse the package-fetch pipeline as a generic file-transfer primitive
 
@@ -16,12 +16,12 @@ A real installed thinC host has no SSH server and no general shell (ADR-0034, co
    ```
 2. **Compute its real checksum** and write a scratch recipe:
    ```sh
-   sha256sum thincd-root.squashfs
+   sha256sum cixd-root.squashfs
    ```
    ```
    pkg_name="scratch-deploy"
    pkg_version="1"
-   pkg_source="http://<your-lan-ip>:8904/thincd-root.squashfs"
+   pkg_source="http://<your-lan-ip>:8904/cixd-root.squashfs"
    pkg_sha256="<the real sha256 above>"
    pkg_depends=""
 
@@ -30,20 +30,20 @@ A real installed thinC host has no SSH server and no general shell (ADR-0034, co
    ```
 3. **Push the recipe and trigger a fetch** (see [`writing-recipes.md`](writing-recipes.md) for the full recipe format):
    ```sh
-   thincctl --host=<box> pkg recipe add --name=scratch-deploy --file=scratch-deploy.recipe
-   thincctl --host=<box> pkg install --name=scratch-deploy
+   cixctl --host=<box> pkg recipe add --name=scratch-deploy --file=scratch-deploy.recipe
+   cixctl --host=<box> pkg install --name=scratch-deploy
    ```
    Poll `GET /pkg/scratch-deploy` until it leaves `fetching`/`building`. `state: "failed"` with `"could not prepare the build container (extract source tarball failed)"` is the **expected, harmless** outcome for a non-tarball artifact — it means the fetch and checksum verification already succeeded, which is all this step is for.
-4. **Read back the real local path**: `<data-dir>/pkg/sources/scratch-deploy-1-0.src` (the default data dir is `/var/lib/thinc`).
-5. **Clean up** once you're done: `thincctl --host=<box> pkg recipe rm scratch-deploy` (a package left in `PKG_STATE_FAILED` can't be `DELETE`d via the package endpoint — that's expected, not a bug; the recipe delete is what matters).
+4. **Read back the real local path**: `<data-dir>/pkg/sources/scratch-deploy-1-0.src` (the default data dir is `/var/lib/cix`).
+5. **Clean up** once you're done: `cixctl --host=<box> pkg recipe rm scratch-deploy` (a package left in `PKG_STATE_FAILED` can't be `DELETE`d via the package endpoint — that's expected, not a bug; the recipe delete is what matters).
 
 ## Writing it to the inactive slot, and a real gap to know about
 
 ```sh
-thincctl --host=<box> update \
-  --image=/var/lib/thinc/rebuildable/pkg/sources/scratch-deploy-1-0.src \
-  --kernel=/var/lib/thinc/rebuildable/pkg/sources/<kernel-scratch-path>
-thincctl --host=<box> reboot
+cixctl --host=<box> update \
+  --image=/var/lib/cix/rebuildable/pkg/sources/scratch-deploy-1-0.src \
+  --kernel=/var/lib/cix/rebuildable/pkg/sources/<kernel-scratch-path>
+cixctl --host=<box> reboot
 ```
 
 **`--image=`/`--kernel=` can be supplied independently -- a one-sided update no longer leaves the other file stale (ADR-0095).** This used to be a real footgun, discovered the hard way: a root-only update once landed in a slot whose kernel predated a since-fixed config, and the very next boot regressed to a bug that had already been fixed elsewhere. `POST /system/update` now auto-fills whichever half is omitted from the *active* slot's own currently-running copy (already booted, already known-good) rather than leaving the inactive slot's own prior, possibly-stale content in place -- so `--kernel=` alone updates only the root, paired with a fresh copy of the kernel that's actually running right now, and vice versa. Supplying both explicitly still works exactly as before and is unaffected; this only changes what happens when one is omitted.
@@ -53,8 +53,8 @@ See [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md#background
 ## Confirming a deploy actually took effect
 
 ```sh
-thincctl --host=<box> health
-thincctl --host=<box> boot
+cixctl --host=<box> health
+cixctl --host=<box> boot
 ```
 
 ```json
@@ -66,10 +66,10 @@ thincctl --host=<box> boot
 
 ## When something goes wrong: read the real diagnostics, not just the exit code
 
-`GET /system/logs?source=thincd&tail=N` is the log store (ADR-0070) — every internal `thincd` diagnostic, not just the audit trail, reaches it. For a failed `pkg install`/`pkg hostbuild`, this includes the real captured stdout/stderr of the build container itself (not just its exit status) — a build failure's *actual* error text, e.g.:
+`GET /system/logs?source=cixd&tail=N` is the log store (ADR-0070) — every internal `cixd` diagnostic, not just the audit trail, reaches it. For a failed `pkg install`/`pkg hostbuild`, this includes the real captured stdout/stderr of the build container itself (not just its exit status) — a build failure's *actual* error text, e.g.:
 
 ```
-"pkg thinc@__hostbuild: build output: /usr/bin/bash: error while loading
+"pkg cix@__hostbuild: build output: /usr/bin/bash: error while loading
 shared libraries: libtinfo.so.6: cannot open shared object file: No such
 file or directory"
 ```
@@ -81,16 +81,16 @@ This is genuinely load-bearing: an exit status alone is often ambiguous (exit 12
 Everything below was learned running real, multi-hour toolchain builds against a live box — each item closes a gap where the basic flow above goes quiet exactly when you need detail most.
 
 - **The captured `build output:` in the log store is a 3800-byte TAIL, not the whole log** (`PKG_BUILD_OUTPUT_CAPTURE_MAX`, `daemon/src/pkg.c` — deliberate: the error is usually last). A build whose final phase prints hundreds of lines of noise (gmp's configure is a real offender) pushes the actual error out of the window entirely. The reliable pattern for a long build: redirect inside the recipe itself — `make -j6 all > /build/make.log 2>&1` — and on failure `tail -n 100 /build/make.log`, so the captured window always holds the real failure point. The full log stays retrievable afterward (next bullet).
-- **`--keep-on-failure` + the files API is your post-mortem** (ADR-0175): `thincctl pkg install ... --keep-on-failure` preserves the failed build container (named `__pkgbuild-N` — check `thincctl ps`). Any file in it is then one REST call away: `curl "http://<box>/v1/containers/__pkgbuild-N/files?path=/build/make.log"` — including crashed binaries themselves, pulled locally for a real gdb session (this exact flow root-caused a corrupted-jump-instruction GCC codegen bug this project hit). `thincctl pkg resume` can continue a preserved build without redoing fetch+extract. Delete the container (`thincctl container rm __pkgbuild-N`) when done — **it holds the single build slot; a new install can't start while it exists**, and a *hung* (not crashed) build likewise holds the slot forever until you `rm` it.
-- **Live streaming**: `thincctl pkg build-log` tails the in-flight build's output live and untruncated (WebSocket under the hood — a plain `curl` on `/v1/pkg/build/log` won't work, use the CLI).
-- **Detecting a silent hang vs. a slow build**: `GET /v1/system/stats` load near zero for two consecutive checks *plus* a make.log (pulled via the files API — readable live, not just after failure) whose line count hasn't grown between checks = genuinely hung, not slow. `thincctl container console __pkgbuild-N` gives an interactive shell inside the still-running container to inspect the process tree — note the dev image's own `ps` binary is currently broken (issue #47); walk `/proc/[0-9]*/cmdline` + `stat` field 22 by hand instead to find which process is stuck and for how long.
-- **`pkg sync` never re-fetches an already-seen `name@version`, even when the repo content for it has genuinely changed** — the per-version cache is keyed on name+version alone, and the first sync wins permanently (confirmed live several times, including a version whose *first* sync caught placeholder content: every later fix pushed to the same version was silently ignored despite `state=success` syncs). Any content change therefore **requires bumping the version string**, and anything that must be live in the repo at fetch time (see next bullet) must be in place *before* that version's first-ever sync. `thincctl pkg recipe show <name> --version=<v>` shows what the daemon actually holds — trust that, not the repo.
-- **Recipes that self-fetch from the private Gitea** (e.g. the kernel recipe pulling its own `.config` via the authenticated raw-content API): put the literal `{{REPO_TOKEN}}` in the `pkg_source` URL where the credential goes (`https://osakka:{{REPO_TOKEN}}@git.home.arpa/...`) and commit it in that final form — the daemon substitutes its own stored repo token (`thincctl pkg repo-config set --token=...`) at fetch time (issue #60). No live-substitution dance, no temp tokens, no revert: the recipe is committable as-is and the token never touches the catalog or any log. (Historical note: before #60, this required committing a `REPLACE_WITH_REAL_TOKEN` placeholder, live-substituting a real scoped token on Gitea's HEAD *before the version's first sync*, then reverting and deleting it after the fetch — the per-version sync cache made every step order-sensitive. `{{REPO_TOKEN}}` replaces all of it.)
+- **`--keep-on-failure` + the files API is your post-mortem** (ADR-0175): `cixctl pkg install ... --keep-on-failure` preserves the failed build container (named `__pkgbuild-N` — check `cixctl ps`). Any file in it is then one REST call away: `curl "http://<box>/v1/containers/__pkgbuild-N/files?path=/build/make.log"` — including crashed binaries themselves, pulled locally for a real gdb session (this exact flow root-caused a corrupted-jump-instruction GCC codegen bug this project hit). `cixctl pkg resume` can continue a preserved build without redoing fetch+extract. Delete the container (`cixctl container rm __pkgbuild-N`) when done — **it holds the single build slot; a new install can't start while it exists**, and a *hung* (not crashed) build likewise holds the slot forever until you `rm` it.
+- **Live streaming**: `cixctl pkg build-log` tails the in-flight build's output live and untruncated (WebSocket under the hood — a plain `curl` on `/v1/pkg/build/log` won't work, use the CLI).
+- **Detecting a silent hang vs. a slow build**: `GET /v1/system/stats` load near zero for two consecutive checks *plus* a make.log (pulled via the files API — readable live, not just after failure) whose line count hasn't grown between checks = genuinely hung, not slow. `cixctl container console __pkgbuild-N` gives an interactive shell inside the still-running container to inspect the process tree — note the dev image's own `ps` binary is currently broken (issue #47); walk `/proc/[0-9]*/cmdline` + `stat` field 22 by hand instead to find which process is stuck and for how long.
+- **`pkg sync` never re-fetches an already-seen `name@version`, even when the repo content for it has genuinely changed** — the per-version cache is keyed on name+version alone, and the first sync wins permanently (confirmed live several times, including a version whose *first* sync caught placeholder content: every later fix pushed to the same version was silently ignored despite `state=success` syncs). Any content change therefore **requires bumping the version string**, and anything that must be live in the repo at fetch time (see next bullet) must be in place *before* that version's first-ever sync. `cixctl pkg recipe show <name> --version=<v>` shows what the daemon actually holds — trust that, not the repo.
+- **Recipes that self-fetch from the private Gitea** (e.g. the kernel recipe pulling its own `.config` via the authenticated raw-content API): put the literal `{{REPO_TOKEN}}` in the `pkg_source` URL where the credential goes (`https://osakka:{{REPO_TOKEN}}@git.home.arpa/...`) and commit it in that final form — the daemon substitutes its own stored repo token (`cixctl pkg repo-config set --token=...`) at fetch time (issue #60). No live-substitution dance, no temp tokens, no revert: the recipe is committable as-is and the token never touches the catalog or any log. (Historical note: before #60, this required committing a `REPLACE_WITH_REAL_TOKEN` placeholder, live-substituting a real scoped token on Gitea's HEAD *before the version's first sync*, then reverting and deleting it after the fetch — the per-version sync cache made every step order-sensitive. `{{REPO_TOKEN}}` replaces all of it.)
 
 ## The endpoint, not just the mechanism
 
-None of this is thinC-specific tooling beyond the recipe format itself — every step above is a plain REST call any HTTP client can make (`curl`, a script, `thincctl`, or the web dashboard). See [`docs/api/README.md`](../api/README.md#package-manager-source-based-asynchronous-installs) and [`docs/api/README.md`](../api/README.md#host--package-updates) for the full contract, [`docs/api/README.md`](../api/README.md#a-consolidated-log) for the log store's own query parameters, and [`cli-reference.md`](cli-reference.md) for every `thincctl` subcommand used above.
+None of this is Cix-specific tooling beyond the recipe format itself — every step above is a plain REST call any HTTP client can make (`curl`, a script, `cixctl`, or the web dashboard). See [`docs/api/README.md`](../api/README.md#package-manager-source-based-asynchronous-installs) and [`docs/api/README.md`](../api/README.md#host--package-updates) for the full contract, [`docs/api/README.md`](../api/README.md#a-consolidated-log) for the log store's own query parameters, and [`cli-reference.md`](cli-reference.md) for every `cixctl` subcommand used above.
 
 ## Going further: no local build at all
 
-Everything above still assumes you cross-compiled `thincd` locally and are pushing the *result*. The [hostbuild mechanism](writing-recipes.md#the-hostbuild-variant) (ADR-0056) removes even that step: `POST /pkg/hostbuild {"name": "thinc", "build_image": "<an image with a working toolchain>"}` compiles `thincd`/`thincctl`/`web/` **entirely on the remote box itself**, from its own currently-tracked source (`thinc.recipe`'s `pkg_source`), harvesting the result to a real host artifact directory — see [`building-thinc.md`](building-thinc.md#from-a-running-thinc-host-self-hosted-rebuild) for the full self-hosted rebuild walkthrough. Combined with the LAN-serve trick above (used here to get the *source snapshot* onto the box instead of a compiled artifact — a scratch recipe whose `pkg_source` is a `tar czf`'d copy of your own working tree, since a real install typically can't reach a real git server either), this closes the loop completely: develop locally, push source, compile server-side, deploy the result, all over plain REST, with no ISO reinstall anywhere in the cycle.
+Everything above still assumes you cross-compiled `cixd` locally and are pushing the *result*. The [hostbuild mechanism](writing-recipes.md#the-hostbuild-variant) (ADR-0056) removes even that step: `POST /pkg/hostbuild {"name": "cix", "build_image": "<an image with a working toolchain>"}` compiles `cixd`/`cixctl`/`web/` **entirely on the remote box itself**, from its own currently-tracked source (`cix.recipe`'s `pkg_source`), harvesting the result to a real host artifact directory — see [`building-cix.md`](building-cix.md#from-a-running-cix-host-self-hosted-rebuild) for the full self-hosted rebuild walkthrough. Combined with the LAN-serve trick above (used here to get the *source snapshot* onto the box instead of a compiled artifact — a scratch recipe whose `pkg_source` is a `tar czf`'d copy of your own working tree, since a real install typically can't reach a real git server either), this closes the loop completely: develop locally, push source, compile server-side, deploy the result, all over plain REST, with no ISO reinstall anywhere in the cycle.

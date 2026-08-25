@@ -1,5 +1,5 @@
-#ifndef THINC_SUBID_H
-#define THINC_SUBID_H
+#ifndef CIX_SUBID_H
+#define CIX_SUBID_H
 
 /*
  * ADR-0179 (issue #29): the subordinate-ID range allocator backing

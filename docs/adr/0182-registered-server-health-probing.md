@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-thinC lets an operator register redundant backend servers for four subsystems — LDAP, DNS, NTP and syslog — each with its own `*_server_register()` binding table. Until now every one of those tables recorded only *that* a server was registered. Nothing anywhere asked whether a registered server was actually **serving**.
+Cix lets an operator register redundant backend servers for four subsystems — LDAP, DNS, NTP and syslog — each with its own `*_server_register()` binding table. Until now every one of those tables recorded only *that* a server was registered. Nothing anywhere asked whether a registered server was actually **serving**.
 
 That gap has already cost real debugging time. Issue #80 was a registered LDAP pair (`ldap-1`/`ldap-2`) that was running, listening, and answering on the wire — but could not resolve anything under the base DN the clients were configured with. Every SSH login to the jump box failed, and no surface anywhere reported a server as bad; the failure had to be traced by hand through `nslcd -d` output. A health check that actually probed the service would have shown it immediately.
 
@@ -25,7 +25,7 @@ The same shape applies to all four subsystems: a registered server can be down, 
 
 Adding a fifth registered-server subsystem means adding a row. The record, the state machine, and the whole REST/CLI/web surface are already shared. Three of the four kinds needed a `*_list_containers()` enumerator to match the one LDAP already had; adding them made the four registries uniform, which is a small win in itself.
 
-**The probe is a non-blocking `connect()` driven by the daemon's own reactor.** This is the load-bearing design constraint, not an implementation detail: `thincd` is a single `epoll` loop, and a blocking probe against an unreachable server would stall the entire control plane — the exact failure ADR-0180 exists to prevent. `serverhealth.c` therefore performs no I/O at all; it is pure state, and `main.c` reports each probe result back into it. In-flight probes are tracked so a sweep can time out stragglers rather than leaving them to the kernel's own multi-minute TCP timeout.
+**The probe is a non-blocking `connect()` driven by the daemon's own reactor.** This is the load-bearing design constraint, not an implementation detail: `cixd` is a single `epoll` loop, and a blocking probe against an unreachable server would stall the entire control plane — the exact failure ADR-0180 exists to prevent. `serverhealth.c` therefore performs no I/O at all; it is pure state, and `main.c` reports each probe result back into it. In-flight probes are tracked so a sweep can time out stragglers rather than leaving them to the kernel's own multi-minute TCP timeout.
 
 **A probe reports what it actually did.** `probe` is `tcp:PORT` when the server accepted a real connection, and `process` when the check was only "the providing container is running". NTP and syslog are UDP: a TCP connect against them would be a meaningless check dressed up as a real one, so they get the honest weaker check and the API says so. An operator is never left guessing how much a `healthy` verdict is worth.
 
@@ -41,7 +41,7 @@ Adding a fifth registered-server subsystem means adding a row. The record, the s
 ## Consequences
 
 - The #80 class of failure is now visible and self-correcting: a registered-but-not-serving LDAP server is reported `unhealthy` and drops out of the client URI list, instead of silently breaking every login.
-- Health is observable and actionable from all three surfaces per the API-First Mandate: `GET/PUT /v1/system/server-health...`, `thincctl server-health`, and the dashboard's Server Health page.
+- Health is observable and actionable from all three surfaces per the API-First Mandate: `GET/PUT /v1/system/server-health...`, `cixctl server-health`, and the dashboard's Server Health page.
 - The honest limitation, stated rather than hidden: NTP and syslog get container-liveness only. A real SNTP exchange (the daemon already speaks SNTP for its own clock sync) would be a genuine improvement and is deliberately left as later work rather than faked now.
 - A drained server stays drained across restarts, so a forgotten drain is a real operational hazard — which is exactly why `in_service` and `drained` are separate, prominently reported fields rather than one merged status.
 - The probe interval (30s) and failure threshold (3) are compiled-in constants, not yet operator-configurable. That is a deliberate YAGNI boundary: one sensible cadence for every deployment until someone has a real reason to differ.

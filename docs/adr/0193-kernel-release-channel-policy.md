@@ -30,7 +30,7 @@ Three things follow from taking the reporting seriously:
 
 **The running kernel comes from `uname()`, not the recipe.** The pin says what was last built; `uname()` says what actually booted. After a failed A/B update those differ, and the version an operator needs to compare against is the one that is running.
 
-**The channel reports; it does not act.** Selecting one never rewrites the recipe pin and never fetches anything. Only `POST /system/kernel-policy/refresh` reaches the network, and it returns `202` — the fetch is a forked `curl` watched by a pidfd, exactly like every other outbound fetch here, because a blocking call would stall the whole control plane behind a DNS timeout on a box with no upstream resolvers ([ADR-0076](0076-operator-set-upstream-resolvers.md)), which is precisely the wedge [ADR-0189](0189-control-plane-stall-watchdog.md)'s watchdog exists to catch.
+**The channel reports; it does not act.** Selecting one never rewrites the recipe pin and never fetches anything. Only `POST /system/kernel-policy/refresh` reaches the network, and it returns `202` — the fetch is a forked `curl` watched by a pidfd, exactly like every other outbound fetch here, because a blocking call would stall the whole control plane behind a DNS timeout on a box with no upstream resolvers ([ADR-0076](0076-host-dns-resolver-config.md)), which is precisely the wedge [ADR-0189](0189-control-plane-stall-watchdog.md)'s watchdog exists to catch.
 
 ### On the checksum question this deliberately does not answer yet
 

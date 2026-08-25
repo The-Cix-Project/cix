@@ -1,5 +1,5 @@
 /*
- * thincctl: a pure REST client for the thinC host API
+ * cixctl: a pure REST client for the Cix host API
  * (docs/api/openapi.yaml). Per the project's API-First Mandate
  * (CLAUDE.md, ADR-0005), this file holds no namespace/cgroup/mount
  * logic of its own -- every subcommand is exactly one HTTP call via
@@ -30,15 +30,15 @@
 static void print_usage(FILE *out)
 {
 	fprintf(out,
-	        "usage: thincctl [--host=ADDR] [--port=N] [--json] <command> [args]\n"
+	        "usage: cixctl [--host=ADDR] [--port=N] [--json] <command> [args]\n"
 	        "\n"
 	        "commands:\n"
 	        "  health\n"
 	        "  boot      -- build version/time, A/B slot, kernel version (uname)\n"
-	        "  shutdown  -- stop thincd; powers off the host too when it's running as\n"
-	        "               real PID 1 (an installed system) -- a dev/interactive thincd\n"
+	        "  shutdown  -- stop cixd; powers off the host too when it's running as\n"
+	        "               real PID 1 (an installed system) -- a dev/interactive cixd\n"
 	        "               just exits, same as it always has on SIGTERM\n"
-	        "  reboot    -- stop thincd; restarts the host too when running as PID 1\n"
+	        "  reboot    -- stop cixd; restarts the host too when running as PID 1\n"
 	        "  update [--image=PATH] [--kernel=PATH]  -- writes a fresh control-plane\n"
 	        "               squashfs and/or a fresh kernel (already transferred onto the\n"
 	        "               box, e.g. via scp) onto this daemon's own inactive A/B slot and\n"
@@ -156,7 +156,7 @@ static void print_usage(FILE *out)
 	        "               the daemon's own host-auth backend (prompts for whichever of\n"
 	        "               username/password isn't given as a flag, with echo off for the\n"
 	        "               password); on success persists the session token to\n"
-	        "               ~/.thincctl_token (mode 0600) so every subsequent thincctl\n"
+	        "               ~/.cixctl_token (mode 0600) so every subsequent cixctl\n"
 	        "               invocation authenticates automatically -- a no-op, harmlessly, on a\n"
 	        "               daemon where write-gating was never activated (no admin-group user\n"
 	        "               exists yet)\n"
@@ -208,14 +208,14 @@ static void print_usage(FILE *out)
 	        "               (ADR-0046); convenience for identification + suggesting FQDNs,\n"
 	        "               never enforced\n"
 	        "  site set [--instance-name=NAME] [--site-name=NAME] [--domain-suffix=NAME]\n"
-	        "  daemon-config show  -- thincd's own listen port, HTTP/HTTPS exposure, and\n"
+	        "  daemon-config show  -- cixd's own listen port, HTTP/HTTPS exposure, and\n"
 	        "               which network is currently its management one\n"
 	        "  daemon-config set [--port=N] [--https-port=N] [--enable-http] [--disable-http]\n"
 	        "               [--enable-https] [--disable-https] [--management-network=NAME]\n"
 	        "               [--bind-ip=A.B.C.D | --clear-bind-ip]\n"
 	        "               -- live, no-restart; only the fields given are changed. bind_ip\n"
 	        "               (ADR-0068) is a second, dedicated address on the management\n"
-	        "               network's own bridge -- thincd binds there instead of that\n"
+	        "               network's own bridge -- cixd binds there instead of that\n"
 	        "               network's own address; --clear-bind-ip reverts to it\n"
 	        "  hostauth-config show  -- current admin_groups/idle_timeout_seconds/live-LDAP\n"
 	        "               backend settings (ADR-0144)\n"
@@ -247,7 +247,7 @@ static void print_usage(FILE *out)
 	        "               same format as run --cpu-max=\n"
 	        "  iso build [--disk=DEV --ip=A.B.C.D --prefix=N --gateway=A.B.C.D\n"
 	        "               --interface=IFNAME] [--wait]  -- assembles a fresh installer ISO\n"
-	        "               server-side (ADR-0064), from the most recent \"thinc\"/\"kernel\"/\n"
+	        "               server-side (ADR-0064), from the most recent \"cix\"/\"kernel\"/\n"
 	        "               \"isotools\" hostbuild artifacts; every flag is optional, an empty\n"
 	        "               call reproduces the original edit-at-the-GRUB-menu placeholder ISO\n"
 	        "  iso status  -- state/iso_path/error of the most recent ISO build\n"
@@ -286,15 +286,15 @@ static void print_usage(FILE *out)
 	        "               it's the active placement for a storage singleton/backup-config/\n"
 	        "               swap, or a live container has its own storage on it\n"
 	        "  storage state [show]  -- which disk (if any) is the active placement for\n"
-	        "               thinC's own state (ADR-0141); default (null) is the OS disk\n"
-	        "  storage state migrate [--disk=NAME]  -- move thinC's own state to a disk\n"
+	        "               Cix's own state (ADR-0141); default (null) is the OS disk\n"
+	        "  storage state migrate [--disk=NAME]  -- move Cix's own state to a disk\n"
 	        "               already carrying the state-storage role and currently mounted;\n"
 	        "               omit --disk= to migrate back to the default OS-disk placement;\n"
 	        "               async, no pause -- poll storage state migrate-status\n"
 	        "  storage state migrate-status  -- state/disk/error of the most recent (or\n"
 	        "               running) state-storage migration\n"
 	        "  storage logs [show|migrate [--disk=NAME]|migrate-status]  -- same shape as\n"
-	        "               storage state, for where thinC's own consolidated log store\n"
+	        "               storage state, for where Cix's own consolidated log store\n"
 	        "               (ADR-0070/ADR-0126) lives instead\n"
 	        "  storage rebuildable [show|migrate [--disk=NAME]|migrate-status]  -- same shape\n"
 	        "               again, for where images/packages/artifacts (regenerable from\n"
@@ -364,9 +364,9 @@ static void print_usage(FILE *out)
 	        "               store 'logs' below already reads from (ADR-0127)\n"
 	        "  syslog target ls\n"
 	        "  syslog target unregister CONTAINER\n"
-	        "  logs [--source=kernel|thincd|audit|container] [--level=...] [--container=NAME]\n"
+	        "  logs [--source=kernel|cixd|audit|container] [--level=...] [--container=NAME]\n"
 	        "               [--regex=PATTERN] [--tail=N] [--since=UNIXTS]\n"
-	        "               -- the consolidated log (kernel dmesg + thincd's own\n"
+	        "               -- the consolidated log (kernel dmesg + cixd's own\n"
 	        "               diagnostics + a per-request audit trail + every container's\n"
 	        "               own stdout/stderr, transparently, ADR-0070/ADR-0126);\n"
 	        "               --container= filters to one container's own lines,\n"
@@ -1162,7 +1162,7 @@ static void fmt_pki_ca(const struct json_value *v)
 
 /* Reissued leaves' own cert_pem/key_pem are real (shown once, same
  * as a fresh cert create()) but omitted here -- this is a summary
- * view; thincctl pki cert ls / a saved --json capture is how an
+ * view; cixctl pki cert ls / a saved --json capture is how an
  * operator gets the full material for every reissued leaf at once. */
 static void fmt_pki_reset(const struct json_value *v)
 {
@@ -1194,14 +1194,14 @@ static void fmt_pki_reset(const struct json_value *v)
  * the API's {"error": "..."} message to stderr. Always frees r.
  * Returns the process exit code.
  */
-static int emit(struct thinc_response *r, int json_mode, void (*fmt)(const struct json_value *))
+static int emit(struct cix_response *r, int json_mode, void (*fmt)(const struct json_value *))
 {
 	int rc;
 
 	if (r->status < 200 || r->status >= 300) {
 		const char *msg = json_str_field(r->json, "error");
 
-		fprintf(stderr, "thincctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
+		fprintf(stderr, "cixctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
 		        r->status);
 		rc = 1;
 	} else if (json_mode || fmt == NULL) {
@@ -1211,44 +1211,44 @@ static int emit(struct thinc_response *r, int json_mode, void (*fmt)(const struc
 		fmt(r->json);
 		rc = 0;
 	}
-	thinc_response_free(r);
+	cix_response_free(r);
 	return rc;
 }
 
-static int cmd_health(const struct thinc_client *c, int json_mode)
+static int cmd_health(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/health", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_health);
 }
 
-static int cmd_boot(const struct thinc_client *c, int json_mode)
+static int cmd_boot(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/system/boot", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/system/boot", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_boot);
 }
 
-static int cmd_routes_ls(const struct thinc_client *c, int json_mode)
+static int cmd_routes_ls(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/system/routes", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/system/routes", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_route_list);
 }
 
-static int cmd_routes_add(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_routes_add(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *dest = NULL;
 	const char *gateway = NULL;
@@ -1256,7 +1256,7 @@ static int cmd_routes_add(const struct thinc_client *c, int json_mode, int argc,
 	int is_default = 0;
 	int i;
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--dest=", 7) == 0)
@@ -1268,15 +1268,15 @@ static int cmd_routes_add(const struct thinc_client *c, int json_mode, int argc,
 		else if (strcmp(argv[i], "--default") == 0)
 			is_default = 1;
 		else {
-			fprintf(stderr, "thincctl: unknown routes add option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown routes add option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 
 	if (!is_default && (dest == NULL || prefix == NULL)) {
 		fprintf(stderr,
-		        "usage: thincctl routes add --dest=A.B.C.D --prefix=N [--gateway=A.B.C.D]\n"
-		        "       thincctl routes add --default --gateway=A.B.C.D\n");
+		        "usage: cixctl routes add --dest=A.B.C.D --prefix=N [--gateway=A.B.C.D]\n"
+		        "       cixctl routes add --default --gateway=A.B.C.D\n");
 		return 2;
 	}
 
@@ -1295,9 +1295,9 @@ static int cmd_routes_add(const struct thinc_client *c, int json_mode, int argc,
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (thinc_client_request(c, "POST", "/v1/system/routes", w.buf, &r) != 0) {
+	if (cix_client_request(c, "POST", "/v1/system/routes", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -1305,14 +1305,14 @@ static int cmd_routes_add(const struct thinc_client *c, int json_mode, int argc,
 	return emit(&r, json_mode, fmt_added);
 }
 
-static int cmd_routes_rm(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_routes_rm(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *dest = NULL;
 	const char *prefix = NULL;
 	int is_default = 0;
 	int i;
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--dest=", 7) == 0)
@@ -1322,15 +1322,15 @@ static int cmd_routes_rm(const struct thinc_client *c, int json_mode, int argc, 
 		else if (strcmp(argv[i], "--default") == 0)
 			is_default = 1;
 		else {
-			fprintf(stderr, "thincctl: unknown routes rm option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown routes rm option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 
 	if (!is_default && (dest == NULL || prefix == NULL)) {
 		fprintf(stderr,
-		        "usage: thincctl routes rm --dest=A.B.C.D --prefix=N\n"
-		        "       thincctl routes rm --default\n");
+		        "usage: cixctl routes rm --dest=A.B.C.D --prefix=N\n"
+		        "       cixctl routes rm --default\n");
 		return 2;
 	}
 
@@ -1345,9 +1345,9 @@ static int cmd_routes_rm(const struct thinc_client *c, int json_mode, int argc, 
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (thinc_client_request(c, "DELETE", "/v1/system/routes", w.buf, &r) != 0) {
+	if (cix_client_request(c, "DELETE", "/v1/system/routes", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -1355,7 +1355,7 @@ static int cmd_routes_rm(const struct thinc_client *c, int json_mode, int argc, 
 	return emit(&r, json_mode, fmt_removed);
 }
 
-static int cmd_routes(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_routes(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -1371,20 +1371,20 @@ static int cmd_routes(const struct thinc_client *c, int json_mode, int argc, cha
 		return cmd_routes_ls(c, json_mode);
 
 	fprintf(stderr,
-	        "usage: thincctl routes [ls]\n"
-	        "       thincctl routes add --dest=A.B.C.D --prefix=N [--gateway=A.B.C.D]\n"
-	        "       thincctl routes add --default --gateway=A.B.C.D\n"
-	        "       thincctl routes rm --dest=A.B.C.D --prefix=N\n"
-	        "       thincctl routes rm --default\n");
+	        "usage: cixctl routes [ls]\n"
+	        "       cixctl routes add --dest=A.B.C.D --prefix=N [--gateway=A.B.C.D]\n"
+	        "       cixctl routes add --default --gateway=A.B.C.D\n"
+	        "       cixctl routes rm --dest=A.B.C.D --prefix=N\n"
+	        "       cixctl routes rm --default\n");
 	return 2;
 }
 
-static int cmd_disks_ls(const struct thinc_client *c, int json_mode)
+static int cmd_disks_ls(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/disks", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/disks", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_disk_list);
@@ -1423,17 +1423,17 @@ static void fmt_diskformat_status(const struct json_value *v)
  * "pki reset" precedent for destructive operations -- the request body
  * confirmation IS the safety gate.
  */
-static int cmd_disks_format(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_disks_format(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *disk_name;
 	const char *fs_type = NULL;
 	char path[256];
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 	int i;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: thincctl disks format NAME [--fs-type=ext4|btrfs]\n");
+		fprintf(stderr, "usage: cixctl disks format NAME [--fs-type=ext4|btrfs]\n");
 		return 2;
 	}
 	disk_name = argv[0];
@@ -1454,29 +1454,29 @@ static int cmd_disks_format(const struct thinc_client *c, int json_mode, int arg
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (thinc_client_request(c, "POST", path, w.buf, &r) != 0) {
+	if (cix_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
 	return emit(&r, json_mode, fmt_diskformat_status);
 }
 
-static int cmd_disks_format_status(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_disks_format_status(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *disk_name;
 	char path[256];
-	struct thinc_response r;
+	struct cix_response r;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: thincctl disks format-status NAME\n");
+		fprintf(stderr, "usage: cixctl disks format-status NAME\n");
 		return 2;
 	}
 	disk_name = argv[0];
 	snprintf(path, sizeof(path), "/v1/disks/%s/format", disk_name);
-	if (thinc_client_request(c, "GET", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_diskformat_status);
@@ -1492,15 +1492,15 @@ static int cmd_disks_format_status(const struct thinc_client *c, int json_mode, 
  * sent as the request body's own confirm_disk_name, no further
  * interactive prompt, the request body confirmation IS the safety gate.
  */
-static int cmd_disks_unmount(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_disks_unmount(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *disk_name;
 	char path[256];
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: thincctl disks unmount NAME\n");
+		fprintf(stderr, "usage: cixctl disks unmount NAME\n");
 		return 2;
 	}
 	disk_name = argv[0];
@@ -1513,9 +1513,9 @@ static int cmd_disks_unmount(const struct thinc_client *c, int json_mode, int ar
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (thinc_client_request(c, "POST", path, w.buf, &r) != 0) {
+	if (cix_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -1581,14 +1581,14 @@ static void fmt_disk_free_space(const struct json_value *v)
  * -- shrinking needs the filesystem shrunk first, and cutting the table
  * entry before that destroys the tail of a live filesystem.
  */
-static int cmd_disks_grow_partition(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_disks_grow_partition(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *disk_name = NULL;
 	const char *part_name = NULL;
 	long size_mib = 0;
 	char path[300];
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 	int i;
 
 	for (i = 0; i < argc; i++) {
@@ -1599,12 +1599,12 @@ static int cmd_disks_grow_partition(const struct thinc_client *c, int json_mode,
 		else if (part_name == NULL)
 			part_name = argv[i];
 		else {
-			fprintf(stderr, "thincctl: unknown grow-partition option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown grow-partition option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (disk_name == NULL || part_name == NULL) {
-		fprintf(stderr, "usage: thincctl disks grow-partition DISK_NAME PARTITION_NAME "
+		fprintf(stderr, "usage: cixctl disks grow-partition DISK_NAME PARTITION_NAME "
 		                "[--size-mib=N]\n"
 		                "  Omit --size-mib to take all free space immediately after it.\n"
 		                "  The partition must be unmounted, and ext4 or unformatted.\n");
@@ -1619,41 +1619,41 @@ static int cmd_disks_grow_partition(const struct thinc_client *c, int json_mode,
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (thinc_client_request(c, "POST", path, w.buf, &r) != 0) {
+	if (cix_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
 	return emit(&r, json_mode, fmt_disk_or_partitions);
 }
 
-static int cmd_disks_free_space(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_disks_free_space(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	char path[256];
-	struct thinc_response r;
+	struct cix_response r;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: thincctl disks free-space NAME\n");
+		fprintf(stderr, "usage: cixctl disks free-space NAME\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/disks/%s/free-space", argv[0]);
-	if (thinc_client_request(c, "GET", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_disk_free_space);
 }
 
-static int cmd_disks_partition_table(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_disks_partition_table(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *disk_name;
 	char path[256];
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: thincctl disks partition-table NAME\n");
+		fprintf(stderr, "usage: cixctl disks partition-table NAME\n");
 		return 2;
 	}
 	disk_name = argv[0];
@@ -1666,28 +1666,28 @@ static int cmd_disks_partition_table(const struct thinc_client *c, int json_mode
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (thinc_client_request(c, "POST", path, w.buf, &r) != 0) {
+	if (cix_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
 	return emit(&r, json_mode, fmt_disk_or_partitions);
 }
 
-static int cmd_disks_add_partition(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_disks_add_partition(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *disk_name;
 	const char *part_name = NULL;
 	unsigned long long size_mib = 0;
 	char path[256];
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 	int i;
 
 	if (argc < 2) {
 		fprintf(stderr,
-		        "usage: thincctl disks add-partition NAME --name=PART_NAME [--size-mib=N]\n"
+		        "usage: cixctl disks add-partition NAME --name=PART_NAME [--size-mib=N]\n"
 		        "       (omit --size-mib to consume all remaining space on the disk)\n");
 		return 2;
 	}
@@ -1699,7 +1699,7 @@ static int cmd_disks_add_partition(const struct thinc_client *c, int json_mode, 
 			size_mib = strtoull(argv[i] + 11, NULL, 10);
 	}
 	if (part_name == NULL) {
-		fprintf(stderr, "thincctl: disks add-partition requires --name=PART_NAME\n");
+		fprintf(stderr, "cixctl: disks add-partition requires --name=PART_NAME\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/disks/%s/partitions", disk_name);
@@ -1715,43 +1715,43 @@ static int cmd_disks_add_partition(const struct thinc_client *c, int json_mode, 
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (thinc_client_request(c, "POST", path, w.buf, &r) != 0) {
+	if (cix_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
 	return emit(&r, json_mode, fmt_disk_or_partitions);
 }
 
-static int cmd_disks_rm_partition(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_disks_rm_partition(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	char path[256];
-	struct thinc_response r;
+	struct cix_response r;
 
 	if (argc < 2) {
-		fprintf(stderr, "usage: thincctl disks rm-partition DISK_NAME PARTITION_NAME\n");
+		fprintf(stderr, "usage: cixctl disks rm-partition DISK_NAME PARTITION_NAME\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/disks/%s/partitions/%s", argv[0], argv[1]);
-	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	if (json_mode) {
 		printf("{\"status\":%d}\n", r.status);
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		return r.status == 204 ? 0 : 1;
 	}
 	if (r.status == 204)
 		printf("partition removed\n");
 	else
 		printf("error: status %d\n", r.status);
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	return r.status == 204 ? 0 : 1;
 }
 
-static int cmd_disks(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_disks(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -1778,15 +1778,15 @@ static int cmd_disks(const struct thinc_client *c, int json_mode, int argc, char
 	if (strcmp(sub, "rm-partition") == 0)
 		return cmd_disks_rm_partition(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "usage: thincctl disks [ls]\n"
-	                "       thincctl disks format NAME [--fs-type=ext4|btrfs]\n"
-	                "       thincctl disks format-status NAME\n"
-	                "       thincctl disks unmount NAME\n"
-	                "       thincctl disks free-space NAME\n"
-	                "       thincctl disks partition-table NAME\n"
-	                "       thincctl disks add-partition NAME --name=PART_NAME [--size-mib=N]\n"
-	                "       thincctl disks grow-partition DISK_NAME PARTITION_NAME [--size-mib=N]\n"
-	                "       thincctl disks rm-partition DISK_NAME PARTITION_NAME\n");
+	fprintf(stderr, "usage: cixctl disks [ls]\n"
+	                "       cixctl disks format NAME [--fs-type=ext4|btrfs]\n"
+	                "       cixctl disks format-status NAME\n"
+	                "       cixctl disks unmount NAME\n"
+	                "       cixctl disks free-space NAME\n"
+	                "       cixctl disks partition-table NAME\n"
+	                "       cixctl disks add-partition NAME --name=PART_NAME [--size-mib=N]\n"
+	                "       cixctl disks grow-partition DISK_NAME PARTITION_NAME [--size-mib=N]\n"
+	                "       cixctl disks rm-partition DISK_NAME PARTITION_NAME\n");
 	return 2;
 }
 
@@ -1828,37 +1828,37 @@ static void fmt_storage_migrate_status(const struct json_value *v)
 	printf("\n");
 }
 
-/* endpoint is "state-storage" or "log-storage" -- thincctl storage
+/* endpoint is "state-storage" or "log-storage" -- cixctl storage
  * {state,logs} both share this identical shape, only the REST path
  * segment (and thus which daemon-side storage_kind ends up acted on)
  * differs. */
-static int cmd_storage_kind_show(const struct thinc_client *c, int json_mode, const char *endpoint)
+static int cmd_storage_kind_show(const struct cix_client *c, int json_mode, const char *endpoint)
 {
 	char path[64];
-	struct thinc_response r;
+	struct cix_response r;
 
 	snprintf(path, sizeof(path), "/v1/system/%s", endpoint);
-	if (thinc_client_request(c, "GET", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_storage_placement);
 }
 
-static int cmd_storage_kind_migrate(const struct thinc_client *c, int json_mode, const char *endpoint,
+static int cmd_storage_kind_migrate(const struct cix_client *c, int json_mode, const char *endpoint,
                                      int argc, char **argv)
 {
 	const char *disk = NULL;
 	char path[64];
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 	int i;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--disk=", 7) == 0)
 			disk = argv[i] + 7;
 		else {
-			fprintf(stderr, "thincctl: unknown storage migrate option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown storage migrate option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
@@ -1874,29 +1874,29 @@ static int cmd_storage_kind_migrate(const struct thinc_client *c, int json_mode,
 	w.buf[w.len] = '\0';
 
 	snprintf(path, sizeof(path), "/v1/system/%s/migrate", endpoint);
-	if (thinc_client_request(c, "POST", path, w.buf, &r) != 0) {
+	if (cix_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
 	return emit(&r, json_mode, fmt_storage_migrate_status);
 }
 
-static int cmd_storage_kind_migrate_status(const struct thinc_client *c, int json_mode, const char *endpoint)
+static int cmd_storage_kind_migrate_status(const struct cix_client *c, int json_mode, const char *endpoint)
 {
 	char path[64];
-	struct thinc_response r;
+	struct cix_response r;
 
 	snprintf(path, sizeof(path), "/v1/system/%s/migrate", endpoint);
-	if (thinc_client_request(c, "GET", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_storage_migrate_status);
 }
 
-static int cmd_storage_kind(const struct thinc_client *c, int json_mode, const char *name,
+static int cmd_storage_kind(const struct cix_client *c, int json_mode, const char *name,
                              const char *endpoint, int argc, char **argv)
 {
 	const char *sub;
@@ -1913,20 +1913,20 @@ static int cmd_storage_kind(const struct thinc_client *c, int json_mode, const c
 		return cmd_storage_kind_migrate_status(c, json_mode, endpoint);
 
 	fprintf(stderr,
-	        "usage: thincctl storage %s [show]\n"
-	        "       thincctl storage %s migrate [--disk=NAME]  -- omit for the default "
+	        "usage: cixctl storage %s [show]\n"
+	        "       cixctl storage %s migrate [--disk=NAME]  -- omit for the default "
 	        "OS-disk placement\n"
-	        "       thincctl storage %s migrate-status\n",
+	        "       cixctl storage %s migrate-status\n",
 	        name, name, name);
 	return 2;
 }
 
-static int cmd_storage(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_storage(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: thincctl storage state|logs|rebuildable [show|migrate|migrate-status]\n");
+		fprintf(stderr, "usage: cixctl storage state|logs|rebuildable [show|migrate|migrate-status]\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -1937,11 +1937,11 @@ static int cmd_storage(const struct thinc_client *c, int json_mode, int argc, ch
 	if (strcmp(sub, "rebuildable") == 0)
 		return cmd_storage_kind(c, json_mode, "rebuildable", "rebuildable-storage", argc - 1, argv + 1);
 
-	fprintf(stderr, "usage: thincctl storage state|logs|rebuildable [show|migrate|migrate-status]\n");
+	fprintf(stderr, "usage: cixctl storage state|logs|rebuildable [show|migrate|migrate-status]\n");
 	return 2;
 }
 
-/* ADR-0160: thincctl sysctl show|get|set|rm -- host-level /proc/sys,
+/* ADR-0160: cixctl sysctl show|get|set|rm -- host-level /proc/sys,
  * live, fully open (no allowlist, host-auth write-gating is the only
  * access control). Distinct from run's own --sysctl= (create-time,
  * net.*-only, per-container) -- this is a separate host-wide surface,
@@ -1993,42 +1993,42 @@ static void fmt_sysctl_list(const struct json_value *v)
 		fmt_sysctl_one(arr->u.array.items[i]);
 }
 
-static int cmd_sysctl_show(const struct thinc_client *c, int json_mode)
+static int cmd_sysctl_show(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/system/sysctl", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/system/sysctl", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_sysctl_list);
 }
 
-static int cmd_sysctl_get(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_sysctl_get(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	char path[192];
-	struct thinc_response r;
+	struct cix_response r;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: thincctl sysctl get KEY\n");
+		fprintf(stderr, "usage: cixctl sysctl get KEY\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/system/sysctl/%s", argv[0]);
-	if (thinc_client_request(c, "GET", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_sysctl_one);
 }
 
-/* thincctl sysctl set KEY --value=V [--value=V ...] [--no-persist]
+/* cixctl sysctl set KEY --value=V [--value=V ...] [--no-persist]
  * -- repeatable --value= (matching resolv set's own --nameserver=
  * repeatable-flag convention) builds a JSON array when given more
  * than once, a bare JSON string when given exactly once -- either
  * shape the daemon already accepts. */
 #define CLI_SYSCTL_MAX_VALUES 8
 
-static int cmd_sysctl_set(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_sysctl_set(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *key;
 	const char *values[CLI_SYSCTL_MAX_VALUES];
@@ -2037,17 +2037,17 @@ static int cmd_sysctl_set(const struct thinc_client *c, int json_mode, int argc,
 	int i;
 	char path[192];
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: thincctl sysctl set KEY --value=V [--value=V ...] [--no-persist]\n");
+		fprintf(stderr, "usage: cixctl sysctl set KEY --value=V [--value=V ...] [--no-persist]\n");
 		return 2;
 	}
 	key = argv[0];
 	for (i = 1; i < argc; i++) {
 		if (strncmp(argv[i], "--value=", 8) == 0) {
 			if (value_count >= CLI_SYSCTL_MAX_VALUES) {
-				fprintf(stderr, "thincctl: too many --value= flags (max %d)\n",
+				fprintf(stderr, "cixctl: too many --value= flags (max %d)\n",
 				        CLI_SYSCTL_MAX_VALUES);
 				return 2;
 			}
@@ -2055,12 +2055,12 @@ static int cmd_sysctl_set(const struct thinc_client *c, int json_mode, int argc,
 		} else if (strcmp(argv[i], "--no-persist") == 0) {
 			persist = 0;
 		} else {
-			fprintf(stderr, "thincctl: unknown sysctl set option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown sysctl set option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (value_count == 0) {
-		fprintf(stderr, "thincctl: sysctl set requires at least one --value=\n");
+		fprintf(stderr, "cixctl: sysctl set requires at least one --value=\n");
 		return 2;
 	}
 
@@ -2083,43 +2083,43 @@ static int cmd_sysctl_set(const struct thinc_client *c, int json_mode, int argc,
 	w.buf[w.len] = '\0';
 
 	snprintf(path, sizeof(path), "/v1/system/sysctl/%s", key);
-	if (thinc_client_request(c, "PUT", path, w.buf, &r) != 0) {
+	if (cix_client_request(c, "PUT", path, w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
 	return emit(&r, json_mode, fmt_sysctl_one);
 }
 
-static int cmd_sysctl_rm(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_sysctl_rm(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	char path[192];
-	struct thinc_response r;
+	struct cix_response r;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: thincctl sysctl rm KEY\n");
+		fprintf(stderr, "usage: cixctl sysctl rm KEY\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/system/sysctl/%s", argv[0]);
-	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	if (json_mode) {
 		printf("{\"status\":%d}\n", r.status);
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		return r.status == 204 ? 0 : 1;
 	}
 	if (r.status == 204)
 		printf("removed from persisted config (live value untouched)\n");
 	else
 		printf("error: status %d\n", r.status);
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	return r.status == 204 ? 0 : 1;
 }
 
-static int cmd_sysctl(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_sysctl(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -2136,15 +2136,15 @@ static int cmd_sysctl(const struct thinc_client *c, int json_mode, int argc, cha
 	if (strcmp(sub, "rm") == 0)
 		return cmd_sysctl_rm(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "usage: thincctl sysctl [show]  -- every persisted (daemon-managed) key\n"
-	                "       thincctl sysctl get KEY  -- live current value, persisted or not\n"
-	                "       thincctl sysctl set KEY --value=V [--value=V ...] [--no-persist]\n"
-	                "       thincctl sysctl rm KEY  -- stop reapplying at boot (live value untouched)\n");
+	fprintf(stderr, "usage: cixctl sysctl [show]  -- every persisted (daemon-managed) key\n"
+	                "       cixctl sysctl get KEY  -- live current value, persisted or not\n"
+	                "       cixctl sysctl set KEY --value=V [--value=V ...] [--no-persist]\n"
+	                "       cixctl sysctl rm KEY  -- stop reapplying at boot (live value untouched)\n");
 	return 2;
 }
 
-/* ADR-0159 Phase A: `thincctl kmod ls|show|load|unload` (management)
- * and `thincctl kmod-config set|ls|rm` (persisted default options +
+/* ADR-0159 Phase A: `cixctl kmod ls|show|load|unload` (management)
+ * and `cixctl kmod-config set|ls|rm` (persisted default options +
  * boot autoload). */
 
 static void fmt_kmod_options_obj(const struct json_value *obj)
@@ -2237,29 +2237,29 @@ static void fmt_kmod_info(const struct json_value *v)
 	}
 }
 
-static int cmd_kmod_ls(const struct thinc_client *c, int json_mode)
+static int cmd_kmod_ls(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/system/kmod", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/system/kmod", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_kmod_list);
 }
 
-static int cmd_kmod_show(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_kmod_show(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	char path[192];
-	struct thinc_response r;
+	struct cix_response r;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: thincctl kmod show NAME\n");
+		fprintf(stderr, "usage: cixctl kmod show NAME\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/system/kmod/%s", argv[0]);
-	if (thinc_client_request(c, "GET", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_kmod_info);
@@ -2267,7 +2267,7 @@ static int cmd_kmod_show(const struct thinc_client *c, int json_mode, int argc, 
 
 #define CLI_KMOD_MAX_OPTIONS 8
 
-static int cmd_kmod_load(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_kmod_load(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name;
 	const char *options[CLI_KMOD_MAX_OPTIONS];
@@ -2275,23 +2275,23 @@ static int cmd_kmod_load(const struct thinc_client *c, int json_mode, int argc, 
 	int i;
 	char path[192];
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: thincctl kmod load NAME [--option=KEY=VALUE ...]\n");
+		fprintf(stderr, "usage: cixctl kmod load NAME [--option=KEY=VALUE ...]\n");
 		return 2;
 	}
 	name = argv[0];
 	for (i = 1; i < argc; i++) {
 		if (strncmp(argv[i], "--option=", 9) == 0) {
 			if (option_count >= CLI_KMOD_MAX_OPTIONS) {
-				fprintf(stderr, "thincctl: too many --option= flags (max %d)\n",
+				fprintf(stderr, "cixctl: too many --option= flags (max %d)\n",
 				        CLI_KMOD_MAX_OPTIONS);
 				return 2;
 			}
 			options[option_count++] = argv[i] + 9;
 		} else {
-			fprintf(stderr, "thincctl: unknown kmod load option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown kmod load option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
@@ -2307,7 +2307,7 @@ static int cmd_kmod_load(const struct thinc_client *c, int json_mode, int argc, 
 		snprintf(buf, sizeof(buf), "%s", options[i]);
 		eq = strchr(buf, '=');
 		if (eq == NULL) {
-			fprintf(stderr, "thincctl: --option= must be KEY=VALUE, got '%s'\n", options[i]);
+			fprintf(stderr, "cixctl: --option= must be KEY=VALUE, got '%s'\n", options[i]);
 			jw_free(&w);
 			return 2;
 		}
@@ -2320,53 +2320,53 @@ static int cmd_kmod_load(const struct thinc_client *c, int json_mode, int argc, 
 	w.buf[w.len] = '\0';
 
 	snprintf(path, sizeof(path), "/v1/system/kmod/%s", name);
-	if (thinc_client_request(c, "POST", path, w.buf, &r) != 0) {
+	if (cix_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
 	if (json_mode) {
 		printf("{\"status\":%d}\n", r.status);
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		return r.status == 200 ? 0 : 1;
 	}
 	if (r.status == 200)
 		printf("loaded %s\n", name);
 	else
 		printf("error: status %d\n", r.status);
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	return r.status == 200 ? 0 : 1;
 }
 
-static int cmd_kmod_unload(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_kmod_unload(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	char path[192];
-	struct thinc_response r;
+	struct cix_response r;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: thincctl kmod unload NAME\n");
+		fprintf(stderr, "usage: cixctl kmod unload NAME\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/system/kmod/%s", argv[0]);
-	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	if (json_mode) {
 		printf("{\"status\":%d}\n", r.status);
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		return r.status == 204 ? 0 : 1;
 	}
 	if (r.status == 204)
 		printf("unloaded %s\n", argv[0]);
 	else
 		printf("error: status %d\n", r.status);
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	return r.status == 204 ? 0 : 1;
 }
 
-static int cmd_kmod(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_kmod(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -2383,12 +2383,12 @@ static int cmd_kmod(const struct thinc_client *c, int json_mode, int argc, char 
 	if (strcmp(sub, "unload") == 0)
 		return cmd_kmod_unload(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "usage: thincctl kmod [ls]  -- every currently-loaded module (/proc/modules)\n"
-	                "       thincctl kmod show NAME  -- modinfo: description, params, depends\n"
-	                "       thincctl kmod load NAME [--option=KEY=VALUE ...]  -- real modprobe;\n"
+	fprintf(stderr, "usage: cixctl kmod [ls]  -- every currently-loaded module (/proc/modules)\n"
+	                "       cixctl kmod show NAME  -- modinfo: description, params, depends\n"
+	                "       cixctl kmod load NAME [--option=KEY=VALUE ...]  -- real modprobe;\n"
 	                "               no --option= falls back to this module's own persisted\n"
 	                "               kmod-config default_options, if any\n"
-	                "       thincctl kmod unload NAME  -- real modprobe -r\n");
+	                "       cixctl kmod unload NAME  -- real modprobe -r\n");
 	return 2;
 }
 
@@ -2413,18 +2413,18 @@ static void fmt_kmodconfig_list(const struct json_value *v)
 		fmt_kmodconfig_one(arr->u.array.items[i]);
 }
 
-static int cmd_kmodconfig_ls(const struct thinc_client *c, int json_mode)
+static int cmd_kmodconfig_ls(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/system/kmod-config", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/system/kmod-config", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_kmodconfig_list);
 }
 
-static int cmd_kmodconfig_set(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_kmodconfig_set(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name;
 	const char *options[CLI_KMOD_MAX_OPTIONS];
@@ -2435,10 +2435,10 @@ static int cmd_kmodconfig_set(const struct thinc_client *c, int json_mode, int a
 	int i;
 	char path[192];
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: thincctl kmod-config set NAME [--option=KEY=VALUE ...] "
+		fprintf(stderr, "usage: cixctl kmod-config set NAME [--option=KEY=VALUE ...] "
 		                "[--autoload|--no-autoload]\n");
 		return 2;
 	}
@@ -2446,7 +2446,7 @@ static int cmd_kmodconfig_set(const struct thinc_client *c, int json_mode, int a
 	for (i = 1; i < argc; i++) {
 		if (strncmp(argv[i], "--option=", 9) == 0) {
 			if (option_count >= CLI_KMOD_MAX_OPTIONS) {
-				fprintf(stderr, "thincctl: too many --option= flags (max %d)\n",
+				fprintf(stderr, "cixctl: too many --option= flags (max %d)\n",
 				        CLI_KMOD_MAX_OPTIONS);
 				return 2;
 			}
@@ -2459,12 +2459,12 @@ static int cmd_kmodconfig_set(const struct thinc_client *c, int json_mode, int a
 			have_autoload = 1;
 			autoload_value = 0;
 		} else {
-			fprintf(stderr, "thincctl: unknown kmod-config set option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown kmod-config set option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (!have_options && !have_autoload) {
-		fprintf(stderr, "thincctl: kmod-config set requires --option= and/or "
+		fprintf(stderr, "cixctl: kmod-config set requires --option= and/or "
 		                "--autoload/--no-autoload\n");
 		return 2;
 	}
@@ -2481,7 +2481,7 @@ static int cmd_kmodconfig_set(const struct thinc_client *c, int json_mode, int a
 			snprintf(buf, sizeof(buf), "%s", options[i]);
 			eq = strchr(buf, '=');
 			if (eq == NULL) {
-				fprintf(stderr, "thincctl: --option= must be KEY=VALUE, got '%s'\n", options[i]);
+				fprintf(stderr, "cixctl: --option= must be KEY=VALUE, got '%s'\n", options[i]);
 				jw_free(&w);
 				return 2;
 			}
@@ -2499,43 +2499,43 @@ static int cmd_kmodconfig_set(const struct thinc_client *c, int json_mode, int a
 	w.buf[w.len] = '\0';
 
 	snprintf(path, sizeof(path), "/v1/system/kmod-config/%s", name);
-	if (thinc_client_request(c, "PUT", path, w.buf, &r) != 0) {
+	if (cix_client_request(c, "PUT", path, w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
 	return emit(&r, json_mode, fmt_kmodconfig_one);
 }
 
-static int cmd_kmodconfig_rm(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_kmodconfig_rm(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	char path[192];
-	struct thinc_response r;
+	struct cix_response r;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: thincctl kmod-config rm NAME\n");
+		fprintf(stderr, "usage: cixctl kmod-config rm NAME\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/system/kmod-config/%s", argv[0]);
-	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	if (json_mode) {
 		printf("{\"status\":%d}\n", r.status);
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		return r.status == 204 ? 0 : 1;
 	}
 	if (r.status == 204)
 		printf("removed kmod-config for %s\n", argv[0]);
 	else
 		printf("error: status %d\n", r.status);
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	return r.status == 204 ? 0 : 1;
 }
 
-static int cmd_kmodconfig(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_kmodconfig(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -2550,10 +2550,10 @@ static int cmd_kmodconfig(const struct thinc_client *c, int json_mode, int argc,
 	if (strcmp(sub, "rm") == 0)
 		return cmd_kmodconfig_rm(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "usage: thincctl kmod-config [ls]  -- every module with a persisted default\n"
-	                "       thincctl kmod-config set NAME [--option=KEY=VALUE ...] "
+	fprintf(stderr, "usage: cixctl kmod-config [ls]  -- every module with a persisted default\n"
+	                "       cixctl kmod-config set NAME [--option=KEY=VALUE ...] "
 	                "[--autoload|--no-autoload]\n"
-	                "       thincctl kmod-config rm NAME  -- clears both fields\n");
+	                "       cixctl kmod-config rm NAME  -- clears both fields\n");
 	return 2;
 }
 
@@ -2572,41 +2572,41 @@ static void fmt_resolv(const struct json_value *v)
 		printf("nameserver %s\n", json_as_string(arr->u.array.items[i]));
 }
 
-static int cmd_resolv_show(const struct thinc_client *c, int json_mode)
+static int cmd_resolv_show(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/system/resolv", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/system/resolv", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_resolv);
 }
 
-/* thincctl resolv set --nameserver=A.B.C.D [--nameserver=A.B.C.D ...]
+/* cixctl resolv set --nameserver=A.B.C.D [--nameserver=A.B.C.D ...]
  * -- repeatable, same convention run's own --network=/--device=/
  * --interface= already use. No flags at all means an empty list --
  * clears the host's own resolver config entirely, same "the absence
  * of the flag is a real, valid choice" precedent --clear-bind-ip
  * established for daemon-config. */
-static int cmd_resolv_set(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_resolv_set(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *nameservers[CLI_RESOLV_MAX_NAMESERVERS];
 	int count = 0;
 	int i;
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--nameserver=", 13) == 0) {
 			if (count >= CLI_RESOLV_MAX_NAMESERVERS) {
-				fprintf(stderr, "thincctl: too many --nameserver= flags (max %d)\n",
+				fprintf(stderr, "cixctl: too many --nameserver= flags (max %d)\n",
 				        CLI_RESOLV_MAX_NAMESERVERS);
 				return 2;
 			}
 			nameservers[count++] = argv[i] + 13;
 		} else {
-			fprintf(stderr, "thincctl: unknown resolv set option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown resolv set option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
@@ -2621,16 +2621,16 @@ static int cmd_resolv_set(const struct thinc_client *c, int json_mode, int argc,
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (thinc_client_request(c, "PUT", "/v1/system/resolv", w.buf, &r) != 0) {
+	if (cix_client_request(c, "PUT", "/v1/system/resolv", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
 	return emit(&r, json_mode, fmt_resolv);
 }
 
-static int cmd_resolv(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_resolv(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -2644,13 +2644,13 @@ static int cmd_resolv(const struct thinc_client *c, int json_mode, int argc, cha
 		return cmd_resolv_set(c, json_mode, argc - 1, argv + 1);
 
 	fprintf(stderr,
-	        "usage: thincctl resolv [show]\n"
-	        "       thincctl resolv set [--nameserver=A.B.C.D ...]\n");
+	        "usage: cixctl resolv [show]\n"
+	        "       cixctl resolv set [--nameserver=A.B.C.D ...]\n");
 	return 2;
 }
 
-/* thincctl ntp config show/set, ntp status, ntp server register/ls/
- * unregister, and the separate thincctl time show/set -- task
+/* cixctl ntp config show/set, ntp status, ntp server register/ls/
+ * unregister, and the separate cixctl time show/set -- task
  * #751-755, mirroring resolv's own upstream-list shape (config) plus
  * dns/ldap server's own registration shape (server), kept as two
  * genuinely different resources exactly like the daemon's own REST
@@ -2671,35 +2671,35 @@ static void fmt_ntp_config(const struct json_value *v)
 		printf("server %s\n", json_as_string(arr->u.array.items[i]));
 }
 
-static int cmd_ntp_config_show(const struct thinc_client *c, int json_mode)
+static int cmd_ntp_config_show(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/system/ntp", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/system/ntp", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_ntp_config);
 }
 
-static int cmd_ntp_config_set(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_ntp_config_set(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *upstream[CLI_NTP_MAX_UPSTREAM];
 	int count = 0;
 	int i;
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--server=", 9) == 0) {
 			if (count >= CLI_NTP_MAX_UPSTREAM) {
-				fprintf(stderr, "thincctl: too many --server= flags (max %d)\n",
+				fprintf(stderr, "cixctl: too many --server= flags (max %d)\n",
 				        CLI_NTP_MAX_UPSTREAM);
 				return 2;
 			}
 			upstream[count++] = argv[i] + 9;
 		} else {
-			fprintf(stderr, "thincctl: unknown ntp config set option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown ntp config set option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
@@ -2714,16 +2714,16 @@ static int cmd_ntp_config_set(const struct thinc_client *c, int json_mode, int a
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (thinc_client_request(c, "PUT", "/v1/system/ntp", w.buf, &r) != 0) {
+	if (cix_client_request(c, "PUT", "/v1/system/ntp", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
 	return emit(&r, json_mode, fmt_ntp_config);
 }
 
-static int cmd_ntp_config(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_ntp_config(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -2737,8 +2737,8 @@ static int cmd_ntp_config(const struct thinc_client *c, int json_mode, int argc,
 		return cmd_ntp_config_set(c, json_mode, argc - 1, argv + 1);
 
 	fprintf(stderr,
-	        "usage: thincctl ntp config [show]\n"
-	        "       thincctl ntp config set [--server=A.B.C.D ...]\n");
+	        "usage: cixctl ntp config [show]\n"
+	        "       cixctl ntp config set [--server=A.B.C.D ...]\n");
 	return 2;
 }
 
@@ -2756,12 +2756,12 @@ static void fmt_ntp_status(const struct json_value *v)
 	printf("\n");
 }
 
-static int cmd_ntp_status(const struct thinc_client *c, int json_mode)
+static int cmd_ntp_status(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/system/ntp/status", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/system/ntp/status", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_ntp_status);
@@ -2770,27 +2770,27 @@ static int cmd_ntp_status(const struct thinc_client *c, int json_mode)
 /* Triggers one sync attempt on demand rather than waiting for the
  * next hourly automatic fire -- 202 on success, no body; check
  * `ntp status` afterward for the outcome. */
-static int cmd_ntp_sync(const struct thinc_client *c, int json_mode)
+static int cmd_ntp_sync(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "POST", "/v1/system/ntp/sync", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "POST", "/v1/system/ntp/sync", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	if (r.status != 202) {
 		const char *msg = json_str_field(r.json, "error");
 
-		fprintf(stderr, "thincctl: %s (HTTP %d)\n", msg != NULL ? msg : "sync failed to start",
+		fprintf(stderr, "cixctl: %s (HTTP %d)\n", msg != NULL ? msg : "sync failed to start",
 		        r.status);
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		return 1;
 	}
 	if (!json_mode)
 		printf("sync started\n");
 	else
 		print_raw_json(r.json);
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	return 0;
 }
 
@@ -2812,23 +2812,23 @@ static void fmt_ntp_server_list(const struct json_value *v)
 		fmt_ntp_server_line(servers->u.array.items[i]);
 }
 
-static int cmd_ntp_server_register(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_ntp_server_register(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *container = NULL;
 	int i;
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--container=", 12) == 0)
 			container = argv[i] + 12;
 		else {
-			fprintf(stderr, "thincctl: unknown ntp server register option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown ntp server register option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (container == NULL) {
-		fprintf(stderr, "usage: thincctl ntp server register --container=NAME\n");
+		fprintf(stderr, "usage: cixctl ntp server register --container=NAME\n");
 		return 2;
 	}
 
@@ -2839,53 +2839,53 @@ static int cmd_ntp_server_register(const struct thinc_client *c, int json_mode, 
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (thinc_client_request(c, "POST", "/v1/ntp/servers", w.buf, &r) != 0) {
+	if (cix_client_request(c, "POST", "/v1/ntp/servers", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
 	return emit(&r, json_mode, fmt_ntp_server_line);
 }
 
-static int cmd_ntp_server_ls(const struct thinc_client *c, int json_mode)
+static int cmd_ntp_server_ls(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/ntp/servers", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/ntp/servers", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_ntp_server_list);
 }
 
-static int cmd_ntp_server_unregister(const struct thinc_client *c, int json_mode, int argc,
+static int cmd_ntp_server_unregister(const struct cix_client *c, int json_mode, int argc,
                                       char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	char path[256];
 
 	if (argc < 1) {
-		fprintf(stderr, "thincctl: ntp server unregister requires a container name\n");
+		fprintf(stderr, "cixctl: ntp server unregister requires a container name\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/ntp/servers/%s", argv[0]);
-	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
 }
 
-static int cmd_ntp_server(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_ntp_server(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
 		fprintf(stderr,
-		        "usage: thincctl ntp server register --container=NAME\n"
-		        "       thincctl ntp server ls\n"
-		        "       thincctl ntp server unregister CONTAINER\n");
+		        "usage: cixctl ntp server register --container=NAME\n"
+		        "       cixctl ntp server ls\n"
+		        "       cixctl ntp server unregister CONTAINER\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -2896,24 +2896,24 @@ static int cmd_ntp_server(const struct thinc_client *c, int json_mode, int argc,
 	if (strcmp(sub, "unregister") == 0)
 		return cmd_ntp_server_unregister(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "thincctl: unknown ntp server subcommand '%s'\n", sub);
+	fprintf(stderr, "cixctl: unknown ntp server subcommand '%s'\n", sub);
 	return 2;
 }
 
-static int cmd_ntp(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_ntp(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
 		fprintf(stderr,
-		        "usage: thincctl ntp config [show]\n"
-		        "       thincctl ntp config set [--server=A.B.C.D ...]\n"
-		        "       thincctl ntp status\n"
-		        "       thincctl ntp sync  -- trigger a sync attempt now, don't wait for the\n"
+		        "usage: cixctl ntp config [show]\n"
+		        "       cixctl ntp config set [--server=A.B.C.D ...]\n"
+		        "       cixctl ntp status\n"
+		        "       cixctl ntp sync  -- trigger a sync attempt now, don't wait for the\n"
 		        "               next hourly automatic one\n"
-		        "       thincctl ntp server register --container=NAME\n"
-		        "       thincctl ntp server ls\n"
-		        "       thincctl ntp server unregister CONTAINER\n");
+		        "       cixctl ntp server register --container=NAME\n"
+		        "       cixctl ntp server ls\n"
+		        "       cixctl ntp server unregister CONTAINER\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -2926,7 +2926,7 @@ static int cmd_ntp(const struct thinc_client *c, int json_mode, int argc, char *
 	if (strcmp(sub, "server") == 0)
 		return cmd_ntp_server(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "thincctl: unknown ntp subcommand '%s'\n", sub);
+	fprintf(stderr, "cixctl: unknown ntp subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -2948,23 +2948,23 @@ static void fmt_syslog_target_list(const struct json_value *v)
 		fmt_syslog_target_line(targets->u.array.items[i]);
 }
 
-static int cmd_syslog_target_register(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_syslog_target_register(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *container = NULL;
 	int i;
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--container=", 12) == 0)
 			container = argv[i] + 12;
 		else {
-			fprintf(stderr, "thincctl: unknown syslog target register option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown syslog target register option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (container == NULL) {
-		fprintf(stderr, "usage: thincctl syslog target register --container=NAME\n");
+		fprintf(stderr, "usage: cixctl syslog target register --container=NAME\n");
 		return 2;
 	}
 
@@ -2975,53 +2975,53 @@ static int cmd_syslog_target_register(const struct thinc_client *c, int json_mod
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (thinc_client_request(c, "POST", "/v1/syslog/targets", w.buf, &r) != 0) {
+	if (cix_client_request(c, "POST", "/v1/syslog/targets", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
 	return emit(&r, json_mode, fmt_syslog_target_line);
 }
 
-static int cmd_syslog_target_ls(const struct thinc_client *c, int json_mode)
+static int cmd_syslog_target_ls(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/syslog/targets", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/syslog/targets", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_syslog_target_list);
 }
 
-static int cmd_syslog_target_unregister(const struct thinc_client *c, int json_mode, int argc,
+static int cmd_syslog_target_unregister(const struct cix_client *c, int json_mode, int argc,
                                          char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	char path[256];
 
 	if (argc < 1) {
-		fprintf(stderr, "thincctl: syslog target unregister requires a container name\n");
+		fprintf(stderr, "cixctl: syslog target unregister requires a container name\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/syslog/targets/%s", argv[0]);
-	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
 }
 
-static int cmd_syslog_target(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_syslog_target(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
 		fprintf(stderr,
-		        "usage: thincctl syslog target register --container=NAME\n"
-		        "       thincctl syslog target ls\n"
-		        "       thincctl syslog target unregister CONTAINER\n");
+		        "usage: cixctl syslog target register --container=NAME\n"
+		        "       cixctl syslog target ls\n"
+		        "       cixctl syslog target unregister CONTAINER\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -3032,31 +3032,31 @@ static int cmd_syslog_target(const struct thinc_client *c, int json_mode, int ar
 	if (strcmp(sub, "unregister") == 0)
 		return cmd_syslog_target_unregister(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "thincctl: unknown syslog target subcommand '%s'\n", sub);
+	fprintf(stderr, "cixctl: unknown syslog target subcommand '%s'\n", sub);
 	return 2;
 }
 
-static int cmd_syslog(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_syslog(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
 		fprintf(stderr,
-		        "usage: thincctl syslog target register --container=NAME  -- forward every\n"
+		        "usage: cixctl syslog target register --container=NAME  -- forward every\n"
 		        "               container-sourced log line to this running container as a real\n"
 		        "               RFC 3164 UDP syslog datagram (e.g. syslog-1/syslog-2 running\n"
 		        "               sysklogd), alongside (never instead of) the consolidated log\n"
-		        "               store every other 'thincctl logs' call already reads from\n"
+		        "               store every other 'cixctl logs' call already reads from\n"
 		        "               (ADR-0127)\n"
-		        "       thincctl syslog target ls\n"
-		        "       thincctl syslog target unregister CONTAINER\n");
+		        "       cixctl syslog target ls\n"
+		        "       cixctl syslog target unregister CONTAINER\n");
 		return 2;
 	}
 	sub = argv[0];
 	if (strcmp(sub, "target") == 0)
 		return cmd_syslog_target(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "thincctl: unknown syslog subcommand '%s'\n", sub);
+	fprintf(stderr, "cixctl: unknown syslog subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -3068,34 +3068,34 @@ static void fmt_time(const struct json_value *v)
 		printf("unixtime=%lld\n", (long long)unixtime->u.number);
 }
 
-static int cmd_time_show(const struct thinc_client *c, int json_mode)
+static int cmd_time_show(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/system/time", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/system/time", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_time);
 }
 
-static int cmd_time_set(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_time_set(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *unixtime = NULL;
 	int i;
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--unixtime=", 11) == 0)
 			unixtime = argv[i] + 11;
 		else {
-			fprintf(stderr, "thincctl: unknown time set option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown time set option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (unixtime == NULL) {
-		fprintf(stderr, "usage: thincctl time set --unixtime=N\n");
+		fprintf(stderr, "usage: cixctl time set --unixtime=N\n");
 		return 2;
 	}
 
@@ -3106,16 +3106,16 @@ static int cmd_time_set(const struct thinc_client *c, int json_mode, int argc, c
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (thinc_client_request(c, "PUT", "/v1/system/time", w.buf, &r) != 0) {
+	if (cix_client_request(c, "PUT", "/v1/system/time", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
 	return emit(&r, json_mode, fmt_time);
 }
 
-static int cmd_time(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_time(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -3129,8 +3129,8 @@ static int cmd_time(const struct thinc_client *c, int json_mode, int argc, char 
 		return cmd_time_set(c, json_mode, argc - 1, argv + 1);
 
 	fprintf(stderr,
-	        "usage: thincctl time [show]\n"
-	        "       thincctl time set --unixtime=N\n");
+	        "usage: cixctl time [show]\n"
+	        "       cixctl time set --unixtime=N\n");
 	return 2;
 }
 
@@ -3250,9 +3250,9 @@ static void fmt_dhcp_leases(const struct json_value *v)
 	}
 }
 
-static int cmd_dhcp(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_dhcp(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	const char *sub = argc > 0 ? argv[0] : "show";
 	const char *network = NULL, *range = NULL, *router = NULL;
 	const char *servers[DHCP_CLI_MAX_SERVERS];
@@ -3264,15 +3264,15 @@ static int cmd_dhcp(const struct thinc_client *c, int json_mode, int argc, char 
 	int i;
 
 	if (strcmp(sub, "show") == 0) {
-		if (thinc_client_request(c, "GET", "/v1/dhcp", NULL, &r) != 0) {
-			fprintf(stderr, "thincctl: could not reach daemon\n");
+		if (cix_client_request(c, "GET", "/v1/dhcp", NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
 		}
 		return emit(&r, json_mode, fmt_dhcp);
 	}
 	if (strcmp(sub, "leases") == 0) {
-		if (thinc_client_request(c, "GET", "/v1/dhcp/leases", NULL, &r) != 0) {
-			fprintf(stderr, "thincctl: could not reach daemon\n");
+		if (cix_client_request(c, "GET", "/v1/dhcp/leases", NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
 		}
 		return emit(&r, json_mode, fmt_dhcp_leases);
@@ -3286,7 +3286,7 @@ static int cmd_dhcp(const struct thinc_client *c, int json_mode, int argc, char 
 			router = argv[i] + 9;
 		else if (strncmp(argv[i], "--server=", 9) == 0) {
 			if (server_count >= DHCP_CLI_MAX_SERVERS) {
-				fprintf(stderr, "thincctl: too many --server= flags (max %d)\n",
+				fprintf(stderr, "cixctl: too many --server= flags (max %d)\n",
 				        DHCP_CLI_MAX_SERVERS);
 				return 2;
 			}
@@ -3309,14 +3309,14 @@ static int cmd_dhcp(const struct thinc_client *c, int json_mode, int argc, char 
 
 		if (network == NULL || (enable && (range == NULL || server_count == 0))) {
 			fprintf(stderr,
-			        "usage: thincctl dhcp enable --network=NAME --range=START-END\n"
+			        "usage: cixctl dhcp enable --network=NAME --range=START-END\n"
 			        "                            --server=CONTAINER [--server=CONTAINER ...]\n"
 			        "                            [--lease-seconds=N] [--router=IP]\n"
-			        "       thincctl dhcp disable --network=NAME\n"
+			        "       cixctl dhcp disable --network=NAME\n"
 			        "  --server= is repeatable. dnsmasq has no failover protocol, so a range\n"
 			        "  named to more than one server is split into disjoint slices: all of\n"
 			        "  them answer, and no two hold the same address. Register servers first\n"
-			        "  with `thincctl dhcp server add`.\n");
+			        "  with `cixctl dhcp server add`.\n");
 			return 2;
 		}
 		jw_init(&w);
@@ -3328,7 +3328,7 @@ static int cmd_dhcp(const struct thinc_client *c, int json_mode, int argc, char 
 
 			if (dash == NULL) {
 				jw_free(&w);
-				fprintf(stderr, "thincctl: --range= must be START-END, e.g. "
+				fprintf(stderr, "cixctl: --range= must be START-END, e.g. "
 				                "172.30.0.100-172.30.0.200\n");
 				return 2;
 			}
@@ -3338,7 +3338,7 @@ static int cmd_dhcp(const struct thinc_client *c, int json_mode, int argc, char 
 
 				if (n >= sizeof(start)) {
 					jw_free(&w);
-					fprintf(stderr, "thincctl: --range= start is too long\n");
+					fprintf(stderr, "cixctl: --range= start is too long\n");
 					return 2;
 				}
 				memcpy(start, range, n);
@@ -3367,9 +3367,9 @@ static int cmd_dhcp(const struct thinc_client *c, int json_mode, int argc, char 
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
 		snprintf(path, sizeof(path), "/v1/dhcp/networks/%s", network);
-		if (thinc_client_request(c, "PUT", path, w.buf, &r) != 0) {
+		if (cix_client_request(c, "PUT", path, w.buf, &r) != 0) {
 			jw_free(&w);
-			fprintf(stderr, "thincctl: could not reach daemon\n");
+			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
 		}
 		jw_free(&w);
@@ -3386,9 +3386,9 @@ static int cmd_dhcp(const struct thinc_client *c, int json_mode, int argc, char 
 			jw_str(&w, argv[2]);
 			jw_obj_close(&w);
 			w.buf[w.len] = '\0';
-			if (thinc_client_request(c, "POST", "/v1/dhcp/servers", w.buf, &r) != 0) {
+			if (cix_client_request(c, "POST", "/v1/dhcp/servers", w.buf, &r) != 0) {
 				jw_free(&w);
-				fprintf(stderr, "thincctl: could not reach daemon\n");
+				fprintf(stderr, "cixctl: could not reach daemon\n");
 				return 1;
 			}
 			jw_free(&w);
@@ -3396,20 +3396,20 @@ static int cmd_dhcp(const struct thinc_client *c, int json_mode, int argc, char 
 		}
 		if (strcmp(op, "rm") == 0 && argc > 2) {
 			snprintf(path, sizeof(path), "/v1/dhcp/servers/%s", argv[2]);
-			if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
-				fprintf(stderr, "thincctl: could not reach daemon\n");
+			if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
+				fprintf(stderr, "cixctl: could not reach daemon\n");
 				return 1;
 			}
 			return emit(&r, json_mode, NULL);
 		}
 		if (strcmp(op, "ls") == 0 || op[0] == '\0') {
-			if (thinc_client_request(c, "GET", "/v1/dhcp/servers", NULL, &r) != 0) {
-				fprintf(stderr, "thincctl: could not reach daemon\n");
+			if (cix_client_request(c, "GET", "/v1/dhcp/servers", NULL, &r) != 0) {
+				fprintf(stderr, "cixctl: could not reach daemon\n");
 				return 1;
 			}
 			return emit(&r, json_mode, fmt_dhcp_servers);
 		}
-		fprintf(stderr, "usage: thincctl dhcp server ls | add CONTAINER | rm CONTAINER\n");
+		fprintf(stderr, "usage: cixctl dhcp server ls | add CONTAINER | rm CONTAINER\n");
 		return 2;
 	}
 	if (strcmp(sub, "static") == 0) {
@@ -3417,7 +3417,7 @@ static int cmd_dhcp(const struct thinc_client *c, int json_mode, int argc, char 
 
 		if (strcmp(op, "add") == 0) {
 			if (mac == NULL || ip == NULL) {
-				fprintf(stderr, "usage: thincctl dhcp static add --mac=M --ip=IP "
+				fprintf(stderr, "usage: cixctl dhcp static add --mac=M --ip=IP "
 				                "[--hostname=NAME]\n");
 				return 2;
 			}
@@ -3433,9 +3433,9 @@ static int cmd_dhcp(const struct thinc_client *c, int json_mode, int argc, char 
 			}
 			jw_obj_close(&w);
 			w.buf[w.len] = '\0';
-			if (thinc_client_request(c, "POST", "/v1/dhcp/static", w.buf, &r) != 0) {
+			if (cix_client_request(c, "POST", "/v1/dhcp/static", w.buf, &r) != 0) {
 				jw_free(&w);
-				fprintf(stderr, "thincctl: could not reach daemon\n");
+				fprintf(stderr, "cixctl: could not reach daemon\n");
 				return 1;
 			}
 			jw_free(&w);
@@ -3443,32 +3443,32 @@ static int cmd_dhcp(const struct thinc_client *c, int json_mode, int argc, char 
 		}
 		if (strcmp(op, "rm") == 0) {
 			if (argc < 3) {
-				fprintf(stderr, "usage: thincctl dhcp static rm MAC\n");
+				fprintf(stderr, "usage: cixctl dhcp static rm MAC\n");
 				return 2;
 			}
 			snprintf(path, sizeof(path), "/v1/dhcp/static/%s", argv[2]);
-			if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
-				fprintf(stderr, "thincctl: could not reach daemon\n");
+			if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
+				fprintf(stderr, "cixctl: could not reach daemon\n");
 				return 1;
 			}
 			return emit(&r, json_mode, NULL);
 		}
-		fprintf(stderr, "usage: thincctl dhcp static add --mac=M --ip=IP [--hostname=NAME]\n"
-		                "       thincctl dhcp static rm MAC\n");
+		fprintf(stderr, "usage: cixctl dhcp static add --mac=M --ip=IP [--hostname=NAME]\n"
+		                "       cixctl dhcp static rm MAC\n");
 		return 2;
 	}
 
-	fprintf(stderr, "usage: thincctl dhcp show | leases\n"
-	                "       thincctl dhcp server ls | add CONTAINER | rm CONTAINER\n"
-	                "       thincctl dhcp enable --network=NAME --range=START-END\n"
-	                "       thincctl dhcp disable --network=NAME\n"
-	                "       thincctl dhcp static add --mac=M --ip=IP [--hostname=NAME]\n"
-	                "       thincctl dhcp static rm MAC\n");
+	fprintf(stderr, "usage: cixctl dhcp show | leases\n"
+	                "       cixctl dhcp server ls | add CONTAINER | rm CONTAINER\n"
+	                "       cixctl dhcp enable --network=NAME --range=START-END\n"
+	                "       cixctl dhcp disable --network=NAME\n"
+	                "       cixctl dhcp static add --mac=M --ip=IP [--hostname=NAME]\n"
+	                "       cixctl dhcp static rm MAC\n");
 	return 2;
 }
 
 /*
- * Issue #51: thincctl zswap show|set. Prints the configured intent and
+ * Issue #51: cixctl zswap show|set. Prints the configured intent and
  * what the kernel actually reports side by side -- they are different
  * questions, and the only interesting case is when they differ.
  */
@@ -3510,9 +3510,9 @@ static void fmt_zswap(const struct json_value *v)
 	}
 }
 
-static int cmd_zswap(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_zswap(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	const char *sub = argc > 0 ? argv[0] : "show";
 	const char *compressor = NULL;
 	long max_pool_percent = -1;
@@ -3521,15 +3521,15 @@ static int cmd_zswap(const struct thinc_client *c, int json_mode, int argc, char
 	struct json_writer w;
 
 	if (strcmp(sub, "show") == 0) {
-		if (thinc_client_request(c, "GET", "/v1/system/zswap", NULL, &r) != 0) {
-			fprintf(stderr, "thincctl: could not reach daemon\n");
+		if (cix_client_request(c, "GET", "/v1/system/zswap", NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
 		}
 		return emit(&r, json_mode, fmt_zswap);
 	}
 	if (strcmp(sub, "set") != 0) {
-		fprintf(stderr, "usage: thincctl zswap show\n"
-		                "       thincctl zswap set [--enable | --disable] "
+		fprintf(stderr, "usage: cixctl zswap show\n"
+		                "       cixctl zswap set [--enable | --disable] "
 		                "[--max-pool-percent=N] [--compressor=NAME]\n"
 		                "  zswap compresses pages in RAM before they would be written to the\n"
 		                "  real swap device -- memory pressure costs CPU instead of disk I/O\n");
@@ -3545,12 +3545,12 @@ static int cmd_zswap(const struct thinc_client *c, int json_mode, int argc, char
 		else if (strncmp(argv[i], "--compressor=", 13) == 0)
 			compressor = argv[i] + 13;
 		else {
-			fprintf(stderr, "thincctl: unknown zswap set option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown zswap set option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (enabled < 0 && max_pool_percent < 0 && compressor == NULL) {
-		fprintf(stderr, "usage: thincctl zswap set [--enable | --disable] "
+		fprintf(stderr, "usage: cixctl zswap set [--enable | --disable] "
 		                "[--max-pool-percent=N] [--compressor=NAME]\n");
 		return 2;
 	}
@@ -3572,33 +3572,33 @@ static int cmd_zswap(const struct thinc_client *c, int json_mode, int argc, char
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (thinc_client_request(c, "PUT", "/v1/system/zswap", w.buf, &r) != 0) {
+	if (cix_client_request(c, "PUT", "/v1/system/zswap", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
 	return emit(&r, json_mode, fmt_zswap);
 }
 
-static int cmd_swap_status(const struct thinc_client *c, int json_mode)
+static int cmd_swap_status(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/system/swap", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/system/swap", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_swap);
 }
 
-static int cmd_swap_enable(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_swap_enable(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *size_mb = NULL;
 	const char *disk = NULL;
 	int i;
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--size-mb=", 10) == 0)
@@ -3606,12 +3606,12 @@ static int cmd_swap_enable(const struct thinc_client *c, int json_mode, int argc
 		else if (strncmp(argv[i], "--disk=", 7) == 0)
 			disk = argv[i] + 7;
 		else {
-			fprintf(stderr, "thincctl: unknown swap enable option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown swap enable option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (size_mb == NULL) {
-		fprintf(stderr, "usage: thincctl swap enable --size-mb=N [--disk=NAME]\n");
+		fprintf(stderr, "usage: cixctl swap enable --size-mb=N [--disk=NAME]\n");
 		return 2;
 	}
 
@@ -3629,9 +3629,9 @@ static int cmd_swap_enable(const struct thinc_client *c, int json_mode, int argc
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (thinc_client_request(c, "POST", "/v1/system/swap", w.buf, &r) != 0) {
+	if (cix_client_request(c, "POST", "/v1/system/swap", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -3639,12 +3639,12 @@ static int cmd_swap_enable(const struct thinc_client *c, int json_mode, int argc
 	return emit(&r, json_mode, fmt_swap);
 }
 
-static int cmd_swap_disable(const struct thinc_client *c, int json_mode)
+static int cmd_swap_disable(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "DELETE", "/v1/system/swap", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "DELETE", "/v1/system/swap", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
@@ -3657,7 +3657,7 @@ static int cmd_swap_disable(const struct thinc_client *c, int json_mode)
  * corrupt. */
 static void url_encode_query_value(const char *in, char *out, size_t out_size);
 
-static int cmd_logs(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_logs(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *source = NULL;
 	const char *level = NULL;
@@ -3672,7 +3672,7 @@ static int cmd_logs(const struct thinc_client *c, int json_mode, int argc, char 
 	char encoded_regex[256 * 3];
 	int i;
 	size_t o;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--source=", 9) == 0)
@@ -3688,7 +3688,7 @@ static int cmd_logs(const struct thinc_client *c, int json_mode, int argc, char 
 		else if (strncmp(argv[i], "--since=", 8) == 0)
 			since = argv[i] + 8;
 		else {
-			fprintf(stderr, "thincctl: unknown logs option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown logs option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
@@ -3711,26 +3711,26 @@ static int cmd_logs(const struct thinc_client *c, int json_mode, int argc, char 
 	if (since != NULL)
 		(void)snprintf(path + o, sizeof(path) - o, "since=%s&", since);
 
-	if (thinc_client_request(c, "GET", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	if (r.status == 400) {
-		fprintf(stderr, "thincctl: %s\n",
+		fprintf(stderr, "cixctl: %s\n",
 		        json_str_field(r.json, "error") != NULL ? json_str_field(r.json, "error") :
 		                                                   "bad request");
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_logs);
 }
 
-static int cmd_logs_config(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_logs_config(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *max_bytes = NULL;
 	const char *min_level = NULL;
 	int i;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--max-bytes=", 12) == 0)
@@ -3738,14 +3738,14 @@ static int cmd_logs_config(const struct thinc_client *c, int json_mode, int argc
 		else if (strncmp(argv[i], "--min-level=", 12) == 0)
 			min_level = argv[i] + 12;
 		else {
-			fprintf(stderr, "thincctl: unknown logs config option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown logs config option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 
 	if (max_bytes == NULL && min_level == NULL) {
-		if (thinc_client_request(c, "GET", "/v1/system/logs/config", NULL, &r) != 0) {
-			fprintf(stderr, "thincctl: could not reach daemon\n");
+		if (cix_client_request(c, "GET", "/v1/system/logs/config", NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
 		}
 		return emit(&r, json_mode, fmt_logs_config);
@@ -3767,9 +3767,9 @@ static int cmd_logs_config(const struct thinc_client *c, int json_mode, int argc
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
 
-		if (thinc_client_request(c, "PUT", "/v1/system/logs/config", w.buf, &r) != 0) {
+		if (cix_client_request(c, "PUT", "/v1/system/logs/config", w.buf, &r) != 0) {
 			jw_free(&w);
-			fprintf(stderr, "thincctl: could not reach daemon\n");
+			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
 		}
 		jw_free(&w);
@@ -3777,14 +3777,14 @@ static int cmd_logs_config(const struct thinc_client *c, int json_mode, int argc
 	return emit(&r, json_mode, fmt_logs_config);
 }
 
-static int cmd_logs_top(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_logs_top(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	if (argc > 0 && strcmp(argv[0], "config") == 0)
 		return cmd_logs_config(c, json_mode, argc - 1, argv + 1);
 	return cmd_logs(c, json_mode, argc, argv);
 }
 
-static int cmd_swap(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_swap(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -3800,29 +3800,29 @@ static int cmd_swap(const struct thinc_client *c, int json_mode, int argc, char 
 		return cmd_swap_disable(c, json_mode);
 
 	fprintf(stderr,
-	        "usage: thincctl swap [status]\n"
-	        "       thincctl swap enable --size-mb=N [--disk=NAME]\n"
-	        "       thincctl swap disable\n");
+	        "usage: cixctl swap [status]\n"
+	        "       cixctl swap enable --size-mb=N [--disk=NAME]\n"
+	        "       cixctl swap disable\n");
 	return 2;
 }
 
-static int cmd_shutdown(const struct thinc_client *c, int json_mode)
+static int cmd_shutdown(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "POST", "/v1/system/shutdown", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "POST", "/v1/system/shutdown", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_health);
 }
 
-static int cmd_reboot(const struct thinc_client *c, int json_mode)
+static int cmd_reboot(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "POST", "/v1/system/reboot", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "POST", "/v1/system/reboot", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_health);
@@ -3842,13 +3842,13 @@ static void fmt_update(const struct json_value *v)
 	printf("\n");
 }
 
-static int cmd_update(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_update(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *image = NULL;
 	const char *kernel = NULL;
 	int i;
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--image=", 8) == 0)
@@ -3856,12 +3856,12 @@ static int cmd_update(const struct thinc_client *c, int json_mode, int argc, cha
 		else if (strncmp(argv[i], "--kernel=", 9) == 0)
 			kernel = argv[i] + 9;
 		else {
-			fprintf(stderr, "thincctl: unknown update option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown update option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (image == NULL && kernel == NULL) {
-		fprintf(stderr, "usage: thincctl update [--image=PATH] [--kernel=PATH]\n");
+		fprintf(stderr, "usage: cixctl update [--image=PATH] [--kernel=PATH]\n");
 		return 2;
 	}
 
@@ -3878,9 +3878,9 @@ static int cmd_update(const struct thinc_client *c, int json_mode, int argc, cha
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (thinc_client_request(c, "POST", "/v1/system/update", w.buf, &r) != 0) {
+	if (cix_client_request(c, "POST", "/v1/system/update", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -3888,12 +3888,12 @@ static int cmd_update(const struct thinc_client *c, int json_mode, int argc, cha
 	return emit(&r, json_mode, fmt_update);
 }
 
-static int cmd_ps(const struct thinc_client *c, int json_mode)
+static int cmd_ps(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/containers", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/containers", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_list);
@@ -3907,8 +3907,8 @@ static int cmd_ps(const struct thinc_client *c, int json_mode)
  * the operations themselves are their own real usability value, not
  * something this adds to replace, only to give a second, equally
  * discoverable entry point into for a plain "list what's running". */
-static int cmd_container_recipe(const struct thinc_client *c, int json_mode, int argc, char **argv);
-static int cmd_container_apply_recipe(const struct thinc_client *c, int json_mode, int argc,
+static int cmd_container_recipe(const struct cix_client *c, int json_mode, int argc, char **argv);
+static int cmd_container_apply_recipe(const struct cix_client *c, int json_mode, int argc,
                                        char **argv);
 
 /*
@@ -3917,7 +3917,7 @@ static int cmd_container_apply_recipe(const struct thinc_client *c, int json_mod
  * comment on handle_container_network_attach() for the full
  * live/ephemeral design reasoning.
  */
-static int cmd_container_network_attach(const struct thinc_client *c, int json_mode, int argc,
+static int cmd_container_network_attach(const struct cix_client *c, int json_mode, int argc,
                                          char **argv)
 {
 	const char *name = NULL;
@@ -3925,7 +3925,7 @@ static int cmd_container_network_attach(const struct thinc_client *c, int json_m
 	const char *ip = NULL;
 	struct json_writer w;
 	char path[300];
-	struct thinc_response r;
+	struct cix_response r;
 	int i;
 
 	for (i = 0; i < argc; i++) {
@@ -3936,13 +3936,13 @@ static int cmd_container_network_attach(const struct thinc_client *c, int json_m
 		else if (name == NULL)
 			name = argv[i];
 		else {
-			fprintf(stderr, "thincctl: unknown container network attach option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown container network attach option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (name == NULL || network == NULL) {
 		fprintf(stderr,
-		        "usage: thincctl container network attach NAME --network=NETWORK [--ip=A.B.C.D]\n");
+		        "usage: cixctl container network attach NAME --network=NETWORK [--ip=A.B.C.D]\n");
 		return 2;
 	}
 
@@ -3958,46 +3958,46 @@ static int cmd_container_network_attach(const struct thinc_client *c, int json_m
 	w.buf[w.len] = '\0';
 
 	snprintf(path, sizeof(path), "/v1/containers/%s/networks", name);
-	if (thinc_client_request(c, "POST", path, w.buf, &r) != 0) {
+	if (cix_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
 	return emit(&r, json_mode, fmt_container_line);
 }
 
-static int cmd_container_network_detach(const struct thinc_client *c, int json_mode, int argc,
+static int cmd_container_network_detach(const struct cix_client *c, int json_mode, int argc,
                                          char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	char path[300];
 
 	if (argc < 2) {
-		fprintf(stderr, "usage: thincctl container network detach NAME NETWORK\n");
+		fprintf(stderr, "usage: cixctl container network detach NAME NETWORK\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/containers/%s/networks/%s", argv[0], argv[1]);
-	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_container_line);
 }
 
-static int cmd_container_network(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_container_network(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	if (argc >= 1 && strcmp(argv[0], "attach") == 0)
 		return cmd_container_network_attach(c, json_mode, argc - 1, argv + 1);
 	if (argc >= 1 && strcmp(argv[0], "detach") == 0)
 		return cmd_container_network_detach(c, json_mode, argc - 1, argv + 1);
-	fprintf(stderr, "usage: thincctl container network attach NAME --network=NETWORK [--ip=A.B.C.D]\n"
-	                "       thincctl container network detach NAME NETWORK\n");
+	fprintf(stderr, "usage: cixctl container network attach NAME --network=NETWORK [--ip=A.B.C.D]\n"
+	                "       cixctl container network detach NAME NETWORK\n");
 	return 2;
 }
 
 /*
- * Issue #92: `thincctl container volume attach|detach` -- edits the
+ * Issue #92: `cixctl container volume attach|detach` -- edits the
  * container's persisted definition, applying on its next start. Same
  * command shape as `container network attach|detach` above, deliberately
  * different semantics: that one is live and ephemeral, this one is
@@ -4028,7 +4028,7 @@ static void fmt_container_volumes(const struct json_value *v)
 		printf("(applies %s -- the running container is unchanged)\n", applies);
 }
 
-static int cmd_container_volume_attach(const struct thinc_client *c, int json_mode, int argc,
+static int cmd_container_volume_attach(const struct cix_client *c, int json_mode, int argc,
                                         char **argv)
 {
 	const char *name = NULL;
@@ -4037,7 +4037,7 @@ static int cmd_container_volume_attach(const struct thinc_client *c, int json_mo
 	int read_only = 0;
 	struct json_writer w;
 	char path[300];
-	struct thinc_response r;
+	struct cix_response r;
 	int i;
 
 	for (i = 0; i < argc; i++) {
@@ -4050,12 +4050,12 @@ static int cmd_container_volume_attach(const struct thinc_client *c, int json_mo
 		else if (name == NULL)
 			name = argv[i];
 		else {
-			fprintf(stderr, "thincctl: unknown container volume attach option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown container volume attach option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (name == NULL || volume == NULL || path_in == NULL) {
-		fprintf(stderr, "usage: thincctl container volume attach NAME --volume=VOLUME "
+		fprintf(stderr, "usage: cixctl container volume attach NAME --volume=VOLUME "
 		                "--path=/mount/point [--read-only]\n");
 		return 2;
 	}
@@ -4074,61 +4074,61 @@ static int cmd_container_volume_attach(const struct thinc_client *c, int json_mo
 	w.buf[w.len] = '\0';
 
 	snprintf(path, sizeof(path), "/v1/containers/%s/volumes", name);
-	if (thinc_client_request(c, "POST", path, w.buf, &r) != 0) {
+	if (cix_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
 	return emit(&r, json_mode, fmt_container_volumes);
 }
 
-static int cmd_container_volume_detach(const struct thinc_client *c, int json_mode, int argc,
+static int cmd_container_volume_detach(const struct cix_client *c, int json_mode, int argc,
                                         char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	char path[300];
 
 	if (argc < 2) {
-		fprintf(stderr, "usage: thincctl container volume detach NAME VOLUME\n");
+		fprintf(stderr, "usage: cixctl container volume detach NAME VOLUME\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/containers/%s/volumes/%s", argv[0], argv[1]);
-	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_container_volumes);
 }
 
-static int cmd_container_volume(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_container_volume(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	if (argc >= 1 && strcmp(argv[0], "attach") == 0)
 		return cmd_container_volume_attach(c, json_mode, argc - 1, argv + 1);
 	if (argc >= 1 && strcmp(argv[0], "detach") == 0)
 		return cmd_container_volume_detach(c, json_mode, argc - 1, argv + 1);
-	fprintf(stderr, "usage: thincctl container volume attach NAME --volume=VOLUME "
+	fprintf(stderr, "usage: cixctl container volume attach NAME --volume=VOLUME "
 	                "--path=/mount/point [--read-only]\n"
-	                "       thincctl container volume detach NAME VOLUME\n"
+	                "       cixctl container volume detach NAME VOLUME\n"
 	                "  Both edit the container's definition and take effect on its next start.\n");
 	return 2;
 }
 
-/* ADR-0161 Phase D: `thincctl container device attach|detach` -- the
+/* ADR-0161 Phase D: `cixctl container device attach|detach` -- the
  * manual REST primitive POST/DELETE /v1/containers/{name}/devices,
  * same shape as container network attach/detach above (a real,
  * callable-by-hand primitive first; Phase C's own hotplug listener is
  * just another, internal caller of the identical daemon-side
  * mechanism). */
-static int cmd_container_device_attach(const struct thinc_client *c, int json_mode, int argc,
+static int cmd_container_device_attach(const struct cix_client *c, int json_mode, int argc,
                                         char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	char path[300];
 	struct json_writer w;
 
 	if (argc < 2) {
-		fprintf(stderr, "usage: thincctl container device attach NAME ID\n");
+		fprintf(stderr, "usage: cixctl container device attach NAME ID\n");
 		return 2;
 	}
 
@@ -4140,65 +4140,65 @@ static int cmd_container_device_attach(const struct thinc_client *c, int json_mo
 	w.buf[w.len] = '\0';
 
 	snprintf(path, sizeof(path), "/v1/containers/%s/devices", argv[0]);
-	if (thinc_client_request(c, "POST", path, w.buf, &r) != 0) {
+	if (cix_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
 	return emit(&r, json_mode, fmt_container_line);
 }
 
-static int cmd_container_device_detach(const struct thinc_client *c, int json_mode, int argc,
+static int cmd_container_device_detach(const struct cix_client *c, int json_mode, int argc,
                                         char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	char path[400];
 
 	if (argc < 2) {
-		fprintf(stderr, "usage: thincctl container device detach NAME ID\n");
+		fprintf(stderr, "usage: cixctl container device detach NAME ID\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/containers/%s/devices/%s", argv[0], argv[1]);
-	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_container_line);
 }
 
-static int cmd_container_device(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_container_device(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	if (argc >= 1 && strcmp(argv[0], "attach") == 0)
 		return cmd_container_device_attach(c, json_mode, argc - 1, argv + 1);
 	if (argc >= 1 && strcmp(argv[0], "detach") == 0)
 		return cmd_container_device_detach(c, json_mode, argc - 1, argv + 1);
-	fprintf(stderr, "usage: thincctl container device attach NAME ID  -- a real device id or "
+	fprintf(stderr, "usage: cixctl container device attach NAME ID  -- a real device id or "
 	                "devicemap name, resolved live\n"
-	                "       thincctl container device detach NAME ID  -- refuses a device "
+	                "       cixctl container device detach NAME ID  -- refuses a device "
 	                "granted at container creation (409)\n");
 	return 2;
 }
 
 /* Forward declarations: cmd_container() dispatches to these container verbs,
  * which are defined below it (issue #74 -- all container ops under `container`). */
-static int cmd_run(const struct thinc_client *c, int json_mode, int argc, char **argv);
-static int cmd_inspect(const struct thinc_client *c, int json_mode, int argc, char **argv);
-static int cmd_start(const struct thinc_client *c, int json_mode, int argc, char **argv);
-static int cmd_stop(const struct thinc_client *c, int json_mode, int argc, char **argv);
-static int cmd_pause(const struct thinc_client *c, int json_mode, int argc, char **argv);
-static int cmd_unpause(const struct thinc_client *c, int json_mode, int argc, char **argv);
-static int cmd_rm(const struct thinc_client *c, int json_mode, int argc, char **argv);
-static int cmd_container_stats(const struct thinc_client *c, int json_mode, int argc, char **argv);
-static int cmd_console(const struct thinc_client *c, int argc, char **argv);
-static int cmd_files(const struct thinc_client *c, int argc, char **argv);
-static int cmd_migrate_storage(const struct thinc_client *c, int json_mode, int argc, char **argv);
-static int cmd_migrate_storage_status(const struct thinc_client *c, int json_mode, int argc, char **argv);
+static int cmd_run(const struct cix_client *c, int json_mode, int argc, char **argv);
+static int cmd_inspect(const struct cix_client *c, int json_mode, int argc, char **argv);
+static int cmd_start(const struct cix_client *c, int json_mode, int argc, char **argv);
+static int cmd_stop(const struct cix_client *c, int json_mode, int argc, char **argv);
+static int cmd_pause(const struct cix_client *c, int json_mode, int argc, char **argv);
+static int cmd_unpause(const struct cix_client *c, int json_mode, int argc, char **argv);
+static int cmd_rm(const struct cix_client *c, int json_mode, int argc, char **argv);
+static int cmd_container_stats(const struct cix_client *c, int json_mode, int argc, char **argv);
+static int cmd_console(const struct cix_client *c, int argc, char **argv);
+static int cmd_files(const struct cix_client *c, int argc, char **argv);
+static int cmd_migrate_storage(const struct cix_client *c, int json_mode, int argc, char **argv);
+static int cmd_migrate_storage_status(const struct cix_client *c, int json_mode, int argc, char **argv);
 
-static int cmd_container_edit(const struct thinc_client *c, int json_mode, int argc,
+static int cmd_container_edit(const struct cix_client *c, int json_mode, int argc,
                                char **argv); /* issue #11 -- defined below */
 
-static int cmd_container(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_container(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	if (argc >= 1 && strcmp(argv[0], "recipe") == 0)
 		return cmd_container_recipe(c, json_mode, argc - 1, argv + 1);
@@ -4245,64 +4245,64 @@ static int cmd_container(const struct thinc_client *c, int json_mode, int argc, 
 	if (argc >= 1 && strcmp(argv[0], "migrate-storage-status") == 0)
 		return cmd_migrate_storage_status(c, json_mode, argc - 1, argv + 1);
 	fprintf(stderr,
-	        "usage: thincctl container ls | run ... | start NAME | stop NAME | pause NAME |\n"
+	        "usage: cixctl container ls | run ... | start NAME | stop NAME | pause NAME |\n"
 	        "         unpause NAME | rm NAME | inspect NAME | stats NAME | console NAME [--cmd=PATH] |\n"
 	        "         files NAME --path=PATH | migrate-storage NAME --disk=ID | migrate-storage-status NAME\n"
-	        "       thincctl container recipe add --name=NAME --file=PATH\n"
-	        "       thincctl container recipe show|rm NAME / container recipe ls\n"
-	        "       thincctl container apply-recipe NAME [--secret=KEY=VALUE ...]\n"
-	        "       thincctl container network attach NAME --network=NETWORK [--ip=A.B.C.D]\n"
-	        "       thincctl container network detach NAME NETWORK\n"
-	        "       thincctl container device attach NAME ID / device detach NAME ID\n");
+	        "       cixctl container recipe add --name=NAME --file=PATH\n"
+	        "       cixctl container recipe show|rm NAME / container recipe ls\n"
+	        "       cixctl container apply-recipe NAME [--secret=KEY=VALUE ...]\n"
+	        "       cixctl container network attach NAME --network=NETWORK [--ip=A.B.C.D]\n"
+	        "       cixctl container network detach NAME NETWORK\n"
+	        "       cixctl container device attach NAME ID / device detach NAME ID\n");
 	return 2;
 }
 
-static int cmd_inspect(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_inspect(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	char path[256];
 
 	if (argc < 1) {
-		fprintf(stderr, "thincctl: inspect requires a container name\n");
+		fprintf(stderr, "cixctl: inspect requires a container name\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/containers/%s", argv[0]);
-	if (thinc_client_request(c, "GET", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_container_line);
 }
 
-static int cmd_rm(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_rm(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	char path[256];
 
 	if (argc < 1) {
-		fprintf(stderr, "thincctl: rm requires a container name\n");
+		fprintf(stderr, "cixctl: rm requires a container name\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/containers/%s", argv[0]);
-	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
 }
 
-static int cmd_stop(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_stop(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	char path[300];
 
 	if (argc < 1) {
-		fprintf(stderr, "thincctl: stop requires a container name\n");
+		fprintf(stderr, "cixctl: stop requires a container name\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/containers/%s/stop", argv[0]);
-	if (thinc_client_request(c, "POST", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "POST", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_health);
@@ -4315,23 +4315,23 @@ static int cmd_stop(const struct thinc_client *c, int json_mode, int argc, char 
  * overlay directory -- see main.c's handle_container_migrate_storage_
  * post()/get() for the full cutover this triggers daemon-side.
  */
-static int cmd_migrate_storage(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_migrate_storage(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *disk = NULL;
 	char path[300];
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 	int i;
 
 	if (argc < 1) {
-		fprintf(stderr, "thincctl: migrate-storage requires a container name\n");
+		fprintf(stderr, "cixctl: migrate-storage requires a container name\n");
 		return 2;
 	}
 	for (i = 1; i < argc; i++) {
 		if (strncmp(argv[i], "--disk=", 7) == 0)
 			disk = argv[i] + 7;
 		else {
-			fprintf(stderr, "thincctl: unknown migrate-storage option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown migrate-storage option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
@@ -4347,78 +4347,78 @@ static int cmd_migrate_storage(const struct thinc_client *c, int json_mode, int 
 	w.buf[w.len] = '\0';
 
 	snprintf(path, sizeof(path), "/v1/containers/%s/migrate-storage", argv[0]);
-	if (thinc_client_request(c, "POST", path, w.buf, &r) != 0) {
+	if (cix_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
 	return emit(&r, json_mode, fmt_storage_migrate_status);
 }
 
-static int cmd_migrate_storage_status(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_migrate_storage_status(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	char path[300];
-	struct thinc_response r;
+	struct cix_response r;
 
 	if (argc < 1) {
-		fprintf(stderr, "thincctl: migrate-storage-status requires a container name\n");
+		fprintf(stderr, "cixctl: migrate-storage-status requires a container name\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/containers/%s/migrate-storage", argv[0]);
-	if (thinc_client_request(c, "GET", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_storage_migrate_status);
 }
 
-static int cmd_start(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_start(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	char path[300];
 
 	if (argc < 1) {
-		fprintf(stderr, "thincctl: start requires a container name\n");
+		fprintf(stderr, "cixctl: start requires a container name\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/containers/%s/start", argv[0]);
-	if (thinc_client_request(c, "POST", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "POST", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_health);
 }
 
-static int cmd_pause(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_pause(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	char path[300];
 
 	if (argc < 1) {
-		fprintf(stderr, "thincctl: pause requires a container name\n");
+		fprintf(stderr, "cixctl: pause requires a container name\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/containers/%s/pause", argv[0]);
-	if (thinc_client_request(c, "POST", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "POST", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_health);
 }
 
-static int cmd_unpause(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_unpause(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	char path[300];
 
 	if (argc < 1) {
-		fprintf(stderr, "thincctl: unpause requires a container name\n");
+		fprintf(stderr, "cixctl: unpause requires a container name\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/containers/%s/unpause", argv[0]);
-	if (thinc_client_request(c, "POST", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "POST", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_health);
@@ -4446,7 +4446,7 @@ static void print_pressure_line(const char *label, const struct json_value *pres
 }
 
 /*
- * thincctl host-stats -- the host-wide counterpart to `stats NAME`,
+ * cixctl host-stats -- the host-wide counterpart to `stats NAME`,
  * same one-shot fetch-and-print/raw-counters convention (no rate or
  * percentage computed here; a live-refreshing view is the web
  * dashboard's own job).
@@ -4558,9 +4558,9 @@ static void fmt_kmsg(const struct json_value *v)
 	}
 }
 
-static int cmd_kmsg(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_kmsg(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	char path[64];
 	long tail = -1;
 	int i;
@@ -4569,7 +4569,7 @@ static int cmd_kmsg(const struct thinc_client *c, int json_mode, int argc, char 
 		if (strncmp(argv[i], "--tail=", 7) == 0) {
 			tail = atol(argv[i] + 7);
 		} else {
-			fprintf(stderr, "usage: thincctl kmsg [--tail=N]\n");
+			fprintf(stderr, "usage: cixctl kmsg [--tail=N]\n");
 			return 2;
 		}
 	}
@@ -4578,8 +4578,8 @@ static int cmd_kmsg(const struct thinc_client *c, int json_mode, int argc, char 
 	else
 		snprintf(path, sizeof(path), "/v1/system/kmsg");
 
-	if (thinc_client_request(c, "GET", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_kmsg);
@@ -4597,7 +4597,7 @@ static void fmt_server_health(const struct json_value *v)
 	size_t i;
 
 	/* Issue #83: printed FIRST and unmissably -- a warning here means
-	 * thinC is managing state it has nowhere to deliver, which is a
+	 * Cix is managing state it has nowhere to deliver, which is a
 	 * silent, total failure of that subsystem (records that resolve
 	 * nothing), not a degradation. */
 	if (warnings != NULL && warnings->type == JSON_ARRAY) {
@@ -4638,13 +4638,13 @@ static void fmt_server_health(const struct json_value *v)
 	}
 }
 
-static int cmd_server_health(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_server_health(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
 	if (argc == 0 || strcmp(argv[0], "ls") == 0) {
-		if (thinc_client_request(c, "GET", "/v1/system/server-health", NULL, &r) != 0) {
-			fprintf(stderr, "thincctl: could not reach daemon\n");
+		if (cix_client_request(c, "GET", "/v1/system/server-health", NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
 		}
 		return emit(&r, json_mode, fmt_server_health);
@@ -4661,17 +4661,17 @@ static int cmd_server_health(const struct thinc_client *c, int json_mode, int ar
 		jw_bool(&w, strcmp(argv[0], "drain") == 0);
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
-		rc = thinc_client_request(c, "PUT", path, w.buf, &r);
+		rc = cix_client_request(c, "PUT", path, w.buf, &r);
 		jw_free(&w);
 		if (rc != 0) {
-			fprintf(stderr, "thincctl: could not reach daemon\n");
+			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
 		}
 		return emit(&r, json_mode, fmt_server_health);
 	}
-	fprintf(stderr, "usage: thincctl server-health [ls]\n"
-	                "       thincctl server-health drain KIND CONTAINER\n"
-	                "       thincctl server-health undrain KIND CONTAINER\n"
+	fprintf(stderr, "usage: cixctl server-health [ls]\n"
+	                "       cixctl server-health drain KIND CONTAINER\n"
+	                "       cixctl server-health undrain KIND CONTAINER\n"
 	                "       (KIND is one of: ldap dns ntp syslog)\n");
 	return 2;
 }
@@ -4817,10 +4817,10 @@ static void fmt_software(const struct json_value *v)
  * the daemon must not block its event loop for the length of someone's
  * command (ADR-0180), but the operator should not have to know that.
  */
-static int cmd_container_exec(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_container_exec(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	char path[300];
-	struct thinc_response r;
+	struct cix_response r;
 	struct json_writer w;
 	const char *name;
 	int i, sep = -1;
@@ -4832,7 +4832,7 @@ static int cmd_container_exec(const struct thinc_client *c, int json_mode, int a
 		}
 	}
 	if (argc < 1 || sep < 1 || sep + 1 >= argc) {
-		fprintf(stderr, "usage: thincctl exec NAME -- COMMAND [ARGS...]\n"
+		fprintf(stderr, "usage: cixctl exec NAME -- COMMAND [ARGS...]\n"
 		                "  Runs COMMAND inside the RUNNING container's own namespaces.\n"
 		                "  No shell: no quoting, globbing or word splitting happens anywhere,\n"
 		                "  which is the point -- nothing reinterprets what you asked for.\n");
@@ -4851,9 +4851,9 @@ static int cmd_container_exec(const struct thinc_client *c, int json_mode, int a
 	w.buf[w.len] = '\0';
 
 	snprintf(path, sizeof(path), "/v1/containers/%s/exec", name);
-	if (thinc_client_request(c, "POST", path, w.buf, &r) != 0) {
+	if (cix_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -4861,19 +4861,19 @@ static int cmd_container_exec(const struct thinc_client *c, int json_mode, int a
 		emit(&r, json_mode, NULL);
 		return 1;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	for (i = 0; i < 3000; i++) {
 		const char *state;
 
 		usleep(100000);
-		if (thinc_client_request(c, "GET", path, NULL, &r) != 0) {
-			fprintf(stderr, "thincctl: could not reach daemon\n");
+		if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
 		}
 		state = json_as_string(json_object_get(r.json, "state"));
 		if (state != NULL && strcmp(state, "running") == 0) {
-			thinc_response_free(&r);
+			cix_response_free(&r);
 			continue;
 		}
 		if (json_mode)
@@ -4887,18 +4887,18 @@ static int cmd_container_exec(const struct thinc_client *c, int json_mode, int a
 			if (out != NULL && out[0] != '\0')
 				fputs(out, stdout);
 			if (tr != NULL && tr->type == JSON_BOOL && tr->u.boolean)
-				fprintf(stderr, "thincctl: output truncated at the capture limit\n");
+				fprintf(stderr, "cixctl: output truncated at the capture limit\n");
 			if (state != NULL && strcmp(state, "timeout") == 0) {
-				fprintf(stderr, "thincctl: the command timed out and was killed\n");
-				thinc_response_free(&r);
+				fprintf(stderr, "cixctl: the command timed out and was killed\n");
+				cix_response_free(&r);
 				return 124; /* timeout(1)'s own convention */
 			}
 			rc = (es != NULL && es->type == JSON_NUMBER) ? (int)json_as_number(es) : 1;
-			thinc_response_free(&r);
+			cix_response_free(&r);
 			return rc;
 		}
 	}
-	fprintf(stderr, "thincctl: gave up waiting for the command\n");
+	fprintf(stderr, "cixctl: gave up waiting for the command\n");
 	return 1;
 }
 
@@ -4909,9 +4909,9 @@ static int cmd_container_exec(const struct thinc_client *c, int json_mode, int a
  * operator having seen what it destroys would defeat the point of the
  * guard rather than honour it.
  */
-static int cmd_factory_reset(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_factory_reset(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	struct json_writer w;
 	const char *confirm = NULL;
 	int i;
@@ -4922,7 +4922,7 @@ static int cmd_factory_reset(const struct thinc_client *c, int json_mode, int ar
 	}
 	if (confirm == NULL) {
 		fprintf(stderr,
-		        "usage: thincctl factory-reset --confirm=<instance name>\n"
+		        "usage: cixctl factory-reset --confirm=<instance name>\n"
 		        "\n"
 		        "  Returns this box to its just-installed state and REBOOTS. Destroys every\n"
 		        "  container, image, network, DNS/PKI/LDAP/NTP registration, package state,\n"
@@ -4931,7 +4931,7 @@ static int cmd_factory_reset(const struct thinc_client *c, int json_mode, int ar
 		        "  Keeps the installed OS itself, and does not reformat any disk -- disk role\n"
 		        "  assignments are forgotten, the filesystems on them are left alone.\n"
 		        "\n"
-		        "  The instance name is this install's own (thincctl site).\n");
+		        "  The instance name is this install's own (cixctl site).\n");
 		return 2;
 	}
 
@@ -4941,35 +4941,35 @@ static int cmd_factory_reset(const struct thinc_client *c, int json_mode, int ar
 	jw_str(&w, confirm);
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
-	if (thinc_client_request(c, "POST", "/v1/system/factory-reset", w.buf, &r) != 0) {
+	if (cix_client_request(c, "POST", "/v1/system/factory-reset", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
 	return emit(&r, json_mode, NULL);
 }
 
-static int cmd_software(const struct thinc_client *c, int json_mode)
+static int cmd_software(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/software", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/software", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_software);
 }
 
-static int cmd_volume_quota(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_volume_quota(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	char path[300];
-	struct thinc_response r;
+	struct cix_response r;
 	struct json_writer w;
 	long long bytes;
 
 	if (argc < 3) {
-		fprintf(stderr, "usage: thincctl volume quota NAME BYTES\n"
+		fprintf(stderr, "usage: cixctl volume quota NAME BYTES\n"
 		                "  0 removes the limit. A volume with no limit is an unbounded way to\n"
 		                "  fill the disk it sits on.\n");
 		return 2;
@@ -4983,19 +4983,19 @@ static int cmd_volume_quota(const struct thinc_client *c, int json_mode, int arg
 	jw_int(&w, bytes);
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
-	if (thinc_client_request(c, "PUT", path, w.buf, &r) != 0) {
+	if (cix_client_request(c, "PUT", path, w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
 	return emit(&r, json_mode, fmt_volume_one);
 }
 
-static int cmd_volume_backups(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_volume_backups(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	char path[300];
-	struct thinc_response r;
+	struct cix_response r;
 	struct json_writer w;
 	int enable = -1;
 	long retain = 0;
@@ -5004,7 +5004,7 @@ static int cmd_volume_backups(const struct thinc_client *c, int json_mode, int a
 
 	if (argc < 2) {
 		fprintf(stderr,
-		        "usage: thincctl volume backups NAME [--enable|--disable] [--retain=N]\n"
+		        "usage: cixctl volume backups NAME [--enable|--disable] [--retain=N]\n"
 		        "                                    [--while-running=refuse|pause|allow]\n"
 		        "  What to do when a container using the volume is running:\n"
 		        "    refuse  (default) skip it -- and an always-on container means never\n"
@@ -5026,8 +5026,8 @@ static int cmd_volume_backups(const struct thinc_client *c, int json_mode, int a
 	snprintf(path, sizeof(path), "/v1/volumes/%s/backups", argv[1]);
 
 	if (enable < 0 && retain == 0 && while_running == NULL) {
-		if (thinc_client_request(c, "GET", path, NULL, &r) != 0) {
-			fprintf(stderr, "thincctl: could not reach daemon\n");
+		if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
 		}
 		return emit(&r, json_mode, fmt_volume_backups);
@@ -5046,40 +5046,40 @@ static int cmd_volume_backups(const struct thinc_client *c, int json_mode, int a
 	}
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
-	if (thinc_client_request(c, "PUT", path, w.buf, &r) != 0) {
+	if (cix_client_request(c, "PUT", path, w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
 	return emit(&r, json_mode, fmt_volume_backups);
 }
 
-static int cmd_volume_backup_now(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_volume_backup_now(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	char path[300];
-	struct thinc_response r;
+	struct cix_response r;
 
 	if (argc < 2) {
-		fprintf(stderr, "usage: thincctl volume backup NAME\n");
+		fprintf(stderr, "usage: cixctl volume backup NAME\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/volumes/%s/backup", argv[1]);
-	if (thinc_client_request(c, "POST", path, "{}", &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "POST", path, "{}", &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_volume_backups);
 }
 
-static int cmd_volume_restore(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_volume_restore(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	char path[300];
-	struct thinc_response r;
+	struct cix_response r;
 	struct json_writer w;
 
 	if (argc < 3) {
-		fprintf(stderr, "usage: thincctl volume restore NAME SNAPSHOT\n"
+		fprintf(stderr, "usage: cixctl volume restore NAME SNAPSHOT\n"
 		                "  Replaces everything currently in the volume with that snapshot.\n");
 		return 2;
 	}
@@ -5093,23 +5093,23 @@ static int cmd_volume_restore(const struct thinc_client *c, int json_mode, int a
 	jw_str(&w, argv[1]);
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
-	if (thinc_client_request(c, "POST", path, w.buf, &r) != 0) {
+	if (cix_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
 	return emit(&r, json_mode, fmt_volume_backups);
 }
 
-static int cmd_volume(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_volume(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	const char *sub = argc > 0 ? argv[0] : "ls";
 
 	if (strcmp(sub, "ls") == 0) {
-		if (thinc_client_request(c, "GET", "/v1/volumes", NULL, &r) != 0) {
-			fprintf(stderr, "thincctl: could not reach daemon\n");
+		if (cix_client_request(c, "GET", "/v1/volumes", NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
 		}
 		return emit(&r, json_mode, fmt_volumes);
@@ -5133,7 +5133,7 @@ static int cmd_volume(const struct thinc_client *c, int json_mode, int argc, cha
 				owner_gid = argv[i] + 12;
 		}
 		if (name == NULL || (owner_uid != NULL) != (owner_gid != NULL)) {
-			fprintf(stderr, "usage: thincctl volume create --name=NAME [--disk=DISK] "
+			fprintf(stderr, "usage: cixctl volume create --name=NAME [--disk=DISK] "
 			                "[--owner-uid=N --owner-gid=N]\n");
 			return 2;
 		}
@@ -5153,10 +5153,10 @@ static int cmd_volume(const struct thinc_client *c, int json_mode, int argc, cha
 		}
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
-		rc = thinc_client_request(c, "POST", "/v1/volumes", w.buf, &r);
+		rc = cix_client_request(c, "POST", "/v1/volumes", w.buf, &r);
 		jw_free(&w);
 		if (rc != 0) {
-			fprintf(stderr, "thincctl: could not reach daemon\n");
+			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
 		}
 		return emit(&r, json_mode, fmt_volume_one);
@@ -5182,13 +5182,13 @@ static int cmd_volume(const struct thinc_client *c, int json_mode, int argc, cha
 			else if (strcmp(argv[i], "--root") == 0)
 				clear = 1;
 			else {
-				fprintf(stderr, "thincctl: unknown volume owner option '%s'\n", argv[i]);
+				fprintf(stderr, "cixctl: unknown volume owner option '%s'\n", argv[i]);
 				return 2;
 			}
 		}
 		if (!clear && (uid == NULL || gid == NULL)) {
-			fprintf(stderr, "usage: thincctl volume owner NAME --uid=N --gid=N [--recursive]\n"
-			                "       thincctl volume owner NAME --root   (hand it back to root)\n");
+			fprintf(stderr, "usage: cixctl volume owner NAME --uid=N --gid=N [--recursive]\n"
+			                "       cixctl volume owner NAME --root   (hand it back to root)\n");
 			return 2;
 		}
 
@@ -5210,10 +5210,10 @@ static int cmd_volume(const struct thinc_client *c, int json_mode, int argc, cha
 		w.buf[w.len] = '\0';
 
 		snprintf(path, sizeof(path), "/v1/volumes/%s/owner", argv[1]);
-		rc = thinc_client_request(c, "PUT", path, w.buf, &r);
+		rc = cix_client_request(c, "PUT", path, w.buf, &r);
 		jw_free(&w);
 		if (rc != 0) {
-			fprintf(stderr, "thincctl: could not reach daemon\n");
+			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
 		}
 		return emit(&r, json_mode, fmt_volume_one);
@@ -5222,8 +5222,8 @@ static int cmd_volume(const struct thinc_client *c, int json_mode, int argc, cha
 		char path[128];
 
 		snprintf(path, sizeof(path), "/v1/volumes/%s", argv[1]);
-		if (thinc_client_request(c, "GET", path, NULL, &r) != 0) {
-			fprintf(stderr, "thincctl: could not reach daemon\n");
+		if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
 		}
 		return emit(&r, json_mode, fmt_volume_one);
@@ -5232,8 +5232,8 @@ static int cmd_volume(const struct thinc_client *c, int json_mode, int argc, cha
 		char path[128];
 
 		snprintf(path, sizeof(path), "/v1/volumes/%s", argv[1]);
-		if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
-			fprintf(stderr, "thincctl: could not reach daemon\n");
+		if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
 		}
 		return emit(&r, json_mode, NULL);
@@ -5249,12 +5249,12 @@ static int cmd_volume(const struct thinc_client *c, int json_mode, int argc, cha
 	if (strcmp(argv[0], "migrate") == 0) {
 		const char *disk = "";
 		struct json_writer w;
-		struct thinc_response r;
+		struct cix_response r;
 		char path[256];
 		int i;
 
 		if (argc < 2) {
-			fprintf(stderr, "usage: thincctl volume migrate NAME [--disk=DISK]\n"
+			fprintf(stderr, "usage: cixctl volume migrate NAME [--disk=DISK]\n"
 			                "  Omit --disk to move it back to the default OS-disk placement.\n");
 			return 2;
 		}
@@ -5271,35 +5271,35 @@ static int cmd_volume(const struct thinc_client *c, int json_mode, int argc, cha
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
 
-		if (thinc_client_request(c, "POST", path, w.buf, &r) != 0) {
+		if (cix_client_request(c, "POST", path, w.buf, &r) != 0) {
 			jw_free(&w);
-			fprintf(stderr, "thincctl: could not reach daemon\n");
+			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
 		}
 		jw_free(&w);
 		return emit(&r, json_mode, fmt_volume_one);
 	}
-	fprintf(stderr, "usage: thincctl volume ls\n"
-	                "       thincctl volume create --name=NAME [--disk=DISK]\n"
-	                "       thincctl volume show NAME\n"
-	                "       thincctl volume rm NAME\n"
-	                "       thincctl volume migrate NAME [--disk=DISK]\n"
-	                "       thincctl volume quota NAME BYTES   (0 removes the limit)\n"
-	                "       thincctl volume backups NAME [--enable|--disable] [--retain=N]\n"
-	                "       thincctl volume backup NAME\n"
-	                "       thincctl volume restore NAME SNAPSHOT\n"
+	fprintf(stderr, "usage: cixctl volume ls\n"
+	                "       cixctl volume create --name=NAME [--disk=DISK]\n"
+	                "       cixctl volume show NAME\n"
+	                "       cixctl volume rm NAME\n"
+	                "       cixctl volume migrate NAME [--disk=DISK]\n"
+	                "       cixctl volume quota NAME BYTES   (0 removes the limit)\n"
+	                "       cixctl volume backups NAME [--enable|--disable] [--retain=N]\n"
+	                "       cixctl volume backup NAME\n"
+	                "       cixctl volume restore NAME SNAPSHOT\n"
 	                "  A volume outlives the containers using it: deleting a container never\n"
 	                "  removes its volumes, and `volume rm` refuses while any container\n"
 	                "  definition still references one.\n");
 	return 2;
 }
 
-static int cmd_host_stats(const struct thinc_client *c, int json_mode)
+static int cmd_host_stats(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/system/stats", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/system/stats", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_host_stats);
@@ -5336,43 +5336,43 @@ static void fmt_process_list(const struct json_value *v)
 		fmt_process_line(v->u.array.items[i]);
 }
 
-static int cmd_process_ls(const struct thinc_client *c, int json_mode)
+static int cmd_process_ls(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/system/processes", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/system/processes", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_process_list);
 }
 
-static int cmd_process_kill(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_process_kill(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	char path[64];
 
 	if (argc < 1) {
-		fprintf(stderr, "thincctl: process kill requires a pid\n");
+		fprintf(stderr, "cixctl: process kill requires a pid\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/system/processes/%s", argv[0]);
-	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
 }
 
-static int cmd_process(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_process(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
 		fprintf(stderr,
-		        "usage: thincctl process ls  -- every real process on the box, correlated to a\n"
+		        "usage: cixctl process ls  -- every real process on the box, correlated to a\n"
 		        "               container by its own real host ppid chain (ADR-0131)\n"
-		        "       thincctl process kill PID  -- a real, immediate SIGKILL; refuses pid 1\n"
+		        "       cixctl process kill PID  -- a real, immediate SIGKILL; refuses pid 1\n"
 		        "               and this daemon's own pid\n");
 		return 2;
 	}
@@ -5382,7 +5382,7 @@ static int cmd_process(const struct thinc_client *c, int json_mode, int argc, ch
 	if (strcmp(sub, "kill") == 0)
 		return cmd_process_kill(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "thincctl: unknown process subcommand '%s'\n", sub);
+	fprintf(stderr, "cixctl: unknown process subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -5405,31 +5405,31 @@ static void fmt_ping(const struct json_value *v)
  * shape as poll_bootstrap_fetch()/poll_hostbuild()/poll_iso(); the
  * server side itself is bounded to a fixed ~2s timeout, so this loop
  * always terminates. */
-static int poll_ping(const struct thinc_client *c, struct thinc_response *out)
+static int poll_ping(const struct cix_client *c, struct cix_response *out)
 {
 	for (;;) {
 		const char *state;
 
-		if (thinc_client_request(c, "GET", "/v1/system/ping", NULL, out) != 0) {
-			fprintf(stderr, "thincctl: could not reach daemon\n");
+		if (cix_client_request(c, "GET", "/v1/system/ping", NULL, out) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return -1;
 		}
 		state = json_str_field(out->json, "state");
 		if (state == NULL || strcmp(state, "pending") != 0)
 			return 0;
-		thinc_response_free(out);
+		cix_response_free(out);
 		usleep(100000);
 	}
 }
 
-static int cmd_ping(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_ping(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 	int rc;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: thincctl ping HOST\n");
+		fprintf(stderr, "usage: cixctl ping HOST\n");
 		return 2;
 	}
 
@@ -5440,21 +5440,21 @@ static int cmd_ping(const struct thinc_client *c, int json_mode, int argc, char 
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (thinc_client_request(c, "POST", "/v1/system/ping", w.buf, &r) != 0) {
+	if (cix_client_request(c, "POST", "/v1/system/ping", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
 	if (r.status == 409) {
-		thinc_response_free(&r);
-		fprintf(stderr, "thincctl: another ping is already in flight\n");
+		cix_response_free(&r);
+		fprintf(stderr, "cixctl: another ping is already in flight\n");
 		return 1;
 	}
 	if (r.status != 202) {
 		return emit(&r, json_mode, fmt_ping);
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	if (poll_ping(c, &r) != 0)
 		return 1;
@@ -5472,7 +5472,7 @@ static int cmd_ping(const struct thinc_client *c, int json_mode, int argc, char 
 }
 
 /*
- * thincctl container stats <name> -- one-shot fetch-and-print, plain
+ * cixctl container stats <name> -- one-shot fetch-and-print, plain
  * key/value lines. Raw counters exactly as the daemon returns them
  * (ADR-0054: no rate/percentage computed here) -- a live-refreshing
  * view belongs to the web dashboard's own Stats tab, not this CLI.
@@ -5528,24 +5528,24 @@ static void fmt_container_stats(const struct json_value *v)
 	}
 }
 
-static int cmd_container_stats(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_container_stats(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	char path[300];
 
 	if (argc < 1) {
-		fprintf(stderr, "thincctl: stats requires a container name\n");
+		fprintf(stderr, "cixctl: stats requires a container name\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/containers/%s/stats", argv[0]);
-	if (thinc_client_request(c, "GET", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_container_stats);
 }
 
-static int cmd_console(const struct thinc_client *c, int argc, char **argv)
+static int cmd_console(const struct cix_client *c, int argc, char **argv)
 {
 	const char *name = NULL;
 	const char *cmd = NULL;
@@ -5557,16 +5557,16 @@ static int cmd_console(const struct thinc_client *c, int argc, char **argv)
 		else if (name == NULL)
 			name = argv[i];
 		else {
-			fprintf(stderr, "thincctl: unknown console option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown console option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (name == NULL) {
-		fprintf(stderr, "usage: thincctl console NAME [--cmd=PATH]\n");
+		fprintf(stderr, "usage: cixctl console NAME [--cmd=PATH]\n");
 		return 2;
 	}
 
-	return thinc_console_run(c, name, cmd) == 0 ? 0 : 1;
+	return cix_console_run(c, name, cmd) == 0 ? 0 : 1;
 }
 
 /* Matches daemon's CONTAINER_MAX_NETWORKS -- see include/container.h. */
@@ -5581,7 +5581,7 @@ static int cmd_console(const struct thinc_client *c, int argc, char **argv)
  * One --volume=NAME:/path[:ro] flag, parsed. Two colon-separated
  * fields plus an optional trailing ":ro" -- deliberately the shape
  * people already know from other runtimes, so nobody has to learn a
- * thinC-specific spelling for the most ordinary thing you can ask of a
+ * Cix-specific spelling for the most ordinary thing you can ask of a
  * volume.
  */
 struct cli_volume_mount {
@@ -5903,14 +5903,14 @@ static void url_encode_query_value(const char *in, char *out, size_t out_size)
 	out[oi] = '\0';
 }
 
-static int cmd_files_get(const struct thinc_client *c, int argc, char **argv)
+static int cmd_files_get(const struct cix_client *c, int argc, char **argv)
 {
 	const char *name = NULL;
 	const char *path_arg = NULL;
 	const char *output = NULL;
 	char encoded_path[256 * 3]; /* 256 matches daemon's CONTAINER_FILE_PATH_MAX */
 	char path[400];
-	struct thinc_response r;
+	struct cix_response r;
 	int i;
 
 	for (i = 0; i < argc; i++) {
@@ -5921,27 +5921,27 @@ static int cmd_files_get(const struct thinc_client *c, int argc, char **argv)
 		else if (name == NULL)
 			name = argv[i];
 		else {
-			fprintf(stderr, "thincctl: unknown files get option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown files get option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (name == NULL || path_arg == NULL) {
-		fprintf(stderr, "usage: thincctl files get NAME --path=/some/path [--output=PATH]\n");
+		fprintf(stderr, "usage: cixctl files get NAME --path=/some/path [--output=PATH]\n");
 		return 2;
 	}
 
 	url_encode_query_value(path_arg, encoded_path, sizeof(encoded_path));
 	snprintf(path, sizeof(path), "/v1/containers/%s/files?path=%s", name, encoded_path);
 
-	if (thinc_client_request(c, "GET", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	if (r.status < 200 || r.status >= 300) {
 		const char *msg = json_str_field(r.json, "error");
 
-		fprintf(stderr, "thincctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed", r.status);
-		thinc_response_free(&r);
+		fprintf(stderr, "cixctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed", r.status);
+		cix_response_free(&r);
 		return 1;
 	}
 
@@ -5958,7 +5958,7 @@ static int cmd_files_get(const struct thinc_client *c, int argc, char **argv)
 			perror(output);
 			if (f != NULL)
 				fclose(f);
-			thinc_response_free(&r);
+			cix_response_free(&r);
 			return 1;
 		}
 		fclose(f);
@@ -5966,7 +5966,7 @@ static int cmd_files_get(const struct thinc_client *c, int argc, char **argv)
 		fwrite(r.body, 1, r.body_len, stdout);
 	}
 
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	return 0;
 }
 
@@ -5980,7 +5980,7 @@ static int cmd_files_get(const struct thinc_client *c, int argc, char **argv)
  * survive a recreate" path is a container recipe (`container recipe
  * add`/`container apply-recipe`), not this command.
  */
-static int cmd_files_put(const struct thinc_client *c, int argc, char **argv)
+static int cmd_files_put(const struct cix_client *c, int argc, char **argv)
 {
 	const char *name = NULL;
 	const char *path_arg = NULL;
@@ -5991,7 +5991,7 @@ static int cmd_files_put(const struct thinc_client *c, int argc, char **argv)
 	char encoded_path[256 * 3];
 	char path[400];
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 	int i;
 
 	for (i = 0; i < argc; i++) {
@@ -6004,18 +6004,18 @@ static int cmd_files_put(const struct thinc_client *c, int argc, char **argv)
 		else if (name == NULL)
 			name = argv[i];
 		else {
-			fprintf(stderr, "thincctl: unknown files put option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown files put option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (name == NULL || path_arg == NULL || file_arg == NULL) {
 		fprintf(stderr,
-		        "usage: thincctl files put NAME --path=/some/path --file=LOCAL_PATH "
+		        "usage: cixctl files put NAME --path=/some/path --file=LOCAL_PATH "
 		        "[--mode=0644]\n");
 		return 2;
 	}
 	if (read_local_file(file_arg, &content, &content_len) != 0) {
-		fprintf(stderr, "thincctl: could not read %s\n", file_arg);
+		fprintf(stderr, "cixctl: could not read %s\n", file_arg);
 		return 1;
 	}
 
@@ -6034,9 +6034,9 @@ static int cmd_files_put(const struct thinc_client *c, int argc, char **argv)
 	url_encode_query_value(path_arg, encoded_path, sizeof(encoded_path));
 	snprintf(path, sizeof(path), "/v1/containers/%s/files?path=%s", name, encoded_path);
 
-	if (thinc_client_request(c, "PUT", path, w.buf, &r) != 0) {
+	if (cix_client_request(c, "PUT", path, w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -6044,22 +6044,22 @@ static int cmd_files_put(const struct thinc_client *c, int argc, char **argv)
 	if (r.status < 200 || r.status >= 300) {
 		const char *msg = json_str_field(r.json, "error");
 
-		fprintf(stderr, "thincctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed", r.status);
-		thinc_response_free(&r);
+		fprintf(stderr, "cixctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed", r.status);
+		cix_response_free(&r);
 		return 1;
 	}
 	printf("wrote %s on %s\n", path_arg, name);
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	return 0;
 }
 
-static int cmd_files(const struct thinc_client *c, int argc, char **argv)
+static int cmd_files(const struct cix_client *c, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: thincctl files get NAME --path=/some/path [--output=PATH]\n"
-		                "       thincctl files put NAME --path=/some/path --file=LOCAL_PATH "
+		fprintf(stderr, "usage: cixctl files get NAME --path=/some/path [--output=PATH]\n"
+		                "       cixctl files put NAME --path=/some/path --file=LOCAL_PATH "
 		                "[--mode=0644]\n");
 		return 2;
 	}
@@ -6069,35 +6069,35 @@ static int cmd_files(const struct thinc_client *c, int argc, char **argv)
 	if (strcmp(sub, "put") == 0)
 		return cmd_files_put(c, argc - 1, argv + 1);
 
-	fprintf(stderr, "thincctl: unknown files subcommand '%s'\n", sub);
+	fprintf(stderr, "cixctl: unknown files subcommand '%s'\n", sub);
 	return 2;
 }
 
-static int cmd_backup(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_backup(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *output = NULL;
 	int i;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--output=", 9) == 0)
 			output = argv[i] + 9;
 		else {
-			fprintf(stderr, "thincctl: unknown backup option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown backup option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 
-	if (thinc_client_request(c, "GET", "/v1/system/backup", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/system/backup", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	if (r.status < 200 || r.status >= 300) {
 		const char *msg = json_str_field(r.json, "error");
 
-		fprintf(stderr, "thincctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
+		fprintf(stderr, "cixctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
 		        r.status);
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		return 1;
 	}
 
@@ -6112,46 +6112,46 @@ static int cmd_backup(const struct thinc_client *c, int json_mode, int argc, cha
 			perror(output);
 			if (f != NULL)
 				fclose(f);
-			thinc_response_free(&r);
+			cix_response_free(&r);
 			return 1;
 		}
 		fclose(f);
 		printf("backup written to %s (%zu bytes)\n", output, r.body_len);
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		return 0;
 	}
 
 	return emit(&r, json_mode, NULL);
 }
 
-static int cmd_restore(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_restore(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *input = NULL;
 	int i;
 	char *buf;
 	size_t len;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--input=", 8) == 0)
 			input = argv[i] + 8;
 		else {
-			fprintf(stderr, "thincctl: unknown restore option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown restore option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (input == NULL) {
-		fprintf(stderr, "usage: thincctl restore --input=PATH\n");
+		fprintf(stderr, "usage: cixctl restore --input=PATH\n");
 		return 2;
 	}
 	if (read_local_file(input, &buf, &len) != 0) {
-		fprintf(stderr, "thincctl: could not read %s\n", input);
+		fprintf(stderr, "cixctl: could not read %s\n", input);
 		return 1;
 	}
 
-	if (thinc_client_request(c, "POST", "/v1/system/restore", buf, &r) != 0) {
+	if (cix_client_request(c, "POST", "/v1/system/restore", buf, &r) != 0) {
 		free(buf);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	free(buf);
@@ -6171,12 +6171,12 @@ static void fmt_site_config(const struct json_value *v)
 	       domain_suffix != NULL ? domain_suffix : "?");
 }
 
-static int cmd_site_show(const struct thinc_client *c, int json_mode)
+static int cmd_site_show(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/system/site", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/system/site", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_site_config);
@@ -6190,7 +6190,7 @@ static int cmd_site_show(const struct thinc_client *c, int json_mode)
  * fetches the current config first and only overrides what was
  * actually passed on the command line.
  */
-static int cmd_site_set(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_site_set(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	char instance_name[128];
 	char site_name[128];
@@ -6201,7 +6201,7 @@ static int cmd_site_set(const struct thinc_client *c, int json_mode, int argc, c
 	const char *cur;
 	int i;
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--instance-name=", 16) == 0)
@@ -6211,32 +6211,32 @@ static int cmd_site_set(const struct thinc_client *c, int json_mode, int argc, c
 		else if (strncmp(argv[i], "--domain-suffix=", 16) == 0)
 			new_domain_suffix = argv[i] + 16;
 		else {
-			fprintf(stderr, "thincctl: unknown site set option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown site set option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (new_instance_name == NULL && new_site_name == NULL && new_domain_suffix == NULL) {
-		fprintf(stderr, "usage: thincctl site set [--instance-name=NAME] [--site-name=NAME] "
+		fprintf(stderr, "usage: cixctl site set [--instance-name=NAME] [--site-name=NAME] "
 		                "[--domain-suffix=NAME]\n");
 		return 2;
 	}
 
-	if (thinc_client_request(c, "GET", "/v1/system/site", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/system/site", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	if (r.status < 200 || r.status >= 300) {
-		fprintf(stderr, "thincctl: could not read current site config (HTTP %d)\n", r.status);
-		thinc_response_free(&r);
+		fprintf(stderr, "cixctl: could not read current site config (HTTP %d)\n", r.status);
+		cix_response_free(&r);
 		return 1;
 	}
 	cur = json_str_field(r.json, "instance_name");
-	snprintf(instance_name, sizeof(instance_name), "%s", cur != NULL ? cur : "thinc");
+	snprintf(instance_name, sizeof(instance_name), "%s", cur != NULL ? cur : "cix");
 	cur = json_str_field(r.json, "site_name");
 	snprintf(site_name, sizeof(site_name), "%s", cur != NULL ? cur : "");
 	cur = json_str_field(r.json, "domain_suffix");
 	snprintf(domain_suffix, sizeof(domain_suffix), "%s", cur != NULL ? cur : "internal");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	if (new_instance_name != NULL)
 		snprintf(instance_name, sizeof(instance_name), "%s", new_instance_name);
@@ -6256,9 +6256,9 @@ static int cmd_site_set(const struct thinc_client *c, int json_mode, int argc, c
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (thinc_client_request(c, "PUT", "/v1/system/site", w.buf, &r) != 0) {
+	if (cix_client_request(c, "PUT", "/v1/system/site", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -6266,13 +6266,13 @@ static int cmd_site_set(const struct thinc_client *c, int json_mode, int argc, c
 	return emit(&r, json_mode, fmt_site_config);
 }
 
-static int cmd_site(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_site(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: thincctl site show\n"
-		                "       thincctl site set [--instance-name=NAME] [--site-name=NAME] "
+		fprintf(stderr, "usage: cixctl site show\n"
+		                "       cixctl site set [--instance-name=NAME] [--site-name=NAME] "
 		                "[--domain-suffix=NAME]\n");
 		return 2;
 	}
@@ -6282,7 +6282,7 @@ static int cmd_site(const struct thinc_client *c, int json_mode, int argc, char 
 	if (strcmp(sub, "set") == 0)
 		return cmd_site_set(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "thincctl: unknown site subcommand '%s'\n", sub);
+	fprintf(stderr, "cixctl: unknown site subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -6304,12 +6304,12 @@ static void fmt_daemon_config(const struct json_value *v)
 	       (long)json_as_number(json_object_get(v, "https_port")));
 }
 
-static int cmd_daemon_config_show(const struct thinc_client *c, int json_mode)
+static int cmd_daemon_config_show(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/system/daemon-config", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/system/daemon-config", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_daemon_config);
@@ -6322,7 +6322,7 @@ static int cmd_daemon_config_show(const struct thinc_client *c, int json_mode)
  * are. So this sends only what the operator actually gave on the
  * command line, no fetch-then-merge dance needed.
  */
-static int cmd_daemon_config_set(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_daemon_config_set(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *port = NULL;
 	const char *https_port = NULL;
@@ -6333,7 +6333,7 @@ static int cmd_daemon_config_set(const struct thinc_client *c, int json_mode, in
 	int want_https = -1;
 	int i;
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--port=", 7) == 0)
@@ -6355,18 +6355,18 @@ static int cmd_daemon_config_set(const struct thinc_client *c, int json_mode, in
 		else if (strcmp(argv[i], "--disable-https") == 0)
 			want_https = 0;
 		else {
-			fprintf(stderr, "thincctl: unknown daemon-config set option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown daemon-config set option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (bind_ip != NULL && clear_bind_ip) {
-		fprintf(stderr, "thincctl: --bind-ip= and --clear-bind-ip are mutually exclusive\n");
+		fprintf(stderr, "cixctl: --bind-ip= and --clear-bind-ip are mutually exclusive\n");
 		return 2;
 	}
 	if (port == NULL && https_port == NULL && management_network == NULL && bind_ip == NULL &&
 	    !clear_bind_ip && want_http == -1 && want_https == -1) {
 		fprintf(stderr,
-		        "usage: thincctl daemon-config set [--port=N] [--https-port=N] "
+		        "usage: cixctl daemon-config set [--port=N] [--https-port=N] "
 		        "[--enable-http] [--disable-http] [--enable-https] [--disable-https] "
 		        "[--management-network=NAME] [--bind-ip=A.B.C.D | --clear-bind-ip]\n");
 		return 2;
@@ -6404,9 +6404,9 @@ static int cmd_daemon_config_set(const struct thinc_client *c, int json_mode, in
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (thinc_client_request(c, "PUT", "/v1/system/daemon-config", w.buf, &r) != 0) {
+	if (cix_client_request(c, "PUT", "/v1/system/daemon-config", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -6414,13 +6414,13 @@ static int cmd_daemon_config_set(const struct thinc_client *c, int json_mode, in
 	return emit(&r, json_mode, fmt_daemon_config);
 }
 
-static int cmd_daemon_config(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_daemon_config(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: thincctl daemon-config show\n"
-		                "       thincctl daemon-config set [--port=N] [--https-port=N] "
+		fprintf(stderr, "usage: cixctl daemon-config show\n"
+		                "       cixctl daemon-config set [--port=N] [--https-port=N] "
 		                "[--enable-http] [--disable-http] [--enable-https] [--disable-https] "
 		                "[--management-network=NAME] [--bind-ip=A.B.C.D | --clear-bind-ip]\n");
 		return 2;
@@ -6431,11 +6431,11 @@ static int cmd_daemon_config(const struct thinc_client *c, int json_mode, int ar
 	if (strcmp(sub, "set") == 0)
 		return cmd_daemon_config_set(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "thincctl: unknown daemon-config subcommand '%s'\n", sub);
+	fprintf(stderr, "cixctl: unknown daemon-config subcommand '%s'\n", sub);
 	return 2;
 }
 
-/* ADR-0141 Phase 5: thincctl backup-config show|set|status|snapshot-now
+/* ADR-0141 Phase 5: cixctl backup-config show|set|status|snapshot-now
  * -- turns the `backup` disk role from a pure inert label into a real,
  * scheduled state-storage snapshot mechanism. */
 static void fmt_backup_config(const struct json_value *v)
@@ -6462,25 +6462,25 @@ static void fmt_backup_status(const struct json_value *v)
 	printf("\n");
 }
 
-static int cmd_backup_config_show(const struct thinc_client *c, int json_mode)
+static int cmd_backup_config_show(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/system/backup-config", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/system/backup-config", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_backup_config);
 }
 
-static int cmd_backup_config_set(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_backup_config_set(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *disk = NULL;
 	int clear_disk = 0;
 	int want_enabled = -1; /* -1: not given */
 	const char *interval_hours = NULL;
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 	int i;
 
 	for (i = 0; i < argc; i++) {
@@ -6495,17 +6495,17 @@ static int cmd_backup_config_set(const struct thinc_client *c, int json_mode, in
 		else if (strncmp(argv[i], "--interval-hours=", 17) == 0)
 			interval_hours = argv[i] + 17;
 		else {
-			fprintf(stderr, "thincctl: unknown backup-config set option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown backup-config set option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (disk != NULL && clear_disk) {
-		fprintf(stderr, "thincctl: --disk= and --clear-disk are mutually exclusive\n");
+		fprintf(stderr, "cixctl: --disk= and --clear-disk are mutually exclusive\n");
 		return 2;
 	}
 	if (disk == NULL && !clear_disk && want_enabled == -1 && interval_hours == NULL) {
 		fprintf(stderr,
-		        "usage: thincctl backup-config set [--disk=NAME | --clear-disk] "
+		        "usage: cixctl backup-config set [--disk=NAME | --clear-disk] "
 		        "[--enable | --disable] [--interval-hours=N]\n");
 		return 2;
 	}
@@ -6530,43 +6530,43 @@ static int cmd_backup_config_set(const struct thinc_client *c, int json_mode, in
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (thinc_client_request(c, "PUT", "/v1/system/backup-config", w.buf, &r) != 0) {
+	if (cix_client_request(c, "PUT", "/v1/system/backup-config", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
 	return emit(&r, json_mode, fmt_backup_config);
 }
 
-static int cmd_backup_config_status(const struct thinc_client *c, int json_mode)
+static int cmd_backup_config_status(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/system/backup-config/status", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/system/backup-config/status", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_backup_status);
 }
 
-static int cmd_backup_config_snapshot_now(const struct thinc_client *c, int json_mode)
+static int cmd_backup_config_snapshot_now(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "POST", "/v1/system/backup-config/snapshot-now", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "POST", "/v1/system/backup-config/snapshot-now", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_backup_status);
 }
 
-static int cmd_backup_config(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_backup_config(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: thincctl backup-config show|set|status|snapshot-now\n");
+		fprintf(stderr, "usage: cixctl backup-config show|set|status|snapshot-now\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -6579,12 +6579,12 @@ static int cmd_backup_config(const struct thinc_client *c, int json_mode, int ar
 	if (strcmp(sub, "snapshot-now") == 0)
 		return cmd_backup_config_snapshot_now(c, json_mode);
 
-	fprintf(stderr, "thincctl: unknown backup-config subcommand '%s'\n", sub);
+	fprintf(stderr, "cixctl: unknown backup-config subcommand '%s'\n", sub);
 	return 2;
 }
 
 /*
- * Part 5 (ADR-0124): thincctl rolling-config show|set -- mirrors
+ * Part 5 (ADR-0124): cixctl rolling-config show|set -- mirrors
  * cmd_daemon_config's own shape exactly, one field instead of several.
  */
 static void fmt_rolling_config(const struct json_value *v)
@@ -6593,34 +6593,34 @@ static void fmt_rolling_config(const struct json_value *v)
 	       (long)json_as_number(json_object_get(v, "jitter_window_seconds")));
 }
 
-static int cmd_rolling_config_show(const struct thinc_client *c, int json_mode)
+static int cmd_rolling_config_show(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/system/rolling-config", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/system/rolling-config", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_rolling_config);
 }
 
-static int cmd_rolling_config_set(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_rolling_config_set(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *window = NULL;
 	int i;
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--jitter-window-seconds=", 24) == 0)
 			window = argv[i] + 24;
 		else {
-			fprintf(stderr, "thincctl: unknown rolling-config set option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown rolling-config set option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (window == NULL) {
-		fprintf(stderr, "usage: thincctl rolling-config set --jitter-window-seconds=N\n");
+		fprintf(stderr, "usage: cixctl rolling-config set --jitter-window-seconds=N\n");
 		return 2;
 	}
 
@@ -6631,9 +6631,9 @@ static int cmd_rolling_config_set(const struct thinc_client *c, int json_mode, i
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (thinc_client_request(c, "PUT", "/v1/system/rolling-config", w.buf, &r) != 0) {
+	if (cix_client_request(c, "PUT", "/v1/system/rolling-config", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -6641,13 +6641,13 @@ static int cmd_rolling_config_set(const struct thinc_client *c, int json_mode, i
 	return emit(&r, json_mode, fmt_rolling_config);
 }
 
-static int cmd_rolling_config(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_rolling_config(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: thincctl rolling-config show\n"
-		                "       thincctl rolling-config set --jitter-window-seconds=N\n");
+		fprintf(stderr, "usage: cixctl rolling-config show\n"
+		                "       cixctl rolling-config set --jitter-window-seconds=N\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -6656,12 +6656,12 @@ static int cmd_rolling_config(const struct thinc_client *c, int json_mode, int a
 	if (strcmp(sub, "set") == 0)
 		return cmd_rolling_config_set(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "thincctl: unknown rolling-config subcommand '%s'\n", sub);
+	fprintf(stderr, "cixctl: unknown rolling-config subcommand '%s'\n", sub);
 	return 2;
 }
 
 /*
- * ADR-0157 Phase 3 / ADR-0165: thincctl pkg-build-config show|set --
+ * ADR-0157 Phase 3 / ADR-0165: cixctl pkg-build-config show|set --
  * mirrors cmd_rolling_config's own shape, now three independently
  * settable fields (partial update, only the flags given are changed)
  * instead of one.
@@ -6677,25 +6677,25 @@ static void fmt_pkg_build_config(const struct json_value *v)
 	printf("cpu_max=%s\n", cpu_max != NULL ? cpu_max : "(none)");
 }
 
-static int cmd_pkg_build_config_show(const struct thinc_client *c, int json_mode)
+static int cmd_pkg_build_config_show(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/system/pkg-build-config", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/system/pkg-build-config", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_pkg_build_config);
 }
 
-static int cmd_pkg_build_config_set(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_pkg_build_config_set(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *max_jobs = NULL;
 	const char *memory_max = NULL;
 	const char *cpu_max = NULL;
 	int i;
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--max-concurrent-jobs=", 23) == 0)
@@ -6705,12 +6705,12 @@ static int cmd_pkg_build_config_set(const struct thinc_client *c, int json_mode,
 		else if (strncmp(argv[i], "--cpu-max=", 10) == 0)
 			cpu_max = argv[i] + 10;
 		else {
-			fprintf(stderr, "thincctl: unknown pkg-build-config set option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown pkg-build-config set option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (max_jobs == NULL && memory_max == NULL && cpu_max == NULL) {
-		fprintf(stderr, "usage: thincctl pkg-build-config set [--max-concurrent-jobs=N] "
+		fprintf(stderr, "usage: cixctl pkg-build-config set [--max-concurrent-jobs=N] "
 		                "[--memory-max=BYTES] [--cpu-max=\"QUOTA PERIOD\"]\n");
 		return 2;
 	}
@@ -6732,9 +6732,9 @@ static int cmd_pkg_build_config_set(const struct thinc_client *c, int json_mode,
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (thinc_client_request(c, "PUT", "/v1/system/pkg-build-config", w.buf, &r) != 0) {
+	if (cix_client_request(c, "PUT", "/v1/system/pkg-build-config", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -6742,13 +6742,13 @@ static int cmd_pkg_build_config_set(const struct thinc_client *c, int json_mode,
 	return emit(&r, json_mode, fmt_pkg_build_config);
 }
 
-static int cmd_pkg_build_config(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_pkg_build_config(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: thincctl pkg-build-config show\n"
-		                "       thincctl pkg-build-config set --max-concurrent-jobs=N\n");
+		fprintf(stderr, "usage: cixctl pkg-build-config show\n"
+		                "       cixctl pkg-build-config set --max-concurrent-jobs=N\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -6757,13 +6757,13 @@ static int cmd_pkg_build_config(const struct thinc_client *c, int json_mode, int
 	if (strcmp(sub, "set") == 0)
 		return cmd_pkg_build_config_set(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "thincctl: unknown pkg-build-config subcommand '%s'\n", sub);
+	fprintf(stderr, "cixctl: unknown pkg-build-config subcommand '%s'\n", sub);
 	return 2;
 }
 
 
 /*
- * Issue #100: thincctl stalls -- times the control plane stopped going
+ * Issue #100: cixctl stalls -- times the control plane stopped going
  * round its own loop, recorded by a watchdog process because the loop
  * cannot report its own silence.
  */
@@ -6791,12 +6791,12 @@ static void fmt_stalls(const struct json_value *v)
 	}
 }
 
-static int cmd_stalls(const struct thinc_client *c, int json_mode)
+static int cmd_stalls(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/system/stalls", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/system/stalls", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_stalls);
@@ -6804,7 +6804,7 @@ static int cmd_stalls(const struct thinc_client *c, int json_mode)
 
 
 /*
- * Issue #24: thincctl boot-console show|set -- what the installed
+ * Issue #24: cixctl boot-console show|set -- what the installed
  * system's own boot line says about consoles. Applied to the loader
  * entries already on the ESP, so it takes effect at the next boot
  * rather than at the next A/B update.
@@ -6836,9 +6836,9 @@ static void fmt_boot_console(const struct json_value *v)
 	}
 }
 
-static int cmd_boot_console(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_boot_console(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	const char *sub = argc > 0 ? argv[0] : "show";
 	const char *consoles[8];
 	int console_count = 0;
@@ -6847,15 +6847,15 @@ static int cmd_boot_console(const struct thinc_client *c, int json_mode, int arg
 	struct json_writer w;
 
 	if (strcmp(sub, "show") == 0) {
-		if (thinc_client_request(c, "GET", "/v1/system/boot-console", NULL, &r) != 0) {
-			fprintf(stderr, "thincctl: could not reach daemon\n");
+		if (cix_client_request(c, "GET", "/v1/system/boot-console", NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
 		}
 		return emit(&r, json_mode, fmt_boot_console);
 	}
 	if (strcmp(sub, "set") != 0) {
-		fprintf(stderr, "usage: thincctl boot-console show\n"
-		                "       thincctl boot-console set [--console=NAME ...] [--extra=\"...\"]\n"
+		fprintf(stderr, "usage: cixctl boot-console show\n"
+		                "       cixctl boot-console set [--console=NAME ...] [--extra=\"...\"]\n"
 		                "  --console is repeatable and ordered (e.g. --console=tty0 "
 		                "--console=ttyS0,115200n8)\n");
 		return 2;
@@ -6863,19 +6863,19 @@ static int cmd_boot_console(const struct thinc_client *c, int json_mode, int arg
 	for (i = 1; i < argc; i++) {
 		if (strncmp(argv[i], "--console=", 10) == 0) {
 			if (console_count >= (int)(sizeof(consoles) / sizeof(consoles[0]))) {
-				fprintf(stderr, "thincctl: too many --console= values\n");
+				fprintf(stderr, "cixctl: too many --console= values\n");
 				return 2;
 			}
 			consoles[console_count++] = argv[i] + 10;
 		} else if (strncmp(argv[i], "--extra=", 8) == 0) {
 			extra = argv[i] + 8;
 		} else {
-			fprintf(stderr, "thincctl: unknown boot-console set option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown boot-console set option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (console_count == 0 && extra == NULL) {
-		fprintf(stderr, "usage: thincctl boot-console set [--console=NAME ...] [--extra=\"...\"]\n");
+		fprintf(stderr, "usage: cixctl boot-console set [--console=NAME ...] [--extra=\"...\"]\n");
 		return 2;
 	}
 
@@ -6895,9 +6895,9 @@ static int cmd_boot_console(const struct thinc_client *c, int json_mode, int arg
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (thinc_client_request(c, "PUT", "/v1/system/boot-console", w.buf, &r) != 0) {
+	if (cix_client_request(c, "PUT", "/v1/system/boot-console", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -6906,7 +6906,7 @@ static int cmd_boot_console(const struct thinc_client *c, int json_mode, int arg
 
 
 /*
- * Issue #65: thincctl kernel-policy show|set|refresh -- which kernel
+ * Issue #65: cixctl kernel-policy show|set|refresh -- which kernel
  * line this box tracks. Prints the gap rather than just the two
  * versions: "you are on X, your channel is at Y" is the question, and
  * leaving the reader to compare two version strings themselves is
@@ -6936,7 +6936,7 @@ static void fmt_kernel_policy(const struct json_value *v)
 	else if (channel != NULL && strcmp(channel, "pinned") == 0)
 		printf("channel is at: (nothing -- pinned means no version is proposed)\n");
 	else
-		printf("channel is at: (unknown -- run `thincctl kernel-policy refresh` first)\n");
+		printf("channel is at: (unknown -- run `cixctl kernel-policy refresh` first)\n");
 	/* Only says anything on the longterm channel: on stable or mainline
 	 * whether your line is a longterm one is not a fact you asked
 	 * about, and printing it there is noise dressed as a warning. */
@@ -6956,32 +6956,32 @@ static void fmt_kernel_policy(const struct json_value *v)
 		printf("last refresh error: %s\n", err);
 }
 
-static int cmd_kernel_policy(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_kernel_policy(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	const char *sub = argc > 0 ? argv[0] : "show";
 	const char *channel = NULL;
 	int i;
 	struct json_writer w;
 
 	if (strcmp(sub, "show") == 0) {
-		if (thinc_client_request(c, "GET", "/v1/system/kernel-policy", NULL, &r) != 0) {
-			fprintf(stderr, "thincctl: could not reach daemon\n");
+		if (cix_client_request(c, "GET", "/v1/system/kernel-policy", NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
 		}
 		return emit(&r, json_mode, fmt_kernel_policy);
 	}
 	if (strcmp(sub, "refresh") == 0) {
-		if (thinc_client_request(c, "POST", "/v1/system/kernel-policy/refresh", "{}", &r) != 0) {
-			fprintf(stderr, "thincctl: could not reach daemon\n");
+		if (cix_client_request(c, "POST", "/v1/system/kernel-policy/refresh", "{}", &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
 		}
 		return emit(&r, json_mode, fmt_kernel_policy);
 	}
 	if (strcmp(sub, "set") != 0) {
-		fprintf(stderr, "usage: thincctl kernel-policy show\n"
-		                "       thincctl kernel-policy set --channel=pinned|longterm|stable|mainline\n"
-		                "       thincctl kernel-policy refresh\n"
+		fprintf(stderr, "usage: cixctl kernel-policy show\n"
+		                "       cixctl kernel-policy set --channel=pinned|longterm|stable|mainline\n"
+		                "       cixctl kernel-policy refresh\n"
 		                "  channels are kernel.org's own monikers; pinned (the default) means\n"
 		                "  the version stays where it is, in the kernel recipe\n");
 		return 2;
@@ -6990,12 +6990,12 @@ static int cmd_kernel_policy(const struct thinc_client *c, int json_mode, int ar
 		if (strncmp(argv[i], "--channel=", 10) == 0)
 			channel = argv[i] + 10;
 		else {
-			fprintf(stderr, "thincctl: unknown kernel-policy set option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown kernel-policy set option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (channel == NULL) {
-		fprintf(stderr, "usage: thincctl kernel-policy set "
+		fprintf(stderr, "usage: cixctl kernel-policy set "
 		                "--channel=pinned|longterm|stable|mainline\n");
 		return 2;
 	}
@@ -7007,9 +7007,9 @@ static int cmd_kernel_policy(const struct thinc_client *c, int json_mode, int ar
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (thinc_client_request(c, "PUT", "/v1/system/kernel-policy", w.buf, &r) != 0) {
+	if (cix_client_request(c, "PUT", "/v1/system/kernel-policy", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -7017,7 +7017,7 @@ static int cmd_kernel_policy(const struct thinc_client *c, int json_mode, int ar
 }
 
 /*
- * Issue #86: thincctl control-plane-reservation show|set -- how much of
+ * Issue #86: cixctl control-plane-reservation show|set -- how much of
  * the machine is held back for the daemon itself. Reported with the
  * derived workload ceiling, because a percentage on its own is not
  * something an operator can act on.
@@ -7049,9 +7049,9 @@ static void fmt_cpreserve(const struct json_value *v)
 	}
 }
 
-static int cmd_cpreserve(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_cpreserve(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	const char *sub = argc > 0 ? argv[0] : "show";
 	const char *cpu = NULL, *mem = NULL;
 	int want_enabled = -1;
@@ -7059,15 +7059,15 @@ static int cmd_cpreserve(const struct thinc_client *c, int json_mode, int argc, 
 	struct json_writer w;
 
 	if (strcmp(sub, "show") == 0) {
-		if (thinc_client_request(c, "GET", "/v1/system/control-plane-reservation", NULL, &r) != 0) {
-			fprintf(stderr, "thincctl: could not reach daemon\n");
+		if (cix_client_request(c, "GET", "/v1/system/control-plane-reservation", NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
 		}
 		return emit(&r, json_mode, fmt_cpreserve);
 	}
 	if (strcmp(sub, "set") != 0) {
-		fprintf(stderr, "usage: thincctl control-plane-reservation show\n"
-		                "       thincctl control-plane-reservation set [--enabled | --disabled] "
+		fprintf(stderr, "usage: cixctl control-plane-reservation show\n"
+		                "       cixctl control-plane-reservation set [--enabled | --disabled] "
 		                "[--cpu-percent=N] [--memory-bytes=N]\n");
 		return 2;
 	}
@@ -7081,13 +7081,13 @@ static int cmd_cpreserve(const struct thinc_client *c, int json_mode, int argc, 
 		else if (strncmp(argv[i], "--memory-bytes=", 15) == 0)
 			mem = argv[i] + 15;
 		else {
-			fprintf(stderr, "thincctl: unknown control-plane-reservation set option '%s'\n",
+			fprintf(stderr, "cixctl: unknown control-plane-reservation set option '%s'\n",
 			        argv[i]);
 			return 2;
 		}
 	}
 	if (want_enabled == -1 && cpu == NULL && mem == NULL) {
-		fprintf(stderr, "usage: thincctl control-plane-reservation set [--enabled | --disabled] "
+		fprintf(stderr, "usage: cixctl control-plane-reservation set [--enabled | --disabled] "
 		                "[--cpu-percent=N] [--memory-bytes=N]\n");
 		return 2;
 	}
@@ -7109,9 +7109,9 @@ static int cmd_cpreserve(const struct thinc_client *c, int json_mode, int argc, 
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (thinc_client_request(c, "PUT", "/v1/system/control-plane-reservation", w.buf, &r) != 0) {
+	if (cix_client_request(c, "PUT", "/v1/system/control-plane-reservation", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -7120,7 +7120,7 @@ static int cmd_cpreserve(const struct thinc_client *c, int json_mode, int argc, 
 
 
 /*
- * ADR-0134: thincctl tls-throttle show|set|status -- per-source-IP
+ * ADR-0134: cixctl tls-throttle show|set|status -- per-source-IP
  * throttling for repeated failed HTTPS handshakes. show/set mirror
  * daemon-config's own multi-field partial-update shape; status has no
  * daemon-config equivalent (there's nothing analogous to show there)
@@ -7138,18 +7138,18 @@ static void fmt_tls_throttle(const struct json_value *v)
 	       (long)json_as_number(json_object_get(v, "log_interval_seconds")));
 }
 
-static int cmd_tls_throttle_show(const struct thinc_client *c, int json_mode)
+static int cmd_tls_throttle_show(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/system/tls-throttle", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/system/tls-throttle", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_tls_throttle);
 }
 
-static int cmd_tls_throttle_set(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_tls_throttle_set(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *threshold = NULL;
 	const char *window = NULL;
@@ -7158,7 +7158,7 @@ static int cmd_tls_throttle_set(const struct thinc_client *c, int json_mode, int
 	int want_enabled = -1; /* -1: untouched, 0: disable, 1: enable */
 	int i;
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strcmp(argv[i], "--enabled") == 0)
@@ -7174,12 +7174,12 @@ static int cmd_tls_throttle_set(const struct thinc_client *c, int json_mode, int
 		else if (strncmp(argv[i], "--log-interval-seconds=", 23) == 0)
 			log_interval = argv[i] + 23;
 		else {
-			fprintf(stderr, "thincctl: unknown tls-throttle set option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown tls-throttle set option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (want_enabled == -1 && threshold == NULL && window == NULL && block == NULL && log_interval == NULL) {
-		fprintf(stderr, "usage: thincctl tls-throttle set [--enabled | --disabled] "
+		fprintf(stderr, "usage: cixctl tls-throttle set [--enabled | --disabled] "
 		                "[--threshold=N] [--window-seconds=N] [--block-seconds=N] "
 		                "[--log-interval-seconds=N]\n");
 		return 2;
@@ -7210,9 +7210,9 @@ static int cmd_tls_throttle_set(const struct thinc_client *c, int json_mode, int
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (thinc_client_request(c, "PUT", "/v1/system/tls-throttle", w.buf, &r) != 0) {
+	if (cix_client_request(c, "PUT", "/v1/system/tls-throttle", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -7245,27 +7245,27 @@ static void fmt_tls_throttle_status(const struct json_value *v)
 		fmt_tls_throttle_status_line(entries->u.array.items[i]);
 }
 
-static int cmd_tls_throttle_status(const struct thinc_client *c, int json_mode)
+static int cmd_tls_throttle_status(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/system/tls-throttle/status", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/system/tls-throttle/status", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_tls_throttle_status);
 }
 
-static int cmd_tls_throttle(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_tls_throttle(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: thincctl tls-throttle show\n"
-		                "       thincctl tls-throttle set [--enabled | --disabled] "
+		fprintf(stderr, "usage: cixctl tls-throttle show\n"
+		                "       cixctl tls-throttle set [--enabled | --disabled] "
 		                "[--threshold=N] [--window-seconds=N] [--block-seconds=N] "
 		                "[--log-interval-seconds=N]\n"
-		                "       thincctl tls-throttle status\n");
+		                "       cixctl tls-throttle status\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -7276,7 +7276,7 @@ static int cmd_tls_throttle(const struct thinc_client *c, int json_mode, int arg
 	if (strcmp(sub, "status") == 0)
 		return cmd_tls_throttle_status(c, json_mode);
 
-	fprintf(stderr, "thincctl: unknown tls-throttle subcommand '%s'\n", sub);
+	fprintf(stderr, "cixctl: unknown tls-throttle subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -7319,18 +7319,18 @@ static void fmt_hostauth_config(const struct json_value *v)
 	       base_dn != NULL && base_dn[0] != '\0' ? base_dn : "-");
 }
 
-static int cmd_hostauth_config_show(const struct thinc_client *c, int json_mode)
+static int cmd_hostauth_config_show(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/system/hostauth-config", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/system/hostauth-config", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_hostauth_config);
 }
 
-static int cmd_hostauth_config_set(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_hostauth_config_set(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *admin_groups[8];
 	int admin_group_count = -1; /* -1: not given, keep current */
@@ -7342,7 +7342,7 @@ static int cmd_hostauth_config_set(const struct thinc_client *c, int json_mode, 
 	const char *ldap_base_dn = NULL;
 	int i;
 	struct json_value *current;
-	struct thinc_response r;
+	struct cix_response r;
 	struct json_writer w;
 
 	admin_group_count = 0;
@@ -7350,7 +7350,7 @@ static int cmd_hostauth_config_set(const struct thinc_client *c, int json_mode, 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--admin-group=", 14) == 0) {
 			if (admin_group_count >= 8) {
-				fprintf(stderr, "thincctl: too many --admin-group= flags (max 8)\n");
+				fprintf(stderr, "cixctl: too many --admin-group= flags (max 8)\n");
 				return 2;
 			}
 			admin_groups[admin_group_count++] = argv[i] + 14;
@@ -7362,7 +7362,7 @@ static int cmd_hostauth_config_set(const struct thinc_client *c, int json_mode, 
 			want_ldap_enabled = 0;
 		} else if (strncmp(argv[i], "--ldap-server=", 14) == 0) {
 			if (ldap_server_count >= 3) {
-				fprintf(stderr, "thincctl: too many --ldap-server= flags (max 3)\n");
+				fprintf(stderr, "cixctl: too many --ldap-server= flags (max 3)\n");
 				return 2;
 			}
 			ldap_servers[ldap_server_count++] = argv[i] + 14;
@@ -7371,7 +7371,7 @@ static int cmd_hostauth_config_set(const struct thinc_client *c, int json_mode, 
 		} else if (strncmp(argv[i], "--ldap-base-dn=", 15) == 0) {
 			ldap_base_dn = argv[i] + 15;
 		} else {
-			fprintf(stderr, "thincctl: unknown hostauth-config set option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown hostauth-config set option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
@@ -7382,7 +7382,7 @@ static int cmd_hostauth_config_set(const struct thinc_client *c, int json_mode, 
 	if (admin_group_count == -1 && idle_timeout == NULL && want_ldap_enabled == -1 &&
 	    ldap_server_count == -1 && ldap_port == NULL && ldap_base_dn == NULL) {
 		fprintf(stderr,
-		        "usage: thincctl hostauth-config set [--admin-group=NAME ...] "
+		        "usage: cixctl hostauth-config set [--admin-group=NAME ...] "
 		        "[--idle-timeout-seconds=N] [--ldap-enable | --ldap-disable] "
 		        "[--ldap-server=HOST ...] [--ldap-port=N] [--ldap-base-dn=NAME]\n");
 		return 2;
@@ -7391,8 +7391,8 @@ static int cmd_hostauth_config_set(const struct thinc_client *c, int json_mode, 
 	/* Read-modify-write: fetch the current config so any flag NOT
 	 * given here is preserved exactly, not reset by the server's own
 	 * full-replacement PUT semantics. */
-	if (thinc_client_request(c, "GET", "/v1/system/hostauth-config", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/system/hostauth-config", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	current = r.json;
@@ -7455,11 +7455,11 @@ static int cmd_hostauth_config_set(const struct thinc_client *c, int json_mode, 
 	}
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
-	if (thinc_client_request(c, "PUT", "/v1/system/hostauth-config", w.buf, &r) != 0) {
+	if (cix_client_request(c, "PUT", "/v1/system/hostauth-config", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -7467,14 +7467,14 @@ static int cmd_hostauth_config_set(const struct thinc_client *c, int json_mode, 
 	return emit(&r, json_mode, fmt_hostauth_config);
 }
 
-static int cmd_hostauth_config(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_hostauth_config(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
 		fprintf(stderr,
-		        "usage: thincctl hostauth-config show\n"
-		        "       thincctl hostauth-config set [--admin-group=NAME ...] "
+		        "usage: cixctl hostauth-config show\n"
+		        "       cixctl hostauth-config set [--admin-group=NAME ...] "
 		        "[--idle-timeout-seconds=N] [--ldap-enable | --ldap-disable] "
 		        "[--ldap-server=HOST ...] [--ldap-port=N] [--ldap-base-dn=NAME]\n");
 		return 2;
@@ -7485,7 +7485,7 @@ static int cmd_hostauth_config(const struct thinc_client *c, int json_mode, int 
 	if (strcmp(sub, "set") == 0)
 		return cmd_hostauth_config_set(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "thincctl: unknown hostauth-config subcommand '%s'\n", sub);
+	fprintf(stderr, "cixctl: unknown hostauth-config subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -7516,42 +7516,42 @@ static void fmt_hostauth_sessions_list(const struct json_value *v)
 		fmt_hostauth_session_line(sessions->u.array.items[i]);
 }
 
-static int cmd_hostauth_sessions_ls(const struct thinc_client *c, int json_mode)
+static int cmd_hostauth_sessions_ls(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/system/hostauth/sessions", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/system/hostauth/sessions", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_hostauth_sessions_list);
 }
 
-static int cmd_hostauth_sessions_revoke(const struct thinc_client *c, int json_mode, int argc,
+static int cmd_hostauth_sessions_revoke(const struct cix_client *c, int json_mode, int argc,
                                          char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	char path[256];
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: thincctl hostauth-sessions revoke USERNAME\n");
+		fprintf(stderr, "usage: cixctl hostauth-sessions revoke USERNAME\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/system/hostauth/sessions/%s", argv[0]);
-	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
 }
 
-static int cmd_hostauth_sessions(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_hostauth_sessions(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: thincctl hostauth-sessions ls\n"
-		                "       thincctl hostauth-sessions revoke USERNAME  -- log out everywhere\n");
+		fprintf(stderr, "usage: cixctl hostauth-sessions ls\n"
+		                "       cixctl hostauth-sessions revoke USERNAME  -- log out everywhere\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -7560,7 +7560,7 @@ static int cmd_hostauth_sessions(const struct thinc_client *c, int json_mode, in
 	if (strcmp(sub, "revoke") == 0)
 		return cmd_hostauth_sessions_revoke(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "thincctl: unknown hostauth-sessions subcommand '%s'\n", sub);
+	fprintf(stderr, "cixctl: unknown hostauth-sessions subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -7626,7 +7626,7 @@ static int parse_env_flag(const char *s, struct cli_env *out)
 	return 0;
 }
 
-static int cmd_run(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_run(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name = NULL;
 	const char *image = NULL;
@@ -7702,7 +7702,7 @@ static int cmd_run(const struct thinc_client *c, int json_mode, int argc, char *
 	int i = 0;
 	int cmd_start = -1;
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 
 	while (i < argc) {
 		if (strcmp(argv[i], "--") == 0) {
@@ -7729,38 +7729,38 @@ static int cmd_run(const struct thinc_client *c, int json_mode, int argc, char *
 			disk = argv[i] + 7;
 		else if (strncmp(argv[i], "--network=", 10) == 0) {
 			if (network_count >= CLI_MAX_NETWORKS) {
-				fprintf(stderr, "thincctl: too many --network= flags (max %d)\n",
+				fprintf(stderr, "cixctl: too many --network= flags (max %d)\n",
 				        CLI_MAX_NETWORKS);
 				return 2;
 			}
 			if (parse_network_flag(argv[i] + 10, &networks[network_count]) != 0) {
-				fprintf(stderr, "thincctl: invalid --network= value '%s'\n", argv[i] + 10);
+				fprintf(stderr, "cixctl: invalid --network= value '%s'\n", argv[i] + 10);
 				return 2;
 			}
 			network_count++;
 		} else if (strncmp(argv[i], "--device=", 9) == 0) {
 			if (device_count >= CLI_MAX_DEVICES) {
-				fprintf(stderr, "thincctl: too many --device= flags (max %d)\n",
+				fprintf(stderr, "cixctl: too many --device= flags (max %d)\n",
 				        CLI_MAX_DEVICES);
 				return 2;
 			}
 			devices[device_count++] = argv[i] + 9;
 		} else if (strncmp(argv[i], "--optional-device=", 18) == 0) {
 			if (optional_device_count >= CLI_MAX_DEVICES) {
-				fprintf(stderr, "thincctl: too many --optional-device= flags (max %d)\n",
+				fprintf(stderr, "cixctl: too many --optional-device= flags (max %d)\n",
 				        CLI_MAX_DEVICES);
 				return 2;
 			}
 			optional_devices[optional_device_count++] = argv[i] + 18;
 		} else if (strncmp(argv[i], "--volume=", 9) == 0) {
 			if (volume_count >= CLI_MAX_VOLUMES) {
-				fprintf(stderr, "thincctl: too many --volume= flags (max %d)\n",
+				fprintf(stderr, "cixctl: too many --volume= flags (max %d)\n",
 				        CLI_MAX_VOLUMES);
 				return 2;
 			}
 			if (parse_volume_flag(argv[i] + 9, &volumes[volume_count]) != 0) {
 				fprintf(stderr,
-				        "thincctl: invalid --volume= value '%s' "
+				        "cixctl: invalid --volume= value '%s' "
 				        "(expected NAME:/path or NAME:/path:ro)\n",
 				        argv[i] + 9);
 				return 2;
@@ -7768,14 +7768,14 @@ static int cmd_run(const struct thinc_client *c, int json_mode, int argc, char *
 			volume_count++;
 		} else if (strncmp(argv[i], "--interface=", 12) == 0) {
 			if (interface_count >= CLI_MAX_INTERFACES) {
-				fprintf(stderr, "thincctl: too many --interface= flags (max %d)\n",
+				fprintf(stderr, "cixctl: too many --interface= flags (max %d)\n",
 				        CLI_MAX_INTERFACES);
 				return 2;
 			}
 			interfaces[interface_count++] = argv[i] + 12;
 		} else if (strncmp(argv[i], "--cap-add=", 10) == 0) {
 			if (cap_add_count >= CLI_MAX_CAP_ADD) {
-				fprintf(stderr, "thincctl: too many --cap-add= flags (max %d)\n",
+				fprintf(stderr, "cixctl: too many --cap-add= flags (max %d)\n",
 				        CLI_MAX_CAP_ADD);
 				return 2;
 			}
@@ -7790,7 +7790,7 @@ static int cmd_run(const struct thinc_client *c, int json_mode, int argc, char *
 			follow_rolling_jitter = atol(argv[i] + 32);
 		} else if (strncmp(argv[i], "--depends-on=", 13) == 0) {
 			if (depends_on_count >= CLI_MAX_DEPENDS) {
-				fprintf(stderr, "thincctl: too many --depends-on= flags (max %d)\n",
+				fprintf(stderr, "cixctl: too many --depends-on= flags (max %d)\n",
 				        CLI_MAX_DEPENDS);
 				return 2;
 			}
@@ -7809,7 +7809,7 @@ static int cmd_run(const struct thinc_client *c, int json_mode, int argc, char *
 			ldap_client = 1;
 		} else if (strncmp(argv[i], "--ldap-allow-group=", 19) == 0) {
 			if (ldap_allow_group_count >= CLI_MAX_LDAP_ALLOW_GROUPS) {
-				fprintf(stderr, "thincctl: too many --ldap-allow-group= flags (max %d)\n",
+				fprintf(stderr, "cixctl: too many --ldap-allow-group= flags (max %d)\n",
 				        CLI_MAX_LDAP_ALLOW_GROUPS);
 				return 2;
 			}
@@ -7834,25 +7834,25 @@ static int cmd_run(const struct thinc_client *c, int json_mode, int argc, char *
 			ldap_secret_dir = argv[i] + 18;
 		} else if (strncmp(argv[i], "--route=", 8) == 0) {
 			if (route_count >= CLI_MAX_ROUTES) {
-				fprintf(stderr, "thincctl: too many --route= flags (max %d)\n",
+				fprintf(stderr, "cixctl: too many --route= flags (max %d)\n",
 				        CLI_MAX_ROUTES);
 				return 2;
 			}
 			if (parse_route_flag(argv[i] + 8, &routes[route_count]) != 0) {
 				fprintf(stderr,
-				        "thincctl: invalid --route= value '%s' (expected DEST/PREFIX:VIA)\n",
+				        "cixctl: invalid --route= value '%s' (expected DEST/PREFIX:VIA)\n",
 				        argv[i] + 8);
 				return 2;
 			}
 			route_count++;
 		} else if (strncmp(argv[i], "--file=", 7) == 0) {
 			if (file_count >= CLI_MAX_FILES) {
-				fprintf(stderr, "thincctl: too many --file= flags (max %d)\n", CLI_MAX_FILES);
+				fprintf(stderr, "cixctl: too many --file= flags (max %d)\n", CLI_MAX_FILES);
 				return 2;
 			}
 			if (parse_file_flag(argv[i] + 7, &files[file_count]) != 0) {
 				fprintf(stderr,
-				        "thincctl: invalid --file= value '%s' (expected "
+				        "cixctl: invalid --file= value '%s' (expected "
 				        "CONTAINER_PATH=LOCAL_PATH[:MODE])\n",
 				        argv[i] + 7);
 				return 2;
@@ -7860,7 +7860,7 @@ static int cmd_run(const struct thinc_client *c, int json_mode, int argc, char *
 			file_count++;
 		} else if (strncmp(argv[i], "--file-owner=", 13) == 0) {
 			if (file_owner_count >= CLI_MAX_FILES) {
-				fprintf(stderr, "thincctl: too many --file-owner= flags (max %d)\n",
+				fprintf(stderr, "cixctl: too many --file-owner= flags (max %d)\n",
 				        CLI_MAX_FILES);
 				return 2;
 			}
@@ -7869,7 +7869,7 @@ static int cmd_run(const struct thinc_client *c, int json_mode, int argc, char *
 			                          &file_owners[file_owner_count].uid,
 			                          &file_owners[file_owner_count].gid) != 0) {
 				fprintf(stderr,
-				        "thincctl: invalid --file-owner= value '%s' (expected "
+				        "cixctl: invalid --file-owner= value '%s' (expected "
 				        "CONTAINER_PATH:UID:GID)\n",
 				        argv[i] + 13);
 				return 2;
@@ -7877,37 +7877,37 @@ static int cmd_run(const struct thinc_client *c, int json_mode, int argc, char *
 			file_owner_count++;
 		} else if (strncmp(argv[i], "--sysctl=", 9) == 0) {
 			if (sysctl_count >= CLI_MAX_SYSCTLS) {
-				fprintf(stderr, "thincctl: too many --sysctl= flags (max %d)\n",
+				fprintf(stderr, "cixctl: too many --sysctl= flags (max %d)\n",
 				        CLI_MAX_SYSCTLS);
 				return 2;
 			}
 			if (parse_sysctl_flag(argv[i] + 9, &sysctls[sysctl_count]) != 0) {
 				fprintf(stderr,
-				        "thincctl: invalid --sysctl= value '%s' (expected KEY=VALUE)\n",
+				        "cixctl: invalid --sysctl= value '%s' (expected KEY=VALUE)\n",
 				        argv[i] + 9);
 				return 2;
 			}
 			sysctl_count++;
 		} else if (strncmp(argv[i], "--env=", 6) == 0) {
 			if (env_count >= CLI_MAX_ENV) {
-				fprintf(stderr, "thincctl: too many --env= flags (max %d)\n", CLI_MAX_ENV);
+				fprintf(stderr, "cixctl: too many --env= flags (max %d)\n", CLI_MAX_ENV);
 				return 2;
 			}
 			if (parse_env_flag(argv[i] + 6, &envs[env_count]) != 0) {
-				fprintf(stderr, "thincctl: invalid --env= value '%s' (expected KEY=VALUE)\n",
+				fprintf(stderr, "cixctl: invalid --env= value '%s' (expected KEY=VALUE)\n",
 				        argv[i] + 6);
 				return 2;
 			}
 			env_count++;
 		} else if (strncmp(argv[i], "--dns-server=", 13) == 0) {
 			if (dns_server_count >= CLI_MAX_DNS_SERVERS) {
-				fprintf(stderr, "thincctl: too many --dns-server= flags (max %d)\n",
+				fprintf(stderr, "cixctl: too many --dns-server= flags (max %d)\n",
 				        CLI_MAX_DNS_SERVERS);
 				return 2;
 			}
 			dns_servers[dns_server_count++] = argv[i] + 13;
 		} else {
-			fprintf(stderr, "thincctl: unknown run option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown run option '%s'\n", argv[i]);
 			return 2;
 		}
 		i++;
@@ -7915,7 +7915,7 @@ static int cmd_run(const struct thinc_client *c, int json_mode, int argc, char *
 
 	if (name == NULL || image == NULL || cmd_start < 0 || cmd_start >= argc) {
 		fprintf(stderr,
-		        "usage: thincctl run --name=NAME --image=IMAGE [--memory-max=N] "
+		        "usage: cixctl run --name=NAME --image=IMAGE [--memory-max=N] "
 		        "[--pids-max=N] [--cpu-max=\"QUOTA PERIOD\"] [--cpuset=0-1,3] "
 		        "[--disk-quota=BYTES] [--disk=NAME] "
 		        "[--network=NAME[:IP] ...] [--ip-forward] [--dns-register] "
@@ -7955,7 +7955,7 @@ static int cmd_run(const struct thinc_client *c, int json_mode, int argc, char *
 		}
 		if (!matched) {
 			fprintf(stderr,
-			        "thincctl: --file-owner=%s:... has no matching --file=%s=... entry\n",
+			        "cixctl: --file-owner=%s:... has no matching --file=%s=... entry\n",
 			        file_owners[i].path, file_owners[i].path);
 			return 2;
 		}
@@ -8237,16 +8237,16 @@ static int cmd_run(const struct thinc_client *c, int json_mode, int argc, char *
 	jw_obj_close(&w);
 
 	/*
-	 * thinc_client_request() needs a NUL-terminated C string; w.buf isn't
+	 * cix_client_request() needs a NUL-terminated C string; w.buf isn't
 	 * one, but jw_ensure()'s growth policy always keeps at least one
 	 * spare byte of capacity beyond w.len, so writing the NUL directly
 	 * here is safe without a further allocation.
 	 */
 	w.buf[w.len] = '\0';
 
-	if (thinc_client_request(c, "POST", "/v1/containers", w.buf, &r) != 0) {
+	if (cix_client_request(c, "POST", "/v1/containers", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -8254,7 +8254,7 @@ static int cmd_run(const struct thinc_client *c, int json_mode, int argc, char *
 	return emit(&r, json_mode, fmt_container_line);
 }
 
-static int cmd_network_create(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_network_create(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name = NULL;
 	const char *subnet = NULL;
@@ -8263,7 +8263,7 @@ static int cmd_network_create(const struct thinc_client *c, int json_mode, int a
 	long prefix_len = -1;
 	int i;
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--name=", 7) == 0)
@@ -8279,14 +8279,14 @@ static int cmd_network_create(const struct thinc_client *c, int json_mode, int a
 		else if (strncmp(argv[i], "--alloc-end=", 12) == 0)
 			alloc_end = argv[i] + 12;
 		else {
-			fprintf(stderr, "thincctl: unknown network create option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown network create option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 
 	if (name == NULL || subnet == NULL || prefix_len < 0) {
 		fprintf(stderr,
-		        "usage: thincctl network create --name=NAME --subnet=A.B.C.D --prefix=N "
+		        "usage: cixctl network create --name=NAME --subnet=A.B.C.D --prefix=N "
 		        "[--address=A.B.C.D]\n"
 		        "  no --address= means the bridge stays pure L2 (no host-owned address) --\n"
 		        "  the default. Pass --address= only when the host itself should have an\n"
@@ -8317,9 +8317,9 @@ static int cmd_network_create(const struct thinc_client *c, int json_mode, int a
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (thinc_client_request(c, "POST", "/v1/networks", w.buf, &r) != 0) {
+	if (cix_client_request(c, "POST", "/v1/networks", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -8327,35 +8327,35 @@ static int cmd_network_create(const struct thinc_client *c, int json_mode, int a
 	return emit(&r, json_mode, fmt_network_line);
 }
 
-static int cmd_network_ls(const struct thinc_client *c, int json_mode)
+static int cmd_network_ls(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/networks", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/networks", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_network_list);
 }
 
-static int cmd_network_rm(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_network_rm(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	char path[256];
 
 	if (argc < 1) {
-		fprintf(stderr, "thincctl: network rm requires a network name\n");
+		fprintf(stderr, "cixctl: network rm requires a network name\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/networks/%s", argv[0]);
-	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
 }
 
-static int cmd_network_attach_interface(const struct thinc_client *c, int json_mode, int argc,
+static int cmd_network_attach_interface(const struct cix_client *c, int json_mode, int argc,
                                          char **argv)
 {
 	const char *net_name;
@@ -8363,11 +8363,11 @@ static int cmd_network_attach_interface(const struct thinc_client *c, int json_m
 	long vlan_id = 0;
 	int i;
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 	char path[256];
 
 	if (argc < 1) {
-		fprintf(stderr, "thincctl: network attach-interface requires a network name\n");
+		fprintf(stderr, "cixctl: network attach-interface requires a network name\n");
 		return 2;
 	}
 	net_name = argv[0];
@@ -8377,13 +8377,13 @@ static int cmd_network_attach_interface(const struct thinc_client *c, int json_m
 		else if (strncmp(argv[i], "--vlan=", 7) == 0)
 			vlan_id = atol(argv[i] + 7);
 		else {
-			fprintf(stderr, "thincctl: unknown network attach-interface option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown network attach-interface option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (ifname == NULL) {
 		fprintf(stderr,
-		        "usage: thincctl network attach-interface NAME --interface=IFNAME [--vlan=N]\n");
+		        "usage: cixctl network attach-interface NAME --interface=IFNAME [--vlan=N]\n");
 		return 2;
 	}
 
@@ -8399,9 +8399,9 @@ static int cmd_network_attach_interface(const struct thinc_client *c, int json_m
 	w.buf[w.len] = '\0';
 
 	snprintf(path, sizeof(path), "/v1/networks/%s/interfaces", net_name);
-	if (thinc_client_request(c, "POST", path, w.buf, &r) != 0) {
+	if (cix_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -8409,17 +8409,17 @@ static int cmd_network_attach_interface(const struct thinc_client *c, int json_m
 	return emit(&r, json_mode, fmt_network_line);
 }
 
-static int cmd_network_detach_interface(const struct thinc_client *c, int json_mode, int argc,
+static int cmd_network_detach_interface(const struct cix_client *c, int json_mode, int argc,
                                          char **argv)
 {
 	const char *net_name;
 	const char *ifname = NULL;
 	int i;
-	struct thinc_response r;
+	struct cix_response r;
 	char path[256];
 
 	if (argc < 1) {
-		fprintf(stderr, "thincctl: network detach-interface requires a network name\n");
+		fprintf(stderr, "cixctl: network detach-interface requires a network name\n");
 		return 2;
 	}
 	net_name = argv[0];
@@ -8427,18 +8427,18 @@ static int cmd_network_detach_interface(const struct thinc_client *c, int json_m
 		if (strncmp(argv[i], "--interface=", 12) == 0)
 			ifname = argv[i] + 12;
 		else {
-			fprintf(stderr, "thincctl: unknown network detach-interface option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown network detach-interface option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (ifname == NULL) {
-		fprintf(stderr, "usage: thincctl network detach-interface NAME --interface=IFNAME\n");
+		fprintf(stderr, "usage: cixctl network detach-interface NAME --interface=IFNAME\n");
 		return 2;
 	}
 
 	snprintf(path, sizeof(path), "/v1/networks/%s/interfaces/%s", net_name, ifname);
-	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
@@ -8495,37 +8495,37 @@ static void fmt_network_ports(const struct json_value *v)
 	       "whatever is plugged in, which is the inverse of what a container sees.\n");
 }
 
-static int cmd_network_ports(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_network_ports(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	char path[256];
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: thincctl network ports NAME\n");
+		fprintf(stderr, "usage: cixctl network ports NAME\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/networks/%s/ports", argv[0]);
-	if (thinc_client_request(c, "GET", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_network_ports);
 }
 
-static int cmd_network(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_network(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
 		fprintf(stderr,
-		        "usage: thincctl network create --name=NAME --subnet=A.B.C.D --prefix=N "
+		        "usage: cixctl network create --name=NAME --subnet=A.B.C.D --prefix=N "
 		        "[--address=A.B.C.D]\n"
-		        "       thincctl network ls\n"
-		        "       thincctl network rm NAME\n"
-	        "       thincctl network ports NAME  -- what is plugged into this network's\n"
+		        "       cixctl network ls\n"
+		        "       cixctl network rm NAME\n"
+	        "       cixctl network ports NAME  -- what is plugged into this network's\n"
 	        "                                       bridge right now, and each port's traffic\n"
-		        "       thincctl network attach-interface NAME --interface=IFNAME [--vlan=N]\n"
-		        "       thincctl network detach-interface NAME --interface=IFNAME\n");
+		        "       cixctl network attach-interface NAME --interface=IFNAME [--vlan=N]\n"
+		        "       cixctl network detach-interface NAME --interface=IFNAME\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -8542,28 +8542,28 @@ static int cmd_network(const struct thinc_client *c, int json_mode, int argc, ch
 	if (strcmp(sub, "detach-interface") == 0)
 		return cmd_network_detach_interface(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "thincctl: unknown network subcommand '%s'\n", sub);
+	fprintf(stderr, "cixctl: unknown network subcommand '%s'\n", sub);
 	return 2;
 }
 
-static int cmd_image_create(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_image_create(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name = NULL;
 	int i;
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--name=", 7) == 0)
 			name = argv[i] + 7;
 		else {
-			fprintf(stderr, "thincctl: unknown image create option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown image create option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 
 	if (name == NULL) {
-		fprintf(stderr, "usage: thincctl image create --name=NAME\n");
+		fprintf(stderr, "usage: cixctl image create --name=NAME\n");
 		return 2;
 	}
 
@@ -8574,9 +8574,9 @@ static int cmd_image_create(const struct thinc_client *c, int json_mode, int arg
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (thinc_client_request(c, "POST", "/v1/images", w.buf, &r) != 0) {
+	if (cix_client_request(c, "POST", "/v1/images", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -8584,46 +8584,46 @@ static int cmd_image_create(const struct thinc_client *c, int json_mode, int arg
 	return emit(&r, json_mode, fmt_image_line);
 }
 
-static int cmd_image_ls(const struct thinc_client *c, int json_mode)
+static int cmd_image_ls(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/images", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/images", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_image_list);
 }
 
-static int cmd_image_rm(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_image_rm(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	char path[256];
 
 	if (argc < 1) {
-		fprintf(stderr, "thincctl: image rm requires an image name\n");
+		fprintf(stderr, "cixctl: image rm requires an image name\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/images/%s", argv[0]);
-	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
 }
 
-static int cmd_image_show(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_image_show(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	char path[256];
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: thincctl image show NAME\n");
+		fprintf(stderr, "usage: cixctl image show NAME\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/images/%s", argv[0]);
-	if (thinc_client_request(c, "GET", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_image_detail);
@@ -8631,7 +8631,7 @@ static int cmd_image_show(const struct thinc_client *c, int json_mode, int argc,
 
 /* ADR-0107: declares package intent on an image -- does not itself
  * trigger a rebuild (task #720's own job). */
-static int cmd_image_manifest_set(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_image_manifest_set(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *image = NULL;
 	const char *package = NULL;
@@ -8640,7 +8640,7 @@ static int cmd_image_manifest_set(const struct thinc_client *c, int json_mode, i
 	int i;
 	char path[256];
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--image=", 8) == 0)
@@ -8652,13 +8652,13 @@ static int cmd_image_manifest_set(const struct thinc_client *c, int json_mode, i
 		else if (strncmp(argv[i], "--version=", 10) == 0)
 			version = argv[i] + 10;
 		else {
-			fprintf(stderr, "thincctl: unknown image manifest set option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown image manifest set option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (image == NULL || package == NULL || mode == NULL || version == NULL) {
 		fprintf(stderr,
-		        "usage: thincctl image manifest set --image=NAME --package=NAME "
+		        "usage: cixctl image manifest set --image=NAME --package=NAME "
 		        "--mode=pinned|rolling --version=VERSION\n");
 		return 2;
 	}
@@ -8675,9 +8675,9 @@ static int cmd_image_manifest_set(const struct thinc_client *c, int json_mode, i
 	w.buf[w.len] = '\0';
 
 	snprintf(path, sizeof(path), "/v1/images/%s/manifest", image);
-	if (thinc_client_request(c, "POST", path, w.buf, &r) != 0) {
+	if (cix_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -8685,23 +8685,23 @@ static int cmd_image_manifest_set(const struct thinc_client *c, int json_mode, i
 	if (r.status < 200 || r.status >= 300) {
 		const char *msg = json_str_field(r.json, "error");
 
-		fprintf(stderr, "thincctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
+		fprintf(stderr, "cixctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
 		        r.status);
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		return 1;
 	}
 	printf("%s@%s (%s) set on image '%s'\n", package, version, mode, image);
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	return 0;
 }
 
-static int cmd_image_manifest_rm(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_image_manifest_rm(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *image = NULL;
 	const char *package = NULL;
 	int i;
 	char path[300];
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--image=", 8) == 0)
@@ -8709,32 +8709,32 @@ static int cmd_image_manifest_rm(const struct thinc_client *c, int json_mode, in
 		else if (strncmp(argv[i], "--package=", 10) == 0)
 			package = argv[i] + 10;
 		else {
-			fprintf(stderr, "thincctl: unknown image manifest rm option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown image manifest rm option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (image == NULL || package == NULL) {
-		fprintf(stderr, "usage: thincctl image manifest rm --image=NAME --package=NAME\n");
+		fprintf(stderr, "usage: cixctl image manifest rm --image=NAME --package=NAME\n");
 		return 2;
 	}
 
 	snprintf(path, sizeof(path), "/v1/images/%s/manifest/%s", image, package);
-	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
 }
 
-static int cmd_image_manifest(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_image_manifest(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
 		fprintf(stderr,
-		        "usage: thincctl image manifest set --image=NAME --package=NAME "
+		        "usage: cixctl image manifest set --image=NAME --package=NAME "
 		        "--mode=pinned|rolling --version=VERSION\n"
-		        "       thincctl image manifest rm --image=NAME --package=NAME\n");
+		        "       cixctl image manifest rm --image=NAME --package=NAME\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -8743,7 +8743,7 @@ static int cmd_image_manifest(const struct thinc_client *c, int json_mode, int a
 	if (strcmp(sub, "rm") == 0)
 		return cmd_image_manifest_rm(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "thincctl: unknown image manifest subcommand '%s'\n", sub);
+	fprintf(stderr, "cixctl: unknown image manifest subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -8767,12 +8767,12 @@ static void fmt_image_recipe_list(const struct json_value *v)
 		fmt_image_recipe_line(recipes->u.array.items[i]);
 }
 
-static int cmd_image_recipe_ls(const struct thinc_client *c, int json_mode)
+static int cmd_image_recipe_ls(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/images/recipes", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/images/recipes", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_image_recipe_list);
@@ -8781,7 +8781,7 @@ static int cmd_image_recipe_ls(const struct thinc_client *c, int json_mode)
 /* Same shape as `pkg recipe add` -- --name= is the image name this
  * recipe declares intent for (recipe name == image name, a 1:1
  * relationship, ADR-0123), --file= a local path to the recipe text. */
-static int cmd_image_recipe_add(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_image_recipe_add(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name = NULL;
 	const char *file = NULL;
@@ -8789,7 +8789,7 @@ static int cmd_image_recipe_add(const struct thinc_client *c, int json_mode, int
 	size_t content_len;
 	int i;
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--name=", 7) == 0)
@@ -8797,16 +8797,16 @@ static int cmd_image_recipe_add(const struct thinc_client *c, int json_mode, int
 		else if (strncmp(argv[i], "--file=", 7) == 0)
 			file = argv[i] + 7;
 		else {
-			fprintf(stderr, "thincctl: unknown image recipe add option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown image recipe add option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (name == NULL || file == NULL) {
-		fprintf(stderr, "usage: thincctl image recipe add --name=NAME --file=PATH\n");
+		fprintf(stderr, "usage: cixctl image recipe add --name=NAME --file=PATH\n");
 		return 2;
 	}
 	if (read_local_file(file, &content, &content_len) != 0) {
-		fprintf(stderr, "thincctl: could not read %s\n", file);
+		fprintf(stderr, "cixctl: could not read %s\n", file);
 		return 1;
 	}
 
@@ -8820,9 +8820,9 @@ static int cmd_image_recipe_add(const struct thinc_client *c, int json_mode, int
 	w.buf[w.len] = '\0';
 	free(content);
 
-	if (thinc_client_request(c, "POST", "/v1/images/recipes", w.buf, &r) != 0) {
+	if (cix_client_request(c, "POST", "/v1/images/recipes", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -8830,13 +8830,13 @@ static int cmd_image_recipe_add(const struct thinc_client *c, int json_mode, int
 	if (r.status < 200 || r.status >= 300) {
 		const char *msg = json_str_field(r.json, "error");
 
-		fprintf(stderr, "thincctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
+		fprintf(stderr, "cixctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
 		        r.status);
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		return 1;
 	}
 	printf("image recipe '%s' added\n", name);
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	return 0;
 }
 
@@ -8847,9 +8847,9 @@ static void fmt_image_recipe_show(const struct json_value *v)
 	printf("%s", content != NULL ? content : "");
 }
 
-static int cmd_image_recipe_show(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_image_recipe_show(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	char path[256];
 	const char *name = NULL;
 	int i;
@@ -8858,25 +8858,25 @@ static int cmd_image_recipe_show(const struct thinc_client *c, int json_mode, in
 		if (name == NULL)
 			name = argv[i];
 		else {
-			fprintf(stderr, "thincctl: unknown image recipe show option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown image recipe show option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (name == NULL) {
-		fprintf(stderr, "usage: thincctl image recipe show NAME\n");
+		fprintf(stderr, "usage: cixctl image recipe show NAME\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/images/recipes/%s", name);
-	if (thinc_client_request(c, "GET", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_image_recipe_show);
 }
 
-static int cmd_image_recipe_rm(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_image_recipe_rm(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	char path[256];
 	const char *name = NULL;
 	int i;
@@ -8885,31 +8885,31 @@ static int cmd_image_recipe_rm(const struct thinc_client *c, int json_mode, int 
 		if (name == NULL)
 			name = argv[i];
 		else {
-			fprintf(stderr, "thincctl: unknown image recipe rm option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown image recipe rm option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (name == NULL) {
-		fprintf(stderr, "usage: thincctl image recipe rm NAME\n");
+		fprintf(stderr, "usage: cixctl image recipe rm NAME\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/images/recipes/%s", name);
-	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
 }
 
-static int cmd_image_recipe(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_image_recipe(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: thincctl image recipe add --name=NAME --file=PATH\n"
-		                "       thincctl image recipe show NAME\n"
-		                "       thincctl image recipe rm NAME\n"
-		                "       thincctl image recipe ls\n");
+		fprintf(stderr, "usage: cixctl image recipe add --name=NAME --file=PATH\n"
+		                "       cixctl image recipe show NAME\n"
+		                "       cixctl image recipe rm NAME\n"
+		                "       cixctl image recipe ls\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -8922,7 +8922,7 @@ static int cmd_image_recipe(const struct thinc_client *c, int json_mode, int arg
 	if (strcmp(sub, "ls") == 0)
 		return cmd_image_recipe_ls(c, json_mode);
 
-	fprintf(stderr, "thincctl: unknown image recipe subcommand '%s'\n", sub);
+	fprintf(stderr, "cixctl: unknown image recipe subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -8934,9 +8934,9 @@ static int cmd_image_recipe(const struct thinc_client *c, int json_mode, int arg
  * status`, 204 means it already fully finished (nothing more to wait
  * for).
  */
-static int cmd_image_apply_recipe(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_image_apply_recipe(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	char path[256];
 	const char *name = NULL;
 	int i;
@@ -8945,25 +8945,25 @@ static int cmd_image_apply_recipe(const struct thinc_client *c, int json_mode, i
 		if (name == NULL)
 			name = argv[i];
 		else {
-			fprintf(stderr, "thincctl: unknown image apply-recipe option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown image apply-recipe option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (name == NULL) {
-		fprintf(stderr, "usage: thincctl image apply-recipe NAME\n");
+		fprintf(stderr, "usage: cixctl image apply-recipe NAME\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/images/%s/apply-recipe", name);
-	if (thinc_client_request(c, "POST", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "POST", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	if (r.status < 200 || r.status >= 300) {
 		const char *msg = json_str_field(r.json, "error");
 
-		fprintf(stderr, "thincctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
+		fprintf(stderr, "cixctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
 		        r.status);
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		return 1;
 	}
 	if (r.status == 202)
@@ -8972,7 +8972,7 @@ static int cmd_image_apply_recipe(const struct thinc_client *c, int json_mode, i
 		       name);
 	else
 		printf("recipe applied for '%s'\n", name);
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	return 0;
 }
 
@@ -8986,12 +8986,12 @@ static void fmt_image_recipe_apply_status(const struct json_value *v)
 	       image != NULL ? image : "-", error != NULL ? error : "-");
 }
 
-static int cmd_image_recipe_apply_status(const struct thinc_client *c, int json_mode)
+static int cmd_image_recipe_apply_status(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/images/recipe-apply-status", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/images/recipe-apply-status", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_image_recipe_apply_status);
@@ -9017,12 +9017,12 @@ static void fmt_container_recipe_list(const struct json_value *v)
 		fmt_container_recipe_line(recipes->u.array.items[i]);
 }
 
-static int cmd_container_recipe_ls(const struct thinc_client *c, int json_mode)
+static int cmd_container_recipe_ls(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/containers/recipes", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/containers/recipes", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_container_recipe_list);
@@ -9033,7 +9033,7 @@ static int cmd_container_recipe_ls(const struct thinc_client *c, int json_mode)
  * pkg_recipe_add()'s pkg_name= contract) -- unlike an image recipe,
  * a container recipe's content is a real POST /v1/containers body, so
  * it necessarily already carries its own name. */
-static int cmd_container_recipe_add(const struct thinc_client *c, int json_mode, int argc,
+static int cmd_container_recipe_add(const struct cix_client *c, int json_mode, int argc,
                                      char **argv)
 {
 	const char *name = NULL;
@@ -9042,7 +9042,7 @@ static int cmd_container_recipe_add(const struct thinc_client *c, int json_mode,
 	size_t content_len;
 	int i;
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--name=", 7) == 0)
@@ -9050,16 +9050,16 @@ static int cmd_container_recipe_add(const struct thinc_client *c, int json_mode,
 		else if (strncmp(argv[i], "--file=", 7) == 0)
 			file = argv[i] + 7;
 		else {
-			fprintf(stderr, "thincctl: unknown container recipe add option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown container recipe add option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (name == NULL || file == NULL) {
-		fprintf(stderr, "usage: thincctl container recipe add --name=NAME --file=PATH\n");
+		fprintf(stderr, "usage: cixctl container recipe add --name=NAME --file=PATH\n");
 		return 2;
 	}
 	if (read_local_file(file, &content, &content_len) != 0) {
-		fprintf(stderr, "thincctl: could not read %s\n", file);
+		fprintf(stderr, "cixctl: could not read %s\n", file);
 		return 1;
 	}
 
@@ -9073,9 +9073,9 @@ static int cmd_container_recipe_add(const struct thinc_client *c, int json_mode,
 	w.buf[w.len] = '\0';
 	free(content);
 
-	if (thinc_client_request(c, "POST", "/v1/containers/recipes", w.buf, &r) != 0) {
+	if (cix_client_request(c, "POST", "/v1/containers/recipes", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -9083,13 +9083,13 @@ static int cmd_container_recipe_add(const struct thinc_client *c, int json_mode,
 	if (r.status < 200 || r.status >= 300) {
 		const char *msg = json_str_field(r.json, "error");
 
-		fprintf(stderr, "thincctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
+		fprintf(stderr, "cixctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
 		        r.status);
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		return 1;
 	}
 	printf("container recipe '%s' added\n", name);
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	return 0;
 }
 
@@ -9100,10 +9100,10 @@ static void fmt_container_recipe_show(const struct json_value *v)
 	printf("%s", content != NULL ? content : "");
 }
 
-static int cmd_container_recipe_show(const struct thinc_client *c, int json_mode, int argc,
+static int cmd_container_recipe_show(const struct cix_client *c, int json_mode, int argc,
                                       char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	char path[256];
 	const char *name = NULL;
 	int i;
@@ -9112,26 +9112,26 @@ static int cmd_container_recipe_show(const struct thinc_client *c, int json_mode
 		if (name == NULL)
 			name = argv[i];
 		else {
-			fprintf(stderr, "thincctl: unknown container recipe show option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown container recipe show option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (name == NULL) {
-		fprintf(stderr, "usage: thincctl container recipe show NAME\n");
+		fprintf(stderr, "usage: cixctl container recipe show NAME\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/containers/recipes/%s", name);
-	if (thinc_client_request(c, "GET", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_container_recipe_show);
 }
 
-static int cmd_container_recipe_rm(const struct thinc_client *c, int json_mode, int argc,
+static int cmd_container_recipe_rm(const struct cix_client *c, int json_mode, int argc,
                                     char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	char path[256];
 	const char *name = NULL;
 	int i;
@@ -9140,31 +9140,31 @@ static int cmd_container_recipe_rm(const struct thinc_client *c, int json_mode, 
 		if (name == NULL)
 			name = argv[i];
 		else {
-			fprintf(stderr, "thincctl: unknown container recipe rm option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown container recipe rm option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (name == NULL) {
-		fprintf(stderr, "usage: thincctl container recipe rm NAME\n");
+		fprintf(stderr, "usage: cixctl container recipe rm NAME\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/containers/recipes/%s", name);
-	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
 }
 
-static int cmd_container_recipe(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_container_recipe(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: thincctl container recipe add --name=NAME --file=PATH\n"
-		                "       thincctl container recipe show NAME\n"
-		                "       thincctl container recipe rm NAME\n"
-		                "       thincctl container recipe ls\n");
+		fprintf(stderr, "usage: cixctl container recipe add --name=NAME --file=PATH\n"
+		                "       cixctl container recipe show NAME\n"
+		                "       cixctl container recipe rm NAME\n"
+		                "       cixctl container recipe ls\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -9177,7 +9177,7 @@ static int cmd_container_recipe(const struct thinc_client *c, int json_mode, int
 	if (strcmp(sub, "ls") == 0)
 		return cmd_container_recipe_ls(c, json_mode);
 
-	fprintf(stderr, "thincctl: unknown container recipe subcommand '%s'\n", sub);
+	fprintf(stderr, "cixctl: unknown container recipe subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -9189,10 +9189,10 @@ static int cmd_container_recipe(const struct thinc_client *c, int json_mode, int
  * real error, never an async job to poll (unlike image recipes' own
  * artifact-fetch fast path, which containers have no equivalent of).
  */
-static int cmd_container_apply_recipe(const struct thinc_client *c, int json_mode, int argc,
+static int cmd_container_apply_recipe(const struct cix_client *c, int json_mode, int argc,
                                        char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	char path[256];
 	const char *name = NULL;
 	int i;
@@ -9208,7 +9208,7 @@ static int cmd_container_apply_recipe(const struct thinc_client *c, int json_mod
 
 			if (eq == NULL) {
 				fprintf(stderr,
-				        "thincctl: invalid --secret= value '%s' (expected KEY=VALUE)\n",
+				        "cixctl: invalid --secret= value '%s' (expected KEY=VALUE)\n",
 				        argv[i] + 9);
 				jw_free(&w);
 				return 2;
@@ -9220,7 +9220,7 @@ static int cmd_container_apply_recipe(const struct thinc_client *c, int json_mod
 		} else if (name == NULL) {
 			name = argv[i];
 		} else {
-			fprintf(stderr, "thincctl: unknown container apply-recipe option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown container apply-recipe option '%s'\n", argv[i]);
 			jw_free(&w);
 			return 2;
 		}
@@ -9231,15 +9231,15 @@ static int cmd_container_apply_recipe(const struct thinc_client *c, int json_mod
 
 	if (name == NULL) {
 		fprintf(stderr,
-		        "usage: thincctl container apply-recipe NAME [--secret=KEY=VALUE ...]\n");
+		        "usage: cixctl container apply-recipe NAME [--secret=KEY=VALUE ...]\n");
 		jw_free(&w);
 		return 2;
 	}
 
 	snprintf(path, sizeof(path), "/v1/containers/recipes/%s/apply", name);
-	if (thinc_client_request(c, "POST", path, w.buf, &r) != 0) {
+	if (cix_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -9247,31 +9247,31 @@ static int cmd_container_apply_recipe(const struct thinc_client *c, int json_mod
 	if (r.status < 200 || r.status >= 300) {
 		const char *msg = json_str_field(r.json, "error");
 
-		fprintf(stderr, "thincctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
+		fprintf(stderr, "cixctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
 		        r.status);
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_container_line);
 }
 
-static int cmd_image(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_image(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: thincctl image create --name=NAME\n"
-		                "       thincctl image ls\n"
-		                "       thincctl image show NAME\n"
-		                "       thincctl image rm NAME\n"
-		                "       thincctl image manifest set --image=NAME --package=NAME "
+		fprintf(stderr, "usage: cixctl image create --name=NAME\n"
+		                "       cixctl image ls\n"
+		                "       cixctl image show NAME\n"
+		                "       cixctl image rm NAME\n"
+		                "       cixctl image manifest set --image=NAME --package=NAME "
 		                "--mode=pinned|rolling --version=VERSION\n"
-		                "       thincctl image manifest rm --image=NAME --package=NAME\n"
-		                "       thincctl image recipe add --name=NAME --file=PATH\n"
-		                "       thincctl image recipe show|rm NAME\n"
-		                "       thincctl image recipe ls\n"
-		                "       thincctl image apply-recipe NAME\n"
-		                "       thincctl image recipe-apply-status\n");
+		                "       cixctl image manifest rm --image=NAME --package=NAME\n"
+		                "       cixctl image recipe add --name=NAME --file=PATH\n"
+		                "       cixctl image recipe show|rm NAME\n"
+		                "       cixctl image recipe ls\n"
+		                "       cixctl image apply-recipe NAME\n"
+		                "       cixctl image recipe-apply-status\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -9292,44 +9292,44 @@ static int cmd_image(const struct thinc_client *c, int json_mode, int argc, char
 	if (strcmp(sub, "recipe-apply-status") == 0)
 		return cmd_image_recipe_apply_status(c, json_mode);
 
-	fprintf(stderr, "thincctl: unknown image subcommand '%s'\n", sub);
+	fprintf(stderr, "cixctl: unknown image subcommand '%s'\n", sub);
 	return 2;
 }
 
-static int cmd_device_ls(const struct thinc_client *c, int json_mode)
+static int cmd_device_ls(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/devices", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/devices", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_device_list);
 }
 
-static int cmd_device(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_device(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: thincctl device ls\n");
+		fprintf(stderr, "usage: cixctl device ls\n");
 		return 2;
 	}
 	sub = argv[0];
 	if (strcmp(sub, "ls") == 0)
 		return cmd_device_ls(c, json_mode);
 
-	fprintf(stderr, "thincctl: unknown device subcommand '%s'\n", sub);
+	fprintf(stderr, "cixctl: unknown device subcommand '%s'\n", sub);
 	return 2;
 }
 
-static int cmd_diskrole_create(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_diskrole_create(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *disk_name = NULL;
 	const char *role = NULL;
 	int i;
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--disk=", 7) == 0)
@@ -9337,13 +9337,13 @@ static int cmd_diskrole_create(const struct thinc_client *c, int json_mode, int 
 		else if (strncmp(argv[i], "--role=", 7) == 0)
 			role = argv[i] + 7;
 		else {
-			fprintf(stderr, "thincctl: unknown diskrole create option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown diskrole create option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (disk_name == NULL || role == NULL) {
 		fprintf(stderr,
-		        "usage: thincctl diskrole create --disk=NAME --role=container-storage|backup|state-storage|rebuildable-storage|log-storage|swap\n");
+		        "usage: cixctl diskrole create --disk=NAME --role=container-storage|backup|state-storage|rebuildable-storage|log-storage|swap\n");
 		return 2;
 	}
 
@@ -9356,9 +9356,9 @@ static int cmd_diskrole_create(const struct thinc_client *c, int json_mode, int 
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (thinc_client_request(c, "POST", "/v1/diskroles", w.buf, &r) != 0) {
+	if (cix_client_request(c, "POST", "/v1/diskroles", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -9366,42 +9366,42 @@ static int cmd_diskrole_create(const struct thinc_client *c, int json_mode, int 
 	return emit(&r, json_mode, fmt_diskrole_line);
 }
 
-static int cmd_diskrole_ls(const struct thinc_client *c, int json_mode)
+static int cmd_diskrole_ls(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/diskroles", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/diskroles", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_diskrole_list);
 }
 
-static int cmd_diskrole_rm(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_diskrole_rm(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	char path[256];
 
 	if (argc < 1) {
-		fprintf(stderr, "thincctl: diskrole rm requires a disk name\n");
+		fprintf(stderr, "cixctl: diskrole rm requires a disk name\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/diskroles/%s", argv[0]);
-	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
 }
 
-static int cmd_diskrole(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_diskrole(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: thincctl diskrole create --disk=NAME --role=container-storage|backup|state-storage|rebuildable-storage|log-storage|swap\n"
-		                "       thincctl diskrole ls\n"
-		                "       thincctl diskrole rm NAME\n");
+		fprintf(stderr, "usage: cixctl diskrole create --disk=NAME --role=container-storage|backup|state-storage|rebuildable-storage|log-storage|swap\n"
+		                "       cixctl diskrole ls\n"
+		                "       cixctl diskrole rm NAME\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -9412,18 +9412,18 @@ static int cmd_diskrole(const struct thinc_client *c, int json_mode, int argc, c
 	if (strcmp(sub, "rm") == 0)
 		return cmd_diskrole_rm(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "thincctl: unknown diskrole subcommand '%s'\n", sub);
+	fprintf(stderr, "cixctl: unknown diskrole subcommand '%s'\n", sub);
 	return 2;
 }
 
-static int cmd_devicemap_create(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_devicemap_create(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name = NULL;
 	const char *kind = NULL;
 	const char *selector = NULL;
 	int i;
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--name=", 7) == 0)
@@ -9433,13 +9433,13 @@ static int cmd_devicemap_create(const struct thinc_client *c, int json_mode, int
 		else if (strncmp(argv[i], "--selector=", 11) == 0)
 			selector = argv[i] + 11;
 		else {
-			fprintf(stderr, "thincctl: unknown devicemap create option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown devicemap create option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (name == NULL || kind == NULL || selector == NULL) {
 		fprintf(stderr,
-		        "usage: thincctl devicemap create --name=NAME --kind=exact|vendor_model "
+		        "usage: cixctl devicemap create --name=NAME --kind=exact|vendor_model "
 		        "--selector=SELECTOR\n");
 		return 2;
 	}
@@ -9455,9 +9455,9 @@ static int cmd_devicemap_create(const struct thinc_client *c, int json_mode, int
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (thinc_client_request(c, "POST", "/v1/devicemaps", w.buf, &r) != 0) {
+	if (cix_client_request(c, "POST", "/v1/devicemaps", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -9465,44 +9465,44 @@ static int cmd_devicemap_create(const struct thinc_client *c, int json_mode, int
 	return emit(&r, json_mode, fmt_devicemap_line);
 }
 
-static int cmd_devicemap_ls(const struct thinc_client *c, int json_mode)
+static int cmd_devicemap_ls(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/devicemaps", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/devicemaps", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_devicemap_list);
 }
 
-static int cmd_devicemap_rm(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_devicemap_rm(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	char path[256];
 
 	if (argc < 1) {
-		fprintf(stderr, "thincctl: devicemap rm requires a mapping name\n");
+		fprintf(stderr, "cixctl: devicemap rm requires a mapping name\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/devicemaps/%s", argv[0]);
-	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
 }
 
-static int cmd_devicemap(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_devicemap(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
 		fprintf(stderr,
-		        "usage: thincctl devicemap create --name=NAME --kind=exact|vendor_model "
+		        "usage: cixctl devicemap create --name=NAME --kind=exact|vendor_model "
 		        "--selector=SELECTOR\n"
-		        "       thincctl devicemap ls\n"
-		        "       thincctl devicemap rm NAME\n");
+		        "       cixctl devicemap ls\n"
+		        "       cixctl devicemap rm NAME\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -9513,17 +9513,17 @@ static int cmd_devicemap(const struct thinc_client *c, int json_mode, int argc, 
 	if (strcmp(sub, "rm") == 0)
 		return cmd_devicemap_rm(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "thincctl: unknown devicemap subcommand '%s'\n", sub);
+	fprintf(stderr, "cixctl: unknown devicemap subcommand '%s'\n", sub);
 	return 2;
 }
 
-static int cmd_dns_record_create(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_dns_record_create(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name = NULL;
 	const char *ip = NULL;
 	int i;
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--name=", 7) == 0)
@@ -9531,13 +9531,13 @@ static int cmd_dns_record_create(const struct thinc_client *c, int json_mode, in
 		else if (strncmp(argv[i], "--ip=", 5) == 0)
 			ip = argv[i] + 5;
 		else {
-			fprintf(stderr, "thincctl: unknown dns record create option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown dns record create option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 
 	if (name == NULL || ip == NULL) {
-		fprintf(stderr, "usage: thincctl dns record create --name=NAME --ip=A.B.C.D\n");
+		fprintf(stderr, "usage: cixctl dns record create --name=NAME --ip=A.B.C.D\n");
 		return 2;
 	}
 
@@ -9550,9 +9550,9 @@ static int cmd_dns_record_create(const struct thinc_client *c, int json_mode, in
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (thinc_client_request(c, "POST", "/v1/dns/records", w.buf, &r) != 0) {
+	if (cix_client_request(c, "POST", "/v1/dns/records", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -9560,24 +9560,24 @@ static int cmd_dns_record_create(const struct thinc_client *c, int json_mode, in
 	return emit(&r, json_mode, fmt_dns_record_line);
 }
 
-static int cmd_dns_record_ls(const struct thinc_client *c, int json_mode)
+static int cmd_dns_record_ls(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/dns/records", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/dns/records", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_dns_record_list);
 }
 
-static int cmd_dns_record_update(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_dns_record_update(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name = NULL;
 	const char *ip = NULL;
 	int i;
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 	char path[256];
 
 	for (i = 0; i < argc; i++) {
@@ -9586,13 +9586,13 @@ static int cmd_dns_record_update(const struct thinc_client *c, int json_mode, in
 		else if (strncmp(argv[i], "--ip=", 5) == 0)
 			ip = argv[i] + 5;
 		else {
-			fprintf(stderr, "thincctl: unknown dns record update option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown dns record update option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 
 	if (name == NULL || ip == NULL) {
-		fprintf(stderr, "usage: thincctl dns record update --name=NAME --ip=A.B.C.D\n");
+		fprintf(stderr, "usage: cixctl dns record update --name=NAME --ip=A.B.C.D\n");
 		return 2;
 	}
 
@@ -9604,9 +9604,9 @@ static int cmd_dns_record_update(const struct thinc_client *c, int json_mode, in
 	w.buf[w.len] = '\0';
 
 	snprintf(path, sizeof(path), "/v1/dns/records/%s", name);
-	if (thinc_client_request(c, "PUT", path, w.buf, &r) != 0) {
+	if (cix_client_request(c, "PUT", path, w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -9614,33 +9614,33 @@ static int cmd_dns_record_update(const struct thinc_client *c, int json_mode, in
 	return emit(&r, json_mode, fmt_dns_record_line);
 }
 
-static int cmd_dns_record_rm(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_dns_record_rm(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	char path[256];
 
 	if (argc < 1) {
-		fprintf(stderr, "thincctl: dns record rm requires a record name\n");
+		fprintf(stderr, "cixctl: dns record rm requires a record name\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/dns/records/%s", argv[0]);
-	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
 }
 
-static int cmd_dns_record(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_dns_record(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
 		fprintf(stderr,
-		        "usage: thincctl dns record create --name=NAME --ip=A.B.C.D\n"
-		        "       thincctl dns record update --name=NAME --ip=A.B.C.D\n"
-		        "       thincctl dns record ls\n"
-		        "       thincctl dns record rm NAME\n");
+		        "usage: cixctl dns record create --name=NAME --ip=A.B.C.D\n"
+		        "       cixctl dns record update --name=NAME --ip=A.B.C.D\n"
+		        "       cixctl dns record ls\n"
+		        "       cixctl dns record rm NAME\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -9653,17 +9653,17 @@ static int cmd_dns_record(const struct thinc_client *c, int json_mode, int argc,
 	if (strcmp(sub, "rm") == 0)
 		return cmd_dns_record_rm(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "thincctl: unknown dns record subcommand '%s'\n", sub);
+	fprintf(stderr, "cixctl: unknown dns record subcommand '%s'\n", sub);
 	return 2;
 }
 
-static int cmd_dns_server_register(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_dns_server_register(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *container = NULL;
 	const char *hosts_path = NULL;
 	int i;
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--container=", 12) == 0)
@@ -9671,14 +9671,14 @@ static int cmd_dns_server_register(const struct thinc_client *c, int json_mode, 
 		else if (strncmp(argv[i], "--hosts-path=", 13) == 0)
 			hosts_path = argv[i] + 13;
 		else {
-			fprintf(stderr, "thincctl: unknown dns server register option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown dns server register option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 
 	if (container == NULL || hosts_path == NULL) {
 		fprintf(stderr,
-		        "usage: thincctl dns server register --container=NAME --hosts-path=PATH\n");
+		        "usage: cixctl dns server register --container=NAME --hosts-path=PATH\n");
 		return 2;
 	}
 
@@ -9691,9 +9691,9 @@ static int cmd_dns_server_register(const struct thinc_client *c, int json_mode, 
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (thinc_client_request(c, "POST", "/v1/dns/servers", w.buf, &r) != 0) {
+	if (cix_client_request(c, "POST", "/v1/dns/servers", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -9701,44 +9701,44 @@ static int cmd_dns_server_register(const struct thinc_client *c, int json_mode, 
 	return emit(&r, json_mode, fmt_dns_server_line);
 }
 
-static int cmd_dns_server_ls(const struct thinc_client *c, int json_mode)
+static int cmd_dns_server_ls(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/dns/servers", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/dns/servers", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_dns_server_list);
 }
 
-static int cmd_dns_server_unregister(const struct thinc_client *c, int json_mode, int argc,
+static int cmd_dns_server_unregister(const struct cix_client *c, int json_mode, int argc,
                                       char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	char path[256];
 
 	if (argc < 1) {
-		fprintf(stderr, "thincctl: dns server unregister requires a container name\n");
+		fprintf(stderr, "cixctl: dns server unregister requires a container name\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/dns/servers/%s", argv[0]);
-	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
 }
 
-static int cmd_dns_server(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_dns_server(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
 		fprintf(stderr,
-		        "usage: thincctl dns server register --container=NAME --hosts-path=PATH\n"
-		        "       thincctl dns server ls\n"
-		        "       thincctl dns server unregister CONTAINER\n");
+		        "usage: cixctl dns server register --container=NAME --hosts-path=PATH\n"
+		        "       cixctl dns server ls\n"
+		        "       cixctl dns server unregister CONTAINER\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -9749,17 +9749,17 @@ static int cmd_dns_server(const struct thinc_client *c, int json_mode, int argc,
 	if (strcmp(sub, "unregister") == 0)
 		return cmd_dns_server_unregister(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "thincctl: unknown dns server subcommand '%s'\n", sub);
+	fprintf(stderr, "cixctl: unknown dns server subcommand '%s'\n", sub);
 	return 2;
 }
 
-static int cmd_dns(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_dns(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: thincctl dns record ...\n"
-		                "       thincctl dns server ...\n");
+		fprintf(stderr, "usage: cixctl dns record ...\n"
+		                "       cixctl dns server ...\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -9768,17 +9768,17 @@ static int cmd_dns(const struct thinc_client *c, int json_mode, int argc, char *
 	if (strcmp(sub, "server") == 0)
 		return cmd_dns_server(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "thincctl: unknown dns subcommand '%s'\n", sub);
+	fprintf(stderr, "cixctl: unknown dns subcommand '%s'\n", sub);
 	return 2;
 }
 
-static int cmd_ldap_server_register(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_ldap_server_register(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *container = NULL;
 	const char *config_path = NULL;
 	int i;
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--container=", 12) == 0)
@@ -9786,14 +9786,14 @@ static int cmd_ldap_server_register(const struct thinc_client *c, int json_mode,
 		else if (strncmp(argv[i], "--config-path=", 14) == 0)
 			config_path = argv[i] + 14;
 		else {
-			fprintf(stderr, "thincctl: unknown ldap server register option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown ldap server register option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 
 	if (container == NULL || config_path == NULL) {
 		fprintf(stderr,
-		        "usage: thincctl ldap server register --container=NAME --config-path=PATH\n");
+		        "usage: cixctl ldap server register --container=NAME --config-path=PATH\n");
 		return 2;
 	}
 
@@ -9806,9 +9806,9 @@ static int cmd_ldap_server_register(const struct thinc_client *c, int json_mode,
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (thinc_client_request(c, "POST", "/v1/ldap/servers", w.buf, &r) != 0) {
+	if (cix_client_request(c, "POST", "/v1/ldap/servers", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -9816,44 +9816,44 @@ static int cmd_ldap_server_register(const struct thinc_client *c, int json_mode,
 	return emit(&r, json_mode, fmt_ldap_server_line);
 }
 
-static int cmd_ldap_server_ls(const struct thinc_client *c, int json_mode)
+static int cmd_ldap_server_ls(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/ldap/servers", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/ldap/servers", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_ldap_server_list);
 }
 
-static int cmd_ldap_server_unregister(const struct thinc_client *c, int json_mode, int argc,
+static int cmd_ldap_server_unregister(const struct cix_client *c, int json_mode, int argc,
                                        char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	char path[256];
 
 	if (argc < 1) {
-		fprintf(stderr, "thincctl: ldap server unregister requires a container name\n");
+		fprintf(stderr, "cixctl: ldap server unregister requires a container name\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/ldap/servers/%s", argv[0]);
-	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
 }
 
-static int cmd_ldap_server(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_ldap_server(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
 		fprintf(stderr,
-		        "usage: thincctl ldap server register --container=NAME --config-path=PATH\n"
-		        "       thincctl ldap server ls\n"
-		        "       thincctl ldap server unregister CONTAINER\n");
+		        "usage: cixctl ldap server register --container=NAME --config-path=PATH\n"
+		        "       cixctl ldap server ls\n"
+		        "       cixctl ldap server unregister CONTAINER\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -9864,17 +9864,17 @@ static int cmd_ldap_server(const struct thinc_client *c, int json_mode, int argc
 	if (strcmp(sub, "unregister") == 0)
 		return cmd_ldap_server_unregister(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "thincctl: unknown ldap server subcommand '%s'\n", sub);
+	fprintf(stderr, "cixctl: unknown ldap server subcommand '%s'\n", sub);
 	return 2;
 }
 
-static int cmd_ldap_group_add(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_ldap_group_add(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name = NULL;
 	const char *gidnumber = NULL;
 	int i;
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--name=", 7) == 0)
@@ -9882,13 +9882,13 @@ static int cmd_ldap_group_add(const struct thinc_client *c, int json_mode, int a
 		else if (strncmp(argv[i], "--gidnumber=", 12) == 0)
 			gidnumber = argv[i] + 12;
 		else {
-			fprintf(stderr, "thincctl: unknown ldap group add option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown ldap group add option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 
 	if (name == NULL) {
-		fprintf(stderr, "usage: thincctl ldap group add --name=NAME [--gidnumber=N]\n");
+		fprintf(stderr, "usage: cixctl ldap group add --name=NAME [--gidnumber=N]\n");
 		return 2;
 	}
 
@@ -9905,9 +9905,9 @@ static int cmd_ldap_group_add(const struct thinc_client *c, int json_mode, int a
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (thinc_client_request(c, "POST", "/v1/ldap/groups", w.buf, &r) != 0) {
+	if (cix_client_request(c, "POST", "/v1/ldap/groups", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -9915,25 +9915,25 @@ static int cmd_ldap_group_add(const struct thinc_client *c, int json_mode, int a
 	return emit(&r, json_mode, fmt_ldap_group_line);
 }
 
-static int cmd_ldap_group_ls(const struct thinc_client *c, int json_mode)
+static int cmd_ldap_group_ls(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/ldap/groups", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/ldap/groups", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_ldap_group_list);
 }
 
-static int cmd_ldap_group_update(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_ldap_group_update(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name = NULL;
 	const char *gidnumber = NULL;
 	const char *new_name = NULL;
 	int i;
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 	char path[256];
 
 	for (i = 0; i < argc; i++) {
@@ -9944,14 +9944,14 @@ static int cmd_ldap_group_update(const struct thinc_client *c, int json_mode, in
 		else if (strncmp(argv[i], "--new-name=", 11) == 0)
 			new_name = argv[i] + 11;
 		else {
-			fprintf(stderr, "thincctl: unknown ldap group update option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown ldap group update option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 
 	if (name == NULL || gidnumber == NULL) {
 		fprintf(stderr,
-		        "usage: thincctl ldap group update --name=NAME --gidnumber=N [--new-name=NEWNAME]\n");
+		        "usage: cixctl ldap group update --name=NAME --gidnumber=N [--new-name=NEWNAME]\n");
 		return 2;
 	}
 
@@ -9971,9 +9971,9 @@ static int cmd_ldap_group_update(const struct thinc_client *c, int json_mode, in
 	w.buf[w.len] = '\0';
 
 	snprintf(path, sizeof(path), "/v1/ldap/groups/%s", name);
-	if (thinc_client_request(c, "PUT", path, w.buf, &r) != 0) {
+	if (cix_client_request(c, "PUT", path, w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -9981,33 +9981,33 @@ static int cmd_ldap_group_update(const struct thinc_client *c, int json_mode, in
 	return emit(&r, json_mode, fmt_ldap_group_line);
 }
 
-static int cmd_ldap_group_rm(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_ldap_group_rm(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	char path[256];
 
 	if (argc < 1) {
-		fprintf(stderr, "thincctl: ldap group rm requires a group name\n");
+		fprintf(stderr, "cixctl: ldap group rm requires a group name\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/ldap/groups/%s", argv[0]);
-	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
 }
 
-static int cmd_ldap_group(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_ldap_group(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: thincctl ldap group add --name=NAME [--gidnumber=N]\n"
-		                "       thincctl ldap group update --name=NAME --gidnumber=N "
+		fprintf(stderr, "usage: cixctl ldap group add --name=NAME [--gidnumber=N]\n"
+		                "       cixctl ldap group update --name=NAME --gidnumber=N "
 		                "[--new-name=NEWNAME]\n"
-		                "       thincctl ldap group ls\n"
-		                "       thincctl ldap group rm NAME\n");
+		                "       cixctl ldap group ls\n"
+		                "       cixctl ldap group rm NAME\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -10020,12 +10020,12 @@ static int cmd_ldap_group(const struct thinc_client *c, int json_mode, int argc,
 	if (strcmp(sub, "rm") == 0)
 		return cmd_ldap_group_rm(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "thincctl: unknown ldap group subcommand '%s'\n", sub);
+	fprintf(stderr, "cixctl: unknown ldap group subcommand '%s'\n", sub);
 	return 2;
 }
 
 /* Shared by "ldap user add" and a future "ldap user update" -- parses
- * every optional field thincctl exposes into a JSON request body. */
+ * every optional field cixctl exposes into a JSON request body. */
 /* is_update: for `add`, --name= both selects the outgoing "name" field
  * and is the record's own real name being created, so it's written into
  * the body as-is. For `update`, --name= only ever identifies WHICH user
@@ -10103,10 +10103,10 @@ static void build_ldap_user_body(struct json_writer *w, int argc, char **argv, i
 	*out_name = name;
 }
 
-static int cmd_ldap_user_add(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_ldap_user_add(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 	const char *name;
 
 	jw_init(&w);
@@ -10114,7 +10114,7 @@ static int cmd_ldap_user_add(const struct thinc_client *c, int json_mode, int ar
 	if (name == NULL) {
 		jw_free(&w);
 		fprintf(stderr,
-		        "usage: thincctl ldap user add --name=NAME [--uidnumber=N] "
+		        "usage: cixctl ldap user add --name=NAME [--uidnumber=N] "
 		        "--primarygroup=N [--givenname=S] [--sn=S] [--mail=S] "
 		        "[--loginshell=S] [--homedirectory=S] [--password=S] [--disabled] "
 		        "[--ssh-key=S] [--can-search]\n");
@@ -10122,9 +10122,9 @@ static int cmd_ldap_user_add(const struct thinc_client *c, int json_mode, int ar
 	}
 	w.buf[w.len] = '\0';
 
-	if (thinc_client_request(c, "POST", "/v1/ldap/users", w.buf, &r) != 0) {
+	if (cix_client_request(c, "POST", "/v1/ldap/users", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -10135,10 +10135,10 @@ static int cmd_ldap_user_add(const struct thinc_client *c, int json_mode, int ar
 /* PUT is full-field-replacement (see handle_ldap_user_update()'s own doc
  * comment) -- an omitted field here resets to empty/0 on the server, same
  * as "ldap group update". */
-static int cmd_ldap_user_update(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_ldap_user_update(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 	const char *name;
 	char path[256];
 
@@ -10147,7 +10147,7 @@ static int cmd_ldap_user_update(const struct thinc_client *c, int json_mode, int
 	if (name == NULL) {
 		jw_free(&w);
 		fprintf(stderr,
-		        "usage: thincctl ldap user update --name=NAME [--new-name=NEWNAME] "
+		        "usage: cixctl ldap user update --name=NAME [--new-name=NEWNAME] "
 		        "[--uidnumber=N] [--primarygroup=N] [--givenname=S] [--sn=S] [--mail=S] "
 		        "[--loginshell=S] [--homedirectory=S] [--password=S] [--disabled] "
 		        "[--ssh-key=S] [--can-search]\n");
@@ -10156,9 +10156,9 @@ static int cmd_ldap_user_update(const struct thinc_client *c, int json_mode, int
 	w.buf[w.len] = '\0';
 
 	snprintf(path, sizeof(path), "/v1/ldap/users/%s", name);
-	if (thinc_client_request(c, "PUT", path, w.buf, &r) != 0) {
+	if (cix_client_request(c, "PUT", path, w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -10166,44 +10166,44 @@ static int cmd_ldap_user_update(const struct thinc_client *c, int json_mode, int
 	return emit(&r, json_mode, fmt_ldap_user_line);
 }
 
-static int cmd_ldap_user_ls(const struct thinc_client *c, int json_mode)
+static int cmd_ldap_user_ls(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/ldap/users", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/ldap/users", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_ldap_user_list);
 }
 
-static int cmd_ldap_user_rm(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_ldap_user_rm(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	char path[256];
 
 	if (argc < 1) {
-		fprintf(stderr, "thincctl: ldap user rm requires a user name\n");
+		fprintf(stderr, "cixctl: ldap user rm requires a user name\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/ldap/users/%s", argv[0]);
-	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
 }
 
-static int cmd_ldap_user(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_ldap_user(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: thincctl ldap user add --name=NAME --uidnumber=N "
+		fprintf(stderr, "usage: cixctl ldap user add --name=NAME --uidnumber=N "
 		                "--primarygroup=N ...\n"
-		                "       thincctl ldap user update --name=NAME ...\n"
-		                "       thincctl ldap user ls\n"
-		                "       thincctl ldap user rm NAME\n");
+		                "       cixctl ldap user update --name=NAME ...\n"
+		                "       cixctl ldap user ls\n"
+		                "       cixctl ldap user rm NAME\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -10216,22 +10216,22 @@ static int cmd_ldap_user(const struct thinc_client *c, int json_mode, int argc, 
 	if (strcmp(sub, "rm") == 0)
 		return cmd_ldap_user_rm(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "thincctl: unknown ldap user subcommand '%s'\n", sub);
+	fprintf(stderr, "cixctl: unknown ldap user subcommand '%s'\n", sub);
 	return 2;
 }
 
-static int cmd_ldap_config_show(const struct thinc_client *c, int json_mode)
+static int cmd_ldap_config_show(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/ldap/config", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/ldap/config", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_ldap_config_line);
 }
 
-static int cmd_ldap_config_set(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_ldap_config_set(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	long start_uid = -1, start_gid = -1;
 	/* Issue #66: the client-login fields containers reference via
@@ -10242,7 +10242,7 @@ static int cmd_ldap_config_set(const struct thinc_client *c, int json_mode, int 
 	const char *client_uri = NULL, *base_dn = NULL, *bind_dn = NULL, *bind_password = NULL;
 	int i;
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--start-uid=", 12) == 0)
@@ -10258,7 +10258,7 @@ static int cmd_ldap_config_set(const struct thinc_client *c, int json_mode, int 
 		else if (strncmp(argv[i], "--bind-password=", 16) == 0)
 			bind_password = argv[i] + 16;
 		else {
-			fprintf(stderr, "thincctl: unknown ldap config set option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown ldap config set option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
@@ -10266,12 +10266,12 @@ static int cmd_ldap_config_set(const struct thinc_client *c, int json_mode, int 
 	if (start_uid < 0 && start_gid < 0 && client_uri == NULL && base_dn == NULL &&
 	    bind_dn == NULL && bind_password == NULL) {
 		fprintf(stderr,
-		        "usage: thincctl ldap config set [--start-uid=N --start-gid=N] "
+		        "usage: cixctl ldap config set [--start-uid=N --start-gid=N] "
 		        "[--client-uri=URIS] [--base-dn=DN] [--bind-dn=DN] [--bind-password=PW]\n");
 		return 2;
 	}
 	if ((start_uid < 0) != (start_gid < 0)) {
-		fprintf(stderr, "thincctl: --start-uid and --start-gid must be given together\n");
+		fprintf(stderr, "cixctl: --start-uid and --start-gid must be given together\n");
 		return 2;
 	}
 
@@ -10302,9 +10302,9 @@ static int cmd_ldap_config_set(const struct thinc_client *c, int json_mode, int 
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (thinc_client_request(c, "PUT", "/v1/ldap/config", w.buf, &r) != 0) {
+	if (cix_client_request(c, "PUT", "/v1/ldap/config", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -10312,13 +10312,13 @@ static int cmd_ldap_config_set(const struct thinc_client *c, int json_mode, int 
 	return emit(&r, json_mode, fmt_ldap_config_line);
 }
 
-static int cmd_ldap_config(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_ldap_config(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: thincctl ldap config show\n"
-		                "       thincctl ldap config set --start-uid=N --start-gid=N\n");
+		fprintf(stderr, "usage: cixctl ldap config show\n"
+		                "       cixctl ldap config set --start-uid=N --start-gid=N\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -10327,19 +10327,19 @@ static int cmd_ldap_config(const struct thinc_client *c, int json_mode, int argc
 	if (strcmp(sub, "set") == 0)
 		return cmd_ldap_config_set(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "thincctl: unknown ldap config subcommand '%s'\n", sub);
+	fprintf(stderr, "cixctl: unknown ldap config subcommand '%s'\n", sub);
 	return 2;
 }
 
-static int cmd_ldap(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_ldap(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: thincctl ldap server ...\n"
-		                "       thincctl ldap config ...\n"
-		                "       thincctl ldap group ...\n"
-		                "       thincctl ldap user ...\n");
+		fprintf(stderr, "usage: cixctl ldap server ...\n"
+		                "       cixctl ldap config ...\n"
+		                "       cixctl ldap group ...\n"
+		                "       cixctl ldap user ...\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -10352,17 +10352,17 @@ static int cmd_ldap(const struct thinc_client *c, int json_mode, int argc, char 
 	if (strcmp(sub, "user") == 0)
 		return cmd_ldap_user(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "thincctl: unknown ldap subcommand '%s'\n", sub);
+	fprintf(stderr, "cixctl: unknown ldap subcommand '%s'\n", sub);
 	return 2;
 }
 
-static int cmd_pki_ca_bootstrap(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_pki_ca_bootstrap(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *common_name = NULL;
 	long days = -1;
 	int i;
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--common-name=", 14) == 0)
@@ -10370,7 +10370,7 @@ static int cmd_pki_ca_bootstrap(const struct thinc_client *c, int json_mode, int
 		else if (strncmp(argv[i], "--days=", 7) == 0)
 			days = atol(argv[i] + 7);
 		else {
-			fprintf(stderr, "thincctl: unknown pki ca bootstrap option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown pki ca bootstrap option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
@@ -10388,9 +10388,9 @@ static int cmd_pki_ca_bootstrap(const struct thinc_client *c, int json_mode, int
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (thinc_client_request(c, "POST", "/v1/pki/ca", w.buf, &r) != 0) {
+	if (cix_client_request(c, "POST", "/v1/pki/ca", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -10398,24 +10398,24 @@ static int cmd_pki_ca_bootstrap(const struct thinc_client *c, int json_mode, int
 	return emit(&r, json_mode, fmt_pki_ca);
 }
 
-static int cmd_pki_ca_show(const struct thinc_client *c, int json_mode)
+static int cmd_pki_ca_show(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/pki/ca", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/pki/ca", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_pki_ca);
 }
 
-static int cmd_pki_ca(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_pki_ca(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: thincctl pki ca bootstrap [--common-name=NAME] [--days=N]\n"
-		                "       thincctl pki ca show\n");
+		fprintf(stderr, "usage: cixctl pki ca bootstrap [--common-name=NAME] [--days=N]\n"
+		                "       cixctl pki ca show\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -10424,18 +10424,18 @@ static int cmd_pki_ca(const struct thinc_client *c, int json_mode, int argc, cha
 	if (strcmp(sub, "show") == 0)
 		return cmd_pki_ca_show(c, json_mode);
 
-	fprintf(stderr, "thincctl: unknown pki ca subcommand '%s'\n", sub);
+	fprintf(stderr, "cixctl: unknown pki ca subcommand '%s'\n", sub);
 	return 2;
 }
 
-static int cmd_pki_intermediate_bootstrap(const struct thinc_client *c, int json_mode, int argc,
+static int cmd_pki_intermediate_bootstrap(const struct cix_client *c, int json_mode, int argc,
                                            char **argv)
 {
 	const char *common_name = NULL;
 	long days = -1;
 	int i;
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--common-name=", 14) == 0)
@@ -10443,7 +10443,7 @@ static int cmd_pki_intermediate_bootstrap(const struct thinc_client *c, int json
 		else if (strncmp(argv[i], "--days=", 7) == 0)
 			days = atol(argv[i] + 7);
 		else {
-			fprintf(stderr, "thincctl: unknown pki intermediate bootstrap option '%s'\n",
+			fprintf(stderr, "cixctl: unknown pki intermediate bootstrap option '%s'\n",
 			        argv[i]);
 			return 2;
 		}
@@ -10462,9 +10462,9 @@ static int cmd_pki_intermediate_bootstrap(const struct thinc_client *c, int json
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (thinc_client_request(c, "POST", "/v1/pki/intermediate", w.buf, &r) != 0) {
+	if (cix_client_request(c, "POST", "/v1/pki/intermediate", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -10472,24 +10472,24 @@ static int cmd_pki_intermediate_bootstrap(const struct thinc_client *c, int json
 	return emit(&r, json_mode, fmt_pki_ca);
 }
 
-static int cmd_pki_intermediate_show(const struct thinc_client *c, int json_mode)
+static int cmd_pki_intermediate_show(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/pki/intermediate", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/pki/intermediate", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_pki_ca);
 }
 
-static int cmd_pki_intermediate(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_pki_intermediate(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: thincctl pki intermediate bootstrap [--common-name=NAME] [--days=N]\n"
-		                "       thincctl pki intermediate show\n");
+		fprintf(stderr, "usage: cixctl pki intermediate bootstrap [--common-name=NAME] [--days=N]\n"
+		                "       cixctl pki intermediate show\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -10498,18 +10498,18 @@ static int cmd_pki_intermediate(const struct thinc_client *c, int json_mode, int
 	if (strcmp(sub, "show") == 0)
 		return cmd_pki_intermediate_show(c, json_mode);
 
-	fprintf(stderr, "thincctl: unknown pki intermediate subcommand '%s'\n", sub);
+	fprintf(stderr, "cixctl: unknown pki intermediate subcommand '%s'\n", sub);
 	return 2;
 }
 
-static int cmd_pki_cert_create(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_pki_cert_create(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name = NULL;
 	const char *sans = NULL;
 	long days = -1;
 	int i;
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--name=", 7) == 0)
@@ -10519,13 +10519,13 @@ static int cmd_pki_cert_create(const struct thinc_client *c, int json_mode, int 
 		else if (strncmp(argv[i], "--days=", 7) == 0)
 			days = atol(argv[i] + 7);
 		else {
-			fprintf(stderr, "thincctl: unknown pki cert create option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown pki cert create option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 
 	if (name == NULL) {
-		fprintf(stderr, "usage: thincctl pki cert create --name=NAME [--sans=a,b,c] [--days=N]\n");
+		fprintf(stderr, "usage: cixctl pki cert create --name=NAME [--sans=a,b,c] [--days=N]\n");
 		return 2;
 	}
 
@@ -10554,9 +10554,9 @@ static int cmd_pki_cert_create(const struct thinc_client *c, int json_mode, int 
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (thinc_client_request(c, "POST", "/v1/pki/certs", w.buf, &r) != 0) {
+	if (cix_client_request(c, "POST", "/v1/pki/certs", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -10564,42 +10564,42 @@ static int cmd_pki_cert_create(const struct thinc_client *c, int json_mode, int 
 	return emit(&r, json_mode, fmt_pki_cert_issued);
 }
 
-static int cmd_pki_cert_ls(const struct thinc_client *c, int json_mode)
+static int cmd_pki_cert_ls(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/pki/certs", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/pki/certs", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_pki_cert_list);
 }
 
-static int cmd_pki_cert_rm(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_pki_cert_rm(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	char path[256];
 
 	if (argc < 1) {
-		fprintf(stderr, "thincctl: pki cert rm requires a cert name\n");
+		fprintf(stderr, "cixctl: pki cert rm requires a cert name\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/pki/certs/%s", argv[0]);
-	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
 }
 
-static int cmd_pki_cert(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_pki_cert(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: thincctl pki cert create --name=NAME [--sans=a,b,c] [--days=N]\n"
-		                "       thincctl pki cert ls\n"
-		                "       thincctl pki cert rm NAME\n");
+		fprintf(stderr, "usage: cixctl pki cert create --name=NAME [--sans=a,b,c] [--days=N]\n"
+		                "       cixctl pki cert ls\n"
+		                "       cixctl pki cert rm NAME\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -10610,7 +10610,7 @@ static int cmd_pki_cert(const struct thinc_client *c, int json_mode, int argc, c
 	if (strcmp(sub, "rm") == 0)
 		return cmd_pki_cert_rm(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "thincctl: unknown pki cert subcommand '%s'\n", sub);
+	fprintf(stderr, "cixctl: unknown pki cert subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -10618,12 +10618,12 @@ static int cmd_pki_cert(const struct thinc_client *c, int json_mode, int argc, c
  * Destructive: wipes and regenerates the whole CA chain (root, plus
  * the intermediate if one exists), reissuing every currently-tracked
  * leaf under the new chain. No separate --yes confirmation flag --
- * matches every other destructive thincctl subcommand's own direct-
+ * matches every other destructive cixctl subcommand's own direct-
  * execution convention (pki cert rm, network rm, ...); the web
  * dashboard's own confirm dialog is where the "are you sure" prompt
  * lives for this project.
  */
-static int cmd_pki_reset(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_pki_reset(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *root_cn = NULL;
 	const char *intermediate_cn = NULL;
@@ -10632,7 +10632,7 @@ static int cmd_pki_reset(const struct thinc_client *c, int json_mode, int argc, 
 	long leaf_days = -1;
 	int i;
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--root-common-name=", 19) == 0)
@@ -10646,7 +10646,7 @@ static int cmd_pki_reset(const struct thinc_client *c, int json_mode, int argc, 
 		else if (strncmp(argv[i], "--leaf-days=", 12) == 0)
 			leaf_days = atol(argv[i] + 12);
 		else {
-			fprintf(stderr, "thincctl: unknown pki reset option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown pki reset option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
@@ -10676,9 +10676,9 @@ static int cmd_pki_reset(const struct thinc_client *c, int json_mode, int argc, 
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (thinc_client_request(c, "POST", "/v1/pki/reset", w.buf, &r) != 0) {
+	if (cix_client_request(c, "POST", "/v1/pki/reset", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -10686,20 +10686,20 @@ static int cmd_pki_reset(const struct thinc_client *c, int json_mode, int argc, 
 	return emit(&r, json_mode, fmt_pki_reset);
 }
 
-static int cmd_pki(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_pki(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: thincctl pki ca ...\n"
-		                "       thincctl pki intermediate ...\n"
-		                "       thincctl pki cert ...\n"
-		                "       thincctl pki reset [--root-common-name=NAME]\n"
+		fprintf(stderr, "usage: cixctl pki ca ...\n"
+		                "       cixctl pki intermediate ...\n"
+		                "       cixctl pki cert ...\n"
+		                "       cixctl pki reset [--root-common-name=NAME]\n"
 		                "               [--intermediate-common-name=NAME] [--root-days=N]\n"
 		                "               [--intermediate-days=N] [--leaf-days=N]  -- wipes and\n"
 		                "               regenerates the whole CA chain, reissuing every leaf\n"
 		                "               currently tracked; defaults name each tier after this\n"
-		                "               install's own domain_suffix (thincctl site show)\n");
+		                "               install's own domain_suffix (cixctl site show)\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -10712,7 +10712,7 @@ static int cmd_pki(const struct thinc_client *c, int json_mode, int argc, char *
 	if (strcmp(sub, "reset") == 0)
 		return cmd_pki_reset(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "thincctl: unknown pki subcommand '%s'\n", sub);
+	fprintf(stderr, "cixctl: unknown pki subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -10742,19 +10742,19 @@ static void fmt_bootstrap_fetch_status(const struct json_value *v)
 /* Polls GET /v1/pkg/bootstrap until state leaves "fetching" -- --wait's
  * own loop for the toolchain_url mode, the same shape poll_hostbuild()/
  * poll_iso() already established. */
-static int poll_bootstrap_fetch(const struct thinc_client *c, struct thinc_response *out)
+static int poll_bootstrap_fetch(const struct cix_client *c, struct cix_response *out)
 {
 	for (;;) {
 		const char *state;
 
-		if (thinc_client_request(c, "GET", "/v1/pkg/bootstrap", NULL, out) != 0) {
-			fprintf(stderr, "thincctl: could not reach daemon\n");
+		if (cix_client_request(c, "GET", "/v1/pkg/bootstrap", NULL, out) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return -1;
 		}
 		state = json_str_field(out->json, "state");
 		if (state == NULL || strcmp(state, "fetching") != 0)
 			return 0;
-		thinc_response_free(out);
+		cix_response_free(out);
 		usleep(500000);
 	}
 }
@@ -10816,25 +10816,25 @@ static void fmt_pkg_list(const struct json_value *v)
 		fmt_pkg_line(packages->u.array.items[i]);
 }
 
-static int cmd_pkg_bootstrap_status(const struct thinc_client *c, int json_mode)
+static int cmd_pkg_bootstrap_status(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/pkg/bootstrap", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/pkg/bootstrap", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_bootstrap_fetch_status);
 }
 
-static int cmd_pkg_bootstrap(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_pkg_bootstrap(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *toolchain = NULL;
 	const char *toolchain_url = NULL;
 	const char *toolchain_sha256 = NULL;
 	int wait = 0;
 	int i;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--toolchain=", 12) == 0)
@@ -10846,7 +10846,7 @@ static int cmd_pkg_bootstrap(const struct thinc_client *c, int json_mode, int ar
 		else if (strcmp(argv[i], "--wait") == 0)
 			wait = 1;
 		else {
-			fprintf(stderr, "thincctl: unknown pkg bootstrap option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown pkg bootstrap option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
@@ -10865,15 +10865,15 @@ static int cmd_pkg_bootstrap(const struct thinc_client *c, int json_mode, int ar
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
 
-		if (thinc_client_request(c, "POST", "/v1/pkg/bootstrap", w.buf, &r) != 0) {
+		if (cix_client_request(c, "POST", "/v1/pkg/bootstrap", w.buf, &r) != 0) {
 			jw_free(&w);
-			fprintf(stderr, "thincctl: could not reach daemon\n");
+			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
 		}
 		jw_free(&w);
 		if (r.status < 200 || r.status >= 300 || !wait)
 			return emit(&r, json_mode, fmt_bootstrap_fetch_status);
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		if (poll_bootstrap_fetch(c, &r) != 0)
 			return 1;
@@ -10881,8 +10881,8 @@ static int cmd_pkg_bootstrap(const struct thinc_client *c, int json_mode, int ar
 	}
 
 	if (toolchain == NULL) {
-		if (thinc_client_request(c, "POST", "/v1/pkg/bootstrap", NULL, &r) != 0) {
-			fprintf(stderr, "thincctl: could not reach daemon\n");
+		if (cix_client_request(c, "POST", "/v1/pkg/bootstrap", NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
 		}
 	} else {
@@ -10895,9 +10895,9 @@ static int cmd_pkg_bootstrap(const struct thinc_client *c, int json_mode, int ar
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
 
-		if (thinc_client_request(c, "POST", "/v1/pkg/bootstrap", w.buf, &r) != 0) {
+		if (cix_client_request(c, "POST", "/v1/pkg/bootstrap", w.buf, &r) != 0) {
 			jw_free(&w);
-			fprintf(stderr, "thincctl: could not reach daemon\n");
+			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
 		}
 		jw_free(&w);
@@ -10925,18 +10925,18 @@ static void fmt_pkg_repo_config(const struct json_value *v)
 	       interval);
 }
 
-static int cmd_pkg_repo_config_show(const struct thinc_client *c, int json_mode)
+static int cmd_pkg_repo_config_show(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/pkg/repo-config", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/pkg/repo-config", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_pkg_repo_config);
 }
 
-static int cmd_pkg_repo_config_set(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_pkg_repo_config_set(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *url = NULL;
 	const char *kind = NULL;
@@ -10945,7 +10945,7 @@ static int cmd_pkg_repo_config_set(const struct thinc_client *c, int json_mode, 
 	long interval = -1;
 	int i;
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--url=", 6) == 0)
@@ -10961,7 +10961,7 @@ static int cmd_pkg_repo_config_set(const struct thinc_client *c, int json_mode, 
 		else if (strncmp(argv[i], "--sync-interval=", 16) == 0)
 			interval = strtol(argv[i] + 16, NULL, 10);
 		else {
-			fprintf(stderr, "thincctl: unknown pkg repo-config set option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown pkg repo-config set option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
@@ -10991,22 +10991,22 @@ static int cmd_pkg_repo_config_set(const struct thinc_client *c, int json_mode, 
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (thinc_client_request(c, "PUT", "/v1/pkg/repo-config", w.buf, &r) != 0) {
+	if (cix_client_request(c, "PUT", "/v1/pkg/repo-config", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
 	return emit(&r, json_mode, fmt_pkg_repo_config);
 }
 
-static int cmd_pkg_repo_config(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_pkg_repo_config(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: thincctl pkg repo-config show\n"
-		                "       thincctl pkg repo-config set [--url=URL] [--kind=gitea|github|gitlab] "
+		fprintf(stderr, "usage: cixctl pkg repo-config show\n"
+		                "       cixctl pkg repo-config set [--url=URL] [--kind=gitea|github|gitlab] "
 		                "[--ref=REF] [--token=TOKEN | --clear-token] [--sync-interval=SECONDS]\n");
 		return 2;
 	}
@@ -11015,7 +11015,7 @@ static int cmd_pkg_repo_config(const struct thinc_client *c, int json_mode, int 
 		return cmd_pkg_repo_config_show(c, json_mode);
 	if (strcmp(sub, "set") == 0)
 		return cmd_pkg_repo_config_set(c, json_mode, argc - 1, argv + 1);
-	fprintf(stderr, "thincctl: unknown pkg repo-config subcommand '%s'\n", sub);
+	fprintf(stderr, "cixctl: unknown pkg repo-config subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -11038,28 +11038,28 @@ static void fmt_pkg_sync_status(const struct json_value *v)
 
 /* Polls GET /v1/pkg/sync until state leaves "running" -- --wait's own
  * loop, the same shape poll_hostbuild()/poll_iso() already establish. */
-static int poll_pkg_sync(const struct thinc_client *c, struct thinc_response *out)
+static int poll_pkg_sync(const struct cix_client *c, struct cix_response *out)
 {
 	for (;;) {
 		const char *state;
 
-		if (thinc_client_request(c, "GET", "/v1/pkg/sync", NULL, out) != 0) {
-			fprintf(stderr, "thincctl: could not reach daemon\n");
+		if (cix_client_request(c, "GET", "/v1/pkg/sync", NULL, out) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return -1;
 		}
 		state = json_str_field(out->json, "state");
 		if (state == NULL || strcmp(state, "running") != 0)
 			return 0;
-		thinc_response_free(out);
+		cix_response_free(out);
 		usleep(500000);
 	}
 }
 
-static int cmd_pkg_sync(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_pkg_sync(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	int wait = 0;
 	int i;
-	struct thinc_response r;
+	struct cix_response r;
 	const char *refetch = NULL;
 	char body[256];
 
@@ -11069,7 +11069,7 @@ static int cmd_pkg_sync(const struct thinc_client *c, int json_mode, int argc, c
 		else if (strncmp(argv[i], "--refetch=", 10) == 0)
 			refetch = argv[i] + 10;
 		else {
-			fprintf(stderr, "thincctl: unknown pkg sync option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown pkg sync option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
@@ -11079,8 +11079,8 @@ static int cmd_pkg_sync(const struct thinc_client *c, int json_mode, int argc, c
 	if (refetch != NULL)
 		snprintf(body, sizeof(body), "{\"refetch\":\"%s\"}", refetch);
 
-	if (thinc_client_request(c, "POST", "/v1/pkg/sync", refetch != NULL ? body : NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "POST", "/v1/pkg/sync", refetch != NULL ? body : NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	if (r.status != 202) {
@@ -11088,24 +11088,24 @@ static int cmd_pkg_sync(const struct thinc_client *c, int json_mode, int argc, c
 
 		return rc != 0 ? rc : 1;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	if (wait) {
 		if (poll_pkg_sync(c, &r) != 0)
 			return 1;
-	} else if (thinc_client_request(c, "GET", "/v1/pkg/sync", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	} else if (cix_client_request(c, "GET", "/v1/pkg/sync", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_pkg_sync_status);
 }
 
-static int cmd_pkg_sync_status(const struct thinc_client *c, int json_mode)
+static int cmd_pkg_sync_status(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/pkg/sync", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/pkg/sync", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_pkg_sync_status);
@@ -11121,52 +11121,52 @@ static void fmt_pkg_cache_status(const struct json_value *v)
 	       entry_count);
 }
 
-static int cmd_pkg_cache_config_show(const struct thinc_client *c, int json_mode)
+static int cmd_pkg_cache_config_show(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/pkg/cache-config", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/pkg/cache-config", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_pkg_cache_status);
 }
 
-static int cmd_pkg_cache_config_set(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_pkg_cache_config_set(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	long max_bytes = -1;
 	int i;
 	char body[128];
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--max-bytes=", 12) == 0)
 			max_bytes = strtol(argv[i] + 12, NULL, 10);
 		else {
-			fprintf(stderr, "thincctl: unknown pkg cache-config set option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown pkg cache-config set option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (max_bytes <= 0) {
-		fprintf(stderr, "usage: thincctl pkg cache-config set --max-bytes=N\n");
+		fprintf(stderr, "usage: cixctl pkg cache-config set --max-bytes=N\n");
 		return 2;
 	}
 
 	snprintf(body, sizeof(body), "{\"max_bytes\":%ld}", max_bytes);
-	if (thinc_client_request(c, "PUT", "/v1/pkg/cache-config", body, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "PUT", "/v1/pkg/cache-config", body, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_pkg_cache_status);
 }
 
-static int cmd_pkg_cache_config(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_pkg_cache_config(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: thincctl pkg cache-config show\n"
-		                "       thincctl pkg cache-config set --max-bytes=N\n");
+		fprintf(stderr, "usage: cixctl pkg cache-config show\n"
+		                "       cixctl pkg cache-config set --max-bytes=N\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -11174,27 +11174,27 @@ static int cmd_pkg_cache_config(const struct thinc_client *c, int json_mode, int
 		return cmd_pkg_cache_config_show(c, json_mode);
 	if (strcmp(sub, "set") == 0)
 		return cmd_pkg_cache_config_set(c, json_mode, argc - 1, argv + 1);
-	fprintf(stderr, "thincctl: unknown pkg cache-config subcommand '%s'\n", sub);
+	fprintf(stderr, "cixctl: unknown pkg cache-config subcommand '%s'\n", sub);
 	return 2;
 }
 
-static int cmd_pkg_cache_status(const struct thinc_client *c, int json_mode)
+static int cmd_pkg_cache_status(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/pkg/cache", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/pkg/cache", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_pkg_cache_status);
 }
 
-static int cmd_pkg_cache_clear(const struct thinc_client *c, int json_mode)
+static int cmd_pkg_cache_clear(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "DELETE", "/v1/pkg/cache", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "DELETE", "/v1/pkg/cache", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
@@ -11214,25 +11214,25 @@ static void fmt_pkg_artifact_config(const struct json_value *v)
 	                                                                                    : "unset");
 }
 
-static int cmd_pkg_artifact_config_show(const struct thinc_client *c, int json_mode)
+static int cmd_pkg_artifact_config_show(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/pkg/artifact-config", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/pkg/artifact-config", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_pkg_artifact_config);
 }
 
-static int cmd_pkg_artifact_config_set(const struct thinc_client *c, int json_mode, int argc,
+static int cmd_pkg_artifact_config_set(const struct cix_client *c, int json_mode, int argc,
                                         char **argv)
 {
 	const char *base_url = NULL;
 	const char *token = NULL;
 	int i;
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--url=", 6) == 0)
@@ -11242,7 +11242,7 @@ static int cmd_pkg_artifact_config_set(const struct thinc_client *c, int json_mo
 		else if (strcmp(argv[i], "--clear-token") == 0)
 			token = "";
 		else {
-			fprintf(stderr, "thincctl: unknown pkg artifact-config set option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown pkg artifact-config set option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
@@ -11260,22 +11260,22 @@ static int cmd_pkg_artifact_config_set(const struct thinc_client *c, int json_mo
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (thinc_client_request(c, "PUT", "/v1/pkg/artifact-config", w.buf, &r) != 0) {
+	if (cix_client_request(c, "PUT", "/v1/pkg/artifact-config", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
 	return emit(&r, json_mode, fmt_pkg_artifact_config);
 }
 
-static int cmd_pkg_artifact_config(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_pkg_artifact_config(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: thincctl pkg artifact-config show\n"
-		                "       thincctl pkg artifact-config set [--url=URL] "
+		fprintf(stderr, "usage: cixctl pkg artifact-config show\n"
+		                "       cixctl pkg artifact-config set [--url=URL] "
 		                "[--token=TOKEN | --clear-token]\n");
 		return 2;
 	}
@@ -11284,16 +11284,16 @@ static int cmd_pkg_artifact_config(const struct thinc_client *c, int json_mode, 
 		return cmd_pkg_artifact_config_show(c, json_mode);
 	if (strcmp(sub, "set") == 0)
 		return cmd_pkg_artifact_config_set(c, json_mode, argc - 1, argv + 1);
-	fprintf(stderr, "thincctl: unknown pkg artifact-config subcommand '%s'\n", sub);
+	fprintf(stderr, "cixctl: unknown pkg artifact-config subcommand '%s'\n", sub);
 	return 2;
 }
 
-static int cmd_pkg_recipes(const struct thinc_client *c, int json_mode)
+static int cmd_pkg_recipes(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/pkg/recipes", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/pkg/recipes", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_pkg_recipe_list);
@@ -11305,7 +11305,7 @@ static int cmd_pkg_recipes(const struct thinc_client *c, int json_mode)
  * content's own pkg_name= field, validated server-side); --file= is a
  * local path to the .recipe file's content, read and embedded the
  * same way `run --file=` already stages container config files. */
-static int cmd_pkg_recipe_add(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_pkg_recipe_add(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name = NULL;
 	const char *file = NULL;
@@ -11313,7 +11313,7 @@ static int cmd_pkg_recipe_add(const struct thinc_client *c, int json_mode, int a
 	size_t content_len;
 	int i;
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--name=", 7) == 0)
@@ -11321,16 +11321,16 @@ static int cmd_pkg_recipe_add(const struct thinc_client *c, int json_mode, int a
 		else if (strncmp(argv[i], "--file=", 7) == 0)
 			file = argv[i] + 7;
 		else {
-			fprintf(stderr, "thincctl: unknown pkg recipe add option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown pkg recipe add option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (name == NULL || file == NULL) {
-		fprintf(stderr, "usage: thincctl pkg recipe add --name=NAME --file=PATH\n");
+		fprintf(stderr, "usage: cixctl pkg recipe add --name=NAME --file=PATH\n");
 		return 2;
 	}
 	if (read_local_file(file, &content, &content_len) != 0) {
-		fprintf(stderr, "thincctl: could not read %s\n", file);
+		fprintf(stderr, "cixctl: could not read %s\n", file);
 		return 1;
 	}
 
@@ -11344,9 +11344,9 @@ static int cmd_pkg_recipe_add(const struct thinc_client *c, int json_mode, int a
 	w.buf[w.len] = '\0';
 	free(content);
 
-	if (thinc_client_request(c, "POST", "/v1/pkg/recipes", w.buf, &r) != 0) {
+	if (cix_client_request(c, "POST", "/v1/pkg/recipes", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -11354,13 +11354,13 @@ static int cmd_pkg_recipe_add(const struct thinc_client *c, int json_mode, int a
 	if (r.status < 200 || r.status >= 300) {
 		const char *msg = json_str_field(r.json, "error");
 
-		fprintf(stderr, "thincctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
+		fprintf(stderr, "cixctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
 		        r.status);
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		return 1;
 	}
 	printf("recipe '%s' added\n", name);
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	return 0;
 }
 
@@ -11374,9 +11374,9 @@ static void fmt_pkg_recipe_show(const struct json_value *v)
 /* ADR-0107: an optional trailing --version=X selects a specific
  * published recipe version; omitted resolves to the highest available
  * version for NAME, matching every other "no version given" caller. */
-static int cmd_pkg_recipe_show(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_pkg_recipe_show(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	char path[256];
 	const char *name = NULL;
 	const char *version = NULL;
@@ -11388,20 +11388,20 @@ static int cmd_pkg_recipe_show(const struct thinc_client *c, int json_mode, int 
 		else if (name == NULL)
 			name = argv[i];
 		else {
-			fprintf(stderr, "thincctl: unknown pkg recipe show option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown pkg recipe show option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (name == NULL) {
-		fprintf(stderr, "usage: thincctl pkg recipe show NAME [--version=VERSION]\n");
+		fprintf(stderr, "usage: cixctl pkg recipe show NAME [--version=VERSION]\n");
 		return 2;
 	}
 	if (version != NULL)
 		snprintf(path, sizeof(path), "/v1/pkg/recipes/%s?version=%s", name, version);
 	else
 		snprintf(path, sizeof(path), "/v1/pkg/recipes/%s", name);
-	if (thinc_client_request(c, "GET", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_pkg_recipe_show);
@@ -11409,9 +11409,9 @@ static int cmd_pkg_recipe_show(const struct thinc_client *c, int json_mode, int 
 
 /* No --version= removes every published version of NAME; a specific
  * version removes only that one (ADR-0107). */
-static int cmd_pkg_recipe_rm(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_pkg_recipe_rm(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	char path[256];
 	const char *name = NULL;
 	const char *version = NULL;
@@ -11423,33 +11423,33 @@ static int cmd_pkg_recipe_rm(const struct thinc_client *c, int json_mode, int ar
 		else if (name == NULL)
 			name = argv[i];
 		else {
-			fprintf(stderr, "thincctl: unknown pkg recipe rm option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown pkg recipe rm option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (name == NULL) {
-		fprintf(stderr, "usage: thincctl pkg recipe rm NAME [--version=VERSION]\n");
+		fprintf(stderr, "usage: cixctl pkg recipe rm NAME [--version=VERSION]\n");
 		return 2;
 	}
 	if (version != NULL)
 		snprintf(path, sizeof(path), "/v1/pkg/recipes/%s?version=%s", name, version);
 	else
 		snprintf(path, sizeof(path), "/v1/pkg/recipes/%s", name);
-	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
 }
 
-static int cmd_pkg_recipe(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_pkg_recipe(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: thincctl pkg recipe add --name=NAME --file=PATH\n"
-		                "       thincctl pkg recipe show NAME [--version=VERSION]\n"
-		                "       thincctl pkg recipe rm NAME [--version=VERSION]\n");
+		fprintf(stderr, "usage: cixctl pkg recipe add --name=NAME --file=PATH\n"
+		                "       cixctl pkg recipe show NAME [--version=VERSION]\n"
+		                "       cixctl pkg recipe rm NAME [--version=VERSION]\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -11460,11 +11460,11 @@ static int cmd_pkg_recipe(const struct thinc_client *c, int json_mode, int argc,
 	if (strcmp(sub, "rm") == 0)
 		return cmd_pkg_recipe_rm(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "thincctl: unknown pkg recipe subcommand '%s'\n", sub);
+	fprintf(stderr, "cixctl: unknown pkg recipe subcommand '%s'\n", sub);
 	return 2;
 }
 
-static int cmd_pkg_install(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_pkg_install(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name = NULL;
 	const char *image = NULL;
@@ -11473,7 +11473,7 @@ static int cmd_pkg_install(const struct thinc_client *c, int json_mode, int argc
 	int keep_on_failure = 0;
 	int i;
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--name=", 7) == 0)
@@ -11487,13 +11487,13 @@ static int cmd_pkg_install(const struct thinc_client *c, int json_mode, int argc
 		else if (strcmp(argv[i], "--keep-on-failure") == 0)
 			keep_on_failure = 1;
 		else {
-			fprintf(stderr, "thincctl: unknown pkg install option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown pkg install option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (name == NULL) {
 		fprintf(stderr,
-		        "usage: thincctl pkg install --name=NAME [--image=IMAGE] "
+		        "usage: cixctl pkg install --name=NAME [--image=IMAGE] "
 		        "[--version=VERSION] [--upgrade] [--keep-on-failure]\n");
 		return 2;
 	}
@@ -11525,9 +11525,9 @@ static int cmd_pkg_install(const struct thinc_client *c, int json_mode, int argc
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (thinc_client_request(c, "POST", "/v1/pkg/install", w.buf, &r) != 0) {
+	if (cix_client_request(c, "POST", "/v1/pkg/install", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -11547,7 +11547,7 @@ static int cmd_pkg_install(const struct thinc_client *c, int json_mode, int argc
  * build container (GET /v1/pkg or /v1/pkg/hostbuild/NAME shows this) --
  * there is nothing to resume otherwise.
  */
-static int cmd_pkg_resume(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_pkg_resume(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name = NULL;
 	const char *image = NULL;
@@ -11555,7 +11555,7 @@ static int cmd_pkg_resume(const struct thinc_client *c, int json_mode, int argc,
 	int keep_on_failure = 0;
 	int i;
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--name=", 7) == 0)
@@ -11567,13 +11567,13 @@ static int cmd_pkg_resume(const struct thinc_client *c, int json_mode, int argc,
 		else if (strcmp(argv[i], "--keep-on-failure") == 0)
 			keep_on_failure = 1;
 		else {
-			fprintf(stderr, "thincctl: unknown pkg resume option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown pkg resume option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (name == NULL) {
 		fprintf(stderr,
-		        "usage: thincctl pkg resume --name=NAME [--image=IMAGE] "
+		        "usage: cixctl pkg resume --name=NAME [--image=IMAGE] "
 		        "[--version=VERSION] [--keep-on-failure]\n");
 		return 2;
 	}
@@ -11600,9 +11600,9 @@ static int cmd_pkg_resume(const struct thinc_client *c, int json_mode, int argc,
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (thinc_client_request(c, "POST", "/v1/pkg/resume", w.buf, &r) != 0) {
+	if (cix_client_request(c, "POST", "/v1/pkg/resume", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -11614,10 +11614,10 @@ static int cmd_pkg_resume(const struct thinc_client *c, int json_mode, int argc,
  * "building" (--wait's own loop, and --deploy's own prerequisite --
  * it needs the finished artifact_path, not the 202's own in-flight
  * snapshot). Prints nothing itself; *out is the final response,
- * caller-owned (thinc_response_free()'d by the caller). Returns 0 on a
+ * caller-owned (cix_response_free()'d by the caller). Returns 0 on a
  * real terminal state (installed/failed), -1 if the daemon became
  * unreachable mid-poll. */
-static int poll_hostbuild(const struct thinc_client *c, const char *name, struct thinc_response *out)
+static int poll_hostbuild(const struct cix_client *c, const char *name, struct cix_response *out)
 {
 	char path[300];
 
@@ -11625,43 +11625,43 @@ static int poll_hostbuild(const struct thinc_client *c, const char *name, struct
 	for (;;) {
 		const char *state;
 
-		if (thinc_client_request(c, "GET", path, NULL, out) != 0) {
-			fprintf(stderr, "thincctl: could not reach daemon\n");
+		if (cix_client_request(c, "GET", path, NULL, out) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return -1;
 		}
 		state = json_str_field(out->json, "state");
 		if (state == NULL || (strcmp(state, "fetching") != 0 && strcmp(state, "building") != 0))
 			return 0;
-		thinc_response_free(out);
+		cix_response_free(out);
 		usleep(500000);
 	}
 }
 
 /*
- * Real GET /system/boot read for the thinc bootroot-assembly
+ * Real GET /system/boot read for the cix bootroot-assembly
  * generation counters (task #737, ADR-0058/ADR-0104-adjacent fix).
  * Returns 0 with *out_completed/*out_running filled, -1 if the daemon
  * became unreachable.
  */
-static int get_bootroot_assembly_generation(const struct thinc_client *c, long *out_completed,
+static int get_bootroot_assembly_generation(const struct cix_client *c, long *out_completed,
                                              int *out_running)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	const struct json_value *jrunning;
 
-	if (thinc_client_request(c, "GET", "/v1/system/boot", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/system/boot", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return -1;
 	}
 	*out_completed = (long)json_as_number(json_object_get(r.json, "bootroot_assembly_completed_generation"));
 	jrunning = json_object_get(r.json, "bootroot_assembly_running");
 	*out_running = jrunning != NULL && jrunning->type == JSON_BOOL && jrunning->u.boolean;
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	return 0;
 }
 
 /*
- * The real fix for task #737: `thincd-root.squashfs` existing is not
+ * The real fix for task #737: `cixd-root.squashfs` existing is not
  * the same as it being *this* hostbuild round's own fresh artifact --
  * it's a leftover from whichever server-side bootroot assembly
  * (ADR-0057) last succeeded, which may still be a round or more behind
@@ -11674,7 +11674,7 @@ static int get_bootroot_assembly_generation(const struct thinc_client *c, long *
  * Returns 0 once a genuinely fresh artifact is confirmed on disk, -1
  * otherwise (daemon unreachable, or the assembly failed).
  */
-static int wait_for_fresh_bootroot_assembly(const struct thinc_client *c, long baseline_completed)
+static int wait_for_fresh_bootroot_assembly(const struct cix_client *c, long baseline_completed)
 {
 	for (;;) {
 		long completed;
@@ -11686,7 +11686,7 @@ static int wait_for_fresh_bootroot_assembly(const struct thinc_client *c, long b
 			return 0;
 		if (!running) {
 			fprintf(stderr,
-			        "thincctl: thinc bootroot assembly did not produce a fresh artifact "
+			        "cixctl: cix bootroot assembly did not produce a fresh artifact "
 			        "(see GET /system/logs for the real failure)\n");
 			return -1;
 		}
@@ -11694,7 +11694,7 @@ static int wait_for_fresh_bootroot_assembly(const struct thinc_client *c, long b
 	}
 }
 
-static int cmd_pkg_hostbuild(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_pkg_hostbuild(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name = NULL;
 	const char *build_image = NULL;
@@ -11702,7 +11702,7 @@ static int cmd_pkg_hostbuild(const struct thinc_client *c, int json_mode, int ar
 	int wait = 0, deploy = 0, upgrade = 0, keep_on_failure = 0;
 	int i;
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 	long bootroot_baseline_completed = 0;
 
 	for (i = 0; i < argc; i++) {
@@ -11721,13 +11721,13 @@ static int cmd_pkg_hostbuild(const struct thinc_client *c, int json_mode, int ar
 		else if (name == NULL)
 			name = argv[i];
 		else {
-			fprintf(stderr, "thincctl: unknown pkg hostbuild option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown pkg hostbuild option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (name == NULL || build_image == NULL) {
 		fprintf(stderr,
-		        "usage: thincctl pkg hostbuild NAME --build-image=IMAGE [--version=VERSION] "
+		        "usage: cixctl pkg hostbuild NAME --build-image=IMAGE [--version=VERSION] "
 		        "[--wait] [--deploy] [--upgrade] [--keep-on-failure]\n");
 		return 2;
 	}
@@ -11740,11 +11740,11 @@ static int cmd_pkg_hostbuild(const struct thinc_client *c, int json_mode, int ar
 	 * later (e.g. right before the deploy step) could itself already
 	 * be racing a slow-but-real assembly from an EARLIER round that
 	 * just hasn't finished yet, which would wrongly look like "the
-	 * baseline" to a check done later. "thinc" only: every other
+	 * baseline" to a check done later. "cix" only: every other
 	 * hostbuild name deploys straight from its own artifact_path with
 	 * no server-side follow-on assembly to wait for.
 	 */
-	if (deploy && strcmp(name, "thinc") == 0) {
+	if (deploy && strcmp(name, "cix") == 0) {
 		int running;
 
 		if (get_bootroot_assembly_generation(c, &bootroot_baseline_completed, &running) != 0)
@@ -11771,9 +11771,9 @@ static int cmd_pkg_hostbuild(const struct thinc_client *c, int json_mode, int ar
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (thinc_client_request(c, "POST", "/v1/pkg/hostbuild", w.buf, &r) != 0) {
+	if (cix_client_request(c, "POST", "/v1/pkg/hostbuild", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -11782,7 +11782,7 @@ static int cmd_pkg_hostbuild(const struct thinc_client *c, int json_mode, int ar
 
 	if (!wait)
 		return emit(&r, json_mode, fmt_pkg_line);
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	if (poll_hostbuild(c, name, &r) != 0)
 		return 1;
@@ -11808,8 +11808,8 @@ static int cmd_pkg_hostbuild(const struct thinc_client *c, int json_mode, int ar
 		int rc;
 
 		if (state == NULL || strcmp(state, "installed") != 0 || artifact_path == NULL) {
-			thinc_response_free(&r);
-			fprintf(stderr, "thincctl: hostbuild did not produce an artifact to deploy\n");
+			cix_response_free(&r);
+			fprintf(stderr, "cixctl: hostbuild did not produce an artifact to deploy\n");
 			return 1;
 		}
 		/* Honest, explicit per-name handling -- only what this
@@ -11818,9 +11818,9 @@ static int cmd_pkg_hostbuild(const struct thinc_client *c, int json_mode, int ar
 		 * every possible hostbuild recipe name. */
 		if (strcmp(name, "kernel") == 0)
 			snprintf(deploy_arg, sizeof(deploy_arg), "--kernel=%s/bzImage", artifact_path);
-		else if (strcmp(name, "thinc") == 0) {
+		else if (strcmp(name, "cix") == 0) {
 			/*
-			 * thincd-root.squashfs is assembled server-side by the
+			 * cixd-root.squashfs is assembled server-side by the
 			 * daemon itself (ADR-0057), asynchronously, once this
 			 * hostbuild's own artifacts finish harvesting -- state
 			 * =="installed" only means pkg_build_completed() ran, not
@@ -11835,24 +11835,24 @@ static int cmd_pkg_hostbuild(const struct thinc_client *c, int json_mode, int ar
 			 * before trusting the path below at all.
 			 */
 			if (wait_for_fresh_bootroot_assembly(c, bootroot_baseline_completed) != 0) {
-				thinc_response_free(&r);
+				cix_response_free(&r);
 				return 1;
 			}
-			snprintf(deploy_arg, sizeof(deploy_arg), "--image=%s/thincd-root.squashfs",
+			snprintf(deploy_arg, sizeof(deploy_arg), "--image=%s/cixd-root.squashfs",
 			         artifact_path);
 		} else {
-			thinc_response_free(&r);
-			fprintf(stderr, "thincctl: --deploy has no rule for hostbuild '%s' yet\n", name);
+			cix_response_free(&r);
+			fprintf(stderr, "cixctl: --deploy has no rule for hostbuild '%s' yet\n", name);
 			return 1;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		deploy_argv[0] = deploy_arg;
 		rc = cmd_update(c, json_mode, 1, deploy_argv);
 		return rc;
 	}
 }
 
-/* thincctl kmod-build --build-image=IMAGE [--version=VERSION]
+/* cixctl kmod-build --build-image=IMAGE [--version=VERSION]
  * [--symbol=CONFIG_FOO ...] [--upgrade] [--wait]  -- ADR-0159 Phase B:
  * an ordinary `pkg hostbuild kernel` under the hood, reusing
  * poll_hostbuild()/fmt_pkg_line() completely unmodified (this is the
@@ -11860,7 +11860,7 @@ static int cmd_pkg_hostbuild(const struct thinc_client *c, int json_mode, int ar
  * produces, GET /v1/pkg/hostbuild/kernel either way). */
 #define CLI_KMOD_BUILD_MAX_SYMBOLS 16
 
-static int cmd_kmod_build(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_kmod_build(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *build_image = NULL;
 	const char *version = NULL;
@@ -11869,7 +11869,7 @@ static int cmd_kmod_build(const struct thinc_client *c, int json_mode, int argc,
 	int wait = 0, upgrade = 0, keep_on_failure = 0;
 	int i;
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--build-image=", 14) == 0)
@@ -11878,7 +11878,7 @@ static int cmd_kmod_build(const struct thinc_client *c, int json_mode, int argc,
 			version = argv[i] + 10;
 		else if (strncmp(argv[i], "--symbol=", 9) == 0) {
 			if (symbol_count >= CLI_KMOD_BUILD_MAX_SYMBOLS) {
-				fprintf(stderr, "thincctl: too many --symbol= flags (max %d)\n",
+				fprintf(stderr, "cixctl: too many --symbol= flags (max %d)\n",
 				        CLI_KMOD_BUILD_MAX_SYMBOLS);
 				return 2;
 			}
@@ -11890,12 +11890,12 @@ static int cmd_kmod_build(const struct thinc_client *c, int json_mode, int argc,
 		else if (strcmp(argv[i], "--keep-on-failure") == 0)
 			keep_on_failure = 1;
 		else {
-			fprintf(stderr, "thincctl: unknown kmod-build option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown kmod-build option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (build_image == NULL) {
-		fprintf(stderr, "usage: thincctl kmod-build --build-image=IMAGE [--version=VERSION] "
+		fprintf(stderr, "usage: cixctl kmod-build --build-image=IMAGE [--version=VERSION] "
 		                "[--symbol=CONFIG_FOO ...] [--upgrade] [--wait] [--keep-on-failure]\n");
 		return 2;
 	}
@@ -11927,9 +11927,9 @@ static int cmd_kmod_build(const struct thinc_client *c, int json_mode, int argc,
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (thinc_client_request(c, "POST", "/v1/system/kmod-build", w.buf, &r) != 0) {
+	if (cix_client_request(c, "POST", "/v1/system/kmod-build", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -11937,36 +11937,36 @@ static int cmd_kmod_build(const struct thinc_client *c, int json_mode, int argc,
 		return emit(&r, json_mode, fmt_pkg_line);
 	if (!wait)
 		return emit(&r, json_mode, fmt_pkg_line);
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	if (poll_hostbuild(c, "kernel", &r) != 0)
 		return 1;
 	return emit(&r, json_mode, fmt_pkg_line);
 }
 
-static int cmd_pkg_ls(const struct thinc_client *c, int json_mode)
+static int cmd_pkg_ls(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/pkg", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/pkg", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_pkg_list);
 }
 
-static int cmd_pkg_rm(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_pkg_rm(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	char path[256];
 
 	if (argc < 1) {
-		fprintf(stderr, "thincctl: pkg rm requires a package name\n");
+		fprintf(stderr, "cixctl: pkg rm requires a package name\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/pkg/%s", argv[0]);
-	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
@@ -11987,28 +11987,28 @@ static void fmt_pkg_update_all(const struct json_value *v)
 	fmt_pkg_line(v);
 }
 
-static int cmd_pkg_update_all(const struct thinc_client *c, int json_mode)
+static int cmd_pkg_update_all(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "POST", "/v1/pkg/update-all", "{}", &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "POST", "/v1/pkg/update-all", "{}", &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_pkg_update_all);
 }
 
 /* task #676: live-tail the currently in-flight build's own output --
- * a thin wrapper, all the real work is thinc_pkg_build_log_run()'s own
+ * a thin wrapper, all the real work is cix_pkg_build_log_run()'s own
  * WS relay (client/src/console.c), same "cmd_* just calls the client
  * library" shape every other pkg subcommand here already has. */
-static int cmd_pkg_build_log(const struct thinc_client *c)
+static int cmd_pkg_build_log(const struct cix_client *c)
 {
-	return thinc_pkg_build_log_run(c) == 0 ? 0 : 1;
+	return cix_pkg_build_log_run(c) == 0 ? 0 : 1;
 }
 
 /*
- * Issue #11: thincctl container edit NAME --field=VALUE ... -- edits the
+ * Issue #11: cixctl container edit NAME --field=VALUE ... -- edits the
  * stored definition in place instead of delete-and-recreate. Applies at
  * the container's next start, which the output states rather than
  * leaving the operator to infer.
@@ -12025,25 +12025,25 @@ static void fmt_container_patch(const struct json_value *v)
 	           : "");
 }
 
-static int cmd_container_edit(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_container_edit(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	char path[256];
 
 	if (argc < 2 || argv[0][0] == '-') {
-		fprintf(stderr, "usage: thincctl container edit NAME --json='{\"cmd\":[...]}'\n"
+		fprintf(stderr, "usage: cixctl container edit NAME --json='{\"cmd\":[...]}'\n"
 		                "  Fields given replace those fields; a field set to null removes it.\n"
 		                "  restart/depends_on/readiness/follow_rolling cannot be edited yet --\n"
 		                "  recreate the container to change those.\n");
 		return 2;
 	}
 	if (strncmp(argv[1], "--json=", 7) != 0) {
-		fprintf(stderr, "thincctl: container edit needs --json='{...}'\n");
+		fprintf(stderr, "cixctl: container edit needs --json='{...}'\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/containers/%s", argv[0]);
-	if (thinc_client_request(c, "PATCH", path, argv[1] + 7, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "PATCH", path, argv[1] + 7, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_container_patch);
@@ -12074,9 +12074,9 @@ static void fmt_build_log_list(const struct json_value *v)
 	}
 }
 
-static int cmd_pkg_build_logs(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_pkg_build_logs(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	const char *file = NULL;
 	int want_last = 0;
 	int i;
@@ -12087,13 +12087,13 @@ static int cmd_pkg_build_logs(const struct thinc_client *c, int json_mode, int a
 		else if (strcmp(argv[i], "--last") == 0)
 			want_last = 1;
 		else {
-			fprintf(stderr, "usage: thincctl pkg build-logs [--last | --file=NAME]\n");
+			fprintf(stderr, "usage: cixctl pkg build-logs [--last | --file=NAME]\n");
 			return 2;
 		}
 	}
 
-	if (thinc_client_request(c, "GET", "/v1/pkg/build-logs", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/pkg/build-logs", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	if (file == NULL && want_last) {
@@ -12101,8 +12101,8 @@ static int cmd_pkg_build_logs(const struct thinc_client *c, int json_mode, int a
 		static char newest[256];
 
 		if (logs == NULL || logs->type != JSON_ARRAY || logs->u.array.count == 0) {
-			thinc_response_free(&r);
-			fprintf(stderr, "thincctl: no build logs recorded yet\n");
+			cix_response_free(&r);
+			fprintf(stderr, "cixctl: no build logs recorded yet\n");
 			return 1;
 		}
 		/* The list is already newest-first, server-side. */
@@ -12114,31 +12114,31 @@ static int cmd_pkg_build_logs(const struct thinc_client *c, int json_mode, int a
 	}
 	if (file == NULL)
 		return emit(&r, json_mode, fmt_build_log_list);
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	{
 		char path[512];
 
 		snprintf(path, sizeof(path), "/v1/pkg/build-logs/%s", file);
-		if (thinc_client_request(c, "GET", path, NULL, &r) != 0) {
-			fprintf(stderr, "thincctl: could not reach daemon\n");
+		if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
 		}
 		if (r.status != 200) {
-			fprintf(stderr, "thincctl: no such build log '%s'\n", file);
-			thinc_response_free(&r);
+			fprintf(stderr, "cixctl: no such build log '%s'\n", file);
+			cix_response_free(&r);
 			return 1;
 		}
 		fwrite(r.body, 1, r.body_len, stdout);
 		if (r.body_len > 0 && r.body[r.body_len - 1] != '\n')
 			printf("\n");
-		thinc_response_free(&r);
+		cix_response_free(&r);
 	}
 	return 0;
 }
 
 /*
- * Issue #64: thincctl pkg policy ls|set|clear -- which version an
+ * Issue #64: cixctl pkg policy ls|set|clear -- which version an
  * omitted version resolves to, per package. `highest` is the
  * rolling-release default and stays it; `newest` and `pinned` exist for
  * the cases where highest is the wrong answer (a bootstrap chain whose
@@ -12163,23 +12163,23 @@ static void fmt_pkg_policies(const struct json_value *v)
 	}
 }
 
-static int cmd_pkg_policy(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_pkg_policy(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	const char *sub = argc > 0 ? argv[0] : "ls";
 	char path[256];
 
 	if (strcmp(sub, "ls") == 0) {
-		if (thinc_client_request(c, "GET", "/v1/pkg/policies", NULL, &r) != 0) {
-			fprintf(stderr, "thincctl: could not reach daemon\n");
+		if (cix_client_request(c, "GET", "/v1/pkg/policies", NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
 		}
 		return emit(&r, json_mode, fmt_pkg_policies);
 	}
 	if (strcmp(sub, "clear") == 0 && argc >= 2) {
 		snprintf(path, sizeof(path), "/v1/pkg/policies/%s", argv[1]);
-		if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
-			fprintf(stderr, "thincctl: could not reach daemon\n");
+		if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
 		}
 		if (r.status != 204) {
@@ -12187,7 +12187,7 @@ static int cmd_pkg_policy(const struct thinc_client *c, int json_mode, int argc,
 
 			return rc != 0 ? rc : 1;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		printf("%s: back on the default policy (highest)\n", argv[1]);
 		return 0;
 	}
@@ -12202,12 +12202,12 @@ static int cmd_pkg_policy(const struct thinc_client *c, int json_mode, int argc,
 			else if (strncmp(argv[i], "--version=", 10) == 0)
 				version = argv[i] + 10;
 			else {
-				fprintf(stderr, "thincctl: unknown pkg policy set option '%s'\n", argv[i]);
+				fprintf(stderr, "cixctl: unknown pkg policy set option '%s'\n", argv[i]);
 				return 2;
 			}
 		}
 		if (policy == NULL) {
-			fprintf(stderr, "usage: thincctl pkg policy set NAME --policy=highest|newest|pinned "
+			fprintf(stderr, "usage: cixctl pkg policy set NAME --policy=highest|newest|pinned "
 			                "[--version=V]\n");
 			return 2;
 		}
@@ -12216,54 +12216,54 @@ static int cmd_pkg_policy(const struct thinc_client *c, int json_mode, int argc,
 		else
 			snprintf(body, sizeof(body), "{\"policy\":\"%s\"}", policy);
 		snprintf(path, sizeof(path), "/v1/pkg/policies/%s", argv[1]);
-		if (thinc_client_request(c, "PUT", path, body, &r) != 0) {
-			fprintf(stderr, "thincctl: could not reach daemon\n");
+		if (cix_client_request(c, "PUT", path, body, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
 		}
 		return emit(&r, json_mode, fmt_pkg_policies);
 	}
 
-	fprintf(stderr, "usage: thincctl pkg policy ls\n"
-	                "       thincctl pkg policy set NAME --policy=highest|newest|pinned [--version=V]\n"
-	                "       thincctl pkg policy clear NAME\n");
+	fprintf(stderr, "usage: cixctl pkg policy ls\n"
+	                "       cixctl pkg policy set NAME --policy=highest|newest|pinned [--version=V]\n"
+	                "       cixctl pkg policy clear NAME\n");
 	return 2;
 }
 
-static int cmd_pkg(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_pkg(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: thincctl pkg bootstrap [--toolchain=PATH]\n"
-		                "       thincctl pkg bootstrap --toolchain-url=URL --toolchain-sha256=SHA256 [--wait]\n"
-		                "       thincctl pkg bootstrap-status\n"
-		                "       thincctl pkg recipes\n"
-		                "       thincctl pkg recipe add --name=NAME --file=PATH\n"
-		                "       thincctl pkg recipe show NAME [--version=VERSION]\n"
-		                "       thincctl pkg recipe rm NAME [--version=VERSION]\n"
-		                "       thincctl pkg install --name=NAME [--image=IMAGE] [--version=VERSION] "
+		fprintf(stderr, "usage: cixctl pkg bootstrap [--toolchain=PATH]\n"
+		                "       cixctl pkg bootstrap --toolchain-url=URL --toolchain-sha256=SHA256 [--wait]\n"
+		                "       cixctl pkg bootstrap-status\n"
+		                "       cixctl pkg recipes\n"
+		                "       cixctl pkg recipe add --name=NAME --file=PATH\n"
+		                "       cixctl pkg recipe show NAME [--version=VERSION]\n"
+		                "       cixctl pkg recipe rm NAME [--version=VERSION]\n"
+		                "       cixctl pkg install --name=NAME [--image=IMAGE] [--version=VERSION] "
 		                "[--upgrade] [--keep-on-failure]\n"
-		                "       thincctl pkg hostbuild NAME --build-image=IMAGE [--version=VERSION] "
+		                "       cixctl pkg hostbuild NAME --build-image=IMAGE [--version=VERSION] "
 		                "[--wait] [--deploy] [--upgrade] [--keep-on-failure]\n"
-		                "       thincctl pkg resume --name=NAME [--image=IMAGE] [--version=VERSION] "
+		                "       cixctl pkg resume --name=NAME [--image=IMAGE] [--version=VERSION] "
 		                "[--keep-on-failure]\n"
-		                "       thincctl pkg build-log\n"
-		                "       thincctl pkg build-logs [--last | --file=NAME]\n"
-		                "       thincctl pkg policy ls | set NAME --policy=... | clear NAME\n"
-		                "       thincctl pkg ls\n"
-		                "       thincctl pkg rm NAME[@IMAGE]\n"
-		                "       thincctl pkg update-all\n"
-		                "       thincctl pkg repo-config show\n"
-		                "       thincctl pkg repo-config set [--url=URL] [--kind=gitea|github|gitlab] "
+		                "       cixctl pkg build-log\n"
+		                "       cixctl pkg build-logs [--last | --file=NAME]\n"
+		                "       cixctl pkg policy ls | set NAME --policy=... | clear NAME\n"
+		                "       cixctl pkg ls\n"
+		                "       cixctl pkg rm NAME[@IMAGE]\n"
+		                "       cixctl pkg update-all\n"
+		                "       cixctl pkg repo-config show\n"
+		                "       cixctl pkg repo-config set [--url=URL] [--kind=gitea|github|gitlab] "
 		                "[--ref=REF] [--token=TOKEN | --clear-token] [--sync-interval=SECONDS]\n"
-		                "       thincctl pkg sync [--wait]\n"
-		                "       thincctl pkg sync-status\n"
-		                "       thincctl pkg cache-config show\n"
-		                "       thincctl pkg cache-config set --max-bytes=N\n"
-		                "       thincctl pkg cache-status\n"
-		                "       thincctl pkg cache-clear\n"
-		                "       thincctl pkg artifact-config show\n"
-		                "       thincctl pkg artifact-config set [--url=URL] "
+		                "       cixctl pkg sync [--wait]\n"
+		                "       cixctl pkg sync-status\n"
+		                "       cixctl pkg cache-config show\n"
+		                "       cixctl pkg cache-config set --max-bytes=N\n"
+		                "       cixctl pkg cache-status\n"
+		                "       cixctl pkg cache-clear\n"
+		                "       cixctl pkg artifact-config show\n"
+		                "       cixctl pkg artifact-config set [--url=URL] "
 		                "[--token=TOKEN | --clear-token]\n");
 		return 2;
 	}
@@ -12309,7 +12309,7 @@ static int cmd_pkg(const struct thinc_client *c, int json_mode, int argc, char *
 	if (strcmp(sub, "artifact-config") == 0)
 		return cmd_pkg_artifact_config(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "thincctl: unknown pkg subcommand '%s'\n", sub);
+	fprintf(stderr, "cixctl: unknown pkg subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -12329,35 +12329,35 @@ static void fmt_iso_status(const struct json_value *v)
 
 /* Polls GET /v1/system/iso until state leaves "building" -- --wait's own
  * loop, the same shape poll_hostbuild() already established. */
-static int poll_iso(const struct thinc_client *c, struct thinc_response *out)
+static int poll_iso(const struct cix_client *c, struct cix_response *out)
 {
 	for (;;) {
 		const char *state;
 
-		if (thinc_client_request(c, "GET", "/v1/system/iso", NULL, out) != 0) {
-			fprintf(stderr, "thincctl: could not reach daemon\n");
+		if (cix_client_request(c, "GET", "/v1/system/iso", NULL, out) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return -1;
 		}
 		state = json_str_field(out->json, "state");
 		if (state == NULL || strcmp(state, "building") != 0)
 			return 0;
-		thinc_response_free(out);
+		cix_response_free(out);
 		usleep(500000);
 	}
 }
 
-static int cmd_iso_status(const struct thinc_client *c, int json_mode)
+static int cmd_iso_status(const struct cix_client *c, int json_mode)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", "/v1/system/iso", NULL, &r) != 0) {
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+	if (cix_client_request(c, "GET", "/v1/system/iso", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_iso_status);
 }
 
-static int cmd_iso_build(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_iso_build(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *disk = NULL;
 	const char *ip = NULL;
@@ -12367,7 +12367,7 @@ static int cmd_iso_build(const struct thinc_client *c, int json_mode, int argc, 
 	int wait = 0;
 	int i;
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--disk=", 7) == 0)
@@ -12383,7 +12383,7 @@ static int cmd_iso_build(const struct thinc_client *c, int json_mode, int argc, 
 		else if (strcmp(argv[i], "--wait") == 0)
 			wait = 1;
 		else {
-			fprintf(stderr, "thincctl: unknown iso build option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown iso build option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
@@ -12413,30 +12413,30 @@ static int cmd_iso_build(const struct thinc_client *c, int json_mode, int argc, 
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (thinc_client_request(c, "POST", "/v1/system/iso", w.buf, &r) != 0) {
+	if (cix_client_request(c, "POST", "/v1/system/iso", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
 	if (r.status < 200 || r.status >= 300 || !wait)
 		return emit(&r, json_mode, fmt_iso_status);
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	if (poll_iso(c, &r) != 0)
 		return 1;
 	return emit(&r, json_mode, fmt_iso_status);
 }
 
-static int cmd_iso(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_iso(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
 		fprintf(stderr,
-		        "usage: thincctl iso build [--disk=DEV --ip=A.B.C.D --prefix=N "
+		        "usage: cixctl iso build [--disk=DEV --ip=A.B.C.D --prefix=N "
 		        "--gateway=A.B.C.D --interface=IFNAME] [--wait]\n"
-		        "       thincctl iso status\n");
+		        "       cixctl iso status\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -12445,13 +12445,13 @@ static int cmd_iso(const struct thinc_client *c, int json_mode, int argc, char *
 	if (strcmp(sub, "status") == 0)
 		return cmd_iso_status(c, json_mode);
 
-	fprintf(stderr, "thincctl: unknown iso subcommand '%s'\n", sub);
+	fprintf(stderr, "cixctl: unknown iso subcommand '%s'\n", sub);
 	return 2;
 }
 
 /*
- * ADR-0144: thincctl's own persisted-session support -- a single
- * dotfile (~/.thincctl_token, mode 0600, since it holds a live bearer
+ * ADR-0144: cixctl's own persisted-session support -- a single
+ * dotfile (~/.cixctl_token, mode 0600, since it holds a live bearer
  * credential), read once at startup (see main()) and written by
  * cmd_login() / removed by cmd_logout(). No prior precedent for local
  * state in this CLI (it has always been a pure, stateless REST
@@ -12465,7 +12465,7 @@ static int token_file_path(char *out, size_t out_size)
 
 	if (home == NULL || home[0] == '\0')
 		return -1;
-	if ((size_t)snprintf(out, out_size, "%s/.thincctl_token", home) >= out_size)
+	if ((size_t)snprintf(out, out_size, "%s/.cixctl_token", home) >= out_size)
 		return -1;
 	return 0;
 }
@@ -12558,14 +12558,14 @@ static int read_line_noecho(const char *prompt, char *out, size_t out_size)
 	return 0;
 }
 
-static int cmd_login(const struct thinc_client *c, int json_mode, int argc, char **argv)
+static int cmd_login(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *username = NULL;
 	const char *password = NULL;
 	char username_buf[128];
 	char password_buf[256];
 	struct json_writer w;
-	struct thinc_response r;
+	struct cix_response r;
 	int i;
 
 	for (i = 0; i < argc; i++) {
@@ -12574,21 +12574,21 @@ static int cmd_login(const struct thinc_client *c, int json_mode, int argc, char
 		else if (strncmp(argv[i], "--password=", 11) == 0)
 			password = argv[i] + 11;
 		else {
-			fprintf(stderr, "usage: thincctl login [--username=NAME] [--password=PASS]\n");
+			fprintf(stderr, "usage: cixctl login [--username=NAME] [--password=PASS]\n");
 			return 2;
 		}
 	}
 
 	if (username == NULL) {
 		if (read_line_noecho("Username: ", username_buf, sizeof(username_buf)) != 0) {
-			fprintf(stderr, "thincctl: no username given\n");
+			fprintf(stderr, "cixctl: no username given\n");
 			return 2;
 		}
 		username = username_buf;
 	}
 	if (password == NULL) {
 		if (read_line_noecho("Password: ", password_buf, sizeof(password_buf)) != 0) {
-			fprintf(stderr, "thincctl: no password given\n");
+			fprintf(stderr, "cixctl: no password given\n");
 			return 2;
 		}
 		password = password_buf;
@@ -12604,9 +12604,9 @@ static int cmd_login(const struct thinc_client *c, int json_mode, int argc, char
 	w.buf[w.len] = '\0';
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(c, "POST", "/v1/login", w.buf, &r) != 0) {
+	if (cix_client_request(c, "POST", "/v1/login", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "thincctl: could not reach daemon\n");
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -12614,9 +12614,9 @@ static int cmd_login(const struct thinc_client *c, int json_mode, int argc, char
 	if (r.status != 200) {
 		const char *msg = json_str_field(r.json, "error");
 
-		fprintf(stderr, "thincctl: login failed: %s (HTTP %d)\n", msg != NULL ? msg : "?",
+		fprintf(stderr, "cixctl: login failed: %s (HTTP %d)\n", msg != NULL ? msg : "?",
 		        r.status);
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		return 1;
 	}
 
@@ -12624,20 +12624,20 @@ static int cmd_login(const struct thinc_client *c, int json_mode, int argc, char
 		const char *token = json_str_field(r.json, "token");
 
 		if (token == NULL || token[0] == '\0') {
-			fprintf(stderr, "thincctl: login response missing a token\n");
-			thinc_response_free(&r);
+			fprintf(stderr, "cixctl: login response missing a token\n");
+			cix_response_free(&r);
 			return 1;
 		}
 		if (save_token_file(token) != 0) {
 			fprintf(stderr,
-			        "thincctl: warning: could not persist session token (%s) -- you'll "
+			        "cixctl: warning: could not persist session token (%s) -- you'll "
 			        "need to log in again for the next command\n",
 			        strerror(errno));
 		}
 		/* Real bug, found via ADR-0164's own new prompt indicator (which
 		 * surfaced it immediately -- it never flipped to "#" after a
 		 * mid-session login): saving the token to disk makes it visible
-		 * to the *next* thincctl invocation (main() loads it once at
+		 * to the *next* cixctl invocation (main() loads it once at
 		 * startup), but did nothing for *this* one -- every command run
 		 * for the rest of the current interactive shell session,
 		 * including the prompt's own whoami check, kept using whatever
@@ -12646,32 +12646,32 @@ static int cmd_login(const struct thinc_client *c, int json_mode, int argc, char
 		 * the const here is routing-only (every cmd_*() handler takes
 		 * one shared signature), so mutating it through this cast is
 		 * safe, not a layer violation. */
-		thinc_client_set_token((struct thinc_client *)c, token);
+		cix_client_set_token((struct cix_client *)c, token);
 		if (json_mode)
 			print_raw_json(r.json);
 		else
 			printf("Logged in as %s.\n", username);
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	return 0;
 }
 
-static int cmd_logout(const struct thinc_client *c, int json_mode)
+static int cmd_logout(const struct cix_client *c, int json_mode)
 {
 	char token[64];
-	struct thinc_response r;
+	struct cix_response r;
 
 	if (load_token_file(token, sizeof(token)) == 0) {
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request_with_auth(c, "POST", "/v1/logout", token, NULL, &r) == 0)
-			thinc_response_free(&r);
+		if (cix_client_request_with_auth(c, "POST", "/v1/logout", token, NULL, &r) == 0)
+			cix_response_free(&r);
 	}
 	clear_token_file();
 	/* Same reasoning as cmd_login()'s own matching call -- clear the
 	 * current process's live in-memory token too, not just the on-disk
 	 * copy, so the rest of *this* session doesn't keep sending a token
 	 * the server was just told to invalidate. */
-	thinc_client_set_token((struct thinc_client *)c, NULL);
+	cix_client_set_token((struct cix_client *)c, NULL);
 
 	if (json_mode)
 		printf("{}\n");
@@ -12689,7 +12689,7 @@ static int cmd_logout(const struct thinc_client *c, int json_mode)
  * global flags and the command name itself are stripped by the
  * caller before this is reached).
  */
-static int dispatch_command(const struct thinc_client *client, int json_mode, const char *cmd,
+static int dispatch_command(const struct cix_client *client, int json_mode, const char *cmd,
                              int argc, char **argv)
 {
 	if (strcmp(cmd, "health") == 0)
@@ -12812,7 +12812,7 @@ static int dispatch_command(const struct thinc_client *client, int json_mode, co
 	if (strcmp(cmd, "pkg") == 0)
 		return cmd_pkg(client, json_mode, argc, argv);
 
-	fprintf(stderr, "thincctl: unknown command '%s'\n", cmd);
+	fprintf(stderr, "cixctl: unknown command '%s'\n", cmd);
 	print_usage(stderr);
 	return 2;
 }
@@ -12866,7 +12866,7 @@ static int tokenize_line(char *line, char **tokens, int max_tokens)
  * ADR-0046) as instance.site.domain (or instance.domain when no site
  * tier is set -- mirrors daemon/src/siteconfig.c's own
  * siteconfig_host_fqdn(), client-side, since the CLI has no access to
- * that daemon-internal function), not a fixed "thinc> ". Trailing
+ * that daemon-internal function), not a fixed "cix> ". Trailing
  * character follows real shell/network-device convention: "#" once
  * GET /v1/whoami (ADR-0164) reports an authenticated session, ">"
  * otherwise -- including whenever host-auth write-gating isn't even
@@ -12874,22 +12874,22 @@ static int tokenize_line(char *line, char **tokens, int max_tokens)
  * a box with no root password set. Fetched once at shell startup by
  * shell_prompt_init() below, so the prompt actually identifies *which*
  * box this session is talking to (useful the moment an operator has
- * more than one thinC install reachable) and *whether* it's currently
- * privileged to write. Falls back to the literal string "thinc" (site
+ * more than one Cix install reachable) and *whether* it's currently
+ * privileged to write. Falls back to the literal string "cix" (site
  * config's own documented default) if the fetch fails for any reason
  * -- never leaves the prompt blank. Re-run after every "login"/
  * "logout" command (see the dispatch loops below) so the prompt
  * reflects a state change immediately, not just at shell startup. */
 #define SHELL_PROMPT_MAX 96
-static char g_shell_prompt[SHELL_PROMPT_MAX] = "thinc> ";
+static char g_shell_prompt[SHELL_PROMPT_MAX] = "cix> ";
 
-static void shell_prompt_init(const struct thinc_client *client)
+static void shell_prompt_init(const struct cix_client *client)
 {
-	struct thinc_response site_r, whoami_r;
-	char fqdn[SHELL_PROMPT_MAX] = "thinc";
+	struct cix_response site_r, whoami_r;
+	char fqdn[SHELL_PROMPT_MAX] = "cix";
 	int authenticated = 0;
 
-	if (thinc_client_request(client, "GET", "/v1/system/site", NULL, &site_r) == 0) {
+	if (cix_client_request(client, "GET", "/v1/system/site", NULL, &site_r) == 0) {
 		if (site_r.status == 200) {
 			const char *instance_name = json_str_field(site_r.json, "instance_name");
 			const char *site_name = json_str_field(site_r.json, "site_name");
@@ -12903,16 +12903,16 @@ static void shell_prompt_init(const struct thinc_client *client)
 					snprintf(fqdn, sizeof(fqdn), "%s.%s", instance_name, domain_suffix);
 			}
 		}
-		thinc_response_free(&site_r);
+		cix_response_free(&site_r);
 	}
 
-	if (thinc_client_request(client, "GET", "/v1/whoami", NULL, &whoami_r) == 0) {
+	if (cix_client_request(client, "GET", "/v1/whoami", NULL, &whoami_r) == 0) {
 		if (whoami_r.status == 200) {
 			const struct json_value *jauth = json_object_get(whoami_r.json, "authenticated");
 
 			authenticated = jauth != NULL && jauth->type == JSON_BOOL && jauth->u.boolean;
 		}
-		thinc_response_free(&whoami_r);
+		cix_response_free(&whoami_r);
 	}
 
 	snprintf(g_shell_prompt, sizeof(g_shell_prompt), "%s%s ", fqdn, authenticated ? "#" : ">");
@@ -13224,7 +13224,7 @@ static int shell_set_raw_mode(struct termios *saved)
  * failed), a real but rare case (e.g. stdin is a tty by isatty()'s
  * own check yet the underlying device rejects termios calls). Keeps
  * the shell usable rather than failing outright. */
-static int run_shell_fallback(const struct thinc_client *client, int json_mode)
+static int run_shell_fallback(const struct cix_client *client, int json_mode)
 {
 	char line[SHELL_LINE_MAX];
 	char *tokens[SHELL_MAX_TOKENS];
@@ -13256,7 +13256,7 @@ static int run_shell_fallback(const struct thinc_client *client, int json_mode)
 }
 
 /*
- * Interactive shell: entered when thincctl is invoked with no command
+ * Interactive shell: entered when cixctl is invoked with no command
  * and stdin is a real terminal (see main()) -- one persistent client,
  * one dispatch_command() call per typed line, no reconnect-per-command
  * ceremony. A real, if minimal, line editor: history (Up/Down),
@@ -13270,13 +13270,13 @@ static int run_shell_fallback(const struct thinc_client *client, int json_mode)
  * an empty line) end it; "help" reuses print_usage(), not a second
  * copy of it.
  */
-static int run_shell(const struct thinc_client *client, int json_mode)
+static int run_shell(const struct cix_client *client, int json_mode)
 {
 	struct termios saved;
 	char line[SHELL_LINE_MAX];
 	char *tokens[SHELL_MAX_TOKENS];
 
-	printf("thincctl interactive shell -- type a command (e.g. \"ps\"), \"help\", or \"exit\"\n");
+	printf("cixctl interactive shell -- type a command (e.g. \"ps\"), \"help\", or \"exit\"\n");
 
 	if (shell_set_raw_mode(&saved) != 0)
 		return run_shell_fallback(client, json_mode);
@@ -13329,7 +13329,7 @@ int main(int argc, char **argv)
 	int json_mode = 0;
 	int i = 1;
 	const char *cmd;
-	struct thinc_client client;
+	struct cix_client client;
 
 	while (i < argc && strncmp(argv[i], "--", 2) == 0) {
 		if (strncmp(argv[i], "--host=", 7) == 0)
@@ -13339,19 +13339,19 @@ int main(int argc, char **argv)
 		else if (strcmp(argv[i], "--json") == 0)
 			json_mode = 1;
 		else {
-			fprintf(stderr, "thincctl: unknown option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown option '%s'\n", argv[i]);
 			print_usage(stderr);
 			return 2;
 		}
 		i++;
 	}
 
-	thinc_client_init(&client, host, port);
+	cix_client_init(&client, host, port);
 	{
 		char saved_token[64];
 
 		if (load_token_file(saved_token, sizeof(saved_token)) == 0)
-			thinc_client_set_token(&client, saved_token);
+			cix_client_set_token(&client, saved_token);
 	}
 
 	if (i >= argc) {

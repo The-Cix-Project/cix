@@ -1,9 +1,9 @@
 openapi: 3.0.3
 info:
-  title: thinC Host API
+  title: Cix Host API
   version: "1"
   description: >
-    The single control surface for the thinC host. Per the project's
+    The single control surface for the Cix host. Per the project's
     API-First Mandate (see /CLAUDE.md), this daemon is the only process
     with direct access to the container runtime library or any other
     host/network/DNS/PKI primitive. The CLI and the web dashboard are
@@ -127,7 +127,7 @@ paths:
         mutation. No `Authorization` header, or one naming an unknown/
         expired/absent session, both report `authenticated: false` --
         this endpoint doesn't distinguish "never logged in" from
-        "session lapsed." `thincctl`'s own interactive shell prompt
+        "session lapsed." `cixctl`'s own interactive shell prompt
         (`host.site.tld>` unauthenticated, `host.site.tld#`
         authenticated) is the first real caller.
       operationId: getWhoami
@@ -331,7 +331,7 @@ paths:
                     description: >
                       The A/B slot this boot's `--slot=` was started
                       with, or `null` for a dev/test daemon started
-                      without one (see `thinc-install.c`'s A/B
+                      without one (see `cix-install.c`'s A/B
                       mechanism).
                   kernel_version:
                     type: string
@@ -343,10 +343,10 @@ paths:
                   bootroot_assembly_started_generation:
                     type: integer
                     description: >
-                      Real freshness signal for `pkg hostbuild thinc
+                      Real freshness signal for `pkg hostbuild cix
                       --deploy` (ADR-0058-follow-on, task #737): a
                       monotonic counter incremented once per server-side
-                      thinc bootroot assembly attempt (ADR-0057). 0 if
+                      cix bootroot assembly attempt (ADR-0057). 0 if
                       no attempt has ever run this daemon lifetime.
                   bootroot_assembly_completed_generation:
                     type: integer
@@ -369,11 +369,11 @@ paths:
   /system/shutdown:
     post:
       summary: >
-        Stop thincd. When running as real PID 1 (--init-mode, i.e. an
+        Stop cixd. When running as real PID 1 (--init-mode, i.e. an
         installed system), also powers off the host via reboot(2) once
         the event loop has stopped cleanly -- the only correct way for
         an init process to end its own life without the kernel treating
-        it as "init exited" and panicking. A dev/interactive thincd
+        it as "init exited" and panicking. A dev/interactive cixd
         (no --init-mode) just exits, same as it always has on SIGTERM.
       operationId: shutdownSystem
       responses:
@@ -691,7 +691,7 @@ paths:
         A real, operator-configurable instance_name/site_name/
         domain_suffix triple. instance_name labels this specific
         install (dashboard header, CLI, backup bundle) and is always
-        non-empty (defaults to "thinc"); site_name/domain_suffix are
+        non-empty (defaults to "cix"); site_name/domain_suffix are
         client tooling's own suggested-FQDN pair
         (`<name>.<site_name>.<domain_suffix>`, or
         `<name>.<domain_suffix>` when site_name is empty) offered when
@@ -699,7 +699,7 @@ paths:
         convenience only, never enforced: DNS records and PKI SANs
         remain plain operator-supplied strings, unaffected by this
         endpoint's own value. Always 200s -- defaults (instance_name
-        "thinc", site_name "", domain_suffix "internal") apply until
+        "cix", site_name "", domain_suffix "internal") apply until
         the first PUT.
       operationId: getSystemSite
       responses:
@@ -750,7 +750,7 @@ paths:
 
   /system/daemon-config:
     get:
-      summary: thincd's own listen port, HTTP/HTTPS exposure, and which network is currently its management one (Part 0.5)
+      summary: cixd's own listen port, HTTP/HTTPS exposure, and which network is currently its management one (Part 0.5)
       description: >
         A dedicated resource, distinct from generic network CRUD, since
         changing any of these fields has a real side effect -- a live
@@ -758,7 +758,7 @@ paths:
         were never meant to trigger. management_network is not this
         resource's own stored state: it's reported here by querying
         network.c's own is_management flag live (GET /networks), the
-        one source of truth for which network thincd is bound to.
+        one source of truth for which network cixd is bound to.
         Always 200s -- defaults (port 80, http_enabled true,
         https_enabled true, https_port 443, ADR-0171) apply until the
         first PUT. A fresh, pre-PKI-bootstrap install just has the
@@ -773,10 +773,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/DaemonConfig"
     put:
-      summary: Live-reconfigure thincd's listen port, HTTP/HTTPS listeners, or management network -- no restart
+      summary: Live-reconfigure cixd's listen port, HTTP/HTTPS listeners, or management network -- no restart
       description: >
         Accepts a partial body -- only the fields being changed. Since
-        thincd runs as real PID 1 on an installed system (ADR-0011),
+        cixd runs as real PID 1 on an installed system (ADR-0011),
         there is no "restart the daemon" to pick up a change: each
         affected listener is created, bound, and added to epoll before
         the old one is torn down, so a failure rolls back to the
@@ -821,7 +821,7 @@ paths:
           description: >
             port/https_port out of range, both http_enabled and
             https_enabled false, management_network not a string, the
-            named network has no address for thincd to bind to,
+            named network has no address for cixd to bind to,
             bind_ip not a string/null, bind_ip not a valid address
             within the management network's subnet, or bind_ip given
             with no management network to bind it within
@@ -851,7 +851,7 @@ paths:
     get:
       summary: The box's own real kernel IPv4 routing table (ADR-0066)
       description: >
-        A read-only rtnetlink dump (RTM_GETROUTE), not a thinC-managed
+        A read-only rtnetlink dump (RTM_GETROUTE), not a Cix-managed
         resource -- this exists purely so a real, installed box (no
         SSH, no general shell, ADR-0034) can be diagnosed at all. The
         "default" dest entry (if present) is the box's own upstream
@@ -882,7 +882,7 @@ paths:
       summary: Add a real IPv4 route to the host's own kernel routing table (ADR-0067 Part 3)
       description: >
         A thin wrapper over rtnl_route_add_ipv4() -- not a persisted
-        thinC resource, same as the GET above: nothing added here
+        Cix resource, same as the GET above: nothing added here
         survives a reboot. Scoped to exactly what that primitive
         supports -- no interface/RTA_OIF binding, no route-replace
         semantics beyond plain NLM_F_CREATE.
@@ -967,7 +967,7 @@ paths:
     get:
       summary: Health of every registered LDAP/DNS/NTP/syslog server (issue #81)
       description: >
-        thinC lets an operator register redundant backend servers for four
+        Cix lets an operator register redundant backend servers for four
         subsystems. This reports, for each of them, whether it is actually
         serving right now -- probed on an interval by the daemon rather than
         assumed from the fact that it is registered.
@@ -986,7 +986,7 @@ paths:
         up as a real one.
 
         Servers that are not in service are dropped from the client
-        configuration thinC generates -- concretely, an unhealthy LDAP server
+        configuration Cix generates -- concretely, an unhealthy LDAP server
         stops being handed to `ldap_client` containers. If health filtering
         would leave NOTHING, the unfiltered list is used instead: handing a
         client a possibly-down server beats handing it none at all.
@@ -1667,7 +1667,7 @@ paths:
                 $ref: "#/components/schemas/Error"
   /system/state-storage:
     get:
-      summary: Which disk (if any) is the active placement for thinC's own state (ADR-0141 Phase 2)
+      summary: Which disk (if any) is the active placement for Cix's own state (ADR-0141 Phase 2)
       description: >
         `disk: null` means the default OS-disk placement (the original,
         pre-ADR-0141 behavior). A non-null disk is one that currently
@@ -1705,7 +1705,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/StorageMigrateStatus"
     post:
-      summary: Moves thinC's own state to a new disk, or back to the default OS-disk placement
+      summary: Moves Cix's own state to a new disk, or back to the default OS-disk placement
       description: >
         `disk` is required -- a real disk name (must already carry the
         `state-storage` role and be currently mounted) or `null` to
@@ -1774,7 +1774,7 @@ paths:
                 $ref: "#/components/schemas/Error"
   /system/log-storage:
     get:
-      summary: Which disk (if any) is the active placement for thinC's own consolidated log store (ADR-0141 Phase 3)
+      summary: Which disk (if any) is the active placement for Cix's own consolidated log store (ADR-0141 Phase 3)
       description: >
         Same shape and same singleton-placement model as
         GET /system/state-storage above -- `disk: null` means the
@@ -1809,7 +1809,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/StorageMigrateStatus"
     post:
-      summary: Moves thinC's own consolidated log store to a new disk, or back to the default OS-disk placement
+      summary: Moves Cix's own consolidated log store to a new disk, or back to the default OS-disk placement
       description: >
         Same contract as POST /system/state-storage/migrate above --
         `disk` required (a real, `log-storage`-role, currently-mounted
@@ -2661,7 +2661,7 @@ paths:
     get:
       summary: The installed system's own boot console parameters (issue #24)
       description: >
-        An installed thinC host boots through systemd-boot, and every
+        An installed Cix host boots through systemd-boot, and every
         loader entry carried a hardcoded `console=tty0 console=ttyS0`.
         Fine as a default, and impossible to change without
         reinstalling: real hardware sometimes needs a serial console at
@@ -2737,7 +2737,7 @@ paths:
       description: >
         On this platform the REST daemon is not one management path among
         several -- it is the only one. There is no SSH and no general
-        shell (ADR-0034), so a starved thincd is not a degraded box, it
+        shell (ADR-0034), so a starved cixd is not a degraded box, it
         is a box nobody can reach until someone walks to the hypervisor.
         That happened for real: four concurrent package builds
         oversubscribed a 2-CPU machine, the kernel stayed perfectly
@@ -2746,7 +2746,7 @@ paths:
 
         Rather than asking the scheduler to favour the daemon, everything
         that is NOT the daemon -- every container, and every package
-        build -- lives under one `thinc-workload` cgroup capped at the
+        build -- lives under one `cix-workload` cgroup capped at the
         machine minus this reservation. What the control plane has left
         is then a kernel-enforced remainder rather than a hope.
 
@@ -3200,17 +3200,17 @@ paths:
 
   /system/logs:
     get:
-      summary: Tail the consolidated log (kernel dmesg + thincd diagnostics + per-request audit trail + every container's own stdout/stderr, ADR-0070/ADR-0126)
+      summary: Tail the consolidated log (kernel dmesg + cixd diagnostics + per-request audit trail + every container's own stdout/stderr, ADR-0070/ADR-0126)
       description: >
-        Every thincctl command and every web UI action is, underneath,
+        Every cixctl command and every web UI action is, underneath,
         a REST call this daemon already handles -- one entry is logged
         per mutating request (source "audit"; POST/PUT/DELETE only --
         every GET is excluded, ADR-0132, since a GET is a query never
         an action, and the web dashboard's own routine ~30-request
         poll cycle every 2s would otherwise drown real actions in
         noise for no diagnostic value). Combined with real kernel
-        dmesg (source "kernel"), thincd's
-        own internal diagnostics (source "thincd"), and -- since
+        dmesg (source "kernel"), cixd's
+        own internal diagnostics (source "cixd"), and -- since
         ADR-0126 -- every container's own stdout/stderr (source
         "container", always captured regardless of that container's
         own "capture_output" opt-in, which only additionally mirrors
@@ -3224,7 +3224,7 @@ paths:
           required: false
           schema:
             type: string
-            enum: [kernel, thincd, audit, container]
+            enum: [kernel, cixd, audit, container]
         - name: level
           in: query
           required: false
@@ -3361,15 +3361,15 @@ paths:
         daemon capability, forked and pidfd-tracked exactly like POST
         /pkg/hostbuild's own async jobs (the response is 202, poll GET
         /system/iso for the result). Reuses whatever the most recent
-        "thinc"/"kernel"/"isotools" hostbuild rounds already harvested
+        "cix"/"kernel"/"isotools" hostbuild rounds already harvested
         (POST /pkg/hostbuild) -- it does not trigger any of them itself.
         Every field is optional; an empty body reproduces mkinstalleriso's
         own original default, a generic ISO with kernel_args left as the
         "CHANGEME" placeholder an operator edits at the GRUB boot menu.
         Requires a real Secure Boot signing key pair, staged out of band
-        by the operator at <data-dir>/keys/thinc-signing.{key,crt,cer}
+        by the operator at <data-dir>/keys/cix-signing.{key,crt,cer}
         -- deliberately never generated, fetched, or copied there by
-        thincd itself (the same real security posture this project's
+        cixd itself (the same real security posture this project's
         own image/keys/ already has: a release-signing private key must
         never propagate onto every deployed box).
       operationId: postSystemIso
@@ -3389,7 +3389,7 @@ paths:
         "400":
           description: >
             Invalid JSON body, or a real precondition is missing --
-            the "thinc"/"kernel"/"isotools" hostbuild artifacts, or
+            the "cix"/"kernel"/"isotools" hostbuild artifacts, or
             the operator-provided signing key pair
           content:
             application/json:
@@ -4473,7 +4473,7 @@ paths:
         "409":
           description: >
             Still in use by at least one container, or this is the
-            management network (is_management -- repoint thincd's own
+            management network (is_management -- repoint cixd's own
             bind address to a different network first via
             PUT /system/daemon-config, then delete this one)
           content:
@@ -4615,7 +4615,7 @@ paths:
         "409":
           description: >
             This is the management network (is_management) -- repoint
-            thincd's own bind address to a different network first via
+            cixd's own bind address to a different network first via
             PUT /system/daemon-config
           content:
             application/json:
@@ -5431,7 +5431,7 @@ paths:
                       $ref: "#/components/schemas/LdapGroup"
     post:
       summary: >
-        Create an LDAP group. thinC itself is the durable source of truth
+        Create an LDAP group. Cix itself is the durable source of truth
         (same model as DNS records); the group is also written through into
         every currently-registered, currently-running LDAP server's own
         config file immediately (glauth's own fsnotify watcher picks up the
@@ -5581,7 +5581,7 @@ paths:
       summary: >
         Create an LDAP user. Same durable-record-store + write-through model
         as groups. password, if given, is hashed with SHA-256 (glauth's own
-        "passsha256" config field, via thincd's already-linked OpenSSL
+        "passsha256" config field, via cixd's already-linked OpenSSL
         libcrypto) -- never stored or echoed in plaintext, and never
         returned by any GET (only a has_password boolean is).
       operationId: createLdapUser
@@ -6004,11 +6004,11 @@ paths:
               properties:
                 root_common_name:
                   type: string
-                  description: Defaults to "thinC Root CA - <domain_suffix>" (this install's own site config).
+                  description: Defaults to "Cix Root CA - <domain_suffix>" (this install's own site config).
                 intermediate_common_name:
                   type: string
                   description: >
-                    Defaults to "thinC Intermediate CA - <domain_suffix>". Ignored if no
+                    Defaults to "Cix Intermediate CA - <domain_suffix>". Ignored if no
                     intermediate was bootstrapped before this call -- resetting the root alone
                     never creates one that didn't already exist.
                 root_days:
@@ -6064,17 +6064,17 @@ paths:
       summary: >
         Stages a real build toolchain (gcc/make/ld/as/cc1/sh/tar and their real headers
         and shared libraries) into the sandboxed build image. No body (or an empty one):
-        copies live from this daemon's own host -- works when thincd happens to be
+        copies live from this daemon's own host -- works when cixd happens to be
         running somewhere with a real toolchain (dev/test), produces an empty,
         non-functional toolchain on a real minimal install (nothing under its own /usr
-        beyond thincd/thincctl and their bare runtime libs). toolchain_path: imports a
+        beyond cixd/cixctl and their bare runtime libs). toolchain_path: imports a
         real, portable artifact (built once, elsewhere, with image/src/mktoolchainimage.c)
         via a local path the operator has already transferred it to (e.g. scp), the same
         "local path, not an upload" precedent /system/update's image_path/kernel_path
         already established. toolchain_url (+ required toolchain_sha256): the daemon
         fetches the artifact itself, host-side, the same real curl primitive every
         recipe's own pkg_source already uses (ADR-0065) -- closes a real gap the other
-        two modes both rest on: a genuinely fresh, minimal thinC install has no SSH
+        two modes both rest on: a genuinely fresh, minimal Cix install has no SSH
         server and no general shell at all (ADR-0034), so "the operator transfers it
         onto the box" was never actually possible without this. The no-body and
         toolchain_path modes stay synchronous (204 on success, unchanged); toolchain_url
@@ -6795,7 +6795,7 @@ paths:
                   type: string
                   description: >
                     Hostbuilds exactly this published recipe version (ADR-0107) --
-                    e.g. rebuilding an older thinc release on demand. Omitted
+                    e.g. rebuilding an older cix release on demand. Omitted
                     resolves to the highest available version for name.
                 upgrade:
                   type: boolean
@@ -7629,7 +7629,7 @@ paths:
         defaults to `/usr/bin/bash` (this project's own package system
         stages everything under `usr/bin/`, never `/bin` -- see
         ADR-0043); a container whose image has neither that nor
-        whatever `X-thinC-Exec-Cmd` names installed fails to exec,
+        whatever `X-Cix-Exec-Cmd` names installed fails to exec,
         the same real limitation `docker exec` has against a
         scratch-based image, not a bug.
 
@@ -7665,7 +7665,7 @@ paths:
           schema:
             type: string
             enum: ["13"]
-        - name: X-thinC-Exec-Cmd
+        - name: X-Cix-Exec-Cmd
           in: header
           required: false
           schema:
@@ -7912,7 +7912,7 @@ paths:
 
         Keeps the installed OS itself -- both root slots, the kernel,
         the ESP, the install-time config -- so the box returns to how
-        thinc-install left it rather than to nothing. Disks that carried
+        cix-install left it rather than to nothing. Disks that carried
         a role are forgotten, NOT reformatted: the filesystems on them
         are untouched.
 
@@ -8492,7 +8492,7 @@ paths:
         Asynchronous with a poll endpoint, not a blocking call: holding
         the daemon's event loop for the length of someone's command is
         exactly the wedge ADR-0180 exists to prevent. Every other slow
-        operation here has the same shape. `thincctl exec` polls for
+        operation here has the same shape. `cixctl exec` polls for
         you, so it still behaves like a synchronous command.
 
         One at a time. Concurrent execs would need per-job identifiers
@@ -9061,13 +9061,13 @@ components:
           pattern: "^[A-Za-z0-9_-]+$"
           description: >
             Unique container name. Used verbatim as the on-disk directory
-            name under /var/lib/thinc/containers/, so it is restricted to
+            name under /var/lib/cix/containers/, so it is restricted to
             [A-Za-z0-9_-].
         image:
           type: string
           description: >
             Name of a pre-existing, pre-populated image whose rootfs lives
-            at /var/lib/thinc/rebuildable/images/{image}/rootfs (ADR-0141).
+            at /var/lib/cix/rebuildable/images/{image}/rootfs (ADR-0141).
             This daemon never creates image content itself -- only 400s if
             it's missing.
         cmd:
@@ -9125,7 +9125,7 @@ components:
             (the default for a real installed system's containers
             partition), this is a project quota (rounded up to the
             nearest 1KiB quota block; requires the filesystem to have
-            been created with project-quota support, thinc-install.c's
+            been created with project-quota support, cix-install.c's
             own mkfs.ext4 -O quota -E quotatype=prjquota); writes past
             the limit fail with EDQUOT at the filesystem level. On
             btrfs (see ADR-0103), this is a qgroup hard limit set
@@ -9268,7 +9268,7 @@ components:
             cert doesn't change after a container starts.
         pki_cert_dir:
           type: string
-          default: "/etc/thinc-tls"
+          default: "/etc/cix-tls"
           description: >
             Destination directory inside the container (its own filesystem
             view) that the cert (tls.crt) and key (tls.key, chmod 0600)
@@ -9289,7 +9289,7 @@ components:
             Requires ldap_group to name an existing LDAP group (400
             otherwise). A "search" capability is granted by default
             (glauth denies all LDAP operations by default otherwise). The
-            plaintext secret is never persisted anywhere in thinC's own
+            plaintext secret is never persisted anywhere in Cix's own
             state -- only its SHA-256 hash survives -- so every
             restart-always respawn regenerates and re-delivers a fresh
             one. Best-effort past validation: an "already exists" account
@@ -9318,7 +9318,7 @@ components:
             an auto-allocated uid. Ignored unless ldap_provision is true.
         ldap_secret_dir:
           type: string
-          default: "/etc/thinc-ldap"
+          default: "/etc/cix-ldap"
           description: >
             Destination directory inside the container (its own
             filesystem view) that the delivered secret (bind.secret,
@@ -9474,7 +9474,7 @@ components:
           description: >
             Extra environment variables merged into this container's own
             process environment at execve() time (e.g. {"DEBUG": "1"}) --
-            a container gets *only* these, never a copy of thincd's own
+            a container gets *only* these, never a copy of cixd's own
             environment (no implicit inheritance). Keys must be POSIX-
             portable environment variable names (letters, digits,
             underscore, not starting with a digit; 400 otherwise, since
@@ -10707,7 +10707,7 @@ components:
             itself started. Separate on purpose: they diverge after a
             control-plane restart that was not a reboot (an update
             confirm, a crash and respawn), and "the box has been up for
-            days but thincd restarted four minutes ago" is exactly the
+            days but cixd restarted four minutes ago" is exactly the
             thing worth being able to see. Best-effort like everything
             else here -- an unreadable /proc/uptime reports 0 rather
             than failing the request.
@@ -11035,7 +11035,7 @@ components:
           description: >
             "net" entries are real, physically-backed network interfaces
             only -- any interface the kernel itself creates (bridges,
-            veths, thinc's own managed networks, ...) is never listed.
+            veths, cix's own managed networks, ...) is never listed.
             An interface currently attached to a running container simply
             doesn't appear here at all (it isn't visible in this netns
             any more) -- the same rule that makes exclusivity automatic,
@@ -11170,8 +11170,8 @@ components:
           description: >
             Partitions only: the partition's own name in the GPT --
             what whoever created it actually called it. The fixed OS
-            layout carries thinc-esp, thinc-root-a, thinc-root-b,
-            thinc-config and thinc-containers; a partition created via
+            layout carries cix-esp, cix-root-a, cix-root-b,
+            cix-config and cix-containers; a partition created via
             POST /disks/{name}/partitions carries whatever `name` that
             request gave it, which was write-only until this was
             reported. Empty for a whole disk, an MBR disk, or a device
@@ -11315,7 +11315,7 @@ components:
             Which filesystem to format the disk with (ADR-0104). Optional --
             omitting it keeps this endpoint's original ext4-only behavior.
             "btrfs" requires a real mkfs.btrfs to actually be staged on this
-            box (btrfs-progs.recipe, via a real thinc-hosttools image) --
+            box (btrfs-progs.recipe, via a real cix-hosttools image) --
             if it isn't, the job still starts but fails fast with a clear
             "mkfs.btrfs failed" once the child process's own exec attempt
             hits ENOENT, the same failure shape any other mkfs failure
@@ -11511,7 +11511,7 @@ components:
         is_management:
           type: boolean
           description: >
-            Whether this network's own address is thincd's own bind
+            Whether this network's own address is cixd's own bind
             address (Part 0.5). At most one network has this set at a
             time; see GET /system/daemon-config for which one. While
             true, DELETE on this network and DELETE on any of its
@@ -11559,7 +11559,7 @@ components:
           type: string
           description: >
             Unique image name. Used verbatim as the directory name under
-            /var/lib/thinc/rebuildable/images/ (ADR-0141), so it is
+            /var/lib/cix/rebuildable/images/ (ADR-0141), so it is
             restricted to [A-Za-z0-9_-] -- the same rule pkg_install's own
             image field already follows.
 
@@ -11908,11 +11908,11 @@ components:
       properties:
         instance_name:
           type: string
-          default: thinc
+          default: cix
           description: >
-            This specific install's own label (e.g. "thinc1") --
+            This specific install's own label (e.g. "cix1") --
             always non-empty, shown in the dashboard header, CLI
-            output, and backup bundle. Defaults to "thinc".
+            output, and backup bundle. Defaults to "cix".
         site_name:
           type: string
           description: >
@@ -11979,11 +11979,11 @@ components:
       type: object
       description: >
         Every field is optional and independent -- composed server-side
-        into the exact kernel-command-line flags thinc-install.c itself
+        into the exact kernel-command-line flags cix-install.c itself
         parses (--disk=/--ip=/--prefix=/--gateway=/--interface=). An
         omitted field becomes the literal placeholder "CHANGEME",
         mkinstalleriso's own original default -- editable at the GRUB
-        boot menu with 'e' before booting; thinc-install's own stat()
+        boot menu with 'e' before booting; cix-install's own stat()
         check on --disk= fails safely if left unedited.
       properties:
         disk:
@@ -12013,7 +12013,7 @@ components:
         bind:
           type: string
           description: >
-            thincd's own current bind address -- the management_
+            cixd's own current bind address -- the management_
             network's own address, unless bind_ip is set, in which case
             this equals bind_ip instead (both listeners, HTTP and
             HTTPS, always share this same address; only the port
@@ -12023,17 +12023,17 @@ components:
           nullable: true
           description: >
             A dedicated second address on the management network's own
-            bridge that thincd binds to instead of that network's own
+            bridge that cixd binds to instead of that network's own
             address (ADR-0068), or null when unset (the default --
-            thincd binds to the management network's own address,
+            cixd binds to the management network's own address,
             same as before this field existed). Decoupling the two
-            lets an operator dedicate a specific address to thincd
+            lets an operator dedicate a specific address to cixd
             itself on a bridge shared with other traffic.
         management_network:
           type: string
           nullable: true
           description: >
-            The network currently carrying thincd's own bind address
+            The network currently carrying cixd's own bind address
             (network_def.is_management, queried live from GET
             /networks -- not a second copy of that state). Null only in
             the unusual case no network is currently designated
@@ -12072,7 +12072,7 @@ components:
           type: string
           description: >
             Name of an existing network with has_address true (see
-            POST /networks). Its own address becomes thincd's new
+            POST /networks). Its own address becomes cixd's new
             bind address for both HTTP and HTTPS, unless bind_ip is
             also given in the same request.
         bind_ip:
@@ -12080,7 +12080,7 @@ components:
           nullable: true
           description: >
             Set to a real IPv4 address within the (possibly just-
-            repointed) management network's own subnet to make thincd
+            repointed) management network's own subnet to make cixd
             bind there instead of that network's own address (ADR-
             0068) -- added to the bridge via rtnl_addr_add_ipv4()
             before the listener rebinds to it. Set explicitly to null
@@ -12104,7 +12104,7 @@ components:
           description: Unix seconds.
         source:
           type: string
-          enum: [kernel, thincd, audit, container]
+          enum: [kernel, cixd, audit, container]
         level:
           type: string
         container:
@@ -12136,7 +12136,7 @@ components:
             Entries less severe than this are dropped at write time,
             before ever touching a segment file -- not merely hidden
             from GET's own `level` query filter. "error"/"warn" are
-            accepted as synonyms for "err"/"warning" (thincd/audit's
+            accepted as synonyms for "err"/"warning" (cixd/audit's
             own logstore_write() callers always say "error", never
             "err"). Default "debug" (log everything).
 
@@ -12277,7 +12277,7 @@ components:
       properties:
         common_name:
           type: string
-          default: "thinC Root CA"
+          default: "Cix Root CA"
           description: >
             A free-form display label (not a hostname -- dots/spaces are fine), embedded
             as the CA's subject CN. Must not contain "/" (would inject additional,
@@ -12308,7 +12308,7 @@ components:
       properties:
         common_name:
           type: string
-          default: "thinC Intermediate CA"
+          default: "Cix Intermediate CA"
           description: Same free-form display-label rules as PkiCaCreateRequest.common_name.
         days:
           type: integer

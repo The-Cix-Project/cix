@@ -46,8 +46,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#define BRIDGE_NAME "thinc-ctnet0"
-#define BRIDGE_NAME2 "thinc-ctnet1"
+#define BRIDGE_NAME "cix-ctnet0"
+#define BRIDGE_NAME2 "cix-ctnet1"
 #define IMAGE_ROOT "/tmp/container_net_test/lower"
 #define NET_CHILD_PORT 17700
 
@@ -592,8 +592,8 @@ int main(void)
 	{
 		struct container_spec spec4;
 		struct container_handle h4;
-		const char *ifname_move = "thinc-ifpt-b";
-		const char *ifname_keep = "thinc-ifpt-a";
+		const char *ifname_move = "cix-ifpt-b";
+		const char *ifname_keep = "cix-ifpt-a";
 		char *argv4[] = { "/bin/daemon_child", "2", "0", NULL };
 		int exit4 = -1;
 		int inside;
@@ -704,7 +704,7 @@ int main(void)
 	 * install no default route at all, has_address=1 must install one
 	 * pointing at address_ip_be exactly as before, and an explicit
 	 * 0.0.0.0/0 route_spec (the documented escape hatch for a gateway-
-	 * less network, e.g. pointing at a VRRP address neither thinC nor
+	 * less network, e.g. pointing at a VRRP address neither Cix nor
 	 * the host owns) still installs one regardless of has_address.
 	 * Checked directly against each container's own /proc/<pid>/net/
 	 * route -- readable cross-netns without setns() (a real, standard

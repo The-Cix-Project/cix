@@ -3,7 +3,7 @@
  * docs/api/openapi.yaml over real HTTP, not just that its internal
  * functions work. Stages one minimal test image, forks and execve's
  * the built daemon on a test port, then drives it via the shared
- * httpclient.c (the same client library thincctl uses -- see
+ * httpclient.c (the same client library cixctl uses -- see
  * ADR-0005/Phase 4 in docs/roadmap/ROADMAP.md), so there is one implementation
  * of "how to talk to the API," not a test-only copy of it.
  */
@@ -28,14 +28,14 @@ extern char **environ;
 static char g_data_dir[PATH_MAX];
 static char g_image_root[PATH_MAX];
 
-static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
+static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 {
 	int i;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			thinc_response_free(&r);
+		if (cix_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			cix_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -63,16 +63,16 @@ static int str_eq(const char *a, const char *b)
 	return a != NULL && b != NULL && strcmp(a, b) == 0;
 }
 
-static int poll_until_exited(const struct thinc_client *c, const char *name, int max_attempts,
-                              struct thinc_response *out)
+static int poll_until_exited(const struct cix_client *c, const char *name, int max_attempts,
+                              struct cix_response *out)
 {
 	int i;
 	char path[128];
 
 	snprintf(path, sizeof(path), "/v1/containers/%s", name);
 	for (i = 0; i < max_attempts; i++) {
-		thinc_response_free(out);
-		if (thinc_client_request(c, "GET", path, NULL, out) != 0)
+		cix_response_free(out);
+		if (cix_client_request(c, "GET", path, NULL, out) != 0)
 			return -1;
 		if (out->status == 200 && str_eq(json_str_field(out->json, "status"), "exited"))
 			return 0;
@@ -85,13 +85,13 @@ int main(void)
 {
 	pid_t daemon_pid;
 	int ok = 1;
-	struct thinc_response r;
-	struct thinc_client client;
+	struct cix_response r;
+	struct cix_client client;
 	char *dargv[4];
 	char data_dir_arg[PATH_MAX + 11];
 
 	memset(&r, 0, sizeof(r));
-	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
+	cix_client_init(&client, "127.0.0.1", TEST_PORT);
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
@@ -115,7 +115,7 @@ int main(void)
 	}
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
-	dargv[0] = "build/thincd";
+	dargv[0] = "build/cixd";
 	dargv[1] = "--port=7621";
 	dargv[2] = data_dir_arg;
 	dargv[3] = NULL;
@@ -127,8 +127,8 @@ int main(void)
 		return 1;
 	}
 	if (daemon_pid == 0) {
-		execve("build/thincd", dargv, environ);
-		perror("execve build/thincd");
+		execve("build/cixd", dargv, environ);
+		perror("execve build/cixd");
 		_exit(127);
 	}
 
@@ -141,25 +141,25 @@ int main(void)
 	}
 
 	/* 1. health */
-	if (thinc_client_request(&client, "GET", "/v1/health", NULL, &r) != 0 || r.status != 200 ||
+	if (cix_client_request(&client, "GET", "/v1/health", NULL, &r) != 0 || r.status != 200 ||
 	    !str_eq(json_str_field(r.json, "status"), "ok")) {
 		fprintf(stderr, "FAIL: GET /v1/health\n");
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 2. create c1, exits quickly with code 5 */
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"c1\",\"image\":\"test\",\"cmd\":[\"/bin/daemon_child\",\"0\",\"5\"]}",
 	                       &r) != 0 ||
 	    r.status != 201 || !str_eq(json_str_field(r.json, "status"), "running")) {
 		fprintf(stderr, "FAIL: POST /v1/containers (c1), status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 3. list shows it */
-	if (thinc_client_request(&client, "GET", "/v1/containers", NULL, &r) != 0 || r.status != 200) {
+	if (cix_client_request(&client, "GET", "/v1/containers", NULL, &r) != 0 || r.status != 200) {
 		fprintf(stderr, "FAIL: GET /v1/containers\n");
 		ok = 0;
 	} else {
@@ -178,7 +178,7 @@ int main(void)
 			ok = 0;
 		}
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 4. poll until c1 exits, check exit_status */
 	if (poll_until_exited(&client, "c1", 50, &r) != 0) {
@@ -189,10 +189,10 @@ int main(void)
 		        json_int_field(r.json, "exit_status"));
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 5. create c2, sleeps 30s -- then delete it while running */
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"c2\",\"image\":\"test\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}",
 	                       &r) != 0 ||
 	    r.status != 201) {
@@ -204,14 +204,14 @@ int main(void)
 		char proc_path[64];
 		struct stat st;
 
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
-		if (thinc_client_request(&client, "DELETE", "/v1/containers/c2", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "DELETE", "/v1/containers/c2", NULL, &r) != 0 ||
 		    r.status != 204) {
 			fprintf(stderr, "FAIL: DELETE /v1/containers/c2, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* ADR-0180: DELETE of a running container is asynchronous --
 		 * 204 records the intent + sends the SIGKILL; the process
@@ -223,16 +223,16 @@ int main(void)
 
 			snprintf(proc_path, sizeof(proc_path), "/proc/%ld", c2_pid);
 			for (i = 0; i < 50; i++) {
-				struct thinc_response gr;
+				struct cix_response gr;
 
 				memset(&gr, 0, sizeof(gr));
-				if (thinc_client_request(&client, "GET", "/v1/containers/c2", NULL, &gr) == 0 &&
+				if (cix_client_request(&client, "GET", "/v1/containers/c2", NULL, &gr) == 0 &&
 				    gr.status == 404 && stat(proc_path, &st) != 0) {
 					reaped = 1;
-					thinc_response_free(&gr);
+					cix_response_free(&gr);
 					break;
 				}
-				thinc_response_free(&gr);
+				cix_response_free(&gr);
 				usleep(100 * 1000);
 			}
 			if (!reaped) {
@@ -268,12 +268,12 @@ int main(void)
 	}
 
 	/* 6. deleted container is gone */
-	if (thinc_client_request(&client, "GET", "/v1/containers/c2", NULL, &r) != 0 ||
+	if (cix_client_request(&client, "GET", "/v1/containers/c2", NULL, &r) != 0 ||
 	    r.status != 404) {
 		fprintf(stderr, "FAIL: GET /v1/containers/c2 after delete, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 6.5. issue #68: unknown top-level fields are a 400 naming the
 	 * offender, never silently dropped (a typo'd "cpuset" once cost a
@@ -281,7 +281,7 @@ int main(void)
 	 * issue #49: cpuset_cpus/disk_quota_bytes now read back in GET
 	 * (cpuset live from the real cgroup file; quota from the
 	 * creation-time mirror). */
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"c49\",\"image\":\"test\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
 	                       "\"cpuset\":\"0\"}",
 	                       &r) != 0 ||
@@ -291,13 +291,13 @@ int main(void)
 		fprintf(stderr, "FAIL: unknown field should 400 naming it, got status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	/* disk_quota_bytes deliberately not exercised here: this test
 	 * env's filesystem has no prjquota support, so requesting one
 	 * correctly 500s -- the quota mirror's read-back shares the same
 	 * serializer path asserted below and is verified against a real
 	 * quota-capable install instead. */
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"c49\",\"image\":\"test\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
 	                       "\"cpuset_cpus\":\"0\"}",
 	                       &r) != 0 ||
@@ -305,21 +305,21 @@ int main(void)
 		fprintf(stderr, "FAIL: POST c49 with cpuset, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
-	if (thinc_client_request(&client, "GET", "/v1/containers/c49", NULL, &r) != 0 || r.status != 200 ||
+	cix_response_free(&r);
+	if (cix_client_request(&client, "GET", "/v1/containers/c49", NULL, &r) != 0 || r.status != 200 ||
 	    !str_eq(json_str_field(r.json, "cpuset_cpus"), "0") ||
 	    json_object_get(r.json, "disk_quota_bytes") == NULL) {
 		fprintf(stderr, "FAIL: c49 cpuset_cpus not read back / quota key missing (status=%d)\n",
 		        r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	/*
 	 * Issue #86: a container's cgroup is a LEAF UNDER the workload
 	 * parent, and that parent carries the machine-minus-reservation
 	 * ceiling. This is what makes the control plane's share a
 	 * kernel-enforced remainder rather than a hope -- a real box was
-	 * lost to exactly this (four builds saturating a 2-CPU host, thincd
+	 * lost to exactly this (four builds saturating a 2-CPU host, cixd
 	 * stopped answering, and with no SSH and no shell that is a
 	 * hypervisor trip).
 	 *
@@ -329,7 +329,7 @@ int main(void)
 		struct stat st;
 		char leaf[PATH_MAX];
 
-		snprintf(leaf, sizeof(leaf), "/sys/fs/cgroup/thinc-workload/c49");
+		snprintf(leaf, sizeof(leaf), "/sys/fs/cgroup/cix-workload/c49");
 		if (stat(leaf, &st) != 0) {
 			fprintf(stderr, "FAIL: #86 container cgroup %s missing -- containers are not under "
 			                "the bounded workload parent\n",
@@ -348,56 +348,56 @@ int main(void)
 		 * honour is refused before it is written.
 		 */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/system/zswap", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "GET", "/v1/system/zswap", NULL, &r) != 0 ||
 		    r.status != 200 || json_object_get(r.json, "supported") == NULL ||
 		    json_object_get(r.json, "kernel") == NULL ||
 		    json_object_get(r.json, "available_compressors") == NULL) {
 			fprintf(stderr, "FAIL: #51 GET zswap, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "PUT", "/v1/system/zswap",
+		if (cix_client_request(&client, "PUT", "/v1/system/zswap",
 		                       "{\"max_pool_percent\":0}", &r) != 0 ||
 		    r.status != 400) {
 			fprintf(stderr, "FAIL: #51 max_pool_percent=0 should 400, got %d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "PUT", "/v1/system/zswap",
+		if (cix_client_request(&client, "PUT", "/v1/system/zswap",
 		                       "{\"max_pool_percent\":101}", &r) != 0 ||
 		    r.status != 400) {
 			fprintf(stderr, "FAIL: #51 max_pool_percent=101 should 400, got %d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* The compressor name is written into a sysfs file; anything
 		 * that is not a plain algorithm name is refused, never
 		 * escaped. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "PUT", "/v1/system/zswap",
+		if (cix_client_request(&client, "PUT", "/v1/system/zswap",
 		                       "{\"compressor\":\"lzo\\nY\"}", &r) != 0 ||
 		    r.status != 400) {
 			fprintf(stderr, "FAIL: #51 a newline in compressor should 400, got %d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* A compressor this kernel was not built with is refused
 		 * rather than written and silently ignored -- 409, since the
 		 * request is well-formed and this machine simply cannot do it. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "PUT", "/v1/system/zswap",
+		if (cix_client_request(&client, "PUT", "/v1/system/zswap",
 		                       "{\"compressor\":\"nosuchalgo\"}", &r) != 0 ||
 		    r.status != 409) {
 			fprintf(stderr, "FAIL: #51 an unavailable compressor should 409, got %d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/*
 		 * Issue #65: the kernel-line endpoint's own contract. The
@@ -408,7 +408,7 @@ int main(void)
 		 * refused rather than silently stored.
 		 */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/system/kernel-policy", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "GET", "/v1/system/kernel-policy", NULL, &r) != 0 ||
 		    r.status != 200 || !str_eq(json_str_field(r.json, "channel"), "pinned") ||
 		    json_object_get(r.json, "resolved_version")->type != JSON_NULL ||
 		    json_object_get(r.json, "behind")->type != JSON_NULL) {
@@ -417,75 +417,75 @@ int main(void)
 			        r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "PUT", "/v1/system/kernel-policy",
+		if (cix_client_request(&client, "PUT", "/v1/system/kernel-policy",
 		                       "{\"channel\":\"edge\"}", &r) != 0 ||
 		    r.status != 400) {
 			fprintf(stderr, "FAIL: #65 an invented channel should 400, got %d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "PUT", "/v1/system/kernel-policy",
+		if (cix_client_request(&client, "PUT", "/v1/system/kernel-policy",
 		                       "{\"channel\":\"longterm\"}", &r) != 0 ||
 		    r.status != 200 || !str_eq(json_str_field(r.json, "channel"), "longterm")) {
 			fprintf(stderr, "FAIL: #65 PUT channel=longterm, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* Selecting a channel must not, by itself, invent a version:
 		 * nothing has been resolved, and reporting one would be the
 		 * kind of confident wrong answer this whole field exists to
 		 * replace. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/system/kernel-policy", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "GET", "/v1/system/kernel-policy", NULL, &r) != 0 ||
 		    r.status != 200 ||
 		    json_object_get(r.json, "resolved_version")->type != JSON_NULL ||
 		    json_object_get(r.json, "releases_fetched_at")->type != JSON_NULL) {
 			fprintf(stderr, "FAIL: #65 selecting a channel resolved a version out of nothing\n");
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/system/control-plane-reservation", NULL, &r) !=
+		if (cix_client_request(&client, "GET", "/v1/system/control-plane-reservation", NULL, &r) !=
 		        0 ||
 		    r.status != 200 || json_object_get(r.json, "enabled") == NULL ||
-		    !str_eq(json_str_field(r.json, "cgroup"), "thinc-workload")) {
+		    !str_eq(json_str_field(r.json, "cgroup"), "cix-workload")) {
 			fprintf(stderr, "FAIL: #86 GET control-plane-reservation, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* A reservation big enough to be a second workload budget is
 		 * refused: the range check is the difference between a safety
 		 * margin and an accidental new ceiling. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "PUT", "/v1/system/control-plane-reservation",
+		if (cix_client_request(&client, "PUT", "/v1/system/control-plane-reservation",
 		                       "{\"cpu_percent\":80}", &r) != 0 ||
 		    r.status != 400) {
 			fprintf(stderr, "FAIL: #86 cpu_percent=80 should 400, got %d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* A real change takes effect immediately, on the live cgroup --
 		 * an operator raising the reservation because the box is under
 		 * strain needs it while it is under strain, not at the next
 		 * container creation. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "PUT", "/v1/system/control-plane-reservation",
+		if (cix_client_request(&client, "PUT", "/v1/system/control-plane-reservation",
 		                       "{\"cpu_percent\":25}", &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: #86 PUT cpu_percent=25, status=%d\n", r.status);
 			ok = 0;
 		} else {
 			const char *want = json_str_field(r.json, "workload_cpu_max");
-			FILE *f = fopen("/sys/fs/cgroup/thinc-workload/cpu.max", "r");
+			FILE *f = fopen("/sys/fs/cgroup/cix-workload/cpu.max", "r");
 			char got[64] = "";
 
 			if (f != NULL) {
@@ -499,23 +499,23 @@ int main(void)
 				ok = 0;
 			}
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		thinc_client_request(&client, "PUT", "/v1/system/control-plane-reservation",
+		cix_client_request(&client, "PUT", "/v1/system/control-plane-reservation",
 		                   "{\"cpu_percent\":10}", &r);
-		thinc_response_free(&r);
+		cix_response_free(&r);
 	}
 
 	memset(&r, 0, sizeof(r));
-	thinc_client_request(&client, "DELETE", "/v1/containers/c49", NULL, &r);
-	thinc_response_free(&r);
+	cix_client_request(&client, "DELETE", "/v1/containers/c49", NULL, &r);
+	cix_response_free(&r);
 
 	/* 6.6. issue #66: ldap_client refused with no client config, then
 	 * accepted once configured -- and it stages the two identity files
 	 * rendered from that config (nslcd.conf carries the bind values,
 	 * proving they came from the daemon, not the recipe). */
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"cll\",\"image\":\"test\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
 	                       "\"ldap_client\":true}",
 	                       &r) != 0 ||
@@ -523,8 +523,8 @@ int main(void)
 		fprintf(stderr, "FAIL: ldap_client with no client config should 400, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
-	if (thinc_client_request(&client, "PUT", "/v1/ldap/config",
+	cix_response_free(&r);
+	if (cix_client_request(&client, "PUT", "/v1/ldap/config",
 	                       "{\"client_uri\":\"ldap://10.7.7.7:3893/\","
 	                       "\"base_dn\":\"dc=t,dc=local\","
 	                       "\"bind_dn\":\"cn=svc,dc=t,dc=local\","
@@ -532,8 +532,8 @@ int main(void)
 		fprintf(stderr, "FAIL: PUT ldap client config for ldap_client, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	cix_response_free(&r);
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"cll\",\"image\":\"test\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
 	                       "\"ldap_client\":true}",
 	                       &r) != 0 ||
@@ -541,8 +541,8 @@ int main(void)
 		fprintf(stderr, "FAIL: ldap_client create once configured, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
-	if (thinc_client_request(&client, "GET", "/v1/containers/cll/files?path=/etc/nslcd.conf", NULL,
+	cix_response_free(&r);
+	if (cix_client_request(&client, "GET", "/v1/containers/cll/files?path=/etc/nslcd.conf", NULL,
 	                       &r) != 0 ||
 	    r.status != 200 || r.body == NULL ||
 	    strstr(r.body, "uri ldap://10.7.7.7:3893/") == NULL ||
@@ -558,7 +558,7 @@ int main(void)
 		fprintf(stderr, "FAIL: an unrestricted ldap_client container carries a pam_authz_search\n");
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/*
 	 * Issue #76: host-scoped authorisation. Which users may log into
@@ -567,7 +567,7 @@ int main(void)
 	 * to still be running.
 	 */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"cllg\",\"image\":\"test\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
 	                       "\"ldap_client\":true,\"ldap_allow_groups\":[\"nosuchgroup\"]}",
 	                       &r) != 0 ||
@@ -576,15 +576,15 @@ int main(void)
 		fprintf(stderr, "FAIL: an unknown allow-group should 400 naming it, got %d: %.*s\n", r.status, (int)r.body_len, r.body ? r.body : "");
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/ldap/groups", "{\"name\":\"jumpusers\"}", &r) != 0 ||
+	if (cix_client_request(&client, "POST", "/v1/ldap/groups", "{\"name\":\"jumpusers\"}", &r) != 0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: create group jumpusers, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/*
 	 * A name that would change the filter's meaning is refused, never
@@ -592,7 +592,7 @@ int main(void)
 	 * LDAP filter.
 	 */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"cllg\",\"image\":\"test\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
 	                       "\"ldap_client\":true,\"ldap_allow_groups\":[\"evil)(uid=*\"]}",
 	                       &r) != 0 ||
@@ -600,10 +600,10 @@ int main(void)
 		fprintf(stderr, "FAIL: a filter-shaped group name should 400, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"cllg\",\"image\":\"test\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
 	                       "\"ldap_client\":true,\"ldap_allow_groups\":[\"jumpusers\"]}",
 	                       &r) != 0 ||
@@ -611,10 +611,10 @@ int main(void)
 		fprintf(stderr, "FAIL: ldap_client with an allow-group, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/containers/cllg/files?path=/etc/nslcd.conf", NULL,
+	if (cix_client_request(&client, "GET", "/v1/containers/cllg/files?path=/etc/nslcd.conf", NULL,
 	                       &r) != 0 ||
 	    r.status != 200 || r.body == NULL ||
 	    strstr(r.body, "pam_authz_search (&(objectClass=posixAccount)(uid=$username)"
@@ -623,40 +623,40 @@ int main(void)
 		        (int)r.body_len, r.body != NULL ? r.body : "");
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	thinc_client_request(&client, "DELETE", "/v1/containers/cllg", NULL, &r);
-	thinc_response_free(&r);
-	if (thinc_client_request(&client, "GET", "/v1/containers/cll/files?path=/etc/nsswitch.conf", NULL,
+	cix_client_request(&client, "DELETE", "/v1/containers/cllg", NULL, &r);
+	cix_response_free(&r);
+	if (cix_client_request(&client, "GET", "/v1/containers/cll/files?path=/etc/nsswitch.conf", NULL,
 	                       &r) != 0 ||
 	    r.status != 200 || r.body == NULL || strstr(r.body, "files ldap") == NULL) {
 		fprintf(stderr, "FAIL: ldap_client nsswitch.conf not staged (status=%d)\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	memset(&r, 0, sizeof(r));
-	thinc_client_request(&client, "DELETE", "/v1/containers/cll", NULL, &r);
-	thinc_response_free(&r);
+	cix_client_request(&client, "DELETE", "/v1/containers/cll", NULL, &r);
+	cix_response_free(&r);
 
 	/* 7. duplicate name -> 409 */
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"c1\",\"image\":\"test\",\"cmd\":[\"/bin/daemon_child\",\"0\",\"1\"]}",
 	                       &r) != 0 ||
 	    r.status != 409) {
 		fprintf(stderr, "FAIL: duplicate name expected 409, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 8. missing image -> 400 */
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"c3\",\"cmd\":[\"/bin/daemon_child\"]}", &r) != 0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: missing image expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 8a. GET/PUT /v1/system/resolv (ADR-0076/ADR-0132): a real
 	 * round-trip proving resolv_set()'s own write mechanism (changed
@@ -669,16 +669,16 @@ int main(void)
 	 * limitation as every other real-boot-only behavior in this
 	 * project. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "PUT", "/v1/system/resolv",
+	if (cix_client_request(&client, "PUT", "/v1/system/resolv",
 	                       "{\"nameservers\":[\"192.168.15.101\",\"192.168.15.102\"]}", &r) != 0 ||
 	    r.status != 200) {
 		fprintf(stderr, "FAIL: PUT /v1/system/resolv, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/system/resolv", NULL, &r) != 0 || r.status != 200) {
+	if (cix_client_request(&client, "GET", "/v1/system/resolv", NULL, &r) != 0 || r.status != 200) {
 		fprintf(stderr, "FAIL: GET /v1/system/resolv, status=%d\n", r.status);
 		ok = 0;
 	} else {
@@ -691,7 +691,7 @@ int main(void)
 			ok = 0;
 		}
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 9. clean shutdown */
 	kill(daemon_pid, SIGTERM);

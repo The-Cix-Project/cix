@@ -1,6 +1,6 @@
 pkg_name="kernel"
 pkg_version="6.18.40-3"
-pkg_source="https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.40.tar.xz https://osakka:REPLACE_WITH_REAL_TOKEN@git.home.arpa/api/v1/repos/itdlabs/thinc/raw/image/kernel/qemu-part1.config?ref=473858954a927611fed6ccccc6ec346d4aec821d"
+pkg_source="https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.40.tar.xz https://osakka:REPLACE_WITH_REAL_TOKEN@git.home.arpa/api/v1/repos/itdlabs/cix/raw/image/kernel/qemu-part1.config?ref=473858954a927611fed6ccccc6ec346d4aec821d"
 pkg_sha256="3712fc1ec839e4daac981176c8518912e8f452650aaedfe4381da4419613a431 71bb10a4615edbfd4f1d2d65e6d8c4d78ab215280f3a26707519f31783ee1f22"
 pkg_depends=""
 
@@ -45,7 +45,7 @@ pkg_depends=""
 # running uname -r (a bare `depmod` with no -F/version argument defaults
 # to that instead, which will not match this kernel version at all).
 #
-# ADR-0159 Phase B: an optional THINC_KMOD_EXTRA_SYMBOLS environment
+# ADR-0159 Phase B: an optional CIX_KMOD_EXTRA_SYMBOLS environment
 # variable (a space-separated list of bare CONFIG_* names, set only by
 # POST /v1/system/kmod-build's own daemon-side pkg_hostbuild_start()
 # call -- every other caller of this same recipe, e.g. an ordinary
@@ -75,14 +75,14 @@ pkg_build() {
 	# convention), so bash.recipe now provides this one standard path
 	# any real build-toolchain image needs.
 	cp /build/extra/qemu-part1.config .config
-	if [ -n "$THINC_KMOD_EXTRA_SYMBOLS" ]; then
+	if [ -n "$CIX_KMOD_EXTRA_SYMBOLS" ]; then
 		: > /build/extra/kmod-extra.config
-		for sym in $THINC_KMOD_EXTRA_SYMBOLS; do
+		for sym in $CIX_KMOD_EXTRA_SYMBOLS; do
 			echo "${sym}=m" >> /build/extra/kmod-extra.config
 		done
 	fi
 	make ARCH=x86_64 SHELL=/usr/bin/bash allnoconfig
-	if [ -n "$THINC_KMOD_EXTRA_SYMBOLS" ]; then
+	if [ -n "$CIX_KMOD_EXTRA_SYMBOLS" ]; then
 		bash ./scripts/kconfig/merge_config.sh -m .config /build/extra/qemu-part1.config \
 			/build/extra/kmod-extra.config
 	else

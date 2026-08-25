@@ -1,6 +1,6 @@
 /*
  * Tasks #751-755 end-to-end test: proves the NTP subsystem over real
- * HTTP against a real thincd subprocess --
+ * HTTP against a real cixd subprocess --
  *   - GET/PUT /v1/system/ntp (upstream address list) CRUD + validation
  *   - GET /v1/system/ntp/status
  *   - POST /v1/system/ntp/sync (on-demand trigger, not just the hourly
@@ -50,14 +50,14 @@ extern char **environ;
 static char g_data_dir[PATH_MAX];
 static char g_image_root[PATH_MAX];
 
-static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
+static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 {
 	int i;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			thinc_response_free(&r);
+		if (cix_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			cix_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -197,9 +197,9 @@ int main(void)
 	pid_t daemon_pid;
 	char *dargv[5];
 	char data_dir_arg[PATH_MAX + 11];
-	struct thinc_client client;
+	struct cix_client client;
 	int ok = 1;
-	struct thinc_response r;
+	struct cix_response r;
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
@@ -219,7 +219,7 @@ int main(void)
 	}
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
-	dargv[0] = "build/thincd";
+	dargv[0] = "build/cixd";
 	dargv[1] = PORT_ARG;
 	dargv[2] = data_dir_arg;
 	dargv[3] = NULL;
@@ -231,12 +231,12 @@ int main(void)
 		return 1;
 	}
 	if (daemon_pid == 0) {
-		execve("build/thincd", dargv, environ);
-		perror("execve build/thincd");
+		execve("build/cixd", dargv, environ);
+		perror("execve build/cixd");
 		_exit(127);
 	}
 
-	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
+	cix_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
@@ -247,7 +247,7 @@ int main(void)
 
 	/* 1. Config: empty by default. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/system/ntp", NULL, &r) != 0 || r.status != 200) {
+	if (cix_client_request(&client, "GET", "/v1/system/ntp", NULL, &r) != 0 || r.status != 200) {
 		fprintf(stderr, "FAIL: GET /v1/system/ntp, status=%d\n", r.status);
 		ok = 0;
 	} else {
@@ -258,41 +258,41 @@ int main(void)
 			ok = 0;
 		}
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 1a. PUT validation: a bad IP is rejected. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "PUT", "/v1/system/ntp", "{\"upstream\":[\"not-an-ip\"]}", &r) !=
+	if (cix_client_request(&client, "PUT", "/v1/system/ntp", "{\"upstream\":[\"not-an-ip\"]}", &r) !=
 	        0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: PUT invalid upstream ip expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 1b. PUT validation: too many (NTP_MAX_UPSTREAM == 3) is rejected. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "PUT", "/v1/system/ntp",
+	if (cix_client_request(&client, "PUT", "/v1/system/ntp",
 	                       "{\"upstream\":[\"10.0.0.1\",\"10.0.0.2\",\"10.0.0.3\",\"10.0.0.4\"]}",
 	                       &r) != 0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: PUT too-many upstream expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 1c. A real PUT round-trip. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "PUT", "/v1/system/ntp",
+	if (cix_client_request(&client, "PUT", "/v1/system/ntp",
 	                       "{\"upstream\":[\"10.0.0.1\",\"10.0.0.2\"]}", &r) != 0 ||
 	    r.status != 200) {
 		fprintf(stderr, "FAIL: PUT upstream, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/system/ntp", NULL, &r) != 0 || r.status != 200) {
+	if (cix_client_request(&client, "GET", "/v1/system/ntp", NULL, &r) != 0 || r.status != 200) {
 		fprintf(stderr, "FAIL: GET /v1/system/ntp after PUT, status=%d\n", r.status);
 		ok = 0;
 	} else {
@@ -305,17 +305,17 @@ int main(void)
 			ok = 0;
 		}
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 2. Status: never synced yet. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/system/ntp/status", NULL, &r) != 0 ||
+	if (cix_client_request(&client, "GET", "/v1/system/ntp/status", NULL, &r) != 0 ||
 	    r.status != 200 || !str_eq(json_str_field(r.json, "state"), "never")) {
 		fprintf(stderr, "FAIL: GET /v1/system/ntp/status (never), status=%d, state=%s\n",
 		        r.status, json_str_field(r.json, "state") ? json_str_field(r.json, "state") : "?");
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 3. Manual sync trigger: 400 with nothing real configured to
 	 * reach (10.0.0.1/.2 above are unroutable-in-this-sandbox
@@ -323,30 +323,30 @@ int main(void)
 	 * upstream first to genuinely exercise the "nothing configured"
 	 * path). */
 	memset(&r, 0, sizeof(r));
-	thinc_client_request(&client, "PUT", "/v1/system/ntp", "{\"upstream\":[]}", &r);
-	thinc_response_free(&r);
+	cix_client_request(&client, "PUT", "/v1/system/ntp", "{\"upstream\":[]}", &r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/system/ntp/sync", NULL, &r) != 0 ||
+	if (cix_client_request(&client, "POST", "/v1/system/ntp/sync", NULL, &r) != 0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: POST sync with no candidates expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 4. Servers: register nonexistent container -> 404. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/ntp/servers", "{\"container\":\"no-such\"}", &r) !=
+	if (cix_client_request(&client, "POST", "/v1/ntp/servers", "{\"container\":\"no-such\"}", &r) !=
 	        0 ||
 	    r.status != 404) {
 		fprintf(stderr, "FAIL: register nonexistent container expected 404, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 4a. A real container, but not running -- also 404. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"stoppedntp\",\"image\":\"ntptest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"0\",\"0\"]}",
 	                       &r) != 0 ||
@@ -354,24 +354,24 @@ int main(void)
 		fprintf(stderr, "FAIL: POST stoppedntp, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	/* daemon_child with sleep=0 exits immediately -- give it a moment. */
 	usleep(300000);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/ntp/servers", "{\"container\":\"stoppedntp\"}",
+	if (cix_client_request(&client, "POST", "/v1/ntp/servers", "{\"container\":\"stoppedntp\"}",
 	                       &r) != 0 ||
 	    r.status != 404) {
 		fprintf(stderr, "FAIL: register not-running container expected 404, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
-	thinc_client_request(&client, "DELETE", "/v1/containers/stoppedntp", NULL, &r);
-	thinc_response_free(&r);
+	cix_response_free(&r);
+	cix_client_request(&client, "DELETE", "/v1/containers/stoppedntp", NULL, &r);
+	cix_response_free(&r);
 
 	/* 4b. A real, running container: register/duplicate/list/unregister. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"ntpserver1\",\"image\":\"ntptest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"300\",\"0\"]}",
 	                       &r) != 0 ||
@@ -379,28 +379,28 @@ int main(void)
 		fprintf(stderr, "FAIL: POST ntpserver1, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/ntp/servers", "{\"container\":\"ntpserver1\"}",
+	if (cix_client_request(&client, "POST", "/v1/ntp/servers", "{\"container\":\"ntpserver1\"}",
 	                       &r) != 0 ||
 	    r.status != 201 || !str_eq(json_str_field(r.json, "container"), "ntpserver1")) {
 		fprintf(stderr, "FAIL: register ntpserver1, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/ntp/servers", "{\"container\":\"ntpserver1\"}",
+	if (cix_client_request(&client, "POST", "/v1/ntp/servers", "{\"container\":\"ntpserver1\"}",
 	                       &r) != 0 ||
 	    r.status != 409) {
 		fprintf(stderr, "FAIL: duplicate registration expected 409, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/ntp/servers", NULL, &r) != 0 || r.status != 200) {
+	if (cix_client_request(&client, "GET", "/v1/ntp/servers", NULL, &r) != 0 || r.status != 200) {
 		fprintf(stderr, "FAIL: GET /v1/ntp/servers, status=%d\n", r.status);
 		ok = 0;
 	} else {
@@ -418,23 +418,23 @@ int main(void)
 			ok = 0;
 		}
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "DELETE", "/v1/ntp/servers/no-such", NULL, &r) != 0 ||
+	if (cix_client_request(&client, "DELETE", "/v1/ntp/servers/no-such", NULL, &r) != 0 ||
 	    r.status != 404) {
 		fprintf(stderr, "FAIL: unregister nonexistent expected 404, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 4c. ntp_server_forget(): deleting the container removes the
 	 * registration too, no separate DELETE /v1/ntp/servers/... needed. */
-	thinc_client_request(&client, "DELETE", "/v1/containers/ntpserver1", NULL, &r);
-	thinc_response_free(&r);
+	cix_client_request(&client, "DELETE", "/v1/containers/ntpserver1", NULL, &r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/ntp/servers", NULL, &r) != 0 || r.status != 200) {
+	if (cix_client_request(&client, "GET", "/v1/ntp/servers", NULL, &r) != 0 || r.status != 200) {
 		fprintf(stderr, "FAIL: GET /v1/ntp/servers after container delete, status=%d\n", r.status);
 		ok = 0;
 	} else {
@@ -449,26 +449,26 @@ int main(void)
 				}
 		}
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 5. Time: GET always works; PUT rejects a negative unixtime
 	 * regardless of environment (real, deterministic validation, not
 	 * environment-dependent). */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/system/time", NULL, &r) != 0 || r.status != 200 ||
+	if (cix_client_request(&client, "GET", "/v1/system/time", NULL, &r) != 0 || r.status != 200 ||
 	    json_object_get(r.json, "unixtime") == NULL) {
 		fprintf(stderr, "FAIL: GET /v1/system/time, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "PUT", "/v1/system/time", "{\"unixtime\":-5}", &r) != 0 ||
+	if (cix_client_request(&client, "PUT", "/v1/system/time", "{\"unixtime\":-5}", &r) != 0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: PUT negative unixtime expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/*
 	 * 6. The real payoff: a genuine SNTP round trip against a
@@ -491,18 +491,18 @@ int main(void)
 			usleep(100000); /* let the responder's bind()/listen loop settle */
 
 			memset(&r, 0, sizeof(r));
-			thinc_client_request(&client, "PUT", "/v1/system/ntp", "{\"upstream\":[\"127.0.0.1\"]}",
+			cix_client_request(&client, "PUT", "/v1/system/ntp", "{\"upstream\":[\"127.0.0.1\"]}",
 			                   &r);
-			thinc_response_free(&r);
+			cix_response_free(&r);
 
 			t_start = now_ms();
 			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "POST", "/v1/system/ntp/sync", NULL, &r) != 0 ||
+			if (cix_client_request(&client, "POST", "/v1/system/ntp/sync", NULL, &r) != 0 ||
 			    r.status != 202) {
 				fprintf(stderr, "FAIL: POST /v1/system/ntp/sync, status=%d\n", r.status);
 				ok = 0;
 			}
-			thinc_response_free(&r);
+			cix_response_free(&r);
 
 			/* Poll status until it's no longer "never", up to 2s
 			 * (comfortably past the responder's own reply latency,
@@ -510,18 +510,18 @@ int main(void)
 			 * timeout twice over). */
 			for (i = 0; i < 40; i++) {
 				memset(&r, 0, sizeof(r));
-				if (thinc_client_request(&client, "GET", "/v1/system/ntp/status", NULL, &r) == 0 &&
+				if (cix_client_request(&client, "GET", "/v1/system/ntp/status", NULL, &r) == 0 &&
 				    r.status == 200) {
 					const char *s = json_str_field(r.json, "state");
 
 					if (s != NULL && strcmp(s, "never") != 0) {
 						snprintf(state, sizeof(state), "%s", s);
 						t_resolved = now_ms();
-						thinc_response_free(&r);
+						cix_response_free(&r);
 						break;
 					}
 				}
-				thinc_response_free(&r);
+				cix_response_free(&r);
 				usleep(50000);
 			}
 
@@ -541,7 +541,7 @@ int main(void)
 				       state, t_resolved - t_start);
 				if (strcmp(state, "ok") == 0) {
 					memset(&r, 0, sizeof(r));
-					if (thinc_client_request(&client, "GET", "/v1/system/ntp/status", NULL, &r) ==
+					if (cix_client_request(&client, "GET", "/v1/system/ntp/status", NULL, &r) ==
 					        0 &&
 					    !str_eq(json_str_field(r.json, "synced_from"), "127.0.0.1")) {
 						fprintf(stderr, "FAIL: state=ok but synced_from != 127.0.0.1 (got %s)\n",
@@ -550,7 +550,7 @@ int main(void)
 						            : "(null)");
 						ok = 0;
 					}
-					thinc_response_free(&r);
+					cix_response_free(&r);
 				}
 			}
 
@@ -560,8 +560,8 @@ int main(void)
 
 	/* cleanup */
 	memset(&r, 0, sizeof(r));
-	thinc_client_request(&client, "PUT", "/v1/system/ntp", "{\"upstream\":[]}", &r);
-	thinc_response_free(&r);
+	cix_client_request(&client, "PUT", "/v1/system/ntp", "{\"upstream\":[]}", &r);
+	cix_response_free(&r);
 
 	kill(daemon_pid, SIGTERM);
 	{

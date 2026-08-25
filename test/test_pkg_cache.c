@@ -84,7 +84,7 @@ static pid_t start_daemon(void)
 	static char data_dir_arg[PATH_MAX + 11];
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
-	dargv[0] = "build/thincd";
+	dargv[0] = "build/cixd";
 	dargv[1] = PORT_ARG;
 	dargv[2] = data_dir_arg;
 	dargv[3] = NULL;
@@ -95,8 +95,8 @@ static pid_t start_daemon(void)
 		return -1;
 	}
 	if (pid == 0) {
-		execve("build/thincd", dargv, environ);
-		perror("execve build/thincd");
+		execve("build/cixd", dargv, environ);
+		perror("execve build/cixd");
 		_exit(127);
 	}
 	return pid;
@@ -117,14 +117,14 @@ static const char *json_str_field(const struct json_value *obj, const char *key)
 	return json_as_string(json_object_get(obj, key));
 }
 
-static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
+static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 {
 	int i;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			thinc_response_free(&r);
+		if (cix_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			cix_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -132,7 +132,7 @@ static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
 	return -1;
 }
 
-static int wait_for_pkg_state(const struct thinc_client *c, const char *name, const char *image,
+static int wait_for_pkg_state(const struct cix_client *c, const char *name, const char *image,
                                const char *want, int max_attempts)
 {
 	int i;
@@ -143,18 +143,18 @@ static int wait_for_pkg_state(const struct thinc_client *c, const char *name, co
 	else
 		snprintf(path, sizeof(path), "/v1/pkg/%s", name);
 	for (i = 0; i < max_attempts; i++) {
-		struct thinc_response r;
+		struct cix_response r;
 		const char *state;
 		int matched;
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(c, "GET", path, NULL, &r) != 0 || r.status != 200) {
-			thinc_response_free(&r);
+		if (cix_client_request(c, "GET", path, NULL, &r) != 0 || r.status != 200) {
+			cix_response_free(&r);
 			return -1;
 		}
 		state = json_str_field(r.json, "state");
 		matched = state != NULL && strcmp(state, want) == 0;
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		if (matched)
 			return 0;
 		usleep(100000);
@@ -271,9 +271,9 @@ static int stop_http_server(pid_t pid)
 int main(void)
 {
 	pid_t daemon_pid, http_pid;
-	struct thinc_client client;
-	struct thinc_response r;
-	char scratch_dir[] = "/tmp/thinc_test_pkgcache_XXXXXX";
+	struct cix_client client;
+	struct cix_response r;
+	char scratch_dir[] = "/tmp/cix_test_pkgcache_XXXXXX";
 	char tarball_path[512], sha256[128];
 	char recipe_check_path[PATH_MAX];
 	char *content;
@@ -301,7 +301,7 @@ int main(void)
 		test_data_dir_cleanup(g_data_dir);
 		return 1;
 	}
-	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
+	cix_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never became healthy\n");
 		kill(daemon_pid, SIGKILL);
@@ -311,9 +311,9 @@ int main(void)
 	}
 
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "POST", "/v1/pkg/bootstrap", NULL, &r) == 0 && r.status == 204,
+	CHECK(cix_client_request(&client, "POST", "/v1/pkg/bootstrap", NULL, &r) == 0 && r.status == 204,
 	      "POST /v1/pkg/bootstrap");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	{
 		char source_url[600];
@@ -325,32 +325,32 @@ int main(void)
 
 	/* --- scenario 1: fresh cache is empty --- */
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "GET", "/v1/pkg/cache", NULL, &r) == 0 && r.status == 200,
+	CHECK(cix_client_request(&client, "GET", "/v1/pkg/cache", NULL, &r) == 0 && r.status == 200,
 	      "GET /v1/pkg/cache (fresh)");
 	if (r.json != NULL)
 		CHECK(cache_json_long(r.json, "entry_count") == 0, "fresh cache has zero entries");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* --- scenario 2: a real install (real fetch, real gcc compile)
 	 * populates the cache. --- */
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "POST", "/v1/pkg/install",
+	CHECK(cix_client_request(&client, "POST", "/v1/pkg/install",
 	                         "{\"name\":\"cachetest\",\"image\":\"imgA\"}", &r) == 0 &&
 	              r.status == 202,
 	      "POST /v1/pkg/install cachetest@imgA (real build)");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	CHECK(wait_for_pkg_state(&client, "cachetest", "imgA", "installed", 300) == 0,
 	      "cachetest@imgA reaches state=installed");
 
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "GET", "/v1/pkg/cache", NULL, &r) == 0 && r.status == 200,
+	CHECK(cix_client_request(&client, "GET", "/v1/pkg/cache", NULL, &r) == 0 && r.status == 200,
 	      "GET /v1/pkg/cache (after real build)");
 	if (r.json != NULL) {
 		CHECK(cache_json_long(r.json, "entry_count") == 1,
 		      "cache has exactly one entry after the real build");
 		CHECK(cache_json_long(r.json, "current_bytes") > 0, "cache reports nonzero occupied bytes");
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	{
 		char cache_tarball[PATH_MAX];
@@ -365,31 +365,31 @@ int main(void)
 	CHECK(unlink(tarball_path) == 0, "delete the real source tarball before the second install");
 
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "POST", "/v1/pkg/install",
+	CHECK(cix_client_request(&client, "POST", "/v1/pkg/install",
 	                         "{\"name\":\"cachetest\",\"image\":\"imgB\"}", &r) == 0 &&
 	              r.status == 202,
 	      "POST /v1/pkg/install cachetest@imgB (cache hit -- source tarball no longer exists)");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	CHECK(wait_for_pkg_state(&client, "cachetest", "imgB", "installed", 300) == 0,
 	      "cachetest@imgB reaches state=installed via cache hit despite missing source");
 
 	/* --- scenario 4: cache-config get/set --- */
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "GET", "/v1/pkg/cache-config", NULL, &r) == 0 &&
+	CHECK(cix_client_request(&client, "GET", "/v1/pkg/cache-config", NULL, &r) == 0 &&
 	              r.status == 200,
 	      "GET /v1/pkg/cache-config (default)");
 	if (r.json != NULL)
 		CHECK(cache_json_long(r.json, "max_bytes") == 2147483648L, "default cache cap is 2 GiB");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "PUT", "/v1/pkg/cache-config", "{\"max_bytes\":104857600}",
+	CHECK(cix_client_request(&client, "PUT", "/v1/pkg/cache-config", "{\"max_bytes\":104857600}",
 	                         &r) == 0 &&
 	              r.status == 200,
 	      "PUT /v1/pkg/cache-config (100 MiB)");
 	if (r.json != NULL)
 		CHECK(cache_json_long(r.json, "max_bytes") == 104857600L, "cache cap updated to 100 MiB");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* --- scenario 5: LRU eviction -- a cap smaller than the existing
 	 * cached entry forces it out when a second, distinct package is
@@ -409,30 +409,30 @@ int main(void)
 		 * fits at a time (~a few KB each), forcing the older
 		 * cachetest-1.0 entry to be evicted once cachetest2 is cached. */
 		memset(&r, 0, sizeof(r));
-		CHECK(thinc_client_request(&client, "PUT", "/v1/pkg/cache-config", "{\"max_bytes\":4096}",
+		CHECK(cix_client_request(&client, "PUT", "/v1/pkg/cache-config", "{\"max_bytes\":4096}",
 		                         &r) == 0 &&
 		              r.status == 200,
 		      "PUT /v1/pkg/cache-config (tiny cap, forces eviction)");
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		CHECK(thinc_client_request(&client, "POST", "/v1/pkg/install",
+		CHECK(cix_client_request(&client, "POST", "/v1/pkg/install",
 		                         "{\"name\":\"cachetest2\",\"image\":\"imgC\"}", &r) == 0 &&
 		              r.status == 202,
 		      "POST /v1/pkg/install cachetest2@imgC");
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		CHECK(wait_for_pkg_state(&client, "cachetest2", "imgC", "installed", 300) == 0,
 		      "cachetest2@imgC reaches state=installed");
 
 		memset(&r, 0, sizeof(r));
-		CHECK(thinc_client_request(&client, "GET", "/v1/pkg/cache", NULL, &r) == 0 && r.status == 200,
+		CHECK(cix_client_request(&client, "GET", "/v1/pkg/cache", NULL, &r) == 0 && r.status == 200,
 		      "GET /v1/pkg/cache (after LRU eviction)");
 		if (r.json != NULL) {
 			long total = cache_json_long(r.json, "current_bytes");
 
 			CHECK(total <= 4096, "cache stays under its own tiny configured cap after eviction");
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		{
 			char old_cache_tarball[PATH_MAX];
@@ -446,23 +446,23 @@ int main(void)
 
 	/* Restore a real cap before the artifact-server scenarios below. */
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "PUT", "/v1/pkg/cache-config", "{\"max_bytes\":104857600}",
+	CHECK(cix_client_request(&client, "PUT", "/v1/pkg/cache-config", "{\"max_bytes\":104857600}",
 	                         &r) == 0 &&
 	              r.status == 200,
 	      "PUT /v1/pkg/cache-config (restore 100 MiB before artifact scenarios)");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* --- scenario 6: cache-clear --- */
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "DELETE", "/v1/pkg/cache", NULL, &r) == 0 && r.status == 204,
+	CHECK(cix_client_request(&client, "DELETE", "/v1/pkg/cache", NULL, &r) == 0 && r.status == 204,
 	      "DELETE /v1/pkg/cache");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "GET", "/v1/pkg/cache", NULL, &r) == 0 && r.status == 200,
+	CHECK(cix_client_request(&client, "GET", "/v1/pkg/cache", NULL, &r) == 0 && r.status == 200,
 	      "GET /v1/pkg/cache (after clear)");
 	if (r.json != NULL)
 		CHECK(cache_json_long(r.json, "entry_count") == 0, "cache is empty after clear");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* --- scenario 7: network artifact-fetch tier -- a recipe with a
 	 * declared pkg_artifact_sha256, an intentionally-broken pkg_source,
@@ -520,11 +520,11 @@ int main(void)
 				snprintf(artifact_url, sizeof(artifact_url), "http://127.0.0.1:%d", HTTP_PORT);
 				snprintf(put_body, sizeof(put_body), "{\"base_url\":\"%s\"}", artifact_url);
 				memset(&r, 0, sizeof(r));
-				CHECK(thinc_client_request(&client, "PUT", "/v1/pkg/artifact-config", put_body, &r) ==
+				CHECK(cix_client_request(&client, "PUT", "/v1/pkg/artifact-config", put_body, &r) ==
 				              0 &&
 				              r.status == 200,
 				      "PUT /v1/pkg/artifact-config");
-				thinc_response_free(&r);
+				cix_response_free(&r);
 			}
 
 			CHECK(write_recipe(g_pkg_state_dir, "artifacttest", "1.0",
@@ -537,22 +537,22 @@ int main(void)
 			 * only the artifact tier can possibly succeed here. */
 
 			memset(&r, 0, sizeof(r));
-			CHECK(thinc_client_request(&client, "POST", "/v1/pkg/install",
+			CHECK(cix_client_request(&client, "POST", "/v1/pkg/install",
 			                         "{\"name\":\"artifacttest\",\"image\":\"imgD\"}", &r) == 0 &&
 			              r.status == 202,
 			      "POST /v1/pkg/install artifacttest@imgD (artifact tier, broken source)");
-			thinc_response_free(&r);
+			cix_response_free(&r);
 			CHECK(wait_for_pkg_state(&client, "artifacttest", "imgD", "installed", 300) == 0,
 			      "artifacttest@imgD reaches state=installed via the artifact tier");
 
 			memset(&r, 0, sizeof(r));
-			CHECK(thinc_client_request(&client, "GET", "/v1/pkg/cache", NULL, &r) == 0 &&
+			CHECK(cix_client_request(&client, "GET", "/v1/pkg/cache", NULL, &r) == 0 &&
 			              r.status == 200,
 			      "GET /v1/pkg/cache (after artifact-tier install)");
 			if (r.json != NULL)
 				CHECK(cache_json_long(r.json, "entry_count") == 1,
 				      "the verified artifact was promoted into the local cache");
-			thinc_response_free(&r);
+			cix_response_free(&r);
 
 			stop_http_server(http_pid);
 		}

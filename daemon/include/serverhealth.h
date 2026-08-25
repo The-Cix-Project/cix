@@ -9,7 +9,7 @@
 /*
  * Health / heartbeat tracking for REGISTERED SERVERS (issue #81).
  *
- * thinC lets an operator register redundant backend servers for four
+ * Cix lets an operator register redundant backend servers for four
  * subsystems -- LDAP, DNS, NTP and syslog -- but until this module it
  * only ever tracked *that* a server was registered, never whether it is
  * actually serving. That gap has already cost real debugging time: #80

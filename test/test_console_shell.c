@@ -1,5 +1,5 @@
 /*
- * Phase 19 demonstrable test: proves thincd --init-mode's new console-
+ * Phase 19 demonstrable test: proves cixd --init-mode's new console-
  * login machinery actually works end to end -- not just that it compiles.
  * Reuses test_boot.c's exact disk-assembly approach (same throwaway
  * ESP + one squashfs root slot), then scripts a real interactive session
@@ -31,8 +31,8 @@
 #include <unistd.h>
 
 #define MKBOOTROOT_BIN "build/mkbootroot"
-#define THINCD_BIN "build/thincd"
-#define THINCCTL_BIN "build/thincctl"
+#define CIXD_BIN "build/cixd"
+#define CIXCTL_BIN "build/cixctl"
 #define BZIMAGE_PATH "build/bzImage"
 #define SFDISK_BIN "/usr/sbin/sfdisk"
 #define SYSTEMD_BOOT_EFI "/usr/lib/systemd/boot/efi/systemd-bootx64.efi"
@@ -71,22 +71,22 @@ static int build_esp_image(const char *esp_img, const char *workdir)
 		return -1;
 	if (esp_mcopy_in(esp_img, SYSTEMD_BOOT_EFI, "::/EFI/BOOT/BOOTX64.EFI") != 0)
 		return -1;
-	if (esp_mcopy_in(esp_img, BZIMAGE_PATH, "::/thinc-bzImage-a") != 0)
+	if (esp_mcopy_in(esp_img, BZIMAGE_PATH, "::/cix-bzImage-a") != 0)
 		return -1;
 
 	snprintf(loader_conf_path, sizeof(loader_conf_path), "%s/loader.conf", workdir);
-	if (write_text_file(loader_conf_path, "default thinc\ntimeout 0\n") != 0)
+	if (write_text_file(loader_conf_path, "default cix\ntimeout 0\n") != 0)
 		return -1;
 	if (esp_mcopy_in(esp_img, loader_conf_path, "::/loader/loader.conf") != 0)
 		return -1;
 
 	snprintf(loader_conf, sizeof(loader_conf),
-	         "title thinC\n"
-	         "linux /thinc-bzImage-a\n"
-	         "options console=ttyS0 root=/dev/vda2 rw init=/bin/thincd -- --init-mode\n");
+	         "title Cix\n"
+	         "linux /cix-bzImage-a\n"
+	         "options console=ttyS0 root=/dev/vda2 rw init=/bin/cixd -- --init-mode\n");
 	if (write_text_file(loader_conf_path, loader_conf) != 0)
 		return -1;
-	if (esp_mcopy_in(esp_img, loader_conf_path, "::/loader/entries/thinc.conf") != 0)
+	if (esp_mcopy_in(esp_img, loader_conf_path, "::/loader/entries/cix.conf") != 0)
 		return -1;
 
 	return 0;
@@ -94,7 +94,7 @@ static int build_esp_image(const char *esp_img, const char *workdir)
 
 int main(void)
 {
-	char workdir[] = "/tmp/thinc_test_console_shell_XXXXXX";
+	char workdir[] = "/tmp/cix_test_console_shell_XXXXXX";
 	char stage_dir[600];
 	char root_squashfs[600];
 	char disk_img[600];
@@ -108,17 +108,17 @@ int main(void)
 	/* Deliberately skips "health" on the *first* shell instance -- exits
 	 * it immediately, waits for the respawned instance's own genuinely
 	 * new prompt (match_search_from advances past the first
-	 * "thinc.internal> " match, so this can only match a second, later
+	 * "cix.internal> " match, so this can only match a second, later
 	 * occurrence -- real proof handle_console_shell_event()/
 	 * arm_console_respawn_timer() actually respawned it), then proves
 	 * that respawned instance is a fully working shell by calling
-	 * health for real. "thinc.internal> ", not the older bare
-	 * "thinc> " -- ADR-0164 changed the shell prompt to the full site
-	 * FQDN (defaulting to thinc.internal with no site tier configured,
+	 * health for real. "cix.internal> ", not the older bare
+	 * "cix> " -- ADR-0164 changed the shell prompt to the full site
+	 * FQDN (defaulting to cix.internal with no site tier configured,
 	 * which this test never does) plus a trailing >/# for auth state. */
 	struct qemu_scripted_input console_script[] = {
-		{ "thinc.internal> ", "exit\n" },
-		{ "thinc.internal> ", "health\n" },
+		{ "cix.internal> ", "exit\n" },
+		{ "cix.internal> ", "health\n" },
 	};
 
 	if (mkdtemp(workdir) == NULL) {
@@ -133,7 +133,7 @@ int main(void)
 
 	{
 		char *mkbootroot_argv[] = { (char *)MKBOOTROOT_BIN, stage_dir,
-			                     (char *)THINCD_BIN, (char *)THINCCTL_BIN, "web", root_squashfs,
+			                     (char *)CIXD_BIN, (char *)CIXCTL_BIN, "web", root_squashfs,
 			                     "", "", "", "", NULL };
 		if (run_subprocess(MKBOOTROOT_BIN, mkbootroot_argv) != 0)
 			return 1;

@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-The user's own router use case made a real gap concrete: `pkg install` has only ever had one destination, the shared `base` image every container uses by default — confirmed directly in `pkg_build_completed()` (`daemon/src/pkg.c`), whose merge step was hardcoded to `g_base_rootfs`. There was no way to build a `router`-flavored image carrying `bash`/`iproute2`/`bird` without every other container on `base` getting them too, which the user explicitly did not want ("I don't want them as part of the base thinc").
+The user's own router use case made a real gap concrete: `pkg install` has only ever had one destination, the shared `base` image every container uses by default — confirmed directly in `pkg_build_completed()` (`daemon/src/pkg.c`), whose merge step was hardcoded to `g_base_rootfs`. There was no way to build a `router`-flavored image carrying `bash`/`iproute2`/`bird` without every other container on `base` getting them too, which the user explicitly did not want ("I don't want them as part of the base cix").
 
 Confirmed alongside two related gaps in the same conversation (explicit network IP allocation, real NIC passthrough) and planned together, but implemented and shipped independently, starting with this one per the user's own stated priority order.
 

@@ -26,14 +26,14 @@ extern char **environ;
 static char g_data_dir[PATH_MAX];
 static char g_image_root[PATH_MAX];
 
-static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
+static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 {
 	int i;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			thinc_response_free(&r);
+		if (cix_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			cix_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -58,7 +58,7 @@ static pid_t start_daemon(void)
 	static char data_dir_arg[PATH_MAX + 11];
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
-	dargv[0] = "build/thincd";
+	dargv[0] = "build/cixd";
 	dargv[1] = PORT_ARG;
 	dargv[2] = data_dir_arg;
 	dargv[3] = NULL;
@@ -69,8 +69,8 @@ static pid_t start_daemon(void)
 		return -1;
 	}
 	if (pid == 0) {
-		execve("build/thincd", dargv, environ);
-		perror("execve build/thincd");
+		execve("build/cixd", dargv, environ);
+		perror("execve build/cixd");
 		_exit(127);
 	}
 	return pid;
@@ -90,20 +90,20 @@ static int stop_daemon(pid_t pid)
  * entry still holds its network attachment for a moment, so a network
  * delete straight after a container delete can transiently 409.
  * Settle-poll the container to 404 first (bounded tight). */
-static void wait_container_gone(const struct thinc_client *c, const char *name)
+static void wait_container_gone(const struct cix_client *c, const char *name)
 {
 	char path[128];
-	struct thinc_response r;
+	struct cix_response r;
 	int i;
 
 	snprintf(path, sizeof(path), "/v1/containers/%s", name);
 	for (i = 0; i < 50; i++) {
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(c, "GET", path, NULL, &r) == 0 && r.status == 404) {
-			thinc_response_free(&r);
+		if (cix_client_request(c, "GET", path, NULL, &r) == 0 && r.status == 404) {
+			cix_response_free(&r);
 			return;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		usleep(100 * 1000);
 	}
 }
@@ -111,9 +111,9 @@ static void wait_container_gone(const struct thinc_client *c, const char *name)
 int main(void)
 {
 	pid_t daemon_pid;
-	struct thinc_client client;
+	struct cix_client client;
 	int ok = 1;
-	struct thinc_response r;
+	struct cix_response r;
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
@@ -137,7 +137,7 @@ int main(void)
 	if (daemon_pid < 0)
 		return 1;
 
-	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
+	cix_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
@@ -149,7 +149,7 @@ int main(void)
 	 * means the new default: pure L2, no host-owned address at all
 	 * (ADR-0037) -- has_address false, gateway null. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/networks",
+	if (cix_client_request(&client, "POST", "/v1/networks",
 	                       "{\"name\":\"neta\",\"subnet\":\"172.40.0.0\",\"prefix_len\":24}",
 	                       &r) != 0 ||
 	    r.status != 201) {
@@ -165,21 +165,21 @@ int main(void)
 			ok = 0;
 		}
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/networks",
+	if (cix_client_request(&client, "POST", "/v1/networks",
 	                       "{\"name\":\"netb\",\"subnet\":\"172.41.0.0\",\"prefix_len\":24}",
 	                       &r) != 0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: POST netb, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 2. GET list shows both; GET one returns it */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/networks", NULL, &r) != 0 || r.status != 200) {
+	if (cix_client_request(&client, "GET", "/v1/networks", NULL, &r) != 0 || r.status != 200) {
 		fprintf(stderr, "FAIL: GET /v1/networks\n");
 		ok = 0;
 	} else {
@@ -202,65 +202,65 @@ int main(void)
 			ok = 0;
 		}
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/networks/neta", NULL, &r) != 0 ||
+	if (cix_client_request(&client, "GET", "/v1/networks/neta", NULL, &r) != 0 ||
 	    r.status != 200 || !str_eq(json_str_field(r.json, "subnet"), "172.40.0.0")) {
 		fprintf(stderr, "FAIL: GET /v1/networks/neta, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 3. validation */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/networks",
+	if (cix_client_request(&client, "POST", "/v1/networks",
 	                       "{\"name\":\"neta\",\"subnet\":\"172.42.0.0\",\"prefix_len\":24}",
 	                       &r) != 0 ||
 	    r.status != 409) {
 		fprintf(stderr, "FAIL: duplicate network name expected 409, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/networks",
+	if (cix_client_request(&client, "POST", "/v1/networks",
 	                       "{\"name\":\"netc\",\"subnet\":\"172.43.0.5\",\"prefix_len\":24}",
 	                       &r) != 0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: misaligned subnet expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/networks",
+	if (cix_client_request(&client, "POST", "/v1/networks",
 	                       "{\"name\":\"netd\",\"subnet\":\"172.40.0.0\",\"prefix_len\":25}",
 	                       &r) != 0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: overlapping subnet expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/networks",
+	if (cix_client_request(&client, "POST", "/v1/networks",
 	                       "{\"name\":\"nete\",\"subnet\":\"172.44.0.0\",\"prefix_len\":31}",
 	                       &r) != 0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: prefix_len 31 expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 4. delete an unused network -> 204, bridge actually gone */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "DELETE", "/v1/networks/netb", NULL, &r) != 0 ||
+	if (cix_client_request(&client, "DELETE", "/v1/networks/netb", NULL, &r) != 0 ||
 	    r.status != 204) {
 		fprintf(stderr, "FAIL: DELETE netb, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	if (if_nametoindex("netb") != 0) {
 		fprintf(stderr, "FAIL: netb interface still exists after delete\n");
 		ok = 0;
@@ -269,7 +269,7 @@ int main(void)
 	/* 5. a container attached to neta blocks its deletion; removing the
 	 * container unblocks it */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"c1\",\"image\":\"networkstest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],\"networks\":[\"neta\"]}",
 	                       &r) != 0 ||
@@ -277,7 +277,7 @@ int main(void)
 		fprintf(stderr, "FAIL: POST c1, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/*
 	 * Issue #26: the switch panel's own data. The port list comes from
@@ -286,7 +286,7 @@ int main(void)
 	 * IP, with counters read from the port's own side.
 	 */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/networks/neta/ports", NULL, &r) != 0 ||
+	if (cix_client_request(&client, "GET", "/v1/networks/neta/ports", NULL, &r) != 0 ||
 	    r.status != 200) {
 		fprintf(stderr, "FAIL: #26 GET neta/ports, status=%d\n", r.status);
 		ok = 0;
@@ -332,38 +332,38 @@ int main(void)
 			}
 		}
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* A network that does not exist is a 404 here too -- the ports of
 	 * nothing is not an empty list. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/networks/nosuchnet/ports", NULL, &r) != 0 ||
+	if (cix_client_request(&client, "GET", "/v1/networks/nosuchnet/ports", NULL, &r) != 0 ||
 	    r.status != 404) {
 		fprintf(stderr, "FAIL: #26 ports of an unknown network should 404, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "DELETE", "/v1/networks/neta", NULL, &r) != 0 ||
+	if (cix_client_request(&client, "DELETE", "/v1/networks/neta", NULL, &r) != 0 ||
 	    r.status != 409) {
 		fprintf(stderr, "FAIL: DELETE in-use neta expected 409, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	thinc_client_request(&client, "DELETE", "/v1/containers/c1", NULL, &r);
-	thinc_response_free(&r);
+	cix_client_request(&client, "DELETE", "/v1/containers/c1", NULL, &r);
+	cix_response_free(&r);
 	wait_container_gone(&client, "c1");
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "DELETE", "/v1/networks/neta", NULL, &r) != 0 ||
+	if (cix_client_request(&client, "DELETE", "/v1/networks/neta", NULL, &r) != 0 ||
 	    r.status != 204) {
 		fprintf(stderr, "FAIL: DELETE neta (now unused) expected 204, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 5.5. explicit, operator-chosen IP override on a container's
 	 * network attachment (Phase 12 part 5b) -- request an address
@@ -375,7 +375,7 @@ int main(void)
 	 * network (the new default, see neta above) reserves nothing
 	 * beyond the network/broadcast addresses themselves. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/networks",
+	if (cix_client_request(&client, "POST", "/v1/networks",
 	                       "{\"name\":\"netip\",\"subnet\":\"172.46.0.0\",\"prefix_len\":24,"
 	                       "\"address\":\"172.46.0.1\"}",
 	                       &r) != 0 ||
@@ -391,11 +391,11 @@ int main(void)
 			ok = 0;
 		}
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* explicit, valid IP is honored, not auto-allocated */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"c2\",\"image\":\"networkstest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
 	                       "\"networks\":[{\"name\":\"netip\",\"ip\":\"172.46.0.42\"}]}",
@@ -416,11 +416,11 @@ int main(void)
 			ok = 0;
 		}
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* the reserved gateway address is rejected */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"cgw\",\"image\":\"networkstest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
 	                       "\"networks\":[{\"name\":\"netip\",\"ip\":\"172.46.0.1\"}]}",
@@ -429,11 +429,11 @@ int main(void)
 		fprintf(stderr, "FAIL: explicit gateway ip expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* an address outside the subnet's usable range is rejected */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"coor\",\"image\":\"networkstest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
 	                       "\"networks\":[{\"name\":\"netip\",\"ip\":\"172.99.0.5\"}]}",
@@ -442,11 +442,11 @@ int main(void)
 		fprintf(stderr, "FAIL: out-of-subnet ip expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* an already-assigned address is rejected (c2 above holds .42) */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"cdup\",\"image\":\"networkstest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
 	                       "\"networks\":[{\"name\":\"netip\",\"ip\":\"172.46.0.42\"}]}",
@@ -455,34 +455,34 @@ int main(void)
 		fprintf(stderr, "FAIL: already-taken ip expected 409, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* cleanup: c2 is holding netip, must go before the network can be deleted */
 	memset(&r, 0, sizeof(r));
-	thinc_client_request(&client, "DELETE", "/v1/containers/c2", NULL, &r);
-	thinc_response_free(&r);
+	cix_client_request(&client, "DELETE", "/v1/containers/c2", NULL, &r);
+	cix_response_free(&r);
 	wait_container_gone(&client, "c2");
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "DELETE", "/v1/networks/netip", NULL, &r) != 0 ||
+	if (cix_client_request(&client, "DELETE", "/v1/networks/netip", NULL, &r) != 0 ||
 	    r.status != 204) {
 		fprintf(stderr, "FAIL: DELETE netip, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 6. restart-survival: create a network, restart the daemon,
 	 * confirm it's still there (both in the API and as a real bridge)
 	 * without a second create call -- the actual point of persistence. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/networks",
+	if (cix_client_request(&client, "POST", "/v1/networks",
 	                       "{\"name\":\"persisted\",\"subnet\":\"172.45.0.0\",\"prefix_len\":24}",
 	                       &r) != 0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: POST persisted, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	if (stop_daemon(daemon_pid) != 0) {
 		fprintf(stderr, "FAIL: daemon did not exit cleanly on SIGTERM (first instance)\n");
@@ -500,13 +500,13 @@ int main(void)
 	}
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/networks/persisted", NULL, &r) != 0 ||
+	if (cix_client_request(&client, "GET", "/v1/networks/persisted", NULL, &r) != 0 ||
 	    r.status != 200 || !str_eq(json_str_field(r.json, "subnet"), "172.45.0.0")) {
 		fprintf(stderr, "FAIL: restarted daemon forgot 'persisted' network, status=%d\n",
 		        r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	if (if_nametoindex("persisted") == 0) {
 		fprintf(stderr, "FAIL: 'persisted' bridge does not exist after restart\n");
 		ok = 0;
@@ -584,7 +584,7 @@ int main(void)
 	}
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/networks/gwmigrate37", NULL, &r) != 0 ||
+	if (cix_client_request(&client, "GET", "/v1/networks/gwmigrate37", NULL, &r) != 0 ||
 	    r.status != 200) {
 		fprintf(stderr, "FAIL: GET migrated old-format network, status=%d\n", r.status);
 		ok = 0;
@@ -599,18 +599,18 @@ int main(void)
 			ok = 0;
 		}
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	thinc_client_request(&client, "DELETE", "/v1/networks/gwmigrate37", NULL, &r);
-	thinc_response_free(&r);
+	cix_client_request(&client, "DELETE", "/v1/networks/gwmigrate37", NULL, &r);
+	cix_response_free(&r);
 
 	/* issue #70: a per-network auto-allocation window -- a container
 	 * with no explicit ip gets an address inside [alloc_start,
 	 * alloc_end], never .1/.2. An EXPLICIT ip outside the window is
 	 * still honored (the window constrains auto-alloc only). */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/networks",
+	if (cix_client_request(&client, "POST", "/v1/networks",
 	                       "{\"name\":\"allocwin\",\"subnet\":\"172.29.0.0\",\"prefix_len\":24,"
 	                       "\"alloc_start\":\"172.29.0.100\",\"alloc_end\":\"172.29.0.109\"}",
 	                       &r) != 0 ||
@@ -618,9 +618,9 @@ int main(void)
 		fprintf(stderr, "FAIL: create network with alloc window, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"awc1\",\"image\":\"networkstest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
 	                       "\"networks\":[\"allocwin\"]}",
@@ -640,21 +640,21 @@ int main(void)
 			ok = 0;
 		}
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	memset(&r, 0, sizeof(r));
-	thinc_client_request(&client, "DELETE", "/v1/containers/awc1", NULL, &r);
-	thinc_response_free(&r);
+	cix_client_request(&client, "DELETE", "/v1/containers/awc1", NULL, &r);
+	cix_response_free(&r);
 	wait_container_gone(&client, "awc1");
 	memset(&r, 0, sizeof(r));
-	thinc_client_request(&client, "DELETE", "/v1/networks/allocwin", NULL, &r);
-	thinc_response_free(&r);
+	cix_client_request(&client, "DELETE", "/v1/networks/allocwin", NULL, &r);
+	cix_response_free(&r);
 
 	/* cleanup */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "DELETE", "/v1/networks/persisted", NULL, &r) != 0 ||
+	if (cix_client_request(&client, "DELETE", "/v1/networks/persisted", NULL, &r) != 0 ||
 	    r.status != 204)
 		fprintf(stderr, "warning: could not clean up 'persisted' network, status=%d\n", r.status);
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	if (stop_daemon(daemon_pid) != 0) {
 		fprintf(stderr, "FAIL: daemon did not exit cleanly on SIGTERM (second instance)\n");

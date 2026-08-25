@@ -6,7 +6,7 @@ Accepted (2026-08-21). Implements the fix for issue #67.
 
 ## Context
 
-`thincd` is a single-threaded epoll loop — one blocking call inside any
+`cixd` is a single-threaded epoll loop — one blocking call inside any
 handler freezes the entire control plane: every endpoint, every client,
 the dashboard. `DELETE /v1/containers/{name}` and `POST .../stop` on a
 *running* container both funneled through `registry_remove()`, whose
@@ -94,7 +94,7 @@ surfaced, instead of taking the whole control plane down silently.
   the definition).
 - **Daemon-restart edge:** intent is durable, so nothing resurrects;
   a child that was mid-teardown when the daemon itself exited is
-  outside the registry on the next boot (on a real install thincd is
+  outside the registry on the next boot (on a real install cixd is
   PID 1 — a daemon exit is a host reboot; in dev harnesses the test
   data-dir isolation already covers it).
 

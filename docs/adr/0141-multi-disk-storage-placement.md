@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-Direct follow-up to the disk management web UI (ADR-0140): the user asked where packages/images, thinC's own config, and logs actually live today, and whether another disk role was needed. Investigated the real code rather than guessing, and found every one of the following lives under one single directory tree, `g_base_dir` (`/var/lib/thinc`, the OS disk's fixed `containers` partition) -- the *only* exception being `/boot` (the ESP) and one tiny file needed before the daemon itself starts (`/config/net.conf`):
+Direct follow-up to the disk management web UI (ADR-0140): the user asked where packages/images, Cix's own config, and logs actually live today, and whether another disk role was needed. Investigated the real code rather than guessing, and found every one of the following lives under one single directory tree, `g_base_dir` (`/var/lib/cix`, the OS disk's fixed `containers` partition) -- the *only* exception being `/boot` (the ESP) and one tiny file needed before the daemon itself starts (`/config/net.conf`):
 
 - `containers/` -- per-container overlay data. Already relocatable per-container via the `container-storage` disk role and `POST /containers`' own `disk` field (ADR-0102, Phase D).
 - `images/` -- every image's shared rootfs layers, which every container's own overlay reads from regardless of where that container's own `disk=` points. Never relocatable today.
@@ -105,15 +105,15 @@ Neither check applies to `container-storage` -- a container's own `disk=` placem
 ### What stays explicitly unchanged / out of scope
 
 - `container-storage`: identical to today, no change.
-- Container workload data is never covered by any of the above -- `state-storage` is thinC's own definition of itself, not what containers are doing.
+- Container workload data is never covered by any of the above -- `state-storage` is Cix's own definition of itself, not what containers are doing.
 - The host swap file (ADR-0069) stays its own separate, disk-role-independent mechanism.
 - A container's own storage disk is still chosen only at creation time; making it migratable *after* creation was not asked for here and is a real separate question for later if it comes up.
 
 ## Consequences
 
-- Every category the user asked about (packages/images, thinC's own config, logs) becomes genuinely relocatable, closing the gap found during this investigation.
+- Every category the user asked about (packages/images, Cix's own config, logs) becomes genuinely relocatable, closing the gap found during this investigation.
 - `backup` goes from an inert label to an actual, scoped, working mechanism -- automatic snapshots of exactly the platform's own state, on the box's own schedule, no operator action required once configured.
 - Three new small daemon-wide job types share one migration primitive (the generalized `merge_tree()`) rather than three separate copy implementations -- No Parallel Implementations honored even while adding three new concerns at once.
 - Real, non-trivial new surface: a real (if small) breaking layout change with a required automatic upgrade path for every already-installed box, a new module (migration job management, mirroring `diskformat.c`'s own shape), `main.c` path-repoint logic for three different subsystems (`LOG_DIR`, `STATE_DIR`, `REBUILDABLE_DIR`), a new scheduled-job mechanism for backups. Comparable in size to the original swap-file feature (ADR-0069), larger than any single round shipped so far this session -- phased delivery is the right approach, not one giant change (see the implementation plan that follows this ADR).
-- CLI: `thincctl storage state|rebuildable|logs show|migrate --disk=NAME` (omit `--disk=` to migrate back to the OS-disk default), `thincctl backup-config show|set|snapshot-now|status`.
+- CLI: `cixctl storage state|rebuildable|logs show|migrate --disk=NAME` (omit `--disk=` to migrate back to the OS-disk default), `cixctl backup-config show|set|snapshot-now|status`.
 - Web UI: the existing Disks page (ADR-0140) gains a "Storage Placement" section (current disk + Migrate action, per concern); the existing Maintenance > Backup page gains an "Automatic backups" section (disk/enabled/interval config + last-snapshot status + a Snapshot now button) -- no new tree leaf needed for either, both extend pages that already exist for exactly this kind of thing.

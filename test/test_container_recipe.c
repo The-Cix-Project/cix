@@ -40,7 +40,7 @@ static pid_t start_daemon(void)
 	static char data_dir_arg[PATH_MAX + 11];
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
-	dargv[0] = "build/thincd";
+	dargv[0] = "build/cixd";
 	dargv[1] = PORT_ARG;
 	dargv[2] = data_dir_arg;
 	dargv[3] = NULL;
@@ -51,8 +51,8 @@ static pid_t start_daemon(void)
 		return -1;
 	}
 	if (pid == 0) {
-		execve("build/thincd", dargv, environ);
-		perror("execve build/thincd");
+		execve("build/cixd", dargv, environ);
+		perror("execve build/cixd");
 		_exit(127);
 	}
 	return pid;
@@ -73,14 +73,14 @@ static const char *json_str_field(const struct json_value *obj, const char *key)
 	return json_as_string(json_object_get(obj, key));
 }
 
-static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
+static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 {
 	int i;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			thinc_response_free(&r);
+		if (cix_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			cix_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -91,8 +91,8 @@ static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
 int main(void)
 {
 	pid_t daemon_pid;
-	struct thinc_client client;
-	struct thinc_response r;
+	struct cix_client client;
+	struct cix_response r;
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
@@ -102,7 +102,7 @@ int main(void)
 		test_data_dir_cleanup(g_data_dir);
 		return 1;
 	}
-	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
+	cix_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never became healthy\n");
 		kill(daemon_pid, SIGKILL);
@@ -111,14 +111,14 @@ int main(void)
 		return 1;
 	}
 
-	CHECK(thinc_client_request(&client, "POST", "/v1/images", "{\"name\":\"base\"}", &r) == 0 &&
+	CHECK(cix_client_request(&client, "POST", "/v1/images", "{\"name\":\"base\"}", &r) == 0 &&
 	          r.status == 201,
 	      "image create base");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* --- scenario 1: fresh recipe list is empty --- */
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "GET", "/v1/containers/recipes", NULL, &r) == 0 &&
+	CHECK(cix_client_request(&client, "GET", "/v1/containers/recipes", NULL, &r) == 0 &&
 	          r.status == 200,
 	      "GET /v1/containers/recipes (fresh)");
 	if (r.json != NULL) {
@@ -127,26 +127,26 @@ int main(void)
 		CHECK(recipes != NULL && recipes->type == JSON_ARRAY && recipes->u.array.count == 0,
 		      "fresh recipe list is empty");
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* --- scenario 2: name mismatch between the upload name and the
 	 * content's own "name" field is rejected (mirrors pkg_recipe_add()'s
 	 * pkg_name= contract). --- */
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "POST", "/v1/containers/recipes",
+	CHECK(cix_client_request(&client, "POST", "/v1/containers/recipes",
 	                         "{\"name\":\"crtest\",\"content\":\"{\\\"name\\\":\\\"different\\\"}\"}",
 	                         &r) == 0 &&
 	          r.status == 400,
 	      "name mismatch between upload name and content's own name is rejected");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* --- scenario 3: malformed JSON content is rejected --- */
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "POST", "/v1/containers/recipes",
+	CHECK(cix_client_request(&client, "POST", "/v1/containers/recipes",
 	                         "{\"name\":\"crtest\",\"content\":\"not json at all\"}", &r) == 0 &&
 	          r.status == 400,
 	      "non-JSON content is rejected");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* --- scenario 4: real add, with a {{SECRET:PW}} token embedded in
 	 * staged file content --- */
@@ -164,15 +164,15 @@ int main(void)
 		jw_str(&w, content);
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
-		CHECK(thinc_client_request(&client, "POST", "/v1/containers/recipes", w.buf, &r) == 0 &&
+		CHECK(cix_client_request(&client, "POST", "/v1/containers/recipes", w.buf, &r) == 0 &&
 		          r.status == 204,
 		      "POST /v1/containers/recipes (crtest)");
 		jw_free(&w);
-		thinc_response_free(&r);
+		cix_response_free(&r);
 	}
 
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "GET", "/v1/containers/recipes", NULL, &r) == 0 &&
+	CHECK(cix_client_request(&client, "GET", "/v1/containers/recipes", NULL, &r) == 0 &&
 	          r.status == 200,
 	      "GET /v1/containers/recipes (one entry)");
 	if (r.json != NULL) {
@@ -181,10 +181,10 @@ int main(void)
 		CHECK(recipes != NULL && recipes->type == JSON_ARRAY && recipes->u.array.count == 1,
 		      "recipe list has exactly one entry after add");
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "GET", "/v1/containers/recipes/crtest", NULL, &r) == 0 &&
+	CHECK(cix_client_request(&client, "GET", "/v1/containers/recipes/crtest", NULL, &r) == 0 &&
 	          r.status == 200,
 	      "GET /v1/containers/recipes/crtest");
 	if (r.json != NULL) {
@@ -193,30 +193,30 @@ int main(void)
 		CHECK(c != NULL && strstr(c, "{{SECRET:PW}}") != NULL,
 		      "raw recipe content shows the unsubstituted placeholder, never a guess");
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* --- scenario 5: apply with the secret supplied -- real container
 	 * created, real substitution, correctly JSON-escaped (the value
 	 * deliberately contains a double quote). --- */
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "POST", "/v1/containers/recipes/crtest/apply",
+	CHECK(cix_client_request(&client, "POST", "/v1/containers/recipes/crtest/apply",
 	                         "{\"secrets\":{\"PW\":\"hunter\\\"2\"}}", &r) == 0 &&
 	          r.status == 201,
 	      "apply-recipe with the secret supplied creates a real container (201)");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "GET", "/v1/containers/crtest/files?path=/etc/secret.conf",
+	CHECK(cix_client_request(&client, "GET", "/v1/containers/crtest/files?path=/etc/secret.conf",
 	                         NULL, &r) == 0 &&
 	          r.status == 200,
 	      "GET the staged file back out of the real container");
 	CHECK(r.body != NULL && strstr(r.body, "password=hunter\"2") != NULL,
 	      "secret was substituted, correctly JSON-escaped through the pipeline");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
-	CHECK(thinc_client_request(&client, "DELETE", "/v1/containers/crtest", NULL, &r) == 0,
+	CHECK(cix_client_request(&client, "DELETE", "/v1/containers/crtest", NULL, &r) == 0,
 	      "rm crtest to free the name for scenario 6");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	{
 		/*
 		 * ADR-0180: settle the async delete before reusing the name.
@@ -231,12 +231,12 @@ int main(void)
 
 		for (i = 0; i < 50; i++) {
 			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "GET", "/v1/containers/crtest", NULL, &r) == 0 &&
+			if (cix_client_request(&client, "GET", "/v1/containers/crtest", NULL, &r) == 0 &&
 			    r.status == 404) {
-				thinc_response_free(&r);
+				cix_response_free(&r);
 				break;
 			}
-			thinc_response_free(&r);
+			cix_response_free(&r);
 			usleep(100 * 1000);
 		}
 	}
@@ -244,53 +244,53 @@ int main(void)
 	/* --- scenario 6: apply with NO secret supplied leaves the token
 	 * untouched (never silently swallowed) --- */
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "POST", "/v1/containers/recipes/crtest/apply", "{}", &r) ==
+	CHECK(cix_client_request(&client, "POST", "/v1/containers/recipes/crtest/apply", "{}", &r) ==
 	              0 &&
 	          r.status == 201,
 	      "apply-recipe with no secrets still creates the container (201)");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "GET", "/v1/containers/crtest/files?path=/etc/secret.conf",
+	CHECK(cix_client_request(&client, "GET", "/v1/containers/crtest/files?path=/etc/secret.conf",
 	                         NULL, &r) == 0 &&
 	          r.status == 200,
 	      "GET the staged file back out (unsubstituted case)");
 	CHECK(r.body != NULL && strstr(r.body, "{{SECRET:PW}}") != NULL,
 	      "an unmatched token is left exactly as-is, not swallowed or blanked");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* --- scenario 6.5 (issue #66): {{LDAP:FIELD}} tokens resolve from
 	 * the daemon's own LDAP client config -- no per-apply secret, no
 	 * copied values in the recipe. Also proves the two token families
 	 * coexist in one file and the bind credential flows only into the
 	 * rendered container, never out of GET /ldap/config. --- */
-	CHECK(thinc_client_request(&client, "DELETE", "/v1/containers/crtest", NULL, &r) == 0,
+	CHECK(cix_client_request(&client, "DELETE", "/v1/containers/crtest", NULL, &r) == 0,
 	      "rm crtest to free the name for the LDAP-token scenario");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	{
 		int i;
 
 		/* ADR-0180: settle the async delete before reusing the name. */
 		for (i = 0; i < 50; i++) {
 			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "GET", "/v1/containers/crtest", NULL, &r) == 0 &&
+			if (cix_client_request(&client, "GET", "/v1/containers/crtest", NULL, &r) == 0 &&
 			    r.status == 404) {
-				thinc_response_free(&r);
+				cix_response_free(&r);
 				break;
 			}
-			thinc_response_free(&r);
+			cix_response_free(&r);
 			usleep(100 * 1000);
 		}
 	}
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "PUT", "/v1/ldap/config",
+	CHECK(cix_client_request(&client, "PUT", "/v1/ldap/config",
 	                         "{\"client_uri\":\"ldap://10.9.9.9:3893/\","
 	                         "\"base_dn\":\"dc=crt,dc=local\","
 	                         "\"bind_dn\":\"cn=svc,dc=crt,dc=local\","
 	                         "\"bind_password\":\"tokpw\"}", &r) == 0 &&
 	          r.status == 200,
 	      "PUT ldap client config for token substitution");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	{
 		static const char ldap_recipe_body[] =
 		    "{\"name\":\"crtest\",\"content\":\"{"
@@ -301,23 +301,23 @@ int main(void)
 		    "binddn {{LDAP:BIND_DN}}\\\\nbindpw {{LDAP:BIND_PASSWORD}}\\\\n\\\"}]}\"}";
 
 		memset(&r, 0, sizeof(r));
-		CHECK(thinc_client_request(&client, "POST", "/v1/containers/recipes", ldap_recipe_body,
+		CHECK(cix_client_request(&client, "POST", "/v1/containers/recipes", ldap_recipe_body,
 		                         &r) == 0 &&
 		          (r.status == 204 || r.status == 201),
 		      "add recipe carrying {{LDAP:*}} tokens");
-		thinc_response_free(&r);
+		cix_response_free(&r);
 	}
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "POST", "/v1/containers/recipes/crtest/apply", "{}", &r) ==
+	CHECK(cix_client_request(&client, "POST", "/v1/containers/recipes/crtest/apply", "{}", &r) ==
 	              0 &&
 	          r.status == 201,
 	      "apply the LDAP-token recipe with NO secrets at all (201)");
 	if (r.status != 201)
 		fprintf(stderr, "  apply said: status=%d body=%s\n", r.status,
 		        r.body != NULL ? r.body : "(null)");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "GET", "/v1/containers/crtest/files?path=/etc/nslcd.conf",
+	CHECK(cix_client_request(&client, "GET", "/v1/containers/crtest/files?path=/etc/nslcd.conf",
 	                         NULL, &r) == 0 &&
 	          r.status == 200,
 	      "GET the rendered nslcd.conf back out of the real container");
@@ -325,27 +325,27 @@ int main(void)
 	          strstr(r.body, "base dc=crt,dc=local") != NULL &&
 	          strstr(r.body, "bindpw tokpw") != NULL,
 	      "all four {{LDAP:*}} tokens substituted from daemon config");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* --- scenario 7: apply on a name with no stored recipe is 404 --- */
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "POST", "/v1/containers/recipes/noexist/apply", "{}", &r) ==
+	CHECK(cix_client_request(&client, "POST", "/v1/containers/recipes/noexist/apply", "{}", &r) ==
 	              0 &&
 	          r.status == 404,
 	      "apply-recipe on an unknown recipe name is 404");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* --- scenario 8: recipe rm --- */
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "DELETE", "/v1/containers/recipes/crtest", NULL, &r) == 0 &&
+	CHECK(cix_client_request(&client, "DELETE", "/v1/containers/recipes/crtest", NULL, &r) == 0 &&
 	          r.status == 204,
 	      "DELETE /v1/containers/recipes/crtest");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "GET", "/v1/containers/recipes/crtest", NULL, &r) == 0 &&
+	CHECK(cix_client_request(&client, "GET", "/v1/containers/recipes/crtest", NULL, &r) == 0 &&
 	          r.status == 404,
 	      "GET removed recipe is 404");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	CHECK(stop_daemon(daemon_pid) == 0, "daemon shut down cleanly");
 	test_data_dir_cleanup(g_data_dir);

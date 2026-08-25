@@ -14,13 +14,13 @@ Every ordinary package build runs in a container whose lowerdir is a shared tool
 - It was seeded once, straight to disk, bypassing the image mechanism entirely.
 - And then it was grown silently by **every successful ordinary install** — a second, parallel `merge_tree()` alongside the real versioned merge into the actual target image.
 
-So its content was a function of one box's entire install history, expressible nowhere and comparable to nothing. That is not a tidiness complaint: it made "what is `/usr/bin/gcc` in this sandbox, and how did it get there" genuinely unanswerable, and it is why a recipe that built once could stop building with no visible change anywhere — which is exactly what happened to `gcc/4.7.4` while working [issue #55](https://git.home.arpa/itdlabs/thinc/issues/55), blocking a fix that was otherwise ready.
+So its content was a function of one box's entire install history, expressible nowhere and comparable to nothing. That is not a tidiness complaint: it made "what is `/usr/bin/gcc` in this sandbox, and how did it get there" genuinely unanswerable, and it is why a recipe that built once could stop building with no visible change anywhere — which is exactly what happened to `gcc/4.7.4` while working [issue #55](https://git.home.arpa/itdlabs/cix/issues/55), blocking a fix that was otherwise ready.
 
 ## Decision
 
-**The sandbox is the `thinc-builder` image, resolved exactly the way a hostbuild's own `--build-image=` already is.** One mechanism, not two: `image_current_version()` + `image_version_rootfs_path()`, the same two calls the hostbuild path three lines above it was already making.
+**The sandbox is the `cix-builder` image, resolved exactly the way a hostbuild's own `--build-image=` already is.** One mechanism, not two: `image_current_version()` + `image_version_rootfs_path()`, the same two calls the hostbuild path three lines above it was already making.
 
-Reusing `thinc-builder` rather than introducing a new name was the operator's decision, made deliberately over the alternative. It has a real consequence, stated here rather than discovered later: `thinc-builder` is now grown by **every** ordinary install, not only by an explicit `pkg install --image=thinc-builder`, so a hostbuild's own inputs move when unrelated things are installed. The concern that motivated the alternative was exactly that — and the answer is that it is now *visible*: the image has real version history to see the movement in, and to roll back to.
+Reusing `cix-builder` rather than introducing a new name was the operator's decision, made deliberately over the alternative. It has a real consequence, stated here rather than discovered later: `cix-builder` is now grown by **every** ordinary install, not only by an explicit `pkg install --image=cix-builder`, so a hostbuild's own inputs move when unrelated things are installed. The concern that motivated the alternative was exactly that — and the answer is that it is now *visible*: the image has real version history to see the movement in, and to roll back to.
 
 Seeding follows: both bootstrap paths produce a real first version through `image_produce_new_version()` instead of writing to a flat directory, and the accretion merge becomes a real new version too.
 
@@ -44,7 +44,7 @@ The lesson generalises past this change: the image's declared content is **not**
 
 ## Consequences
 
-What is in the build sandbox is now inspectable through `GET /v1/images/thinc-builder` like anything else, has history, and can be rolled back. A recipe that stops building can be compared against the version it last built under.
+What is in the build sandbox is now inspectable through `GET /v1/images/cix-builder` like anything else, has history, and can be rolled back. A recipe that stops building can be compared against the version it last built under.
 
 **What this does not yet do** is make the content *declared*. The image's manifest still lists only what an operator installed into it directly; the accreted union is real content without a corresponding manifest entry. Closing that is the remaining half of issue #40 — publishing a real `image_packages=` recipe for it — and it is now possible precisely because the versioning exists to hang it on.
 

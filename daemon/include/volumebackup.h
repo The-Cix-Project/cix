@@ -14,7 +14,7 @@
  * that keeps image content out of it. That boundary still stands. But
  * it left volumes with no recovery story at all: a volume exists
  * precisely because its contents should outlive the container that
- * wrote them, and "whatever you arranged yourself outside thinC" was
+ * wrote them, and "whatever you arranged yourself outside Cix" was
  * the only answer available, with no way to arrange anything inside it
  * either, since a volume is a host directory no container can reach.
  *

@@ -111,11 +111,11 @@ static int send_masked_frame(int fd, int opcode, const void *payload, size_t len
 	for (i = 0; i < len; i++)
 		masked[i] = ((const unsigned char *)payload)[i] ^ mask[i % 4];
 
-	rc = thinc_write_all(fd, header, hlen);
+	rc = cix_write_all(fd, header, hlen);
 	if (rc == 0)
-		rc = thinc_write_all(fd, mask, sizeof(mask));
+		rc = cix_write_all(fd, mask, sizeof(mask));
 	if (rc == 0 && len > 0)
-		rc = thinc_write_all(fd, masked, len);
+		rc = cix_write_all(fd, masked, len);
 	free(masked);
 	return rc;
 }
@@ -199,13 +199,13 @@ static void consume(struct client_ws_buf *b, size_t frame_len)
 }
 
 /*
- * Shared WS handshake for both thinc_console_run() (path always
- * /v1/containers/{name}/console, optional X-thinC-Exec-Cmd header)
- * and thinc_pkg_build_log_run() below (fixed path, no such header) --
+ * Shared WS handshake for both cix_console_run() (path always
+ * /v1/containers/{name}/console, optional X-Cix-Exec-Cmd header)
+ * and cix_pkg_build_log_run() below (fixed path, no such header) --
  * label identifies which one for error messages, path is the exact
  * request-line target to send.
  */
-static int do_ws_handshake(const struct thinc_client *c, const char *label, const char *path,
+static int do_ws_handshake(const struct cix_client *c, const char *label, const char *path,
                             const char *exec_cmd_header)
 {
 	int fd;
@@ -222,7 +222,7 @@ static int do_ws_handshake(const struct thinc_client *c, const char *label, cons
 		return -1;
 	}
 
-	fd = thinc_client_connect_raw(c);
+	fd = cix_client_connect_raw(c);
 	if (fd < 0) {
 		fprintf(stderr, "%s: could not connect to %s:%d\n", label, c->host, c->port);
 		return -1;
@@ -236,7 +236,7 @@ static int do_ws_handshake(const struct thinc_client *c, const char *label, cons
 		                 "Connection: Upgrade\r\n"
 		                 "Sec-WebSocket-Key: %s\r\n"
 		                 "Sec-WebSocket-Version: 13\r\n"
-		                 "X-thinC-Exec-Cmd: %s\r\n"
+		                 "X-Cix-Exec-Cmd: %s\r\n"
 		                 "\r\n",
 		                 path, c->host, c->port, key, exec_cmd_header);
 	} else {
@@ -250,7 +250,7 @@ static int do_ws_handshake(const struct thinc_client *c, const char *label, cons
 		                 "\r\n",
 		                 path, c->host, c->port, key);
 	}
-	if (rlen < 0 || (size_t)rlen >= sizeof(req) || thinc_write_all(fd, req, (size_t)rlen) != 0) {
+	if (rlen < 0 || (size_t)rlen >= sizeof(req) || cix_write_all(fd, req, (size_t)rlen) != 0) {
 		fprintf(stderr, "%s: failed to send the upgrade request\n", label);
 		close(fd);
 		return -1;
@@ -383,7 +383,7 @@ static void relay(int ws_fd)
 				if (r < 0)
 					return;
 				if (opcode == 0x1 || opcode == 0x2) {
-					if (thinc_write_all(STDOUT_FILENO, payload, payload_len) != 0)
+					if (cix_write_all(STDOUT_FILENO, payload, payload_len) != 0)
 						return;
 				} else if (opcode == 0x8) {
 					consume(&inbuf, frame_len);
@@ -395,7 +395,7 @@ static void relay(int ws_fd)
 	}
 }
 
-int thinc_console_run(const struct thinc_client *c, const char *container_name, const char *cmd)
+int cix_console_run(const struct cix_client *c, const char *container_name, const char *cmd)
 {
 	int fd;
 	struct termios saved;
@@ -427,10 +427,10 @@ int thinc_console_run(const struct thinc_client *c, const char *container_name, 
  * stdin, no raw mode, no send_masked_frame() call at all (this
  * daemon-side stream never expects anything FROM the client but a
  * close frame), just print every TEXT frame straight to stdout as it
- * arrives, same server-frame parser thinc_console_run()'s own relay()
+ * arrives, same server-frame parser cix_console_run()'s own relay()
  * already uses.
  */
-int thinc_pkg_build_log_run(const struct thinc_client *c)
+int cix_pkg_build_log_run(const struct cix_client *c)
 {
 	int fd;
 	struct client_ws_buf inbuf;
@@ -462,7 +462,7 @@ int thinc_pkg_build_log_run(const struct thinc_client *c)
 			if (r < 0)
 				goto done;
 			if (opcode == 0x1 || opcode == 0x2) {
-				if (thinc_write_all(STDOUT_FILENO, payload, payload_len) != 0)
+				if (cix_write_all(STDOUT_FILENO, payload, payload_len) != 0)
 					goto done;
 			} else if (opcode == 0x8) {
 				consume(&inbuf, frame_len);

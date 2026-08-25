@@ -8,7 +8,7 @@ Accepted
 
 Diagnosing issue #32 (the GCC 16 stage2 bootstrap's own deterministic `genpreds` segfault) hit a hard wall: `pkg_build_completed()` tears down a failed build container's registry entry immediately, unconditionally, the instant it exits — so a real, reproducible crash inside a build had no post-mortem artifact left to inspect. The daemon's own captured build output (`e->build_output_captured`, ADR-0087) only ever holds the build script's own stdout/stderr tail, never the actual crashing binary, its shared libraries, or whatever partial object tree existed at the moment of failure.
 
-The user asked directly: "why don't we build a debug and trace mechanism for thinC?" — a permanent, reusable capability, not another one-off manual reproduction.
+The user asked directly: "why don't we build a debug and trace mechanism for Cix?" — a permanent, reusable capability, not another one-off manual reproduction.
 
 Before designing anything, the actual scope was checked rather than assumed: a debugger reachable via `console exec` was the first idea, but real GDB 16.2 source was fetched and inspected directly (485 `.cc` files, 0 `.c` files under `gdb/`) — modern GDB is 100% C++, which TCC categorically cannot build, and building it with a real g++ would need exactly the working C++ compiler issue #32 itself is trying to produce (a genuine circular dependency for this specific use case). That ruled out a `gdb.recipe`.
 

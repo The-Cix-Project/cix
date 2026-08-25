@@ -206,7 +206,7 @@ enum pkg_error {
  * built on image "base" gets everything installed, no separate path).
  * artifacts_dir is where a hostbuild job's own harvested output lands
  * (artifacts_dir/<name>/..., ADR-0056) -- a plain host directory, never
- * a container-visible path (a bare bzImage or thincd/thincctl/web/
+ * a container-visible path (a bare bzImage or cixd/cixctl/web/
  * has no business inside a normal container image's rootfs).
  */
 int pkg_init(const char *pkg_dir, const char *installed_state_path, const char *containers_dir,
@@ -470,7 +470,7 @@ enum pkg_error pkg_install_start(const char *name, const char *image, const char
 /*
  * A second mode of the same fetch/build pipeline pkg_install_start()
  * drives, for building a standalone HOST artifact (a kernel bzImage, a
- * fresh thincd/thincctl/web/ control-plane) rather than installing
+ * fresh cixd/cixctl/web/ control-plane) rather than installing
  * into a container image's rootfs (ADR-0056). Reuses fetch/verify/
  * stage/build completely unmodified -- the build container gets the
  * exact same offline, no-network isolation every ordinary install
@@ -479,7 +479,7 @@ enum pkg_error pkg_install_start(const char *name, const char *image, const char
  *   - The build container's own lowerdir is build_image's rootfs
  *     (an ordinary image, built up via completely normal `pkg install
  *     --image=<build_image>` calls beforehand -- e.g. installing
- *     "tcc"/"make" into a "thinc-builder" image), never the shared
+ *     "tcc"/"make" into a "cix-builder" image), never the shared
  *     g_pkgbuild_rootfs toolchain sandbox every ordinary install uses.
  *     build_image must already exist (PKG_ERR_NOT_FOUND if its rootfs
  *     doesn't).
@@ -510,12 +510,12 @@ enum pkg_error pkg_install_start(const char *name, const char *image, const char
  * version (ADR-0107): same meaning as pkg_install_start()'s own --
  * NULL or "" resolves to name's highest available recipe version;
  * a non-empty value hostbuilds that exact published version instead
- * (e.g. rebuilding an older thinc.recipe release on demand).
+ * (e.g. rebuilding an older cix.recipe release on demand).
  *
  * extra_config_symbols (ADR-0159 Phase B): NULL or "" for every caller
  * except POST /v1/system/kmod-build -- a pre-validated, space-joined
  * string of bare CONFIG_* symbol names, passed through unmodified as
- * the build container's own THINC_KMOD_EXTRA_SYMBOLS environment
+ * the build container's own CIX_KMOD_EXTRA_SYMBOLS environment
  * variable. Recipe-agnostic at this layer (pkg.c has no notion of
  * "the kernel recipe" specifically) -- only kernel.recipe's own
  * pkg_build() actually reads that variable; any other recipe simply
@@ -652,8 +652,8 @@ void pkg_build_spawn_failed(int chain_idx);
  * This is pkg.c's only hostbuild-completion signal to the rest of the
  * daemon -- deliberately just a name, not a dispatch decision: pkg.c
  * itself stays completely agnostic to what any particular package
- * *means* (ADR-0057's own ARTIFACTS_DIR/<name>/thincd-root.squashfs
- * assembly for name=="thinc" specifically is main.c's business, not
+ * *means* (ADR-0057's own ARTIFACTS_DIR/<name>/cixd-root.squashfs
+ * assembly for name=="cix" specifically is main.c's business, not
  * this module's).
  *
  * out_chain_idx (ADR-0157 Phase 2): only meaningful when this

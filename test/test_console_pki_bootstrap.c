@@ -3,7 +3,7 @@
  * fresh, real install -- not just that they compile, and not just on
  * this rich dev sandbox every other test already runs on. Closes the
  * actual blind spot that let two real bugs (docs/adr/0035) hide this
- * whole time: thincd shells out to /usr/bin/openssl (and curl/tar/
+ * whole time: cixd shells out to /usr/bin/openssl (and curl/tar/
  * sha256sum/cp/rm) at runtime, but nothing ever staged them onto the
  * installed root, and pkg_seed_image_baseline() (then still named
  * pkg_seed_image_runtime()) read from the wrong
@@ -25,8 +25,8 @@
 #include <unistd.h>
 
 #define MKBOOTROOT_BIN "build/mkbootroot"
-#define THINCD_BIN "build/thincd"
-#define THINCCTL_BIN "build/thincctl"
+#define CIXD_BIN "build/cixd"
+#define CIXCTL_BIN "build/cixctl"
 #define BZIMAGE_PATH "build/bzImage"
 #define SFDISK_BIN "/usr/sbin/sfdisk"
 #define SYSTEMD_BOOT_EFI "/usr/lib/systemd/boot/efi/systemd-bootx64.efi"
@@ -61,22 +61,22 @@ static int build_esp_image(const char *esp_img, const char *workdir)
 		return -1;
 	if (esp_mcopy_in(esp_img, SYSTEMD_BOOT_EFI, "::/EFI/BOOT/BOOTX64.EFI") != 0)
 		return -1;
-	if (esp_mcopy_in(esp_img, BZIMAGE_PATH, "::/thinc-bzImage-a") != 0)
+	if (esp_mcopy_in(esp_img, BZIMAGE_PATH, "::/cix-bzImage-a") != 0)
 		return -1;
 
 	snprintf(loader_conf_path, sizeof(loader_conf_path), "%s/loader.conf", workdir);
-	if (write_text_file(loader_conf_path, "default thinc\ntimeout 0\n") != 0)
+	if (write_text_file(loader_conf_path, "default cix\ntimeout 0\n") != 0)
 		return -1;
 	if (esp_mcopy_in(esp_img, loader_conf_path, "::/loader/loader.conf") != 0)
 		return -1;
 
 	snprintf(loader_conf, sizeof(loader_conf),
-	         "title thinC\n"
-	         "linux /thinc-bzImage-a\n"
-	         "options console=ttyS0 root=/dev/vda2 rw init=/bin/thincd -- --init-mode\n");
+	         "title Cix\n"
+	         "linux /cix-bzImage-a\n"
+	         "options console=ttyS0 root=/dev/vda2 rw init=/bin/cixd -- --init-mode\n");
 	if (write_text_file(loader_conf_path, loader_conf) != 0)
 		return -1;
-	if (esp_mcopy_in(esp_img, loader_conf_path, "::/loader/entries/thinc.conf") != 0)
+	if (esp_mcopy_in(esp_img, loader_conf_path, "::/loader/entries/cix.conf") != 0)
 		return -1;
 
 	return 0;
@@ -84,7 +84,7 @@ static int build_esp_image(const char *esp_img, const char *workdir)
 
 int main(void)
 {
-	char workdir[] = "/tmp/thinc_test_console_pki_XXXXXX";
+	char workdir[] = "/tmp/cix_test_console_pki_XXXXXX";
 	char stage_dir[600];
 	char root_squashfs[600];
 	char disk_img[600];
@@ -95,12 +95,12 @@ int main(void)
 	long esp_start_sec, esp_size_sec;
 	long root_start_sec, root_size_sec;
 	enum qemu_boot_outcome outcome;
-	/* "thinc.internal> ", not the older bare "thinc> " -- ADR-0164
+	/* "cix.internal> ", not the older bare "cix> " -- ADR-0164
 	 * changed the shell prompt to the full site FQDN (instance.domain,
-	 * defaulting to thinc.internal with no site tier configured, which
+	 * defaulting to cix.internal with no site tier configured, which
 	 * this test never does) plus a trailing >/# for auth state. */
 	struct qemu_scripted_input console_script[] = {
-		{ "thinc.internal> ", "pki ca bootstrap\n" },
+		{ "cix.internal> ", "pki ca bootstrap\n" },
 	};
 
 	if (mkdtemp(workdir) == NULL) {
@@ -115,7 +115,7 @@ int main(void)
 
 	{
 		char *mkbootroot_argv[] = { (char *)MKBOOTROOT_BIN, stage_dir,
-			                     (char *)THINCD_BIN, (char *)THINCCTL_BIN, "web", root_squashfs,
+			                     (char *)CIXD_BIN, (char *)CIXCTL_BIN, "web", root_squashfs,
 			                     "", "", "", "", NULL };
 		if (run_subprocess(MKBOOTROOT_BIN, mkbootroot_argv) != 0)
 			return 1;

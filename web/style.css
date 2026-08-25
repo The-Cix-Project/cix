@@ -73,7 +73,7 @@
 }
 
 /*
- * Manual override for the header's theme toggle (app.js, "thinc-theme"
+ * Manual override for the header's theme toggle (app.js, "cix-theme"
  * localStorage key) -- an attribute selector on :root outranks the bare
  * :root a plain @media query targets, in both directions, regardless of
  * source order, so these two blocks always win over prefers-color-scheme
@@ -608,8 +608,8 @@ header {
 	border-right: 1px solid var(--border);
 }
 
-/* Drag handles for the resizable tree/log panels (thinc-tree-width/
- * thinc-log-height in localStorage, same persisted-preference
+/* Drag handles for the resizable tree/log panels (cix-tree-width/
+ * cix-log-height in localStorage, same persisted-preference
  * convention as theme/tree-collapse/log-collapse). A thin, mostly-
  * invisible hit target that only reveals itself as an accent color on
  * hover/drag -- the resize affordance shouldn't compete visually with
@@ -1644,7 +1644,7 @@ td.empty {
 	tab-size: 4;
 }
 
-/* Issue #83: a server-health warning -- thinC managing state it has nowhere
+/* Issue #83: a server-health warning -- Cix managing state it has nowhere
    to deliver. Deliberately louder than a hint: this is a silent total
    failure of a subsystem, not a degradation. */
 .warning {

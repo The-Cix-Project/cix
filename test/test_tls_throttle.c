@@ -16,7 +16,7 @@
  * expires on its own after block_seconds; a clean handshake resets an
  * IP's failure count; the enabled=false toggle genuinely
  * disables enforcement; and -- the one real, non-obvious correctness
- * requirement this feature has -- loopback (127.0.0.1, thincctl's own
+ * requirement this feature has -- loopback (127.0.0.1, cixctl's own
  * default --host=) is never throttled, so a hostile source sharing a
  * box with the daemon's own local admin access can never lock it out.
  *
@@ -60,7 +60,7 @@ static pid_t start_daemon(void)
 	static char data_dir_arg[PATH_MAX + 11];
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
-	dargv[0] = "build/thincd";
+	dargv[0] = "build/cixd";
 	dargv[1] = "--port=7663";
 	dargv[2] = "--bind=0.0.0.0";
 	dargv[3] = data_dir_arg;
@@ -72,8 +72,8 @@ static pid_t start_daemon(void)
 		return -1;
 	}
 	if (pid == 0) {
-		execve("build/thincd", dargv, environ);
-		perror("execve build/thincd");
+		execve("build/cixd", dargv, environ);
+		perror("execve build/cixd");
 		_exit(127);
 	}
 	return pid;
@@ -89,14 +89,14 @@ static int stop_daemon(pid_t pid)
 	return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
 }
 
-static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
+static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 {
 	int i;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			thinc_response_free(&r);
+		if (cix_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			cix_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -280,9 +280,9 @@ static int get_int_field(const struct json_value *obj, const char *key)
 int main(void)
 {
 	pid_t daemon_pid;
-	struct thinc_client client;
+	struct cix_client client;
 	int ok = 1;
-	struct thinc_response r;
+	struct cix_response r;
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
@@ -293,7 +293,7 @@ int main(void)
 		return 1;
 	}
 
-	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
+	cix_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
@@ -304,7 +304,7 @@ int main(void)
 
 	/* 1. Default config, sane out of the box. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/system/tls-throttle", NULL, &r) != 0 || r.status != 200) {
+	if (cix_client_request(&client, "GET", "/v1/system/tls-throttle", NULL, &r) != 0 || r.status != 200) {
 		fprintf(stderr, "FAIL: GET tls-throttle (defaults), status=%d\n", r.status);
 		ok = 0;
 	}
@@ -321,17 +321,17 @@ int main(void)
 			ok = 0;
 		}
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 2. Validation: an out-of-range field is rejected and doesn't
 	 * silently apply the other, in-range fields either. */
 	memset(&r, 0, sizeof(r));
-	if (ok && (thinc_client_request(&client, "PUT", "/v1/system/tls-throttle", "{\"threshold\":0}", &r) != 0 ||
+	if (ok && (cix_client_request(&client, "PUT", "/v1/system/tls-throttle", "{\"threshold\":0}", &r) != 0 ||
 	           r.status != 400)) {
 		fprintf(stderr, "FAIL: expected 400 for threshold=0, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 3. A real partial update: only threshold/window/block/log_interval
 	 * change, matching this project's own established config-PUT
@@ -341,7 +341,7 @@ int main(void)
 	 * exactly one log line, not one per failure. */
 	memset(&r, 0, sizeof(r));
 	if (ok &&
-	    (thinc_client_request(&client, "PUT", "/v1/system/tls-throttle",
+	    (cix_client_request(&client, "PUT", "/v1/system/tls-throttle",
 	                        "{\"threshold\":3,\"window_seconds\":60,\"block_seconds\":2,\"log_interval_seconds\":10}",
 	                        &r) != 0 ||
 	     r.status != 200)) {
@@ -353,16 +353,16 @@ int main(void)
 		fprintf(stderr, "FAIL: PUT did not apply threshold/window/block/log_interval correctly\n");
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 4. Bootstrap PKI and turn HTTPS on so real handshakes can be
 	 * attempted against it. */
 	memset(&r, 0, sizeof(r));
-	if (ok && (thinc_client_request(&client, "POST", "/v1/pki/ca", "{}", &r) != 0 || r.status != 201)) {
+	if (ok && (cix_client_request(&client, "POST", "/v1/pki/ca", "{}", &r) != 0 || r.status != 201)) {
 		fprintf(stderr, "FAIL: POST /v1/pki/ca, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/*
 	 * https_port explicit, not left to whatever the daemon's own
@@ -373,14 +373,14 @@ int main(void)
 	 * can't do that again.
 	 */
 	memset(&r, 0, sizeof(r));
-	if (ok && (thinc_client_request(&client, "PUT", "/v1/system/daemon-config",
+	if (ok && (cix_client_request(&client, "PUT", "/v1/system/daemon-config",
 	                              "{\"https_enabled\":true,\"https_port\":" TOSTR(HTTPS_PORT) "}", &r) !=
 	               0 ||
 	           r.status != 200)) {
 		fprintf(stderr, "FAIL: PUT https_enabled=true, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 5. Three malformed handshakes (threshold=3) from the attacker
 	 * source -- the third one must trip the block. */
@@ -398,8 +398,8 @@ int main(void)
 	 * log itself is rate-limited independently of the failure count
 	 * (which must still be exactly 3, checked in step 7 below). */
 	memset(&r, 0, sizeof(r));
-	if (ok && (thinc_client_request(&client, "GET",
-	                              "/v1/system/logs?source=thincd&regex=" ATTACKER_IP "&tail=10", NULL, &r) !=
+	if (ok && (cix_client_request(&client, "GET",
+	                              "/v1/system/logs?source=cixd&regex=" ATTACKER_IP "&tail=10", NULL, &r) !=
 	               0 ||
 	           r.status != 200)) {
 		fprintf(stderr, "FAIL: GET logs regex=" ATTACKER_IP ", status=%d\n", r.status);
@@ -410,12 +410,12 @@ int main(void)
 		        ok && r.json != NULL && r.json->type == JSON_ARRAY ? (int)r.json->u.array.count : -1);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 7. GET tls-throttle/status shows this IP tracked, at/above
 	 * threshold, and blocked. */
 	memset(&r, 0, sizeof(r));
-	if (ok && (thinc_client_request(&client, "GET", "/v1/system/tls-throttle/status", NULL, &r) != 0 ||
+	if (ok && (cix_client_request(&client, "GET", "/v1/system/tls-throttle/status", NULL, &r) != 0 ||
 	           r.status != 200)) {
 		fprintf(stderr, "FAIL: GET tls-throttle/status, status=%d\n", r.status);
 		ok = 0;
@@ -453,7 +453,7 @@ int main(void)
 			}
 		}
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 8. The blocked attacker is refused outright on the HTTPS listener
 	 * itself, before ever reaching SSL_accept() -- while, per ADR-0137,
@@ -472,12 +472,12 @@ int main(void)
 		ok = 0;
 	}
 	memset(&r, 0, sizeof(r));
-	if (ok && (thinc_client_request(&client, "GET", "/v1/health", NULL, &r) != 0 || r.status != 200)) {
+	if (ok && (cix_client_request(&client, "GET", "/v1/health", NULL, &r) != 0 || r.status != 200)) {
 		fprintf(stderr, "FAIL: loopback must stay reachable even while another source is blocked, status=%d\n",
 		        r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 9. The block expires on its own (block_seconds=2) -- poll the
 	 * HTTPS layer (the listener the block actually applies to; plain
@@ -521,7 +521,7 @@ int main(void)
 		}
 
 		memset(&r, 0, sizeof(r));
-		if (ok && (thinc_client_request(&client, "GET", "/v1/system/tls-throttle/status", NULL, &r) != 0 ||
+		if (ok && (cix_client_request(&client, "GET", "/v1/system/tls-throttle/status", NULL, &r) != 0 ||
 		           r.status != 200)) {
 			fprintf(stderr, "FAIL: GET tls-throttle/status (post-recovery), status=%d\n", r.status);
 			ok = 0;
@@ -541,7 +541,7 @@ int main(void)
 				}
 			}
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 	}
 
 	/* 11. enabled=false genuinely disables enforcement -- flood well
@@ -550,12 +550,12 @@ int main(void)
 	 * still reachable. */
 	memset(&r, 0, sizeof(r));
 	if (ok &&
-	    (thinc_client_request(&client, "PUT", "/v1/system/tls-throttle", "{\"enabled\":false}", &r) != 0 ||
+	    (cix_client_request(&client, "PUT", "/v1/system/tls-throttle", "{\"enabled\":false}", &r) != 0 ||
 	     r.status != 200)) {
 		fprintf(stderr, "FAIL: PUT enabled=false, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	if (ok) {
 		int i;

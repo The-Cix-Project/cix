@@ -1,7 +1,7 @@
 #
 # bash -- the GNU Bourne-Again SHell.
 #
-# Read by thincd's own non-executing metadata scanner (pkg_name=/
+# Read by cixd's own non-executing metadata scanner (pkg_name=/
 # pkg_version=/pkg_source=/pkg_sha256=/pkg_depends=, daemon/src/pkg.c's
 # parse_recipe()) AND sourced as a real POSIX shell script inside the
 # isolated, network-less build container (". /build/recipe.sh" --
@@ -30,7 +30,7 @@ pkg_build() {
 	make -j"$(nproc)"
 }
 
-# PKG_DESTDIR is set by thincd itself (daemon/src/pkg.c) -- everything
+# PKG_DESTDIR is set by cixd itself (daemon/src/pkg.c) -- everything
 # written under it is what actually gets merged into the shared "base"
 # image once this build container exits successfully.
 #
@@ -45,7 +45,7 @@ pkg_build() {
 # popen() to evaluate Kconfig's $(shell ...) macros. Without /bin/sh,
 # that popen() call fails deep inside glibc's posix_spawn fast path
 # and (misleadingly) surfaces as ENOMEM, not the expected ENOENT --
-# not a thinC bug, a real gap in any build-toolchain image. Any
+# not a Cix bug, a real gap in any build-toolchain image. Any
 # image that installs bash now also gets a standard /bin/sh symlink,
 # matching how every real Linux distribution guarantees this exact
 # path exists.

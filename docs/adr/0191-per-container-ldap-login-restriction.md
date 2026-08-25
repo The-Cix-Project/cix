@@ -27,7 +27,7 @@ The daemon renders one line into the staged `/etc/nslcd.conf`:
 pam_authz_search (&(objectClass=posixAccount)(uid=$username)(|(memberOf=ou=<g>,ou=groups,<base>)…))
 ```
 
-`nslcd` runs that search after authenticating and refuses a login it does not match. The restriction therefore holds because of a file in the container and the daemon the container already depends on — not because anything of thinC's is still running to check it. A control plane that has to be up for a security boundary to hold is a security boundary with an availability dependency.
+`nslcd` runs that search after authenticating and refuses a login it does not match. The restriction therefore holds because of a file in the container and the daemon the container already depends on — not because anything of Cix's is still running to check it. A control plane that has to be up for a security boundary to hold is a security boundary with an availability dependency.
 
 Three rules follow from taking that seriously:
 

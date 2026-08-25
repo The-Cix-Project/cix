@@ -1,6 +1,6 @@
 /*
- * thinC dashboard: a pure client of docs/api/openapi.yaml, same as
- * thincctl (cli/src/main.c) -- no capability here that isn't already
+ * Cix dashboard: a pure client of docs/api/openapi.yaml, same as
+ * cixctl (cli/src/main.c) -- no capability here that isn't already
  * one of the REST endpoints. Vanilla JS, no framework, no build step
  * (docs/adr/0010). Left resource tree + per-resource detail views,
  * routed via location.hash (#category or #category/name) -- no router
@@ -78,8 +78,8 @@ const logPanelHeader = document.getElementById("log-panel-header");
 const logPanelArrow = document.getElementById("log-panel-arrow");
 const logPanelSource = document.getElementById("log-panel-source");
 
-const LOG_COLLAPSE_KEY = "thinc-log-collapsed";
-const LOG_HEIGHT_KEY = "thinc-log-height";
+const LOG_COLLAPSE_KEY = "cix-log-collapsed";
+const LOG_HEIGHT_KEY = "cix-log-height";
 
 /* Collapsing/expanding must also manage #log-panel's own inline
  * flex-basis -- makeResizable() below (log-panel-resize-handle) sets
@@ -143,7 +143,7 @@ try {
  * right = grow, no inversion needed), the log panel's handle is on
  * its top edge but the panel itself is anchored to the page's bottom
  * (drag down = shrink, the delta has to flip). Persists to
- * localStorage (thinc-tree-width/thinc-log-height) and restores on
+ * localStorage (cix-tree-width/cix-log-height) and restores on
  * load -- same convention as theme/tree-collapse/log-collapse above.
  */
 function makeResizable(handle, opts) {
@@ -219,7 +219,7 @@ function makeResizable(handle, opts) {
 
 makeResizable(document.getElementById("tree-resize-handle"), {
 	axis: "x",
-	storageKey: "thinc-tree-width",
+	storageKey: "cix-tree-width",
 	min: 160,
 	max: 480,
 	getSize: () => document.querySelector(".tree-panel").getBoundingClientRect().width,
@@ -247,7 +247,7 @@ makeResizable(document.getElementById("log-panel-resize-handle"), {
 
 /* ---------- theme toggle (light / dark / auto) ---------- */
 
-const THEME_KEY = "thinc-theme";
+const THEME_KEY = "cix-theme";
 const themeToggle = document.getElementById("theme-toggle");
 
 /* "auto" (no stored value, or an unrecognized one) means "follow
@@ -448,7 +448,7 @@ for (const item of document.querySelectorAll(".menu-bar button[data-modal]")) {
 	item.addEventListener("click", () => openModal(item.dataset.modal, item.dataset.title));
 }
 
-/* About thinC: read-only, fetched fresh on every open rather than
+/* About Cix: read-only, fetched fresh on every open rather than
  * cached -- build/slot/kernel can change under an operator's feet
  * (an update staged to the inactive slot, a reboot) and this is the
  * one place meant to answer "what is this box actually running right
@@ -490,16 +490,16 @@ document.getElementById("menu-about").addEventListener("click", async () => {
  * ---------- host authentication (ADR-0144) ----------
  *
  * A session token, persisted in localStorage -- this dashboard's own
- * analog of thincctl's ~/.thincctl_token dotfile, so a page reload
+ * analog of cixctl's ~/.cixctl_token dotfile, so a page reload
  * doesn't force a fresh login. GET requests never need it (the
  * daemon's write-gating leaves every GET open, always, regardless of
  * auth state); apiRequest()/apiRequestRaw() below attach it to every
  * request automatically once set -- one place, not every one of this
- * file's many call sites, the same design thinc_client_set_token() gives
- * thincctl (client/include/httpclient.h).
+ * file's many call sites, the same design cix_client_set_token() gives
+ * cixctl (client/include/httpclient.h).
  */
-let authToken = localStorage.getItem("thinc-auth-token") || null;
-let authUsername = localStorage.getItem("thinc-auth-username") || null;
+let authToken = localStorage.getItem("cix-auth-token") || null;
+let authUsername = localStorage.getItem("cix-auth-username") || null;
 
 const authStatusEl = document.getElementById("auth-status");
 const authActionBtn = document.getElementById("menu-auth-action");
@@ -520,18 +520,18 @@ function setAuth(token, username) {
 	authToken = token;
 	authUsername = username;
 	if (token) {
-		localStorage.setItem("thinc-auth-token", token);
-		localStorage.setItem("thinc-auth-username", username || "");
+		localStorage.setItem("cix-auth-token", token);
+		localStorage.setItem("cix-auth-username", username || "");
 	} else {
-		localStorage.removeItem("thinc-auth-token");
-		localStorage.removeItem("thinc-auth-username");
+		localStorage.removeItem("cix-auth-token");
+		localStorage.removeItem("cix-auth-username");
 	}
 	updateAuthUi();
 }
 
 /* Opens the login modal on a 401 from any request, so "why did my
  * action just fail" has an immediate, actionable answer instead of
- * only a status-bar error -- the same reasoning thincctl's own
+ * only a status-bar error -- the same reasoning cixctl's own
  * "authentication required -- POST /v1/login first" message serves,
  * adapted to a UI that can just show the form directly. Guarded so a
  * burst of 401s from one poll cycle (several concurrent GETs are
@@ -547,7 +547,7 @@ authActionBtn.addEventListener("click", async () => {
 		try {
 			await apiRequest("POST", "/v1/logout");
 		} catch (e) {
-			/* best-effort -- matches thincctl's own idempotent-logout
+			/* best-effort -- matches cixctl's own idempotent-logout
 			 * posture; the local session clears either way */
 		}
 		setAuth(null, null);
@@ -584,7 +584,7 @@ updateAuthUi();
  * ("web-ui" -- every mutating request this dashboard makes, plus every
  * toast below, kept entirely client-side, never sent to the server
  * since it isn't a system component) and the server's own consolidated
- * log store (kernel/thincd/audit/container, GET /v1/system/logs,
+ * log store (kernel/cixd/audit/container, GET /v1/system/logs,
  * ADR-0070/ADR-0126) merged in via periodic polling (pollServerLogs(),
  * called from the main poll() loop). logBuffer is the one source of
  * truth both the live-append path and a full filter-change re-render
@@ -772,7 +772,7 @@ function logLine(method, path, statusText, kind) {
 }
 
 /* Merges newly-polled server-side entries into the same buffer/panel,
- * source-tagged by their own real source (kernel/thincd/audit/
+ * source-tagged by their own real source (kernel/cixd/audit/
  * container) rather than "web-ui". Deliberately starts from "now"
  * (logsSinceTs set at declaration time below) rather than 0 -- this
  * panel is a live tail from page-load onward, not a full-history
@@ -931,7 +931,7 @@ async function apiRequest(method, path, body) {
 
 /* Raw variant for /v1/system/backup|restore -- the response/request
  * body IS the bundle, written/read byte-for-byte, the same "exact
- * round trip, not re-serialized" guarantee thincctl's own backup/
+ * round trip, not re-serialized" guarantee cixctl's own backup/
  * restore commands already have (cli/src/main.c). */
 async function apiRequestRaw(method, path, rawBody) {
 	const opts = { method: method, headers: {} };
@@ -1049,14 +1049,14 @@ function renderStatusMeta() {
 		/* Slot is an A/B fact and only a real installed host has one --
 		 * a dev daemon reports none, and "slot ?" would be inventing an
 		 * answer to a question that does not apply. */
-		parts.push("thinC " + statusVersion.version +
+		parts.push("Cix " + statusVersion.version +
 		           (statusVersion.slot !== null ? " · slot " + statusVersion.slot : ""));
 	}
 	if (statusMetaBase !== null) {
 		const elapsed = Math.floor((Date.now() - statusMetaBase.fetchedAt) / 1000);
 
 		parts.push("up " + formatUptime(statusMetaBase.host + elapsed));
-		parts.push("thincd " + formatUptime(statusMetaBase.daemon + elapsed));
+		parts.push("cixd " + formatUptime(statusMetaBase.daemon + elapsed));
 		parts.push("load " + statusMetaBase.load1.toFixed(2) +
 		           " " + statusMetaBase.load5.toFixed(2) +
 		           " " + statusMetaBase.load15.toFixed(2));
@@ -1075,7 +1075,7 @@ async function refreshStatusVersion() {
 		const b = await apiRequest("GET", "/v1/system/boot");
 
 		statusVersion = { version: b.build_version || "unknown", slot: b.slot || null };
-		statusMeta.title = "thinC " + statusVersion.version +
+		statusMeta.title = "Cix " + statusVersion.version +
 		                   ", built " + (b.build_time || "unknown") +
 		                   (statusVersion.slot !== null ? ", running from slot " + statusVersion.slot : "") +
 		                   " on kernel " + (b.kernel_version || "unknown");
@@ -1091,7 +1091,7 @@ async function refreshStatusVersion() {
  * Host uptime, this daemon's own uptime, and load average, along the
  * left of the status bar. The two uptimes are separate on purpose:
  * they diverge after a control-plane restart that was not a reboot,
- * and "the box has been up for days but thincd restarted four minutes
+ * and "the box has been up for days but cixd restarted four minutes
  * ago" is exactly the thing worth noticing.
  *
  * Its own slow interval rather than the 2s poll -- nothing here moves
@@ -1132,7 +1132,7 @@ async function refreshStatusMeta() {
  * this only covers the case where there's nothing for the browser
  * itself to have remembered.
  */
-const LAST_VIEW_KEY = "thinc-last-view";
+const LAST_VIEW_KEY = "cix-last-view";
 
 function saveLastView() {
 	try {
@@ -1453,7 +1453,7 @@ window.addEventListener("hashchange", () => {
 
 /* ---------- tree ---------- */
 
-const TREE_COLLAPSE_KEY = "thinc-tree-collapsed";
+const TREE_COLLAPSE_KEY = "cix-tree-collapsed";
 
 function loadCollapsedCategories() {
 	try {
@@ -1741,8 +1741,8 @@ function buildTreeNode(item, parentUl, parentId, depth, parentPath) {
  * longest prefix of the path is the one holding it, which is the same
  * longest-match walk disk.c uses server-side to find the OS disk.
  *
- * Longest match matters: /var/lib/thinc/volumes/x sits under both "/"
- * and "/var/lib/thinc" when both are mounted, and only the second is
+ * Longest match matters: /var/lib/cix/volumes/x sits under both "/"
+ * and "/var/lib/cix" when both are mounted, and only the second is
  * the true answer.
  */
 function deviceHoldingVolume(v) {
@@ -2259,7 +2259,7 @@ function simpleTableRows(bodyEl, columns, colCount, emptyText) {
  * text) but otherwise silently discarded -- there is no 2D cursor-
  * addressable screen model here, so full-screen redraw programs (vim,
  * top, less) render wrong. A stated, accepted boundary (see ADR-0043),
- * not an oversight -- `thincctl console` has no such limitation.
+ * not an oversight -- `cixctl console` has no such limitation.
  */
 const TERM_MAX_LINES = 2000;
 
@@ -5952,7 +5952,7 @@ async function removeDiskRole(diskName) {
  * confirm() dialog is the actual gate here, the same severity class as
  * Kill/Reset-CA-chain elsewhere in this dashboard -- confirm_disk_name
  * is filled in automatically from that same unambiguous context,
- * mirroring thincctl's own "the operator already specified which disk
+ * mirroring cixctl's own "the operator already specified which disk
  * by typing its name once" reasoning (cli/src/main.c's cmd_disks_
  * format()), not asked for a second time as a separate typed field. */
 /*
@@ -7152,7 +7152,7 @@ async function refreshPkiCa() {
 		pkiCaStatus.className = "pki-ca-status bootstrapped";
 		pkiCaStatus.textContent =
 			"Bootstrapped: " + ca.subject + " (serial " + ca.serial + ", expires " + ca.not_after + ") ";
-		pkiCaStatus.appendChild(buildCaDownloadButton("thinc-root-ca.crt", ca.cert_pem));
+		pkiCaStatus.appendChild(buildCaDownloadButton("cix-root-ca.crt", ca.cert_pem));
 		pkiCaForm.hidden = true;
 	} catch (e) {
 		cache.pkiCa = null;
@@ -7179,7 +7179,7 @@ async function refreshPkiIntermediate() {
 			", expires " +
 			intermediate.not_after +
 			") ";
-		status.appendChild(buildCaDownloadButton("thinc-intermediate-ca.crt", intermediate.cert_pem));
+		status.appendChild(buildCaDownloadButton("cix-intermediate-ca.crt", intermediate.cert_pem));
 		form.hidden = true;
 	} catch (e) {
 		cache.pkiIntermediate = null;
@@ -7327,7 +7327,7 @@ function renderPackagesList() {
 
 /*
  * issue #19: GET /pkg/recipes returns one entry per (name,version) --
- * a package with many published versions (thinc has 14) used to render
+ * a package with many published versions (cix has 14) used to render
  * as that many separate, equally-weighted rows, and worse, the single
  * "Delete" button on any one of them called DELETE .../recipes/{name}
  * with no ?version= -- silently wiping *every* stored version, not just
@@ -8906,7 +8906,7 @@ document.getElementById("ldap-group-form").addEventListener("submit", async (eve
 document.getElementById("ldap-user-form").addEventListener("submit", async (event) => {
 	event.preventDefault();
 
-	/* Comma-separated GID numbers, matching thincctl's own
+	/* Comma-separated GID numbers, matching cixctl's own
 	 * --secondary-groups= parsing convention exactly -- PUT is a real
 	 * full-field-replacement (same as every other field here), so this
 	 * is always sent, defaulting to an empty array (no secondary
@@ -9209,7 +9209,7 @@ async function refreshSiteConfig() {
 		label.textContent = instanceFqdn(site);
 		label.title = instanceFqdn(site);
 		label.hidden = false;
-		document.title = "thinC — " + instanceFqdn(site);
+		document.title = "Cix — " + instanceFqdn(site);
 	} catch (e) {
 		/* Best-effort -- the form/header just stay at whatever was last shown. */
 	}
@@ -9415,7 +9415,7 @@ function renderSysctlList() {
 /* Parses the web form's own single "KEY=VALUE,KEY=VALUE" text field
  * into the {key: value} object shape both /kmod POST (load options)
  * and /kmod-config PUT (default_options) expect -- the web analog of
- * thincctl's repeatable --option=KEY=VALUE. Empty input -> {} (no
+ * cixctl's repeatable --option=KEY=VALUE. Empty input -> {} (no
  * options), matching "omit means fall back to persisted defaults". */
 function parseKeyValueList(text) {
 	const result = {};
@@ -10452,7 +10452,7 @@ async function refreshServerHealth() {
 		showStatus("Failed to read server health: " + e.message, true);
 		return;
 	}
-	/* Issue #83: a warning here means thinC is managing state with nowhere
+	/* Issue #83: a warning here means Cix is managing state with nowhere
 	   to deliver it -- a silent, total failure of that subsystem, not a
 	   degradation. Shown above the table because it is more urgent than
 	   any individual server's state. */
@@ -10748,7 +10748,7 @@ document.getElementById("sys-backup").addEventListener("click", async () => {
 		const a = document.createElement("a");
 
 		a.href = url;
-		a.download = "thinc-backup.json";
+		a.download = "cix-backup.json";
 		a.click();
 		URL.revokeObjectURL(url);
 		clearStatus();

@@ -1,6 +1,6 @@
 /*
  * ADR-0042: proves image/src/dual_console.c's own relay logic directly
- * -- the exact same code image/src/thinc-install.c links and runs in
+ * -- the exact same code image/src/cix-install.c links and runs in
  * production (No Parallel Implementations: this is not a re-
  * implementation of the relay, it's the real thing) -- against two
  * throwaway PTYs standing in for the two real consoles (/dev/tty0,
@@ -8,7 +8,7 @@
  * serial output and can't exercise a real video console at all (see
  * docs/roadmap/ROADMAP.md's Phase 14 own already-accepted boundary).
  *
- * A forked "driver" process plays the role thinc-install.c itself
+ * A forked "driver" process plays the role cix-install.c itself
  * plays in production: it opens the two PTY slaves as its own pair of
  * consoles (dual_console_open()) and calls run_subprocess_dual_console()
  * against dual_console_child (test/dual_console_child.c), which just
@@ -141,7 +141,7 @@ int main(void)
 		return 1;
 	}
 	if (driver_pid == 0) {
-		/* Plays thinc-install.c's own role: opens the two consoles
+		/* Plays cix-install.c's own role: opens the two consoles
 		 * (here, the PTY slaves standing in for /dev/tty0/ttyS0) and
 		 * relays dual_console_child's I/O across both. Doesn't need
 		 * the masters at all -- those belong to the "operator" side
@@ -200,13 +200,13 @@ int main(void)
 		perror("waitpid driver");
 		ok = 0;
 	} else if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-		fprintf(stderr, "FAIL: driver process (thinc-install stand-in) exited abnormally "
+		fprintf(stderr, "FAIL: driver process (cix-install stand-in) exited abnormally "
 		                "(status 0x%x)\n",
 		        (unsigned)status);
 		ok = 0;
 	}
 
-	/* 3. dual_console_wait_for_key() -- thinc-install.c's own
+	/* 3. dual_console_wait_for_key() -- cix-install.c's own
 	 * end-of-install "press Enter to reboot" prompt (ADR-0146 follow-up
 	 * UX fix), not exercised by the relay above at all. Confirms it
 	 * unblocks the instant a byte arrives on console B (the "other"
@@ -232,7 +232,7 @@ int main(void)
 			/* The console defaults to canonical (line-buffered) mode --
 			 * a byte with no newline never becomes readable, matching
 			 * dual_console_wait_for_key()'s real "press Enter" contract
-			 * (see thinc-install.c's own end-of-install prompt). */
+			 * (see cix-install.c's own end-of-install prompt). */
 			if (write_line(master_b, "x\n") != 0) {
 				fprintf(stderr, "FAIL: could not write key line to master_b\n");
 				ok = 0;

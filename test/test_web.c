@@ -1,5 +1,5 @@
 /*
- * Phase 5 end-to-end test: proves thincd's static-file serving
+ * Phase 5 end-to-end test: proves cixd's static-file serving
  * (daemon/src/staticfile.c) works over real HTTP -- correct status/
  * content-type per asset, 404 for missing files, path traversal
  * rejected, and that adding this didn't regress /v1/... routing.
@@ -22,14 +22,14 @@ extern char **environ;
 #define TEST_PORT 7623
 #define PORT_ARG "--port=7623"
 
-static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
+static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 {
 	int i;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			thinc_response_free(&r);
+		if (cix_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			cix_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -37,13 +37,13 @@ static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
 	return -1;
 }
 
-static void check(const struct thinc_client *c, const char *path, int want_status,
+static void check(const struct cix_client *c, const char *path, int want_status,
                    const char *want_content_type, const char *want_body_substr,
                    const char *forbid_body_substr, int *ok)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
-	if (thinc_client_request(c, "GET", path, NULL, &r) != 0) {
+	if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
 		fprintf(stderr, "FAIL: GET %s: transport error\n", path);
 		*ok = 0;
 		return;
@@ -70,7 +70,7 @@ static void check(const struct thinc_client *c, const char *path, int want_statu
 		*ok = 0;
 	}
 
-	thinc_response_free(&r);
+	cix_response_free(&r);
 }
 
 int main(void)
@@ -79,14 +79,14 @@ int main(void)
 	char *dargv[4];
 	char data_dir[PATH_MAX];
 	char data_dir_arg[PATH_MAX + 11];
-	struct thinc_client client;
+	struct cix_client client;
 	int ok = 1;
 
 	if (test_data_dir_create(data_dir, sizeof(data_dir)) != 0)
 		return 1;
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", data_dir);
 
-	dargv[0] = "build/thincd";
+	dargv[0] = "build/cixd";
 	dargv[1] = PORT_ARG;
 	dargv[2] = data_dir_arg;
 	dargv[3] = NULL;
@@ -98,12 +98,12 @@ int main(void)
 		return 1;
 	}
 	if (daemon_pid == 0) {
-		execve("build/thincd", dargv, environ);
-		perror("execve build/thincd");
+		execve("build/cixd", dargv, environ);
+		perror("execve build/cixd");
 		_exit(127);
 	}
 
-	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
+	cix_client_init(&client, "127.0.0.1", TEST_PORT);
 
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
@@ -114,7 +114,7 @@ int main(void)
 	}
 
 	/* 1-2. index and its title marker */
-	check(&client, "/", 200, "text/html", "thinC", NULL, &ok);
+	check(&client, "/", 200, "text/html", "Cix", NULL, &ok);
 	/* 3. app.js */
 	check(&client, "/app.js", 200, "application/javascript", "docs/api/openapi.yaml", NULL, &ok);
 	/* 4. style.css */

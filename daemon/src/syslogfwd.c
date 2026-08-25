@@ -218,7 +218,7 @@ void syslogfwd_send(const char *container, const char *level, const char *msg)
 			localtime_r(&now, &tm_now);
 			strftime(timestr, sizeof(timestr), "%b %e %T", &tm_now);
 
-			dlen = snprintf(datagram, sizeof(datagram), "<%d>%s %s thincd: %s", pri, timestr,
+			dlen = snprintf(datagram, sizeof(datagram), "<%d>%s %s cixd: %s", pri, timestr,
 			                 container, msg);
 			if (dlen < 0)
 				continue;

@@ -6,7 +6,7 @@
 #include <stddef.h>
 
 /*
- * ADR-0144: real authentication for thincd's own REST API, which has
+ * ADR-0144: real authentication for cixd's own REST API, which has
  * had none at all until this. One rule -- write operations (POST/PUT/
  * DELETE, plus the container console, judged by intent rather than
  * HTTP verb) require a valid session belonging to a user in one of the
@@ -22,7 +22,7 @@
  * own data-model part, the local in-process backend) and
  * ldapclient_bind() (daemon/src/ldapclient.c, a live LDAP bind against
  * a real running glauth server, tried first when ldap_enabled). One
- * directory (thinC's own persisted ldap_user/ldap_group records --
+ * directory (Cix's own persisted ldap_user/ldap_group records --
  * glauth is just a rendered, running view of that same data), two
  * interchangeable ways to ask it "is this password right": hostauth_
  * login() itself decides which one answered authoritatively, see its

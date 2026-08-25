@@ -12,7 +12,7 @@ User-requested, directly: "let's make the container recipes so it will make thin
 
 One real design question, surfaced by reading the existing `create_container_from_body()` (`daemon/src/main.c`) before designing anything: a container's persisted create-request body is *already* a complete, self-contained JSON representation of everything needed to recreate it (ADR-0124's own rolling-restart mechanism already relies on this — it does raw string surgery on that exact persisted body). Rather than inventing a third recipe format, a container recipe's content **is** that same JSON shape verbatim — the one already accepted by `POST /v1/containers`.
 
-A second real question, raised directly rather than assumed: several of this session's real container recipes (an LDAP client's `nslcd.conf`/`ldap-authkeys.conf`) would need a live bind password embedded in staged file content. Committing that to git bakes a real secret into permanent history. Asked the user directly (`AskUserQuestion`): generalize `thinc.recipe`'s own existing `REPLACE_WITH_REAL_TOKEN` placeholder convention into a real, mechanical substitution step, rather than leave secrets out of recipes entirely (which would leave the exact containers that most need reproducibility — the LDAP-backed ones — only partially covered). Confirmed: build the substitution mechanism.
+A second real question, raised directly rather than assumed: several of this session's real container recipes (an LDAP client's `nslcd.conf`/`ldap-authkeys.conf`) would need a live bind password embedded in staged file content. Committing that to git bakes a real secret into permanent history. Asked the user directly (`AskUserQuestion`): generalize `cix.recipe`'s own existing `REPLACE_WITH_REAL_TOKEN` placeholder convention into a real, mechanical substitution step, rather than leave secrets out of recipes entirely (which would leave the exact containers that most need reproducibility — the LDAP-backed ones — only partially covered). Confirmed: build the substitution mechanism.
 
 ## Decision
 
@@ -26,7 +26,7 @@ A second real question, raised directly rather than assumed: several of this ses
 
 **`pkg sync`** (`daemon/src/pkg.c`'s `pkg_sync_completed()`) extended a third time: walks `recipes/container/<name>/<version>/container.json`, publishing the highest version per name via `container_recipe_add()` — identical selection/always-overwrite semantics to the image-recipe walk ADR-0149 already added.
 
-**CLI**: `thincctl container recipe add|show|rm|ls`, `thincctl container apply-recipe NAME [--secret=KEY=VALUE ...]` — mirrors `image recipe`/`image apply-recipe` exactly, added to the existing (previously `ls`-only) `container` noun-based command group.
+**CLI**: `cixctl container recipe add|show|rm|ls`, `cixctl container apply-recipe NAME [--secret=KEY=VALUE ...]` — mirrors `image recipe`/`image apply-recipe` exactly, added to the existing (previously `ls`-only) `container` noun-based command group.
 
 ## Verification
 

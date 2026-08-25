@@ -14,7 +14,7 @@ Root cause: the kernel ABI for `struct epoll_event` is 12 bytes (`uint32_t event
 
 ## Decision
 
-`include/linux_compat.h` defines `struct thinc_epoll_event` (and matching `union thinc_epoll_data`) using `#pragma pack`, byte-identical to the real kernel ABI, plus `thinc_epoll_ctl()`/`thinc_epoll_wait()` wrapper functions that cast our pointer to `struct epoll_event *` when calling the glibc functions. This is safe because glibc's `epoll_ctl`/`epoll_wait` wrappers only forward the pointer to the kernel syscall — they never interpret the struct's fields themselves. All epoll usage in this project goes through `thinc_epoll_event`/`thinc_epoll_ctl`/`thinc_epoll_wait`, never the system `struct epoll_event` directly.
+`include/linux_compat.h` defines `struct cix_epoll_event` (and matching `union cix_epoll_data`) using `#pragma pack`, byte-identical to the real kernel ABI, plus `cix_epoll_ctl()`/`cix_epoll_wait()` wrapper functions that cast our pointer to `struct epoll_event *` when calling the glibc functions. This is safe because glibc's `epoll_ctl`/`epoll_wait` wrappers only forward the pointer to the kernel syscall — they never interpret the struct's fields themselves. All epoll usage in this project goes through `cix_epoll_event`/`cix_epoll_ctl`/`cix_epoll_wait`, never the system `struct epoll_event` directly.
 
 ## Consequences
 

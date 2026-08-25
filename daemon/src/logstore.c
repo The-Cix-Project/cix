@@ -42,7 +42,7 @@ static int g_initialized;
 /*
  * Real syslog severity order (RFC 5424, the same scale kmsg_level_name()
  * below already names) -- lower number is more severe. "error"/"warn"
- * are accepted as synonyms for "err"/"warning" since thincd/audit's
+ * are accepted as synonyms for "err"/"warning" since cixd/audit's
  * own logstore_write() callers always say "error", never "err".
  * Anything unrecognized ranks as INFO (6) -- permissive by
  * construction, so a typo'd or future level name is never silently
@@ -333,7 +333,7 @@ static void write_entry(const char *source, const char *level, const char *conta
 	if (level_rank(lvl) > level_rank(g_min_level))
 		return; /* less severe than the configured floor -- dropped before any write */
 
-	snprintf(src, sizeof(src), "%s", source != NULL ? source : "thincd");
+	snprintf(src, sizeof(src), "%s", source != NULL ? source : "cixd");
 	snprintf(cont, sizeof(cont), "%s", container != NULL ? container : "");
 
 	jw_init(&w);

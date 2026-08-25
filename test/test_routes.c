@@ -4,7 +4,7 @@
  * main.c's handle_route_add()/handle_route_del()) actually mutate the
  * host's own real kernel IPv4 routing table, not just parse JSON --
  * verified via a real add+dump+delete+dump round-trip against a live
- * thincd, cross-checked against GET /v1/system/routes (ADR-0066)
+ * cixd, cross-checked against GET /v1/system/routes (ADR-0066)
  * before ever trusting the mutation succeeded.
  */
 #include "httpclient.h"
@@ -42,7 +42,7 @@ static pid_t start_daemon(void)
 	static char data_dir_arg[PATH_MAX + 11];
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
-	dargv[0] = "build/thincd";
+	dargv[0] = "build/cixd";
 	dargv[1] = PORT_ARG;
 	dargv[2] = data_dir_arg;
 	dargv[3] = NULL;
@@ -53,8 +53,8 @@ static pid_t start_daemon(void)
 		return -1;
 	}
 	if (pid == 0) {
-		execve("build/thincd", dargv, environ);
-		perror("execve build/thincd");
+		execve("build/cixd", dargv, environ);
+		perror("execve build/cixd");
 		_exit(127);
 	}
 	return pid;
@@ -70,14 +70,14 @@ static int stop_daemon(pid_t pid)
 	return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
 }
 
-static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
+static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 {
 	int i;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			thinc_response_free(&r);
+		if (cix_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			cix_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -89,16 +89,16 @@ static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
  * this exact dest/prefix appears -- the real, kernel-backed proof a
  * mutation actually took effect, not just that the daemon returned the
  * status code it was supposed to. */
-static int route_dump_contains(const struct thinc_client *c, const char *dest, int prefix)
+static int route_dump_contains(const struct cix_client *c, const char *dest, int prefix)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	const struct json_value *routes;
 	size_t i;
 	int found = 0;
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(c, "GET", "/v1/system/routes", NULL, &r) != 0 || r.status != 200) {
-		thinc_response_free(&r);
+	if (cix_client_request(c, "GET", "/v1/system/routes", NULL, &r) != 0 || r.status != 200) {
+		cix_response_free(&r);
 		return -1;
 	}
 
@@ -117,16 +117,16 @@ static int route_dump_contains(const struct thinc_client *c, const char *dest, i
 			}
 		}
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	return found;
 }
 
 int main(void)
 {
 	pid_t daemon_pid;
-	struct thinc_client client;
+	struct cix_client client;
 	int ok = 1;
-	struct thinc_response r;
+	struct cix_response r;
 	int present;
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
@@ -138,7 +138,7 @@ int main(void)
 		return 1;
 	}
 
-	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
+	cix_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
@@ -158,7 +158,7 @@ int main(void)
 
 	/* 2. Add it via POST, expect 204. */
 	memset(&r, 0, sizeof(r));
-	if (ok && (thinc_client_request(&client, "POST", "/v1/system/routes",
+	if (ok && (cix_client_request(&client, "POST", "/v1/system/routes",
 	                              "{\"dest\":\"" TEST_DEST "\",\"prefix\":24,\"gateway\":\"" TEST_GATEWAY
 	                              "\"}",
 	                              &r) != 0 ||
@@ -166,7 +166,7 @@ int main(void)
 		fprintf(stderr, "FAIL: POST /v1/system/routes, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 3. Real, kernel-backed proof it's there: re-dump and find it. */
 	if (ok) {
@@ -183,7 +183,7 @@ int main(void)
 	 * itself rejects the duplicate (no NLM_F_REPLACE), and the daemon
 	 * must surface that as 400, not silently succeed or crash. */
 	memset(&r, 0, sizeof(r));
-	if (ok && (thinc_client_request(&client, "POST", "/v1/system/routes",
+	if (ok && (cix_client_request(&client, "POST", "/v1/system/routes",
 	                              "{\"dest\":\"" TEST_DEST "\",\"prefix\":24,\"gateway\":\"" TEST_GATEWAY
 	                              "\"}",
 	                              &r) != 0 ||
@@ -191,28 +191,28 @@ int main(void)
 		fprintf(stderr, "FAIL: duplicate POST /v1/system/routes expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 5. Malformed body (bad dest) must 400, not crash or silently
 	 * install a garbage route. */
 	memset(&r, 0, sizeof(r));
-	if (ok && (thinc_client_request(&client, "POST", "/v1/system/routes",
+	if (ok && (cix_client_request(&client, "POST", "/v1/system/routes",
 	                              "{\"dest\":\"not-an-ip\",\"prefix\":24}", &r) != 0 ||
 	           r.status != 400)) {
 		fprintf(stderr, "FAIL: invalid dest POST expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 6. Delete it via DELETE, expect 204. */
 	memset(&r, 0, sizeof(r));
-	if (ok && (thinc_client_request(&client, "DELETE", "/v1/system/routes",
+	if (ok && (cix_client_request(&client, "DELETE", "/v1/system/routes",
 	                              "{\"dest\":\"" TEST_DEST "\",\"prefix\":24}", &r) != 0 ||
 	           r.status != 204)) {
 		fprintf(stderr, "FAIL: DELETE /v1/system/routes, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 7. Real, kernel-backed proof it's gone: re-dump and confirm it's
 	 * absent again. */
@@ -229,13 +229,13 @@ int main(void)
 	/* 8. Deleting an already-gone route must 404, not crash or silently
 	 * report success. */
 	memset(&r, 0, sizeof(r));
-	if (ok && (thinc_client_request(&client, "DELETE", "/v1/system/routes",
+	if (ok && (cix_client_request(&client, "DELETE", "/v1/system/routes",
 	                              "{\"dest\":\"" TEST_DEST "\",\"prefix\":24}", &r) != 0 ||
 	           r.status != 404)) {
 		fprintf(stderr, "FAIL: DELETE of already-gone route expected 404, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	if (ok)
 		printf("ROUTES RESULT: PASS\n");

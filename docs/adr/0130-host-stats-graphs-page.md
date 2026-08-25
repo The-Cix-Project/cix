@@ -29,4 +29,4 @@ Part 4 of the logging/web-UI epic. User request: "in the system tree, i want to 
 ## Consequences
 
 - Closes the one real remaining gap between `GET /system/stats`'s own existence (ADR-0073) and it having zero operator-facing surface until now.
-- The "all interfaces combined" network chart is honest but coarse — an operator wanting per-interface host-level throughput still needs `thincctl host-stats` or a direct API call and their own filtering; not solved here, and not asked for.
+- The "all interfaces combined" network chart is honest but coarse — an operator wanting per-interface host-level throughput still needs `cixctl host-stats` or a direct API call and their own filtering; not solved here, and not asked for.

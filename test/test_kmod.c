@@ -44,7 +44,7 @@ static pid_t start_daemon(void)
 	static char data_dir_arg[PATH_MAX + 11];
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
-	dargv[0] = "build/thincd";
+	dargv[0] = "build/cixd";
 	dargv[1] = PORT_ARG;
 	dargv[2] = data_dir_arg;
 	dargv[3] = NULL;
@@ -55,8 +55,8 @@ static pid_t start_daemon(void)
 		return -1;
 	}
 	if (pid == 0) {
-		execve("build/thincd", dargv, environ);
-		perror("execve build/thincd");
+		execve("build/cixd", dargv, environ);
+		perror("execve build/cixd");
 		_exit(127);
 	}
 	return pid;
@@ -72,14 +72,14 @@ static int stop_daemon(pid_t pid)
 	return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
 }
 
-static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
+static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 {
 	int i;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			thinc_response_free(&r);
+		if (cix_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			cix_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -122,9 +122,9 @@ static int real_loaded_module_name(char *out, size_t out_size)
 int main(void)
 {
 	pid_t daemon_pid;
-	struct thinc_client client;
+	struct cix_client client;
 	int ok = 1;
-	struct thinc_response r;
+	struct cix_response r;
 	char real_name[64];
 	int have_real_name;
 
@@ -137,7 +137,7 @@ int main(void)
 		return 1;
 	}
 
-	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
+	cix_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
@@ -152,7 +152,7 @@ int main(void)
 	 * /proc/modules -- the one live-management surface fully provable
 	 * in this sandbox, since it's a plain file read, no fork. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/system/kmod", NULL, &r) != 0 || r.status != 200) {
+	if (cix_client_request(&client, "GET", "/v1/system/kmod", NULL, &r) != 0 || r.status != 200) {
 		fprintf(stderr, "FAIL: GET /v1/system/kmod: expected 200, got %d\n", r.status);
 		ok = 0;
 	} else if (have_real_name) {
@@ -179,13 +179,13 @@ int main(void)
 			}
 		}
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 2. kmod-config: PUT with both fields, GET (via list), round-trip
 	 * the options object, DELETE, re-DELETE 404. Real daemon state,
 	 * fully testable with no real modprobe/modinfo involved at all. */
 	memset(&r, 0, sizeof(r));
-	if (ok && (thinc_client_request(&client, "PUT", "/v1/system/kmod-config/e1000e",
+	if (ok && (cix_client_request(&client, "PUT", "/v1/system/kmod-config/e1000e",
 	                              "{\"default_options\":{\"debug\":\"1\",\"mode\":\"auto\"},"
 	                              "\"autoload\":true}",
 	                              &r) != 0 ||
@@ -210,13 +210,13 @@ int main(void)
 			ok = 0;
 		}
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* Partial update: only autoload, options must survive untouched
 	 * (read-modify-write, matching daemon-config's own established PUT
 	 * shape). */
 	memset(&r, 0, sizeof(r));
-	if (ok && (thinc_client_request(&client, "PUT", "/v1/system/kmod-config/e1000e",
+	if (ok && (cix_client_request(&client, "PUT", "/v1/system/kmod-config/e1000e",
 	                              "{\"autoload\":false}", &r) != 0 ||
 	           r.status != 200)) {
 		fprintf(stderr, "FAIL: PUT kmod-config e1000e (autoload only): expected 200, got %d\n",
@@ -237,10 +237,10 @@ int main(void)
 			ok = 0;
 		}
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (ok && (thinc_client_request(&client, "GET", "/v1/system/kmod-config", NULL, &r) != 0 ||
+	if (ok && (cix_client_request(&client, "GET", "/v1/system/kmod-config", NULL, &r) != 0 ||
 	           r.status != 200)) {
 		fprintf(stderr, "FAIL: GET /v1/system/kmod-config: expected 200, got %d\n", r.status);
 		ok = 0;
@@ -265,33 +265,33 @@ int main(void)
 			}
 		}
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (ok && (thinc_client_request(&client, "DELETE", "/v1/system/kmod-config/e1000e", NULL, &r) !=
+	if (ok && (cix_client_request(&client, "DELETE", "/v1/system/kmod-config/e1000e", NULL, &r) !=
 	               0 ||
 	           r.status != 204)) {
 		fprintf(stderr, "FAIL: DELETE kmod-config e1000e: expected 204, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (ok && (thinc_client_request(&client, "DELETE", "/v1/system/kmod-config/e1000e", NULL, &r) !=
+	if (ok && (cix_client_request(&client, "DELETE", "/v1/system/kmod-config/e1000e", NULL, &r) !=
 	               0 ||
 	           r.status != 404)) {
 		fprintf(stderr, "FAIL: second DELETE kmod-config e1000e: expected 404, got %d\n",
 		        r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 3. Live load/unload/show -- this sandbox has no real modprobe/
 	 * modinfo staged at all, so the only provable behavior here is a
 	 * clean 404, never a crash/hang. Real success-path verification
 	 * needs a real installed box (see the file-level comment above). */
 	memset(&r, 0, sizeof(r));
-	if (ok && (thinc_client_request(&client, "POST", "/v1/system/kmod/e1000e", "{}", &r) != 0 ||
+	if (ok && (cix_client_request(&client, "POST", "/v1/system/kmod/e1000e", "{}", &r) != 0 ||
 	           r.status != 404)) {
 		fprintf(stderr,
 		        "FAIL: POST /v1/system/kmod/e1000e (no real modprobe in this sandbox): "
@@ -299,10 +299,10 @@ int main(void)
 		        r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (ok && (thinc_client_request(&client, "GET", "/v1/system/kmod/e1000e", NULL, &r) != 0 ||
+	if (ok && (cix_client_request(&client, "GET", "/v1/system/kmod/e1000e", NULL, &r) != 0 ||
 	           r.status != 404)) {
 		fprintf(stderr,
 		        "FAIL: GET /v1/system/kmod/e1000e (no real modinfo in this sandbox): expected "
@@ -310,10 +310,10 @@ int main(void)
 		        r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (ok && (thinc_client_request(&client, "DELETE", "/v1/system/kmod/e1000e", NULL, &r) != 0 ||
+	if (ok && (cix_client_request(&client, "DELETE", "/v1/system/kmod/e1000e", NULL, &r) != 0 ||
 	           r.status != 404)) {
 		fprintf(stderr,
 		        "FAIL: DELETE /v1/system/kmod/e1000e (no real modprobe in this sandbox): "
@@ -321,28 +321,28 @@ int main(void)
 		        r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 4. Error paths: invalid names everywhere a name is taken. */
 	memset(&r, 0, sizeof(r));
-	if (ok && (thinc_client_request(&client, "GET", "/v1/system/kmod/bad/name", NULL, &r) != 0 ||
+	if (ok && (cix_client_request(&client, "GET", "/v1/system/kmod/bad/name", NULL, &r) != 0 ||
 	           r.status != 400)) {
 		fprintf(stderr, "FAIL: GET kmod with '/' in name: expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (ok && (thinc_client_request(&client, "PUT", "/v1/system/kmod-config/e1000e", "{}", &r) != 0 ||
+	if (ok && (cix_client_request(&client, "PUT", "/v1/system/kmod-config/e1000e", "{}", &r) != 0 ||
 	           r.status != 400)) {
 		fprintf(stderr, "FAIL: PUT kmod-config with neither field: expected 400, got %d\n",
 		        r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (ok && (thinc_client_request(&client, "PUT", "/v1/system/kmod-config/e1000e",
+	if (ok && (cix_client_request(&client, "PUT", "/v1/system/kmod-config/e1000e",
 	                              "{\"default_options\":\"not-an-object\"}", &r) != 0 ||
 	           r.status != 400)) {
 		fprintf(stderr, "FAIL: PUT kmod-config with non-object default_options: expected 400, "
@@ -350,7 +350,7 @@ int main(void)
 		        r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	if (ok)
 		printf("KMOD RESULT: PASS\n");

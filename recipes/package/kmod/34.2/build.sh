@@ -4,7 +4,7 @@
 # hand-roll dependency resolution" posture, e.g. bird/keepalived/coreutils)
 # rather than reimplementing modprobe's own dependency-graph resolution in
 # raw C. Part 3 of the bare-metal-readiness plan (kernel module loading) --
-# thincd's own boot_init() shells out to this real, freshly-staged
+# cixd's own boot_init() shells out to this real, freshly-staged
 # modprobe for a curated boot-critical module list, the exact same
 # subprocess pattern every other host tool this project already invokes
 # (curl, sfdisk, openssl) uses, no new mechanism needed.
@@ -42,7 +42,7 @@ pkg_build() {
 # pulled in statically at link time, not as a runtime .so dependency) --
 # no extra runtime libraries to stage. Bash/fish/zsh completions and
 # libkmod's own pkg-config/header/library files are stripped -- none of
-# this project's own tooling (thincctl, the daemon) ever links against
+# this project's own tooling (cixctl, the daemon) ever links against
 # libkmod or uses shell completions.
 pkg_install() {
 	make install DESTDIR="$PKG_DESTDIR"

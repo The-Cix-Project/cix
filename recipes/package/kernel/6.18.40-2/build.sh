@@ -1,6 +1,6 @@
 pkg_name="kernel"
 pkg_version="6.18.40-2"
-pkg_source="https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.40.tar.xz https://osakka:REPLACE_WITH_REAL_TOKEN@git.home.arpa/api/v1/repos/itdlabs/thinc/raw/image/kernel/qemu-part1.config?ref=f2281813a4b542efd5993386e27d8d60740981ff"
+pkg_source="https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.40.tar.xz https://osakka:REPLACE_WITH_REAL_TOKEN@git.home.arpa/api/v1/repos/itdlabs/cix/raw/image/kernel/qemu-part1.config?ref=f2281813a4b542efd5993386e27d8d60740981ff"
 pkg_sha256="3712fc1ec839e4daac981176c8518912e8f452650aaedfe4381da4419613a431 c219ac9ab1ead53bc0877e6e3a8468addf5a3ff1b23849aaf5014e78e46e4d59"
 pkg_depends=""
 
@@ -15,10 +15,10 @@ pkg_depends=""
 # Also switches the config-file half of pkg_source from a stale
 # 127.0.0.1:8901 scratch-server placeholder to this repo's own real,
 # git-hosted copy at the exact commit that landed the fix -- fetched
-# via gitea's raw-file API the same way thinc.recipe's own pkg_source
+# via gitea's raw-file API the same way cix.recipe's own pkg_source
 # already fetches a full archive, just for a single file instead.
 # REPLACE_WITH_REAL_TOKEN is the same deliberate, never-committed
-# placeholder convention thinc.recipe already established -- a real
+# placeholder convention cix.recipe already established -- a real
 # token is substituted only via `pkg recipe add`, never here.
 #
 # A hostbuild recipe (ADR-0056) -- pkg_install() places its output at a
@@ -40,7 +40,7 @@ pkg_depends=""
 # running uname -r (a bare `depmod` with no -F/version argument defaults
 # to that instead, which will not match this kernel version at all).
 #
-# ADR-0159 Phase B: an optional THINC_KMOD_EXTRA_SYMBOLS environment
+# ADR-0159 Phase B: an optional CIX_KMOD_EXTRA_SYMBOLS environment
 # variable (a space-separated list of bare CONFIG_* names, set only by
 # POST /v1/system/kmod-build's own daemon-side pkg_hostbuild_start()
 # call -- every other caller of this same recipe, e.g. an ordinary
@@ -70,14 +70,14 @@ pkg_build() {
 	# convention), so bash.recipe now provides this one standard path
 	# any real build-toolchain image needs.
 	cp /build/extra/qemu-part1.config .config
-	if [ -n "$THINC_KMOD_EXTRA_SYMBOLS" ]; then
+	if [ -n "$CIX_KMOD_EXTRA_SYMBOLS" ]; then
 		: > /build/extra/kmod-extra.config
-		for sym in $THINC_KMOD_EXTRA_SYMBOLS; do
+		for sym in $CIX_KMOD_EXTRA_SYMBOLS; do
 			echo "${sym}=m" >> /build/extra/kmod-extra.config
 		done
 	fi
 	make ARCH=x86_64 SHELL=/usr/bin/bash allnoconfig
-	if [ -n "$THINC_KMOD_EXTRA_SYMBOLS" ]; then
+	if [ -n "$CIX_KMOD_EXTRA_SYMBOLS" ]; then
 		bash ./scripts/kconfig/merge_config.sh -m .config /build/extra/qemu-part1.config \
 			/build/extra/kmod-extra.config
 	else

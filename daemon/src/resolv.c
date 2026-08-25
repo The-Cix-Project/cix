@@ -81,7 +81,7 @@ enum resolv_error resolv_set(const char *const *nameservers, int count)
 
 	/*
 	 * NOT persist_atomic_write(): this file is bind-mounted onto
-	 * /etc/resolv.conf at boot (boot_init(), main.c) so thincd's own
+	 * /etc/resolv.conf at boot (boot_init(), main.c) so cixd's own
 	 * curl/openssl subprocesses -- and every future host-level tool --
 	 * resolve through it live. A bind mount binds to the INODE that
 	 * was at this path at mount time, not the path itself -- persist_

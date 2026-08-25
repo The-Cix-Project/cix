@@ -8,7 +8,7 @@ Refines the layout described in [ADR-0018](0018-containers-partition-for-base-di
 
 ## Context
 
-`thinc-install --auto-partition` created five partitions: ESP, root-a, root-b, config, and then `thinc-containers` sized as **the rest of the disk**. On a 2 TB machine that is 2 TB of one filesystem, chosen by the installer, before the machine's owner has said anything about how they want their storage arranged.
+`cix-install --auto-partition` created five partitions: ESP, root-a, root-b, config, and then `cix-containers` sized as **the rest of the disk**. On a 2 TB machine that is 2 TB of one filesystem, chosen by the installer, before the machine's owner has said anything about how they want their storage arranged.
 
 Raised directly by the operator, ahead of the first bare-metal install:
 
@@ -18,7 +18,7 @@ It does, and there is a stronger reason than flexibility: an installer that cons
 
 Two things were checked rather than assumed while scoping this:
 
-- **The `config` partition is genuinely used.** It carries `net.conf` — the address, prefix, gateway and interface the installer was given — which `thincd` reads on its very first boot to bootstrap the management network. Not vestigial.
+- **The `config` partition is genuinely used.** It carries `net.conf` — the address, prefix, gateway and interface the installer was given — which `cixd` reads on its very first boot to bootstrap the management network. Not vestigial.
 - **No disk role is auto-assigned.** `diskrole_create()` is only ever reached from its REST handler; nothing assigns one at boot. The operator's concern about an auto-assigned container-storage role was already satisfied — the disk-consumption half was the real gap.
 
 ## Decision

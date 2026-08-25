@@ -12,26 +12,26 @@
  * constants already take. Only the ones this file actually references are
  * named; see capabilities(7) for the full canonical list.
  */
-#define THINC_CAP_SYS_MODULE       16
-#define THINC_CAP_SYS_RAWIO        17
-#define THINC_CAP_SYS_PTRACE       19
-#define THINC_CAP_SYS_PACCT        20
-#define THINC_CAP_SYS_ADMIN        21
-#define THINC_CAP_SYS_BOOT         22
-#define THINC_CAP_SYS_RESOURCE     24
-#define THINC_CAP_SYS_TIME         25
-#define THINC_CAP_SYS_TTY_CONFIG   26
-#define THINC_CAP_LINUX_IMMUTABLE  9
-#define THINC_CAP_AUDIT_CONTROL    30
-#define THINC_CAP_MAC_OVERRIDE     32
-#define THINC_CAP_MAC_ADMIN        33
-#define THINC_CAP_SYSLOG           34
-#define THINC_CAP_WAKE_ALARM       35
-#define THINC_CAP_BLOCK_SUSPEND    36
-#define THINC_CAP_AUDIT_READ       37
-#define THINC_CAP_PERFMON          38
-#define THINC_CAP_BPF              39
-#define THINC_CAP_CHECKPOINT_RESTORE 40
+#define CIX_CAP_SYS_MODULE       16
+#define CIX_CAP_SYS_RAWIO        17
+#define CIX_CAP_SYS_PTRACE       19
+#define CIX_CAP_SYS_PACCT        20
+#define CIX_CAP_SYS_ADMIN        21
+#define CIX_CAP_SYS_BOOT         22
+#define CIX_CAP_SYS_RESOURCE     24
+#define CIX_CAP_SYS_TIME         25
+#define CIX_CAP_SYS_TTY_CONFIG   26
+#define CIX_CAP_LINUX_IMMUTABLE  9
+#define CIX_CAP_AUDIT_CONTROL    30
+#define CIX_CAP_MAC_OVERRIDE     32
+#define CIX_CAP_MAC_ADMIN        33
+#define CIX_CAP_SYSLOG           34
+#define CIX_CAP_WAKE_ALARM       35
+#define CIX_CAP_BLOCK_SUSPEND    36
+#define CIX_CAP_AUDIT_READ       37
+#define CIX_CAP_PERFMON          38
+#define CIX_CAP_BPF              39
+#define CIX_CAP_CHECKPOINT_RESTORE 40
 
 /*
  * Default deny-list: real, actively dangerous capabilities no ordinary
@@ -82,76 +82,76 @@
  * confirmed by inspecting each live container's actual cmd/config before
  * writing this list, not assumed.
  */
-static const int thinc_default_deny[] = {
-	THINC_CAP_SYS_MODULE,
-	THINC_CAP_SYS_ADMIN,
-	THINC_CAP_SYS_PTRACE,
-	THINC_CAP_SYS_RAWIO,
-	THINC_CAP_SYS_BOOT,
-	THINC_CAP_SYS_TIME,
-	THINC_CAP_SYS_RESOURCE,
-	THINC_CAP_SYS_TTY_CONFIG,
-	THINC_CAP_LINUX_IMMUTABLE,
-	THINC_CAP_SYS_PACCT,
-	THINC_CAP_MAC_OVERRIDE,
-	THINC_CAP_MAC_ADMIN,
-	THINC_CAP_SYSLOG,
-	THINC_CAP_WAKE_ALARM,
-	THINC_CAP_BLOCK_SUSPEND,
-	THINC_CAP_AUDIT_CONTROL,
-	THINC_CAP_AUDIT_READ,
-	THINC_CAP_PERFMON,
-	THINC_CAP_BPF,
-	THINC_CAP_CHECKPOINT_RESTORE,
+static const int cix_default_deny[] = {
+	CIX_CAP_SYS_MODULE,
+	CIX_CAP_SYS_ADMIN,
+	CIX_CAP_SYS_PTRACE,
+	CIX_CAP_SYS_RAWIO,
+	CIX_CAP_SYS_BOOT,
+	CIX_CAP_SYS_TIME,
+	CIX_CAP_SYS_RESOURCE,
+	CIX_CAP_SYS_TTY_CONFIG,
+	CIX_CAP_LINUX_IMMUTABLE,
+	CIX_CAP_SYS_PACCT,
+	CIX_CAP_MAC_OVERRIDE,
+	CIX_CAP_MAC_ADMIN,
+	CIX_CAP_SYSLOG,
+	CIX_CAP_WAKE_ALARM,
+	CIX_CAP_BLOCK_SUSPEND,
+	CIX_CAP_AUDIT_CONTROL,
+	CIX_CAP_AUDIT_READ,
+	CIX_CAP_PERFMON,
+	CIX_CAP_BPF,
+	CIX_CAP_CHECKPOINT_RESTORE,
 };
-#define THINC_DEFAULT_DENY_COUNT (int)(sizeof(thinc_default_deny) / sizeof(thinc_default_deny[0]))
+#define CIX_DEFAULT_DENY_COUNT (int)(sizeof(cix_default_deny) / sizeof(cix_default_deny[0]))
 
-/* Only capabilities that are ever actually on thinc_default_deny above are
+/* Only capabilities that are ever actually on cix_default_deny above are
  * meaningful cap_add targets -- CAP_NET_ADMIN etc. are already kept by
  * default and would be a silent no-op here, not a real exception. */
-struct thinc_cap_name {
+struct cix_cap_name {
 	const char *name;
 	int value;
 };
 
-static const struct thinc_cap_name thinc_cap_names[] = {
-	{ "CAP_SYS_MODULE", THINC_CAP_SYS_MODULE },
-	{ "CAP_SYS_ADMIN", THINC_CAP_SYS_ADMIN },
-	{ "CAP_SYS_PTRACE", THINC_CAP_SYS_PTRACE },
-	{ "CAP_SYS_RAWIO", THINC_CAP_SYS_RAWIO },
-	{ "CAP_SYS_BOOT", THINC_CAP_SYS_BOOT },
-	{ "CAP_SYS_TIME", THINC_CAP_SYS_TIME },
-	{ "CAP_SYS_RESOURCE", THINC_CAP_SYS_RESOURCE },
-	{ "CAP_SYS_TTY_CONFIG", THINC_CAP_SYS_TTY_CONFIG },
-	{ "CAP_LINUX_IMMUTABLE", THINC_CAP_LINUX_IMMUTABLE },
-	{ "CAP_SYS_PACCT", THINC_CAP_SYS_PACCT },
-	{ "CAP_MAC_OVERRIDE", THINC_CAP_MAC_OVERRIDE },
-	{ "CAP_MAC_ADMIN", THINC_CAP_MAC_ADMIN },
-	{ "CAP_SYSLOG", THINC_CAP_SYSLOG },
-	{ "CAP_WAKE_ALARM", THINC_CAP_WAKE_ALARM },
-	{ "CAP_BLOCK_SUSPEND", THINC_CAP_BLOCK_SUSPEND },
-	{ "CAP_AUDIT_CONTROL", THINC_CAP_AUDIT_CONTROL },
-	{ "CAP_AUDIT_READ", THINC_CAP_AUDIT_READ },
-	{ "CAP_PERFMON", THINC_CAP_PERFMON },
-	{ "CAP_BPF", THINC_CAP_BPF },
-	{ "CAP_CHECKPOINT_RESTORE", THINC_CAP_CHECKPOINT_RESTORE },
+static const struct cix_cap_name cix_cap_names[] = {
+	{ "CAP_SYS_MODULE", CIX_CAP_SYS_MODULE },
+	{ "CAP_SYS_ADMIN", CIX_CAP_SYS_ADMIN },
+	{ "CAP_SYS_PTRACE", CIX_CAP_SYS_PTRACE },
+	{ "CAP_SYS_RAWIO", CIX_CAP_SYS_RAWIO },
+	{ "CAP_SYS_BOOT", CIX_CAP_SYS_BOOT },
+	{ "CAP_SYS_TIME", CIX_CAP_SYS_TIME },
+	{ "CAP_SYS_RESOURCE", CIX_CAP_SYS_RESOURCE },
+	{ "CAP_SYS_TTY_CONFIG", CIX_CAP_SYS_TTY_CONFIG },
+	{ "CAP_LINUX_IMMUTABLE", CIX_CAP_LINUX_IMMUTABLE },
+	{ "CAP_SYS_PACCT", CIX_CAP_SYS_PACCT },
+	{ "CAP_MAC_OVERRIDE", CIX_CAP_MAC_OVERRIDE },
+	{ "CAP_MAC_ADMIN", CIX_CAP_MAC_ADMIN },
+	{ "CAP_SYSLOG", CIX_CAP_SYSLOG },
+	{ "CAP_WAKE_ALARM", CIX_CAP_WAKE_ALARM },
+	{ "CAP_BLOCK_SUSPEND", CIX_CAP_BLOCK_SUSPEND },
+	{ "CAP_AUDIT_CONTROL", CIX_CAP_AUDIT_CONTROL },
+	{ "CAP_AUDIT_READ", CIX_CAP_AUDIT_READ },
+	{ "CAP_PERFMON", CIX_CAP_PERFMON },
+	{ "CAP_BPF", CIX_CAP_BPF },
+	{ "CAP_CHECKPOINT_RESTORE", CIX_CAP_CHECKPOINT_RESTORE },
 };
-#define THINC_CAP_NAMES_COUNT (int)(sizeof(thinc_cap_names) / sizeof(thinc_cap_names[0]))
+#define CIX_CAP_NAMES_COUNT (int)(sizeof(cix_cap_names) / sizeof(cix_cap_names[0]))
 
 /* -1 if name isn't a recognized, droppable capability name. */
-static int thinc_cap_by_name(const char *name)
+static int cix_cap_by_name(const char *name)
 {
 	int i;
 
-	for (i = 0; i < THINC_CAP_NAMES_COUNT; i++)
-		if (strcmp(thinc_cap_names[i].name, name) == 0)
-			return thinc_cap_names[i].value;
+	for (i = 0; i < CIX_CAP_NAMES_COUNT; i++)
+		if (strcmp(cix_cap_names[i].name, name) == 0)
+			return cix_cap_names[i].value;
 	return -1;
 }
 
 int container_cap_name_valid(const char *name)
 {
-	return thinc_cap_by_name(name) >= 0;
+	return cix_cap_by_name(name) >= 0;
 }
 
 int container_caps_drop(const char cap_add[][CONTAINER_CAP_NAME_MAX], int cap_add_count)
@@ -162,18 +162,18 @@ int container_caps_drop(const char cap_add[][CONTAINER_CAP_NAME_MAX], int cap_ad
 	 * anything -- a typo should fail cleanly, not leave an operator
 	 * believing a capability was restored when it silently wasn't. */
 	for (j = 0; j < cap_add_count; j++) {
-		if (thinc_cap_by_name(cap_add[j]) < 0) {
+		if (cix_cap_by_name(cap_add[j]) < 0) {
 			errno = EINVAL;
 			return -1;
 		}
 	}
 
-	for (i = 0; i < THINC_DEFAULT_DENY_COUNT; i++) {
-		int cap = thinc_default_deny[i];
+	for (i = 0; i < CIX_DEFAULT_DENY_COUNT; i++) {
+		int cap = cix_default_deny[i];
 		int keep = 0;
 
 		for (j = 0; j < cap_add_count; j++) {
-			if (thinc_cap_by_name(cap_add[j]) == cap) {
+			if (cix_cap_by_name(cap_add[j]) == cap) {
 				keep = 1;
 				break;
 			}

@@ -62,7 +62,7 @@ static pid_t start_daemon(void)
 	static char data_dir_arg[PATH_MAX + 11];
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
-	dargv[0] = "build/thincd";
+	dargv[0] = "build/cixd";
 	dargv[1] = PORT_ARG;
 	dargv[2] = data_dir_arg;
 	dargv[3] = NULL;
@@ -73,8 +73,8 @@ static pid_t start_daemon(void)
 		return -1;
 	}
 	if (pid == 0) {
-		execve("build/thincd", dargv, environ);
-		perror("execve build/thincd");
+		execve("build/cixd", dargv, environ);
+		perror("execve build/cixd");
 		_exit(127);
 	}
 	return pid;
@@ -95,14 +95,14 @@ static const char *json_str_field(const struct json_value *obj, const char *key)
 	return json_as_string(json_object_get(obj, key));
 }
 
-static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
+static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 {
 	int i;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			thinc_response_free(&r);
+		if (cix_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			cix_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -214,7 +214,7 @@ static int stage_fixture_archive(const char *scratch_dir)
 }
 
 /* Polls GET /v1/pkg/sync until state leaves "running". */
-static int poll_sync(const struct thinc_client *c, struct thinc_response *out)
+static int poll_sync(const struct cix_client *c, struct cix_response *out)
 {
 	int i;
 
@@ -222,12 +222,12 @@ static int poll_sync(const struct thinc_client *c, struct thinc_response *out)
 		const char *state;
 
 		memset(out, 0, sizeof(*out));
-		if (thinc_client_request(c, "GET", "/v1/pkg/sync", NULL, out) != 0 || out->status != 200)
+		if (cix_client_request(c, "GET", "/v1/pkg/sync", NULL, out) != 0 || out->status != 200)
 			return -1;
 		state = json_str_field(out->json, "state");
 		if (state == NULL || strcmp(state, "running") != 0)
 			return 0;
-		thinc_response_free(out);
+		cix_response_free(out);
 		usleep(100000);
 	}
 	return -1;
@@ -236,9 +236,9 @@ static int poll_sync(const struct thinc_client *c, struct thinc_response *out)
 int main(void)
 {
 	pid_t daemon_pid, http_pid;
-	struct thinc_client client;
-	struct thinc_response r;
-	char scratch_dir[] = "/tmp/thinc_test_pkgsync_XXXXXX";
+	struct cix_client client;
+	struct cix_response r;
+	char scratch_dir[] = "/tmp/cix_test_pkgsync_XXXXXX";
 	char put_body[512];
 	char repo_url[128];
 	char recipe_check_path[PATH_MAX];
@@ -274,7 +274,7 @@ int main(void)
 		return 1;
 	}
 
-	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
+	cix_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never became healthy\n");
 		kill(daemon_pid, SIGKILL);
@@ -286,7 +286,7 @@ int main(void)
 
 	/* --- scenario 1: fresh daemon, no repo configured --- */
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "GET", "/v1/pkg/repo-config", NULL, &r) == 0 &&
+	CHECK(cix_client_request(&client, "GET", "/v1/pkg/repo-config", NULL, &r) == 0 &&
 	              r.status == 200,
 	      "GET /v1/pkg/repo-config (fresh)");
 	if (r.json != NULL) {
@@ -294,13 +294,13 @@ int main(void)
 
 		CHECK(url != NULL && url[0] == '\0', "fresh repo-config has empty repo_url");
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* --- scenario 2: POST /v1/pkg/sync with nothing configured -> 400 --- */
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "POST", "/v1/pkg/sync", NULL, &r) == 0 && r.status == 400,
+	CHECK(cix_client_request(&client, "POST", "/v1/pkg/sync", NULL, &r) == 0 && r.status == 400,
 	      "POST /v1/pkg/sync with no repo configured must 400");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* --- scenario 3: PUT /v1/pkg/repo-config, partial update semantics --- */
 	snprintf(repo_url, sizeof(repo_url), "http://127.0.0.1:%d/testowner/testrepo", HTTP_PORT);
@@ -309,7 +309,7 @@ int main(void)
 	         "\"auth_token\":\"scratch-token\",\"sync_interval_seconds\":0}",
 	         repo_url);
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "PUT", "/v1/pkg/repo-config", put_body, &r) == 0 &&
+	CHECK(cix_client_request(&client, "PUT", "/v1/pkg/repo-config", put_body, &r) == 0 &&
 	              r.status == 200,
 	      "PUT /v1/pkg/repo-config (initial)");
 	if (r.json != NULL) {
@@ -324,12 +324,12 @@ int main(void)
 		CHECK(json_object_get(r.json, "auth_token") == NULL,
 		      "the raw auth_token value is never echoed back");
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* Partial update: only bump sync_interval_seconds, url/kind/ref/token
 	 * must be left exactly as they were. */
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "PUT", "/v1/pkg/repo-config",
+	CHECK(cix_client_request(&client, "PUT", "/v1/pkg/repo-config",
 	                         "{\"sync_interval_seconds\":3600}", &r) == 0 &&
 	              r.status == 200,
 	      "PUT /v1/pkg/repo-config (partial: interval only)");
@@ -344,11 +344,11 @@ int main(void)
 		CHECK(token_set != NULL && token_set->type == JSON_BOOL && token_set->u.boolean,
 		      "auth_token_set still true (token untouched by partial update)");
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* --clear-token equivalent: an explicit empty string clears it. */
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "PUT", "/v1/pkg/repo-config", "{\"auth_token\":\"\"}", &r) ==
+	CHECK(cix_client_request(&client, "PUT", "/v1/pkg/repo-config", "{\"auth_token\":\"\"}", &r) ==
 	              0 &&
 	              r.status == 200,
 	      "PUT /v1/pkg/repo-config (clear token)");
@@ -358,21 +358,21 @@ int main(void)
 		CHECK(token_set != NULL && token_set->type == JSON_BOOL && !token_set->u.boolean,
 		      "auth_token_set false after explicit clear");
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* Set the interval back to 0 (disabled) so no periodic timer races
 	 * the explicit POST /v1/pkg/sync calls below. */
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "PUT", "/v1/pkg/repo-config",
+	CHECK(cix_client_request(&client, "PUT", "/v1/pkg/repo-config",
 	                         "{\"sync_interval_seconds\":0}", &r) == 0 && r.status == 200,
 	      "PUT /v1/pkg/repo-config (disable periodic sync)");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* --- scenario 4: real fetch + merge against the stand-in http server --- */
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "POST", "/v1/pkg/sync", NULL, &r) == 0 && r.status == 202,
+	CHECK(cix_client_request(&client, "POST", "/v1/pkg/sync", NULL, &r) == 0 && r.status == 202,
 	      "POST /v1/pkg/sync accepted (202)");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
 	CHECK(poll_sync(&client, &r) == 0, "sync leaves running state before timeout");
@@ -385,7 +385,7 @@ int main(void)
 		CHECK(added == 2, "first sync adds the package recipe and the image recipe");
 		CHECK(skipped == 0, "first sync skips nothing (nothing pre-existing)");
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	snprintf(recipe_check_path, sizeof(recipe_check_path), "%s/recipes/synctest/1.0/build.sh",
 	         g_pkg_state_dir);
@@ -401,7 +401,7 @@ int main(void)
 	 * higher of the two staged versions (1.0.0, not the stale 0.9.0)
 	 * won. */
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "GET", "/v1/images/recipes/synctest-image", NULL, &r) == 0 &&
+	CHECK(cix_client_request(&client, "GET", "/v1/images/recipes/synctest-image", NULL, &r) == 0 &&
 	              r.status == 200,
 	      "synced image recipe reachable via GET /v1/images/recipes/{name}");
 	if (r.json != NULL) {
@@ -411,14 +411,14 @@ int main(void)
 		              strstr(recipe_content, "synctest:pinned:0.9") == NULL,
 		      "synced image recipe picked the higher of the two staged versions (1.0.0)");
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* --- scenario 5: re-sync is additive/merge, not destructive -- the
 	 * same recipe is skipped as a duplicate, not re-added or rejected. */
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "POST", "/v1/pkg/sync", NULL, &r) == 0 && r.status == 202,
+	CHECK(cix_client_request(&client, "POST", "/v1/pkg/sync", NULL, &r) == 0 && r.status == 202,
 	      "second POST /v1/pkg/sync accepted (202)");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
 	CHECK(poll_sync(&client, &r) == 0, "second sync leaves running state before timeout");
@@ -433,7 +433,7 @@ int main(void)
 		CHECK(skipped == 1,
 		      "second sync skips the already-present package recipe (merge semantics)");
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* --- scenario 5b: parse_repo_url() ignores anything past the repo
 	 * segment (ADR-0133) -- an operator pasting a real forge browse URL
@@ -450,15 +450,15 @@ int main(void)
 	         "{\"repo_url\":\"http://127.0.0.1:%d/testowner/testrepo/src/branch/master/recipes/"
 	         "package\"}",
 	         HTTP_PORT);
-	CHECK(thinc_client_request(&client, "PUT", "/v1/pkg/repo-config", put_body, &r) == 0 &&
+	CHECK(cix_client_request(&client, "PUT", "/v1/pkg/repo-config", put_body, &r) == 0 &&
 	              r.status == 200,
 	      "PUT /v1/pkg/repo-config (browse-URL-style suffix)");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "POST", "/v1/pkg/sync", NULL, &r) == 0 && r.status == 202,
+	CHECK(cix_client_request(&client, "POST", "/v1/pkg/sync", NULL, &r) == 0 && r.status == 202,
 	      "POST /v1/pkg/sync accepted (browse-URL-style suffix)");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
 	CHECK(poll_sync(&client, &r) == 0, "browse-URL-suffix sync leaves running state before timeout");
@@ -472,22 +472,22 @@ int main(void)
 		CHECK(added == 1 && skipped == 1,
 		      "browse-URL-suffix sync resolves to the SAME repo as the bare owner/repo URL did");
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* --- scenario 6: a real fetch failure (unknown repo path -> curl
 	 * exit) reports state=failed with a real error, not a silent hang. */
 	memset(&r, 0, sizeof(r));
 	snprintf(put_body, sizeof(put_body), "{\"repo_url\":\"http://127.0.0.1:%d/testowner/nosuch\"}",
 	         HTTP_PORT);
-	CHECK(thinc_client_request(&client, "PUT", "/v1/pkg/repo-config", put_body, &r) == 0 &&
+	CHECK(cix_client_request(&client, "PUT", "/v1/pkg/repo-config", put_body, &r) == 0 &&
 	              r.status == 200,
 	      "PUT /v1/pkg/repo-config (repoint at a nonexistent repo)");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "POST", "/v1/pkg/sync", NULL, &r) == 0 && r.status == 202,
+	CHECK(cix_client_request(&client, "POST", "/v1/pkg/sync", NULL, &r) == 0 && r.status == 202,
 	      "POST /v1/pkg/sync accepted even though the target 404s (async, fails later)");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
 	CHECK(poll_sync(&client, &r) == 0, "failing sync leaves running state before timeout");
@@ -498,7 +498,7 @@ int main(void)
 		CHECK(state != NULL && strcmp(state, "failed") == 0, "sync against a 404 reports failed");
 		CHECK(error != NULL && error[0] != '\0', "a failed sync carries a real error message");
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	stop_daemon(daemon_pid);
 	stop_http_server(http_pid);

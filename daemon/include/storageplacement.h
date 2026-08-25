@@ -5,7 +5,7 @@
 
 /*
  * ADR-0141 Phase 2: which disk (if any) is the *active* placement for
- * each of thinC's own daemon-wide storage singletons -- state-storage,
+ * each of Cix's own daemon-wide storage singletons -- state-storage,
  * rebuildable-storage, log-storage. Persisted at a fixed g_base_dir
  * path (STORAGE_PLACEMENT_PATH, main.c), deliberately NEVER inside
  * STATE_DIR itself -- the same bootstrap-circularity reasoning

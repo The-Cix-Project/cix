@@ -13,7 +13,7 @@
  * networks, DNS records, installed-package state, every on-disk
  * package recipe version, and site config. Deliberately, and pre-
  * existingly, NEVER PKI keys/certs (do_system_backup() itself has
- * never included them -- thincctl's own `backup` command help already
+ * never included them -- cixctl's own `backup` command help already
  * says so) and NEVER container workload data or rebuildable-storage
  * content (no point backing up something regenerable from recipes/
  * sources by definition). An operator who also wants PKI material

@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-Confirmed directly, earlier this project: a real installed thinC host has no outbound DNS resolution mechanism at all (`thincd`'s own `curl` subprocess fails immediately with `CURLE_COULDNT_RESOLVE_HOST` against any real hostname). Worked around, repeatedly, with an ad-hoc LAN-mirror trick (`docs/guides/remote-development.md`) — real, but a per-session hack, not a fix.
+Confirmed directly, earlier this project: a real installed Cix host has no outbound DNS resolution mechanism at all (`cixd`'s own `curl` subprocess fails immediately with `CURLE_COULDNT_RESOLVE_HOST` against any real hostname). Worked around, repeatedly, with an ad-hoc LAN-mirror trick (`docs/guides/remote-development.md`) — real, but a per-session hack, not a fix.
 
 The user pushed back on an earlier draft of this ADR that proposed bind-mounting a file managed entirely inside `main.c`'s own boot path with no persisted, API-visible state: "we already write stuff to disk... where are they all being written to?" — correctly pointing out that every other piece of host config (`daemon_config.json`, `site_config.json`, PKI keys, disk roles) already has a real, `g_base_dir`-rooted, REST-visible home, and this should too, not a special case.
 
@@ -24,7 +24,7 @@ Two more decisions came out of the same discussion:
 
 **`dnsmasq.recipe`'s documented container invocation** gains real upstream forwarders (`--server=1.1.1.1 --server=8.8.8.8` alongside the existing `-R`) — previously purely authoritative for `.internal`, no recursion for anything else.
 
-**`thincctl resolv [show]` / `resolv set [--nameserver=A.B.C.D ...]`.**
+**`cixctl resolv [show]` / `resolv set [--nameserver=A.B.C.D ...]`.**
 
 ## Consequences
 

@@ -75,7 +75,7 @@ as a plain integer" approach either -- checked directly against every one
 of this project's own 60+ existing recipes before committing to a design,
 rather than assumed: most `pkg_version=` values are pure dotted-numeric
 (`"1.47.4"`, `"7.1"`, `"3.0.5"`, ...), but two real, already-shipping
-recipes are not -- `thinc.recipe`'s own `"v1.4.0"` (a leading non-digit
+recipes are not -- `cix.recipe`'s own `"v1.4.0"` (a leading non-digit
 prefix) and `xorriso.recipe`'s own `"1.5.8.pl02"` (a non-numeric trailing
 component). A naive per-component `atoi()` would silently treat both of
 those as `0` for the offending component -- exactly the kind of quiet

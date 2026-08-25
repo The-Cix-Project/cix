@@ -83,7 +83,7 @@ static int compute_file_sha256(const char *path, char *out_sha256, size_t sha256
  * cooperation. */
 static int compute_manifest_hash(const char *canonical, char *out_hash, size_t out_hash_size)
 {
-	char tmp_path[] = "/tmp/thinc_test_imgrecipe_hash_XXXXXX";
+	char tmp_path[] = "/tmp/cix_test_imgrecipe_hash_XXXXXX";
 	int fd;
 	ssize_t written;
 	int rc;
@@ -109,7 +109,7 @@ static pid_t start_daemon(void)
 	static char data_dir_arg[PATH_MAX + 11];
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
-	dargv[0] = "build/thincd";
+	dargv[0] = "build/cixd";
 	dargv[1] = PORT_ARG;
 	dargv[2] = data_dir_arg;
 	dargv[3] = NULL;
@@ -120,8 +120,8 @@ static pid_t start_daemon(void)
 		return -1;
 	}
 	if (pid == 0) {
-		execve("build/thincd", dargv, environ);
-		perror("execve build/thincd");
+		execve("build/cixd", dargv, environ);
+		perror("execve build/cixd");
 		_exit(127);
 	}
 	return pid;
@@ -142,14 +142,14 @@ static const char *json_str_field(const struct json_value *obj, const char *key)
 	return json_as_string(json_object_get(obj, key));
 }
 
-static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
+static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 {
 	int i;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			thinc_response_free(&r);
+		if (cix_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			cix_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -157,24 +157,24 @@ static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
 	return -1;
 }
 
-static int wait_for_apply_state(const struct thinc_client *c, const char *want, int max_attempts)
+static int wait_for_apply_state(const struct cix_client *c, const char *want, int max_attempts)
 {
 	int i;
 
 	for (i = 0; i < max_attempts; i++) {
-		struct thinc_response r;
+		struct cix_response r;
 		const char *state;
 		int matched;
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(c, "GET", "/v1/images/recipe-apply-status", NULL, &r) != 0 ||
+		if (cix_client_request(c, "GET", "/v1/images/recipe-apply-status", NULL, &r) != 0 ||
 		    r.status != 200) {
-			thinc_response_free(&r);
+			cix_response_free(&r);
 			return -1;
 		}
 		state = json_str_field(r.json, "state");
 		matched = state != NULL && strcmp(state, want) == 0;
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		if (matched)
 			return 0;
 		usleep(100000);
@@ -222,9 +222,9 @@ static int stop_http_server(pid_t pid)
 int main(void)
 {
 	pid_t daemon_pid, http_pid;
-	struct thinc_client client;
-	struct thinc_response r;
-	char scratch_dir[] = "/tmp/thinc_test_imgrecipe_XXXXXX";
+	struct cix_client client;
+	struct cix_response r;
+	char scratch_dir[] = "/tmp/cix_test_imgrecipe_XXXXXX";
 	char artifact_path[512], artifact_sha256[128];
 	char target_hash[128];
 
@@ -247,7 +247,7 @@ int main(void)
 		test_data_dir_cleanup(g_data_dir);
 		return 1;
 	}
-	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
+	cix_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never became healthy\n");
 		kill(daemon_pid, SIGKILL);
@@ -258,7 +258,7 @@ int main(void)
 
 	/* --- scenario 1: fresh recipe list is empty --- */
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "GET", "/v1/images/recipes", NULL, &r) == 0 && r.status == 200,
+	CHECK(cix_client_request(&client, "GET", "/v1/images/recipes", NULL, &r) == 0 && r.status == 200,
 	      "GET /v1/images/recipes (fresh)");
 	if (r.json != NULL) {
 		const struct json_value *recipes = json_object_get(r.json, "recipes");
@@ -266,16 +266,16 @@ int main(void)
 		CHECK(recipes != NULL && recipes->type == JSON_ARRAY && recipes->u.array.count == 0,
 		      "fresh recipe list is empty");
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* --- scenario 2: bulk-declare (no artifact tier) --- */
 	{
 		struct json_writer w;
 
-		CHECK(thinc_client_request(&client, "POST", "/v1/images", "{\"name\":\"bulkimg\"}", &r) == 0 &&
+		CHECK(cix_client_request(&client, "POST", "/v1/images", "{\"name\":\"bulkimg\"}", &r) == 0 &&
 		          r.status == 201,
 		      "image create bulkimg");
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		jw_init(&w);
 		jw_obj_open(&w);
@@ -285,15 +285,15 @@ int main(void)
 		jw_str(&w, "image_packages=\"foo:pinned:1.0 bar:rolling:2.0\"\n");
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
-		CHECK(thinc_client_request(&client, "POST", "/v1/images/recipes", w.buf, &r) == 0 &&
+		CHECK(cix_client_request(&client, "POST", "/v1/images/recipes", w.buf, &r) == 0 &&
 		          r.status == 204,
 		      "POST /v1/images/recipes (bulkimg)");
 		jw_free(&w);
-		thinc_response_free(&r);
+		cix_response_free(&r);
 	}
 
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "GET", "/v1/images/recipes", NULL, &r) == 0 && r.status == 200,
+	CHECK(cix_client_request(&client, "GET", "/v1/images/recipes", NULL, &r) == 0 && r.status == 200,
 	      "GET /v1/images/recipes (one entry)");
 	if (r.json != NULL) {
 		const struct json_value *recipes = json_object_get(r.json, "recipes");
@@ -301,10 +301,10 @@ int main(void)
 		CHECK(recipes != NULL && recipes->type == JSON_ARRAY && recipes->u.array.count == 1,
 		      "recipe list has exactly one entry after add");
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "GET", "/v1/images/recipes/bulkimg", NULL, &r) == 0 &&
+	CHECK(cix_client_request(&client, "GET", "/v1/images/recipes/bulkimg", NULL, &r) == 0 &&
 	          r.status == 200,
 	      "GET /v1/images/recipes/bulkimg");
 	if (r.json != NULL) {
@@ -312,16 +312,16 @@ int main(void)
 
 		CHECK(c != NULL && strstr(c, "foo:pinned:1.0") != NULL, "recipe content round-trips");
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "POST", "/v1/images/bulkimg/apply-recipe", NULL, &r) == 0 &&
+	CHECK(cix_client_request(&client, "POST", "/v1/images/bulkimg/apply-recipe", NULL, &r) == 0 &&
 	          r.status == 204,
 	      "apply-recipe bulkimg is synchronous (204, no artifact configured)");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "GET", "/v1/images/bulkimg", NULL, &r) == 0 && r.status == 200,
+	CHECK(cix_client_request(&client, "GET", "/v1/images/bulkimg", NULL, &r) == 0 && r.status == 200,
 	      "GET /v1/images/bulkimg after apply");
 	if (r.json != NULL) {
 		const struct json_value *manifest = json_object_get(r.json, "manifest");
@@ -329,7 +329,7 @@ int main(void)
 		CHECK(manifest != NULL && manifest->type == JSON_ARRAY && manifest->u.array.count == 2,
 		      "bulk-declared manifest has both entries");
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* Genuine "no build happened" proof: current_version is still the
 	 * empty-manifest hash (sha256 of ""), since bulk-declare never
@@ -337,7 +337,7 @@ int main(void)
 	 * calls to actually be realized, exactly like a manual manifest
 	 * edit already requires (v1 scope, pkg.h's own doc comment). */
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "GET", "/v1/images/bulkimg", NULL, &r) == 0, "re-fetch bulkimg");
+	CHECK(cix_client_request(&client, "GET", "/v1/images/bulkimg", NULL, &r) == 0, "re-fetch bulkimg");
 	if (r.json != NULL) {
 		const char *cv = json_str_field(r.json, "current_version");
 
@@ -346,14 +346,14 @@ int main(void)
 		              0,
 		      "bulk-declare never produced a new rootfs version");
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* --- scenario 3: unknown recipe apply is 404 --- */
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "POST", "/v1/images/noimg/apply-recipe", NULL, &r) == 0 &&
+	CHECK(cix_client_request(&client, "POST", "/v1/images/noimg/apply-recipe", NULL, &r) == 0 &&
 	          r.status == 404,
 	      "apply-recipe on an image with no stored recipe is 404");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* --- scenario 4: invalid recipe content is rejected --- */
 	{
@@ -367,11 +367,11 @@ int main(void)
 		jw_str(&w, "image_packages=\"not-a-valid-entry\"\n");
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
-		CHECK(thinc_client_request(&client, "POST", "/v1/images/recipes", w.buf, &r) == 0 &&
+		CHECK(cix_client_request(&client, "POST", "/v1/images/recipes", w.buf, &r) == 0 &&
 		          r.status == 400,
 		      "malformed image_packages entry is rejected (400)");
 		jw_free(&w);
-		thinc_response_free(&r);
+		cix_response_free(&r);
 	}
 
 	/* --- scenario 5: fully-pinned recipe + artifact fast path --- */
@@ -411,17 +411,17 @@ int main(void)
 		jw_str(&w, base_url);
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
-		CHECK(thinc_client_request(&client, "PUT", "/v1/pkg/artifact-config", w.buf, &r) == 0 &&
+		CHECK(cix_client_request(&client, "PUT", "/v1/pkg/artifact-config", w.buf, &r) == 0 &&
 		          r.status == 200,
 		      "PUT /v1/pkg/artifact-config");
 		jw_free(&w);
-		thinc_response_free(&r);
+		cix_response_free(&r);
 	}
 
-	CHECK(thinc_client_request(&client, "POST", "/v1/images", "{\"name\":\"artifactimg\"}", &r) == 0 &&
+	CHECK(cix_client_request(&client, "POST", "/v1/images", "{\"name\":\"artifactimg\"}", &r) == 0 &&
 	          r.status == 201,
 	      "image create artifactimg");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	{
 		char recipe_content[300];
@@ -438,23 +438,23 @@ int main(void)
 		jw_str(&w, recipe_content);
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
-		CHECK(thinc_client_request(&client, "POST", "/v1/images/recipes", w.buf, &r) == 0 &&
+		CHECK(cix_client_request(&client, "POST", "/v1/images/recipes", w.buf, &r) == 0 &&
 		          r.status == 204,
 		      "POST /v1/images/recipes (artifactimg)");
 		jw_free(&w);
-		thinc_response_free(&r);
+		cix_response_free(&r);
 	}
 
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "POST", "/v1/images/artifactimg/apply-recipe", NULL, &r) == 0 &&
+	CHECK(cix_client_request(&client, "POST", "/v1/images/artifactimg/apply-recipe", NULL, &r) == 0 &&
 	          r.status == 202,
 	      "apply-recipe artifactimg is async (202, fully-pinned + matching artifact)");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	CHECK(wait_for_apply_state(&client, "success", 50) == 0, "recipe apply reaches success");
 
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "GET", "/v1/images/artifactimg", NULL, &r) == 0 &&
+	CHECK(cix_client_request(&client, "GET", "/v1/images/artifactimg", NULL, &r) == 0 &&
 	          r.status == 200,
 	      "GET /v1/images/artifactimg after artifact apply");
 	if (r.json != NULL) {
@@ -466,12 +466,12 @@ int main(void)
 		CHECK(manifest != NULL && manifest->type == JSON_ARRAY && manifest->u.array.count == 1,
 		      "artifact-tier apply also declared the manifest");
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* g_packages[] mirrored (GET /v1/pkg matches the rootfs the
 	 * artifact tier just wrote, not just manifest.json's own intent). */
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "GET", "/v1/pkg/artifactpkg@artifactimg", NULL, &r) == 0 &&
+	CHECK(cix_client_request(&client, "GET", "/v1/pkg/artifactpkg@artifactimg", NULL, &r) == 0 &&
 	          r.status == 200,
 	      "GET /v1/pkg/artifactpkg@artifactimg");
 	if (r.json != NULL) {
@@ -482,7 +482,7 @@ int main(void)
 		      "artifact-tier package mirrored as installed");
 		CHECK(version != NULL && strcmp(version, "1.0") == 0, "mirrored version matches recipe");
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* The real rootfs file the artifact tarball actually carried. */
 	{
@@ -495,15 +495,15 @@ int main(void)
 
 	/* --- scenario 6: recipe rm --- */
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "DELETE", "/v1/images/recipes/bulkimg", NULL, &r) == 0 &&
+	CHECK(cix_client_request(&client, "DELETE", "/v1/images/recipes/bulkimg", NULL, &r) == 0 &&
 	          r.status == 204,
 	      "DELETE /v1/images/recipes/bulkimg");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "GET", "/v1/images/recipes/bulkimg", NULL, &r) == 0 &&
+	CHECK(cix_client_request(&client, "GET", "/v1/images/recipes/bulkimg", NULL, &r) == 0 &&
 	          r.status == 404,
 	      "GET removed recipe is 404");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/*
 	 * Issue #97: the declared-vs-installed reconciliation. What matters
@@ -522,19 +522,19 @@ int main(void)
 
 		/* An image with no recipe. */
 		memset(&r, 0, sizeof(r));
-		thinc_client_request(&client, "POST", "/v1/images", "{\"name\":\"recon-orphan\"}", &r);
-		thinc_response_free(&r);
+		cix_client_request(&client, "POST", "/v1/images", "{\"name\":\"recon-orphan\"}", &r);
+		cix_response_free(&r);
 
 		/* A recipe nobody has applied. */
 		memset(&r, 0, sizeof(r));
-		thinc_client_request(&client, "POST", "/v1/images/recipes",
+		cix_client_request(&client, "POST", "/v1/images/recipes",
 		                   "{\"name\":\"recon-unapplied\",\"content\":\"image_name=\\\"recon-unapplied\\\""
 		                   "\\nimage_packages=\\\"tcc:rolling:0.9.27\\\"\\n\"}",
 		                   &r);
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		CHECK(thinc_client_request(&client, "GET", "/v1/software", NULL, &r) == 0 && r.status == 200,
+		CHECK(cix_client_request(&client, "GET", "/v1/software", NULL, &r) == 0 && r.status == 200,
 		      "GET /v1/software reconciles declared against installed");
 		{
 			const struct json_value *list = json_object_get(r.json, "software");
@@ -557,7 +557,7 @@ int main(void)
 				}
 			}
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		CHECK(saw_orphan, "an image with no recipe is reported as installed-but-not-declared -- the "
 		                  "state that means it cannot be rebuilt from source control");
 		CHECK(saw_unapplied, "a recipe nobody has applied is reported as declared-but-not-installed");

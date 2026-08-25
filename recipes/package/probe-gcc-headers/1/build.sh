@@ -6,7 +6,7 @@
 # seeing a real PATH_MAX definition on this build image despite
 # libc-dev@2.36 staging a complete usr/include/limits.h. Deliberately
 # exits nonzero at the end so its own diagnostic output lands in
-# thincd's build-failure log without needing a real package artifact.
+# cixd's build-failure log without needing a real package artifact.
 #
 pkg_name="probe-gcc-headers"
 pkg_version="1"

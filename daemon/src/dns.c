@@ -517,7 +517,7 @@ void dns_server_write_json_one(const struct dns_server_binding *binding, struct 
 /* Issue #81: uniform enumerator so the shared server-health prober can
  * walk this kind's registered servers exactly as it walks the others --
  * same shape ldap_server_list_containers() already had. */
-/* Issue #83: how many records thinC is currently managing. Used to detect
+/* Issue #83: how many records Cix is currently managing. Used to detect
  * the silent-failure state where records exist but no server is registered
  * to receive them -- exactly how the internal zone resolved nothing on a
  * real box for as long as it existed. */

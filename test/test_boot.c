@@ -1,11 +1,11 @@
 /*
  * Phase 11 part 1 demonstrable test: proves the actual boot chain works --
- * kernel -> systemd-boot -> thincd --init-mode -- not just that each piece
+ * kernel -> systemd-boot -> cixd --init-mode -- not just that each piece
  * builds. Assembles a throwaway 2-partition disk (ESP + one squashfs root
  * slot; the real 5-partition A/B layout is part 3's installer output, not
  * this test's job), boots it in QEMU (software-emulated -- no /dev/kvm in
  * this dev LXC), and scrapes the serial console for the exact same
- * "thincd listening on ..." line every other test in this suite already
+ * "cixd listening on ..." line every other test in this suite already
  * treats as daemon-ready (daemon/src/main.c) -- proof this is the real
  * startup sequence running for real, not a special-cased boot-mode stub.
  *
@@ -23,8 +23,8 @@
 #include <unistd.h>
 
 #define MKBOOTROOT_BIN "build/mkbootroot"
-#define THINCD_BIN "build/thincd"
-#define THINCCTL_BIN "build/thincctl"
+#define CIXD_BIN "build/cixd"
+#define CIXCTL_BIN "build/cixctl"
 #define BZIMAGE_PATH "build/bzImage"
 #define SFDISK_BIN "/usr/sbin/sfdisk"
 #define SYSTEMD_BOOT_EFI "/usr/lib/systemd/boot/efi/systemd-bootx64.efi"
@@ -35,12 +35,12 @@
 #define SECTOR_SIZE 512
 
 #define BOOT_TIMEOUT_SECONDS 120
-#define SUCCESS_MARKER "thincd listening on"
+#define SUCCESS_MARKER "cixd listening on"
 #define PANIC_MARKER "Kernel panic"
 
 /* Builds the ESP as a standalone FAT32 file via mtools -- systemd-boot
  * itself, the kernel, and a loader entry pointing init at
- * thincd --init-mode on the raw root partition. */
+ * cixd --init-mode on the raw root partition. */
 static int build_esp_image(const char *esp_img, const char *workdir)
 {
 	char loader_conf_path[600];
@@ -58,22 +58,22 @@ static int build_esp_image(const char *esp_img, const char *workdir)
 		return -1;
 	if (esp_mcopy_in(esp_img, SYSTEMD_BOOT_EFI, "::/EFI/BOOT/BOOTX64.EFI") != 0)
 		return -1;
-	if (esp_mcopy_in(esp_img, BZIMAGE_PATH, "::/thinc-bzImage-a") != 0)
+	if (esp_mcopy_in(esp_img, BZIMAGE_PATH, "::/cix-bzImage-a") != 0)
 		return -1;
 
 	snprintf(loader_conf_path, sizeof(loader_conf_path), "%s/loader.conf", workdir);
-	if (write_text_file(loader_conf_path, "default thinc\ntimeout 0\n") != 0)
+	if (write_text_file(loader_conf_path, "default cix\ntimeout 0\n") != 0)
 		return -1;
 	if (esp_mcopy_in(esp_img, loader_conf_path, "::/loader/loader.conf") != 0)
 		return -1;
 
 	snprintf(loader_conf, sizeof(loader_conf),
-	         "title thinC\n"
-	         "linux /thinc-bzImage-a\n"
-	         "options console=ttyS0 root=/dev/vda2 rw init=/bin/thincd -- --init-mode\n");
+	         "title Cix\n"
+	         "linux /cix-bzImage-a\n"
+	         "options console=ttyS0 root=/dev/vda2 rw init=/bin/cixd -- --init-mode\n");
 	if (write_text_file(loader_conf_path, loader_conf) != 0)
 		return -1;
-	if (esp_mcopy_in(esp_img, loader_conf_path, "::/loader/entries/thinc.conf") != 0)
+	if (esp_mcopy_in(esp_img, loader_conf_path, "::/loader/entries/cix.conf") != 0)
 		return -1;
 
 	return 0;
@@ -81,7 +81,7 @@ static int build_esp_image(const char *esp_img, const char *workdir)
 
 int main(void)
 {
-	char workdir[] = "/tmp/thinc_test_boot_XXXXXX";
+	char workdir[] = "/tmp/cix_test_boot_XXXXXX";
 	char stage_dir[600];
 	char root_squashfs[600];
 	char disk_img[600];
@@ -104,11 +104,11 @@ int main(void)
 	snprintf(ovmf_vars, sizeof(ovmf_vars), "%s/OVMF_VARS.fd", workdir);
 
 	/* 1. Build the minimal control-plane root (build/mkbootroot already
-	 * reuses test_image_fixture_build() for the thincd+ld.so+libc
+	 * reuses test_image_fixture_build() for the cixd+ld.so+libc
 	 * staging -- not reimplemented here). */
 	{
 		char *mkbootroot_argv[] = { (char *)MKBOOTROOT_BIN, stage_dir,
-			                     (char *)THINCD_BIN, (char *)THINCCTL_BIN, "web", root_squashfs,
+			                     (char *)CIXD_BIN, (char *)CIXCTL_BIN, "web", root_squashfs,
 			                     "", /* no real GPU firmware needed for a boot test */
 			                     "", /* no kernel modules needed for a boot test */
 			                     "", /* no kmod tools needed for a boot test */

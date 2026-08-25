@@ -1,7 +1,7 @@
 #
 # SCRATCH DIAGNOSTIC ONLY -- never meant to succeed or be installed.
 # v4: v3's full `cat include-fixed/limits.h` got tail-truncated by
-# thincd's own 3800-byte build-output capture, cutting off exactly the
+# cixd's own 3800-byte build-output capture, cutting off exactly the
 # part that matters. Narrowed to grep just the MB_LEN_MAX-relevant
 # lines out of that file, plus a real preprocess of argp.h's own
 # `#include <limits.h>` (confirmed via /usr/include/argp.h: it pulls

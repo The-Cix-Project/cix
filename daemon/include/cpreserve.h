@@ -8,7 +8,7 @@
  *
  * On this platform the REST daemon is not one management path among
  * several -- it is the only one. There is no SSH and no general shell
- * (ADR-0034), so a starved `thincd` is not a degraded box, it is a box
+ * (ADR-0034), so a starved `cixd` is not a degraded box, it is a box
  * nobody can reach until someone walks to the hypervisor. That happened
  * for real on 192.168.15.95: four concurrent package builds oversub-
  * scribed a 2-CPU machine, the kernel stayed perfectly healthy (ping 0%
@@ -18,7 +18,7 @@
  * oom_score_adj -1000 (priority, the cheap 80%), and an aggregate
  * budget for builds (#85). This is the third and the structurally sound
  * one: rather than prioritising the daemon, BOUND EVERYTHING ELSE. Every
- * container and every build lives under one `thinc-workload` cgroup
+ * container and every build lives under one `cix-workload` cgroup
  * whose ceiling is the machine minus this reservation, so what is left
  * over is not a hope, it is a kernel-enforced remainder.
  *

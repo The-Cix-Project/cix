@@ -41,14 +41,14 @@ extern char **environ;
 static char g_data_dir[PATH_MAX];
 static char g_image_root[PATH_MAX];
 
-static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
+static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 {
 	int i;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			thinc_response_free(&r);
+		if (cix_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			cix_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -73,7 +73,7 @@ static pid_t start_daemon(void)
 	static char data_dir_arg[PATH_MAX + 11];
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
-	dargv[0] = "build/thincd";
+	dargv[0] = "build/cixd";
 	dargv[1] = PORT_ARG;
 	dargv[2] = data_dir_arg;
 	dargv[3] = NULL;
@@ -84,8 +84,8 @@ static pid_t start_daemon(void)
 		return -1;
 	}
 	if (pid == 0) {
-		execve("build/thincd", dargv, environ);
-		perror("execve build/thincd");
+		execve("build/cixd", dargv, environ);
+		perror("execve build/cixd");
 		_exit(127);
 	}
 	return pid;
@@ -104,9 +104,9 @@ static int stop_daemon(pid_t pid)
 int main(void)
 {
 	pid_t daemon_pid;
-	struct thinc_client client;
+	struct cix_client client;
 	int ok = 1;
-	struct thinc_response r;
+	struct cix_response r;
 	char first_assignable_id[128] = "";
 	int have_assignable = 0;
 	int have_composite = 0;
@@ -134,7 +134,7 @@ int main(void)
 		test_data_dir_cleanup(g_data_dir);
 		return 1;
 	}
-	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
+	cix_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
@@ -146,7 +146,7 @@ int main(void)
 	/* 1. Phase A: GET /v1/devices reports real composite-device
 	 * interface metadata, if this host has one. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/devices", NULL, &r) != 0 || r.status != 200) {
+	if (cix_client_request(&client, "GET", "/v1/devices", NULL, &r) != 0 || r.status != 200) {
 		fprintf(stderr, "FAIL: GET /v1/devices, status=%d\n", r.status);
 		ok = 0;
 	} else {
@@ -194,7 +194,7 @@ int main(void)
 			}
 		}
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	if (!have_composite)
 		printf("(no real composite USB device discovered on this host -- Phase A interface "
 		       "assertion skipped)\n");
@@ -203,7 +203,7 @@ int main(void)
 	 * resolve does NOT fail container creation -- fully deterministic
 	 * regardless of real hardware (a made-up id can never resolve). */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"devoptional\",\"image\":\"hotplugtest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"0\",\"0\"],"
 	                       "\"devices\":[{\"id\":\"usb:0000:0000:nonexistent\",\"optional\":true}]}",
@@ -233,13 +233,13 @@ int main(void)
 			}
 		}
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* Still deterministic: an unresolvable NON-optional device still
 	 * fails creation exactly as before (ADR-0161 Phase B is additive,
 	 * not a behavior change for the pre-existing bare-string form). */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"devrequired\",\"image\":\"hotplugtest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"0\",\"0\"],"
 	                       "\"devices\":[\"usb:0000:0000:nonexistent\"]}",
@@ -251,10 +251,10 @@ int main(void)
 		        r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"devbadoptional\",\"image\":\"hotplugtest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"0\",\"0\"],"
 	                       "\"devices\":[{\"id\":\"usb:0000:0000:nonexistent\",\"optional\":"
@@ -264,14 +264,14 @@ int main(void)
 		fprintf(stderr, "FAIL: POST with non-boolean optional: expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 3. Phase D: manual live attach/detach against a real, currently-
 	 * assignable device this host actually has -- skipped, not
 	 * failed, if none. */
 	if (have_assignable) {
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/containers",
+		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"devlive\",\"image\":\"hotplugtest\","
 		                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}",
 		                       &r) != 0 ||
@@ -280,14 +280,14 @@ int main(void)
 			        r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		if (ok) {
 			char body[192];
 
 			snprintf(body, sizeof(body), "{\"id\":\"%s\"}", first_assignable_id);
 			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "POST", "/v1/containers/devlive/devices", body, &r) !=
+			if (cix_client_request(&client, "POST", "/v1/containers/devlive/devices", body, &r) !=
 			        0 ||
 			    r.status != 200) {
 				fprintf(stderr, "FAIL: POST devlive/devices (live attach): expected 200, got "
@@ -314,7 +314,7 @@ int main(void)
 					ok = 0;
 				}
 			}
-			thinc_response_free(&r);
+			cix_response_free(&r);
 		}
 
 		/* A duplicate live-attach of the exact same id is rejected. */
@@ -323,7 +323,7 @@ int main(void)
 
 			snprintf(body, sizeof(body), "{\"id\":\"%s\"}", first_assignable_id);
 			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "POST", "/v1/containers/devlive/devices", body, &r) !=
+			if (cix_client_request(&client, "POST", "/v1/containers/devlive/devices", body, &r) !=
 			        0 ||
 			    r.status != 500) {
 				/* registry_device_live_attach() returns -1/EEXIST for a
@@ -335,7 +335,7 @@ int main(void)
 				fprintf(stderr, "FAIL: duplicate live attach: expected 500, got %d\n", r.status);
 				ok = 0;
 			}
-			thinc_response_free(&r);
+			cix_response_free(&r);
 		}
 
 		if (ok) {
@@ -343,22 +343,22 @@ int main(void)
 
 			snprintf(path, sizeof(path), "/v1/containers/devlive/devices/%s", first_assignable_id);
 			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "DELETE", path, NULL, &r) != 0 || r.status != 200) {
+			if (cix_client_request(&client, "DELETE", path, NULL, &r) != 0 || r.status != 200) {
 				fprintf(stderr, "FAIL: DELETE devlive/devices/%s (live detach): expected 200, "
 				                "got %d\n",
 				        first_assignable_id, r.status);
 				ok = 0;
 			}
-			thinc_response_free(&r);
+			cix_response_free(&r);
 
 			/* Second delete: no longer attached -> 404. */
 			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "DELETE", path, NULL, &r) != 0 || r.status != 404) {
+			if (cix_client_request(&client, "DELETE", path, NULL, &r) != 0 || r.status != 404) {
 				fprintf(stderr, "FAIL: second DELETE devlive/devices/%s: expected 404, got %d\n",
 				        first_assignable_id, r.status);
 				ok = 0;
 			}
-			thinc_response_free(&r);
+			cix_response_free(&r);
 		}
 
 		/* A create-time grant is never live-detachable (409). */
@@ -370,12 +370,12 @@ int main(void)
 			         "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],\"devices\":[\"%s\"]}",
 			         first_assignable_id);
 			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "POST", "/v1/containers", body, &r) != 0 ||
+			if (cix_client_request(&client, "POST", "/v1/containers", body, &r) != 0 ||
 			    r.status != 201) {
 				fprintf(stderr, "FAIL: POST devlivecreate: expected 201, got %d\n", r.status);
 				ok = 0;
 			}
-			thinc_response_free(&r);
+			cix_response_free(&r);
 
 			if (ok) {
 				char path[192];
@@ -383,24 +383,24 @@ int main(void)
 				snprintf(path, sizeof(path), "/v1/containers/devlivecreate/devices/%s",
 				         first_assignable_id);
 				memset(&r, 0, sizeof(r));
-				if (thinc_client_request(&client, "DELETE", path, NULL, &r) != 0 ||
+				if (cix_client_request(&client, "DELETE", path, NULL, &r) != 0 ||
 				    r.status != 409) {
 					fprintf(stderr,
 					        "FAIL: DELETE a create-time device grant: expected 409, got %d\n",
 					        r.status);
 					ok = 0;
 				}
-				thinc_response_free(&r);
+				cix_response_free(&r);
 			}
 
 			memset(&r, 0, sizeof(r));
-			thinc_client_request(&client, "DELETE", "/v1/containers/devlivecreate", NULL, &r);
-			thinc_response_free(&r);
+			cix_client_request(&client, "DELETE", "/v1/containers/devlivecreate", NULL, &r);
+			cix_response_free(&r);
 		}
 
 		memset(&r, 0, sizeof(r));
-		thinc_client_request(&client, "DELETE", "/v1/containers/devlive", NULL, &r);
-		thinc_response_free(&r);
+		cix_client_request(&client, "DELETE", "/v1/containers/devlive", NULL, &r);
+		cix_response_free(&r);
 	} else {
 		printf("(no assignable device discovered on this host -- Phase D live attach/detach "
 		       "scenario skipped)\n");
@@ -409,24 +409,24 @@ int main(void)
 	/* 4. Live attach/detach against a container that doesn't exist,
 	 * or isn't running -- fully deterministic. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers/nosuchcontainer/devices",
+	if (cix_client_request(&client, "POST", "/v1/containers/nosuchcontainer/devices",
 	                       "{\"id\":\"usb:0000:0000:x\"}", &r) != 0 ||
 	    r.status != 404) {
 		fprintf(stderr, "FAIL: POST devices on nonexistent container: expected 404, got %d\n",
 		        r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "DELETE", "/v1/containers/nosuchcontainer/devices/usb:x", NULL,
+	if (cix_client_request(&client, "DELETE", "/v1/containers/nosuchcontainer/devices/usb:x", NULL,
 	                       &r) != 0 ||
 	    r.status != 404) {
 		fprintf(stderr, "FAIL: DELETE devices on nonexistent container: expected 404, got %d\n",
 		        r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	if (ok)
 		printf("DEVICE HOTPLUG RESULT: PASS\n");

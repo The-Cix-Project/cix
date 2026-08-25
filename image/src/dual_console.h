@@ -7,7 +7,7 @@
  * ADR-0042: mirrors a program's own status output and one interactive
  * child process's I/O across two consoles at once, instead of
  * whatever single one the kernel happened to bind /dev/console to.
- * Extracted out of image/src/thinc-install.c (its own real, only
+ * Extracted out of image/src/cix-install.c (its own real, only
  * caller in production) into its own module specifically so
  * test/test_dual_console.c can link and exercise the real relay logic
  * directly -- not a re-implementation of it (No Parallel
@@ -17,7 +17,7 @@
 
 /*
  * Opens path0/path1 as the two consoles every function below writes
- * to / relays through -- thinc-install.c passes the real device
+ * to / relays through -- cix-install.c passes the real device
  * paths ("/dev/tty0"/"/dev/ttyS0"); test_dual_console.c passes two
  * PTY slave paths instead. Tolerant per-path: either failing to open
  * just makes that one unavailable to every helper below, not fatal by
@@ -43,7 +43,7 @@ int run_subprocess_dual_console(const char *bin, char *const argv[]);
 
 /*
  * Blocks until a byte arrives on whichever console still has one open,
- * discards it, and returns 0 -- thinc-install.c's own end-of-install
+ * discards it, and returns 0 -- cix-install.c's own end-of-install
  * "press Enter to reboot" prompt, so an operator watching either
  * console can proceed without needing to know which one is "live."
  * Returns -1 if neither console is open (nothing left to wait on).

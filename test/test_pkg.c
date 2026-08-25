@@ -70,14 +70,14 @@ static const char *router_path(const char *suffix)
 	return buf;
 }
 
-static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
+static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 {
 	int i;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			thinc_response_free(&r);
+		if (cix_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			cix_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -102,7 +102,7 @@ static pid_t start_daemon(void)
 	static char data_dir_arg[PATH_MAX + 11];
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
-	dargv[0] = "build/thincd";
+	dargv[0] = "build/cixd";
 	dargv[1] = PORT_ARG;
 	dargv[2] = data_dir_arg;
 	dargv[3] = NULL;
@@ -115,9 +115,9 @@ static pid_t start_daemon(void)
 	if (pid == 0) {
 		/* A stall is 10 minutes in production, which no test should
 		 * sit through to check that the reporting works. */
-		setenv("THINC_BUILD_STALL_SECONDS", "15", 1);
-		execve("build/thincd", dargv, environ);
-		perror("execve build/thincd");
+		setenv("CIX_BUILD_STALL_SECONDS", "15", 1);
+		execve("build/cixd", dargv, environ);
+		perror("execve build/cixd");
 		_exit(127);
 	}
 	return pid;
@@ -475,7 +475,7 @@ static int write_multisrc_recipe(const char *name, const char *version, const ch
 
 /* Polls GET /v1/pkg/{name} until state leaves fetching/building (or
  * max_attempts is exhausted). Writes the final state into out_state. */
-static int poll_pkg_state(const struct thinc_client *c, const char *name, char *out_state,
+static int poll_pkg_state(const struct cix_client *c, const char *name, char *out_state,
                            size_t out_state_size, int max_attempts)
 {
 	int i;
@@ -483,24 +483,24 @@ static int poll_pkg_state(const struct thinc_client *c, const char *name, char *
 
 	snprintf(path, sizeof(path), "/v1/pkg/%s", name);
 	for (i = 0; i < max_attempts; i++) {
-		struct thinc_response r;
+		struct cix_response r;
 		const char *state;
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(c, "GET", path, NULL, &r) != 0 || r.status != 200) {
-			thinc_response_free(&r);
+		if (cix_client_request(c, "GET", path, NULL, &r) != 0 || r.status != 200) {
+			cix_response_free(&r);
 			return -1;
 		}
 		state = json_str_field(r.json, "state");
 		if (state == NULL) {
-			thinc_response_free(&r);
+			cix_response_free(&r);
 			return -1;
 		}
 		/* Compare via out_state (a stable, owned copy) after freeing
 		 * r -- state itself points into r.json's tree and would be a
-		 * dangling pointer the instant thinc_response_free() runs. */
+		 * dangling pointer the instant cix_response_free() runs. */
 		snprintf(out_state, out_state_size, "%s", state);
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		if (strcmp(out_state, "fetching") != 0 && strcmp(out_state, "building") != 0)
 			return 0;
 		usleep(300000);
@@ -511,10 +511,10 @@ static int poll_pkg_state(const struct thinc_client *c, const char *name, char *
 int main(void)
 {
 	pid_t daemon_pid;
-	struct thinc_client client;
+	struct cix_client client;
 	int ok = 1;
-	struct thinc_response r;
-	char scratch_dir[] = "/tmp/thinc_test_pkg_XXXXXX";
+	struct cix_response r;
+	char scratch_dir[] = "/tmp/cix_test_pkg_XXXXXX";
 	char tarball_path[512], sha256[128];
 	char bad_sha256[128];
 	char state[32];
@@ -586,7 +586,7 @@ int main(void)
 	if (daemon_pid < 0)
 		return 1;
 
-	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
+	cix_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
@@ -597,21 +597,21 @@ int main(void)
 	/* ADR-0157 Phase 3: the real, unmodified default before this test
 	 * touches it at all. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/system/pkg-build-config", NULL, &r) != 0 ||
+	if (cix_client_request(&client, "GET", "/v1/system/pkg-build-config", NULL, &r) != 0 ||
 	    r.status != 200 || json_as_number(json_object_get(r.json, "max_concurrent_jobs")) != 10) {
 		fprintf(stderr, "FAIL: GET pkg-build-config expected 200 max_concurrent_jobs=10, got %d\n",
 		        r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 1. bootstrap the build toolchain image */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/pkg/bootstrap", NULL, &r) != 0 || r.status != 204) {
+	if (cix_client_request(&client, "POST", "/v1/pkg/bootstrap", NULL, &r) != 0 || r.status != 204) {
 		fprintf(stderr, "FAIL: POST /v1/pkg/bootstrap, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* ADR-0157 Phase 3 raised the real default ceiling to 10 -- lowered
 	 * here to a small, deterministic 2 so every "N chains busy" boundary
@@ -621,33 +621,33 @@ int main(void)
 	 * (validation, and the ceiling genuinely taking effect) is proven
 	 * separately, later in this test, by deliberately varying it. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "PUT", "/v1/system/pkg-build-config",
+	if (cix_client_request(&client, "PUT", "/v1/system/pkg-build-config",
 	                       "{\"max_concurrent_jobs\":2}", &r) != 0 || r.status != 200) {
 		fprintf(stderr, "FAIL: PUT pkg-build-config max_concurrent_jobs=2 (test setup), got %d\n",
 		        r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 2. install for an unknown recipe -> 400 */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"nosuchpackage\"}", &r) !=
+	if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"nosuchpackage\"}", &r) !=
 	        0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: install unknown recipe expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 3. real install: greeter -> 202, fetching */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"greeter\"}", &r) != 0 ||
+	if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"greeter\"}", &r) != 0 ||
 	    r.status != 202 || !str_eq(json_str_field(r.json, "state"), "fetching")) {
 		fprintf(stderr, "FAIL: POST install greeter, status=%d, state=%s\n", r.status,
 		        json_str_field(r.json, "state") ? json_str_field(r.json, "state") : "(null)");
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 4. ADR-0157 Phase 2: a second install (a DIFFERENT package) while
 	 * greeter is still in flight now genuinely fits -> 202, not 409.
@@ -661,27 +661,27 @@ int main(void)
 	 * isolation (distinct build containers, distinct output-capture
 	 * pipes, a correctly-serialized final merge into one image). */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"concurrent\"}", &r) !=
+	if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"concurrent\"}", &r) !=
 	        0 ||
 	    r.status != 202 || !str_eq(json_str_field(r.json, "state"), "fetching")) {
 		fprintf(stderr, "FAIL: POST install concurrent (2nd chain) status=%d, state=%s\n", r.status,
 		        json_str_field(r.json, "state") ? json_str_field(r.json, "state") : "(null)");
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 4b. a THIRD distinct install while both chain slots are occupied
 	 * -> 409 -- proves both slots are genuinely in use (not just that
 	 * "concurrent" above got lucky some other way), and that the
 	 * PKG_MAX_CONCURRENT_JOBS ceiling is still real and enforced. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"overflow\"}", &r) != 0 ||
+	if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"overflow\"}", &r) != 0 ||
 	    r.status != 409) {
 		fprintf(stderr, "FAIL: overflow install with both chains busy expected 409, got %d\n",
 		        r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/*
 	 * Issue #40: the shared build sandbox is a real, versioned image
@@ -701,10 +701,10 @@ int main(void)
 		char before[128] = { 0 };
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/images/thinc-builder", NULL, &r) == 0 &&
+		if (cix_client_request(&client, "GET", "/v1/images/cix-builder", NULL, &r) == 0 &&
 		    r.status == 200 && json_str_field(r.json, "current_version") != NULL)
 			snprintf(before, sizeof(before), "%s", json_str_field(r.json, "current_version"));
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		snprintf(sandbox_version_before, sizeof(sandbox_version_before), "%s", before);
 	}
 
@@ -723,7 +723,7 @@ int main(void)
 		 * discarded and every build after it is running against stale
 		 * content while reporting success. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/images/thinc-builder", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "GET", "/v1/images/cix-builder", NULL, &r) != 0 ||
 		    r.status != 200 || json_str_field(r.json, "current_version") == NULL) {
 			fprintf(stderr, "FAIL: #40 the build sandbox is not a real image\n");
 			ok = 0;
@@ -733,7 +733,7 @@ int main(void)
 			                "the merge into it is being silently discarded\n");
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 	}
 	if (strcmp(state, "installed") == 0) {
 		char run_out[256] = { 0 };
@@ -791,15 +791,15 @@ int main(void)
 		}
 
 		memset(&r, 0, sizeof(r));
-		thinc_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"unreachable\"}", &r);
-		thinc_response_free(&r);
+		cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"unreachable\"}", &r);
+		cix_response_free(&r);
 		if (poll_pkg_state(&client, "unreachable", state, sizeof(state), 90) != 0 ||
 		    strcmp(state, "failed") != 0) {
 			fprintf(stderr, "FAIL: #101 unreachable ended in state '%s', expected failed\n", state);
 			ok = 0;
 		}
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/pkg/unreachable", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "GET", "/v1/pkg/unreachable", NULL, &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: #101 GET unreachable, status=%d\n", r.status);
 			ok = 0;
@@ -813,18 +813,18 @@ int main(void)
 				ok = 0;
 			}
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		thinc_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"badbuild\"}", &r);
-		thinc_response_free(&r);
+		cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"badbuild\"}", &r);
+		cix_response_free(&r);
 		if (poll_pkg_state(&client, "badbuild", state, sizeof(state), 90) != 0 ||
 		    strcmp(state, "failed") != 0) {
 			fprintf(stderr, "FAIL: #101 badbuild ended in state '%s', expected failed\n", state);
 			ok = 0;
 		}
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/pkg/badbuild", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "GET", "/v1/pkg/badbuild", NULL, &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: #101 GET badbuild, status=%d\n", r.status);
 			ok = 0;
@@ -839,12 +839,12 @@ int main(void)
 				ok = 0;
 			}
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* And a healthy package says nothing at all -- absence of a
 		 * failure is not a kind of failure. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/pkg/greeter", NULL, &r) == 0 &&
+		if (cix_client_request(&client, "GET", "/v1/pkg/greeter", NULL, &r) == 0 &&
 		    r.status == 200) {
 			const struct json_value *k = json_object_get(r.json, "failure_kind");
 
@@ -853,15 +853,15 @@ int main(void)
 				ok = 0;
 			}
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* Leave nothing failed behind for later assertions to trip on. */
 		memset(&r, 0, sizeof(r));
-		thinc_client_request(&client, "DELETE", "/v1/pkg/unreachable", NULL, &r);
-		thinc_response_free(&r);
+		cix_client_request(&client, "DELETE", "/v1/pkg/unreachable", NULL, &r);
+		cix_response_free(&r);
 		memset(&r, 0, sizeof(r));
-		thinc_client_request(&client, "DELETE", "/v1/pkg/badbuild", NULL, &r);
-		thinc_response_free(&r);
+		cix_client_request(&client, "DELETE", "/v1/pkg/badbuild", NULL, &r);
+		cix_response_free(&r);
 	}
 
 	/*
@@ -893,8 +893,8 @@ int main(void)
 
 		/* Default: highest wins, which is 2.0 even though 1.5 is newer. */
 		memset(&r, 0, sizeof(r));
-		thinc_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"policypkg\"}", &r);
-		thinc_response_free(&r);
+		cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"policypkg\"}", &r);
+		cix_response_free(&r);
 		if (poll_pkg_state(&client, "policypkg", state, sizeof(state), 60) != 0 ||
 		    strcmp(state, "installed") != 0) {
 			fprintf(stderr, "FAIL: #64 policypkg default install ended '%s'\n", state);
@@ -902,10 +902,10 @@ int main(void)
 		}
 		memset(&r, 0, sizeof(r));
 		installed[0] = '\0';
-		if (thinc_client_request(&client, "GET", "/v1/pkg/policypkg", NULL, &r) == 0 && r.status == 200 &&
+		if (cix_client_request(&client, "GET", "/v1/pkg/policypkg", NULL, &r) == 0 && r.status == 200 &&
 		    json_str_field(r.json, "version") != NULL)
 			snprintf(installed, sizeof(installed), "%s", json_str_field(r.json, "version"));
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		if (strcmp(installed, "2.0") != 0) {
 			fprintf(stderr, "FAIL: #64 default policy installed '%s', expected 2.0 (highest)\n",
 			        installed);
@@ -914,19 +914,19 @@ int main(void)
 
 		/* newest: the later-published 1.5 wins over the higher 2.0. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "PUT", "/v1/pkg/policies/policypkg",
+		if (cix_client_request(&client, "PUT", "/v1/pkg/policies/policypkg",
 		                       "{\"policy\":\"newest\"}", &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: #64 set newest, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		memset(&r, 0, sizeof(r));
-		thinc_client_request(&client, "DELETE", "/v1/pkg/policypkg", NULL, &r);
-		thinc_response_free(&r);
+		cix_client_request(&client, "DELETE", "/v1/pkg/policypkg", NULL, &r);
+		cix_response_free(&r);
 		memset(&r, 0, sizeof(r));
-		thinc_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"policypkg\"}", &r);
-		thinc_response_free(&r);
+		cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"policypkg\"}", &r);
+		cix_response_free(&r);
 		if (poll_pkg_state(&client, "policypkg", state, sizeof(state), 60) != 0 ||
 		    strcmp(state, "installed") != 0) {
 			fprintf(stderr, "FAIL: #64 policypkg newest install ended '%s'\n", state);
@@ -934,10 +934,10 @@ int main(void)
 		}
 		memset(&r, 0, sizeof(r));
 		installed[0] = '\0';
-		if (thinc_client_request(&client, "GET", "/v1/pkg/policypkg", NULL, &r) == 0 && r.status == 200 &&
+		if (cix_client_request(&client, "GET", "/v1/pkg/policypkg", NULL, &r) == 0 && r.status == 200 &&
 		    json_str_field(r.json, "version") != NULL)
 			snprintf(installed, sizeof(installed), "%s", json_str_field(r.json, "version"));
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		if (strcmp(installed, "1.5") != 0) {
 			fprintf(stderr,
 			        "FAIL: #64 newest policy installed '%s', expected 1.5 (published later)\n",
@@ -948,23 +948,23 @@ int main(void)
 		/* pinned: held at 2.0 even with 1.5 newer and 3.0 published
 		 * after the pin -- a pin that drifts is not a pin. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "PUT", "/v1/pkg/policies/policypkg",
+		if (cix_client_request(&client, "PUT", "/v1/pkg/policies/policypkg",
 		                       "{\"policy\":\"pinned\",\"version\":\"2.0\"}", &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: #64 set pinned, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		if (write_recipe("policypkg", "3.0", tarball_path, sha256, "") != 0) {
 			fprintf(stderr, "FAIL: #64 could not write policypkg 3.0\n");
 			ok = 0;
 		}
 		memset(&r, 0, sizeof(r));
-		thinc_client_request(&client, "DELETE", "/v1/pkg/policypkg", NULL, &r);
-		thinc_response_free(&r);
+		cix_client_request(&client, "DELETE", "/v1/pkg/policypkg", NULL, &r);
+		cix_response_free(&r);
 		memset(&r, 0, sizeof(r));
-		thinc_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"policypkg\"}", &r);
-		thinc_response_free(&r);
+		cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"policypkg\"}", &r);
+		cix_response_free(&r);
 		if (poll_pkg_state(&client, "policypkg", state, sizeof(state), 60) != 0 ||
 		    strcmp(state, "installed") != 0) {
 			fprintf(stderr, "FAIL: #64 policypkg pinned install ended '%s'\n", state);
@@ -972,10 +972,10 @@ int main(void)
 		}
 		memset(&r, 0, sizeof(r));
 		installed[0] = '\0';
-		if (thinc_client_request(&client, "GET", "/v1/pkg/policypkg", NULL, &r) == 0 && r.status == 200 &&
+		if (cix_client_request(&client, "GET", "/v1/pkg/policypkg", NULL, &r) == 0 && r.status == 200 &&
 		    json_str_field(r.json, "version") != NULL)
 			snprintf(installed, sizeof(installed), "%s", json_str_field(r.json, "version"));
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		if (strcmp(installed, "2.0") != 0) {
 			fprintf(stderr, "FAIL: #64 pinned policy installed '%s', expected the held 2.0\n",
 			        installed);
@@ -985,24 +985,24 @@ int main(void)
 		/* A pin with no version is refused: it would claim to hold
 		 * something while meaning "highest". */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "PUT", "/v1/pkg/policies/policypkg", "{\"policy\":\"pinned\"}",
+		if (cix_client_request(&client, "PUT", "/v1/pkg/policies/policypkg", "{\"policy\":\"pinned\"}",
 		                       &r) != 0 ||
 		    r.status != 400) {
 			fprintf(stderr, "FAIL: #64 pin without a version should 400, got %d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* Leave nothing drifted behind: policypkg is installed at the
 		 * held 2.0 with a 3.0 published, which is a real update
 		 * candidate and would make a later "nothing to update"
 		 * assertion fail for a reason that has nothing to do with it. */
 		memset(&r, 0, sizeof(r));
-		thinc_client_request(&client, "DELETE", "/v1/pkg/policypkg", NULL, &r);
-		thinc_response_free(&r);
+		cix_client_request(&client, "DELETE", "/v1/pkg/policypkg", NULL, &r);
+		cix_response_free(&r);
 		memset(&r, 0, sizeof(r));
-		thinc_client_request(&client, "DELETE", "/v1/pkg/policies/policypkg", NULL, &r);
-		thinc_response_free(&r);
+		cix_client_request(&client, "DELETE", "/v1/pkg/policies/policypkg", NULL, &r);
+		cix_response_free(&r);
 	}
 
 	/*
@@ -1023,12 +1023,12 @@ int main(void)
 
 		/* Build the chatty package first, so there is output to find. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"chatty\"}", &r) != 0 ||
+		if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"chatty\"}", &r) != 0 ||
 		    r.status != 202) {
 			fprintf(stderr, "FAIL: #57 install chatty, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		if (poll_pkg_state(&client, "chatty", state, sizeof(state), 60) != 0 ||
 		    strcmp(state, "installed") != 0) {
 			fprintf(stderr, "FAIL: #57 chatty ended in state '%s'\n", state);
@@ -1036,7 +1036,7 @@ int main(void)
 		}
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/pkg/build-logs", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "GET", "/v1/pkg/build-logs", NULL, &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: #57 GET build-logs, status=%d\n", r.status);
 			ok = 0;
@@ -1063,14 +1063,14 @@ int main(void)
 				}
 			}
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		if (logfile[0] != '\0') {
 			char path[512];
 
 			snprintf(path, sizeof(path), "/v1/pkg/build-logs/%s", logfile);
 			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "GET", path, NULL, &r) != 0 || r.status != 200) {
+			if (cix_client_request(&client, "GET", path, NULL, &r) != 0 || r.status != 200) {
 				fprintf(stderr, "FAIL: #57 reading %s, status=%d\n", path, r.status);
 				ok = 0;
 			} else if (memmem(r.body, r.body_len, "BUILD_LOG_MARKER_ONE",
@@ -1085,20 +1085,20 @@ int main(void)
 				        (int)r.body_len);
 				ok = 0;
 			}
-			thinc_response_free(&r);
+			cix_response_free(&r);
 		}
 
 		/* A filename is a path component straight out of an HTTP
 		 * request and this opens a file with it, so traversal is
 		 * refused rather than sanitised into something plausible. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/pkg/build-logs/../../../etc/passwd", NULL, &r) ==
+		if (cix_client_request(&client, "GET", "/v1/pkg/build-logs/../../../etc/passwd", NULL, &r) ==
 		        0 &&
 		    r.status == 200) {
 			fprintf(stderr, "FAIL: #57 path traversal in a build-log name was served\n");
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 	}
 
 	/*
@@ -1106,7 +1106,7 @@ int main(void)
 	 * cgroup every build container is a leaf of -- not a per-container
 	 * ceiling that silently multiplies by max_concurrent_jobs (default
 	 * 10). That mistake took a real 2-CPU box off the network: four
-	 * concurrent builds at 1.5 CPU each demanded 6 CPUs, starved thincd
+	 * concurrent builds at 1.5 CPU each demanded 6 CPUs, starved cixd
 	 * off the run queue, and a shell-less host has no other way in.
 	 *
 	 * Asserted by CHANGING the configured budget and running a build,
@@ -1118,7 +1118,7 @@ int main(void)
 	 * what stops a stale ceiling outliving a config change.
 	 */
 	{
-		const char *parent = "/sys/fs/cgroup/thinc-workload/thinc-pkgbuild";
+		const char *parent = "/sys/fs/cgroup/cix-workload/cix-pkgbuild";
 		const char *want_cpu = "70000 100000";
 		const long long want_mem = 1610612736LL;
 		char path[PATH_MAX];
@@ -1127,26 +1127,26 @@ int main(void)
 		snprintf(restore, sizeof(restore), "{\"cpu_max\":\"150000 100000\",\"memory_max\":4294967296}");
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "PUT", "/v1/system/pkg-build-config",
+		if (cix_client_request(&client, "PUT", "/v1/system/pkg-build-config",
 		                       "{\"cpu_max\":\"70000 100000\",\"memory_max\":1610612736}", &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: #85 could not set a distinctive build budget, status=%d\n",
 			        r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		if (write_recipe("budgeted", "1.0", tarball_path, sha256, "") != 0) {
 			fprintf(stderr, "FAIL: #85 could not write budgeted recipe\n");
 			ok = 0;
 		}
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"budgeted\"}", &r) != 0 ||
+		if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"budgeted\"}", &r) != 0 ||
 		    r.status != 202) {
 			fprintf(stderr, "FAIL: #85 install budgeted, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		if (poll_pkg_state(&client, "budgeted", state, sizeof(state), 60) != 0 ||
 		    strcmp(state, "installed") != 0) {
 			fprintf(stderr, "FAIL: #85 budgeted ended in state '%s'\n", state);
@@ -1215,8 +1215,8 @@ int main(void)
 		}
 
 		memset(&r, 0, sizeof(r));
-		thinc_client_request(&client, "PUT", "/v1/system/pkg-build-config", restore, &r);
-		thinc_response_free(&r);
+		cix_client_request(&client, "PUT", "/v1/system/pkg-build-config", restore, &r);
+		cix_response_free(&r);
 	}
 
 	if (poll_pkg_state(&client, "concurrent", state, sizeof(state), 60) != 0) {
@@ -1256,13 +1256,13 @@ int main(void)
 		ok = 0;
 	}
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"declaredmissing\"}",
+	if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"declaredmissing\"}",
 	                       &r) != 0 ||
 	    r.status != 202) {
 		fprintf(stderr, "FAIL: #109 install of a declared-tools recipe, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	if (poll_pkg_state(&client, "declaredmissing", state, sizeof(state), 60) != 0 ||
 	    strcmp(state, "failed") != 0) {
 		fprintf(stderr, "FAIL: #109 a recipe declaring an unavailable build tool ended '%s', "
@@ -1271,7 +1271,7 @@ int main(void)
 		ok = 0;
 	} else {
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/pkg/declaredmissing", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "GET", "/v1/pkg/declaredmissing", NULL, &r) != 0 ||
 		    r.status != 200 || json_str_field(r.json, "error") == NULL ||
 		    strstr(json_str_field(r.json, "error"), "nosuchbuildtool") == NULL) {
 			fprintf(stderr, "FAIL: #109 the failure does not name the missing build tool: %s\n",
@@ -1280,7 +1280,7 @@ int main(void)
 			            : "(none)");
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 	}
 
 	/*
@@ -1303,14 +1303,14 @@ int main(void)
 		ok = 0;
 	}
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/pkg/install",
+	if (cix_client_request(&client, "POST", "/v1/pkg/install",
 	                       "{\"name\":\"declaredpresent\"}", &r) != 0 ||
 	    r.status != 202) {
 		fprintf(stderr, "FAIL: #109 install of an available-declared-tools recipe, status=%d\n",
 		        r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	if (poll_pkg_state(&client, "declaredpresent", state, sizeof(state), 600) != 0) {
 		fprintf(stderr, "FAIL: #109 available-declared-tools install never settled (last state '%s')\n", state);
 		ok = 0;
@@ -1318,7 +1318,7 @@ int main(void)
 		const char *err;
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/pkg/declaredpresent", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "GET", "/v1/pkg/declaredpresent", NULL, &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: #109 could not read back the available-declared-tools pkg\n");
 			ok = 0;
@@ -1332,7 +1332,7 @@ int main(void)
 				ok = 0;
 			}
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 	}
 
 	/*
@@ -1346,7 +1346,7 @@ int main(void)
 	 */
 	{
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/images", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "GET", "/v1/images", NULL, &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: #109 could not list images to check the composed env\n");
 			ok = 0;
@@ -1361,14 +1361,14 @@ int main(void)
 				const char *nm = im != NULL ? json_str_field(im, "name") : NULL;
 
 				if (nm != NULL && strncmp(nm, "__buildenv-", 11) == 0) {
-					struct thinc_response ir;
+					struct cix_response ir;
 					char ipath[256];
 					const char *v;
 
 					found = 1;
 					snprintf(ipath, sizeof(ipath), "/v1/images/%s", nm);
 					memset(&ir, 0, sizeof(ir));
-					if (thinc_client_request(&client, "GET", ipath, NULL, &ir) != 0 ||
+					if (cix_client_request(&client, "GET", ipath, NULL, &ir) != 0 ||
 					    ir.status != 200) {
 						fprintf(stderr, "FAIL: #109 could not GET composed env %s\n", nm);
 						ok = 0;
@@ -1405,7 +1405,7 @@ int main(void)
 							}
 						}
 					}
-					thinc_response_free(&ir);
+					cix_response_free(&ir);
 				}
 			}
 			if (!found) {
@@ -1413,7 +1413,7 @@ int main(void)
 				ok = 0;
 			}
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 	}
 
 	/*
@@ -1429,13 +1429,13 @@ int main(void)
 		ok = 0;
 	}
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"midfail\"}", &r) !=
+	if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"midfail\"}", &r) !=
 	        0 ||
 	    r.status != 202) {
 		fprintf(stderr, "FAIL: POST install midfail, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	if (poll_pkg_state(&client, "midfail", state, sizeof(state), 200) != 0 ||
 	    strcmp(state, "failed") != 0) {
 		fprintf(stderr,
@@ -1478,7 +1478,7 @@ int main(void)
 		         g_data_dir, "current");
 		/* Resolve "current" the way the daemon does: ask for the image. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/images/base", NULL, &r) == 0 &&
+		if (cix_client_request(&client, "GET", "/v1/images/base", NULL, &r) == 0 &&
 		    r.status == 200 && json_str_field(r.json, "current_version") != NULL) {
 			snprintf(link_path, sizeof(link_path),
 			         "%s/rebuildable/images/base/%s/rootfs/usr/bin/relinked", g_data_dir,
@@ -1487,18 +1487,18 @@ int main(void)
 			if (symlink(decoy_path, link_path) != 0)
 				fprintf(stderr, "WARN: could not stage the symlink fixture\n");
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		if (write_recipe("relinked", "1.0", tarball_path, sha256, NULL) != 0)
 			ok = 0;
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"relinked\"}",
+		if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"relinked\"}",
 		                       &r) != 0 ||
 		    r.status != 202) {
 			fprintf(stderr, "FAIL: POST install relinked, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		if (poll_pkg_state(&client, "relinked", state, sizeof(state), 200) != 0 ||
 		    strcmp(state, "installed") != 0) {
 			fprintf(stderr,
@@ -1525,7 +1525,7 @@ int main(void)
 			 * landed in that one -- the path staged above belongs to
 			 * the version that was current beforehand. */
 			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "GET", "/v1/images/base", NULL, &r) == 0 &&
+			if (cix_client_request(&client, "GET", "/v1/images/base", NULL, &r) == 0 &&
 			    r.status == 200 && json_str_field(r.json, "current_version") != NULL) {
 				char new_path[PATH_MAX];
 
@@ -1543,27 +1543,27 @@ int main(void)
 					ok = 0;
 				}
 			}
-			thinc_response_free(&r);
+			cix_response_free(&r);
 		}
 	}
 
 	/* 6. duplicate install of an already-installed package -> 409 */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"greeter\"}", &r) != 0 ||
+	if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"greeter\"}", &r) != 0 ||
 	    r.status != 409) {
 		fprintf(stderr, "FAIL: duplicate install expected 409, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 7. checksum mismatch -> ends FAILED, never installed */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"badsum\"}", &r) != 0 ||
+	if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"badsum\"}", &r) != 0 ||
 	    r.status != 202) {
 		fprintf(stderr, "FAIL: POST install badsum, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	if (poll_pkg_state(&client, "badsum", state, sizeof(state), 30) != 0) {
 		fprintf(stderr, "FAIL: badsum never left fetching/building\n");
@@ -1590,19 +1590,19 @@ int main(void)
 		}
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "DELETE", "/v1/pkg/badsum", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "DELETE", "/v1/pkg/badsum", NULL, &r) != 0 ||
 		    r.status != 204) {
 			fprintf(stderr, "FAIL: DELETE badsum (failed state) expected 204, got %d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/pkg/badsum", NULL, &r) != 0 || r.status != 404) {
+		if (cix_client_request(&client, "GET", "/v1/pkg/badsum", NULL, &r) != 0 || r.status != 404) {
 			fprintf(stderr, "FAIL: GET badsum after delete expected 404, got %d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		if (test_image_fixture_read_current_version(g_images_base_dir, base_version_after,
 		                                             sizeof(base_version_after)) != 0 ||
@@ -1617,11 +1617,11 @@ int main(void)
 	/* 8. delete removes the manifested file from the base image, not
 	 * just the registry entry */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "DELETE", "/v1/pkg/greeter", NULL, &r) != 0 || r.status != 204) {
+	if (cix_client_request(&client, "DELETE", "/v1/pkg/greeter", NULL, &r) != 0 || r.status != 204) {
 		fprintf(stderr, "FAIL: DELETE greeter expected 204, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	{
 		struct stat st;
@@ -1633,21 +1633,21 @@ int main(void)
 	}
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/pkg/greeter", NULL, &r) != 0 || r.status != 404) {
+	if (cix_client_request(&client, "GET", "/v1/pkg/greeter", NULL, &r) != 0 || r.status != 404) {
 		fprintf(stderr, "FAIL: GET greeter after delete expected 404, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 8b. same cleanup for "concurrent" (step 4's second chain) -- left
 	 * installed until now so later steps don't have to account for its
 	 * presence; nothing past this point depends on it. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "DELETE", "/v1/pkg/concurrent", NULL, &r) != 0 || r.status != 204) {
+	if (cix_client_request(&client, "DELETE", "/v1/pkg/concurrent", NULL, &r) != 0 || r.status != 204) {
 		fprintf(stderr, "FAIL: DELETE concurrent expected 204, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	{
 		struct stat st;
@@ -1659,11 +1659,11 @@ int main(void)
 	}
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/pkg/concurrent", NULL, &r) != 0 || r.status != 404) {
+	if (cix_client_request(&client, "GET", "/v1/pkg/concurrent", NULL, &r) != 0 || r.status != 404) {
 		fprintf(stderr, "FAIL: GET concurrent after delete expected 404, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 9. dependency resolution: `top` depends on `leaf` -- a single
 	 * install of top should transparently install leaf first, both
@@ -1684,13 +1684,13 @@ int main(void)
 			ok = 0;
 		} else {
 			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"top\"}", &r) !=
+			if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"top\"}", &r) !=
 			        0 ||
 			    r.status != 202) {
 				fprintf(stderr, "FAIL: POST install top, status=%d\n", r.status);
 				ok = 0;
 			}
-			thinc_response_free(&r);
+			cix_response_free(&r);
 
 			if (poll_pkg_state(&client, "leaf", state, sizeof(state), 60) != 0 ||
 			    strcmp(state, "installed") != 0) {
@@ -1712,21 +1712,21 @@ int main(void)
 		ok = 0;
 	} else {
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"circ1\"}", &r) !=
+		if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"circ1\"}", &r) !=
 		        0 ||
 		    r.status != 400) {
 			fprintf(stderr, "FAIL: circular dependency install expected 400, got %d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/pkg/circ1", NULL, &r) != 0 || r.status != 404) {
+		if (cix_client_request(&client, "GET", "/v1/pkg/circ1", NULL, &r) != 0 || r.status != 404) {
 			fprintf(stderr, "FAIL: circ1 should never have been registered, status=%d\n",
 			        r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 	}
 
 	/* 11. a dependency with no matching recipe -> 400 */
@@ -1735,13 +1735,13 @@ int main(void)
 		ok = 0;
 	} else {
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"needsghost\"}", &r) !=
+		if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"needsghost\"}", &r) !=
 		        0 ||
 		    r.status != 400) {
 			fprintf(stderr, "FAIL: missing dependency install expected 400, got %d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 	}
 
 	/* 12. upgrade: bump leaf to 2.0. available_version must be visible
@@ -1761,7 +1761,7 @@ int main(void)
 			ok = 0;
 		} else {
 			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "GET", "/v1/pkg/leaf", NULL, &r) != 0 ||
+			if (cix_client_request(&client, "GET", "/v1/pkg/leaf", NULL, &r) != 0 ||
 			    r.status != 200 || !str_eq(json_str_field(r.json, "available_version"), "2.0")) {
 				fprintf(stderr,
 				        "FAIL: leaf should show available_version=2.0 before upgrading, got %s\n",
@@ -1770,26 +1770,26 @@ int main(void)
 				            : "(null)");
 				ok = 0;
 			}
-			thinc_response_free(&r);
+			cix_response_free(&r);
 
 			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"leaf\"}", &r) !=
+			if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"leaf\"}", &r) !=
 			        0 ||
 			    r.status != 409) {
 				fprintf(stderr, "FAIL: re-install without upgrade expected 409, got %d\n",
 				        r.status);
 				ok = 0;
 			}
-			thinc_response_free(&r);
+			cix_response_free(&r);
 
 			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "POST", "/v1/pkg/install",
+			if (cix_client_request(&client, "POST", "/v1/pkg/install",
 			                       "{\"name\":\"leaf\",\"upgrade\":true}", &r) != 0 ||
 			    r.status != 202) {
 				fprintf(stderr, "FAIL: upgrade install expected 202, got %d\n", r.status);
 				ok = 0;
 			}
-			thinc_response_free(&r);
+			cix_response_free(&r);
 
 			if (poll_pkg_state(&client, "leaf", state, sizeof(state), 60) != 0 ||
 			    strcmp(state, "installed") != 0) {
@@ -1797,7 +1797,7 @@ int main(void)
 				ok = 0;
 			} else {
 				memset(&r, 0, sizeof(r));
-				if (thinc_client_request(&client, "GET", "/v1/pkg/leaf", NULL, &r) != 0 ||
+				if (cix_client_request(&client, "GET", "/v1/pkg/leaf", NULL, &r) != 0 ||
 				    !str_eq(json_str_field(r.json, "version"), "2.0") ||
 				    json_str_field(r.json, "available_version") != NULL) {
 					fprintf(stderr,
@@ -1805,7 +1805,7 @@ int main(void)
 					        "available_version=null\n");
 					ok = 0;
 				}
-				thinc_response_free(&r);
+				cix_response_free(&r);
 
 				{
 					char run_out[256] = { 0 };
@@ -1834,14 +1834,14 @@ int main(void)
 	 * default "base" image. */
 	{
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/pkg/install",
+		if (cix_client_request(&client, "POST", "/v1/pkg/install",
 		                       "{\"name\":\"greeter\",\"image\":\"router\"}", &r) != 0 ||
 		    r.status != 202 || !str_eq(json_str_field(r.json, "image"), "router")) {
 			fprintf(stderr, "FAIL: POST install greeter@router, status=%d, image=%s\n", r.status,
 			        json_str_field(r.json, "image") ? json_str_field(r.json, "image") : "(null)");
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		if (poll_pkg_state(&client, "greeter@router", state, sizeof(state), 60) != 0 ||
 		    strcmp(state, "installed") != 0) {
@@ -1892,29 +1892,29 @@ int main(void)
 		/* bare (base-image) addressing still 404s -- base's own greeter
 		 * entry was deleted in step 8 and this install never touched it */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/pkg/greeter", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "GET", "/v1/pkg/greeter", NULL, &r) != 0 ||
 		    r.status != 404) {
 			fprintf(stderr, "FAIL: GET greeter (base) expected 404, got %d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* @-addressed GET reaches the router entry specifically */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/pkg/greeter@router", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "GET", "/v1/pkg/greeter@router", NULL, &r) != 0 ||
 		    r.status != 200 || !str_eq(json_str_field(r.json, "image"), "router") ||
 		    !str_eq(json_str_field(r.json, "state"), "installed")) {
 			fprintf(stderr, "FAIL: GET greeter@router expected 200 installed router, got %d\n",
 			        r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* a fresh install of the SAME name back into the default image
 		 * is independent -- greeter@router being installed must not
 		 * make this a 409 duplicate */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"greeter\"}", &r) !=
+		if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"greeter\"}", &r) !=
 		        0 ||
 		    r.status != 202) {
 			fprintf(stderr,
@@ -1923,7 +1923,7 @@ int main(void)
 			        r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		if (poll_pkg_state(&client, "greeter", state, sizeof(state), 60) != 0 ||
 		    strcmp(state, "installed") != 0) {
@@ -1940,7 +1940,7 @@ int main(void)
 
 		/* GET /v1/pkg (list) reports both (name, image) entries distinctly */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/pkg", NULL, &r) != 0 || r.status != 200) {
+		if (cix_client_request(&client, "GET", "/v1/pkg", NULL, &r) != 0 || r.status != 200) {
 			fprintf(stderr, "FAIL: GET /v1/pkg, status=%d\n", r.status);
 			ok = 0;
 		} else {
@@ -1968,17 +1968,17 @@ int main(void)
 				ok = 0;
 			}
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* @-addressed DELETE removes only the router entry, leaving the
 		 * independently-installed base entry untouched */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "DELETE", "/v1/pkg/greeter@router", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "DELETE", "/v1/pkg/greeter@router", NULL, &r) != 0 ||
 		    r.status != 204) {
 			fprintf(stderr, "FAIL: DELETE greeter@router expected 204, got %d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		{
 			struct stat st;
@@ -2005,7 +2005,7 @@ int main(void)
 	 * drained, reports nothing to update once more rather than erroring. */
 	{
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/pkg/update-all", "{}", &r) != 0 ||
+		if (cix_client_request(&client, "POST", "/v1/pkg/update-all", "{}", &r) != 0 ||
 		    r.status != 200 || !str_eq(json_str_field(r.json, "status"), "nothing to update")) {
 			fprintf(stderr,
 			        "FAIL: update-all with nothing drifted expected 200 \"nothing to update\", got %d %s\n",
@@ -2013,7 +2013,7 @@ int main(void)
 			        json_str_field(r.json, "status") ? json_str_field(r.json, "status") : "(null)");
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		{
 			char top2_tarball[512], top2_sha[128];
@@ -2027,7 +2027,7 @@ int main(void)
 				ok = 0;
 			} else {
 				memset(&r, 0, sizeof(r));
-				if (thinc_client_request(&client, "POST", "/v1/pkg/update-all", "{}", &r) != 0 ||
+				if (cix_client_request(&client, "POST", "/v1/pkg/update-all", "{}", &r) != 0 ||
 				    r.status != 202 || !str_eq(json_str_field(r.json, "name"), "top")) {
 					fprintf(stderr,
 					        "FAIL: update-all with top drifted expected 202 name=top, got %d name=%s\n",
@@ -2035,7 +2035,7 @@ int main(void)
 					        json_str_field(r.json, "name") ? json_str_field(r.json, "name") : "(null)");
 					ok = 0;
 				}
-				thinc_response_free(&r);
+				cix_response_free(&r);
 
 				if (poll_pkg_state(&client, "top", state, sizeof(state), 60) != 0 ||
 				    strcmp(state, "installed") != 0) {
@@ -2058,7 +2058,7 @@ int main(void)
 				}
 
 				memset(&r, 0, sizeof(r));
-				if (thinc_client_request(&client, "POST", "/v1/pkg/update-all", "{}", &r) != 0 ||
+				if (cix_client_request(&client, "POST", "/v1/pkg/update-all", "{}", &r) != 0 ||
 				    r.status != 200 ||
 				    !str_eq(json_str_field(r.json, "status"), "nothing to update")) {
 					fprintf(stderr,
@@ -2067,7 +2067,7 @@ int main(void)
 					        r.status);
 					ok = 0;
 				}
-				thinc_response_free(&r);
+				cix_response_free(&r);
 			}
 		}
 	}
@@ -2100,26 +2100,26 @@ int main(void)
 		/* 1.10 into one image, 1.9 into another -- 1.10 is newer, and
 		 * is also the one a plain strcmp() would rank lower. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/pkg/install",
+		if (cix_client_request(&client, "POST", "/v1/pkg/install",
 		                       "{\"name\":\"stamped\",\"version\":\"1.10\","
 		                       "\"image\":\"vnew\"}",
 		                       &r) != 0 ||
 		    r.status != 202)
 			ok = 0;
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		if (poll_pkg_state(&client, "stamped@vnew", state, sizeof(state), 200) != 0 ||
 		    strcmp(state, "installed") != 0) {
 			fprintf(stderr, "FAIL: #109 stamped 1.10 ended '%s'\n", state);
 			ok = 0;
 		}
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/pkg/install",
+		if (cix_client_request(&client, "POST", "/v1/pkg/install",
 		                       "{\"name\":\"stamped\",\"version\":\"1.9\","
 		                       "\"image\":\"vold\"}",
 		                       &r) != 0 ||
 		    r.status != 202)
 			ok = 0;
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		if (poll_pkg_state(&client, "stamped@vold", state, sizeof(state), 200) != 0 ||
 		    strcmp(state, "installed") != 0) {
 			fprintf(stderr, "FAIL: #109 stamped 1.9 ended '%s'\n", state);
@@ -2129,11 +2129,11 @@ int main(void)
 		if (write_builddeps_recipe("usesstamped", "1.0", tarball_path, sha256, "stamped") != 0)
 			ok = 0;
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/pkg/install",
+		if (cix_client_request(&client, "POST", "/v1/pkg/install",
 		                       "{\"name\":\"usesstamped\"}", &r) != 0 ||
 		    r.status != 202)
 			ok = 0;
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		if (poll_pkg_state(&client, "usesstamped", state, sizeof(state), 400) != 0) {
 			fprintf(stderr, "FAIL: #109 usesstamped never settled\n");
 			ok = 0;
@@ -2141,7 +2141,7 @@ int main(void)
 
 		/* Which copy landed in the composed environment? */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/images", NULL, &r) == 0 &&
+		if (cix_client_request(&client, "GET", "/v1/images", NULL, &r) == 0 &&
 		    r.status == 200) {
 			const struct json_value *arr = json_object_get(r.json, "images");
 			size_t n = (arr != NULL && arr->type == JSON_ARRAY) ? arr->u.array.count : 0;
@@ -2151,16 +2151,16 @@ int main(void)
 			for (k = 0; k < n; k++) {
 				const struct json_value *im = arr->u.array.items[k];
 				const char *nm = im != NULL ? json_str_field(im, "name") : NULL;
-				struct thinc_response ir;
+				struct cix_response ir;
 				const char *v;
 
 				if (nm == NULL || strncmp(nm, "__buildenv-", 11) != 0)
 					continue;
 				memset(&ir, 0, sizeof(ir));
 				snprintf(stamp_path, sizeof(stamp_path), "/v1/images/%s", nm);
-				if (thinc_client_request(&client, "GET", stamp_path, NULL, &ir) != 0 ||
+				if (cix_client_request(&client, "GET", stamp_path, NULL, &ir) != 0 ||
 				    ir.status != 200) {
-					thinc_response_free(&ir);
+					cix_response_free(&ir);
 					continue;
 				}
 				v = json_str_field(ir.json, "current_version");
@@ -2185,7 +2185,7 @@ int main(void)
 						}
 					}
 				}
-				thinc_response_free(&ir);
+				cix_response_free(&ir);
 			}
 			if (!checked) {
 				fprintf(stderr,
@@ -2193,7 +2193,7 @@ int main(void)
 				ok = 0;
 			}
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 	}
 
 
@@ -2225,13 +2225,13 @@ int main(void)
 			ok = 0;
 		} else {
 			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"multisrc\"}", &r) !=
+			if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"multisrc\"}", &r) !=
 			        0 ||
 			    r.status != 202) {
 				fprintf(stderr, "FAIL: POST install multisrc, status=%d\n", r.status);
 				ok = 0;
 			}
-			thinc_response_free(&r);
+			cix_response_free(&r);
 
 			if (poll_pkg_state(&client, "multisrc", state, sizeof(state), 30) != 0 ||
 			    strcmp(state, "installed") != 0) {
@@ -2270,13 +2270,13 @@ int main(void)
 			ok = 0;
 		} else {
 			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"multisrcbad\"}",
+			if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"multisrcbad\"}",
 			                       &r) != 0 ||
 			    r.status != 202) {
 				fprintf(stderr, "FAIL: POST install multisrcbad, status=%d\n", r.status);
 				ok = 0;
 			}
-			thinc_response_free(&r);
+			cix_response_free(&r);
 
 			if (poll_pkg_state(&client, "multisrcbad", state, sizeof(state), 30) != 0) {
 				fprintf(stderr, "FAIL: multisrcbad never left fetching/building\n");
@@ -2328,13 +2328,13 @@ int main(void)
 				ok = 0;
 			} else {
 				memset(&r, 0, sizeof(r));
-				if (thinc_client_request(&client, "POST", "/v1/pkg/install",
+				if (cix_client_request(&client, "POST", "/v1/pkg/install",
 				                       "{\"name\":\"multisrcquery\"}", &r) != 0 ||
 				    r.status != 202) {
 					fprintf(stderr, "FAIL: POST install multisrcquery, status=%d\n", r.status);
 					ok = 0;
 				}
-				thinc_response_free(&r);
+				cix_response_free(&r);
 
 				if (poll_pkg_state(&client, "multisrcquery", state, sizeof(state), 30) != 0 ||
 				    strcmp(state, "installed") != 0) {
@@ -2401,13 +2401,13 @@ int main(void)
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/pkg/recipes", w.buf, &r) != 0 ||
+		if (cix_client_request(&client, "POST", "/v1/pkg/recipes", w.buf, &r) != 0 ||
 		    r.status != 400) {
 			fprintf(stderr, "FAIL: POST recipe with name/pkg_name= mismatch, status=%d\n",
 			        r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		jw_free(&w);
 
 		/* outright malformed content (no pkg_source=) -> 400 */
@@ -2420,12 +2420,12 @@ int main(void)
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/pkg/recipes", w.buf, &r) != 0 ||
+		if (cix_client_request(&client, "POST", "/v1/pkg/recipes", w.buf, &r) != 0 ||
 		    r.status != 400) {
 			fprintf(stderr, "FAIL: POST malformed recipe, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		jw_free(&w);
 
 		/* a real, valid add -> 204, then genuinely installable */
@@ -2438,22 +2438,22 @@ int main(void)
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/pkg/recipes", w.buf, &r) != 0 ||
+		if (cix_client_request(&client, "POST", "/v1/pkg/recipes", w.buf, &r) != 0 ||
 		    r.status != 204) {
 			fprintf(stderr, "FAIL: POST valid recipe via API, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		jw_free(&w);
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"apirecipe\"}", &r) !=
+		if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"apirecipe\"}", &r) !=
 		        0 ||
 		    r.status != 202) {
 			fprintf(stderr, "FAIL: POST install apirecipe (added via API), status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		if (poll_pkg_state(&client, "apirecipe", state, sizeof(state), 30) != 0 ||
 		    strcmp(state, "installed") != 0) {
@@ -2489,12 +2489,12 @@ int main(void)
 			jw_obj_close(&w);
 			w.buf[w.len] = '\0';
 			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "POST", "/v1/pkg/recipes", w.buf, &r) != 0 ||
+			if (cix_client_request(&client, "POST", "/v1/pkg/recipes", w.buf, &r) != 0 ||
 			    r.status != 204) {
 				fprintf(stderr, "FAIL: upsert apirecipe to 2.0, status=%d\n", r.status);
 				ok = 0;
 			}
-			thinc_response_free(&r);
+			cix_response_free(&r);
 			jw_free(&w);
 		}
 		/* ADR-0107: recipe versions are immutable and multi-version,
@@ -2502,7 +2502,7 @@ int main(void)
 		 * 2.0 as separate, independently-published entries for
 		 * "apirecipe", neither one replacing the other. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/pkg/recipes", NULL, &r) != 0 || r.status != 200) {
+		if (cix_client_request(&client, "GET", "/v1/pkg/recipes", NULL, &r) != 0 || r.status != 200) {
 			fprintf(stderr, "FAIL: GET recipes after publishing a second version, status=%d\n",
 			        r.status);
 			ok = 0;
@@ -2529,13 +2529,13 @@ int main(void)
 				ok = 0;
 			}
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* GET /v1/pkg/recipes/{name} (Phase 16, packages-tree UI): the
 		 * raw .recipe text too, not just the list view's metadata --
 		 * must reflect the 2.0 upsert above, byte for byte. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/pkg/recipes/apirecipe", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "GET", "/v1/pkg/recipes/apirecipe", NULL, &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: GET recipe content, status=%d\n", r.status);
 			ok = 0;
@@ -2545,58 +2545,58 @@ int main(void)
 			fprintf(stderr, "FAIL: GET recipe content mismatch after upsert\n");
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* An unknown recipe name -> 404, not a raw-id-style fallback
 		 * (there is no such fallback for recipes -- a name either has
 		 * a recipe on file or it doesn't). */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/pkg/recipes/never-added-recipe", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "GET", "/v1/pkg/recipes/never-added-recipe", NULL, &r) != 0 ||
 		    r.status != 404) {
 			fprintf(stderr, "FAIL: GET unknown recipe content expected 404, got %d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* DELETE removes it; a subsequent install attempt fails again */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "DELETE", "/v1/pkg/recipes/apirecipe", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "DELETE", "/v1/pkg/recipes/apirecipe", NULL, &r) != 0 ||
 		    r.status != 204) {
 			fprintf(stderr, "FAIL: DELETE apirecipe recipe, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* GET after DELETE -> 404 too (recipe genuinely gone, not just
 		 * uninstalled). */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/pkg/recipes/apirecipe", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "GET", "/v1/pkg/recipes/apirecipe", NULL, &r) != 0 ||
 		    r.status != 404) {
 			fprintf(stderr, "FAIL: GET recipe content after delete expected 404, got %d\n",
 			        r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"apirecipe2\"}", &r) !=
+		if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"apirecipe2\"}", &r) !=
 		        0 ||
 		    r.status != 400) {
 			fprintf(stderr,
 			        "FAIL: install of a never-added name should 400, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* DELETE of something never added -> 404 */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "DELETE", "/v1/pkg/recipes/apirecipe2", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "DELETE", "/v1/pkg/recipes/apirecipe2", NULL, &r) != 0 ||
 		    r.status != 404) {
 			fprintf(stderr, "FAIL: DELETE of a never-added recipe should 404, status=%d\n",
 			        r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 	}
 skip_recipe_api:
 
@@ -2620,14 +2620,14 @@ skip_recipe_api:
 		int i;
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/images", "{\"name\":\"rollingtest\"}", &r) !=
+		if (cix_client_request(&client, "POST", "/v1/images", "{\"name\":\"rollingtest\"}", &r) !=
 		        0 ||
 		    r.status != 201) {
 			fprintf(stderr, "FAIL: POST rollingtest image, status=%d\n", r.status);
 			ok = 0;
 			goto skip_rolling_rebuild;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		if (stage_fixture_tarball(scratch_dir, "rollpkg", "1.0", tarball1, sizeof(tarball1), sha1,
 		                           sizeof(sha1)) != 0 ||
@@ -2638,13 +2638,13 @@ skip_recipe_api:
 		}
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/pkg/install",
+		if (cix_client_request(&client, "POST", "/v1/pkg/install",
 		                       "{\"name\":\"rollpkg\",\"image\":\"rollingtest\"}", &r) != 0 ||
 		    r.status != 202) {
 			fprintf(stderr, "FAIL: POST install rollpkg@rollingtest, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		if (poll_pkg_state(&client, "rollpkg@rollingtest", state, sizeof(state), 60) != 0 ||
 		    strcmp(state, "installed") != 0) {
@@ -2654,7 +2654,7 @@ skip_recipe_api:
 		}
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/images/rollingtest/manifest",
+		if (cix_client_request(&client, "POST", "/v1/images/rollingtest/manifest",
 		                       "{\"package\":\"rollpkg\",\"mode\":\"rolling\",\"version\":\"1.0\"}",
 		                       &r) != 0 ||
 		    r.status != 204) {
@@ -2663,7 +2663,7 @@ skip_recipe_api:
 			ok = 0;
 			goto skip_rolling_rebuild;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* Read rollingtest's own current_version now, before the
 		 * rebuild -- immutability means this exact directory must
@@ -2702,12 +2702,12 @@ skip_recipe_api:
 			jw_obj_close(&w);
 			w.buf[w.len] = '\0';
 			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "POST", "/v1/pkg/recipes", w.buf, &r) != 0 ||
+			if (cix_client_request(&client, "POST", "/v1/pkg/recipes", w.buf, &r) != 0 ||
 			    r.status != 204) {
 				fprintf(stderr, "FAIL: publish rollpkg 2.0, status=%d\n", r.status);
 				ok = 0;
 			}
-			thinc_response_free(&r);
+			cix_response_free(&r);
 			jw_free(&w);
 
 			/* No install/upgrade request follows -- the daemon's own
@@ -2715,7 +2715,7 @@ skip_recipe_api:
 			state[0] = '\0';
 			for (i = 0; i < 60; i++) {
 				memset(&r, 0, sizeof(r));
-				if (thinc_client_request(&client, "GET", "/v1/pkg/rollpkg@rollingtest", NULL, &r) ==
+				if (cix_client_request(&client, "GET", "/v1/pkg/rollpkg@rollingtest", NULL, &r) ==
 				        0 &&
 				    r.status == 200) {
 					const char *st = json_str_field(r.json, "state");
@@ -2725,15 +2725,15 @@ skip_recipe_api:
 						snprintf(state, sizeof(state), "%s", st);
 					if (st != NULL && strcmp(st, "installed") == 0 && ver != NULL &&
 					    strcmp(ver, "2.0") == 0) {
-						thinc_response_free(&r);
+						cix_response_free(&r);
 						break;
 					}
 				}
-				thinc_response_free(&r);
+				cix_response_free(&r);
 				usleep(300000);
 			}
 			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "GET", "/v1/pkg/rollpkg@rollingtest", NULL, &r) != 0 ||
+			if (cix_client_request(&client, "GET", "/v1/pkg/rollpkg@rollingtest", NULL, &r) != 0 ||
 			    r.status != 200 || !str_eq(json_str_field(r.json, "state"), "installed") ||
 			    !str_eq(json_str_field(r.json, "version"), "2.0")) {
 				fprintf(stderr,
@@ -2742,7 +2742,7 @@ skip_recipe_api:
 				        state);
 				ok = 0;
 			}
-			thinc_response_free(&r);
+			cix_response_free(&r);
 
 			/* The old version's own rootfs must still exist, untouched
 			 * -- copy-forward immutability (ADR-0107/0108), not
@@ -2790,13 +2790,13 @@ skip_rolling_rebuild:
 		char v1_version[128], v2_version[128];
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/images", "{\"name\":\"pintest\"}", &r) != 0 ||
+		if (cix_client_request(&client, "POST", "/v1/images", "{\"name\":\"pintest\"}", &r) != 0 ||
 		    r.status != 201) {
 			fprintf(stderr, "FAIL: POST pintest image, status=%d\n", r.status);
 			ok = 0;
 			goto skip_pin_isolation;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		if (stage_fixture_tarball(scratch_dir, "pinpkg", "1.0", tarball1, sizeof(tarball1), sha1,
 		                           sizeof(sha1)) != 0 ||
@@ -2807,13 +2807,13 @@ skip_rolling_rebuild:
 		}
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/pkg/install",
+		if (cix_client_request(&client, "POST", "/v1/pkg/install",
 		                       "{\"name\":\"pinpkg\",\"image\":\"pintest\"}", &r) != 0 ||
 		    r.status != 202) {
 			fprintf(stderr, "FAIL: POST install pinpkg@pintest, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		if (poll_pkg_state(&client, "pinpkg@pintest", state, sizeof(state), 60) != 0 ||
 		    strcmp(state, "installed") != 0) {
@@ -2841,7 +2841,7 @@ skip_rolling_rebuild:
 		 * exercised below -- the same fallback a real operator's
 		 * stopped/restarted container would hit. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/containers",
+		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"pintest-old\",\"image\":\"pintest\","
 		                       "\"cmd\":[\"/usr/bin/pinpkg\"]}",
 		                       &r) != 0 ||
@@ -2850,11 +2850,11 @@ skip_rolling_rebuild:
 			ok = 0;
 			goto skip_pin_isolation;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		usleep(500000);
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/containers/pintest-old", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "GET", "/v1/containers/pintest-old", NULL, &r) != 0 ||
 		    r.status != 200 || !str_eq(json_str_field(r.json, "image_version"), v1_version)) {
 			fprintf(stderr,
 			        "FAIL: pintest-old should be pinned to %s, image_version=%s\n", v1_version,
@@ -2862,7 +2862,7 @@ skip_rolling_rebuild:
 			                                                 : "(null)");
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* Now upgrade pintest to 2.0 -- produces a NEW immutable
 		 * current_version; pintest-old's own overlay lowerdir must stay
@@ -2876,14 +2876,14 @@ skip_rolling_rebuild:
 		}
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/pkg/install",
+		if (cix_client_request(&client, "POST", "/v1/pkg/install",
 		                       "{\"name\":\"pinpkg\",\"image\":\"pintest\",\"upgrade\":true}", &r) !=
 		        0 ||
 		    r.status != 202) {
 			fprintf(stderr, "FAIL: POST upgrade pinpkg@pintest, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		if (poll_pkg_state(&client, "pinpkg@pintest", state, sizeof(state), 60) != 0 ||
 		    strcmp(state, "installed") != 0) {
@@ -2904,7 +2904,7 @@ skip_rolling_rebuild:
 		 * upgrade -- it was resolved once at create time, never
 		 * re-resolved by a later, unrelated pkg install. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/containers/pintest-old", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "GET", "/v1/containers/pintest-old", NULL, &r) != 0 ||
 		    r.status != 200 || !str_eq(json_str_field(r.json, "image_version"), v1_version)) {
 			fprintf(stderr,
 			        "FAIL: pintest-old's image_version changed after pintest's upgrade "
@@ -2914,7 +2914,7 @@ skip_rolling_rebuild:
 			                                                 : "(null)");
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* The real proof: pintest-old's own /usr/bin/pinpkg must still
 		 * be the OLD binary (embeds "hello from pinpkg v1.0" in its own
@@ -2924,7 +2924,7 @@ skip_rolling_rebuild:
 		 * (handle_container_file_read(), ADR-0107/0108), never
 		 * pintest's current (now 2.0) rootfs. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET",
+		if (cix_client_request(&client, "GET",
 		                       "/v1/containers/pintest-old/files?path=%2Fusr%2Fbin%2Fpinpkg", NULL,
 		                       &r) != 0 ||
 		    r.status != 200 || r.body == NULL ||
@@ -2935,13 +2935,13 @@ skip_rolling_rebuild:
 			        "pintest's own upgrade to 2.0 -- per-version isolation broke\n");
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* A FRESH container created now, against the very same image
 		 * name, must pin to the NEW version and see the NEW binary --
 		 * completing the two-sided proof. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/containers",
+		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"pintest-new\",\"image\":\"pintest\","
 		                       "\"cmd\":[\"/usr/bin/pinpkg\"]}",
 		                       &r) != 0 ||
@@ -2950,11 +2950,11 @@ skip_rolling_rebuild:
 			ok = 0;
 			goto skip_pin_isolation;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		usleep(500000);
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/containers/pintest-new", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "GET", "/v1/containers/pintest-new", NULL, &r) != 0 ||
 		    r.status != 200 || !str_eq(json_str_field(r.json, "image_version"), v2_version)) {
 			fprintf(stderr, "FAIL: pintest-new should be pinned to %s, image_version=%s\n",
 			        v2_version,
@@ -2962,10 +2962,10 @@ skip_rolling_rebuild:
 			                                                 : "(null)");
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET",
+		if (cix_client_request(&client, "GET",
 		                       "/v1/containers/pintest-new/files?path=%2Fusr%2Fbin%2Fpinpkg", NULL,
 		                       &r) != 0 ||
 		    r.status != 200 || r.body == NULL ||
@@ -2974,7 +2974,7 @@ skip_rolling_rebuild:
 			fprintf(stderr, "FAIL: pintest-new's /usr/bin/pinpkg does not reflect v2.0\n");
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 	}
 skip_pin_isolation:
 
@@ -3070,13 +3070,13 @@ skip_pin_isolation:
 
 		/* start it -> 202, fetching */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/pkg/hostbuild",
+		if (cix_client_request(&client, "POST", "/v1/pkg/hostbuild",
 		                       "{\"name\":\"hbtest\",\"build_image\":\"hbimage\"}", &r) != 0 ||
 		    r.status != 202) {
 			fprintf(stderr, "FAIL: POST hostbuild hbtest, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* ADR-0157 Phase 2: while it's in flight, a concurrent
 		 * *ordinary* install now genuinely fits in the second chain
@@ -3093,7 +3093,7 @@ skip_pin_isolation:
 		 * checksum failure was fast enough to free its chain slot
 		 * before the overflow request even landed). */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"hbconcurrent\"}", &r) !=
+		if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"hbconcurrent\"}", &r) !=
 		        0 ||
 		    r.status != 202 || !str_eq(json_str_field(r.json, "state"), "fetching")) {
 			fprintf(stderr,
@@ -3101,7 +3101,7 @@ skip_pin_isolation:
 			        r.status, json_str_field(r.json, "state") ? json_str_field(r.json, "state") : "(null)");
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* a THIRD job attempt now that both chain slots are genuinely
 		 * occupied (hbtest's hostbuild + hbconcurrent's fetch/build)
@@ -3109,7 +3109,7 @@ skip_pin_isolation:
 		 * step 4b already proved gets rejected the same way at the
 		 * top level. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"overflow\"}", &r) !=
+		if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"overflow\"}", &r) !=
 		        0 ||
 		    r.status != 409) {
 			fprintf(stderr,
@@ -3117,7 +3117,7 @@ skip_pin_isolation:
 			        r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* poll GET /v1/pkg/hostbuild/{name} (the dedicated route, not
 		 * the generic /v1/pkg/{name} -- that one has no way to say
@@ -3135,18 +3135,18 @@ skip_pin_isolation:
 			const char *state;
 
 			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "GET", "/v1/pkg/hostbuild/hbtest", NULL, &r) != 0 ||
+			if (cix_client_request(&client, "GET", "/v1/pkg/hostbuild/hbtest", NULL, &r) != 0 ||
 			    r.status != 200) {
-				thinc_response_free(&r);
+				cix_response_free(&r);
 				break;
 			}
 			state = json_str_field(r.json, "state");
 			if (state == NULL) {
-				thinc_response_free(&r);
+				cix_response_free(&r);
 				break;
 			}
 			snprintf(hb_state, sizeof(hb_state), "%s", state);
-			thinc_response_free(&r);
+			cix_response_free(&r);
 			if (strcmp(hb_state, "fetching") != 0 && strcmp(hb_state, "building") != 0)
 				break;
 			usleep(300000);
@@ -3175,17 +3175,17 @@ skip_pin_isolation:
 			ok = 0;
 		}
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "DELETE", "/v1/pkg/hbconcurrent", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "DELETE", "/v1/pkg/hbconcurrent", NULL, &r) != 0 ||
 		    r.status != 204) {
 			fprintf(stderr, "FAIL: DELETE hbconcurrent (2nd chain) expected 204, got %d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* the response itself must say is_hostbuild=true and give the
 		 * real artifact_path -- not just that the job finished. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/pkg/hostbuild/hbtest", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "GET", "/v1/pkg/hostbuild/hbtest", NULL, &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: GET hostbuild/hbtest after completion, status=%d\n", r.status);
 			ok = 0;
@@ -3220,7 +3220,7 @@ skip_pin_isolation:
 				}
 			}
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* the real payoff: a real file landed on disk under
 		 * ARTIFACTS_DIR/hbtest/ -- not merged into any image's
@@ -3267,7 +3267,7 @@ skip_pin_isolation:
 		fclose(f);
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/pkg/hostbuild",
+		if (cix_client_request(&client, "POST", "/v1/pkg/hostbuild",
 		                       "{\"name\":\"hbdepstest\",\"build_image\":\"hbimage\"}", &r) != 0 ||
 		    r.status != 400) {
 			fprintf(stderr,
@@ -3275,42 +3275,42 @@ skip_pin_isolation:
 			        r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* an unknown build_image -> 404, not a silent fall-through */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/pkg/hostbuild",
+		if (cix_client_request(&client, "POST", "/v1/pkg/hostbuild",
 		                       "{\"name\":\"hbtest\",\"build_image\":\"no-such-image\"}", &r) != 0 ||
 		    r.status != 404) {
 			fprintf(stderr, "FAIL: hostbuild with unknown build_image expected 404, got %d\n",
 			        r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 	}
 skip_hostbuild:
 
 	/* ADR-0157 Phase 3: PUT /v1/system/pkg-build-config validation --
 	 * still at the ceiling=2 this test set right after startup. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "PUT", "/v1/system/pkg-build-config",
+	if (cix_client_request(&client, "PUT", "/v1/system/pkg-build-config",
 	                       "{\"max_concurrent_jobs\":0}", &r) != 0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: PUT pkg-build-config max_concurrent_jobs=0 expected 400, got %d\n",
 		        r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "PUT", "/v1/system/pkg-build-config",
+	if (cix_client_request(&client, "PUT", "/v1/system/pkg-build-config",
 	                       "{\"max_concurrent_jobs\":11}", &r) != 0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: PUT pkg-build-config max_concurrent_jobs=11 expected 400, got %d\n",
 		        r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* Lowering the ceiling to 1 and confirming chain_alloc() actually
 	 * honors it (not just the compile-time PKG_MAX_CONCURRENT_JOBS
@@ -3318,24 +3318,24 @@ skip_hostbuild:
 	 * just a number that gets echoed back. "overflow"/"hbconcurrent"
 	 * are both still fresh, never-installed recipes at this point. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "PUT", "/v1/system/pkg-build-config",
+	if (cix_client_request(&client, "PUT", "/v1/system/pkg-build-config",
 	                       "{\"max_concurrent_jobs\":1}", &r) != 0 ||
 	    r.status != 200 || json_as_number(json_object_get(r.json, "max_concurrent_jobs")) != 1) {
 		fprintf(stderr, "FAIL: PUT pkg-build-config max_concurrent_jobs=1, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"overflow\"}", &r) != 0 ||
+	if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"overflow\"}", &r) != 0 ||
 	    r.status != 202) {
 		fprintf(stderr, "FAIL: POST install overflow (ceiling=1) status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"hbconcurrent\"}", &r) !=
+	if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"hbconcurrent\"}", &r) !=
 	        0 ||
 	    r.status != 409) {
 		fprintf(stderr,
@@ -3343,7 +3343,7 @@ skip_hostbuild:
 		        r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	if (poll_pkg_state(&client, "overflow", state, sizeof(state), 60) != 0 ||
 	    strcmp(state, "installed") != 0) {
@@ -3356,23 +3356,23 @@ skip_hostbuild:
 	 * proves raising the ceiling back up re-admits genuine concurrency
 	 * immediately, not just that lowering it worked. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "PUT", "/v1/system/pkg-build-config",
+	if (cix_client_request(&client, "PUT", "/v1/system/pkg-build-config",
 	                       "{\"max_concurrent_jobs\":10}", &r) != 0 || r.status != 200) {
 		fprintf(stderr, "FAIL: PUT pkg-build-config restore max_concurrent_jobs=10, got %d\n",
 		        r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"hbconcurrent\"}", &r) !=
+	if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"hbconcurrent\"}", &r) !=
 	        0 ||
 	    r.status != 202) {
 		fprintf(stderr,
 		        "FAIL: POST install hbconcurrent after restoring ceiling=10 status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	if (poll_pkg_state(&client, "hbconcurrent", state, sizeof(state), 60) != 0 ||
 	    strcmp(state, "installed") != 0) {
@@ -3421,14 +3421,14 @@ skip_hostbuild:
 		 * behavior -- the failed build container is gone immediately,
 		 * kept_build_container stays null. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"keepfail\"}", &r) !=
+		if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"keepfail\"}", &r) !=
 		        0 ||
 		    r.status != 202) {
 			fprintf(stderr, "FAIL: POST install keepfail (no keep_on_failure) status=%d\n",
 			        r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		if (poll_pkg_state(&client, "keepfail", state, sizeof(state), 60) != 0 ||
 		    strcmp(state, "failed") != 0) {
@@ -3437,7 +3437,7 @@ skip_hostbuild:
 		}
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/pkg/keepfail", NULL, &r) != 0 || r.status != 200) {
+		if (cix_client_request(&client, "GET", "/v1/pkg/keepfail", NULL, &r) != 0 || r.status != 200) {
 			fprintf(stderr, "FAIL: GET pkg/keepfail (no keep_on_failure) status=%d\n", r.status);
 			ok = 0;
 		} else if (json_object_get(r.json, "kept_build_container")->type != JSON_NULL) {
@@ -3445,12 +3445,12 @@ skip_hostbuild:
 			        "FAIL: keepfail (no keep_on_failure) has a non-null kept_build_container\n");
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* 18b. WITH keep_on_failure: the build container survives,
 		 * readable, until an explicit DELETE. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/pkg/install",
+		if (cix_client_request(&client, "POST", "/v1/pkg/install",
 		                       "{\"name\":\"keepfail\",\"upgrade\":true,\"keep_on_failure\":true}",
 		                       &r) != 0 ||
 		    r.status != 202) {
@@ -3458,7 +3458,7 @@ skip_hostbuild:
 			ok = 0;
 			goto skip_keep_on_failure;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		if (poll_pkg_state(&client, "keepfail", state, sizeof(state), 60) != 0 ||
 		    strcmp(state, "failed") != 0) {
@@ -3469,7 +3469,7 @@ skip_hostbuild:
 
 		memset(&r, 0, sizeof(r));
 		kept_name[0] = '\0';
-		if (thinc_client_request(&client, "GET", "/v1/pkg/keepfail", NULL, &r) != 0 || r.status != 200) {
+		if (cix_client_request(&client, "GET", "/v1/pkg/keepfail", NULL, &r) != 0 || r.status != 200) {
 			fprintf(stderr, "FAIL: GET pkg/keepfail (keep_on_failure) status=%d\n", r.status);
 			ok = 0;
 		} else {
@@ -3494,7 +3494,7 @@ skip_hostbuild:
 				ok = 0;
 			}
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		if (kept_name[0] == '\0')
 			goto skip_keep_on_failure;
@@ -3503,12 +3503,12 @@ skip_hostbuild:
 		 * exited container -- GET still finds it... */
 		snprintf(kf_container_path, sizeof(kf_container_path), "/v1/containers/%s", kept_name);
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", kf_container_path, NULL, &r) != 0 || r.status != 200) {
+		if (cix_client_request(&client, "GET", kf_container_path, NULL, &r) != 0 || r.status != 200) {
 			fprintf(stderr, "FAIL: GET %s (preserved build container) status=%d\n",
 			        kf_container_path, r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* ...and ADR-0055's GET .../files reads real content back out
 		 * of it -- proof the overlay genuinely survived, not just the
@@ -3518,13 +3518,13 @@ skip_hostbuild:
 		snprintf(kf_container_path, sizeof(kf_container_path),
 		         "/v1/containers/%s/files?path=%%2Fbuild%%2Fsrc%%2Fhello.c", kept_name);
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", kf_container_path, NULL, &r) != 0 || r.status != 200 ||
+		if (cix_client_request(&client, "GET", kf_container_path, NULL, &r) != 0 || r.status != 200 ||
 		    r.body == NULL || r.body_len == 0) {
 			fprintf(stderr, "FAIL: GET %s status=%d body_len=%zu\n", kf_container_path, r.status,
 			        r.body_len);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/*
 		 * Issue #61: the same preserved build container must also serve
@@ -3544,14 +3544,14 @@ skip_hostbuild:
 		snprintf(kf_container_path, sizeof(kf_container_path),
 		         "/v1/containers/%s/files?path=%%2Fusr%%2Fbin%%2Ftcc", kept_name);
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", kf_container_path, NULL, &r) != 0 || r.status != 200 ||
+		if (cix_client_request(&client, "GET", kf_container_path, NULL, &r) != 0 || r.status != 200 ||
 		    r.body == NULL || r.body_len == 0) {
 			fprintf(stderr,
 			        "FAIL: GET %s (build container lowerdir read) status=%d body_len=%zu\n",
 			        kf_container_path, r.status, r.body_len);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/*
 		 * Negative (the host-leak half): /etc/os-release exists on the
@@ -3563,33 +3563,33 @@ skip_hostbuild:
 		snprintf(kf_container_path, sizeof(kf_container_path),
 		         "/v1/containers/%s/files?path=%%2Fetc%%2Fos-release", kept_name);
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", kf_container_path, NULL, &r) != 0 || r.status != 404) {
+		if (cix_client_request(&client, "GET", kf_container_path, NULL, &r) != 0 || r.status != 404) {
 			fprintf(stderr,
 			        "FAIL: GET %s expected 404 -- a host file must never be readable through a "
 			        "container's own files endpoint, status=%d\n",
 			        kf_container_path, r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* explicit cleanup -- the completely ordinary DELETE path,
 		 * no new mechanism. */
 		snprintf(kf_container_path, sizeof(kf_container_path), "/v1/containers/%s", kept_name);
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "DELETE", kf_container_path, NULL, &r) != 0 || r.status != 204) {
+		if (cix_client_request(&client, "DELETE", kf_container_path, NULL, &r) != 0 || r.status != 204) {
 			fprintf(stderr, "FAIL: DELETE %s (preserved build container) status=%d\n",
 			        kf_container_path, r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", kf_container_path, NULL, &r) != 0 || r.status != 404) {
+		if (cix_client_request(&client, "GET", kf_container_path, NULL, &r) != 0 || r.status != 404) {
 			fprintf(stderr, "FAIL: GET %s after DELETE expected 404, got %d\n", kf_container_path,
 			        r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 	}
 skip_keep_on_failure:
 
@@ -3628,14 +3628,14 @@ skip_keep_on_failure:
 		fclose(f);
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/pkg/install",
+		if (cix_client_request(&client, "POST", "/v1/pkg/install",
 		                       "{\"name\":\"resumeme\",\"keep_on_failure\":true}", &r) != 0 ||
 		    r.status != 202) {
 			fprintf(stderr, "FAIL: POST install resumeme (v1.0) status=%d\n", r.status);
 			ok = 0;
 			goto skip_resume;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		if (poll_pkg_state(&client, "resumeme", state, sizeof(state), 60) != 0 ||
 		    strcmp(state, "failed") != 0) {
@@ -3646,7 +3646,7 @@ skip_keep_on_failure:
 
 		memset(&r, 0, sizeof(r));
 		kept_name[0] = '\0';
-		if (thinc_client_request(&client, "GET", "/v1/pkg/resumeme", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "GET", "/v1/pkg/resumeme", NULL, &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: GET pkg/resumeme (v1.0) status=%d\n", r.status);
 			ok = 0;
@@ -3661,7 +3661,7 @@ skip_keep_on_failure:
 				snprintf(kept_name, sizeof(kept_name), "%s", kbc);
 			}
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		if (kept_name[0] == '\0')
 			goto skip_resume;
@@ -3672,13 +3672,13 @@ skip_keep_on_failure:
 		snprintf(rs_container_path, sizeof(rs_container_path),
 		         "/v1/containers/%s/files?path=%%2Fbuild%%2Fsrc%%2F.resumed_marker", kept_name);
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", rs_container_path, NULL, &r) != 0 ||
+		if (cix_client_request(&client, "GET", rs_container_path, NULL, &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: GET %s (marker before resume) status=%d\n", rs_container_path,
 			        r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* publish a "fixed" 1.1 -- its own pkg_build() checks the
 		 * marker survived (i.e. this really is a resume, not a
@@ -3701,7 +3701,7 @@ skip_keep_on_failure:
 		fclose(f);
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/pkg/resume", "{\"name\":\"resumeme\"}", &r) !=
+		if (cix_client_request(&client, "POST", "/v1/pkg/resume", "{\"name\":\"resumeme\"}", &r) !=
 		        0 ||
 		    r.status != 202) {
 			fprintf(stderr, "FAIL: POST resume resumeme status=%d body=%s\n", r.status,
@@ -3709,7 +3709,7 @@ skip_keep_on_failure:
 			ok = 0;
 			goto skip_resume;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		if (poll_pkg_state(&client, "resumeme", state, sizeof(state), 60) != 0 ||
 		    strcmp(state, "installed") != 0) {
@@ -3719,7 +3719,7 @@ skip_keep_on_failure:
 		}
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/pkg/resumeme", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "GET", "/v1/pkg/resumeme", NULL, &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: GET pkg/resumeme (resumed) status=%d\n", r.status);
 			ok = 0;
@@ -3737,7 +3737,7 @@ skip_keep_on_failure:
 				ok = 0;
 			}
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* the exact same registry slot/container name was reused, not a
 		 * fresh one -- and a genuinely successful build (resumed or
@@ -3745,13 +3745,13 @@ skip_keep_on_failure:
 		 * any other pkgbuild container's clean exit. */
 		snprintf(rs_container_path, sizeof(rs_container_path), "/v1/containers/%s", kept_name);
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", rs_container_path, NULL, &r) != 0 ||
+		if (cix_client_request(&client, "GET", rs_container_path, NULL, &r) != 0 ||
 		    r.status != 404) {
 			fprintf(stderr, "FAIL: GET %s (resumed container after success) expected 404, got %d\n",
 			        rs_container_path, r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 	}
 skip_resume:
 
@@ -3786,38 +3786,38 @@ skip_resume:
 			ok = 0;
 		}
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"stallpkg\"}",
+		if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"stallpkg\"}",
 		                       &r) != 0 ||
 		    r.status != 202) {
 			fprintf(stderr, "FAIL: POST install stallpkg, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		for (attempt = 0; attempt < 120 && !saw_stall; attempt++) {
 			usleep(500000);
 			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "GET",
-			                       "/v1/system/logs?source=thincd&tail=200", NULL, &r) == 0 &&
+			if (cix_client_request(&client, "GET",
+			                       "/v1/system/logs?source=cixd&tail=200", NULL, &r) == 0 &&
 			    r.status == 200 && r.body != NULL &&
 			    strstr(r.body, "no build output for") != NULL &&
 			    strstr(r.body, "stallpkg") != NULL)
 				saw_stall = 1;
-			thinc_response_free(&r);
+			cix_response_free(&r);
 		}
 		if (!saw_stall) {
 			fprintf(stderr,
 			        "FAIL: a build that produced no output was never reported as stalled\n");
 			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "GET", "/v1/pkg/stallpkg", NULL, &r) == 0)
+			if (cix_client_request(&client, "GET", "/v1/pkg/stallpkg", NULL, &r) == 0)
 				fprintf(stderr, "  stallpkg: status=%d %s\n", r.status,
 				        r.body != NULL ? r.body : "(no body)");
-			thinc_response_free(&r);
+			cix_response_free(&r);
 			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "GET", "/v1/system/logs?source=thincd&tail=12",
+			if (cix_client_request(&client, "GET", "/v1/system/logs?source=cixd&tail=12",
 			                       NULL, &r) == 0 && r.body != NULL)
 				fprintf(stderr, "  last logs: %.1200s\n", r.body);
-			thinc_response_free(&r);
+			cix_response_free(&r);
 			ok = 0;
 		}
 	}

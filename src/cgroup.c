@@ -144,7 +144,7 @@ int cgroup_create(const struct cgroup_limits *lim, int *out_fd)
  * v2 controller this project's own container/host-stats code needs,
  * in the root's own subtree_control -- io/cpuset (this function's own
  * original scope) plus memory/pids/cpu, added after a real, confirmed
- * gap: a genuinely fresh cgroup v2 hierarchy (thincd running as real
+ * gap: a genuinely fresh cgroup v2 hierarchy (cixd running as real
  * PID 1, no systemd ever pre-delegating anything to its own default
  * slices, unlike every dev/test environment this project had
  * exercised so far) starts with a completely EMPTY root
@@ -207,11 +207,11 @@ static void delegate_controllers(const char *dir)
  * containers will live under, carrying the AGGREGATE limit for all of
  * them, and delegates the controllers its children need.
  *
- * This exists because a per-container limit is not a budget. thinC's own
+ * This exists because a per-container limit is not a budget. Cix's own
  * package builder applied its configured cpu_max/memory_max to each
  * build container individually while allowing up to max_concurrent_jobs
  * of them, so the real ceiling was (limit x concurrency) -- on a real
- * 2-CPU box that starved thincd itself off the run queue and, since a
+ * 2-CPU box that starved cixd itself off the run queue and, since a
  * shell-less host has no other way in, took the whole machine out of
  * reach until it was reset. A parent cgroup makes the configured number
  * mean what it says: N children can never collectively exceed it,
@@ -232,7 +232,7 @@ int cgroup_create_parent(const struct cgroup_limits *lim)
 	}
 	/*
 	 * mkdir every component, not just the last: a nested parent
-	 * ("thinc-workload/thinc-pkgbuild") is how the build budget is kept
+	 * ("cix-workload/cix-pkgbuild") is how the build budget is kept
 	 * INSIDE the workload budget rather than beside it (issue #86).
 	 * Beside it would mean two ceilings that add up to more than the
 	 * machine, which is the same class of mistake #85 was.
