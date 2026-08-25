@@ -430,44 +430,39 @@ EOF
 	# a single bad pass.
 	#
 	#
-	# CXXFLAGS carries -fno-threadsafe-statics, and the futex decode
-	# behind it belongs in the record (issue #116).
 	#
-	# Every hang this issue has produced waited on
-	# futex(addr, FUTEX_WAIT, 0x10100, NULL). 0x10100 is not garbage:
-	# it is libstdc++'s own guard.cc, exactly --
-	# _GLIBCXX_GUARD_PENDING_BIT (0x100) | _GLIBCXX_GUARD_WAITING_BIT
-	# (0x10000), the precise value __cxa_guard_acquire futex-waits on
-	# when a C++ function-local static appears to be mid-initialization
-	# in another thread. There is no other thread: cc1 is single-
-	# threaded. A guard left PENDING is an initialization whose release
-	# never ran, and the wait is forever.
+	# CXXFLAGS carries -fno-threadsafe-statics, and the mechanism it
+	# defeats is now fully established (issue #116, final diagnosis).
 	#
-	# Two facts frame the fix. First, on glibc >= 2.34 the gthread
-	# weak-symbol check always reports "threads active" (pthread lives
-	# inside libc.so.6 now), so this futex path runs even in single-
-	# threaded processes -- on older glibc the whole mechanism was
-	# bypassed, which is why a broken guard path could lie dormant.
-	# Second, the guard machinery in a compiler built here traces back
-	# through gcc-4.7.4's TCC-built cc1plus and the libstdc++ it
-	# compiled -- the suspect lineage this issue is about. Simple and
-	# libstdc++-internal guard reproducers PASS in isolation, so the
-	# failing guard is something only real cc1 reaches; which one was
-	# not run to ground, deliberately: the mission is a working
-	# compiler, and the mechanism-level fix is decisive either way.
+	# GCC 4.7's libstdc++ guard machinery (libsupc++/guard.cc)
+	# deadlocks on function-local static initialization under glibc >=
+	# 2.34 -- REGARDLESS of which compiler built it. A 3-stage
+	# bootstrapped, byte-compared 4.7.4's own libstdc++ hangs a
+	# five-line twice-entered-static test at -O0 and -O2 exactly like
+	# the TCC-seeded one did, while rol64, varargs, the limits chain
+	# and iostream/locale all pass. glibc 2.34 folded pthreads into
+	# libc.so.6, so that era's weak-symbol __gthread_active_p answers
+	# "threaded" in every process, taking a futex guard path that
+	# misbehaves single-threaded; the observed futex value 0x10100 is
+	# guard.cc's own PENDING|WAITING.
 	#
-	# -fno-threadsafe-statics removes the mechanism: no inline guard
-	# checks, no __cxa_guard_* calls, plain check-and-set statics.
-	# For cc1/cc1plus -- single-threaded by construction -- that is
-	# semantically exact, and GCC documents the flag for precisely this
-	# case. It applies to HOST code only (the compilers being built);
-	# 9.5.0's own target libstdc++ is compiled by the new 9.5.0
-	# compiler and keeps full thread-safe semantics for its consumers.
+	# This compiler's cc1/cc1plus are linked by the host g++ against
+	# that 4.7-era libstdc++.a, so any twice-entered guarded static in
+	# THEIR code deadlocks -- which is precisely what hung 6.4.0's and
+	# 9.5.0's builds. -fno-threadsafe-statics removes guard emission
+	# from the host tools entirely: no inline checks, no __cxa_guard_*
+	# calls. Semantically exact for single-threaded compilers, and
+	# documented by GCC for the purpose. libstdc++'s own internal
+	# statics test clean (iostream/locale battery above); 9.5.0's
+	# target libstdc++ is built by 9.5.0 itself; 16.2.0's bootstrap
+	# links its own modern runtime from stage 2 on.
 	#
-	# This intermediate's correctness is not taken on faith regardless:
-	# the self-test below runs real compiled output, and gcc-16.2.0 is
-	# built from here with a full 3-stage bootstrap, which is the
-	# actual correctness gate for the final compiler.
+	# Worth recording: three earlier guard reproducers passed by
+	# accident -- they linked libstdc++ DYNAMICALLY, resolving to the
+	# build sandbox's untracked modern copy instead of ours. The
+	# five-second reproducer only fires with -static-libstdc++, which
+	# is exactly how cc1 links. A probe that tests the wrong library is
+	# worse than none.
 	#
 	CC=/usr/bin/gcc CXX=/usr/bin/g++ \
 		CXXFLAGS="-g -O2 -fno-threadsafe-statics" \
