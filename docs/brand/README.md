@@ -12,7 +12,8 @@ owner provided, replaced only by new versions from them — never edited ad hoc
 |---|---|
 | [brand-guidelines.md](brand-guidelines.md) | The full brand system, v1.0 — strategy, naming, verbal identity, colour, typography, product expression, ThinC→Cix migration, governance. Markdown transcription of the owner's `Cix_Brand_Guidelines_v1.0.docx` (32 sections). |
 | [cix-logo-reference.webp](cix-logo-reference.webp) | The owner's one-page logo reference sheet: the Cix mark (joined C + X), construction, variations, lockups, clear space, usage do/don'ts. |
-| [assets/](assets/) | Colour swatch chips (SVG) rendered from the guidelines' palette, so the colour table shows real swatches. The logo/icon SVG set lands here when the owner provides it. |
+| [cix-ui-svg-icons/](cix-ui-svg-icons/) | The owner's SVG set, filed verbatim: the canonical Cix mark in four brand variants (`brand/`) and 102 UI icons (`icons/`, 24×24, `currentColor`, 1.75 stroke) with its own README and manifest. This is the source the web dashboard draws from when the #121 rebrand executes. |
+| [assets/](assets/) | Colour swatch chips (SVG) rendered from the guidelines' palette, so the colour table shows real swatches. |
 
 ## Notes
 

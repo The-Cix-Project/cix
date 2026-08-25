@@ -1,0 +1,210 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1215" viewBox="0 0 1200 1215">
+<rect width="100%" height="100%" fill="#F2F5FA"/>
+<text x="40" y="45" font-family="Arial,sans-serif" font-size="24" font-weight="700" fill="#0A0E14">Cix UI SVG Icon Set</text>
+<text x="40" y="75" font-family="Arial,sans-serif" font-size="14" fill="#26303B">Canonical B5.1.E logo + complete UI resource/action icon family</text>
+<g transform="translate(40 100) scale(1.019608)" fill="#0A0E14"><path d="M 72.424 8.180 C 69.078 8.377 65.801 8.952 62.698 9.623 C 59.596 10.294 56.717 11.207 53.811 12.206 C 50.904 13.206 48.013 14.245 45.259 15.621 C 42.506 16.997 39.877 18.681 37.290 20.461 C 34.702 22.241 32.087 24.127 29.735 26.303 C 27.383 28.478 25.170 31.022 23.180 33.512 C 21.189 36.001 19.400 38.584 17.792 41.238 C 16.183 43.892 14.736 46.617 13.528 49.438 C 12.319 52.259 11.303 55.156 10.542 58.165 C 9.781 61.173 9.398 64.331 8.962 67.487 C 8.526 70.642 7.886 73.924 7.925 77.097 C 7.965 80.270 8.585 83.459 9.197 86.524 C 9.809 89.588 10.601 92.575 11.598 95.482 C 12.594 98.389 13.780 101.218 15.174 103.964 C 16.569 106.711 18.214 109.360 19.962 111.961 C 21.710 114.563 23.526 117.189 25.664 119.573 C 27.802 121.957 30.318 124.240 32.788 126.264 C 35.258 128.288 37.841 130.085 40.485 131.719 C 43.128 133.353 45.850 134.807 48.651 136.066 C 51.451 137.325 54.307 138.455 57.287 139.273 C 60.267 140.090 63.397 140.533 66.529 140.974 C 69.660 141.414 72.864 141.852 76.077 141.917 C 79.289 141.982 82.628 141.707 85.803 141.364 C 88.979 141.021 92.106 140.574 95.130 139.861 C 98.153 139.149 101.084 138.198 103.945 137.088 C 106.807 135.978 109.573 134.635 112.301 133.201 C 115.029 131.767 117.744 130.303 120.312 128.485 C 122.880 126.666 125.305 124.503 127.711 122.292 C 130.116 120.080 132.370 117.502 134.744 115.215 C 137.118 112.928 139.554 110.792 141.956 108.569 C 144.359 106.347 146.778 104.137 149.159 101.878 C 151.540 99.619 153.850 96.776 156.242 95.013 C 158.633 93.250 161.067 90.832 163.506 91.302 C 165.945 91.773 168.475 95.565 170.875 97.836 C 173.275 100.106 175.523 102.653 177.905 104.924 C 180.286 107.195 182.706 109.376 185.165 111.461 C 187.624 113.547 190.099 115.590 192.656 117.436 C 195.212 119.283 197.774 121.114 200.504 122.543 C 203.233 123.972 206.105 125.057 209.032 126.011 C 211.960 126.965 214.955 127.762 218.069 128.269 C 221.182 128.776 224.473 128.997 227.713 129.056 C 230.953 129.114 234.526 129.405 237.511 128.620 C 240.496 127.835 244.143 126.596 245.625 124.346 C 247.106 122.096 247.359 117.623 246.401 115.120 C 245.444 112.618 242.610 110.357 239.881 109.330 C 237.152 108.304 233.293 109.114 230.027 108.963 C 226.761 108.811 223.336 109.074 220.284 108.423 C 217.232 107.772 214.449 106.477 211.716 105.056 C 208.983 103.635 206.416 101.811 203.886 99.898 C 201.356 97.984 198.930 95.817 196.538 93.576 C 194.145 91.335 191.931 88.679 189.532 86.453 C 187.134 84.227 184.000 82.359 182.149 80.219 C 180.297 78.079 177.810 75.783 178.421 73.614 C 179.033 71.445 183.402 69.419 185.819 67.205 C 188.236 64.990 190.505 62.507 192.922 60.327 C 195.339 58.148 197.807 56.079 200.321 54.128 C 202.835 52.178 205.336 50.191 208.008 48.622 C 210.681 47.054 213.421 45.656 216.354 44.717 C 219.286 43.779 222.396 43.268 225.603 42.991 C 228.809 42.714 232.473 43.503 235.592 43.054 C 238.710 42.604 242.405 42.202 244.316 40.292 C 246.226 38.382 247.545 34.175 247.055 31.591 C 246.565 29.008 243.856 26.225 241.374 24.792 C 238.892 23.359 235.327 23.200 232.165 22.995 C 229.002 22.790 225.564 23.168 222.398 23.562 C 219.233 23.956 216.179 24.592 213.174 25.359 C 210.169 26.125 207.217 27.016 204.370 28.161 C 201.523 29.306 198.777 30.695 196.090 32.228 C 193.404 33.762 190.785 35.458 188.251 37.360 C 185.717 39.261 183.317 41.486 180.887 43.638 C 178.456 45.789 176.039 47.973 173.668 50.267 C 171.297 52.561 169.035 55.121 166.658 57.401 C 164.281 59.682 161.808 61.729 159.406 63.949 C 157.004 66.170 154.625 68.446 152.248 70.725 C 149.871 73.005 147.533 75.381 145.142 77.627 C 142.751 79.872 140.325 82.035 137.900 84.200 C 135.475 86.365 132.999 88.406 130.594 90.618 C 128.188 92.830 125.823 95.139 123.468 97.472 C 121.113 99.805 118.845 102.348 116.463 104.616 C 114.081 106.885 111.702 109.162 109.176 111.083 C 106.650 113.004 104.056 114.759 101.307 116.143 C 98.558 117.527 95.656 118.542 92.682 119.387 C 89.708 120.232 86.595 120.817 83.464 121.215 C 80.334 121.613 77.018 122.000 73.901 121.773 C 70.785 121.547 67.743 120.675 64.767 119.857 C 61.791 119.039 58.808 118.209 56.046 116.865 C 53.283 115.522 50.672 113.779 48.192 111.795 C 45.713 109.811 43.216 107.398 41.169 104.962 C 39.121 102.526 37.427 99.872 35.906 97.179 C 34.384 94.486 33.012 91.720 32.039 88.805 C 31.066 85.889 30.388 82.864 30.068 79.687 C 29.747 76.510 29.726 72.901 30.115 69.744 C 30.504 66.587 31.390 63.644 32.402 60.745 C 33.415 57.845 34.669 55.042 36.190 52.348 C 37.711 49.654 39.446 46.973 41.529 44.581 C 43.613 42.190 46.160 39.873 48.691 37.998 C 51.222 36.122 53.929 34.621 56.714 33.329 C 59.499 32.038 62.384 30.977 65.402 30.250 C 68.421 29.523 71.609 29.140 74.825 28.969 C 78.040 28.797 81.533 28.827 84.696 29.222 C 87.860 29.618 90.892 30.351 93.807 31.342 C 96.722 32.333 99.511 33.604 102.186 35.166 C 104.862 36.729 107.390 38.725 109.860 40.716 C 112.330 42.708 114.752 44.803 117.006 47.115 C 119.260 49.426 121.076 52.295 123.385 54.585 C 125.695 56.874 128.394 58.778 130.864 60.851 C 133.334 62.925 135.391 65.867 138.205 67.027 C 141.018 68.187 144.953 68.694 147.746 67.813 C 150.539 66.932 153.944 64.166 154.961 61.739 C 155.979 59.311 155.234 55.761 153.850 53.249 C 152.467 50.738 149.034 48.942 146.662 46.669 C 144.291 44.396 141.971 41.960 139.622 39.612 C 137.274 37.263 134.971 34.810 132.574 32.579 C 130.177 30.347 127.701 28.306 125.240 26.226 C 122.780 24.146 120.392 21.889 117.811 20.099 C 115.231 18.309 112.533 16.804 109.758 15.485 C 106.983 14.166 104.093 13.124 101.161 12.186 C 98.229 11.247 95.231 10.479 92.166 9.855 C 89.102 9.231 86.065 8.721 82.775 8.441 C 79.484 8.162 75.770 7.983 72.424 8.180 Z"/><circle cx="77.500" cy="75.000" r="20.750"/></g>
+<g transform="translate(40 218) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="4" rx="1"/><rect x="14" y="11" width="7" height="10" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></g>
+<text x="40" y="266" font-family="Arial,sans-serif" font-size="11" fill="#26303B">dashboard</text>
+<g transform="translate(190 218) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4v11"/><path d="M5 8h5"/><path d="M5 15h5"/><rect x="10" y="5.5" width="9" height="5" rx="1"/><rect x="10" y="12.5" width="9" height="5" rx="1"/></g>
+<text x="190" y="266" font-family="Arial,sans-serif" font-size="11" fill="#26303B">tree</text>
+<g transform="translate(340 218) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h16"/></g>
+<text x="340" y="266" font-family="Arial,sans-serif" font-size="11" fill="#26303B">menu</text>
+<g transform="translate(490 218) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 4.5 4.5"/></g>
+<text x="490" y="266" font-family="Arial,sans-serif" font-size="11" fill="#26303B">search</text>
+<g transform="translate(640 218) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6V5a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3v14a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6Z"/></g>
+<text x="640" y="266" font-family="Arial,sans-serif" font-size="11" fill="#26303B">command</text>
+<g transform="translate(790 218) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="12" r="1" fill="#0A0E14" stroke="none"/><circle cx="12" cy="12" r="1" fill="#0A0E14" stroke="none"/><circle cx="19" cy="12" r="1" fill="#0A0E14" stroke="none"/></g>
+<text x="790" y="266" font-family="Arial,sans-serif" font-size="11" fill="#26303B">more-horizontal</text>
+<g transform="translate(940 218) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="1" fill="#0A0E14" stroke="none"/><circle cx="12" cy="12" r="1" fill="#0A0E14" stroke="none"/><circle cx="12" cy="19" r="1" fill="#0A0E14" stroke="none"/></g>
+<text x="940" y="266" font-family="Arial,sans-serif" font-size="11" fill="#26303B">more-vertical</text>
+<g transform="translate(1090 218) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m14.5 6-6 6 6 6"/></g>
+<text x="1090" y="266" font-family="Arial,sans-serif" font-size="11" fill="#26303B">chevron-left</text>
+<g transform="translate(40 293) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m9.5 6 6 6-6 6"/></g>
+<text x="40" y="341" font-family="Arial,sans-serif" font-size="11" fill="#26303B">chevron-right</text>
+<g transform="translate(190 293) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m6 14.5 6-6 6 6"/></g>
+<text x="190" y="341" font-family="Arial,sans-serif" font-size="11" fill="#26303B">chevron-up</text>
+<g transform="translate(340 293) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9.5 6 6 6-6"/></g>
+<text x="340" y="341" font-family="Arial,sans-serif" font-size="11" fill="#26303B">chevron-down</text>
+<g transform="translate(490 293) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12H4m6-6-6 6 6 6"/></g>
+<text x="490" y="341" font-family="Arial,sans-serif" font-size="11" fill="#26303B">arrow-left</text>
+<g transform="translate(640 293) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h16m-6-6 6 6-6 6"/></g>
+<text x="640" y="341" font-family="Arial,sans-serif" font-size="11" fill="#26303B">arrow-right</text>
+<g transform="translate(790 293) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20V4m-6 6 6-6 6 6"/></g>
+<text x="790" y="341" font-family="Arial,sans-serif" font-size="11" fill="#26303B">arrow-up</text>
+<g transform="translate(940 293) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v16m-6-6 6 6 6-6"/></g>
+<text x="940" y="341" font-family="Arial,sans-serif" font-size="11" fill="#26303B">arrow-down</text>
+<g transform="translate(1090 293) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6M20 4l-9 9"/><path d="M18 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h6"/></g>
+<text x="1090" y="341" font-family="Arial,sans-serif" font-size="11" fill="#26303B">external-link</text>
+<g transform="translate(40 368) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H3v5M3 3l6 6M16 3h5v5m0-5-6 6M8 21H3v-5m0 5 6-6M16 21h5v-5m0 5-6-6"/></g>
+<text x="40" y="416" font-family="Arial,sans-serif" font-size="11" fill="#26303B">expand</text>
+<g transform="translate(190 368) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M9 9H4V4m0 5 5-5M15 9h5V4m0 5-5-5M9 15H4v5m0-5 5 5M15 15h5v5m0-5-5 5"/></g>
+<text x="190" y="416" font-family="Arial,sans-serif" font-size="11" fill="#26303B">collapse</text>
+<g transform="translate(340 368) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 8h10M7 12h5M7 16h8"/></g>
+<text x="340" y="416" font-family="Arial,sans-serif" font-size="11" fill="#26303B">system</text>
+<g transform="translate(490 368) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 7h8M8 11h8M8 15h5"/><circle cx="16.5" cy="15" r=".75" fill="#0A0E14" stroke="none"/></g>
+<text x="490" y="416" font-family="Arial,sans-serif" font-size="11" fill="#26303B">host</text>
+<g transform="translate(640 368) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z"/><path d="m4.5 7.8 7.5 4.1 7.5-4.1M12 12v9"/></g>
+<text x="640" y="416" font-family="Arial,sans-serif" font-size="11" fill="#26303B">container</text>
+<g transform="translate(790 368) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8" cy="9" r="1.5"/><path d="m4 17 5-5 3 3 2-2 6 5"/></g>
+<text x="790" y="416" font-family="Arial,sans-serif" font-size="11" fill="#26303B">image</text>
+<g transform="translate(940 368) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="2"/><circle cx="5" cy="18" r="2"/><circle cx="19" cy="18" r="2"/><path d="m10.7 6.6-4.4 9M13.3 6.6l4.4 9M7 18h10"/></g>
+<text x="940" y="416" font-family="Arial,sans-serif" font-size="11" fill="#26303B">network</text>
+<g transform="translate(1090 368) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="7" width="18" height="10" rx="2"/><path d="M7 12h10M9 9v6M15 9v6"/></g>
+<text x="1090" y="416" font-family="Arial,sans-serif" font-size="11" fill="#26303B">interface</text>
+<g transform="translate(40 443) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="5" r="2"/><circle cx="19" cy="5" r="2"/><circle cx="12" cy="19" r="2"/><path d="M7 5h7a5 5 0 0 1 5 5v0M12 17v-3a5 5 0 0 0-5-5H5"/></g>
+<text x="40" y="491" font-family="Arial,sans-serif" font-size="11" fill="#26303B">route</text>
+<g transform="translate(190 443) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v14H4zM4 10h16M8 5v5M15 10v4M9 14v5M4 14h16"/></g>
+<text x="190" y="491" font-family="Arial,sans-serif" font-size="11" fill="#26303B">firewall</text>
+<g transform="translate(340 443) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></g>
+<text x="340" y="491" font-family="Arial,sans-serif" font-size="11" fill="#26303B">dns</text>
+<g transform="translate(490 443) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3h8l4 4v8a6 6 0 0 1-12 0V3Z"/><path d="M15 3v5h4M9 12h6M9 15h4"/></g>
+<text x="490" y="491" font-family="Arial,sans-serif" font-size="11" fill="#26303B">certificate</text>
+<g transform="translate(640 443) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="12" r="4"/><path d="M12 12h9M17 12v3M20 12v2"/></g>
+<text x="640" y="491" font-family="Arial,sans-serif" font-size="11" fill="#26303B">key</text>
+<g transform="translate(790 443) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5.5" rx="8" ry="3"/><path d="M4 5.5v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6M4 11.5v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></g>
+<text x="790" y="491" font-family="Arial,sans-serif" font-size="11" fill="#26303B">storage</text>
+<g transform="translate(940 443) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16v12H4z"/><path d="M8 10h8M8 14h5"/></g>
+<text x="940" y="491" font-family="Arial,sans-serif" font-size="11" fill="#26303B">volume</text>
+<g transform="translate(1090 443) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h7l2 2h9v11H3z"/><path d="M3 6V4h7l2 2"/></g>
+<text x="1090" y="491" font-family="Arial,sans-serif" font-size="11" fill="#26303B">filesystem</text>
+<g transform="translate(40 518) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="2"/><path d="M9 1v4M15 1v4M9 19v4M15 19v4M1 9h4M1 15h4M19 9h4M19 15h4"/><rect x="9" y="9" width="6" height="6" rx="1"/></g>
+<text x="40" y="566" font-family="Arial,sans-serif" font-size="11" fill="#26303B">hardware</text>
+<g transform="translate(190 518) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/><path d="M10 10h4v4h-4z"/></g>
+<text x="190" y="566" font-family="Arial,sans-serif" font-size="11" fill="#26303B">cpu</text>
+<g transform="translate(340 518) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="7" width="18" height="10" rx="1"/><path d="M6 7v10M10 7v10M14 7v10M18 7v10M5 4v3M9 4v3M15 4v3M19 4v3"/></g>
+<text x="340" y="566" font-family="Arial,sans-serif" font-size="11" fill="#26303B">memory</text>
+<g transform="translate(490 518) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/><path d="M12 3v3M21 12h-3M12 21v-3M3 12h3"/></g>
+<text x="490" y="566" font-family="Arial,sans-serif" font-size="11" fill="#26303B">disk</text>
+<g transform="translate(640 518) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="7" width="15" height="10" rx="1"/><circle cx="9" cy="12" r="3"/><path d="M18 10h3v4h-3M6 5v2M10 5v2M14 5v2"/></g>
+<text x="640" y="566" font-family="Arial,sans-serif" font-size="11" fill="#26303B">gpu</text>
+<g transform="translate(790 518) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="10" rx="1"/><path d="M6 16v3M9 16v3M12 16v3M15 16v3M18 16v3M7 9h6v4H7zM16 9h2"/></g>
+<text x="790" y="566" font-family="Arial,sans-serif" font-size="11" fill="#26303B">pci</text>
+<g transform="translate(940 518) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21V6M12 6l-3 3M12 6l3 3"/><circle cx="12" cy="4" r="1"/><path d="M12 14h5l2-2M19 12v-2M12 17H7l-2-2"/><rect x="3.5" y="13.5" width="3" height="3"/></g>
+<text x="940" y="566" font-family="Arial,sans-serif" font-size="11" fill="#26303B">usb</text>
+<g transform="translate(1090 518) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M8 7h8M8 11h8M8 15h5"/><circle cx="16" cy="16" r="1"/></g>
+<text x="1090" y="566" font-family="Arial,sans-serif" font-size="11" fill="#26303B">device</text>
+<g transform="translate(40 593) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/></g>
+<text x="40" y="641" font-family="Arial,sans-serif" font-size="11" fill="#26303B">process</text>
+<g transform="translate(190 593) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="8" height="16" rx="1"/><rect x="13" y="4" width="8" height="16" rx="1"/><path d="M7 8h0M17 8h0M7 12h0M17 12h0"/></g>
+<text x="190" y="641" font-family="Arial,sans-serif" font-size="11" fill="#26303B">namespace</text>
+<g transform="translate(340 593) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="7" cy="8" r="3"/><circle cx="17" cy="8" r="3"/><circle cx="12" cy="17" r="3"/><path d="M9.5 9.5 11 14M14.5 9.5 13 14"/></g>
+<text x="340" y="641" font-family="Arial,sans-serif" font-size="11" fill="#26303B">cgroup</text>
+<g transform="translate(490 593) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m9 7-5 5 5 5M15 7l5 5-5 5M14 4l-4 16"/></g>
+<text x="490" y="641" font-family="Arial,sans-serif" font-size="11" fill="#26303B">source</text>
+<g transform="translate(640 593) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m8 5-5 7 5 7M16 5l5 7-5 7"/><path d="M10 15h4"/></g>
+<text x="640" y="641" font-family="Arial,sans-serif" font-size="11" fill="#26303B">compiler</text>
+<g transform="translate(790 593) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 8 4-8 4-8-4 8-4Z"/><path d="m4 7v10l8 4 8-4V7M12 11v10"/></g>
+<text x="790" y="641" font-family="Arial,sans-serif" font-size="11" fill="#26303B">package</text>
+<g transform="translate(940 593) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7H5a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2M17 7h2a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2h-2M9 15l6-6M10 9h5v5"/></g>
+<text x="940" y="641" font-family="Arial,sans-serif" font-size="11" fill="#26303B">api</text>
+<g transform="translate(1090 593) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="12" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="19" cy="18" r="2"/><path d="M7 12h5a4 4 0 0 0 4-4V6M12 12a4 4 0 0 1 4 4v2"/></g>
+<text x="1090" y="641" font-family="Arial,sans-serif" font-size="11" fill="#26303B">endpoint</text>
+<g transform="translate(40 668) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M12 15h5"/></g>
+<text x="40" y="716" font-family="Arial,sans-serif" font-size="11" fill="#26303B">terminal</text>
+<g transform="translate(190 668) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4h14v16H5z"/><path d="M8 8h8M8 12h8M8 16h5"/></g>
+<text x="190" y="716" font-family="Arial,sans-serif" font-size="11" fill="#26303B">logs</text>
+<g transform="translate(340 668) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l2-6 4 12 2-6h6"/></g>
+<text x="340" y="716" font-family="Arial,sans-serif" font-size="11" fill="#26303B">activity</text>
+<g transform="translate(490 668) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10M10 20V4M16 20v-7M22 20V7"/></g>
+<text x="490" y="716" font-family="Arial,sans-serif" font-size="11" fill="#26303B">metrics</text>
+<g transform="translate(640 668) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5h18l-7 8v5l-4 2v-7L3 5Z"/></g>
+<text x="640" y="716" font-family="Arial,sans-serif" font-size="11" fill="#26303B">filter</text>
+<g transform="translate(790 668) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M8 5v14m0 0-3-3m3 3 3-3M16 19V5m0 0-3 3m3-3 3 3"/></g>
+<text x="790" y="716" font-family="Arial,sans-serif" font-size="11" fill="#26303B">sort</text>
+<g transform="translate(940 668) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m8 5 11 7-11 7V5Z"/></g>
+<text x="940" y="716" font-family="Arial,sans-serif" font-size="11" fill="#26303B">play</text>
+<g transform="translate(1090 668) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M8 5v14M16 5v14"/></g>
+<text x="1090" y="716" font-family="Arial,sans-serif" font-size="11" fill="#26303B">pause</text>
+<g transform="translate(40 743) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="1"/></g>
+<text x="40" y="791" font-family="Arial,sans-serif" font-size="11" fill="#26303B">stop</text>
+<g transform="translate(190 743) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M19 7V3l-2 2a8 8 0 1 0 2.2 8"/><path d="M19 3h-4"/></g>
+<text x="190" y="791" font-family="Arial,sans-serif" font-size="11" fill="#26303B">restart</text>
+<g transform="translate(340 743) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v9M7.1 5.7A8 8 0 1 0 16.9 5.7"/></g>
+<text x="340" y="791" font-family="Arial,sans-serif" font-size="11" fill="#26303B">power</text>
+<g transform="translate(490 743) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6v5h-5M4 18v-5h5"/><path d="M18.4 11A7 7 0 0 0 6.2 7M5.6 13A7 7 0 0 0 17.8 17"/></g>
+<text x="490" y="791" font-family="Arial,sans-serif" font-size="11" fill="#26303B">refresh</text>
+<g transform="translate(640 743) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h11l-3-3M20 17H9l3 3"/><path d="m15 4 3 3-3 3M9 14l-3 3 3 3"/></g>
+<text x="640" y="791" font-family="Arial,sans-serif" font-size="11" fill="#26303B">sync</text>
+<g transform="translate(790 743) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></g>
+<text x="790" y="791" font-family="Arial,sans-serif" font-size="11" fill="#26303B">plus</text>
+<g transform="translate(940 743) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/></g>
+<text x="940" y="791" font-family="Arial,sans-serif" font-size="11" fill="#26303B">minus</text>
+<g transform="translate(1090 743) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m6 6 12 12M18 6 6 18"/></g>
+<text x="1090" y="791" font-family="Arial,sans-serif" font-size="11" fill="#26303B">close</text>
+<g transform="translate(40 818) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 4 4L19 6"/></g>
+<text x="40" y="866" font-family="Arial,sans-serif" font-size="11" fill="#26303B">check</text>
+<g transform="translate(190 818) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L19 9l-4-4L4 16v4Z"/><path d="m13.5 6.5 4 4"/></g>
+<text x="190" y="866" font-family="Arial,sans-serif" font-size="11" fill="#26303B">edit</text>
+<g transform="translate(340 818) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></g>
+<text x="340" y="866" font-family="Arial,sans-serif" font-size="11" fill="#26303B">copy</text>
+<g transform="translate(490 818) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="7" width="13" height="13" rx="2"/><path d="M4 16H3V4h12v1M13 10v7M9.5 13.5h7"/></g>
+<text x="490" y="866" font-family="Arial,sans-serif" font-size="11" fill="#26303B">duplicate</text>
+<g transform="translate(640 818) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5"/></g>
+<text x="640" y="866" font-family="Arial,sans-serif" font-size="11" fill="#26303B">trash</text>
+<g transform="translate(790 818) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m-4-4 4 4 4-4M5 20h14"/></g>
+<text x="790" y="866" font-family="Arial,sans-serif" font-size="11" fill="#26303B">download</text>
+<g transform="translate(940 818) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3m-4 4 4-4 4 4M5 20h14"/></g>
+<text x="940" y="866" font-family="Arial,sans-serif" font-size="11" fill="#26303B">upload</text>
+<g transform="translate(1090 818) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v16h-6M3 12h12m-4-4 4 4-4 4"/></g>
+<text x="1090" y="866" font-family="Arial,sans-serif" font-size="11" fill="#26303B">import</text>
+<g transform="translate(40 893) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M10 4H4v16h6M21 12H9m4-4-4 4 4 4"/></g>
+<text x="40" y="941" font-family="Arial,sans-serif" font-size="11" fill="#26303B">export</text>
+<g transform="translate(190 893) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 3h13l3 3v15H4z"/><path d="M8 3v6h8V3M8 21v-7h8v7"/></g>
+<text x="190" y="941" font-family="Arial,sans-serif" font-size="11" fill="#26303B">save</text>
+<g transform="translate(340 893) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7h.01"/></g>
+<text x="340" y="941" font-family="Arial,sans-serif" font-size="11" fill="#26303B">info</text>
+<g transform="translate(490 893) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 2.8 20h18.4L12 3Z"/><path d="M12 9v5M12 17h.01"/></g>
+<text x="490" y="941" font-family="Arial,sans-serif" font-size="11" fill="#26303B">warning</text>
+<g transform="translate(640 893) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m9 9 6 6M15 9l-6 6"/></g>
+<text x="640" y="941" font-family="Arial,sans-serif" font-size="11" fill="#26303B">error</text>
+<g transform="translate(790 893) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></g>
+<text x="790" y="941" font-family="Arial,sans-serif" font-size="11" fill="#26303B">success</text>
+<g transform="translate(940 893) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></g>
+<text x="940" y="941" font-family="Arial,sans-serif" font-size="11" fill="#26303B">lock</text>
+<g transform="translate(1090 893) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 7-2.6"/></g>
+<text x="1090" y="941" font-family="Arial,sans-serif" font-size="11" fill="#26303B">unlock</text>
+<g transform="translate(40 968) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 20 6v6c0 5-3.4 7.7-8 9-4.6-1.3-8-4-8-9V6l8-3Z"/><path d="m8.5 12 2.2 2.2 4.8-5"/></g>
+<text x="40" y="1016" font-family="Arial,sans-serif" font-size="11" fill="#26303B">shield</text>
+<g transform="translate(190 968) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.5"/></g>
+<text x="190" y="1016" font-family="Arial,sans-serif" font-size="11" fill="#26303B">eye</text>
+<g transform="translate(340 968) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m3 3 18 18M10.6 6.1A9 9 0 0 1 12 6c6 0 9.5 6 9.5 6a15 15 0 0 1-2.2 3M6.2 6.2A15 15 0 0 0 2.5 12s3.5 6 9.5 6a9 9 0 0 0 2.2-.3"/><path d="M10.2 10.2a2.5 2.5 0 0 0 3.6 3.6"/></g>
+<text x="340" y="1016" font-family="Arial,sans-serif" font-size="11" fill="#26303B">eye-off</text>
+<g transform="translate(490 968) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9a6 6 0 0 1 12 0v5l2 3H4l2-3V9ZM10 20h4"/></g>
+<text x="490" y="1016" font-family="Arial,sans-serif" font-size="11" fill="#26303B">bell</text>
+<g transform="translate(640 968) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></g>
+<text x="640" y="1016" font-family="Arial,sans-serif" font-size="11" fill="#26303B">clock</text>
+<g transform="translate(790 968) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19 13.5v-3l-2-.7a7 7 0 0 0-.7-1.7l.9-1.9-2.1-2.1-1.9.9a7 7 0 0 0-1.7-.7L10.5 2h-3l-.7 2a7 7 0 0 0-1.7.7l-1.9-.9-2.1 2.1.9 1.9a7 7 0 0 0-.7 1.7L0 10.5v3l2 .7a7 7 0 0 0 .7 1.7l-.9 1.9 2.1 2.1 1.9-.9a7 7 0 0 0 1.7.7l.7 2h3l.7-2a7 7 0 0 0 1.7-.7l1.9.9 2.1-2.1-.9-1.9a7 7 0 0 0 .7-1.7l2-.7Z" transform="translate(1.5 -0.5) scale(.875)"/></g>
+<text x="790" y="1016" font-family="Arial,sans-serif" font-size="11" fill="#26303B">settings</text>
+<g transform="translate(940 968) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></g>
+<text x="940" y="1016" font-family="Arial,sans-serif" font-size="11" fill="#26303B">user</text>
+<g transform="translate(1090 968) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3"/><circle cx="17" cy="9" r="2.5"/><path d="M3 20a6 6 0 0 1 12 0M14 15a5 5 0 0 1 7 5"/></g>
+<text x="1090" y="1016" font-family="Arial,sans-serif" font-size="11" fill="#26303B">users</text>
+<g transform="translate(40 1043) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3h8l-1 5 3 3v2H6v-2l3-3-1-5ZM12 13v8"/></g>
+<text x="40" y="1091" font-family="Arial,sans-serif" font-size="11" fill="#26303B">pin</text>
+<g transform="translate(190 1043) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1.5 1.5M14 11a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 19.7l1.5-1.5"/></g>
+<text x="190" y="1091" font-family="Arial,sans-serif" font-size="11" fill="#26303B">link</text>
+<g transform="translate(340 1043) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m3 3 18 18M10 13a4 4 0 0 0 3.4 1.1M14 11a4 4 0 0 0-3.4-1.1M15.7 13l3-3a4 4 0 0 0-5.7-5.7l-1.5 1.5M8.3 11l-3 3A4 4 0 0 0 11 19.7l1.5-1.5"/></g>
+<text x="340" y="1091" font-family="Arial,sans-serif" font-size="11" fill="#26303B">unlink</text>
+<g transform="translate(490 1043) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.7 2.7 0 1 1 4.6 1.9c-1.3 1.1-2.1 1.5-2.1 3.1M12 17h.01"/></g>
+<text x="490" y="1091" font-family="Arial,sans-serif" font-size="11" fill="#26303B">help</text>
+<g transform="translate(640 1043) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m3 11 9-8 9 8v10h-6v-6H9v6H3V11Z"/></g>
+<text x="640" y="1091" font-family="Arial,sans-serif" font-size="11" fill="#26303B">home</text>
+<g transform="translate(790 1043) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 3v4M17 3v4M3 9h18"/></g>
+<text x="790" y="1091" font-family="Arial,sans-serif" font-size="11" fill="#26303B">calendar</text>
+<g transform="translate(940 1043) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h12v18l-6-4-6 4V3Z"/></g>
+<text x="940" y="1091" font-family="Arial,sans-serif" font-size="11" fill="#26303B">bookmark</text>
+<g transform="translate(1090 1043) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h7l2 2h9v11H3V6Z"/></g>
+<text x="1090" y="1091" font-family="Arial,sans-serif" font-size="11" fill="#26303B">folder</text>
+<g transform="translate(40 1118) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h8l4 4v14H6V3Z"/><path d="M14 3v5h4"/></g>
+<text x="40" y="1166" font-family="Arial,sans-serif" font-size="11" fill="#26303B">file</text>
+<g transform="translate(190 1118) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m8 8-4 4 4 4M16 8l4 4-4 4M14 5l-4 14"/></g>
+<text x="190" y="1166" font-family="Arial,sans-serif" font-size="11" fill="#26303B">code</text>
+<g transform="translate(340 1118) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v7c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12v7c0 1.7 3.6 3 8 3s8-1.3 8-3v-7"/></g>
+<text x="340" y="1166" font-family="Arial,sans-serif" font-size="11" fill="#26303B">database</text>
+<g transform="translate(490 1118) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M7 18h11a4 4 0 0 0 .5-8A6 6 0 0 0 7 8.5 4.8 4.8 0 0 0 7 18Z"/></g>
+<text x="490" y="1166" font-family="Arial,sans-serif" font-size="11" fill="#26303B">cloud</text>
+<g transform="translate(640 1118) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.5 4 5.5 4 9s-1.5 6.5-4 9c-2.5-2.5-4-5.5-4-9s1.5-6.5 4-9"/></g>
+<text x="640" y="1166" font-family="Arial,sans-serif" font-size="11" fill="#26303B">globe</text>
+<g transform="translate(790 1118) scale(1.3)" fill="none" stroke="#0A0E14" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9a12 12 0 0 1 16 0M7 12.5a7.5 7.5 0 0 1 10 0M10 16a3 3 0 0 1 4 0"/><circle cx="12" cy="19" r=".8" fill="#0A0E14" stroke="none"/></g>
+<text x="790" y="1166" font-family="Arial,sans-serif" font-size="11" fill="#26303B">wifi</text>
+</svg>
