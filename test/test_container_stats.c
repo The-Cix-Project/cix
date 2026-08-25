@@ -1,6 +1,6 @@
 /*
  * ADR-0054 end-to-end test: GET /v1/containers/{name}/stats over real
- * HTTP against a real thincd subprocess and a real running container
+ * HTTP against a real cixd subprocess and a real running container
  * (stats_child.c) that actively burns CPU, touches memory, and appends
  * to a real on-disk file in a loop -- proving the returned numbers
  * genuinely move across two samples, not just that the endpoint
@@ -28,14 +28,14 @@ extern char **environ;
 static char g_data_dir[PATH_MAX];
 static char g_image_root[PATH_MAX];
 
-static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
+static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 {
 	int i;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			thinc_response_free(&r);
+		if (cix_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			cix_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -65,7 +65,7 @@ static pid_t start_daemon(void)
 	static char data_dir_arg[PATH_MAX + 11];
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
-	dargv[0] = "build/thincd";
+	dargv[0] = "build/cixd";
 	dargv[1] = PORT_ARG;
 	dargv[2] = data_dir_arg;
 	dargv[3] = NULL;
@@ -76,8 +76,8 @@ static pid_t start_daemon(void)
 		return -1;
 	}
 	if (pid == 0) {
-		execve("build/thincd", dargv, environ);
-		perror("execve build/thincd");
+		execve("build/cixd", dargv, environ);
+		perror("execve build/cixd");
 		_exit(127);
 	}
 	return pid;
@@ -93,19 +93,19 @@ static int stop_daemon(pid_t pid)
 	return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
 }
 
-static int fetch_stats(const struct thinc_client *c, const char *name, struct thinc_response *out)
+static int fetch_stats(const struct cix_client *c, const char *name, struct cix_response *out)
 {
 	char path[128];
 
 	snprintf(path, sizeof(path), "/v1/containers/%s/stats", name);
 	memset(out, 0, sizeof(*out));
-	return thinc_client_request(c, "GET", path, NULL, out);
+	return cix_client_request(c, "GET", path, NULL, out);
 }
 
 int main(void)
 {
-	struct thinc_client client;
-	struct thinc_response r;
+	struct cix_client client;
+	struct cix_response r;
 	pid_t daemon_pid;
 	int ok = 1;
 	long long cpu1, cpu2, disk1, disk2, mem1;
@@ -134,7 +134,7 @@ int main(void)
 		return 1;
 	}
 
-	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
+	cix_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
@@ -145,28 +145,28 @@ int main(void)
 
 	/* 1. 404 for a name that was never created. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/containers/nosuchthing/stats", NULL, &r) != 0 ||
+	if (cix_client_request(&client, "GET", "/v1/containers/nosuchthing/stats", NULL, &r) != 0 ||
 	    r.status != 404) {
 		fprintf(stderr, "FAIL: GET stats for nonexistent container expected 404, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 2. a network to attach to, so networks[] has a real entry to check. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/networks",
+	if (cix_client_request(&client, "POST", "/v1/networks",
 	                       "{\"name\":\"statsnet\",\"subnet\":\"172.40.0.0\",\"prefix_len\":24}", &r) !=
 	        0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: POST /v1/networks, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 3. the real container: stats_child burns CPU, touches memory, and
 	 * appends to /statsdata.bin in a loop until killed. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"statsctr\",\"image\":\"statstest\","
 	                       "\"cmd\":[\"/bin/stats_child\"],"
 	                       "\"memory_max\":67108864,"
@@ -176,7 +176,7 @@ int main(void)
 		fprintf(stderr, "FAIL: POST statsctr, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* Let it run through at least one real CPU-burn + disk-append cycle
 	 * before the first sample. */
@@ -237,7 +237,7 @@ int main(void)
 			}
 		}
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* Real wall-clock time for another CPU-burn + disk-append cycle. */
 	usleep(400000);
@@ -265,7 +265,7 @@ int main(void)
 			ok = 0;
 		}
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/*
 	 * 6. a container that exits ON ITS OWN (not via POST .../stop, which
@@ -282,7 +282,7 @@ int main(void)
 		ok = 0;
 	}
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"statsexited\",\"image\":\"statstest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"1\",\"7\"]}",
 	                       &r) != 0 ||
@@ -290,17 +290,17 @@ int main(void)
 		fprintf(stderr, "FAIL: POST statsexited, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	{
 		int i, exited = 0;
 
 		for (i = 0; i < 50 && !exited; i++) {
 			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "GET", "/v1/containers/statsexited", NULL, &r) == 0 &&
+			if (cix_client_request(&client, "GET", "/v1/containers/statsexited", NULL, &r) == 0 &&
 			    r.status == 200 && str_eq(json_str_field(r.json, "status"), "exited"))
 				exited = 1;
-			thinc_response_free(&r);
+			cix_response_free(&r);
 			if (!exited)
 				usleep(100000);
 		}
@@ -316,7 +316,7 @@ int main(void)
 		        r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/*
 	 * 7. POST .../stop, unlike a natural exit, really does remove the
@@ -325,12 +325,12 @@ int main(void)
 	 * other registry_find()-based endpoint.
 	 */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers/statsctr/stop", NULL, &r) != 0 ||
+	if (cix_client_request(&client, "POST", "/v1/containers/statsctr/stop", NULL, &r) != 0 ||
 	    r.status != 200) {
 		fprintf(stderr, "FAIL: POST statsctr/stop, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
 	if (fetch_stats(&client, "statsctr", &r) != 0 || r.status != 404) {
@@ -338,7 +338,7 @@ int main(void)
 		        r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/*
 	 * Delete the real bridge this test created (DELETE /v1/networks is
@@ -350,11 +350,11 @@ int main(void)
 	 * follow).
 	 */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "DELETE", "/v1/networks/statsnet", NULL, &r) != 0 || r.status != 204) {
+	if (cix_client_request(&client, "DELETE", "/v1/networks/statsnet", NULL, &r) != 0 || r.status != 204) {
 		fprintf(stderr, "FAIL: DELETE /v1/networks/statsnet, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	if (stop_daemon(daemon_pid) != 0) {
 		fprintf(stderr, "FAIL: daemon did not exit cleanly on SIGTERM\n");

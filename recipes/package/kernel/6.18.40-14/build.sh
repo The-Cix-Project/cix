@@ -1,6 +1,6 @@
 pkg_name="kernel"
 pkg_version="6.18.40-14"
-pkg_source="https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.40.tar.xz https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/thinc/raw/image/kernel/qemu-part1.config?ref=e49bbbe193a23eff35d48fb1a085a23a474a2eb6"
+pkg_source="https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.40.tar.xz https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/raw/image/kernel/qemu-part1.config?ref=e49bbbe193a23eff35d48fb1a085a23a474a2eb6"
 pkg_sha256="3712fc1ec839e4daac981176c8518912e8f452650aaedfe4381da4419613a431 3258cfcd6bcde1cc1cc252c00c00344cd772aa3dec1c8791b7c65d931ee5b1c8"
 pkg_depends=""
 
@@ -82,14 +82,14 @@ pkg_build() {
 EOF
 
 	cp /build/extra/qemu-part1.config .config
-	if [ -n "$THINC_KMOD_EXTRA_SYMBOLS" ]; then
+	if [ -n "$CIX_KMOD_EXTRA_SYMBOLS" ]; then
 		: > /build/extra/kmod-extra.config
-		for sym in $THINC_KMOD_EXTRA_SYMBOLS; do
+		for sym in $CIX_KMOD_EXTRA_SYMBOLS; do
 			echo "${sym}=m" >> /build/extra/kmod-extra.config
 		done
 	fi
 	make ARCH=x86_64 SHELL=/usr/bin/bash HOSTCC=/usr/bin/gcc CC=/usr/bin/gcc allnoconfig
-	if [ -n "$THINC_KMOD_EXTRA_SYMBOLS" ]; then
+	if [ -n "$CIX_KMOD_EXTRA_SYMBOLS" ]; then
 		bash ./scripts/kconfig/merge_config.sh -m .config /build/extra/qemu-part1.config \
 			/build/extra/kmod-extra.config
 	else

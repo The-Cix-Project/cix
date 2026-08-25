@@ -22,7 +22,7 @@
  * Parallel Implementations), matching the precedent daemon/include/
  * namecheck.h already set for a small shared static-inline helper.
  */
-static inline int thinc_mkdir_p(const char *dir_path)
+static inline int cix_mkdir_p(const char *dir_path)
 {
 	char tmp[PATH_MAX];
 	size_t len;
@@ -43,14 +43,14 @@ static inline int thinc_mkdir_p(const char *dir_path)
 		if (*p == '/') {
 			*p = '\0';
 			if (mkdir(tmp, 0755) != 0 && errno != EEXIST) {
-				fprintf(stderr, "thinc_mkdir_p: mkdir %s failed: %s\n", tmp, strerror(errno));
+				fprintf(stderr, "cix_mkdir_p: mkdir %s failed: %s\n", tmp, strerror(errno));
 				return -1;
 			}
 			*p = '/';
 		}
 	}
 	if (mkdir(tmp, 0755) != 0 && errno != EEXIST) {
-		fprintf(stderr, "thinc_mkdir_p: mkdir %s failed: %s\n", tmp, strerror(errno));
+		fprintf(stderr, "cix_mkdir_p: mkdir %s failed: %s\n", tmp, strerror(errno));
 		return -1;
 	}
 	return 0;

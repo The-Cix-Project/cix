@@ -45,14 +45,14 @@ static const char *json_str_field(const struct json_value *obj, const char *key)
 	return json_as_string(json_object_get(obj, key));
 }
 
-static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
+static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 {
 	int i;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			thinc_response_free(&r);
+		if (cix_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			cix_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -67,7 +67,7 @@ static pid_t start_daemon(void)
 	static char data_dir_arg[PATH_MAX + 11];
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
-	dargv[0] = "build/thincd";
+	dargv[0] = "build/cixd";
 	dargv[1] = PORT_ARG;
 	dargv[2] = data_dir_arg;
 	dargv[3] = NULL;
@@ -78,8 +78,8 @@ static pid_t start_daemon(void)
 		return -1;
 	}
 	if (pid == 0) {
-		execve("build/thincd", dargv, environ);
-		perror("execve build/thincd");
+		execve("build/cixd", dargv, environ);
+		perror("execve build/cixd");
 		_exit(127);
 	}
 	return pid;
@@ -98,9 +98,9 @@ static int stop_daemon(pid_t pid)
 int main(void)
 {
 	pid_t daemon_pid;
-	struct thinc_client client;
+	struct cix_client client;
 	int ok = 1;
-	struct thinc_response r;
+	struct cix_response r;
 	char non_os_disk[64] = "";
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
@@ -127,7 +127,7 @@ int main(void)
 		return 1;
 	}
 
-	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
+	cix_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
@@ -141,25 +141,25 @@ int main(void)
 	 * resource, unlike the daemon-wide storage kinds -- matches
 	 * GET .../stats's own existence-check convention). */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/containers/nosuchcontainer/migrate-storage", NULL, &r) !=
+	if (cix_client_request(&client, "GET", "/v1/containers/nosuchcontainer/migrate-storage", NULL, &r) !=
 	            0 ||
 	    r.status != 404) {
 		fprintf(stderr, "FAIL: GET migrate-storage for nonexistent container expected 404, got %d\n",
 		        r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 2. POST migrate-storage for a nonexistent container -> 404. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers/nosuchcontainer/migrate-storage",
+	if (cix_client_request(&client, "POST", "/v1/containers/nosuchcontainer/migrate-storage",
 	                       "{\"disk\":null}", &r) != 0 ||
 	    r.status != 404) {
 		fprintf(stderr, "FAIL: POST migrate-storage for nonexistent container expected 404, got %d\n",
 		        r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/*
 	 * 3. ADR-0181 (issue #73) changed what a restart:"no" container means
@@ -173,7 +173,7 @@ int main(void)
 	 * as defence in depth for a genuinely def-less internal container.)
 	 */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"noreplay\",\"image\":\"migtest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"60\",\"0\"]}",
 	                       &r) != 0 ||
@@ -181,10 +181,10 @@ int main(void)
 		fprintf(stderr, "FAIL: POST noreplay, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers/noreplay/migrate-storage", "{\"disk\":null}",
+	if (cix_client_request(&client, "POST", "/v1/containers/noreplay/migrate-storage", "{\"disk\":null}",
 	                       &r) != 0 ||
 	    r.status != 409) {
 		fprintf(stderr,
@@ -192,15 +192,15 @@ int main(void)
 		        r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	thinc_client_request(&client, "DELETE", "/v1/containers/noreplay", NULL, &r);
-	thinc_response_free(&r);
+	cix_client_request(&client, "DELETE", "/v1/containers/noreplay", NULL, &r);
+	cix_response_free(&r);
 
 	/* 4. A real restart:"always" container for the rest of this test. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"migc\",\"image\":\"migtest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"60\",\"0\"],"
 	                       "\"restart\":\"always\"}",
@@ -209,11 +209,11 @@ int main(void)
 		fprintf(stderr, "FAIL: POST migc, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 5. Fresh container, never migrated: status is state:none. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/containers/migc/migrate-storage", NULL, &r) != 0 ||
+	if (cix_client_request(&client, "GET", "/v1/containers/migc/migrate-storage", NULL, &r) != 0 ||
 	    r.status != 200) {
 		fprintf(stderr, "FAIL: GET migc migrate-storage, status=%d\n", r.status);
 		ok = 0;
@@ -222,23 +222,23 @@ int main(void)
 		        json_str_field(r.json, "state"));
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 6. A body missing "disk" entirely -> 400. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers/migc/migrate-storage", "{}", &r) != 0 ||
+	if (cix_client_request(&client, "POST", "/v1/containers/migc/migrate-storage", "{}", &r) != 0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: POST migc migrate-storage with no disk field expected 400, got %d\n",
 		        r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 7. disk:null while already on the default placement -> 409
 	 * (nothing to do -- the same "already active" rejection every
 	 * other storage-placement kind has). */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers/migc/migrate-storage", "{\"disk\":null}",
+	if (cix_client_request(&client, "POST", "/v1/containers/migc/migrate-storage", "{\"disk\":null}",
 	                       &r) != 0 ||
 	    r.status != 409) {
 		fprintf(stderr,
@@ -247,26 +247,26 @@ int main(void)
 		        r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 8. An unknown disk name -> 400 (resolve_container_disk_root's own
 	 * DISK_RESOLVE_NOT_FOUND, "no such disk"). */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers/migc/migrate-storage",
+	if (cix_client_request(&client, "POST", "/v1/containers/migc/migrate-storage",
 	                       "{\"disk\":\"nonexistentdisk99\"}", &r) != 0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: POST migc migrate-storage unknown disk expected 400, got %d\n",
 		        r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* Find a real, non-OS disk on this host to exercise the role/mount-
 	 * state validation paths against -- every diskrole create/rm step
 	 * below is non-destructive, the same precedent test_storage_
 	 * placement.c already established. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/disks", NULL, &r) == 0 && r.status == 200) {
+	if (cix_client_request(&client, "GET", "/v1/disks", NULL, &r) == 0 && r.status == 200) {
 		const struct json_value *disks = json_object_get(r.json, "disks");
 		size_t i;
 
@@ -280,7 +280,7 @@ int main(void)
 			}
 		}
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	if (non_os_disk[0] == '\0') {
 		printf("(no non-OS disk discovered on this host -- scenarios 9-10 skipped)\n");
@@ -292,30 +292,30 @@ int main(void)
 		 * assigned". */
 		snprintf(body, sizeof(body), "{\"disk_name\":\"%s\",\"role\":\"state-storage\"}", non_os_disk);
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/diskroles", body, &r) != 0 || r.status != 201) {
+		if (cix_client_request(&client, "POST", "/v1/diskroles", body, &r) != 0 || r.status != 201) {
 			fprintf(stderr, "FAIL: POST /v1/diskroles (state-storage), status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		snprintf(body, sizeof(body), "{\"disk\":\"%s\"}", non_os_disk);
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/containers/migc/migrate-storage", body, &r) != 0 ||
+		if (cix_client_request(&client, "POST", "/v1/containers/migc/migrate-storage", body, &r) != 0 ||
 		    r.status != 400) {
 			fprintf(stderr, "FAIL: POST migc migrate-storage to a wrong-role disk expected 400, "
 			                "got %d\n",
 			        r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		{
 			char path[96];
 
 			snprintf(path, sizeof(path), "/v1/diskroles/%s", non_os_disk);
 			memset(&r, 0, sizeof(r));
-			thinc_client_request(&client, "DELETE", path, NULL, &r);
-			thinc_response_free(&r);
+			cix_client_request(&client, "DELETE", path, NULL, &r);
+			cix_response_free(&r);
 		}
 
 		/* 10. The right role (container-storage) but never actually
@@ -324,15 +324,15 @@ int main(void)
 		snprintf(body, sizeof(body), "{\"disk_name\":\"%s\",\"role\":\"container-storage\"}",
 		         non_os_disk);
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/diskroles", body, &r) != 0 || r.status != 201) {
+		if (cix_client_request(&client, "POST", "/v1/diskroles", body, &r) != 0 || r.status != 201) {
 			fprintf(stderr, "FAIL: POST /v1/diskroles (container-storage), status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		snprintf(body, sizeof(body), "{\"disk\":\"%s\"}", non_os_disk);
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/containers/migc/migrate-storage", body, &r) != 0 ||
+		if (cix_client_request(&client, "POST", "/v1/containers/migc/migrate-storage", body, &r) != 0 ||
 		    r.status != 400) {
 			fprintf(stderr,
 			        "FAIL: POST migc migrate-storage to a role-correct but unmounted disk "
@@ -340,12 +340,12 @@ int main(void)
 			        r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* Status is still state:none -- no job was ever actually
 		 * started by any of the rejected attempts above. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/containers/migc/migrate-storage", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "GET", "/v1/containers/migc/migrate-storage", NULL, &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: GET migc migrate-storage (post-rejections), status=%d\n",
 			        r.status);
@@ -357,28 +357,28 @@ int main(void)
 			        json_str_field(r.json, "state"));
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		{
 			char path[96];
 
 			snprintf(path, sizeof(path), "/v1/diskroles/%s", non_os_disk);
 			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "DELETE", path, NULL, &r) != 0 || r.status != 204) {
+			if (cix_client_request(&client, "DELETE", path, NULL, &r) != 0 || r.status != 204) {
 				fprintf(stderr,
 				        "FAIL: DELETE diskrole for a never-active disk expected 204, got "
 				        "%d\n",
 				        r.status);
 				ok = 0;
 			}
-			thinc_response_free(&r);
+			cix_response_free(&r);
 		}
 	}
 
 	/* Cleanup. */
 	memset(&r, 0, sizeof(r));
-	thinc_client_request(&client, "DELETE", "/v1/containers/migc", NULL, &r);
-	thinc_response_free(&r);
+	cix_client_request(&client, "DELETE", "/v1/containers/migc", NULL, &r);
+	cix_response_free(&r);
 
 	if (stop_daemon(daemon_pid) != 0) {
 		fprintf(stderr, "FAIL: daemon did not exit cleanly on SIGTERM\n");

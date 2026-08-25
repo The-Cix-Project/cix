@@ -115,7 +115,7 @@ pkg_build() {
 	PATH="/build/toolwrap:$PATH" ./autogen.sh
 	# A third, real, unrelated gap hit only after the C99 fix got this
 	# far: "Neither pidfd_open or __NR_pidfd_open found" -- this
-	# project's kernel genuinely has pidfd_open() (thincd's own
+	# project's kernel genuinely has pidfd_open() (cixd's own
 	# container_wait() uses waitid(P_PIDFD, ...) directly), so this is a
 	# build-time header-detection gap, not a real missing kernel
 	# feature. --disable-pidwait is procps-ng's own real, intended

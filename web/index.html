@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>thinC</title>
-<link rel="icon" type="image/svg+xml" href="/thinc-mark.svg">
+<title>Cix</title>
+<link rel="icon" type="image/svg+xml" href="/cix-app-icon.svg">
 <link rel="stylesheet" href="/style.css">
 <script>
 /* Applied synchronously, before body paints, so a saved manual theme
@@ -14,7 +14,7 @@
    already chosen" half. */
 (function () {
 	try {
-		var t = localStorage.getItem("thinc-theme");
+		var t = localStorage.getItem("cix-theme");
 		if (t === "light" || t === "dark")
 			document.documentElement.setAttribute("data-theme", t);
 	} catch (e) {
@@ -40,10 +40,11 @@
 	<nav class="menu-bar">
 		<div class="menu-dropdown menu-dropdown-logo">
 			<button type="button" class="menu-dropdown-toggle menu-dropdown-toggle-logo" data-menu="logo">
-				<img src="/thinc-mark.svg" alt="thinC" class="header-mark">
+				<svg class="header-mark" viewBox="0 0 255 150" role="img" aria-label="Cix"><path d="M 72.424 8.180 C 69.078 8.377 65.801 8.952 62.698 9.623 C 59.596 10.294 56.717 11.207 53.811 12.206 C 50.904 13.206 48.013 14.245 45.259 15.621 C 42.506 16.997 39.877 18.681 37.290 20.461 C 34.702 22.241 32.087 24.127 29.735 26.303 C 27.383 28.478 25.170 31.022 23.180 33.512 C 21.189 36.001 19.400 38.584 17.792 41.238 C 16.183 43.892 14.736 46.617 13.528 49.438 C 12.319 52.259 11.303 55.156 10.542 58.165 C 9.781 61.173 9.398 64.331 8.962 67.487 C 8.526 70.642 7.886 73.924 7.925 77.097 C 7.965 80.270 8.585 83.459 9.197 86.524 C 9.809 89.588 10.601 92.575 11.598 95.482 C 12.594 98.389 13.780 101.218 15.174 103.964 C 16.569 106.711 18.214 109.360 19.962 111.961 C 21.710 114.563 23.526 117.189 25.664 119.573 C 27.802 121.957 30.318 124.240 32.788 126.264 C 35.258 128.288 37.841 130.085 40.485 131.719 C 43.128 133.353 45.850 134.807 48.651 136.066 C 51.451 137.325 54.307 138.455 57.287 139.273 C 60.267 140.090 63.397 140.533 66.529 140.974 C 69.660 141.414 72.864 141.852 76.077 141.917 C 79.289 141.982 82.628 141.707 85.803 141.364 C 88.979 141.021 92.106 140.574 95.130 139.861 C 98.153 139.149 101.084 138.198 103.945 137.088 C 106.807 135.978 109.573 134.635 112.301 133.201 C 115.029 131.767 117.744 130.303 120.312 128.485 C 122.880 126.666 125.305 124.503 127.711 122.292 C 130.116 120.080 132.370 117.502 134.744 115.215 C 137.118 112.928 139.554 110.792 141.956 108.569 C 144.359 106.347 146.778 104.137 149.159 101.878 C 151.540 99.619 153.850 96.776 156.242 95.013 C 158.633 93.250 161.067 90.832 163.506 91.302 C 165.945 91.773 168.475 95.565 170.875 97.836 C 173.275 100.106 175.523 102.653 177.905 104.924 C 180.286 107.195 182.706 109.376 185.165 111.461 C 187.624 113.547 190.099 115.590 192.656 117.436 C 195.212 119.283 197.774 121.114 200.504 122.543 C 203.233 123.972 206.105 125.057 209.032 126.011 C 211.960 126.965 214.955 127.762 218.069 128.269 C 221.182 128.776 224.473 128.997 227.713 129.056 C 230.953 129.114 234.526 129.405 237.511 128.620 C 240.496 127.835 244.143 126.596 245.625 124.346 C 247.106 122.096 247.359 117.623 246.401 115.120 C 245.444 112.618 242.610 110.357 239.881 109.330 C 237.152 108.304 233.293 109.114 230.027 108.963 C 226.761 108.811 223.336 109.074 220.284 108.423 C 217.232 107.772 214.449 106.477 211.716 105.056 C 208.983 103.635 206.416 101.811 203.886 99.898 C 201.356 97.984 198.930 95.817 196.538 93.576 C 194.145 91.335 191.931 88.679 189.532 86.453 C 187.134 84.227 184.000 82.359 182.149 80.219 C 180.297 78.079 177.810 75.783 178.421 73.614 C 179.033 71.445 183.402 69.419 185.819 67.205 C 188.236 64.990 190.505 62.507 192.922 60.327 C 195.339 58.148 197.807 56.079 200.321 54.128 C 202.835 52.178 205.336 50.191 208.008 48.622 C 210.681 47.054 213.421 45.656 216.354 44.717 C 219.286 43.779 222.396 43.268 225.603 42.991 C 228.809 42.714 232.473 43.503 235.592 43.054 C 238.710 42.604 242.405 42.202 244.316 40.292 C 246.226 38.382 247.545 34.175 247.055 31.591 C 246.565 29.008 243.856 26.225 241.374 24.792 C 238.892 23.359 235.327 23.200 232.165 22.995 C 229.002 22.790 225.564 23.168 222.398 23.562 C 219.233 23.956 216.179 24.592 213.174 25.359 C 210.169 26.125 207.217 27.016 204.370 28.161 C 201.523 29.306 198.777 30.695 196.090 32.228 C 193.404 33.762 190.785 35.458 188.251 37.360 C 185.717 39.261 183.317 41.486 180.887 43.638 C 178.456 45.789 176.039 47.973 173.668 50.267 C 171.297 52.561 169.035 55.121 166.658 57.401 C 164.281 59.682 161.808 61.729 159.406 63.949 C 157.004 66.170 154.625 68.446 152.248 70.725 C 149.871 73.005 147.533 75.381 145.142 77.627 C 142.751 79.872 140.325 82.035 137.900 84.200 C 135.475 86.365 132.999 88.406 130.594 90.618 C 128.188 92.830 125.823 95.139 123.468 97.472 C 121.113 99.805 118.845 102.348 116.463 104.616 C 114.081 106.885 111.702 109.162 109.176 111.083 C 106.650 113.004 104.056 114.759 101.307 116.143 C 98.558 117.527 95.656 118.542 92.682 119.387 C 89.708 120.232 86.595 120.817 83.464 121.215 C 80.334 121.613 77.018 122.000 73.901 121.773 C 70.785 121.547 67.743 120.675 64.767 119.857 C 61.791 119.039 58.808 118.209 56.046 116.865 C 53.283 115.522 50.672 113.779 48.192 111.795 C 45.713 109.811 43.216 107.398 41.169 104.962 C 39.121 102.526 37.427 99.872 35.906 97.179 C 34.384 94.486 33.012 91.720 32.039 88.805 C 31.066 85.889 30.388 82.864 30.068 79.687 C 29.747 76.510 29.726 72.901 30.115 69.744 C 30.504 66.587 31.390 63.644 32.402 60.745 C 33.415 57.845 34.669 55.042 36.190 52.348 C 37.711 49.654 39.446 46.973 41.529 44.581 C 43.613 42.190 46.160 39.873 48.691 37.998 C 51.222 36.122 53.929 34.621 56.714 33.329 C 59.499 32.038 62.384 30.977 65.402 30.250 C 68.421 29.523 71.609 29.140 74.825 28.969 C 78.040 28.797 81.533 28.827 84.696 29.222 C 87.860 29.618 90.892 30.351 93.807 31.342 C 96.722 32.333 99.511 33.604 102.186 35.166 C 104.862 36.729 107.390 38.725 109.860 40.716 C 112.330 42.708 114.752 44.803 117.006 47.115 C 119.260 49.426 121.076 52.295 123.385 54.585 C 125.695 56.874 128.394 58.778 130.864 60.851 C 133.334 62.925 135.391 65.867 138.205 67.027 C 141.018 68.187 144.953 68.694 147.746 67.813 C 150.539 66.932 153.944 64.166 154.961 61.739 C 155.979 59.311 155.234 55.761 153.850 53.249 C 152.467 50.738 149.034 48.942 146.662 46.669 C 144.291 44.396 141.971 41.960 139.622 39.612 C 137.274 37.263 134.971 34.810 132.574 32.579 C 130.177 30.347 127.701 28.306 125.240 26.226 C 122.780 24.146 120.392 21.889 117.811 20.099 C 115.231 18.309 112.533 16.804 109.758 15.485 C 106.983 14.166 104.093 13.124 101.161 12.186 C 98.229 11.247 95.231 10.479 92.166 9.855 C 89.102 9.231 86.065 8.721 82.775 8.441 C 79.484 8.162 75.770 7.983 72.424 8.180 Z" fill="currentColor"/>
+  <circle cx="77.500" cy="75.000" r="20.750" fill="currentColor"/></svg>
 			</button>
 			<ul class="menu-dropdown-menu" data-menu="logo" hidden>
-				<li><button type="button" id="menu-about" data-modal="about-form" data-title="About thinC">About thinC</button></li>
+				<li><button type="button" id="menu-about" data-modal="about-form" data-title="About Cix">About Cix</button></li>
 				<li class="menu-divider"></li>
 				<li><button type="button" id="menu-reboot" class="menu-item-danger">Reboot</button></li>
 				<li><button type="button" id="menu-shutdown" class="menu-item-danger">Shutdown</button></li>
@@ -297,7 +298,7 @@
 					<span id="cd-console-status" class="hint">&hellip;</span>
 				</div>
 				<div class="console-output" id="cd-console-output" tabindex="0"></div>
-				<p class="hint">Minimal built-in terminal (no framework, per ADR-0010/ADR-0043) -- handles plain output, colors, and basic input. Full-screen programs (vim, top, less) won't render correctly here; use <code>thincctl console</code> for those.</p>
+				<p class="hint">Minimal built-in terminal (no framework, per ADR-0010/ADR-0043) -- handles plain output, colors, and basic input. Full-screen programs (vim, top, less) won't render correctly here; use <code>cixctl console</code> for those.</p>
 			</div>
 		</section>
 
@@ -796,7 +797,7 @@
 			<div class="tab-panel" data-tab="daemon-config">
 			<h2>Daemon</h2>
 			<p class="hint">
-				thincd's own listen port, HTTP/HTTPS exposure, and which network
+				cixd's own listen port, HTTP/HTTPS exposure, and which network
 				it's currently bound to (Part 0.5). Changes apply live -- no
 				restart -- and persist across a reboot. Repointing the
 				management network only works to a network that already has its
@@ -835,7 +836,7 @@
 				<button type="submit">Save</button>
 			</form>
 			<p class="hint" id="dcf-bind-hint"></p>
-			<p class="hint">Bind IP (ADR-0068) is a second, dedicated address on the management network's own bridge -- thincd binds there instead of that network's own address. Leave blank to make no change; check "Clear bind IP" to revert to the network's own address.</p>
+			<p class="hint">Bind IP (ADR-0068) is a second, dedicated address on the management network's own bridge -- cixd binds there instead of that network's own address. Leave blank to make no change; check "Clear bind IP" to revert to the network's own address.</p>
 		</div>
 			<div class="tab-panel" data-tab="site" hidden>
 			<h2>Site</h2>
@@ -848,7 +849,7 @@
 			<form id="sys-site-form">
 				<label>
 					Instance name
-					<input type="text" id="sitef-instance-name" placeholder="thinc">
+					<input type="text" id="sitef-instance-name" placeholder="cix">
 				</label>
 				<label>
 					Site name (optional)
@@ -864,7 +865,7 @@
 			<div class="tab-panel" data-tab="routes" hidden>
 			<div class="view-list">
 				<h2>Routes</h2>
-				<p class="hint">The box's own real kernel IPv4 routing table (ADR-0066) -- not a persisted thinC resource; a route added or removed here is gone on the next reboot unless re-applied by whatever set it up in the first place. Add one via the "+ Create" menu above.</p>
+				<p class="hint">The box's own real kernel IPv4 routing table (ADR-0066) -- not a persisted Cix resource; a route added or removed here is gone on the next reboot unless re-applied by whatever set it up in the first place. Add one via the "+ Create" menu above.</p>
 				<table id="routes">
 					<thead>
 						<tr>
@@ -968,7 +969,7 @@
 					</label>
 					<button type="submit">Migrate</button>
 				</form>
-				<p class="hint">thinC's own state (ADR-0141) &mdash; networks, DNS/LDAP/NTP/syslog config, PKI,
+				<p class="hint">Cix's own state (ADR-0141) &mdash; networks, DNS/LDAP/NTP/syslog config, PKI,
 					container definitions, site identity, daemon config. Never container workload data, never
 					rebuildable content, never logs.</p>
 
@@ -1091,7 +1092,7 @@
 					hypervisor, which has happened for real. Rather than asking the scheduler
 					to favour the daemon, everything that is <em>not</em> the daemon &mdash;
 					every container and every package build &mdash; lives under one
-					<code>thinc-workload</code> cgroup capped at the machine minus this
+					<code>cix-workload</code> cgroup capped at the machine minus this
 					reservation, so what the control plane has left is enforced by the kernel
 					rather than hoped for.
 				</p>
@@ -1407,7 +1408,7 @@
 				What <code>ldap_client</code> containers are actually handed right now
 				(issue #84) -- derived from registered servers when no explicit
 				<code>client_uri</code> is set, and with drained or unhealthy servers
-				dropped either way. A URI pointing at a directory thinC does not manage
+				dropped either way. A URI pointing at a directory Cix does not manage
 				is never dropped, and if filtering would leave nothing the full list
 				stands: a client with a possibly-down server beats a client with none.
 			</p>
@@ -1601,12 +1602,12 @@
 			</div>
 			<div class="tab-panel" data-tab="pki-ca">
 			<h2>PKI: Root CA</h2>
-			<p class="hint">A browser or OS that doesn't already trust this install's own root CA will refuse HTTPS to this dashboard (and to any other thinc endpoint) with a certificate warning -- expected, since it's a private, self-signed CA, not a publicly trusted one. Download the certificate below and trust it once on whatever device you connect from; see "Trusting the CA on your own device" in <code>docs/guides/security.md</code> for the full, platform-by-platform steps (Windows/macOS/Linux/Firefox all differ). Short version: import the downloaded <code>.crt</code> into your OS or browser's own trusted-root store, marked to trust it for identifying websites.</p>
+			<p class="hint">A browser or OS that doesn't already trust this install's own root CA will refuse HTTPS to this dashboard (and to any other cix endpoint) with a certificate warning -- expected, since it's a private, self-signed CA, not a publicly trusted one. Download the certificate below and trust it once on whatever device you connect from; see "Trusting the CA on your own device" in <code>docs/guides/security.md</code> for the full, platform-by-platform steps (Windows/macOS/Linux/Firefox all differ). Short version: import the downloaded <code>.crt</code> into your OS or browser's own trusted-root store, marked to trust it for identifying websites.</p>
 			<div id="pki-ca-status" class="pki-ca-status"></div>
 			<form id="pki-ca-form">
 				<label>
 					Common name
-					<input type="text" id="caf-common-name" placeholder="thinC Root CA">
+					<input type="text" id="caf-common-name" placeholder="Cix Root CA">
 				</label>
 				<label>
 					Days
@@ -1621,7 +1622,7 @@
 				reissuing every currently-tracked leaf cert under the new chain.
 				<strong>Destructive</strong> -- every previously-issued cert stops
 				verifying against the new root the moment this completes. Leaves
-				empty to default each name to <code>thinC Root/Intermediate CA -
+				empty to default each name to <code>Cix Root/Intermediate CA -
 				&lt;domain_suffix&gt;</code>.
 			</p>
 			<form id="pki-reset-form">
@@ -1648,7 +1649,7 @@
 			<form id="pki-intermediate-form">
 				<label>
 					Common name
-					<input type="text" id="icaf-common-name" placeholder="thinC Intermediate CA">
+					<input type="text" id="icaf-common-name" placeholder="Cix Intermediate CA">
 				</label>
 				<label>
 					Days
@@ -1912,7 +1913,7 @@
 			<form id="pac-form">
 				<label class="wide">
 					Base URL
-					<input type="text" id="pac-base-url" placeholder="http://artifacts.example.com/thinc">
+					<input type="text" id="pac-base-url" placeholder="http://artifacts.example.com/cix">
 				</label>
 				<label>
 					Auth token (blank = unchanged)
@@ -1970,7 +1971,7 @@
 			<form id="sys-update-form">
 				<label class="wide">
 					Control-plane image path (optional, local to this daemon's host)
-					<input type="text" id="sys-update-image" placeholder="/path/to/thincd-root.squashfs">
+					<input type="text" id="sys-update-image" placeholder="/path/to/cixd-root.squashfs">
 				</label>
 				<label class="wide">
 					Kernel path (optional, local to this daemon's host)
@@ -2104,7 +2105,7 @@
 				</div>
 			</div>
 			<p class="hint" id="hs-stats-load">Load average: &hellip;</p>
-			<p class="hint">Real, host-side usage (ADR-0073/ADR-0130) -- /proc + statvfs() on the daemon's own data directory, no in-container agent, sampled every 2s while this page stays open. History resets whenever this page (re)opens. Disk is the filesystem thincd's own data directory lives on, not every mounted filesystem on the box.</p>
+			<p class="hint">Real, host-side usage (ADR-0073/ADR-0130) -- /proc + statvfs() on the daemon's own data directory, no in-container agent, sampled every 2s while this page stays open. History resets whenever this page (re)opens. Disk is the filesystem cixd's own data directory lives on, not every mounted filesystem on the box.</p>
 		
 			</div>
 			<div class="tab-panel" data-tab="processes" hidden>
@@ -2134,7 +2135,7 @@
 			<div class="tab-panel" data-tab="logs" hidden>
 			<div class="view-list">
 				<h2>Log Store</h2>
-				<p class="hint">A consolidated log (ADR-0070/ADR-0126): real kernel dmesg, thincd's own diagnostics, a per-request audit trail, and every container's own stdout/stderr -- all in one place, size-capped with the oldest entries dropped first once the cap is reached. Browse it live in the Log panel at the bottom of every page (source filter includes this browser's own local activity too, kept client-side only) -- this page just configures the store's size cap, not what's logged.</p>
+				<p class="hint">A consolidated log (ADR-0070/ADR-0126): real kernel dmesg, cixd's own diagnostics, a per-request audit trail, and every container's own stdout/stderr -- all in one place, size-capped with the oldest entries dropped first once the cap is reached. Browse it live in the Log panel at the bottom of every page (source filter includes this browser's own local activity too, kept client-side only) -- this page just configures the store's size cap, not what's logged.</p>
 				<h3>Size cap</h3>
 				<form id="logs-config-form">
 					<label>
@@ -2150,7 +2151,7 @@
 			<div class="tab-panel" data-tab="kmsg" hidden>
 			<div class="view-list">
 				<h2>Kernel Log</h2>
-				<p class="hint">The kernel's own ring buffer (<code>/dev/kmsg</code>) &mdash; dmesg over REST. This is where mount failures, driver probes and OOM kills surface, and on a real installed host with no shell it is the only way to read them. Distinct from the Log Store, which carries <code>thincd</code>'s own diagnostics and the audit trail.</p>
+				<p class="hint">The kernel's own ring buffer (<code>/dev/kmsg</code>) &mdash; dmesg over REST. This is where mount failures, driver probes and OOM kills surface, and on a real installed host with no shell it is the only way to read them. Distinct from the Log Store, which carries <code>cixd</code>'s own diagnostics and the audit trail.</p>
 				<form id="kmsg-form">
 					<label>
 						Tail (entries)
@@ -2369,7 +2370,7 @@
 				<option value="">(all)</option>
 				<option value="web-ui">web-ui</option>
 				<option value="kernel">kernel</option>
-				<option value="thincd">thincd</option>
+				<option value="cixd">cixd</option>
 				<option value="audit">audit</option>
 				<option value="container">container</option>
 			</select>
@@ -2400,7 +2401,8 @@
 		<div class="modal-body">
 			<div id="modal-about-form" hidden>
 				<div class="about-panel">
-					<img src="/thinc-mark.svg" alt="" class="about-mark">
+					<svg class="about-mark" viewBox="0 0 255 150" role="img" aria-hidden="true"><path d="M 72.424 8.180 C 69.078 8.377 65.801 8.952 62.698 9.623 C 59.596 10.294 56.717 11.207 53.811 12.206 C 50.904 13.206 48.013 14.245 45.259 15.621 C 42.506 16.997 39.877 18.681 37.290 20.461 C 34.702 22.241 32.087 24.127 29.735 26.303 C 27.383 28.478 25.170 31.022 23.180 33.512 C 21.189 36.001 19.400 38.584 17.792 41.238 C 16.183 43.892 14.736 46.617 13.528 49.438 C 12.319 52.259 11.303 55.156 10.542 58.165 C 9.781 61.173 9.398 64.331 8.962 67.487 C 8.526 70.642 7.886 73.924 7.925 77.097 C 7.965 80.270 8.585 83.459 9.197 86.524 C 9.809 89.588 10.601 92.575 11.598 95.482 C 12.594 98.389 13.780 101.218 15.174 103.964 C 16.569 106.711 18.214 109.360 19.962 111.961 C 21.710 114.563 23.526 117.189 25.664 119.573 C 27.802 121.957 30.318 124.240 32.788 126.264 C 35.258 128.288 37.841 130.085 40.485 131.719 C 43.128 133.353 45.850 134.807 48.651 136.066 C 51.451 137.325 54.307 138.455 57.287 139.273 C 60.267 140.090 63.397 140.533 66.529 140.974 C 69.660 141.414 72.864 141.852 76.077 141.917 C 79.289 141.982 82.628 141.707 85.803 141.364 C 88.979 141.021 92.106 140.574 95.130 139.861 C 98.153 139.149 101.084 138.198 103.945 137.088 C 106.807 135.978 109.573 134.635 112.301 133.201 C 115.029 131.767 117.744 130.303 120.312 128.485 C 122.880 126.666 125.305 124.503 127.711 122.292 C 130.116 120.080 132.370 117.502 134.744 115.215 C 137.118 112.928 139.554 110.792 141.956 108.569 C 144.359 106.347 146.778 104.137 149.159 101.878 C 151.540 99.619 153.850 96.776 156.242 95.013 C 158.633 93.250 161.067 90.832 163.506 91.302 C 165.945 91.773 168.475 95.565 170.875 97.836 C 173.275 100.106 175.523 102.653 177.905 104.924 C 180.286 107.195 182.706 109.376 185.165 111.461 C 187.624 113.547 190.099 115.590 192.656 117.436 C 195.212 119.283 197.774 121.114 200.504 122.543 C 203.233 123.972 206.105 125.057 209.032 126.011 C 211.960 126.965 214.955 127.762 218.069 128.269 C 221.182 128.776 224.473 128.997 227.713 129.056 C 230.953 129.114 234.526 129.405 237.511 128.620 C 240.496 127.835 244.143 126.596 245.625 124.346 C 247.106 122.096 247.359 117.623 246.401 115.120 C 245.444 112.618 242.610 110.357 239.881 109.330 C 237.152 108.304 233.293 109.114 230.027 108.963 C 226.761 108.811 223.336 109.074 220.284 108.423 C 217.232 107.772 214.449 106.477 211.716 105.056 C 208.983 103.635 206.416 101.811 203.886 99.898 C 201.356 97.984 198.930 95.817 196.538 93.576 C 194.145 91.335 191.931 88.679 189.532 86.453 C 187.134 84.227 184.000 82.359 182.149 80.219 C 180.297 78.079 177.810 75.783 178.421 73.614 C 179.033 71.445 183.402 69.419 185.819 67.205 C 188.236 64.990 190.505 62.507 192.922 60.327 C 195.339 58.148 197.807 56.079 200.321 54.128 C 202.835 52.178 205.336 50.191 208.008 48.622 C 210.681 47.054 213.421 45.656 216.354 44.717 C 219.286 43.779 222.396 43.268 225.603 42.991 C 228.809 42.714 232.473 43.503 235.592 43.054 C 238.710 42.604 242.405 42.202 244.316 40.292 C 246.226 38.382 247.545 34.175 247.055 31.591 C 246.565 29.008 243.856 26.225 241.374 24.792 C 238.892 23.359 235.327 23.200 232.165 22.995 C 229.002 22.790 225.564 23.168 222.398 23.562 C 219.233 23.956 216.179 24.592 213.174 25.359 C 210.169 26.125 207.217 27.016 204.370 28.161 C 201.523 29.306 198.777 30.695 196.090 32.228 C 193.404 33.762 190.785 35.458 188.251 37.360 C 185.717 39.261 183.317 41.486 180.887 43.638 C 178.456 45.789 176.039 47.973 173.668 50.267 C 171.297 52.561 169.035 55.121 166.658 57.401 C 164.281 59.682 161.808 61.729 159.406 63.949 C 157.004 66.170 154.625 68.446 152.248 70.725 C 149.871 73.005 147.533 75.381 145.142 77.627 C 142.751 79.872 140.325 82.035 137.900 84.200 C 135.475 86.365 132.999 88.406 130.594 90.618 C 128.188 92.830 125.823 95.139 123.468 97.472 C 121.113 99.805 118.845 102.348 116.463 104.616 C 114.081 106.885 111.702 109.162 109.176 111.083 C 106.650 113.004 104.056 114.759 101.307 116.143 C 98.558 117.527 95.656 118.542 92.682 119.387 C 89.708 120.232 86.595 120.817 83.464 121.215 C 80.334 121.613 77.018 122.000 73.901 121.773 C 70.785 121.547 67.743 120.675 64.767 119.857 C 61.791 119.039 58.808 118.209 56.046 116.865 C 53.283 115.522 50.672 113.779 48.192 111.795 C 45.713 109.811 43.216 107.398 41.169 104.962 C 39.121 102.526 37.427 99.872 35.906 97.179 C 34.384 94.486 33.012 91.720 32.039 88.805 C 31.066 85.889 30.388 82.864 30.068 79.687 C 29.747 76.510 29.726 72.901 30.115 69.744 C 30.504 66.587 31.390 63.644 32.402 60.745 C 33.415 57.845 34.669 55.042 36.190 52.348 C 37.711 49.654 39.446 46.973 41.529 44.581 C 43.613 42.190 46.160 39.873 48.691 37.998 C 51.222 36.122 53.929 34.621 56.714 33.329 C 59.499 32.038 62.384 30.977 65.402 30.250 C 68.421 29.523 71.609 29.140 74.825 28.969 C 78.040 28.797 81.533 28.827 84.696 29.222 C 87.860 29.618 90.892 30.351 93.807 31.342 C 96.722 32.333 99.511 33.604 102.186 35.166 C 104.862 36.729 107.390 38.725 109.860 40.716 C 112.330 42.708 114.752 44.803 117.006 47.115 C 119.260 49.426 121.076 52.295 123.385 54.585 C 125.695 56.874 128.394 58.778 130.864 60.851 C 133.334 62.925 135.391 65.867 138.205 67.027 C 141.018 68.187 144.953 68.694 147.746 67.813 C 150.539 66.932 153.944 64.166 154.961 61.739 C 155.979 59.311 155.234 55.761 153.850 53.249 C 152.467 50.738 149.034 48.942 146.662 46.669 C 144.291 44.396 141.971 41.960 139.622 39.612 C 137.274 37.263 134.971 34.810 132.574 32.579 C 130.177 30.347 127.701 28.306 125.240 26.226 C 122.780 24.146 120.392 21.889 117.811 20.099 C 115.231 18.309 112.533 16.804 109.758 15.485 C 106.983 14.166 104.093 13.124 101.161 12.186 C 98.229 11.247 95.231 10.479 92.166 9.855 C 89.102 9.231 86.065 8.721 82.775 8.441 C 79.484 8.162 75.770 7.983 72.424 8.180 Z" fill="currentColor"/>
+  <circle cx="77.500" cy="75.000" r="20.750" fill="currentColor"/></svg>
 					<dl class="about-fields">
 						<dt>Instance</dt>
 						<dd id="about-instance">&hellip;</dd>
@@ -2596,7 +2598,7 @@
 						</label>
 						<label>
 							Cert dir
-							<input type="text" id="f-pki-cert-dir" placeholder="/etc/thinc-tls">
+							<input type="text" id="f-pki-cert-dir" placeholder="/etc/cix-tls">
 						</label>
 						<label>
 							Cert days
@@ -2623,7 +2625,7 @@
 						</label>
 						<label>
 							Secret dir
-							<input type="text" id="f-ldap-secret-dir" placeholder="/etc/thinc-ldap">
+							<input type="text" id="f-ldap-secret-dir" placeholder="/etc/cix-ldap">
 						</label>
 					</fieldset>
 					<button type="submit">Run</button>

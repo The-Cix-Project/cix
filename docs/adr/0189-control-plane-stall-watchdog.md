@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-`thincd` is a single-threaded `epoll` loop, and on an installed host it is the only way in: there is no SSH and no general shell (ADR-0034). Three separate mechanisms already exist to keep it answering — ADR-0180 made container teardown asynchronous after two real freezes, issue #85 gave package builds an aggregate budget after a real lockout, and ADR-0187 reserved a share of the machine for the control plane so no workload can starve it.
+`cixd` is a single-threaded `epoll` loop, and on an installed host it is the only way in: there is no SSH and no general shell (ADR-0034). Three separate mechanisms already exist to keep it answering — ADR-0180 made container teardown asynchronous after two real freezes, issue #85 gave package builds an aggregate budget after a real lockout, and ADR-0187 reserved a share of the machine for the control plane so no workload can starve it.
 
 None of them helped with what happened on 2026-08-23. The production host accepted TCP on both listeners while answering nothing, for at least five minutes and possibly thirty-five, then recovered on its own. Containers kept serving throughout; the kernel was healthy; `ping` was 0.5ms.
 

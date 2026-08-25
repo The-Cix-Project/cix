@@ -4,7 +4,7 @@
 
 Accepted
 
-Builds on the model [ADR-0013](0013-proc-pid-root-for-live-container-file-writes.md) established and DNS has used since: thinC owns the durable state, a real dnsmasq in an ordinary container does the serving, and every change re-renders the whole file into every registered server through `/proc/<pid>/root`.
+Builds on the model [ADR-0013](0013-proc-pid-root-for-live-container-file-writes.md) established and DNS has used since: Cix owns the durable state, a real dnsmasq in an ordinary container does the serving, and every change re-renders the whole file into every registered server through `/proc/<pid>/root`.
 
 ## Context
 
@@ -46,6 +46,6 @@ Enabling is refused when no DNS server is registered at all — nothing would an
 
 A split range is a smaller pool per server than the operator wrote down. Two servers over a hundred addresses means fifty each, and if one is down the other still only has its own fifty. That is the honest cost of having no failover protocol, and it is why the split is reported rather than hidden: the number that matters when a server is down is the slice, not the range.
 
-The serving container must be started against the three well-known paths (`/etc/dnsmasq-dhcp.conf`, `/etc/dnsmasq-dhcp-hosts`, `/run/dnsmasq.leases`) with those first two staged, even empty, at creation — dnsmasq refuses to start on a `--conf-file` that does not exist. That is the same shape every other service container here already has, where thinC renders into a file the container was created holding.
+The serving container must be started against the three well-known paths (`/etc/dnsmasq-dhcp.conf`, `/etc/dnsmasq-dhcp-hosts`, `/run/dnsmasq.leases`) with those first two staged, even empty, at creation — dnsmasq refuses to start on a `--conf-file` that does not exist. That is the same shape every other service container here already has, where Cix renders into a file the container was created holding.
 
 **Enabling DHCP on a network that reaches a real LAN will answer requests from machines that are not this platform's.** The management network on a home or office LAN almost certainly already has a DHCP server, and a second one is not a redundant pair — it is two servers with separate lease databases handing out overlapping addresses. Nothing here prevents that, because nothing here can tell a lab bridge from an uplinked one; it is an operator decision, and the documentation says so plainly.

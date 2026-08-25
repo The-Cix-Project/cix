@@ -48,12 +48,12 @@ passed as a no-op flag that doesn't exist.
 ### `mkfs.btrfs` staging is genuinely optional, unlike `mkfs.ext4`
 
 `mkfs.ext4` is staged into every assembled boot image unconditionally
-(`image/src/mkbootroot.c`'s `shelled_bins[]`, Phase C) -- every real thinC
+(`image/src/mkbootroot.c`'s `shelled_bins[]`, Phase C) -- every real Cix
 install can always format ext4. `mkfs.btrfs` cannot follow the same
 unconditional pattern: this dev sandbox has no `mkfs.btrfs` of its own at
 all (confirmed directly -- unlike `mke2fs`, Debian doesn't ship
 btrfs-progs by default), and an already-deployed real box may not have
-built `btrfs-progs.recipe` onto its own `thinc-hosttools` image yet
+built `btrfs-progs.recipe` onto its own `cix-hosttools` image yet
 either. Adding it to `mkbootroot.c`'s existing `host_tool_bins[]` (every
 entry there is unconditionally required, with a dev-host fallback that
 doesn't exist for this binary) would have made every local test build
@@ -64,7 +64,7 @@ Staged instead the same tolerant way `firmware_dir`/`modules_dir`/
 *and* that tree's own copy actually exists (`stat()`-gated) -- reusing the
 existing `host_tools_dir` argument threaded through `mkbootroot.c` already
 (no new positional argv slot needed, so no test call site needed updating).
-A box whose `thinc-hosttools` image predates `btrfs-progs.recipe` simply
+A box whose `cix-hosttools` image predates `btrfs-progs.recipe` simply
 can't format a disk btrfs yet; `POST .../format` with `fs_type=btrfs` on
 such a box starts the job (this daemon has no cheap way to distinguish
 "binary genuinely missing" from every other reason `execve()` could fail
@@ -119,7 +119,7 @@ binary copy itself, per the tolerant block above.
 ## Consequences
 
 - `POST /v1/disks/{name}/format` can now format a disk btrfs, operator-
-  chosen via `fs_type`, on any box whose `thinc-hosttools` image includes
+  chosen via `fs_type`, on any box whose `cix-hosttools` image includes
   `btrfs-progs.recipe`. A box without one keeps today's ext4-only
   behavior exactly, and a `btrfs` request there fails loud and
   specifically rather than silently no-op'ing.
@@ -132,7 +132,7 @@ binary copy itself, per the tolerant block above.
   and one new tool recipe (`btrfs-progs.recipe`) join the recipe catalog,
   each verified via a real local build in this sandbox (configure summary
   output, real `make`, real `ldd`/`--version` on the resulting binary) --
-  not yet verified through a live `thincd` `pkg install` round-trip or
+  not yet verified through a live `cixd` `pkg install` round-trip or
   against a real, mounted btrfs filesystem (this sandbox has kernel btrfs
   support but no mounted btrfs filesystem, no loop devices, and no disk
   safe to reformat -- the same acknowledged gap ADR-0099/ADR-0102/ADR-0103

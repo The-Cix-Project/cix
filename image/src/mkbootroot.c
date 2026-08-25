@@ -1,9 +1,9 @@
 /*
  * Assembles a minimal Phase 11 boot root at a staging directory and
- * squashes it into a single read-only image: thincd + the ld.so/libc.so.6
+ * squashes it into a single read-only image: cixd + the ld.so/libc.so.6
  * it dynamically links against (per the project's TCC-wide "never -static"
  * rule), plus empty /proc, /sys, and BASE_DIR mountpoints for
- * thincd --init-mode's own boot-time mounts (daemon/src/main.c's
+ * cixd --init-mode's own boot-time mounts (daemon/src/main.c's
  * boot_init()) to mount onto. Reuses test_image_fixture_build() (test/)
  * rather than re-implementing the same ld.so/libc staging a second time --
  * that function's own contract ("shared by every test that needs a real,
@@ -168,8 +168,8 @@ static int run_mksquashfs(const char *mksquashfs_bin, const char *image_root,
 int main(int argc, char **argv)
 {
 	const char *image_root;
-	const char *thincd_bin;
-	const char *thincctl_bin;
+	const char *cixd_bin;
+	const char *cixctl_bin;
 	const char *web_dir;
 	const char *out_path;
 	const char *firmware_dir;
@@ -179,15 +179,15 @@ int main(int argc, char **argv)
 
 	if (argc != 10) {
 		fprintf(stderr,
-		        "usage: %s <staging-dir> <build/thincd> <build/thincctl> <web-dir> "
+		        "usage: %s <staging-dir> <build/cixd> <build/cixctl> <web-dir> "
 		        "<out.squashfs> <amdgpu-firmware-dir-or-\"\"> <modules-dir-or-\"\"> "
 		        "<kmod-bin-dir-or-\"\"> <host-tools-image-rootfs-or-\"\">\n",
 		        argv[0]);
 		return 2;
 	}
 	image_root = argv[1];
-	thincd_bin = argv[2];
-	thincctl_bin = argv[3];
+	cixd_bin = argv[2];
+	cixctl_bin = argv[3];
 	web_dir = argv[4];
 	out_path = argv[5];
 	firmware_dir = argv[6];
@@ -228,21 +228,21 @@ int main(int argc, char **argv)
 
 	if (ensure_dir(image_root) != 0)
 		return 1;
-	if (test_image_fixture_build(image_root, thincd_bin, "thincd") != 0)
+	if (test_image_fixture_build(image_root, cixd_bin, "cixd") != 0)
 		return 1;
 	/*
-	 * thincctl itself: staged so thincd --init-mode (Phase 19) has
+	 * cixctl itself: staged so cixd --init-mode (Phase 19) has
 	 * something to execve() when it spawns a managed shell on each
 	 * console -- previously absent from this image entirely, meaning
 	 * even a fully working console-input path would have had nothing to
 	 * launch. Needs no extra runtime libs of its own beyond what's
 	 * already staged above (ld.so/libc.so.6, the same TCC dynamic-link
-	 * dependency thincd itself has).
+	 * dependency cixd itself has).
 	 */
-	if (test_image_fixture_build(image_root, thincctl_bin, "thincctl") != 0)
+	if (test_image_fixture_build(image_root, cixctl_bin, "cixctl") != 0)
 		return 1;
 	/*
-	 * thincd itself never needs libtinfo -- this is staged purely so
+	 * cixd itself never needs libtinfo -- this is staged purely so
 	 * the RUNNING system's own root reliably has it available at its
 	 * real, well-known host path, the source pkg_seed_image_baseline()
 	 * (daemon/src/pkg.c) copies from when seeding a container image's
@@ -263,7 +263,7 @@ int main(int argc, char **argv)
 	 * where nothing ever looked for it, so every hostbuild whose
 	 * build_image needed bash (which needs libtinfo) failed with
 	 * "libtinfo.so.6: cannot open shared object file" -- invisible in
-	 * every local test, since a locally-run thincd reads its own
+	 * every local test, since a locally-run cixd reads its own
 	 * sandbox's real /lib and /usr/lib directly (merged-usr symlinks
 	 * here make both forms resolve identically for the READ side),
 	 * never from an assembled squashfs mounted as root the way a real
@@ -278,11 +278,11 @@ int main(int argc, char **argv)
 		return 1;
 
 	/*
-	 * The real binaries thincd itself shells out to at runtime --
+	 * The real binaries cixd itself shells out to at runtime --
 	 * grep-confirmed against daemon/src/pki.c's/daemon/src/pkg.c's own
 	 * hardcoded absolute-path _BIN macros, the authoritative list, not
 	 * docs/roadmap/ROADMAP.md's own partly-stale "dnsmasq" mention (dnsmasq
-	 * runs inside operator-created containers; thincd itself never
+	 * runs inside operator-created containers; cixd itself never
 	 * execve()s it). Previously entirely absent from this image --
 	 * confirmed live: booting a fresh install and running "pki ca
 	 * bootstrap" on the console failed outright ("CA genpkey failed")
@@ -294,7 +294,7 @@ int main(int argc, char **argv)
 	 * regenerate via `ldd /usr/bin/<name>` if a newer build of one of
 	 * these ever needs a different dependency set. Unlike firmware_dir
 	 * below, failure here is fatal, not silently skipped: these are
-	 * unconditionally required for thincd's own core PKI/pkg
+	 * unconditionally required for cixd's own core PKI/pkg
 	 * functionality, not an operator-opt-in extra -- silently
 	 * tolerating their absence is exactly the bug this closes.
 	 */
@@ -340,7 +340,7 @@ int main(int argc, char **argv)
 			 * 192.168.15.95's tcc.recipe (.tar.bz2) install, invisible
 			 * until pkg.c's own build-container-prep diagnostics were
 			 * wired into the log store. Never caught by this sandbox's
-			 * own dev-loop testing because a locally-run thincd here
+			 * own dev-loop testing because a locally-run cixd here
 			 * always had this rich dev host's own real /usr/bin/{gzip,
 			 * bzip2,xz} reachable via $PATH -- the same "this dev
 			 * sandbox's own rich /usr made the gap easy to miss"
@@ -383,7 +383,7 @@ int main(int argc, char **argv)
 			 * code was correct, the binary simply was not there, so the
 			 * very first real POST /disks/{name}/partition-table on an
 			 * installed host could only ever fail. Easy to miss because
-			 * thinc-install.c drives the same sfdisk at install time and
+			 * cix-install.c drives the same sfdisk at install time and
 			 * works fine -- the installer runs from the ISO, which has a
 			 * full environment; the daemon on the installed host does
 			 * not. Same "this build sandbox's own rich /usr made the gap
@@ -565,12 +565,12 @@ int main(int argc, char **argv)
 		 * fallback always exists), but this dev sandbox has no mkfs.btrfs
 		 * of its own at all (confirmed directly -- unlike mke2fs, Debian
 		 * doesn't ship btrfs-progs by default) and no real box may have
-		 * built btrfs-progs.recipe onto its thinc-hosttools image yet
+		 * built btrfs-progs.recipe onto its cix-hosttools image yet
 		 * either. Staged tolerantly instead, matching firmware_dir/
 		 * modules_dir/kmod_bin_dir's own "absent is a normal, silently-
 		 * skipped state, not a build failure" precedent: only attempted
 		 * when host_tools_dir is given AND that tree's own copy actually
-		 * exists (stat()-gated) -- an older thinc-hosttools image built
+		 * exists (stat()-gated) -- an older cix-hosttools image built
 		 * before btrfs-progs.recipe existed is not an error here, just a
 		 * box that can't format a disk btrfs yet (POST /v1/disks/{name}/
 		 * format with fs_type=btrfs fails loud with ENOENT at exec time
@@ -634,7 +634,7 @@ int main(int argc, char **argv)
 		 * host-side HTTPS pkg_source fetch (PKG_CURL_BIN) has had no way
 		 * to verify a TLS cert at all. Found live via ADR-0096's own new
 		 * diagnostic capture: "curl: (77) error setting certificate file:
-		 * /etc/ssl/certs/ca-certificates.crt" on a real thinc hostbuild
+		 * /etc/ssl/certs/ca-certificates.crt" on a real cix hostbuild
 		 * fetch, previously invisible behind a bare "curl exit status 1".
 		 * Same fix shape as openssl.cnf just above: copy the real bundle
 		 * from wherever this tool itself runs -- test_image_fixture_copy_file()
@@ -682,7 +682,7 @@ int main(int argc, char **argv)
 		fclose(f);
 	}
 
-	/* thincd's DEFAULT_WEB_ROOT is "web", resolved relative to its own
+	/* cixd's DEFAULT_WEB_ROOT is "web", resolved relative to its own
 	 * CWD -- PID 1 never chdir()s anywhere, so that's this squashfs
 	 * image's own root, i.e. exactly image_root/web. */
 	if (ensure_dir_under(image_root, "web") != 0)
@@ -763,7 +763,7 @@ int main(int argc, char **argv)
 	 * still works correctly either way -- kmod's own tools dispatch on
 	 * argv[0], which is identical regardless of whether that path was
 	 * reached via a symlink or a real file. usr/bin already exists
-	 * (thincd/thincctl staged there above), so the flat copy merges
+	 * (cixd/cixctl staged there above), so the flat copy merges
 	 * into it rather than needing test_image_fixture_copy_dir_recursive()'s
 	 * own "destination must not exist" contract.
 	 */
@@ -788,12 +788,12 @@ int main(int argc, char **argv)
 	 * boot logged "devtmpfs: error mounting -2" without this). */
 	if (ensure_dir_under(image_root, "dev") != 0)
 		return 1;
-	/* Phase 11 part 2: thincd --init-mode mounts the ESP here to reach
+	/* Phase 11 part 2: cixd --init-mode mounts the ESP here to reach
 	 * the loader entry confirm_boot() renames once a boot proves
 	 * healthy (daemon/src/main.c). */
 	if (ensure_dir_under(image_root, "boot") != 0)
 		return 1;
-	/* Phase 11 part 3: thincd --init-mode mounts the config partition
+	/* Phase 11 part 3: cixd --init-mode mounts the config partition
 	 * here for its static-IP net.conf (daemon/src/main.c's
 	 * apply_static_ip()) -- absent (and harmlessly so) on parts 1/2's
 	 * own throwaway disks, which have no partition 4 at all. */
@@ -803,19 +803,19 @@ int main(int argc, char **argv)
 		return 1;
 	if (ensure_dir_under(image_root, "var/lib") != 0)
 		return 1;
-	if (ensure_dir_under(image_root, "var/lib/thinc") != 0)
+	if (ensure_dir_under(image_root, "var/lib/cix") != 0)
 		return 1;
 
 	/*
 	 * mksquashfs itself is a build-time-only tool (assembles image_root
 	 * into out_path) -- nothing inside the assembled control-plane root
 	 * ever shells out to it (unlike unsquashfs/openssl/curl/tar above,
-	 * which thincd itself invokes at runtime and which are therefore
+	 * which cixd itself invokes at runtime and which are therefore
 	 * staged INTO image_root via shelled_bins[]). The hardcoded
 	 * "/usr/bin/mksquashfs" this used to exec unconditionally only ever
 	 * existed on this dev sandbox's own rich /usr -- when this same
 	 * binary runs for real, server-side, via
-	 * spawn_thinc_bootroot_assembly() (daemon/src/main.c) on an
+	 * spawn_cix_bootroot_assembly() (daemon/src/main.c) on an
 	 * installed host whose root IS a prior-generation assembled
 	 * control-plane squashfs, "/usr/bin/mksquashfs" simply doesn't
 	 * exist there (confirmed: never one of the shelled_bins[] staged

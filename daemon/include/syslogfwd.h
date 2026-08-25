@@ -12,7 +12,7 @@
  * container (typically syslog-1/syslog-2, a redundant pair running a
  * real syslogd, e.g. sysklogd.recipe) as a target means every
  * subsequent container-sourced log line (source="container" only --
- * kernel/thincd/audit entries are NOT forwarded, matching the user's
+ * kernel/cixd/audit entries are NOT forwarded, matching the user's
  * own "all the logs for the containers" scoping) is also sent to it as
  * a real RFC 3164 BSD-syslog UDP datagram, for operators who want
  * standard external tooling on top of this platform's own logging. A
@@ -25,7 +25,7 @@
  * exactly -- pure bookkeeping, no pid/pidfd, a registered container's
  * live IP is resolved fresh from the registry at every send, never
  * cached. The one real difference: NTP's registration governs an
- * inbound query thincd itself initiates and waits on a reply for;
+ * inbound query cixd itself initiates and waits on a reply for;
  * this one governs an outbound, unacknowledged fire-and-forget send
  * triggered by unrelated container-output activity, so there is no
  * async job/epoll machinery here at all -- just a single persistent,
@@ -85,7 +85,7 @@ void syslogfwd_target_write_json_list(struct json_writer *w);
  * logstore_level_severity() maps it to the RFC 5424 numeric severity
  * used in the PRI field. container becomes the datagram's HOSTNAME
  * field (the container is the real originator of the message, not
- * this daemon) -- TAG is always "thincd" (identifying this daemon as
+ * this daemon) -- TAG is always "cixd" (identifying this daemon as
  * the relay). A no-op if zero targets are currently registered, so
  * this is safe to call unconditionally from every container-output
  * line without a separate "is forwarding enabled" check at the call

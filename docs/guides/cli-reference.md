@@ -1,29 +1,29 @@
-# `thincctl` CLI reference
+# `cixctl` CLI reference
 
-`thincctl` is a pure REST client (`docs/api/openapi.yaml`) — every subcommand below is exactly one HTTP call, per the API-First Mandate (ADR-0005). This page is the CLI's own command surface; for what each call actually does, its request/response fields, and its error conditions, see [`docs/api/README.md`](../api/README.md) and `openapi.yaml` — this page deliberately doesn't repeat that.
+`cixctl` is a pure REST client (`docs/api/openapi.yaml`) — every subcommand below is exactly one HTTP call, per the API-First Mandate (ADR-0005). This page is the CLI's own command surface; for what each call actually does, its request/response fields, and its error conditions, see [`docs/api/README.md`](../api/README.md) and `openapi.yaml` — this page deliberately doesn't repeat that.
 
 ## Global flags and invocation
 
 ```
-thincctl [--host=ADDR] [--port=N] [--json] <command> [args...]
+cixctl [--host=ADDR] [--port=N] [--json] <command> [args...]
 ```
 
 - `--host=`/`--port=` — default `127.0.0.1:80`.
 - `--json` — print the raw API response instead of the default formatted text. Every subcommand supports it except `console` (an interactive terminal session, not a per-call response) and `files get`/`files put` (`get`'s own raw file bytes are the CLI's one non-JSON response body, and `put`'s own success response is a real `204 No Content` with nothing to render as JSON) — `--json` is silently ignored on all three.
-- Running `thincctl` with no command at all, from a real terminal (`isatty(stdin)`), drops into an **interactive shell**: one line, one command, reusing the same connection — useful for a session of several related calls without re-establishing a TCP connection each time (`thincctl --json` plus a piped/redirected stdin skips the shell and falls through to the usual usage-error path instead, so scripting is unaffected). The prompt is the connected daemon's own full site identity (`GET /system/site`, `instance.site.domain` or `instance.domain` with no site tier set, e.g. `lab.uk.home.arpa> `), not a fixed string — useful the moment more than one thinC install is reachable (ADR-0132). The trailing character follows real shell/network-device convention: `>` normally, `#` once `login` succeeds (`GET /whoami`, ADR-0164) -- refreshed immediately after every `login`/`logout` command, not just at shell startup.
+- Running `cixctl` with no command at all, from a real terminal (`isatty(stdin)`), drops into an **interactive shell**: one line, one command, reusing the same connection — useful for a session of several related calls without re-establishing a TCP connection each time (`cixctl --json` plus a piped/redirected stdin skips the shell and falls through to the usual usage-error path instead, so scripting is unaffected). The prompt is the connected daemon's own full site identity (`GET /system/site`, `instance.site.domain` or `instance.domain` with no site tier set, e.g. `lab.uk.home.arpa> `), not a fixed string — useful the moment more than one Cix install is reachable (ADR-0132). The trailing character follows real shell/network-device convention: `>` normally, `#` once `login` succeeds (`GET /whoami`, ADR-0164) -- refreshed immediately after every `login`/`logout` command, not just at shell startup.
 - **Exit codes**: `0` success, `1` the API call itself failed (a non-2xx response, or a transport-level failure reaching the daemon), `2` a usage error (bad flags, unknown subcommand) — checked before any network call is made.
-- **Authentication (ADR-0144)**: once a daemon has write-gating active (see [`docs/api/README.md`'s own "Host authentication" section](../api/README.md#host-authentication-adr-0144)), every mutating command needs a session — run `login` once and every subsequent `thincctl` invocation on this machine authenticates automatically via the persisted token, until `logout` or the session's own idle timeout expires it. `GET`-only commands (`health`, `container ls`, every `... ls`/`... show`) never need one.
+- **Authentication (ADR-0144)**: once a daemon has write-gating active (see [`docs/api/README.md`'s own "Host authentication" section](../api/README.md#host-authentication-adr-0144)), every mutating command needs a session — run `login` once and every subsequent `cixctl` invocation on this machine authenticates automatically via the persisted token, until `logout` or the session's own idle timeout expires it. `GET`-only commands (`health`, `container ls`, every `... ls`/`... show`) never need one.
 
 ## System
 
 | Command | |
 |---|---|
-| `login [--username=NAME] [--password=PASS]` | Authenticate (ADR-0144) -- prompts for whichever of username/password isn't given as a flag, with terminal echo off for the password; on success persists the session token to `~/.thincctl_token` (mode `0600`) so every subsequent invocation authenticates automatically. A no-op-equivalent (succeeds, but nothing enforces it) on a daemon where write-gating was never activated (no admin-group user exists yet) |
+| `login [--username=NAME] [--password=PASS]` | Authenticate (ADR-0144) -- prompts for whichever of username/password isn't given as a flag, with terminal echo off for the password; on success persists the session token to `~/.cixctl_token` (mode `0600`) so every subsequent invocation authenticates automatically. A no-op-equivalent (succeeds, but nothing enforces it) on a daemon where write-gating was never activated (no admin-group user exists yet) |
 | `logout` | Invalidate the current session (if any) and remove the persisted token; always succeeds, even when not currently logged in |
 | `health` | Liveness check -- minimal, no build/slot identity |
 | `boot` | Build version/time, A/B slot, kernel version (ADR-0077) |
-| `shutdown` | Stop `thincd`; powers off the host too when running as real PID 1 |
-| `reboot` | Stop `thincd`; restarts the host too when running as real PID 1 |
+| `shutdown` | Stop `cixd`; powers off the host too when running as real PID 1 |
+| `reboot` | Stop `cixd`; restarts the host too when running as real PID 1 |
 | `update [--image=PATH] [--kernel=PATH]` | Write a fresh control-plane squashfs and/or kernel to the inactive A/B slot; does not reboot |
 | `backup [--output=PATH]` | Bundle platform config state; prints it (or `--json`) by default, `--output=` saves verbatim for `restore --input=` |
 | `restore --input=PATH` | Write a previously-saved bundle back; does not reboot or hot-reload |
@@ -33,7 +33,7 @@ thincctl [--host=ADDR] [--port=N] [--json] <command> [args...]
 | `backup-config snapshot-now` | Write the same bundle `backup` produces to the configured disk right now |
 | `site show` | This install's `instance_name`/`site_name`/`domain_suffix` |
 | `site set [--instance-name=NAME] [--site-name=NAME] [--domain-suffix=NAME]` | Set them |
-| `daemon-config show` | `thincd`'s own listen port, HTTP/HTTPS exposure, and which network is currently its management one |
+| `daemon-config show` | `cixd`'s own listen port, HTTP/HTTPS exposure, and which network is currently its management one |
 | `daemon-config set [--port=N] [--https-port=N] [--enable-http] [--disable-http] [--enable-https] [--disable-https] [--management-network=NAME] [--bind-ip=A.B.C.D \| --clear-bind-ip]` | Live, no-restart change — only the fields given are touched. `bind_ip` (ADR-0068) is a dedicated second address on the management network's own bridge; `--clear-bind-ip` reverts to that network's own address |
 | `hostauth-config show` | Current `admin_groups`/`idle_timeout_seconds`/live-LDAP backend settings (ADR-0144) |
 | `hostauth-config set [--admin-group=NAME ...] [--idle-timeout-seconds=N] [--ldap-enable \| --ldap-disable] [--ldap-server=HOST ...] [--ldap-port=N] [--ldap-base-dn=NAME]` | Read-modify-write (the underlying `PUT` is full-replacement, but this command fetches the current config first so only the flags given actually change) -- write-gating activates the instant a real user is a member of one of `admin_groups` |
@@ -49,10 +49,10 @@ thincctl [--host=ADDR] [--port=N] [--json] <command> [args...]
 | `iso status` | Status of the most recent server-side installer ISO build |
 | `iso build [--disk=DEV] [--ip=A.B.C.D] [--prefix=N] [--gateway=A.B.C.D] [--interface=IFNAME] [--wait]` | Assemble a fresh installer ISO server-side; all flags optional (unset fields fall back to the daemon's own defaults) — `--wait` polls until the build finishes instead of returning immediately |
 | `routes` | The box's own real kernel IPv4 routing table (ADR-0066) — the only way to see this on a real install, no SSH/general shell |
-| `host-stats` | Host-wide uptime/load/CPU/memory/disk/network snapshot, including cpu/memory/io pressure-stall (PSI) figures (ADR-0073, ADR-0074) — the host-level counterpart to `stats NAME` below. `uptime.host` is seconds since boot, `uptime.daemon` seconds since `thincd` itself started; they diverge after a control-plane restart that was not a reboot |
-| `kmsg [--tail=N]` | The kernel's own ring buffer (`/dev/kmsg`) — dmesg over REST (issue #77). Mount failures, driver probes and OOM kills surface here, and on a real installed host with no shell this is the only way to read them. Distinct from the log store, which carries `thincd`'s own diagnostics and the audit trail |
+| `host-stats` | Host-wide uptime/load/CPU/memory/disk/network snapshot, including cpu/memory/io pressure-stall (PSI) figures (ADR-0073, ADR-0074) — the host-level counterpart to `stats NAME` below. `uptime.host` is seconds since boot, `uptime.daemon` seconds since `cixd` itself started; they diverge after a control-plane restart that was not a reboot |
+| `kmsg [--tail=N]` | The kernel's own ring buffer (`/dev/kmsg`) — dmesg over REST (issue #77). Mount failures, driver probes and OOM kills surface here, and on a real installed host with no shell this is the only way to read them. Distinct from the log store, which carries `cixd`'s own diagnostics and the audit trail |
 | `server-health [ls]` | Health of every registered LDAP/DNS/NTP/syslog server (issue #81) — state, whether it's in service, how it was probed (`tcp:PORT` is a real service check; `process` only means the container is running), and the last error |
-| `server-health drain KIND NAME` / `server-health undrain KIND NAME` | Take one deliberately out of / back into service (maintenance). Persisted across a daemon restart, unlike the observed health state. A drained or unhealthy server is withheld from the client config thinC generates |
+| `server-health drain KIND NAME` / `server-health undrain KIND NAME` | Take one deliberately out of / back into service (maintenance). Persisted across a daemon restart, unlike the observed health state. A drained or unhealthy server is withheld from the client config Cix generates |
 | `process ls` | Every real process on the box (a direct `/proc` scan), each correlated to a container by its own real host ppid chain, if any (ADR-0131) |
 | `process kill PID` | A real, immediate SIGKILL; refuses pid 1 and this daemon's own pid |
 | `ping HOST` | Real ICMP echo against a literal IPv4 address (ADR-0075) — waits ~2s max, exits nonzero if unreachable |
@@ -96,7 +96,7 @@ thincctl [--host=ADDR] [--port=N] [--json] <command> [args...]
 | `dhcp static rm MAC` | Remove a reservation |
 | `zswap show` | The compressed swap cache (issue #51): configured intent, what the kernel actually reports, and the compressors this kernel was built with. A disagreement between the first two means the setting did not take |
 | `zswap set [--enable \| --disable] [--max-pool-percent=N] [--compressor=NAME]` | Configure it. On by default -- it costs nothing until the box is actually swapping |
-| `logs [--source=kernel\|thincd\|audit\|container] [--level=...] [--container=NAME] [--regex=PATTERN] [--tail=N] [--since=UNIXTS]` | The consolidated log — kernel dmesg, thincd diagnostics, a per-request audit trail, and every container's own stdout/stderr, transparently (ADR-0070, ADR-0126) — `--container=` filters to one container's own lines, `--regex=` is a POSIX extended regex (case-insensitive) matched against the message text |
+| `logs [--source=kernel\|cixd\|audit\|container] [--level=...] [--container=NAME] [--regex=PATTERN] [--tail=N] [--since=UNIXTS]` | The consolidated log — kernel dmesg, cixd diagnostics, a per-request audit trail, and every container's own stdout/stderr, transparently (ADR-0070, ADR-0126) — `--container=` filters to one container's own lines, `--regex=` is a POSIX extended regex (case-insensitive) matched against the message text |
 | `logs config [--max-bytes=N] [--min-level=LEVEL]` | Show or set the log's total size cap and/or minimum severity floor (`emerg`/`alert`/`crit`/`err`\|`error`/`warning`\|`warn`/`notice`/`info`/`debug`, default `debug`) -- either flag alone is fine, both are independent |
 
 See [`docs/guides/kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md) and [`docs/guides/staying-updated.md`](staying-updated.md) for `update`'s real operator runbooks, not just the flag syntax.
@@ -183,7 +183,7 @@ Each flag maps directly to the matching `ContainerCreateRequest` field — see [
 | `kernel-policy refresh` | Re-ask kernel.org's `releases.json` what each channel is at. Async — the answer lands a moment after the command returns |
 | `boot-console show` | The installed system's own boot console parameters, plus the options line each loader entry currently carries (issue #24) |
 | `boot-console set [--console=NAME ...] [--extra="..."]` | Set them — `--console` is repeatable and ordered. Rewrites the loader entries on the ESP; takes effect at the next boot. Everything from `root=` onward is left alone |
-| `control-plane-reservation show` | How much CPU/memory is held back for the daemon itself, the host's totals, and the derived ceiling actually applied to the `thinc-workload` cgroup every container and build lives under (issue #86) |
+| `control-plane-reservation show` | How much CPU/memory is held back for the daemon itself, the host's totals, and the derived ceiling actually applied to the `cix-workload` cgroup every container and build lives under (issue #86) |
 | `control-plane-reservation set [--enabled\|--disabled] [--cpu-percent=N] [--memory-bytes=N]` | Change it — applied to the live cgroup immediately. `cpu_percent` 1-50; a larger reservation would be a second workload budget, not a safety margin |
 | `factory-reset --confirm=<instance name>` | Return the box to its just-installed state and reboot. Destroys every container, image, network, registration, package state, the log store, and **every volume and all data in them**. Keeps the installed OS; forgets disk roles without reformatting the disks |
 
@@ -256,8 +256,8 @@ Attach one at container creation with `--volume=NAME:/path[:ro]`. The volume mus
 | `disks partition-table NAME` | Destructive: writes a fresh, empty GPT partition table to a non-OS whole disk with no role or partitions of its own in use |
 | `disks add-partition NAME --name=PART_NAME [--size-mib=N]` | Appends one new partition to a disk's existing table; omit `--size-mib` for "rest of the disk" |
 | `disks rm-partition DISK_NAME PARTITION_NAME` | Removes one partition (409 if it still has a role assigned) |
-| `storage state [show]` | Which disk (if any) is the active placement for thinC's own state (ADR-0141) |
-| `storage state migrate [--disk=NAME]` | Move thinC's own state to a disk already carrying the role and mounted; omit `--disk=` for the default OS-disk placement; live, no downtime |
+| `storage state [show]` | Which disk (if any) is the active placement for Cix's own state (ADR-0141) |
+| `storage state migrate [--disk=NAME]` | Move Cix's own state to a disk already carrying the role and mounted; omit `--disk=` for the default OS-disk placement; live, no downtime |
 | `storage state migrate-status` | State/disk/error of the most recent (or running) state-storage migration |
 | `storage logs [show\|migrate [--disk=NAME]\|migrate-status]` | Same shape as `storage state`, for where the consolidated log store lives instead (ADR-0141 Phase 3); an independent job slot from `storage state migrate` |
 | `storage rebuildable [show\|migrate [--disk=NAME]\|migrate-status]` | Same shape again, for where images/packages/artifacts live instead (ADR-0141 Phase 4); its own independent job slot |
@@ -315,7 +315,7 @@ Attach one at container creation with `--volume=NAME:/path[:ro]`. The volume mus
 | `pkg ls` | List every known package (installed or in-flight). State reads `failed:fetch` / `failed:build` / `failed:recipe` / `failed:install` (issue #101), so a source that could not be reached is distinguishable from a build that genuinely broke |
 | `pkg rm NAME[@IMAGE]` | Uninstall |
 | `pkg update-all` | Start an upgrade for the first installed package whose recipe has drifted; call again to drain the backlog |
-| `pkg hostbuild NAME --build-image=IMAGE [--version=VERSION] [--wait] [--deploy] [--upgrade] [--keep-on-failure]` | Build a standalone host artifact (kernel, or thinC's own control plane) instead of merging into an image — see [`docs/guides/writing-recipes.md#the-hostbuild-variant`](writing-recipes.md#the-hostbuild-variant). `--upgrade` re-runs a build already `state: "installed"` if the recipe's own version has moved on (otherwise a bare 409). `--keep-on-failure` (ADR-0175) preserves a failed build container for real debugging |
+| `pkg hostbuild NAME --build-image=IMAGE [--version=VERSION] [--wait] [--deploy] [--upgrade] [--keep-on-failure]` | Build a standalone host artifact (kernel, or Cix's own control plane) instead of merging into an image — see [`docs/guides/writing-recipes.md#the-hostbuild-variant`](writing-recipes.md#the-hostbuild-variant). `--upgrade` re-runs a build already `state: "installed"` if the recipe's own version has moved on (otherwise a bare 409). `--keep-on-failure` (ADR-0175) preserves a failed build container for real debugging |
 | `pkg resume --name=NAME [--image=IMAGE] [--version=VERSION] [--keep-on-failure]` | Continue a `--keep-on-failure`-preserved build container in place (ADR-0177) — its already-extracted source tree is kept, only the recipe (optionally a newly-fixed version) and install destination are refreshed, skipping a full fetch+extract+build restart — see [Continuing a kept build in place](../api/README.md#continuing-a-kept-build-in-place-post-pkgresume-adr-0177-issue-46) |
 | `pkg build-log` | Live-tail the currently in-flight install/hostbuild's own stdout/stderr (task #676, ADR-0101) — a one-way stream, not an interactive session; prints each chunk as it arrives and exits once the build finishes. 404 if nothing is currently building |
 | `pkg build-logs [--last \| --file=NAME]` | The **complete** persisted output of recent builds, kept on disk as each build streams (issue #57) — as opposed to `pkg build-log`'s live-only stream and the log store's ~4KB tail. `--last` prints the most recent build's whole log; with no arguments, lists what is kept |
@@ -323,4 +323,4 @@ Attach one at container creation with `--volume=NAME:/path[:ro]`. The volume mus
 | `pkg policy set NAME --policy=highest\|newest\|pinned [--version=V]` | `highest` is the default; `newest` picks the most recently published recipe; `pinned` holds an explicit version that `update-all`/`follow_rolling` cannot bump |
 | `pkg policy clear NAME` | Back to the default |
 
-See [`docs/guides/writing-recipes.md`](writing-recipes.md) for the recipe format itself, and [`docs/guides/kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md) / [`docs/guides/building-thinc.md`](building-thinc.md) for the two real operator runbooks built on `pkg hostbuild`.
+See [`docs/guides/writing-recipes.md`](writing-recipes.md) for the recipe format itself, and [`docs/guides/kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md) / [`docs/guides/building-cix.md`](building-cix.md) for the two real operator runbooks built on `pkg hostbuild`.

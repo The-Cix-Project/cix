@@ -738,7 +738,7 @@ int network_alloc_ip(const char *name, uint32_t *out_ip_be)
 		 * real LAN whose gateway is, by overwhelming convention, .1 --
 		 * never auto-hand-out host-part 1 there unless the operator has
 		 * explicitly widened the range back down to it. An internal,
-		 * thinc-owned network has no external gateway, so its floor
+		 * cix-owned network has no external gateway, so its floor
 		 * stays 1. */
 		if (net->is_management && net->alloc_start_host == 0 && lo < 2)
 			lo = 2;
@@ -847,7 +847,7 @@ void network_write_json_list(struct json_writer *w)
 
 /* ADR-0066: a real, read-only view of the box's own kernel routing
  * table -- the daemon is the only way to ever inspect a running
- * thinC install (ADR-0034, no SSH/general shell), and until now
+ * Cix install (ADR-0034, no SSH/general shell), and until now
  * there was no way to see this at all. */
 #define ROUTE_DUMP_MAX 64
 

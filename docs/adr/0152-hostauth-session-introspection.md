@@ -16,7 +16,7 @@ Confirmed with the user this was worth closing: "yes we want to build that... wi
 
 **Revocation is per-username, not per-session** (`DELETE /v1/system/hostauth/sessions/{username}`, revokes every active session for that user at once): the real design question this part turned on. A per-session revoke needs a stable, safe identifier for one specific session — but the only genuine per-session identifier is the raw token itself, which is never surfaced past its one-time login response by design (surfacing even a truncated/hashed form for this purpose would be a new, narrow crypto surface for a feature that doesn't need it). "Log this account out everywhere" is also the actually-useful admin action in practice (a compromised or departing account, a stuck client holding a stale session) — a hypothetical "log out just this one browser tab" has no real use case this project has ever needed, and per-username revocation gets the real one for free with no new primitive.
 
-**CLI**: `thincctl hostauth-sessions ls`, `thincctl hostauth-sessions revoke USERNAME` — a new top-level command, flat-named to match `hostauth-config`'s own existing convention (not nested under a `hostauth <verb>` group, since there's no other `hostauth` noun with subcommands to group alongside).
+**CLI**: `cixctl hostauth-sessions ls`, `cixctl hostauth-sessions revoke USERNAME` — a new top-level command, flat-named to match `hostauth-config`'s own existing convention (not nested under a `hostauth <verb>` group, since there's no other `hostauth` noun with subcommands to group alongside).
 
 **Web**: a new `Sessions` page under `Host` (`SYSTEM > Host > Sessions`), a table (username, expires-in) with a "Log out everywhere" button per row.
 

@@ -178,7 +178,7 @@ static struct throttle_entry *get_or_create_entry(const char *ip, time_t now)
 }
 
 /*
- * Loopback is never throttled, deliberately: thincctl's own default
+ * Loopback is never throttled, deliberately: cixctl's own default
  * --host= is 127.0.0.1 (a real operator's local CLI use, or this
  * daemon's own test suite, both connect from exactly there), and a
  * block applies uniformly across both listeners -- tripping it from

@@ -28,6 +28,6 @@ Live on 192.168.15.95: after explicitly `DELETE`ing the pre-existing, poisoned `
 
 ## Consequences
 
-- `/run` now behaves the same way inside a thinC container as it does on every real Linux host: empty at start, safe for any daemon's pidfile/socket/lock conventions, never a source of stale cross-restart state.
+- `/run` now behaves the same way inside a Cix container as it does on every real Linux host: empty at start, safe for any daemon's pidfile/socket/lock conventions, never a source of stale cross-restart state.
 - Any recipe that was relying (even accidentally) on `/run` content surviving a restart needs to move that state under a path that's actually meant to be persistent (anywhere else in the container's own rootfs) -- no current recipe in this repository does this, confirmed by inspection of every `files[]` block and every recipe's own runtime paths.
 - This does not retroactively fix any container whose on-disk upperdir was already poisoned by a stale `/run/chronyd.pid`-shaped file before this fix was deployed -- those still need one explicit `DELETE` to clear the old state; only *new* poisoning is prevented going forward.

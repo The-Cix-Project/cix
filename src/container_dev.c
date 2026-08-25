@@ -25,24 +25,24 @@
  * BPF_JMP|BPF_JA         : unconditional branch
  * BPF_JMP|BPF_EXIT        : return r0
  */
-#define THINC_OP_LDX_MEM_W  0x61
-#define THINC_OP_ALU64_AND_K 0x57
-#define THINC_OP_ALU64_MOV_K 0xb7
-#define THINC_OP_JMP_JNE_K  0x55
-#define THINC_OP_JMP_JA     0x05
-#define THINC_OP_JMP_EXIT   0x95
+#define CIX_OP_LDX_MEM_W  0x61
+#define CIX_OP_ALU64_AND_K 0x57
+#define CIX_OP_ALU64_MOV_K 0xb7
+#define CIX_OP_JMP_JNE_K  0x55
+#define CIX_OP_JMP_JA     0x05
+#define CIX_OP_JMP_EXIT   0x95
 
-#define THINC_REG_0 0
-#define THINC_REG_1 1
-#define THINC_REG_2 2
-#define THINC_REG_3 3
-#define THINC_REG_4 4
+#define CIX_REG_0 0
+#define CIX_REG_1 1
+#define CIX_REG_2 2
+#define CIX_REG_3 3
+#define CIX_REG_4 4
 
 /* bpf_cgroup_dev_ctx.access_type low 16 bits, per security/device_cgroup.c */
-#define THINC_BPF_DEVCG_DEV_BLOCK 1
-#define THINC_BPF_DEVCG_DEV_CHAR  2
+#define CIX_BPF_DEVCG_DEV_BLOCK 1
+#define CIX_BPF_DEVCG_DEV_CHAR  2
 
-static void emit(struct thinc_bpf_insn *prog, int *idx, uint8_t code, uint8_t dst, uint8_t src,
+static void emit(struct cix_bpf_insn *prog, int *idx, uint8_t code, uint8_t dst, uint8_t src,
                   int16_t off, int32_t imm)
 {
 	prog[*idx].code = code;
@@ -57,9 +57,9 @@ int container_dev_bpf_attach(int cgroup_fd, const struct device_spec *devices, i
 {
 	/* Prologue (4) + one 4-insn comparison block per device + a 2-insn
 	 * deny epilogue + a 2-insn allow epilogue. */
-	struct thinc_bpf_insn prog[4 + 4 * CONTAINER_MAX_DEVICES + 4];
-	struct thinc_bpf_prog_load_attr load_attr;
-	struct thinc_bpf_prog_attach_attr attach_attr;
+	struct cix_bpf_insn prog[4 + 4 * CONTAINER_MAX_DEVICES + 4];
+	struct cix_bpf_prog_load_attr load_attr;
+	struct cix_bpf_prog_attach_attr attach_attr;
 	static const char license[] = "GPL";
 	int idx = 0;
 	int allow_idx;
@@ -74,48 +74,48 @@ int container_dev_bpf_attach(int cgroup_fd, const struct device_spec *devices, i
 	allow_idx = 4 + 4 * device_count + 2;
 
 	/* r2 = ctx->major; r3 = ctx->minor; r4 = ctx->access_type & 0xffff */
-	emit(prog, &idx, THINC_OP_LDX_MEM_W, THINC_REG_2, THINC_REG_1, 4, 0);
-	emit(prog, &idx, THINC_OP_LDX_MEM_W, THINC_REG_3, THINC_REG_1, 8, 0);
-	emit(prog, &idx, THINC_OP_LDX_MEM_W, THINC_REG_4, THINC_REG_1, 0, 0);
-	emit(prog, &idx, THINC_OP_ALU64_AND_K, THINC_REG_4, 0, 0, 0xffff);
+	emit(prog, &idx, CIX_OP_LDX_MEM_W, CIX_REG_2, CIX_REG_1, 4, 0);
+	emit(prog, &idx, CIX_OP_LDX_MEM_W, CIX_REG_3, CIX_REG_1, 8, 0);
+	emit(prog, &idx, CIX_OP_LDX_MEM_W, CIX_REG_4, CIX_REG_1, 0, 0);
+	emit(prog, &idx, CIX_OP_ALU64_AND_K, CIX_REG_4, 0, 0, 0xffff);
 
 	for (i = 0; i < device_count; i++) {
-		int devtype = (devices[i].type == DEVICE_NODE_BLOCK) ? THINC_BPF_DEVCG_DEV_BLOCK
-		                                                      : THINC_BPF_DEVCG_DEV_CHAR;
+		int devtype = (devices[i].type == DEVICE_NODE_BLOCK) ? CIX_BPF_DEVCG_DEV_BLOCK
+		                                                      : CIX_BPF_DEVCG_DEV_CHAR;
 
 		/* Any mismatch falls through to the next block (or the deny
 		 * epilogue, for the last device); a full match jumps to allow. */
-		emit(prog, &idx, THINC_OP_JMP_JNE_K, THINC_REG_2, 0, 3, (int32_t)devices[i].major);
-		emit(prog, &idx, THINC_OP_JMP_JNE_K, THINC_REG_3, 0, 2, (int32_t)devices[i].minor);
-		emit(prog, &idx, THINC_OP_JMP_JNE_K, THINC_REG_4, 0, 1, devtype);
-		emit(prog, &idx, THINC_OP_JMP_JA, 0, 0, (int16_t)(allow_idx - idx - 1), 0);
+		emit(prog, &idx, CIX_OP_JMP_JNE_K, CIX_REG_2, 0, 3, (int32_t)devices[i].major);
+		emit(prog, &idx, CIX_OP_JMP_JNE_K, CIX_REG_3, 0, 2, (int32_t)devices[i].minor);
+		emit(prog, &idx, CIX_OP_JMP_JNE_K, CIX_REG_4, 0, 1, devtype);
+		emit(prog, &idx, CIX_OP_JMP_JA, 0, 0, (int16_t)(allow_idx - idx - 1), 0);
 	}
 
 	/* deny */
-	emit(prog, &idx, THINC_OP_ALU64_MOV_K, THINC_REG_0, 0, 0, 0);
-	emit(prog, &idx, THINC_OP_JMP_EXIT, 0, 0, 0, 0);
+	emit(prog, &idx, CIX_OP_ALU64_MOV_K, CIX_REG_0, 0, 0, 0);
+	emit(prog, &idx, CIX_OP_JMP_EXIT, 0, 0, 0, 0);
 	/* allow */
-	emit(prog, &idx, THINC_OP_ALU64_MOV_K, THINC_REG_0, 0, 0, 1);
-	emit(prog, &idx, THINC_OP_JMP_EXIT, 0, 0, 0, 0);
+	emit(prog, &idx, CIX_OP_ALU64_MOV_K, CIX_REG_0, 0, 0, 1);
+	emit(prog, &idx, CIX_OP_JMP_EXIT, 0, 0, 0, 0);
 
 	memset(&load_attr, 0, sizeof(load_attr));
-	load_attr.prog_type = THINC_BPF_PROG_TYPE_CGROUP_DEVICE;
+	load_attr.prog_type = CIX_BPF_PROG_TYPE_CGROUP_DEVICE;
 	load_attr.insn_cnt = (uint32_t)idx;
 	load_attr.insns = (uint64_t)(uintptr_t)prog;
 	load_attr.license = (uint64_t)(uintptr_t)license;
-	load_attr.expected_attach_type = THINC_BPF_CGROUP_DEVICE;
-	memcpy(load_attr.prog_name, "thinc_devcg", sizeof("thinc_devcg"));
+	load_attr.expected_attach_type = CIX_BPF_CGROUP_DEVICE;
+	memcpy(load_attr.prog_name, "cix_devcg", sizeof("cix_devcg"));
 
-	prog_fd = (int)sys_bpf(THINC_BPF_PROG_LOAD, &load_attr, sizeof(load_attr));
+	prog_fd = (int)sys_bpf(CIX_BPF_PROG_LOAD, &load_attr, sizeof(load_attr));
 	if (prog_fd < 0)
 		return -1;
 
 	memset(&attach_attr, 0, sizeof(attach_attr));
 	attach_attr.target_fd = (uint32_t)cgroup_fd;
 	attach_attr.attach_bpf_fd = (uint32_t)prog_fd;
-	attach_attr.attach_type = THINC_BPF_CGROUP_DEVICE;
+	attach_attr.attach_type = CIX_BPF_CGROUP_DEVICE;
 
-	if (sys_bpf(THINC_BPF_PROG_ATTACH, &attach_attr, sizeof(attach_attr)) != 0) {
+	if (sys_bpf(CIX_BPF_PROG_ATTACH, &attach_attr, sizeof(attach_attr)) != 0) {
 		int saved_errno = errno;
 
 		close(prog_fd);
@@ -129,14 +129,14 @@ int container_dev_bpf_attach(int cgroup_fd, const struct device_spec *devices, i
 
 int container_dev_bpf_detach(int cgroup_fd, int prog_fd)
 {
-	struct thinc_bpf_prog_attach_attr detach_attr;
+	struct cix_bpf_prog_attach_attr detach_attr;
 
 	memset(&detach_attr, 0, sizeof(detach_attr));
 	detach_attr.target_fd = (uint32_t)cgroup_fd;
 	detach_attr.attach_bpf_fd = (uint32_t)prog_fd;
-	detach_attr.attach_type = THINC_BPF_CGROUP_DEVICE;
+	detach_attr.attach_type = CIX_BPF_CGROUP_DEVICE;
 
-	if (sys_bpf(THINC_BPF_PROG_DETACH, &detach_attr, sizeof(detach_attr)) != 0)
+	if (sys_bpf(CIX_BPF_PROG_DETACH, &detach_attr, sizeof(detach_attr)) != 0)
 		return -1;
 	return 0;
 }
@@ -158,7 +158,7 @@ int container_dev_mknod(const struct device_spec *devices, int device_count)
 		slash = strrchr(dir, '/');
 		if (slash != NULL && slash != dir) {
 			*slash = '\0';
-			if (thinc_mkdir_p(dir) != 0)
+			if (cix_mkdir_p(dir) != 0)
 				return -1;
 		}
 

@@ -74,7 +74,7 @@ pkg_depends="binutils m4"
 # seed than 16.x ever was (same major series, not four majors ahead), and
 # already comfortably exceeds the Linux kernel's own documented minimum
 # supported compiler version (GCC 5.1+) -- there was never a real
-# requirement for thinC's own Tier-3 gcc to be the latest release; 16.x
+# requirement for Cix's own Tier-3 gcc to be the latest release; 16.x
 # was only ever the default "newest" choice, not a genuine need.
 #
 # Re-pinned again to 12.5.0-2 (same real upstream 12.5.0 source,
@@ -97,7 +97,7 @@ pkg_depends="binutils m4"
 # (re)generated Makefile, for the whole bootstrap.
 
 # --- Bootstrap-compiler declaration (Tier 3 of this project's 3-tier
-# TCC policy: thinC's own code is always TCC; third-party recipes are
+# TCC policy: Cix's own code is always TCC; third-party recipes are
 # TCC by default with real effort; a small, explicit, documented
 # exception list exists for genuinely infeasible cases -- kernel and
 # openssl already sit there for their own reasons). gcc belongs there
@@ -125,7 +125,7 @@ pkg_depends="binutils m4"
 # `--disable-bootstrap` -- it performs GCC's real 3-stage bootstrap:
 # stage 1 is built by the ambient host gcc (this build container's own
 # already-present gcc 12.2, ordinary Debian-provided at this layer,
-# not part of thinC's own package tracking); stage 2 is built *by
+# not part of Cix's own package tracking); stage 2 is built *by
 # stage 1*; stage 3 is built *by stage 2*; and GCC's own bootstrap
 # machinery then byte-for-byte compares stage 2 and stage 3 object
 # code, failing the build outright if they differ. That comparison is
@@ -290,10 +290,10 @@ MINIEXTRACT
 	# `-j$(nproc)` bootstrap on the real box (8GB RAM total,
 	# `pkg-build-config`'s own `memory_max` was 0 -- no enforced ceiling
 	# at the time) hung the entire host, not just this build --
-	# `thincd` itself stopped answering even `GET /v1/health` for over
+	# `cixd` itself stopped answering even `GET /v1/health` for over
 	# 20 minutes, requiring a hard host reset to recover. No log
 	# evidence survived to prove the exact mechanism (the kernel's own
-	# dmesg ring buffer is wiped by a reboot, and thincd's own log store
+	# dmesg ring buffer is wiped by a reboot, and cixd's own log store
 	# shows nothing logged between the last pre-hang entry and the
 	# reset -- it was already too stuck to log anything about this
 	# attempt at all), but real C++ template-heavy compiles routinely
@@ -499,7 +499,7 @@ MINIEXTRACT
 		# captured build log otherwise. Dump only the single MOST
 		# RECENTLY WRITTEN config.log (a full GCC tree has dozens, one
 		# per subproject configured so far; dumping all of them
-		# overflows thincd's own fixed-size captured-build-output
+		# overflows cixd's own fixed-size captured-build-output
 		# buffer before reaching the relevant one -- confirmed the hard
 		# way during the earlier TCC investigation).
 		latest_config_log=$(find . -name config.log -printf '%T@ %p\n' | \

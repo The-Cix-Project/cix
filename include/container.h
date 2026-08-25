@@ -119,7 +119,7 @@ struct overlay_spec {
 
 /*
  * True if path's own backing filesystem is btrfs (a plain statfs(2)
- * check against THINC_BTRFS_SUPER_MAGIC), false for anything else
+ * check against CIX_BTRFS_SUPER_MAGIC), false for anything else
  * (including a statfs() failure -- a path that can't even be statfs'd
  * is conservatively never treated as btrfs). Exposed publicly (not
  * static to src/overlay.c) because daemon/src/main.c's own container-
@@ -484,7 +484,7 @@ void container_set_last_error_step(const char *prefix);
  * Children are then created by passing "<parent>/<child>" as a
  * cgroup_limits name. A per-container limit is not a budget: applying one
  * to each of N concurrent containers permits N times the intended
- * ceiling, which on a real box starved thincd itself off the run queue.
+ * ceiling, which on a real box starved cixd itself off the run queue.
  * Returns 0 on success, -1 (errno set) if the parent can't be created.
  */
 int cgroup_create_parent(const struct cgroup_limits *lim);
@@ -615,7 +615,7 @@ int overlay_upperdir_size(const char *upperdir_path, long long *out_bytes);
  * rich, disjoint numeric exit-code encoding (see the child branch's
  * own comments) -- but the ONLY place that encoding was ever
  * explained in human terms was a perror() to this process's own
- * stdin/stderr, which on a real installed box (thincd as PID 1, no
+ * stdin/stderr, which on a real installed box (cixd as PID 1, no
  * attached console, no systemd journal) reaches nobody. On failure of
  * ANY of those steps, before exit()ing with its own numeric code, the
  * child now ALSO writes one "step: strerror(errno)" line to this

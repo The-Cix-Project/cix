@@ -1,7 +1,7 @@
 #
 # SCRATCH DIAGNOSTIC ONLY -- never meant to succeed or be installed.
 # v2 of the same probe (v1's overly verbose output got truncated by
-# thincd's own build-output capture, which keeps only the LAST 3800
+# cixd's own build-output capture, which keeps only the LAST 3800
 # bytes -- PKG_BUILD_OUTPUT_CAPTURE_MAX, daemon/src/pkg.c -- so the
 # actually-important -H header-search trace never made it into the
 # log). Narrowed to just the two -H traces (bare vs explicit -I), the

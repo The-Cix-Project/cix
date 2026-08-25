@@ -17,9 +17,9 @@
  * a container by walking its own real host-visible ppid chain against
  * the registry's own known container root pids (registry_entry.
  * handle.pid), not by comparing PID-namespace identity: every
- * container's own init is a direct clone3() child of thincd itself,
+ * container's own init is a direct clone3() child of cixd itself,
  * so a real host ppid-chain walk from any process reaches either a
- * known container root (that process belongs to it) or thincd's own
+ * known container root (that process belongs to it) or cixd's own
  * pid / pid 1 (a plain host-level process) -- simpler than opening and
  * comparing /proc/<pid>/ns/pid for every candidate, and gives the same
  * answer for every case that actually matters here.
@@ -73,7 +73,7 @@ enum hostproc_error hostproc_snapshot(struct hostproc_entry **out, size_t *count
  * a container operation -- an operator reaching for "kill" on a raw
  * pid already means "now." Refuses pid 1 and this daemon's own real
  * pid outright (killing either would crash or reboot the whole host,
- * on a real installed system where thincd runs as real PID 1) --
+ * on a real installed system where cixd runs as real PID 1) --
  * every other pid, including one that happens to belong to a running
  * container, is allowed (killing a container's own init pid this way
  * is exactly equivalent to the container crashing on its own; the

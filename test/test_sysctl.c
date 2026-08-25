@@ -42,7 +42,7 @@ static pid_t start_daemon(void)
 	static char data_dir_arg[PATH_MAX + 11];
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
-	dargv[0] = "build/thincd";
+	dargv[0] = "build/cixd";
 	dargv[1] = PORT_ARG;
 	dargv[2] = data_dir_arg;
 	dargv[3] = NULL;
@@ -53,8 +53,8 @@ static pid_t start_daemon(void)
 		return -1;
 	}
 	if (pid == 0) {
-		execve("build/thincd", dargv, environ);
-		perror("execve build/thincd");
+		execve("build/cixd", dargv, environ);
+		perror("execve build/cixd");
 		_exit(127);
 	}
 	return pid;
@@ -70,14 +70,14 @@ static int stop_daemon(pid_t pid)
 	return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
 }
 
-static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
+static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 {
 	int i;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			thinc_response_free(&r);
+		if (cix_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			cix_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -88,9 +88,9 @@ static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
 int main(void)
 {
 	pid_t daemon_pid;
-	struct thinc_client client;
+	struct cix_client client;
 	int ok = 1;
-	struct thinc_response r;
+	struct cix_response r;
 	char forward_value[64] = "";
 	char port_range_value[128] = "";
 
@@ -103,7 +103,7 @@ int main(void)
 		return 1;
 	}
 
-	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
+	cix_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
@@ -114,7 +114,7 @@ int main(void)
 
 	/* 1. GET a real, always-present single-value key. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/system/sysctl/net.ipv4.ip_forward", NULL, &r) != 0 ||
+	if (cix_client_request(&client, "GET", "/v1/system/sysctl/net.ipv4.ip_forward", NULL, &r) != 0 ||
 	    r.status != 200) {
 		fprintf(stderr, "FAIL: GET net.ipv4.ip_forward: expected 200, got %d\n", r.status);
 		ok = 0;
@@ -128,12 +128,12 @@ int main(void)
 			snprintf(forward_value, sizeof(forward_value), "%s", v);
 		}
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 2. GET a real, always-present multi-value (tuple) key -- proves
 	 * the array-splitting logic against real kernel state. */
 	memset(&r, 0, sizeof(r));
-	if (ok && (thinc_client_request(&client, "GET", "/v1/system/sysctl/net.ipv4.ip_local_port_range",
+	if (ok && (cix_client_request(&client, "GET", "/v1/system/sysctl/net.ipv4.ip_local_port_range",
 	                              NULL, &r) != 0 ||
 	           r.status != 200)) {
 		fprintf(stderr, "FAIL: GET net.ipv4.ip_local_port_range: expected 200, got %d\n", r.status);
@@ -157,7 +157,7 @@ int main(void)
 			}
 		}
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 3. PUT the same single-value key back with its own current
 	 * value (idempotent, real write) -- persists by default. */
@@ -166,19 +166,19 @@ int main(void)
 		char body[96];
 
 		snprintf(body, sizeof(body), "{\"value\":\"%s\"}", forward_value);
-		if (thinc_client_request(&client, "PUT", "/v1/system/sysctl/net.ipv4.ip_forward", body, &r) !=
+		if (cix_client_request(&client, "PUT", "/v1/system/sysctl/net.ipv4.ip_forward", body, &r) !=
 		        0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: PUT net.ipv4.ip_forward: expected 200, got %d\n", r.status);
 			ok = 0;
 		}
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 4. GET /v1/system/sysctl (collection) now shows exactly this
 	 * one persisted key. */
 	memset(&r, 0, sizeof(r));
-	if (ok && (thinc_client_request(&client, "GET", "/v1/system/sysctl", NULL, &r) != 0 ||
+	if (ok && (cix_client_request(&client, "GET", "/v1/system/sysctl", NULL, &r) != 0 ||
 	           r.status != 200)) {
 		fprintf(stderr, "FAIL: GET /v1/system/sysctl: expected 200, got %d\n", r.status);
 		ok = 0;
@@ -205,7 +205,7 @@ int main(void)
 			}
 		}
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 5. PUT the tuple key back as an array (its own current value,
 	 * still idempotent) with persist:false -- real write, but must
@@ -216,7 +216,7 @@ int main(void)
 
 		if (sscanf(port_range_value, "%31s %31s", lo, hi) == 2) {
 			snprintf(body, sizeof(body), "{\"value\":[\"%s\",\"%s\"],\"persist\":false}", lo, hi);
-			if (thinc_client_request(&client, "PUT", "/v1/system/sysctl/net.ipv4.ip_local_port_range",
+			if (cix_client_request(&client, "PUT", "/v1/system/sysctl/net.ipv4.ip_local_port_range",
 			                       body, &r) != 0 ||
 			    r.status != 200) {
 				fprintf(stderr, "FAIL: PUT net.ipv4.ip_local_port_range (array): expected 200, "
@@ -226,10 +226,10 @@ int main(void)
 			}
 		}
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (ok && (thinc_client_request(&client, "GET", "/v1/system/sysctl", NULL, &r) != 0 ||
+	if (ok && (cix_client_request(&client, "GET", "/v1/system/sysctl", NULL, &r) != 0 ||
 	           r.status != 200)) {
 		ok = 0;
 	} else if (ok) {
@@ -249,21 +249,21 @@ int main(void)
 			ok = 0;
 		}
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 6. DELETE the persisted (from step 3) entry -- removes it from
 	 * the collection, does not touch the live value. */
 	memset(&r, 0, sizeof(r));
-	if (ok && (thinc_client_request(&client, "DELETE", "/v1/system/sysctl/net.ipv4.ip_forward", NULL,
+	if (ok && (cix_client_request(&client, "DELETE", "/v1/system/sysctl/net.ipv4.ip_forward", NULL,
 	                              &r) != 0 ||
 	           r.status != 204)) {
 		fprintf(stderr, "FAIL: DELETE net.ipv4.ip_forward: expected 204, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (ok && (thinc_client_request(&client, "GET", "/v1/system/sysctl/net.ipv4.ip_forward", NULL, &r) !=
+	if (ok && (cix_client_request(&client, "GET", "/v1/system/sysctl/net.ipv4.ip_forward", NULL, &r) !=
 	               0 ||
 	           r.status != 200)) {
 		fprintf(stderr, "FAIL: GET net.ipv4.ip_forward after DELETE (live value): expected 200, "
@@ -278,45 +278,45 @@ int main(void)
 			ok = 0;
 		}
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 7. DELETE again -- no longer persisted, real 404. */
 	memset(&r, 0, sizeof(r));
-	if (ok && (thinc_client_request(&client, "DELETE", "/v1/system/sysctl/net.ipv4.ip_forward", NULL,
+	if (ok && (cix_client_request(&client, "DELETE", "/v1/system/sysctl/net.ipv4.ip_forward", NULL,
 	                              &r) != 0 ||
 	           r.status != 404)) {
 		fprintf(stderr, "FAIL: second DELETE net.ipv4.ip_forward: expected 404, got %d\n",
 		        r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 8. Error paths. */
 	memset(&r, 0, sizeof(r));
-	if (ok && (thinc_client_request(&client, "GET", "/v1/system/sysctl/thinc.test.nosuchkey.at.all",
+	if (ok && (cix_client_request(&client, "GET", "/v1/system/sysctl/cix.test.nosuchkey.at.all",
 	                              NULL, &r) != 0 ||
 	           r.status != 404)) {
 		fprintf(stderr, "FAIL: GET nonexistent key: expected 404, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (ok && (thinc_client_request(&client, "PUT", "/v1/system/sysctl/net.ipv4.ip_forward", "{}", &r) !=
+	if (ok && (cix_client_request(&client, "PUT", "/v1/system/sysctl/net.ipv4.ip_forward", "{}", &r) !=
 	               0 ||
 	           r.status != 400)) {
 		fprintf(stderr, "FAIL: PUT with no value: expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (ok && (thinc_client_request(&client, "GET", "/v1/system/sysctl/bad/key", NULL, &r) != 0 ||
+	if (ok && (cix_client_request(&client, "GET", "/v1/system/sysctl/bad/key", NULL, &r) != 0 ||
 	           r.status != 400)) {
 		fprintf(stderr, "FAIL: GET key containing '/': expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	if (ok)
 		printf("SYSCTL RESULT: PASS\n");

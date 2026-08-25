@@ -36,14 +36,14 @@ extern char **environ;
 
 static char g_data_dir[PATH_MAX];
 
-static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
+static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 {
 	int i;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			thinc_response_free(&r);
+		if (cix_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			cix_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -58,7 +58,7 @@ static pid_t start_daemon(void)
 	static char data_dir_arg[PATH_MAX + 11];
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
-	dargv[0] = "build/thincd";
+	dargv[0] = "build/cixd";
 	dargv[1] = "--port=7679";
 	dargv[2] = data_dir_arg;
 	dargv[3] = NULL;
@@ -69,8 +69,8 @@ static pid_t start_daemon(void)
 		return -1;
 	}
 	if (pid == 0) {
-		execve("build/thincd", dargv, environ);
-		perror("execve build/thincd");
+		execve("build/cixd", dargv, environ);
+		perror("execve build/cixd");
 		_exit(127);
 	}
 	return pid;
@@ -112,9 +112,9 @@ static int move_back_to_flat(const char *grouped_parent, const char *basename, c
 int main(void)
 {
 	pid_t daemon_pid;
-	struct thinc_client client;
+	struct cix_client client;
 	int ok = 1;
-	struct thinc_response r;
+	struct cix_response r;
 	char state_dir[PATH_MAX], flat_pki[PATH_MAX], grouped_pki[PATH_MAX];
 	char flat_site[PATH_MAX], grouped_site[PATH_MAX];
 	char cert_pem_before[8192] = { 0 };
@@ -131,7 +131,7 @@ int main(void)
 		test_data_dir_cleanup(g_data_dir);
 		return 1;
 	}
-	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
+	cix_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon (round 1) never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
@@ -141,7 +141,7 @@ int main(void)
 	}
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/pki/ca", "{\"common_name\":\"Upgrade Test CA\"}", &r) != 0 ||
+	if (cix_client_request(&client, "POST", "/v1/pki/ca", "{\"common_name\":\"Upgrade Test CA\"}", &r) != 0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: POST /v1/pki/ca, status=%d\n", r.status);
 		ok = 0;
@@ -156,17 +156,17 @@ int main(void)
 			snprintf(cert_pem_before, sizeof(cert_pem_before), "%s", pem);
 		}
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (ok && (thinc_client_request(&client, "PUT", "/v1/system/site",
+	if (ok && (cix_client_request(&client, "PUT", "/v1/system/site",
 	                              "{\"instance_name\":\"upgrade-test-box\",\"domain_suffix\":\"internal\"}", &r) !=
 	               0 ||
 	           r.status != 200)) {
 		fprintf(stderr, "FAIL: PUT /v1/system/site, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	snprintf(instance_name_before, sizeof(instance_name_before), "upgrade-test-box");
 
 	if (stop_daemon(daemon_pid) != 0) {
@@ -230,7 +230,7 @@ int main(void)
 	/* The real proof: the daemon is genuinely reading from the new
 	 * location, not just leaving a file sitting there unread. */
 	memset(&r, 0, sizeof(r));
-	if (ok && (thinc_client_request(&client, "GET", "/v1/pki/ca", NULL, &r) != 0 || r.status != 200)) {
+	if (ok && (cix_client_request(&client, "GET", "/v1/pki/ca", NULL, &r) != 0 || r.status != 200)) {
 		fprintf(stderr, "FAIL: GET /v1/pki/ca after migration, status=%d\n", r.status);
 		ok = 0;
 	}
@@ -242,10 +242,10 @@ int main(void)
 			ok = 0;
 		}
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (ok && (thinc_client_request(&client, "GET", "/v1/system/site", NULL, &r) != 0 || r.status != 200)) {
+	if (ok && (cix_client_request(&client, "GET", "/v1/system/site", NULL, &r) != 0 || r.status != 200)) {
 		fprintf(stderr, "FAIL: GET /v1/system/site after migration, status=%d\n", r.status);
 		ok = 0;
 	}
@@ -257,7 +257,7 @@ int main(void)
 			ok = 0;
 		}
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	if (ok)
 		printf("LAYOUT UPGRADE RESULT: PASS\n");

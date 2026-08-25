@@ -38,11 +38,11 @@ SSL *tls_lookup(int fd);
  * (retrying on WANT_READ/WANT_WRITE -- fd is always blocking-mode by
  * the time these are called, same as the existing http_set_blocking()
  * convention this daemon already applies before every plain-fd
- * response write) when fd is currently TLS-wrapped, or thinc_write_all()
+ * response write) when fd is currently TLS-wrapped, or cix_write_all()
  * otherwise. The one place either case is decided, reused by
  * http_write_response() and the WebSocket frame sender rather than
  * each reimplementing the same branch. Returns 0 on success, -1 on
- * any failure -- same contract as thinc_write_all().
+ * any failure -- same contract as cix_write_all().
  */
 int tls_write_all(int fd, const void *buf, size_t n);
 

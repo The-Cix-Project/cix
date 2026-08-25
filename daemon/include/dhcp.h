@@ -35,7 +35,7 @@
  * Redundancy is SPLIT SCOPE, because dnsmasq implements no failover
  * protocol -- there is no equivalent of ISC dhcpd's peer relationship
  * for it to join, and two instances share no lease database. Each range
- * names the servers that serve it, and thinC divides it into one
+ * names the servers that serve it, and Cix divides it into one
  * disjoint slice per named server: all of them answer, a client takes
  * whichever offer reaches it first, and handing one address to two
  * machines is impossible because no two servers hold it. Any one of

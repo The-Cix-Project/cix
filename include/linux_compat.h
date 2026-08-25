@@ -43,12 +43,12 @@
 #define AT_RECURSIVE 0x8000
 #endif
 
-static inline int thinc_open_tree(int dfd, const char *path, unsigned int flags)
+static inline int cix_open_tree(int dfd, const char *path, unsigned int flags)
 {
 	return (int)syscall(SYS_open_tree, dfd, path, flags);
 }
 
-static inline int thinc_move_mount(int from_dfd, const char *from_path, int to_dfd,
+static inline int cix_move_mount(int from_dfd, const char *from_path, int to_dfd,
                                 const char *to_path, unsigned int flags)
 {
 	return (int)syscall(SYS_move_mount, from_dfd, from_path, to_dfd, to_path, flags);
@@ -152,24 +152,24 @@ static inline int sys_pidfd_open(pid_t pid, unsigned int flags)
  * No #pragma pack needed: every field is a naturally-aligned uint32_t
  * or uint64_t, same posture as struct clone_args.
  */
-enum thinc_bpf_cmd {
-	THINC_BPF_PROG_LOAD = 5,
-	THINC_BPF_PROG_ATTACH = 8,
-	THINC_BPF_PROG_DETACH = 9,
+enum cix_bpf_cmd {
+	CIX_BPF_PROG_LOAD = 5,
+	CIX_BPF_PROG_ATTACH = 8,
+	CIX_BPF_PROG_DETACH = 9,
 };
 
-enum thinc_bpf_prog_type {
-	THINC_BPF_PROG_TYPE_CGROUP_DEVICE = 15,
+enum cix_bpf_prog_type {
+	CIX_BPF_PROG_TYPE_CGROUP_DEVICE = 15,
 };
 
-enum thinc_bpf_attach_type {
-	THINC_BPF_CGROUP_DEVICE = 6,
+enum cix_bpf_attach_type {
+	CIX_BPF_CGROUP_DEVICE = 6,
 };
 
-struct thinc_bpf_prog_load_attr {
+struct cix_bpf_prog_load_attr {
 	uint32_t prog_type;
 	uint32_t insn_cnt;
-	uint64_t insns;			/* (uintptr_t) struct thinc_bpf_insn[] */
+	uint64_t insns;			/* (uintptr_t) struct cix_bpf_insn[] */
 	uint64_t license;		/* (uintptr_t) NUL-terminated string */
 	uint32_t log_level;
 	uint32_t log_size;
@@ -178,13 +178,13 @@ struct thinc_bpf_prog_load_attr {
 	uint32_t prog_flags;
 	char prog_name[16];		/* BPF_OBJ_NAME_LEN */
 	uint32_t prog_ifindex;
-	uint32_t expected_attach_type;	/* THINC_BPF_CGROUP_DEVICE */
+	uint32_t expected_attach_type;	/* CIX_BPF_CGROUP_DEVICE */
 };
 
-struct thinc_bpf_prog_attach_attr {
+struct cix_bpf_prog_attach_attr {
 	uint32_t target_fd;		/* the cgroup's O_PATH fd */
-	uint32_t attach_bpf_fd;	/* fd returned by THINC_BPF_PROG_LOAD */
-	uint32_t attach_type;		/* THINC_BPF_CGROUP_DEVICE */
+	uint32_t attach_bpf_fd;	/* fd returned by CIX_BPF_PROG_LOAD */
+	uint32_t attach_type;		/* CIX_BPF_CGROUP_DEVICE */
 	uint32_t attach_flags;		/* 0: one program per cgroup leaf,
 					 * every container owns its leaf
 					 * 1:1, so there's never a sibling
@@ -196,7 +196,7 @@ struct thinc_bpf_prog_attach_attr {
  * struct bpf_insn (<linux/bpf.h>) packs dst_reg/src_reg into a single
  * byte via two 4-bit C bitfields. This project has never trusted
  * TCC's bitfield layout for a syscall-ABI struct (see the
- * thinc_epoll_event note below -- TCC already silently mishandles
+ * cix_epoll_event note below -- TCC already silently mishandles
  * __attribute__((packed)) on a struct of our own writing), so the
  * combined register byte is built by hand with plain bit ops
  * (dst_reg in the low nibble, src_reg in the high nibble, matching
@@ -205,7 +205,7 @@ struct thinc_bpf_prog_attach_attr {
  * compiler could disagree on -- same "plain fields, no pragma needed"
  * posture as struct clone_args.
  */
-struct thinc_bpf_insn {
+struct cix_bpf_insn {
 	uint8_t code;
 	uint8_t regs;	/* (dst_reg & 0xf) | ((src_reg & 0xf) << 4) */
 	int16_t off;
@@ -236,24 +236,24 @@ static inline long sys_bpf(int cmd, void *attr, size_t size)
  * `struct epoll_event *` at the call site is safe.
  */
 #pragma pack(push, 1)
-union thinc_epoll_data {
+union cix_epoll_data {
 	void *ptr;
 	int fd;
 	uint32_t u32;
 	uint64_t u64;
 };
-struct thinc_epoll_event {
+struct cix_epoll_event {
 	uint32_t events;
-	union thinc_epoll_data data;
+	union cix_epoll_data data;
 };
 #pragma pack(pop)
 
-static inline int thinc_epoll_ctl(int epfd, int op, int fd, struct thinc_epoll_event *ev)
+static inline int cix_epoll_ctl(int epfd, int op, int fd, struct cix_epoll_event *ev)
 {
 	return epoll_ctl(epfd, op, fd, (struct epoll_event *)ev);
 }
 
-static inline int thinc_epoll_wait(int epfd, struct thinc_epoll_event *events, int maxevents,
+static inline int cix_epoll_wait(int epfd, struct cix_epoll_event *events, int maxevents,
                                  int timeout)
 {
 	return epoll_wait(epfd, (struct epoll_event *)events, maxevents, timeout);
@@ -270,7 +270,7 @@ static inline int thinc_epoll_wait(int epfd, struct thinc_epoll_event *events, i
  * clone3/epoll_event). ABI-stable, taken verbatim from the real kernel
  * header.
  */
-struct thinc_fsxattr {
+struct cix_fsxattr {
 	uint32_t fsx_xflags;
 	uint32_t fsx_extsize;
 	uint32_t fsx_nextents;
@@ -279,10 +279,10 @@ struct thinc_fsxattr {
 	unsigned char fsx_pad[8];
 };
 
-#define THINC_FS_XFLAG_PROJINHERIT 0x00000200
+#define CIX_FS_XFLAG_PROJINHERIT 0x00000200
 
-#define THINC_FS_IOC_FSGETXATTR 0x801c581f
-#define THINC_FS_IOC_FSSETXATTR 0x401c5820
+#define CIX_FS_IOC_FSGETXATTR 0x801c581f
+#define CIX_FS_IOC_FSSETXATTR 0x401c5820
 
 /*
  * Real btrfs qgroup-based quota enforcement (task #678, ADR-0103) --
@@ -298,18 +298,18 @@ struct thinc_fsxattr {
  * checkout's own build environment) and the ioctl numbers independently
  * re-derived by hand from the standard _IOC(dir,type,nr,size) encoding
  * as a cross-check -- both agree, and the same derivation correctly
- * reproduces THINC_FS_IOC_FSGETXATTR/FSSETXATTR above byte for byte,
+ * reproduces CIX_FS_IOC_FSGETXATTR/FSSETXATTR above byte for byte,
  * confirming the encoding is right.
  */
-#define THINC_BTRFS_IOCTL_MAGIC 0x94
-#define THINC_BTRFS_PATH_NAME_MAX 4087
+#define CIX_BTRFS_IOCTL_MAGIC 0x94
+#define CIX_BTRFS_PATH_NAME_MAX 4087
 
-struct thinc_btrfs_ioctl_vol_args {
+struct cix_btrfs_ioctl_vol_args {
 	int64_t fd;
-	char name[THINC_BTRFS_PATH_NAME_MAX + 1];
+	char name[CIX_BTRFS_PATH_NAME_MAX + 1];
 };
 
-struct thinc_btrfs_qgroup_limit {
+struct cix_btrfs_qgroup_limit {
 	uint64_t flags;
 	uint64_t max_rfer;
 	uint64_t max_excl;
@@ -317,32 +317,32 @@ struct thinc_btrfs_qgroup_limit {
 	uint64_t rsv_excl;
 };
 
-struct thinc_btrfs_ioctl_qgroup_limit_args {
+struct cix_btrfs_ioctl_qgroup_limit_args {
 	uint64_t qgroupid;
-	struct thinc_btrfs_qgroup_limit lim;
+	struct cix_btrfs_qgroup_limit lim;
 };
 
-struct thinc_btrfs_ioctl_quota_ctl_args {
+struct cix_btrfs_ioctl_quota_ctl_args {
 	uint64_t cmd;
 	uint64_t status;
 };
 
-#define THINC_BTRFS_QGROUP_LIMIT_MAX_RFER (1ULL << 0)
-#define THINC_BTRFS_QGROUP_LIMIT_MAX_EXCL (1ULL << 1)
-#define THINC_BTRFS_QUOTA_CTL_ENABLE 1
+#define CIX_BTRFS_QGROUP_LIMIT_MAX_RFER (1ULL << 0)
+#define CIX_BTRFS_QGROUP_LIMIT_MAX_EXCL (1ULL << 1)
+#define CIX_BTRFS_QUOTA_CTL_ENABLE 1
 
-/* _IOW(0x94, 14, struct thinc_btrfs_ioctl_vol_args) -- sizeof() 4096 */
-#define THINC_BTRFS_IOC_SUBVOL_CREATE 0x5000940e
-/* _IOWR(0x94, 40, struct thinc_btrfs_ioctl_quota_ctl_args) -- sizeof() 16 */
-#define THINC_BTRFS_IOC_QUOTA_CTL 0xc0109428
-/* _IOR(0x94, 43, struct thinc_btrfs_ioctl_qgroup_limit_args) -- sizeof() 48 */
-#define THINC_BTRFS_IOC_QGROUP_LIMIT 0x8030942b
+/* _IOW(0x94, 14, struct cix_btrfs_ioctl_vol_args) -- sizeof() 4096 */
+#define CIX_BTRFS_IOC_SUBVOL_CREATE 0x5000940e
+/* _IOWR(0x94, 40, struct cix_btrfs_ioctl_quota_ctl_args) -- sizeof() 16 */
+#define CIX_BTRFS_IOC_QUOTA_CTL 0xc0109428
+/* _IOR(0x94, 43, struct cix_btrfs_ioctl_qgroup_limit_args) -- sizeof() 48 */
+#define CIX_BTRFS_IOC_QGROUP_LIMIT 0x8030942b
 
 /* statfs(2) f_type value for a btrfs filesystem (statfs.h's own
  * BTRFS_SUPER_MAGIC) -- no header clash risk for this one (it's a
  * bare integer constant, not a struct/ioctl-number pair), but kept
  * alongside the rest of this project's own btrfs constants for
  * locality rather than pulled from a system header inconsistently. */
-#define THINC_BTRFS_SUPER_MAGIC 0x9123683e
+#define CIX_BTRFS_SUPER_MAGIC 0x9123683e
 
 #endif /* LINUX_COMPAT_H */

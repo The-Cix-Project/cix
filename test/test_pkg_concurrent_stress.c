@@ -70,7 +70,7 @@ static pid_t start_daemon(const char *data_dir, int port)
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", data_dir);
 	snprintf(port_arg, sizeof(port_arg), "--port=%d", port);
-	dargv[0] = "build/thincd";
+	dargv[0] = "build/cixd";
 	dargv[1] = port_arg;
 	dargv[2] = data_dir_arg;
 	dargv[3] = NULL;
@@ -81,8 +81,8 @@ static pid_t start_daemon(const char *data_dir, int port)
 		return -1;
 	}
 	if (pid == 0) {
-		execve("build/thincd", dargv, environ);
-		perror("execve build/thincd");
+		execve("build/cixd", dargv, environ);
+		perror("execve build/cixd");
 		_exit(127);
 	}
 	return pid;
@@ -98,14 +98,14 @@ static int stop_daemon(pid_t pid)
 	return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
 }
 
-static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
+static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 {
 	int i;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			thinc_response_free(&r);
+		if (cix_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			cix_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -207,7 +207,7 @@ static int write_recipe(const char *pkg_state_dir, const char *name, const char 
 	return 0;
 }
 
-static int poll_pkg_state(const struct thinc_client *c, const char *name, char *out_state,
+static int poll_pkg_state(const struct cix_client *c, const char *name, char *out_state,
                            size_t out_state_size, int max_attempts)
 {
 	int i;
@@ -215,21 +215,21 @@ static int poll_pkg_state(const struct thinc_client *c, const char *name, char *
 
 	snprintf(path, sizeof(path), "/v1/pkg/%s", name);
 	for (i = 0; i < max_attempts; i++) {
-		struct thinc_response r;
+		struct cix_response r;
 		const char *state;
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(c, "GET", path, NULL, &r) != 0 || r.status != 200) {
-			thinc_response_free(&r);
+		if (cix_client_request(c, "GET", path, NULL, &r) != 0 || r.status != 200) {
+			cix_response_free(&r);
 			return -1;
 		}
 		state = json_str_field(r.json, "state");
 		if (state == NULL) {
-			thinc_response_free(&r);
+			cix_response_free(&r);
 			return -1;
 		}
 		snprintf(out_state, out_state_size, "%s", state);
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		if (strcmp(out_state, "fetching") != 0 && strcmp(out_state, "building") != 0)
 			return 0;
 		usleep(300000);
@@ -239,7 +239,7 @@ static int poll_pkg_state(const struct thinc_client *c, const char *name, char *
 
 int main(void)
 {
-	char scratch_dir[] = "/tmp/thinc_test_pkgstress_XXXXXX";
+	char scratch_dir[] = "/tmp/cix_test_pkgstress_XXXXXX";
 	char data_dir_a[PATH_MAX], data_dir_b[PATH_MAX];
 	char pkg_state_a[PATH_MAX], pkg_state_b[PATH_MAX];
 	char images_base_a[PATH_MAX], images_base_b[PATH_MAX];
@@ -247,8 +247,8 @@ int main(void)
 	char tarball_path[N_PACKAGES + 1][512];
 	char sha256[N_PACKAGES + 1][128];
 	pid_t daemon_a, daemon_b;
-	struct thinc_client client_a, client_b;
-	struct thinc_response r;
+	struct cix_client client_a, client_b;
+	struct cix_response r;
 	char version_a[128], version_b[128];
 	int i;
 
@@ -286,13 +286,13 @@ int main(void)
 		test_data_dir_cleanup(data_dir_a);
 		return 1;
 	}
-	thinc_client_init(&client_a, "127.0.0.1", PORT_A);
+	cix_client_init(&client_a, "127.0.0.1", PORT_A);
 	CHECK(wait_for_daemon(&client_a, 50) == 0, "daemon A became healthy");
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client_a, "POST", "/v1/pkg/bootstrap", NULL, &r) != 0 || r.status != 204)
+	if (cix_client_request(&client_a, "POST", "/v1/pkg/bootstrap", NULL, &r) != 0 || r.status != 204)
 		CHECK(0, "POST /v1/pkg/bootstrap (daemon A)");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* Pin the concurrency ceiling to exactly N -- deterministic, and
 	 * proves the config genuinely governs how many of these N+1
@@ -303,10 +303,10 @@ int main(void)
 
 		snprintf(body, sizeof(body), "{\"max_concurrent_jobs\":%d}", N_PACKAGES);
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client_a, "PUT", "/v1/system/pkg-build-config", body, &r) != 0 ||
+		if (cix_client_request(&client_a, "PUT", "/v1/system/pkg-build-config", body, &r) != 0 ||
 		    r.status != 200)
 			CHECK(0, "PUT pkg-build-config max_concurrent_jobs=N (daemon A)");
-		thinc_response_free(&r);
+		cix_response_free(&r);
 	}
 
 	/* Fire N installs back to back, no wait between any of them --
@@ -317,12 +317,12 @@ int main(void)
 
 		snprintf(body, sizeof(body), "{\"name\":\"%s\"}", names[i]);
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client_a, "POST", "/v1/pkg/install", body, &r) != 0 ||
+		if (cix_client_request(&client_a, "POST", "/v1/pkg/install", body, &r) != 0 ||
 		    r.status != 202) {
 			fprintf(stderr, "FAIL: POST install %s (concurrent) status=%d\n", names[i], r.status);
 			g_failures++;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 	}
 
 	/* The (N+1)th, while all N slots are genuinely busy -> 409. */
@@ -331,13 +331,13 @@ int main(void)
 
 		snprintf(body, sizeof(body), "{\"name\":\"%s\"}", names[N_PACKAGES]);
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client_a, "POST", "/v1/pkg/install", body, &r) != 0 ||
+		if (cix_client_request(&client_a, "POST", "/v1/pkg/install", body, &r) != 0 ||
 		    r.status != 409) {
 			fprintf(stderr, "FAIL: POST install %s (N+1th, all slots busy) expected 409, got %d\n",
 			        names[N_PACKAGES], r.status);
 			g_failures++;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 	}
 
 	for (i = 0; i < N_PACKAGES; i++) {
@@ -384,13 +384,13 @@ int main(void)
 		test_data_dir_cleanup(data_dir_b);
 		return 1;
 	}
-	thinc_client_init(&client_b, "127.0.0.1", PORT_B);
+	cix_client_init(&client_b, "127.0.0.1", PORT_B);
 	CHECK(wait_for_daemon(&client_b, 50) == 0, "daemon B became healthy");
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client_b, "POST", "/v1/pkg/bootstrap", NULL, &r) != 0 || r.status != 204)
+	if (cix_client_request(&client_b, "POST", "/v1/pkg/bootstrap", NULL, &r) != 0 || r.status != 204)
 		CHECK(0, "POST /v1/pkg/bootstrap (daemon B)");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	for (i = 0; i < N_PACKAGES; i++) {
 		char body[64];
@@ -398,12 +398,12 @@ int main(void)
 
 		snprintf(body, sizeof(body), "{\"name\":\"%s\"}", names[i]);
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client_b, "POST", "/v1/pkg/install", body, &r) != 0 ||
+		if (cix_client_request(&client_b, "POST", "/v1/pkg/install", body, &r) != 0 ||
 		    r.status != 202) {
 			fprintf(stderr, "FAIL: POST install %s (serial) status=%d\n", names[i], r.status);
 			g_failures++;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		if (poll_pkg_state(&client_b, names[i], state, sizeof(state), 120) != 0 ||
 		    strcmp(state, "installed") != 0) {

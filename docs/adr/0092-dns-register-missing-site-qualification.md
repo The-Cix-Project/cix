@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-Raised directly by the user, noticing `dns-1`/`dns-2` (auto-registered via `--dns-register` at container-create time) had no domain suffix in `GET /v1/dns/records` (`"dns-1"`, `"dns-2"`) while every manually-created record (`thinc`, `ldapsvc`) showed the full site-qualified form (`thinc.uk.home.arpa`, `ldapsvc.uk.home.arpa`) -- asking directly whether the bare form was intentional.
+Raised directly by the user, noticing `dns-1`/`dns-2` (auto-registered via `--dns-register` at container-create time) had no domain suffix in `GET /v1/dns/records` (`"dns-1"`, `"dns-2"`) while every manually-created record (`cix`, `ldapsvc`) showed the full site-qualified form (`cix.uk.home.arpa`, `ldapsvc.uk.home.arpa`) -- asking directly whether the bare form was intentional.
 
 It was not. `daemon/src/main.c`'s manual `dns record create` handler (`handle_dns_record_create()`) has always called `siteconfig_qualify()` (ADR-0052: a bare, dot-less label gets the site's own default suffix appended server-side) before `dns_record_create()`. The container-create handler's own `dns_register` block, one function away in the same file, called `dns_record_create(entry->name, ...)` directly -- skipping that exact call, for no documented reason; a real, previously-undiscovered inconsistency, not a deliberate design choice, confirmed by grepping both call sites side by side.
 

@@ -6,7 +6,7 @@
  * than by trusting the write.
  *
  * The serving container here is an ordinary test child, not a real
- * dnsmasq: what is being proved is that thinC renders and delivers the
+ * dnsmasq: what is being proved is that Cix renders and delivers the
  * right bytes to the right path. Whether dnsmasq then hands out an
  * address is dnsmasq's own behaviour, verified on real hardware where
  * there is a wire and a client to hand one to.
@@ -31,14 +31,14 @@ static char g_data_dir[PATH_MAX];
 static char g_image_root[PATH_MAX];
 static int ok = 1;
 
-static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
+static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 {
 	int i;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			thinc_response_free(&r);
+		if (cix_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			cix_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -58,7 +58,7 @@ static pid_t start_daemon(void)
 	static char data_dir_arg[PATH_MAX + 11];
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
-	dargv[0] = "build/thincd";
+	dargv[0] = "build/cixd";
 	dargv[1] = PORT_ARG;
 	dargv[2] = data_dir_arg;
 	dargv[3] = NULL;
@@ -69,8 +69,8 @@ static pid_t start_daemon(void)
 		return -1;
 	}
 	if (pid == 0) {
-		execve("build/thincd", dargv, environ);
-		perror("execve build/thincd");
+		execve("build/cixd", dargv, environ);
+		perror("execve build/cixd");
 		_exit(127);
 	}
 	return pid;
@@ -79,36 +79,36 @@ static pid_t start_daemon(void)
 /* status-only helper: most of this test is "does this request get the
  * answer it should", and spelling that out eleven times would bury the
  * few places that check content. */
-static void expect(struct thinc_client *c, const char *method, const char *path, const char *body,
+static void expect(struct cix_client *c, const char *method, const char *path, const char *body,
                     int want_status, const char *what)
 {
-	struct thinc_response r;
+	struct cix_response r;
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(c, method, path, body, &r) != 0 || r.status != want_status) {
+	if (cix_client_request(c, method, path, body, &r) != 0 || r.status != want_status) {
 		fprintf(stderr, "FAIL: %s -- expected %d, got %d\n", what, want_status, r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 }
 
 /* Bounded poll for a file inside a container to contain `want`.
  * Everything that changes a range restarts the serving containers on a
  * jittered timer, so a single read races the recreate -- what matters
  * is that the content arrives, not how fast. */
-static int wait_for_file(struct thinc_client *c, const char *path, const char *want)
+static int wait_for_file(struct cix_client *c, const char *path, const char *want)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	int i;
 
 	for (i = 0; i < 150; i++) {
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(c, "GET", path, NULL, &r) == 0 && r.status == 200 &&
+		if (cix_client_request(c, "GET", path, NULL, &r) == 0 && r.status == 200 &&
 		    r.body != NULL && strstr(r.body, want) != NULL) {
-			thinc_response_free(&r);
+			cix_response_free(&r);
 			return 1;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		usleep(200 * 1000);
 	}
 	ok = 0;
@@ -118,8 +118,8 @@ static int wait_for_file(struct thinc_client *c, const char *path, const char *w
 int main(void)
 {
 	pid_t daemon_pid;
-	struct thinc_client client;
-	struct thinc_response r;
+	struct cix_client client;
+	struct cix_response r;
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
@@ -142,7 +142,7 @@ int main(void)
 	daemon_pid = start_daemon();
 	if (daemon_pid < 0)
 		return 1;
-	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
+	cix_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 100) != 0) {
 		fprintf(stderr, "FAIL: daemon did not come up\n");
 		kill(daemon_pid, SIGKILL);
@@ -160,14 +160,14 @@ int main(void)
 	 * rather than a 404 -- and it reports the same default lease a PUT
 	 * would start from, so reading and enabling agree on the number. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/dhcp/networks/dhcplab", NULL, &r) != 0 ||
+	if (cix_client_request(&client, "GET", "/v1/dhcp/networks/dhcplab", NULL, &r) != 0 ||
 	    r.status != 200 || json_object_get(r.json, "enabled") == NULL ||
 	    json_object_get(r.json, "enabled")->u.boolean ||
 	    (long)json_as_number(json_object_get(r.json, "lease_seconds")) != 3600) {
 		fprintf(stderr, "FAIL: an unconfigured network is not reported as DHCP-off\n");
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	expect(&client, "GET", "/v1/dhcp/networks/nosuchnet", NULL, 404,
 	        "DHCP config of an unknown network");
@@ -247,7 +247,7 @@ int main(void)
 	/* The two slices are reported, adjacent, and cover the whole range
 	 * with nothing shared: 101 addresses over two servers is 51 + 50. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/dhcp/networks/dhcplab", NULL, &r) != 0 ||
+	if (cix_client_request(&client, "GET", "/v1/dhcp/networks/dhcplab", NULL, &r) != 0 ||
 	    r.status != 200) {
 		fprintf(stderr, "FAIL: GET the split, status=%d\n", r.status);
 		ok = 0;
@@ -272,7 +272,7 @@ int main(void)
 			}
 		}
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* And each server's own rendered conf carries only its own slice --
 	 * the split is real in the file dnsmasq reads, not just in the
@@ -281,14 +281,14 @@ int main(void)
 	                    "dhcp-range=172.30.7.151,172.30.7.200,3600s"))
 		fprintf(stderr, "FAIL: the second server did not get its own slice\n");
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET",
+	if (cix_client_request(&client, "GET",
 	                       "/v1/containers/dhcpsrv2/files?path=/etc/dnsmasq-dhcp.conf", NULL,
 	                       &r) == 0 && r.status == 200 && r.body != NULL &&
 	    strstr(r.body, "172.30.7.100,") != NULL) {
 		fprintf(stderr, "FAIL: the second server also carries the first's slice\n");
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/*
 	 * A registered DNS server on a DIFFERENT network gets none of this
@@ -315,23 +315,23 @@ int main(void)
 	        "\"servers\":[\"dhcpsrv\",\"dhcpelsewhere\"]}",
 	        400, "naming a server that is not on this network");
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET",
+	if (cix_client_request(&client, "GET",
 	                       "/v1/containers/dhcpelsewhere/files?path=/etc/dnsmasq-dhcp.conf", NULL,
 	                       &r) == 0 && r.status == 200 && r.body != NULL &&
 	    strstr(r.body, "dhcp-range=") != NULL) {
 		fprintf(stderr, "FAIL: a server no range names was given one anyway\n");
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	/* And it did not change the split on the network it is not on. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/dhcp/networks/dhcplab", NULL, &r) != 0 ||
+	if (cix_client_request(&client, "GET", "/v1/dhcp/networks/dhcplab", NULL, &r) != 0 ||
 	    r.status != 200 || json_object_get(r.json, "slices") == NULL ||
 	    json_object_get(r.json, "slices")->u.array.count != 2) {
 		fprintf(stderr, "FAIL: an unrelated server changed this network's split\n");
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	expect(&client, "DELETE", "/v1/dhcp/servers/dhcpelsewhere", NULL, 204, "unregister it");
 	expect(&client, "DELETE", "/v1/containers/dhcpelsewhere", NULL, 204, "remove it");
 
@@ -371,12 +371,12 @@ int main(void)
 		 * before asking for it back. */
 		for (i = 0; i < 60; i++) {
 			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "GET", "/v1/containers/dhcpsrv", NULL, &r) == 0 &&
+			if (cix_client_request(&client, "GET", "/v1/containers/dhcpsrv", NULL, &r) == 0 &&
 			    r.status == 404) {
-				thinc_response_free(&r);
+				cix_response_free(&r);
 				break;
 			}
-			thinc_response_free(&r);
+			cix_response_free(&r);
 			usleep(200 * 1000);
 		}
 	}
@@ -386,14 +386,14 @@ int main(void)
 
 		for (i = 0; i < 60; i++) {
 			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "GET",
+			if (cix_client_request(&client, "GET",
 			                       "/v1/containers/dhcpsrv/files?path=/etc/dnsmasq-dhcp.conf",
 			                       NULL, &r) == 0 && r.status == 200 && r.body != NULL &&
 			    strstr(r.body, "dhcp-range=172.30.7.100,172.30.7.150,3600s") != NULL) {
-				thinc_response_free(&r);
+				cix_response_free(&r);
 				break;
 			}
-			thinc_response_free(&r);
+			cix_response_free(&r);
 			usleep(200 * 1000);
 		}
 		if (i == 60) {
@@ -407,13 +407,13 @@ int main(void)
 	/* 6. Leases come from the server, so with no lease file there are
 	 * simply none -- an empty list, not an error. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/dhcp/leases", NULL, &r) != 0 ||
+	if (cix_client_request(&client, "GET", "/v1/dhcp/leases", NULL, &r) != 0 ||
 	    r.status != 200 || json_object_get(r.json, "leases") == NULL ||
 	    json_object_get(r.json, "leases")->type != JSON_ARRAY) {
 		fprintf(stderr, "FAIL: GET leases, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 7. A reservation removed is a reservation gone from the file the
 	 * server reads, not just from our own list. */
@@ -427,14 +427,14 @@ int main(void)
 		 * still coming up lands once it is up. */
 		for (i = 0; i < 60; i++) {
 			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "GET",
+			if (cix_client_request(&client, "GET",
 			                       "/v1/containers/dhcpsrv/files?path=/etc/dnsmasq-dhcp-hosts",
 			                       NULL, &r) == 0 && r.status == 200 && r.body != NULL &&
 			    strstr(r.body, "aa:bb:cc:dd:ee:01") == NULL) {
-				thinc_response_free(&r);
+				cix_response_free(&r);
 				break;
 			}
-			thinc_response_free(&r);
+			cix_response_free(&r);
 			usleep(200 * 1000);
 		}
 		if (i == 60) {
@@ -465,12 +465,12 @@ int main(void)
 		for (g = 0; g < sizeof(gone) / sizeof(gone[0]); g++) {
 			for (i = 0; i < 50; i++) {
 				memset(&r, 0, sizeof(r));
-				if (thinc_client_request(&client, "GET", gone[g], NULL, &r) == 0 &&
+				if (cix_client_request(&client, "GET", gone[g], NULL, &r) == 0 &&
 				    r.status == 404) {
-					thinc_response_free(&r);
+					cix_response_free(&r);
 					break;
 				}
-				thinc_response_free(&r);
+				cix_response_free(&r);
 				usleep(100 * 1000);
 			}
 		}

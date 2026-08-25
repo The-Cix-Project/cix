@@ -6,7 +6,7 @@
 /*
  * Issue #24: the installed system's own boot console.
  *
- * An installed thinC host boots through systemd-boot, and every loader
+ * An installed Cix host boots through systemd-boot, and every loader
  * entry's `options` line was hardcoded to `console=tty0 console=ttyS0`
  * -- written that way by the installer, and rewritten that way by every
  * A/B update. That is a reasonable default and a poor one to be stuck

@@ -104,7 +104,7 @@ extern char **environ;
 #define DEFAULT_PORT 80
 #define DEFAULT_BIND "127.0.0.1"
 #define DEFAULT_WEB_ROOT "web"
-#define DEFAULT_BASE_DIR "/var/lib/thinc"
+#define DEFAULT_BASE_DIR "/var/lib/cix"
 /*
  * Runtime-overridable via --data-dir=PATH (default DEFAULT_BASE_DIR,
  * unchanged from every prior release). Every subsystem already takes
@@ -117,7 +117,7 @@ extern char **environ;
  * Exists because this project's own test suite has zero isolation
  * from a live daemon sharing the same default path -- confirmed the
  * hard way (twice, same session): running the test suite against a
- * host that also has a real thincd on default paths silently wipes
+ * host that also has a real cixd on default paths silently wipes
  * that daemon's container/network/DNS/PKI state and any image content
  * package installs had built, because every test's own reset_state()
  * resets these exact same files. --data-dir= lets tests point
@@ -199,16 +199,16 @@ static char QUOTAMAP_STATE_PATH[PATH_MAX];
  * Where POST /v1/system/iso (ADR-0064) looks for the Secure Boot
  * signing key pair and writes its own output -- both new with this
  * mechanism, since building a *new* installer ISO server-side is the
- * first time thincd itself, rather than a dev machine's own manual
+ * first time cixd itself, rather than a dev machine's own manual
  * mkinstalleriso invocation, has ever needed either. SIGNING_KEYS_DIR
  * is deliberately operator-populated out of band (never fetched,
- * generated, or copied here by thincd itself, and never staged onto
+ * generated, or copied here by cixd itself, and never staged onto
  * any container image or target-disk install) -- the same real
  * security posture image/keys/ already has in this repo: a release-
  * signing private key must never propagate onto every deployed box,
  * only the specific build/release instance actually cutting installer
  * media. A box with nothing at SIGNING_KEYS_DIR simply can't serve
- * this endpoint, exactly like `pkg hostbuild thinc` can't complete
+ * this endpoint, exactly like `pkg hostbuild cix` can't complete
  * without a real git token -- a real, environment-specific
  * precondition, not a gap.
  */
@@ -226,7 +226,7 @@ static char PKGBUILD_TOOLCHAIN_FETCH_PATH[PATH_MAX];
 static char SWAP_DIR[PATH_MAX];
 static char SWAP_FILE_PATH[PATH_MAX];
 static char SWAP_STATE_PATH[PATH_MAX];
-/* Consolidated log store (kernel dmesg + thincd's own diagnostics +
+/* Consolidated log store (kernel dmesg + cixd's own diagnostics +
  * a per-request audit trail, ADR-0070) -- its own subdirectory,
  * matching every other subsystem's "own directory under the base
  * data dir" convention (PKI_DIR/PKG_DIR/SWAP_DIR above). */
@@ -718,11 +718,11 @@ static void migrate_diskroles_out_of_state_dir(void)
  */
 static char g_esp_entries_dir[PATH_MAX] = ESP_LOADER_ENTRIES_DIR;
 /*
- * Partitions 2/3 in thinc-install's own layout (image/src/thinc-
+ * Partitions 2/3 in cix-install's own layout (image/src/cix-
  * install.c's auto_partition()), same fixed QEMU virtio-blk layout/
  * posture as ESP_DEVICE above -- a GPT-partition-name-based lookup
  * (find_partition_device() already exists for this purpose, but only
- * in thinc-install.c, installer-only code the daemon doesn't link)
+ * in cix-install.c, installer-only code the daemon doesn't link)
  * can wait for part 4's real hardware, the same deferral ESP_DEVICE's
  * own comment and ADR-0018's Consequences section already state twice
  * for other partitions. root=%s2/%s3 in populate_esp()'s own loader
@@ -731,7 +731,7 @@ static char g_esp_entries_dir[PATH_MAX] = ESP_LOADER_ENTRIES_DIR;
 #define ROOT_A_DEVICE "/dev/vda2"
 #define ROOT_B_DEVICE "/dev/vda3"
 /*
- * Partition 4 in thinc-install's own layout (image/src/thinc-install.c)
+ * Partition 4 in cix-install's own layout (image/src/cix-install.c)
  * -- absent on parts 1/2's own throwaway 2/3-partition test disks, so
  * mounting it is deliberately non-fatal (boot_init()'s only non-fatal
  * mount): its absence just means "not a real installed system," not a
@@ -857,7 +857,7 @@ static int resolve_backing_device(const char *path, char *out_device, size_t out
  * has no mechanism to surface to an operator anyway. Returns 0 on
  * success, -1 (errno set by quotactl(2) -- ENOTSUP/EOPNOTSUPP if the
  * backing filesystem doesn't have the project-quota feature enabled at
- * all, exactly what a filesystem thinc-install.c didn't create via
+ * all, exactly what a filesystem cix-install.c didn't create via
  * mkfs.ext4 -O quota -E quotatype=prjquota reports) otherwise.
  */
 static int set_disk_quota(const char *base_path, uint32_t projid, long long quota_bytes)
@@ -1050,7 +1050,7 @@ struct console_exec_session {
  * than the bare `return 0` that, as PID 1, the kernel treats as "init
  * exited" and panics on) or the new /v1/system/{shutdown,reboot}
  * endpoints below. Only ever acted on when running --init-mode (real
- * PID 1) -- see main()'s own post-loop handling; a dev/test thincd
+ * PID 1) -- see main()'s own post-loop handling; a dev/test cixd
  * (no --init-mode, e.g. every test/*.c invocation) just exits normally
  * regardless of this value, exactly as it always has.
  */
@@ -1068,7 +1068,7 @@ static volatile sig_atomic_t g_shutdown_action = SHUTDOWN_ACTION_POWEROFF;
 
 /*
  * conns torn down mid-batch are queued here instead of free()'d
- * immediately. A single thinc_epoll_wait() call can report BOTH halves of
+ * immediately. A single cix_epoll_wait() call can report BOTH halves of
  * one console session's fd pair as ready in the same batch; freeing
  * the first one processed would leave the second event's own `struct
  * conn *` dangling for the rest of that same batch's for-loop. Drained
@@ -1116,7 +1116,7 @@ static void console_session_teardown(struct console_exec_session *sess)
 	kill(sess->exec_pid, SIGKILL);
 	waitpid(sess->exec_pid, NULL, 0);
 
-	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, sess->ws_conn->fd, NULL);
+	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, sess->ws_conn->fd, NULL);
 	if (sess->ws_conn->ssl != NULL) {
 		tls_unregister(sess->ws_conn->fd);
 		SSL_free(sess->ws_conn->ssl);
@@ -1126,7 +1126,7 @@ static void console_session_teardown(struct console_exec_session *sess)
 	sess->ws_conn->kind = CONN_DEAD;
 	queue_conn_free(sess->ws_conn);
 
-	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, sess->pty_conn->fd, NULL);
+	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, sess->pty_conn->fd, NULL);
 	close(sess->pty_conn->fd);
 	sess->pty_conn->kind = CONN_DEAD;
 	queue_conn_free(sess->pty_conn);
@@ -1146,7 +1146,7 @@ static void console_session_teardown(struct console_exec_session *sess)
  *
  * g_port joins them for the same reason (Phase 19): spawn_console_shell()
  * and its respawn-timer path need the real listening port to hand
- * thincctl a --port= that actually reaches this daemon, and both are
+ * cixctl a --port= that actually reaches this daemon, and both are
  * called from places that don't otherwise have it in scope.
  */
 static const char *g_slot;
@@ -1159,16 +1159,16 @@ static char g_bind_addr_buf[INET_ADDRSTRLEN];
 static int g_port;
 
 /*
- * Real freshness tracking for the async thinc bootroot assembly
- * (spawn_thinc_bootroot_assembly()/handle_bootroot_assemble_event(),
- * ADR-0057) -- closes task #737's own gap: `pkg hostbuild thinc
- * --deploy` used to treat "thincd-root.squashfs exists" as "this
+ * Real freshness tracking for the async cix bootroot assembly
+ * (spawn_cix_bootroot_assembly()/handle_bootroot_assemble_event(),
+ * ADR-0057) -- closes task #737's own gap: `pkg hostbuild cix
+ * --deploy` used to treat "cixd-root.squashfs exists" as "this
  * hostbuild round's own artifact is ready," but that file is a leftover
  * from whichever assembly last succeeded, not necessarily the one this
  * round's own hostbuild triggered -- a stale file from an earlier round
  * would be silently redeployed while the real new assembly was still
  * running. g_bootroot_assembly_started increments once per attempt
- * (right before the fork in spawn_thinc_bootroot_assembly());
+ * (right before the fork in spawn_cix_bootroot_assembly());
  * g_bootroot_assembly_completed is only ever set to that attempt's own
  * generation number on a *real, confirmed success*
  * (handle_bootroot_assemble_event(), WIFEXITED && WEXITSTATUS==0) --
@@ -1184,7 +1184,7 @@ static int g_port;
  * recently-assembled boot image," the same subject that endpoint already
  * owns; keeping it there (rather than folding it into pkg.c's own
  * generic pkg_get_one() JSON) keeps pkg.c fully agnostic to what any
- * hostbuild name *means*, exactly the separation ADR-0057's own "thinc"
+ * hostbuild name *means*, exactly the separation ADR-0057's own "cix"
  * special-case comment in this file already established.
  */
 static long g_bootroot_assembly_started;
@@ -1217,7 +1217,7 @@ static int mount_or_fail(const char *source, const char *target, const char *fst
 }
 
 /*
- * Only reached with --init-mode, i.e. thincd running as PID 1 on a bare
+ * Only reached with --init-mode, i.e. cixd running as PID 1 on a bare
  * kernel boot with no initramfs (Phase 11) -- nothing else has mounted
  * /proc, /sys, or cgroup2 yet. devtmpfs is populated by the kernel itself
  * (CONFIG_DEVTMPFS_MOUNT) before init ever runs, so /dev needs no mount
@@ -1225,7 +1225,7 @@ static int mount_or_fail(const char *source, const char *target, const char *fst
  * container's own /proc (src/mountns.c) -- one already-correct flag set,
  * not a second one invented.
  *
- * BASE_DIR is the real thinc-containers partition (CONTAINERS_DEVICE) --
+ * BASE_DIR is the real cix-containers partition (CONTAINERS_DEVICE) --
  * everything a running daemon persists (images/, containers/,
  * networks.json, dns_records.json, pki_certs.json, pkg_installed.json)
  * genuinely survives a real reboot, not just a plain daemon restart
@@ -1240,8 +1240,8 @@ static int mount_or_fail(const char *source, const char *target, const char *fst
  * ADR-0018.
  */
 
-/* Parses the simple key=value net.conf thinc-install writes to the
- * config partition (image/src/thinc-install.c's populate step) --
+/* Parses the simple key=value net.conf cix-install writes to the
+ * config partition (image/src/cix-install.c's populate step) --
  * ip=/prefix=/gateway=/interface=, one per line. interface= (Part 0.5)
  * is the physical NIC to attach to the management network -- an explicit,
  * operator-chosen GRUB field rather than find_nic()'s old "whichever
@@ -1402,7 +1402,7 @@ static void load_configured_modules(void)
  *
  * Two genuinely different concepts here, not to be confused (ADR-0058,
  * ADR-0067): the management network's own address_be -- an address
- * living directly on its bridge, now doing double duty as thincd's
+ * living directly on its bridge, now doing double duty as cixd's
  * own bind address -- versus net.conf's own "gateway=" field, the
  * box's *upstream* default route (the next-hop router this box's own
  * outbound traffic egresses through), which keeps its existing,
@@ -1516,7 +1516,7 @@ static int boot_init(void)
 	if (mount_or_fail("cgroup2", "/sys/fs/cgroup", "cgroup2", 0) != 0)
 		return -1;
 	/*
-	 * task #764: thincd's own exec_into_container() (daemon/src/exec.c,
+	 * task #764: cixd's own exec_into_container() (daemon/src/exec.c,
 	 * the console/exec feature, ADR pending #426) calls posix_openpt()
 	 * and then open()s the slave device ptsname_r() hands back --
 	 * that slave path only resolves to a real device node once the
@@ -1526,17 +1526,17 @@ static int boot_init(void)
 	 * this gap so easy to miss: only the SECOND step (opening the
 	 * slave) ever fails, with a generic ENOENT that gave no hint it
 	 * was devpts-shaped until task #764's own diagnostic surfacing
-	 * made "No such file or directory" visible at all. thinc-install.c's
+	 * made "No such file or directory" visible at all. cix-install.c's
 	 * own early_mounts() has mounted devpts since ADR-0042/task #406 --
 	 * but that binary only ever runs during one-time disk installation,
-	 * never during thincd's own real boot_init() (--init-mode, a bare
+	 * never during cixd's own real boot_init() (--init-mode, a bare
 	 * kernel with no initramfs) on an already-installed box, which is
 	 * exactly why every console/exec attempt against 192.168.15.95
 	 * failed with a bare 500 while the same code path passed cleanly
 	 * in every dev-sandbox/QEMU test harness run (those inherit an
 	 * already-mounted /dev/pts from their own outer environment,
 	 * never exercising this gap). Same mount options as
-	 * thinc-install.c's own copy, for the same reason (ptmxmode=0666
+	 * cix-install.c's own copy, for the same reason (ptmxmode=0666
 	 * -- devpts's own ptmx alias needs to be world-writable for
 	 * posix_openpt() to work as any non-root exec'd process would
 	 * expect, even though everything in this project currently execs
@@ -1590,7 +1590,7 @@ static int boot_init(void)
 	 * doesn't run until well after this mount needs the file to
 	 * already exist. Bind-mounted onto /etc/resolv.conf (a real,
 	 * empty placeholder file already staged in the control-plane
-	 * squashfs, mkbootroot.c) so thincd's own curl/openssl/etc.
+	 * squashfs, mkbootroot.c) so cixd's own curl/openssl/etc.
 	 * subprocesses -- and every future host-level tool -- resolve
 	 * against whatever an operator sets via PUT /v1/system/resolv,
 	 * with zero further wiring needed per tool. Best-effort: a
@@ -1643,8 +1643,8 @@ static int boot_init(void)
 
 /*
  * Renames whichever loader entry on the ESP matches this boot's slot
- * (thinc-<slot>[+<tries-left>[-<tries-done>]].conf) down to the bare
- * thinc-<slot>.conf, stripping systemd-boot's own Automatic Boot
+ * (cix-<slot>[+<tries-left>[-<tries-done>]].conf) down to the bare
+ * cix-<slot>.conf, stripping systemd-boot's own Automatic Boot
  * Assessment counter suffix -- a plain rename(2), not a bootctl
  * subprocess call, the same hand-rolled-daemon posture ADR-0007/
  * ADR-0014 already established. Called only once this boot has actually
@@ -1662,7 +1662,7 @@ static int confirm_boot(const char *slot)
 	char newpath[PATH_MAX];
 	int found = 0;
 
-	snprintf(prefix, sizeof(prefix), "thinc-%s", slot);
+	snprintf(prefix, sizeof(prefix), "cix-%s", slot);
 	prefix_len = strlen(prefix);
 
 	d = opendir(g_esp_entries_dir);
@@ -1684,7 +1684,7 @@ static int confirm_boot(const char *slot)
 		return -1;
 	}
 
-	snprintf(newpath, sizeof(newpath), "%s/thinc-%s.conf", g_esp_entries_dir, slot);
+	snprintf(newpath, sizeof(newpath), "%s/cix-%s.conf", g_esp_entries_dir, slot);
 	if (strcmp(oldpath, newpath) == 0)
 		return 0; /* already confirmed (no counter suffix) -- nothing to do */
 	if (rename(oldpath, newpath) != 0) {
@@ -1788,7 +1788,7 @@ static int network_error_to_status(enum network_error err, const char **out_msg)
 		*out_msg = "ifname.vlan_id would not fit in IFNAMSIZ";
 		return 400;
 	case NETWORK_ERR_IS_MANAGEMENT:
-		*out_msg = "refused: this network carries thincd's own bind address -- "
+		*out_msg = "refused: this network carries cixd's own bind address -- "
 		           "repoint the management network first (see /v1/system/daemon-config)";
 		return 409;
 	case NETWORK_ERR_CREATE_FAILED:
@@ -1834,9 +1834,9 @@ static void handle_system_boot(int fd)
 	jw_init(&w);
 	jw_obj_open(&w);
 	jw_key(&w, "build_version");
-	jw_str(&w, THINC_BUILD_VERSION);
+	jw_str(&w, CIX_BUILD_VERSION);
 	jw_key(&w, "build_time");
-	jw_str(&w, THINC_BUILD_TIME);
+	jw_str(&w, CIX_BUILD_TIME);
 	jw_key(&w, "slot");
 	if (g_slot != NULL)
 		jw_str(&w, g_slot);
@@ -1848,12 +1848,12 @@ static void handle_system_boot(int fd)
 	else
 		jw_null(&w);
 	/*
-	 * Real freshness signal for `pkg hostbuild thinc --deploy`
+	 * Real freshness signal for `pkg hostbuild cix --deploy`
 	 * (task #737, ADR-0058-follow-on comment in
 	 * g_bootroot_assembly_started's own doc comment above): a client
 	 * that captured bootroot_assembly_completed_generation *before*
 	 * triggering a new hostbuild round can wait here for it to advance
-	 * past that baseline rather than trusting "thincd-root.squashfs
+	 * past that baseline rather than trusting "cixd-root.squashfs
 	 * exists" (which is also true of a stale file left by an earlier,
 	 * unrelated round).
 	 */
@@ -1925,7 +1925,7 @@ static void factory_reset_sentinel_path(char *out, size_t out_size)
  * What is deliberately NOT touched: the OS itself. The two root slots,
  * the kernel, the ESP and the install-time config partition all live
  * outside this base directory, so a reset returns the box to how
- * thinc-install left it rather than to nothing.
+ * cix-install left it rather than to nothing.
  *
  * What IS destroyed, and worth naming because it is the part that
  * cannot be undone: volumes and everything in them. A just-installed
@@ -1988,7 +1988,7 @@ static void handle_factory_reset(int fd, const char *body, size_t body_len)
 	}
 	confirm = json_as_string(json_object_get(root, "confirm"));
 	if (instance == NULL || instance[0] == '\0')
-		instance = "thinc";
+		instance = "cix";
 	if (confirm == NULL || strcmp(confirm, instance) != 0) {
 		json_free(root);
 		respond_error(fd, 400, "Bad Request",
@@ -2060,7 +2060,7 @@ static void handle_reboot(int fd)
 
 /*
  * Tries-left counter for a freshly-staged update's own loader entry --
- * matches thinc-install.c's own ROOT_A_TRIES value (3), the same
+ * matches cix-install.c's own ROOT_A_TRIES value (3), the same
  * Automatic Boot Assessment convention applied uniformly to any fresh
  * slot, not just the very first install.
  */
@@ -2068,7 +2068,7 @@ static void handle_reboot(int fd)
 
 /*
  * Writes the whole content of src_path onto dst device_path, raw --
- * mirrors thinc-install.c's own copy_file()/write_whole_file_to_
+ * mirrors cix-install.c's own copy_file()/write_whole_file_to_
  * device() shape (plain open/read/write loop, no byte-offset math,
  * since device_path is a real partition block device here too, not
  * test/test_disk_image.c's flat-file-at-an-offset case). device_path
@@ -2184,7 +2184,7 @@ static int write_file_to_esp(const char *src_path, const char *esp_path)
  * image_path/kernel_path are local paths the operator has already
  * transferred the new files to (e.g. scp) -- no upload/streaming HTTP
  * machinery is added here; see ADR-0031 for why. Independent and both
- * optional (at least one required): a thincd security fix needs no
+ * optional (at least one required): a cixd security fix needs no
  * new kernel, and new hardware support needs no new root.
  *
  * Deliberately does NOT reboot -- update and reboot stay two separate,
@@ -2232,8 +2232,8 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
 		snprintf(out_errmsg, out_errmsg_size, "unrecognized --slot=, expected \"a\" or \"b\"");
 		return 400;
 	}
-	snprintf(kernel_dest, sizeof(kernel_dest), "%s/thinc-bzImage-%s", ESP_DIR, inactive_slot);
-	snprintf(active_kernel_path, sizeof(active_kernel_path), "%s/thinc-bzImage-%s", ESP_DIR, g_slot);
+	snprintf(kernel_dest, sizeof(kernel_dest), "%s/cix-bzImage-%s", ESP_DIR, inactive_slot);
+	snprintf(active_kernel_path, sizeof(active_kernel_path), "%s/cix-bzImage-%s", ESP_DIR, g_slot);
 
 	root = json_parse(body, body_len);
 	if (root == NULL) {
@@ -2336,13 +2336,13 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
 		return 500;
 	}
 
-	snprintf(entry_path, sizeof(entry_path), "%s/thinc-%s+%d.conf", g_esp_entries_dir,
+	snprintf(entry_path, sizeof(entry_path), "%s/cix-%s+%d.conf", g_esp_entries_dir,
 	         inactive_slot, ROOT_UPDATE_TRIES);
 	/* version is this boot's own current timestamp -- always higher
 	 * than whatever's already on disk, so systemd-boot sorts this
 	 * entry first, with no need to parse the existing entry's own
 	 * version back out first. linux always references this slot's own
-	 * thinc-bzImage-<slot> (pre-staged for both slots at install
+	 * cix-bzImage-<slot> (pre-staged for both slots at install
 	 * time, ADR-0032) -- whether or not kernel_path was given this
 	 * call, that file already exists and is exactly what should boot. */
 	{
@@ -2355,11 +2355,11 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
 
 		bootconsole_render(console_opts, sizeof(console_opts));
 		snprintf(entry_conf, sizeof(entry_conf),
-		         "title thinC (%s)\n"
-		         "sort-key thinc\n"
+		         "title Cix (%s)\n"
+		         "sort-key cix\n"
 		         "version %ld\n"
-		         "linux /thinc-bzImage-%s\n"
-		         "options %s%sroot=%s rw init=/bin/thincd -- --init-mode "
+		         "linux /cix-bzImage-%s\n"
+		         "options %s%sroot=%s rw init=/bin/cixd -- --init-mode "
 		         "--slot=%s --bind=%s\n",
 		         inactive_slot[0] == 'a' ? "A" : "B", (long)time(NULL), inactive_slot,
 		         console_opts, console_opts[0] != '\0' ? " " : "", device, inactive_slot,
@@ -3241,9 +3241,9 @@ static int create_listen_socket(const char *bind_addr, int port)
 }
 
 /*
- * Live listen-socket rebind (Part 0.5) -- thincd is real PID 1 under
- * --init-mode (confirmed: image/src/thinc-install.c's loader entry
- * uses "init=/bin/thincd"), so there is no "restart the daemon" to
+ * Live listen-socket rebind (Part 0.5) -- cixd is real PID 1 under
+ * --init-mode (confirmed: image/src/cix-install.c's loader entry
+ * uses "init=/bin/cixd"), so there is no "restart the daemon" to
  * pick up a new bind address or port; this closes the old listening
  * socket and opens a new one in-process instead. Already-accept()ed
  * connections (a separate fd from the listening socket) are completely
@@ -3261,7 +3261,7 @@ static int rebind_listener(const char *new_bind_addr, int new_port)
 {
 	int new_fd;
 	int old_fd;
-	struct thinc_epoll_event ev;
+	struct cix_epoll_event ev;
 
 	if (strcmp(new_bind_addr, g_bind_addr) == 0 && new_port == g_port)
 		return 0;
@@ -3275,21 +3275,21 @@ static int rebind_listener(const char *new_bind_addr, int new_port)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = &g_listener_conn;
-	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, new_fd, &ev) != 0) {
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, new_fd, &ev) != 0) {
 		perror("rebind_listener: epoll_ctl ADD");
 		g_listener_conn.fd = old_fd;
 		close(new_fd);
 		return -1;
 	}
 
-	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, old_fd, NULL);
+	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, old_fd, NULL);
 	close(old_fd);
 
 	snprintf(g_bind_addr_buf, sizeof(g_bind_addr_buf), "%s", new_bind_addr);
 	g_bind_addr = g_bind_addr_buf;
 	g_port = new_port;
 
-	printf("thincd rebound listener to %s:%d\n", new_bind_addr, new_port);
+	printf("cixd rebound listener to %s:%d\n", new_bind_addr, new_port);
 	fflush(stdout);
 	return 0;
 }
@@ -3299,10 +3299,10 @@ static int rebind_listener(const char *new_bind_addr, int new_port)
  * accounting(), swap_init()'s own swapon() retry) -- a test/dev
  * invocation, or a kernel with /dev/kmsg unreadable for any other
  * reason, simply never gets kernel-source log entries; every other
- * source (thincd's own diagnostics, the audit trail) is unaffected. */
+ * source (cixd's own diagnostics, the audit trail) is unaffected. */
 static void start_kmsg_watch(void)
 {
-	struct thinc_epoll_event ev;
+	struct cix_epoll_event ev;
 	int fd = logstore_kmsg_fd();
 
 	if (fd < 0)
@@ -3312,7 +3312,7 @@ static void start_kmsg_watch(void)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = &g_kmsg_conn;
-	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0)
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0)
 		g_kmsg_conn.fd = -1;
 }
 
@@ -3345,7 +3345,7 @@ static int live_attach_one_device(struct registry_entry *e, const struct discove
  */
 static void start_uevent_watch(void)
 {
-	struct thinc_epoll_event ev;
+	struct cix_epoll_event ev;
 	int fd;
 	struct sockaddr_nl addr;
 
@@ -3367,7 +3367,7 @@ static void start_uevent_watch(void)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = &g_uevent_conn;
-	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
 		close(fd);
 		g_uevent_conn.fd = -1;
 	}
@@ -3436,7 +3436,7 @@ static void reconcile_pending_device_attachments(void)
 			/* Logged once per losing claim, not once per contending
 			 * pair -- a real operator-visible signal without becoming
 			 * noisy for a device with many contenders. */
-			logstore_write("thincd", "warning",
+			logstore_write("cixd", "warning",
 			                "container %s: hotplugged device %s matches \"%s\" but another "
 			                "running container also claims it -- granted to neither",
 			                claims[i].e->name, claims[i].resolved_id, claims[i].ref);
@@ -3449,11 +3449,11 @@ static void reconcile_pending_device_attachments(void)
 
 		if (live_attach_one_device(claims[i].e, dd) == 0) {
 			registry_clear_pending_device(claims[i].e, claims[i].ref);
-			logstore_write("thincd", "info",
+			logstore_write("cixd", "info",
 			                "container %s: hotplug live-attached device %s (matched \"%s\")",
 			                claims[i].e->name, dd->id, claims[i].ref);
 		} else {
-			logstore_write("thincd", "error",
+			logstore_write("cixd", "error",
 			                "container %s: hotplug live-attach of %s (matched \"%s\") failed: %s",
 			                claims[i].e->name, dd->id, claims[i].ref, strerror(errno));
 		}
@@ -3497,13 +3497,13 @@ static void reconcile_live_device_revocations(void)
 
 			snprintf(id_copy, sizeof(id_copy), "%s", e->devices[j].id);
 			if (registry_device_live_detach(e, id_copy, &removed) != 0) {
-				logstore_write("thincd", "error",
+				logstore_write("cixd", "error",
 				                "container %s: failed to revoke unplugged device %s: %s",
 				                e->name, id_copy, strerror(errno));
 				continue;
 			}
 			live_unlink_device(e->handle.pid, removed.dev_path);
-			logstore_write("thincd", "info",
+			logstore_write("cixd", "info",
 			                "container %s: revoked grant for unplugged device %s", e->name,
 			                id_copy);
 		}
@@ -3569,7 +3569,7 @@ static void handle_uevent_event(struct conn *cc)
 
 static int start_http_listener(const char *bind_addr, int port)
 {
-	struct thinc_epoll_event ev;
+	struct cix_epoll_event ev;
 	int fd = create_listen_socket(bind_addr, port);
 
 	if (fd < 0)
@@ -3579,13 +3579,13 @@ static int start_http_listener(const char *bind_addr, int port)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = &g_listener_conn;
-	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
 		perror("start_http_listener: epoll_ctl ADD");
 		close(fd);
 		g_listener_conn.fd = -1;
 		return -1;
 	}
-	printf("thincd listening on %s:%d\n", bind_addr, port);
+	printf("cixd listening on %s:%d\n", bind_addr, port);
 	fflush(stdout);
 	return 0;
 }
@@ -3594,7 +3594,7 @@ static void stop_http_listener(void)
 {
 	if (g_listener_conn.fd < 0)
 		return;
-	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, g_listener_conn.fd, NULL);
+	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, g_listener_conn.fd, NULL);
 	close(g_listener_conn.fd);
 	g_listener_conn.fd = -1;
 }
@@ -3609,7 +3609,7 @@ static void stop_http_listener(void)
  */
 static int start_https_listener(const char *bind_addr, int port)
 {
-	struct thinc_epoll_event ev;
+	struct cix_epoll_event ev;
 	int fd;
 
 	if (g_tls_ctx == NULL) {
@@ -3626,13 +3626,13 @@ static int start_https_listener(const char *bind_addr, int port)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = &g_https_listener_conn;
-	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
 		perror("start_https_listener: epoll_ctl ADD");
 		close(fd);
 		g_https_listener_conn.fd = -1;
 		return -1;
 	}
-	printf("thincd listening (https) on %s:%d\n", bind_addr, port);
+	printf("cixd listening (https) on %s:%d\n", bind_addr, port);
 	fflush(stdout);
 	return 0;
 }
@@ -3641,7 +3641,7 @@ static void stop_https_listener(void)
 {
 	if (g_https_listener_conn.fd < 0)
 		return;
-	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, g_https_listener_conn.fd, NULL);
+	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, g_https_listener_conn.fd, NULL);
 	close(g_https_listener_conn.fd);
 	g_https_listener_conn.fd = -1;
 }
@@ -3650,7 +3650,7 @@ static int rebind_https_listener(const char *new_bind_addr, int new_port)
 {
 	int new_fd;
 	int old_fd;
-	struct thinc_epoll_event ev;
+	struct cix_epoll_event ev;
 
 	/* Same no-op short-circuit rebind_listener() has, and for the same
 	 * reason: binding new_bind_addr:new_port a second time while the
@@ -3672,17 +3672,17 @@ static int rebind_https_listener(const char *new_bind_addr, int new_port)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = &g_https_listener_conn;
-	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, new_fd, &ev) != 0) {
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, new_fd, &ev) != 0) {
 		perror("rebind_https_listener: epoll_ctl ADD");
 		g_https_listener_conn.fd = old_fd;
 		close(new_fd);
 		return -1;
 	}
 
-	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, old_fd, NULL);
+	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, old_fd, NULL);
 	close(old_fd);
 
-	printf("thincd rebound https listener to %s:%d\n", new_bind_addr, new_port);
+	printf("cixd rebound https listener to %s:%d\n", new_bind_addr, new_port);
 	fflush(stdout);
 	return 0;
 }
@@ -3713,7 +3713,7 @@ static void arm_bind_ip_cleanup_timer(const char *ifname, uint32_t addr_be, int 
 	int tfd;
 	struct itimerspec its;
 	struct conn *cc;
-	struct thinc_epoll_event ev;
+	struct cix_epoll_event ev;
 
 	tfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
 	if (tfd < 0) {
@@ -3744,7 +3744,7 @@ static void arm_bind_ip_cleanup_timer(const char *ifname, uint32_t addr_be, int 
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = cc;
-	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, tfd, &ev) != 0) {
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, tfd, &ev) != 0) {
 		perror("epoll_ctl ADD bind_ip cleanup timer");
 		close(tfd);
 		free(cc);
@@ -3759,7 +3759,7 @@ static void handle_bind_ip_cleanup_timer_event(struct conn *cc)
 	if (read(cc->fd, &expirations, sizeof(expirations)) < 0)
 		perror("read (bind_ip cleanup timerfd)");
 
-	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	close(cc->fd);
 
 	rtfd = rtnl_open();
@@ -3769,7 +3769,7 @@ static void handle_bind_ip_cleanup_timer_event(struct conn *cc)
 	}
 	/* Best-effort, same as before this became a deferred timer: a
 	 * failure here leaves a harmless leftover address on the bridge,
-	 * never persisted or bound to by thincd itself. */
+	 * never persisted or bound to by cixd itself. */
 
 	free(cc);
 }
@@ -3792,14 +3792,14 @@ static struct conn *g_ping_timer_conn;
 static void ping_job_teardown(void)
 {
 	if (g_ping_sock_conn != NULL) {
-		thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, g_ping_sock_conn->fd, NULL);
+		cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, g_ping_sock_conn->fd, NULL);
 		close(g_ping_sock_conn->fd);
 		g_ping_sock_conn->kind = CONN_DEAD;
 		queue_conn_free(g_ping_sock_conn);
 		g_ping_sock_conn = NULL;
 	}
 	if (g_ping_timer_conn != NULL) {
-		thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, g_ping_timer_conn->fd, NULL);
+		cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, g_ping_timer_conn->fd, NULL);
 		close(g_ping_timer_conn->fd);
 		g_ping_timer_conn->kind = CONN_DEAD;
 		queue_conn_free(g_ping_timer_conn);
@@ -3854,7 +3854,7 @@ static void exec_job_close_conn(struct conn **slot)
 {
 	if (*slot == NULL)
 		return;
-	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, (*slot)->fd, NULL);
+	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, (*slot)->fd, NULL);
 	close((*slot)->fd);
 	free(*slot);
 	*slot = NULL;
@@ -3989,7 +3989,7 @@ static void handle_container_exec_get(int fd, const char *name)
 static struct conn *exec_register(int fd, enum conn_kind kind)
 {
 	struct conn *cc = malloc(sizeof(*cc));
-	struct thinc_epoll_event ev;
+	struct cix_epoll_event ev;
 
 	if (cc == NULL)
 		return NULL;
@@ -3999,7 +3999,7 @@ static struct conn *exec_register(int fd, enum conn_kind kind)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = cc;
-	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
 		free(cc);
 		return NULL;
 	}
@@ -4173,7 +4173,7 @@ static void handle_ping_post(int fd, const char *body, size_t body_len)
 	int sockfd;
 	enum ping_error perr;
 	struct conn *sock_cc, *timer_cc;
-	struct thinc_epoll_event ev;
+	struct cix_epoll_event ev;
 	int tfd;
 	struct itimerspec its;
 	struct json_writer w;
@@ -4239,7 +4239,7 @@ static void handle_ping_post(int fd, const char *body, size_t body_len)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = sock_cc;
-	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, sockfd, &ev) != 0) {
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, sockfd, &ev) != 0) {
 		perror("epoll_ctl ADD ping socket");
 		free(sock_cc);
 		free(timer_cc);
@@ -4249,9 +4249,9 @@ static void handle_ping_post(int fd, const char *body, size_t body_len)
 		return;
 	}
 	ev.data.ptr = timer_cc;
-	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, tfd, &ev) != 0) {
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, tfd, &ev) != 0) {
 		perror("epoll_ctl ADD ping timer");
-		thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, sockfd, NULL);
+		cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, sockfd, NULL);
 		free(sock_cc);
 		free(timer_cc);
 		close(tfd);
@@ -4296,14 +4296,14 @@ static struct conn g_build_stall_conn;  /* permanent -- registered once at start
 static void ntp_job_teardown(void)
 {
 	if (g_ntp_sync_conn != NULL) {
-		thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, g_ntp_sync_conn->fd, NULL);
+		cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, g_ntp_sync_conn->fd, NULL);
 		close(g_ntp_sync_conn->fd);
 		g_ntp_sync_conn->kind = CONN_DEAD;
 		queue_conn_free(g_ntp_sync_conn);
 		g_ntp_sync_conn = NULL;
 	}
 	if (g_ntp_timer_conn != NULL) {
-		thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, g_ntp_timer_conn->fd, NULL);
+		cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, g_ntp_timer_conn->fd, NULL);
 		close(g_ntp_timer_conn->fd);
 		g_ntp_timer_conn->kind = CONN_DEAD;
 		queue_conn_free(g_ntp_timer_conn);
@@ -4366,7 +4366,7 @@ static enum ntp_start_error start_ntp_sync_job(void)
 	int sockfd;
 	enum ntp_start_error serr;
 	struct conn *sock_cc, *timer_cc;
-	struct thinc_epoll_event ev;
+	struct cix_epoll_event ev;
 	int tfd;
 	struct itimerspec its;
 
@@ -4408,7 +4408,7 @@ static enum ntp_start_error start_ntp_sync_job(void)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = sock_cc;
-	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, sockfd, &ev) != 0) {
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, sockfd, &ev) != 0) {
 		perror("epoll_ctl ADD ntp sync socket");
 		free(sock_cc);
 		free(timer_cc);
@@ -4417,9 +4417,9 @@ static enum ntp_start_error start_ntp_sync_job(void)
 		return NTP_START_SOCKET_FAILED;
 	}
 	ev.data.ptr = timer_cc;
-	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, tfd, &ev) != 0) {
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, tfd, &ev) != 0) {
 		perror("epoll_ctl ADD ntp sync timer");
-		thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, sockfd, NULL);
+		cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, sockfd, NULL);
 		free(sock_cc);
 		free(timer_cc);
 		close(tfd);
@@ -4556,7 +4556,7 @@ static void serverhealth_inflight_remove(struct conn *cc)
 static void serverhealth_probe_teardown(struct conn *cc)
 {
 	serverhealth_inflight_remove(cc);
-	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	close(cc->fd);
 	free(cc);
 }
@@ -4611,7 +4611,7 @@ static void serverhealth_start_tcp_probe(const char *kind, const char *container
 {
 	struct sockaddr_in sa;
 	struct conn *cc;
-	struct thinc_epoll_event ev;
+	struct cix_epoll_event ev;
 	char desc[SERVERHEALTH_PROBE_MAX];
 	int fd;
 
@@ -4653,7 +4653,7 @@ static void serverhealth_start_tcp_probe(const char *kind, const char *container
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLOUT;
 	ev.data.ptr = cc;
-	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
 		close(fd);
 		free(cc);
 		serverhealth_record_result(kind, container, desc, 0, "epoll registration failed");
@@ -4711,7 +4711,7 @@ static void arm_serverhealth_timer(void)
 /* Best-effort, same posture as every other periodic timer here: failing
  * to create it means no automatic probing, never a failed startup. */
 /*
- * Issue #86: keep thincd schedulable and un-killable under overload.
+ * Issue #86: keep cixd schedulable and un-killable under overload.
  * Best-effort by design -- see the call site's own comment. Reports what
  * it could not do rather than failing silently, so a real install where
  * one of these is unexpectedly denied is visible in the log.
@@ -4750,7 +4750,7 @@ static void protect_control_plane(void)
 
 static void start_serverhealth_timer(void)
 {
-	struct thinc_epoll_event ev;
+	struct cix_epoll_event ev;
 	int fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
 
 	g_serverhealth_timer_conn.fd = -1;
@@ -4763,7 +4763,7 @@ static void start_serverhealth_timer(void)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = &g_serverhealth_timer_conn;
-	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
 		close(fd);
 		g_serverhealth_timer_conn.fd = -1;
 		return;
@@ -4826,7 +4826,7 @@ static void handle_build_stall_timer_event(struct conn *cc)
 
 static void start_build_stall_timer(void)
 {
-	struct thinc_epoll_event ev;
+	struct cix_epoll_event ev;
 	int fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
 
 	if (fd < 0) {
@@ -4838,7 +4838,7 @@ static void start_build_stall_timer(void)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = &g_build_stall_conn;
-	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
 		close(fd);
 		g_build_stall_conn.fd = -1;
 		return;
@@ -4848,7 +4848,7 @@ static void start_build_stall_timer(void)
 
 static void start_ntp_periodic_timer(void)
 {
-	struct thinc_epoll_event ev;
+	struct cix_epoll_event ev;
 	int fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
 
 	if (fd < 0) {
@@ -4860,7 +4860,7 @@ static void start_ntp_periodic_timer(void)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = &g_ntp_periodic_conn;
-	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
 		close(fd);
 		g_ntp_periodic_conn.fd = -1;
 		return;
@@ -5752,7 +5752,7 @@ static void handle_kmodconfig_list(int fd)
 }
 
 /*
- * GET/PUT /v1/system/daemon-config (Part 0.5): thincd's own listen
+ * GET/PUT /v1/system/daemon-config (Part 0.5): cixd's own listen
  * port and which network is currently its management one -- a
  * dedicated resource, distinct from generic network CRUD, since
  * changing either has a real side effect (a live listen-socket
@@ -5880,7 +5880,7 @@ static void handle_daemon_config_put(int fd, const char *body, size_t body_len)
 		if (!mgmt_target->has_address) {
 			json_free(root);
 			respond_error(fd, 400, "Bad Request",
-			              "network has no address for thincd to bind to");
+			              "network has no address for cixd to bind to");
 			return;
 		}
 		{
@@ -6158,7 +6158,7 @@ static void handle_route_list(int fd)
  * gateway is optional (omitted means a direct/on-link route). Scoped
  * to exactly what that primitive supports -- no RTA_OIF/interface
  * binding, no route replace semantics beyond what NLM_F_CREATE
- * already gives it. Not a persisted thinC resource (see
+ * already gives it. Not a persisted Cix resource (see
  * network_write_routes_json()'s own comment) -- nothing here is
  * remembered across a reboot, same as this whole endpoint family. */
 static void handle_route_add(int fd, const char *body, size_t body_len)
@@ -6823,13 +6823,13 @@ static void handle_system_stats(int fd)
  * was probed.
  */
 /*
- * Issue #83: health can only ever describe servers thinC KNOWS about, so
+ * Issue #83: health can only ever describe servers Cix KNOWS about, so
  * an unregistered one is invisible to it by construction -- which is
  * exactly how a real box ran for its whole life with DNS records that
  * resolved nothing, because dns-1/dns-2 were never registered and
  * dns_record_sync_all() only ever writes into registered servers.
  *
- * The precisely detectable version of that failure is "thinC is managing
+ * The precisely detectable version of that failure is "Cix is managing
  * state it has nowhere to deliver": records/accounts exist, zero servers
  * are registered to receive them. Reported as real warnings alongside the
  * health list. Deliberately only for the two subsystems that actually
@@ -7838,7 +7838,7 @@ static void handle_get_one(int fd, const char *name)
 static void register_container_pidfd(struct registry_entry *entry)
 {
 	struct conn *cc;
-	struct thinc_epoll_event ev;
+	struct cix_epoll_event ev;
 
 	cc = malloc(sizeof(*cc));
 	if (cc == NULL) {
@@ -7861,7 +7861,7 @@ static void register_container_pidfd(struct registry_entry *entry)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = cc;
-	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
 		perror("epoll_ctl ADD pidfd");
 		abort();
 	}
@@ -7878,7 +7878,7 @@ static void register_container_pidfd(struct registry_entry *entry)
 static void register_pkg_fetch_pidfd(pid_t pid, int pidfd, int chain_idx)
 {
 	struct conn *cc;
-	struct thinc_epoll_event ev;
+	struct cix_epoll_event ev;
 
 	cc = malloc(sizeof(*cc));
 	if (cc == NULL) {
@@ -7893,7 +7893,7 @@ static void register_pkg_fetch_pidfd(pid_t pid, int pidfd, int chain_idx)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = cc;
-	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
 		perror("epoll_ctl ADD pkg fetch pidfd");
 		abort();
 	}
@@ -7950,7 +7950,7 @@ static void try_start_queued_pkg_rebuild(void)
 static void register_pkg_build_output(int output_fd, int chain_idx)
 {
 	struct conn *cc;
-	struct thinc_epoll_event ev;
+	struct cix_epoll_event ev;
 
 	if (output_fd < 0)
 		return;
@@ -7967,7 +7967,7 @@ static void register_pkg_build_output(int output_fd, int chain_idx)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = cc;
-	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
 		perror("epoll_ctl ADD pkg build output fd");
 		abort();
 	}
@@ -8016,7 +8016,7 @@ static void build_log_ws_broadcast(int chain_idx, const void *data, size_t len)
 			continue;
 		}
 		if (ws_write_frame(cc->fd, WS_OPCODE_TEXT, data, len) != 0) {
-			thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+			cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 			ws_conn_free(&cc->ws);
 			close(cc->fd);
 			g_build_log_ws_conns[i] = g_build_log_ws_conns[g_build_log_ws_conn_count - 1];
@@ -8047,7 +8047,7 @@ static void build_log_ws_teardown_all(int chain_idx)
 			continue;
 		}
 		ws_write_frame(cc->fd, WS_OPCODE_CLOSE, NULL, 0);
-		thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+		cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 		ws_conn_free(&cc->ws);
 		close(cc->fd);
 		free(cc);
@@ -8078,7 +8078,7 @@ static void handle_pkg_build_output_event(struct conn *cc)
 	if (new_len > 0 && g_build_log_ws_conn_count > 0)
 		build_log_ws_broadcast(cc->pkg_chain_idx, new_data, (size_t)new_len);
 	if (eof) {
-		thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+		cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 		pkg_build_output_close(cc->pkg_chain_idx);
 		build_log_ws_teardown_all(cc->pkg_chain_idx);
 		free(cc);
@@ -8100,7 +8100,7 @@ static void handle_pkg_build_output_event(struct conn *cc)
 static void register_container_output(struct registry_entry *entry)
 {
 	struct conn *cc;
-	struct thinc_epoll_event ev;
+	struct cix_epoll_event ev;
 
 	if (entry->output_fd < 0)
 		return;
@@ -8118,7 +8118,7 @@ static void register_container_output(struct registry_entry *entry)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = cc;
-	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
 		perror("epoll_ctl ADD container output fd");
 		abort();
 	}
@@ -8238,7 +8238,7 @@ static void handle_container_output_event(struct conn *cc)
 	if (eof) {
 		if (cc->entry->in_use && cc->entry->output_fd == cc->fd)
 			forward_container_output_to_logstore(cc, "", 0, 1);
-		thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+		cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 		close(cc->fd);
 		if (cc->entry->output_fd == cc->fd)
 			cc->entry->output_fd = -1;
@@ -8255,7 +8255,7 @@ static void handle_container_output_event(struct conn *cc)
  * control-plane-only rebuild's own output has never been verbose
  * enough to fill it. Safe as a bare static: only one bootroot
  * assembly can ever be in flight at a time (triggered exclusively by
- * a "thinc" hostbuild completing, itself serialized by pkg.c's own
+ * a "cix" hostbuild completing, itself serialized by pkg.c's own
  * one-job-at-a-time invariant) -- the same reasoning pkg.c's own
  * module-level build state statics already document.
  */
@@ -8319,7 +8319,7 @@ static void bootroot_output_close(void)
 static void register_bootroot_output(void)
 {
 	struct conn *cc;
-	struct thinc_epoll_event ev;
+	struct cix_epoll_event ev;
 
 	if (g_bootroot_output_rd < 0)
 		return;
@@ -8335,7 +8335,7 @@ static void register_bootroot_output(void)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = cc;
-	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
 		perror("epoll_ctl ADD bootroot output fd");
 		abort();
 	}
@@ -8344,21 +8344,21 @@ static void register_bootroot_output(void)
 static void handle_bootroot_output_event(struct conn *cc)
 {
 	if (bootroot_output_readable()) {
-		thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+		cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 		bootroot_output_close();
 		free(cc);
 	}
 }
 
 /* Same shape as register_pkg_fetch_pidfd(), for the mkbootroot child
- * spawn_thinc_bootroot_assembly() below just forked -- tracks only
+ * spawn_cix_bootroot_assembly() below just forked -- tracks only
  * its exit; its captured stdout/stderr is a separate, directly-
  * registered conn (register_bootroot_output()/g_bootroot_output_rd
  * above, ADR-0087), not this one. */
 static void register_bootroot_assemble_pidfd(pid_t pid, int pidfd)
 {
 	struct conn *cc;
-	struct thinc_epoll_event ev;
+	struct cix_epoll_event ev;
 
 	cc = malloc(sizeof(*cc));
 	if (cc == NULL) {
@@ -8372,7 +8372,7 @@ static void register_bootroot_assemble_pidfd(pid_t pid, int pidfd)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = cc;
-	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
 		perror("epoll_ctl ADD bootroot assemble pidfd");
 		abort();
 	}
@@ -8382,18 +8382,18 @@ static void register_bootroot_assemble_pidfd(pid_t pid, int pidfd)
  * ADR-0078: the well-known name of the shared "host tools" image --
  * cp/rm/sha256sum/gzip (coreutils.recipe/gzip.recipe) plus openssl/
  * curl/tar/bzip2/xz/squashfs-tools/e2fsprogs, one real `pkg install
- * --image=thinc-hosttools` per recipe -- an operator builds this
- * exactly like "thinc-builder"/"dev" (docs/guides/building-thinc.md),
- * no special-cased creation path. spawn_thinc_bootroot_assembly()
+ * --image=cix-hosttools` per recipe -- an operator builds this
+ * exactly like "cix-builder"/"dev" (docs/guides/building-cix.md),
+ * no special-cased creation path. spawn_cix_bootroot_assembly()
  * below passes its rootfs to mkbootroot.c's own host_tools_dir
  * argument when present, purely additive: a box that never built this
  * image keeps today's dev-host-sourced behavior (mkbootroot.c's own
  * "" fallback), never a hard failure.
  */
-#define HOST_TOOLS_IMAGE "thinc-hosttools"
+#define HOST_TOOLS_IMAGE "cix-hosttools"
 
 /*
- * ADR-0057: when a hostbuild job named "thinc" completes, assembles a
+ * ADR-0057: when a hostbuild job named "cix" completes, assembles a
  * fresh control-plane squashfs from its own just-harvested artifacts
  * by forking+exec'ing the real, unmodified build/mkbootroot binary --
  * server-side, entirely within the daemon, never CLI-invoked (the
@@ -8401,18 +8401,18 @@ static void register_bootroot_assemble_pidfd(pid_t pid, int pidfd)
  * directly). Mirrors start_fetch_for()'s own "daemon already forks
  * subprocesses for curl" precedent -- this is the same class of
  * capability, not a new one. Uses THIS SAME hostbuild round's own
- * freshly built mkbootroot (thinc.recipe now stages one alongside
- * thincd/thincctl/web/) rather than assuming some earlier round's
+ * freshly built mkbootroot (cix.recipe now stages one alongside
+ * cixd/cixctl/web/) rather than assuming some earlier round's
  * copy is still present anywhere -- self-contained, no bootstrap-order
  * dependency. Failure here (missing mkbootroot, fork failure) is
  * logged, never fatal to the daemon -- the hostbuild itself already
  * succeeded and its own artifacts are still there for a later retry.
  */
-static void spawn_thinc_bootroot_assembly(const char *artifact_dir)
+static void spawn_cix_bootroot_assembly(const char *artifact_dir)
 {
 	char mkbootroot_bin[PATH_MAX];
-	char thincd_bin[PATH_MAX];
-	char thincctl_bin[PATH_MAX];
+	char cixd_bin[PATH_MAX];
+	char cixctl_bin[PATH_MAX];
 	char web_dir[PATH_MAX];
 	char out_squashfs[PATH_MAX];
 	char stage_dir[PATH_MAX];
@@ -8424,10 +8424,10 @@ static void spawn_thinc_bootroot_assembly(const char *artifact_dir)
 	int output_pipe[2];
 
 	snprintf(mkbootroot_bin, sizeof(mkbootroot_bin), "%s/mkbootroot", artifact_dir);
-	snprintf(thincd_bin, sizeof(thincd_bin), "%s/thincd", artifact_dir);
-	snprintf(thincctl_bin, sizeof(thincctl_bin), "%s/thincctl", artifact_dir);
+	snprintf(cixd_bin, sizeof(cixd_bin), "%s/cixd", artifact_dir);
+	snprintf(cixctl_bin, sizeof(cixctl_bin), "%s/cixctl", artifact_dir);
 	snprintf(web_dir, sizeof(web_dir), "%s/web", artifact_dir);
-	snprintf(out_squashfs, sizeof(out_squashfs), "%s/thincd-root.squashfs", artifact_dir);
+	snprintf(out_squashfs, sizeof(out_squashfs), "%s/cixd-root.squashfs", artifact_dir);
 	snprintf(stage_dir, sizeof(stage_dir), "%s/.bootroot-stage", artifact_dir);
 
 	/*
@@ -8457,15 +8457,15 @@ static void spawn_thinc_bootroot_assembly(const char *artifact_dir)
 
 	argv[0] = mkbootroot_bin;
 	argv[1] = stage_dir;
-	argv[2] = thincd_bin;
-	argv[3] = thincctl_bin;
+	argv[2] = cixd_bin;
+	argv[3] = cixctl_bin;
 	argv[4] = web_dir;
 	argv[5] = out_squashfs;
 	argv[6] = ""; /* firmware dir -- a control-plane-only rebuild needs no GPU firmware re-staging */
-	argv[7] = ""; /* modules dir -- a control-plane-only rebuild (thincd/thincctl/web only,
+	argv[7] = ""; /* modules dir -- a control-plane-only rebuild (cixd/cixctl/web only,
 	               * ADR-0057) touches no kernel module tree at all */
 	argv[8] = ""; /* kmod bin dir -- same reasoning */
-	argv[9] = host_tools_dir; /* "" if thinc-hosttools was never built on this box */
+	argv[9] = host_tools_dir; /* "" if cix-hosttools was never built on this box */
 	argv[10] = NULL;
 
 	/*
@@ -8481,8 +8481,8 @@ static void spawn_thinc_bootroot_assembly(const char *artifact_dir)
 	 */
 	if (pipe2(output_pipe, O_CLOEXEC) != 0) {
 		perror("pipe2 (bootroot assembly output capture)");
-		logstore_write("thincd", "error",
-		                "thinc bootroot assembly: output capture pipe failed: %s",
+		logstore_write("cixd", "error",
+		                "cix bootroot assembly: output capture pipe failed: %s",
 		                strerror(errno));
 		output_pipe[0] = output_pipe[1] = -1;
 	} else if (fcntl(output_pipe[0], F_SETFL, O_NONBLOCK) != 0) {
@@ -8495,7 +8495,7 @@ static void spawn_thinc_bootroot_assembly(const char *artifact_dir)
 	pid = fork();
 	if (pid < 0) {
 		perror("fork (bootroot assembly)");
-		logstore_write("thincd", "error", "thinc bootroot assembly: fork failed: %s",
+		logstore_write("cixd", "error", "cix bootroot assembly: fork failed: %s",
 		                strerror(errno));
 		if (output_pipe[0] >= 0) {
 			close(output_pipe[0]);
@@ -8531,7 +8531,7 @@ static void spawn_thinc_bootroot_assembly(const char *artifact_dir)
 	pidfd = sys_pidfd_open(pid, 0);
 	if (pidfd < 0) {
 		perror("pidfd_open (bootroot assembly)");
-		logstore_write("thincd", "error", "thinc bootroot assembly: pidfd_open failed: %s",
+		logstore_write("cixd", "error", "cix bootroot assembly: pidfd_open failed: %s",
 		                strerror(errno));
 		if (output_pipe[0] >= 0)
 			close(output_pipe[0]);
@@ -8551,13 +8551,13 @@ static void spawn_thinc_bootroot_assembly(const char *artifact_dir)
  * ADR-0063 deliberately left open -- image/src/mkinstalleriso.c was a
  * dev-machine-only tool an operator had to run by hand; this makes ISO
  * assembly a real, REST/CLI-reachable daemon capability, the same
- * fork+exec+pidfd-tracked, non-blocking shape spawn_thinc_bootroot_
+ * fork+exec+pidfd-tracked, non-blocking shape spawn_cix_bootroot_
  * assembly() above already established for mkbootroot. Unlike that
- * mechanism (auto-triggered the moment a "thinc" hostbuild completes),
+ * mechanism (auto-triggered the moment a "cix" hostbuild completes),
  * ISO assembly is explicitly, separately triggered -- it has real
  * inputs of its own (the target's disk/ip/prefix/gateway/interface)
  * a hostbuild completion has no way to supply, and reuses whatever the
- * most recent "thinc"/"kernel"/"isotools" hostbuild rounds already
+ * most recent "cix"/"kernel"/"isotools" hostbuild rounds already
  * harvested rather than forcing a fresh rebuild of any of them.
  *
  * Only one ISO build is ever in flight at a time (the same v1 single-
@@ -8574,7 +8574,7 @@ static char ISO_OUTPUT_PATH[PATH_MAX];
 static void register_iso_assemble_pidfd(pid_t pid, int pidfd)
 {
 	struct conn *cc;
-	struct thinc_epoll_event ev;
+	struct cix_epoll_event ev;
 
 	cc = malloc(sizeof(*cc));
 	if (cc == NULL) {
@@ -8588,14 +8588,14 @@ static void register_iso_assemble_pidfd(pid_t pid, int pidfd)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = cc;
-	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
 		perror("epoll_ctl ADD iso assemble pidfd");
 		abort();
 	}
 }
 
 /*
- * Validates every real precondition (the "thinc"/"kernel" hostbuild
+ * Validates every real precondition (the "cix"/"kernel" hostbuild
  * artifacts, the "isotools" hostbuild artifact, and the operator-
  * populated signing key pair at SIGNING_KEYS_DIR) up front, so a
  * missing one fails the POST itself with a specific, actionable
@@ -8613,8 +8613,8 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
                             size_t err_msg_size)
 {
 	char mkinstalleriso_bin[PATH_MAX];
-	char thinc_install_bin[PATH_MAX];
-	char thinc_recover_bin[PATH_MAX];
+	char cix_install_bin[PATH_MAX];
+	char cix_recover_bin[PATH_MAX];
 	char bzimage_path[PATH_MAX];
 	char squashfs_path[PATH_MAX];
 	char isotools_root[PATH_MAX];
@@ -8630,11 +8630,11 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 		const char *path;
 		const char *what;
 	} required[] = {
-	    {mkinstalleriso_bin, "mkinstalleriso (from a \"thinc\" hostbuild)"},
-	    {thinc_install_bin, "thinc-install (from a \"thinc\" hostbuild)"},
-	    {thinc_recover_bin, "thinc-recover (from a \"thinc\" hostbuild, ADR-0146)"},
+	    {mkinstalleriso_bin, "mkinstalleriso (from a \"cix\" hostbuild)"},
+	    {cix_install_bin, "cix-install (from a \"cix\" hostbuild)"},
+	    {cix_recover_bin, "cix-recover (from a \"cix\" hostbuild, ADR-0146)"},
 	    {bzimage_path, "bzImage (from a \"kernel\" hostbuild)"},
-	    {squashfs_path, "thincd-root.squashfs (from a \"thinc\" hostbuild)"},
+	    {squashfs_path, "cixd-root.squashfs (from a \"cix\" hostbuild)"},
 	    {isotools_root, "isotools artifact directory (from an \"isotools\" hostbuild)"},
 	    {signing_key, "signing key (operator-provided at SIGNING_KEYS_DIR)"},
 	    {signing_cert_pem, "signing cert .crt (operator-provided at SIGNING_KEYS_DIR)"},
@@ -8642,19 +8642,19 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 	};
 	size_t i;
 
-	snprintf(mkinstalleriso_bin, sizeof(mkinstalleriso_bin), "%s/thinc/mkinstalleriso",
+	snprintf(mkinstalleriso_bin, sizeof(mkinstalleriso_bin), "%s/cix/mkinstalleriso",
 	         ARTIFACTS_DIR);
-	snprintf(thinc_install_bin, sizeof(thinc_install_bin), "%s/thinc/thinc-install",
+	snprintf(cix_install_bin, sizeof(cix_install_bin), "%s/cix/cix-install",
 	         ARTIFACTS_DIR);
-	snprintf(thinc_recover_bin, sizeof(thinc_recover_bin), "%s/thinc/thinc-recover",
+	snprintf(cix_recover_bin, sizeof(cix_recover_bin), "%s/cix/cix-recover",
 	         ARTIFACTS_DIR);
 	snprintf(bzimage_path, sizeof(bzimage_path), "%s/kernel/bzImage", ARTIFACTS_DIR);
-	snprintf(squashfs_path, sizeof(squashfs_path), "%s/thinc/thincd-root.squashfs",
+	snprintf(squashfs_path, sizeof(squashfs_path), "%s/cix/cixd-root.squashfs",
 	         ARTIFACTS_DIR);
 	snprintf(isotools_root, sizeof(isotools_root), "%s/isotools", ARTIFACTS_DIR);
-	snprintf(signing_key, sizeof(signing_key), "%s/thinc-signing.key", SIGNING_KEYS_DIR);
-	snprintf(signing_cert_pem, sizeof(signing_cert_pem), "%s/thinc-signing.crt", SIGNING_KEYS_DIR);
-	snprintf(signing_cert_der, sizeof(signing_cert_der), "%s/thinc-signing.cer", SIGNING_KEYS_DIR);
+	snprintf(signing_key, sizeof(signing_key), "%s/cix-signing.key", SIGNING_KEYS_DIR);
+	snprintf(signing_cert_pem, sizeof(signing_cert_pem), "%s/cix-signing.crt", SIGNING_KEYS_DIR);
+	snprintf(signing_cert_der, sizeof(signing_cert_der), "%s/cix-signing.cer", SIGNING_KEYS_DIR);
 
 	for (i = 0; i < sizeof(required) / sizeof(required[0]); i++) {
 		if (access(required[i].path, R_OK) != 0) {
@@ -8672,12 +8672,12 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 	         (interface != NULL && interface[0] != '\0') ? interface : "CHANGEME");
 
 	snprintf(stage_dir, sizeof(stage_dir), "%s/.stage", ISO_DIR);
-	snprintf(ISO_OUTPUT_PATH, sizeof(ISO_OUTPUT_PATH), "%s/thinc-install.iso", ISO_DIR);
+	snprintf(ISO_OUTPUT_PATH, sizeof(ISO_OUTPUT_PATH), "%s/cix-install.iso", ISO_DIR);
 
 	argv[0] = mkinstalleriso_bin;
 	argv[1] = stage_dir;
-	argv[2] = thinc_install_bin;
-	argv[3] = thinc_recover_bin;
+	argv[2] = cix_install_bin;
+	argv[3] = cix_recover_bin;
 	argv[4] = bzimage_path;
 	argv[5] = squashfs_path;
 	argv[6] = signing_key;
@@ -8721,7 +8721,7 @@ static void handle_iso_assemble_event(struct conn *cc)
 {
 	int status;
 
-	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	if (waitpid(cc->pkg_fetch_pid, &status, 0) == cc->pkg_fetch_pid && WIFEXITED(status) &&
 	    WEXITSTATUS(status) == 0) {
 		g_iso_build_state = ISO_BUILD_READY;
@@ -8740,7 +8740,7 @@ static void handle_iso_assemble_event(struct conn *cc)
  * POST /v1/pkg/bootstrap's own toolchain_url mode (ADR-0065): closes a
  * real gap ADR-0031's own "the operator transfers it onto the box
  * out-of-band (scp)" assumption turned out to rest on -- a real,
- * freshly-installed thinC box has no SSH server and no general shell
+ * freshly-installed Cix box has no SSH server and no general shell
  * at all (deliberately, ADR-0034), so there was never actually a way
  * to get a multi-hundred-MB toolchain artifact onto one over the
  * network. Reuses the exact host-side curl-fetch primitive pkg.c's own
@@ -8764,7 +8764,7 @@ static char g_bootstrap_fetch_sha256_expected[PKG_SHA256_MAX];
 static void register_bootstrap_fetch_pidfd(pid_t pid, int pidfd)
 {
 	struct conn *cc;
-	struct thinc_epoll_event ev;
+	struct cix_epoll_event ev;
 
 	cc = malloc(sizeof(*cc));
 	if (cc == NULL) {
@@ -8778,7 +8778,7 @@ static void register_bootstrap_fetch_pidfd(pid_t pid, int pidfd)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = cc;
-	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
 		perror("epoll_ctl ADD bootstrap fetch pidfd");
 		abort();
 	}
@@ -8790,7 +8790,7 @@ static void register_bootstrap_fetch_pidfd(pid_t pid, int pidfd)
 static void register_pkg_sync_fetch_pidfd(pid_t pid, int pidfd)
 {
 	struct conn *cc;
-	struct thinc_epoll_event ev;
+	struct cix_epoll_event ev;
 
 	cc = malloc(sizeof(*cc));
 	if (cc == NULL) {
@@ -8804,7 +8804,7 @@ static void register_pkg_sync_fetch_pidfd(pid_t pid, int pidfd)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = cc;
-	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
 		perror("epoll_ctl ADD pkg sync fetch pidfd");
 		abort();
 	}
@@ -8818,7 +8818,7 @@ static void handle_pkg_sync_fetch_event(struct conn *cc)
 	int status;
 	int exit_status;
 
-	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	if (waitpid(cc->pkg_fetch_pid, &status, 0) == cc->pkg_fetch_pid && WIFEXITED(status))
 		exit_status = WEXITSTATUS(status);
 	else
@@ -8835,7 +8835,7 @@ static void handle_pkg_sync_fetch_event(struct conn *cc)
 static void register_image_recipe_fetch_pidfd(pid_t pid, int pidfd)
 {
 	struct conn *cc;
-	struct thinc_epoll_event ev;
+	struct cix_epoll_event ev;
 
 	cc = malloc(sizeof(*cc));
 	if (cc == NULL) {
@@ -8849,7 +8849,7 @@ static void register_image_recipe_fetch_pidfd(pid_t pid, int pidfd)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = cc;
-	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
 		perror("epoll_ctl ADD image recipe fetch pidfd");
 		abort();
 	}
@@ -8864,7 +8864,7 @@ static void handle_image_recipe_fetch_event(struct conn *cc)
 	int status;
 	int exit_status;
 
-	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	if (waitpid(cc->pkg_fetch_pid, &status, 0) == cc->pkg_fetch_pid && WIFEXITED(status))
 		exit_status = WEXITSTATUS(status);
 	else
@@ -8915,7 +8915,7 @@ static void handle_pkg_sync_periodic_timer_event(struct conn *cc)
  * remains fully usable via manual trigger regardless. */
 static void start_pkg_sync_periodic_timer(void)
 {
-	struct thinc_epoll_event ev;
+	struct cix_epoll_event ev;
 	int fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
 
 	g_pkg_sync_periodic_conn.fd = -1;
@@ -8928,7 +8928,7 @@ static void start_pkg_sync_periodic_timer(void)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = &g_pkg_sync_periodic_conn;
-	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
 		close(fd);
 		g_pkg_sync_periodic_conn.fd = -1;
 		return;
@@ -8975,7 +8975,7 @@ static void handle_backup_periodic_timer_event(struct conn *cc)
  * regardless. */
 static void start_backup_periodic_timer(void)
 {
-	struct thinc_epoll_event ev;
+	struct cix_epoll_event ev;
 	int fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
 
 	g_backup_periodic_conn.fd = -1;
@@ -8988,7 +8988,7 @@ static void start_backup_periodic_timer(void)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = &g_backup_periodic_conn;
-	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
 		close(fd);
 		g_backup_periodic_conn.fd = -1;
 		return;
@@ -9221,7 +9221,7 @@ static void handle_logout(int fd, const char *req_headers, size_t req_headers_le
  * client can answer "is my current bearer token actually still valid"
  * without write-gating's own GETs-are-always-open rule making that
  * otherwise undeterminable (every ordinary GET succeeds whether or not
- * a token is supplied, by design) -- thincctl's own interactive shell
+ * a token is supplied, by design) -- cixctl's own interactive shell
  * prompt (ADR-0164) is the first real caller. No Authorization header
  * at all, or one naming an unknown/expired/absent-session token, both
  * report the same authenticated:false -- this endpoint doesn't
@@ -9494,7 +9494,7 @@ static void handle_bootstrap_fetch_event(struct conn *cc)
 	int status;
 	char sha_out[PKG_SHA256_MAX];
 
-	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	if (waitpid(cc->pkg_fetch_pid, &status, 0) != cc->pkg_fetch_pid || !WIFEXITED(status) ||
 	    WEXITSTATUS(status) != 0) {
 		g_bootstrap_fetch_state = BOOTSTRAP_FETCH_FAILED;
@@ -9542,7 +9542,7 @@ static void handle_bootstrap_fetch_event(struct conn *cc)
 static void register_disk_format_pidfd(pid_t pid, int pidfd)
 {
 	struct conn *cc;
-	struct thinc_epoll_event ev;
+	struct cix_epoll_event ev;
 
 	cc = malloc(sizeof(*cc));
 	if (cc == NULL) {
@@ -9556,7 +9556,7 @@ static void register_disk_format_pidfd(pid_t pid, int pidfd)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = cc;
-	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
 		perror("epoll_ctl ADD disk format pidfd");
 		abort();
 	}
@@ -9572,7 +9572,7 @@ static void handle_disk_format_event(struct conn *cc)
 	int status;
 	int exit_status;
 
-	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	if (waitpid(cc->pkg_fetch_pid, &status, 0) == cc->pkg_fetch_pid && WIFEXITED(status))
 		exit_status = WEXITSTATUS(status);
 	else
@@ -9592,7 +9592,7 @@ static void handle_disk_format_event(struct conn *cc)
 static void register_storage_migrate_pidfd(enum storage_kind kind, pid_t pid, int pidfd)
 {
 	struct conn *cc;
-	struct thinc_epoll_event ev;
+	struct cix_epoll_event ev;
 
 	cc = malloc(sizeof(*cc));
 	if (cc == NULL) {
@@ -9607,7 +9607,7 @@ static void register_storage_migrate_pidfd(enum storage_kind kind, pid_t pid, in
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = cc;
-	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
 		perror("epoll_ctl ADD storage migrate pidfd");
 		abort();
 	}
@@ -9618,7 +9618,7 @@ static void register_storage_migrate_pidfd(enum storage_kind kind, pid_t pid, in
 static void register_container_storage_migrate_pidfd(const char *name, pid_t pid, int pidfd)
 {
 	struct conn *cc;
-	struct thinc_epoll_event ev;
+	struct cix_epoll_event ev;
 
 	cc = malloc(sizeof(*cc));
 	if (cc == NULL) {
@@ -9633,7 +9633,7 @@ static void register_container_storage_migrate_pidfd(const char *name, pid_t pid
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = cc;
-	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
 		perror("epoll_ctl ADD container storage migrate pidfd");
 		abort();
 	}
@@ -9804,7 +9804,7 @@ static void handle_storage_migrate_event(struct conn *cc)
 	int exit_status;
 	enum storage_kind kind = cc->storage_migrate_kind;
 
-	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	if (waitpid(cc->pkg_fetch_pid, &status, 0) == cc->pkg_fetch_pid && WIFEXITED(status))
 		exit_status = WEXITSTATUS(status);
 	else
@@ -10354,7 +10354,7 @@ static int stage_container_file(const char *upperdir, const char *path, const ch
  * Health is keyed by container name; client_uri is free-form URIs, so
  * the two only meet by resolving each registered server's live IP and
  * comparing. Returns the matching registered container name, or NULL
- * for a URI that maps to nothing thinC manages -- which is a real,
+ * for a URI that maps to nothing Cix manages -- which is a real,
  * legitimate case (an operator may point at a directory this platform
  * knows nothing about) and must be left strictly alone rather than
  * filtered on evidence that does not exist.
@@ -10419,7 +10419,7 @@ static const char *ldap_uri_registered_server(const char *uri, char names[][LDAP
  *
  * Three rules, and the two conservative ones matter more than the
  * filtering itself: a URI that maps to no registered server is kept
- * untouched (it may be a directory thinC does not manage), and if
+ * untouched (it may be a directory Cix does not manage), and if
  * filtering would leave nothing, the original list stands. Handing a
  * client a server that might be down beats handing it none -- the
  * client retries; an empty list turns a partial outage into a total one.
@@ -10541,7 +10541,7 @@ static int ldap_effective_client_uri(char *out, size_t out_size)
  * permitted must still run containers. A safety margin that refuses to
  * start the system it protects is not one.
  */
-#define CGROUP_WORKLOAD_PARENT "thinc-workload"
+#define CGROUP_WORKLOAD_PARENT "cix-workload"
 
 static void workload_parent_ensure(void)
 {
@@ -10758,7 +10758,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	pki_issue = (jpki_issue != NULL && jpki_issue->type == JSON_BOOL && jpki_issue->u.boolean);
 	snprintf(pki_cert_dir_buf, sizeof(pki_cert_dir_buf), "%s",
 	         json_as_string(jpki_cert_dir) != NULL ? json_as_string(jpki_cert_dir) :
-	                                                  "/etc/thinc-tls");
+	                                                  "/etc/cix-tls");
 	if (jpki_days != NULL)
 		pki_days = (int)json_as_number(jpki_days);
 
@@ -10784,7 +10784,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 		ldap_uid = (int)json_as_number(jldap_uid);
 	snprintf(ldap_secret_dir_buf, sizeof(ldap_secret_dir_buf), "%s",
 	         json_as_string(jldap_secret_dir) != NULL ? json_as_string(jldap_secret_dir) :
-	                                                     "/etc/thinc-ldap");
+	                                                     "/etc/cix-ldap");
 
 	jrestart = json_object_get(root, "restart");
 	restart_str = json_as_string(jrestart);
@@ -12102,7 +12102,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 			close(output_pipe[0]);
 		snprintf(err_msg, err_msg_size, "failed to create container: %s (%s)",
 		         strerror(create_errno), container_create_last_error_step());
-		logstore_write("thincd", "error", "container %s: failed to create: %s (%s)", name_copy,
+		logstore_write("cixd", "error", "container %s: failed to create: %s (%s)", name_copy,
 		                strerror(create_errno), container_create_last_error_step());
 		return 500;
 	}
@@ -12470,7 +12470,7 @@ static void handle_delete(int fd, const char *name)
 	if (e != NULL) {
 		if (e->reactor_conn != NULL) {
 			cc = e->reactor_conn;
-			thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+			cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 			free(cc);
 			e->reactor_conn = NULL;
 		}
@@ -12660,7 +12660,7 @@ static void finalize_container_storage_migration(const char *name)
 		if (live->reactor_conn != NULL) {
 			struct conn *rc = live->reactor_conn;
 
-			thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, rc->fd, NULL);
+			cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, rc->fd, NULL);
 			free(rc);
 			live->reactor_conn = NULL;
 		}
@@ -12748,7 +12748,7 @@ static void handle_container_storage_migrate_event(struct conn *cc)
 
 	snprintf(name, sizeof(name), "%s", cc->container_storage_migrate_name);
 
-	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	if (waitpid(cc->pkg_fetch_pid, &status, 0) == cc->pkg_fetch_pid && WIFEXITED(status))
 		exit_status = WEXITSTATUS(status);
 	else
@@ -13788,7 +13788,7 @@ static void handle_container_device_detach(int fd, const char *container_name, c
 /* GET /v1/system/kmsg?tail=N -- tail of the kernel ring buffer (/dev/kmsg).
  * The only kernel-log window a shell-less installed host has: dmesg-class
  * diagnostics (mount failures, driver probes, OOM) over the REST API, the same
- * spirit as /v1/system/logs but for the KERNEL's own messages, not thincd's.
+ * spirit as /v1/system/logs but for the KERNEL's own messages, not cixd's.
  * Single-threaded event loop, so a static ring buffer is safe. ADR-0179 phase
  * 2c needed this to read overlayfs's own "mounting read-only" pr_warn on the
  * shell-less .95 box. */
@@ -14642,7 +14642,7 @@ static void handle_stop(int fd, const char *name)
 		 * skipped for a non-running entry, so nothing here can block. */
 		if (e->reactor_conn != NULL) {
 			cc = e->reactor_conn;
-			thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+			cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 			free(cc);
 			e->reactor_conn = NULL;
 		}
@@ -15272,7 +15272,7 @@ static void handle_disk_format_post(int fd, const char *disk_name, const char *b
 	 * every pre-existing request body (no fs_type field at all) keeps
 	 * its exact prior behavior. "btrfs" requires a real mkfs.btrfs to
 	 * actually be staged on this box (btrfs-progs.recipe via a real
-	 * thinc-hosttools image, ADR-0103's own scope note) -- if it
+	 * cix-hosttools image, ADR-0103's own scope note) -- if it
 	 * isn't, the job still starts (this daemon has no cheap way to
 	 * probe for the binary's presence without also handling every
 	 * other reason execve() could fail the same way) but fails fast
@@ -17459,7 +17459,7 @@ static void handle_ldap_server_create(int fd, const char *body, size_t body_len)
 	}
 
 	/* Task #726: populate the freshly-registered server's own config
-	 * file from thinC's own record store, the dns_server_sync_all()
+	 * file from Cix's own record store, the dns_server_sync_all()
 	 * analog -- a fresh/replacement glauth instance starts current
 	 * instead of empty. */
 	ldap_record_sync_all();
@@ -17962,7 +17962,7 @@ static void respond_pki_error(int fd, enum pki_error err)
 static void handle_pki_ca_create(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root = NULL;
-	const char *common_name = "thinC Root CA";
+	const char *common_name = "Cix Root CA";
 	int days = 3650;
 	enum pki_error perr;
 
@@ -18035,7 +18035,7 @@ static void handle_pki_ca_get(int fd)
 static void handle_pki_intermediate_create(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root = NULL;
-	const char *common_name = "thinC Intermediate CA";
+	const char *common_name = "Cix Intermediate CA";
 	int days = 1825;
 	enum pki_error perr;
 
@@ -18267,7 +18267,7 @@ static void redeliver_pki_certs_after_reset(void)
 		if (!pki_cert_owned_by(names[i], names[i]))
 			continue;
 
-		snprintf(cert_dir_buf, sizeof(cert_dir_buf), "/etc/thinc-tls");
+		snprintf(cert_dir_buf, sizeof(cert_dir_buf), "/etc/cix-tls");
 		def = containerdef_find(names[i]);
 		if (def != NULL) {
 			struct json_value *body_root = json_parse(def->body, def->body_len);
@@ -18299,8 +18299,8 @@ static void handle_pki_reset(int fd, const char *body, size_t body_len)
 	enum pki_error perr;
 	struct json_writer w;
 
-	snprintf(root_cn, sizeof(root_cn), "thinC Root CA - %s", siteconfig_domain_suffix());
-	snprintf(intermediate_cn, sizeof(intermediate_cn), "thinC Intermediate CA - %s",
+	snprintf(root_cn, sizeof(root_cn), "Cix Root CA - %s", siteconfig_domain_suffix());
+	snprintf(intermediate_cn, sizeof(intermediate_cn), "Cix Intermediate CA - %s",
 	         siteconfig_domain_suffix());
 
 	if (body_len > 0) {
@@ -18492,7 +18492,7 @@ static void handle_pkg_bootstrap_get(int fd)
  * itself, host-side, the same real curl primitive every recipe
  * source already uses -- closing the real gap the other two modes
  * both rest on (an operator "transferring it onto the box out-of-
- * band" assumes an SSH server a real, freshly-installed thinC box
+ * band" assumes an SSH server a real, freshly-installed Cix box
  * simply doesn't have, ADR-0034). Async, 202, poll GET /pkg/bootstrap.
  */
 static void handle_pkg_bootstrap(int fd, const char *body, size_t body_len)
@@ -18934,7 +18934,7 @@ static void handle_pkg_build_log_get(int fd, const char *file)
 	 * piping it to a file would never see a header. */
 	if (total > n) {
 		snprintf(header, sizeof(header),
-		         "[thinC: showing the last %lld of %lld bytes -- the tail is where the failure "
+		         "[Cix: showing the last %lld of %lld bytes -- the tail is where the failure "
 		         "is; fetch the file itself for the whole log]\n",
 		         n, total);
 	} else {
@@ -19265,7 +19265,7 @@ static char g_kernel_releases_error[256];
 static void register_kernel_releases_pidfd(pid_t pid, int pidfd)
 {
 	struct conn *cc;
-	struct thinc_epoll_event ev;
+	struct cix_epoll_event ev;
 
 	cc = malloc(sizeof(*cc));
 	if (cc == NULL) {
@@ -19279,7 +19279,7 @@ static void register_kernel_releases_pidfd(pid_t pid, int pidfd)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = cc;
-	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
 		perror("epoll_ctl ADD kernel releases pidfd");
 		abort();
 	}
@@ -19341,7 +19341,7 @@ static void handle_kernel_releases_fetch_event(struct conn *cc)
 {
 	int status;
 
-	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	g_kernel_releases_fetching = 0;
 	if (waitpid(cc->pkg_fetch_pid, &status, 0) != cc->pkg_fetch_pid || !WIFEXITED(status) ||
 	    WEXITSTATUS(status) != 0) {
@@ -19530,7 +19530,7 @@ static void dhcp_apply_and_maybe_restart(void)
 		 */
 		arm_rolling_restart_timer(names[i], rolling_jitter_seconds(DHCP_RESTART_JITTER_SECONDS));
 	}
-	logstore_write("thincd", "info",
+	logstore_write("cixd", "info",
 	               "dhcp: ranges changed -- rolling %d DNS/DHCP server(s) so they take effect",
 	               count);
 }
@@ -20580,7 +20580,7 @@ static void handle_pkg_install(int fd, const char *body, size_t body_len)
 /*
  * POST /v1/pkg/hostbuild (ADR-0056): the second mode of the same
  * fetch/build pipeline handle_pkg_install() drives above -- builds a
- * standalone host artifact (a kernel bzImage, a fresh thincd-root
+ * standalone host artifact (a kernel bzImage, a fresh cixd-root
  * squashfs's own components) instead of installing into a container
  * image's rootfs. Reuses register_pkg_fetch_pidfd()/respond_pkg_error()
  * completely unmodified; the only new plumbing is pkg_hostbuild_start()
@@ -20740,15 +20740,15 @@ static void handle_pkg_resume(int fd, const char *body, size_t body_len)
 		close(stdio_write_fd);
 
 	if (rerr == REGISTRY_ERR_CREATE_FAILED)
-		logstore_write("thincd", "error", "pkgbuild resume (%s): container_create failed: %s",
+		logstore_write("cixd", "error", "pkgbuild resume (%s): container_create failed: %s",
 		                build_container_name, container_create_last_error_step());
 	else if (rerr == REGISTRY_ERR_DUPLICATE)
-		logstore_write("thincd", "error",
+		logstore_write("cixd", "error",
 		                "pkgbuild resume (%s): a registry entry with this name already exists "
 		                "(stale leftover?)",
 		                build_container_name);
 	else if (rerr == REGISTRY_ERR_FULL)
-		logstore_write("thincd", "error", "pkgbuild resume (%s): registry table full",
+		logstore_write("cixd", "error", "pkgbuild resume (%s): registry table full",
 		                build_container_name);
 
 	if (rerr != REGISTRY_OK) {
@@ -20773,7 +20773,7 @@ static void handle_pkg_resume(int fd, const char *body, size_t body_len)
 }
 
 /* GET /v1/pkg/hostbuild/{name} -- status/artifact_path polling for a
- * hostbuild job, the exact shape thincctl pkg hostbuild --wait polls. */
+ * hostbuild job, the exact shape cixctl pkg hostbuild --wait polls. */
 static void handle_pkg_hostbuild_get(int fd, const char *name)
 {
 	struct json_writer w;
@@ -21085,7 +21085,7 @@ static void dispatch(int fd, const struct http_request *req)
 		stallwatch_activity(activity);
 	}
 
-	/* Every thincctl command and every web UI action already goes
+	/* Every cixctl command and every web UI action already goes
 	 * through this exact function (API-First Mandate, no exceptions)
 	 * -- one log call here is a complete audit trail of every real
 	 * action taken via either client, with zero client-side
@@ -22767,7 +22767,7 @@ static void dispatch(int fd, const struct http_request *req)
  * all (packages stage into usr/bin -- confirmed directly against a
  * real running container while building this, see docs/roadmap/ROADMAP.md);
  * "/bin/sh" would fail on every one of them. This is only a default:
- * X-thinC-Exec-Cmd overrides it, and a container whose image has
+ * X-Cix-Exec-Cmd overrides it, and a container whose image has
  * neither this nor an override installed simply fails to exec --
  * a real, expected limitation (see this phase's own ADR), not a bug.
  */
@@ -22815,7 +22815,7 @@ static enum console_route_result try_console_upgrade(struct conn *cc, const stru
 	int rlen;
 	struct console_exec_session *sess;
 	struct conn *pty_cc;
-	struct thinc_epoll_event ev;
+	struct cix_epoll_event ev;
 
 	if (strcmp(req->method, "GET") != 0)
 		return CONSOLE_NOT_MATCHED;
@@ -22877,7 +22877,7 @@ static enum console_route_result try_console_upgrade(struct conn *cc, const stru
 		return CONSOLE_FAILED;
 	}
 
-	if (http_find_header(req->headers, req->headers_len, "X-thinC-Exec-Cmd", cmd_override, sizeof(cmd_override)) >= 0 &&
+	if (http_find_header(req->headers, req->headers_len, "X-Cix-Exec-Cmd", cmd_override, sizeof(cmd_override)) >= 0 &&
 	    cmd_override[0] != '\0')
 		cmd = cmd_override;
 	else
@@ -22893,7 +22893,7 @@ static enum console_route_result try_console_upgrade(struct conn *cc, const stru
 	if (exec_into_container(entry->handle.pid, cmd_argv, &master_fd, &exec_pid) != 0) {
 		/* task #764: exec_into_container()'s own diagnostics
 		 * (daemon/src/exec.c's fprintf(stderr,...) calls) go to
-		 * thincd's own stderr -- invisible to a REST client on a
+		 * cixd's own stderr -- invisible to a REST client on a
 		 * real installed box with no host shell access, exactly the
 		 * gap that made a live-only console failure unreachable to
 		 * diagnose during task #760's sweep. errno is preserved by
@@ -22970,7 +22970,7 @@ static enum console_route_result try_console_upgrade(struct conn *cc, const stru
 
 	ev.events = EPOLLIN;
 	ev.data.ptr = pty_cc;
-	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, pty_cc->fd, &ev) != 0) {
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, pty_cc->fd, &ev) != 0) {
 		/* Extremely unlikely (fd/epoll exhaustion) -- tear the whole
 		 * session down the normal way (queues cc for deferred free
 		 * too) rather than leaving half of it dangling. */
@@ -23138,7 +23138,7 @@ static enum console_route_result try_pkg_build_log_upgrade(struct conn *cc, cons
 	snapshot_len = pkg_build_output_snapshot(chain_idx, snapshot, sizeof(snapshot));
 	if (snapshot_len > 0 && ws_write_frame(cc->fd, WS_OPCODE_TEXT, snapshot, (size_t)snapshot_len) != 0) {
 		build_log_ws_detach(cc);
-		thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+		cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 		ws_conn_free(&cc->ws);
 		close(cc->fd);
 		free(cc);
@@ -23190,7 +23190,7 @@ static void handle_pkg_build_log_ws_event(struct conn *cc)
 
 gone:
 	build_log_ws_detach(cc);
-	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	ws_conn_free(&cc->ws);
 	close(cc->fd);
 	free(cc);
@@ -23227,7 +23227,7 @@ static void handle_console_ws_event(struct conn *cc)
 
 			if (frame.opcode == WS_OPCODE_TEXT || frame.opcode == WS_OPCODE_BINARY) {
 				if (frame.payload_len > 0 &&
-				    thinc_write_all(cc->exec_session->pty_conn->fd, frame.payload, frame.payload_len) !=
+				    cix_write_all(cc->exec_session->pty_conn->fd, frame.payload, frame.payload_len) !=
 				        0) {
 					ws_conn_consume(&cc->ws, frame.frame_len);
 					console_session_teardown(cc->exec_session);
@@ -23289,7 +23289,7 @@ static void handle_console_pty_event(struct conn *cc)
  * HTTPS port with an untrusted cert floods the console non-stop with
  * multi-line OpenSSL traces for something that isn't an error an
  * operator can or needs to act on. Routed through logstore instead
- * (source "thincd", "warning") as a single summary line per failure,
+ * (source "cixd", "warning") as a single summary line per failure,
  * discoverable via the API like everything else, never spamming the
  * console; still drains the whole error queue (ERR_get_error() in a
  * loop) so it can't silently accumulate across repeated failures --
@@ -23315,7 +23315,7 @@ static void log_tls_error(const char *context, const char *peer_ip, int should_l
 	unsigned long e;
 
 	if (first != 0 && should_log)
-		logstore_write("thincd", "warning", "%s from %s: %s", context, peer_ip,
+		logstore_write("cixd", "warning", "%s from %s: %s", context, peer_ip,
 		                ERR_reason_error_string(first));
 	while ((e = ERR_get_error()) != 0)
 		; /* drain the rest of the queue silently -- see this function's own comment */
@@ -23329,7 +23329,7 @@ static void log_tls_error(const char *context, const char *peer_ip, int should_l
  */
 static void client_conn_teardown(struct conn *cc)
 {
-	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	if (cc->ssl != NULL) {
 		tls_unregister(cc->fd);
 		SSL_free(cc->ssl);
@@ -23360,7 +23360,7 @@ static int client_conn_advance_handshake(struct conn *cc)
 {
 	int r;
 	int err;
-	struct thinc_epoll_event ev;
+	struct cix_epoll_event ev;
 
 	r = SSL_accept(cc->ssl);
 	if (r == 1) {
@@ -23375,7 +23375,7 @@ static int client_conn_advance_handshake(struct conn *cc)
 		memset(&ev, 0, sizeof(ev));
 		ev.events = EPOLLIN | EPOLLOUT;
 		ev.data.ptr = cc;
-		thinc_epoll_ctl(g_epfd, EPOLL_CTL_MOD, cc->fd, &ev);
+		cix_epoll_ctl(g_epfd, EPOLL_CTL_MOD, cc->fd, &ev);
 		return 0;
 	}
 	log_tls_error("https handshake failed", cc->peer_ip, connthrottle_should_log_failure(cc->peer_ip));
@@ -23407,12 +23407,12 @@ static void handle_client_event(struct conn *cc)
 		 * application data immediately below, not on the next event
 		 * (SSL_pending() may already be nonzero). */
 		{
-			struct thinc_epoll_event ev;
+			struct cix_epoll_event ev;
 
 			memset(&ev, 0, sizeof(ev));
 			ev.events = EPOLLIN;
 			ev.data.ptr = cc;
-			thinc_epoll_ctl(g_epfd, EPOLL_CTL_MOD, cc->fd, &ev);
+			cix_epoll_ctl(g_epfd, EPOLL_CTL_MOD, cc->fd, &ev);
 		}
 	}
 
@@ -23506,7 +23506,7 @@ static void arm_restart_timer(const char *name, int delay_seconds)
 	int tfd;
 	struct itimerspec its;
 	struct conn *cc;
-	struct thinc_epoll_event ev;
+	struct cix_epoll_event ev;
 
 	tfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
 	if (tfd < 0) {
@@ -23535,7 +23535,7 @@ static void arm_restart_timer(const char *name, int delay_seconds)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = cc;
-	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, tfd, &ev) != 0) {
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, tfd, &ev) != 0) {
 		perror("epoll_ctl ADD restart timer");
 		close(tfd);
 		free(cc);
@@ -23566,7 +23566,7 @@ static void handle_restart_timer_event(struct conn *cc)
 	if (read(cc->fd, &expirations, sizeof(expirations)) < 0)
 		perror("read (restart timerfd)");
 
-	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	close(cc->fd);
 
 	def = containerdef_find(cc->restart_name);
@@ -23620,7 +23620,7 @@ static void arm_rolling_restart_timer(const char *name, int delay_seconds)
 	int tfd;
 	struct itimerspec its;
 	struct conn *cc;
-	struct thinc_epoll_event ev;
+	struct cix_epoll_event ev;
 
 	tfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
 	if (tfd < 0) {
@@ -23651,7 +23651,7 @@ static void arm_rolling_restart_timer(const char *name, int delay_seconds)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = cc;
-	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, tfd, &ev) != 0) {
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, tfd, &ev) != 0) {
 		perror("epoll_ctl ADD rolling restart timer");
 		close(tfd);
 		free(cc);
@@ -23686,7 +23686,7 @@ static void handle_rolling_restart_timer_event(struct conn *cc)
 	if (read(cc->fd, &expirations, sizeof(expirations)) < 0)
 		perror("read (rolling restart timerfd)");
 
-	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	close(cc->fd);
 
 	def = containerdef_find(cc->restart_name);
@@ -23697,7 +23697,7 @@ static void handle_rolling_restart_timer_event(struct conn *cc)
 			if (live->reactor_conn != NULL) {
 				struct conn *rc = live->reactor_conn;
 
-				thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, rc->fd, NULL);
+				cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, rc->fd, NULL);
 				free(rc);
 				live->reactor_conn = NULL;
 			}
@@ -23865,7 +23865,7 @@ static void handle_container_event(struct conn *cc)
 	char hostbuild_done_name[PKG_NAME_MAX];
 	int kept_build_container;
 
-	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	registry_mark_exited(entry);
 	entry->reactor_conn = NULL;
 	free(cc);
@@ -23909,17 +23909,17 @@ static void handle_container_event(struct conn *cc)
 		try_start_queued_pkg_rebuild();
 
 	/*
-	 * ADR-0057: "thinc" is the one hostbuild name this daemon gives
+	 * ADR-0057: "cix" is the one hostbuild name this daemon gives
 	 * any further meaning to -- everything else pkg.c handles is
 	 * completely generic. Deliberately a plain string match here in
 	 * main.c, not a flag/callback registered in pkg.c itself: pkg.c
 	 * stays fully agnostic to what any package *means*.
 	 */
-	if (hostbuild_done_name[0] != '\0' && strcmp(hostbuild_done_name, "thinc") == 0) {
+	if (hostbuild_done_name[0] != '\0' && strcmp(hostbuild_done_name, "cix") == 0) {
 		char artifact_dir[PATH_MAX];
 
 		snprintf(artifact_dir, sizeof(artifact_dir), "%s/%s", ARTIFACTS_DIR, hostbuild_done_name);
-		spawn_thinc_bootroot_assembly(artifact_dir);
+		spawn_cix_bootroot_assembly(artifact_dir);
 	}
 
 	/*
@@ -24051,7 +24051,7 @@ static void handle_pkg_fetch_event(struct conn *cc)
 	int stdio_write_fd;
 	int chain_idx = cc->pkg_chain_idx;
 
-	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	if (waitpid(cc->pkg_fetch_pid, &status, 0) == cc->pkg_fetch_pid && WIFEXITED(status))
 		exit_status = WEXITSTATUS(status);
 	else
@@ -24094,15 +24094,15 @@ static void handle_pkg_fetch_event(struct conn *cc)
 			close(stdio_write_fd);
 
 		if (rerr == REGISTRY_ERR_CREATE_FAILED)
-			logstore_write("thincd", "error", "pkgbuild container spawn (%s): container_create failed: %s",
+			logstore_write("cixd", "error", "pkgbuild container spawn (%s): container_create failed: %s",
 			                build_container_name, container_create_last_error_step());
 		else if (rerr == REGISTRY_ERR_DUPLICATE)
-			logstore_write("thincd", "error",
+			logstore_write("cixd", "error",
 			                "pkgbuild container spawn (%s): a registry entry with this name "
 			                "already exists (stale leftover?)",
 			                build_container_name);
 		else if (rerr == REGISTRY_ERR_FULL)
-			logstore_write("thincd", "error",
+			logstore_write("cixd", "error",
 			                "pkgbuild container spawn (%s): registry table full", build_container_name);
 
 		if (rerr != REGISTRY_OK) {
@@ -24119,10 +24119,10 @@ static void handle_pkg_fetch_event(struct conn *cc)
 }
 
 /*
- * Reaps spawn_thinc_bootroot_assembly()'s own mkbootroot child.
+ * Reaps spawn_cix_bootroot_assembly()'s own mkbootroot child.
  * Nothing further to dispatch on completion -- either
- * <artifact_dir>/thincd-root.squashfs now exists (success, ready for
- * `pkg hostbuild thinc --deploy` to pick up) or it doesn't (logged
+ * <artifact_dir>/cixd-root.squashfs now exists (success, ready for
+ * `pkg hostbuild cix --deploy` to pick up) or it doesn't (logged
  * failure, the hostbuild's own artifacts are still there to retry
  * from). No REST response is waiting on this -- the original POST
  * /v1/pkg/hostbuild already returned 202 long before this fires.
@@ -24143,7 +24143,7 @@ static void handle_bootroot_assemble_event(struct conn *cc)
 	char output[BOOTROOT_OUTPUT_CAPTURE_MAX + 1];
 	ssize_t output_len;
 
-	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	reaped = waitpid(cc->pkg_fetch_pid, &status, 0);
 	/*
 	 * ADR-0087: g_bootroot_output_captured has already been
@@ -24168,7 +24168,7 @@ static void handle_bootroot_assemble_event(struct conn *cc)
 	/*
 	 * task #737: only a real, confirmed success ever advances the
 	 * completed generation -- at most one assembly is ever in flight
-	 * (only triggered by the "thinc" hostbuild's own single-job-
+	 * (only triggered by the "cix" hostbuild's own single-job-
 	 * constrained completion event), so g_bootroot_assembly_started's
 	 * current value is unambiguously *this* attempt's own generation
 	 * number at the moment it resolves, whichever way it resolves.
@@ -24176,8 +24176,8 @@ static void handle_bootroot_assemble_event(struct conn *cc)
 	g_bootroot_assembly_running = 0;
 	if (reaped == cc->pkg_fetch_pid && WIFEXITED(status) && WEXITSTATUS(status) == 0) {
 		g_bootroot_assembly_completed = g_bootroot_assembly_started;
-		fprintf(stderr, "thinc bootroot assembly: succeeded\n");
-		logstore_write("thincd", "info", "thinc bootroot assembly: succeeded");
+		fprintf(stderr, "cix bootroot assembly: succeeded\n");
+		logstore_write("cixd", "info", "cix bootroot assembly: succeeded");
 		/*
 		 * A real diagnostic gap closed here, not just for tonight:
 		 * mkbootroot exiting 0 was previously trusted as the whole
@@ -24193,26 +24193,26 @@ static void handle_bootroot_assemble_event(struct conn *cc)
 		 * keeping visible.
 		 */
 		if (output_len > 0)
-			logstore_write("thincd", "info", "thinc bootroot assembly: output: %s", output);
+			logstore_write("cixd", "info", "cix bootroot assembly: output: %s", output);
 	} else if (reaped != cc->pkg_fetch_pid) {
-		fprintf(stderr, "thinc bootroot assembly: waitpid failed\n");
-		logstore_write("thincd", "error", "thinc bootroot assembly: waitpid failed: %s",
+		fprintf(stderr, "cix bootroot assembly: waitpid failed\n");
+		logstore_write("cixd", "error", "cix bootroot assembly: waitpid failed: %s",
 		                strerror(errno));
 	} else if (WIFEXITED(status)) {
-		fprintf(stderr, "thinc bootroot assembly: failed (exit %d)\n", WEXITSTATUS(status));
-		logstore_write("thincd", "error", "thinc bootroot assembly: mkbootroot exited %d",
+		fprintf(stderr, "cix bootroot assembly: failed (exit %d)\n", WEXITSTATUS(status));
+		logstore_write("cixd", "error", "cix bootroot assembly: mkbootroot exited %d",
 		                WEXITSTATUS(status));
 		if (output_len > 0)
-			logstore_write("thincd", "error", "thinc bootroot assembly: output: %s", output);
+			logstore_write("cixd", "error", "cix bootroot assembly: output: %s", output);
 	} else if (WIFSIGNALED(status)) {
-		fprintf(stderr, "thinc bootroot assembly: killed by signal %d\n", WTERMSIG(status));
-		logstore_write("thincd", "error", "thinc bootroot assembly: mkbootroot killed by signal %d",
+		fprintf(stderr, "cix bootroot assembly: killed by signal %d\n", WTERMSIG(status));
+		logstore_write("cixd", "error", "cix bootroot assembly: mkbootroot killed by signal %d",
 		                WTERMSIG(status));
 		if (output_len > 0)
-			logstore_write("thincd", "error", "thinc bootroot assembly: output: %s", output);
+			logstore_write("cixd", "error", "cix bootroot assembly: output: %s", output);
 	} else {
-		fprintf(stderr, "thinc bootroot assembly: failed\n");
-		logstore_write("thincd", "error", "thinc bootroot assembly: failed");
+		fprintf(stderr, "cix bootroot assembly: failed\n");
+		logstore_write("cixd", "error", "cix bootroot assembly: failed");
 	}
 	close(cc->fd);
 	free(cc);
@@ -24228,7 +24228,7 @@ static void handle_bootroot_assemble_event(struct conn *cc)
 static void register_console_shell_pidfd(pid_t pid, int pidfd, const char *tty_path)
 {
 	struct conn *cc;
-	struct thinc_epoll_event ev;
+	struct cix_epoll_event ev;
 
 	cc = malloc(sizeof(*cc));
 	if (cc == NULL) {
@@ -24244,7 +24244,7 @@ static void register_console_shell_pidfd(pid_t pid, int pidfd, const char *tty_p
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = cc;
-	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
 		perror("epoll_ctl ADD console shell pidfd");
 		close(pidfd);
 		free(cc);
@@ -24252,21 +24252,21 @@ static void register_console_shell_pidfd(pid_t pid, int pidfd, const char *tty_p
 }
 
 /*
- * Forks a console-login child bound to tty_path and execve()s thincctl
- * into it with no command -- thincctl's own isatty(STDIN_FILENO) check
+ * Forks a console-login child bound to tty_path and execve()s cixctl
+ * into it with no command -- cixctl's own isatty(STDIN_FILENO) check
  * (Phase 18) then drops it straight into run_shell(). setsid() detaches
  * any inherited controlling terminal (moot for a PID 1 caller, which
  * never had one) so the following open() of tty_path, being this new
  * session's first tty open without O_NOCTTY, makes it that session's
  * controlling terminal -- standard Linux tty semantics, no explicit
  * TIOCSCTTY needed. That isolation is what keeps a Ctrl-C typed at this
- * console from ever reaching thincd itself: it lands on this child's
- * own, separate session/process group only. Talks to thincd over real
- * HTTP via g_bind_addr/g_port like any other thincctl invocation --
+ * console from ever reaching cixd itself: it lands on this child's
+ * own, separate session/process group only. Talks to cixd over real
+ * HTTP via g_bind_addr/g_port like any other cixctl invocation --
  * this is still a pure REST client, API-First Mandate intact, just
  * running on the same host it's talking to.
  *
- * A failed open()/execve() (tty genuinely absent, thincctl missing) is
+ * A failed open()/execve() (tty genuinely absent, cixctl missing) is
  * non-fatal: the child just exits, the pidfd event still fires, and
  * handle_console_shell_event() arms a respawn -- the same "keep trying
  * forever" a real getty already has for an unready device.
@@ -24287,7 +24287,7 @@ static void spawn_console_shell(const char *tty_path)
 	}
 	if (pid == 0) {
 		int fd;
-		char *argv[] = { (char *)"thincctl", host_arg, port_arg, NULL };
+		char *argv[] = { (char *)"cixctl", host_arg, port_arg, NULL };
 
 		setsid();
 		fd = open(tty_path, O_RDWR);
@@ -24300,8 +24300,8 @@ static void spawn_console_shell(const char *tty_path)
 		dup2(fd, STDERR_FILENO);
 		if (fd > STDERR_FILENO)
 			close(fd);
-		execve("/bin/thincctl", argv, environ);
-		perror("execve /bin/thincctl");
+		execve("/bin/cixctl", argv, environ);
+		perror("execve /bin/cixctl");
 		_exit(127);
 	}
 
@@ -24317,7 +24317,7 @@ static void spawn_console_shell(const char *tty_path)
  * Arms a one-shot delay before respawning a console shell on tty_path --
  * same timerfd + epoll shape as arm_restart_timer() (container crash-
  * restart backoff), reused here so a console shell that exits instantly
- * on every respawn (thincctl missing, tty genuinely broken) can't spin
+ * on every respawn (cixctl missing, tty genuinely broken) can't spin
  * the reactor in a tight fork loop.
  */
 static void arm_console_respawn_timer(const char *tty_path, int delay_seconds)
@@ -24325,7 +24325,7 @@ static void arm_console_respawn_timer(const char *tty_path, int delay_seconds)
 	int tfd;
 	struct itimerspec its;
 	struct conn *cc;
-	struct thinc_epoll_event ev;
+	struct cix_epoll_event ev;
 
 	tfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
 	if (tfd < 0) {
@@ -24354,7 +24354,7 @@ static void arm_console_respawn_timer(const char *tty_path, int delay_seconds)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = cc;
-	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, tfd, &ev) != 0) {
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, tfd, &ev) != 0) {
 		perror("epoll_ctl ADD console respawn timer");
 		close(tfd);
 		free(cc);
@@ -24370,7 +24370,7 @@ static void handle_console_shell_event(struct conn *cc)
 	int status;
 	char tty_path[sizeof(cc->console_tty)];
 
-	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	waitpid(cc->console_pid, &status, 0);
 	close(cc->fd);
 	snprintf(tty_path, sizeof(tty_path), "%s", cc->console_tty);
@@ -24390,7 +24390,7 @@ static void handle_console_respawn_timer_event(struct conn *cc)
 	if (read(cc->fd, &expirations, sizeof(expirations)) < 0)
 		perror("read (console respawn timerfd)");
 
-	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	close(cc->fd);
 	snprintf(tty_path, sizeof(tty_path), "%s", cc->console_tty);
 	free(cc);
@@ -24411,7 +24411,7 @@ static void accept_loop(struct conn *listener)
 {
 	int client_fd;
 	struct conn *cc;
-	struct thinc_epoll_event ev;
+	struct cix_epoll_event ev;
 	int is_tls = (listener->kind == CONN_LISTENER_TLS);
 	struct sockaddr_in peer_addr;
 	socklen_t peer_len;
@@ -24486,7 +24486,7 @@ static void accept_loop(struct conn *listener)
 		memset(&ev, 0, sizeof(ev));
 		ev.events = EPOLLIN;
 		ev.data.ptr = cc;
-		if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, client_fd, &ev) != 0) {
+		if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, client_fd, &ev) != 0) {
 			perror("epoll_ctl ADD client");
 			if (cc->ssl != NULL) {
 				tls_unregister(client_fd);
@@ -24658,7 +24658,7 @@ static void containerdef_autostart_all(void)
  * mutation of that state). Treating that as fatal made sense for a
  * dev/test invocation (fail fast, not real PID 1, an ordinary process
  * exit) but is a genuine, confirmed-the-hard-way bug for a real
- * --init-mode boot: thincd IS real PID 1 there, so main() returning at
+ * --init-mode boot: cixd IS real PID 1 there, so main() returning at
  * all is a kernel panic ("Attempted to kill init!"), not just a failed
  * daemon start -- a single corrupted state file (a bad restore, a
  * truncated write, disk corruption) was capable of taking the entire
@@ -24695,7 +24695,7 @@ int main(int argc, char **argv)
 	const char *test_bootstrap_toolchain = NULL;
 	int i;
 	int listen_fd;
-	struct thinc_epoll_event ev;
+	struct cix_epoll_event ev;
 	struct sigaction sa;
 
 	/* Stamped before anything else so a slow startup (image scan, state
@@ -25106,7 +25106,7 @@ int main(int argc, char **argv)
 	/*
 	 * Issue #86: make the control plane hard to starve.
 	 *
-	 * On a real install thincd IS the machine's only management channel:
+	 * On a real install cixd IS the machine's only management channel:
 	 * no SSH, no general shell (ADR-0034). Losing it does not degrade the
 	 * box, it removes every way in short of the hypervisor -- which is
 	 * exactly what happened when four concurrent package builds
@@ -25126,7 +25126,7 @@ int main(int argc, char **argv)
 	/*
 	 * ensure_dir()'s directory scaffolding and each module's own
 	 * state-init above are real writes onto BASE_DIR -- the real
-	 * thinc-containers partition as of this change (ADR-0018), not a
+	 * cix-containers partition as of this change (ADR-0018), not a
 	 * tmpfs. QEMU's default `-drive` cache mode (writeback) only
 	 * guarantees those bytes reach the actual disk image once the
 	 * guest itself issues a flush; without this, they'd sit in the
@@ -25243,7 +25243,7 @@ int main(int argc, char **argv)
 	ldap_record_sync_all();
 
 	/* Console login (Phase 19): a real console needs something to walk
-	 * up to, once boot is fully healthy -- never for a dev/test thincd
+	 * up to, once boot is fully healthy -- never for a dev/test cixd
 	 * (no --init-mode), which is already running attached to a real
 	 * developer's own terminal and must never fork a second process to
 	 * fight it over. Both consoles get an independent instance -- either
@@ -25262,7 +25262,7 @@ int main(int argc, char **argv)
 	stallwatch_start(STALLWATCH_RECORDS_PATH);
 
 	while (!g_stop) {
-		struct thinc_epoll_event events[MAX_EVENTS];
+		struct cix_epoll_event events[MAX_EVENTS];
 		/*
 		 * One-second timeout rather than an indefinite block: the
 		 * heartbeat below has to happen even with nothing to do, or an
@@ -25270,7 +25270,7 @@ int main(int argc, char **argv)
 		 * A wakeup per second costs nothing next to the per-2s polling
 		 * every dashboard client already does.
 		 */
-		int n = thinc_epoll_wait(g_epfd, events, MAX_EVENTS, 1000);
+		int n = cix_epoll_wait(g_epfd, events, MAX_EVENTS, 1000);
 		int j;
 		struct conn *cc;
 
@@ -25395,18 +25395,18 @@ int main(int argc, char **argv)
 		SSL_CTX_free(g_tls_ctx);
 	}
 	close(g_epfd);
-	printf("thincd shutting down\n");
+	printf("cixd shutting down\n");
 	fflush(stdout);
 
 	/* As real PID 1 (--init-mode), a bare `return 0` here is exactly
 	 * "init exited" -- the kernel panics unconditionally regardless of
-	 * how gracefully thincd itself shut down first. reboot(2) is the
+	 * how gracefully cixd itself shut down first. reboot(2) is the
 	 * actual, correct way for an init process to end its own life; a
 	 * dev/test invocation (no --init-mode, e.g. every test/*.c fork+
 	 * execve) is never PID 1 and just returns normally, exactly as it
 	 * always has -- reboot(2) is never reachable from there regardless
 	 * of what set g_shutdown_action (SIGTERM/SIGINT default to
-	 * SHUTDOWN_ACTION_POWEROFF; the same tests already send thincd
+	 * SHUTDOWN_ACTION_POWEROFF; the same tests already send cixd
 	 * SIGTERM to end sessions today). */
 	if (init_mode) {
 		sync();

@@ -140,14 +140,14 @@ static int write_minimal_passwd_group(const char *image_root)
 	return 0;
 }
 
-static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
+static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 {
 	int i;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			thinc_response_free(&r);
+		if (cix_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			cix_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -251,9 +251,9 @@ int main(void)
 	pid_t daemon_pid;
 	char *dargv[5];
 	char data_dir_arg[PATH_MAX + 11];
-	struct thinc_client client;
+	struct cix_client client;
 	int ok = 1;
-	struct thinc_response r;
+	struct cix_response r;
 	char server_ip[64] = { 0 };
 	char dig_out[256];
 	size_t i;
@@ -298,7 +298,7 @@ int main(void)
 	}
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
-	dargv[0] = "build/thincd";
+	dargv[0] = "build/cixd";
 	dargv[1] = PORT_ARG;
 	dargv[2] = data_dir_arg;
 	dargv[3] = BIND_ARG;
@@ -311,12 +311,12 @@ int main(void)
 		return 1;
 	}
 	if (daemon_pid == 0) {
-		execve("build/thincd", dargv, environ);
-		perror("execve build/thincd");
+		execve("build/cixd", dargv, environ);
+		perror("execve build/cixd");
 		_exit(127);
 	}
 
-	thinc_client_init(&client, TEST_BIND, TEST_PORT);
+	cix_client_init(&client, TEST_BIND, TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
@@ -329,24 +329,24 @@ int main(void)
 	 * 0. ADR-0053: reconcile_instance_dns_record() runs once at daemon
 	 * startup -- with a real, specific --bind= address (TEST_BIND, not
 	 * the default 127.0.0.1 this function deliberately skips), a
-	 * record for the default FQDN ("thinc.internal" -- default
+	 * record for the default FQDN ("cix.internal" -- default
 	 * instance_name/domain_suffix, no site config touched yet) must
 	 * already exist without any PUT ever happening.
 	 */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/dns/records/thinc.internal", NULL, &r) != 0 ||
+	if (cix_client_request(&client, "GET", "/v1/dns/records/cix.internal", NULL, &r) != 0 ||
 	    r.status != 200 || !str_eq(json_str_field(r.json, "ip"), TEST_BIND)) {
 		fprintf(stderr,
 		        "FAIL: instance DNS record for default FQDN missing at startup, status=%d\n",
 		        r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* A live rename must delete the old record and create the new one
 	 * -- not leave both, not leave neither. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "PUT", "/v1/system/site",
+	if (cix_client_request(&client, "PUT", "/v1/system/site",
 	                       "{\"instance_name\":\"dnstesthost2\",\"site_name\":\"\","
 	                       "\"domain_suffix\":\"internal\"}",
 	                       &r) != 0 ||
@@ -354,73 +354,73 @@ int main(void)
 		fprintf(stderr, "FAIL: PUT site config (instance rename), status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/dns/records/dnstesthost2.internal", NULL, &r) !=
+	if (cix_client_request(&client, "GET", "/v1/dns/records/dnstesthost2.internal", NULL, &r) !=
 	        0 ||
 	    r.status != 200 || !str_eq(json_str_field(r.json, "ip"), TEST_BIND)) {
 		fprintf(stderr, "FAIL: instance DNS record did not follow rename, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/dns/records/thinc.internal", NULL, &r) != 0 ||
+	if (cix_client_request(&client, "GET", "/v1/dns/records/cix.internal", NULL, &r) != 0 ||
 	    r.status != 404) {
 		fprintf(stderr, "FAIL: old instance DNS record still present after rename, status=%d\n",
 		        r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
-	thinc_client_request(&client, "DELETE", "/v1/dns/records/dnstesthost2.internal", NULL, &r);
-	thinc_response_free(&r);
+	cix_client_request(&client, "DELETE", "/v1/dns/records/dnstesthost2.internal", NULL, &r);
+	cix_response_free(&r);
 
 	/* 1. records CRUD + hostname/ip validation */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/dns/records",
+	if (cix_client_request(&client, "POST", "/v1/dns/records",
 	                       "{\"name\":\"svc.test\",\"ip\":\"10.9.9.9\"}", &r) != 0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: POST svc.test, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/dns/records/svc.test", NULL, &r) != 0 ||
+	if (cix_client_request(&client, "GET", "/v1/dns/records/svc.test", NULL, &r) != 0 ||
 	    r.status != 200 || !str_eq(json_str_field(r.json, "ip"), "10.9.9.9")) {
 		fprintf(stderr, "FAIL: GET svc.test, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/dns/records",
+	if (cix_client_request(&client, "POST", "/v1/dns/records",
 	                       "{\"name\":\"svc.test\",\"ip\":\"10.9.9.9\"}", &r) != 0 ||
 	    r.status != 409) {
 		fprintf(stderr, "FAIL: duplicate record expected 409, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/dns/records",
+	if (cix_client_request(&client, "POST", "/v1/dns/records",
 	                       "{\"name\":\"bad..name\",\"ip\":\"10.9.9.9\"}", &r) != 0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: invalid hostname expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/dns/records",
+	if (cix_client_request(&client, "POST", "/v1/dns/records",
 	                       "{\"name\":\"bad.test\",\"ip\":\"not-an-ip\"}", &r) != 0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: invalid ip expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/*
 	 * 1a (task #749): PUT edits an existing record's ip in place --
@@ -431,52 +431,52 @@ int main(void)
 	 * to that.
 	 */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/dns/records",
+	if (cix_client_request(&client, "POST", "/v1/dns/records",
 	                       "{\"name\":\"editme.test\",\"ip\":\"10.9.9.50\"}", &r) != 0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: POST editme.test, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "PUT", "/v1/dns/records/editme.test", "{\"ip\":\"10.9.9.77\"}",
+	if (cix_client_request(&client, "PUT", "/v1/dns/records/editme.test", "{\"ip\":\"10.9.9.77\"}",
 	                       &r) != 0 ||
 	    r.status != 200 || !str_eq(json_str_field(r.json, "ip"), "10.9.9.77") ||
 	    !str_eq(json_str_field(r.json, "name"), "editme.test")) {
 		fprintf(stderr, "FAIL: PUT editme.test update, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/dns/records/editme.test", NULL, &r) != 0 ||
+	if (cix_client_request(&client, "GET", "/v1/dns/records/editme.test", NULL, &r) != 0 ||
 	    r.status != 200 || !str_eq(json_str_field(r.json, "ip"), "10.9.9.77")) {
 		fprintf(stderr, "FAIL: GET editme.test after update, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "PUT", "/v1/dns/records/editme.test", "{\"ip\":\"not-an-ip\"}",
+	if (cix_client_request(&client, "PUT", "/v1/dns/records/editme.test", "{\"ip\":\"not-an-ip\"}",
 	                       &r) != 0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: PUT editme.test with invalid ip expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "PUT", "/v1/dns/records/no-such-record.test",
+	if (cix_client_request(&client, "PUT", "/v1/dns/records/no-such-record.test",
 	                       "{\"ip\":\"10.9.9.1\"}", &r) != 0 ||
 	    r.status != 404) {
 		fprintf(stderr, "FAIL: PUT nonexistent record expected 404, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
-	thinc_client_request(&client, "DELETE", "/v1/dns/records/editme.test", NULL, &r);
-	thinc_response_free(&r);
+	cix_client_request(&client, "DELETE", "/v1/dns/records/editme.test", NULL, &r);
+	cix_response_free(&r);
 
 	/*
 	 * 1b (ADR-0052): server-side default name qualification -- a bare
@@ -486,7 +486,7 @@ int main(void)
 	 * anything but "svc.test" back.
 	 */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "PUT", "/v1/system/site",
+	if (cix_client_request(&client, "PUT", "/v1/system/site",
 	                       "{\"instance_name\":\"dnstesthost\",\"site_name\":\"lab9\","
 	                       "\"domain_suffix\":\"qualify.test\"}",
 	                       &r) != 0 ||
@@ -494,10 +494,10 @@ int main(void)
 		fprintf(stderr, "FAIL: PUT site config for qualification test, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/dns/records",
+	if (cix_client_request(&client, "POST", "/v1/dns/records",
 	                       "{\"name\":\"bareweb\",\"ip\":\"10.9.9.30\"}", &r) != 0 ||
 	    r.status != 201 ||
 	    !str_eq(json_str_field(r.json, "name"), "bareweb.lab9.qualify.test")) {
@@ -506,17 +506,17 @@ int main(void)
 		        r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/dns/records",
+	if (cix_client_request(&client, "POST", "/v1/dns/records",
 	                       "{\"name\":\"explicit.other\",\"ip\":\"10.9.9.31\"}", &r) != 0 ||
 	    r.status != 201 || !str_eq(json_str_field(r.json, "name"), "explicit.other")) {
 		fprintf(stderr, "FAIL: dotted name was qualified when it shouldn't be, got name=%s\n",
 		        json_str_field(r.json, "name") ? json_str_field(r.json, "name") : "(null)");
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/*
 	 * task #760: GET/PUT/DELETE-by-name used to require the caller
@@ -532,46 +532,46 @@ int main(void)
 	 * are the real regression coverage for that fix.
 	 */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/dns/records/bareweb", NULL, &r) != 0 ||
+	if (cix_client_request(&client, "GET", "/v1/dns/records/bareweb", NULL, &r) != 0 ||
 	    r.status != 200 ||
 	    !str_eq(json_str_field(r.json, "name"), "bareweb.lab9.qualify.test")) {
 		fprintf(stderr, "FAIL: GET by bare name didn't find the qualified record, status=%d\n",
 		        r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "PUT", "/v1/dns/records/bareweb", "{\"ip\":\"10.9.9.99\"}",
+	if (cix_client_request(&client, "PUT", "/v1/dns/records/bareweb", "{\"ip\":\"10.9.9.99\"}",
 	                       &r) != 0 ||
 	    r.status != 200) {
 		fprintf(stderr, "FAIL: PUT by bare name didn't find the qualified record, status=%d\n",
 		        r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "DELETE", "/v1/dns/records/bareweb", NULL, &r) != 0 ||
+	if (cix_client_request(&client, "DELETE", "/v1/dns/records/bareweb", NULL, &r) != 0 ||
 	    r.status != 204) {
 		fprintf(stderr, "FAIL: DELETE by bare name didn't find the qualified record, status=%d\n",
 		        r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
-	thinc_client_request(&client, "DELETE", "/v1/dns/records/explicit.other", NULL, &r);
-	thinc_response_free(&r);
+	cix_client_request(&client, "DELETE", "/v1/dns/records/explicit.other", NULL, &r);
+	cix_response_free(&r);
 
 	/* Restore site_name to "" (no site tier) -- every bare name the
 	 * rest of this test creates below expects to be stored literally,
 	 * exactly like before ADR-0052 existed. */
 	memset(&r, 0, sizeof(r));
-	thinc_client_request(&client, "PUT", "/v1/system/site",
+	cix_client_request(&client, "PUT", "/v1/system/site",
 	                   "{\"instance_name\":\"dnstesthost\",\"site_name\":\"\","
 	                   "\"domain_suffix\":\"internal\"}",
 	                   &r);
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 2. create the network the dnsmasq container lives on. Explicit
 	 * --address= (ADR-0037, renamed by ADR-0067): this test's own
@@ -584,7 +584,7 @@ int main(void)
 	 * host is ever a participant on a network unless explicitly asked
 	 * to be, ADR-0037). */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/networks",
+	if (cix_client_request(&client, "POST", "/v1/networks",
 	                       "{\"name\":\"" TEST_NETWORK_NAME "\",\"subnet\":\"" TEST_NETWORK_SUBNET
 	                       "\",\"prefix_len\":24,\"address\":\"172.35.0.1\"}",
 	                       &r) != 0 ||
@@ -592,11 +592,11 @@ int main(void)
 		fprintf(stderr, "FAIL: POST /v1/networks, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 2b. dns_register requires networks -- 400 without it (Phase 8 part 2) */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"badreg\",\"image\":\"dnstest\",\"cmd\":[\"/bin/dnsmasq\"],"
 	                       "\"dns_register\":true}",
 	                       &r) != 0 ||
@@ -604,11 +604,11 @@ int main(void)
 		fprintf(stderr, "FAIL: dns_register without networks expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 3. create the real dnsmasq container */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"dnsserver\",\"image\":\"dnstest\","
 	                       "\"cmd\":[\"/bin/dnsmasq\",\"-k\",\"-u\",\"root\",\"-g\",\"root\","
 	                       "\"-p\",\"53\",\"-H\",\"/etc/dnsmasq-hosts\",\"-R\",\"-h\","
@@ -629,47 +629,47 @@ int main(void)
 			snprintf(server_ip, sizeof(server_ip), "%s", ip);
 		}
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 4. register it as a DNS server; 404/400/409 validation first */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/dns/servers",
+	if (cix_client_request(&client, "POST", "/v1/dns/servers",
 	                       "{\"container\":\"no-such-container\",\"hosts_path\":\"/etc/x\"}",
 	                       &r) != 0 ||
 	    r.status != 404) {
 		fprintf(stderr, "FAIL: register nonexistent container expected 404, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/dns/servers",
+	if (cix_client_request(&client, "POST", "/v1/dns/servers",
 	                       "{\"container\":\"dnsserver\",\"hosts_path\":\"etc/x\"}", &r) != 0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: non-absolute hosts_path expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/dns/servers",
+	if (cix_client_request(&client, "POST", "/v1/dns/servers",
 	                       "{\"container\":\"dnsserver\",\"hosts_path\":\"/etc/dnsmasq-hosts\"}",
 	                       &r) != 0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: register dnsserver, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/dns/servers",
+	if (cix_client_request(&client, "POST", "/v1/dns/servers",
 	                       "{\"container\":\"dnsserver\",\"hosts_path\":\"/etc/dnsmasq-hosts\"}",
 	                       &r) != 0 ||
 	    r.status != 409) {
 		fprintf(stderr, "FAIL: duplicate registration expected 409, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 5. the actual payoff: real DNS resolution via the host's own dig */
 	if (server_ip[0] != '\0') {
@@ -684,13 +684,13 @@ int main(void)
 		 * proving the SIGHUP-reload path, not just the initial
 		 * bake-in at registration time */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/dns/records",
+		if (cix_client_request(&client, "POST", "/v1/dns/records",
 		                       "{\"name\":\"svc2.test\",\"ip\":\"10.9.9.10\"}", &r) != 0 ||
 		    r.status != 201) {
 			fprintf(stderr, "FAIL: POST svc2.test, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		if (run_dig(server_ip, "svc2.test", dig_out, sizeof(dig_out)) != 0 ||
 		    strstr(dig_out, "10.9.9.10") == NULL) {
@@ -714,7 +714,7 @@ int main(void)
 			char webapp_ip[64] = { 0 };
 
 			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "POST", "/v1/containers",
+			if (cix_client_request(&client, "POST", "/v1/containers",
 			                       "{\"name\":\"webapp\",\"image\":\"dnstest\","
 			                       "\"cmd\":[\"/bin/dnsmasq\",\"-k\",\"-u\",\"root\",\"-g\",\"root\","
 			                       "\"-p\",\"53\",\"-H\",\"/etc/dnsmasq-hosts\",\"-R\",\"-h\","
@@ -735,10 +735,10 @@ int main(void)
 					snprintf(webapp_ip, sizeof(webapp_ip), "%s", ip);
 				}
 			}
-			thinc_response_free(&r);
+			cix_response_free(&r);
 
 			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "GET", "/v1/dns/records/webapp", NULL, &r) != 0 ||
+			if (cix_client_request(&client, "GET", "/v1/dns/records/webapp", NULL, &r) != 0 ||
 			    r.status != 200 || !str_eq(json_str_field(r.json, "ip"), webapp_ip) ||
 			    !str_eq(json_str_field(r.json, "owner"), "webapp")) {
 				fprintf(stderr,
@@ -749,7 +749,7 @@ int main(void)
 				        json_str_field(r.json, "owner") ? json_str_field(r.json, "owner") : "(null)");
 				ok = 0;
 			}
-			thinc_response_free(&r);
+			cix_response_free(&r);
 
 			if (webapp_ip[0] != '\0') {
 				if (run_dig(server_ip, "webapp", dig_out, sizeof(dig_out)) != 0 ||
@@ -773,16 +773,16 @@ int main(void)
 			 * though a record named "shadow" already exists.
 			 */
 			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "POST", "/v1/dns/records",
+			if (cix_client_request(&client, "POST", "/v1/dns/records",
 			                       "{\"name\":\"shadow\",\"ip\":\"10.9.9.20\"}", &r) != 0 ||
 			    r.status != 201) {
 				fprintf(stderr, "FAIL: POST shadow (manual), status=%d\n", r.status);
 				ok = 0;
 			}
-			thinc_response_free(&r);
+			cix_response_free(&r);
 
 			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "POST", "/v1/containers",
+			if (cix_client_request(&client, "POST", "/v1/containers",
 			                       "{\"name\":\"shadow\",\"image\":\"dnstest\","
 			                       "\"cmd\":[\"/bin/dnsmasq\",\"-k\",\"-u\",\"root\",\"-g\",\"root\","
 			                       "\"-p\",\"53\",\"-H\",\"/etc/dnsmasq-hosts\",\"-R\",\"-h\","
@@ -796,13 +796,13 @@ int main(void)
 				        r.status);
 				ok = 0;
 			}
-			thinc_response_free(&r);
+			cix_response_free(&r);
 
-			thinc_client_request(&client, "DELETE", "/v1/containers/shadow", NULL, &r);
-			thinc_response_free(&r);
+			cix_client_request(&client, "DELETE", "/v1/containers/shadow", NULL, &r);
+			cix_response_free(&r);
 
 			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "GET", "/v1/dns/records/shadow", NULL, &r) != 0 ||
+			if (cix_client_request(&client, "GET", "/v1/dns/records/shadow", NULL, &r) != 0 ||
 			    r.status != 200 || !str_eq(json_str_field(r.json, "ip"), "10.9.9.20")) {
 				fprintf(stderr,
 				        "FAIL: manually-created 'shadow' record did not survive "
@@ -810,13 +810,13 @@ int main(void)
 				        r.status);
 				ok = 0;
 			}
-			thinc_response_free(&r);
+			cix_response_free(&r);
 
-			thinc_client_request(&client, "DELETE", "/v1/containers/webapp", NULL, &r);
-			thinc_response_free(&r);
+			cix_client_request(&client, "DELETE", "/v1/containers/webapp", NULL, &r);
+			cix_response_free(&r);
 
 			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "GET", "/v1/dns/records/webapp", NULL, &r) != 0 ||
+			if (cix_client_request(&client, "GET", "/v1/dns/records/webapp", NULL, &r) != 0 ||
 			    r.status != 404) {
 				fprintf(stderr,
 				        "FAIL: webapp's auto-registered record survived container "
@@ -824,7 +824,7 @@ int main(void)
 				        r.status);
 				ok = 0;
 			}
-			thinc_response_free(&r);
+			cix_response_free(&r);
 		}
 	} else {
 		fprintf(stderr, "FAIL: skipping dig checks, dnsserver never got an ip\n");
@@ -832,11 +832,11 @@ int main(void)
 	}
 
 	/* 7. deleting the container cleans up its dns_server binding */
-	thinc_client_request(&client, "DELETE", "/v1/containers/dnsserver", NULL, &r);
-	thinc_response_free(&r);
+	cix_client_request(&client, "DELETE", "/v1/containers/dnsserver", NULL, &r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/dns/servers", NULL, &r) != 0 || r.status != 200) {
+	if (cix_client_request(&client, "GET", "/v1/dns/servers", NULL, &r) != 0 || r.status != 200) {
 		fprintf(stderr, "FAIL: GET /v1/dns/servers\n");
 		ok = 0;
 	} else {
@@ -855,23 +855,23 @@ int main(void)
 			ok = 0;
 		}
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* cleanup */
-	thinc_client_request(&client, "DELETE", "/v1/dns/records/svc.test", NULL, &r);
-	thinc_response_free(&r);
-	thinc_client_request(&client, "DELETE", "/v1/dns/records/svc2.test", NULL, &r);
-	thinc_response_free(&r);
-	thinc_client_request(&client, "DELETE", "/v1/dns/records/shadow", NULL, &r);
-	thinc_response_free(&r);
+	cix_client_request(&client, "DELETE", "/v1/dns/records/svc.test", NULL, &r);
+	cix_response_free(&r);
+	cix_client_request(&client, "DELETE", "/v1/dns/records/svc2.test", NULL, &r);
+	cix_response_free(&r);
+	cix_client_request(&client, "DELETE", "/v1/dns/records/shadow", NULL, &r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "DELETE", "/v1/networks/" TEST_NETWORK_NAME, NULL, &r) != 0 ||
+	if (cix_client_request(&client, "DELETE", "/v1/networks/" TEST_NETWORK_NAME, NULL, &r) != 0 ||
 	    r.status != 204) {
 		fprintf(stderr, "FAIL: DELETE " TEST_NETWORK_NAME " expected 204, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	kill(daemon_pid, SIGTERM);
 	{

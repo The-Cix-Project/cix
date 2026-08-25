@@ -50,7 +50,7 @@ int rtnl_link_set_netns_fd(int fd, const char *name, int target_netns_fd);
 
 /* Attaches (enslaves) the named link to a bridge. Generic -- works for
  * any already-existing link by name, not just veth ports; this is
- * also how a real physical NIC gets enslaved to a thinC-managed
+ * also how a real physical NIC gets enslaved to a Cix-managed
  * bridge (network_attach_interface(), daemon/src/network.c). */
 int rtnl_link_set_master(int fd, const char *name, const char *bridge_name);
 

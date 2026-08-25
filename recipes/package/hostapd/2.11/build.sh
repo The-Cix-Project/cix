@@ -1,9 +1,9 @@
 #
 # hostapd -- a full-featured IEEE 802.11 AP/authenticator daemon
-# (w1.fi/hostap), for thinC's own wireless-AP container use case
+# (w1.fi/hostap), for Cix's own wireless-AP container use case
 # (issue #25, feeding into issue #30's real ar-1 example container).
 #
-# Read by thincd's own non-executing metadata scanner (pkg_name=/
+# Read by cixd's own non-executing metadata scanner (pkg_name=/
 # pkg_version=/pkg_source=/pkg_sha256=/pkg_depends=, daemon/src/pkg.c's
 # parse_recipe()) AND sourced as a real POSIX shell script inside the
 # isolated, network-less build container (". /build/recipe.sh") to run
@@ -68,7 +68,7 @@
 #          100%-CPU loop in hostapd_cli on an unrecognized reply)
 #        400-wps_single_auth_enc_type (real WPS Windows-7 interop fix)
 #        410-limit_debug_messages (generic debug-log-volume control,
-#          valuable given thinC's own consolidated log store,
+#          valuable given Cix's own consolidated log store,
 #          ADR-0070/ADR-0126, that container stdout/stderr feeds)
 #        465-hostapd-config-support-random-BSS-color (real config-
 #          validation hardening, out-of-range HE BSS color)
@@ -89,18 +89,18 @@
 #
 #      DROPPED (OpenWrt-infra-coupled, or not applicable here):
 #        050-Fix-OpenWrt-13156 -- REVERTS a real upstream DoS fix as an
-#          mt7915-driver-specific workaround; thinC targets generic
+#          mt7915-driver-specific workaround; Cix targets generic
 #          hardware (a Realtek USB dongle, vendor:product 2357:012e),
 #          reintroducing this DoS exposure for zero benefit is wrong.
 #        250-hostapd_cli_ifdef -- solves an OpenWrt "mini vs full
-#          build variant" split thinC has no equivalent of.
+#          build variant" split Cix has no equivalent of.
 #        590-rrm-wnm-statistics, 600-ubus_support, 601-ucode_support,
 #        610-hostapd_cli_ujail_permission -- explicitly ubus/ucode/
 #          procd-ujail-specific (confirmed in each patch's own commit
 #          message, not guessed).
 #        710-vlan_no_bridge, 711-wds_bridge_force -- both explicitly
 #          delegate VLAN-bridge management to netifd (OpenWrt's own
-#          network config daemon); thinC has no netifd and its own,
+#          network config daemon); Cix has no netifd and its own,
 #          completely different bridge/VLAN model
 #          (netplane/src/rtnetlink.c, network_attach_interface()).
 #
@@ -108,11 +108,11 @@
 #      (2:2.11-2, experimental) -- CVE-2024-5290-lib_engine_trusted_
 #      path.patch, a real security fix (only load OpenSSL "engine"
 #      shared libraries from a trusted path) directly relevant since
-#      thinC builds hostapd against OpenSSL, not mbedtls (see step 5).
+#      Cix builds hostapd against OpenSSL, not mbedtls (see step 5).
 #      Debian's remaining patches are D-Bus/systemd/packaging-specific
 #      or wpa_supplicant-client-side-only (this recipe builds hostapd,
 #      the AP daemon, never wpa_supplicant) -- not relevant here.
-#   5. CONFIG_TLS=openssl, not OpenWrt's own mbedtls port: thincd
+#   5. CONFIG_TLS=openssl, not OpenWrt's own mbedtls port: cixd
 #      itself already links libssl/libcrypto directly (CLAUDE.md's own
 #      tech-stack notes, confirmed compiling/linking clean under TCC)
 #      -- mbedtls exists in OpenWrt's own patch stack purely to shrink
@@ -126,7 +126,7 @@
 #      embedded/minimal-image use case) vendored directly into the
 #      tarball under libnl-tiny/, built as a small .so alongside
 #      hostapd itself (CONFIG_LIBNL_TINY=y) -- avoids needing a whole
-#      new, heavier libnl3 package/dependency chain thinC has never
+#      new, heavier libnl3 package/dependency chain Cix has never
 #      needed before, matching the exact reasoning that led OpenWrt to
 #      the same choice. One small, real compat patch applied to it
 #      directly (not upstream-unmodified -- justified below): its own
@@ -138,7 +138,7 @@
 #      GCC only warns, and only for a genuinely different value; TCC
 #      doesn't make that distinction). Fixed by additionally gating the
 #      vendored fallback on `!defined __linux__` -- glibc always
-#      provides IFNAMSIZ on thinC's only target (Linux), so this
+#      provides IFNAMSIZ on Cix's only target (Linux), so this
 #      fallback was always dead code here regardless.
 #   7. tar -czf hostapd-2.11.tarball hostapd-2.11/ (patches applied,
 #      libnl-tiny vendored under hostapd-2.11/libnl-tiny/, matching
@@ -174,11 +174,11 @@ pkg_depends="openssl"
 # to ip/iw (confirmed: zero system("ip ...")/popen("ip ...") calls
 # anywhere in src/) -- it talks to the kernel directly via real netlink
 # sockets (NETLINK_GENERIC/nl80211 for wireless config, NETLINK_ROUTE
-# for basic link state), the same direct-netlink philosophy thinC's own
+# for basic link state), the same direct-netlink philosophy Cix's own
 # networking plane already follows. No conflict with that plane either:
 # daemon/src/device.c's own enumerate_net_one()/container_net_host_
 # attach_interfaces() move a physical netdev wholesale into a
-# container's own network namespace -- once assigned, thincd's host-
+# container's own network namespace -- once assigned, cixd's host-
 # level rtnetlink code never touches that interface again ("it simply
 # stops appearing here at all", that function's own doc comment) --  so
 # hostapd running inside an AP container has real, exclusive,

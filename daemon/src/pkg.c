@@ -97,7 +97,7 @@ struct pkg_entry {
 	char *build_argv[4];
 	char *build_envp[5];
 	/* Backing storage for build_envp's own optional 4th entry (ADR-0159
-	 * Phase B) -- "THINC_KMOD_EXTRA_SYMBOLS=<value>", built once
+	 * Phase B) -- "CIX_KMOD_EXTRA_SYMBOLS=<value>", built once
 	 * g_chains[chain_idx].hostbuild_extra_config_symbols is known, in
 	 * pkg_fetch_completed(). */
 	char build_envp_extra[PKG_HOSTBUILD_EXTRA_SYMBOLS_MAX + 32];
@@ -195,17 +195,17 @@ static char g_images_dir[PATH_MAX];
  * already is -- not a flat, unversioned directory living beside the
  * image mechanism as a second concept.
  *
- * It is `thinc-builder`, the image that already served the structurally
+ * It is `cix-builder`, the image that already served the structurally
  * identical "toolchain lowerdir for a build container" role for
  * hostbuilds. Operator's decision, made deliberately over a separate
  * name, and it has a real consequence worth stating rather than
  * discovering: this image is now grown by EVERY successful ordinary
- * install, not only by an explicit `pkg install --image=thinc-builder`.
+ * install, not only by an explicit `pkg install --image=cix-builder`.
  * A hostbuild's own inputs therefore move when unrelated things are
  * installed -- which is exactly why it now has real version history to
  * see that in, and to roll back to.
  */
-#define PKG_BUILD_SANDBOX_IMAGE "thinc-builder"
+#define PKG_BUILD_SANDBOX_IMAGE "cix-builder"
 
 /*
  * Issue #85: the one parent cgroup every build container lives under. Its
@@ -217,7 +217,7 @@ static char g_images_dir[PATH_MAX];
  * same class of mistake #85 itself was. The build budget still applies
  * on its own at this level; the level above simply bounds builds and
  * ordinary containers together. */
-#define PKG_BUILD_CGROUP_PARENT "thinc-workload/thinc-pkgbuild"
+#define PKG_BUILD_CGROUP_PARENT "cix-workload/cix-pkgbuild"
 
 static void pkg_build_ensure_parent_cgroup(void)
 {
@@ -277,7 +277,7 @@ struct pkg_chain {
 	int is_hostbuild;
 	/* Only meaningful while is_hostbuild is true: the real image whose
 	 * rootfs supplies the build container's own lowerdir (e.g.
-	 * "thinc-builder"), as opposed to the always-shared
+	 * "cix-builder"), as opposed to the always-shared
 	 * shared build-sandbox image every ordinary install uses
 	 * (PKG_BUILD_SANDBOX_IMAGE). */
 	char build_image[PKG_IMAGE_NAME_MAX];
@@ -784,7 +784,7 @@ static int parse_recipe(const char *path, struct pkg_recipe *out)
 	 * (pkg repo-config --token=). This is what lets a recipe that
 	 * self-fetches from the private Gitea be committed in its final,
 	 * working form -- no more the temp-real-token-substitute-then-
-	 * revert dance the kernel/thinc recipes needed on every re-pin
+	 * revert dance the kernel/cix recipes needed on every re-pin
 	 * (documented at length in remote-development.md). The token is
 	 * never persisted into any recipe or the catalog, and the
 	 * substituted URL only ever exists in this transient parsed struct,
@@ -1052,7 +1052,7 @@ static int run_subprocess(const char *bin, char *const argv[])
 	pid = fork();
 	if (pid < 0) {
 		perror("fork");
-		logstore_write("thincd", "error", "run_subprocess %s: fork failed: %s", bin,
+		logstore_write("cixd", "error", "run_subprocess %s: fork failed: %s", bin,
 		                strerror(errno));
 		return -1;
 	}
@@ -1063,7 +1063,7 @@ static int run_subprocess(const char *bin, char *const argv[])
 	}
 	if (waitpid(pid, &status, 0) != pid) {
 		perror("waitpid");
-		logstore_write("thincd", "error", "run_subprocess %s: waitpid failed: %s", bin,
+		logstore_write("cixd", "error", "run_subprocess %s: waitpid failed: %s", bin,
 		                strerror(errno));
 		return -1;
 	}
@@ -1079,15 +1079,15 @@ static int run_subprocess(const char *bin, char *const argv[])
 		 * /bin/sh -> /usr/bin/bash lesson): a wrong hardcoded path is
 		 * invisible from the exit status alone otherwise. */
 		if (WEXITSTATUS(status) == 127)
-			logstore_write("thincd", "error",
+			logstore_write("cixd", "error",
 			                "run_subprocess %s: exec failed (missing binary or bad path?)",
 			                bin);
 		else
-			logstore_write("thincd", "error", "run_subprocess %s: exited with status %d",
+			logstore_write("cixd", "error", "run_subprocess %s: exited with status %d",
 			                bin, WEXITSTATUS(status));
 	} else if (WIFSIGNALED(status)) {
 		fprintf(stderr, "%s: killed by signal %d\n", bin, WTERMSIG(status));
-		logstore_write("thincd", "error", "run_subprocess %s: killed by signal %d", bin,
+		logstore_write("cixd", "error", "run_subprocess %s: killed by signal %d", bin,
 		                WTERMSIG(status));
 	}
 	return -1;
@@ -1099,7 +1099,7 @@ static int run_subprocess(const char *bin, char *const argv[])
  * assumes (a real release tarball's own "foo-1.2.3/" wrapping
  * directory). Confirmed a real, previously-undiscovered gap (ADR-0093):
  * git archive without --prefix= (gitea's own archive-download REST
- * endpoint, used by thinc.recipe's own self-build source snapshot)
+ * endpoint, used by cix.recipe's own self-build source snapshot)
  * produces a tarball with NO such wrapping directory at all -- every
  * top-level file/directory of the real source tree sits at depth 0.
  * Blindly stripping one component there silently drops or misplaces
@@ -1250,7 +1250,7 @@ static int extract_tarball(const char *tarball_path, const char *dest_dir)
  * The basename of a URL's path component, with any trailing query
  * string (a literal '?' onward) stripped -- a git-raw-file pkg_source
  * entry needs a `?ref=<commit>` query parameter (Gitea's own raw-file
- * API convention, used by kernel.recipe/thinc.recipe's own multi-
+ * API convention, used by kernel.recipe/cix.recipe's own multi-
  * source config-file fetches) for reproducibility, and this function's
  * own prior naive strrchr('/')-only basename left that query string
  * attached to the staged /build/extra/<basename> filename, silently
@@ -1369,11 +1369,11 @@ int pkg_run_capture_sha256(const char *path, char *out, size_t out_size)
 static int merge_fail(const char *relpath, const char *step, int use_errno)
 {
 	if (use_errno)
-		logstore_write("thincd", "error", "merge: %s failed for \"%s\": %s", step,
+		logstore_write("cixd", "error", "merge: %s failed for \"%s\": %s", step,
 		               relpath != NULL && relpath[0] != '\0' ? relpath : "(tree root)",
 		               strerror(errno));
 	else
-		logstore_write("thincd", "error", "merge: %s failed for \"%s\"", step,
+		logstore_write("cixd", "error", "merge: %s failed for \"%s\"", step,
 		               relpath != NULL && relpath[0] != '\0' ? relpath : "(tree root)");
 	return -1;
 }
@@ -1499,7 +1499,7 @@ static int merge_tree(const char *src_root, const char *dst_root, const char *re
 				struct stat dst_st;
 
 				if (lstat(dst_path, &dst_st) == 0 && S_ISDIR(dst_st.st_mode)) {
-					logstore_write("thincd", "info",
+					logstore_write("cixd", "info",
 					               "merge: keeping the existing directory at %s rather than "
 					               "replacing it with a symlink to %s (merged-/usr shape "
 					               "difference, not a content conflict)",
@@ -1683,11 +1683,11 @@ static const char *build_image_manifest_string(const char *image)
 static int produce_fail(const char *image, const char *staging, const char *step, int use_errno)
 {
 	if (use_errno)
-		logstore_write("thincd", "error",
+		logstore_write("cixd", "error",
 		               "image %s: could not produce a new version -- %s failed: %s", image,
 		               step, strerror(errno));
 	else
-		logstore_write("thincd", "error",
+		logstore_write("cixd", "error",
 		               "image %s: could not produce a new version -- %s failed", image, step);
 	if (staging != NULL)
 		persist_remove_tree(staging);
@@ -2088,7 +2088,7 @@ int pkg_init(const char *pkg_dir, const char *installed_state_path, const char *
 
 /*
  * Live-copy fallback: stages a toolchain by copying from whatever host
- * thincd itself happens to be running on. Fine for dev/test convenience
+ * cixd itself happens to be running on. Fine for dev/test convenience
  * (this build sandbox has a real toolchain); silently produces an empty,
  * non-functional pkgbuild rootfs on a real minimal install, which has
  * none of this under its own /usr -- confirmed live (a real `pkg
@@ -2165,7 +2165,7 @@ enum pkg_error pkg_bootstrap_from_toolchain(const char *toolchain_path)
 	 * file (the real, intended operator usage -- scp'd onto a real
 	 * filesystem path) or a raw block device (unsquashfs itself
 	 * neither knows nor cares), so this also naturally supports the
-	 * same "write to a raw scratch partition, point thincd at the
+	 * same "write to a raw scratch partition, point cixd at the
 	 * device path" self-test technique test_boot_update.c's own
 	 * --test-update-image= already uses for do_system_update().
 	 */
@@ -2236,7 +2236,7 @@ static int sandbox_migrate_mutate(const char *staging_rootfs, void *ctx_v)
 	struct sandbox_migrate_ctx *ctx = ctx_v;
 
 	if (merge_tree(ctx->flat_rootfs, staging_rootfs, "", NULL) != 0) {
-		logstore_write("thincd", "error",
+		logstore_write("cixd", "error",
 		               "build sandbox migration: merging %s into the staging tree failed: %s",
 		               ctx->flat_rootfs, strerror(errno));
 		return -1;
@@ -2263,7 +2263,7 @@ static void pkg_migrate_flat_sandbox(const char *images_dir)
 		/* Already migrated, or never existed -- both fine, and both
 		 * worth saying once. A migration nobody can see run is a
 		 * migration nobody can trust ran. */
-		logstore_write("thincd", "info",
+		logstore_write("cixd", "info",
 		               "pkg: no flat build sandbox at %s -- nothing to migrate (issue #40)", flat);
 		return;
 	}
@@ -2272,7 +2272,7 @@ static void pkg_migrate_flat_sandbox(const char *images_dir)
 	if (image_produce_new_version(PKG_BUILD_SANDBOX_IMAGE, sandbox_migrate_mutate, &ctx,
 	                               "migrate:flat-pkgbuild-rootfs") != 0) {
 		snprintf(g_flat_sandbox_fallback, sizeof(g_flat_sandbox_fallback), "%s", flat);
-		logstore_write("thincd", "error",
+		logstore_write("cixd", "error",
 		               "pkg: could not migrate the flat build sandbox at %s into %s -- keeping "
 		               "it, and builds keep using it, exactly as before. The image's own "
 		               "content is NOT a substitute: it lacks everything that only ever "
@@ -2285,7 +2285,7 @@ static void pkg_migrate_flat_sandbox(const char *images_dir)
 	if (snprintf(retired, sizeof(retired), "%s/pkgbuild/rootfs.migrated-%s", images_dir,
 	             version) < (int)sizeof(retired))
 		rename(flat, retired);
-	logstore_write("thincd", "info",
+	logstore_write("cixd", "info",
 	               "pkg: migrated the flat build sandbox into %s version %s (previous content "
 	               "kept at %s, not deleted) (issue #40)",
 	               PKG_BUILD_SANDBOX_IMAGE, version, retired);
@@ -2440,7 +2440,7 @@ static int buildenv_add_tool(const char *name, const char *via, struct buildenv_
 	 * files whichever image it was installed into -- but only if that
 	 * image can still be resolved to a real rootfs to copy them out of.
 	 * A stale image left behind by an earlier era of this project
-	 * ("kanxeo-builder", on the first real box) still carries INSTALLED
+	 * ("cix-builder", on the first real box) still carries INSTALLED
 	 * package rows while having no current version at all, and taking
 	 * the first name match regardless meant a perfectly healthy tool
 	 * installed in three good images resolved to the one broken one
@@ -2547,7 +2547,7 @@ static int buildenv_mutate(const char *staging_rootfs, void *ctx_v)
 	 * of files a process needs to start at all. Not a "tool", and not
 	 * something a recipe should have to declare. */
 	if (pkg_seed_image_baseline(staging_rootfs) != PKG_OK) {
-		logstore_write("thincd", "error",
+		logstore_write("cixd", "error",
 		               "build environment: seeding the image baseline failed");
 		return -1;
 	}
@@ -2558,7 +2558,7 @@ static int buildenv_mutate(const char *staging_rootfs, void *ctx_v)
 		int f;
 
 		if (image_current_version(normalize_image(e->image), version, sizeof(version)) != IMAGE_OK) {
-			logstore_write("thincd", "error",
+			logstore_write("cixd", "error",
 			               "build environment: declared tool %s@%s lives in image \"%s\", "
 			               "which has no current version", e->name, e->version,
 			               normalize_image(e->image));
@@ -2577,7 +2577,7 @@ static int buildenv_mutate(const char *staging_rootfs, void *ctx_v)
 			 * the composition rather than producing a quietly
 			 * incomplete environment. */
 			if (copy_one_file_preserving(src, dst) != 0) {
-				logstore_write("thincd", "error",
+				logstore_write("cixd", "error",
 				               "build environment: copying %s from declared tool %s@%s "
 				               "(image %s) failed: %s", e->files[f], e->name, e->version,
 				               normalize_image(e->image), strerror(errno));
@@ -2679,7 +2679,7 @@ static int buildenv_image_for(const char *declared, char *out_image, size_t out_
 			return -1;
 		}
 	}
-	logstore_write("thincd", "info", "pkg: composed build environment %s from %d declared tool(s)",
+	logstore_write("cixd", "info", "pkg: composed build environment %s from %d declared tool(s)",
 	               out_image, count);
 	return 0;
 }
@@ -2901,7 +2901,7 @@ enum pkg_error pkg_seed_image_baseline(const char *rootfs_path)
 	/*
 	 * ADR-0051: stage the platform's own CA trust chain into this
 	 * image, so a TLS client running inside any container built on it
-	 * (curl, openssl, ...) can verify a thinC-issued cert without
+	 * (curl, openssl, ...) can verify a Cix-issued cert without
 	 * -k/--insecure. No image built by this platform has ever shipped
 	 * ANY CA trust (not even public roots) -- a real, closeable gap,
 	 * not something this seeding step is regressing. Idempotent (skip
@@ -2916,7 +2916,7 @@ enum pkg_error pkg_seed_image_baseline(const char *rootfs_path)
 		struct stat dst_st;
 		enum pki_error perr;
 
-		snprintf(bundle_dst, sizeof(bundle_dst), "%s/etc/ssl/certs/thinc-ca-bundle.pem",
+		snprintf(bundle_dst, sizeof(bundle_dst), "%s/etc/ssl/certs/cix-ca-bundle.pem",
 		         target_rootfs);
 		if (stat(bundle_dst, &dst_st) != 0) {
 			char bundle_dir[PATH_MAX];
@@ -2941,7 +2941,7 @@ enum pkg_error pkg_seed_image_baseline(const char *rootfs_path)
 	 * plausibly need (no "ldap"/"dns" backend entries -- this project
 	 * always pushes rendered files into a container's own filesystem
 	 * rather than having the container's own NSS talk to a remote
-	 * service directly, the same "thinC owns the durable record,
+	 * service directly, the same "Cix owns the durable record,
 	 * renders into the consumer's own format" posture dns.c/ldap.c
 	 * already established for DNS/LDAP).
 	 */
@@ -3811,7 +3811,7 @@ enum pkg_error pkg_hostbuild_start(const char *name, const char *build_image, co
 	 * that already succeeded once for this name used to make every
 	 * later hostbuild attempt a bare, permanent PKG_ERR_DUPLICATE,
 	 * with no way to rebuild from fresh source under the same recipe
-	 * name (e.g. a new commit under thinc.recipe's own tracked tag).
+	 * name (e.g. a new commit under cix.recipe's own tracked tag).
 	 * Same rule as install: only actually re-run the build if the
 	 * recipe's own version genuinely differs from what's already
 	 * installed -- upgrade=1 with an unchanged version is still a
@@ -3883,7 +3883,7 @@ static int start_build_container_spec(int chain_idx, struct pkg_entry *e,
 	 * container individually. That reads like a budget but is not one:
 	 * with max_concurrent_jobs (default 10) the real ceiling was
 	 * limit x concurrency. On a real 2-CPU box, four concurrent builds at
-	 * a 1.5-CPU each ceiling demanded 6 CPUs, starved thincd off the run
+	 * a 1.5-CPU each ceiling demanded 6 CPUs, starved cixd off the run
 	 * queue, and -- because a shell-less host has no way in except the
 	 * daemon's own REST API -- took the machine out of reach until it was
 	 * reset. Putting the limit on the shared parent makes the configured
@@ -4018,7 +4018,7 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 		else
 			pkg_fail(e, is_final_upgrade, PKG_FAILURE_FETCH, "fetch failed (curl exit status %d)",
 			         exit_status);
-		logstore_write("thincd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
+		logstore_write("cixd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
 		g_chains[chain_idx].name[0] = '\0';
 		g_chains[chain_idx].dep_queue_count = 0;
 		return 0;
@@ -4144,7 +4144,7 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 		if (buildenv_image_for(recipe.build_depends, env_image, sizeof(env_image), env_err,
 		                        sizeof(env_err)) != 0) {
 			pkg_fail(e, is_final_upgrade, PKG_FAILURE_BUILD, "%s", env_err);
-			logstore_write("thincd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
+			logstore_write("cixd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
 			g_chains[chain_idx].name[0] = '\0';
 			g_chains[chain_idx].dep_queue_count = 0;
 			return 0;
@@ -4251,12 +4251,12 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 
 			if (prep_step != NULL) {
 				if (prep_errno != 0)
-					logstore_write("thincd", "error",
+					logstore_write("cixd", "error",
 					                "pkg %s@%s: could not prepare build container (%s): %s",
 					                e->name, g_chains[chain_idx].image, prep_step,
 					                strerror(prep_errno));
 				else
-					logstore_write("thincd", "error",
+					logstore_write("cixd", "error",
 					                "pkg %s@%s: could not prepare build container (%s) -- see run_subprocess detail above",
 					                e->name, g_chains[chain_idx].image, prep_step);
 				pkg_fail(e, is_final_upgrade, PKG_FAILURE_BUILD,
@@ -4276,7 +4276,7 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 	 * a cache hit -- nothing was fetched at all in that case. */
 	if (!e->cache_hit && recipe.source_count > 1) {
 		if (persist_mkdir_p(extra_dir) != 0) {
-			logstore_write("thincd", "error",
+			logstore_write("cixd", "error",
 			                "pkg %s@%s: could not prepare build container (create extra dir): %s",
 			                e->name, g_chains[chain_idx].image, strerror(errno));
 			pkg_fail(e, is_final_upgrade, PKG_FAILURE_BUILD,
@@ -4293,7 +4293,7 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 			url_basename(recipe.source[i], extra_basename, sizeof(extra_basename));
 			snprintf(extra_dst, sizeof(extra_dst), "%s/%s", extra_dir, extra_basename);
 			if (copy_file_simple(src_path, extra_dst) != 0) {
-				logstore_write("thincd", "error",
+				logstore_write("cixd", "error",
 				                "pkg %s@%s: could not prepare build container (copy extra source %d): %s",
 				                e->name, g_chains[chain_idx].image, i, strerror(errno));
 				pkg_fail(e, is_final_upgrade, PKG_FAILURE_BUILD,
@@ -4345,7 +4345,7 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 	 * only because the toolchain sandbox is a wholesale host /usr copy
 	 * with a real bin -> usr/bin symlink -- fails outright
 	 * (execve: No such file or directory) the moment the lowerdir is
-	 * a real, minimal thinC-built image instead. bash accepts the
+	 * a real, minimal Cix-built image instead. bash accepts the
 	 * identical "-c <script>" invocation sh does, and every image this
 	 * project has ever built (dev, base, router, ...) has it at this
 	 * exact path -- confirmed directly, not assumed.
@@ -4364,7 +4364,7 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 	 * ever need to guard against seeing" posture. */
 	if (g_chains[chain_idx].hostbuild_extra_config_symbols[0] != '\0') {
 		snprintf(e->build_envp_extra, sizeof(e->build_envp_extra),
-		         "THINC_KMOD_EXTRA_SYMBOLS=%s", g_chains[chain_idx].hostbuild_extra_config_symbols);
+		         "CIX_KMOD_EXTRA_SYMBOLS=%s", g_chains[chain_idx].hostbuild_extra_config_symbols);
 		e->build_envp[3] = e->build_envp_extra;
 		e->build_envp[4] = NULL;
 	} else {
@@ -4485,7 +4485,7 @@ enum pkg_error pkg_resume_build(const char *name, const char *image, const char 
 	 * entirely (not just empty) when no extra symbols are given. */
 	if (extra_config_symbols != NULL && extra_config_symbols[0] != '\0') {
 		snprintf(e->build_envp_extra, sizeof(e->build_envp_extra),
-		         "THINC_KMOD_EXTRA_SYMBOLS=%s", extra_config_symbols);
+		         "CIX_KMOD_EXTRA_SYMBOLS=%s", extra_config_symbols);
 		e->build_envp[3] = e->build_envp_extra;
 		e->build_envp[4] = NULL;
 	} else {
@@ -4812,7 +4812,7 @@ static void pkg_build_output_append(struct pkg_entry *e, const char *data, int l
 
 /*
  * How long a build may produce nothing before it is reported as
- * possibly stalled. Overridable through THINC_BUILD_STALL_SECONDS
+ * possibly stalled. Overridable through CIX_BUILD_STALL_SECONDS
  * because the honest default is ten minutes -- a legitimately quiet
  * stretch (a large link, mksquashfs over a big tree) can run for
  * several -- and no test should have to sit through that to check that
@@ -4823,7 +4823,7 @@ static long pkg_build_stall_seconds(void)
 	static long cached = -1;
 
 	if (cached < 0) {
-		const char *env = getenv("THINC_BUILD_STALL_SECONDS");
+		const char *env = getenv("CIX_BUILD_STALL_SECONDS");
 		long v = env != NULL ? strtol(env, NULL, 10) : 0;
 
 		cached = v > 0 ? v : PKG_BUILD_STALL_SECONDS_DEFAULT;
@@ -4841,7 +4841,7 @@ static void pkg_report_stalled_build(struct pkg_entry *e)
 	{
 		time_t quiet_since = e->last_output_at > 0 ? e->last_output_at : e->build_started_at;
 
-		logstore_write("thincd", "error",
+		logstore_write("cixd", "error",
 		               "pkg %s@%s: no build output for %ld seconds -- the build may be stalled",
 		               e->name, e->image, (long)(time(NULL) - quiet_since));
 	}
@@ -4856,7 +4856,7 @@ static void pkg_report_stalled_build(struct pkg_entry *e)
 		/* do_wait is every parent in the tree waiting on a child; the
 		 * process blocked on anything else is where the build actually
 		 * is. Both are printed -- the contrast is the signal. */
-		logstore_write("thincd", "error", "  pkg %s: pid %d %s state=%c wchan=%s", e->name,
+		logstore_write("cixd", "error", "  pkg %s: pid %d %s state=%c wchan=%s", e->name,
 		               (int)procs[i].pid, procs[i].comm, procs[i].state,
 		               procs[i].wchan[0] != '\0' ? procs[i].wchan : "(running)");
 		shown++;
@@ -5153,13 +5153,13 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		if (exit_status >= 110 && exit_status <= 119) {
 			const char *step = setup_step_names[exit_status - 110];
 
-			logstore_write("thincd", "error", "pkg %s@%s: build container setup failed (%s)",
+			logstore_write("cixd", "error", "pkg %s@%s: build container setup failed (%s)",
 			                e->name, g_chains[chain_idx].image, step);
 			pkg_fail(e, is_upgrade, PKG_FAILURE_BUILD, "build container setup failed (%s)", step);
 		} else if (exit_status >= 130 && exit_status <= 136) {
 			const char *step = overlay_step_names[exit_status - 130];
 
-			logstore_write("thincd", "error", "pkg %s@%s: build container setup failed (%s)",
+			logstore_write("cixd", "error", "pkg %s@%s: build container setup failed (%s)",
 			                e->name, g_chains[chain_idx].image, step);
 			pkg_fail(e, is_upgrade, PKG_FAILURE_BUILD, "build container setup failed (%s)", step);
 		} else if (exit_status >= 141 && exit_status <= 255 &&
@@ -5184,7 +5184,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 			 */
 			int real_errno = exit_status - 140;
 
-			logstore_write("thincd", "error",
+			logstore_write("cixd", "error",
 			                "pkg %s@%s: build container setup/exec failed: %s", e->name,
 			                g_chains[chain_idx].image, strerror(real_errno));
 			pkg_fail(e, is_upgrade, PKG_FAILURE_BUILD, "build container setup/exec failed: %s",
@@ -5218,7 +5218,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 				         "build killed by signal %d (%s)", sig, name);
 			else
 				pkg_fail(e, is_upgrade, PKG_FAILURE_BUILD, "build killed by signal %d", sig);
-			logstore_write("thincd", "error", "pkg %s@%s: build killed by signal %d%s%s%s",
+			logstore_write("cixd", "error", "pkg %s@%s: build killed by signal %d%s%s%s",
 			                e->name, g_chains[chain_idx].image, sig, name != NULL ? " (" : "",
 			                name != NULL ? name : "", name != NULL ? ")" : "");
 		} else if (exit_status == 127) {
@@ -5237,7 +5237,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 			 * captured text here means bash did launch and this is
 			 * its own real exit code, not the fallback.
 			 */
-			logstore_write("thincd", "error",
+			logstore_write("cixd", "error",
 			                "pkg %s@%s: build failed with exit 127 (ambiguous: either an "
 			                "execve() errno too large to encode, or a real \"command not "
 			                "found\" from inside the recipe's own build script -- check the "
@@ -5250,7 +5250,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 			         exit_status);
 		}
 		if (captured_len > 0)
-			logstore_write("thincd", "error", "pkg %s@%s: build output: %s", e->name,
+			logstore_write("cixd", "error", "pkg %s@%s: build output: %s", e->name,
 			                g_chains[chain_idx].image, captured);
 
 		/*
@@ -5333,7 +5333,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 
 	if (g_chains[chain_idx].is_hostbuild) {
 		/* A hostbuild's output is a standalone host artifact (a
-		 * bzImage, a thincd-root squashfs's own components), not
+		 * bzImage, a cixd-root squashfs's own components), not
 		 * something that belongs inside any container image's
 		 * rootfs -- harvested to a plain host directory instead of
 		 * merged into an image (ADR-0056). Passing the real e here
@@ -5773,10 +5773,10 @@ int pkg_repo_is_configured(void)
  * deliberately lenient, not just simple: a real, confirmed bug (found
  * live, not in review) was a naive "split at the LAST slash" version
  * silently mis-parsing a real browser browse URL an operator pasted
- * verbatim (e.g. ".../itdlabs/thinc/src/branch/master/recipes/package",
+ * verbatim (e.g. ".../itdlabs/cix/src/branch/master/recipes/package",
  * exactly what a forge's own address bar shows while browsing a repo
  * -- an entirely natural thing to copy-paste) into a garbage owner
- * ("itdlabs/thinc/src/branch/master/pkg") and repo ("recipes"),
+ * ("itdlabs/cix/src/branch/master/pkg") and repo ("recipes"),
  * which then failed at fetch time as an opaque 404/curl-exit-22 with
  * no clue the URL itself was the problem. Taking the first two
  * segments and discarding the rest accepts that exact paste directly,
@@ -5860,7 +5860,7 @@ static int build_sync_fetch_request(char *out_url, size_t out_url_size, char *ou
 
 	if (strcmp(g_repo_kind, "gitea") == 0) {
 		/* Token-in-URL basic auth, same proven convention ADR-0057's
-		 * own thinc.recipe pkg_source already relies on. */
+		 * own cix.recipe pkg_source already relies on. */
 		if (g_repo_auth_token[0] != '\0')
 			snprintf(out_url, out_url_size, "%s://%s@%s/api/v1/repos/%s/%s/archive/%s.tar.gz",
 			         scheme, g_repo_auth_token, host, owner, repo, ref);
@@ -6598,7 +6598,7 @@ static char g_build_config_path[PATH_MAX];
 static int g_build_max_jobs = PKG_BUILD_MAX_JOBS_DEFAULT;
 /*
  * Real resource ceilings for the pkgbuild sandbox (found missing the
- * hard way: a burst of concurrent installs hung thincd entirely on
+ * hard way: a burst of concurrent installs hung cixd entirely on
  * 192.168.15.95, TCP still accepting but no HTTP request ever
  * completing again -- see ADR-0165). 0/NULL means "no limit," matching
  * cgroup_create()'s own existing gate (struct cgroup_limits, already
@@ -6786,7 +6786,7 @@ enum pkg_error pkg_build_set_cpu_max(const char *cpu_max)
  * precompiled artifact is instead served from any plain HTTP
  * location (a generic file server, a forge's own release-assets/
  * package-registry feature reachable over plain HTTP, a peer
- * thincd) at a fixed, predictable path this daemon computes itself:
+ * cixd) at a fixed, predictable path this daemon computes itself:
  * <base_url>/<name>-<version>.tar.gz -- the exact same naming
  * convention the local cache already uses. Trust never comes from
  * the server (see struct pkg_recipe's own artifact_sha256 comment):
@@ -7128,7 +7128,7 @@ void image_recipe_write_json_list(struct json_writer *w)
  * file content) -- container_recipe_apply_start() substitutes them
  * from the apply request's own secrets map before ever calling
  * create_container_from_body(), so a real credential never has to be
- * committed to git (the same class of gap thinc.recipe's own
+ * committed to git (the same class of gap cix.recipe's own
  * REPLACE_WITH_REAL_TOKEN placeholder already established a
  * convention for, generalized here into a real substitution
  * mechanism instead of a manual find-and-replace).

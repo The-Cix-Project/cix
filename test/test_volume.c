@@ -48,14 +48,14 @@ static void check(int ok, const char *what)
 	}
 }
 
-static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
+static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 {
 	int i;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			thinc_response_free(&r);
+		if (cix_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			cix_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -70,7 +70,7 @@ static pid_t start_daemon(void)
 	static char data_dir_arg[PATH_MAX + 11];
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
-	dargv[0] = "build/thincd";
+	dargv[0] = "build/cixd";
 	dargv[1] = PORT_ARG;
 	dargv[2] = data_dir_arg;
 	dargv[3] = NULL;
@@ -79,54 +79,54 @@ static pid_t start_daemon(void)
 	if (pid < 0)
 		return -1;
 	if (pid == 0) {
-		execve("build/thincd", dargv, environ);
+		execve("build/cixd", dargv, environ);
 		_exit(127);
 	}
 	return pid;
 }
 
 /* Polls until name reports "exited", then returns its captured output. */
-static int wait_exited(const struct thinc_client *c, const char *name, char *out, size_t out_size)
+static int wait_exited(const struct cix_client *c, const char *name, char *out, size_t out_size)
 {
 	char path[128];
 	int i;
 
 	snprintf(path, sizeof(path), "/v1/containers/%s", name);
 	for (i = 0; i < 100; i++) {
-		struct thinc_response r;
+		struct cix_response r;
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(c, "GET", path, NULL, &r) == 0 && r.status == 200) {
+		if (cix_client_request(c, "GET", path, NULL, &r) == 0 && r.status == 200) {
 			const char *st = json_str_field(r.json, "status");
 
 			if (st != NULL && strcmp(st, "exited") == 0) {
 				const char *cap = json_str_field(r.json, "captured_output");
 
 				snprintf(out, out_size, "%s", cap != NULL ? cap : "");
-				thinc_response_free(&r);
+				cix_response_free(&r);
 				return 0;
 			}
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		usleep(100000);
 	}
 	return -1;
 }
 
 /* Waits for a DELETE to fully settle (ADR-0180 async teardown). */
-static void wait_gone(const struct thinc_client *c, const char *name)
+static void wait_gone(const struct cix_client *c, const char *name)
 {
 	char path[128];
 	int i;
 
 	snprintf(path, sizeof(path), "/v1/containers/%s", name);
 	for (i = 0; i < 100; i++) {
-		struct thinc_response r;
+		struct cix_response r;
 		int gone;
 
 		memset(&r, 0, sizeof(r));
-		gone = (thinc_client_request(c, "GET", path, NULL, &r) == 0 && r.status == 404);
-		thinc_response_free(&r);
+		gone = (cix_client_request(c, "GET", path, NULL, &r) == 0 && r.status == 404);
+		cix_response_free(&r);
 		if (gone)
 			return;
 		usleep(100000);
@@ -136,8 +136,8 @@ static void wait_gone(const struct thinc_client *c, const char *name)
 int main(void)
 {
 	pid_t daemon_pid;
-	struct thinc_client client;
-	struct thinc_response r;
+	struct cix_client client;
+	struct cix_response r;
 	char out[256];
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
@@ -163,7 +163,7 @@ int main(void)
 		test_data_dir_cleanup(g_data_dir);
 		return 1;
 	}
-	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
+	cix_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
@@ -174,41 +174,41 @@ int main(void)
 
 	/* 1. create a volume */
 	memset(&r, 0, sizeof(r));
-	check(thinc_client_request(&client, "POST", "/v1/volumes", "{\"name\":\"vol1\"}", &r) == 0 &&
+	check(cix_client_request(&client, "POST", "/v1/volumes", "{\"name\":\"vol1\"}", &r) == 0 &&
 	          r.status == 201,
 	      "POST /v1/volumes creates a volume");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 2. an invalid name must be refused -- a volume name becomes a real
 	 * directory name, so path-escaping characters can never be accepted. */
 	memset(&r, 0, sizeof(r));
-	check(thinc_client_request(&client, "POST", "/v1/volumes", "{\"name\":\"../escape\"}", &r) == 0 &&
+	check(cix_client_request(&client, "POST", "/v1/volumes", "{\"name\":\"../escape\"}", &r) == 0 &&
 	          r.status == 400,
 	      "a path-escaping volume name is refused (400)");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 3. a container naming an UNKNOWN volume is refused rather than
 	 * silently getting a fresh empty one. */
 	memset(&r, 0, sizeof(r));
-	check(thinc_client_request(&client, "POST", "/v1/containers",
+	check(cix_client_request(&client, "POST", "/v1/containers",
 	                         "{\"name\":\"cbad\",\"image\":\"voltest\","
 	                         "\"volumes\":[{\"name\":\"nosuchvol\",\"path\":\"/vol\"}],"
 	                         "\"cmd\":[\"/bin/volume_child\"]}",
 	                         &r) == 0 &&
 	          r.status == 400,
 	      "a container naming an unknown volume is refused (400), never auto-created");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 4. write into the volume from a real container */
 	memset(&r, 0, sizeof(r));
-	check(thinc_client_request(&client, "POST", "/v1/containers",
+	check(cix_client_request(&client, "POST", "/v1/containers",
 	                         "{\"name\":\"cwrite\",\"image\":\"voltest\",\"capture_output\":true,"
 	                         "\"volumes\":[{\"name\":\"vol1\",\"path\":\"/vol\"}],"
 	                         "\"cmd\":[\"/bin/volume_child\",\"write\"]}",
 	                         &r) == 0 &&
 	          r.status == 201,
 	      "container with a volume is created");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	out[0] = '\0';
 	check(wait_exited(&client, "cwrite", out, sizeof(out)) == 0, "writer container exited");
@@ -219,7 +219,7 @@ int main(void)
 	 * exactly the write-only gap Part 163 had to close for the resource
 	 * limits, and the reason this assertion exists at all. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/containers/cwrite", NULL, &r) == 0 &&
+	if (cix_client_request(&client, "GET", "/v1/containers/cwrite", NULL, &r) == 0 &&
 	    r.status == 200) {
 		const struct json_value *jv = json_object_get(r.json, "volumes");
 		const char *vn = NULL;
@@ -235,24 +235,24 @@ int main(void)
 	} else {
 		check(0, "GET /containers/{name} echoes the volume back (name and path)");
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 5. THE POINT: delete the container entirely, then read the data
 	 * back from a DIFFERENT container mounting the same volume. */
 	memset(&r, 0, sizeof(r));
-	thinc_client_request(&client, "DELETE", "/v1/containers/cwrite", NULL, &r);
-	thinc_response_free(&r);
+	cix_client_request(&client, "DELETE", "/v1/containers/cwrite", NULL, &r);
+	cix_response_free(&r);
 	wait_gone(&client, "cwrite");
 
 	memset(&r, 0, sizeof(r));
-	check(thinc_client_request(&client, "POST", "/v1/containers",
+	check(cix_client_request(&client, "POST", "/v1/containers",
 	                         "{\"name\":\"cread\",\"image\":\"voltest\",\"capture_output\":true,"
 	                         "\"volumes\":[{\"name\":\"vol1\",\"path\":\"/vol\"}],"
 	                         "\"cmd\":[\"/bin/volume_child\"]}",
 	                         &r) == 0 &&
 	          r.status == 201,
 	      "second container with the same volume is created");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	out[0] = '\0';
 	check(wait_exited(&client, "cread", out, sizeof(out)) == 0, "reader container exited");
@@ -268,20 +268,20 @@ int main(void)
 	 * Everything weaker than that would pass against an endpoint that
 	 * updated bookkeeping and nothing else. */
 	memset(&r, 0, sizeof(r));
-	check(thinc_client_request(&client, "POST", "/v1/volumes", "{\"name\":\"vol2\"}", &r) == 0 &&
+	check(cix_client_request(&client, "POST", "/v1/volumes", "{\"name\":\"vol2\"}", &r) == 0 &&
 	          r.status == 201,
 	      "a second volume for the attach test");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	check(thinc_client_request(&client, "POST", "/v1/containers",
+	check(cix_client_request(&client, "POST", "/v1/containers",
 	                         "{\"name\":\"cattach\",\"image\":\"voltest\",\"capture_output\":true,"
 	                         "\"restart\":\"no\","
 	                         "\"cmd\":[\"/bin/volume_child\",\"write\"]}",
 	                         &r) == 0 &&
 	          r.status == 201,
 	      "container created with no volumes at all");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	out[0] = '\0';
 	check(wait_exited(&client, "cattach", out, sizeof(out)) == 0, "first run exited");
@@ -290,40 +290,40 @@ int main(void)
 	      "change");
 
 	memset(&r, 0, sizeof(r));
-	check(thinc_client_request(&client, "POST", "/v1/containers/cattach/volumes",
+	check(cix_client_request(&client, "POST", "/v1/containers/cattach/volumes",
 	                         "{\"name\":\"vol2\",\"path\":\"/vol\"}", &r) == 0 &&
 	          r.status == 200,
 	      "attaching a volume to an existing container");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* A duplicate, and a second volume at a path already in use, are
 	 * both refused -- silently ignoring either would leave the caller
 	 * believing something happened that did not. */
 	memset(&r, 0, sizeof(r));
-	check(thinc_client_request(&client, "POST", "/v1/containers/cattach/volumes",
+	check(cix_client_request(&client, "POST", "/v1/containers/cattach/volumes",
 	                         "{\"name\":\"vol2\",\"path\":\"/elsewhere\"}", &r) == 0 &&
 	          r.status == 409,
 	      "attaching the same volume twice is refused (409)");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	memset(&r, 0, sizeof(r));
-	check(thinc_client_request(&client, "POST", "/v1/containers/cattach/volumes",
+	check(cix_client_request(&client, "POST", "/v1/containers/cattach/volumes",
 	                         "{\"name\":\"vol1\",\"path\":\"/vol\"}", &r) == 0 &&
 	          r.status == 409,
 	      "a second volume at an already-used path is refused (409)");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	memset(&r, 0, sizeof(r));
-	check(thinc_client_request(&client, "POST", "/v1/containers/cattach/volumes",
+	check(cix_client_request(&client, "POST", "/v1/containers/cattach/volumes",
 	                         "{\"name\":\"nosuchvol\",\"path\":\"/x\"}", &r) == 0 &&
 	          r.status == 404,
 	      "attaching an unknown volume is refused (404)");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* The point: start it again and the volume is really there. */
 	memset(&r, 0, sizeof(r));
-	check(thinc_client_request(&client, "POST", "/v1/containers/cattach/start", NULL, &r) == 0 &&
+	check(cix_client_request(&client, "POST", "/v1/containers/cattach/start", NULL, &r) == 0 &&
 	          r.status == 200,
 	      "restarting the container after the attach");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	out[0] = '\0';
 	check(wait_exited(&client, "cattach", out, sizeof(out)) == 0, "second run exited");
@@ -333,17 +333,17 @@ int main(void)
 	/* Detach, restart, and confirm it is genuinely gone again -- an
 	 * endpoint that only ever adds would pass every assertion above. */
 	memset(&r, 0, sizeof(r));
-	check(thinc_client_request(&client, "DELETE", "/v1/containers/cattach/volumes/vol2", NULL, &r) ==
+	check(cix_client_request(&client, "DELETE", "/v1/containers/cattach/volumes/vol2", NULL, &r) ==
 	              0 &&
 	          r.status == 200,
 	      "detaching the volume");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	memset(&r, 0, sizeof(r));
-	check(thinc_client_request(&client, "DELETE", "/v1/containers/cattach/volumes/vol2", NULL, &r) ==
+	check(cix_client_request(&client, "DELETE", "/v1/containers/cattach/volumes/vol2", NULL, &r) ==
 	              0 &&
 	          r.status == 404,
 	      "detaching a volume the container does not mount is 404");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/*
 	 * The detach is checked on the definition, not by watching the
@@ -354,7 +354,7 @@ int main(void)
 	 * the write here would be asserting something untrue.
 	 */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/containers/cattach", NULL, &r) == 0 &&
+	if (cix_client_request(&client, "GET", "/v1/containers/cattach", NULL, &r) == 0 &&
 	    r.status == 200) {
 		const struct json_value *jv = json_object_get(r.json, "volumes");
 
@@ -363,15 +363,15 @@ int main(void)
 	} else {
 		check(0, "after detaching, the container's definition carries no volumes");
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	thinc_client_request(&client, "DELETE", "/v1/containers/cattach", NULL, &r);
-	thinc_response_free(&r);
+	cix_client_request(&client, "DELETE", "/v1/containers/cattach", NULL, &r);
+	cix_response_free(&r);
 	wait_gone(&client, "cattach");
 	memset(&r, 0, sizeof(r));
-	thinc_client_request(&client, "DELETE", "/v1/volumes/vol2", NULL, &r);
-	thinc_response_free(&r);
+	cix_client_request(&client, "DELETE", "/v1/volumes/vol2", NULL, &r);
+	cix_response_free(&r);
 
 	/* 5c. migration (user-reported gap: a volume was placed at create
 	 * time and could never move).
@@ -381,23 +381,23 @@ int main(void)
 	 * copying would pass any check on the response alone and lose
 	 * everything. So: write, migrate, read back through a container. */
 	memset(&r, 0, sizeof(r));
-	check(thinc_client_request(&client, "POST", "/v1/volumes/vol1/migrate", "{\"disk\":\"\"}", &r) == 0 &&
+	check(cix_client_request(&client, "POST", "/v1/volumes/vol1/migrate", "{\"disk\":\"\"}", &r) == 0 &&
 	          r.status == 409,
 	      "migrating a volume to where it already is is refused (409)");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	check(thinc_client_request(&client, "POST", "/v1/volumes/vol1/migrate",
+	check(cix_client_request(&client, "POST", "/v1/volumes/vol1/migrate",
 	                         "{\"disk\":\"nosuchdisk\"}", &r) == 0 &&
 	          r.status == 404,
 	      "migrating onto an unknown disk is refused (404)");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	check(thinc_client_request(&client, "POST", "/v1/volumes/nosuchvol/migrate", "{}", &r) == 0 &&
+	check(cix_client_request(&client, "POST", "/v1/volumes/nosuchvol/migrate", "{}", &r) == 0 &&
 	          r.status == 404,
 	      "migrating an unknown volume is refused (404)");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 5d. content snapshots (issue #96).
 	 *
@@ -408,7 +408,7 @@ int main(void)
 	 * snapshot, destroy the data, restore, read it back through a real
 	 * container. */
 	memset(&r, 0, sizeof(r));
-	check(thinc_client_request(&client, "GET", "/v1/volumes/vol1/backups", NULL, &r) == 0 &&
+	check(cix_client_request(&client, "GET", "/v1/volumes/vol1/backups", NULL, &r) == 0 &&
 	          r.status == 200,
 	      "a volume reports its backup policy");
 	{
@@ -417,35 +417,35 @@ int main(void)
 		check(en != NULL && en->type == JSON_BOOL && !en->u.boolean,
 		      "backups are OFF until asked for -- copying workload data is opt-in");
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	check(thinc_client_request(&client, "POST", "/v1/volumes/vol1/backup", NULL, &r) == 0 &&
+	check(cix_client_request(&client, "POST", "/v1/volumes/vol1/backup", NULL, &r) == 0 &&
 	          r.status == 409,
 	      "taking a snapshot with no backup disk configured is refused (409), not silently "
 	      "written somewhere else");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	check(thinc_client_request(&client, "PUT", "/v1/volumes/vol1/backups",
+	check(cix_client_request(&client, "PUT", "/v1/volumes/vol1/backups",
 	                         "{\"enabled\":true,\"retain\":3}", &r) == 0 &&
 	          r.status == 200,
 	      "opting a volume in, with its own retention");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	check(thinc_client_request(&client, "PUT", "/v1/volumes/vol1/backups",
+	check(cix_client_request(&client, "PUT", "/v1/volumes/vol1/backups",
 	                         "{\"enabled\":true,\"retain\":100000}", &r) == 0 &&
 	          r.status == 400,
 	      "an absurd retention is refused rather than stored");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* Omitting retain leaves the existing one alone rather than
 	 * silently resetting it to a default -- a partial update that
 	 * quietly rewrites a field it was not given is how settings get
 	 * lost. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "PUT", "/v1/volumes/vol1/backups", "{\"enabled\":true}", &r) ==
+	if (cix_client_request(&client, "PUT", "/v1/volumes/vol1/backups", "{\"enabled\":true}", &r) ==
 	        0 &&
 	    r.status == 200) {
 		const struct json_value *re = json_object_get(r.json, "retain");
@@ -455,19 +455,19 @@ int main(void)
 	} else {
 		check(0, "omitting retain leaves the previously-set value alone");
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	check(thinc_client_request(&client, "POST", "/v1/volumes/vol1/restore",
+	check(cix_client_request(&client, "POST", "/v1/volumes/vol1/restore",
 	                         "{\"snapshot\":\"whenever\"}", &r) == 0 &&
 	          r.status == 400,
 	      "restoring without naming the volume back is refused -- it replaces everything in it");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* An unknown mode reads as the safe one rather than being accepted
 	 * as something this daemon does not implement. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "PUT", "/v1/volumes/vol1/backups",
+	if (cix_client_request(&client, "PUT", "/v1/volumes/vol1/backups",
 	                       "{\"enabled\":true,\"while_running\":\"whatever\"}", &r) == 0 &&
 	    r.status == 200) {
 		const char *aw = json_as_string(json_object_get(r.json, "while_running"));
@@ -477,14 +477,14 @@ int main(void)
 	} else {
 		check(0, "an unrecognised while_running mode falls back to refusing, not to copying");
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* while_running: without a non-default mode, a volume mounted by an
 	 * always-on service could never be backed up at all -- the guard
 	 * would refuse forever. Off unless asked for, and it survives a
 	 * later policy update that does not mention it. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/volumes/vol1/backups", NULL, &r) == 0 &&
+	if (cix_client_request(&client, "GET", "/v1/volumes/vol1/backups", NULL, &r) == 0 &&
 	    r.status == 200) {
 		const char *aw = json_as_string(json_object_get(r.json, "while_running"));
 
@@ -493,17 +493,17 @@ int main(void)
 	} else {
 		check(0, "a running container blocks the backup unless the volume says otherwise");
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	check(thinc_client_request(&client, "PUT", "/v1/volumes/vol1/backups",
+	check(cix_client_request(&client, "PUT", "/v1/volumes/vol1/backups",
 	                         "{\"enabled\":true,\"while_running\":\"pause\"}", &r) == 0 &&
 	          r.status == 200,
 	      "choosing to pause containers for the copy");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "PUT", "/v1/volumes/vol1/backups",
+	if (cix_client_request(&client, "PUT", "/v1/volumes/vol1/backups",
 	                       "{\"enabled\":true,\"retain\":5}", &r) == 0 &&
 	    r.status == 200) {
 		const char *aw = json_as_string(json_object_get(r.json, "while_running"));
@@ -513,15 +513,15 @@ int main(void)
 	} else {
 		check(0, "a policy update that does not mention while_running leaves it alone");
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	check(thinc_client_request(&client, "POST", "/v1/volumes/vol1/restore",
+	check(cix_client_request(&client, "POST", "/v1/volumes/vol1/restore",
 	                         "{\"snapshot\":\"nosuchsnapshot\",\"confirm_volume_name\":\"vol1\"}",
 	                         &r) == 0 &&
 	          (r.status == 404 || r.status == 409),
 	      "restoring a snapshot that does not exist fails rather than emptying the volume");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/*
 	 * 5d-bis. Ownership (issue #102). A volume is a directory the
@@ -531,7 +531,7 @@ int main(void)
 	 * box and their home directory, a volume, belonged to root.
 	 */
 	memset(&r, 0, sizeof(r));
-	check(thinc_client_request(&client, "POST", "/v1/volumes",
+	check(cix_client_request(&client, "POST", "/v1/volumes",
 	                         "{\"name\":\"ownedvol\",\"owner_uid\":10000,\"owner_gid\":10000}",
 	                         &r) == 0 &&
 	          r.status == 201 &&
@@ -546,21 +546,21 @@ int main(void)
 		check(hp != NULL && stat(hp, &st) == 0 && st.st_uid == 10000 && st.st_gid == 10000,
 		      "and the real directory on disk is owned by them, not just the record");
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	check(thinc_client_request(&client, "POST", "/v1/volumes",
+	check(cix_client_request(&client, "POST", "/v1/volumes",
 	                         "{\"name\":\"halfowned\",\"owner_uid\":10000}", &r) == 0 &&
 	          r.status == 400,
 	      "an owner_uid with no owner_gid is refused rather than half-applied");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	check(thinc_client_request(&client, "GET", "/v1/volumes/vol1", NULL, &r) == 0 && r.status == 200 &&
+	check(cix_client_request(&client, "GET", "/v1/volumes/vol1", NULL, &r) == 0 && r.status == 200 &&
 	          json_object_get(r.json, "owner_uid") != NULL &&
 	          json_object_get(r.json, "owner_uid")->type == JSON_NULL,
 	      "a volume nobody claimed reports null, not uid 0 -- \"root\" and \"unsaid\" are different");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/*
 	 * Changing it afterwards, and the recursive flag meaning exactly
@@ -575,10 +575,10 @@ int main(void)
 		FILE *f;
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/volumes/ownedvol", NULL, &r) == 0 &&
+		if (cix_client_request(&client, "GET", "/v1/volumes/ownedvol", NULL, &r) == 0 &&
 		    json_str_field(r.json, "host_path") != NULL)
 			snprintf(host_path, sizeof(host_path), "%s", json_str_field(r.json, "host_path"));
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		snprintf(child, sizeof(child), "%s/preexisting", host_path);
 		f = fopen(child, "w");
@@ -587,11 +587,11 @@ int main(void)
 		chown(child, 0, 0);
 
 		memset(&r, 0, sizeof(r));
-		check(thinc_client_request(&client, "PUT", "/v1/volumes/ownedvol/owner",
+		check(cix_client_request(&client, "PUT", "/v1/volumes/ownedvol/owner",
 		                         "{\"uid\":10001,\"gid\":10002}", &r) == 0 &&
 		          r.status == 200,
 		      "a volume's owner can be changed afterwards");
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		check(stat(host_path, &st) == 0 && st.st_uid == 10001,
 		      "the volume directory itself follows the new owner");
@@ -599,18 +599,18 @@ int main(void)
 		      "and content inside it is left alone unless recursion is asked for");
 
 		memset(&r, 0, sizeof(r));
-		check(thinc_client_request(&client, "PUT", "/v1/volumes/ownedvol/owner",
+		check(cix_client_request(&client, "PUT", "/v1/volumes/ownedvol/owner",
 		                         "{\"uid\":10001,\"gid\":10002,\"recursive\":true}", &r) == 0 &&
 		          r.status == 200,
 		      "and recursion is available when it IS what was meant");
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		check(stat(child, &st) == 0 && st.st_uid == 10001,
 		      "which does reach the content");
 
 		/* Handing it back to root is a real request, not the absence of
 		 * one: the directory must actually change hands. */
 		memset(&r, 0, sizeof(r));
-		check(thinc_client_request(&client, "PUT", "/v1/volumes/ownedvol/owner",
+		check(cix_client_request(&client, "PUT", "/v1/volumes/ownedvol/owner",
 		                         "{\"uid\":null,\"gid\":null}", &r) == 0 &&
 		          r.status == 200 &&
 		          json_object_get(r.json, "owner_uid")->type == JSON_NULL,
@@ -620,17 +620,17 @@ int main(void)
 	}
 
 	memset(&r, 0, sizeof(r));
-	check(thinc_client_request(&client, "PUT", "/v1/volumes/ownedvol/owner", "{\"uid\":5}", &r) == 0 &&
+	check(cix_client_request(&client, "PUT", "/v1/volumes/ownedvol/owner", "{\"uid\":5}", &r) == 0 &&
 	          r.status == 400,
 	      "a uid with no gid is refused");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	check(thinc_client_request(&client, "PUT", "/v1/volumes/nosuchvol/owner", "{\"uid\":1,\"gid\":1}",
+	check(cix_client_request(&client, "PUT", "/v1/volumes/nosuchvol/owner", "{\"uid\":1,\"gid\":1}",
 	                         &r) == 0 &&
 	          r.status == 404,
 	      "setting an owner on an unknown volume is refused");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 5e. size limits (issue #93). A volume had none, which made it an
 	 * unbounded way to fill whatever disk it sits on -- sharper now
@@ -642,21 +642,21 @@ int main(void)
 	 * the refusal is explicit rather than an accepted-and-unenforced
 	 * limit, which is the failure mode that matters. */
 	memset(&r, 0, sizeof(r));
-	check(thinc_client_request(&client, "PUT", "/v1/volumes/vol1/quota", "{\"quota_bytes\":-1}", &r) ==
+	check(cix_client_request(&client, "PUT", "/v1/volumes/vol1/quota", "{\"quota_bytes\":-1}", &r) ==
 	              0 &&
 	          r.status == 400,
 	      "a negative size limit is refused");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	check(thinc_client_request(&client, "PUT", "/v1/volumes/nosuchvol/quota", "{\"quota_bytes\":0}",
+	check(cix_client_request(&client, "PUT", "/v1/volumes/nosuchvol/quota", "{\"quota_bytes\":0}",
 	                         &r) == 0 &&
 	          r.status == 404,
 	      "setting a limit on an unknown volume is refused");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "PUT", "/v1/volumes/vol1/quota",
+	if (cix_client_request(&client, "PUT", "/v1/volumes/vol1/quota",
 	                       "{\"quota_bytes\":1073741824}", &r) == 0) {
 		/*
 		 * Either it applied (a real quota-capable filesystem) or it was
@@ -678,7 +678,7 @@ int main(void)
 	} else {
 		check(0, "setting a size limit reaches the daemon");
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 5f. LIVE attach (issue #92 part 2).
 	 *
@@ -691,22 +691,22 @@ int main(void)
 	 * in the volume -- proving the mount was real, not merely recorded.
 	 */
 	memset(&r, 0, sizeof(r));
-	check(thinc_client_request(&client, "POST", "/v1/volumes", "{\"name\":\"livevol\"}", &r) == 0 &&
+	check(cix_client_request(&client, "POST", "/v1/volumes", "{\"name\":\"livevol\"}", &r) == 0 &&
 	          r.status == 201,
 	      "a volume for the live-attach test");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	check(thinc_client_request(&client, "POST", "/v1/containers",
+	check(cix_client_request(&client, "POST", "/v1/containers",
 	                         "{\"name\":\"clive\",\"image\":\"voltest\",\"restart\":\"no\","
 	                         "\"cmd\":[\"/bin/volume_child\",\"sleep\"]}",
 	                         &r) == 0 &&
 	          r.status == 201,
 	      "a running container with no volumes");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers/clive/volumes",
+	if (cix_client_request(&client, "POST", "/v1/containers/clive/volumes",
 	                       "{\"name\":\"livevol\",\"path\":\"/live\"}", &r) == 0 &&
 	    r.status == 200) {
 		const char *applies = json_as_string(json_object_get(r.json, "applies"));
@@ -722,15 +722,15 @@ int main(void)
 	} else {
 		check(0, "attaching a volume to a running container");
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	thinc_client_request(&client, "DELETE", "/v1/containers/clive", NULL, &r);
-	thinc_response_free(&r);
+	cix_client_request(&client, "DELETE", "/v1/containers/clive", NULL, &r);
+	cix_response_free(&r);
 	wait_gone(&client, "clive");
 	memset(&r, 0, sizeof(r));
-	thinc_client_request(&client, "DELETE", "/v1/volumes/livevol", NULL, &r);
-	thinc_response_free(&r);
+	cix_client_request(&client, "DELETE", "/v1/volumes/livevol", NULL, &r);
+	cix_response_free(&r);
 
 	/* 5g. non-interactive exec (issue #62).
 	 *
@@ -742,34 +742,34 @@ int main(void)
 	 * mount namespace.
 	 */
 	memset(&r, 0, sizeof(r));
-	check(thinc_client_request(&client, "POST", "/v1/volumes", "{\"name\":\"execvol\"}", &r) == 0 &&
+	check(cix_client_request(&client, "POST", "/v1/volumes", "{\"name\":\"execvol\"}", &r) == 0 &&
 	          r.status == 201,
 	      "a volume for the exec test");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	check(thinc_client_request(&client, "POST", "/v1/containers",
+	check(cix_client_request(&client, "POST", "/v1/containers",
 	                         "{\"name\":\"cexec\",\"image\":\"voltest\",\"restart\":\"no\","
 	                         "\"cmd\":[\"/bin/volume_child\",\"sleep\"]}",
 	                         &r) == 0 &&
 	          r.status == 201,
 	      "a running container to exec into");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	check(thinc_client_request(&client, "POST", "/v1/containers/cexec/volumes",
+	check(cix_client_request(&client, "POST", "/v1/containers/cexec/volumes",
 	                         "{\"name\":\"execvol\",\"path\":\"/execvol\"}", &r) == 0 &&
 	          r.status == 200,
 	      "volume attached live to the exec target");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	check(thinc_client_request(&client, "POST", "/v1/containers/cexec/exec",
+	check(cix_client_request(&client, "POST", "/v1/containers/cexec/exec",
 	                         "{\"argv\":[\"/bin/volume_child\",\"write\"],\"timeout_seconds\":20}",
 	                         &r) == 0 &&
 	          r.status == 200,
 	      "exec starts");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	{
 		int tries;
@@ -778,8 +778,8 @@ int main(void)
 		for (tries = 0; tries < 100; tries++) {
 			usleep(100000);
 			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "GET", "/v1/containers/cexec/exec", NULL, &r) != 0) {
-				thinc_response_free(&r);
+			if (cix_client_request(&client, "GET", "/v1/containers/cexec/exec", NULL, &r) != 0) {
+				cix_response_free(&r);
 				continue;
 			}
 			state = json_as_string(json_object_get(r.json, "state"));
@@ -789,10 +789,10 @@ int main(void)
 				check(strcmp(state, "done") == 0, "the exec completed rather than timing out");
 				check(es != NULL && es->type == JSON_NUMBER && (int)json_as_number(es) == 0,
 				      "the exec reports the command's real exit status");
-				thinc_response_free(&r);
+				cix_response_free(&r);
 				break;
 			}
-			thinc_response_free(&r);
+			cix_response_free(&r);
 		}
 		check(tries < 100, "the exec finished within the poll window");
 	}
@@ -804,19 +804,19 @@ int main(void)
 	 * unrelated namespace and this would be empty.
 	 */
 	memset(&r, 0, sizeof(r));
-	thinc_client_request(&client, "DELETE", "/v1/containers/cexec", NULL, &r);
-	thinc_response_free(&r);
+	cix_client_request(&client, "DELETE", "/v1/containers/cexec", NULL, &r);
+	cix_response_free(&r);
 	wait_gone(&client, "cexec");
 
 	memset(&r, 0, sizeof(r));
-	check(thinc_client_request(&client, "POST", "/v1/containers",
+	check(cix_client_request(&client, "POST", "/v1/containers",
 	                         "{\"name\":\"cexecread\",\"image\":\"voltest\",\"capture_output\":true,"
 	                         "\"volumes\":[{\"name\":\"execvol\",\"path\":\"/vol\"}],"
 	                         "\"cmd\":[\"/bin/volume_child\"]}",
 	                         &r) == 0 &&
 	          r.status == 201,
 	      "a reader for what the exec wrote");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	out[0] = '\0';
 	check(wait_exited(&client, "cexecread", out, sizeof(out)) == 0, "reader exited");
 	check(strstr(out, "READ:PERSISTED") != NULL,
@@ -824,38 +824,38 @@ int main(void)
 	      "container's mounted volume, which a fresh namespace could not have reached");
 
 	memset(&r, 0, sizeof(r));
-	thinc_client_request(&client, "DELETE", "/v1/containers/cexecread", NULL, &r);
-	thinc_response_free(&r);
+	cix_client_request(&client, "DELETE", "/v1/containers/cexecread", NULL, &r);
+	cix_response_free(&r);
 	wait_gone(&client, "cexecread");
 	memset(&r, 0, sizeof(r));
-	thinc_client_request(&client, "DELETE", "/v1/volumes/execvol", NULL, &r);
-	thinc_response_free(&r);
+	cix_client_request(&client, "DELETE", "/v1/volumes/execvol", NULL, &r);
+	cix_response_free(&r);
 
 	/* 6. deleting a volume is refused while a container definition still
 	 * references it -- silently removing data a stopped container will
 	 * expect on its next start would be a data-loss bug. */
 	memset(&r, 0, sizeof(r));
-	check(thinc_client_request(&client, "DELETE", "/v1/volumes/vol1", NULL, &r) == 0 &&
+	check(cix_client_request(&client, "DELETE", "/v1/volumes/vol1", NULL, &r) == 0 &&
 	          r.status == 409,
 	      "volume delete refused (409) while a container definition references it");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 7. once nothing references it, the volume deletes cleanly. */
 	memset(&r, 0, sizeof(r));
-	thinc_client_request(&client, "DELETE", "/v1/containers/cread", NULL, &r);
-	thinc_response_free(&r);
+	cix_client_request(&client, "DELETE", "/v1/containers/cread", NULL, &r);
+	cix_response_free(&r);
 	wait_gone(&client, "cread");
 
 	memset(&r, 0, sizeof(r));
-	check(thinc_client_request(&client, "DELETE", "/v1/volumes/vol1", NULL, &r) == 0 &&
+	check(cix_client_request(&client, "DELETE", "/v1/volumes/vol1", NULL, &r) == 0 &&
 	          r.status == 204,
 	      "volume deletes once nothing references it");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	check(thinc_client_request(&client, "GET", "/v1/volumes/vol1", NULL, &r) == 0 && r.status == 404,
+	check(cix_client_request(&client, "GET", "/v1/volumes/vol1", NULL, &r) == 0 && r.status == 404,
 	      "deleted volume is gone");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	kill(daemon_pid, SIGTERM);
 	waitpid(daemon_pid, NULL, 0);

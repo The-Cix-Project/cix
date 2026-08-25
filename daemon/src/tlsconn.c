@@ -75,7 +75,7 @@ int tls_write_all(int fd, const void *buf, size_t n)
 	size_t written = 0;
 
 	if (ssl == NULL)
-		return thinc_write_all(fd, buf, n);
+		return cix_write_all(fd, buf, n);
 
 	while (written < n) {
 		int wrote = SSL_write(ssl, p + written, (int)(n - written));

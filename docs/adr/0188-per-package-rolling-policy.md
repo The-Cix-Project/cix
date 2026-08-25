@@ -4,7 +4,7 @@
 
 Accepted
 
-Extends [ADR-0107](0107-image-versioning.md), which established version-keyed recipes and the highest-version resolution rule. That rule stays the default; this makes it one of three.
+Extends [ADR-0107](0107-package-image-versioning.md), which established version-keyed recipes and the highest-version resolution rule. That rule stays the default; this makes it one of three.
 
 ## Context
 

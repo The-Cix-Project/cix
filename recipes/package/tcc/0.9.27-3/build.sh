@@ -2,8 +2,8 @@
 # tcc -- the Tiny C Compiler, the exclusive toolchain this project's
 # own daemon/CLI are built with (ADR-0001). An ordinary recipe (built
 # inside the shared toolchain sandbox's own real gcc, not a hostbuild)
-# -- installed onto a "thinc-builder" image so thinc.recipe (ADR-0057)
-# has a real tcc to build thincd/thincctl with via hostbuild.
+# -- installed onto a "cix-builder" image so cix.recipe (ADR-0057)
+# has a real tcc to build cixd/cixctl with via hostbuild.
 #
 # Source is tinycc's own canonical download.savannah.nongnu.org
 # release. Version matches this sandbox's own already-installed system
@@ -51,7 +51,7 @@ pkg_build_depends="tcc make libc-dev bash coreutils sed grep gawk binutils"
 
 # lib/bcheck.c (TCC's own optional bounds-checking runtime, only used
 # by programs compiled with tcc's own -b flag -- not needed to build
-# thincd/thincctl, which never pass it) unconditionally defines
+# cixd/cixctl, which never pass it) unconditionally defines
 # CONFIG_TCC_MALLOC_HOOKS on Linux and references glibc's
 # __malloc_hook/__free_hook/etc. directly. Real, confirmed upstream/
 # environment incompatibility, not a project bug: TCC 0.9.27 was

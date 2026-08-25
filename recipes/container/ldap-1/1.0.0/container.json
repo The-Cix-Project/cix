@@ -19,7 +19,7 @@
   "files": [
     {
       "path": "/etc/glauth/glauth.cfg",
-      "content": "watchconfig = true\n\n[ldap]\n  enabled = true\n  listen = \"0.0.0.0:3893\"\n\n[ldaps]\n  enabled = false\n\n[backend]\n  datastore = \"config\"\n  baseDN = \"dc=thinc,dc=internal\"\n  sshkeyattr = \"sshPublicKey\"\n\n[behaviors]\n  IgnoreCapabilities = true\n"
+      "content": "watchconfig = true\n\n[ldap]\n  enabled = true\n  listen = \"0.0.0.0:3893\"\n\n[ldaps]\n  enabled = false\n\n[backend]\n  datastore = \"config\"\n  baseDN = \"dc=cix,dc=internal\"\n  sshkeyattr = \"sshPublicKey\"\n\n[behaviors]\n  IgnoreCapabilities = true\n"
     },
     {
       "path": "/etc/passwd",

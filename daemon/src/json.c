@@ -76,7 +76,7 @@ static char *parse_string_raw(struct parser *ps)
 				 * bytes (ESC = 0x1b) into what capture_output
 				 * relays verbatim, which jw_escaped_string() then
 				 * has to \u-escape to stay valid JSON at all --
-				 * found live via `thincctl ps` silently returning
+				 * found live via `cixctl ps` silently returning
 				 * nothing against a real box with LDAP containers
 				 * running. json.h's own "no field needs \uXXXX"
 				 * scope note was accurate when written, before

@@ -64,7 +64,7 @@ static int run_openssl_stdin(char *const argv[], const void *input, size_t input
 	close(inpipe[0]);
 	close(outpipe[1]);
 
-	if (thinc_write_all(inpipe[1], input, input_len) != 0) {
+	if (cix_write_all(inpipe[1], input, input_len) != 0) {
 		close(inpipe[1]);
 		close(outpipe[0]);
 		waitpid(pid, &status, 0);

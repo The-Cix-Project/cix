@@ -87,7 +87,7 @@ pkg_build() {
 #
 # ADR-0057: the crt objects (crt1.o/crti.o/crtn.o/Scrt1.o/gcrt1.o/
 # Mcrt1.o) are ALSO staged a second time at /usr/lib/x86_64-linux-gnu --
-# confirmed the hard way via a real thinc.recipe hostbuild failing
+# confirmed the hard way via a real cix.recipe hostbuild failing
 # `tcc: error: file 'crt1.o' not found` even though the file genuinely
 # existed at /lib/x86_64-linux-gnu, then root-caused against tinycc's own
 # upstream source (tcc.h's CONFIG_TCC_CRTPREFIX macro, confirmed vanilla,

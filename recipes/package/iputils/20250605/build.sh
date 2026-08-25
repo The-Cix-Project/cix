@@ -31,7 +31,7 @@ pkg_depends=""
 # first real build attempt failed outright on a missing xsltproc
 # nothing else in this toolchain provides, not worth adding a whole
 # docs-generation dependency for man pages that never ship into any
-# image (no `man` present in any thinC image either). USE_CAP/
+# image (no `man` present in any Cix image either). USE_CAP/
 # USE_IDN stay at their real upstream defaults (true) -- both found
 # via the toolchain's own already-real libcap-dev/libidn2-dev.
 pkg_build() {

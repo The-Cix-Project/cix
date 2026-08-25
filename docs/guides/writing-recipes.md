@@ -1,10 +1,10 @@
 # Writing a package recipe
 
-This is the canonical, complete reference for thinC's recipe format — the source of truth this content lives in exactly once (`daemon/include/pkg.h`'s own header comment points here rather than repeating it). For what the REST endpoints that consume a recipe actually do, see [`docs/api/README.md`](../api/README.md#package-manager-source-based-asynchronous-installs); for the underlying design rationale, see ADR-0036 (multi-source recipes) and ADR-0056 (the hostbuild variant).
+This is the canonical, complete reference for Cix's recipe format — the source of truth this content lives in exactly once (`daemon/include/pkg.h`'s own header comment points here rather than repeating it). For what the REST endpoints that consume a recipe actually do, see [`docs/api/README.md`](../api/README.md#package-manager-source-based-asynchronous-installs); for the underlying design rationale, see ADR-0036 (multi-source recipes) and ADR-0056 (the hostbuild variant).
 
 ## What a recipe is
 
-A recipe is a POSIX shell script, one per package, matching the same well-proven format Gentoo ebuilds, Arch PKGBUILDs, and CRUX Pkgfiles all use. `thincd` treats it two completely different ways depending on which part is being read:
+A recipe is a POSIX shell script, one per package, matching the same well-proven format Gentoo ebuilds, Arch PKGBUILDs, and CRUX Pkgfiles all use. `cixd` treats it two completely different ways depending on which part is being read:
 
 - **Metadata** (`pkg_name=`, `pkg_version=`, `pkg_source=`, `pkg_sha256=`, `pkg_depends=`, `pkg_changelog=`) is read by a strict, non-executing line scanner (`parse_recipe()` in `daemon/src/pkg.c`) — the daemon never runs a shell interpreter over your recipe to extract these values.
 - **Build logic** (`pkg_build()`/`pkg_install()`, real shell functions) is only ever invoked inside an isolated, network-less build container, `". /build/recipe.sh"` sourced by a tiny driver script. This is the *only* place a recipe's own shell code ever actually runs — never on the host, never outside a container.
@@ -23,7 +23,7 @@ pkg_depends=""
 
 - **`pkg_name`** — must exactly match the `{name}` this recipe is uploaded as (`POST /pkg/recipes {"name": ...}`) — a mismatch is a `400`, so a bad upload can never silently attach to the wrong name. Same charset as every other simple name in this platform: `[A-Za-z0-9_-]+`.
 - **`pkg_version`** — a plain string, compared byte-for-byte against what's installed to detect drift (`GET /pkg/{name}`'s `available_version` field, and what `POST /pkg/update-all` scans for). Bump it whenever the recipe changes in a way that should trigger an upgrade — there's no separate "recipe revision" concept, `pkg_version` *is* the revision.
-- **`pkg_source`** — where to fetch from. Almost always an `https://` URL; a local self-hosted git remote's own archive-download endpoint works identically (see [`building-thinc.md`](building-thinc.md) for a real example). Fetched host-side by the daemon's own `curl` subprocess, before the build container ever starts — the container itself has no network access at all, so anything a build needs must already be named here.
+- **`pkg_source`** — where to fetch from. Almost always an `https://` URL; a local self-hosted git remote's own archive-download endpoint works identically (see [`building-cix.md`](building-cix.md) for a real example). Fetched host-side by the daemon's own `curl` subprocess, before the build container ever starts — the container itself has no network access at all, so anything a build needs must already be named here.
 - **`pkg_sha256`** — the fetched source's checksum, verified before extraction. A mismatch fails the job outright (`PKG_STATE_FAILED`, no partial state).
 - **`pkg_build_depends`** — a space-separated list of packages that must be present to *build* this one (ADR-0199). The build container is composed from exactly these; see [Dependencies](#dependencies-two-questions-two-fields) below.
 - **`pkg_depends`** — a space-separated list of other recipe names to install first (empty string if none), i.e. what the built thing needs at *runtime*. See [Dependencies](#dependencies) below. Must be exactly empty for a hostbuild recipe (see [The hostbuild variant](#the-hostbuild-variant) below) — dependency resolution has no meaning for a one-shot artifact harvest.
@@ -68,7 +68,7 @@ A failure at any point (`pkg_build()`/`pkg_install()` returning nonzero, the con
 
 ### Real gotchas, found the hard way this project's own recipe catalog was built up against
 
-These are genuine, confirmed environment facts about this project's own minimal images — not thinC bugs, just what a from-scratch, `/usr/bin`-only, no-`/tmp` image actually looks like to a build script that assumes a normal Linux distro underneath it:
+These are genuine, confirmed environment facts about this project's own minimal images — not Cix bugs, just what a from-scratch, `/usr/bin`-only, no-`/tmp` image actually looks like to a build script that assumes a normal Linux distro underneath it:
 
 - **No `/bin`, only `/usr/bin`.** This project's images stage everything under `/usr/bin/` — `/bin/sh` doesn't exist unless something explicitly creates it (`bash.recipe`'s own `pkg_install()` symlinks it, see the real recipe below). glibc's `popen()`/`system()` hardcode `/bin/sh` with no override, so any build step that shells out (`make`'s own recipe lines, `configure`'s `$(shell ...)`-style macros) needs it present in the *build image*, not just the target.
 - **No `/tmp`.** Use `/run` instead for any scratch path a build step needs.
@@ -182,7 +182,7 @@ POST /v1/pkg/recipes
 {"name": "hello", "content": "pkg_name=hello\npkg_version=2.12.1\n..."}
 ```
 
-Publishes a new `(name, version)` recipe (ADR-0107) — validated (parses, and its own `pkg_name=`/`pkg_version=` match `name` and the version this call actually publishes) before anything on disk changes. Recipe versions are immutable once published: an already-published `(name, version)` pair is rejected (`409 Conflict`), not silently overwritten — fixing a mistake means bumping `pkg_version=` and publishing again, not re-uploading under the same version. `thincctl pkg recipe add --name=hello --file=./hello.recipe` is the CLI equivalent. A bare `pkg install`/`pkg hostbuild` (no explicit `version`) always resolves to the highest published version for that name. Then:
+Publishes a new `(name, version)` recipe (ADR-0107) — validated (parses, and its own `pkg_name=`/`pkg_version=` match `name` and the version this call actually publishes) before anything on disk changes. Recipe versions are immutable once published: an already-published `(name, version)` pair is rejected (`409 Conflict`), not silently overwritten — fixing a mistake means bumping `pkg_version=` and publishing again, not re-uploading under the same version. `cixctl pkg recipe add --name=hello --file=./hello.recipe` is the CLI equivalent. A bare `pkg install`/`pkg hostbuild` (no explicit `version`) always resolves to the highest published version for that name. Then:
 
 ```
 POST /v1/pkg/install
@@ -191,13 +191,13 @@ POST /v1/pkg/install
 
 starts the actual build — see [`docs/api/README.md`](../api/README.md#package-manager-source-based-asynchronous-installs) for the full async install/poll/upgrade contract, which this guide doesn't repeat.
 
-Rather than pushing every recipe individually, a host can also point itself at a shared recipe repository and pull its whole tree in one call: `thincctl pkg repo-config set --url=https://git.example.internal/team/recipes --kind=gitea`, then `thincctl pkg sync --wait`. This is additive/merge only — a sync never overwrites or removes a recipe version this host already has, it only adds ones it doesn't (see [`docs/api/README.md`](../api/README.md#package-manager-source-based-asynchronous-installs) and ADR-0121 for the full contract, including the `gitea`/`github`/`gitlab` URL shapes).
+Rather than pushing every recipe individually, a host can also point itself at a shared recipe repository and pull its whole tree in one call: `cixctl pkg repo-config set --url=https://git.example.internal/team/recipes --kind=gitea`, then `cixctl pkg sync --wait`. This is additive/merge only — a sync never overwrites or removes a recipe version this host already has, it only adds ones it doesn't (see [`docs/api/README.md`](../api/README.md#package-manager-source-based-asynchronous-installs) and ADR-0121 for the full contract, including the `gitea`/`github`/`gitlab` URL shapes).
 
-Every real build is also cached locally (ADR-0122) — installing the same `(name, version)` into a second image, or reinstalling after deletion, reuses it instead of fetching/compiling again, with no recipe change needed. `thincctl pkg cache-status` / `pkg cache-config` manage its size cap; see [`docs/api/README.md`](../api/README.md#package-manager-source-based-asynchronous-installs) for the full cache + optional precompiled-artifact-server contract.
+Every real build is also cached locally (ADR-0122) — installing the same `(name, version)` into a second image, or reinstalling after deletion, reuses it instead of fetching/compiling again, with no recipe change needed. `cixctl pkg cache-status` / `pkg cache-config` manage its size cap; see [`docs/api/README.md`](../api/README.md#package-manager-source-based-asynchronous-installs) for the full cache + optional precompiled-artifact-server contract.
 
 ## The hostbuild variant
 
-A recipe can also be built as a standalone, host-side artifact instead of merging into a container image's rootfs — used for building the Linux kernel and for [self-hosted rebuilds of thinC's own control plane](building-thinc.md) (ADR-0056). The recipe format is identical; the only hard requirement is `pkg_depends=""` (empty), since dependency resolution targets "merge into an image," a concept with no meaning for a one-shot harvest — every prerequisite the build needs must already be installed onto the named `--build-image=` beforehand, via ordinary `pkg install` calls against that image, exactly as described in [Build images](#build-images) above.
+A recipe can also be built as a standalone, host-side artifact instead of merging into a container image's rootfs — used for building the Linux kernel and for [self-hosted rebuilds of Cix's own control plane](building-cix.md) (ADR-0056). The recipe format is identical; the only hard requirement is `pkg_depends=""` (empty), since dependency resolution targets "merge into an image," a concept with no meaning for a one-shot harvest — every prerequisite the build needs must already be installed onto the named `--build-image=` beforehand, via ordinary `pkg install` calls against that image, exactly as described in [Build images](#build-images) above.
 
 ```sh
 pkg_install() {
@@ -205,4 +205,4 @@ pkg_install() {
 }
 ```
 
-`$PKG_DESTDIR`'s contents are copied verbatim to `BASE_DIR/artifacts/<name>/` on the host instead of being merged anywhere — see [`docs/guides/kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md) and [`docs/guides/building-thinc.md`](building-thinc.md) for the two real, complete operator runbooks built on this mechanism.
+`$PKG_DESTDIR`'s contents are copied verbatim to `BASE_DIR/artifacts/<name>/` on the host instead of being merged anywhere — see [`docs/guides/kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md) and [`docs/guides/building-cix.md`](building-cix.md) for the two real, complete operator runbooks built on this mechanism.

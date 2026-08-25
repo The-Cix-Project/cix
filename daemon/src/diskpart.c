@@ -38,7 +38,7 @@ static int sfdisk_status_to_rc(int status)
 	return -1;
 }
 
-/* Same shape as image/src/thinc-install.c's own run_subprocess_stdin()
+/* Same shape as image/src/cix-install.c's own run_subprocess_stdin()
  * (that copy drives the exact same sfdisk scripted-partition-table
  * mode, just for the fixed install-time layout rather than an
  * operator-chosen data disk after install) -- duplicated rather than
@@ -397,7 +397,7 @@ enum diskpart_error diskpart_free_space_from_path(const char *dev_path,
 	}
 	/*
 	 * Sector size is not parsed out of the header: every path in this
-	 * daemon that deals in sectors already assumes 512 (thinc-install.c
+	 * daemon that deals in sectors already assumes 512 (cix-install.c
 	 * and the sfdisk scripts above both do), and inventing a second,
 	 * differently-sourced answer here would be the disagreement rather
 	 * than the fix. If a 4Kn disk ever needs supporting, it needs

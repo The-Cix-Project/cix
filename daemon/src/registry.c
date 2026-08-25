@@ -259,13 +259,13 @@ void registry_mark_exited(struct registry_entry *entry)
 		 * (teardown_kind still NONE) stays at error level.
 		 */
 		if (entry->teardown_kind == REGISTRY_TEARDOWN_STOP) {
-			logstore_write("thincd", "info", "container %s stopped (%s)",
+			logstore_write("cixd", "info", "container %s stopped (%s)",
 			                entry->name, entry->last_exit_reason);
 		} else if (entry->teardown_kind == REGISTRY_TEARDOWN_DELETE) {
-			logstore_write("thincd", "info", "container %s removed (%s)",
+			logstore_write("cixd", "info", "container %s removed (%s)",
 			                entry->name, entry->last_exit_reason);
 		} else if (status != 0) {
-			logstore_write("thincd", "error", "container %s exited abnormally: %s",
+			logstore_write("cixd", "error", "container %s exited abnormally: %s",
 			                entry->name, entry->last_exit_reason);
 		}
 	}

@@ -96,7 +96,7 @@ static pid_t start_daemon(void)
 	static char data_dir_arg[PATH_MAX + 11];
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
-	dargv[0] = "build/thincd";
+	dargv[0] = "build/cixd";
 	dargv[1] = PORT_ARG;
 	dargv[2] = data_dir_arg;
 	dargv[3] = NULL;
@@ -107,8 +107,8 @@ static pid_t start_daemon(void)
 		return -1;
 	}
 	if (pid == 0) {
-		execve("build/thincd", dargv, environ);
-		perror("execve build/thincd");
+		execve("build/cixd", dargv, environ);
+		perror("execve build/cixd");
 		_exit(127);
 	}
 	return pid;
@@ -129,14 +129,14 @@ static const char *json_str_field(const struct json_value *obj, const char *key)
 	return json_as_string(json_object_get(obj, key));
 }
 
-static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
+static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 {
 	int i;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			thinc_response_free(&r);
+		if (cix_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			cix_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -206,7 +206,7 @@ static int write_binary_recipe(const char *pkg_state_dir, const char *version,
 	return 0;
 }
 
-static int poll_pkg_installed_version(const struct thinc_client *c, const char *pkg_at_image,
+static int poll_pkg_installed_version(const struct cix_client *c, const char *pkg_at_image,
                                        const char *want_version, int max_attempts)
 {
 	int i;
@@ -214,18 +214,18 @@ static int poll_pkg_installed_version(const struct thinc_client *c, const char *
 
 	snprintf(path, sizeof(path), "/v1/pkg/%s", pkg_at_image);
 	for (i = 0; i < max_attempts; i++) {
-		struct thinc_response r;
+		struct cix_response r;
 		int matched = 0;
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(c, "GET", path, NULL, &r) == 0 && r.status == 200) {
+		if (cix_client_request(c, "GET", path, NULL, &r) == 0 && r.status == 200) {
 			const char *st = json_str_field(r.json, "state");
 			const char *ver = json_str_field(r.json, "version");
 
 			matched = st != NULL && strcmp(st, "installed") == 0 && ver != NULL &&
 			          strcmp(ver, want_version) == 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		if (matched)
 			return 0;
 		usleep(200000);
@@ -234,16 +234,16 @@ static int poll_pkg_installed_version(const struct thinc_client *c, const char *
 }
 
 /* Fetches pid and image_version for name; returns 0 on success. */
-static int fetch_container_pid_version(const struct thinc_client *c, const char *name, long *out_pid,
+static int fetch_container_pid_version(const struct cix_client *c, const char *name, long *out_pid,
                                         char *out_version, size_t version_size)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	char path[300];
 	int rc = -1;
 
 	snprintf(path, sizeof(path), "/v1/containers/%s", name);
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(c, "GET", path, NULL, &r) == 0 && r.status == 200) {
+	if (cix_client_request(c, "GET", path, NULL, &r) == 0 && r.status == 200) {
 		const char *ver = json_str_field(r.json, "image_version");
 
 		*out_pid = (long)json_as_number(json_object_get(r.json, "pid"));
@@ -253,16 +253,16 @@ static int fetch_container_pid_version(const struct thinc_client *c, const char 
 			out_version[0] = '\0';
 		rc = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	return rc;
 }
 
 int main(void)
 {
 	pid_t daemon_pid;
-	struct thinc_client client;
-	struct thinc_response r;
-	char scratch_dir[] = "/tmp/thinc_test_rollrestart_XXXXXX";
+	struct cix_client client;
+	struct cix_response r;
+	char scratch_dir[] = "/tmp/cix_test_rollrestart_XXXXXX";
 	char pkg_state_dir[PATH_MAX];
 	char image_dir[PATH_MAX];
 	char tarball_v1[512], sha_v1[128];
@@ -289,7 +289,7 @@ int main(void)
 		test_data_dir_cleanup(g_data_dir);
 		return 1;
 	}
-	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
+	cix_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never became healthy\n");
 		kill(daemon_pid, SIGKILL);
@@ -305,31 +305,31 @@ int main(void)
 	 * test_pkg.c's own scenario 1 makes), needed before any install
 	 * below can create its build container. */
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "POST", "/v1/pkg/bootstrap", NULL, &r) == 0 && r.status == 204,
+	CHECK(cix_client_request(&client, "POST", "/v1/pkg/bootstrap", NULL, &r) == 0 && r.status == 204,
 	      "POST /v1/pkg/bootstrap");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* --- rolling-config GET/PUT round trip, and range validation --- */
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "GET", "/v1/system/rolling-config", NULL, &r) == 0 &&
+	CHECK(cix_client_request(&client, "GET", "/v1/system/rolling-config", NULL, &r) == 0 &&
 	          r.status == 200,
 	      "GET /v1/system/rolling-config (default)");
 	if (r.json != NULL) {
 		CHECK((long)json_as_number(json_object_get(r.json, "jitter_window_seconds")) == 60,
 		      "default jitter_window_seconds is 60");
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "PUT", "/v1/system/rolling-config",
+	CHECK(cix_client_request(&client, "PUT", "/v1/system/rolling-config",
 	                         "{\"jitter_window_seconds\":99999}", &r) == 0 &&
 	          r.status == 400,
 	      "PUT rolling-config out of range (99999) is 400");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* Deterministic restart timing for the rest of this test: no jitter. */
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "PUT", "/v1/system/rolling-config",
+	CHECK(cix_client_request(&client, "PUT", "/v1/system/rolling-config",
 	                         "{\"jitter_window_seconds\":0}", &r) == 0 &&
 	          r.status == 200,
 	      "PUT rolling-config jitter_window_seconds=0");
@@ -337,7 +337,7 @@ int main(void)
 		CHECK((long)json_as_number(json_object_get(r.json, "jitter_window_seconds")) == 0,
 		      "rolling-config round-trips to 0");
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* --- stage rollsvc 1.0 (a real prebuilt binary, no compiler) --- */
 	CHECK(stage_binary_fixture(scratch_dir, "1.0", "build/daemon_child", tarball_v1,
@@ -347,34 +347,34 @@ int main(void)
 	      "write rollsvc 1.0 recipe");
 
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "POST", "/v1/images", "{\"name\":\"rollctrimg\"}", &r) == 0 &&
+	CHECK(cix_client_request(&client, "POST", "/v1/images", "{\"name\":\"rollctrimg\"}", &r) == 0 &&
 	          r.status == 201,
 	      "POST rollctrimg image");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "POST", "/v1/pkg/install",
+	CHECK(cix_client_request(&client, "POST", "/v1/pkg/install",
 	                         "{\"name\":\"rollsvc\",\"image\":\"rollctrimg\"}", &r) == 0 &&
 	          r.status == 202,
 	      "POST install rollsvc@rollctrimg");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	CHECK(poll_pkg_installed_version(&client, "rollsvc@rollctrimg", "1.0", 60) == 0,
 	      "rollsvc@rollctrimg (1.0) reaches installed");
 
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "POST", "/v1/images/rollctrimg/manifest",
+	CHECK(cix_client_request(&client, "POST", "/v1/images/rollctrimg/manifest",
 	                         "{\"package\":\"rollsvc\",\"mode\":\"rolling\",\"version\":\"1.0\"}",
 	                         &r) == 0 &&
 	          r.status == 204,
 	      "POST rollctrimg manifest (rollsvc rolling@1.0)");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	CHECK(test_image_fixture_read_current_version(image_dir, old_version, sizeof(old_version)) == 0,
 	      "read rollctrimg's pre-rebuild current_version");
 
 	/* --- two containers on the same rolling image: one opts in, one doesn't --- */
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "POST", "/v1/containers",
+	CHECK(cix_client_request(&client, "POST", "/v1/containers",
 	                         "{\"name\":\"rollctr-follow\",\"image\":\"rollctrimg\","
 	                         "\"cmd\":[\"/usr/bin/rollsvc\",\"300\",\"0\"],"
 	                         "\"restart\":\"always\",\"follow_rolling\":true}",
@@ -387,10 +387,10 @@ int main(void)
 		CHECK(fr != NULL && fr->type == JSON_BOOL && fr->u.boolean,
 		      "create response reports follow_rolling=true");
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "POST", "/v1/containers",
+	CHECK(cix_client_request(&client, "POST", "/v1/containers",
 	                         "{\"name\":\"rollctr-plain\",\"image\":\"rollctrimg\","
 	                         "\"cmd\":[\"/usr/bin/rollsvc\",\"300\",\"0\"],"
 	                         "\"restart\":\"always\"}",
@@ -403,7 +403,7 @@ int main(void)
 		CHECK(fr != NULL && fr->type == JSON_BOOL && !fr->u.boolean,
 		      "create response reports follow_rolling=false by default");
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	CHECK(fetch_container_pid_version(&client, "rollctr-follow", &follow_pid_before,
 	                                   follow_ver_before, sizeof(follow_ver_before)) == 0 &&
@@ -461,11 +461,11 @@ int main(void)
 		}
 
 		memset(&r, 0, sizeof(r));
-		CHECK(thinc_client_request(&client, "POST", "/v1/pkg/recipes", body, &r) == 0 &&
+		CHECK(cix_client_request(&client, "POST", "/v1/pkg/recipes", body, &r) == 0 &&
 		          r.status == 204,
 		      "publish rollsvc 2.0 recipe (triggers rolling auto-rebuild)");
 		jw_free(&w);
-		thinc_response_free(&r);
+		cix_response_free(&r);
 	}
 
 	/* Wait for the auto-rebuild to move rollctrimg's own current_version. */
@@ -524,7 +524,7 @@ int main(void)
 	 * 0.3%.
 	 */
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "POST", "/v1/containers",
+	CHECK(cix_client_request(&client, "POST", "/v1/containers",
 	                         "{\"name\":\"rollctr-jitter\",\"image\":\"rollctrimg\","
 	                         "\"cmd\":[\"/usr/bin/rollsvc\",\"300\",\"0\"],"
 	                         "\"restart\":\"always\",\"follow_rolling\":true,"
@@ -538,10 +538,10 @@ int main(void)
 		CHECK(jj != NULL && jj->type == JSON_NUMBER && (long)json_as_number(jj) == 0,
 		      "create response echoes follow_rolling_jitter_seconds=0, not null");
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "GET", "/v1/containers/rollctr-jitter", NULL, &r) == 0 &&
+	CHECK(cix_client_request(&client, "GET", "/v1/containers/rollctr-jitter", NULL, &r) == 0 &&
 	          r.status == 200,
 	      "GET rollctr-jitter");
 	if (r.json != NULL) {
@@ -550,15 +550,15 @@ int main(void)
 		CHECK(jj != NULL && jj->type == JSON_NUMBER && (long)json_as_number(jj) == 0,
 		      "GET rollctr-jitter reports follow_rolling_jitter_seconds=0");
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	CHECK(thinc_client_request(&client, "PUT", "/v1/system/rolling-config",
+	CHECK(cix_client_request(&client, "PUT", "/v1/system/rolling-config",
 	                         "{\"jitter_window_seconds\":3600}", &r) == 0 &&
 	          r.status == 200,
 	      "PUT rolling-config jitter_window_seconds=3600 (the daemon-wide default a container-level "
 	      "override must beat)");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	{
 		long jitter_pid_before, jitter_pid_after;
@@ -600,11 +600,11 @@ int main(void)
 		snprintf(body, sizeof(body), "%s", w.buf);
 
 		memset(&r, 0, sizeof(r));
-		CHECK(thinc_client_request(&client, "POST", "/v1/pkg/recipes", body, &r) == 0 &&
+		CHECK(cix_client_request(&client, "POST", "/v1/pkg/recipes", body, &r) == 0 &&
 		          r.status == 204,
 		      "publish rollsvc 3.0 recipe (triggers second rolling auto-rebuild)");
 		jw_free(&w);
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		newer_version[0] = '\0';
 		for (i = 0; i < 100; i++) {

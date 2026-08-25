@@ -40,20 +40,20 @@ extern char **environ;
 
 #define TEST_PORT 7633
 #define PORT_ARG "--port=7633"
-#define VETH_A "thinc-nif-a"
-#define VETH_B "thinc-nif-b"
+#define VETH_A "cix-nif-a"
+#define VETH_B "cix-nif-b"
 
 static char g_data_dir[PATH_MAX];
 static char g_image_root[PATH_MAX];
 
-static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
+static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 {
 	int i;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			thinc_response_free(&r);
+		if (cix_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			cix_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -68,7 +68,7 @@ static pid_t start_daemon(void)
 	static char data_dir_arg[PATH_MAX + 11];
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
-	dargv[0] = "build/thincd";
+	dargv[0] = "build/cixd";
 	dargv[1] = PORT_ARG;
 	dargv[2] = data_dir_arg;
 	dargv[3] = NULL;
@@ -79,8 +79,8 @@ static pid_t start_daemon(void)
 		return -1;
 	}
 	if (pid == 0) {
-		execve("build/thincd", dargv, environ);
-		perror("execve build/thincd");
+		execve("build/cixd", dargv, environ);
+		perror("execve build/cixd");
 		_exit(127);
 	}
 	return pid;
@@ -99,9 +99,9 @@ static int stop_daemon(pid_t pid)
 int main(void)
 {
 	pid_t daemon_pid;
-	struct thinc_client client;
+	struct cix_client client;
 	int ok = 1;
-	struct thinc_response r;
+	struct cix_response r;
 	int rtfd;
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
@@ -134,7 +134,7 @@ int main(void)
 	if (daemon_pid < 0)
 		return 1;
 
-	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
+	cix_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
@@ -144,24 +144,24 @@ int main(void)
 
 	/* 1. an address-less network (the new default) to attach to */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/networks",
+	if (cix_client_request(&client, "POST", "/v1/networks",
 	                       "{\"name\":\"nifnet\",\"subnet\":\"172.48.0.0\",\"prefix_len\":24}",
 	                       &r) != 0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: POST nifnet, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 2. unknown ifname rejected */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/networks/nifnet/interfaces",
-	                       "{\"ifname\":\"thinc-nif-nonexistent\"}", &r) != 0 ||
+	if (cix_client_request(&client, "POST", "/v1/networks/nifnet/interfaces",
+	                       "{\"ifname\":\"cix-nif-nonexistent\"}", &r) != 0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: unknown ifname expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 3. a real, kernel-backed veth end is still rejected -- it's
 	 * software (/virtual/net/), the same exclusion GET /v1/devices'
@@ -171,23 +171,23 @@ int main(void)
 		char body[128];
 
 		snprintf(body, sizeof(body), "{\"ifname\":\"%s\"}", VETH_A);
-		if (thinc_client_request(&client, "POST", "/v1/networks/nifnet/interfaces", body, &r) != 0 ||
+		if (cix_client_request(&client, "POST", "/v1/networks/nifnet/interfaces", body, &r) != 0 ||
 		    r.status != 400) {
 			fprintf(stderr, "FAIL: veth ifname expected 400, got %d\n", r.status);
 			ok = 0;
 		}
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 4. attach to an unknown network 404s */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/networks/nosuchnet/interfaces",
-	                       "{\"ifname\":\"thinc-nif-a\"}", &r) != 0 ||
+	if (cix_client_request(&client, "POST", "/v1/networks/nosuchnet/interfaces",
+	                       "{\"ifname\":\"cix-nif-a\"}", &r) != 0 ||
 	    r.status != 404) {
 		fprintf(stderr, "FAIL: attach to unknown network expected 404, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 5. an out-of-range vlan_id is rejected */
 	memset(&r, 0, sizeof(r));
@@ -195,18 +195,18 @@ int main(void)
 		char body[128];
 
 		snprintf(body, sizeof(body), "{\"ifname\":\"%s\",\"vlan_id\":4095}", VETH_A);
-		if (thinc_client_request(&client, "POST", "/v1/networks/nifnet/interfaces", body, &r) != 0 ||
+		if (cix_client_request(&client, "POST", "/v1/networks/nifnet/interfaces", body, &r) != 0 ||
 		    r.status != 400) {
 			fprintf(stderr, "FAIL: vlan_id 4095 expected 400, got %d\n", r.status);
 			ok = 0;
 		}
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 6. none of the above ever actually attached anything -- the
 	 * network's own interfaces[] stays empty throughout */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/networks/nifnet", NULL, &r) != 0 || r.status != 200) {
+	if (cix_client_request(&client, "GET", "/v1/networks/nifnet", NULL, &r) != 0 || r.status != 200) {
 		fprintf(stderr, "FAIL: GET nifnet, status=%d\n", r.status);
 		ok = 0;
 	} else {
@@ -218,7 +218,7 @@ int main(void)
 			ok = 0;
 		}
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 7. detaching something never attached 404s */
 	memset(&r, 0, sizeof(r));
@@ -226,20 +226,20 @@ int main(void)
 		char path[128];
 
 		snprintf(path, sizeof(path), "/v1/networks/nifnet/interfaces/%s", VETH_A);
-		if (thinc_client_request(&client, "DELETE", path, NULL, &r) != 0 || r.status != 404) {
+		if (cix_client_request(&client, "DELETE", path, NULL, &r) != 0 || r.status != 404) {
 			fprintf(stderr, "FAIL: detach never-attached expected 404, got %d\n", r.status);
 			ok = 0;
 		}
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* cleanup */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "DELETE", "/v1/networks/nifnet", NULL, &r) != 0 ||
+	if (cix_client_request(&client, "DELETE", "/v1/networks/nifnet", NULL, &r) != 0 ||
 	    r.status != 204) {
 		fprintf(stderr, "warning: could not clean up 'nifnet' network, status=%d\n", r.status);
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	if (stop_daemon(daemon_pid) != 0) {
 		fprintf(stderr, "FAIL: daemon did not exit cleanly on SIGTERM\n");

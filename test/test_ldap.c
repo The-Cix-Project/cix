@@ -85,14 +85,14 @@ static int extract_toml_string_value(const char *body, size_t body_len, const ch
 	return 0;
 }
 
-static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
+static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 {
 	int i;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			thinc_response_free(&r);
+		if (cix_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			cix_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -107,7 +107,7 @@ static pid_t start_daemon(void)
 	static char data_dir_arg[PATH_MAX + 11];
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
-	dargv[0] = "build/thincd";
+	dargv[0] = "build/cixd";
 	dargv[1] = PORT_ARG;
 	dargv[2] = data_dir_arg;
 	dargv[3] = NULL;
@@ -118,8 +118,8 @@ static pid_t start_daemon(void)
 		return -1;
 	}
 	if (pid == 0) {
-		execve("build/thincd", dargv, environ);
-		perror("execve build/thincd");
+		execve("build/cixd", dargv, environ);
+		perror("execve build/cixd");
 		_exit(127);
 	}
 	return pid;
@@ -168,9 +168,9 @@ static int servers_list_contains(struct json_value *root, const char *container,
 int main(void)
 {
 	pid_t daemon_pid;
-	struct thinc_client client;
+	struct cix_client client;
 	int ok = 1;
-	struct thinc_response r;
+	struct cix_response r;
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
@@ -196,7 +196,7 @@ int main(void)
 		return 1;
 	}
 
-	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
+	cix_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
@@ -207,7 +207,7 @@ int main(void)
 
 	/* 1. a real, long-running container to register against */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"ldapsrv\",\"image\":\"ldaptest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}",
 	                       &r) != 0 ||
@@ -215,33 +215,33 @@ int main(void)
 		fprintf(stderr, "FAIL: POST ldapsrv, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 2. validation: nonexistent container -> 404 */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/ldap/servers",
+	if (cix_client_request(&client, "POST", "/v1/ldap/servers",
 	                       "{\"container\":\"no-such-container\",\"config_path\":\"/etc/glauth/glauth.cfg\"}",
 	                       &r) != 0 ||
 	    r.status != 404) {
 		fprintf(stderr, "FAIL: register nonexistent container expected 404, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 3. validation: non-absolute config_path -> 400 */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/ldap/servers",
+	if (cix_client_request(&client, "POST", "/v1/ldap/servers",
 	                       "{\"container\":\"ldapsrv\",\"config_path\":\"etc/glauth/glauth.cfg\"}", &r) !=
 	        0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: non-absolute config_path expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 4. a real, valid registration -> 201, echoes container/config_path */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/ldap/servers",
+	if (cix_client_request(&client, "POST", "/v1/ldap/servers",
 	                       "{\"container\":\"ldapsrv\",\"config_path\":\"/etc/glauth/glauth.cfg\"}", &r) !=
 	        0 ||
 	    r.status != 201 || !str_eq(json_str_field(r.json, "container"), "ldapsrv") ||
@@ -249,27 +249,27 @@ int main(void)
 		fprintf(stderr, "FAIL: register ldapsrv, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 5. duplicate registration -> 409 */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/ldap/servers",
+	if (cix_client_request(&client, "POST", "/v1/ldap/servers",
 	                       "{\"container\":\"ldapsrv\",\"config_path\":\"/etc/glauth/glauth.cfg\"}", &r) !=
 	        0 ||
 	    r.status != 409) {
 		fprintf(stderr, "FAIL: duplicate registration expected 409, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 6. GET reflects it */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/ldap/servers", NULL, &r) != 0 || r.status != 200 ||
+	if (cix_client_request(&client, "GET", "/v1/ldap/servers", NULL, &r) != 0 || r.status != 200 ||
 	    !servers_list_contains(r.json, "ldapsrv", "/etc/glauth/glauth.cfg")) {
 		fprintf(stderr, "FAIL: GET /v1/ldap/servers did not show ldapsrv, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/*
 	 * 7. persistence across a real daemon restart -- same discipline
@@ -293,41 +293,41 @@ int main(void)
 		ok = 0;
 	} else {
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/ldap/servers", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "GET", "/v1/ldap/servers", NULL, &r) != 0 ||
 		    r.status != 200 || !servers_list_contains(r.json, "ldapsrv", "/etc/glauth/glauth.cfg")) {
 			fprintf(stderr,
 			        "FAIL: ldapsrv binding did not survive a daemon restart, status=%d\n",
 			        r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 	}
 
 	/* 8. unregister -> 204, then GET no longer shows it */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "DELETE", "/v1/ldap/servers/ldapsrv", NULL, &r) != 0 ||
+	if (cix_client_request(&client, "DELETE", "/v1/ldap/servers/ldapsrv", NULL, &r) != 0 ||
 	    r.status != 204) {
 		fprintf(stderr, "FAIL: unregister ldapsrv, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/ldap/servers", NULL, &r) != 0 || r.status != 200 ||
+	if (cix_client_request(&client, "GET", "/v1/ldap/servers", NULL, &r) != 0 || r.status != 200 ||
 	    servers_list_contains(r.json, "ldapsrv", NULL)) {
 		fprintf(stderr, "FAIL: ldapsrv binding survived unregister, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 9. unregister of something never registered -> 404 */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "DELETE", "/v1/ldap/servers/ldapsrv", NULL, &r) != 0 ||
+	if (cix_client_request(&client, "DELETE", "/v1/ldap/servers/ldapsrv", NULL, &r) != 0 ||
 	    r.status != 404) {
 		fprintf(stderr, "FAIL: unregister already-gone binding expected 404, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/*
 	 * 10. container-delete cleanup: a FRESH container (the original
@@ -341,7 +341,7 @@ int main(void)
 	 * own step 7.
 	 */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"ldapsrv2\",\"image\":\"ldaptest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}",
 	                       &r) != 0 ||
@@ -349,28 +349,28 @@ int main(void)
 		fprintf(stderr, "FAIL: POST ldapsrv2, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/ldap/servers",
+	if (cix_client_request(&client, "POST", "/v1/ldap/servers",
 	                       "{\"container\":\"ldapsrv2\",\"config_path\":\"/etc/glauth/glauth.cfg\"}", &r) !=
 	        0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: register ldapsrv2, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
-	thinc_client_request(&client, "DELETE", "/v1/containers/ldapsrv2", NULL, &r);
-	thinc_response_free(&r);
+	cix_client_request(&client, "DELETE", "/v1/containers/ldapsrv2", NULL, &r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/ldap/servers", NULL, &r) != 0 || r.status != 200 ||
+	if (cix_client_request(&client, "GET", "/v1/ldap/servers", NULL, &r) != 0 || r.status != 200 ||
 	    servers_list_contains(r.json, "ldapsrv2", NULL)) {
 		fprintf(stderr, "FAIL: ldap server binding survived container deletion\n");
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/*
 	 * 11-19. Task #726: user/group CRUD, and -- the part actually worth
@@ -380,7 +380,7 @@ int main(void)
 	 * glauth (this project has no way to verify glauth's own fsnotify
 	 * reload from inside this test suite -- confirmed directly against
 	 * glauth's real source instead, see ldap.h's own header comment);
-	 * what's under test here is entirely thincd's own code: the
+	 * what's under test here is entirely cixd's own code: the
 	 * marker-based prefix-preserving rewrite in ldap_write_config_
 	 * file(), read back via the real GET .../files endpoint (ADR-0055)
 	 * exactly the way an operator or a future test with real glauth
@@ -392,7 +392,7 @@ int main(void)
 		char passbcrypt_val[128]; /* hex-encoded PWHASH_BCRYPT_LEN (60) bytes -- 120 hex chars + NUL */
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/containers",
+		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"ldapcfg\",\"image\":\"ldaptest\","
 		                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
 		                       "\"files\":[{\"path\":\"/etc/glauth/glauth.cfg\","
@@ -402,59 +402,59 @@ int main(void)
 			fprintf(stderr, "FAIL: POST ldapcfg, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/ldap/servers",
+		if (cix_client_request(&client, "POST", "/v1/ldap/servers",
 		                       "{\"container\":\"ldapcfg\",\"config_path\":\"/etc/glauth/glauth.cfg\"}",
 		                       &r) != 0 ||
 		    r.status != 201) {
 			fprintf(stderr, "FAIL: register ldapcfg, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* 12. group create */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/ldap/groups",
+		if (cix_client_request(&client, "POST", "/v1/ldap/groups",
 		                       "{\"name\":\"engineers\",\"gidnumber\":6001}", &r) != 0 ||
 		    r.status != 201 || !str_eq(json_str_field(r.json, "name"), "engineers")) {
 			fprintf(stderr, "FAIL: create group engineers, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* 13. duplicate group -> 409 */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/ldap/groups",
+		if (cix_client_request(&client, "POST", "/v1/ldap/groups",
 		                       "{\"name\":\"engineers\",\"gidnumber\":6002}", &r) != 0 ||
 		    r.status != 409) {
 			fprintf(stderr, "FAIL: duplicate group expected 409, got %d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* 14. user create with an unknown primarygroup -> 400 */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/ldap/users",
+		if (cix_client_request(&client, "POST", "/v1/ldap/users",
 		                       "{\"name\":\"nogroup\",\"uidnumber\":5002,\"primarygroup\":9999}",
 		                       &r) != 0 ||
 		    r.status != 400) {
 			fprintf(stderr, "FAIL: unknown primarygroup expected 400, got %d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* 15. real user create, with a password -- passbcrypt must
 		 * never come back over the API (only has_password). Also
 		 * carries a real ssh_public_key (ADR-0144 task #838) to prove
 		 * it renders as glauth's own real `sshkeys = [...]` array. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/ldap/users",
+		if (cix_client_request(&client, "POST", "/v1/ldap/users",
 		                       "{\"name\":\"j_doe\",\"uidnumber\":5001,\"primarygroup\":6001,"
-		                       "\"mail\":\"j.doe@thinc.internal\",\"password\":\"dogood\","
+		                       "\"mail\":\"j.doe@cix.internal\",\"password\":\"dogood\","
 		                       "\"ssh_public_key\":\"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAItest "
-		                       "j_doe@thinc\"}",
+		                       "j_doe@cix\"}",
 		                       &r) != 0 ||
 		    r.status != 201) {
 			fprintf(stderr, "FAIL: create user j_doe, status=%d\n", r.status);
@@ -465,7 +465,7 @@ int main(void)
 			fprintf(stderr, "FAIL: create user j_doe did not report has_password=true\n");
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* 16. the container's own config file now shows the preserved
 		 * prefix plus a correctly-rendered managed tail, including a
@@ -476,7 +476,7 @@ int main(void)
 		 * capture the exact value to prove it survives an update
 		 * unchanged in step 17). */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET",
+		if (cix_client_request(&client, "GET",
 		                       "/v1/containers/ldapcfg/files?path=%2Fetc%2Fglauth%2Fglauth.cfg", NULL,
 		                       &r) != 0 ||
 		    r.status != 200) {
@@ -491,14 +491,14 @@ int main(void)
 		           memmem(r.body, r.body_len, "gidnumber = 6001", strlen("gidnumber = 6001")) ==
 		               NULL ||
 		           memmem(r.body, r.body_len, "name = \"j_doe\"", strlen("name = \"j_doe\"")) == NULL ||
-		           memmem(r.body, r.body_len, "mail = \"j.doe@thinc.internal\"",
-		                  strlen("mail = \"j.doe@thinc.internal\"")) == NULL) {
+		           memmem(r.body, r.body_len, "mail = \"j.doe@cix.internal\"",
+		                  strlen("mail = \"j.doe@cix.internal\"")) == NULL) {
 			fprintf(stderr, "FAIL: rendered config missing expected group/user fields\n");
 			ok = 0;
 		} else if (memmem(r.body, r.body_len,
-		                   "sshkeys = [\"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAItest j_doe@thinc\"]",
+		                   "sshkeys = [\"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAItest j_doe@cix\"]",
 		                   strlen("sshkeys = [\"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAItest "
-		                          "j_doe@thinc\"]")) == NULL) {
+		                          "j_doe@cix\"]")) == NULL) {
 			fprintf(stderr,
 			        "FAIL: rendered config missing glauth's real sshkeys = [...] array "
 			        "(ADR-0144 task #838)\n");
@@ -523,24 +523,24 @@ int main(void)
 				ok = 0;
 			}
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* 17. update: change mail, omit password -- the existing hash
 		 * must survive unchanged (byte-for-byte the same value captured
 		 * above) in the re-rendered file */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "PUT", "/v1/ldap/users/j_doe",
+		if (cix_client_request(&client, "PUT", "/v1/ldap/users/j_doe",
 		                       "{\"uidnumber\":5001,\"primarygroup\":6001,"
-		                       "\"mail\":\"jd@thinc.internal\"}",
+		                       "\"mail\":\"jd@cix.internal\"}",
 		                       &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: update user j_doe, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET",
+		if (cix_client_request(&client, "GET",
 		                       "/v1/containers/ldapcfg/files?path=%2Fetc%2Fglauth%2Fglauth.cfg", NULL,
 		                       &r) != 0 ||
 		    r.status != 200) {
@@ -549,8 +549,8 @@ int main(void)
 		} else {
 			char passbcrypt_after[128];
 
-			if (memmem(r.body, r.body_len, "mail = \"jd@thinc.internal\"",
-			           strlen("mail = \"jd@thinc.internal\"")) == NULL) {
+			if (memmem(r.body, r.body_len, "mail = \"jd@cix.internal\"",
+			           strlen("mail = \"jd@cix.internal\"")) == NULL) {
 				fprintf(stderr, "FAIL: update lost the mail change\n");
 				ok = 0;
 			} else if (extract_toml_string_value(r.body, r.body_len, "passbcrypt", passbcrypt_after,
@@ -562,25 +562,25 @@ int main(void)
 				ok = 0;
 			}
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* 17b (ADR-0144): real secondary-group membership -- a second
 		 * group, then j_doe gains it as a secondary group alongside its
 		 * existing primarygroup, echoed correctly on GET and rendered
 		 * as glauth's own "othergroups" array. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/ldap/groups", "{\"name\":\"ops\",\"gidnumber\":6099}",
+		if (cix_client_request(&client, "POST", "/v1/ldap/groups", "{\"name\":\"ops\",\"gidnumber\":6099}",
 		                       &r) != 0 ||
 		    r.status != 201) {
 			fprintf(stderr, "FAIL: create group ops, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "PUT", "/v1/ldap/users/j_doe",
+		if (cix_client_request(&client, "PUT", "/v1/ldap/users/j_doe",
 		                       "{\"uidnumber\":5001,\"primarygroup\":6001,"
-		                       "\"mail\":\"jd@thinc.internal\",\"secondary_groups\":[6099]}",
+		                       "\"mail\":\"jd@cix.internal\",\"secondary_groups\":[6099]}",
 		                       &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: update user j_doe with secondary_groups, status=%d\n", r.status);
@@ -594,10 +594,10 @@ int main(void)
 				ok = 0;
 			}
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET",
+		if (cix_client_request(&client, "GET",
 		                       "/v1/containers/ldapcfg/files?path=%2Fetc%2Fglauth%2Fglauth.cfg", NULL,
 		                       &r) != 0 ||
 		    r.status != 200) {
@@ -609,12 +609,12 @@ int main(void)
 			fprintf(stderr, "FAIL: rendered config missing othergroups = [6099]\n");
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* An invalid secondary group (no such gidnumber) is rejected,
 		 * same validation primarygroup already gets. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "PUT", "/v1/ldap/users/j_doe",
+		if (cix_client_request(&client, "PUT", "/v1/ldap/users/j_doe",
 		                       "{\"uidnumber\":5001,\"primarygroup\":6001,"
 		                       "\"secondary_groups\":[999999]}",
 		                       &r) != 0 ||
@@ -623,7 +623,7 @@ int main(void)
 			        r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* Cleanup: drop the secondary group again before the group
 		 * itself is deleted below (a still-referenced group can still
@@ -631,32 +631,32 @@ int main(void)
 		 * posture, but leaving a dangling reference around isn't the
 		 * point of this test). */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "PUT", "/v1/ldap/users/j_doe",
+		if (cix_client_request(&client, "PUT", "/v1/ldap/users/j_doe",
 		                       "{\"uidnumber\":5001,\"primarygroup\":6001,"
-		                       "\"mail\":\"jd@thinc.internal\"}",
+		                       "\"mail\":\"jd@cix.internal\"}",
 		                       &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: clear secondary_groups, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "DELETE", "/v1/ldap/groups/ops", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "DELETE", "/v1/ldap/groups/ops", NULL, &r) != 0 ||
 		    r.status != 204) {
 			fprintf(stderr, "FAIL: delete group ops, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* 17c (ADR-0144 task #838): can_search, now a real public field
 		 * (previously internal-only, set only by the auto-provisioning
 		 * hook) -- off by default, settable via PUT, echoed on GET, and
 		 * rendered as glauth's own [[users.capabilities]] stanza. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "PUT", "/v1/ldap/users/j_doe",
+		if (cix_client_request(&client, "PUT", "/v1/ldap/users/j_doe",
 		                       "{\"uidnumber\":5001,\"primarygroup\":6001,"
-		                       "\"mail\":\"jd@thinc.internal\",\"can_search\":true}",
+		                       "\"mail\":\"jd@cix.internal\",\"can_search\":true}",
 		                       &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: update user j_doe with can_search, status=%d\n", r.status);
@@ -669,10 +669,10 @@ int main(void)
 				ok = 0;
 			}
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET",
+		if (cix_client_request(&client, "GET",
 		                       "/v1/containers/ldapcfg/files?path=%2Fetc%2Fglauth%2Fglauth.cfg", NULL,
 		                       &r) != 0 ||
 		    r.status != 200) {
@@ -684,14 +684,14 @@ int main(void)
 			fprintf(stderr, "FAIL: rendered config missing [[users.capabilities]] stanza\n");
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* PUT is full-field-replacement: omitting can_search now turns
 		 * it back off, same as every other field here. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "PUT", "/v1/ldap/users/j_doe",
+		if (cix_client_request(&client, "PUT", "/v1/ldap/users/j_doe",
 		                       "{\"uidnumber\":5001,\"primarygroup\":6001,"
-		                       "\"mail\":\"jd@thinc.internal\"}",
+		                       "\"mail\":\"jd@cix.internal\"}",
 		                       &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: clear can_search, status=%d\n", r.status);
@@ -704,20 +704,20 @@ int main(void)
 				ok = 0;
 			}
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* 18. delete the user -> the rendered file no longer names it,
 		 * but the group stanza survives */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "DELETE", "/v1/ldap/users/j_doe", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "DELETE", "/v1/ldap/users/j_doe", NULL, &r) != 0 ||
 		    r.status != 204) {
 			fprintf(stderr, "FAIL: delete user j_doe, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET",
+		if (cix_client_request(&client, "GET",
 		                       "/v1/containers/ldapcfg/files?path=%2Fetc%2Fglauth%2Fglauth.cfg", NULL,
 		                       &r) != 0 ||
 		    r.status != 200) {
@@ -729,19 +729,19 @@ int main(void)
 			fprintf(stderr, "FAIL: user delete didn't remove j_doe or dropped the group\n");
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* 19. delete the group too, list endpoints reflect it */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "DELETE", "/v1/ldap/groups/engineers", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "DELETE", "/v1/ldap/groups/engineers", NULL, &r) != 0 ||
 		    r.status != 204) {
 			fprintf(stderr, "FAIL: delete group engineers, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/ldap/groups", NULL, &r) != 0 || r.status != 200) {
+		if (cix_client_request(&client, "GET", "/v1/ldap/groups", NULL, &r) != 0 || r.status != 200) {
 			fprintf(stderr, "FAIL: GET /v1/ldap/groups, status=%d\n", r.status);
 			ok = 0;
 		} else {
@@ -752,10 +752,10 @@ int main(void)
 				ok = 0;
 			}
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
-		thinc_client_request(&client, "DELETE", "/v1/containers/ldapcfg", NULL, &r);
-		thinc_response_free(&r);
+		cix_client_request(&client, "DELETE", "/v1/containers/ldapcfg", NULL, &r);
+		cix_response_free(&r);
 	}
 
 	/*
@@ -766,7 +766,7 @@ int main(void)
 	 * itself, owner set to the container's name, a "search"
 	 * capability granted by default (glauth defaults to deny-all),
 	 * and a freshly generated secret delivered into the container's
-	 * own filesystem at /etc/thinc-ldap/bind.secret -- read directly
+	 * own filesystem at /etc/cix-ldap/bind.secret -- read directly
 	 * via /proc/<pid>/root/, the same privilege pki_issue's own test
 	 * already established (ADR-0013), not just assumed from a 201.
 	 */
@@ -775,17 +775,17 @@ int main(void)
 
 		/* 20. a group for provisioned accounts to join */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/ldap/groups",
+		if (cix_client_request(&client, "POST", "/v1/ldap/groups",
 		                       "{\"name\":\"svcaccts\",\"gidnumber\":7001}", &r) != 0 ||
 		    r.status != 201) {
 			fprintf(stderr, "FAIL: create group svcaccts, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* 21. ldap_provision without ldap_group naming a real group -> 400 */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/containers",
+		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"badprov\",\"image\":\"ldaptest\","
 		                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
 		                       "\"ldap_provision\":true}",
@@ -795,13 +795,13 @@ int main(void)
 			        r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* 22. a real provisioned container -- default ldap_user
 		 * (the container's own name), default ldap_uid (allocated),
-		 * default ldap_secret_dir (/etc/thinc-ldap) */
+		 * default ldap_secret_dir (/etc/cix-ldap) */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/containers",
+		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"provtest\",\"image\":\"ldaptest\","
 		                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
 		                       "\"ldap_provision\":true,\"ldap_group\":\"svcaccts\"}",
@@ -812,12 +812,12 @@ int main(void)
 		} else {
 			provtest_pid = (int)json_as_number(json_object_get(r.json, "pid"));
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* 23. the auto-created service account: owner==container name,
 		 * primarygroup resolved, can_search granted, has_password */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/ldap/users/provtest", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "GET", "/v1/ldap/users/provtest", NULL, &r) != 0 ||
 		    r.status != 200 || !str_eq(json_str_field(r.json, "owner"), "provtest") ||
 		    (int)json_as_number(json_object_get(r.json, "primarygroup")) != 7001) {
 			fprintf(stderr, "FAIL: GET provtest ldap user, status=%d\n", r.status);
@@ -832,7 +832,7 @@ int main(void)
 				ok = 0;
 			}
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* 24. the secret was really delivered into the container's own
 		 * filesystem, at the default path, chmod 0600 */
@@ -843,7 +843,7 @@ int main(void)
 			char secret[128] = { 0 };
 			size_t n = 0;
 
-			snprintf(proc_path, sizeof(proc_path), "/proc/%d/root/etc/thinc-ldap/bind.secret",
+			snprintf(proc_path, sizeof(proc_path), "/proc/%d/root/etc/cix-ldap/bind.secret",
 			         provtest_pid);
 			if (stat(proc_path, &st) != 0 || (st.st_mode & 0777) != 0600) {
 				fprintf(stderr, "FAIL: delivered bind.secret missing or not chmod 0600 (%s)\n",
@@ -876,25 +876,25 @@ int main(void)
 		 * account too (ldap_user_forget_owner(), mirroring
 		 * dns_record_forget_owner()/pki_cert_forget_owner()) */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "DELETE", "/v1/containers/provtest", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "DELETE", "/v1/containers/provtest", NULL, &r) != 0 ||
 		    r.status != 204) {
 			fprintf(stderr, "FAIL: delete provtest, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/ldap/users/provtest", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "GET", "/v1/ldap/users/provtest", NULL, &r) != 0 ||
 		    r.status != 404) {
 			fprintf(stderr,
 			        "FAIL: provtest ldap user survived container deletion, status=%d\n",
 			        r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
-		thinc_client_request(&client, "DELETE", "/v1/ldap/groups/svcaccts", NULL, &r);
-		thinc_response_free(&r);
+		cix_client_request(&client, "DELETE", "/v1/ldap/groups/svcaccts", NULL, &r);
+		cix_response_free(&r);
 	}
 
 	/*
@@ -906,40 +906,40 @@ int main(void)
 	{
 		/* 26. default config */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/ldap/config", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "GET", "/v1/ldap/config", NULL, &r) != 0 ||
 		    r.status != 200 ||
 		    (long)json_as_number(json_object_get(r.json, "start_uid")) != 10000 ||
 		    (long)json_as_number(json_object_get(r.json, "start_gid")) != 10000) {
 			fprintf(stderr, "FAIL: GET default ldap config, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* 27. group create with no gidnumber -> auto-allocated from start_gid */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/ldap/groups", "{\"name\":\"autogid1\"}",
+		if (cix_client_request(&client, "POST", "/v1/ldap/groups", "{\"name\":\"autogid1\"}",
 		                       &r) != 0 ||
 		    r.status != 201 ||
 		    (long)json_as_number(json_object_get(r.json, "gidnumber")) != 10000) {
 			fprintf(stderr, "FAIL: create group with no gidnumber, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* 28. user create with no uidnumber -> auto-allocated from start_uid */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/ldap/users",
+		if (cix_client_request(&client, "POST", "/v1/ldap/users",
 		                       "{\"name\":\"autouid1\",\"primarygroup\":10000}", &r) != 0 ||
 		    r.status != 201 ||
 		    (long)json_as_number(json_object_get(r.json, "uidnumber")) != 10000) {
 			fprintf(stderr, "FAIL: create user with no uidnumber, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* 29. PUT ldap config -- changes take effect for future allocations only */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "PUT", "/v1/ldap/config",
+		if (cix_client_request(&client, "PUT", "/v1/ldap/config",
 		                       "{\"start_uid\":50000,\"start_gid\":50000}", &r) != 0 ||
 		    r.status != 200 ||
 		    (long)json_as_number(json_object_get(r.json, "start_uid")) != 50000 ||
@@ -947,14 +947,14 @@ int main(void)
 			fprintf(stderr, "FAIL: PUT ldap config, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* 29.5. issue #66: client-login fields -- individually optional
 		 * (this PUT must not disturb the floors just set), credential
 		 * write-only (bind_password_set reported, the value never
 		 * echoed), and the floors' own PUT must not disturb these. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "PUT", "/v1/ldap/config",
+		if (cix_client_request(&client, "PUT", "/v1/ldap/config",
 		                       "{\"client_uri\":\"ldap://10.0.0.1:3893/\","
 		                       "\"base_dn\":\"dc=t,dc=local\","
 		                       "\"bind_dn\":\"cn=svc,dc=t,dc=local\","
@@ -970,106 +970,106 @@ int main(void)
 			fprintf(stderr, "FAIL: PUT ldap client config (status=%d)\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* 30. a second auto-allocated group/user now starts from 50000,
 		 * not colliding with autogid1/autouid1's own 10000 */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/ldap/groups", "{\"name\":\"autogid2\"}",
+		if (cix_client_request(&client, "POST", "/v1/ldap/groups", "{\"name\":\"autogid2\"}",
 		                       &r) != 0 ||
 		    r.status != 201 ||
 		    (long)json_as_number(json_object_get(r.json, "gidnumber")) != 50000) {
 			fprintf(stderr, "FAIL: create group after config change, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* 31. group update -- PUT edits gidnumber in place */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "PUT", "/v1/ldap/groups/autogid1",
+		if (cix_client_request(&client, "PUT", "/v1/ldap/groups/autogid1",
 		                       "{\"gidnumber\":10999}", &r) != 0 ||
 		    r.status != 200 ||
 		    (long)json_as_number(json_object_get(r.json, "gidnumber")) != 10999) {
 			fprintf(stderr, "FAIL: PUT autogid1 update, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/ldap/groups/autogid1", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "GET", "/v1/ldap/groups/autogid1", NULL, &r) != 0 ||
 		    r.status != 200 ||
 		    (long)json_as_number(json_object_get(r.json, "gidnumber")) != 10999) {
 			fprintf(stderr, "FAIL: GET autogid1 after update, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* 32. group update colliding with a different group's gidnumber -> 409 */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "PUT", "/v1/ldap/groups/autogid1",
+		if (cix_client_request(&client, "PUT", "/v1/ldap/groups/autogid1",
 		                       "{\"gidnumber\":50000}", &r) != 0 ||
 		    r.status != 409) {
 			fprintf(stderr, "FAIL: PUT autogid1 gidnumber collision expected 409, got %d\n",
 			        r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* 33. group update on a nonexistent group -> 404 */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "PUT", "/v1/ldap/groups/no-such-group",
+		if (cix_client_request(&client, "PUT", "/v1/ldap/groups/no-such-group",
 		                       "{\"gidnumber\":10001}", &r) != 0 ||
 		    r.status != 404) {
 			fprintf(stderr, "FAIL: PUT nonexistent group expected 404, got %d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* 34. ADR-0147: renaming a group in place -- old name gone, new
 		 * name resolves with every other field (gidnumber) untouched. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "PUT", "/v1/ldap/groups/autogid1",
+		if (cix_client_request(&client, "PUT", "/v1/ldap/groups/autogid1",
 		                       "{\"name\":\"autogid1renamed\",\"gidnumber\":10999}", &r) != 0 ||
 		    r.status != 200 ||
 		    strcmp(json_str_field(r.json, "name"), "autogid1renamed") != 0) {
 			fprintf(stderr, "FAIL: rename group autogid1, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/ldap/groups/autogid1", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "GET", "/v1/ldap/groups/autogid1", NULL, &r) != 0 ||
 		    r.status != 404) {
 			fprintf(stderr, "FAIL: old group name should be gone after rename, status=%d\n",
 			        r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/ldap/groups/autogid1renamed", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "GET", "/v1/ldap/groups/autogid1renamed", NULL, &r) != 0 ||
 		    r.status != 200 ||
 		    (long)json_as_number(json_object_get(r.json, "gidnumber")) != 10999) {
 			fprintf(stderr, "FAIL: renamed group not found under new name, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* Renaming to an already-taken name is a real, rejected
 		 * collision, not silently accepted. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "PUT", "/v1/ldap/groups/autogid1renamed",
+		if (cix_client_request(&client, "PUT", "/v1/ldap/groups/autogid1renamed",
 		                       "{\"name\":\"autogid2\",\"gidnumber\":10999}", &r) != 0 ||
 		    r.status != 409) {
 			fprintf(stderr, "FAIL: rename group to an existing name expected 409, got %d\n",
 			        r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* 35. Same mechanics, for a user. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "PUT", "/v1/ldap/users/autouid1",
+		if (cix_client_request(&client, "PUT", "/v1/ldap/users/autouid1",
 		                       "{\"name\":\"autouid1renamed\",\"uidnumber\":10000,\"primarygroup\":10999}",
 		                       &r) != 0 ||
 		    r.status != 200 ||
@@ -1077,31 +1077,31 @@ int main(void)
 			fprintf(stderr, "FAIL: rename user autouid1, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/ldap/users/autouid1", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "GET", "/v1/ldap/users/autouid1", NULL, &r) != 0 ||
 		    r.status != 404) {
 			fprintf(stderr, "FAIL: old user name should be gone after rename, status=%d\n",
 			        r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/ldap/users/autouid1renamed", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "GET", "/v1/ldap/users/autouid1renamed", NULL, &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: renamed user not found under new name, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
-		thinc_client_request(&client, "DELETE", "/v1/ldap/users/autouid1renamed", NULL, &r);
-		thinc_response_free(&r);
-		thinc_client_request(&client, "DELETE", "/v1/ldap/groups/autogid1renamed", NULL, &r);
-		thinc_response_free(&r);
-		thinc_client_request(&client, "DELETE", "/v1/ldap/groups/autogid2", NULL, &r);
-		thinc_response_free(&r);
+		cix_client_request(&client, "DELETE", "/v1/ldap/users/autouid1renamed", NULL, &r);
+		cix_response_free(&r);
+		cix_client_request(&client, "DELETE", "/v1/ldap/groups/autogid1renamed", NULL, &r);
+		cix_response_free(&r);
+		cix_client_request(&client, "DELETE", "/v1/ldap/groups/autogid2", NULL, &r);
+		cix_response_free(&r);
 	}
 
 	/*
@@ -1124,7 +1124,7 @@ int main(void)
 	 */
 	{
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/containers",
+		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"ldapresync\",\"image\":\"ldaptest\","
 		                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],\"restart\":\"always\","
 		                       "\"files\":[{\"path\":\"/etc/glauth/glauth.cfg\","
@@ -1134,29 +1134,29 @@ int main(void)
 			fprintf(stderr, "FAIL: POST ldapresync, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/ldap/servers",
+		if (cix_client_request(&client, "POST", "/v1/ldap/servers",
 		                       "{\"container\":\"ldapresync\",\"config_path\":\"/etc/glauth/glauth.cfg\"}",
 		                       &r) != 0 ||
 		    r.status != 201) {
 			fprintf(stderr, "FAIL: register ldapresync, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/ldap/groups",
+		if (cix_client_request(&client, "POST", "/v1/ldap/groups",
 		                       "{\"name\":\"resyncgrp\",\"gidnumber\":6501}", &r) != 0 ||
 		    r.status != 201) {
 			fprintf(stderr, "FAIL: create group resyncgrp, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET",
+		if (cix_client_request(&client, "GET",
 		                       "/v1/containers/ldapresync/files?path=%2Fetc%2Fglauth%2Fglauth.cfg",
 		                       NULL, &r) != 0 ||
 		    r.status != 200 ||
@@ -1165,7 +1165,7 @@ int main(void)
 			fprintf(stderr, "FAIL: ldapresync config missing resyncgrp before restart\n");
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		if (stop_daemon(daemon_pid) != 0) {
 			fprintf(stderr, "FAIL: daemon did not exit cleanly (ldapresync)\n");
@@ -1186,7 +1186,7 @@ int main(void)
 			 * daemon's own startup path, not by anything this test
 			 * itself did. */
 			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "GET",
+			if (cix_client_request(&client, "GET",
 			                       "/v1/containers/ldapresync/files?path=%2Fetc%2Fglauth%2Fglauth.cfg",
 			                       NULL, &r) != 0 ||
 			    r.status != 200 ||
@@ -1197,12 +1197,12 @@ int main(void)
 				        "startup resync regressed\n");
 				ok = 0;
 			}
-			thinc_response_free(&r);
+			cix_response_free(&r);
 		}
 
 		memset(&r, 0, sizeof(r));
-		thinc_client_request(&client, "DELETE", "/v1/ldap/groups/resyncgrp", NULL, &r);
-		thinc_response_free(&r);
+		cix_client_request(&client, "DELETE", "/v1/ldap/groups/resyncgrp", NULL, &r);
+		cix_response_free(&r);
 	}
 
 	/*
@@ -1219,7 +1219,7 @@ int main(void)
 		    "[behaviors]\n  IgnoreCapabilities = true\n";
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/containers",
+		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"basedntest\",\"image\":\"ldaptest\","
 		                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
 		                       "\"files\":[{\"path\":\"/etc/glauth/glauth.cfg\","
@@ -1231,17 +1231,17 @@ int main(void)
 			fprintf(stderr, "FAIL: POST basedntest, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/ldap/servers",
+		if (cix_client_request(&client, "POST", "/v1/ldap/servers",
 		                       "{\"container\":\"basedntest\",\"config_path\":\"/etc/glauth/glauth.cfg\"}",
 		                       &r) != 0 ||
 		    r.status != 201) {
 			fprintf(stderr, "FAIL: register basedntest, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* Registration itself already triggers a sync -- confirm the
 		 * rewrite already landed, before hostauth-config is even
@@ -1250,7 +1250,7 @@ int main(void)
 		 * in this test file before now), so the rewrite is a
 		 * deliberate no-op here -- the OLD value must still be intact. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET",
+		if (cix_client_request(&client, "GET",
 		                       "/v1/containers/basedntest/files?path=%2Fetc%2Fglauth%2Fglauth.cfg",
 		                       NULL, &r) != 0 ||
 		    r.status != 200 ||
@@ -1261,11 +1261,11 @@ int main(void)
 			        r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* Now set the real, canonical ldap_base_dn. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "PUT", "/v1/system/hostauth-config",
+		if (cix_client_request(&client, "PUT", "/v1/system/hostauth-config",
 		                       "{\"admin_groups\":[],\"idle_timeout_seconds\":900,"
 		                       "\"ldap_base_dn\":\"dc=new,dc=test\"}",
 		                       &r) != 0 ||
@@ -1273,21 +1273,21 @@ int main(void)
 			fprintf(stderr, "FAIL: PUT hostauth-config ldap_base_dn, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* Any LDAP mutation triggers ldap_record_sync_all() -- a
 		 * throwaway group create is as good as any other for that. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/ldap/groups",
+		if (cix_client_request(&client, "POST", "/v1/ldap/groups",
 		                       "{\"name\":\"basedntrigger\",\"gidnumber\":6501}", &r) != 0 ||
 		    r.status != 201) {
 			fprintf(stderr, "FAIL: create group basedntrigger, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET",
+		if (cix_client_request(&client, "GET",
 		                       "/v1/containers/basedntest/files?path=%2Fetc%2Fglauth%2Fglauth.cfg",
 		                       NULL, &r) != 0 ||
 		    r.status != 200) {
@@ -1314,10 +1314,10 @@ int main(void)
 				ok = 0;
 			}
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
-		thinc_client_request(&client, "DELETE", "/v1/ldap/groups/basedntrigger", NULL, &r);
-		thinc_response_free(&r);
+		cix_client_request(&client, "DELETE", "/v1/ldap/groups/basedntrigger", NULL, &r);
+		cix_response_free(&r);
 	}
 
 	/*
@@ -1338,17 +1338,17 @@ int main(void)
 		char body[512];
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/networks",
+		if (cix_client_request(&client, "POST", "/v1/networks",
 		                       "{\"name\":\"ldapfilt\",\"subnet\":\"10.77.0.0\",\"prefix_len\":24}",
 		                       &r) != 0 ||
 		    (r.status != 201 && r.status != 409)) {
 			fprintf(stderr, "FAIL: create ldapfilt network, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/containers",
+		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"ldapfsrv\",\"image\":\"ldaptest\","
 		                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
 		                       "\"networks\":[{\"name\":\"ldapfilt\"}]}",
@@ -1365,14 +1365,14 @@ int main(void)
 			if (found != NULL)
 				snprintf(ip, sizeof(ip), "%s", found);
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		if (ip[0] == '\0') {
 			fprintf(stderr, "FAIL: ldapfsrv has no IP to filter on\n");
 			ok = 0;
 		} else {
 			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "POST", "/v1/ldap/servers",
+			if (cix_client_request(&client, "POST", "/v1/ldap/servers",
 			                       "{\"container\":\"ldapfsrv\","
 			                       "\"config_path\":\"/etc/glauth/glauth.cfg\"}",
 			                       &r) != 0 ||
@@ -1380,24 +1380,24 @@ int main(void)
 				fprintf(stderr, "FAIL: register ldapfsrv, status=%d\n", r.status);
 				ok = 0;
 			}
-			thinc_response_free(&r);
+			cix_response_free(&r);
 
 			/* Two URIs: one that IS this registered server, one that
-			 * maps to nothing thinC manages. */
+			 * maps to nothing Cix manages. */
 			snprintf(body, sizeof(body),
 			         "{\"client_uri\":\"ldap://%s:%d/ ldap://198.51.100.7:%d/\"}", ip,
 			         HOSTAUTH_LDAP_DEFAULT_PORT, HOSTAUTH_LDAP_DEFAULT_PORT);
 			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "PUT", "/v1/ldap/config", body, &r) != 0 ||
+			if (cix_client_request(&client, "PUT", "/v1/ldap/config", body, &r) != 0 ||
 			    r.status != 200) {
 				fprintf(stderr, "FAIL: PUT client_uri for filtering, status=%d\n", r.status);
 				ok = 0;
 			}
-			thinc_response_free(&r);
+			cix_response_free(&r);
 
 			/* Healthy (never probed counts as in service): both kept. */
 			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "GET", "/v1/ldap/config", NULL, &r) != 0 ||
+			if (cix_client_request(&client, "GET", "/v1/ldap/config", NULL, &r) != 0 ||
 			    r.status != 200) {
 				fprintf(stderr, "FAIL: GET ldap config, status=%d\n", r.status);
 				ok = 0;
@@ -1411,20 +1411,20 @@ int main(void)
 					ok = 0;
 				}
 			}
-			thinc_response_free(&r);
+			cix_response_free(&r);
 
 			/* Drained: that URI must go, the unmanaged one must stay. */
 			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "PUT", "/v1/system/server-health/ldap/ldapfsrv",
+			if (cix_client_request(&client, "PUT", "/v1/system/server-health/ldap/ldapfsrv",
 			                       "{\"drained\":true}", &r) != 0 ||
 			    r.status != 200) {
 				fprintf(stderr, "FAIL: drain ldapfsrv, status=%d\n", r.status);
 				ok = 0;
 			}
-			thinc_response_free(&r);
+			cix_response_free(&r);
 
 			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "GET", "/v1/ldap/config", NULL, &r) != 0 ||
+			if (cix_client_request(&client, "GET", "/v1/ldap/config", NULL, &r) != 0 ||
 			    r.status != 200) {
 				fprintf(stderr, "FAIL: GET ldap config after drain, status=%d\n", r.status);
 				ok = 0;
@@ -1440,7 +1440,7 @@ int main(void)
 					ok = 0;
 				}
 			}
-			thinc_response_free(&r);
+			cix_response_free(&r);
 
 			/* Filtering to nothing must fall back to the configured
 			 * list rather than hand a client an empty one -- a partial
@@ -1448,11 +1448,11 @@ int main(void)
 			snprintf(body, sizeof(body), "{\"client_uri\":\"ldap://%s:%d/\"}", ip,
 			         HOSTAUTH_LDAP_DEFAULT_PORT);
 			memset(&r, 0, sizeof(r));
-			thinc_client_request(&client, "PUT", "/v1/ldap/config", body, &r);
-			thinc_response_free(&r);
+			cix_client_request(&client, "PUT", "/v1/ldap/config", body, &r);
+			cix_response_free(&r);
 
 			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "GET", "/v1/ldap/config", NULL, &r) != 0 ||
+			if (cix_client_request(&client, "GET", "/v1/ldap/config", NULL, &r) != 0 ||
 			    r.status != 200) {
 				fprintf(stderr, "FAIL: GET ldap config for empty-fallback, status=%d\n",
 				        r.status);
@@ -1466,15 +1466,15 @@ int main(void)
 					ok = 0;
 				}
 			}
-			thinc_response_free(&r);
+			cix_response_free(&r);
 		}
 
 		/* Both removed, network included: a leaked bridge outlives the
 		 * daemon and makes the NEXT run fail at network creation with a
 		 * 500 that looks nothing like its real cause. */
 		memset(&r, 0, sizeof(r));
-		thinc_client_request(&client, "DELETE", "/v1/containers/ldapfsrv", NULL, &r);
-		thinc_response_free(&r);
+		cix_client_request(&client, "DELETE", "/v1/containers/ldapfsrv", NULL, &r);
+		cix_response_free(&r);
 		/* ADR-0180: container teardown is asynchronous, so the network
 		 * still has an attachment for a moment after DELETE returns
 		 * 204 and removing it immediately fails. Poll until the
@@ -1484,24 +1484,24 @@ int main(void)
 
 			for (i = 0; i < 50; i++) {
 				memset(&r, 0, sizeof(r));
-				if (thinc_client_request(&client, "GET", "/v1/containers/ldapfsrv", NULL, &r) == 0 &&
+				if (cix_client_request(&client, "GET", "/v1/containers/ldapfsrv", NULL, &r) == 0 &&
 				    r.status == 404) {
-					thinc_response_free(&r);
+					cix_response_free(&r);
 					break;
 				}
-				thinc_response_free(&r);
+				cix_response_free(&r);
 				usleep(100000);
 			}
 		}
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "DELETE", "/v1/networks/ldapfilt", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "DELETE", "/v1/networks/ldapfilt", NULL, &r) != 0 ||
 		    (r.status != 204 && r.status != 404)) {
 			fprintf(stderr, "FAIL: could not remove ldapfilt network (status=%d) -- a leaked "
 			                "bridge breaks the NEXT run at network creation\n",
 			        r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 	}
 
 	stop_daemon(daemon_pid);

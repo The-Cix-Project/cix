@@ -6,7 +6,7 @@
 # calls getpwnam()/pam_authenticate(). This is task #832's own actual
 # target, closing out ADR-0144's container-side real-LDAP chain
 # (openldap-client -> linux-pam -> this): a container running this
-# plus the two earlier recipes can resolve real thinC LDAP accounts
+# plus the two earlier recipes can resolve real Cix LDAP accounts
 # via ordinary getpwnam()/getgrnam()/PAM, the mechanism a future
 # PAM-enabled openssh rebuild (a later ADR-0144 part) will actually
 # use for real SSH login -- replacing the file-rendering SSH-target
@@ -102,7 +102,7 @@ pkg_build() {
 # step) would never actually resolve. nslcd itself (the daemon) is an
 # ordinary /usr/sbin binary. Deliberately NOT staged here: a real
 # /etc/nslcd.conf (base DN, server URI, bind credentials) -- that's a
-# per-deployment concern, the same "thinC owns the durable config,
+# per-deployment concern, the same "Cix owns the durable config,
 # a container's own files entry stages the concrete value" posture
 # every other real service config in this project (dnsmasq, glauth)
 # already has, not something a package recipe should bake in.

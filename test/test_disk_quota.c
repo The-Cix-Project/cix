@@ -1,6 +1,6 @@
 /*
  * Part 4 (bare-metal-readiness plan, ADR-0062) end-to-end test: proves
- * disk_quota_bytes' real wiring over real HTTP against a real thincd
+ * disk_quota_bytes' real wiring over real HTTP against a real cixd
  * subprocess -- JSON parsing, quotamap_get_or_assign()'s real,
  * persisted project-id allocation (same name always gets the same id
  * back; a fresh name gets a fresh, incrementing one), and the full
@@ -50,7 +50,7 @@ static pid_t start_daemon(void)
 	static char data_dir_arg[PATH_MAX + 11];
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
-	dargv[0] = "build/thincd";
+	dargv[0] = "build/cixd";
 	dargv[1] = PORT_ARG;
 	dargv[2] = data_dir_arg;
 	dargv[3] = NULL;
@@ -61,8 +61,8 @@ static pid_t start_daemon(void)
 		return -1;
 	}
 	if (pid == 0) {
-		execve("build/thincd", dargv, environ);
-		perror("execve build/thincd");
+		execve("build/cixd", dargv, environ);
+		perror("execve build/cixd");
 		_exit(127);
 	}
 	return pid;
@@ -78,14 +78,14 @@ static int stop_daemon(pid_t pid)
 	return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
 }
 
-static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
+static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 {
 	int i;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			thinc_response_free(&r);
+		if (cix_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			cix_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -94,7 +94,7 @@ static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
 }
 
 /* Real, whole-file read of the daemon's own persisted project-id map
- * -- the same thinc_test_data_dir_XXXXXX path start_daemon() itself
+ * -- the same cix_test_data_dir_XXXXXX path start_daemon() itself
  * was pointed at, so this is the exact file quotamap_init()/
  * quotamap_get_or_assign() actually read and wrote, not a guess at
  * its shape. */
@@ -133,9 +133,9 @@ static int count_occurrences(const char *haystack, const char *needle)
 int main(void)
 {
 	pid_t daemon_pid;
-	struct thinc_client client;
+	struct cix_client client;
 	int ok = 1;
-	struct thinc_response r;
+	struct cix_response r;
 	char projmap[8192];
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
@@ -162,7 +162,7 @@ int main(void)
 		return 1;
 	}
 
-	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
+	cix_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
@@ -179,7 +179,7 @@ int main(void)
 	 * as a clean 500, never a crash and never a silent 201.
 	 */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"quotafail1\",\"image\":\"quotatest\","
 	                       "\"cmd\":[\"/bin/daemon_child\"],\"disk_quota_bytes\":1048576}",
 	                       &r) != 0 ||
@@ -187,19 +187,19 @@ int main(void)
 		fprintf(stderr, "FAIL: quota create on unsupported fs: expected 500, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* No container should exist -- creation must have failed clean,
 	 * before ever spawning anything. */
 	memset(&r, 0, sizeof(r));
-	if (ok && (thinc_client_request(&client, "GET", "/v1/containers/quotafail1", NULL, &r) != 0 ||
+	if (ok && (cix_client_request(&client, "GET", "/v1/containers/quotafail1", NULL, &r) != 0 ||
 	           r.status != 404)) {
 		fprintf(stderr, "FAIL: quotafail1 should not exist after a failed quota create "
 		                "(got status %d)\n",
 		        r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/*
 	 * 2. Same name, second attempt -- quotamap_get_or_assign() must
@@ -209,7 +209,7 @@ int main(void)
 	 * exactly one entry for this name exists, not two.
 	 */
 	memset(&r, 0, sizeof(r));
-	if (ok && (thinc_client_request(&client, "POST", "/v1/containers",
+	if (ok && (cix_client_request(&client, "POST", "/v1/containers",
 	                              "{\"name\":\"quotafail1\",\"image\":\"quotatest\","
 	                              "\"cmd\":[\"/bin/daemon_child\"],\"disk_quota_bytes\":2097152}",
 	                              &r) != 0 ||
@@ -218,7 +218,7 @@ int main(void)
 		        r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	if (ok && read_quota_projids(projmap, sizeof(projmap)) != 0) {
 		fprintf(stderr, "FAIL: could not read persisted quota_projids.json\n");
@@ -236,7 +236,7 @@ int main(void)
 	 * distinct project id -- both now present in the persisted map.
 	 */
 	memset(&r, 0, sizeof(r));
-	if (ok && (thinc_client_request(&client, "POST", "/v1/containers",
+	if (ok && (cix_client_request(&client, "POST", "/v1/containers",
 	                              "{\"name\":\"quotafail2\",\"image\":\"quotatest\","
 	                              "\"cmd\":[\"/bin/daemon_child\"],\"disk_quota_bytes\":1048576}",
 	                              &r) != 0 ||
@@ -244,7 +244,7 @@ int main(void)
 		fprintf(stderr, "FAIL: quota create on quotafail2: expected 500, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	if (ok && read_quota_projids(projmap, sizeof(projmap)) != 0) {
 		fprintf(stderr, "FAIL: could not re-read persisted quota_projids.json\n");
@@ -265,7 +265,7 @@ int main(void)
 	 * quota) must be completely unaffected.
 	 */
 	memset(&r, 0, sizeof(r));
-	if (ok && (thinc_client_request(&client, "POST", "/v1/containers",
+	if (ok && (cix_client_request(&client, "POST", "/v1/containers",
 	                              "{\"name\":\"noquota\",\"image\":\"quotatest\","
 	                              "\"cmd\":[\"/bin/daemon_child\"]}",
 	                              &r) != 0 ||
@@ -273,7 +273,7 @@ int main(void)
 		fprintf(stderr, "FAIL: no-quota create: expected 201, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	if (ok)
 		printf("DISK QUOTA RESULT: PASS\n");

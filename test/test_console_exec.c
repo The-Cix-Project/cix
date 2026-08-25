@@ -14,7 +14,7 @@
  * Exec target is test/dual_console_child.c (already used by
  * test_dual_console.c as a trivial line-echo stand-in) -- reused here
  * rather than duplicated, staged into a real container image and run
- * via X-thinC-Exec-Cmd instead of as a bare host subprocess. The
+ * via X-Cix-Exec-Cmd instead of as a bare host subprocess. The
  * container's own long-lived process is test/daemon_child.c (already
  * used across this project's other daemon tests for exactly "stay
  * alive for a controlled duration").
@@ -70,7 +70,7 @@ static pid_t start_daemon(void)
 	static char data_dir_arg[PATH_MAX + 11];
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
-	dargv[0] = "build/thincd";
+	dargv[0] = "build/cixd";
 	dargv[1] = PORT_ARG;
 	dargv[2] = data_dir_arg;
 	dargv[3] = NULL;
@@ -81,8 +81,8 @@ static pid_t start_daemon(void)
 		return -1;
 	}
 	if (pid == 0) {
-		execve("build/thincd", dargv, environ);
-		perror("execve build/thincd");
+		execve("build/cixd", dargv, environ);
+		perror("execve build/cixd");
 		_exit(127);
 	}
 	return pid;
@@ -108,14 +108,14 @@ static void reset_state(void)
 	system(cmd);
 }
 
-static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
+static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 {
 	int i;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			thinc_response_free(&r);
+		if (cix_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			cix_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -123,7 +123,7 @@ static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
 	return -1;
 }
 
-/* Raw socket connect to the daemon -- thinc_client_request() has no
+/* Raw socket connect to the daemon -- cix_client_request() has no
  * concept of a connection that survives past one response, which is
  * the whole point of what's being tested here. */
 static int raw_connect(int port)
@@ -262,8 +262,8 @@ static int recv_ws_frame(int fd, int *out_opcode, unsigned char *out_buf, size_t
 int main(void)
 {
 	pid_t daemon_pid;
-	struct thinc_client client;
-	struct thinc_response r;
+	struct cix_client client;
+	struct cix_response r;
 	int fd;
 	char req[1024];
 	int rlen;
@@ -305,7 +305,7 @@ int main(void)
 	if (daemon_pid < 0)
 		return 1;
 
-	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
+	cix_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never became healthy\n");
 		stop_daemon(daemon_pid);
@@ -314,7 +314,7 @@ int main(void)
 
 	/* --- fixture: a real, long-lived running container --- */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"consoletest\",\"image\":\"consoletest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}",
 	                       &r) != 0 ||
@@ -322,18 +322,18 @@ int main(void)
 		fprintf(stderr, "FAIL: POST consoletest, status=%d\n", r.status);
 		g_failures++;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* --- scenario 1: a plain GET with no Upgrade header is a 400, not
 	 * silently treated as an ordinary request for this path --- */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/containers/consoletest/console", NULL, &r) != 0) {
+	if (cix_client_request(&client, "GET", "/v1/containers/consoletest/console", NULL, &r) != 0) {
 		fprintf(stderr, "FAIL: plain GET .../console unreachable\n");
 		g_failures++;
 	} else {
 		CHECK(r.status == 400, "plain GET .../console (no Upgrade header) should be 400");
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* --- scenario 2: console into a container that doesn't exist --- */
 	fd = raw_connect(TEST_PORT);
@@ -370,7 +370,7 @@ int main(void)
 		                 "Connection: Upgrade\r\n"
 		                 "Sec-WebSocket-Key: %s\r\n"
 		                 "Sec-WebSocket-Version: 13\r\n"
-		                 "X-thinC-Exec-Cmd: /bin/dual_console_child\r\n"
+		                 "X-Cix-Exec-Cmd: /bin/dual_console_child\r\n"
 		                 "\r\n",
 		                 TEST_WS_KEY);
 		CHECK(write_all_raw(fd, req, (size_t)rlen) == 0, "send upgrade request");
@@ -449,8 +449,8 @@ int main(void)
 
 	/* --- cleanup --- */
 	memset(&r, 0, sizeof(r));
-	thinc_client_request(&client, "DELETE", "/v1/containers/consoletest", NULL, &r);
-	thinc_response_free(&r);
+	cix_client_request(&client, "DELETE", "/v1/containers/consoletest", NULL, &r);
+	cix_response_free(&r);
 
 	stop_daemon(daemon_pid);
 	reset_state();

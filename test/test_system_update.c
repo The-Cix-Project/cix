@@ -6,7 +6,7 @@
  * ROOT_A_DEVICE/ROOT_B_DEVICE, write_file_to_esp() onto the mounted
  * ESP -- real paths that only exist under a real QEMU guest with a
  * virtio-blk disk attached, or on real hardware). None of that
- * requires --init-mode or a real device: thincd happily accepts
+ * requires --init-mode or a real device: cixd happily accepts
  * --slot=a without --init-mode (boot_init(), which mounts the ESP,
  * only runs when --init-mode is also given), so every 400 case here is
  * reachable from a plain dev daemon on this dev LXC -- both
@@ -35,14 +35,14 @@ extern char **environ;
 
 static char g_data_dir[PATH_MAX];
 
-static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
+static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 {
 	int i;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			thinc_response_free(&r);
+		if (cix_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			cix_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -63,7 +63,7 @@ static pid_t start_daemon(const char *extra_arg)
 	int argc = 0;
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
-	dargv[argc++] = "build/thincd";
+	dargv[argc++] = "build/cixd";
 	dargv[argc++] = PORT_ARG;
 	dargv[argc++] = data_dir_arg;
 	if (extra_arg != NULL)
@@ -76,8 +76,8 @@ static pid_t start_daemon(const char *extra_arg)
 		return -1;
 	}
 	if (pid == 0) {
-		execve("build/thincd", dargv, environ);
-		perror("execve build/thincd");
+		execve("build/cixd", dargv, environ);
+		perror("execve build/cixd");
 		_exit(127);
 	}
 	return pid;
@@ -96,16 +96,16 @@ static int stop_daemon(pid_t pid)
 int main(void)
 {
 	pid_t daemon_pid;
-	struct thinc_client client;
-	struct thinc_response r;
+	struct cix_client client;
+	struct cix_response r;
 	int ok = 1;
-	char not_squashfs_path[] = "/tmp/thinc_test_system_update_notsquashfs_XXXXXX";
+	char not_squashfs_path[] = "/tmp/cix_test_system_update_notsquashfs_XXXXXX";
 	int fd;
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
 
-	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
+	cix_client_init(&client, "127.0.0.1", TEST_PORT);
 
 	/* 1. No --slot= at all -> the request is rejected outright, before
 	 * even looking at the body -- there is no meaningful "inactive
@@ -121,13 +121,13 @@ int main(void)
 	}
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/system/update", "{\"image_path\":\"/nonexistent\"}",
+	if (cix_client_request(&client, "POST", "/v1/system/update", "{\"image_path\":\"/nonexistent\"}",
 	                       &r) != 0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: update with no --slot= expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	if (stop_daemon(daemon_pid) != 0) {
 		fprintf(stderr, "FAIL: daemon (no --slot=) did not exit cleanly on SIGTERM\n");
@@ -150,22 +150,22 @@ int main(void)
 
 	/* 2a. image_path missing from the body entirely */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/system/update", "{}", &r) != 0 || r.status != 400) {
+	if (cix_client_request(&client, "POST", "/v1/system/update", "{}", &r) != 0 || r.status != 400) {
 		fprintf(stderr, "FAIL: update with missing image_path expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 2b. image_path pointing at a file that doesn't exist */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/system/update",
+	if (cix_client_request(&client, "POST", "/v1/system/update",
 	                       "{\"image_path\":\"/no/such/path/here\"}", &r) != 0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: update with nonexistent image_path expected 400, got %d\n",
 		        r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 2c. image_path pointing at a real, readable file that is NOT a
 	 * squashfs image -- rejected on magic before any device write is
@@ -187,7 +187,7 @@ int main(void)
 
 			snprintf(body, sizeof(body), "{\"image_path\":\"%s\"}", not_squashfs_path);
 			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "POST", "/v1/system/update", body, &r) != 0 ||
+			if (cix_client_request(&client, "POST", "/v1/system/update", body, &r) != 0 ||
 			    r.status != 400) {
 				fprintf(stderr, "FAIL: update with non-squashfs image_path expected 400, got %d\n",
 				        r.status);
@@ -202,18 +202,18 @@ int main(void)
 					ok = 0;
 				}
 			}
-			thinc_response_free(&r);
+			cix_response_free(&r);
 		}
 		/* 2d. kernel_path pointing at a file that doesn't exist */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/system/update",
+		if (cix_client_request(&client, "POST", "/v1/system/update",
 		                       "{\"kernel_path\":\"/no/such/kernel/here\"}", &r) != 0 ||
 		    r.status != 400) {
 			fprintf(stderr, "FAIL: update with nonexistent kernel_path expected 400, got %d\n",
 			        r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* 2e. kernel_path pointing at a real, readable file that is NOT
 		 * a valid bzImage -- the same plain-text fixture already proven
@@ -225,7 +225,7 @@ int main(void)
 
 			snprintf(body, sizeof(body), "{\"kernel_path\":\"%s\"}", not_squashfs_path);
 			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "POST", "/v1/system/update", body, &r) != 0 ||
+			if (cix_client_request(&client, "POST", "/v1/system/update", body, &r) != 0 ||
 			    r.status != 400) {
 				fprintf(stderr,
 				        "FAIL: update with non-bzImage kernel_path expected 400, got %d\n",
@@ -241,7 +241,7 @@ int main(void)
 					ok = 0;
 				}
 			}
-			thinc_response_free(&r);
+			cix_response_free(&r);
 		}
 
 		/* 2f. A real, valid-magic image_path combined with a bad
@@ -252,7 +252,7 @@ int main(void)
 		 * "hsqs" fixture is enough here -- only the magic is checked,
 		 * not real squashfs structure. */
 		{
-			char good_image_path[] = "/tmp/thinc_test_system_update_goodimage_XXXXXX";
+			char good_image_path[] = "/tmp/cix_test_system_update_goodimage_XXXXXX";
 			char body[512];
 
 			if (mkstemp(good_image_path) < 0) {
@@ -267,7 +267,7 @@ int main(void)
 				snprintf(body, sizeof(body), "{\"image_path\":\"%s\",\"kernel_path\":\"%s\"}",
 				         good_image_path, not_squashfs_path);
 				memset(&r, 0, sizeof(r));
-				if (thinc_client_request(&client, "POST", "/v1/system/update", body, &r) != 0 ||
+				if (cix_client_request(&client, "POST", "/v1/system/update", body, &r) != 0 ||
 				    r.status != 400) {
 					fprintf(stderr,
 					        "FAIL: update with valid image_path + bad kernel_path expected "
@@ -275,7 +275,7 @@ int main(void)
 					        r.status);
 					ok = 0;
 				}
-				thinc_response_free(&r);
+				cix_response_free(&r);
 				unlink(good_image_path);
 			}
 		}

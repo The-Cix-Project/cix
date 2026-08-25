@@ -20,7 +20,7 @@
 # give a false mismatch).
 #
 # 1.47.4-2, one real fix from 1.47.4 -- the first real build-image
-# rebuild of this recipe (building thinc-hosttools, task #865) hit a
+# rebuild of this recipe (building cix-hosttools, task #865) hit a
 # genuine build failure this recipe's own unqualified `make -j` had
 # never actually exercised before: the bare `all` target builds every
 # PROG_SUBDIRS entry (e2fsck, misc, and friends), not just misc/, and

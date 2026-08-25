@@ -4,7 +4,7 @@
  * container_create(), not just that the eBPF program loads.
  *
  * 1. A standalone bpf(2) sanity check (no container involved) isolates
- *    a struct thinc_bpf_insn byte-packing bug from a device-logic bug,
+ *    a struct cix_bpf_insn byte-packing bug from a device-logic bug,
  *    per this project's own "stress-test anything touching a raw
  *    syscall ABI struct" discipline (see ADR-0008/0009).
  * 2. Container A: one real device grant -- its own node opens, and
@@ -63,15 +63,15 @@ static int mkdir_p1(const char *path)
 	return 0;
 }
 
-/* Isolates a struct thinc_bpf_insn byte-packing bug from a device-logic
+/* Isolates a struct cix_bpf_insn byte-packing bug from a device-logic
  * bug: a minimal "mov r0,1; exit" program, no context access, no
  * jumps -- if this alone fails to load, the bug is in the raw
  * instruction encoding, not in container_dev_bpf_attach()'s own
  * per-device comparison chain. */
 static int bpf_encoding_sanity_check(void)
 {
-	struct thinc_bpf_insn prog[2];
-	struct thinc_bpf_prog_load_attr attr;
+	struct cix_bpf_insn prog[2];
+	struct cix_bpf_prog_load_attr attr;
 	int fd;
 
 	prog[0].code = 0xb7; /* BPF_ALU64|BPF_MOV|BPF_K */
@@ -84,13 +84,13 @@ static int bpf_encoding_sanity_check(void)
 	prog[1].imm = 0;
 
 	memset(&attr, 0, sizeof(attr));
-	attr.prog_type = THINC_BPF_PROG_TYPE_CGROUP_DEVICE;
+	attr.prog_type = CIX_BPF_PROG_TYPE_CGROUP_DEVICE;
 	attr.insn_cnt = 2;
 	attr.insns = (uint64_t)(uintptr_t)prog;
 	attr.license = (uint64_t)(uintptr_t)"GPL";
-	attr.expected_attach_type = THINC_BPF_CGROUP_DEVICE;
+	attr.expected_attach_type = CIX_BPF_CGROUP_DEVICE;
 
-	fd = (int)sys_bpf(THINC_BPF_PROG_LOAD, &attr, sizeof(attr));
+	fd = (int)sys_bpf(CIX_BPF_PROG_LOAD, &attr, sizeof(attr));
 	if (fd < 0) {
 		perror("bpf_encoding_sanity_check: BPF_PROG_LOAD");
 		return -1;

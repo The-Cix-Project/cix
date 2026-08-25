@@ -7,7 +7,7 @@
  * the pkgbuild rootfs, then confirmed by checking a real toolchain
  * binary (gcc) actually landed -- not just that the call returned OK.
  *
- * Reached via thincd's own --test-bootstrap-toolchain=, the same
+ * Reached via cixd's own --test-bootstrap-toolchain=, the same
  * precedent --test-update-image=/--test-update-kernel= already
  * established (test_boot_update.c): host-to-guest HTTP is unavailable
  * for a statically-addressed guest under this project's own test
@@ -33,8 +33,8 @@
 #include <unistd.h>
 
 #define MKBOOTROOT_BIN "build/mkbootroot"
-#define THINCD_BIN "build/thincd"
-#define THINCCTL_BIN "build/thincctl"
+#define CIXD_BIN "build/cixd"
+#define CIXCTL_BIN "build/cixctl"
 #define BZIMAGE_PATH "build/bzImage"
 #define TOOLCHAIN_SQUASHFS_PATH "/tmp/toolchain.squashfs"
 #define SFDISK_BIN "/usr/sbin/sfdisk"
@@ -72,11 +72,11 @@ static int build_esp_image(const char *esp_img, const char *workdir)
 		return -1;
 	if (esp_mcopy_in(esp_img, SYSTEMD_BOOT_EFI, "::/EFI/BOOT/BOOTX64.EFI") != 0)
 		return -1;
-	if (esp_mcopy_in(esp_img, BZIMAGE_PATH, "::/thinc-bzImage-a") != 0)
+	if (esp_mcopy_in(esp_img, BZIMAGE_PATH, "::/cix-bzImage-a") != 0)
 		return -1;
 
 	snprintf(loader_conf_path, sizeof(loader_conf_path), "%s/loader.conf", workdir);
-	if (write_text_file(loader_conf_path, "default thinc\ntimeout 0\n") != 0)
+	if (write_text_file(loader_conf_path, "default cix\ntimeout 0\n") != 0)
 		return -1;
 	if (esp_mcopy_in(esp_img, loader_conf_path, "::/loader/loader.conf") != 0)
 		return -1;
@@ -89,13 +89,13 @@ static int build_esp_image(const char *esp_img, const char *workdir)
 	 * this works -- see pkg_bootstrap_from_toolchain()). */
 	snprintf(loader_conf,
 	         sizeof(loader_conf),
-	         "title thinC\n"
-	         "linux /thinc-bzImage-a\n"
-	         "options console=ttyS0 root=/dev/vda2 rw init=/bin/thincd -- --init-mode "
+	         "title Cix\n"
+	         "linux /cix-bzImage-a\n"
+	         "options console=ttyS0 root=/dev/vda2 rw init=/bin/cixd -- --init-mode "
 	         "--test-bootstrap-toolchain=/dev/vda3\n");
 	if (write_text_file(loader_conf_path, loader_conf) != 0)
 		return -1;
-	if (esp_mcopy_in(esp_img, loader_conf_path, "::/loader/entries/thinc.conf") != 0)
+	if (esp_mcopy_in(esp_img, loader_conf_path, "::/loader/entries/cix.conf") != 0)
 		return -1;
 
 	return 0;
@@ -103,7 +103,7 @@ static int build_esp_image(const char *esp_img, const char *workdir)
 
 int main(void)
 {
-	char workdir[] = "/tmp/thinc_test_console_pkgboot_XXXXXX";
+	char workdir[] = "/tmp/cix_test_console_pkgboot_XXXXXX";
 	char stage_dir[600];
 	char root_squashfs[600];
 	char disk_img[600];
@@ -140,7 +140,7 @@ int main(void)
 
 	{
 		char *mkbootroot_argv[] = { (char *)MKBOOTROOT_BIN, stage_dir,
-			                     (char *)THINCD_BIN, (char *)THINCCTL_BIN, "web", root_squashfs,
+			                     (char *)CIXD_BIN, (char *)CIXCTL_BIN, "web", root_squashfs,
 			                     "", "", "", "", NULL };
 		if (run_subprocess(MKBOOTROOT_BIN, mkbootroot_argv) != 0)
 			return 1;

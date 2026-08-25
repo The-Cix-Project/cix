@@ -322,8 +322,8 @@ void disk_probe_fs_type(const char *dev_path, char *out, size_t out_size)
  * partition table (issue: OS partitions reported no role at all).
  *
  * This is the name whoever created the partition actually gave it --
- * thinc-install.c writes "thinc-esp", "thinc-root-a", "thinc-root-b",
- * "thinc-config", "thinc-containers", and POST /disks/{d}/partitions
+ * cix-install.c writes "cix-esp", "cix-root-a", "cix-root-b",
+ * "cix-config", "cix-containers", and POST /disks/{d}/partitions
  * writes whatever the caller asked for. Until now that name was
  * write-only: the API accepted it, the installer set it, and nothing
  * could ever read it back, so the fixed OS layout showed up as five
@@ -643,7 +643,7 @@ void disk_write_json_one(const struct discovered_disk *d, struct json_writer *w)
 	jw_str(w, d->fs_type);
 	/* Partitions only: the name in the partition table, which is what
 	 * whoever created it actually called it -- the fixed OS layout's
-	 * own thinc-esp/thinc-root-a/... names, or whatever POST
+	 * own cix-esp/cix-root-a/... names, or whatever POST
 	 * .../partitions was given. Write-only until now. */
 	jw_key(w, "part_label");
 	jw_str(w, d->part_label);

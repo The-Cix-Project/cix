@@ -13,7 +13,7 @@ static char g_domain_suffix[SITECONFIG_NAME_MAX];
 
 static void apply_defaults(void)
 {
-	snprintf(g_instance_name, sizeof(g_instance_name), "thinc");
+	snprintf(g_instance_name, sizeof(g_instance_name), "cix");
 	g_site_name[0] = '\0';
 	snprintf(g_domain_suffix, sizeof(g_domain_suffix), "internal");
 }
@@ -36,7 +36,7 @@ static int load_state(void)
 		/* A malformed/truncated/empty persisted file is recoverable --
 		 * apply_defaults() already ran before load_state() was called,
 		 * so falling through and returning success here just means
-		 * "boot with defaults," never a fatal error. thincd runs as
+		 * "boot with defaults," never a fatal error. cixd runs as
 		 * real PID 1 on an installed system (main()'s own init sequence
 		 * treats any siteconfig_init() failure as fatal, returning 1
 		 * straight out of main -- which is a kernel panic there, not an

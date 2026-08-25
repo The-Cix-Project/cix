@@ -1,7 +1,7 @@
 /*
  * Issue #24: the installed system's own boot console, over REST.
  *
- * An installed thinC host boots through systemd-boot, and every loader
+ * An installed Cix host boots through systemd-boot, and every loader
  * entry carried a hardcoded `console=tty0 console=ttyS0`. Real hardware
  * needs a serial console at a particular baud, or a framebuffer
  * argument to produce any output at all, or exactly the opposite when
@@ -34,14 +34,14 @@ extern char **environ;
 static char g_data_dir[PATH_MAX];
 static char g_esp_dir[PATH_MAX];
 
-static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
+static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 {
 	int i;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			thinc_response_free(&r);
+		if (cix_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			cix_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -58,7 +58,7 @@ static pid_t start_daemon(void)
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
 	snprintf(esp_arg, sizeof(esp_arg), "--test-esp-entries-dir=%s", g_esp_dir);
-	dargv[0] = "build/thincd";
+	dargv[0] = "build/cixd";
 	dargv[1] = PORT_ARG;
 	dargv[2] = data_dir_arg;
 	dargv[3] = esp_arg;
@@ -70,8 +70,8 @@ static pid_t start_daemon(void)
 		return -1;
 	}
 	if (pid == 0) {
-		execve("build/thincd", dargv, environ);
-		perror("execve build/thincd");
+		execve("build/cixd", dargv, environ);
+		perror("execve build/cixd");
 		_exit(127);
 	}
 	return pid;
@@ -89,11 +89,11 @@ static int stop_daemon(pid_t pid)
 
 /* The entry file exactly as populate_esp()/the A/B update path write it. */
 static const char *ENTRY_BEFORE =
-    "title thinC (A)\n"
-    "sort-key thinc\n"
+    "title Cix (A)\n"
+    "sort-key cix\n"
     "version 1\n"
-    "linux /thinc-bzImage-a\n"
-    "options console=tty0 console=ttyS0 root=/dev/vda2 rw init=/bin/thincd -- --init-mode "
+    "linux /cix-bzImage-a\n"
+    "options console=tty0 console=ttyS0 root=/dev/vda2 rw init=/bin/cixd -- --init-mode "
     "--slot=a --bind=192.168.15.95\n";
 
 static int write_entry(const char *path, const char *content)
@@ -123,8 +123,8 @@ static int read_entry(const char *path, char *buf, size_t cap)
 int main(void)
 {
 	pid_t daemon_pid;
-	struct thinc_client client;
-	struct thinc_response r;
+	struct cix_client client;
+	struct cix_response r;
 	char entry_path[PATH_MAX];
 	char after[4096];
 	int ok = 1;
@@ -137,7 +137,7 @@ int main(void)
 		test_data_dir_cleanup(g_data_dir);
 		return 1;
 	}
-	snprintf(entry_path, sizeof(entry_path), "%s/thinc-a+3.conf", g_esp_dir);
+	snprintf(entry_path, sizeof(entry_path), "%s/cix-a+3.conf", g_esp_dir);
 	if (write_entry(entry_path, ENTRY_BEFORE) != 0) {
 		test_data_dir_cleanup(g_data_dir);
 		return 1;
@@ -148,7 +148,7 @@ int main(void)
 		test_data_dir_cleanup(g_data_dir);
 		return 1;
 	}
-	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
+	cix_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
@@ -160,7 +160,7 @@ int main(void)
 	/* 1. The default is exactly what was hardcoded before this existed,
 	 * so an install that never touches the setting boots identically. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/system/boot-console", NULL, &r) != 0 ||
+	if (cix_client_request(&client, "GET", "/v1/system/boot-console", NULL, &r) != 0 ||
 	    r.status != 200) {
 		fprintf(stderr, "FAIL: GET boot-console, status=%d\n", r.status);
 		ok = 0;
@@ -180,19 +180,19 @@ int main(void)
 			ok = 0;
 		}
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 2. A real change: serial console at a real baud, plus a
 	 * framebuffer argument -- and the entry on disk is rewritten. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "PUT", "/v1/system/boot-console",
+	if (cix_client_request(&client, "PUT", "/v1/system/boot-console",
 	                       "{\"consoles\":[\"ttyS0,115200n8\"],\"extra\":\"nomodeset\"}", &r) != 0 ||
 	    r.status != 200 ||
 	    (long)json_as_number(json_object_get(r.json, "loader_entries_updated")) != 1) {
 		fprintf(stderr, "FAIL: PUT boot-console, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	if (read_entry(entry_path, after, sizeof(after)) != 0) {
 		fprintf(stderr, "FAIL: could not read the rewritten entry\n");
@@ -204,7 +204,7 @@ int main(void)
 		 * boots at all, and this endpoint has no business touching it.
 		 */
 		if (strstr(after, "options console=ttyS0,115200n8 nomodeset root=/dev/vda2 rw "
-		                  "init=/bin/thincd -- --init-mode --slot=a --bind=192.168.15.95") == NULL) {
+		                  "init=/bin/cixd -- --init-mode --slot=a --bind=192.168.15.95") == NULL) {
 			fprintf(stderr, "FAIL: rewritten entry is wrong:\n%s\n", after);
 			ok = 0;
 		}
@@ -212,7 +212,7 @@ int main(void)
 			fprintf(stderr, "FAIL: the old console survived the rewrite\n");
 			ok = 0;
 		}
-		if (strstr(after, "title thinC (A)") == NULL || strstr(after, "linux /thinc-bzImage-a") == NULL) {
+		if (strstr(after, "title Cix (A)") == NULL || strstr(after, "linux /cix-bzImage-a") == NULL) {
 			fprintf(stderr, "FAIL: the rewrite lost the rest of the entry\n");
 			ok = 0;
 		}
@@ -228,7 +228,7 @@ int main(void)
 		return 1;
 	}
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/system/boot-console", NULL, &r) != 0 ||
+	if (cix_client_request(&client, "GET", "/v1/system/boot-console", NULL, &r) != 0 ||
 	    r.status != 200) {
 		fprintf(stderr, "FAIL: GET after restart, status=%d\n", r.status);
 		ok = 0;
@@ -242,7 +242,7 @@ int main(void)
 			ok = 0;
 		}
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/*
 	 * 4. Anything that could split the boot line, or smuggle in a
@@ -263,12 +263,12 @@ int main(void)
 
 		for (i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
 			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "PUT", "/v1/system/boot-console", bad[i], &r) != 0 ||
+			if (cix_client_request(&client, "PUT", "/v1/system/boot-console", bad[i], &r) != 0 ||
 			    r.status != 400) {
 				fprintf(stderr, "FAIL: %s should be 400, got %d\n", bad[i], r.status);
 				ok = 0;
 			}
-			thinc_response_free(&r);
+			cix_response_free(&r);
 		}
 	}
 

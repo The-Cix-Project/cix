@@ -22,7 +22,7 @@
 # formats can never produce the same sha256 regardless of content).
 #
 # 5.8.3-2, one real fix from 5.8.3 -- the first real build-image
-# rebuild of this recipe (building thinc-hosttools, task #865) hit a
+# rebuild of this recipe (building cix-hosttools, task #865) hit a
 # genuine TCC gap that 5.8.3's own "not rebuild-verified" disclosure
 # (task #845's CC=tcc audit) had flagged as a real, open risk:
 # src/liblzma/common/common.c's own HAVE_SYMBOL_VERSIONS_LINUX branch

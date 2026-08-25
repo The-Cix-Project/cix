@@ -1,6 +1,6 @@
 /*
  * Phase A (ADR-0045) end-to-end test: proves the container lifecycle
- * completeness fixes over real HTTP against a real thincd subprocess
+ * completeness fixes over real HTTP against a real cixd subprocess
  * -- POST .../start actually recovers a stopped-but-defined container
  * without a daemon restart, POST .../pause and .../unpause are a real
  * cgroup v2 freeze (checked against the real cgroup.events file, not
@@ -31,14 +31,14 @@ extern char **environ;
 static char g_data_dir[PATH_MAX];
 static char g_image_root[PATH_MAX];
 
-static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
+static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 {
 	int i;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			thinc_response_free(&r);
+		if (cix_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			cix_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -75,7 +75,7 @@ static pid_t start_daemon(void)
 	static char data_dir_arg[PATH_MAX + 11];
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
-	dargv[0] = "build/thincd";
+	dargv[0] = "build/cixd";
 	dargv[1] = PORT_ARG;
 	dargv[2] = data_dir_arg;
 	dargv[3] = NULL;
@@ -86,8 +86,8 @@ static pid_t start_daemon(void)
 		return -1;
 	}
 	if (pid == 0) {
-		execve("build/thincd", dargv, environ);
-		perror("execve build/thincd");
+		execve("build/cixd", dargv, environ);
+		perror("execve build/cixd");
 		_exit(127);
 	}
 	return pid;
@@ -103,17 +103,17 @@ static int stop_daemon(pid_t pid)
 	return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
 }
 
-static long fetch_pid(const struct thinc_client *c, const char *name)
+static long fetch_pid(const struct cix_client *c, const char *name)
 {
 	char path[128];
-	struct thinc_response r;
+	struct cix_response r;
 	long pid = -1;
 
 	snprintf(path, sizeof(path), "/v1/containers/%s", name);
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(c, "GET", path, NULL, &r) == 0 && r.status == 200)
+	if (cix_client_request(c, "GET", path, NULL, &r) == 0 && r.status == 200)
 		pid = json_num_field(r.json, "pid");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	return pid;
 }
 
@@ -122,25 +122,25 @@ static long fetch_pid(const struct thinc_client *c, const char *name)
  * gone) when the reactor reaps the SIGKILLed child, typically within
  * one loop turn. Tests poll to the settled state, bounded tightly:
  * a SIGKILLed sleeping child taking >5s to settle is a regression. */
-static int wait_status(struct thinc_client *client, const char *path, const char *want, int want_http)
+static int wait_status(struct cix_client *client, const char *path, const char *want, int want_http)
 {
-	struct thinc_response r;
+	struct cix_response r;
 	int i;
 
 	for (i = 0; i < 50; i++) {
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(client, "GET", path, NULL, &r) == 0) {
+		if (cix_client_request(client, "GET", path, NULL, &r) == 0) {
 			if (want_http == 404 && r.status == 404) {
-				thinc_response_free(&r);
+				cix_response_free(&r);
 				return 1;
 			}
 			if (r.status == want_http && want != NULL &&
 			    str_eq(json_str_field(r.json, "status"), want)) {
-				thinc_response_free(&r);
+				cix_response_free(&r);
 				return 1;
 			}
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		usleep(100 * 1000);
 	}
 	return 0;
@@ -158,7 +158,7 @@ static int read_cgroup_value(const char *name, const char *file, char *out, size
 	FILE *f;
 	size_t n;
 
-	snprintf(path, sizeof(path), "/sys/fs/cgroup/thinc-workload/%s/%s", name, file);
+	snprintf(path, sizeof(path), "/sys/fs/cgroup/cix-workload/%s/%s", name, file);
 	f = fopen(path, "r");
 	if (f == NULL)
 		return -1;
@@ -187,7 +187,7 @@ static int cgroup_is_frozen(const char *name)
 	 * COLLECTIVE demand is bounded and the control plane keeps a real
 	 * reservation. The freeze itself is unchanged -- the daemon writes
 	 * through its own cgroup_fd and never rebuilds this path. */
-	snprintf(path, sizeof(path), "/sys/fs/cgroup/thinc-workload/%s/cgroup.events", name);
+	snprintf(path, sizeof(path), "/sys/fs/cgroup/cix-workload/%s/cgroup.events", name);
 	f = fopen(path, "r");
 	if (f == NULL)
 		return -1;
@@ -204,9 +204,9 @@ static int cgroup_is_frozen(const char *name)
 int main(void)
 {
 	pid_t daemon_pid;
-	struct thinc_client client;
+	struct cix_client client;
 	int ok = 1;
-	struct thinc_response r;
+	struct cix_response r;
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
@@ -236,7 +236,7 @@ int main(void)
 		return 1;
 	}
 
-	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
+	cix_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
@@ -247,7 +247,7 @@ int main(void)
 
 	/* 1. Create a long-lived "always" container. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"lc1\",\"image\":\"lifecycletest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"],"
 	                       "\"restart\":\"always\"}",
@@ -256,7 +256,7 @@ int main(void)
 		fprintf(stderr, "FAIL: POST lc1, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 2. stop -- must still be visible via GET (not 404), status
 	 * "stopped", not just "gone." This is the actual bug reported. */
@@ -264,29 +264,29 @@ int main(void)
 		long pid1 = fetch_pid(&client, "lc1");
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/containers/lc1/stop", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "POST", "/v1/containers/lc1/stop", NULL, &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: POST lc1/stop, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		if (!wait_status(&client, "/v1/containers/lc1", "stopped", 200)) {
 			fprintf(stderr, "FAIL: lc1 never settled to 200/stopped after async stop\n");
 			ok = 0;
 		}
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/containers/lc1", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "GET", "/v1/containers/lc1", NULL, &r) != 0 ||
 		    r.status != 200 || !json_bool_field(r.json, "stopped")) {
 			fprintf(stderr, "FAIL: settled lc1 should report stopped:true, got status=%d\n",
 			        r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* Also confirm it shows up in the plain list, not just single-GET. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/containers", NULL, &r) != 0 || r.status != 200) {
+		if (cix_client_request(&client, "GET", "/v1/containers", NULL, &r) != 0 || r.status != 200) {
 			fprintf(stderr, "FAIL: GET /v1/containers, status=%d\n", r.status);
 			ok = 0;
 		} else {
@@ -305,17 +305,17 @@ int main(void)
 				ok = 0;
 			}
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* 3. start -- brings it back, no daemon restart, fresh pid. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/containers/lc1/start", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "POST", "/v1/containers/lc1/start", NULL, &r) != 0 ||
 		    r.status != 200 || !str_eq(json_str_field(r.json, "status"), "running") ||
 		    json_bool_field(r.json, "stopped")) {
 			fprintf(stderr, "FAIL: POST lc1/start, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		if (fetch_pid(&client, "lc1") == pid1 || fetch_pid(&client, "lc1") < 0) {
 			fprintf(stderr, "FAIL: lc1 should have a fresh pid after start\n");
@@ -324,12 +324,12 @@ int main(void)
 
 		/* Idempotent: starting an already-live container is 200, not an error. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/containers/lc1/start", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "POST", "/v1/containers/lc1/start", NULL, &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: idempotent re-start, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/*
 		 * Issue #11: edit the stored definition in place, instead of
@@ -342,7 +342,7 @@ int main(void)
 		 * response that merely echoes what it was told proves nothing.
 		 */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "PATCH", "/v1/containers/lc1",
+		if (cix_client_request(&client, "PATCH", "/v1/containers/lc1",
 		                       "{\"cmd\":[\"/bin/daemon_child\",\"45\",\"0\"],"
 		                       "\"env\":{\"PATCHED\":\"yes\"}}",
 		                       &r) != 0 ||
@@ -351,59 +351,59 @@ int main(void)
 			fprintf(stderr, "FAIL: PATCH lc1, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* Its identity is not editable -- that is a different container. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "PATCH", "/v1/containers/lc1", "{\"name\":\"lc1-renamed\"}",
+		if (cix_client_request(&client, "PATCH", "/v1/containers/lc1", "{\"name\":\"lc1-renamed\"}",
 		                       &r) != 0 ||
 		    r.status != 400) {
 			fprintf(stderr, "FAIL: PATCH name should be 400, got %d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* An index field is refused with a 400 that names it, rather
 		 * than being silently stored and quietly ignored. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "PATCH", "/v1/containers/lc1", "{\"restart\":\"always\"}",
+		if (cix_client_request(&client, "PATCH", "/v1/containers/lc1", "{\"restart\":\"always\"}",
 		                       &r) != 0 ||
 		    r.status != 400 || json_str_field(r.json, "error") == NULL ||
 		    strstr(json_str_field(r.json, "error"), "restart") == NULL) {
 			fprintf(stderr, "FAIL: PATCH restart should 400 naming it, got %d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* Now prove the edit is real: stop, start, and read the
 		 * container back -- the new env must be there. */
 		memset(&r, 0, sizeof(r));
-		thinc_client_request(&client, "POST", "/v1/containers/lc1/stop", NULL, &r);
-		thinc_response_free(&r);
+		cix_client_request(&client, "POST", "/v1/containers/lc1/stop", NULL, &r);
+		cix_response_free(&r);
 		{
 			int i;
 
 			for (i = 0; i < 50; i++) {
 				memset(&r, 0, sizeof(r));
-				if (thinc_client_request(&client, "GET", "/v1/containers/lc1", NULL, &r) == 0 &&
+				if (cix_client_request(&client, "GET", "/v1/containers/lc1", NULL, &r) == 0 &&
 				    r.status == 200 && str_eq(json_str_field(r.json, "status"), "stopped")) {
-					thinc_response_free(&r);
+					cix_response_free(&r);
 					break;
 				}
-				thinc_response_free(&r);
+				cix_response_free(&r);
 				usleep(100000);
 			}
 		}
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/containers/lc1/start", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "POST", "/v1/containers/lc1/start", NULL, &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: start after PATCH, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/containers/lc1", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "GET", "/v1/containers/lc1", NULL, &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: GET lc1 after patched start, status=%d\n", r.status);
 			ok = 0;
@@ -417,29 +417,29 @@ int main(void)
 				ok = 0;
 			}
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* start on a name with no definition at all is 404. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/containers/never-existed/start", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "POST", "/v1/containers/never-existed/start", NULL, &r) != 0 ||
 		    r.status != 404) {
 			fprintf(stderr, "FAIL: start on unknown name should be 404, got %d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 	}
 
 	/* 4. pause -- real cgroup freeze, checked against the kernel's own
 	 * cgroup.events, not just the REST status string. */
 	{
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/containers/lc1/pause", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "POST", "/v1/containers/lc1/pause", NULL, &r) != 0 ||
 		    r.status != 200 || !str_eq(json_str_field(r.json, "status"), "paused") ||
 		    !json_bool_field(r.json, "paused")) {
 			fprintf(stderr, "FAIL: POST lc1/pause, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		if (cgroup_is_frozen("lc1") != 1) {
 			fprintf(stderr, "FAIL: cgroup.events for lc1 does not report frozen 1 after pause\n");
@@ -448,22 +448,22 @@ int main(void)
 
 		/* Double-pause is 409, not a silent no-op. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/containers/lc1/pause", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "POST", "/v1/containers/lc1/pause", NULL, &r) != 0 ||
 		    r.status != 409) {
 			fprintf(stderr, "FAIL: double-pause should be 409, got %d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* 5. unpause -- real thaw. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/containers/lc1/unpause", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "POST", "/v1/containers/lc1/unpause", NULL, &r) != 0 ||
 		    r.status != 200 || !str_eq(json_str_field(r.json, "status"), "running") ||
 		    json_bool_field(r.json, "paused")) {
 			fprintf(stderr, "FAIL: POST lc1/unpause, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		if (cgroup_is_frozen("lc1") != 0) {
 			fprintf(stderr, "FAIL: cgroup.events for lc1 does not report frozen 0 after unpause\n");
@@ -472,37 +472,37 @@ int main(void)
 
 		/* Double-unpause is 409. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/containers/lc1/unpause", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "POST", "/v1/containers/lc1/unpause", NULL, &r) != 0 ||
 		    r.status != 409) {
 			fprintf(stderr, "FAIL: double-unpause should be 409, got %d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* pause/unpause on a stopped-but-defined (not live) container is 404. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/containers/lc1/stop", NULL, &r) != 0 || r.status != 200) {
+		if (cix_client_request(&client, "POST", "/v1/containers/lc1/stop", NULL, &r) != 0 || r.status != 200) {
 			fprintf(stderr, "FAIL: POST lc1/stop (pre-pause-404-check), status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		if (!wait_status(&client, "/v1/containers/lc1", "stopped", 200)) {
 			fprintf(stderr, "FAIL: lc1 never settled to stopped (pre-pause-404-check)\n");
 			ok = 0;
 		}
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/containers/lc1/pause", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "POST", "/v1/containers/lc1/pause", NULL, &r) != 0 ||
 		    r.status != 404) {
 			fprintf(stderr, "FAIL: pause on a stopped container should be 404, got %d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/containers/lc1/start", NULL, &r) != 0 || r.status != 200) {
+		if (cix_client_request(&client, "POST", "/v1/containers/lc1/start", NULL, &r) != 0 || r.status != 200) {
 			fprintf(stderr, "FAIL: POST lc1/start (post-pause-404-check), status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 	}
 
 	/* 6. Freeze-before-kill: DELETE on a paused container must not hang. */
@@ -510,21 +510,21 @@ int main(void)
 		time_t t0, t1;
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/containers/lc1/pause", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "POST", "/v1/containers/lc1/pause", NULL, &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: pause before delete, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		t0 = time(NULL);
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "DELETE", "/v1/containers/lc1", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "DELETE", "/v1/containers/lc1", NULL, &r) != 0 ||
 		    r.status != 204) {
 			fprintf(stderr, "FAIL: DELETE paused lc1, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		t1 = time(NULL);
 
 		if (t1 - t0 > 5) {
@@ -545,13 +545,13 @@ int main(void)
 
 			for (i = 0; i < 50; i++) {
 				memset(&r, 0, sizeof(r));
-				if (thinc_client_request(&client, "GET", "/v1/containers/lc1", NULL, &r) == 0 &&
+				if (cix_client_request(&client, "GET", "/v1/containers/lc1", NULL, &r) == 0 &&
 				    r.status == 404) {
 					gone = 1;
-					thinc_response_free(&r);
+					cix_response_free(&r);
 					break;
 				}
-				thinc_response_free(&r);
+				cix_response_free(&r);
 				usleep(100 * 1000);
 			}
 			if (!gone) {
@@ -568,7 +568,7 @@ int main(void)
 	 * then on -- see ADR-0045). */
 	{
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/containers",
+		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"lc2\",\"image\":\"lifecycletest\","
 		                       "\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"],"
 		                       "\"restart\":\"always\"}",
@@ -577,15 +577,15 @@ int main(void)
 			fprintf(stderr, "FAIL: POST lc2, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/containers/lc2/stop", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "POST", "/v1/containers/lc2/stop", NULL, &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: POST lc2/stop, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		if (stop_daemon(daemon_pid) != 0) {
 			fprintf(stderr, "FAIL: daemon did not exit cleanly on SIGTERM\n");
@@ -599,7 +599,7 @@ int main(void)
 		}
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/containers/lc2", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "GET", "/v1/containers/lc2", NULL, &r) != 0 ||
 		    r.status != 200 || !str_eq(json_str_field(r.json, "status"), "running") ||
 		    json_bool_field(r.json, "stopped")) {
 			fprintf(stderr,
@@ -608,7 +608,7 @@ int main(void)
 			        r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 	}
 
 	/* 8. cpu_max (Part 1 of the bare-metal-readiness plan): a real
@@ -621,7 +621,7 @@ int main(void)
 		char cpu_max[64];
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/containers",
+		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"lc3\",\"image\":\"lifecycletest\","
 		                       "\"cmd\":[\"/bin/daemon_child\",\"5\",\"0\"],"
 		                       "\"cpu_max\":\"50000 100000\"}",
@@ -630,7 +630,7 @@ int main(void)
 			fprintf(stderr, "FAIL: POST lc3 with cpu_max, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		if (read_cgroup_value("lc3", "cpu.max", cpu_max, sizeof(cpu_max)) != 0) {
 			fprintf(stderr, "FAIL: could not read /sys/fs/cgroup/lc3/cpu.max\n");
@@ -642,12 +642,12 @@ int main(void)
 		}
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "DELETE", "/v1/containers/lc3", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "DELETE", "/v1/containers/lc3", NULL, &r) != 0 ||
 		    r.status != 204) {
 			fprintf(stderr, "FAIL: DELETE lc3, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 	}
 
 	/* 9. cpuset_cpus (Part 2 of the bare-metal-readiness plan): same
@@ -658,7 +658,7 @@ int main(void)
 		char cpuset_cpus[64];
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/containers",
+		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"lc4\",\"image\":\"lifecycletest\","
 		                       "\"cmd\":[\"/bin/daemon_child\",\"5\",\"0\"],"
 		                       "\"cpuset_cpus\":\"0\"}",
@@ -667,7 +667,7 @@ int main(void)
 			fprintf(stderr, "FAIL: POST lc4 with cpuset_cpus, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		if (read_cgroup_value("lc4", "cpuset.cpus", cpuset_cpus, sizeof(cpuset_cpus)) != 0) {
 			fprintf(stderr, "FAIL: could not read /sys/fs/cgroup/lc4/cpuset.cpus\n");
@@ -680,12 +680,12 @@ int main(void)
 		}
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "DELETE", "/v1/containers/lc4", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "DELETE", "/v1/containers/lc4", NULL, &r) != 0 ||
 		    r.status != 204) {
 			fprintf(stderr, "FAIL: DELETE lc4, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 	}
 
 	/*
@@ -701,7 +701,7 @@ int main(void)
 		char swap_max[64];
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/containers",
+		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"lc4s\",\"image\":\"lifecycletest\","
 		                       "\"cmd\":[\"/bin/daemon_child\",\"5\",\"0\"],"
 		                       "\"memory_swap_max\":0}",
@@ -710,7 +710,7 @@ int main(void)
 			fprintf(stderr, "FAIL: POST lc4s with memory_swap_max=0, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		if (read_cgroup_value("lc4s", "memory.swap.max", swap_max, sizeof(swap_max)) != 0) {
 			fprintf(stderr, "FAIL: could not read lc4s memory.swap.max -- this kernel may not "
@@ -724,23 +724,23 @@ int main(void)
 		/* And it is reported back, read from the kernel rather than
 		 * echoed -- 0, not the null that means "no limit". */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/containers/lc4s", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "GET", "/v1/containers/lc4s", NULL, &r) != 0 ||
 		    r.status != 200 || json_object_get(r.json, "memory_swap_max") == NULL ||
 		    json_object_get(r.json, "memory_swap_max")->type != JSON_NUMBER ||
 		    (long long)json_as_number(json_object_get(r.json, "memory_swap_max")) != 0) {
 			fprintf(stderr, "FAIL: #52 GET lc4s did not report memory_swap_max=0\n");
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		thinc_client_request(&client, "DELETE", "/v1/containers/lc4s", NULL, &r);
-		thinc_response_free(&r);
+		cix_client_request(&client, "DELETE", "/v1/containers/lc4s", NULL, &r);
+		cix_response_free(&r);
 
 		/* Absent means unlimited, and must report as null rather than
 		 * as the 0 that means the opposite. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/containers",
+		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"lc4t\",\"image\":\"lifecycletest\","
 		                       "\"cmd\":[\"/bin/daemon_child\",\"5\",\"0\"]}",
 		                       &r) != 0 ||
@@ -748,25 +748,25 @@ int main(void)
 			fprintf(stderr, "FAIL: POST lc4t, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/containers/lc4t", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "GET", "/v1/containers/lc4t", NULL, &r) != 0 ||
 		    r.status != 200 || json_object_get(r.json, "memory_swap_max") == NULL ||
 		    json_object_get(r.json, "memory_swap_max")->type != JSON_NULL) {
 			fprintf(stderr, "FAIL: #52 an unset memory_swap_max is not reported as null\n");
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		thinc_client_request(&client, "DELETE", "/v1/containers/lc4t", NULL, &r);
-		thinc_response_free(&r);
+		cix_client_request(&client, "DELETE", "/v1/containers/lc4t", NULL, &r);
+		cix_response_free(&r);
 
 		/* A negative is refused rather than silently meaning "unset" --
 		 * that is what omitting the field is for. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/containers",
+		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"lc4u\",\"image\":\"lifecycletest\","
 		                       "\"cmd\":[\"/bin/daemon_child\",\"5\",\"0\"],"
 		                       "\"memory_swap_max\":-1}",
@@ -775,7 +775,7 @@ int main(void)
 			fprintf(stderr, "FAIL: #52 a negative memory_swap_max should 400, got %d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 	}
 
 	/* 10. capture_output: a container created with "capture_output":true
@@ -795,7 +795,7 @@ int main(void)
 		captured_buf[0] = '\0';
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/containers",
+		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"lc5\",\"image\":\"lifecycletest\","
 		                       "\"cmd\":[\"/bin/output_child\"],"
 		                       "\"capture_output\":true}",
@@ -804,19 +804,19 @@ int main(void)
 			fprintf(stderr, "FAIL: POST lc5 with capture_output, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* output_child exits almost immediately -- poll briefly for the
 		 * pipe's EOF to be drained into captured_output rather than
 		 * racing it. The matched string is copied out into a local
-		 * buffer BEFORE thinc_response_free(&r) -- captured pointed into
+		 * buffer BEFORE cix_response_free(&r) -- captured pointed into
 		 * r.json's own tree, which that free() invalidates, so holding
 		 * onto the struct json_value* itself across the free (as an
 		 * earlier version of this test did) is a real use-after-free,
 		 * not just untidy. */
 		for (attempt = 0; attempt < 50; attempt++) {
 			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "GET", "/v1/containers/lc5", NULL, &r) == 0 &&
+			if (cix_client_request(&client, "GET", "/v1/containers/lc5", NULL, &r) == 0 &&
 			    r.status == 200) {
 				const struct json_value *captured = json_object_get(r.json, "captured_output");
 
@@ -824,11 +824,11 @@ int main(void)
 				    strstr(captured->u.string, "capture-test-stdout-line") != NULL) {
 					snprintf(captured_buf, sizeof(captured_buf), "%s", captured->u.string);
 					captured_found = 1;
-					thinc_response_free(&r);
+					cix_response_free(&r);
 					break;
 				}
 			}
-			thinc_response_free(&r);
+			cix_response_free(&r);
 			usleep(100000);
 		}
 
@@ -843,7 +843,7 @@ int main(void)
 		/* task #760: output_child.c's stdout line carries a real ANSI
 		 * color escape (raw ESC 0x1b) -- jw_escaped_string() writes it
 		 * as a \u00XX escape to stay valid JSON, so this only round-trips
-		 * correctly if json_parse() (used by thinc_client_request() just
+		 * correctly if json_parse() (used by cix_client_request() just
 		 * above, the same shared client every CLI command goes
 		 * through) actually decodes \uXXXX back into a real byte
 		 * rather than failing the whole parse. */
@@ -856,16 +856,16 @@ int main(void)
 		}
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "DELETE", "/v1/containers/lc5", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "DELETE", "/v1/containers/lc5", NULL, &r) != 0 ||
 		    r.status != 204) {
 			fprintf(stderr, "FAIL: DELETE lc5, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* Sibling without capture_output: captured_output must be JSON null. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/containers",
+		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"lc6\",\"image\":\"lifecycletest\","
 		                       "\"cmd\":[\"/bin/output_child\"]}",
 		                       &r) != 0 ||
@@ -873,10 +873,10 @@ int main(void)
 			fprintf(stderr, "FAIL: POST lc6 without capture_output, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/containers/lc6", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "GET", "/v1/containers/lc6", NULL, &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: GET lc6, status=%d\n", r.status);
 			ok = 0;
@@ -890,7 +890,7 @@ int main(void)
 				ok = 0;
 			}
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/*
 		 * lc6 never asked for capture_output (confirmed null just
@@ -908,7 +908,7 @@ int main(void)
 
 			for (i = 0; i < 30 && !seen; i++) {
 				memset(&r, 0, sizeof(r));
-				if (thinc_client_request(&client, "GET",
+				if (cix_client_request(&client, "GET",
 				                       "/v1/system/logs?source=container&container=lc6", NULL,
 				                       &r) == 0 &&
 				    r.status == 200 && r.json != NULL && r.json->type == JSON_ARRAY) {
@@ -928,7 +928,7 @@ int main(void)
 						}
 					}
 				}
-				thinc_response_free(&r);
+				cix_response_free(&r);
 				if (!seen)
 					usleep(100000);
 			}
@@ -943,7 +943,7 @@ int main(void)
 
 		/* A container-name filter for an unrelated name must exclude it. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET",
+		if (cix_client_request(&client, "GET",
 		                       "/v1/system/logs?source=container&container=no-such-container", NULL,
 		                       &r) != 0 ||
 		    r.status != 200 || r.json == NULL || r.json->type != JSON_ARRAY ||
@@ -952,24 +952,24 @@ int main(void)
 			        "FAIL: container filter for an unrelated name should return zero entries\n");
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* A malformed regex is a 400, not a silent empty match. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "GET", "/v1/system/logs?regex=%5B", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "GET", "/v1/system/logs?regex=%5B", NULL, &r) != 0 ||
 		    r.status != 400) {
 			fprintf(stderr, "FAIL: malformed regex filter expected 400, got %d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "DELETE", "/v1/containers/lc6", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "DELETE", "/v1/containers/lc6", NULL, &r) != 0 ||
 		    r.status != 204) {
 			fprintf(stderr, "FAIL: DELETE lc6, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 	}
 
 	stop_daemon(daemon_pid);

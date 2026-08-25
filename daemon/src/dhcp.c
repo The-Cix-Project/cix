@@ -567,7 +567,7 @@ int dhcp_render_conf(const char *server_name, char *out, size_t out_size)
 	int n;
 
 	n = snprintf(out, out_size,
-	             "# Rendered by thincd -- every edit here is overwritten.\n"
+	             "# Rendered by cixd -- every edit here is overwritten.\n"
 	             "# Ranges take effect only when dnsmasq starts, which is why\n"
 	             "# changing one restarts this container.\n"
 	             "# Only this server's own slice of each range appears here:\n"
@@ -622,7 +622,7 @@ int dhcp_render_hosts(char *out, size_t out_size)
 	int i;
 	int n;
 
-	n = snprintf(out, out_size, "# Rendered by thincd -- every edit here is overwritten.\n");
+	n = snprintf(out, out_size, "# Rendered by cixd -- every edit here is overwritten.\n");
 	if (n < 0 || (size_t)n >= out_size)
 		return -1;
 	off = (size_t)n;

@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-A thinC network is a real Linux bridge. Everything about what is attached to it was, until now, answered from this daemon's own registry: which containers hold an address on it, which host interfaces were enslaved to it. Both are records of what this daemon *did*.
+A Cix network is a real Linux bridge. Everything about what is attached to it was, until now, answered from this daemon's own registry: which containers hold an address on it, which host interfaces were enslaved to it. Both are records of what this daemon *did*.
 
 That is a fine answer right up to the moment it is wrong, and it is exactly the answer that cannot tell you it is wrong. A veth left on a bridge by a container the registry has forgotten, an interface enslaved by something outside this daemon — neither exists as far as the registry is concerned, and the operator sees a tidy picture of a network that is not the one the kernel is switching.
 

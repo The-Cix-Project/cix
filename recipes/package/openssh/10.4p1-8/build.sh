@@ -25,7 +25,7 @@
 # directly (getpwnam()-driven "invalid user" + a bind that succeeds
 # fine from an unchrooted shell but fails identically from inside
 # sshd) by checking `/proc/mounts` inside a real running container:
-# `/run` is its own tmpfs (thincd mounts it there), while `/` (and
+# `/run` is its own tmpfs (cixd mounts it there), while `/` (and
 # therefore /var/empty, 10.4p1-7's own --with-privsep-path) is the
 # overlay root -- two different filesystems, so making nslcd's own
 # /run/nslcd/socket reachable from inside the chroot via a hard link

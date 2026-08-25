@@ -143,7 +143,7 @@ int mountns_pivot(const char *new_root, const struct mount_spec *mnt)
 	/*
 	 * The same devpts gap task #764/ADR-pending-#426 already found and
 	 * fixed for the daemon's own host-namespace console-exec feature
-	 * (thincd's exec.c posix_openpt()s /dev/ptmx fine regardless --
+	 * (cixd's exec.c posix_openpt()s /dev/ptmx fine regardless --
 	 * that device is always reachable -- but opening the SLAVE path
 	 * ptsname_r() hands back fails with a bare ENOENT unless a real
 	 * devpts filesystem is mounted at /dev/pts), one namespace layer
@@ -157,13 +157,13 @@ int mountns_pivot(const char *new_root, const struct mount_spec *mnt)
 	 * with no such device. Fresh on every start, same as /proc/​/sys/​
 	 * /run above -- mount points never persist across a container
 	 * restart, only the underlying rootfs files do. Same mount options
-	 * as the host's own copy (main.c's boot_init(), thinc-install.c's
+	 * as the host's own copy (main.c's boot_init(), cix-install.c's
 	 * early_mounts()) for the same reason: ptmxmode=0666 so a non-root
 	 * process inside the container can still allocate a pty.
 	 */
 	/* Unlike /proc, /sys, /run (all fresh top-level dirs regardless of
 	 * what the lowerdir provides), /dev itself is only guaranteed to
-	 * exist for a real thinC-managed image (pkg_seed_image_baseline()
+	 * exist for a real Cix-managed image (pkg_seed_image_baseline()
 	 * creates it) -- a minimal hand-built rootfs with no /dev at all is
 	 * a legitimate case (mkdir("/dev/pts", ...) would otherwise fail
 	 * ENOENT, its parent missing), so /dev itself gets the same
@@ -243,7 +243,7 @@ int mountns_bind_into(pid_t child_pid, const char *host_dir, const char *contain
 	 * because the container's /proc belongs to its own PID namespace
 	 * and the helper is not in it, so /proc/self does not resolve.
 	 */
-	src_fd = thinc_open_tree(AT_FDCWD, host_dir, OPEN_TREE_CLONE | AT_RECURSIVE);
+	src_fd = cix_open_tree(AT_FDCWD, host_dir, OPEN_TREE_CLONE | AT_RECURSIVE);
 	if (src_fd < 0) {
 		fprintf(stderr, "mountns_bind_into: open_tree(%s): %s\n", host_dir, strerror(errno));
 		return -1;
@@ -270,7 +270,7 @@ int mountns_bind_into(pid_t child_pid, const char *host_dir, const char *contain
 		 * create-time path already creates it. */
 		if (mkdir(container_path, 0755) != 0 && errno != EEXIST)
 			_exit(3);
-		if (thinc_move_mount(src_fd, "", AT_FDCWD, container_path, MOVE_MOUNT_F_EMPTY_PATH) != 0)
+		if (cix_move_mount(src_fd, "", AT_FDCWD, container_path, MOVE_MOUNT_F_EMPTY_PATH) != 0)
 			_exit(4);
 		if (read_only) {
 			/*

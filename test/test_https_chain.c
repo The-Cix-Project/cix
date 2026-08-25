@@ -47,7 +47,7 @@ static pid_t start_daemon(void)
 	static char data_dir_arg[PATH_MAX + 11];
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
-	dargv[0] = "build/thincd";
+	dargv[0] = "build/cixd";
 	dargv[1] = PORT_ARG;
 	dargv[2] = data_dir_arg;
 	dargv[3] = NULL;
@@ -58,8 +58,8 @@ static pid_t start_daemon(void)
 		return -1;
 	}
 	if (pid == 0) {
-		execve("build/thincd", dargv, environ);
-		perror("execve build/thincd");
+		execve("build/cixd", dargv, environ);
+		perror("execve build/cixd");
 		_exit(127);
 	}
 	return pid;
@@ -75,14 +75,14 @@ static int stop_daemon(pid_t pid)
 	return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
 }
 
-static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
+static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 {
 	int i;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			thinc_response_free(&r);
+		if (cix_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			cix_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -182,9 +182,9 @@ static int count_certificates_in_file(const char *path)
 int main(void)
 {
 	pid_t daemon_pid;
-	struct thinc_client client;
+	struct cix_client client;
 	int ok = 1;
-	struct thinc_response r;
+	struct cix_response r;
 	char root_pem_path[PATH_MAX];
 	char chain_path[PATH_MAX];
 
@@ -204,7 +204,7 @@ int main(void)
 		return 1;
 	}
 
-	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
+	cix_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
@@ -219,14 +219,14 @@ int main(void)
 	 * intermediate already bootstrapped, exactly the sequence a real
 	 * install follows and the sequence that exposed this bug. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/pki/ca", "{}", &r) != 0 || r.status != 201) {
+	if (cix_client_request(&client, "POST", "/v1/pki/ca", "{}", &r) != 0 || r.status != 201) {
 		fprintf(stderr, "FAIL: POST /v1/pki/ca, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (ok && (thinc_client_request(&client, "GET", "/v1/pki/ca", NULL, &r) != 0 || r.status != 200)) {
+	if (ok && (cix_client_request(&client, "GET", "/v1/pki/ca", NULL, &r) != 0 || r.status != 200)) {
 		fprintf(stderr, "FAIL: GET /v1/pki/ca, status=%d\n", r.status);
 		ok = 0;
 	}
@@ -241,15 +241,15 @@ int main(void)
 		if (f != NULL)
 			fclose(f);
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (ok && (thinc_client_request(&client, "POST", "/v1/pki/intermediate", "{}", &r) != 0 ||
+	if (ok && (cix_client_request(&client, "POST", "/v1/pki/intermediate", "{}", &r) != 0 ||
 	           r.status != 201)) {
 		fprintf(stderr, "FAIL: POST /v1/pki/intermediate, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/*
 	 * https_port explicit, not left to whatever the daemon's own
@@ -260,7 +260,7 @@ int main(void)
 	 * can't do that again.
 	 */
 	memset(&r, 0, sizeof(r));
-	if (ok && (thinc_client_request(&client, "PUT", "/v1/system/daemon-config",
+	if (ok && (cix_client_request(&client, "PUT", "/v1/system/daemon-config",
 	                              "{\"https_enabled\":true,\"https_port\":" TOSTR(
 	                                      HTTPS_PORT) "}",
 	                              &r) != 0 ||
@@ -268,7 +268,7 @@ int main(void)
 		fprintf(stderr, "FAIL: PUT https_enabled=true, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* Give the newly-added HTTPS listener a moment to actually be
 	 * ready to accept -- daemon-config's own PUT response returns as

@@ -44,14 +44,14 @@ static char g_data_dir[PATH_MAX];
 static char g_image_root[PATH_MAX];
 static char g_container_defs_path[PATH_MAX];
 
-static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
+static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 {
 	int i;
-	struct thinc_response r;
+	struct cix_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			thinc_response_free(&r);
+		if (cix_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			cix_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -81,7 +81,7 @@ static pid_t start_daemon(void)
 	static char data_dir_arg[PATH_MAX + 11];
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
-	dargv[0] = "build/thincd";
+	dargv[0] = "build/cixd";
 	dargv[1] = PORT_ARG;
 	dargv[2] = data_dir_arg;
 	dargv[3] = NULL;
@@ -92,8 +92,8 @@ static pid_t start_daemon(void)
 		return -1;
 	}
 	if (pid == 0) {
-		execve("build/thincd", dargv, environ);
-		perror("execve build/thincd");
+		execve("build/cixd", dargv, environ);
+		perror("execve build/cixd");
 		_exit(127);
 	}
 	return pid;
@@ -129,18 +129,18 @@ static void reset_state(void)
  * test's own crash-restart-suppression scenarios below depend on not
  * happening.
  */
-static long fetch_pid(const struct thinc_client *c, const char *name)
+static long fetch_pid(const struct cix_client *c, const char *name)
 {
 	char path[128];
-	struct thinc_response r;
+	struct cix_response r;
 	long pid = -1;
 
 	snprintf(path, sizeof(path), "/v1/containers/%s", name);
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(c, "GET", path, NULL, &r) == 0 && r.status == 200 &&
+	if (cix_client_request(c, "GET", path, NULL, &r) == 0 && r.status == 200 &&
 	    !str_eq(json_str_field(r.json, "status"), "stopped"))
 		pid = json_num_field(r.json, "pid");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	return pid;
 }
 
@@ -154,36 +154,36 @@ static long fetch_pid(const struct thinc_client *c, const char *name)
  * this function to mean "live", matching its intent from before either
  * ADR (this test predates both).
  */
-static int container_exists(const struct thinc_client *c, const char *name)
+static int container_exists(const struct cix_client *c, const char *name)
 {
 	char path[128];
-	struct thinc_response r;
+	struct cix_response r;
 	const char *status;
 	int result;
 
 	snprintf(path, sizeof(path), "/v1/containers/%s", name);
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(c, "GET", path, NULL, &r) != 0)
+	if (cix_client_request(c, "GET", path, NULL, &r) != 0)
 		return -1;
 	status = json_str_field(r.json, "status");
 	result = r.status == 200 && !str_eq(status, "stopped") && !str_eq(status, "exited");
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	return result;
 }
 
 /* POST .../stop; returns the HTTP status, or -1 if the daemon couldn't be reached. */
-static int stop_container(const struct thinc_client *c, const char *name)
+static int stop_container(const struct cix_client *c, const char *name)
 {
 	char path[160];
-	struct thinc_response r;
+	struct cix_response r;
 	int status;
 
 	snprintf(path, sizeof(path), "/v1/containers/%s/stop", name);
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(c, "POST", path, NULL, &r) != 0)
+	if (cix_client_request(c, "POST", path, NULL, &r) != 0)
 		return -1;
 	status = r.status;
-	thinc_response_free(&r);
+	cix_response_free(&r);
 	return status;
 }
 
@@ -193,7 +193,7 @@ static int stop_container(const struct thinc_client *c, const char *name)
  * NOT restart" check here wants. Times out after max_attempts*100ms.
  * Returns the time it was first observed
  * gone, or 0 on timeout. */
-static time_t wait_for_gone(const struct thinc_client *c, const char *name, int max_attempts)
+static time_t wait_for_gone(const struct cix_client *c, const char *name, int max_attempts)
 {
 	int attempts;
 
@@ -208,7 +208,7 @@ static time_t wait_for_gone(const struct thinc_client *c, const char *name, int 
 /* Polls until name's pid differs from old_pid (a restart happened), or
  * max_attempts*100ms elapses. Returns the time it was first observed,
  * or 0 on timeout. */
-static time_t wait_for_new_pid(const struct thinc_client *c, const char *name, long old_pid,
+static time_t wait_for_new_pid(const struct cix_client *c, const char *name, long old_pid,
                                 int max_attempts)
 {
 	int attempts;
@@ -226,9 +226,9 @@ static time_t wait_for_new_pid(const struct thinc_client *c, const char *name, l
 int main(void)
 {
 	pid_t daemon_pid;
-	struct thinc_client client;
+	struct cix_client client;
 	int ok = 1;
-	struct thinc_response r;
+	struct cix_response r;
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
@@ -267,7 +267,7 @@ int main(void)
 		return 1;
 	}
 
-	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
+	cix_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
@@ -284,7 +284,7 @@ int main(void)
 		int attempts;
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/containers",
+		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"crasher\",\"image\":\"restarttest\","
 		                       "\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"],"
 		                       "\"restart\":\"always\"}",
@@ -293,7 +293,7 @@ int main(void)
 			fprintf(stderr, "FAIL: POST crasher, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		pid1 = fetch_pid(&client, "crasher");
 		if (pid1 < 0) {
@@ -337,8 +337,8 @@ int main(void)
 		}
 
 		memset(&r, 0, sizeof(r));
-		thinc_client_request(&client, "DELETE", "/v1/containers/crasher", NULL, &r);
-		thinc_response_free(&r);
+		cix_client_request(&client, "DELETE", "/v1/containers/crasher", NULL, &r);
+		cix_response_free(&r);
 	}
 
 	/* Phase 13 part 3 (ADR-0027): restart policy expansion + backoff.
@@ -353,7 +353,7 @@ int main(void)
 		long pid1;
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/containers",
+		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"onfailclean\",\"image\":\"restarttest\","
 		                       "\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"],"
 		                       "\"restart\":\"on-failure\"}",
@@ -362,7 +362,7 @@ int main(void)
 			fprintf(stderr, "FAIL: POST onfailclean, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		/* The running pid, captured before the clean exit. ADR-0181's
 		 * persist-all keeps the exited container around (status "exited",
@@ -395,12 +395,12 @@ int main(void)
 		 * for. It sleeps 1s again before its next clean exit, so there is
 		 * a real live window to observe. */
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/containers/onfailclean/start", NULL, &r) != 0 ||
+		if (cix_client_request(&client, "POST", "/v1/containers/onfailclean/start", NULL, &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: start of exited onfailclean, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 		/* wait_for_new_pid() returns nonzero once a pid different from
 		 * pid1 appears -- i.e. the container genuinely restarted, not a
 		 * silent 200 on the stale exited entry. 0 (timeout) is the
@@ -413,8 +413,8 @@ int main(void)
 		}
 
 		memset(&r, 0, sizeof(r));
-		thinc_client_request(&client, "DELETE", "/v1/containers/onfailclean", NULL, &r);
-		thinc_response_free(&r);
+		cix_client_request(&client, "DELETE", "/v1/containers/onfailclean", NULL, &r);
+		cix_response_free(&r);
 	}
 
 	/*
@@ -434,7 +434,7 @@ int main(void)
 		int i;
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/containers",
+		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"sigdeath\",\"image\":\"restarttest\","
 		                       "\"cmd\":[\"/bin/daemon_child\",\"1\",\"-1\"]}",
 		                       &r) != 0 ||
@@ -442,13 +442,13 @@ int main(void)
 			fprintf(stderr, "FAIL: POST sigdeath, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
 		for (i = 0; i < 60; i++) {
-			thinc_response_free(&r);
+			cix_response_free(&r);
 			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "GET", "/v1/containers/sigdeath", NULL, &r) == 0 &&
+			if (cix_client_request(&client, "GET", "/v1/containers/sigdeath", NULL, &r) == 0 &&
 			    r.status == 200 && str_eq(json_str_field(r.json, "status"), "exited"))
 				break;
 			usleep(100000);
@@ -466,11 +466,11 @@ int main(void)
 			        json_str_field(r.json, "exit_reason"));
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		thinc_client_request(&client, "DELETE", "/v1/containers/sigdeath", NULL, &r);
-		thinc_response_free(&r);
+		cix_client_request(&client, "DELETE", "/v1/containers/sigdeath", NULL, &r);
+		cix_response_free(&r);
 	}
 
 	/* on-failure: a crash (nonzero exit) exit DOES restart, same
@@ -481,7 +481,7 @@ int main(void)
 		time_t gone_at, back_at;
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/containers",
+		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"onfailcrash\",\"image\":\"restarttest\","
 		                       "\"cmd\":[\"/bin/daemon_child\",\"1\",\"7\"],"
 		                       "\"restart\":\"on-failure\"}",
@@ -490,7 +490,7 @@ int main(void)
 			fprintf(stderr, "FAIL: POST onfailcrash, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		pid1 = fetch_pid(&client, "onfailcrash");
 		gone_at = wait_for_gone(&client, "onfailcrash", 40);
@@ -510,8 +510,8 @@ int main(void)
 		}
 
 		memset(&r, 0, sizeof(r));
-		thinc_client_request(&client, "DELETE", "/v1/containers/onfailcrash", NULL, &r);
-		thinc_response_free(&r);
+		cix_client_request(&client, "DELETE", "/v1/containers/onfailcrash", NULL, &r);
+		cix_response_free(&r);
 	}
 
 	/* restart_delay_seconds overrides the default base delay. */
@@ -520,7 +520,7 @@ int main(void)
 		time_t gone_at, back_at;
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/containers",
+		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"delaytest\",\"image\":\"restarttest\","
 		                       "\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"],"
 		                       "\"restart\":\"always\",\"restart_delay_seconds\":5}",
@@ -529,7 +529,7 @@ int main(void)
 			fprintf(stderr, "FAIL: POST delaytest, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		pid1 = fetch_pid(&client, "delaytest");
 		gone_at = wait_for_gone(&client, "delaytest", 40);
@@ -550,8 +550,8 @@ int main(void)
 		}
 
 		memset(&r, 0, sizeof(r));
-		thinc_client_request(&client, "DELETE", "/v1/containers/delaytest", NULL, &r);
-		thinc_response_free(&r);
+		cix_client_request(&client, "DELETE", "/v1/containers/delaytest", NULL, &r);
+		cix_response_free(&r);
 	}
 
 	/* stop during a pending crash-restart delay window -- proves
@@ -561,7 +561,7 @@ int main(void)
 		time_t gone_at;
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/containers",
+		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"stopwindow\",\"image\":\"restarttest\","
 		                       "\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"],"
 		                       "\"restart\":\"always\",\"restart_delay_seconds\":5}",
@@ -570,7 +570,7 @@ int main(void)
 			fprintf(stderr, "FAIL: POST stopwindow, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		gone_at = wait_for_gone(&client, "stopwindow", 40);
 		if (gone_at == 0) {
@@ -593,8 +593,8 @@ int main(void)
 		}
 
 		memset(&r, 0, sizeof(r));
-		thinc_client_request(&client, "DELETE", "/v1/containers/stopwindow", NULL, &r);
-		thinc_response_free(&r);
+		cix_client_request(&client, "DELETE", "/v1/containers/stopwindow", NULL, &r);
+		cix_response_free(&r);
 	}
 
 	/* Backoff genuinely grows across consecutive failures: a fast
@@ -607,7 +607,7 @@ int main(void)
 		time_t gone1, back1, gone2, back2;
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/containers",
+		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"backoffgrow\",\"image\":\"restarttest\","
 		                       "\"cmd\":[\"/bin/daemon_child\",\"1\",\"1\"],"
 		                       "\"restart\":\"always\",\"restart_delay_seconds\":2}",
@@ -616,7 +616,7 @@ int main(void)
 			fprintf(stderr, "FAIL: POST backoffgrow, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		pid1 = fetch_pid(&client, "backoffgrow");
 		gone1 = wait_for_gone(&client, "backoffgrow", 40);
@@ -648,8 +648,8 @@ int main(void)
 		}
 
 		memset(&r, 0, sizeof(r));
-		thinc_client_request(&client, "DELETE", "/v1/containers/backoffgrow", NULL, &r);
-		thinc_response_free(&r);
+		cix_client_request(&client, "DELETE", "/v1/containers/backoffgrow", NULL, &r);
+		cix_response_free(&r);
 	}
 
 	/* Backoff resets for a container that ran stably (>= the 30s
@@ -667,7 +667,7 @@ int main(void)
 		time_t gone_at, back_at;
 
 		memset(&r, 0, sizeof(r));
-		if (thinc_client_request(&client, "POST", "/v1/containers",
+		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"backoffstable\",\"image\":\"restarttest\","
 		                       "\"cmd\":[\"/bin/daemon_child\",\"32\",\"9\"],"
 		                       "\"restart\":\"always\",\"restart_delay_seconds\":2}",
@@ -676,7 +676,7 @@ int main(void)
 			fprintf(stderr, "FAIL: POST backoffstable, status=%d\n", r.status);
 			ok = 0;
 		}
-		thinc_response_free(&r);
+		cix_response_free(&r);
 
 		pid1 = fetch_pid(&client, "backoffstable");
 		gone_at = wait_for_gone(&client, "backoffstable", 400);
@@ -698,14 +698,14 @@ int main(void)
 		}
 
 		memset(&r, 0, sizeof(r));
-		thinc_client_request(&client, "DELETE", "/v1/containers/backoffstable", NULL, &r);
-		thinc_response_free(&r);
+		cix_client_request(&client, "DELETE", "/v1/containers/backoffstable", NULL, &r);
+		cix_response_free(&r);
 	}
 
 	/* Validation: the expanded restart enum, restart_delay_seconds
 	 * bounds, and stop's 404/idempotent-200 shape. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"badrestart\",\"image\":\"restarttest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"],\"restart\":\"bogus\"}",
 	                       &r) != 0 ||
@@ -713,10 +713,10 @@ int main(void)
 		fprintf(stderr, "FAIL: restart:\"bogus\" expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"baddelay\",\"image\":\"restarttest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"],\"restart\":\"always\","
 	                       "\"restart_delay_seconds\":0}",
@@ -725,7 +725,7 @@ int main(void)
 		fprintf(stderr, "FAIL: restart_delay_seconds=0 expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	if (stop_container(&client, "no-such-container") != 404) {
 		fprintf(stderr, "FAIL: stop on an unknown container expected 404\n");
@@ -736,7 +736,7 @@ int main(void)
 	 * long-sleeping restart:"always" container, deleted, must not come
 	 * back even across a real daemon restart. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"deleteme\",\"image\":\"restarttest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"],"
 	                       "\"restart\":\"always\"}",
@@ -745,20 +745,20 @@ int main(void)
 		fprintf(stderr, "FAIL: POST deleteme, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "DELETE", "/v1/containers/deleteme", NULL, &r) != 0 ||
+	if (cix_client_request(&client, "DELETE", "/v1/containers/deleteme", NULL, &r) != 0 ||
 	    r.status != 204) {
 		fprintf(stderr, "FAIL: DELETE deleteme, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 3. depends_on ordering + boot autostart: depA (no deps) and depB
 	 * (depends_on depA) both restart:"always", long-sleeping. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"depA\",\"image\":\"restarttest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"],"
 	                       "\"restart\":\"always\"}",
@@ -767,10 +767,10 @@ int main(void)
 		fprintf(stderr, "FAIL: POST depA, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"depB\",\"image\":\"restarttest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"],"
 	                       "\"restart\":\"always\",\"depends_on\":[\"depA\"]}",
@@ -779,13 +779,13 @@ int main(void)
 		fprintf(stderr, "FAIL: POST depB, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 4. a genuine cycle (cycleA <-> cycleB) plus an independent,
 	 * unrelated restart:"always" container ("innocent") -- the cycle
 	 * must not prevent innocent from autostarting after restart. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"cycleA\",\"image\":\"restarttest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"],"
 	                       "\"restart\":\"always\",\"depends_on\":[\"cycleB\"]}",
@@ -794,10 +794,10 @@ int main(void)
 		fprintf(stderr, "FAIL: POST cycleA, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"cycleB\",\"image\":\"restarttest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"],"
 	                       "\"restart\":\"always\",\"depends_on\":[\"cycleA\"]}",
@@ -806,10 +806,10 @@ int main(void)
 		fprintf(stderr, "FAIL: POST cycleB, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"innocent\",\"image\":\"restarttest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"],"
 	                       "\"restart\":\"always\"}",
@@ -818,11 +818,11 @@ int main(void)
 		fprintf(stderr, "FAIL: POST innocent, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 5. an unknown dependency -- also must not affect anything else. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"needsghost\",\"image\":\"restarttest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"],"
 	                       "\"restart\":\"always\",\"depends_on\":[\"ghost\"]}",
@@ -831,12 +831,12 @@ int main(void)
 		fprintf(stderr, "FAIL: POST needsghost, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 6. readiness (Phase 13 part 2): a network is required (400
 	 * without one), mirroring dns_register's existing requirement. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"noreadynet\",\"image\":\"restarttest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"],"
 	                       "\"readiness\":{\"tcp_port\":" STR(READY_TCP_PORT) "}}",
@@ -845,7 +845,7 @@ int main(void)
 		fprintf(stderr, "FAIL: readiness without networks expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* Explicit --address= (ADR-0037, renamed by ADR-0067): readiness
 	 * checks connect() from the daemon's own root netns straight at a
@@ -854,7 +854,7 @@ int main(void)
 	 * subnet at all (correct, intended behavior, not a bug), so the
 	 * readiness check itself would never be able to reach in. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/networks",
+	if (cix_client_request(&client, "POST", "/v1/networks",
 	                       "{\"name\":\"" READY_NETWORK_NAME "\",\"subnet\":\"" READY_NETWORK_SUBNET
 	                       "\",\"prefix_len\":24,\"address\":\"172.60.0.1\"}",
 	                       &r) != 0 ||
@@ -862,14 +862,14 @@ int main(void)
 		fprintf(stderr, "FAIL: POST " READY_NETWORK_NAME ", status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* depR only starts listening on READY_TCP_PORT after a real 2s
 	 * delay (tcp_listen_child) -- depS (depends_on depR, with depR's
 	 * own readiness configured) must genuinely wait for that, proven
 	 * below by timing the daemon restart itself. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"depR\",\"image\":\"restarttest\","
 	                       "\"cmd\":[\"/bin/tcp_listen_child\",\"" STR(READY_TCP_PORT) "\",\"2\"],"
 	                       "\"networks\":[\"" READY_NETWORK_NAME "\"],\"restart\":\"always\","
@@ -880,10 +880,10 @@ int main(void)
 		fprintf(stderr, "FAIL: POST depR, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"depS\",\"image\":\"restarttest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"],"
 	                       "\"networks\":[\"" READY_NETWORK_NAME "\"],\"restart\":\"always\","
@@ -893,14 +893,14 @@ int main(void)
 		fprintf(stderr, "FAIL: POST depS, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* neverready never listens on NEVER_READY_TCP_PORT at all -- its
 	 * own readiness must time out (1s) without blocking boot forever,
 	 * and afterNeverReady (depends on it) must still autostart anyway
 	 * (best-effort, not a hard failure). */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"neverready\",\"image\":\"restarttest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"],"
 	                       "\"networks\":[\"" READY_NETWORK_NAME "\"],\"restart\":\"always\","
@@ -910,10 +910,10 @@ int main(void)
 		fprintf(stderr, "FAIL: POST neverready, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"afterNeverReady\",\"image\":\"restarttest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"],"
 	                       "\"networks\":[\"" READY_NETWORK_NAME "\"],\"restart\":\"always\","
@@ -923,14 +923,14 @@ int main(void)
 		fprintf(stderr, "FAIL: POST afterNeverReady, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* 6. unless-stopped vs always across a real daemon restart:
 	 * stopping a container is the one thing that's supposed to
 	 * distinguish them. Both long-sleeping so a stop actually has a
 	 * live process to kill. */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"stopalways\",\"image\":\"restarttest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"],"
 	                       "\"restart\":\"always\"}",
@@ -939,10 +939,10 @@ int main(void)
 		fprintf(stderr, "FAIL: POST stopalways, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"stopunless\",\"image\":\"restarttest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"],"
 	                       "\"restart\":\"unless-stopped\"}",
@@ -951,7 +951,7 @@ int main(void)
 		fprintf(stderr, "FAIL: POST stopunless, status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	if (stop_container(&client, "stopalways") != 200) {
 		fprintf(stderr, "FAIL: POST stopalways/stop\n");
@@ -999,7 +999,7 @@ int main(void)
 	 * the restart below so it's in the file the next boot must parse.
 	 */
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "POST", "/v1/containers",
+	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"plainno\",\"image\":\"restarttest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"]}",
 	                       &r) != 0 ||
@@ -1007,7 +1007,7 @@ int main(void)
 		fprintf(stderr, "FAIL: POST plainno (restart:\"no\"), status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* Now the real proof: restart the daemon process itself (not just
 	 * reload in-memory state) and confirm every expectation above. */
@@ -1067,10 +1067,10 @@ int main(void)
 	 * reporting status "stopped", not a 404 and not a live container.
 	 */
 	{
-		struct thinc_response pr;
+		struct cix_response pr;
 
 		memset(&pr, 0, sizeof(pr));
-		if (thinc_client_request(&client, "GET", "/v1/containers/plainno", NULL, &pr) != 0 ||
+		if (cix_client_request(&client, "GET", "/v1/containers/plainno", NULL, &pr) != 0 ||
 		    pr.status != 200) {
 			fprintf(stderr,
 			        "FAIL: plainno (restart:\"no\") not known after a daemon restart "
@@ -1083,7 +1083,7 @@ int main(void)
 			        json_str_field(pr.json, "status"));
 			ok = 0;
 		}
-		thinc_response_free(&pr);
+		cix_response_free(&pr);
 	}
 
 	{
@@ -1155,13 +1155,13 @@ int main(void)
 	}
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "GET", "/v1/containers/depR", NULL, &r) != 0 ||
+	if (cix_client_request(&client, "GET", "/v1/containers/depR", NULL, &r) != 0 ||
 	    r.status != 200 ||
 	    json_num_field(json_object_get(r.json, "readiness"), "tcp_port") != READY_TCP_PORT) {
 		fprintf(stderr, "FAIL: GET depR did not echo its own readiness.tcp_port\n");
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	/* Phase 13 part 3: the core unless-stopped-vs-always split. Both
 	 * were stopped identically above, right before this same restart --
@@ -1193,18 +1193,18 @@ int main(void)
 
 			snprintf(path, sizeof(path), "/v1/containers/%s", cleanup[i]);
 			memset(&r, 0, sizeof(r));
-			thinc_client_request(&client, "DELETE", path, NULL, &r);
-			thinc_response_free(&r);
+			cix_client_request(&client, "DELETE", path, NULL, &r);
+			cix_response_free(&r);
 		}
 	}
 
 	memset(&r, 0, sizeof(r));
-	if (thinc_client_request(&client, "DELETE", "/v1/networks/" READY_NETWORK_NAME, NULL, &r) != 0 ||
+	if (cix_client_request(&client, "DELETE", "/v1/networks/" READY_NETWORK_NAME, NULL, &r) != 0 ||
 	    r.status != 204) {
 		fprintf(stderr, "FAIL: DELETE " READY_NETWORK_NAME ", status=%d\n", r.status);
 		ok = 0;
 	}
-	thinc_response_free(&r);
+	cix_response_free(&r);
 
 	if (stop_daemon(daemon_pid) != 0) {
 		fprintf(stderr, "FAIL: daemon did not exit cleanly on SIGTERM (second instance)\n");

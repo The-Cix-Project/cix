@@ -60,8 +60,8 @@ static const char *RELEASES =
 
 int main(void)
 {
-	char state[] = "/tmp/thinc_test_kpol_XXXXXX";
-	char releases[] = "/tmp/thinc_test_krel_XXXXXX";
+	char state[] = "/tmp/cix_test_kpol_XXXXXX";
+	char releases[] = "/tmp/cix_test_krel_XXXXXX";
 	char state_path[256];
 	char releases_path[256];
 	struct kernel_resolution res;

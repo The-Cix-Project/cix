@@ -6,13 +6,13 @@ Accepted
 
 ## Context
 
-This project's first LDAP deployment (Phase 21, ADR-0036) used `lldap` (Rust + a bundled WASM web frontend) as the LDAP-serving workload. That frontend is dead weight here: thinC's own REST layer was always going to own user/group management end to end, with no human-facing admin UI ever needed against the LDAP server itself. `lldap`'s dependency footprint (a full Rust toolchain, WASM build step) is disproportionate to what this project actually uses it for.
+This project's first LDAP deployment (Phase 21, ADR-0036) used `lldap` (Rust + a bundled WASM web frontend) as the LDAP-serving workload. That frontend is dead weight here: Cix's own REST layer was always going to own user/group management end to end, with no human-facing admin UI ever needed against the LDAP server itself. `lldap`'s dependency footprint (a full Rust toolchain, WASM build step) is disproportionate to what this project actually uses it for.
 
 Replacing it opened four real, sequential design questions, tackled as tasks #723-727:
 
-1. **What LDAP server, and how does thinC build it?** (#723/#724)
-2. **How does thinC know which running container is the/a LDAP server?** (#725)
-3. **How does thinC get user/group data into that server, and keep it current?** (#726)
+1. **What LDAP server, and how does Cix build it?** (#723/#724)
+2. **How does Cix know which running container is the/a LDAP server?** (#725)
+3. **How does Cix get user/group data into that server, and keep it current?** (#726)
 4. **How does a container that needs to bind against LDAP get its own credentials, automatically?** (#727)
 
 ### Question 1: which server, and how is it built
@@ -31,7 +31,7 @@ One deliberate simplification versus DNS: LDAP registration takes no `pid`/`pidf
 
 ### Question 3: how data gets into glauth, and the SQLite course-correction
 
-The first implementation attempt (never committed, caught in review) wrote directly into glauth's SQLite backend as a new stateful format thinC would own outright — a new `libsqlite3` C dependency, confirmed to build cleanly under this project's own TCC toolchain and `-Wall -Werror` flags. Working code. But raised directly by the user as the wrong shape: *"i don't like the sqlite thing, I prefer we write as per dns, and glauth slurps the records in somehow, and keeps them updated? same as we have for dns?"* — i.e. thinC should own the durable record and render it into whatever format the target server actually reads, the same split DNS already uses (`dns_record_*()` for the durable record, `dns_write_hosts_file()`/`dns_server_sync_all()` for the rendered push), not a second, independently-owned stateful datastore.
+The first implementation attempt (never committed, caught in review) wrote directly into glauth's SQLite backend as a new stateful format Cix would own outright — a new `libsqlite3` C dependency, confirmed to build cleanly under this project's own TCC toolchain and `-Wall -Werror` flags. Working code. But raised directly by the user as the wrong shape: *"i don't like the sqlite thing, I prefer we write as per dns, and glauth slurps the records in somehow, and keeps them updated? same as we have for dns?"* — i.e. Cix should own the durable record and render it into whatever format the target server actually reads, the same split DNS already uses (`dns_record_*()` for the durable record, `dns_write_hosts_file()`/`dns_server_sync_all()` for the rendered push), not a second, independently-owned stateful datastore.
 
 Confirmed directly against glauth's real upstream source (not assumed) that this is not only possible but simpler than DNS's own mechanism: `v2/glauth.go`'s `startConfigWatcher()` is a genuine `fsnotify` watcher on glauth's own config file, active whenever that file sets `watchconfig = true`, and it reloads automatically on **any** write — no signal needed at all. glauth's "config" datastore backend (as opposed to "sqlite"/"embed"/"ldap"/"owncloud"/"plugin") defines users and groups directly as `[[users]]`/`[[groups]]` TOML array-of-tables stanzas within the **same** config file that also carries the server's own bootstrap settings (`[backend]`, `[ldap]`, `[api]`, TLS paths) — unlike dnsmasq's separate `--addn-hosts` data file, there's no dedicated data-only file to write.
 
@@ -39,7 +39,7 @@ Confirmed directly against glauth's real upstream source (not assumed) that this
 
 The abandoned SQLite work was fully reverted: `libsqlite3`'s link-line addition (`Makefile`), its staging into `mkbootroot.c`'s `shelled_bin_libs[]`, and the never-committed `sqlite.recipe` were all removed; `glauth.recipe` (task #724) was simplified in the same pass to drop its own `-tags embedsqlite` CGO/go-sqlite3/submodule complexity, since the config datastore needs none of it.
 
-Passwords: `passsha256` (a real, documented glauth "config" datastore field) via thincd's own already-linked OpenSSL `libcrypto` SHA-256 — never persisted or echoed as plaintext, and never returned by any `GET` (only a `has_password` boolean is).
+Passwords: `passsha256` (a real, documented glauth "config" datastore field) via cixd's own already-linked OpenSSL `libcrypto` SHA-256 — never persisted or echoed as plaintext, and never returned by any `GET` (only a `has_password` boolean is).
 
 **Multiple servers / redundancy**: because `ldap_record_sync_all()` iterates every entry in `g_bindings[LDAP_SERVER_MAX]`, not a single pinned target, registering two (or up to 32) glauth-serving containers gives every one of them the identical, always-current user/group set with zero extra work per write — the same fan-out redundancy model DNS already provides for multi-server dnsmasq deployments. Client-side failover in front of them (round-robin, a VRRP-fronted VIP, DNS SRV records) is an external topology choice, outside this daemon's own scope, same as it would be for any LDAP deployment.
 
@@ -52,7 +52,7 @@ Two real design forks were resolved explicitly with the user via `AskUserQuestio
 1. **What gets provisioned**: a **service/bind account for the container itself**, not a human login account. Human accounts are created directly via task #726's own `POST /v1/ldap/users` — this hook never creates one. The provisioned account's `owner_container` field is set to the container's name (mirroring `dns_record.owner_container`/PKI's own cert-owner field exactly), and `ldap_user_forget_owner()` — searching BY the owner field, not by name (the same deliberate post-ADR-0092 pattern `dns_record_forget_owner()`/`pki_cert_forget_owner()` already established, since a container's own name and its LDAP username can differ when `ldap_user=` overrides the default) — removes it automatically on container delete.
 2. **Default capabilities**: a minimal `"search"` capability (`action = "search"`, `object = "*"`) is granted now rather than deferring all capability/ACL work to task #728, since glauth denies all LDAP operations by default and a zero-capability bind account couldn't do anything useful. Real TOML syntax was verified directly against glauth's own `v2/sample-simple.cfg` before writing any rendering code.
 
-The delivered credential (`ldap_generate_secret()`: 16 raw bytes from `/dev/urandom`, hex-encoded to 32 characters — a new, minimal, in-process randomness primitive; PKI key generation shells out to `openssl` instead, but a single bind secret doesn't need a real keypair) is written into the container's own filesystem at `<ldap_secret_dir>/bind.secret` (default `/etc/thinc-ldap`), chmod `0600`, via `/proc/<pid>/root/` — byte-for-byte the same `persist_mkdir_p()` + `persist_atomic_write()` + `chmod` shape `pki_cert_deliver()` already established for a TLS keypair, just for one secret file. **The plaintext secret is never persisted anywhere in thinC's own state** — only its SHA-256 hash (`passsha256`) survives in the durable user record — so every single fire of this hook, including every `restart:"always"` respawn, generates and re-delivers a fresh secret even though the underlying account may already exist (`LDAP_RECORD_ERR_DUPLICATE` tolerated the same way `pki_issue` already tolerates `PKI_ERR_DUPLICATE` on a respawn's fresh pid).
+The delivered credential (`ldap_generate_secret()`: 16 raw bytes from `/dev/urandom`, hex-encoded to 32 characters — a new, minimal, in-process randomness primitive; PKI key generation shells out to `openssl` instead, but a single bind secret doesn't need a real keypair) is written into the container's own filesystem at `<ldap_secret_dir>/bind.secret` (default `/etc/cix-ldap`), chmod `0600`, via `/proc/<pid>/root/` — byte-for-byte the same `persist_mkdir_p()` + `persist_atomic_write()` + `chmod` shape `pki_cert_deliver()` already established for a TLS keypair, just for one secret file. **The plaintext secret is never persisted anywhere in Cix's own state** — only its SHA-256 hash (`passsha256`) survives in the durable user record — so every single fire of this hook, including every `restart:"always"` respawn, generates and re-delivers a fresh secret even though the underlying account may already exist (`LDAP_RECORD_ERR_DUPLICATE` tolerated the same way `pki_issue` already tolerates `PKI_ERR_DUPLICATE` on a respawn's fresh pid).
 
 ## Decision
 
@@ -60,7 +60,7 @@ Adopt, as the settled shape for this project's LDAP subsystem going forward:
 
 - **glauth**, its "config" datastore, dynamically linked, no CGO/SQLite complexity.
 - **Registration is pure bookkeeping** (no pid/signal needed) because glauth's own `fsnotify` watcher does the work DNS's own SIGHUP push exists to work around.
-- **thinC owns the durable record; the target server's own config file is a rendered, always-fully-rewritten projection of it**, preserving any operator-authored prefix above the managed `[[users]]`/`[[groups]]` tail — the same split DNS already uses, not a second independently-owned datastore.
+- **Cix owns the durable record; the target server's own config file is a rendered, always-fully-rewritten projection of it**, preserving any operator-authored prefix above the managed `[[users]]`/`[[groups]]` tail — the same split DNS already uses, not a second independently-owned datastore.
 - **Multiple registered servers are already fully supported** with zero extra mechanism — `ldap_record_sync_all()` fans out to every one.
 - **The provisioning hook creates service/bind accounts only**, owner-tracked and auto-cleaned-up on container delete, with a minimal default capability grant and a never-persisted, always-freshly-generated secret.
 

@@ -23,7 +23,7 @@ Both `PUT` endpoints now accept an optional `name` field in the request body, di
 
 **What is deliberately NOT handled**: neither rename updates external, operator-authored configuration that referenced the record's old rendered LDAP DN (`cn=<user>,ou=<group>,<base-dn>`) — `nslcd.conf`'s own `binddn`, an `AuthorizedKeysCommand` script's own bind credentials, anything staged via a container's `files[]` at creation time. This daemon has no visibility into config it didn't itself render, the same posture already established for a `gidnumber` change's non-cascade to `primarygroup` references. An operator renaming a group or user that's already wired into container-side LDAP config needs to update that config themselves.
 
-CLI: `thincctl ldap group update --name=NAME --gidnumber=N [--new-name=NEWNAME]`, `thincctl ldap user update --name=NAME [--new-name=NEWNAME] ...` — a distinct flag from `--name=` (which continues to mean "which record"), not a reused/overloaded one, avoiding the exact kind of ambiguity a prior CLI design in this project (`--file=`'s own owner/group fields, caught before shipping) already ran into once.
+CLI: `cixctl ldap group update --name=NAME --gidnumber=N [--new-name=NEWNAME]`, `cixctl ldap user update --name=NAME [--new-name=NEWNAME] ...` — a distinct flag from `--name=` (which continues to mean "which record"), not a reused/overloaded one, avoiding the exact kind of ambiguity a prior CLI design in this project (`--file=`'s own owner/group fields, caught before shipping) already ran into once.
 
 ## Consequences
 

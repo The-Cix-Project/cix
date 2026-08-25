@@ -120,7 +120,7 @@ which the container userns can't map, so upper must be id-mapped consistently;
 kernel `pr_warn` reason is unreadable without kernel-log visibility. Confirmed
 from 6.18 source: layer fds carry their idmap (`ovl_parse_layer`), and
 `clone_private_mount` accepts an id-mapped subdir mount and preserves the
-mapping. **Next unblock: expose the kernel log (`/dev/kmsg`) via a thincd
+mapping. **Next unblock: expose the kernel log (`/dev/kmsg`) via a cixd
 endpoint** so the overlay read-only reason is visible, then finish
 all-layers-idmap; the per-container reflink/copy of the rootfs (owned by base)
 remains the "last resort" if it stays intractable. userns stays opt-in; no
@@ -129,10 +129,10 @@ working userns container yet.
 **kmsg endpoint added, and it closed the diagnosis (2026-08-21).** A new
 `GET /v1/system/kmsg` (tails `/dev/kmsg`) gave the exact reason the all-layers
 id-mapped overlay mounts read-only: `overlayfs: failed to create directory
-/work/work (errno: 13 EACCES); mounting read-only`. Root cause: **thincd mounts
+/work/work (errno: 13 EACCES); mounting read-only`. Root cause: **cixd mounts
 the overlay from *outside* the user namespace (as host uid 0), but on the
 id-mapped upper/work it is a non-owner, so overlay's own `work/` creation --
-performed as thincd -- is denied.** Confirmed it is not a mode issue (`chmod
+performed as cixd -- is denied.** Confirmed it is not a mode issue (`chmod
 0777` on upper/work did not help). Every rootless idmapped-overlay setup mounts
 the overlay from *inside* the userns, where the mapped root owns upper/work.
 **Resolution for the next pass: mount the overlay from inside the userns.** The
@@ -152,11 +152,11 @@ upper/work, with the id-mapped shared-lower fd -- and gets all the way to
 not support tmpfile`). Root cause: `ovl_make_workdir`'s setup ops -- the
 `O_TMPFILE` probe, the whiteout `mknod`/`RENAME_WHITEOUT` probe, the overlay
 xattr -- must be performed with privilege over the **layer filesystem's**
-`s_user_ns`, which is **init** (thinC's upper/work live on the host's ext4,
-mounted by thincd in the initial userns). The mapped-root child is privileged
+`s_user_ns`, which is **init** (Cix's upper/work live on the host's ext4,
+mounted by cixd in the initial userns). The mapped-root child is privileged
 only in its OWN userns, so these ops are denied. This is exactly why rootless
 overlay requires the upper on a filesystem mounted *inside* the userns (or
-fuse-overlayfs) -- and thinC's **persistent** upper is on host ext4. So
+fuse-overlayfs) -- and Cix's **persistent** upper is on host ext4. So
 kernel-native id-mapped-overlay with a persistent host upper + shared host-0
 lower is not achievable from this architecture on 6.18. **The remaining options
 are an architecture tradeoff (user's call), not a bug:** (a) **per-container
@@ -171,7 +171,7 @@ The mount-from-inside code is correct and is the foundation for (b).
 
 ## Context
 
-Issue #29 (raised 2026-08-17, still open): thinC's containers run as real host UID 0 with no `CLONE_NEWUSER` at all. ADR-0168 closed the single sharpest consequence of that (an untrimmed capability set, `CAP_SYS_MODULE` chief among them) but explicitly deferred the underlying gap: "Root UID inside a container is still real host UID 0 after this change... Full user-namespace support... remains open as issue #29's own original scope."
+Issue #29 (raised 2026-08-17, still open): Cix's containers run as real host UID 0 with no `CLONE_NEWUSER` at all. ADR-0168 closed the single sharpest consequence of that (an untrimmed capability set, `CAP_SYS_MODULE` chief among them) but explicitly deferred the underlying gap: "Root UID inside a container is still real host UID 0 after this change... Full user-namespace support... remains open as issue #29's own original scope."
 
 Discussed directly with the user 2026-08-19 (during the gcc/issue #32 bootstrap effort, as part of a wider "what else is already in the kernel we're not using" pass). The user's own explicit requirements, stated directly: used **by default**, not opt-in; **100% API-driven**; **100% transparent to the end user** (no manual UID range picking, no new required fields); **integrated with this platform's existing user/group management and LDAP**; and **resilient to LDAP being unreachable or not configured at all**.
 
@@ -180,13 +180,13 @@ Three real, upstream precedents inform this design, checked directly rather than
 - Podman's *rootless* mode specifically: each real Linux user gets their own sub-range from `/etc/subuid`/`/etc/subgid`, keyed to their own login identity — the direct model for "keyed to identity" rather than one shared range for everything.
 - FreeIPA's Subordinate IDs feature: stores sub-range assignments as real LDAP attributes (`ipaSubordinateId` auxiliary objectclass) on the owning user's own directory entry — the direct model for "integrated with LDAP," **but not directly applicable here**, checked and ruled out below.
 
-**Why FreeIPA's own LDAP-schema approach doesn't transfer**: this platform's LDAP layer is `glauth` (`recipes/container/ldap-*`, `daemon/src/ldap.c`), not a general-purpose directory server with extensible schema. glauth is a TOML-config-driven LDAP *emulation* — `daemon/src/ldap.c`'s own `write_glauth_config()` renders thincd's own managed `struct ldap_user`/`struct ldap_group` records directly into glauth's fixed, real Go struct schema (`v2/pkg/config/config.go`'s own `User`/`Group` types, confirmed directly against glauth's real source per that file's own comments). There is no facility to attach an arbitrary new LDAP attribute the way a real directory server would — extending it would mean patching glauth's own upstream source (a real, available option, this project already builds glauth from source as a Tier-3-adjacent recipe — but not needed here, see Decision).
+**Why FreeIPA's own LDAP-schema approach doesn't transfer**: this platform's LDAP layer is `glauth` (`recipes/container/ldap-*`, `daemon/src/ldap.c`), not a general-purpose directory server with extensible schema. glauth is a TOML-config-driven LDAP *emulation* — `daemon/src/ldap.c`'s own `write_glauth_config()` renders cixd's own managed `struct ldap_user`/`struct ldap_group` records directly into glauth's fixed, real Go struct schema (`v2/pkg/config/config.go`'s own `User`/`Group` types, confirmed directly against glauth's real source per that file's own comments). There is no facility to attach an arbitrary new LDAP attribute the way a real directory server would — extending it would mean patching glauth's own upstream source (a real, available option, this project already builds glauth from source as a Tier-3-adjacent recipe — but not needed here, see Decision).
 
-**Why "resilient to LDAP being down" is mostly already solved, not a new problem**: checked directly in `daemon/src/hostauth.c`'s own `hostauth_login()` — it tries a live LDAP bind first (`try_ldap_login()`), but falls back to `ldap_user_check_password()` whenever no configured server actually answers. That fallback checks the password against thincd's **own locally-persisted** `struct ldap_user` record (the same managed record `daemon/src/ldap.c` renders into glauth's config in the first place) — meaning thincd already maintains its own authoritative, always-available copy of every managed user's identity, independent of whether a live LDAP bind is currently possible. Critically, that same `struct ldap_user` record **already has a real `uidnumber` field** (confirmed: `daemon/src/ldap.c` lines 239-240, 348, 671-672) — a stable per-user integer that already exists, is already persisted locally, and is already resilient to LDAP being unreachable, entirely independent of this ADR.
+**Why "resilient to LDAP being down" is mostly already solved, not a new problem**: checked directly in `daemon/src/hostauth.c`'s own `hostauth_login()` — it tries a live LDAP bind first (`try_ldap_login()`), but falls back to `ldap_user_check_password()` whenever no configured server actually answers. That fallback checks the password against cixd's **own locally-persisted** `struct ldap_user` record (the same managed record `daemon/src/ldap.c` renders into glauth's config in the first place) — meaning cixd already maintains its own authoritative, always-available copy of every managed user's identity, independent of whether a live LDAP bind is currently possible. Critically, that same `struct ldap_user` record **already has a real `uidnumber` field** (confirmed: `daemon/src/ldap.c` lines 239-240, 348, 671-672) — a stable per-user integer that already exists, is already persisted locally, and is already resilient to LDAP being unreachable, entirely independent of this ADR.
 
 ## Decision
 
-**Subordinate ID ranges are keyed to `uidnumber` on thinC's own already-existing, already-resilient `struct ldap_user` record — not to a new LDAP attribute, and not to a live LDAP bind.** No glauth schema change, no new LDAP concept, no new resilience engineering: this ADR is additive on top of identity infrastructure that already exists and is already proven to degrade gracefully.
+**Subordinate ID ranges are keyed to `uidnumber` on Cix's own already-existing, already-resilient `struct ldap_user` record — not to a new LDAP attribute, and not to a live LDAP bind.** No glauth schema change, no new LDAP concept, no new resilience engineering: this ADR is additive on top of identity infrastructure that already exists and is already proven to degrade gracefully.
 
 **Allocator**: a new, small module (`daemon/src/subid.c`) owns one flat, atomically-rewritten persisted table (same convention as ADR-0012's network persistence) mapping `uidnumber → {sub_uid_base, sub_gid_base}`, one fixed range width (65536, the same convention Docker/Podman/systemd all already use — no reason to invent a different number). Allocation is first-come: the first container creation for a given `uidnumber` gets the next free range from a monotonically increasing counter; every later container for that same identity reuses the same range. This table is the **sole source of truth**, present and fully functional with zero LDAP configuration at all.
 

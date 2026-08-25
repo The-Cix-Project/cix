@@ -48,7 +48,7 @@ int test_image_fixture_copy_file(const char *src_path, const char *dst_path);
  * above. Shared by mkbootroot.c (web/'s three files, an optional
  * amdgpu firmware directory) and mkinstalleriso.c (pkg/recipes/'s
  * .recipe files, staged into the installer's own payload for
- * thinc-install.c to copy onto the containers partition at install
+ * cix-install.c to copy onto the containers partition at install
  * time) -- one real directory-copy implementation, not two drifting
  * copies. Returns 0, or -1 (with perror on the failing path)
  * otherwise.
@@ -87,8 +87,8 @@ int test_image_fixture_copy_dir_recursive(const char *src_dir, const char *dst_d
  * /usr/share/{bison,autoconf,perl}, /usr/local/go), standard /dev
  * nodes, and a writable/sticky /tmp -- everything a real ./configure
  * && make && make install sequence needs, run inside an isolated,
- * network-less build container. Shared by two consumers: thincd's
- * own POST /v1/pkg/bootstrap (a live copy from whatever host thincd
+ * network-less build container. Shared by two consumers: cixd's
+ * own POST /v1/pkg/bootstrap (a live copy from whatever host cixd
  * happens to be running on -- fine for dev/test convenience, silently
  * empty on a real minimal install) and image/src/mktoolchainimage.c
  * (builds one real, portable, durable squashfs artifact from this
@@ -104,11 +104,11 @@ int test_image_fixture_stage_toolchain(const char *image_root);
 
 /*
  * Creates a fresh, unique directory under /tmp (via mkdtemp(), same
- * "/tmp/thinc_test_<name>_XXXXXX" convention test_pki.c/
+ * "/tmp/cix_test_<name>_XXXXXX" convention test_pki.c/
  * test_installer.c/test_boot_ab.c already each hand-roll on their own)
  * and writes it into out_path. Meant to be passed straight to a test's
- * own thincd subprocess as --data-dir=<out_path>, so that subprocess
- * never touches the real /var/lib/thinc a live daemon on this same
+ * own cixd subprocess as --data-dir=<out_path>, so that subprocess
+ * never touches the real /var/lib/cix a live daemon on this same
  * host might be using -- every daemon-linked test's own reset_state()
  * wipes container/network/DNS/PKI state and image content
  * unconditionally, and this project's test suite wiping a real

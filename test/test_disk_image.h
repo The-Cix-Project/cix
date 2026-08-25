@@ -111,7 +111,7 @@ struct qemu_boot_opts {
 	int mem_mib;               /* guest RAM in MiB; 0 means the existing default (512) -- raise
 	                             * this for a test whose own guest-side work sits under real
 	                             * memory pressure (e.g. unsquashfs-ing a large artifact into a
-	                             * tmpfs-backed /var/lib/thinc on a disk with no real containers
+	                             * tmpfs-backed /var/lib/cix on a disk with no real containers
 	                             * partition -- confirmed directly: extracting a real ~600MB
 	                             * toolchain squashfs into tmpfs on the 512MB default guest
 	                             * exhausted memory and panicked, a real RAM constraint, not a

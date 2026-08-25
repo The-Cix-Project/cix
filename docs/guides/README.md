@@ -1,6 +1,6 @@
 # Guides
 
-Task-oriented "how do I do X" instructions for building, installing, operating, and extending thinC. Each guide has exactly one job and links to the ADR/API doc that owns the "why"/"contract" behind it rather than restating it — see [`docs/README.md`](../README.md) for how this category relates to the rest of the documentation set.
+Task-oriented "how do I do X" instructions for building, installing, operating, and extending Cix. Each guide has exactly one job and links to the ADR/API doc that owns the "why"/"contract" behind it rather than restating it — see [`docs/README.md`](../README.md) for how this category relates to the rest of the documentation set.
 
 **Getting started** — first contact with a new box:
 
@@ -8,20 +8,20 @@ Task-oriented "how do I do X" instructions for building, installing, operating, 
 |---|---|
 | [`quickstart.md`](quickstart.md) | The fastest real path to a first running container |
 | [`installing.md`](installing.md) | Building and using the installer ISO: Secure Boot, partitioning, first boot |
-| [`building-thinc.md`](building-thinc.md) | Compiling `thincd`/`thincctl`/`web` — on a dev machine, or self-hosted from a running thinC box |
+| [`building-cix.md`](building-cix.md) | Compiling `cixd`/`cixctl`/`web` — on a dev machine, or self-hosted from a running Cix box |
 
 **Operating** — running and administering an installed box day to day:
 
 | Guide | Job |
 |---|---|
-| [`cli-reference.md`](cli-reference.md) | The full `thincctl` command surface |
+| [`cli-reference.md`](cli-reference.md) | The full `cixctl` command surface |
 | [`web-dashboard.md`](web-dashboard.md) | A tour of the browser dashboard |
 | [`staying-updated.md`](staying-updated.md) | Keeping an already-installed system current: control plane + packages |
 | [`administration.md`](administration.md) | Monitoring, backup/restore, and disk management day to day |
 | [`networking.md`](networking.md) | Networks, physical/VLAN interface attachment, and routing |
 | [`security.md`](security.md) | PKI, HTTPS, and LDAP-backed Unix/SSH accounts |
 
-**Extending** — building on top of thinC:
+**Extending** — building on top of Cix:
 
 | Guide | Job |
 |---|---|

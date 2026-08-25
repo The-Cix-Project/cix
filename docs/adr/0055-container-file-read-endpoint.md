@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-thinC's own `files[]` mechanism (POST /containers, ADR-0030) is write-only: a client can stage a file into a container's rootfs before `clone3()`, but there was never a way to read one back out over the API. This surfaced while planning a self-hosted kernel/control-plane build pipeline that needs to pull a freshly built artifact out of a build container — but it's independently useful on its own (inspecting a config file, a log, a generated cert, without opening a full interactive `console` session and `cat`-ing it through a terminal renderer).
+Cix's own `files[]` mechanism (POST /containers, ADR-0030) is write-only: a client can stage a file into a container's rootfs before `clone3()`, but there was never a way to read one back out over the API. This surfaced while planning a self-hosted kernel/control-plane build pipeline that needs to pull a freshly built artifact out of a build container — but it's independently useful on its own (inspecting a config file, a log, a generated cert, without opening a full interactive `console` session and `cat`-ing it through a terminal renderer).
 
 The write path already has a real precedent for how to reach a container's files safely and cheaply: ADR-0013 established `/proc/<pid>/root/<path>` (the kernel-resolved "magic symlink" through a live process's own mount namespace and root) for writing into a *running* container without `setns()`. That precedent only covers the running case, though — `dns.c`/`pki.c`'s own write paths never had to consider an exited container, since neither ever needed to touch one. This endpoint does: `GET .../stats` (ADR-0054) already established that an exited-but-not-removed container (`registry_mark_exited()`, `running == 0`, entry still present) is a legitimate target for other GETs, and a file-read endpoint should honor the same convention rather than only supporting the running case.
 
@@ -26,7 +26,7 @@ A stale `registry_entry.handle.pid` is never trusted once `running == 0` — PID
 
 ## Consequences
 
-- The CLI (`thincctl files get NAME --path=... [--output=PATH]`) needed no new HTTP client primitive: `thinc_client_request()` already captures a response's raw bytes into `struct thinc_response.body`/`body_len` regardless of Content-Type (`json` is simply `NULL` when the body isn't valid JSON) — reused as-is rather than adding a redundant `..._raw()` sibling function.
+- The CLI (`cixctl files get NAME --path=... [--output=PATH]`) needed no new HTTP client primitive: `cix_client_request()` already captures a response's raw bytes into `struct cix_response.body`/`body_len` regardless of Content-Type (`json` is simply `NULL` when the body isn't valid JSON) — reused as-is rather than adding a redundant `..._raw()` sibling function.
 - No streaming/range support (`Range:` header, partial content) — every file this daemon has any reason to serve this way is small; there's no precedent for chunked responses anywhere in this codebase, and none was added here either.
 - No directory listing. An operator wanting to browse a container's rootfs still needs `console` + `ls`; this endpoint only ever answers "give me exactly this one file's bytes."
 - No new authentication/authorization boundary — this endpoint is exactly as protected as every other one here (network reachability only), same as ADR-0043 already noted for `console`.

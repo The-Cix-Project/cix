@@ -334,7 +334,7 @@ struct registry_entry {
 	 * cleanly and then exits on its own for a reason with no other
 	 * visible signal (e.g. a daemon refusing to start over a config
 	 * problem) previously had no way to say why, since neither the diag
-	 * pipe (container_read_diag(), only ever written by thinC's own
+	 * pipe (container_read_diag(), only ever written by Cix's own
 	 * pre-exec setup steps) nor anything else captured what the
 	 * exec'd program itself wrote. output_fd is main.c's own
 	 * epoll-owned read end of the capture pipe (-1 once not capturing,
