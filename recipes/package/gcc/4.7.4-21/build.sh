@@ -346,14 +346,17 @@ MINIEXTRACT
 	# curated list); a source-level default has no propagation question
 	# to answer. Asserted first so a future GCC that changes the
 	# default fails loudly instead of silently reverting to tar.
-	# Reverts naturally once #122's tar is fixed.
+	# Reverts naturally once #122's tar is fixed. Path is ../gcc/
+	# because this runs after `cd build` -- the -20 run's assertion
+	# caught the bare gcc/ path in seconds, which is the whole reason
+	# the assertion exists.
 	#
-	grep -q 'build_install_headers_dir=install-headers-tar' gcc/config.build || {
+	grep -q 'build_install_headers_dir=install-headers-tar' ../gcc/config.build || {
 		echo "gcc: config.build no longer defaults to install-headers-tar -- re-check this patch" >&2
 		exit 1
 	}
 	sed -i 's/build_install_headers_dir=install-headers-tar/build_install_headers_dir=install-headers-cp/' \
-		gcc/config.build
+		../gcc/config.build
 
 	CC=tcc ../configure --prefix=/usr \
 		--enable-bootstrap --disable-multilib --enable-languages=c,c++ \
