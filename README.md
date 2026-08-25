@@ -15,7 +15,7 @@ The name is the architecture, not a label bolted on afterward:
 | **thin** | The host is the thinnest possible layer underneath the containers: raw Linux namespaces and cgroups, OverlayFS image layering, no runc, no Open vSwitch, no bundled platform services. It exposes the kernel, not an opinion. |
 | **C** | The core is hand-rolled C, all the way down — the container runtime, the networking data plane, the REST control layer — compiled exclusively with the Tiny C Compiler. C is not an implementation detail here; C is the product. |
 
-See [`brand/GUIDELINES.md`](brand/GUIDELINES.md) for the full narrative, voice, and visual identity.
+See [`docs/brand/`](docs/brand/) for brand identity — the current thinC narrative gives way to the [Cix brand system](docs/brand/brand-guidelines.md) when the #121 rebrand executes.
 
 ## What It Represents
 

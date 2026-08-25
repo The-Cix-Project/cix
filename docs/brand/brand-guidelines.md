@@ -582,16 +582,16 @@ Cix uses a material palette: near-black carbon, warm paper, machined neutrals an
 
 | SWATCH | NAME / HEX | ROLE | SEMANTIC |
 |---|---|---|---|
-|  | Carbon — #0A0D0F | Primary dark background; terminal-adjacent surfaces; high-contrast wordmark. | BASE |
-|  | Ferrite — #151A1E | Raised dark surfaces; code panels; navigation. | BASE |
-|  | Machined — #242C31 | Dividers, secondary dark surfaces, structural lines. | BASE |
-|  | Paper — #F3F0E7 | Primary light background; warm alternative to sterile white. | BASE |
-|  | Nickel — #98A2A8 | Secondary text and metadata. | BASE |
-|  | Copper — #D87945 | Primary brand accent; focus, selected states, key structural emphasis. | SIGNAL |
-|  | Phosphor — #B9E769 | Healthy/live/runtime state; success where state is actually positive. | SIGNAL |
-|  | Bus Blue — #5FA8D3 | Informational links, network/data-path emphasis. | SIGNAL |
-|  | Amber — #E4B34A | Warnings, physical attention, degraded state. | SIGNAL |
-|  | Fault — #E15D57 | Errors, destructive actions, failed state. | SIGNAL |
+| ![#](assets/swatch-carbon.svg) | Carbon — #0A0D0F | Primary dark background; terminal-adjacent surfaces; high-contrast wordmark. | BASE |
+| ![#](assets/swatch-ferrite.svg) | Ferrite — #151A1E | Raised dark surfaces; code panels; navigation. | BASE |
+| ![#](assets/swatch-machined.svg) | Machined — #242C31 | Dividers, secondary dark surfaces, structural lines. | BASE |
+| ![#](assets/swatch-paper.svg) | Paper — #F3F0E7 | Primary light background; warm alternative to sterile white. | BASE |
+| ![#](assets/swatch-nickel.svg) | Nickel — #98A2A8 | Secondary text and metadata. | BASE |
+| ![#](assets/swatch-copper.svg) | Copper — #D87945 | Primary brand accent; focus, selected states, key structural emphasis. | SIGNAL |
+| ![#](assets/swatch-phosphor.svg) | Phosphor — #B9E769 | Healthy/live/runtime state; success where state is actually positive. | SIGNAL |
+| ![#](assets/swatch-bus-blue.svg) | Bus Blue — #5FA8D3 | Informational links, network/data-path emphasis. | SIGNAL |
+| ![#](assets/swatch-amber.svg) | Amber — #E4B34A | Warnings, physical attention, degraded state. | SIGNAL |
+| ![#](assets/swatch-fault.svg) | Fault — #E15D57 | Errors, destructive actions, failed state. | SIGNAL |
 
 ### Colour rules
 
