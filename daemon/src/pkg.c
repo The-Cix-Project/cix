@@ -67,14 +67,17 @@ struct pkg_entry {
 	int in_use;
 
 	/*
-	 * ADR-0157 Phase 1: build-transient fields, meaningful only while
-	 * state is FETCHING or BUILDING -- moved here from bare module
-	 * statics (this is the one specific pkg_entry any given build
-	 * concerns) so a future phase can run more than one build
-	 * concurrently with no second parallel table (see the ADR's own
-	 * Decision section 1). Still only ever one entry actually in this
-	 * state at a time in this phase (PKG_MAX_CONCURRENT_JOBS == 1) --
-	 * a pure storage relocation, no behavior change yet.
+	 * ADR-0157: build-transient fields, meaningful only while state is
+	 * FETCHING or BUILDING -- moved here from bare module statics (this
+	 * is the one specific pkg_entry any given build concerns) so builds
+	 * can run concurrently with no second parallel table (see the ADR's
+	 * own Decision section 1). Phase 3 raised the real ceiling to
+	 * PKG_MAX_CONCURRENT_JOBS == 10, operator-configurable down to 1 via
+	 * `max_concurrent_jobs` (GET/PUT /v1/system/pkg-build-config); each
+	 * concurrent build gets its own __pkgbuild-<chain index> container.
+	 * (Phase 1, where this relocation first landed, still ran one at a
+	 * time -- that is the state this comment used to describe and no
+	 * longer does.)
 	 */
 	int cache_hit;
 	/* ADR-0157 Phase 2: this build's own real, distinct registry
@@ -1278,11 +1281,12 @@ static void url_basename(const char *url, char *out, size_t out_size)
 }
 
 /*
- * __pkgbuild is a single, reserved, reused container path (v1
- * serializes builds to one at a time) -- without this, a later
- * build's /build/pkg-dest would silently inherit leftover files from
- * whatever the previous build (chained dependency or a completely
- * unrelated earlier install) left in the same upperdir. Called before
+ * Each concurrent build owns a distinct __pkgbuild-<chain index>
+ * container path (ADR-0157 -- builds run in parallel, up to
+ * max_concurrent_jobs) -- without wiping it first, a build's
+ * /build/pkg-dest would silently inherit leftover files from whatever
+ * ran in that same slot's upperdir before (a chained dependency, or an
+ * unrelated earlier install that used the same index). Called before
  * every build's prep, guaranteeing each one starts from a genuinely
  * clean container directory regardless of what ran there before.
  */
