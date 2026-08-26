@@ -8703,7 +8703,7 @@ static int image_export_start(const char *name, char *err_msg, size_t err_msg_si
 	char version[IMAGE_VERSION_MAX];
 	char rootfs[PATH_MAX];
 	char out_dir[PATH_MAX];
-	char *argv[7];
+	char *argv[8];
 	pid_t pid;
 	int pidfd;
 
@@ -8731,13 +8731,17 @@ static int image_export_start(const char *name, char *err_msg, size_t err_msg_si
 	         version);
 	unlink(g_image_export_path);
 
+	/* Issue #125: name the compressor absolutely -- tar's own -z shells
+	 * out to a bare "gzip" through PATH, and this daemon runs as PID 1
+	 * with no PATH, so that lookup fails and tar exits 2. */
 	argv[0] = (char *)"/usr/bin/tar";
-	argv[1] = (char *)"-C";
-	argv[2] = rootfs;
-	argv[3] = (char *)"-czf";
-	argv[4] = g_image_export_path;
-	argv[5] = (char *)".";
-	argv[6] = NULL;
+	argv[1] = (char *)"--use-compress-program=/usr/bin/gzip";
+	argv[2] = (char *)"-C";
+	argv[3] = rootfs;
+	argv[4] = (char *)"-cf";
+	argv[5] = g_image_export_path;
+	argv[6] = (char *)".";
+	argv[7] = NULL;
 
 	pid = fork();
 	if (pid < 0) {

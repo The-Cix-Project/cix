@@ -33,6 +33,16 @@ extern char **environ;
 /* PKG_CURL_BIN now lives in pkg.h -- shared with main.c's own
  * bootstrap-fetch mechanism (ADR-0065), one real definition. */
 #define PKG_TAR_BIN "/usr/bin/tar"
+/*
+ * Issue #125: tar's own -z shells out to a BARE "gzip", resolved
+ * through PATH -- and this daemon runs as PID 1 from the kernel, whose
+ * environment carries no PATH at all, so that lookup fails and tar
+ * exits 2. Every cache save on a real installed host failed this way,
+ * silently, for months. Naming the compressor absolutely removes the
+ * lookup; mkbootroot stages this exact path into the control-plane
+ * image (its own host_tool_bins list, from gzip.recipe).
+ */
+#define PKG_GZIP_BIN "/usr/bin/gzip"
 #define PKG_SHA256SUM_BIN "/usr/bin/sha256sum"
 #define PKG_RM_BIN "/bin/rm"
 #define PKG_UNSQUASHFS_BIN "/usr/bin/unsquashfs"
@@ -6531,7 +6541,11 @@ static void pkg_cache_save(const char *name, const char *version, const char *de
 	unlink(tmp_path);
 
 	{
-		char *argv[] = { (char *)PKG_TAR_BIN, "-C", (char *)dest_dir, "-czf", tmp_path, ".", NULL };
+		char *argv[] = { (char *)PKG_TAR_BIN,
+			         "--use-compress-program=" PKG_GZIP_BIN,
+			         "-C",   (char *)dest_dir,
+			         "-cf",  tmp_path,
+			         ".",    NULL };
 
 		if (run_subprocess(PKG_TAR_BIN, argv) != 0) {
 			/* Best-effort stays best-effort, but never silent again:
