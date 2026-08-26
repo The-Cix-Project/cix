@@ -43,6 +43,19 @@ extern char **environ;
 #define TEST_PORT 7657
 #define PORT_ARG "--port=7657"
 
+/*
+ * Poll budget for an async operation that involves a real package build
+ * or a container restart under this test's own load. 300 * 200ms = 60s.
+ * Was 12s at the install wait and 20s at the rebuild waits (issue #123),
+ * which a real filesystem journal stall -- the daemon's own stall
+ * watchdog logs 5-13s of jbd2_log_wait_commit here on a busy box --
+ * could exceed, failing the wait and cascading into every assertion
+ * after it. The assertion is that the operation COMPLETES, never that it
+ * completes fast; 60s is generous headroom over the worst stall observed
+ * while still bounded well under the harness timeout.
+ */
+#define ROLL_POLL_ATTEMPTS 300
+
 static char g_data_dir[PATH_MAX];
 static int g_failures;
 
@@ -358,7 +371,7 @@ int main(void)
 	          r.status == 202,
 	      "POST install rollsvc@rollctrimg");
 	cix_response_free(&r);
-	CHECK(poll_pkg_installed_version(&client, "rollsvc@rollctrimg", "1.0", 60) == 0,
+	CHECK(poll_pkg_installed_version(&client, "rollsvc@rollctrimg", "1.0", ROLL_POLL_ATTEMPTS) == 0,
 	      "rollsvc@rollctrimg (1.0) reaches installed");
 
 	memset(&r, 0, sizeof(r));
@@ -470,7 +483,7 @@ int main(void)
 
 	/* Wait for the auto-rebuild to move rollctrimg's own current_version. */
 	new_version[0] = '\0';
-	for (i = 0; i < 100; i++) {
+	for (i = 0; i < ROLL_POLL_ATTEMPTS; i++) {
 		if (test_image_fixture_read_current_version(image_dir, new_version, sizeof(new_version)) ==
 		        0 &&
 		    strcmp(new_version, old_version) != 0)
@@ -484,7 +497,7 @@ int main(void)
 	 * new image_version. */
 	follow_pid_after = follow_pid_before;
 	follow_ver_after[0] = '\0';
-	for (i = 0; i < 100; i++) {
+	for (i = 0; i < ROLL_POLL_ATTEMPTS; i++) {
 		if (fetch_container_pid_version(&client, "rollctr-follow", &follow_pid_after,
 		                                 follow_ver_after, sizeof(follow_ver_after)) == 0 &&
 		    follow_pid_after != follow_pid_before && strcmp(follow_ver_after, new_version) == 0)
@@ -607,7 +620,7 @@ int main(void)
 		cix_response_free(&r);
 
 		newer_version[0] = '\0';
-		for (i = 0; i < 100; i++) {
+		for (i = 0; i < ROLL_POLL_ATTEMPTS; i++) {
 			if (test_image_fixture_read_current_version(image_dir, newer_version,
 			                                             sizeof(newer_version)) == 0 &&
 			    strcmp(newer_version, new_version) != 0)
