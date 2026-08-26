@@ -190,6 +190,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/images/recipe-apply-status` | Most recent image-recipe-apply artifact fetch's own state/image/error |
 | POST | `/images/{name}/export` | Export the image's current version as a whole-rootfs tarball, so compiled output moves to another host instead of being rebuilt (issue #126). Async (202) -- poll the GET |
 | GET | `/images/{name}/export` | That export's state (`none`/`building`/`ready`/`failed`), its `artifact_path`, and `artifact_name` |
+| GET | `/images/{name}/export/download` | Bytes of a ready export, in bounded chunks (`?offset=&length=`, clamped to 8 MiB) the caller loops over |
 | GET | `/dns/records` | List all DNS records this daemon knows about |
 | POST | `/dns/records` | Create a DNS record (name -> IP, persisted across restarts) |
 | GET | `/dns/records/{name}` | Inspect one DNS record |

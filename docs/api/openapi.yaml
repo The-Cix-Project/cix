@@ -5002,6 +5002,68 @@ paths:
                   error:
                     type: string
 
+  /images/{name}/export/download:
+    get:
+      summary: >
+        The bytes of a ready export, in bounded chunks the caller loops
+        over (issue #126).
+      description: >
+        Deliberately chunked rather than one streamed response. This
+        daemon is a single event loop, so writing a multi-gigabyte body
+        inline would freeze the control plane for the whole transfer
+        (ADR-0180's own wedge) -- and the two obvious escapes are worse
+        here: a forked child cannot write to the parent's TLS session,
+        and a full EPOLLOUT streaming state machine is a large change to
+        a load-bearing HTTP layer for one endpoint. A bounded chunk costs
+        one small allocation; the caller reassembles. Total size comes
+        from GET .../export's own size_bytes, which the caller polls for
+        "ready" anyway.
+
+
+        length is clamped to 8 MiB. A short read means end of artifact.
+      operationId: downloadImageExport
+      parameters:
+        - $ref: "#/components/parameters/ImageName"
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+            default: 0
+        - name: length
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: The requested byte range
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "400":
+          description: offset < 0 or length <= 0
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No ready export for this image
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "416":
+          description: offset is at or past the end of the artifact
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /images/{name}/apply-recipe:
     post:
       summary: >
