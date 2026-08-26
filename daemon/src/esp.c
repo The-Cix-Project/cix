@@ -1,0 +1,610 @@
+/*
+ * The EFI System Partition's boot configuration, over REST (issue #128,
+ * ADR-0202).
+ *
+ * Every other piece of a running host's state had an endpoint. The ESP
+ * did not, and the cost of that showed up as a host stuck on an old
+ * build with a correctly staged update it would never boot, no error
+ * anywhere, and no way to look at the one file that explained it.
+ *
+ * The trap is systemd-boot's `default`: it is a glob PATTERN, not an
+ * entry name. A pattern left behind by an earlier naming scheme goes on
+ * matching stale entries forever and outranks every newly written one.
+ * Nothing reports this -- the update succeeds, the entry is written
+ * correctly, and the machine reboots into exactly what it was already
+ * running. So this module's job is as much to make that visible as it
+ * is to make it changeable: esp_write_json() reports, for every entry,
+ * whether the current pattern selects it, and names the entry
+ * systemd-boot would actually choose.
+ */
+#include "esp.h"
+
+#include "json.h"
+#include "persist.h"
+
+#include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <fnmatch.h>
+#include <limits.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+static char g_loader_dir[PATH_MAX];
+static char g_entries_dir[PATH_MAX];
+static char g_running_slot[8];
+
+void esp_init(const char *loader_dir, const char *entries_dir)
+{
+	snprintf(g_loader_dir, sizeof(g_loader_dir), "%s", loader_dir);
+	snprintf(g_entries_dir, sizeof(g_entries_dir), "%s", entries_dir);
+	g_running_slot[0] = '\0';
+}
+
+void esp_set_running_slot(const char *slot)
+{
+	snprintf(g_running_slot, sizeof(g_running_slot), "%s", slot != NULL ? slot : "");
+}
+
+static void loader_conf_path(char *out, size_t out_size)
+{
+	snprintf(out, out_size, "%s/loader.conf", g_loader_dir);
+}
+
+/*
+ * systemd-boot's entry id, and its Automatic Boot Assessment counter.
+ *
+ * The id is the filename with ".conf" removed AND the "+<left>[-<done>]"
+ * counter stripped -- so "cix-b+3.conf" has the id "cix-b", not
+ * "cix-b+3". That distinction is not cosmetic: it decides whether an
+ * operator's pattern matches, and getting it wrong here would mean this
+ * API answering differently from the firmware it claims to describe.
+ *
+ * out_tries_left is the counter's first number, or -1 when the entry
+ * carries no counter at all (a confirmed entry). Zero is a real,
+ * distinct value: it means "no attempts remain", and systemd-boot sorts
+ * such entries last.
+ */
+static void entry_id(const char *filename, char *out, size_t out_size, int *out_tries_left)
+{
+	size_t len;
+	char *plus;
+
+	if (out_tries_left != NULL)
+		*out_tries_left = -1;
+	snprintf(out, out_size, "%s", filename);
+	len = strlen(out);
+	if (len > 5 && strcmp(out + len - 5, ".conf") == 0)
+		out[len - 5] = '\0';
+
+	plus = strrchr(out, '+');
+	if (plus == NULL || plus[1] == '\0')
+		return;
+	{
+		const char *q = plus + 1;
+		int seen_digit = 0;
+		int valid = 1;
+
+		while (*q != '\0') {
+			if (*q >= '0' && *q <= '9') {
+				seen_digit = 1;
+			} else if (*q == '-' && seen_digit) {
+				/* the "-<done>" half; the rest must be digits */
+			} else {
+				valid = 0;
+				break;
+			}
+			q++;
+		}
+		if (!valid || !seen_digit)
+			return; /* a literal '+' in the name, not a counter */
+		if (out_tries_left != NULL)
+			*out_tries_left = atoi(plus + 1);
+		*plus = '\0';
+	}
+}
+
+int esp_pattern_matches(const char *pattern, const char *entry_name)
+{
+	char stem[ESP_ENTRY_NAME_MAX];
+	char id[ESP_ENTRY_NAME_MAX];
+	size_t len;
+
+	if (pattern == NULL || pattern[0] == '\0' || entry_name == NULL)
+		return 0;
+	/*
+	 * Three spellings, because a pattern an operator writes should
+	 * behave the way the bootloader behaves, not the way a naive
+	 * filename match would suggest: the raw filename, the filename
+	 * without .conf, and the real entry id with the boot counter
+	 * stripped (which is what systemd-boot itself matches against).
+	 */
+	if (fnmatch(pattern, entry_name, 0) == 0)
+		return 1;
+	snprintf(stem, sizeof(stem), "%s", entry_name);
+	len = strlen(stem);
+	if (len > 5 && strcmp(stem + len - 5, ".conf") == 0) {
+		stem[len - 5] = '\0';
+		if (fnmatch(pattern, stem, 0) == 0)
+			return 1;
+	}
+	entry_id(entry_name, id, sizeof(id), NULL);
+	if (id[0] != '\0' && fnmatch(pattern, id, 0) == 0)
+		return 1;
+	return 0;
+}
+
+/* The value of a single-word directive ("default cix-b"), trimmed. */
+static void parse_directive(const char *text, const char *key, char *out, size_t out_size)
+{
+	const char *p = text;
+	size_t key_len = strlen(key);
+
+	out[0] = '\0';
+	while (*p != '\0') {
+		const char *line_end = strchr(p, '\n');
+		size_t line_len = (line_end != NULL) ? (size_t)(line_end - p) : strlen(p);
+		const char *v;
+		size_t vlen;
+
+		while (line_len > 0 && (*p == ' ' || *p == '\t')) {
+			p++;
+			line_len--;
+		}
+		if (line_len > key_len && strncmp(p, key, key_len) == 0 &&
+		    (p[key_len] == ' ' || p[key_len] == '\t')) {
+			v = p + key_len;
+			vlen = line_len - key_len;
+			while (vlen > 0 && (*v == ' ' || *v == '\t')) {
+				v++;
+				vlen--;
+			}
+			while (vlen > 0 && (v[vlen - 1] == ' ' || v[vlen - 1] == '\t' ||
+			                    v[vlen - 1] == '\r'))
+				vlen--;
+			if (vlen >= out_size)
+				vlen = out_size - 1;
+			memcpy(out, v, vlen);
+			out[vlen] = '\0';
+			return;
+		}
+		if (line_end == NULL)
+			return;
+		p = line_end + 1;
+	}
+}
+
+enum esp_error esp_loader_get(char *out_default, size_t out_default_size, int *out_timeout,
+                              int *out_writable)
+{
+	char path[PATH_MAX];
+	char *buf = NULL;
+	size_t len = 0;
+	char timeout_str[32];
+
+	out_default[0] = '\0';
+	*out_timeout = -1;
+	*out_writable = 0;
+
+	if (g_loader_dir[0] == '\0')
+		return ESP_ERR_NO_ESP;
+	if (access(g_loader_dir, F_OK) != 0)
+		return ESP_ERR_NO_ESP;
+	*out_writable = (access(g_loader_dir, W_OK) == 0) ? 1 : 0;
+
+	loader_conf_path(path, sizeof(path));
+	if (persist_read_file(path, &buf, &len) != 0 || buf == NULL) {
+		/* A loader directory with no loader.conf is a real, bootable
+		 * state (systemd-boot falls back to its own defaults), not an
+		 * error -- report it as "nothing set" rather than failing. */
+		return ESP_OK;
+	}
+	parse_directive(buf, "default", out_default, out_default_size);
+	parse_directive(buf, "timeout", timeout_str, sizeof(timeout_str));
+	if (timeout_str[0] != '\0')
+		*out_timeout = atoi(timeout_str);
+	free(buf);
+	return ESP_OK;
+}
+
+/* One entry's file, parsed. Returns 0 on success. */
+static int read_entry(const char *name, struct esp_entry *out)
+{
+	char path[PATH_MAX];
+	char *buf = NULL;
+	size_t len = 0;
+
+	snprintf(path, sizeof(path), "%s/%s", g_entries_dir, name);
+	if (persist_read_file(path, &buf, &len) != 0 || buf == NULL)
+		return -1;
+
+	memset(out, 0, sizeof(*out));
+	snprintf(out->name, sizeof(out->name), "%s", name);
+	parse_directive(buf, "title", out->title, sizeof(out->title));
+	parse_directive(buf, "linux", out->linux_image, sizeof(out->linux_image));
+	parse_directive(buf, "options", out->options, sizeof(out->options));
+	free(buf);
+	return 0;
+}
+
+/* The slot an entry boots, read from the --slot= this daemon itself
+ * writes into every entry's options. An entry with no recognizable slot
+ * (a rescue entry, say) is nobody's running entry, which is the safe
+ * reading -- it means the delete guard never silently protects
+ * something it does not understand. */
+static int entry_slot(const struct esp_entry *e, char *out, size_t out_size)
+{
+	const char *p = strstr(e->options, "--slot=");
+	size_t i = 0;
+
+	out[0] = '\0';
+	if (p == NULL)
+		return -1;
+	p += 7;
+	while (p[i] != '\0' && p[i] != ' ' && p[i] != '\t' && i + 1 < out_size) {
+		out[i] = p[i];
+		i++;
+	}
+	out[i] = '\0';
+	return 0;
+}
+
+int esp_entries_list(struct esp_entry *out, int max)
+{
+	DIR *d;
+	struct dirent *de;
+	int count = 0;
+	char default_pattern[ESP_DEFAULT_MAX];
+	int timeout, writable;
+
+	if (g_entries_dir[0] == '\0')
+		return -1;
+	d = opendir(g_entries_dir);
+	if (d == NULL)
+		return -1;
+
+	default_pattern[0] = '\0';
+	esp_loader_get(default_pattern, sizeof(default_pattern), &timeout, &writable);
+
+	while ((de = readdir(d)) != NULL && count < max) {
+		char slot[8];
+
+		if (de->d_name[0] == '.')
+			continue;
+		if (read_entry(de->d_name, &out[count]) != 0)
+			continue;
+		out[count].matches_default = esp_pattern_matches(default_pattern, de->d_name);
+		out[count].is_running_slot =
+		    (g_running_slot[0] != '\0' && entry_slot(&out[count], slot, sizeof(slot)) == 0 &&
+		     strcmp(slot, g_running_slot) == 0)
+		        ? 1
+		        : 0;
+		count++;
+	}
+	closedir(d);
+	return count;
+}
+
+/*
+ * Rewrites loader.conf with default/timeout replaced, every other line
+ * kept verbatim. Preserving the rest matters: loader.conf legitimately
+ * carries editor/console-mode/auto-entries settings this module has no
+ * opinion about, and rewriting the file from a template would silently
+ * discard them.
+ */
+static enum esp_error write_loader_conf(const char *new_default, const int *new_timeout)
+{
+	char path[PATH_MAX];
+	char *buf = NULL;
+	size_t len = 0;
+	char *out;
+	size_t out_cap;
+	size_t out_len = 0;
+	int wrote_default = 0;
+	int wrote_timeout = 0;
+	const char *p;
+	enum esp_error rc = ESP_OK;
+
+	loader_conf_path(path, sizeof(path));
+	if (persist_read_file(path, &buf, &len) != 0)
+		buf = NULL;
+
+	/*
+	 * Generous by design, and every append below is checked against it.
+	 * A truncated loader.conf is not a cosmetic failure -- it is a host
+	 * that does not boot -- so running out of room must fail the write
+	 * loudly rather than silently produce a short file.
+	 */
+	out_cap = len + 2 * ESP_DEFAULT_MAX + 256;
+	out = malloc(out_cap);
+	if (out == NULL) {
+		free(buf);
+		return ESP_ERR_PERSIST_FAILED;
+	}
+
+	p = (buf != NULL) ? buf : "";
+	while (*p != '\0') {
+		const char *line_end = strchr(p, '\n');
+		size_t line_len = (line_end != NULL) ? (size_t)(line_end - p) : strlen(p);
+		int is_default = (line_len >= 7 && strncmp(p, "default", 7) == 0 &&
+		                  (line_len == 7 || p[7] == ' ' || p[7] == '\t'));
+		int is_timeout = (line_len >= 7 && strncmp(p, "timeout", 7) == 0 &&
+		                  (line_len == 7 || p[7] == ' ' || p[7] == '\t'));
+
+		if (is_default && new_default != NULL) {
+			int n = snprintf(out + out_len, out_cap - out_len, "default %s\n", new_default);
+
+			if (n < 0 || (size_t)n >= out_cap - out_len)
+				goto no_room;
+			out_len += (size_t)n;
+			wrote_default = 1;
+		} else if (is_timeout && new_timeout != NULL) {
+			int n = snprintf(out + out_len, out_cap - out_len, "timeout %d\n", *new_timeout);
+
+			if (n < 0 || (size_t)n >= out_cap - out_len)
+				goto no_room;
+			out_len += (size_t)n;
+			wrote_timeout = 1;
+		} else {
+			if (out_len + line_len + 2 > out_cap)
+				goto no_room;
+			memcpy(out + out_len, p, line_len);
+			out_len += line_len;
+			out[out_len++] = '\n';
+		}
+		if (line_end == NULL)
+			break;
+		p = line_end + 1;
+	}
+	if (new_default != NULL && !wrote_default) {
+		int n = snprintf(out + out_len, out_cap - out_len, "default %s\n", new_default);
+
+		if (n < 0 || (size_t)n >= out_cap - out_len)
+			goto no_room;
+		out_len += (size_t)n;
+	}
+	if (new_timeout != NULL && !wrote_timeout) {
+		int n = snprintf(out + out_len, out_cap - out_len, "timeout %d\n", *new_timeout);
+
+		if (n < 0 || (size_t)n >= out_cap - out_len)
+			goto no_room;
+		out_len += (size_t)n;
+	}
+
+	if (persist_atomic_write(path, out, out_len) != 0)
+		rc = ESP_ERR_PERSIST_FAILED;
+	free(out);
+	free(buf);
+	return rc;
+
+no_room:
+	/* Nothing has been written to the ESP at this point -- the whole
+	 * file is assembled in memory first, precisely so a failure here
+	 * leaves the existing, working loader.conf untouched. */
+	fprintf(stderr, "esp: loader.conf rewrite would not fit in %zu bytes -- not written\n",
+	        out_cap);
+	free(out);
+	free(buf);
+	return ESP_ERR_PERSIST_FAILED;
+}
+
+enum esp_error esp_loader_set(const char *default_pattern, const int *timeout)
+{
+	struct esp_entry entries[ESP_MAX_ENTRIES];
+	int n, i;
+	int matched = 0;
+
+	if (g_loader_dir[0] == '\0' || access(g_loader_dir, F_OK) != 0)
+		return ESP_ERR_NO_ESP;
+	if (access(g_loader_dir, W_OK) != 0)
+		return ESP_ERR_READ_ONLY;
+	if (default_pattern != NULL) {
+		if (default_pattern[0] == '\0' || strlen(default_pattern) >= ESP_DEFAULT_MAX ||
+		    strchr(default_pattern, '\n') != NULL)
+			return ESP_ERR_INVALID;
+	}
+	if (timeout != NULL && (*timeout < 0 || *timeout > 3600))
+		return ESP_ERR_INVALID;
+
+	/*
+	 * A default matching nothing is the single most dangerous thing an
+	 * operator can set here from a machine they cannot physically
+	 * reach, and it is silent -- so it is refused, not warned about.
+	 * The caller is told what does exist, which turns a bricking
+	 * mistake into an obvious typo.
+	 */
+	if (default_pattern != NULL) {
+		n = esp_entries_list(entries, ESP_MAX_ENTRIES);
+		for (i = 0; i < n; i++) {
+			if (esp_pattern_matches(default_pattern, entries[i].name))
+				matched = 1;
+		}
+		if (n > 0 && !matched)
+			return ESP_ERR_WOULD_ORPHAN;
+	}
+	return write_loader_conf(default_pattern, timeout);
+}
+
+enum esp_error esp_entry_delete(const char *name)
+{
+	struct esp_entry entries[ESP_MAX_ENTRIES];
+	char path[PATH_MAX];
+	int n, i;
+	int found = 0;
+	int running_slot_survivors = 0;
+	int target_is_running_slot = 0;
+
+	if (name == NULL || name[0] == '\0' || strchr(name, '/') != NULL ||
+	    strstr(name, "..") != NULL)
+		return ESP_ERR_INVALID;
+	if (g_entries_dir[0] == '\0' || access(g_entries_dir, F_OK) != 0)
+		return ESP_ERR_NO_ESP;
+	if (access(g_entries_dir, W_OK) != 0)
+		return ESP_ERR_READ_ONLY;
+
+	n = esp_entries_list(entries, ESP_MAX_ENTRIES);
+	for (i = 0; i < n; i++) {
+		if (strcmp(entries[i].name, name) == 0) {
+			found = 1;
+			target_is_running_slot = entries[i].is_running_slot;
+		} else if (entries[i].is_running_slot) {
+			running_slot_survivors++;
+		}
+	}
+	if (!found)
+		return ESP_ERR_NOT_FOUND;
+	/*
+	 * Removing a duplicate entry for the running slot is exactly the
+	 * cleanup this endpoint exists for, so it is allowed -- what is
+	 * refused is removing the LAST one, which is how a remote operator
+	 * makes a machine they cannot reach unbootable.
+	 */
+	if (target_is_running_slot && running_slot_survivors == 0)
+		return ESP_ERR_WOULD_ORPHAN;
+	/*
+	 * With no --slot (not the installed control plane, so nothing can
+	 * be attributed to a running slot) the guard above can never fire.
+	 * Rather than silently protecting nothing, it degrades to the
+	 * weaker claim that still always holds: never remove the last
+	 * entry on the ESP. A guard that quietly stops applying is worse
+	 * than one that is merely coarse.
+	 */
+	if (g_running_slot[0] == '\0' && n <= 1)
+		return ESP_ERR_WOULD_ORPHAN;
+
+	snprintf(path, sizeof(path), "%s/%s", g_entries_dir, name);
+	if (unlink(path) != 0)
+		return ESP_ERR_PERSIST_FAILED;
+	return ESP_OK;
+}
+
+/*
+ * Which entry systemd-boot would actually select, following its own
+ * documented ordering rather than a guess:
+ *
+ *   1. entries whose counter has reached zero (no attempts left) sort
+ *      to the END -- the bootloader will not choose one while any
+ *      other candidate exists;
+ *   2. the rest sort ASCENDING by entry id;
+ *   3. the default pattern selects the FIRST match in that order.
+ *
+ * The direction matters and was worth checking against a real machine
+ * rather than assuming: taking the LAST match instead names an entry
+ * for the wrong A/B slot on a host carrying entries for both, which is
+ * exactly the situation this endpoint exists to diagnose. An answer
+ * that is confidently wrong here would be worse than no answer.
+ *
+ * Ties (several files sharing one id -- a confirmed entry plus its
+ * leftover counted variants, which is common) are broken by filename
+ * so the answer is at least deterministic; every such candidate boots
+ * the same slot, which is the fact an operator is actually reading
+ * this for.
+ */
+static int selection_rank_less(const struct esp_entry *a, const struct esp_entry *b)
+{
+	char id_a[ESP_ENTRY_NAME_MAX];
+	char id_b[ESP_ENTRY_NAME_MAX];
+	int tries_a = -1;
+	int tries_b = -1;
+	int cmp;
+
+	entry_id(a->name, id_a, sizeof(id_a), &tries_a);
+	entry_id(b->name, id_b, sizeof(id_b), &tries_b);
+
+	if ((tries_a == 0) != (tries_b == 0))
+		return (tries_b == 0) ? 1 : 0; /* exhausted entries last */
+	cmp = strcmp(id_a, id_b);
+	if (cmp != 0)
+		return cmp < 0;
+	return strcmp(a->name, b->name) < 0;
+}
+
+static void selected_entry(const struct esp_entry *entries, int n, const char *pattern, char *out,
+                           size_t out_size)
+{
+	int i;
+	const struct esp_entry *best = NULL;
+
+	out[0] = '\0';
+	if (pattern == NULL || pattern[0] == '\0')
+		return;
+	for (i = 0; i < n; i++) {
+		if (!entries[i].matches_default)
+			continue;
+		if (best == NULL || selection_rank_less(&entries[i], best))
+			best = &entries[i];
+	}
+	if (best != NULL)
+		snprintf(out, out_size, "%s", best->name);
+}
+
+void esp_write_json(struct json_writer *w)
+{
+	struct esp_entry entries[ESP_MAX_ENTRIES];
+	char default_pattern[ESP_DEFAULT_MAX];
+	char selected[ESP_ENTRY_NAME_MAX];
+	int timeout = -1;
+	int writable = 0;
+	int n, i;
+	enum esp_error err;
+
+	err = esp_loader_get(default_pattern, sizeof(default_pattern), &timeout, &writable);
+	n = esp_entries_list(entries, ESP_MAX_ENTRIES);
+	if (n < 0)
+		n = 0;
+	selected_entry(entries, n, default_pattern, selected, sizeof(selected));
+
+	jw_obj_open(w);
+	jw_key(w, "present");
+	jw_bool(w, err != ESP_ERR_NO_ESP);
+	jw_key(w, "writable");
+	jw_bool(w, writable);
+	jw_key(w, "loader_dir");
+	jw_str(w, g_loader_dir);
+	jw_key(w, "default");
+	if (default_pattern[0] != '\0')
+		jw_str(w, default_pattern);
+	else
+		jw_null(w);
+	jw_key(w, "timeout");
+	if (timeout >= 0)
+		jw_int(w, timeout);
+	else
+		jw_null(w);
+	jw_key(w, "running_slot");
+	if (g_running_slot[0] != '\0')
+		jw_str(w, g_running_slot);
+	else
+		jw_null(w);
+	/* The entry the firmware would actually boot next, and whether that
+	 * is the slot this daemon is running from -- the two-line answer to
+	 * "why did my update not take effect". */
+	jw_key(w, "selected_entry");
+	if (selected[0] != '\0')
+		jw_str(w, selected);
+	else
+		jw_null(w);
+	jw_key(w, "entries");
+	jw_arr_open(w);
+	for (i = 0; i < n; i++) {
+		jw_obj_open(w);
+		jw_key(w, "name");
+		jw_str(w, entries[i].name);
+		jw_key(w, "title");
+		jw_str(w, entries[i].title);
+		jw_key(w, "linux");
+		jw_str(w, entries[i].linux_image);
+		jw_key(w, "options");
+		jw_str(w, entries[i].options);
+		jw_key(w, "matches_default");
+		jw_bool(w, entries[i].matches_default);
+		jw_key(w, "is_running_slot");
+		jw_bool(w, entries[i].is_running_slot);
+		jw_obj_close(w);
+	}
+	jw_arr_close(w);
+	jw_obj_close(w);
+}

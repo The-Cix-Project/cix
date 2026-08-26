@@ -32,6 +32,7 @@
 #include "cpreserve.h"
 #include "pkgpolicy.h"
 #include "bootconsole.h"
+#include "esp.h"
 #include "kernelpolicy.h"
 #include "zswap.h"
 #include "dhcp.h"
@@ -20590,6 +20591,124 @@ static void handle_kernel_policy_refresh(int fd)
 	jw_free(&w);
 }
 
+/*
+ * Issue #128: GET /v1/system/esp -- what the firmware will actually do
+ * next, not what was intended. Reports loader.conf's default PATTERN,
+ * every loader entry, which entries that pattern selects, and the one
+ * entry systemd-boot would therefore boot.
+ *
+ * That last field is the point. A stale default pattern silently
+ * outranking every newly written entry is invisible from every other
+ * angle -- the update succeeds, the entry is correct, and the machine
+ * reboots into what it was already running.
+ */
+static void handle_esp_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	esp_write_json(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void respond_esp_error(int fd, enum esp_error err, const char *what)
+{
+	switch (err) {
+	case ESP_ERR_NO_ESP:
+		respond_error(fd, 503, "Service Unavailable",
+		              "no EFI System Partition is mounted on this host");
+		return;
+	case ESP_ERR_NOT_FOUND:
+		respond_error(fd, 404, "Not Found", "no such loader entry");
+		return;
+	case ESP_ERR_READ_ONLY:
+		respond_error(fd, 409, "Conflict", "the ESP is mounted read-only");
+		return;
+	case ESP_ERR_INVALID:
+		respond_error(fd, 400, "Bad Request", what);
+		return;
+	case ESP_ERR_WOULD_ORPHAN:
+		respond_error(fd, 409, "Conflict", what);
+		return;
+	default:
+		respond_error(fd, 500, "Internal Server Error", "the ESP write failed");
+		return;
+	}
+}
+
+/*
+ * PUT /v1/system/esp {"default": "...", "timeout": N} -- partial; an
+ * omitted field is left alone. A default matching no existing entry is
+ * refused rather than warned about: it is silent, it strands the host
+ * on next boot, and the operator setting it is by definition not at the
+ * console.
+ */
+static void handle_esp_put(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root = NULL;
+	const char *default_pattern = NULL;
+	const int *timeout_ptr = NULL;
+	int timeout_val = 0;
+	enum esp_error err;
+
+	if (body == NULL || body_len == 0 || (root = json_parse(body, body_len)) == NULL) {
+		respond_error(fd, 400, "Bad Request", "body must be JSON");
+		json_free(root);
+		return;
+	}
+	default_pattern = json_as_string(json_object_get(root, "default"));
+	{
+		const struct json_value *t = json_object_get(root, "timeout");
+
+		if (t != NULL && t->type == JSON_NUMBER) {
+			timeout_val = (int)json_as_number(t);
+			timeout_ptr = &timeout_val;
+		}
+	}
+	if (default_pattern == NULL && timeout_ptr == NULL) {
+		respond_error(fd, 400, "Bad Request", "nothing to set -- give \"default\" and/or \"timeout\"");
+		json_free(root);
+		return;
+	}
+
+	err = esp_loader_set(default_pattern, timeout_ptr);
+	json_free(root);
+	if (err != ESP_OK) {
+		respond_esp_error(fd, err,
+		                  err == ESP_ERR_WOULD_ORPHAN
+		                      ? "that default pattern matches no existing loader entry -- it "
+		                        "would leave this host with nothing to boot. GET "
+		                        "/v1/system/esp lists the entries that do exist."
+		                      : "default must be a non-empty single line; timeout must be "
+		                        "0-3600");
+		return;
+	}
+	handle_esp_get(fd);
+}
+
+/*
+ * DELETE /v1/system/esp/entries/{name} -- removes one stale loader
+ * entry. Refuses the LAST entry for the slot this daemon booted from;
+ * removing a duplicate of it is allowed, because clearing accumulated
+ * duplicates is exactly what this is for.
+ */
+static void handle_esp_entry_delete(int fd, const char *name)
+{
+	enum esp_error err = esp_entry_delete(name);
+
+	if (err != ESP_OK) {
+		respond_esp_error(fd, err,
+		                  err == ESP_ERR_WOULD_ORPHAN
+		                      ? "that is the only remaining loader entry for the slot this "
+		                        "host is running from -- deleting it would leave it unbootable"
+		                      : "invalid loader entry name");
+		return;
+	}
+	http_set_blocking(fd);
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}
+
 static void handle_bootconsole_get(int fd)
 {
 	struct json_writer w;
@@ -22089,6 +22208,21 @@ static void dispatch(int fd, const struct http_request *req)
 			handle_bootconsole_put(fd, req->body, req->body_len);
 			return;
 		}
+	}
+	if (strcmp(req->path, "/v1/system/esp") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_esp_get(fd);
+			return;
+		}
+		if (strcmp(req->method, "PUT") == 0) {
+			handle_esp_put(fd, req->body, req->body_len);
+			return;
+		}
+	}
+	if (strncmp(req->path, "/v1/system/esp/entries/", 23) == 0 &&
+	    strcmp(req->method, "DELETE") == 0) {
+		handle_esp_entry_delete(fd, req->path + 23);
+		return;
 	}
 	if (strcmp(req->path, "/v1/system/kernel-policy") == 0) {
 		if (strcmp(req->method, "GET") == 0) {
@@ -25410,6 +25544,27 @@ int main(int argc, char **argv)
 	cpreserve_init(CPRESERVE_STATE_PATH);   /* issue #86 */
 	pkgpolicy_init(PKGPOLICY_STATE_PATH);   /* issue #64 */
 	bootconsole_init(BOOTCONSOLE_STATE_PATH); /* issue #24 */
+	/*
+	 * Issue #128: the ESP's own location already has exactly one answer
+	 * here (g_esp_entries_dir, including its --test-esp-entries-dir=
+	 * override), so the loader directory is DERIVED from it -- it is
+	 * that directory's parent by definition (<loader>/entries). Deriving
+	 * rather than composing a second path from ESP_DIR means the test
+	 * override still governs both, instead of a test pointing entries
+	 * somewhere harmless while loader.conf writes went to the real
+	 * /boot.
+	 */
+	{
+		char loader_dir[PATH_MAX];
+		char *last_slash;
+
+		snprintf(loader_dir, sizeof(loader_dir), "%s", g_esp_entries_dir);
+		last_slash = strrchr(loader_dir, '/');
+		if (last_slash != NULL && last_slash != loader_dir)
+			*last_slash = '\0';
+		esp_init(loader_dir, g_esp_entries_dir);
+		esp_set_running_slot(g_slot);
+	}
 	kernelpolicy_init(KERNELPOLICY_STATE_PATH); /* issue #65 */
 	/* Issue #51: applied here, not just on PUT -- the kernel default is
 	 * deliberately off, so this is the setting's only chance to survive
