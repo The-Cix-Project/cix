@@ -1336,6 +1336,89 @@ int main(void)
 	}
 
 	/*
+	 * Issue #127: a build tool may be version-pinned as name@version.
+	 * A pin to the version actually installed (greeter@1.0) must
+	 * resolve and compose exactly like the bare-name case above; a pin
+	 * to a version that is NOT installed (greeter@9.9) must fail with
+	 * the same "not installed anywhere" refusal an entirely-unknown
+	 * tool gets -- never silently ignore the pin and match the wrong
+	 * version, which is what happened before (the whole "name@version"
+	 * string was compared against bare package names and matched
+	 * nothing, so even the correct pin failed).
+	 */
+	if (write_builddeps_recipe("pinnedgood", "1.0", tarball_path, sha256, "greeter@1.0") != 0 ||
+	    write_builddeps_recipe("pinnedbad", "1.0", tarball_path, sha256, "greeter@9.9") != 0) {
+		fprintf(stderr, "FAIL: could not write the version-pinned build-deps recipes
+");
+		ok = 0;
+	}
+	/* good pin: composes (build then fails because greeter is not a
+	 * compiler, exactly like declaredpresent -- the point is it got
+	 * past composition). */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"pinnedgood\"}", &r) !=
+	        0 ||
+	    r.status != 202) {
+		fprintf(stderr, "FAIL: #127 install of a correctly-pinned recipe, status=%d
+", r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+	if (poll_pkg_state(&client, "pinnedgood", state, sizeof(state), 600) != 0) {
+		fprintf(stderr, "FAIL: #127 correctly-pinned install never settled (last '%s')
+", state);
+		ok = 0;
+	} else {
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "GET", "/v1/pkg/pinnedgood", NULL, &r) == 0 &&
+		    r.status == 200) {
+			const char *err = json_str_field(r.json, "error");
+
+			if (err != NULL && (strstr(err, "compose") != NULL ||
+			                    strstr(err, "not installed anywhere") != NULL)) {
+				fprintf(stderr, "FAIL: #127 greeter@1.0 (the installed version) did not "
+				                "resolve: %s
+", err);
+				ok = 0;
+			}
+		}
+		cix_response_free(&r);
+	}
+	/* bad pin: must fail, naming the pinned tool -- the wrong version
+	 * is not installed, so it is as unavailable as an unknown name. */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"pinnedbad\"}", &r) !=
+	        0 ||
+	    r.status != 202) {
+		fprintf(stderr, "FAIL: #127 install of a wrong-version-pinned recipe, status=%d
+",
+		        r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+	if (poll_pkg_state(&client, "pinnedbad", state, sizeof(state), 60) != 0 ||
+	    strcmp(state, "failed") != 0) {
+		fprintf(stderr, "FAIL: #127 a pin to an uninstalled version ended '%s', expected "
+		                "failed
+", state);
+		ok = 0;
+	} else {
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "GET", "/v1/pkg/pinnedbad", NULL, &r) == 0 &&
+		    r.status == 200) {
+			const char *err = json_str_field(r.json, "error");
+
+			if (err == NULL || strstr(err, "greeter@9.9") == NULL) {
+				fprintf(stderr, "FAIL: #127 the wrong-version-pin failure does not name "
+				                "greeter@9.9: %s
+", err != NULL ? err : "(none)");
+				ok = 0;
+			}
+		}
+		cix_response_free(&r);
+	}
+
+	/*
 	 * ...and the environment it composed must not be EMPTY. image_create()
 	 * gives every new image a current version straight away, so an image
 	 * that exists is not the same thing as an image that was filled --
