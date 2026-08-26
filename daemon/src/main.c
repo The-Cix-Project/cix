@@ -8608,6 +8608,8 @@ static enum iso_build_state g_iso_build_state = ISO_BUILD_NONE;
 static char g_iso_build_error[256];
 static char ISO_OUTPUT_PATH[PATH_MAX];
 
+static int url_query_param(const char *full_path, const char *key, char *out, size_t out_size);
+
 /*
  * Issue #126: export an image's current version as a whole-rootfs
  * tarball, so compiled output can be pulled off one host and installed
@@ -8760,6 +8762,100 @@ static int image_export_start(const char *name, char *err_msg, size_t err_msg_si
 	g_image_export_error[0] = '\0';
 	g_image_export_state = IMAGE_EXPORT_BUILDING;
 	return 0;
+}
+
+/*
+ * GET /v1/images/{name}/export/download?offset=N&length=M -- the bytes
+ * of a ready export, in bounded chunks the caller loops over.
+ *
+ * Deliberately chunked rather than one streamed response. This daemon
+ * is a single event loop (ADR-0007/0009): writing a multi-gigabyte body
+ * inline would freeze the control plane for the whole transfer (ADR-0180's
+ * own wedge), and the two obvious escapes are both worse here -- a forked
+ * child cannot write to the parent's TLS session, and a real EPOLLOUT
+ * streaming state machine is a large change to a load-bearing HTTP layer
+ * for one endpoint. A bounded chunk costs one small allocation and a few
+ * hundred milliseconds, and the caller reassembles; the existing
+ * build-log endpoint already establishes that responses here are capped
+ * rather than unbounded.
+ *
+ * The caller learns the total size from GET .../export's own size_bytes
+ * (it must poll that for "ready" anyway), so no custom header is needed
+ * here and the HTTP layer stays untouched.
+ */
+#define IMAGE_EXPORT_CHUNK_MAX (8 * 1024 * 1024)
+
+static void handle_image_export_download(int fd, const char *name, const char *full_path)
+{
+	long long offset = 0;
+	long long length = IMAGE_EXPORT_CHUNK_MAX;
+	struct stat st;
+	int file_fd;
+	char *buf;
+	ssize_t got;
+
+	if (g_image_export_state != IMAGE_EXPORT_READY || g_image_export_name[0] == '\0' ||
+	    strcmp(g_image_export_name, name) != 0) {
+		respond_error(fd, 404, "Not Found",
+		              "no ready export for this image -- POST .../export first");
+		return;
+	}
+	{
+		char v[64];
+
+		if (url_query_param(full_path, "offset", v, sizeof(v)) == 0)
+			offset = strtoll(v, NULL, 10);
+		if (url_query_param(full_path, "length", v, sizeof(v)) == 0)
+			length = strtoll(v, NULL, 10);
+	}
+	if (offset < 0 || length <= 0) {
+		respond_error(fd, 400, "Bad Request", "offset must be >= 0 and length > 0");
+		return;
+	}
+	if (length > IMAGE_EXPORT_CHUNK_MAX)
+		length = IMAGE_EXPORT_CHUNK_MAX;
+
+	file_fd = open(g_image_export_path, O_RDONLY);
+	if (file_fd < 0) {
+		respond_error(fd, 500, "Internal Server Error", "export artifact is no longer readable");
+		return;
+	}
+	if (fstat(file_fd, &st) != 0) {
+		close(file_fd);
+		respond_error(fd, 500, "Internal Server Error", "stat failed");
+		return;
+	}
+	if (offset >= (long long)st.st_size) {
+		close(file_fd);
+		respond_error(fd, 416, "Range Not Satisfiable", "offset is at or past the end of the artifact");
+		return;
+	}
+	if (offset + length > (long long)st.st_size)
+		length = (long long)st.st_size - offset;
+	if (lseek(file_fd, (off_t)offset, SEEK_SET) == (off_t)-1) {
+		close(file_fd);
+		respond_error(fd, 500, "Internal Server Error", "seek failed");
+		return;
+	}
+	buf = malloc((size_t)length);
+	if (buf == NULL) {
+		close(file_fd);
+		respond_error(fd, 500, "Internal Server Error", "out of memory");
+		return;
+	}
+	got = 0;
+	while (got < length) {
+		ssize_t n = read(file_fd, buf + got, (size_t)(length - got));
+
+		if (n <= 0)
+			break;
+		got += n;
+	}
+	close(file_fd);
+
+	http_set_blocking(fd);
+	http_write_response(fd, 200, "OK", "application/octet-stream", buf, (size_t)got);
+	free(buf);
 }
 
 static void handle_image_export_post(int fd, const char *name)
@@ -22583,6 +22679,27 @@ static void dispatch(int fd, const struct http_request *req)
 				image_name[nlen - 9] = '\0';
 				handle_image_manifest_set(fd, image_name, req->body, req->body_len);
 				return;
+			}
+			/* Issue #126: /v1/images/{name}/export/download -- bytes of
+			 * a ready export, in bounded chunks. Checked BEFORE the
+			 * "/export" suffix below, which it would otherwise not
+			 * match anyway (different suffix) but keeping them adjacent
+			 * makes the pair obvious. */
+			{
+				/* Like "/files" above, this one carries a trailing
+				 * "?offset=&length=" query -- image names are
+				 * '?'-free, so the name ends at the first '?'. */
+				size_t qlen = strcspn(name, "?");
+
+				if (qlen > 16 && strncmp(name + qlen - 16, "/export/download", 16) == 0 &&
+				    strcmp(req->method, "GET") == 0 && qlen - 16 < PKG_IMAGE_NAME_MAX) {
+					char image_name[PKG_IMAGE_NAME_MAX];
+
+					memcpy(image_name, name, qlen - 16);
+					image_name[qlen - 16] = '\0';
+					handle_image_export_download(fd, image_name, req->path);
+					return;
+				}
 			}
 			/* Issue #126: /v1/images/{name}/export -- POST starts a
 			 * whole-rootfs tarball, GET reports it. */
