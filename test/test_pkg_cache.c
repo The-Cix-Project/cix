@@ -27,6 +27,9 @@ extern char **environ;
 #define TEST_PORT 7649
 #define PORT_ARG "--port=7649"
 #define HTTP_PORT 17650
+/* Issue #129: the push receiver -- a separate port from the pull
+ * server above, so a push can never be mistaken for a pull. */
+#define PUSH_PORT 17651
 
 static char g_data_dir[PATH_MAX];
 static char g_pkg_state_dir[PATH_MAX];
@@ -266,6 +269,60 @@ static int stop_http_server(pid_t pid)
 
 	kill(pid, SIGTERM);
 	return waitpid(pid, &status, 0) == pid ? 0 : -1;
+}
+
+/*
+ * Issue #129: a minimal PUT-accepting artifact server, standing in for
+ * the real one. python3 -m http.server cannot do this (GET only), and
+ * the point of the test is what actually arrives over the wire, so it
+ * records the body plus the two headers the contract depends on:
+ * the bearer token and the declared digest.
+ *
+ * Deliberately dumb -- it verifies nothing itself. The test asserts
+ * against what it recorded, so a daemon that sent the wrong digest
+ * would be caught here rather than quietly accepted.
+ */
+static pid_t start_push_server(const char *dir)
+{
+	pid_t pid;
+
+	pid = fork();
+	if (pid < 0) {
+		perror("fork");
+		return -1;
+	}
+	if (pid == 0) {
+		char script[2048];
+		char *argv[5];
+
+		snprintf(script, sizeof(script),
+		         "import http.server,os\n"
+		         "D=%s%s%s\n"
+		         "class H(http.server.BaseHTTPRequestHandler):\n"
+		         "    def do_PUT(self):\n"
+		         "        n=int(self.headers.get('Content-Length','0'))\n"
+		         "        b=self.rfile.read(n)\n"
+		         "        base=os.path.basename(self.path)\n"
+		         "        open(os.path.join(D,base),'wb').write(b)\n"
+		         "        open(os.path.join(D,base+'.headers'),'w').write(\n"
+		         "            (self.headers.get('Authorization') or '')+chr(10)+\n"
+		         "            (self.headers.get('X-Cix-Sha256') or '')+chr(10))\n"
+		         "        self.send_response(201)\n"
+		         "        self.end_headers()\n"
+		         "    def log_message(self,*a):\n"
+		         "        pass\n"
+		         "http.server.HTTPServer(('127.0.0.1',%d),H).serve_forever()\n",
+		         "'", dir, "'", PUSH_PORT);
+		argv[0] = "python3";
+		argv[1] = "-c";
+		argv[2] = script;
+		argv[3] = NULL;
+		freopen("/dev/null", "w", stdout);
+		freopen("/dev/null", "w", stderr);
+		execvp("python3", argv);
+		_exit(127);
+	}
+	return pid;
 }
 
 int main(void)
@@ -555,6 +612,152 @@ int main(void)
 			cix_response_free(&r);
 
 			stop_http_server(http_pid);
+		}
+	}
+
+	/*
+	 * ---- issue #129: a fresh build publishes itself ----
+	 *
+	 * The whole point: before this, a built artifact lived only in one
+	 * box's local cache and nothing could retrieve it, so every other
+	 * host rebuilt it from source. Here a real build must result in a
+	 * real PUT arriving at the configured server, under exactly the
+	 * name a puller will later ask for, carrying a digest that
+	 * actually matches the bytes.
+	 */
+	{
+		char push_dir[PATH_MAX];
+		char pushed[PATH_MAX];
+		char headers_path[PATH_MAX];
+		char push_tarball[512];
+		char source_url[600];
+		char push_sha256[128];
+		pid_t push_pid;
+		int ok = 1;
+		int i;
+
+		snprintf(push_dir, sizeof(push_dir), "%s/pushed", scratch_dir);
+		if (run_cmd("mkdir -p '%s'", push_dir) != 0)
+			ok = 0;
+		CHECK(ok, "create push receiver directory");
+
+		if (ok && stage_source_tarball(scratch_dir, "pushtest", "1.0", push_tarball,
+		                                sizeof(push_tarball), push_sha256,
+		                                sizeof(push_sha256)) != 0)
+			ok = 0;
+		snprintf(source_url, sizeof(source_url), "file://%s", push_tarball);
+		CHECK(ok, "stage pushtest source tarball");
+
+		if (ok) {
+			push_pid = start_push_server(push_dir);
+			CHECK(push_pid > 0, "start push receiver");
+			usleep(400000);
+
+			{
+				char put_body[640];
+
+				snprintf(put_body, sizeof(put_body),
+				         "{\"base_url\":\"http://127.0.0.1:%d\",\"auth_token\":\"tok-129\","
+				         "\"push_enabled\":true}",
+				         PUSH_PORT);
+				memset(&r, 0, sizeof(r));
+				CHECK(cix_client_request(&client, "PUT", "/v1/pkg/artifact-config", put_body,
+				                         &r) == 0 &&
+				              r.status == 200,
+				      "PUT /v1/pkg/artifact-config with push_enabled");
+				if (r.json != NULL) {
+					const struct json_value *pe =
+					    json_object_get(r.json, "push_enabled");
+
+					CHECK(pe != NULL && pe->type == JSON_BOOL && pe->u.boolean,
+					      "artifact-config reports push_enabled true");
+					CHECK(json_object_get(r.json, "auth_token") == NULL,
+					      "the token itself is never echoed back");
+				}
+				cix_response_free(&r);
+			}
+
+			CHECK(write_recipe(g_pkg_state_dir, "pushtest", "1.0", source_url, push_sha256,
+			                    NULL) == 0,
+			      "write pushtest recipe (real source -- must genuinely build)");
+
+			memset(&r, 0, sizeof(r));
+			CHECK(cix_client_request(&client, "POST", "/v1/pkg/install",
+			                         "{\"name\":\"pushtest\",\"image\":\"imgD\"}", &r) == 0 &&
+			              r.status == 202,
+			      "POST /v1/pkg/install pushtest@imgD");
+			cix_response_free(&r);
+			CHECK(wait_for_pkg_state(&client, "pushtest", "imgD", "installed", 300) == 0,
+			      "pushtest@imgD reaches state=installed via a real build");
+
+			/* The push is asynchronous by design (it must never block
+			 * the event loop), so the arrival is polled, not assumed. */
+			snprintf(pushed, sizeof(pushed), "%s/pushtest-1.0.tar.gz", push_dir);
+			snprintf(headers_path, sizeof(headers_path), "%s/pushtest-1.0.tar.gz.headers",
+			         push_dir);
+			for (i = 0; i < 100; i++) {
+				if (access(headers_path, R_OK) == 0)
+					break;
+				usleep(200000);
+			}
+			CHECK(access(pushed, R_OK) == 0,
+			      "the freshly built package arrived at the artifact server");
+
+			if (access(pushed, R_OK) == 0) {
+				char received_sha[65];
+				char declared_sha[128] = { 0 };
+				char auth_line[256] = { 0 };
+				FILE *hf = fopen(headers_path, "r");
+
+				if (hf != NULL) {
+					if (fgets(auth_line, sizeof(auth_line), hf) != NULL)
+						auth_line[strcspn(auth_line, "\r\n")] = '\0';
+					if (fgets(declared_sha, sizeof(declared_sha), hf) != NULL)
+						declared_sha[strcspn(declared_sha, "\r\n")] = '\0';
+					fclose(hf);
+				}
+				CHECK(strcmp(auth_line, "Bearer tok-129") == 0,
+				      "the push carried the configured bearer token");
+
+				/* The digest must describe the bytes that actually
+				 * arrived -- a header computed from anything else
+				 * would make the receiver's corruption check
+				 * meaningless. */
+				CHECK(compute_file_sha256(pushed, received_sha, sizeof(received_sha)) == 0,
+				      "hash the received artifact");
+				CHECK(strcmp(declared_sha, received_sha) == 0,
+				      "X-Cix-Sha256 matches the bytes that arrived");
+
+				/* And it must be a real archive, not a truncated
+				 * upload that merely hashed consistently. */
+				CHECK(run_cmd("gzip -t '%s' 2>/dev/null", pushed) == 0,
+				      "the received artifact is a valid gzip");
+			}
+
+			/*
+			 * A second install of the SAME package must not re-publish:
+			 * it is a cache hit, so its bytes already came from here.
+			 * Proven by removing the receiver's copy and confirming
+			 * nothing puts it back.
+			 */
+			run_cmd("rm -f '%s' '%s'", pushed, headers_path);
+			memset(&r, 0, sizeof(r));
+			cix_client_request(&client, "DELETE", "/v1/pkg/pushtest@imgD", NULL, &r);
+			cix_response_free(&r);
+			memset(&r, 0, sizeof(r));
+			CHECK(cix_client_request(&client, "POST", "/v1/pkg/install",
+			                         "{\"name\":\"pushtest\",\"image\":\"imgD\"}", &r) == 0 &&
+			              r.status == 202,
+			      "POST /v1/pkg/install pushtest@imgD again (expect a cache hit)");
+			cix_response_free(&r);
+			CHECK(wait_for_pkg_state(&client, "pushtest", "imgD", "installed", 300) == 0,
+			      "pushtest@imgD reinstalls from cache");
+			usleep(1500000);
+			CHECK(access(pushed, R_OK) != 0,
+			      "a cache hit does NOT re-publish what it did not build");
+
+			kill(push_pid, SIGTERM);
+			waitpid(push_pid, NULL, 0);
 		}
 	}
 

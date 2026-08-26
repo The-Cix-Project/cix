@@ -189,7 +189,12 @@ enum pkg_error {
 	                                 * from PKG_ERR_NOT_FOUND (the recipe itself missing), which
 	                                 * this used to collapse into, misleadingly reporting a real
 	                                 * "create the image first" situation as if the recipe's own
-	                                 * content were malformed. */
+	                                 * content were malformed. */,
+	PKG_ERR_NOT_INSTALLED /* the package row exists but is not INSTALLED -- a failed or
+	                       * in-flight build. Distinct from PKG_ERR_NOT_FOUND (no such
+	                       * package at all) for the same reason
+	                       * PKG_ERR_TARGET_IMAGE_NOT_FOUND is: collapsing the two reports
+	                       * "no such thing" for something the operator can plainly see. */
 };
 
 /*
@@ -844,6 +849,16 @@ int pkg_find_update_candidate(char *out_name, size_t out_name_size, char *out_im
 /* image NULL or "" means PKG_DEFAULT_IMAGE, matching pkg_install_start(). */
 enum pkg_error pkg_get_one(const char *name, const char *image, struct json_writer *w);
 
+/*
+ * Issue #129: where a hostbuild package's harvested artifact lives, so
+ * it can be exported. out_dir is ADR-0056's artifacts_dir/<name>/.
+ * PKG_ERR_NOT_FOUND if there is no such hostbuild package,
+ * PKG_ERR_NOT_INSTALLED if one exists but has no artifact to export.
+ */
+enum pkg_error pkg_hostbuild_artifact_info(const char *name, char *out_version,
+                                           size_t out_version_size, char *out_dir,
+                                           size_t out_dir_size);
+
 /* Forgets a package entry in either of the two terminal states:
  * PKG_STATE_INSTALLED (unlinks every manifested file from that
  * specific (name, image) entry's own image first, producing a new
@@ -1043,7 +1058,22 @@ void pkg_artifact_write_json_config(struct json_writer *w);
  * HTTP location, not a git forge (see pkg.c's own module comment for
  * why binaries and git don't mix).
  */
-enum pkg_error pkg_artifact_set_config(const char *base_url, const char *auth_token);
+/* NULL leaves a field unchanged (partial PUT); "" for auth_token
+ * clears it. push_enabled is a pointer for the same reason -- NULL
+ * means "not mentioned in this request", not "false". */
+enum pkg_error pkg_artifact_set_config(const char *base_url, const char *auth_token,
+                                       const int *push_enabled);
+
+/*
+ * Issue #129: publishing a freshly built package to the configured
+ * artifact server, so the next host pulls it instead of rebuilding it.
+ * pkg.c queues the work itself (only ever for a genuine fresh build);
+ * main.c owns the event loop, so it drives the child:
+ * pkg_artifact_push_try_start() returns 1 with a pid/pidfd to register,
+ * and pkg_artifact_push_completed() is called when that pidfd fires.
+ */
+int pkg_artifact_push_try_start(pid_t *out_pid, int *out_pidfd, char *out_desc, size_t desc_size);
+void pkg_artifact_push_completed(int exit_status);
 
 /*
  * ---- pkg/ redesign Part 4 (ADR-0123): image recipes + image-artifact fetch ----

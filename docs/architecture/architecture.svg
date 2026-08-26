@@ -464,7 +464,7 @@
   <use href="#i-box" x="1104" y="718" width="14" height="14" style="color:#718096"/>
   <text x="1220" y="728" text-anchor="middle" class="module-text">artifacts/ — hostbuild output</text>
   <text x="1220" y="742" text-anchor="middle" class="small-text">kernel bzImage, self-built squashfs,</text>
-  <text x="1220" y="754" text-anchor="middle" class="small-text">isotools (ADR-0056/57/64)</text>
+  <text x="1220" y="754" text-anchor="middle" class="small-text">isotools; exportable (ADR-0056/57/64/201)</text>
 
   <line x1="1070" y1="140" x2="1070" y2="200" stroke="#94a3b8" stroke-width="1.8" marker-end="url(#arrowLight)"/>
   <rect x="1080" y="168" width="100" height="16" rx="8" fill="#ffffff" stroke="#e2e8f0"/>

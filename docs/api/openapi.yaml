@@ -4983,9 +4983,13 @@ paths:
                   state:
                     type: string
                     enum: [none, building, ready, failed]
-                  image_version:
+                  version:
                     type: string
-                    description: The version (manifest hash) that was exported.
+                    description: >
+                      The version that was exported -- an image's manifest hash,
+                      or a hostbuild package's version. Renamed from
+                      image_version in ADR-0201, when this state machine became
+                      shared between both export kinds.
                   artifact_path:
                     type: string
                     description: Absolute path of the tarball on this host.
@@ -6663,6 +6667,147 @@ paths:
         "204":
           description: Cache cleared
 
+  /pkg/{name}/artifact/export:
+    post:
+      summary: >
+        Starts a tarball of a hostbuild package's harvested artifact
+        (issue #129, ADR-0201).
+      description: >
+        A hostbuild's output lands in a plain host directory that is
+        deliberately never container-visible (ADR-0056), so
+        GET /containers/{name}/files cannot reach it and it previously had
+        no retrieval route at all -- the self-hosted kernel existed only as
+        bytes on one machine's disk, excluded from backup and wiped by
+        factory reset.
+
+
+        Shares one state machine with the image export above: one export
+        runs at a time, of either kind. The resulting file is named
+        {name}-{version}.tar.gz, which is exactly the name the artifact
+        cache serves a package at, so an export can be pushed verbatim.
+
+
+        Returns 202 immediately; poll the GET below.
+      operationId: exportPkgArtifact
+      parameters:
+        - $ref: "#/components/parameters/PkgName"
+      responses:
+        "202":
+          description: Export started
+        "404":
+          description: No such hostbuild package
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >
+            An export is already running, or the package exists but is not
+            installed (a failed or in-flight build has no artifact to export)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Could not start the export (artifact directory unreadable, or fork failed)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    get:
+      summary: The most recent export's state for this package (issue #129).
+      description: >
+        One export is tracked at a time and it is matched on BOTH kind and
+        name, so a package that is simply not the one most recently exported
+        reports state "none" -- and an image sharing a name with a package
+        never reports the other's export.
+      operationId: getPkgArtifactExport
+      parameters:
+        - $ref: "#/components/parameters/PkgName"
+      responses:
+        "200":
+          description: Export state
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  package:
+                    type: string
+                  state:
+                    type: string
+                    enum: [none, building, ready, failed]
+                  version:
+                    type: string
+                    description: The package version that was exported.
+                  artifact_path:
+                    type: string
+                    description: Absolute path of the tarball on this host.
+                  artifact_name:
+                    type: string
+                    description: >
+                      Basename only -- {name}-{version}.tar.gz, the exact
+                      filename a consuming host asks for at the root of its
+                      configured base_url (ADR-0122).
+                  size_bytes:
+                    type: integer
+                    format: int64
+                    description: -1 until the export is ready.
+                  error:
+                    type: string
+
+  /pkg/{name}/artifact/export/download:
+    get:
+      summary: >
+        The bytes of a ready hostbuild-artifact export, in bounded chunks
+        (issue #129).
+      description: >
+        Same chunking contract as the image export download -- see that
+        endpoint for why this is chunked rather than streamed. length is
+        clamped to 8 MiB; a short read means end of artifact.
+      operationId: downloadPkgArtifactExport
+      parameters:
+        - $ref: "#/components/parameters/PkgName"
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+            default: 0
+        - name: length
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: The requested byte range
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "400":
+          description: offset < 0 or length <= 0
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No ready export for this package
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "416":
+          description: offset is at or past the end of the artifact
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /pkg/artifact-config:
     get:
       summary: >
@@ -6696,6 +6841,16 @@ paths:
                 auth_token:
                   type: string
                   description: Write-only; "" clears an existing token, omitted leaves it unchanged. Sent as an Authorization Bearer header.
+                push_enabled:
+                  type: boolean
+                  description: >
+                    Whether a genuine fresh build publishes its own result to
+                    base_url (issue #129, ADR-0201). Off by default: publishing
+                    is outward-facing, so it is opted into deliberately and is
+                    never inherited from having a base_url set for pulling.
+                    Requires auth_token to be set; a cache or artifact HIT is
+                    never republished, since those bytes already came from
+                    there.
       responses:
         "200":
           description: Updated artifact-server config (same shape as GET)
@@ -12779,6 +12934,15 @@ components:
         auth_token_set:
           type: boolean
           description: Whether a bearer auth token is currently stored -- the token itself is never returned.
+        push_enabled:
+          type: boolean
+          description: >
+            Whether a fresh local build publishes itself to base_url
+            (issue #129, ADR-0201). The upload is a PUT to exactly the URL a
+            puller will later fetch from, carrying the bearer token and an
+            X-Cix-Sha256 header. That header is a corruption check at the
+            door, not a trust claim: the consumer still verifies every byte
+            against the recipe's own git-tracked pkg_artifact_sha256.
 
     RollingConfig:
       type: object

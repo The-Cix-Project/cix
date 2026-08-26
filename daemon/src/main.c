@@ -927,7 +927,8 @@ enum conn_kind {
 	CONN_BOOTROOT_OUTPUT,   /* mkbootroot's own captured stdout/stderr, drained
 	                          * incrementally exactly like CONN_PKG_BUILD_OUTPUT (ADR-0087) */
 	CONN_ISO_ASSEMBLE,      /* server-side mkinstalleriso invocation (ADR-0064) */
-	CONN_IMAGE_EXPORT,      /* issue #126: tar of an image's rootfs into the artifact dir */
+	CONN_ARTIFACT_EXPORT,      /* issue #126: tar of an image's rootfs into the artifact dir */
+	CONN_ARTIFACT_PUSH,     /* issue #129: curl child publishing a fresh build to the artifact server */
 	CONN_BOOTSTRAP_FETCH,   /* pkg/bootstrap's own toolchain_url curl fetch (ADR-0065) */
 	CONN_KERNEL_RELEASES_FETCH, /* kernel.org releases.json curl fetch (issue #65) */
 	CONN_PKG_SYNC_FETCH,    /* pkg sync's own repo-archive curl fetch (ADR-0121) */
@@ -8631,20 +8632,40 @@ static int url_query_param(const char *full_path, const char *key, char *out, si
  * deliberately, and a per-job identifier would be machinery with no
  * caller.
  */
-enum image_export_state {
-	IMAGE_EXPORT_NONE = 0,
-	IMAGE_EXPORT_BUILDING,
-	IMAGE_EXPORT_READY,
-	IMAGE_EXPORT_FAILED
+enum artifact_export_state {
+	ARTIFACT_EXPORT_NONE = 0,
+	ARTIFACT_EXPORT_BUILDING,
+	ARTIFACT_EXPORT_READY,
+	ARTIFACT_EXPORT_FAILED
 };
 
-static enum image_export_state g_image_export_state;
-static char g_image_export_name[PKG_IMAGE_NAME_MAX];
-static char g_image_export_version[IMAGE_VERSION_MAX];
-static char g_image_export_path[PATH_MAX];
-static char g_image_export_error[256];
+/*
+ * Issue #129: what the running export is OF. The two subjects differ
+ * only in where the bytes come from and what the resulting file is
+ * called -- tarring, reaping, status and chunked download are
+ * identical, so they share one state machine rather than growing a
+ * second parallel one.
+ *
+ * A hostbuild artifact (ADR-0056) is the case that forced this: it
+ * lives in a plain host directory that is deliberately never
+ * container-visible, so GET /v1/containers/{n}/files cannot reach it
+ * and it had no retrieval route at all -- the self-hosted kernel, the
+ * single most expensive thing this project builds, existed only as
+ * bytes on one box's disk.
+ */
+enum artifact_export_kind {
+	ARTIFACT_EXPORT_KIND_IMAGE = 0,
+	ARTIFACT_EXPORT_KIND_HOSTBUILD
+};
 
-static void register_image_export_pidfd(pid_t pid, int pidfd)
+static enum artifact_export_state g_artifact_export_state;
+static enum artifact_export_kind g_artifact_export_kind;
+static char g_artifact_export_name[PKG_IMAGE_NAME_MAX];
+static char g_artifact_export_version[IMAGE_VERSION_MAX];
+static char g_artifact_export_path[PATH_MAX];
+static char g_artifact_export_error[256];
+
+static void register_artifact_export_pidfd(pid_t pid, int pidfd)
 {
 	struct conn *cc;
 	struct cix_epoll_event ev;
@@ -8654,7 +8675,7 @@ static void register_image_export_pidfd(pid_t pid, int pidfd)
 		perror("malloc (image export reactor conn)");
 		abort();
 	}
-	cc->kind = CONN_IMAGE_EXPORT;
+	cc->kind = CONN_ARTIFACT_EXPORT;
 	cc->fd = pidfd;
 	cc->pkg_fetch_pid = pid;
 
@@ -8667,25 +8688,74 @@ static void register_image_export_pidfd(pid_t pid, int pidfd)
 	}
 }
 
+/*
+ * Issue #129: drives pkg.c's artifact-push queue. pkg.c decides WHAT
+ * to publish (only genuine fresh builds) and forks the uploader; the
+ * event loop owns reaping it, exactly like every other long-running
+ * child here. Called after anything that might have finished a build,
+ * and again after each push completes so a queue drains.
+ */
+static void artifact_push_pump(void)
+{
+	pid_t pid;
+	int pidfd;
+	char desc[PKG_NAME_MAX + PKG_VERSION_MAX + 2];
+	struct conn *cc;
+	struct cix_epoll_event ev;
+
+	if (pkg_artifact_push_try_start(&pid, &pidfd, desc, sizeof(desc)) != 1)
+		return;
+
+	cc = malloc(sizeof(*cc));
+	if (cc == NULL) {
+		perror("malloc (artifact push reactor conn)");
+		abort();
+	}
+	cc->kind = CONN_ARTIFACT_PUSH;
+	cc->fd = pidfd;
+	cc->pkg_fetch_pid = pid;
+
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = cc;
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+		perror("epoll_ctl ADD artifact push pidfd");
+		abort();
+	}
+}
+
+static void handle_artifact_push_event(struct conn *cc)
+{
+	int status = 0;
+
+	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	waitpid(cc->pkg_fetch_pid, &status, 0);
+	close(cc->fd);
+	free(cc);
+	pkg_artifact_push_completed(status);
+	/* Serialized queue -- one finishing is what lets the next start. */
+	artifact_push_pump();
+}
+
 /* Reaps the tar child; the POST returned 202 long ago, so the result
  * only ever reaches the operator through GET .../export. */
-static void handle_image_export_event(struct conn *cc)
+static void handle_artifact_export_event(struct conn *cc)
 {
 	int status;
 
 	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	if (waitpid(cc->pkg_fetch_pid, &status, 0) == cc->pkg_fetch_pid && WIFEXITED(status) &&
 	    WEXITSTATUS(status) == 0) {
-		g_image_export_state = IMAGE_EXPORT_READY;
-		logstore_write("cixd", "info", "image export: %s@%s ready at %s", g_image_export_name,
-		               g_image_export_version, g_image_export_path);
+		g_artifact_export_state = ARTIFACT_EXPORT_READY;
+		logstore_write("cixd", "info", "image export: %s@%s ready at %s", g_artifact_export_name,
+		               g_artifact_export_version, g_artifact_export_path);
 	} else {
-		g_image_export_state = IMAGE_EXPORT_FAILED;
-		snprintf(g_image_export_error, sizeof(g_image_export_error),
+		g_artifact_export_state = ARTIFACT_EXPORT_FAILED;
+		snprintf(g_artifact_export_error, sizeof(g_artifact_export_error),
 		         "tar failed (status 0x%x)", (unsigned)status);
-		unlink(g_image_export_path);
-		logstore_write("cixd", "error", "image export: %s failed -- %s", g_image_export_name,
-		               g_image_export_error);
+		unlink(g_artifact_export_path);
+		logstore_write("cixd", "error", "image export: %s failed -- %s", g_artifact_export_name,
+		               g_artifact_export_error);
 	}
 	close(cc->fd);
 	free(cc);
@@ -8693,55 +8763,92 @@ static void handle_image_export_event(struct conn *cc)
 
 /*
  * Starts the export. Returns 0 with the job running, -1 with err_msg
- * filled. The rootfs is tarred from its own directory (tar -C <rootfs>
- * . ) so the archive holds the tree's CONTENTS at top level, which is
- * exactly the shape ADR-0123's consumer extracts straight into a new
- * version's rootfs.
+ * filled. The source tree is tarred from its own directory
+ * (tar -C <src> . ) so the archive holds the tree's CONTENTS at top
+ * level -- for an image that is exactly the shape ADR-0123's consumer
+ * extracts straight into a new version's rootfs, and for a hostbuild
+ * artifact it is the shape ADR-0122's package-artifact consumer
+ * expects.
+ *
+ * The output filename is <name>-<version>.tar.gz for both kinds,
+ * which is deliberately the exact name the artifact cache serves at
+ * (ADR-0122 for packages, ADR-0123's images/ prefix for images) --
+ * an export can be pushed to the cache verbatim, with no renaming
+ * step that could drift from what a puller later asks for.
  */
-static int image_export_start(const char *name, char *err_msg, size_t err_msg_size)
+static int artifact_export_start(enum artifact_export_kind kind, const char *name, char *err_msg,
+                                 size_t err_msg_size)
 {
 	char version[IMAGE_VERSION_MAX];
-	char rootfs[PATH_MAX];
+	char src[PATH_MAX];
 	char out_dir[PATH_MAX];
-	char *argv[8];
+	char *argv[13];
 	pid_t pid;
 	int pidfd;
 
-	if (g_image_export_state == IMAGE_EXPORT_BUILDING) {
+	if (g_artifact_export_state == ARTIFACT_EXPORT_BUILDING) {
 		snprintf(err_msg, err_msg_size, "an export of \"%s\" is already running",
-		         g_image_export_name);
-		return -1;
-	}
-	if (image_current_version(name, version, sizeof(version)) != IMAGE_OK) {
-		snprintf(err_msg, err_msg_size, "no such image, or it has no current version");
-		return -1;
-	}
-	image_version_rootfs_path(name, version, rootfs, sizeof(rootfs));
-	if (access(rootfs, R_OK) != 0) {
-		snprintf(err_msg, err_msg_size, "image rootfs is not readable: %s", rootfs);
+		         g_artifact_export_name);
 		return -1;
 	}
 
-	snprintf(out_dir, sizeof(out_dir), "%s/images", ARTIFACTS_DIR);
+	if (kind == ARTIFACT_EXPORT_KIND_IMAGE) {
+		if (image_current_version(name, version, sizeof(version)) != IMAGE_OK) {
+			snprintf(err_msg, err_msg_size, "no such image, or it has no current version");
+			return -1;
+		}
+		image_version_rootfs_path(name, version, src, sizeof(src));
+		snprintf(out_dir, sizeof(out_dir), "%s/images", ARTIFACTS_DIR);
+	} else {
+		enum pkg_error perr =
+		    pkg_hostbuild_artifact_info(name, version, sizeof(version), src, sizeof(src));
+
+		if (perr == PKG_ERR_NOT_FOUND) {
+			snprintf(err_msg, err_msg_size, "no such hostbuild package");
+			return -1;
+		}
+		if (perr != PKG_OK) {
+			snprintf(err_msg, err_msg_size,
+			         "hostbuild \"%s\" is not installed -- nothing to export", name);
+			return -1;
+		}
+		snprintf(out_dir, sizeof(out_dir), "%s/exports", ARTIFACTS_DIR);
+	}
+
+	if (access(src, R_OK) != 0) {
+		snprintf(err_msg, err_msg_size, "source tree is not readable: %s", src);
+		return -1;
+	}
 	if (persist_mkdir_p(out_dir) != 0) {
 		snprintf(err_msg, err_msg_size, "could not create %s: %s", out_dir, strerror(errno));
 		return -1;
 	}
-	snprintf(g_image_export_path, sizeof(g_image_export_path), "%s/%s-%s.tar.gz", out_dir, name,
+	snprintf(g_artifact_export_path, sizeof(g_artifact_export_path), "%s/%s-%s.tar.gz", out_dir, name,
 	         version);
-	unlink(g_image_export_path);
+	unlink(g_artifact_export_path);
 
 	/* Issue #125: name the compressor absolutely -- tar's own -z shells
 	 * out to a bare "gzip" through PATH, and this daemon runs as PID 1
 	 * with no PATH, so that lookup fails and tar exits 2. */
 	argv[0] = (char *)"/usr/bin/tar";
 	argv[1] = (char *)"--use-compress-program=/usr/bin/gzip";
-	argv[2] = (char *)"-C";
-	argv[3] = rootfs;
-	argv[4] = (char *)"-cf";
-	argv[5] = g_image_export_path;
-	argv[6] = (char *)".";
-	argv[7] = NULL;
+	/* Same normalizing flags pkg_cache_save() uses, for the same reason
+	 * (ADR-0201): an export is named exactly what the artifact server
+	 * serves it at, so it can be pushed verbatim -- and a push is only
+	 * coherent against an immutable store if two hosts exporting the
+	 * same tree produce the same bytes. Without these, per-file mtimes
+	 * ride in the tar headers and every host's export differs. */
+	argv[2] = (char *)"--sort=name";
+	argv[3] = (char *)"--mtime=@0";
+	argv[4] = (char *)"--owner=0";
+	argv[5] = (char *)"--group=0";
+	argv[6] = (char *)"--numeric-owner";
+	argv[7] = (char *)"-C";
+	argv[8] = src;
+	argv[9] = (char *)"-cf";
+	argv[10] = g_artifact_export_path;
+	argv[11] = (char *)".";
+	argv[12] = NULL;
 
 	pid = fork();
 	if (pid < 0) {
@@ -8760,11 +8867,12 @@ static int image_export_start(const char *name, char *err_msg, size_t err_msg_si
 		waitpid(pid, NULL, 0);
 		return -1;
 	}
-	register_image_export_pidfd(pid, pidfd);
-	snprintf(g_image_export_name, sizeof(g_image_export_name), "%s", name);
-	snprintf(g_image_export_version, sizeof(g_image_export_version), "%s", version);
-	g_image_export_error[0] = '\0';
-	g_image_export_state = IMAGE_EXPORT_BUILDING;
+	register_artifact_export_pidfd(pid, pidfd);
+	g_artifact_export_kind = kind;
+	snprintf(g_artifact_export_name, sizeof(g_artifact_export_name), "%s", name);
+	snprintf(g_artifact_export_version, sizeof(g_artifact_export_version), "%s", version);
+	g_artifact_export_error[0] = '\0';
+	g_artifact_export_state = ARTIFACT_EXPORT_BUILDING;
 	return 0;
 }
 
@@ -8787,21 +8895,22 @@ static int image_export_start(const char *name, char *err_msg, size_t err_msg_si
  * (it must poll that for "ready" anyway), so no custom header is needed
  * here and the HTTP layer stays untouched.
  */
-#define IMAGE_EXPORT_CHUNK_MAX (8 * 1024 * 1024)
+#define ARTIFACT_EXPORT_CHUNK_MAX (8 * 1024 * 1024)
 
-static void handle_image_export_download(int fd, const char *name, const char *full_path)
+static void handle_artifact_export_download(int fd, enum artifact_export_kind kind,
+                                            const char *name, const char *full_path)
 {
 	long long offset = 0;
-	long long length = IMAGE_EXPORT_CHUNK_MAX;
+	long long length = ARTIFACT_EXPORT_CHUNK_MAX;
 	struct stat st;
 	int file_fd;
 	char *buf;
 	ssize_t got;
 
-	if (g_image_export_state != IMAGE_EXPORT_READY || g_image_export_name[0] == '\0' ||
-	    strcmp(g_image_export_name, name) != 0) {
+	if (g_artifact_export_state != ARTIFACT_EXPORT_READY || g_artifact_export_name[0] == '\0' ||
+	    g_artifact_export_kind != kind || strcmp(g_artifact_export_name, name) != 0) {
 		respond_error(fd, 404, "Not Found",
-		              "no ready export for this image -- POST .../export first");
+		              "no ready export for this subject -- POST .../export first");
 		return;
 	}
 	{
@@ -8816,10 +8925,10 @@ static void handle_image_export_download(int fd, const char *name, const char *f
 		respond_error(fd, 400, "Bad Request", "offset must be >= 0 and length > 0");
 		return;
 	}
-	if (length > IMAGE_EXPORT_CHUNK_MAX)
-		length = IMAGE_EXPORT_CHUNK_MAX;
+	if (length > ARTIFACT_EXPORT_CHUNK_MAX)
+		length = ARTIFACT_EXPORT_CHUNK_MAX;
 
-	file_fd = open(g_image_export_path, O_RDONLY);
+	file_fd = open(g_artifact_export_path, O_RDONLY);
 	if (file_fd < 0) {
 		respond_error(fd, 500, "Internal Server Error", "export artifact is no longer readable");
 		return;
@@ -8915,14 +9024,15 @@ static void handle_image_rename(int fd, const char *name, const char *body, size
 	}
 }
 
-static void handle_image_export_post(int fd, const char *name)
+static void handle_artifact_export_post(int fd, enum artifact_export_kind kind, const char *name)
 {
 	char err_msg[256];
 
-	if (image_export_start(name, err_msg, sizeof(err_msg)) != 0) {
-		int code = (strstr(err_msg, "already running") != NULL) ? 409
-		           : (strstr(err_msg, "no such image") != NULL) ? 404
-		                                                        : 500;
+	if (artifact_export_start(kind, name, err_msg, sizeof(err_msg)) != 0) {
+		int code = (strstr(err_msg, "already running") != NULL)  ? 409
+		           : (strstr(err_msg, "no such") != NULL)        ? 404
+		           : (strstr(err_msg, "is not installed") != NULL) ? 409
+		                                                          : 500;
 
 		respond_error(fd, code,
 		              code == 409   ? "Conflict"
@@ -8935,45 +9045,46 @@ static void handle_image_export_post(int fd, const char *name)
 	http_write_response(fd, 202, "Accepted", "application/json", "", 0);
 }
 
-static void handle_image_export_get(int fd, const char *name)
+static void handle_artifact_export_get(int fd, enum artifact_export_kind kind, const char *name)
 {
 	struct json_writer w;
 	const char *state = "none";
 	struct stat st;
 	long long size = -1;
 
-	if (g_image_export_name[0] != '\0' && strcmp(g_image_export_name, name) == 0) {
-		switch (g_image_export_state) {
-		case IMAGE_EXPORT_BUILDING: state = "building"; break;
-		case IMAGE_EXPORT_READY: state = "ready"; break;
-		case IMAGE_EXPORT_FAILED: state = "failed"; break;
+	if (g_artifact_export_name[0] != '\0' && g_artifact_export_kind == kind &&
+	    strcmp(g_artifact_export_name, name) == 0) {
+		switch (g_artifact_export_state) {
+		case ARTIFACT_EXPORT_BUILDING: state = "building"; break;
+		case ARTIFACT_EXPORT_READY: state = "ready"; break;
+		case ARTIFACT_EXPORT_FAILED: state = "failed"; break;
 		default: state = "none"; break;
 		}
 	}
 	jw_init(&w);
 	jw_obj_open(&w);
-	jw_key(&w, "image");
+	jw_key(&w, kind == ARTIFACT_EXPORT_KIND_IMAGE ? "image" : "package");
 	jw_str(&w, name);
 	jw_key(&w, "state");
 	jw_str(&w, state);
 	if (strcmp(state, "none") != 0) {
-		jw_key(&w, "image_version");
-		jw_str(&w, g_image_export_version);
+		jw_key(&w, "version");
+		jw_str(&w, g_artifact_export_version);
 		jw_key(&w, "artifact_path");
-		jw_str(&w, g_image_export_path);
+		jw_str(&w, g_artifact_export_path);
 		jw_key(&w, "artifact_name");
 		{
-			const char *base = strrchr(g_image_export_path, '/');
+			const char *base = strrchr(g_artifact_export_path, '/');
 
-			jw_str(&w, base != NULL ? base + 1 : g_image_export_path);
+			jw_str(&w, base != NULL ? base + 1 : g_artifact_export_path);
 		}
 	}
-	if (strcmp(state, "ready") == 0 && stat(g_image_export_path, &st) == 0)
+	if (strcmp(state, "ready") == 0 && stat(g_artifact_export_path, &st) == 0)
 		size = (long long)st.st_size;
 	jw_key(&w, "size_bytes");
 	jw_num(&w, (double)size);
 	jw_key(&w, "error");
-	jw_str(&w, g_image_export_error);
+	jw_str(&w, g_artifact_export_error);
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 	http_set_blocking(fd);
@@ -15074,6 +15185,7 @@ static void handle_stop(int fd, const char *name)
 				register_pkg_fetch_pidfd(pkg_pid, pkg_pidfd, pkg_chain_idx);
 			else
 				try_start_queued_pkg_rebuild();
+			artifact_push_pump(); /* issue #129 -- see the other call site */
 		}
 	}
 	containerdef_set_stopped(name, 1);
@@ -20802,6 +20914,8 @@ static void handle_pkg_artifact_config_put(int fd, const char *body, size_t body
 	struct json_value *root = NULL;
 	const char *base_url = NULL;
 	const char *auth_token = NULL;
+	const int *push_enabled = NULL;
+	int push_enabled_val = 0;
 	enum pkg_error perr;
 
 	if (body_len > 0) {
@@ -20812,9 +20926,17 @@ static void handle_pkg_artifact_config_put(int fd, const char *body, size_t body
 		}
 		base_url = json_as_string(json_object_get(root, "base_url"));
 		auth_token = json_as_string(json_object_get(root, "auth_token"));
+		{
+			const struct json_value *pe = json_object_get(root, "push_enabled");
+
+			if (pe != NULL && pe->type == JSON_BOOL) {
+				push_enabled_val = pe->u.boolean ? 1 : 0;
+				push_enabled = &push_enabled_val;
+			}
+		}
 	}
 
-	perr = pkg_artifact_set_config(base_url, auth_token);
+	perr = pkg_artifact_set_config(base_url, auth_token, push_enabled);
 	if (root != NULL)
 		json_free(root);
 	if (perr != PKG_OK) {
@@ -22754,7 +22876,7 @@ static void dispatch(int fd, const struct http_request *req)
 
 					memcpy(image_name, name, qlen - 16);
 					image_name[qlen - 16] = '\0';
-					handle_image_export_download(fd, image_name, req->path);
+					handle_artifact_export_download(fd, ARTIFACT_EXPORT_KIND_IMAGE, image_name, req->path);
 					return;
 				}
 			}
@@ -22777,11 +22899,11 @@ static void dispatch(int fd, const struct http_request *req)
 				memcpy(image_name, name, nlen - 7);
 				image_name[nlen - 7] = '\0';
 				if (strcmp(req->method, "POST") == 0) {
-					handle_image_export_post(fd, image_name);
+					handle_artifact_export_post(fd, ARTIFACT_EXPORT_KIND_IMAGE, image_name);
 					return;
 				}
 				if (strcmp(req->method, "GET") == 0) {
-					handle_image_export_get(fd, image_name);
+					handle_artifact_export_get(fd, ARTIFACT_EXPORT_KIND_IMAGE, image_name);
 					return;
 				}
 			}
@@ -23191,6 +23313,56 @@ static void dispatch(int fd, const struct http_request *req)
 	if (strncmp(req->path, PKG_PREFIX, strlen(PKG_PREFIX)) == 0) {
 		name = req->path + strlen(PKG_PREFIX);
 		if (name[0] != '\0') {
+			/*
+			 * Issue #129: /v1/pkg/{name}/artifact/export{,/download}
+			 * -- a hostbuild's harvested output (ADR-0056), which
+			 * lives in a host directory no container can see and so
+			 * had no retrieval route at all. Checked before the
+			 * bare-name GET/DELETE below, which would otherwise
+			 * swallow these as a package literally named
+			 * "kernel/artifact/export". Package names are '/'-free
+			 * (namecheck.h), the same property the images routes
+			 * above rely on to split suffixes unambiguously.
+			 */
+			{
+				/* Carries a trailing "?offset=&length=" query;
+				 * package names are '?'-free, so the name ends at
+				 * the first '?'. */
+				size_t qlen = strcspn(name, "?");
+
+				if (qlen > 25 &&
+				    strncmp(name + qlen - 25, "/artifact/export/download", 25) == 0 &&
+				    strcmp(req->method, "GET") == 0 && qlen - 25 < PKG_NAME_MAX) {
+					char pkg_name[PKG_NAME_MAX];
+
+					memcpy(pkg_name, name, qlen - 25);
+					pkg_name[qlen - 25] = '\0';
+					handle_artifact_export_download(
+					    fd, ARTIFACT_EXPORT_KIND_HOSTBUILD, pkg_name, req->path);
+					return;
+				}
+			}
+			{
+				size_t nlen = strlen(name);
+
+				if (nlen > 16 && strcmp(name + nlen - 16, "/artifact/export") == 0 &&
+				    nlen - 16 < PKG_NAME_MAX) {
+					char pkg_name[PKG_NAME_MAX];
+
+					memcpy(pkg_name, name, nlen - 16);
+					pkg_name[nlen - 16] = '\0';
+					if (strcmp(req->method, "POST") == 0) {
+						handle_artifact_export_post(
+						    fd, ARTIFACT_EXPORT_KIND_HOSTBUILD, pkg_name);
+						return;
+					}
+					if (strcmp(req->method, "GET") == 0) {
+						handle_artifact_export_get(
+						    fd, ARTIFACT_EXPORT_KIND_HOSTBUILD, pkg_name);
+						return;
+					}
+				}
+			}
 			if (strcmp(req->method, "GET") == 0) {
 				handle_pkg_get_one(fd, name);
 				return;
@@ -24365,6 +24537,9 @@ static void handle_container_event(struct conn *cc)
 		register_pkg_fetch_pidfd(pkg_pid, pkg_pidfd, pkg_chain_idx);
 	else
 		try_start_queued_pkg_rebuild();
+	/* Issue #129: a build just finished, so there may be something to
+	 * publish. Cheap no-op when the queue is empty or push is off. */
+	artifact_push_pump();
 
 	/*
 	 * ADR-0057: "cix" is the one hostbuild name this daemon gives
@@ -25761,8 +25936,10 @@ int main(int argc, char **argv)
 				handle_bootroot_output_event(cc);
 			else if (cc->kind == CONN_ISO_ASSEMBLE)
 				handle_iso_assemble_event(cc);
-			else if (cc->kind == CONN_IMAGE_EXPORT)
-				handle_image_export_event(cc);
+			else if (cc->kind == CONN_ARTIFACT_EXPORT)
+				handle_artifact_export_event(cc);
+			else if (cc->kind == CONN_ARTIFACT_PUSH)
+				handle_artifact_push_event(cc);
 			else if (cc->kind == CONN_BOOTSTRAP_FETCH)
 				handle_bootstrap_fetch_event(cc);
 			else if (cc->kind == CONN_KERNEL_RELEASES_FETCH)

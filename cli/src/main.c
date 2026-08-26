@@ -11209,9 +11209,16 @@ static void fmt_pkg_artifact_config(const struct json_value *v)
 		printf("(no artifact server configured)\n");
 		return;
 	}
-	printf("base_url=%s auth_token=%s\n", base_url,
-	       (token_set != NULL && token_set->type == JSON_BOOL && token_set->u.boolean) ? "set"
-	                                                                                    : "unset");
+	{
+		const struct json_value *push = json_object_get(v, "push_enabled");
+
+		printf("base_url=%s auth_token=%s push=%s\n", base_url,
+		       (token_set != NULL && token_set->type == JSON_BOOL && token_set->u.boolean)
+		           ? "set"
+		           : "unset",
+		       (push != NULL && push->type == JSON_BOOL && push->u.boolean) ? "enabled"
+		                                                                    : "disabled");
+	}
 }
 
 static int cmd_pkg_artifact_config_show(const struct cix_client *c, int json_mode)
@@ -11230,6 +11237,7 @@ static int cmd_pkg_artifact_config_set(const struct cix_client *c, int json_mode
 {
 	const char *base_url = NULL;
 	const char *token = NULL;
+	int push = -1; /* -1 = not mentioned, so the daemon leaves it alone */
 	int i;
 	struct json_writer w;
 	struct cix_response r;
@@ -11241,6 +11249,10 @@ static int cmd_pkg_artifact_config_set(const struct cix_client *c, int json_mode
 			token = argv[i] + 8;
 		else if (strcmp(argv[i], "--clear-token") == 0)
 			token = "";
+		else if (strcmp(argv[i], "--push") == 0)
+			push = 1;
+		else if (strcmp(argv[i], "--no-push") == 0)
+			push = 0;
 		else {
 			fprintf(stderr, "cixctl: unknown pkg artifact-config set option '%s'\n", argv[i]);
 			return 2;
@@ -11256,6 +11268,10 @@ static int cmd_pkg_artifact_config_set(const struct cix_client *c, int json_mode
 	if (token != NULL) {
 		jw_key(&w, "auth_token");
 		jw_str(&w, token);
+	}
+	if (push >= 0) {
+		jw_key(&w, "push_enabled");
+		jw_bool(&w, push);
 	}
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
@@ -11276,7 +11292,7 @@ static int cmd_pkg_artifact_config(const struct cix_client *c, int json_mode, in
 	if (argc < 1) {
 		fprintf(stderr, "usage: cixctl pkg artifact-config show\n"
 		                "       cixctl pkg artifact-config set [--url=URL] "
-		                "[--token=TOKEN | --clear-token]\n");
+		                "[--token=TOKEN | --clear-token] [--push | --no-push]\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -11286,6 +11302,141 @@ static int cmd_pkg_artifact_config(const struct cix_client *c, int json_mode, in
 		return cmd_pkg_artifact_config_set(c, json_mode, argc - 1, argv + 1);
 	fprintf(stderr, "cixctl: unknown pkg artifact-config subcommand '%s'\n", sub);
 	return 2;
+}
+
+/*
+ * Issue #129: exports a hostbuild package's artifact and writes it to a
+ * local file. The whole point is getting expensive build output OFF the
+ * box that made it, so this drives the full async sequence rather than
+ * leaving the operator to poll and reassemble chunks by hand: POST,
+ * poll until ready, then loop the bounded download.
+ *
+ * The chunk size matches the daemon's own 8 MiB clamp -- asking for
+ * more just gets silently trimmed, and asking for much less makes a
+ * large artifact take needlessly many round trips.
+ */
+#define ARTIFACT_EXPORT_CHUNK (8 * 1024 * 1024)
+
+static int cmd_pkg_artifact_export(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	const char *name = NULL;
+	const char *out_path = NULL;
+	char path[512];
+	char out_default[512];
+	struct cix_response r;
+	long long size = -1;
+	long long got = 0;
+	FILE *out;
+	int i;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--out=", 6) == 0)
+			out_path = argv[i] + 6;
+		else if (argv[i][0] == '-') {
+			fprintf(stderr, "cixctl: unknown pkg artifact-export option '%s'\n", argv[i]);
+			return 2;
+		} else if (name == NULL) {
+			name = argv[i];
+		}
+	}
+	if (name == NULL) {
+		fprintf(stderr, "usage: cixctl pkg artifact-export NAME [--out=FILE]\n");
+		return 2;
+	}
+
+	snprintf(path, sizeof(path), "/v1/pkg/%s/artifact/export", name);
+	if (cix_client_request(c, "POST", path, "", &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	if (r.status != 202) {
+		int rc = emit(&r, json_mode, NULL);
+
+		return rc == 0 ? 1 : rc;
+	}
+	cix_response_free(&r);
+
+	/* Poll for readiness. A large tree genuinely takes a while to tar,
+	 * so this waits rather than reporting "not ready" and giving up. */
+	for (i = 0; i < 1800; i++) {
+		const char *state;
+
+		if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		state = (r.json != NULL) ? json_str_field(r.json, "state") : NULL;
+		if (state != NULL && strcmp(state, "ready") == 0) {
+			const struct json_value *sz = json_object_get(r.json, "size_bytes");
+			const char *aname = json_str_field(r.json, "artifact_name");
+
+			if (sz != NULL)
+				size = (long long)json_as_number(sz);
+			if (out_path == NULL && aname != NULL) {
+				snprintf(out_default, sizeof(out_default), "%s", aname);
+				out_path = out_default;
+			}
+			cix_response_free(&r);
+			break;
+		}
+		if (state != NULL && strcmp(state, "failed") == 0) {
+			const char *err = json_str_field(r.json, "error");
+
+			fprintf(stderr, "cixctl: export failed: %s\n", err != NULL ? err : "(no detail)");
+			cix_response_free(&r);
+			return 1;
+		}
+		cix_response_free(&r);
+		usleep(500000);
+	}
+	if (size <= 0) {
+		fprintf(stderr, "cixctl: export did not become ready\n");
+		return 1;
+	}
+	if (out_path == NULL) {
+		fprintf(stderr, "cixctl: daemon did not report an artifact name\n");
+		return 1;
+	}
+
+	out = fopen(out_path, "wb");
+	if (out == NULL) {
+		fprintf(stderr, "cixctl: cannot write %s: %s\n", out_path, strerror(errno));
+		return 1;
+	}
+	while (got < size) {
+		long long want = size - got;
+
+		if (want > ARTIFACT_EXPORT_CHUNK)
+			want = ARTIFACT_EXPORT_CHUNK;
+		snprintf(path, sizeof(path),
+		         "/v1/pkg/%s/artifact/export/download?offset=%lld&length=%lld", name, got, want);
+		if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			fclose(out);
+			return 1;
+		}
+		if (r.status != 200) {
+			fprintf(stderr, "cixctl: download failed at offset %lld (HTTP %d)\n", got,
+			        r.status);
+			cix_response_free(&r);
+			fclose(out);
+			return 1;
+		}
+		if (r.body_len == 0) {
+			cix_response_free(&r);
+			break;
+		}
+		fwrite(r.body, 1, r.body_len, out);
+		got += (long long)r.body_len;
+		cix_response_free(&r);
+	}
+	fclose(out);
+	if (got != size) {
+		fprintf(stderr, "cixctl: wrote %lld of %lld bytes to %s\n", got, size, out_path);
+		return 1;
+	}
+	printf("%s (%lld bytes)\n", out_path, got);
+	return 0;
 }
 
 static int cmd_pkg_recipes(const struct cix_client *c, int json_mode)
@@ -12264,7 +12415,8 @@ static int cmd_pkg(const struct cix_client *c, int json_mode, int argc, char **a
 		                "       cixctl pkg cache-clear\n"
 		                "       cixctl pkg artifact-config show\n"
 		                "       cixctl pkg artifact-config set [--url=URL] "
-		                "[--token=TOKEN | --clear-token]\n");
+		                "[--token=TOKEN | --clear-token] [--push | --no-push]\n"
+		                "       cixctl pkg artifact-export NAME [--out=FILE]\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -12306,6 +12458,8 @@ static int cmd_pkg(const struct cix_client *c, int json_mode, int argc, char **a
 		return cmd_pkg_cache_status(c, json_mode);
 	if (strcmp(sub, "cache-clear") == 0)
 		return cmd_pkg_cache_clear(c, json_mode);
+	if (strcmp(sub, "artifact-export") == 0)
+		return cmd_pkg_artifact_export(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "artifact-config") == 0)
 		return cmd_pkg_artifact_config(c, json_mode, argc - 1, argv + 1);
 
