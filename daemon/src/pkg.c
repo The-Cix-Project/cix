@@ -3464,6 +3464,9 @@ static void pkg_build_log_close(struct pkg_entry *e);
 static void pkg_cache_save_from_file(const char *name, const char *version, const char *src_path);
 static int pkg_cache_extract(const char *name, const char *version, const char *out_dir);
 static int pkg_artifact_is_configured(void);
+/* Issue #129: defined with the rest of the push machinery further
+ * down; called from pkg_build_completed()'s own fresh-build branch. */
+static void pkg_artifact_push_enqueue(const char *name, const char *version);
 static void pkg_artifact_build_request(const char *name, const char *version, char *out_url,
                                         size_t out_url_size, char *out_header, size_t out_header_size);
 static void artifact_sentinel_path(const char *name, const char *version, char *out, size_t out_size);
@@ -5419,12 +5422,16 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		 * itself just extracted FROM the cache, so there's nothing new
 		 * to save -- just bump its mtime so LRU eviction correctly
 		 * treats it as recently used, not stale. */
-		if (e->cache_hit)
+		if (e->cache_hit) {
 			pkg_cache_touch(e->name, e->version);
-		else
+		} else {
 			pkg_cache_save(e->name, e->version, dest_dir);
+			/* Issue #129: a fresh build is the only thing worth
+			 * publishing -- a cache/artifact hit's bytes already came
+			 * from somewhere else. */
+			pkg_artifact_push_enqueue(e->name, e->version);
+		}
 
-		/*
 		/*
 		 * ALSO fold into the shared build sandbox
 		 * (PKG_BUILD_SANDBOX_IMAGE) -- the image every ordinary
@@ -5562,6 +5569,34 @@ enum pkg_error pkg_get_one(const char *name, const char *image, struct json_writ
 	if (e == NULL)
 		return PKG_ERR_NOT_FOUND;
 	write_pkg_json(e, w);
+	return PKG_OK;
+}
+
+/*
+ * Issue #129: the installed version of a hostbuild package and the
+ * directory its harvested output lives in (ADR-0056's
+ * g_artifacts_dir/<name>/), so an exporter can find the bytes without
+ * main.c having to learn that layout -- the artifact-directory
+ * convention stays owned here, exactly like artifact_path in
+ * write_pkg_json() already is.
+ *
+ * Returns PKG_ERR_NOT_FOUND when there is no such hostbuild package,
+ * PKG_ERR_INVALID_STATE when one exists but is not INSTALLED (a
+ * failed or in-flight build has no artifact to export), PKG_OK
+ * otherwise.
+ */
+enum pkg_error pkg_hostbuild_artifact_info(const char *name, char *out_version,
+                                           size_t out_version_size, char *out_dir,
+                                           size_t out_dir_size)
+{
+	struct pkg_entry *e = pkg_find(name, PKG_HOSTBUILD_IMAGE);
+
+	if (e == NULL)
+		return PKG_ERR_NOT_FOUND;
+	if (e->state != PKG_STATE_INSTALLED)
+		return PKG_ERR_NOT_INSTALLED;
+	snprintf(out_version, out_version_size, "%s", e->version);
+	snprintf(out_dir, out_dir_size, "%s/%s", g_artifacts_dir, e->name);
 	return PKG_OK;
 }
 
@@ -6541,8 +6576,35 @@ static void pkg_cache_save(const char *name, const char *version, const char *de
 	unlink(tmp_path);
 
 	{
+		/*
+		 * Issue #129: the normalizing flags make this archive
+		 * REPRODUCIBLE -- two independent builds of the same content
+		 * produce byte-identical output. Confirmed by direct
+		 * experiment, not assumed: without --sort/--mtime/--owner the
+		 * per-file mtimes ride in the tar headers, so two builds of
+		 * an identical tree differ; with them they hash the same.
+		 * (The gzip timestamp is already zero here for an unrelated
+		 * reason -- --use-compress-program pipes through gzip's
+		 * stdin, which has no filename or mtime to record. That came
+		 * from issue #125's PATH fix and is worth knowing before
+		 * anyone "simplifies" it back to -z.)
+		 *
+		 * This matters because these bytes get published to a shared
+		 * artifact server whose contract is that one name means one
+		 * byte sequence forever. Without reproducibility every host
+		 * would produce a different tarball for the same recipe
+		 * version, so the first push would win and every later one
+		 * would be refused as a conflict -- turning a real integrity
+		 * rule into permanent noise. With it, a rejected push means
+		 * what it should: two builds genuinely diverged.
+		 */
 		char *argv[] = { (char *)PKG_TAR_BIN,
 			         "--use-compress-program=" PKG_GZIP_BIN,
+			         "--sort=name",
+			         "--mtime=@0",
+			         "--owner=0",
+			         "--group=0",
+			         "--numeric-owner",
 			         "-C",   (char *)dest_dir,
 			         "-cf",  tmp_path,
 			         ".",    NULL };
@@ -6876,6 +6938,11 @@ enum pkg_error pkg_build_set_cpu_max(const char *cpu_max)
 static char g_artifact_base_url[PKGARTIFACT_URL_MAX];
 static char g_artifact_token[PKGARTIFACT_TOKEN_MAX];
 static char g_artifact_config_path[PATH_MAX];
+/* Issue #129: whether a fresh local build publishes its own result to
+ * the configured artifact server. Off by default -- publishing is an
+ * outward-facing action, so it is opted into deliberately, never
+ * inherited from merely having a base_url set for pulling. */
+static int g_artifact_push_enabled;
 
 static int save_artifact_config(void)
 {
@@ -6888,6 +6955,8 @@ static int save_artifact_config(void)
 	jw_str(&w, g_artifact_base_url);
 	jw_key(&w, "auth_token");
 	jw_str(&w, g_artifact_token);
+	jw_key(&w, "push_enabled");
+	jw_bool(&w, g_artifact_push_enabled);
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
@@ -6915,6 +6984,7 @@ int pkg_artifact_init(const char *config_path)
 		return -1;
 	g_artifact_base_url[0] = '\0';
 	g_artifact_token[0] = '\0';
+	g_artifact_push_enabled = 0;
 
 	if (persist_read_file(config_path, &buf, &len) != 0 || buf == NULL)
 		return 0; /* no persisted config yet -- defaults stand */
@@ -6930,6 +7000,12 @@ int pkg_artifact_init(const char *config_path)
 	s = json_as_string(json_object_get(root, "auth_token"));
 	if (s != NULL)
 		snprintf(g_artifact_token, sizeof(g_artifact_token), "%s", s);
+	{
+		const struct json_value *pe = json_object_get(root, "push_enabled");
+
+		if (pe != NULL && pe->type == JSON_BOOL)
+			g_artifact_push_enabled = pe->u.boolean ? 1 : 0;
+	}
 
 	json_free(root);
 	return 0;
@@ -6944,18 +7020,23 @@ void pkg_artifact_write_json_config(struct json_writer *w)
 	jw_str(w, g_artifact_base_url);
 	jw_key(w, "auth_token_set");
 	jw_bool(w, g_artifact_token[0] != '\0');
+	jw_key(w, "push_enabled");
+	jw_bool(w, g_artifact_push_enabled);
 	jw_obj_close(w);
 }
 
 /* NULL leaves that field unchanged (partial PUT, same contract
  * pkg_repo_set_config() already has); "" for auth_token explicitly
  * clears it. */
-enum pkg_error pkg_artifact_set_config(const char *base_url, const char *auth_token)
+enum pkg_error pkg_artifact_set_config(const char *base_url, const char *auth_token,
+                                       const int *push_enabled)
 {
 	if (base_url != NULL)
 		snprintf(g_artifact_base_url, sizeof(g_artifact_base_url), "%s", base_url);
 	if (auth_token != NULL)
 		snprintf(g_artifact_token, sizeof(g_artifact_token), "%s", auth_token);
+	if (push_enabled != NULL)
+		g_artifact_push_enabled = *push_enabled ? 1 : 0;
 
 	if (save_artifact_config() != 0)
 		return PKG_ERR_PERSIST_FAILED;
@@ -6965,6 +7046,263 @@ enum pkg_error pkg_artifact_set_config(const char *base_url, const char *auth_to
 static int pkg_artifact_is_configured(void)
 {
 	return g_artifact_base_url[0] != '\0';
+}
+
+/*
+ * ============================ artifact push (issue #129) ============
+ *
+ * A fresh local build's own result, published to the configured
+ * artifact server so the next host pulls it instead of rebuilding it.
+ * Before this, an artifact's default fate was to be forgotten: it
+ * lived in one box's local cache and nothing could ever retrieve it,
+ * which for a multi-hour toolchain build is a real loss, not an
+ * inconvenience.
+ *
+ * Three properties this deliberately keeps:
+ *
+ * - It never publishes what it did not build. A cache or artifact HIT
+ *   already came from somewhere; re-uploading it would be pure noise,
+ *   so only the fresh-build branch enqueues.
+ * - It is not a trust boundary, and does not become one. The bytes are
+ *   still verified by the consumer against the recipe's own git-tracked
+ *   pkg_artifact_sha256 (ADR-0122); the X-Cix-Sha256 header this sends
+ *   is a corruption check at the door, not a claim the receiver takes
+ *   on faith.
+ * - It never blocks the event loop. The upload runs in a forked child
+ *   that also computes the digest, so a multi-hundred-megabyte push
+ *   costs the daemon one fork, not a stalled control plane (ADR-0180).
+ *
+ * Pushes are serialized through a small queue rather than run
+ *  concurrently: parallel builds (ADR-0157) can finish together, and
+ * dropping the overflow would recreate exactly the forgotten-artifact
+ * problem this exists to fix.
+ */
+#define PKG_PUSH_QUEUE_MAX 32
+/* Distinct from any curl exit status, so the reaper can tell a failed
+ * digest apart from a failed upload. */
+#define PKG_PUSH_EXIT_SHA_FAILED 90
+
+struct pkg_push_job {
+	char name[PKG_NAME_MAX];
+	char version[PKG_VERSION_MAX];
+};
+
+static struct pkg_push_job g_push_queue[PKG_PUSH_QUEUE_MAX];
+static int g_push_queue_count;
+static int g_push_in_flight;
+static struct pkg_push_job g_push_current;
+
+/* Where the push child records curl's own HTTP status, so the reaper
+ * can say "published" / "already present with different bytes" /
+ * "rejected" instead of a bare exit code. One push runs at a time, so
+ * one fixed path is enough. */
+static void push_status_path(char *out, size_t out_size)
+{
+	snprintf(out, out_size, "%s/.artifact-push.status", g_sources_dir);
+}
+
+/*
+ * Queues a freshly built package for publication. Best-effort by
+ * design -- a push that never happens must never fail the build that
+ * produced it -- but never silent: every reason to skip is logged,
+ * because a host that silently publishes nothing looks exactly like a
+ * host with nothing to publish (the same trap issue #125 set).
+ */
+static void pkg_artifact_push_enqueue(const char *name, const char *version)
+{
+	if (!g_artifact_push_enabled)
+		return;
+	if (!pkg_artifact_is_configured()) {
+		logstore_write("cixd", "info",
+		                "artifact push: %s@%s not published -- push is enabled but no "
+		                "base_url is configured",
+		                name, version);
+		return;
+	}
+	if (g_artifact_token[0] == '\0') {
+		logstore_write("cixd", "info",
+		                "artifact push: %s@%s not published -- push is enabled but no "
+		                "auth_token is configured",
+		                name, version);
+		return;
+	}
+	if (g_push_queue_count >= PKG_PUSH_QUEUE_MAX) {
+		logstore_write("cixd", "error",
+		                "artifact push: queue full (%d) -- %s@%s will NOT be published",
+		                PKG_PUSH_QUEUE_MAX, name, version);
+		return;
+	}
+	snprintf(g_push_queue[g_push_queue_count].name, PKG_NAME_MAX, "%s", name);
+	snprintf(g_push_queue[g_push_queue_count].version, PKG_VERSION_MAX, "%s", version);
+	g_push_queue_count++;
+}
+
+/*
+ * Starts the next queued push, if any and if none is already running.
+ * Returns 1 with *out_pid/*out_pidfd owned by the caller (main.c
+ * registers the pidfd and calls pkg_artifact_push_completed() when it
+ * fires), 0 when there is nothing to do.
+ */
+int pkg_artifact_push_try_start(pid_t *out_pid, int *out_pidfd, char *out_desc, size_t desc_size)
+{
+	char tarball[PATH_MAX];
+	char status_path[PATH_MAX];
+	char url[PKGARTIFACT_URL_MAX];
+	char auth_header[PKGARTIFACT_TOKEN_MAX + 32];
+	struct stat st;
+	pid_t pid;
+	int pidfd;
+	int i;
+
+	if (g_push_in_flight)
+		return 0;
+
+	/*
+	 * Skipping an entry must not strand the rest of the queue: nothing
+	 * schedules another pump until a push actually completes, so a bare
+	 * "return 0" here would leave everything behind it unpublished
+	 * until the next unrelated build happened to finish. Keep taking
+	 * entries until one is genuinely startable.
+	 */
+	for (;;) {
+		if (g_push_queue_count == 0)
+			return 0;
+
+		g_push_current = g_push_queue[0];
+		for (i = 1; i < g_push_queue_count; i++)
+			g_push_queue[i - 1] = g_push_queue[i];
+		g_push_queue_count--;
+
+		cache_tarball_path(g_push_current.name, g_push_current.version, tarball,
+		                   sizeof(tarball));
+		if (stat(tarball, &st) == 0)
+			break;
+		/* Evicted by the cache's own LRU between build and push --
+		 * real, and worth saying out loud rather than failing mutely. */
+		logstore_write("cixd", "info",
+		                "artifact push: %s@%s is no longer in the local cache -- not published",
+		                g_push_current.name, g_push_current.version);
+	}
+	pkg_artifact_build_request(g_push_current.name, g_push_current.version, url, sizeof(url),
+	                           auth_header, sizeof(auth_header));
+	push_status_path(status_path, sizeof(status_path));
+	unlink(status_path);
+
+	pid = fork();
+	if (pid < 0) {
+		logstore_write("cixd", "error", "artifact push: fork failed: %s -- %s@%s not published",
+		                strerror(errno), g_push_current.name, g_push_current.version);
+		return 0;
+	}
+	if (pid == 0) {
+		char sha[65];
+		char sha_header[96];
+
+		/* Digest in the child, deliberately: hashing a large tarball
+		 * on the daemon's own thread would stall the event loop for
+		 * exactly as long as the file is big. */
+		if (pkg_run_capture_sha256(tarball, sha, sizeof(sha)) != 0)
+			_exit(PKG_PUSH_EXIT_SHA_FAILED);
+		snprintf(sha_header, sizeof(sha_header), "X-Cix-Sha256: %s", sha);
+		{
+			/* --upload-file is a real PUT and sets Content-Length
+			 * from the file itself, which is what the receiver
+			 * requires (it refuses chunked encoding). The HTTP status
+			 * is written to stdout, redirected to the status file
+			 * below, so the reaper can report what the server said
+			 * rather than a bare exit code. */
+			char *argv[] = { (char *)PKG_CURL_BIN,
+				         (char *)"-s",
+				         (char *)"--upload-file",
+				         tarball,
+				         (char *)"-H",
+				         auth_header,
+				         (char *)"-H",
+				         sha_header,
+				         (char *)"--output",
+				         (char *)"/dev/null",
+				         (char *)"--write-out",
+				         (char *)"%{http_code}",
+				         url,
+				         NULL };
+			int sfd = open(status_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+
+			if (sfd >= 0) {
+				dup2(sfd, STDOUT_FILENO);
+				close(sfd);
+			}
+			execve(PKG_CURL_BIN, argv, environ);
+		}
+		_exit(127);
+	}
+	pidfd = sys_pidfd_open(pid, 0);
+	if (pidfd < 0) {
+		logstore_write("cixd", "error", "artifact push: pidfd_open failed: %s", strerror(errno));
+		kill(pid, SIGKILL);
+		waitpid(pid, NULL, 0);
+		return 0;
+	}
+	g_push_in_flight = 1;
+	*out_pid = pid;
+	*out_pidfd = pidfd;
+	snprintf(out_desc, desc_size, "%s@%s", g_push_current.name, g_push_current.version);
+	logstore_write("cixd", "info", "artifact push: uploading %s@%s (%lld bytes) to %s",
+	                g_push_current.name, g_push_current.version, (long long)st.st_size, url);
+	return 1;
+}
+
+/*
+ * Reaps a finished push and reports what the server actually said.
+ * The HTTP status matters more than the exit code here: a 409 is not
+ * a failure of this host -- it means that name already holds different
+ * bytes, which is the artifact server's immutability rule doing its
+ * job and a genuine signal that two builds diverged.
+ */
+void pkg_artifact_push_completed(int exit_status)
+{
+	char status_path[PATH_MAX];
+	char *buf = NULL;
+	size_t len = 0;
+	long code = 0;
+
+	g_push_in_flight = 0;
+	push_status_path(status_path, sizeof(status_path));
+	if (persist_read_file(status_path, &buf, &len) == 0 && buf != NULL) {
+		code = strtol(buf, NULL, 10);
+		free(buf);
+	}
+	unlink(status_path);
+
+	if (WIFEXITED(exit_status) && WEXITSTATUS(exit_status) == PKG_PUSH_EXIT_SHA_FAILED) {
+		logstore_write("cixd", "error",
+		                "artifact push: %s@%s -- could not compute sha256, not published",
+		                g_push_current.name, g_push_current.version);
+		return;
+	}
+	if (code == 201 || code == 200 || code == 204) {
+		logstore_write("cixd", "info", "artifact push: %s@%s published (HTTP %ld)",
+		                g_push_current.name, g_push_current.version, code);
+		return;
+	}
+	if (code == 409) {
+		logstore_write("cixd", "error",
+		                "artifact push: %s@%s REJECTED (HTTP 409) -- that name already holds "
+		                "different bytes on the artifact server. Two builds of the same "
+		                "recipe version produced different output; the server's immutability "
+		                "rule refused to overwrite it.",
+		                g_push_current.name, g_push_current.version);
+		return;
+	}
+	if (code == 401 || code == 403) {
+		logstore_write("cixd", "error",
+		                "artifact push: %s@%s rejected (HTTP %ld) -- the configured auth_token "
+		                "was not accepted",
+		                g_push_current.name, g_push_current.version, code);
+		return;
+	}
+	logstore_write("cixd", "error",
+	                "artifact push: %s@%s failed (HTTP %ld, curl exit status 0x%x)",
+	                g_push_current.name, g_push_current.version, code, (unsigned)exit_status);
 }
 
 /* out_url: <base_url>/<name>-<version>.tar.gz (a trailing slash on
