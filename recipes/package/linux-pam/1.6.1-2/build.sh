@@ -46,6 +46,14 @@ pkg_name="linux-pam"
 pkg_version="1.6.1-2"
 pkg_source="https://github.com/linux-pam/linux-pam/releases/download/v1.6.1/Linux-PAM-1.6.1.tar.xz"
 pkg_sha256="f8923c740159052d719dbfc2a2f81942d68dd34fcaf61c706a02c9b80feeef8e"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/linux-pam-1.6.1-2.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="d77fe6e76248bcb54649f237065435fef75ac2544a31276d619dbb67b47039eb"
 pkg_depends=""
 
 # One real, confirmed TCC-vs-upstream-source gap, found via a local

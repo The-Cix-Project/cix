@@ -23,6 +23,14 @@ pkg_name="tar"
 pkg_version="1.35-5"
 pkg_source="https://ftp.gnu.org/gnu/tar/tar-1.35.tar.gz"
 pkg_sha256="14d55e32063ea9526e057fbf35fcabd53378e769787eff7919c3755b02d2b57e"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/tar-1.35-5.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="f3d4ed863082d1bbbd189e4b0266353f8d7ffb5273c54caaf81a4b5a64402cc2"
 # Nothing at runtime: tar links against libc alone.
 pkg_depends=""
 #

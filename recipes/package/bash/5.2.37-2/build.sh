@@ -15,6 +15,14 @@ pkg_name="bash"
 pkg_version="5.2.37-2"
 pkg_source="https://ftp.gnu.org/gnu/bash/bash-5.2.37.tar.gz"
 pkg_sha256="9599b22ecd1d5787ad7d3b7bf0c59f312b3396d1e281175dd1f8a4014da621ff"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/bash-5.2.37-2.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="47f08a7eac65b59ce6e6a211ffcf77545993f4b5c52c094dbd79ec367f08bd14"
 # Nothing at runtime beyond libc: this build takes no readline (the
 # shell's own line editing is compiled in) and no NLS.
 pkg_depends=""

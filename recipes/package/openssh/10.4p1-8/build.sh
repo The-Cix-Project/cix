@@ -100,6 +100,14 @@ pkg_name="openssh"
 pkg_version="10.4p1-8"
 pkg_source="https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-10.4p1.tar.gz"
 pkg_sha256="ef6026dd2aea8d56059638d5d3262902c892ceba9f88395835e0d06d3fb63238"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/openssh-10.4p1-8.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="98fdf9d3122edc255ed078e56943dc4482602558254fd7fc72bafcd7c992b486"
 pkg_depends="openssl zlib linux-pam"
 
 # Confirmed real via a local --with-pam build in this sandbox, linking

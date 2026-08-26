@@ -24,6 +24,14 @@ pkg_name="zlib"
 pkg_version="1.3.2-2"
 pkg_source="https://zlib.net/zlib-1.3.2.tar.gz"
 pkg_sha256="bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/zlib-1.3.2-2.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="2c80a816a25ecc3c0e7f1a76bf70a3fab218bda3dd2cf604002519cce37d1fd4"
 pkg_depends=""
 
 # zlib's own configure is a hand-written script, not autoconf, but

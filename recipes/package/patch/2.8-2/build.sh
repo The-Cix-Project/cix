@@ -10,6 +10,14 @@ pkg_name="patch"
 pkg_version="2.8-2"
 pkg_source="https://ftp.gnu.org/gnu/patch/patch-2.8.tar.xz"
 pkg_sha256="f87cee69eec2b4fcbf60a396b030ad6aa3415f192aa5f7ee84cad5e11f7f5ae3"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/patch-2.8-2.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="4661ca25fd43b60c9a157d9a01d2c393b27d9f7d68a8a457ad1a0645b140f99e"
 # Nothing at runtime: patch links against libc alone.
 pkg_depends=""
 #

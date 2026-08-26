@@ -74,6 +74,14 @@ pkg_name="glauth"
 pkg_version="2.4.0"
 pkg_source="http://192.168.15.31:8920/glauth-2.4.0.tarball"
 pkg_sha256="3f654908f498ede1ec99eb951b3120c9f907df1fe380db0b5311b6ba46394170"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/glauth-2.4.0.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="c0c5565bd2bf8b9be2f4e374f01e72eb8c3db6cfed703a01dc249c2b87106cbb"
 pkg_depends=""
 
 # CGO_ENABLED=1 is load-bearing: mattn/go-sqlite3 compiles SQLite's own C

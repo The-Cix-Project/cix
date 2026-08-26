@@ -15,6 +15,14 @@ pkg_name="binutils"
 pkg_version="2.42-2"
 pkg_source="https://ftp.gnu.org/gnu/binutils/binutils-2.42.tar.xz"
 pkg_sha256="f6e4d41fd5fc778b06b7891457b3620da5ecea1006c6a4a41ae998109f85a800"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/binutils-2.42-2.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="0f2178591e217ca93b8cd6d15853c115be5635078450b58a2be1a3d7033b7e1a"
 pkg_depends=""
 
 # Out-of-tree build (binutils' own documented convention, avoids a real,

@@ -16,6 +16,14 @@ pkg_name="perl"
 pkg_version="5.40.1"
 pkg_source="https://www.cpan.org/src/5.0/perl-5.40.1.tar.gz"
 pkg_sha256="02f8c45bb379ed0c3de7514fad48c714fd46be8f0b536bfd5320050165a1ee26"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/perl-5.40.1.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="7c74e3a2689c9093488ae811578c2e2315b2a56ab60d837d4e42aa1f57bf4acd"
 pkg_depends=""
 
 # Perl's own Configure (not autotools -- a hand-rolled, interactive-by-

@@ -9,6 +9,14 @@ pkg_name="screen"
 pkg_version="5.0.2"
 pkg_source="https://ftp.gnu.org/gnu/screen/screen-5.0.2.tar.gz"
 pkg_sha256="ca9a2c7e240919bc7ac12124593ae4529bb4eb5f7349d8857829b7e3f0b3b332"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/screen-5.0.2.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="749197331f97fd006d39dc1aae6f21892dd60b05e02eac25b701918956f09120"
 pkg_depends="ncurses"
 
 # --disable-pam: no PAM recipe exists in this project. --disable-pam

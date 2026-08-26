@@ -18,6 +18,14 @@ pkg_name="flex"
 pkg_version="2.6.4-2"
 pkg_source="https://github.com/westes/flex/releases/download/v2.6.4/flex-2.6.4.tar.gz"
 pkg_sha256="e87aae032bf07c26f85ac0ed3250998c37621d95f8bd748b31f15b33c45ee995"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/flex-2.6.4-2.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="956c62c65e3befad1c725c98032cd63aa7e167598a7be3e12ffaaace155fe6bd"
 pkg_depends=""
 
 # 2.6.4's own bare `CC=tcc ./configure` failed its own regex.h

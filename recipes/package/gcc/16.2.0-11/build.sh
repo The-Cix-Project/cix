@@ -47,6 +47,14 @@ pkg_name="gcc"
 pkg_version="16.2.0-11"
 pkg_source="https://ftp.gnu.org/gnu/gcc/gcc-16.2.0/gcc-16.2.0.tar.xz https://gcc.gnu.org/pub/gcc/infrastructure/gmp-6.3.0.tar.bz2 https://gcc.gnu.org/pub/gcc/infrastructure/mpfr-4.2.2.tar.bz2 https://gcc.gnu.org/pub/gcc/infrastructure/mpc-1.3.1.tar.gz"
 pkg_sha256="e6738e29597f733270731aa90600f37ffdc045079dfc27ec7e8192cc81085c3e ac28211a7cfb609bae2e2c8d6058d66c8fe96434f740cf6fe2e47b000d1c20cb 9ad62c7dc910303cd384ff8f1f4767a655124980bb6d8650fe62c815a231bb7b ab642492f5cf882b74aa0cb730cd410a81edcdbec895183ce930e706c1c759b8"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/gcc-16.2.0-11.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="a80cea83774520fe739c3e8250f86d4c24ab7a9beead484dcbbcef46340f13b4"
 # zlib/libc-dev added to pkg_depends in -5: always real, load-bearing
 # requirements (--with-system-zlib below needs zlib genuinely present;
 # any real C/C++ compile needs libc's own headers) that -2 through -4

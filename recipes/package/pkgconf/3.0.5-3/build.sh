@@ -20,6 +20,14 @@ pkg_name="pkgconf"
 pkg_version="3.0.5-3"
 pkg_source="https://distfiles.ariadne.space/pkgconf/pkgconf-3.0.5.tar.xz"
 pkg_sha256="3acd3a8a3cce65a8d620321855d92fb602e026cbe8e13ee36bdec58483b59ace"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/pkgconf-3.0.5-3.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="6b475ddcb70b16ee6146a57cf7b53ee7ebd61493d754991984c0625783a6f553"
 # Nothing at runtime: pkgconf links against libc alone.
 pkg_depends=""
 #

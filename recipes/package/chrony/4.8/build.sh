@@ -23,6 +23,14 @@ pkg_name="chrony"
 pkg_version="4.8"
 pkg_source="https://chrony-project.org/releases/chrony-4.8.tar.gz"
 pkg_sha256="33ea8eb2a4daeaa506e8fcafd5d6d89027ed6f2f0609645c6f149b560d301706"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/chrony-4.8.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="19f02189174d32d80699494890f92ee5e31039883f7a5a3c2c32ae89001fe2f2"
 # Real, empirically confirmed via a local ./configure + build in this
 # sandbox: chrony's own hand-rolled configure script (not autoconf)
 # builds clean under tcc with zero patches needed. Every optional

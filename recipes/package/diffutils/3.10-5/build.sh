@@ -13,6 +13,14 @@ pkg_name="diffutils"
 pkg_version="3.10-5"
 pkg_source="https://ftp.gnu.org/gnu/diffutils/diffutils-3.10.tar.xz"
 pkg_sha256="90e5e93cc724e4ebe12ede80df1634063c7a855692685919bfe60b556c9bd09e"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/diffutils-3.10-5.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="fa6edce530fe074b30eadbaaad67759d111798afd81201d9f6974f2c0a940143"
 # Nothing at runtime: diffutils links against libc alone.
 pkg_depends=""
 #

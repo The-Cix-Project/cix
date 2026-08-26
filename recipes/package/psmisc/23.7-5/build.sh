@@ -15,6 +15,14 @@ pkg_name="psmisc"
 pkg_version="23.7-5"
 pkg_source="https://deb.debian.org/debian/pool/main/p/psmisc/psmisc_23.7.orig.tar.xz"
 pkg_sha256="58c55d9c1402474065adae669511c191de374b0871eec781239ab400b907c327"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/psmisc-23.7-5.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="76c6e03af2217a86aadebe50c7c9cb408d4952f77fc6a62053d58f3f89e43467"
 # ncurses: `watch` and `pstree` use terminal handling, and configure
 # refuses outright without it -- "Cannot find tinfo, ncurses or termcap
 # libraries". Never declared before, because pkg_seed_image_baseline()

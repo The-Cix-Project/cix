@@ -20,6 +20,14 @@ pkg_name="dnsmasq"
 pkg_version="2.90"
 pkg_source="https://deb.debian.org/debian/pool/main/d/dnsmasq/dnsmasq_2.90.orig.tar.xz"
 pkg_sha256="8e50309bd837bfec9649a812e066c09b6988b73d749b7d293c06c57d46a109e4"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/dnsmasq-2.90.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="a697ece459bca5a178bad3532174b0aecaf2d48c99b47234c85845ec88223cd0"
 pkg_depends=""
 
 # Plain Makefile, no ./configure step at all (confirmed directly --

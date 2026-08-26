@@ -14,6 +14,14 @@ pkg_name="sed"
 pkg_version="4.9-2"
 pkg_source="https://ftp.gnu.org/gnu/sed/sed-4.9.tar.gz"
 pkg_sha256="d1478a18f033a73ac16822901f6533d30b6be561bcbce46ffd7abce93602282e"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/sed-4.9-2.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="47a3dfbf8aaeeea594b10cc00d80c1e498986ef268333a2d9378b43386aab340"
 pkg_depends=""
 
 # 4.9's own bare `CC=tcc ./configure` failed at final link, confirmed

@@ -21,6 +21,14 @@ pkg_name="mtr"
 pkg_version="0.96-3"
 pkg_source="https://github.com/traviscross/mtr/archive/refs/tags/v0.96.tar.gz"
 pkg_sha256="73e6aef3fb6c8b482acb5b5e2b8fa7794045c4f2420276f035ce76c5beae632d"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/mtr-0.96-3.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="bf5801e2e18ea9472f72f77ee597e9892c5096b83734d9724808a13943362bb9"
 pkg_depends="ncurses"
 
 # --without-gtk/--without-jansson/--without-ipinfo: none of GTK+3,

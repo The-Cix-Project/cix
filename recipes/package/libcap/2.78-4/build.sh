@@ -20,6 +20,14 @@ pkg_name="libcap"
 pkg_version="2.78-4"
 pkg_source="https://mirrors.edge.kernel.org/pub/linux/libs/security/linux-privs/libcap2/libcap-2.78.tar.xz"
 pkg_sha256="0d621e562fd932ccf67b9660fb018e468a683d7b827541df27813228c996bb11"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/libcap-2.78-4.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="f7cf4077006754fead93213137ee06678ebbca5123bd354284aa95c9853c337e"
 # Nothing at runtime: confirmed with readelf against the built
 # libcap.so.2.78 -- libc.so.6 is its only NEEDED entry.
 pkg_depends=""
