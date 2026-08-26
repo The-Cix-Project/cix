@@ -6472,8 +6472,11 @@ static void pkg_cache_save(const char *name, const char *version, const char *de
 	struct stat st;
 	long long size;
 
-	if (persist_mkdir_p(g_cache_dir) != 0)
+	if (persist_mkdir_p(g_cache_dir) != 0) {
+		logstore_write("cixd", "error", "pkg cache: cannot create %s: %s -- %s@%s not cached",
+		                g_cache_dir, strerror(errno), name, version);
 		return;
+	}
 	cache_tarball_path(name, version, final_path, sizeof(final_path));
 	snprintf(tmp_path, sizeof(tmp_path), "%s.tmp-%d", final_path, (int)getpid());
 	unlink(tmp_path);
@@ -6482,16 +6485,29 @@ static void pkg_cache_save(const char *name, const char *version, const char *de
 		char *argv[] = { (char *)PKG_TAR_BIN, "-C", (char *)dest_dir, "-czf", tmp_path, ".", NULL };
 
 		if (run_subprocess(PKG_TAR_BIN, argv) != 0) {
+			/* Best-effort stays best-effort, but never silent again:
+			 * a host whose cache save fails on EVERY build looked
+			 * exactly like a host with nothing to cache, for months
+			 * (issue #125) -- run_subprocess's own log line names
+			 * tar, not the caller, so this one names the caller. */
+			logstore_write("cixd", "error",
+			                "pkg cache: tar create failed for %s@%s (dest %s) -- not cached",
+			                name, version, dest_dir);
 			unlink(tmp_path);
 			return;
 		}
 	}
 	if (stat(tmp_path, &st) != 0) {
+		logstore_write("cixd", "error", "pkg cache: %s@%s tarball missing after create: %s",
+		                name, version, strerror(errno));
 		unlink(tmp_path);
 		return;
 	}
 	size = (long long)st.st_size;
 	if (size > g_cache_max_bytes) {
+		logstore_write("cixd", "info",
+		                "pkg cache: %s@%s is %lld bytes, over the whole %lld cache cap -- not cached",
+		                name, version, size, (long long)g_cache_max_bytes);
 		unlink(tmp_path); /* bigger than the whole cache cap -- not cacheable */
 		return;
 	}
