@@ -4814,6 +4814,41 @@ static void arm_build_stall_timer(void)
 		perror("timerfd_settime (build stall re-arm)");
 }
 
+/*
+ * Issue #119: a container whose async teardown (ADR-0180) never
+ * completes -- its pidns init wedged in the kernel reaping a process
+ * that will not die -- sits in "deleting" forever, holding its build
+ * slot, indistinguishable from a merely-slow teardown. Nothing here can
+ * force the kernel to finish, but this makes the stuck teardown VISIBLE:
+ * once a teardown has been in flight past the threshold, log it (once),
+ * the same discipline pkg_check_build_stalls() applies to a quiet build.
+ */
+static void check_teardown_stalls(void)
+{
+	char names[REGISTRY_MAX_CONTAINERS][REGISTRY_NAME_MAX];
+	int n = registry_list_names(names, REGISTRY_MAX_CONTAINERS);
+	time_t now = time(NULL);
+	int i;
+
+	for (i = 0; i < n; i++) {
+		struct registry_entry *e = registry_find(names[i]);
+
+		if (e == NULL || e->teardown_kind == REGISTRY_TEARDOWN_NONE)
+			continue;
+		if (e->teardown_stall_reported)
+			continue;
+		if (now - e->teardown_started_at < REGISTRY_TEARDOWN_STALL_SECONDS)
+			continue;
+		logstore_write("cixd", "error",
+		               "container %s stuck in teardown for %llds -- its pidfd has not "
+		               "fired since SIGKILL, most likely a kernel pidns reap that cannot "
+		               "complete; the build slot it holds will not return until the "
+		               "process dies or the host reboots (issue #119)",
+		               names[i], (long long)(now - e->teardown_started_at));
+		e->teardown_stall_reported = 1;
+	}
+}
+
 static void handle_build_stall_timer_event(struct conn *cc)
 {
 	uint64_t expirations;
@@ -4821,6 +4856,7 @@ static void handle_build_stall_timer_event(struct conn *cc)
 	if (read(cc->fd, &expirations, sizeof(expirations)) < 0)
 		perror("read (build stall timerfd)");
 	pkg_check_build_stalls();
+	check_teardown_stalls();   /* issue #119 */
 	arm_build_stall_timer();
 }
 

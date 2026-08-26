@@ -20,6 +20,11 @@
 #define REGISTRY_TEARDOWN_NONE 0
 #define REGISTRY_TEARDOWN_STOP 1
 #define REGISTRY_TEARDOWN_DELETE 2
+
+/* Issue #119: a teardown still incomplete this long after its SIGKILL is
+ * almost certainly wedged in the kernel (a pidns init stuck reaping),
+ * not merely slow -- worth telling the operator about, once. */
+#define REGISTRY_TEARDOWN_STALL_SECONDS 120
 /* Same cap pkg.c's own PKG_BUILD_OUTPUT_CAPTURE_MAX uses for build-output
  * capture -- generous enough for a real startup failure's own diagnostic
  * text, bounded so one misbehaving container can't grow this indefinitely. */
@@ -193,6 +198,19 @@ struct registry_entry {
 	 * resurrect the container either way.
 	 */
 	int teardown_kind;
+	/*
+	 * Issue #119: when teardown_kind became non-NONE (registry_begin_kill),
+	 * and whether the "this teardown is stuck" warning has already been
+	 * logged for it. A container whose pidns init wedges in the kernel
+	 * (zap_pid_ns_processes, waiting to reap a process that will not die)
+	 * never fires its pidfd, so its async teardown (ADR-0180) never
+	 * completes and it sits in "deleting" indefinitely, holding its
+	 * build slot. Nothing userspace can do forces the kernel to finish,
+	 * but an operator should at least be TOLD, the same way a quiet
+	 * build is (pkg_check_build_stalls). Reported once, not every tick.
+	 */
+	time_t teardown_started_at;
+	int teardown_stall_reported;
 	/*
 	 * Issue #49: the disk quota requested at creation (bytes; 0 = none)
 	 * -- mirrored here because unlike the cgroup limits (all read back

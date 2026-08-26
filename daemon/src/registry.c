@@ -353,6 +353,8 @@ void registry_begin_kill(struct registry_entry *e, int teardown_kind)
 	registry_set_paused(e, 0);
 	sys_pidfd_send_signal(e->handle.pidfd, SIGKILL);
 	e->teardown_kind = teardown_kind;
+	e->teardown_started_at = time(NULL);   /* issue #119 */
+	e->teardown_stall_reported = 0;
 }
 
 int registry_network_attach(struct registry_entry *e, const struct registry_network_attachment *net)
