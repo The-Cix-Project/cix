@@ -12927,15 +12927,16 @@ static void shell_prompt_init(const struct cix_client *client)
  * makes on the web dashboard side (web/app.js) for the identical
  * reason (a route table that can't be enumerated by walking code). */
 static const char *const SHELL_COMMANDS[] = {
-	"backup", "backup-config", "boot",      "console",       "container",     "daemon-config", "device",   "devicemap", "diskrole",
-	"disks",  "dns",       "exit",          "files",    "health",    "help",
-	"host-stats", "hostauth-config", "hostauth-sessions", "image", "inspect",       "iso",      "kmod",      "kmod-build", "kmod-config", "ldap",      "login",     "logout",    "logs",      "migrate-storage", "migrate-storage-status", "network",
-	"ntp",
-	"pause",  "ping",      "pkg",           "pkg-build-config", "pki",      "process",   "ps",        "quit",      "reboot",
-	"resolv",
-	"restore", "rm",       "rolling-config", "routes",        "run",      "shutdown",  "site",
-	"start",  "stats",     "stop",          "storage",  "swap",     "sysctl",   "syslog",    "time",      "tls-throttle", "unpause",   "update",
-	"control-plane-reservation", "boot-console", "kernel-policy", "zswap", "dhcp", "stalls",
+	"backup", "backup-config", "boot", "boot-console", "container", "control-plane-reservation",
+	"daemon-config", "device", "devicemap", "dhcp", "diskrole", "disks",
+	"dns", "exec", "exit", "factory-reset", "health", "help",
+	"host-stats", "hostauth-config", "hostauth-sessions", "image", "iso", "kernel-policy",
+	"kmod", "kmod-build", "kmod-config", "kmsg", "ldap", "login",
+	"logout", "logs", "network", "ntp", "ping", "pkg",
+	"pkg-build-config", "pki", "process", "quit", "reboot", "resolv",
+	"restore", "rolling-config", "routes", "server-health", "shutdown", "site",
+	"software", "stalls", "storage", "swap", "sysctl", "syslog",
+	"time", "tls-throttle", "update", "volume", "zswap",
 	NULL
 };
 
