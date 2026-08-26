@@ -2420,10 +2420,36 @@ static int buildenv_add_tool(const char *name, const char *via, struct buildenv_
 	char version[IMAGE_VERSION_MAX];
 	char deps_copy[PKG_DEPENDS_MAX];
 	char *tok, *save = NULL;
+	char bare_name[PKG_NAME_MAX];
+	const char *want_version = NULL;
 	int i;
 
+	/*
+	 * Issue #127: a declared build tool may be version-pinned as
+	 * "name@version" (e.g. "tcc@0.9.27-7", to require the revision that
+	 * fixes a miscompile). Split it here: bare_name is what matches a
+	 * package's own name, want_version (if present and non-empty) is the
+	 * exact installed version required. A bare "name" pins nothing and
+	 * resolves to the newest usable copy, exactly as before.
+	 */
+	{
+		const char *at = strchr(name, '@');
+
+		if (at != NULL) {
+			size_t bl = (size_t)(at - name);
+
+			if (bl >= sizeof(bare_name))
+				bl = sizeof(bare_name) - 1;
+			memcpy(bare_name, name, bl);
+			bare_name[bl] = '\0';
+			want_version = (at[1] != '\0') ? at + 1 : NULL;
+		} else {
+			snprintf(bare_name, sizeof(bare_name), "%s", name);
+		}
+	}
+
 	for (i = 0; i < *n; i++) {
-		if (strcmp(out[i].name, name) == 0)
+		if (strcmp(out[i].name, bare_name) == 0)
 			return 0; /* already in the environment */
 	}
 	if (depth > PKG_BUILDENV_MAX_TOOLS) {
@@ -2452,7 +2478,9 @@ static int buildenv_add_tool(const char *name, const char *via, struct buildenv_
 
 		if (!g_packages[i].in_use || g_packages[i].state != PKG_STATE_INSTALLED)
 			continue;
-		if (strcmp(g_packages[i].name, name) != 0)
+		if (strcmp(g_packages[i].name, bare_name) != 0)
+			continue;
+		if (want_version != NULL && strcmp(g_packages[i].version, want_version) != 0)
 			continue;
 		img = normalize_image(g_packages[i].image);
 		if (image_current_version(img, version, sizeof(version)) != IMAGE_OK) {
