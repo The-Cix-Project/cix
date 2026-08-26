@@ -5516,6 +5516,23 @@ int pkg_find_update_candidate(char *out_name, size_t out_name_size, char *out_im
 	return 0;
 }
 
+int pkg_rename_image(const char *old_image, const char *new_image)
+{
+	int i, moved = 0;
+
+	for (i = 0; i < PKG_MAX_PACKAGES; i++) {
+		if (!g_packages[i].in_use)
+			continue;
+		if (strcmp(normalize_image(g_packages[i].image), normalize_image(old_image)) != 0)
+			continue;
+		snprintf(g_packages[i].image, sizeof(g_packages[i].image), "%s", new_image);
+		moved++;
+	}
+	if (moved > 0 && save_state() != 0)
+		return -1;
+	return moved;
+}
+
 int pkg_image_has_packages(const char *image)
 {
 	const char *norm_image = normalize_image(image);

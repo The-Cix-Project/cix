@@ -243,6 +243,56 @@ enum image_error image_create(const char *name)
 	return IMAGE_OK;
 }
 
+/*
+ * Issue #124: rename an image and every package row that names it.
+ *
+ * The two halves must move together -- a directory rename that left the
+ * rows behind would produce exactly the orphaned "installed in an image
+ * that does not exist" rows issue #111 was about. The rows are moved
+ * only after the directory rename succeeds, so a failed rename changes
+ * nothing at all.
+ */
+enum image_error image_rename(const char *old_name, const char *new_name)
+{
+	char old_dir[PATH_MAX];
+	char new_dir[PATH_MAX];
+	char probe[PATH_MAX];
+	struct stat st;
+
+	if (!image_name_is_valid(old_name) || !image_name_is_valid(new_name))
+		return IMAGE_ERR_INVALID_NAME;
+	if (strcmp(old_name, new_name) == 0)
+		return IMAGE_ERR_DUPLICATE;
+	if (strcmp(old_name, PKG_DEFAULT_IMAGE) == 0 || strcmp(new_name, PKG_DEFAULT_IMAGE) == 0)
+		return IMAGE_ERR_PROTECTED;
+
+	manifest_path(old_name, probe, sizeof(probe));
+	if (stat(probe, &st) != 0)
+		return IMAGE_ERR_NOT_FOUND;
+	manifest_path(new_name, probe, sizeof(probe));
+	if (stat(probe, &st) == 0)
+		return IMAGE_ERR_DUPLICATE;
+
+	/* A running container's overlay lowerdir points into this directory
+	 * by path; renaming it out from under one is not survivable. */
+	if (registry_image_in_use(old_name))
+		return IMAGE_ERR_IN_USE;
+
+	snprintf(old_dir, sizeof(old_dir), "%s/%s", g_images_dir, old_name);
+	snprintf(new_dir, sizeof(new_dir), "%s/%s", g_images_dir, new_name);
+	if (rename(old_dir, new_dir) != 0)
+		return IMAGE_ERR_DELETE_FAILED;
+
+	if (pkg_rename_image(old_name, new_name) < 0) {
+		/* State could not be persisted -- put the directory back so the
+		 * two halves stay consistent rather than half-applied. */
+		rename(new_dir, old_dir);
+		pkg_rename_image(new_name, old_name);
+		return IMAGE_ERR_DELETE_FAILED;
+	}
+	return IMAGE_OK;
+}
+
 enum image_error image_delete(const char *name)
 {
 	char path[PATH_MAX];

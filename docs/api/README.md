@@ -188,6 +188,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | DELETE | `/images/recipes/{name}` | Remove an image recipe |
 | POST | `/images/{name}/apply-recipe` | Apply `{name}`'s own stored recipe -- bulk-declares the manifest (204), or an async whole-rootfs artifact fetch for a fully-pinned recipe with a matching artifact server (202) |
 | GET | `/images/recipe-apply-status` | Most recent image-recipe-apply artifact fetch's own state/image/error |
+| POST | `/images/{name}/rename` | Rename an image, moving its package rows with it (issue #124). Refused while a container uses it |
 | POST | `/images/{name}/export` | Export the image's current version as a whole-rootfs tarball, so compiled output moves to another host instead of being rebuilt (issue #126). Async (202) -- poll the GET |
 | GET | `/images/{name}/export` | That export's state (`none`/`building`/`ready`/`failed`), its `artifact_path`, and `artifact_name` |
 | GET | `/images/{name}/export/download` | Bytes of a ready export, in bounded chunks (`?offset=&length=`, clamped to 8 MiB) the caller loops over |

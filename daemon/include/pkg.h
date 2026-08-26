@@ -865,6 +865,11 @@ enum pkg_error pkg_delete(const char *name, const char *image);
  */
 int pkg_image_has_packages(const char *image);
 
+/* Issue #124: repoint every package row recorded against old_image to
+ * new_image, persisting the result. Returns the number of rows moved,
+ * or -1 if the state could not be saved. Called by image_rename(). */
+int pkg_rename_image(const char *old_image, const char *new_image);
+
 /* ---- pkg/ redesign Part 2 (ADR-0121): configurable repo + pkg sync ---- */
 
 #define PKGREPO_URL_MAX 512
