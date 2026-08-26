@@ -4914,6 +4914,94 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /images/{name}/export:
+    post:
+      summary: >
+        Export this image's current version as a whole-rootfs tarball
+        (issue #126), so compiled output can be moved to another host
+        instead of being rebuilt from source.
+      description: >
+        The output filename is deliberately EXACTLY what the consuming
+        side already computes: ADR-0123's image-artifact fast path
+        fetches <base_url>/images/{name}-{hash}.tar.gz, where hash is
+        the image version. So an exported file placed behind any plain
+        HTTP server (including a peer cixd) is directly consumable by
+        another host's image recipe -- no new protocol and no
+        translation step, with that recipe's own image_artifact_sha256
+        still gating trust, since an artifact server is never a trust
+        boundary.
+
+
+        Asynchronous with a status poll, not a blocking call: tarring a
+        multi-gigabyte rootfs would hold this daemon's single event loop
+        for minutes, exactly the wedge ADR-0180 exists to prevent. One
+        export runs at a time.
+      operationId: exportImage
+      parameters:
+        - $ref: "#/components/parameters/ImageName"
+      responses:
+        "202":
+          description: Export started -- poll GET on this same path
+        "404":
+          description: No such image, or it has no current version
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: An export is already running
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Could not start the export (artifact directory or fork failed)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    get:
+      summary: The most recent export's state for this image.
+      description: >
+        state is none/building/ready/failed. "none" is also what an
+        image that is simply not the one most recently exported reports
+        -- one export is tracked at a time, so this never reports
+        another image's progress under this image's name.
+      operationId: getImageExport
+      parameters:
+        - $ref: "#/components/parameters/ImageName"
+      responses:
+        "200":
+          description: Export state
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  image:
+                    type: string
+                  state:
+                    type: string
+                    enum: [none, building, ready, failed]
+                  image_version:
+                    type: string
+                    description: The version (manifest hash) that was exported.
+                  artifact_path:
+                    type: string
+                    description: Absolute path of the tarball on this host.
+                  artifact_name:
+                    type: string
+                    description: >
+                      Basename only -- {name}-{hash}.tar.gz, the exact filename
+                      a consuming host's image-artifact fetch will ask for under
+                      its configured base_url's own images/ prefix.
+                  size_bytes:
+                    type: integer
+                    format: int64
+                    description: -1 until the export is ready.
+                  error:
+                    type: string
+
   /images/{name}/apply-recipe:
     post:
       summary: >
