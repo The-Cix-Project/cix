@@ -481,8 +481,8 @@
   <text x="700" y="948" text-anchor="middle" class="box-title">Read-only squashfs A/B root, systemd-boot's native boot counting (ADR-0014)</text>
 
   <!-- ESP -->
-  <rect x="55" y="970" width="300" height="260" class="card" fill="#ffffff" stroke="#f0dbdb"/>
-  <rect x="58" y="976" width="5" height="248" rx="2.5" fill="#c53030"/>
+  <rect x="55" y="970" width="300" height="285" class="card" fill="#ffffff" stroke="#f0dbdb"/>
+  <rect x="58" y="976" width="5" height="273" rx="2.5" fill="#c53030"/>
   <use href="#i-disk" x="69" y="978" width="16" height="16" style="color:#c53030"/>
   <text x="205" y="992" text-anchor="middle" class="module-title">ESP (cix-esp, FAT32)</text>
   <text x="205" y="1012" text-anchor="middle" class="module-text">shim (MS-signed) → systemd-boot</text>
@@ -498,6 +498,8 @@
   <text x="205" y="1178" text-anchor="middle" class="module-text">daemon runtime (writable)</text>
   <text x="205" y="1200" text-anchor="middle" class="module-text" font-style="italic">POST /system/update writes</text>
   <text x="205" y="1214" text-anchor="middle" class="module-text" font-style="italic">a fresh entry here (ADR-0031)</text>
+  <text x="205" y="1236" text-anchor="middle" class="module-text" font-style="italic">GET/PUT /system/esp reads and</text>
+  <text x="205" y="1250" text-anchor="middle" class="module-text" font-style="italic">repairs loader.conf (ADR-0202)</text>
 
   <!-- Slot A / B -->
   <rect x="380" y="970" width="330" height="260" class="card" fill="#ffffff" stroke="#f0dbdb"/>

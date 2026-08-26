@@ -6804,6 +6804,136 @@ static int cmd_stalls(const struct cix_client *c, int json_mode)
 
 
 /*
+ * Issue #128: cixctl esp show|set|rm-entry -- the EFI System
+ * Partition's boot configuration.
+ *
+ * The show output leads with the answer to the question that actually
+ * matters, "what will this machine boot next", because working that out
+ * by hand from a glob pattern and a directory listing is exactly the
+ * step that once cost a very long investigation. An entry the default
+ * pattern does not select is marked, so a staged update being silently
+ * outranked is visible at a glance rather than inferred.
+ */
+static void fmt_esp(const struct json_value *v)
+{
+	const struct json_value *entries = json_object_get(v, "entries");
+	const struct json_value *present = json_object_get(v, "present");
+	const struct json_value *writable = json_object_get(v, "writable");
+	const char *def = json_str_field(v, "default");
+	const char *selected = json_str_field(v, "selected_entry");
+	const char *running = json_str_field(v, "running_slot");
+	const struct json_value *timeout = json_object_get(v, "timeout");
+	size_t i;
+
+	if (present == NULL || present->type != JSON_BOOL || !present->u.boolean) {
+		printf("no EFI System Partition visible from here (not an installed host)\n");
+		return;
+	}
+	printf("default:  %s\n", def != NULL ? def : "(unset)");
+	printf("timeout:  ");
+	if (timeout != NULL && timeout->type == JSON_NUMBER)
+		printf("%d\n", (int)json_as_number(timeout));
+	else
+		printf("(unset)\n");
+	printf("running:  slot %s\n", running != NULL ? running : "(unknown)");
+	printf("will boot: %s\n", selected != NULL ? selected : "(nothing matches the default)");
+	if (writable != NULL && writable->type == JSON_BOOL && !writable->u.boolean)
+		printf("NOTE: the ESP is mounted read-only -- changes are not possible\n");
+
+	if (entries != NULL && entries->type == JSON_ARRAY) {
+		printf("\nentries:\n");
+		for (i = 0; i < entries->u.array.count; i++) {
+			const struct json_value *e = entries->u.array.items[i];
+			const struct json_value *m = json_object_get(e, "matches_default");
+			const struct json_value *rs = json_object_get(e, "is_running_slot");
+			int matches = (m != NULL && m->type == JSON_BOOL && m->u.boolean);
+			int is_running = (rs != NULL && rs->type == JSON_BOOL && rs->u.boolean);
+			const char *nm = json_str_field(e, "name");
+
+			printf("  %-20s %-14s %s\n", nm != NULL ? nm : "-",
+			       matches ? "[default]" : "[not matched]", is_running ? "(running slot)" : "");
+		}
+	}
+}
+
+static int cmd_esp(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	struct cix_response r;
+	const char *sub = argc > 0 ? argv[0] : "show";
+
+	if (strcmp(sub, "show") == 0) {
+		if (cix_client_request(c, "GET", "/v1/system/esp", NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_esp);
+	}
+	if (strcmp(sub, "set") == 0) {
+		const char *def = NULL;
+		const char *timeout = NULL;
+		struct json_writer w;
+		int i;
+
+		for (i = 1; i < argc; i++) {
+			if (strncmp(argv[i], "--default=", 10) == 0)
+				def = argv[i] + 10;
+			else if (strncmp(argv[i], "--timeout=", 10) == 0)
+				timeout = argv[i] + 10;
+			else {
+				fprintf(stderr, "cixctl: unknown esp set option '%s'\n", argv[i]);
+				return 2;
+			}
+		}
+		if (def == NULL && timeout == NULL) {
+			fprintf(stderr, "usage: cixctl esp set [--default=PATTERN] [--timeout=N]\n");
+			return 2;
+		}
+		jw_init(&w);
+		jw_obj_open(&w);
+		if (def != NULL) {
+			jw_key(&w, "default");
+			jw_str(&w, def);
+		}
+		if (timeout != NULL) {
+			jw_key(&w, "timeout");
+			jw_int(&w, atoi(timeout));
+		}
+		jw_obj_close(&w);
+		w.buf[w.len] = '\0';
+		if (cix_client_request(c, "PUT", "/v1/system/esp", w.buf, &r) != 0) {
+			jw_free(&w);
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		jw_free(&w);
+		return emit(&r, json_mode, fmt_esp);
+	}
+	if (strcmp(sub, "rm-entry") == 0) {
+		char path[256];
+
+		if (argc < 2) {
+			fprintf(stderr, "usage: cixctl esp rm-entry NAME\n");
+			return 2;
+		}
+		snprintf(path, sizeof(path), "/v1/system/esp/entries/%s", argv[1]);
+		if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		if (r.status == 204) {
+			printf("removed %s\n", argv[1]);
+			cix_response_free(&r);
+			return 0;
+		}
+		return emit(&r, json_mode, NULL);
+	}
+	fprintf(stderr, "usage: cixctl esp show\n"
+	                "       cixctl esp set [--default=PATTERN] [--timeout=N]\n"
+	                "       cixctl esp rm-entry NAME\n");
+	return 2;
+}
+
+/*
  * Issue #24: cixctl boot-console show|set -- what the installed
  * system's own boot line says about consoles. Applied to the loader
  * entries already on the ESP, so it takes effect at the next boot
@@ -12880,6 +13010,8 @@ static int dispatch_command(const struct cix_client *client, int json_mode, cons
 		return cmd_cpreserve(client, json_mode, argc, argv);
 	if (strcmp(cmd, "kernel-policy") == 0)
 		return cmd_kernel_policy(client, json_mode, argc, argv);
+	if (strcmp(cmd, "esp") == 0)
+		return cmd_esp(client, json_mode, argc, argv);
 	if (strcmp(cmd, "boot-console") == 0)
 		return cmd_boot_console(client, json_mode, argc, argv);
 	if (strcmp(cmd, "stalls") == 0)

@@ -2657,6 +2657,141 @@ paths:
                 $ref: "#/components/schemas/KernelPolicy"
         "409":
           description: A refresh is already running
+  /system/esp:
+    get:
+      summary: >
+        The EFI System Partition's boot configuration -- and, crucially,
+        which entry the firmware will actually boot next (issue #128,
+        ADR-0202).
+      description: >
+        systemd-boot's `default` is a glob PATTERN, not an entry name. A
+        pattern left over from an earlier naming scheme goes on matching
+        stale entries and outranks every newly written one, so a correctly
+        staged A/B update simply never boots and nothing reports an error
+        anywhere. That is a real failure this endpoint exists because of.
+
+
+        So the field that matters most here is `selected_entry`: the entry
+        systemd-boot would actually choose, computed by the daemon rather
+        than left for an operator to derive by hand from a pattern and a
+        directory listing. Each entry additionally reports whether the
+        current default selects it (`matches_default`) and whether it
+        belongs to the slot this daemon booted from (`is_running_slot`).
+      operationId: getEsp
+      responses:
+        "200":
+          description: >
+            The ESP's boot configuration. `present` is false on a host with
+            no ESP mounted (a dev sandbox), where the entry list is empty
+            rather than an error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EspConfig"
+    put:
+      summary: Set loader.conf's default pattern and/or timeout (issue #128).
+      description: >
+        Partial: an omitted field is left unchanged. Directives this daemon
+        has no opinion about (console-mode, editor, ...) are preserved
+        verbatim rather than regenerated from a template.
+
+
+        A `default` matching no existing entry is REFUSED with 409, not
+        accepted with a warning: it is silent, it strands the host at the
+        next boot, and by construction the caller is not at the console.
+        The error names the entries that do exist.
+      operationId: putEsp
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                default:
+                  type: string
+                  description: >
+                    A systemd-boot glob pattern (e.g. "cix-*"), matched
+                    against both the entry filename and the filename with
+                    .conf stripped, exactly as the bootloader matches it.
+                timeout:
+                  type: integer
+                  description: Menu timeout in seconds, 0-3600.
+      responses:
+        "200":
+          description: Updated configuration (same shape as GET)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EspConfig"
+        "400":
+          description: Nothing to set, a malformed default, or a timeout out of range
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >
+            The default matches no existing loader entry (it would leave the
+            host with nothing to boot), or the ESP is mounted read-only
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: No ESP is mounted on this host
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /system/esp/entries/{name}:
+    delete:
+      summary: Remove one stale loader entry (issue #128).
+      description: >
+        Removing a DUPLICATE entry for the running slot is allowed --
+        clearing accumulated duplicates is what this is for. Removing the
+        LAST remaining entry for the running slot is refused: that is how a
+        remote operator makes a machine they cannot physically reach
+        unbootable.
+      operationId: deleteEspEntry
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: The entry's filename, e.g. "thinc-a+3.conf".
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Removed
+        "400":
+          description: Invalid entry name (path separators are rejected)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No such loader entry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >
+            That is the only remaining entry for the running slot, or the
+            ESP is mounted read-only
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: No ESP is mounted on this host
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /system/boot-console:
     get:
       summary: The installed system's own boot console parameters (issue #24)
@@ -12943,6 +13078,70 @@ components:
             X-Cix-Sha256 header. That header is a corruption check at the
             door, not a trust claim: the consumer still verifies every byte
             against the recipe's own git-tracked pkg_artifact_sha256.
+
+    EspConfig:
+      type: object
+      required: [present, writable, entries]
+      properties:
+        present:
+          type: boolean
+          description: False when no ESP is mounted here (a dev sandbox).
+        writable:
+          type: boolean
+          description: False when the ESP is mounted read-only -- PUT/DELETE will be refused.
+        loader_dir:
+          type: string
+        default:
+          type: string
+          nullable: true
+          description: >
+            loader.conf's default GLOB PATTERN, or null when unset. Not an
+            entry name -- see this path's own description.
+        timeout:
+          type: integer
+          nullable: true
+          description: Menu timeout in seconds, or null when unset.
+        running_slot:
+          type: string
+          nullable: true
+          description: The A/B slot this daemon booted from ("a"/"b").
+        selected_entry:
+          type: string
+          nullable: true
+          description: >
+            The entry systemd-boot would actually boot next -- the last
+            entry in sort order that `default` matches. Null when the
+            pattern matches nothing. This is the single most useful field
+            here: an update that was staged correctly but will not boot
+            shows up as this naming something other than the new entry.
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/EspEntry"
+
+    EspEntry:
+      type: object
+      properties:
+        name:
+          type: string
+          description: The entry's filename, e.g. "cix-b+3.conf".
+        title:
+          type: string
+        linux:
+          type: string
+          description: The kernel image path from the entry's `linux` line.
+        options:
+          type: string
+          description: The kernel command line the entry boots with.
+        matches_default:
+          type: boolean
+          description: Whether the current default pattern selects this entry.
+        is_running_slot:
+          type: boolean
+          description: >
+            Whether this entry boots the slot the daemon is currently
+            running from, derived from the --slot= it writes into every
+            entry it creates.
 
     RollingConfig:
       type: object

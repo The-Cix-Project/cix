@@ -23,6 +23,9 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | POST | `/system/kernel-policy/refresh` | Re-ask kernel.org what each channel is at (202; the fetch is async) |
 | GET | `/system/boot-console` | The installed system's own boot console parameters, and what each loader entry currently carries (issue #24) |
 | PUT | `/system/boot-console` | Set them — rewrites the loader entries on the ESP, effective next boot |
+| GET | `/system/esp` | The ESP's boot configuration — `loader.conf`'s default **pattern**, every loader entry, and `selected_entry`: which one the firmware will actually boot next (issue #128) |
+| PUT | `/system/esp` | Set the default pattern and/or timeout. A default matching no entry is refused, not warned about |
+| DELETE | `/system/esp/entries/{name}` | Remove one stale loader entry; refuses the last remaining entry for the running slot |
 | GET | `/system/control-plane-reservation` | How much of the machine is held back for the daemon itself (issue #86) |
 | PUT | `/system/control-plane-reservation` | Set it — applied to the live workload cgroup immediately |
 | POST | `/system/factory-reset` | Return the box to its just-installed state and reboot — destroys everything including volumes (issue #63) |
@@ -1771,6 +1774,18 @@ Validation refuses rather than escapes. A console is a bare tty name with option
 `GET` reports the configured intent **and** the options line each entry on the ESP currently carries, because those differ on any box whose ESP is not writable from here. On a dev daemon `loader_entries` is empty — a fact, not an error.
 
 `cixctl boot-console show|set --console=… --extra="…"` is the CLI surface; the dashboard has a **Boot Console** tab under System > Host.
+
+**The ESP itself is a REST resource (ADR-0202, issue #128)** — and this one exists because of a real failure that was expensive precisely because the state was invisible. A host could not complete an A/B update: `POST /v1/system/update` wrote the new image and staged a correct loader entry, the machine rebooted, and came back running exactly what it had been running. Repeatedly, with no error anywhere. The cause was one line, `default thinc-*`, written at install time under the project's previous name — because **systemd-boot's `default` is a glob PATTERN, not an entry name**, it went on matching six stale entries and outranking the one correctly-staged new one. Nothing could report that, and until this endpoint existed nothing could even read `loader.conf`.
+
+```
+GET    /v1/system/esp
+PUT    /v1/system/esp                  {"default": "cix-*"}          # partial; timeout too
+DELETE /v1/system/esp/entries/thinc-a+3.conf
+```
+
+The most important field is the one you cannot set: **`selected_entry`** names the entry systemd-boot would actually boot, and each entry carries `matches_default`. The daemon computes that rather than leaving an operator to derive it from a glob and a directory listing — which is the step that went wrong. `cixctl esp show` leads with `will boot: <entry>`.
+
+Two refusals, both hard errors rather than warnings, because anyone using this endpoint is by definition not at the console: a `default` matching **zero** existing entries is refused with 409 (it is silent, and strands the host on next boot — the error names what does exist), and the **last remaining** entry for the running slot cannot be deleted, though duplicates of it can, since clearing accumulated duplicates is what removal is for. A `loader.conf` rewrite preserves directives this daemon has no opinion about (`console-mode`, `editor`, …) rather than regenerating the file and silently dropping them.
 
 
 ## DHCP: a self-contained service (ADR-0197)
