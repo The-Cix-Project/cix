@@ -182,7 +182,7 @@
 pkg_name="cix"
 pkg_version="v2.0.0"
 pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/v2.0.0.tar.gz"
-pkg_sha256="018fb5380892bc8fbf483d3430e1d9c9f4eb7107a35a40b099d804848bbc0d2a"
+pkg_sha256="45e81538b3c45f33d9a6d4c74ed40bd6cbc7a601c7f1ff6abdbfbcea90a5a297"
 pkg_depends=""
 
 #
