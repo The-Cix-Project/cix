@@ -8858,6 +8858,59 @@ static void handle_image_export_download(int fd, const char *name, const char *f
 	free(buf);
 }
 
+/*
+ * POST /v1/images/{name}/rename {"new_name": "..."} (issue #124).
+ * Renames the image directory and every package row recorded against
+ * it, together -- moving one without the other is precisely how the
+ * orphaned rows in #111 came about.
+ */
+static void handle_image_rename(int fd, const char *name, const char *body, size_t body_len)
+{
+	struct json_value *root = NULL;
+	const char *new_name;
+	enum image_error err;
+
+	if (body == NULL || body_len == 0 || (root = json_parse(body, body_len)) == NULL) {
+		respond_error(fd, 400, "Bad Request", "body must be JSON");
+		json_free(root);
+		return;
+	}
+	new_name = json_as_string(json_object_get(root, "new_name"));
+	if (new_name == NULL || new_name[0] == '\0') {
+		respond_error(fd, 400, "Bad Request", "new_name is required");
+		json_free(root);
+		return;
+	}
+	err = image_rename(name, new_name);
+	json_free(root);
+	switch (err) {
+	case IMAGE_OK:
+		http_set_blocking(fd);
+		http_write_response(fd, 204, "No Content", "application/json", "", 0);
+		return;
+	case IMAGE_ERR_INVALID_NAME:
+		respond_error(fd, 400, "Bad Request", "invalid image name");
+		return;
+	case IMAGE_ERR_DUPLICATE:
+		respond_error(fd, 409, "Conflict", "an image with that name already exists");
+		return;
+	case IMAGE_ERR_PROTECTED:
+		respond_error(fd, 400, "Bad Request", "the default image cannot be renamed");
+		return;
+	case IMAGE_ERR_IN_USE:
+		respond_error(fd, 409, "Conflict",
+		              "a container is using this image -- a running container's overlay "
+		              "lowerdir points at this directory by path");
+		return;
+	case IMAGE_ERR_NOT_FOUND:
+		respond_error(fd, 404, "Not Found", "no such image");
+		return;
+	default:
+		respond_error(fd, 500, "Internal Server Error", "rename failed");
+		return;
+	}
+}
+
 static void handle_image_export_post(int fd, const char *name)
 {
 	char err_msg[256];
@@ -22700,6 +22753,16 @@ static void dispatch(int fd, const struct http_request *req)
 					handle_image_export_download(fd, image_name, req->path);
 					return;
 				}
+			}
+			/* Issue #124: /v1/images/{name}/rename (POST). */
+			if (nlen > 7 && strcmp(name + nlen - 7, "/rename") == 0 &&
+			    strcmp(req->method, "POST") == 0 && nlen - 7 < PKG_IMAGE_NAME_MAX) {
+				char image_name[PKG_IMAGE_NAME_MAX];
+
+				memcpy(image_name, name, nlen - 7);
+				image_name[nlen - 7] = '\0';
+				handle_image_rename(fd, image_name, req->body, req->body_len);
+				return;
 			}
 			/* Issue #126: /v1/images/{name}/export -- POST starts a
 			 * whole-rootfs tarball, GET reports it. */

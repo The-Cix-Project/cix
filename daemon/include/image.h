@@ -116,6 +116,19 @@ enum image_error image_create(const char *name);
 enum image_error image_delete(const char *name);
 
 /*
+ * Renames an image directory, and with it every package row recorded
+ * against that image (issue #124 -- a rename that left the rows behind
+ * would manufacture exactly the orphans #111 was about).
+ *
+ * Refuses if new_name is invalid or already exists, if old_name does
+ * not exist, if either is the protected default image, or if any
+ * container is currently using old_name -- a running container's
+ * overlay lowerdir points into this directory by path, so renaming it
+ * out from under one is not survivable.
+ */
+enum image_error image_rename(const char *old_name, const char *new_name);
+
+/*
  * The version every image is born with: the hash of its own empty
  * manifest, written by image_create() before anything has been put in
  * it. Callers that need to tell "this image exists" apart from "this

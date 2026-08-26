@@ -5064,6 +5064,56 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /images/{name}/rename:
+    post:
+      summary: Rename an image, carrying its package rows with it (issue #124).
+      description: >
+        The directory rename and the package-row move happen together: a
+        rename that left the rows behind would manufacture exactly the
+        orphaned "installed in an image that does not exist" rows issue
+        #111 was about. The rows move only after the directory rename
+        succeeds, and are rolled back with it if the state cannot be
+        persisted, so a failure changes nothing.
+
+
+        Refused while any container references the image -- a running
+        container's overlay lowerdir points into this directory by path,
+        so renaming it out from under one is not survivable.
+      operationId: renameImage
+      parameters:
+        - $ref: "#/components/parameters/ImageName"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [new_name]
+              properties:
+                new_name:
+                  type: string
+      responses:
+        "204":
+          description: Renamed
+        "400":
+          description: Missing/invalid new_name, or the protected default image
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No such image
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: The new name is taken, or a container is using this image
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /images/{name}/apply-recipe:
     post:
       summary: >
