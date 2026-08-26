@@ -22,6 +22,14 @@ pkg_name="sysklogd"
 pkg_version="2.7.0"
 pkg_source="https://github.com/troglobit/sysklogd/releases/download/v2.7.0/sysklogd-2.7.0.tar.gz"
 pkg_sha256="6ab74ab5001121bb32697fd2f7ab3cc4b4452c3f721677e06e5b60982a04d0cc"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/sysklogd-2.7.0.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="5dcd1ba5861d2dc04df13358e84c30007cbee122b200ab0d9222031bf4e5cd24"
 pkg_depends=""
 
 # Real, empirically confirmed via a local ./configure + build in this

@@ -13,6 +13,14 @@ pkg_name="findutils"
 pkg_version="4.10.0-3"
 pkg_source="https://ftp.gnu.org/gnu/findutils/findutils-4.10.0.tar.xz"
 pkg_sha256="1387e0b67ff247d2abde998f90dfbf70c1491391a59ddfecb8ae698789f0a4f5"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/findutils-4.10.0-3.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="3753c09ea23ec35c365c26a2f0b0f5b03fea4722dc6f31d6bf7858ad14674ce2"
 # Nothing at runtime: findutils links against libc alone.
 pkg_depends=""
 #

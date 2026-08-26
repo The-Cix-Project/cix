@@ -14,6 +14,14 @@ pkg_name="grep"
 pkg_version="3.11-2"
 pkg_source="https://ftp.gnu.org/gnu/grep/grep-3.11.tar.gz"
 pkg_sha256="1f31014953e71c3cddcedb97692ad7620cb9d6d04fbdc19e0d8dd836f87622bb"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/grep-3.11-2.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="276f2944b2fd22d0b51aab5a3929fbc08877bbbab74b9a2adfabb4b5db7e46a7"
 pkg_depends=""
 
 # 3.11's own bare `CC=tcc ./configure` failed the same, already

@@ -47,6 +47,14 @@ pkg_name="xz"
 pkg_version="5.8.3-3"
 pkg_source="https://github.com/tukaani-project/xz/releases/download/v5.8.3/xz-5.8.3.tar.gz"
 pkg_sha256="3d3a1b973af218114f4f889bbaa2f4c037deaae0c8e815eec381c3d546b974a0"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/xz-5.8.3-3.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="9187ab8a78634e2aaf82154377df1b3f883d0771fbdce09ce2164044cc432f65"
 # Nothing at runtime: liblzma links against libc alone.
 pkg_depends=""
 #

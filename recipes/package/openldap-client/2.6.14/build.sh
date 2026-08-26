@@ -26,6 +26,14 @@ pkg_name="openldap-client"
 pkg_version="2.6.14"
 pkg_source="https://www.openldap.org/software/download/OpenLDAP/openldap-release/openldap-2.6.14.tgz"
 pkg_sha256="806dcd21d366428187fba3278da773d5930f774852c9e92517f950d585f19107"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/openldap-client-2.6.14.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="e4dff14fcc1bd965b56b1a7aeac0cf76d2aab73a9a5408bf181b162ed68ebcc2"
 pkg_depends="openssl libuuid"
 
 # Three real, distinct TCC-vs-this-source gaps found and fixed while

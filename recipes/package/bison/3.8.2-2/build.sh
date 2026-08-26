@@ -14,6 +14,14 @@ pkg_name="bison"
 pkg_version="3.8.2-2"
 pkg_source="https://ftp.gnu.org/gnu/bison/bison-3.8.2.tar.gz"
 pkg_sha256="06c9e13bdf7eb24d4ceb6b59205a4f67c2c7e7213119644430fe82fbd14a0abb"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/bison-3.8.2-2.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="98fb980c29582aea513e0e862d0c8c1eb78091809e9dc4b7095492cd6a372bf5"
 pkg_depends="m4"
 
 # 3.8.2's own bare `CC=tcc ./configure` failed the same, already

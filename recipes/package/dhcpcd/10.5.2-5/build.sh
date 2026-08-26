@@ -39,6 +39,14 @@ pkg_name="dhcpcd"
 pkg_version="10.5.2-5"
 pkg_source="https://github.com/NetworkConfiguration/dhcpcd/releases/download/v10.5.2/dhcpcd-10.5.2.tar.xz"
 pkg_sha256="3e476657fdb6eeb38b277da3a48d0ac0113ecce5858ebdcddff2b629faed52b4"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/dhcpcd-10.5.2-5.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="b985187524896c82171f6d227128c1250aa87350d3c73476dbbc5745eebeff58"
 pkg_depends="openssl"
 
 pkg_build() {

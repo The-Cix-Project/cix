@@ -19,6 +19,14 @@ pkg_name="coreutils"
 pkg_version="9.11-3"
 pkg_source="https://ftp.gnu.org/gnu/coreutils/coreutils-9.11.tar.xz"
 pkg_sha256="394024eda0a5955217ceda9cd1201e65dc8fa3aa29c2951135a49521d57c3cc3"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/coreutils-9.11-3.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="f040e943e222849b9b8b405c16d1abeebf238544c9905328173c2f3ad4fb1009"
 pkg_depends=""
 
 # 9.11-2 fixed the glibc fortify #error (-D_FORTIFY_SOURCE=0) but the

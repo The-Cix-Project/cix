@@ -15,6 +15,14 @@ pkg_name="gawk"
 pkg_version="5.3.0-2"
 pkg_source="https://ftp.gnu.org/gnu/gawk/gawk-5.3.0.tar.gz"
 pkg_sha256="378f8864ec21cfceaa048f7e1869ac9b4597b449087caf1eb55e440d30273336"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/gawk-5.3.0-2.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="37c711a5c76d2510fc3d204a8c7e39589524e662c5df4cec33c1a583dca0888b"
 pkg_depends=""
 
 # 5.3.0's own bare `CC=tcc ./configure` failed only at the final link

@@ -25,6 +25,14 @@ pkg_name="curl"
 pkg_version="8.21.0"
 pkg_source="https://curl.se/download/curl-8.21.0.tar.gz"
 pkg_sha256="d9b327997999045a24cda50f3983e69e51c516bd8be6ef9842fc7f99135e33bb"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/curl-8.21.0.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="e27e2f8c901ec2d5fdffe6eb7ba64b009e61ca06408f8449f2919e42b14f16ea"
 pkg_depends="openssl zlib"
 
 # Real, empirically confirmed via a local build in this sandbox

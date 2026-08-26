@@ -16,6 +16,14 @@ pkg_name="make"
 pkg_version="4.4.1"
 pkg_source="https://ftp.gnu.org/gnu/make/make-4.4.1.tar.gz"
 pkg_sha256="dd16fb1d67bfab79a72f5e8390735c49e3e8e70b4945a15ab1f81ddb78658fb3"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/make-4.4.1.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="29860a5f082bf1de4c0e30d6571c2cf1a5ec3e32c492959d3fc8a143d85055fd"
 pkg_depends=""
 
 # Plain autotools, confirmed directly. MAKEINFO=true skips texinfo doc

@@ -24,6 +24,14 @@ pkg_name="bzip2"
 pkg_version="1.0.8"
 pkg_source="https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz"
 pkg_sha256="ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/bzip2-1.0.8.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="94057e0f7d43c131b3db7fc94c6a8db6353f276270b8ec44a5f1e49c5a877a8a"
 pkg_depends=""
 
 pkg_build() {

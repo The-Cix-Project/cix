@@ -14,6 +14,14 @@ pkg_name="grep"
 pkg_version="3.11-3"
 pkg_source="https://ftp.gnu.org/gnu/grep/grep-3.11.tar.gz"
 pkg_sha256="1f31014953e71c3cddcedb97692ad7620cb9d6d04fbdc19e0d8dd836f87622bb"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/grep-3.11-3.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="cc766c540e2dfe273304ce269cb066ab603845106d2f15e141ee027f38765822"
 # Nothing at runtime: GNU grep links against libc alone (PCRE is not
 # enabled by this build).
 pkg_depends=""

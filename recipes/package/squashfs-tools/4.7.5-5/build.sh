@@ -114,6 +114,14 @@ pkg_name="squashfs-tools"
 pkg_version="4.7.5-5"
 pkg_source="https://github.com/plougher/squashfs-tools/archive/refs/tags/4.7.5.tar.gz"
 pkg_sha256="547b7b7f4d2e44bf91b6fc554664850c69563701deab9fd9cd7e21f694c88ea6"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/squashfs-tools-4.7.5-5.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="d79bfaa16928cd234faf7980321f3bec93d28bc56f6fff14d6c2b457d9826bba"
 pkg_depends="xz"
 
 # Plain hand-written Makefile (no autotools), confirmed via a real

@@ -16,6 +16,14 @@ pkg_name="make"
 pkg_version="4.4.1-3"
 pkg_source="https://ftp.gnu.org/gnu/make/make-4.4.1.tar.gz"
 pkg_sha256="dd16fb1d67bfab79a72f5e8390735c49e3e8e70b4945a15ab1f81ddb78658fb3"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/make-4.4.1-3.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="dfd2136d27b1ea7b0f804a16f4d6f0c8a19172bbb6828007c2b073e8ab22fef1"
 # Nothing at runtime: GNU make links against libc alone.
 pkg_depends=""
 #

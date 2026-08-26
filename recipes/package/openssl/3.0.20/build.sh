@@ -38,6 +38,14 @@ pkg_name="openssl"
 pkg_version="3.0.20"
 pkg_source="https://github.com/openssl/openssl/releases/download/openssl-3.0.20/openssl-3.0.20.tar.gz"
 pkg_sha256="c80a01dfc70ece4dc21168932c37739042d404d46ccc81a5986dd75314ecda6f"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/openssl-3.0.20.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="c6bbc96a41823972560fdfd9833eb78136b4fece7368d70962dcc4d504603b7b"
 pkg_depends="perl"
 
 # ./Configure (OpenSSL's own bespoke, Perl-driven build script -- not

@@ -18,6 +18,14 @@ pkg_name="procps"
 pkg_version="4.0.6-6"
 pkg_source="https://gitlab.com/procps-ng/procps/-/archive/v4.0.6/procps-v4.0.6.tar.gz"
 pkg_sha256="1bbe8ff21dcd05a6adcda99a67d2e99cbd515c9e3a78fd3cc915b12aeb330d40"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/procps-4.0.6-6.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="1c6d263019dd21c20952111dd3c7e895a8804a285b76353601f4f4d63e45ff86"
 pkg_depends=""
 
 # Autotools, not meson -- confirmed directly (configure.ac/Makefile.am,

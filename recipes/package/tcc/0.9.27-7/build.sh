@@ -14,6 +14,14 @@ pkg_name="tcc"
 pkg_version="0.9.27-7"
 pkg_source="https://download.savannah.nongnu.org/releases/tinycc/tcc-0.9.27.tar.bz2"
 pkg_sha256="de23af78fca90ce32dff2dd45b3432b2334740bb9bb7b05bf60fdbfc396ceb9c"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/tcc-0.9.27-7.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="2e9095069725a251dcecadddc89e179f08627728ff13d376510a854e0e6de26d"
 # Nothing at runtime: tcc links against libc alone, and its own
 # libtcc1.a is part of this package.
 pkg_depends=""

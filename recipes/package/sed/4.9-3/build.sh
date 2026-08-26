@@ -14,6 +14,14 @@ pkg_name="sed"
 pkg_version="4.9-3"
 pkg_source="https://ftp.gnu.org/gnu/sed/sed-4.9.tar.gz"
 pkg_sha256="d1478a18f033a73ac16822901f6533d30b6be561bcbce46ffd7abce93602282e"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/sed-4.9-3.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="9b4eecb47d225fc63dad62367df422061176cd6572192e0ff72040a28a351808"
 # Nothing at runtime: GNU sed links against libc alone.
 pkg_depends=""
 #

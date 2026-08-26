@@ -35,6 +35,14 @@ pkg_name="libc-dev"
 pkg_version="2.36-3"
 pkg_source="https://ftp.gnu.org/gnu/libc/glibc-2.36.tar.xz"
 pkg_sha256="1c959fea240906226062cb4b1e7ebce71a9f0e3c0836c09e7e3423d434fcfe75"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/libc-dev-2.36-3.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="bd952d6a9b360c0c0f294ab538b6666213902ab92829d1d5d25db2ad33769bb8"
 pkg_depends=""
 
 # Deliberately not a real build -- see this recipe's own header

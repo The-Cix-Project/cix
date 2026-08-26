@@ -12,6 +12,14 @@ pkg_name="elfutils"
 pkg_version="0.192-6"
 pkg_source="https://sourceware.org/elfutils/ftp/0.192/elfutils-0.192.tar.bz2"
 pkg_sha256="616099beae24aba11f9b63d86ca6cc8d566d968b802391334c91df54eab416b4"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/elfutils-0.192-6.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="383d042799208e8daf73ab583d38615f6b526d49178e2a0e681b4b95d0e10354"
 pkg_depends=""
 
 # 0.192's own bare `CC=tcc ./configure` failed on TCC's own genuine

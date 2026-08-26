@@ -66,6 +66,14 @@ pkg_name="gcc"
 pkg_version="9.5.0-6"
 pkg_source="https://ftp.gnu.org/gnu/gcc/gcc-9.5.0/gcc-9.5.0.tar.xz https://gcc.gnu.org/pub/gcc/infrastructure/gmp-6.1.0.tar.bz2 https://gcc.gnu.org/pub/gcc/infrastructure/mpfr-3.1.4.tar.bz2 https://gcc.gnu.org/pub/gcc/infrastructure/mpc-1.0.3.tar.gz"
 pkg_sha256="27769f64ef1d4cd5e2be8682c0c93f9887983e6cfd1a927ce5a0a2915a95cf8f 498449a994efeba527885c10405993427995d3f86b8768d8cdf8d9dd7c6b73e8 d3103a80cdad2407ed581f3618c4bed04e0c92d1cf771a65ead662cc397f7775 617decc6ea09889fb08ede330917a00b16809b8db88c29c31bfbb49cbf88ecc3"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/gcc-9.5.0-6.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="3fd84ac5d0ad6308e6e916f0f92dc14b09c638091977ff3050a79ac708b7e486"
 # zlib/libc-dev: real, load-bearing (gcc-16.2.0-5's own recipe already
 # found and documents this same gap) -- always required for any real
 # C/C++ build in a target image with no incidental prior-install

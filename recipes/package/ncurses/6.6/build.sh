@@ -12,6 +12,14 @@ pkg_name="ncurses"
 pkg_version="6.6"
 pkg_source="https://invisible-island.net/archives/ncurses/ncurses-6.6.tar.gz"
 pkg_sha256="355b4cbbed880b0381a04c46617b7656e362585d52e9cf84a67e2009b749ff11"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/ncurses-6.6.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="c8ace3b85a940ab2022b65618d78a11ff2afcf72938d692ad720375bbeffbc57"
 pkg_depends=""
 
 # Wide (Unicode-capable) build only -- confirmed real via a local

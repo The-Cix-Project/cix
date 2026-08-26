@@ -19,6 +19,14 @@ pkg_name="coreutils"
 pkg_version="9.11"
 pkg_source="https://ftp.gnu.org/gnu/coreutils/coreutils-9.11.tar.xz"
 pkg_sha256="394024eda0a5955217ceda9cd1201e65dc8fa3aa29c2951135a49521d57c3cc3"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/coreutils-9.11.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="c7b38545eecbf09b565395927b253476c8b7aa7925e9e833a5bee781507860ab"
 pkg_depends=""
 
 # Plain autotools, confirmed directly. MAKEINFO=true skips texinfo doc

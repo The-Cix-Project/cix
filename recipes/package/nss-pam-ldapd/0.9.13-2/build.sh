@@ -31,6 +31,14 @@ pkg_name="nss-pam-ldapd"
 pkg_version="0.9.13-2"
 pkg_source="https://arthurdejong.org/nss-pam-ldapd/nss-pam-ldapd-0.9.13.tar.gz"
 pkg_sha256="e01784e17cb533bb66bd0601e205e785263445c3c2df7a6f90232ab4131c716d"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/nss-pam-ldapd-0.9.13-2.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="88b17ff223b2ecaa954fd342c7a9dc70f6d6c0bc54f8dfc6dbd060805ff6ffc7"
 pkg_depends="openldap-client linux-pam"
 
 # -2: real, confirmed-needed revision found while actually wiring this

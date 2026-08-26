@@ -16,6 +16,14 @@ pkg_name="m4"
 pkg_version="1.4.19-2"
 pkg_source="https://ftp.gnu.org/gnu/m4/m4-1.4.19.tar.xz"
 pkg_sha256="63aede5c6d33b6d9b13511cd0be2cac046f2e70fd0a07aa9573a04a82783af96"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/m4-1.4.19-2.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="53a36b7e7653a0ec60bce72be01be534c82d83b261edd88bd58a1bc9bd2b8a45"
 # binutils (ADR/recipe: recipes/package/binutils/2.42-2), for a real,
 # known-good ar/ranlib -- see pkg_build()'s own comment for why this
 # build genuinely needs one, unlike most recipes in this set.

@@ -9,6 +9,14 @@ pkg_name="vim"
 pkg_version="9.1.1428"
 pkg_source="https://github.com/vim/vim/archive/refs/tags/v9.1.1428.tar.gz"
 pkg_sha256="d96a8208f7756958d5bdb2464e9fdb770a8400e3aafac328e58c81c2477124f1"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/vim-9.1.1428.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="43cb6727961b0207eaa601fadb059c19231ac28ca8e9aee3de35830292d3a0a9"
 pkg_depends="ncurses"
 
 # --without-x/--disable-gui: no X11 anywhere in this project's own
