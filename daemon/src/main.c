@@ -927,6 +927,7 @@ enum conn_kind {
 	CONN_BOOTROOT_OUTPUT,   /* mkbootroot's own captured stdout/stderr, drained
 	                          * incrementally exactly like CONN_PKG_BUILD_OUTPUT (ADR-0087) */
 	CONN_ISO_ASSEMBLE,      /* server-side mkinstalleriso invocation (ADR-0064) */
+	CONN_IMAGE_EXPORT,      /* issue #126: tar of an image's rootfs into the artifact dir */
 	CONN_BOOTSTRAP_FETCH,   /* pkg/bootstrap's own toolchain_url curl fetch (ADR-0065) */
 	CONN_KERNEL_RELEASES_FETCH, /* kernel.org releases.json curl fetch (issue #65) */
 	CONN_PKG_SYNC_FETCH,    /* pkg sync's own repo-archive curl fetch (ADR-0121) */
@@ -8606,6 +8607,226 @@ enum iso_build_state { ISO_BUILD_NONE, ISO_BUILD_BUILDING, ISO_BUILD_READY, ISO_
 static enum iso_build_state g_iso_build_state = ISO_BUILD_NONE;
 static char g_iso_build_error[256];
 static char ISO_OUTPUT_PATH[PATH_MAX];
+
+/*
+ * Issue #126: export an image's current version as a whole-rootfs
+ * tarball, so compiled output can be pulled off one host and installed
+ * on another instead of being rebuilt from source.
+ *
+ * The output filename is deliberately EXACTLY what the consuming side
+ * already computes: ADR-0123's image-artifact fetch asks for
+ * <base_url>/images/<name>-<hash>.tar.gz, where hash is the image
+ * version (image_hash_manifest_string() over the sorted manifest). So
+ * an exported file dropped behind any plain HTTP server is directly
+ * consumable by a peer cixd's own image recipe -- no new protocol, no
+ * translation step, and the existing checksum verification still gates
+ * trust (the artifact server is never a trust boundary).
+ *
+ * Asynchronous with a status poll, like the ISO build above: tarring a
+ * multi-gigabyte rootfs would freeze this daemon's single event loop
+ * for minutes, which is exactly the wedge ADR-0180 exists to prevent.
+ * One export at a time -- an operator exports a handful of images
+ * deliberately, and a per-job identifier would be machinery with no
+ * caller.
+ */
+enum image_export_state {
+	IMAGE_EXPORT_NONE = 0,
+	IMAGE_EXPORT_BUILDING,
+	IMAGE_EXPORT_READY,
+	IMAGE_EXPORT_FAILED
+};
+
+static enum image_export_state g_image_export_state;
+static char g_image_export_name[PKG_IMAGE_NAME_MAX];
+static char g_image_export_version[IMAGE_VERSION_MAX];
+static char g_image_export_path[PATH_MAX];
+static char g_image_export_error[256];
+
+static void register_image_export_pidfd(pid_t pid, int pidfd)
+{
+	struct conn *cc;
+	struct cix_epoll_event ev;
+
+	cc = malloc(sizeof(*cc));
+	if (cc == NULL) {
+		perror("malloc (image export reactor conn)");
+		abort();
+	}
+	cc->kind = CONN_IMAGE_EXPORT;
+	cc->fd = pidfd;
+	cc->pkg_fetch_pid = pid;
+
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = cc;
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+		perror("epoll_ctl ADD image export pidfd");
+		abort();
+	}
+}
+
+/* Reaps the tar child; the POST returned 202 long ago, so the result
+ * only ever reaches the operator through GET .../export. */
+static void handle_image_export_event(struct conn *cc)
+{
+	int status;
+
+	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	if (waitpid(cc->pkg_fetch_pid, &status, 0) == cc->pkg_fetch_pid && WIFEXITED(status) &&
+	    WEXITSTATUS(status) == 0) {
+		g_image_export_state = IMAGE_EXPORT_READY;
+		logstore_write("cixd", "info", "image export: %s@%s ready at %s", g_image_export_name,
+		               g_image_export_version, g_image_export_path);
+	} else {
+		g_image_export_state = IMAGE_EXPORT_FAILED;
+		snprintf(g_image_export_error, sizeof(g_image_export_error),
+		         "tar failed (status 0x%x)", (unsigned)status);
+		unlink(g_image_export_path);
+		logstore_write("cixd", "error", "image export: %s failed -- %s", g_image_export_name,
+		               g_image_export_error);
+	}
+	close(cc->fd);
+	free(cc);
+}
+
+/*
+ * Starts the export. Returns 0 with the job running, -1 with err_msg
+ * filled. The rootfs is tarred from its own directory (tar -C <rootfs>
+ * . ) so the archive holds the tree's CONTENTS at top level, which is
+ * exactly the shape ADR-0123's consumer extracts straight into a new
+ * version's rootfs.
+ */
+static int image_export_start(const char *name, char *err_msg, size_t err_msg_size)
+{
+	char version[IMAGE_VERSION_MAX];
+	char rootfs[PATH_MAX];
+	char out_dir[PATH_MAX];
+	char *argv[7];
+	pid_t pid;
+	int pidfd;
+
+	if (g_image_export_state == IMAGE_EXPORT_BUILDING) {
+		snprintf(err_msg, err_msg_size, "an export of \"%s\" is already running",
+		         g_image_export_name);
+		return -1;
+	}
+	if (image_current_version(name, version, sizeof(version)) != IMAGE_OK) {
+		snprintf(err_msg, err_msg_size, "no such image, or it has no current version");
+		return -1;
+	}
+	image_version_rootfs_path(name, version, rootfs, sizeof(rootfs));
+	if (access(rootfs, R_OK) != 0) {
+		snprintf(err_msg, err_msg_size, "image rootfs is not readable: %s", rootfs);
+		return -1;
+	}
+
+	snprintf(out_dir, sizeof(out_dir), "%s/images", ARTIFACTS_DIR);
+	if (persist_mkdir_p(out_dir) != 0) {
+		snprintf(err_msg, err_msg_size, "could not create %s: %s", out_dir, strerror(errno));
+		return -1;
+	}
+	snprintf(g_image_export_path, sizeof(g_image_export_path), "%s/%s-%s.tar.gz", out_dir, name,
+	         version);
+	unlink(g_image_export_path);
+
+	argv[0] = (char *)"/usr/bin/tar";
+	argv[1] = (char *)"-C";
+	argv[2] = rootfs;
+	argv[3] = (char *)"-czf";
+	argv[4] = g_image_export_path;
+	argv[5] = (char *)".";
+	argv[6] = NULL;
+
+	pid = fork();
+	if (pid < 0) {
+		snprintf(err_msg, err_msg_size, "fork failed: %s", strerror(errno));
+		return -1;
+	}
+	if (pid == 0) {
+		execve(argv[0], argv, environ);
+		perror("child: execve tar (image export)");
+		_exit(127);
+	}
+	pidfd = sys_pidfd_open(pid, 0);
+	if (pidfd < 0) {
+		snprintf(err_msg, err_msg_size, "pidfd_open failed: %s", strerror(errno));
+		kill(pid, SIGKILL);
+		waitpid(pid, NULL, 0);
+		return -1;
+	}
+	register_image_export_pidfd(pid, pidfd);
+	snprintf(g_image_export_name, sizeof(g_image_export_name), "%s", name);
+	snprintf(g_image_export_version, sizeof(g_image_export_version), "%s", version);
+	g_image_export_error[0] = '\0';
+	g_image_export_state = IMAGE_EXPORT_BUILDING;
+	return 0;
+}
+
+static void handle_image_export_post(int fd, const char *name)
+{
+	char err_msg[256];
+
+	if (image_export_start(name, err_msg, sizeof(err_msg)) != 0) {
+		int code = (strstr(err_msg, "already running") != NULL) ? 409
+		           : (strstr(err_msg, "no such image") != NULL) ? 404
+		                                                        : 500;
+
+		respond_error(fd, code,
+		              code == 409   ? "Conflict"
+		              : code == 404 ? "Not Found"
+		                            : "Internal Server Error",
+		              err_msg);
+		return;
+	}
+	http_set_blocking(fd);
+	http_write_response(fd, 202, "Accepted", "application/json", "", 0);
+}
+
+static void handle_image_export_get(int fd, const char *name)
+{
+	struct json_writer w;
+	const char *state = "none";
+	struct stat st;
+	long long size = -1;
+
+	if (g_image_export_name[0] != '\0' && strcmp(g_image_export_name, name) == 0) {
+		switch (g_image_export_state) {
+		case IMAGE_EXPORT_BUILDING: state = "building"; break;
+		case IMAGE_EXPORT_READY: state = "ready"; break;
+		case IMAGE_EXPORT_FAILED: state = "failed"; break;
+		default: state = "none"; break;
+		}
+	}
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "image");
+	jw_str(&w, name);
+	jw_key(&w, "state");
+	jw_str(&w, state);
+	if (strcmp(state, "none") != 0) {
+		jw_key(&w, "image_version");
+		jw_str(&w, g_image_export_version);
+		jw_key(&w, "artifact_path");
+		jw_str(&w, g_image_export_path);
+		jw_key(&w, "artifact_name");
+		{
+			const char *base = strrchr(g_image_export_path, '/');
+
+			jw_str(&w, base != NULL ? base + 1 : g_image_export_path);
+		}
+	}
+	if (strcmp(state, "ready") == 0 && stat(g_image_export_path, &st) == 0)
+		size = (long long)st.st_size;
+	jw_key(&w, "size_bytes");
+	jw_num(&w, (double)size);
+	jw_key(&w, "error");
+	jw_str(&w, g_image_export_error);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+	http_set_blocking(fd);
+	http_write_response(fd, 200, "OK", "application/json", w.buf, w.len);
+	jw_free(&w);
+}
 
 static void register_iso_assemble_pidfd(pid_t pid, int pidfd)
 {
@@ -22363,6 +22584,23 @@ static void dispatch(int fd, const struct http_request *req)
 				handle_image_manifest_set(fd, image_name, req->body, req->body_len);
 				return;
 			}
+			/* Issue #126: /v1/images/{name}/export -- POST starts a
+			 * whole-rootfs tarball, GET reports it. */
+			if (nlen > 7 && strcmp(name + nlen - 7, "/export") == 0 &&
+			    nlen - 7 < PKG_IMAGE_NAME_MAX) {
+				char image_name[PKG_IMAGE_NAME_MAX];
+
+				memcpy(image_name, name, nlen - 7);
+				image_name[nlen - 7] = '\0';
+				if (strcmp(req->method, "POST") == 0) {
+					handle_image_export_post(fd, image_name);
+					return;
+				}
+				if (strcmp(req->method, "GET") == 0) {
+					handle_image_export_get(fd, image_name);
+					return;
+				}
+			}
 			/* ADR-0123: /v1/images/{name}/apply-recipe (POST) --
 			 * applies image's own already-stored recipe. */
 			if (nlen > 13 && strcmp(name + nlen - 13, "/apply-recipe") == 0 &&
@@ -25339,6 +25577,8 @@ int main(int argc, char **argv)
 				handle_bootroot_output_event(cc);
 			else if (cc->kind == CONN_ISO_ASSEMBLE)
 				handle_iso_assemble_event(cc);
+			else if (cc->kind == CONN_IMAGE_EXPORT)
+				handle_image_export_event(cc);
 			else if (cc->kind == CONN_BOOTSTRAP_FETCH)
 				handle_bootstrap_fetch_event(cc);
 			else if (cc->kind == CONN_KERNEL_RELEASES_FETCH)
