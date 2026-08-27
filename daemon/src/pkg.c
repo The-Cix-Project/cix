@@ -2,6 +2,7 @@
 #include "pkgpolicy.h"
 #include "hostproc.h"
 #include "image.h"
+#include "btrfs.h"
 #include "ldap.h"
 #include "linux_compat.h"
 #include "logstore.h"
@@ -1799,7 +1800,7 @@ static int produce_fail(const char *image, const char *staging, const char *step
 		logstore_write("cixd", "error",
 		               "image %s: could not produce a new version -- %s failed", image, step);
 	if (staging != NULL)
-		persist_remove_tree(staging);
+		cix_btrfs_subvol_delete_or_rmtree(staging);
 	return -1;
 }
 
@@ -1826,12 +1827,30 @@ static int image_produce_new_version(const char *image,
 	image_version_rootfs_path(image, old_version, old_rootfs, sizeof(old_rootfs));
 
 	snprintf(staging, sizeof(staging), "%s/%s/.staging.%d", g_images_dir, image, (int)getpid());
-	persist_remove_tree(staging); /* clear any leftover from a prior crashed attempt */
-	if (persist_mkdir_p(staging) != 0)
-		return produce_fail(image, NULL, "creating the staging directory", 1);
+	/* Clear any leftover from a prior crashed attempt. Subvolume-aware:
+	 * on btrfs the leftover staging is a subvolume that rmdir cannot
+	 * remove (ADR-0207); on ext4 this is the same rmtree as before. */
+	cix_btrfs_subvol_delete_or_rmtree(staging);
 
-	if (copy_tree_hardlink(old_rootfs, staging) != 0)
-		return produce_fail(image, staging, "hardlink-copying the current rootfs forward", 1);
+	/*
+	 * ADR-0207 phase 1: on btrfs, staging is a writable snapshot of the
+	 * current version's subvolume -- an O(1), copy-on-write clone,
+	 * which is the whole point of the substrate change (production
+	 * costs only the mutate's changed extents, not a copy of the
+	 * rootfs). On ext4 the fast hardlink copy is kept exactly as
+	 * before. Both leave `staging` a writable tree the mutate step and
+	 * the atomic rename below treat identically.
+	 */
+	if (cix_btrfs_is_backing(old_rootfs)) {
+		if (cix_btrfs_snapshot_or_copy(old_rootfs, staging) != 0)
+			return produce_fail(image, NULL, "snapshotting the current rootfs forward", 1);
+	} else {
+		if (persist_mkdir_p(staging) != 0)
+			return produce_fail(image, NULL, "creating the staging directory", 1);
+		if (copy_tree_hardlink(old_rootfs, staging) != 0)
+			return produce_fail(image, staging, "hardlink-copying the current rootfs forward",
+			                     1);
+	}
 
 	if (mutate(staging, ctx) != 0)
 		return produce_fail(image, staging, "the caller's own mutate step", 0);
@@ -1867,8 +1886,9 @@ static int image_produce_new_version(const char *image,
 	image_version_rootfs_path(image, new_version, new_rootfs, sizeof(new_rootfs));
 	if (stat(new_rootfs, &st) == 0) {
 		/* Already produced before -- discard this build, trust the
-		 * existing immutable copy (see this function's own comment). */
-		persist_remove_tree(staging);
+		 * existing immutable copy (see this function's own comment).
+		 * Subvolume-aware: on btrfs `staging` is a snapshot. */
+		cix_btrfs_subvol_delete_or_rmtree(staging);
 	} else {
 		snprintf(version_dir, sizeof(version_dir), "%s", new_rootfs);
 		slash = strrchr(version_dir, '/'); /* drop the trailing "/rootfs" component */
