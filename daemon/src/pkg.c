@@ -30,6 +30,11 @@
 
 extern char **environ;
 
+/* Exit code the fetch child uses when it never got as far as running
+ * curl, so the reported error does not claim a curl status that never
+ * happened. Chosen outside curl's own range of documented codes. */
+#define PKG_FETCH_EXIT_PRECONDITION 91
+
 /* PKG_CURL_BIN now lives in pkg.h -- shared with main.c's own
  * bootstrap-fetch mechanism (ADR-0065), one real definition. */
 #define PKG_TAR_BIN "/usr/bin/tar"
@@ -3774,6 +3779,54 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 			unlink(artifact_path); /* not found / wrong checksum -- discard, fall through */
 		}
 
+		/*
+		 * Issue #153: a source still carrying {{REPO_TOKEN}} means no
+		 * repo token is configured on this host -- substitution
+		 * happens at recipe-parse time and leaves the placeholder
+		 * alone when the stored token is empty (#60).
+		 *
+		 * Caught here rather than handed to curl, because curl reports
+		 * it as URL syntax:
+		 *
+		 *   curl: (3) nested brace in URL position 17:
+		 *   https://osakka:{{REPO_TOKEN}}@git.home.arpa/...
+		 *
+		 * which reads like a malformed recipe and says nothing about
+		 * the token. The daemon knows exactly what is wrong and can
+		 * say so, which is one `pkg repo-config set --token=` away
+		 * from fixed. Hit live on a real host, where the fetch had
+		 * been failing this way with nothing naming the cause.
+		 */
+		for (j = 0; j < recipe.source_count; j++) {
+			if (strstr(recipe.source[j], "{{REPO_TOKEN}}") != NULL) {
+				static const char msg[] =
+				    "pkg_source needs a repo token, but none is configured on this host -- "
+				    "set one with `cixctl pkg repo-config set --token=...`";
+				int efd = open(fetch_err_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+
+				/*
+				 * Written to the error sidecar, NOT to stderr. This
+				 * daemon never mirrors a child's stderr into the log
+				 * store or into e->error, so an fprintf here would be
+				 * invisible to the operator -- which is the whole
+				 * failure being fixed. The sidecar is what
+				 * pkg_fetch_completed() reads back as the "detail"
+				 * half of the reported error.
+				 */
+				if (efd >= 0) {
+					ssize_t written = write(efd, msg, sizeof(msg) - 1);
+
+					(void)written;
+					close(efd);
+				}
+				/* Distinct from curl's own exit codes: nothing was
+				 * fetched, so reporting a curl status would be the
+				 * same species of misleading error this guard exists
+				 * to remove. */
+				_exit(PKG_FETCH_EXIT_PRECONDITION);
+			}
+		}
+
 		for (j = 0; j < recipe.source_count; j++) {
 			char src_tarball_path[PATH_MAX];
 			pid_t sub;
@@ -4203,7 +4256,11 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 			}
 		}
 
-		if (detail_len > 0)
+		if (exit_status == PKG_FETCH_EXIT_PRECONDITION && detail_len > 0)
+			/* Never reached curl -- a precondition failed, and the
+			 * sidecar says which. */
+			pkg_fail(e, is_final_upgrade, PKG_FAILURE_FETCH, "%s", detail);
+		else if (detail_len > 0)
 			pkg_fail(e, is_final_upgrade, PKG_FAILURE_FETCH,
 			         "fetch failed (curl exit status %d): %s", exit_status, detail);
 		else
@@ -8077,6 +8134,31 @@ char *container_recipe_render(const char *name, const struct json_value *secrets
 		*out_err = PKG_ERR_PERSIST_FAILED;
 		return NULL;
 	}
+	/*
+	 * Issue #153's sibling case. An unmatched {{SECRET:KEY}} is left
+	 * untouched deliberately (see substitute_secrets above) -- a
+	 * preview must show the real token, not a guess. The reasoning
+	 * there assumes the leftover surfaces as an error downstream, and
+	 * for most fields it does.
+	 *
+	 * It does NOT for a files[] entry: a config file containing a
+	 * literal "{{SECRET:X}}" is perfectly valid JSON and creates a
+	 * perfectly valid container, which then misbehaves at runtime for
+	 * reasons nothing connects back to a missing secret. That is the
+	 * same shape as the dnsmasq pidfile and the non-executable
+	 * artifact -- valid by every check the platform makes, wrong in
+	 * the one way that matters.
+	 *
+	 * Warned rather than refused, because the deliberate leave-alone
+	 * behaviour is still correct and a caller may genuinely intend a
+	 * literal. The point is that it stops being silent.
+	 */
+	if (strstr(rendered, "{{SECRET:") != NULL)
+		logstore_write("cixd", "warn",
+		                "container recipe %s: rendered with an unsubstituted {{SECRET:...}} "
+		                "token -- the container will be created with the placeholder as "
+		                "literal text, which is valid but almost certainly not intended",
+		                name);
 	*out_err = PKG_OK;
 	return rendered;
 }
