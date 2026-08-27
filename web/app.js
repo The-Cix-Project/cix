@@ -1204,6 +1204,7 @@ const CATEGORY_VIEWS = {
 	"tls-throttle": "view-daemon-config",
 	"control-plane-reservation": "view-daemon-config",
 	"boot-console": "view-daemon-config",
+	esp: "view-daemon-config",
 	"kernel-policy": "view-daemon-config",
 	logs: "view-monitoring",
 	kmsg: "view-monitoring",
@@ -1284,6 +1285,7 @@ const SERVICE_TAB_VIEWS = {
 	"tls-throttle": "view-daemon-config",
 	"control-plane-reservation": "view-daemon-config",
 	"boot-console": "view-daemon-config",
+	esp: "view-daemon-config",
 	"kernel-policy": "view-daemon-config",
 	backup: "view-daemon-config",
 	"volume-backup-config": "view-daemon-config",
@@ -1374,6 +1376,8 @@ function renderCurrentView() {
 			refreshControlPlaneReservation();
 		else if (route.category === "boot-console")
 			refreshBootConsole();
+		else if (route.category === "esp")
+			refreshEsp();
 		else if (route.category === "kernel-policy")
 			refreshKernelPolicy();
 		else if (route.category === "logs")
@@ -6753,6 +6757,134 @@ document.getElementById("ldap-config-form").addEventListener("submit", async (ev
 });
 
 /* ---------- NTP (tasks #751-755) ---------- */
+
+/* ---- ESP: loader config and boot entries (ADR-0202, issue #128) ---- */
+
+let espDirty = false;
+
+function renderEspEntries(data) {
+	const body = document.getElementById("esp-entries-body");
+	const entries = data.entries || [];
+
+	body.textContent = "";
+	if (entries.length === 0) {
+		const row = document.createElement("tr");
+		const cell = document.createElement("td");
+
+		cell.colSpan = 5;
+		cell.className = "empty";
+		cell.textContent = "No loader entries";
+		row.appendChild(cell);
+		body.appendChild(row);
+		return;
+	}
+
+	for (const e of entries) {
+		const row = document.createElement("tr");
+
+		for (const text of [e.name, e.title || "-",
+		                     e.matches_default ? "yes" : "no",
+		                     e.is_running_slot ? "yes" : ""]) {
+			const cell = document.createElement("td");
+
+			cell.textContent = text;
+			row.appendChild(cell);
+		}
+
+		const actionCell = document.createElement("td");
+		const rmButton = document.createElement("button");
+
+		rmButton.textContent = "Delete";
+		rmButton.className = "button-danger";
+		/* The daemon refuses to delete the running slot's own entry;
+		 * disabling it here as well makes that a visible rule rather
+		 * than a surprise 409. */
+		rmButton.disabled = !!e.is_running_slot;
+		if (e.is_running_slot)
+			rmButton.title = "This is the entry the running system booted from";
+		rmButton.addEventListener("click", () => removeEspEntry(e.name));
+		actionCell.appendChild(rmButton);
+		row.appendChild(actionCell);
+
+		body.appendChild(row);
+	}
+}
+
+async function refreshEsp() {
+	try {
+		const data = await apiRequest("GET", "/v1/system/esp");
+		const box = document.getElementById("esp-summary");
+
+		cache.esp = data;
+		box.textContent = "";
+		if (!data.present) {
+			const p = document.createElement("p");
+
+			p.textContent = "No ESP reachable from this daemon.";
+			box.appendChild(p);
+			return;
+		}
+		for (const [label, value] of [
+			    ["Will boot", data.selected_entry || "(nothing matches the default)"],
+			    ["Running slot", data.running_slot || "(not an installed system)"],
+			    ["Writable", data.writable ? "yes" : "no"]]) {
+			const p = document.createElement("p");
+
+			p.textContent = label + ": " + value;
+			box.appendChild(p);
+		}
+		if (!espDirty) {
+			document.getElementById("esp-default").value = data.default || "";
+			document.getElementById("esp-timeout").value =
+			    data.timeout === null || data.timeout === undefined ? "" : data.timeout;
+		}
+		renderEspEntries(data);
+	} catch (e) {
+		/* Best-effort, same posture as the other config panels. */
+	}
+}
+
+async function removeEspEntry(name) {
+	try {
+		await apiRequest("DELETE", "/v1/system/esp/entries/" + encodeURIComponent(name));
+		clearStatus();
+		showStatus("Removed loader entry " + name, false);
+		await refreshEsp();
+	} catch (e) {
+		showStatus("Failed to remove " + name + ": " + e.message, true);
+	}
+}
+
+for (const id of ["esp-default", "esp-timeout"])
+	document.getElementById(id).addEventListener("input", () => {
+		espDirty = true;
+	});
+
+document.getElementById("esp-loader-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	const pattern = document.getElementById("esp-default").value.trim();
+	const timeoutRaw = document.getElementById("esp-timeout").value.trim();
+	const payload = {};
+
+	if (pattern !== "")
+		payload.default = pattern;
+	if (timeoutRaw !== "")
+		payload.timeout = Number(timeoutRaw);
+
+	try {
+		await apiRequest("PUT", "/v1/system/esp", payload);
+		clearStatus();
+		showStatus("Loader configuration saved", false);
+		espDirty = false;
+		await refreshEsp();
+	} catch (e) {
+		/* A pattern matching no entry comes back 409 -- that guard is
+		 * the whole point of the endpoint, so surface it as-is rather
+		 * than a generic failure. */
+		showStatus("Failed to save loader config: " + e.message, true);
+	}
+});
 
 /* ---- DNS provisioning: one call, per-replica results (ADR-0205) ---- */
 

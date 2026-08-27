@@ -789,6 +789,7 @@
 				<button type="button" class="tab-button" data-tab="tls-throttle">TLS Throttle</button>
 				<button type="button" class="tab-button" data-tab="control-plane-reservation">Control Plane</button>
 				<button type="button" class="tab-button" data-tab="boot-console">Boot Console</button>
+				<button type="button" class="tab-button" data-tab="esp">Boot Entries</button>
 				<button type="button" class="tab-button" data-tab="kernel-policy">Kernel Line</button>
 				<button type="button" class="tab-button" data-tab="backup">Backup</button>
 				<button type="button" class="tab-button" data-tab="volume-backup-config">Volume Backups</button>
@@ -1045,6 +1046,52 @@
 					<thead><tr><th>Loader entry</th><th>options</th></tr></thead>
 					<tbody id="boot-entries-body">
 						<tr><td colspan="2" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+			</div>
+		</div>
+			<div class="tab-panel" data-tab="esp" hidden>
+			<div class="view-list">
+				<h2>Boot Entries (ESP)</h2>
+				<p class="hint">
+					What this machine will actually boot next, and why. <strong>Will boot</strong>
+					is computed the way systemd-boot itself chooses: entries whose boot counter has
+					run out sort last, then by <code>sort-key</code> and <code>version</code>
+					descending &mdash; so a freshly staged update outranks an older entry whatever
+					its slot letter (ADR-0202).
+				</p>
+				<p class="hint">
+					<strong>Default is a glob pattern, not a name.</strong> That is what made a real
+					host reboot into the image it was already running, repeatedly, with no error
+					anywhere: a stale <code>thinc-*</code> written at install time went on matching
+					six obsolete entries and outranking every correctly staged one (issue #128).
+					Leave it as <code>cix-*</code> unless you have a specific reason &mdash; pinning
+					it to one slot breaks the <em>next</em> update, which stages the other one.
+				</p>
+				<div id="esp-summary" class="pki-ca-status"><p>Loading&hellip;</p></div>
+				<form id="esp-loader-form">
+					<label class="wide">
+						Default pattern
+						<input type="text" id="esp-default" placeholder="cix-*">
+					</label>
+					<label class="wide">
+						Menu timeout (seconds)
+						<input type="number" id="esp-timeout" min="0" max="600">
+					</label>
+					<button type="submit">Save</button>
+				</form>
+				<table id="esp-entries">
+					<thead>
+						<tr>
+							<th>Entry</th>
+							<th>Title</th>
+							<th>Matches default</th>
+							<th>Running slot</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody id="esp-entries-body">
+						<tr><td colspan="5" class="empty">Loading&hellip;</td></tr>
 					</tbody>
 				</table>
 			</div>
