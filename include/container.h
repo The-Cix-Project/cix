@@ -88,6 +88,18 @@ struct overlay_spec {
 	 * inside the userns) ever run. NULL for non-userns (classic overlay path).
 	 */
 	const char *userns_rootfs;
+	/*
+	 * ADR-0207 phase 2: when set, `merged` IS this container's own
+	 * per-container rootfs (a btrfs snapshot of its image's subvolume,
+	 * or -- under the test-only copy mode -- a plain copied tree), and
+	 * there is no overlay at all: lowerdir/upperdir/workdir are unused,
+	 * the child self-binds `merged` (pivot_root needs a mount point, a
+	 * plain directory is not one -- the same lesson the userns path
+	 * learned in ADR-0179 phase 2b) and pivots straight in. 0 keeps
+	 * the classic overlay path, which non-btrfs hosts (including the
+	 * btrfs-incapable dev sandbox) run until ADR-0207 phase 4.
+	 */
+	int direct_rootfs;
 	const char *merged;
 	/*
 	 * Real ext4 project-quota id (Part 4, bare-metal-readiness plan,

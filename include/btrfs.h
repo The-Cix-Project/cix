@@ -62,4 +62,20 @@ int cix_btrfs_snapshot_or_copy(const char *src, const char *dst);
  */
 int cix_btrfs_subvol_delete_or_rmtree(const char *path);
 
+/*
+ * Apply a btrfs qgroup hard limit of `bytes` EXCLUSIVE bytes to the
+ * subvolume at `path` (enabling quotas on the filesystem first,
+ * idempotently). Exclusive -- not referenced -- because a container's
+ * rootfs snapshot shares every unchanged extent with its image: a
+ * referenced-bytes limit would count the whole image against the
+ * container from the first instant (a 100MB quota on a 1GB image could
+ * never even start), while exclusive bytes are precisely the
+ * container's own divergence -- the same "quota = your diff" semantics
+ * the overlay upperdir quota (ADR-0103) always had.
+ *
+ * Returns 0 on success, -1 with errno set otherwise. Only meaningful
+ * on btrfs; callers gate on the storage mode, not this function.
+ */
+int cix_btrfs_qgroup_limit_excl(const char *path, unsigned long long bytes);
+
 #endif /* CIX_BTRFS_H */

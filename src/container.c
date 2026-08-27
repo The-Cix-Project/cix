@@ -402,7 +402,22 @@ int container_create(const struct container_spec *spec, struct container_handle 
 		 * move_mounts + pivots into just below. So the classic child-side
 		 * overlay_create runs for the non-userns case only.
 		 */
-		if (!spec->userns_enabled) {
+		if (!spec->userns_enabled && spec->ov.direct_rootfs) {
+			/*
+			 * ADR-0207 phase 2: no overlay. merged IS this
+			 * container's own rootfs (a btrfs snapshot of its
+			 * image, or the test-mode copy); pivot_root demands a
+			 * mount point and a plain directory is not one, so
+			 * self-bind it first -- the identical lesson the userns
+			 * path below learned in ADR-0179 phase 2b, applied to
+			 * the non-userns direct path.
+			 */
+			if (mount(spec->ov.merged, spec->ov.merged, NULL, MS_BIND, NULL) != 0) {
+				child_diag(diag_pipe[1], "child: bind direct rootfs");
+				_exit(123);
+			}
+		}
+		if (!spec->userns_enabled && !spec->ov.direct_rootfs) {
 			int overlay_ret = overlay_create(&spec->ov);
 
 			/*
