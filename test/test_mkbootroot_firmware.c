@@ -318,6 +318,40 @@ int main(void)
 			                "checking anything\n");
 			ok = 0;
 		}
+
+		/*
+		 * mksquashfs, checked explicitly (issue #146). The scan above
+		 * only looks at daemon/ sources, and this one is mkbootroot's
+		 * own tool, so nothing above would notice it going missing.
+		 *
+		 * It has to be staged because the assembly step's fallback
+		 * depends on it. ADR-0078 described that fallback as harmless
+		 * -- "a box that never built cix-hosttools keeps today's
+		 * dev-host-sourced behavior, never a hard failure" -- which
+		 * held on a dev machine and was false on every installed host,
+		 * where /usr/bin/mksquashfs does not exist. A fresh install
+		 * therefore could not deploy an update to itself, failing with
+		 * "mksquashfs binary not found at /usr/bin/mksquashfs" after
+		 * the build had already succeeded.
+		 */
+		snprintf(path, sizeof(path), "%s/usr/bin/mksquashfs", STAGE_DIR);
+		if (!file_exists(path)) {
+			fprintf(stderr,
+			        "FAIL: mksquashfs is not staged -- an installed host with no cix-hosttools "
+			        "image cannot assemble a control-plane squashfs, so it cannot deploy an "
+			        "update to itself (#146)\n");
+			ok = 0;
+		} else {
+			struct stat mst;
+
+			/* Staged content with no exec bit is a real, previously-hit
+			 * failure mode (#139): the file is present, its checksum is
+			 * right, and it dies at execve. */
+			if (stat(path, &mst) != 0 || (mst.st_mode & S_IXUSR) == 0) {
+				fprintf(stderr, "FAIL: staged mksquashfs is not executable\n");
+				ok = 0;
+			}
+		}
 	}
 
 	system("rm -rf " STAGE_DIR " " FW_SRC_DIR " " MODULES_SRC_DIR " " KMOD_BIN_SRC_DIR " "
