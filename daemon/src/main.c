@@ -1754,39 +1754,33 @@ static int boot_init(void)
  */
 static int confirm_boot(const char *slot)
 {
-	DIR *d;
-	struct dirent *de;
-	char prefix[32];
-	size_t prefix_len;
+	char entry_name[ESP_ENTRY_NAME_MAX];
 	char oldpath[PATH_MAX];
 	char newpath[PATH_MAX];
-	int found = 0;
 
-	snprintf(prefix, sizeof(prefix), "cix-%s", slot);
-	prefix_len = strlen(prefix);
-
-	d = opendir(g_esp_entries_dir);
-	if (d == NULL) {
-		perror(g_esp_entries_dir);
-		return -1;
-	}
-	while ((de = readdir(d)) != NULL) {
-		if (strncmp(de->d_name, prefix, prefix_len) == 0) {
-			found = 1;
-			snprintf(oldpath, sizeof(oldpath), "%s/%s", g_esp_entries_dir, de->d_name);
-			break;
-		}
-	}
-	closedir(d);
-
-	if (!found) {
+	/*
+	 * Which entry to confirm is esp.c's business -- it already owns
+	 * loader-entry naming, and this used to duplicate that knowledge
+	 * here, wrongly: it took whichever entry readdir() returned first.
+	 * After an update the ESP legitimately holds both
+	 * `cix-<slot>.conf` and `cix-<slot>+N.conf`, so hitting the bare
+	 * one first made this a no-op while the real entry's counter kept
+	 * ticking down -- an update that booted and passed every health
+	 * check, silently undone two reboots later. Seen on a real host
+	 * after a successful cutover (cix-a.conf and cix-a+2-1.conf side
+	 * by side).
+	 */
+	if (!esp_entry_to_confirm(g_esp_entries_dir, slot, entry_name, sizeof(entry_name))) {
 		fprintf(stderr, "confirm_boot: no loader entry found for slot %s\n", slot);
 		return -1;
 	}
 
+	snprintf(oldpath, sizeof(oldpath), "%s/%s", g_esp_entries_dir, entry_name);
 	snprintf(newpath, sizeof(newpath), "%s/cix-%s.conf", g_esp_entries_dir, slot);
 	if (strcmp(oldpath, newpath) == 0)
 		return 0; /* already confirmed (no counter suffix) -- nothing to do */
+	/* rename(2) replaces any stale confirmed entry of the same name,
+	 * which is exactly what should happen to the previous cycle's. */
 	if (rename(oldpath, newpath) != 0) {
 		perror("confirm_boot rename");
 		return -1;
