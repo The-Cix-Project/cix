@@ -309,6 +309,27 @@ struct cix_btrfs_ioctl_vol_args {
 	char name[CIX_BTRFS_PATH_NAME_MAX + 1];
 };
 
+/*
+ * The v2 vol_args, used by SNAP_CREATE_V2 (ADR-0207): a writable
+ * snapshot of the subvolume named by `fd` is created under the parent
+ * the ioctl is issued on, with leaf name `name`. flags=0 means a
+ * writable snapshot (BTRFS_SUBVOL_RDONLY, unused here, would make it
+ * read-only). The struct is exactly 4096 bytes -- 8+8+8+32+4040 --
+ * which the ioctl number below encodes; all members are naturally
+ * 8-byte aligned before the trailing char array, so TCC's default
+ * layout matches the kernel's without any packing (unlike the
+ * epoll_event case, ADR-0008). `unused` stands in for the kernel's
+ * size/qgroup_inherit union, which this project does not use.
+ */
+#define CIX_BTRFS_SUBVOL_NAME_MAX 4039
+struct cix_btrfs_ioctl_vol_args_v2 {
+	int64_t fd;
+	uint64_t transid;
+	uint64_t flags;
+	uint64_t unused[4];
+	char name[CIX_BTRFS_SUBVOL_NAME_MAX + 1];
+};
+
 struct cix_btrfs_qgroup_limit {
 	uint64_t flags;
 	uint64_t max_rfer;
@@ -333,6 +354,10 @@ struct cix_btrfs_ioctl_quota_ctl_args {
 
 /* _IOW(0x94, 14, struct cix_btrfs_ioctl_vol_args) -- sizeof() 4096 */
 #define CIX_BTRFS_IOC_SUBVOL_CREATE 0x5000940e
+/* _IOW(0x94, 15, struct cix_btrfs_ioctl_vol_args) -- sizeof() 4096 */
+#define CIX_BTRFS_IOC_SNAP_DESTROY 0x5000940f
+/* _IOW(0x94, 23, struct cix_btrfs_ioctl_vol_args_v2) -- sizeof() 4096 */
+#define CIX_BTRFS_IOC_SNAP_CREATE_V2 0x50009417
 /* _IOWR(0x94, 40, struct cix_btrfs_ioctl_quota_ctl_args) -- sizeof() 16 */
 #define CIX_BTRFS_IOC_QUOTA_CTL 0xc0109428
 /* _IOR(0x94, 43, struct cix_btrfs_ioctl_qgroup_limit_args) -- sizeof() 48 */
