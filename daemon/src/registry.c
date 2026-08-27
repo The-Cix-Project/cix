@@ -219,6 +219,29 @@ int registry_ip_available(uint32_t candidate_be)
 	return !ip_in_use(candidate_be);
 }
 
+int registry_ip_holder(uint32_t candidate_be, char *out_name, size_t out_name_size,
+                        int *out_tearing_down)
+{
+	int i, j;
+
+	if (out_tearing_down != NULL)
+		*out_tearing_down = 0;
+	for (i = 0; i < REGISTRY_MAX_CONTAINERS; i++) {
+		if (!g_entries[i].in_use)
+			continue;
+		for (j = 0; j < g_entries[i].net_count; j++) {
+			if (g_entries[i].nets[j].ip_be != candidate_be)
+				continue;
+			if (out_name != NULL && out_name_size > 0)
+				snprintf(out_name, out_name_size, "%s", g_entries[i].name);
+			if (out_tearing_down != NULL)
+				*out_tearing_down = g_entries[i].teardown_kind != REGISTRY_TEARDOWN_NONE;
+			return 1;
+		}
+	}
+	return 0;
+}
+
 void registry_mark_exited(struct registry_entry *entry)
 {
 	int status, sig;

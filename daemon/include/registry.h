@@ -493,6 +493,23 @@ int registry_alloc_ip(uint32_t network_base_be, int host_min, int host_max, uint
 int registry_ip_available(uint32_t candidate_be);
 
 /*
+ * Names the container currently holding an address, and whether it is
+ * being torn down. Exists so a rejection can say WHICH container holds
+ * the address rather than only that one does.
+ *
+ * The distinction matters because container deletion is asynchronous:
+ * DELETE returns as soon as the teardown is under way, so an immediate
+ * recreate at the same address legitimately races a holder that is
+ * on its way out. Reported as "shutting down" rather than as a plain
+ * conflict, because the two call for different responses -- retry
+ * shortly, versus go and find what is using it.
+ *
+ * Returns 0 if nothing holds it.
+ */
+int registry_ip_holder(uint32_t candidate_be, char *out_name, size_t out_name_size,
+                        int *out_tearing_down);
+
+/*
  * Call when epoll reports entry->handle.pidfd readable: reaps via
  * container_wait() (safe/non-blocking here -- readability is defined
  * as "the process has already exited") and marks the entry exited.

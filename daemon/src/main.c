@@ -1887,7 +1887,10 @@ static int network_error_to_status(enum network_error err, const char **out_msg)
 		*out_msg = "ip is not a usable address on this network";
 		return 400;
 	case NETWORK_ERR_IP_TAKEN:
-		*out_msg = "ip is already assigned to a running container";
+		/* Not necessarily RUNNING: the address is held by any registry
+		 * entry, including one being torn down (#148). Callers that
+		 * can identify the holder say so instead of using this. */
+		*out_msg = "ip is already assigned to another container";
 		return 409;
 	case NETWORK_ERR_INTERFACE_NOT_FOUND:
 		*out_msg = "unknown or unassignable interface (see GET /v1/devices)";
@@ -11744,8 +11747,41 @@ static int create_container_from_body(const char *body, size_t body_len,
 					const char *ip_msg;
 					int ip_status = network_error_to_status(ip_err, &ip_msg);
 
+					/*
+					 * Issue #148: say WHICH container holds the
+					 * address, and whether it is on its way out.
+					 *
+					 * Container deletion is asynchronous -- DELETE
+					 * returns once teardown is under way -- so
+					 * recreating at the same address immediately after
+					 * a delete legitimately races the previous holder.
+					 * The old message said "assigned to a running
+					 * container" when nothing was running and nothing
+					 * appeared in `container ls`, which reads as
+					 * "something else grabbed it" and sends an
+					 * operator looking for a conflict that does not
+					 * exist. Naming the holder, and distinguishing
+					 * "shutting down" from a genuine clash, is the
+					 * difference between "retry in a moment" and "go
+					 * find what is using this".
+					 */
+					if (ip_err == NETWORK_ERR_IP_TAKEN) {
+						char holder[REGISTRY_NAME_MAX];
+						int tearing = 0;
+
+						holder[0] = '\0';
+						if (registry_ip_holder(ip_be, holder, sizeof(holder), &tearing))
+							snprintf(err_msg, err_msg_size,
+							          "ip is held by container \"%s\"%s", holder,
+							          tearing ? ", which is still shutting down -- retry "
+							                     "shortly"
+							                  : "");
+						else
+							snprintf(err_msg, err_msg_size, "%s", ip_msg);
+					} else {
+						snprintf(err_msg, err_msg_size, "%s", ip_msg);
+					}
 					json_free(root);
-					snprintf(err_msg, err_msg_size, "%s", ip_msg);
 					return ip_status;
 				}
 			}
