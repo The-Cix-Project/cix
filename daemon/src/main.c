@@ -12035,6 +12035,35 @@ static int create_container_from_body(const char *body, size_t body_len,
 				snprintf(err_msg, err_msg_size, "invalid files entry");
 				return 400;
 			}
+			/*
+			 * Issue #142: /run is a fresh tmpfs mounted at every
+			 * container start (src/mountns.c, deliberately -- a
+			 * daemon finding its own stale pidfile there is a real
+			 * failure this project has hit). files[] are written into
+			 * the container's upperdir at CREATION time, so anything
+			 * staged under /run is masked by that mount on every
+			 * single start and can never be read by anything.
+			 *
+			 * Refused rather than silently discarded, because there is
+			 * no arrangement in which it works: the file is written,
+			 * the request succeeds, the container starts, and the
+			 * content is simply not there. That is the same shape as
+			 * the artifact that lost its exec bit and the config file
+			 * holding a literal {{SECRET:X}} -- valid by every check
+			 * the platform makes, wrong in the one way that matters.
+			 */
+			if (strcmp(path, "/run") == 0 || strncmp(path, "/run/", 5) == 0) {
+				/* Message BEFORE the free: `path` points into the
+				 * parsed JSON, so formatting it afterwards prints
+				 * freed memory. */
+				snprintf(err_msg, err_msg_size,
+				          "files entry \"%s\": /run is a fresh tmpfs at every container "
+				          "start, so staged content there is never visible -- use another "
+				          "path (/etc is the usual home for config)",
+				          path);
+				json_free(root);
+				return 400;
+			}
 			mode = mode_str != NULL ? strtol(mode_str, NULL, 8) : 0644;
 			if (mode < 0 || mode > 0777) {
 				json_free(root);
