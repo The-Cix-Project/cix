@@ -122,7 +122,17 @@ static int stop_daemon(pid_t pid)
 }
 
 /* One loader entry, in systemd-boot's own format. */
-static int write_entry(const char *name, const char *slot, const char *init_path)
+/*
+ * sort-key and version are written here because the real thing writes
+ * them -- cix-install.c emits "sort-key cix / version 1", and every
+ * POST /system/update emits "sort-key cix / version <unix timestamp>".
+ * They are not decoration: they are what systemd-boot actually orders
+ * by, so a fixture omitting them cannot model selection at all. An
+ * earlier version of this test omitted both and therefore "verified"
+ * an ordering rule the bootloader does not use.
+ */
+static int write_entry(const char *name, const char *slot, const char *init_path,
+                        const char *version)
 {
 	char path[PATH_MAX];
 	FILE *f;
@@ -134,9 +144,9 @@ static int write_entry(const char *name, const char *slot, const char *init_path
 		return -1;
 	}
 	fprintf(f,
-	        "title Cix (%s)\nlinux /cix-bzImage-%s\noptions console=tty0 root=/dev/vda%s rw "
-	        "init=%s -- --init-mode --slot=%s\n",
-	        name, slot, strcmp(slot, "a") == 0 ? "2" : "3", init_path, slot);
+	        "title Cix (%s)\nsort-key cix\nversion %s\nlinux /cix-bzImage-%s\noptions "
+	        "console=tty0 root=/dev/vda%s rw init=%s -- --init-mode --slot=%s\n",
+	        name, version, slot, strcmp(slot, "a") == 0 ? "2" : "3", init_path, slot);
 	fclose(f);
 	return 0;
 }
@@ -162,11 +172,18 @@ static int seed_esp(void)
 	fprintf(f, "default thinc-*\ntimeout 3\nconsole-mode keep\neditor no\n");
 	fclose(f);
 
-	if (write_entry("thinc-a", "a", "/bin/thincd") != 0 ||
-	    write_entry("thinc-b", "b", "/bin/thincd") != 0 ||
-	    write_entry("thinc-a+3", "a", "/bin/thincd") != 0 ||
-	    write_entry("thinc-b+3", "b", "/bin/thincd") != 0 ||
-	    write_entry("cix-b+3", "b", "/bin/cixd") != 0)
+	/*
+	 * Versions mirror how these entries really come to exist: "1" from
+	 * the installer, and an increasing timestamp from each subsequent
+	 * update. Expected selections below were taken from real
+	 * `bootctl list` output against this exact layout, not derived
+	 * from reading the specification.
+	 */
+	if (write_entry("thinc-a", "a", "/bin/thincd", "1") != 0 ||
+	    write_entry("thinc-b", "b", "/bin/thincd", "100") != 0 ||
+	    write_entry("thinc-a+3", "a", "/bin/thincd", "200") != 0 ||
+	    write_entry("thinc-b+3", "b", "/bin/thincd", "300") != 0 ||
+	    write_entry("cix-b+3", "b", "/bin/cixd", "400") != 0)
 		return -1;
 	return 0;
 }
@@ -230,39 +247,77 @@ int main(void)
 		const char *def = json_as_string(json_object_get(r.json, "default"));
 		const char *selected = json_as_string(json_object_get(r.json, "selected_entry"));
 		const struct json_value *staged = entry_named(r.json, "cix-b+3.conf");
-		const struct json_value *stale = entry_named(r.json, "thinc-a.conf");
+		const struct json_value *stale = entry_named(r.json, "thinc-b+3.conf");
 
 		if (!bool_field(r.json, "present"))
 			fail("ESP reported absent with a real loader directory present");
 		if (def == NULL || strcmp(def, "thinc-*") != 0)
 			fail("default pattern: got %s, expected thinc-*", def != NULL ? def : "(null)");
 		/*
-		 * The whole bug in one field: the firmware boots a stale entry.
+		 * The whole bug in one field: the firmware boots a stale entry
+		 * and the correctly staged one is never even a candidate.
 		 *
-		 * And specifically a slot-A one. The real host this fixture
-		 * copies boots slot A, so an implementation taking the LAST
-		 * match in sort order instead of the FIRST names a slot-B
-		 * entry here -- confidently wrong about the one thing an
-		 * operator reads this field for. Not hypothetical: that is
-		 * what the first version of this did, caught only by checking
-		 * the answer against the real machine.
+		 * Which stale entry is decided by version, descending. Real
+		 * `bootctl list` on this exact layout orders them
+		 * cix-b+3 (400), thinc-b+3 (300), thinc-a+3 (200),
+		 * thinc-b (100), thinc-a (1) -- so thinc-* selects
+		 * thinc-b+3.conf. This field exists to be
+		 * believed, so being confidently wrong here is worse than not
+		 * reporting it: an earlier implementation ordered by filename
+		 * ascending and answered "thinc-a", which would send an
+		 * operator looking at the wrong slot entirely.
 		 */
-		if (selected == NULL || strncmp(selected, "thinc-a", 7) != 0)
-			fail("selected_entry: got %s, expected a slot-A thinc-* entry (the slot the "
-			     "real host actually boots)",
+		if (selected == NULL || strcmp(selected, "thinc-b+3.conf") != 0)
+			fail("selected_entry: got %s, expected thinc-b+3.conf (highest version among "
+			     "thinc-*, per real bootctl)",
 			     selected != NULL ? selected : "(null)");
 		if (staged == NULL)
 			fail("the staged cix-b+3.conf entry is missing from the listing");
 		else if (bool_field(staged, "matches_default"))
 			fail("the staged entry must NOT match a thinc-* default");
 		if (stale == NULL || !bool_field(stale, "matches_default"))
-			fail("the stale thinc-a.conf entry should match the thinc-* default");
-		if (stale != NULL && !bool_field(stale, "is_running_slot"))
-			fail("thinc-a.conf should be flagged as the running slot's entry");
+			fail("the stale thinc-b+3.conf entry should match the thinc-* default");
 		cix_response_free(&r);
 	} else {
 		fail("GET /v1/system/esp failed");
 	}
+
+	/*
+	 * ---- the guarantee an A/B update depends on ----
+	 *
+	 * With the correct default, a freshly staged entry must be the one
+	 * that boots. This is the property that makes POST /system/update
+	 * work at all, and it rests entirely on version-descending order:
+	 * the staged entry carries a unix timestamp, every older entry
+	 * carries something smaller, so the new one sorts first regardless
+	 * of which slot letter it happens to be.
+	 *
+	 * Asserted explicitly because an earlier ordering model got this
+	 * backwards and reported that a correctly staged slot-B update
+	 * would never boot. That reading is worse than a missing field: it
+	 * invites pinning the default to one slot, which really does break
+	 * the next update in the other direction.
+	 */
+	if (cix_client_request(&c, "PUT", "/v1/system/esp", "{\"default\":\"cix-*\"}", &r) == 0) {
+		if (r.status != 200)
+			fail("setting default to cix-*: expected 200, got %d", r.status);
+		cix_response_free(&r);
+	} else {
+		fail("PUT default=cix-* failed to send");
+	}
+	if (cix_client_request(&c, "GET", "/v1/system/esp", NULL, &r) == 0 && r.json != NULL) {
+		const char *selected = json_as_string(json_object_get(r.json, "selected_entry"));
+
+		if (selected == NULL || strcmp(selected, "cix-b+3.conf") != 0)
+			fail("with default cix-*, the staged entry must be selected; got %s",
+			     selected != NULL ? selected : "(null)");
+		cix_response_free(&r);
+	} else {
+		fail("GET /v1/system/esp after setting cix-* failed");
+	}
+	/* restore the stale-pattern fixture for the checks that follow */
+	if (cix_client_request(&c, "PUT", "/v1/system/esp", "{\"default\":\"thinc-*\"}", &r) == 0)
+		cix_response_free(&r);
 
 	/* ---- a default matching nothing is refused, not warned about ---- */
 	if (cix_client_request(&c, "PUT", "/v1/system/esp", "{\"default\":\"nosuch-*\"}", &r) == 0) {

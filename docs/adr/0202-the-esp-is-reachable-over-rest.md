@@ -54,9 +54,15 @@ This is the part that turns #128 from a multi-hour investigation into a single c
 An API that describes the firmware must agree with the firmware, so both halves mirror systemd-boot's own rules rather than a plausible-looking approximation:
 
 - **Entry id.** The id is the filename with `.conf` removed *and* the Automatic Boot Assessment counter stripped — `cix-b+3.conf` has the id `cix-b`. `esp_pattern_matches()` therefore tests three spellings (filename, `.conf`-stripped, and the real id), so `default cix-b` selects `cix-b+3.conf` exactly as the bootloader would.
-- **Selection order.** Entries whose counter has reached zero sort last; the rest sort ascending by id; the pattern takes the **first** match.
+- **Selection order.** Entries whose counter has reached zero sort last; then, when both entries carry a `sort-key`, by sort-key ascending and then **version descending**; then by id descending. The pattern takes the **first** match. This is systemd-boot's own `config_entry_compare()`, and version-descending is the rule the A/B update mechanism actually rests on: every staged entry carries a unix timestamp while the installer's carries `version 1`, so a freshly staged entry sorts first regardless of its slot letter.
 
-That second rule was got wrong first time round, and the way it was caught is worth recording. The initial implementation took the *last* match in sort order. Against the real host's entry set that named `thinc-b.conf` — a **slot-B** entry — while the machine demonstrably boots **slot A**. The error was invisible in isolation and only surfaced by checking the computed answer against what the box actually does. A field like this being confidently wrong is worse than absent, because its whole purpose is to be believed; the regression test now asserts the slot, not just the prefix.
+That ordering was got wrong twice, and both errors are worth recording because they share a cause: the model was written from reasoning rather than from the bootloader.
+
+The first implementation took the *last* match in sort order, naming a slot-B entry on a host that demonstrably boots slot A. That was corrected to first-match — but the correction kept two other mistakes, and the fix looked validated because it now agreed with the one observation available.
+
+The rest surfaced later, on a real deploy. The model ordered ids **ascending** and ignored `sort-key`/`version` entirely, so on a host with `cix-a.conf` (version 1) and a freshly staged `cix-b+3.conf` (a timestamp) it reported `will boot: cix-a.conf` — i.e. that a correctly staged update would never boot. It was very nearly acted on: the obvious response is to pin `default` to the staged slot, which genuinely does break the *next* update in the other direction. What settled it was extracting a real `bootctl` and asking it, against a fabricated ESP mirroring the host exactly: it marks `cix-b` as the default. Every ordering rule above is now taken from that, and the tests assert what `bootctl list` actually printed for the fixture they build.
+
+The lesson is narrower than "test more". A field whose whole purpose is to be believed must be derived from the thing it models, not from a plausible reading of it — and a fixture that omits the inputs the real decision turns on (here, `sort-key` and `version`, which the old test never wrote) cannot validate the model no matter how many assertions it carries.
 
 ### Two guards, because the operator is not at the console
 

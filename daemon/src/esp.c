@@ -226,6 +226,8 @@ static int read_entry(const char *name, struct esp_entry *out)
 	parse_directive(buf, "title", out->title, sizeof(out->title));
 	parse_directive(buf, "linux", out->linux_image, sizeof(out->linux_image));
 	parse_directive(buf, "options", out->options, sizeof(out->options));
+	parse_directive(buf, "sort-key", out->sort_key, sizeof(out->sort_key));
+	parse_directive(buf, "version", out->version, sizeof(out->version));
 	free(buf);
 	return 0;
 }
@@ -503,6 +505,37 @@ enum esp_error esp_entry_delete(const char *name)
  * the same slot, which is the fact an operator is actually reading
  * this for.
  */
+/*
+ * systemd-boot's own entry ordering, as implemented by its
+ * config_entry_compare() -- the pattern in loader.conf then selects the
+ * FIRST entry in this order.
+ *
+ * Every rule below was pinned against real `bootctl list` output rather
+ * than read off documentation, because an earlier version of this
+ * function got two of them wrong in a way nothing caught: it ignored
+ * sort-key/version entirely and ordered ids ASCENDING. That made it
+ * report "will boot: cix-a.conf" on a host where real systemd-boot
+ * selects cix-b -- the freshly staged update. Acting on that wrong
+ * answer is what makes it dangerous: it says a correctly staged update
+ * will not boot, and the obvious "fix" (pinning default to one slot)
+ * genuinely breaks the next update in the other direction.
+ *
+ * The experiments, for anyone revisiting this:
+ *   entries cix-a(version 1) + cix-b+3(version <ts>), default cix-*
+ *     -> bootctl marks cix-b default                  (version wins, descending)
+ *   equal versions, ids cix-a/cix-b   -> cix-b first  (id descending)
+ *   no version field at all           -> cix-b first  (id descending)
+ *   cix-b+0-3 (exhausted, newer ver)  -> cix-a first  (exhausted sorts last)
+ *
+ * strverscmp() is glibc's; systemd uses its own strverscmp_improved,
+ * which differs on some corner cases (notably '~' and how it treats
+ * non-alphanumerics). For the values this project actually writes --
+ * "1" from the installer and a unix timestamp from every update -- the
+ * two agree, and both order a timestamp above "1" numerically rather
+ * than lexically. A recipe-authored entry using an exotic version
+ * string could in principle diverge; that is a documented limit of
+ * this model, not a silent one.
+ */
 static int selection_rank_less(const struct esp_entry *a, const struct esp_entry *b)
 {
 	char id_a[ESP_ENTRY_NAME_MAX];
@@ -514,12 +547,25 @@ static int selection_rank_less(const struct esp_entry *a, const struct esp_entry
 	entry_id(a->name, id_a, sizeof(id_a), &tries_a);
 	entry_id(b->name, id_b, sizeof(id_b), &tries_b);
 
+	/* Entries with no attempts left are never selected while any other
+	 * entry exists -- this is the whole rollback mechanism. */
 	if ((tries_a == 0) != (tries_b == 0))
-		return (tries_b == 0) ? 1 : 0; /* exhausted entries last */
-	cmp = strcmp(id_a, id_b);
+		return (tries_b == 0) ? 1 : 0;
+
+	/* New-style ordering applies only when BOTH entries carry a
+	 * sort-key, matching systemd-boot's own condition. */
+	if (a->sort_key[0] != '\0' && b->sort_key[0] != '\0') {
+		cmp = strcmp(a->sort_key, b->sort_key);
+		if (cmp != 0)
+			return cmp < 0; /* sort-key ascending */
+		cmp = strverscmp(a->version, b->version);
+		if (cmp != 0)
+			return cmp > 0; /* version DESCENDING -- newer first */
+	}
+	cmp = strverscmp(id_a, id_b);
 	if (cmp != 0)
-		return cmp < 0;
-	return strcmp(a->name, b->name) < 0;
+		return cmp > 0; /* id DESCENDING */
+	return strcmp(a->name, b->name) > 0;
 }
 
 static void selected_entry(const struct esp_entry *entries, int n, const char *pattern, char *out,

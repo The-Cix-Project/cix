@@ -45,6 +45,8 @@ struct esp_entry {
 	char title[ESP_ENTRY_TITLE_MAX];
 	char linux_image[ESP_ENTRY_LINUX_MAX];
 	char options[ESP_ENTRY_OPTIONS_MAX];
+	char sort_key[ESP_ENTRY_TITLE_MAX];  /* BLS "sort-key", "" when absent */
+	char version[ESP_ENTRY_TITLE_MAX];   /* BLS "version", "" when absent */
 	int matches_default;                  /* the current default pattern selects this */
 	int is_running_slot;                  /* this is the entry the live system booted from */
 };
