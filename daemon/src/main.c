@@ -33,6 +33,7 @@
 #include "pkgpolicy.h"
 #include "bootconsole.h"
 #include "esp.h"
+#include "btrfs.h"
 #include "kernelpolicy.h"
 #include "zswap.h"
 #include "dhcp.h"
@@ -8679,6 +8680,35 @@ static void register_bootroot_assemble_pidfd(pid_t pid, int pidfd)
 static void artifact_push_pump(void);
 static void spawn_cix_bootroot_assembly(const char *artifact_dir);
 
+/* ADR-0207 phase 2: force the direct-rootfs container path with a COPY
+ * instead of a snapshot, so the btrfs-incapable dev sandbox (ext4, no
+ * loop devices) can exercise the whole direct machinery -- provisioning,
+ * self-bind + pivot, persistence across restart, stopped-file access,
+ * deletion -- everything except SNAP_CREATE_V2 itself, which only a
+ * real btrfs host can prove. Same test-hook family as
+ * --test-esp-entries-dir/--test-efivars-dir. */
+static int g_test_direct_rootfs;
+
+/*
+ * Where a stopped container's writable tree lives (ADR-0207 phase 2):
+ * `<base>/rootfs` for a direct-rootfs container (its snapshot/copy is
+ * the whole filesystem), `<base>/upper` for a classic overlay one. The
+ * on-disk presence of rootfs IS the storage-mode marker -- no side
+ * state to drift, the filesystem is the one source of truth, and a
+ * container keeps its mode across restarts automatically.
+ */
+static void container_writable_path(const char *container_root, const char *name,
+                                     const char *rel_path, char *out, size_t out_size)
+{
+	struct stat wst;
+	char wbase[PATH_MAX];
+
+	snprintf(wbase, sizeof(wbase), "%s/%s/rootfs", container_root, name);
+	if (!(stat(wbase, &wst) == 0 && S_ISDIR(wst.st_mode)))
+		snprintf(wbase, sizeof(wbase), "%s/%s/upper", container_root, name);
+	snprintf(out, out_size, "%s%s", wbase, rel_path);
+}
+
 /*
  * The work that follows a pkg build completing, wherever completion
  * came from: a real build container exiting, or an artifact/cache hit
@@ -11435,6 +11465,8 @@ static int create_container_from_body(const char *body, size_t body_len,
 	char container_cgroup_path[PATH_MAX]; /* issue #86 -- under the workload parent */
 	char userns_rootfs[PATH_MAX]; /* ADR-0179 phase 2c option (a) */
 	const char *stage_dir;        /* where container files are staged: upper, or the userns rootfs */
+	char direct_rootfs_dir[PATH_MAX]; /* ADR-0207: <base>/rootfs when direct_mode */
+	int direct_mode = 0;          /* ADR-0207 phase 2: snapshot/copy rootfs, no overlay */
 	struct stat st;
 	struct container_spec spec;
 	struct registry_entry *entry;
@@ -12413,6 +12445,44 @@ static int create_container_from_body(const char *body, size_t body_len,
 			return 500;
 		}
 		stage_dir = userns_rootfs;
+	} else {
+		/*
+		 * ADR-0207 phase 2: the non-userns twin of the branch above --
+		 * decide the storage mode HERE, before file staging, because
+		 * files[] (and every synthetic file: nsswitch, nslcd, dhcp)
+		 * are staged into stage_dir next, and a direct-mode container
+		 * reads its files from its rootfs, not from an overlay
+		 * upperdir it will never mount. The on-disk presence of
+		 * <base>/rootfs is the mode marker: a revived container whose
+		 * rootfs exists keeps it (that IS its state -- re-snapshotting
+		 * would silently discard every write it ever made); a fresh
+		 * create on btrfs snapshots the image's subvolume (O(1),
+		 * copy-on-write); anything else stays on the classic overlay
+		 * path until phase 4. A failed snapshot (e.g. image store and
+		 * container storage on different filesystems, which
+		 * SNAP_CREATE_V2 cannot cross) falls back to overlay LOUDLY --
+		 * the overlay-on-btrfs upperdir path (ADR-0103) is still fully
+		 * functional, so the fallback is honest, not hidden.
+		 */
+		struct stat rst;
+
+		snprintf(direct_rootfs_dir, sizeof(direct_rootfs_dir), "%s/rootfs", container_base);
+		if (stat(direct_rootfs_dir, &rst) == 0 && S_ISDIR(rst.st_mode)) {
+			direct_mode = 1;
+		} else if (g_test_direct_rootfs || cix_btrfs_is_backing(container_base)) {
+			if (cix_btrfs_snapshot_or_copy(lowerdir, direct_rootfs_dir) == 0) {
+				direct_mode = 1;
+			} else {
+				logstore_write("cixd", "warn",
+				                "container %s: could not snapshot the image rootfs (%s) -- "
+				                "falling back to the overlay path",
+				                name, strerror(errno));
+			}
+		}
+		if (direct_mode) {
+			snprintf(merged, sizeof(merged), "%s", direct_rootfs_dir);
+			stage_dir = direct_rootfs_dir;
+		}
 	}
 
 	/*
@@ -12827,6 +12897,25 @@ static int create_container_from_body(const char *body, size_t body_len,
 				return 500;
 			}
 			spec.ov.project_id = projid;
+		}
+	}
+	if (direct_mode) {
+		spec.ov.direct_rootfs = 1;
+		if (spec.ov.quota_bytes > 0) {
+			/*
+			 * EXCLUSIVE bytes, not referenced (ADR-0207): a snapshot
+			 * references the whole image from the first instant, and
+			 * the quota owed here is "your own divergence" -- exactly
+			 * what the overlay upperdir quota meant. See btrfs.h.
+			 */
+			if (cix_btrfs_qgroup_limit_excl(direct_rootfs_dir,
+			                                 (unsigned long long)spec.ov.quota_bytes) != 0) {
+				json_free(root);
+				snprintf(err_msg, err_msg_size,
+				         "failed to set the btrfs qgroup quota on the container rootfs");
+				return 500;
+			}
+			spec.ov.quota_bytes = 0; /* enforced here; overlay_create will not run */
 		}
 	}
 	spec.ov.lowerdir = lowerdir;
@@ -13476,6 +13565,15 @@ static void handle_delete(int fd, const char *name)
 		if (umount2(merged, MNT_DETACH) != 0 && errno != EINVAL && errno != ENOENT)
 			fprintf(stderr, "DELETE %s: umount2(%s) failed: %s\n", name, merged,
 			        strerror(errno));
+		{
+			/* ADR-0207: a direct-mode container's rootfs is a btrfs
+			 * subvolume persist_remove_tree cannot remove -- destroy it
+			 * first; a no-op (ENOENT) for overlay-mode containers. */
+			char droot[PATH_MAX];
+
+			snprintf(droot, sizeof(droot), "%s/rootfs", container_base);
+			cix_btrfs_subvol_delete_or_rmtree(droot);
+		}
 		if (persist_remove_tree(container_base) != 0)
 			fprintf(stderr, "DELETE %s: failed to remove %s: %s\n", name, container_base,
 			        strerror(errno));
@@ -13702,6 +13800,21 @@ static void handle_start(int fd, const char *name)
 	struct json_writer w;
 
 	entry = registry_find(name);
+	/*
+	 * A container mid-stop is still running=1 until its kill completes,
+	 * and the idempotent-200 below would ack it as alive -- so a
+	 * stop-then-start sequence could get a 200 for the DYING
+	 * incarnation, start nothing, and end with the container down while
+	 * the caller believes it started. Found reproducibly by a test
+	 * driving stop-then-start at 200ms; every restart script has the
+	 * same window. An in-flight teardown is a retryable conflict, never
+	 * a success.
+	 */
+	if (entry != NULL && entry->running && entry->teardown_kind != REGISTRY_TEARDOWN_NONE) {
+		respond_error(fd, 409, "Conflict",
+		               "this container is being stopped -- retry once the stop completes");
+		return;
+	}
 	if (entry != NULL && entry->running) {
 		/* Genuinely live (or paused, which is still running=1) --
 		 * start is idempotent, so this is a plain 200, not an error. */
@@ -14975,7 +15088,7 @@ static void handle_container_dir_list(int fd, const char *name, const char *rel_
 		char container_root[PATH_MAX];
 
 		container_root_for(e->disk_name, container_root, sizeof(container_root));
-		snprintf(dirs[0], sizeof(dirs[0]), "%s/%s/upper%s", container_root, name, rel_path);
+		container_writable_path(container_root, name, rel_path, dirs[0], sizeof(dirs[0]));
 		if (stat(dirs[0], &st) == 0 && S_ISDIR(st.st_mode))
 			dir_count = 1;
 		if (e->lowerdir[0] != '\0') {
@@ -15103,7 +15216,7 @@ static void handle_container_file_read(int fd, const char *name, const char *rel
 		char container_root[PATH_MAX];
 
 		container_root_for(e->disk_name, container_root, sizeof(container_root));
-		snprintf(full_path, sizeof(full_path), "%s/%s/upper%s", container_root, name, rel_path);
+		container_writable_path(container_root, name, rel_path, full_path, sizeof(full_path));
 		file_fd = open(full_path, O_RDONLY);
 		if (file_fd < 0) {
 			/*
@@ -15316,7 +15429,8 @@ static void handle_container_file_write(int fd, const char *name, const char *re
 			char container_root[PATH_MAX];
 
 			container_root_for(e->disk_name, container_root, sizeof(container_root));
-			snprintf(full_path, sizeof(full_path), "%s/%s/upper%s", container_root, name, rel_path);
+			container_writable_path(container_root, name, rel_path, full_path,
+			                         sizeof(full_path));
 		}
 	}
 	json_free(root);
@@ -15406,7 +15520,7 @@ static void handle_container_stats(int fd, const char *name)
 		char upperdir[PATH_MAX];
 
 		container_root_for(e->disk_name, container_root, sizeof(container_root));
-		snprintf(upperdir, sizeof(upperdir), "%s/%s/upper", container_root, name);
+		container_writable_path(container_root, name, "", upperdir, sizeof(upperdir));
 		overlay_upperdir_size(upperdir, &disk_bytes);
 	}
 
@@ -15749,6 +15863,28 @@ static void handle_container_migrate_storage_post(int fd, const char *name, cons
 	container_root_for(current_disk[0] != '\0' ? current_disk : NULL, source_root, sizeof(source_root));
 	snprintf(source_base, sizeof(source_base), "%s/%s", source_root, name);
 	snprintf(target_base, sizeof(target_base), "%s/%s", target_root, name);
+
+	/*
+	 * ADR-0207 phase 2 limitation, refused loudly rather than silently
+	 * corrupted: the migration machinery moves upper/work between
+	 * disks, and a direct-rootfs container has neither -- its state is
+	 * a btrfs snapshot that cannot be moved across filesystems by a
+	 * rename, and whose extent sharing a naive copy would forfeit.
+	 * Cross-disk migration for snapshot containers arrives with the
+	 * phase-4 migration tooling.
+	 */
+	{
+		struct stat mst;
+		char mroot[PATH_MAX];
+
+		snprintf(mroot, sizeof(mroot), "%s/rootfs", source_base);
+		if (stat(mroot, &mst) == 0 && S_ISDIR(mst.st_mode)) {
+			respond_error(fd, 409, "Conflict",
+			               "this container uses a snapshot rootfs (ADR-0207) -- storage "
+			               "migration for snapshot containers is not available yet");
+			return;
+		}
+	}
 
 	if (persist_mkdir_p(target_base) != 0) {
 		respond_error(fd, 500, "Internal Server Error", "failed to create target container directory");
@@ -25464,6 +25600,7 @@ static void handle_container_event(struct conn *cc)
 	int exit_status;
 	int teardown_kind;
 	time_t started_at;
+	pid_t incarnation_pid;
 	struct container_def *def;
 	pid_t pkg_pid;
 	int pkg_pidfd;
@@ -25485,6 +25622,7 @@ static void handle_container_event(struct conn *cc)
 	snprintf(name_copy, sizeof(name_copy), "%s", entry->name);
 	exit_status = entry->exit_status;
 	started_at = entry->started_at;
+	incarnation_pid = entry->handle.pid;
 	teardown_kind = entry->teardown_kind;
 	snprintf(disk_copy, sizeof(disk_copy), "%s", entry->disk_name);
 
@@ -25532,7 +25670,26 @@ static void handle_container_event(struct conn *cc)
 	 * the keep flag" rule.
 	 */
 	if (teardown_kind == REGISTRY_TEARDOWN_DELETE || teardown_kind == REGISTRY_TEARDOWN_STOP) {
-		if (registry_find(name_copy) != NULL)
+		/*
+		 * Remove only the SAME INCARNATION this completion belongs to.
+		 * The lookup is by name, and a stop followed by a quick start
+		 * of the same name can interleave so the new container is
+		 * already registered when this late completion fires -- an
+		 * unconditional remove would then registry_remove() the FRESH,
+		 * RUNNING container (whose kill/wait branch is not skipped),
+		 * silently killing a container the operator just started.
+		 * Found exactly that way: a test driving stop-then-start at
+		 * 200ms intervals lost its restarted container reproducibly,
+		 * while the identical sequence with a 2s pause worked --
+		 * i.e. every scripted restart was one unlucky scheduling
+		 * window away from this. started_at alone cannot distinguish
+		 * two incarnations within the same second, so the captured
+		 * pid is required too.
+		 */
+		struct registry_entry *found = registry_find(name_copy);
+
+		if (found != NULL && found->started_at == started_at &&
+		    found->handle.pid == incarnation_pid)
 			registry_remove(name_copy);
 		if (teardown_kind == REGISTRY_TEARDOWN_DELETE) {
 			char container_root[PATH_MAX];
@@ -25546,6 +25703,14 @@ static void handle_container_event(struct conn *cc)
 			if (umount2(merged, MNT_DETACH) != 0 && errno != EINVAL && errno != ENOENT)
 				fprintf(stderr, "DELETE %s (async completion): umount2(%s) failed: %s\n",
 				        name_copy, merged, strerror(errno));
+			{
+				/* ADR-0207: same subvolume pre-destroy as the sync
+				 * delete path above. */
+				char droot[PATH_MAX];
+
+				snprintf(droot, sizeof(droot), "%s/rootfs", container_base);
+				cix_btrfs_subvol_delete_or_rmtree(droot);
+			}
 			if (persist_remove_tree(container_base) != 0)
 				fprintf(stderr, "DELETE %s (async completion): failed to remove %s: %s\n",
 				        name_copy, container_base, strerror(errno));
@@ -26369,6 +26534,8 @@ static int cixd_main(int argc, char **argv)
 			snprintf(g_esp_entries_dir, sizeof(g_esp_entries_dir), "%s", argv[i] + 23);
 		else if (strncmp(argv[i], "--test-efivars-dir=", 19) == 0)
 			esp_set_efivars_dir(argv[i] + 19);
+		else if (strcmp(argv[i], "--test-direct-rootfs") == 0)
+			g_test_direct_rootfs = 1;
 		else if (strncmp(argv[i], "--test-update-image=", 20) == 0)
 			test_update_image = argv[i] + 20;
 		else if (strncmp(argv[i], "--test-update-kernel=", 21) == 0)

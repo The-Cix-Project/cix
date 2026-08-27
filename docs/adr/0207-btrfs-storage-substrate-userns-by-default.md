@@ -172,10 +172,34 @@ begins; the security default flips only in phase 3.
    to the subvolume API. Overlay is still in place — its lowerdir is now a
    subvolume tree, a no-op for the union mount — so existing containers keep
    working unchanged. Verifies the subvolume image model in isolation.
-2. **Container rootfs = snapshot; overlay retired.** `BTRFS_IOC_SNAP_CREATE_V2`
-   per container, mounted directly; `src/overlay.c` and its call sites removed.
-   Verifies non-userns containers run, write, persist across restart, and hold
-   quota via qgroups — with no overlay anywhere.
+2. **Container rootfs = snapshot on btrfs.** `BTRFS_IOC_SNAP_CREATE_V2` per
+   container, self-bound and pivoted into directly; qgroup quota in EXCLUSIVE
+   bytes (a snapshot references the whole image from the first instant, and the
+   quota owed is the container's own divergence — the semantics the upperdir
+   quota always had). Verifies non-userns containers run, write, persist across
+   restart, and hold quota.
+
+   > **Correction (2026-08-28, during phase-2 implementation).** This phase
+   > originally also said "`src/overlay.c` and its call sites removed — no
+   > overlay fallback." That was written ahead of two measured facts. First,
+   > the dev sandbox — where the entire container test suite runs — is ext4
+   > with no loop devices and a read-only `/sys`: **btrfs cannot exist there at
+   > all**, so with overlay deleted, every sandbox container would take a
+   > full-copy fallback. Second, the staged test toolchain image is ~1GB
+   > (wholesale `/usr/{include,lib,bin,...}`), and `test_pkg` alone creates a
+   > build container per install — **15–25GB of copying per suite run**, which
+   > is not a test suite anyone runs. Hardlinks are categorically unsafe for a
+   > writable rootfs, so there is no cheap copy. Overlay therefore remains the
+   > non-btrfs path — which is also what every not-yet-migrated ext4 host
+   > actually runs, so the sandbox keeps exercising a real production path,
+   > not a throwaway one — and **overlay's code retires in phase 4 together
+   > with ext4**, exactly as ext4's own staged retirement was already
+   > specified. The decision is unchanged: overlay still dies on production
+   > and btrfs snapshots are the single forward model; only the deletion
+   > commit moves to the phase where its last real user disappears. The
+   > direct-rootfs machinery is fully exercised in the sandbox regardless,
+   > through a copy-based `--test-direct-rootfs` mode covering everything but
+   > the snapshot ioctl itself.
 3. **userns by default.** `CLONE_NEWUSER` + idmapped snapshot mount + idmapped
    volume binds; build/hostbuild containers set `userns:false`. Verified live on
    .95: `/proc/1/uid_map` shows the mapped range, writes persist, extents stay

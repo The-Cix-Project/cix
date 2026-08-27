@@ -290,3 +290,42 @@ int cix_btrfs_subvol_delete_or_rmtree(const char *path)
 	close(parent_fd);
 	return 0;
 }
+
+int cix_btrfs_qgroup_limit_excl(const char *path, unsigned long long bytes)
+{
+	int fd;
+	struct cix_btrfs_ioctl_quota_ctl_args qc;
+	struct cix_btrfs_ioctl_qgroup_limit_args ql;
+
+	fd = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	if (fd < 0)
+		return -1;
+
+	/* Enable quotas filesystem-wide; EINVAL means already enabled --
+	 * the same idempotent convention ADR-0103's upperdir path uses. */
+	memset(&qc, 0, sizeof(qc));
+	qc.cmd = CIX_BTRFS_QUOTA_CTL_ENABLE;
+	if (ioctl(fd, CIX_BTRFS_IOC_QUOTA_CTL, &qc) != 0 && errno != EINVAL) {
+		int saved = errno;
+
+		close(fd);
+		errno = saved;
+		return -1;
+	}
+
+	/* qgroupid 0 addresses the subvolume owning this fd -- btrfs's own
+	 * documented convention for self-addressing. */
+	memset(&ql, 0, sizeof(ql));
+	ql.qgroupid = 0;
+	ql.lim.flags = CIX_BTRFS_QGROUP_LIMIT_MAX_EXCL;
+	ql.lim.max_excl = bytes;
+	if (ioctl(fd, CIX_BTRFS_IOC_QGROUP_LIMIT, &ql) != 0) {
+		int saved = errno;
+
+		close(fd);
+		errno = saved;
+		return -1;
+	}
+	close(fd);
+	return 0;
+}
