@@ -21,7 +21,7 @@ pkg_sha256="1f31014953e71c3cddcedb97692ad7620cb9d6d04fbdc19e0d8dd836f87622bb"
 # source; without it the artifact tier is skipped entirely.
 # The checksum lives here, in git, because the artifact server is
 # never a trust boundary -- it serves bytes, this line approves them.
-pkg_artifact_sha256="cc766c540e2dfe273304ce269cb066ab603845106d2f15e141ee027f38765822"
+pkg_artifact_sha256="e17030fbbcaf5be7edbb7c4b4809c7e8612aa78a25a993f032bc0194c7cc85fd"
 # Nothing at runtime: GNU grep links against libc alone (PCRE is not
 # enabled by this build).
 pkg_depends=""

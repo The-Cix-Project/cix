@@ -27,7 +27,7 @@ pkg_sha256="3acd3a8a3cce65a8d620321855d92fb602e026cbe8e13ee36bdec58483b59ace"
 # source; without it the artifact tier is skipped entirely.
 # The checksum lives here, in git, because the artifact server is
 # never a trust boundary -- it serves bytes, this line approves them.
-pkg_artifact_sha256="6b475ddcb70b16ee6146a57cf7b53ee7ebd61493d754991984c0625783a6f553"
+pkg_artifact_sha256="a0d5d922a51dc36f6ab6d6bd0a528251155049ecdecc004c51c63d60d57f2d35"
 # Nothing at runtime: pkgconf links against libc alone.
 pkg_depends=""
 #

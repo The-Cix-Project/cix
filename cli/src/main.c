@@ -9883,13 +9883,245 @@ static int cmd_dns_server(const struct cix_client *c, int json_mode, int argc, c
 	return 2;
 }
 
+/*
+ * Issue #134: cixctl dns forwarders show|set --forwarder=IP ...
+ * What this platform resolves upstream through -- daemon-owned and
+ * applied live to every registered DNS server, rather than frozen into
+ * each container's command line where the two replicas could disagree
+ * and nothing could report the answer.
+ */
+static void fmt_dns_forwarders(const struct json_value *v)
+{
+	const struct json_value *a = json_object_get(v, "forwarders");
+	size_t i;
+
+	if (a == NULL || a->type != JSON_ARRAY || a->u.array.count == 0) {
+		printf("no upstream forwarders configured (DNS is authoritative-only)\n");
+		return;
+	}
+	for (i = 0; i < a->u.array.count; i++)
+		printf("%s\n", json_as_string(a->u.array.items[i]));
+}
+
+static int cmd_dns_forwarders(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	struct cix_response r;
+	const char *sub = argc > 0 ? argv[0] : "show";
+
+	if (strcmp(sub, "show") == 0) {
+		if (cix_client_request(c, "GET", "/v1/dns/forwarders", NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_dns_forwarders);
+	}
+	if (strcmp(sub, "set") == 0) {
+		struct json_writer w;
+		int i;
+
+		jw_init(&w);
+		jw_obj_open(&w);
+		jw_key(&w, "forwarders");
+		jw_arr_open(&w);
+		for (i = 1; i < argc; i++) {
+			if (strncmp(argv[i], "--forwarder=", 12) == 0) {
+				jw_str(&w, argv[i] + 12);
+			} else {
+				fprintf(stderr, "cixctl: unknown dns forwarders set option '%s'\n", argv[i]);
+				jw_free(&w);
+				return 2;
+			}
+		}
+		jw_arr_close(&w);
+		jw_obj_close(&w);
+		w.buf[w.len] = '\0';
+		if (cix_client_request(c, "PUT", "/v1/dns/forwarders", w.buf, &r) != 0) {
+			jw_free(&w);
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		jw_free(&w);
+		return emit(&r, json_mode, fmt_dns_forwarders);
+	}
+	fprintf(stderr, "usage: cixctl dns forwarders show\n"
+	                "       cixctl dns forwarders set [--forwarder=IP ...]  (no flags clears them)\n");
+	return 2;
+}
+
+/*
+ * Issue #136: DNS in one action.
+ *
+ * Standing this up by hand takes seven steps, one of which is a
+ * twelve-argument dnsmasq command line whose every flag encodes a past
+ * failure (-u root because a minimal image has no /etc/passwd; -R/-h
+ * because it has no resolv.conf or hosts; --pid-file= because it has no
+ * /var/run, and without that dnsmasq crash-loops silently). Expecting
+ * an operator to know all of that -- or to copy it correctly out of
+ * prose documentation -- is not a product.
+ *
+ * The knowledge belongs in the container recipes, which already carry
+ * it (recipes/container/dns-1, dns-2), pinned addresses included. This
+ * command is the missing ACTION that applies them: it does not
+ * reimplement any of it, it drives the recipes and then registers the
+ * result, reporting each step as it goes.
+ *
+ * Idempotent: re-running it against an already-provisioned box
+ * re-applies the recipes and re-registers, which is exactly what an
+ * operator wants after editing one.
+ */
+static int cmd_dns_provision(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	const char *replicas[8];
+	int replica_count = 0;
+	int set_resolver = 1;
+	int i;
+	int failures = 0;
+	struct cix_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--replica=", 10) == 0) {
+			if (replica_count < 8)
+				replicas[replica_count++] = argv[i] + 10;
+		} else if (strcmp(argv[i], "--no-resolver") == 0) {
+			set_resolver = 0;
+		} else {
+			fprintf(stderr, "cixctl: unknown dns provision option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (replica_count == 0) {
+		/* The two this platform ships recipes for. */
+		replicas[replica_count++] = "dns-1";
+		replicas[replica_count++] = "dns-2";
+	}
+
+	for (i = 0; i < replica_count; i++) {
+		char path[256];
+
+		/* 1. create the container from its own recipe */
+		snprintf(path, sizeof(path), "/v1/containers/recipes/%s/apply", replicas[i]);
+		if (cix_client_request(c, "POST", path, "{}", &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		if (r.status == 201) {
+			printf("%-8s created from its recipe\n", replicas[i]);
+		} else if (r.status == 409) {
+			printf("%-8s already exists (left as it is)\n", replicas[i]);
+		} else if (r.status == 404) {
+			fprintf(stderr,
+			        "%-8s NO RECIPE on this host -- publish it first:\n"
+			        "         cixctl container recipe add %s --file=recipes/container/%s/<v>/container.json\n",
+			        replicas[i], replicas[i], replicas[i]);
+			failures++;
+			cix_response_free(&r);
+			continue;
+		} else {
+			const char *msg = (r.json != NULL) ? json_str_field(r.json, "error") : NULL;
+
+			fprintf(stderr, "%-8s could not be created (HTTP %d)%s%s\n", replicas[i], r.status,
+			        msg != NULL ? ": " : "", msg != NULL ? msg : "");
+			failures++;
+			cix_response_free(&r);
+			continue;
+		}
+		cix_response_free(&r);
+
+		/* 2. register it as a DNS server so records reach it live */
+		{
+			char body[256];
+
+			snprintf(body, sizeof(body),
+			         "{\"container\":\"%s\",\"hosts_path\":\"/etc/dnsmasq-hosts\"}",
+			         replicas[i]);
+			if (cix_client_request(c, "POST", "/v1/dns/servers", body, &r) == 0) {
+				if (r.status == 201 || r.status == 409)
+					printf("%-8s registered as a DNS server\n", replicas[i]);
+				else {
+					fprintf(stderr, "%-8s could not be registered (HTTP %d)\n", replicas[i],
+					        r.status);
+					failures++;
+				}
+				cix_response_free(&r);
+			}
+		}
+	}
+
+	/*
+	 * 3. Point the host's own resolver at the replicas we just created,
+	 * reading their real addresses back rather than assuming what the
+	 * recipes pinned -- the recipe is the intent, the container is the
+	 * fact, and only the fact is worth writing into resolv.conf.
+	 */
+	if (set_resolver && failures == 0) {
+		char ips[8][64];
+		int ip_count = 0;
+
+		for (i = 0; i < replica_count && ip_count < 8; i++) {
+			char path[256];
+
+			snprintf(path, sizeof(path), "/v1/containers/%s", replicas[i]);
+			if (cix_client_request(c, "GET", path, NULL, &r) != 0)
+				continue;
+			if (r.status == 200 && r.json != NULL) {
+				const struct json_value *nets = json_object_get(r.json, "networks");
+
+				if (nets != NULL && nets->type == JSON_ARRAY && nets->u.array.count > 0) {
+					const char *ip =
+					    json_str_field(nets->u.array.items[0], "ip");
+
+					if (ip != NULL && ip[0] != '\0')
+						snprintf(ips[ip_count++], sizeof(ips[0]), "%s", ip);
+				}
+			}
+			cix_response_free(&r);
+		}
+		if (ip_count > 0) {
+			struct json_writer w;
+			int j;
+
+			jw_init(&w);
+			jw_obj_open(&w);
+			jw_key(&w, "nameservers");
+			jw_arr_open(&w);
+			for (j = 0; j < ip_count; j++)
+				jw_str(&w, ips[j]);
+			jw_arr_close(&w);
+			jw_obj_close(&w);
+			w.buf[w.len] = '\0';
+			if (cix_client_request(c, "PUT", "/v1/system/resolv", w.buf, &r) == 0) {
+				if (r.status == 200) {
+					printf("host resolver -> ");
+					for (j = 0; j < ip_count; j++)
+						printf("%s%s", j ? ", " : "", ips[j]);
+					printf("\n");
+				} else {
+					fprintf(stderr, "could not set the host resolver (HTTP %d)\n", r.status);
+					failures++;
+				}
+				cix_response_free(&r);
+			}
+			jw_free(&w);
+		}
+	}
+
+	if (failures > 0) {
+		fprintf(stderr, "\ndns provision finished with %d problem(s) above.\n", failures);
+		return 1;
+	}
+	printf("\nDNS is provisioned. Check it with:  cixctl dns server ls\n");
+	return 0;
+}
+
 static int cmd_dns(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
 		fprintf(stderr, "usage: cixctl dns record ...\n"
-		                "       cixctl dns server ...\n");
+		                "       cixctl dns server ...\n"
+		                "       cixctl dns provision [--replica=NAME ...] [--no-resolver]\n"
+		                "       cixctl dns forwarders show | set [--forwarder=IP ...]\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -9897,6 +10129,10 @@ static int cmd_dns(const struct cix_client *c, int json_mode, int argc, char **a
 		return cmd_dns_record(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "server") == 0)
 		return cmd_dns_server(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "provision") == 0)
+		return cmd_dns_provision(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "forwarders") == 0)
+		return cmd_dns_forwarders(c, json_mode, argc - 1, argv + 1);
 
 	fprintf(stderr, "cixctl: unknown dns subcommand '%s'\n", sub);
 	return 2;

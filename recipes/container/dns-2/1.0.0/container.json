@@ -13,8 +13,7 @@
     "-R",
     "-h",
     "--pid-file=",
-    "--server=192.168.15.200",
-    "--server=192.168.15.100"
+    "--servers-file=/etc/dnsmasq-servers"
   ],
   "networks": [
     {
@@ -22,5 +21,11 @@
       "ip": "192.168.15.102"
     }
   ],
-  "restart": "always"
+  "restart": "always",
+  "files": [
+    {
+      "path": "/etc/dnsmasq-servers",
+      "content": ""
+    }
+  ]
 }

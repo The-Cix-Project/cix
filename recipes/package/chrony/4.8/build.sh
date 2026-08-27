@@ -30,7 +30,7 @@ pkg_sha256="33ea8eb2a4daeaa506e8fcafd5d6d89027ed6f2f0609645c6f149b560d301706"
 # source; without it the artifact tier is skipped entirely.
 # The checksum lives here, in git, because the artifact server is
 # never a trust boundary -- it serves bytes, this line approves them.
-pkg_artifact_sha256="19f02189174d32d80699494890f92ee5e31039883f7a5a3c2c32ae89001fe2f2"
+pkg_artifact_sha256="22f2048371a3d65e650f10a64c767463197fa8136ab02c67f145672db4f22368"
 # Real, empirically confirmed via a local ./configure + build in this
 # sandbox: chrony's own hand-rolled configure script (not autoconf)
 # builds clean under tcc with zero patches needed. Every optional

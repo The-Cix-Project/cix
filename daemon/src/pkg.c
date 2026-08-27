@@ -4315,6 +4315,41 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 			                           e->build_lowerdir, sizeof(e->build_lowerdir));
 		else
 			e->build_lowerdir[0] = '\0';
+	} else if (e->cache_hit) {
+		/*
+		 * Issue #144: a precompiled package needs NO build environment.
+		 *
+		 * The container spawned below is a deliberate no-op for a
+		 * cache/artifact hit -- its upperdir already IS the finished
+		 * package, and it exists only so the merge and
+		 * dependency-chaining logic downstream stays one code path.
+		 * That was harmless when a no-op container had no
+		 * prerequisites. It stopped being harmless when ADR-0199 made
+		 * composing a build container require every declared build
+		 * tool to be INSTALLED on this box: a no-op suddenly needed a
+		 * full toolchain.
+		 *
+		 * The effect was to invert the artifact tier exactly where it
+		 * matters most. On a fresh install, `sed` had a valid,
+		 * checksum-verified artifact and still failed with "declared
+		 * build tool tcc is not installed anywhere"; `dnsmasq` failed
+		 * the same way for want of a build sandbox image. Artifacts
+		 * exist so a box does not need a toolchain -- requiring one to
+		 * unpack them defeats the entire mechanism.
+		 *
+		 * So a cache hit is rooted on the TARGET image instead: it
+		 * certainly exists (the package is being installed into it),
+		 * it needs nothing composed, and the no-op container has
+		 * nothing to compile against anyway.
+		 */
+		char target_version[IMAGE_VERSION_MAX];
+
+		if (image_current_version(g_chains[chain_idx].image, target_version,
+		                           sizeof(target_version)) == IMAGE_OK)
+			image_version_rootfs_path(g_chains[chain_idx].image, target_version,
+			                           e->build_lowerdir, sizeof(e->build_lowerdir));
+		else
+			e->build_lowerdir[0] = '\0';
 	} else if (recipe.build_depends[0] != '\0') {
 		/*
 		 * Issue #109: this recipe declares its build tools, so its
@@ -5713,6 +5748,25 @@ int pkg_image_has_packages(const char *image)
 			return 1;
 	}
 	return 0;
+}
+
+/*
+ * Issue #144: is this chain's in-flight job a cache/artifact hit?
+ *
+ * Lets main.c skip spawning a build container for a package whose
+ * content is already on disk -- see the call site for why that
+ * container was never harmless.
+ */
+int pkg_chain_is_cache_hit(int chain_idx)
+{
+	struct pkg_entry *e;
+
+	if (chain_idx < 0 || chain_idx >= PKG_MAX_CONCURRENT_JOBS)
+		return 0;
+	if (g_chains[chain_idx].name[0] == '\0')
+		return 0;
+	e = pkg_find(g_chains[chain_idx].name, g_chains[chain_idx].image);
+	return (e != NULL && e->cache_hit) ? 1 : 0;
 }
 
 enum pkg_error pkg_get_one(const char *name, const char *image, struct json_writer *w)

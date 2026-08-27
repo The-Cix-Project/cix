@@ -847,6 +847,13 @@ void pkg_write_json_list(struct json_writer *w);
 int pkg_find_update_candidate(char *out_name, size_t out_name_size, char *out_image,
                                size_t out_image_size);
 /* image NULL or "" means PKG_DEFAULT_IMAGE, matching pkg_install_start(). */
+/*
+ * Issue #144: whether this chain's in-flight job is a cache/artifact
+ * hit -- i.e. its content is already on disk and there is nothing to
+ * build. main.c uses it to skip creating a build container entirely.
+ */
+int pkg_chain_is_cache_hit(int chain_idx);
+
 enum pkg_error pkg_get_one(const char *name, const char *image, struct json_writer *w);
 
 /*

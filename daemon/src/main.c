@@ -219,6 +219,20 @@ static char ISO_DIR[PATH_MAX];
  * fixed scratch path for the curl'd artifact, same "one fixed spot,
  * overwritten each time" convention ISO_OUTPUT_PATH already uses. */
 static char PKGBUILD_TOOLCHAIN_FETCH_PATH[PATH_MAX];
+/*
+ * Issue #141: where POST /v1/system/update stages an image fetched by
+ * URL. Exists because "image_path" alone made the endpoint unusable on
+ * a real installed host: it names a path ON THE BOX, and a host with no
+ * SSH, no shell, and a 1 MiB API request cap has no way to put a
+ * ~10 MB squashfs there. So the one endpoint whose entire job is
+ * updating the control plane could not be used to update the control
+ * plane -- every deploy went through a hand-fed workaround instead.
+ *
+ * The daemon has always been able to do this: pkg bootstrap's own
+ * toolchain_url fetch pulls 1.4 GB the same way. Update simply never
+ * offered it.
+ */
+static char SYSTEM_UPDATE_FETCH_PATH[PATH_MAX];
 /* ADR-0069: a single host-level swap file, off by default, enabled
  * on demand via POST /v1/system/swap. SWAP_DIR keeps the file and its
  * tiny persisted enabled/size state together, out of g_base_dir's own
@@ -368,6 +382,8 @@ static void compute_rebuildable_dir_relative_paths(void)
 	snprintf(PKG_BUILD_CONFIG_PATH, sizeof(PKG_BUILD_CONFIG_PATH), "%s/build_config.json", PKG_DIR);
 	snprintf(ARTIFACTS_DIR, sizeof(ARTIFACTS_DIR), "%s/artifacts", REBUILDABLE_DIR);
 	snprintf(ISO_DIR, sizeof(ISO_DIR), "%s/iso", REBUILDABLE_DIR);
+	snprintf(SYSTEM_UPDATE_FETCH_PATH, sizeof(SYSTEM_UPDATE_FETCH_PATH),
+	         "%s/system_update_image.squashfs", REBUILDABLE_DIR);
 	snprintf(PKGBUILD_TOOLCHAIN_FETCH_PATH, sizeof(PKGBUILD_TOOLCHAIN_FETCH_PATH),
 	         "%s/bootstrap_toolchain.squashfs", PKG_DIR);
 }
@@ -2482,6 +2498,77 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
 	return 200;
 }
 
+/*
+ * Issue #141: fetch an update image by URL, verify it, and hand back a
+ * local path do_system_update() can use unchanged.
+ *
+ * Synchronous on purpose, unlike pkg bootstrap's async toolchain fetch.
+ * An update image is ~10 MB on a LAN, not 1.4 GB, and the caller is an
+ * operator waiting on a single deliberate action -- an async job with
+ * its own polling endpoint would be more machinery than the problem
+ * has. If that stops being true (a slow WAN, a much larger image), the
+ * async pattern already exists next door to copy.
+ *
+ * The checksum is required, not optional: this writes a boot slot, and
+ * an image that arrives truncated or wrong would be discovered at the
+ * next reboot, which is the worst possible time.
+ */
+static int fetch_update_image(const char *url, const char *sha256, char *out_path,
+                              size_t out_path_size, char *err, size_t err_size)
+{
+	char *argv[8];
+	char url_buf[PKG_URL_MAX];
+	pid_t pid;
+	int status;
+	char got[128];
+
+	if (sha256 == NULL || strlen(sha256) != 64) {
+		snprintf(err, err_size,
+		         "image_sha256 is required with image_url and must be 64 hex characters -- "
+		         "this writes a boot slot, so an unverified image is not accepted");
+		return -1;
+	}
+	snprintf(url_buf, sizeof(url_buf), "%s", url);
+	snprintf(out_path, out_path_size, "%s", SYSTEM_UPDATE_FETCH_PATH);
+	unlink(out_path);
+
+	argv[0] = (char *)PKG_CURL_BIN;
+	argv[1] = "-fsSL";
+	argv[2] = "--retry";
+	argv[3] = "8";
+	argv[4] = "-o";
+	argv[5] = out_path;
+	argv[6] = url_buf;
+	argv[7] = NULL;
+
+	pid = fork();
+	if (pid < 0) {
+		snprintf(err, err_size, "fork failed: %s", strerror(errno));
+		return -1;
+	}
+	if (pid == 0) {
+		execve(PKG_CURL_BIN, argv, environ);
+		_exit(127);
+	}
+	if (waitpid(pid, &status, 0) != pid || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+		snprintf(err, err_size, "could not fetch image_url (curl exit %d)",
+		         WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+		unlink(out_path);
+		return -1;
+	}
+	if (pkg_run_capture_sha256(out_path, got, sizeof(got)) != 0) {
+		snprintf(err, err_size, "could not checksum the fetched image");
+		unlink(out_path);
+		return -1;
+	}
+	if (strcasecmp(got, sha256) != 0) {
+		snprintf(err, err_size, "fetched image does not match image_sha256 (got %s)", got);
+		unlink(out_path);
+		return -1;
+	}
+	return 0;
+}
+
 static void handle_system_update(int fd, const char *body, size_t body_len)
 {
 	char slot[8];
@@ -2489,9 +2576,50 @@ static void handle_system_update(int fd, const char *body, size_t body_len)
 	int status;
 	int updated_root, updated_kernel;
 	struct json_writer w;
+	char fetched_body[PKG_URL_MAX + 512];
+	char fetched_path[PATH_MAX];
+	const char *use_body = body;
+	size_t use_body_len = body_len;
 
-	status = do_system_update(body, body_len, slot, sizeof(slot), &updated_root, &updated_kernel,
-	                           errmsg, sizeof(errmsg));
+	/*
+	 * Issue #141: image_url is rewritten into the image_path
+	 * do_system_update() already understands, rather than teaching that
+	 * function a second way to be given an image. One code path stages
+	 * a slot; this just decides what file it stages from.
+	 */
+	{
+		struct json_value *root = (body != NULL && body_len > 0) ? json_parse(body, body_len) : NULL;
+
+		if (root != NULL) {
+			const char *url = json_as_string(json_object_get(root, "image_url"));
+			const char *sha = json_as_string(json_object_get(root, "image_sha256"));
+			const char *kpath = json_as_string(json_object_get(root, "kernel_path"));
+
+			if (url != NULL && url[0] != '\0') {
+				if (fetch_update_image(url, sha, fetched_path, sizeof(fetched_path), errmsg,
+				                        sizeof(errmsg)) != 0) {
+					json_free(root);
+					respond_error(fd, 400, "Bad Request", errmsg);
+					return;
+				}
+				if (kpath != NULL && kpath[0] != '\0')
+					snprintf(fetched_body, sizeof(fetched_body),
+					         "{\"image_path\":\"%s\",\"kernel_path\":\"%s\"}", fetched_path,
+					         kpath);
+				else
+					snprintf(fetched_body, sizeof(fetched_body), "{\"image_path\":\"%s\"}",
+					         fetched_path);
+				use_body = fetched_body;
+				use_body_len = strlen(fetched_body);
+				logstore_write("cixd", "info",
+				                "system update: fetched and verified an image from %s", url);
+			}
+			json_free(root);
+		}
+	}
+
+	status = do_system_update(use_body, use_body_len, slot, sizeof(slot), &updated_root,
+	                           &updated_kernel, errmsg, sizeof(errmsg));
 	if (status != 200) {
 		respond_error(fd, status, http_status_text(status), errmsg);
 		return;
@@ -20262,6 +20390,80 @@ static void handle_dhcp_server_register(int fd, const char *body, size_t body_le
 	jw_free(&w);
 }
 
+/*
+ * Issue #134: GET/PUT /v1/dns/forwarders -- what this platform resolves
+ * upstream through.
+ *
+ * Previously these were --server= arguments baked into each DNS
+ * container's command line at creation time: changing one meant
+ * recreating core infrastructure, two replicas could silently disagree,
+ * and nothing could answer the question at all. Now they are ordinary
+ * daemon-owned configuration, applied live to every registered server.
+ */
+static void handle_dns_forwarders_get(int fd)
+{
+	char list[DNS_FORWARDERS_MAX][DNS_FORWARDER_LEN];
+	int n = dns_forwarders_get(list, DNS_FORWARDERS_MAX);
+	struct json_writer w;
+	int i;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "forwarders");
+	jw_arr_open(&w);
+	for (i = 0; i < n; i++)
+		jw_str(&w, list[i]);
+	jw_arr_close(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_dns_forwarders_put(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root = NULL;
+	const struct json_value *arr;
+	char list[DNS_FORWARDERS_MAX][DNS_FORWARDER_LEN];
+	int count = 0;
+	size_t i;
+	enum dns_server_error err;
+
+	if (body == NULL || body_len == 0 || (root = json_parse(body, body_len)) == NULL) {
+		respond_error(fd, 400, "Bad Request", "body must be JSON");
+		json_free(root);
+		return;
+	}
+	arr = json_object_get(root, "forwarders");
+	if (arr == NULL || arr->type != JSON_ARRAY) {
+		respond_error(fd, 400, "Bad Request", "\"forwarders\" must be an array of IPv4 addresses");
+		json_free(root);
+		return;
+	}
+	if (arr->u.array.count > DNS_FORWARDERS_MAX) {
+		respond_error(fd, 400, "Bad Request", "too many forwarders");
+		json_free(root);
+		return;
+	}
+	for (i = 0; i < arr->u.array.count; i++) {
+		const char *v = json_as_string(arr->u.array.items[i]);
+
+		if (v == NULL || v[0] == '\0') {
+			respond_error(fd, 400, "Bad Request", "each forwarder must be a non-empty string");
+			json_free(root);
+			return;
+		}
+		snprintf(list[count++], DNS_FORWARDER_LEN, "%s", v);
+	}
+	err = dns_forwarders_set(list, count);
+	json_free(root);
+	if (err != DNS_SERVER_OK) {
+		respond_error(fd, 400, "Bad Request",
+		              "each forwarder must be a valid IPv4 address");
+		return;
+	}
+	handle_dns_forwarders_get(fd);
+}
+
 static void handle_dhcp_server_unregister(int fd, const char *container)
 {
 	enum dhcp_error err = dhcp_server_unregister(container);
@@ -22346,6 +22548,16 @@ static void dispatch(int fd, const struct http_request *req)
 		}
 		if (strcmp(req->method, "PUT") == 0) {
 			handle_bootconsole_put(fd, req->body, req->body_len);
+			return;
+		}
+	}
+	if (strcmp(req->path, "/v1/dns/forwarders") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_dns_forwarders_get(fd);
+			return;
+		}
+		if (strcmp(req->method, "PUT") == 0) {
+			handle_dns_forwarders_put(fd, req->body, req->body_len);
 			return;
 		}
 	}
@@ -24971,6 +25183,52 @@ static void handle_pkg_fetch_event(struct conn *cc)
 		char build_container_name[PKG_NAME_MAX];
 		enum registry_error rerr;
 
+		/*
+		 * Issue #144: a precompiled package needs no container at all.
+		 *
+		 * Checked HERE, not before the call: an artifact hit only
+		 * becomes a cache hit inside pkg_fetch_completed(), which is
+		 * where the verified download is promoted into the local
+		 * cache. Testing earlier looks right and is always false for
+		 * the case that matters.
+		 *
+		 * The container this replaces ran the literal no-op ":" purely
+		 * to keep the merge and dependency-chaining logic downstream a
+		 * single code path -- a fair trade when it cost nothing, and
+		 * not one once it meant execve()ing /usr/bin/bash inside the
+		 * target image and (after ADR-0199) composing a build
+		 * environment from every declared build tool. On a fresh box
+		 * that inverted the artifact tier exactly where it matters:
+		 * `sed` had a valid, checksum-verified artifact and could not
+		 * install for want of a toolchain it never needed.
+		 *
+		 * Completion is driven directly instead. It is the SAME
+		 * function the container's exit would have called, with the
+		 * same synthetic success status -- pkg_build_container_chain_
+		 * index() derives the chain from the NAME alone, never from a
+		 * registry lookup, so no container needs to exist for this to
+		 * be the ordinary path rather than a parallel one.
+		 */
+		if (pkg_chain_is_cache_hit(chain_idx)) {
+			pid_t nc_pid;
+			int nc_pidfd;
+			int nc_chain;
+			char nc_hostbuild[PKG_NAME_MAX];
+			int nc_kept = 0;
+			char nc_name[PKG_NAME_MAX];
+
+			if (stdio_write_fd >= 0)
+				close(stdio_write_fd);
+			pkg_build_container_name(chain_idx, nc_name, sizeof(nc_name));
+			if (pkg_build_completed(nc_name, 0, &nc_pid, &nc_pidfd, &nc_chain, nc_hostbuild,
+			                         &nc_kept))
+				register_pkg_fetch_pidfd(nc_pid, nc_pidfd, nc_chain);
+			else
+				try_start_queued_pkg_rebuild();
+			artifact_push_pump();
+			return;
+		}
+
 		pkg_build_container_name(chain_idx, build_container_name, sizeof(build_container_name));
 		rerr = registry_create(build_container_name, "pkgbuild", "", &spec, NULL, 0, 0, NULL, 0,
 		                        NULL, 0, NULL, NULL, 0, &entry);
@@ -26162,6 +26420,10 @@ static int cixd_main(int argc, char **argv)
 	 * run a DNS-serving container).
 	 */
 	dns_server_sync_all();
+	/* Issue #134: forwarders ride the same post-autostart sync as
+	 * records -- a restarted DNS container must come back with both,
+	 * not just its records. */
+	dns_forwarders_sync_all();
 
 	/*
 	 * The identical gap, for LDAP (ADR-0146): every registered LDAP

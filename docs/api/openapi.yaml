@@ -415,6 +415,22 @@ paths:
         with a fresh Automatic Boot Assessment tries-left counter.
         image_path/kernel_path are local paths the operator has already
         transferred the files to (e.g. scp) -- no upload is performed.
+        image_url is the alternative that needs no prior transfer at
+        all: the daemon fetches that URL itself and writes the result
+        to its own staging path, which is then used exactly as an
+        image_path would be (one staging code path, not two). This
+        exists because a real installed host has no shell and no scp
+        target, and the API's own 1 MiB request cap rules out sending
+        a multi-megabyte squashfs as a request body -- without it,
+        /system/update cannot actually be used to update the control
+        plane of the machine it runs on (#141). image_sha256 is
+        REQUIRED with image_url and verified before the image is used:
+        this call writes a boot slot, so a truncated or wrong image
+        would otherwise only be discovered at the next reboot, which
+        is the worst possible moment to discover it. Note the daemon
+        resolves this URL itself, so on a host with no working
+        upstream resolver (see GET/PUT /system/resolv) only a literal
+        IP will work.
         Independent and both optional (at least one required): update
         just the root, just the kernel (both slots already carry a
         kernel file from install time, so this always has something to
@@ -441,7 +457,18 @@ paths:
               properties:
                 image_path:
                   type: string
-                  description: Local filesystem path to a squashfs image (checked via its own on-disk magic)
+                  description: Local filesystem path to a squashfs image (checked via its own on-disk magic). Mutually exclusive with image_url.
+                image_url:
+                  type: string
+                  description: >
+                    URL the daemon fetches the squashfs from itself, instead of
+                    requiring it to already be on disk. Requires image_sha256.
+                image_sha256:
+                  type: string
+                  description: >
+                    Lowercase hex SHA-256 of the image at image_url. Mandatory
+                    whenever image_url is used -- an unverified image is never
+                    written to a boot slot.
                 kernel_path:
                   type: string
                   description: Local filesystem path to a bzImage kernel (checked via its own on-disk boot-sector/setup_header magic)
@@ -5589,6 +5616,71 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /dns/forwarders:
+    get:
+      summary: >
+        The upstream resolvers every registered DNS server forwards to
+        for names it is not itself authoritative for (issue #134).
+      operationId: getDnsForwarders
+      responses:
+        "200":
+          description: The currently configured forwarders
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [forwarders]
+                properties:
+                  forwarders:
+                    type: array
+                    items:
+                      type: string
+    put:
+      summary: >
+        Replace the upstream forwarder list and apply it live to every
+        registered DNS server. These used to be --server= arguments
+        baked into each DNS container's command line at creation time,
+        which meant changing a forwarder required recreating core
+        infrastructure, two replicas could silently disagree with each
+        other, and nothing could answer "what does this platform
+        resolve through?" at all. They are now ordinary daemon-owned
+        configuration written to a servers-file each dnsmasq reads, so
+        one PUT updates every replica consistently. Replaces the whole
+        list (it is not additive); an empty array leaves the servers
+        authoritative-only, with no upstream recursion at all.
+      operationId: setDnsForwarders
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [forwarders]
+              properties:
+                forwarders:
+                  type: array
+                  description: IPv4 addresses, at most 8
+                  items:
+                    type: string
+      responses:
+        "200":
+          description: Applied, and every registered server reloaded
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [forwarders]
+                properties:
+                  forwarders:
+                    type: array
+                    items:
+                      type: string
+        "400":
+          description: Not an array, too many entries, or an entry is not a valid IPv4 address
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /dns/servers:
     get:
       summary: List all registered DNS server bindings
