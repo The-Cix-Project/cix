@@ -11,6 +11,7 @@
 #include "httpclient.h"
 #include "json.h"
 #include "test_image_fixture.h"
+#include "test_cleanup.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -950,46 +951,9 @@ int main(void)
 	cix_client_request(&client, "DELETE", "/v1/dns/records/shadow", NULL, &r);
 	cix_response_free(&r);
 
-	/*
-	 * Containers first, then the network. A network with an attached
-	 * container cannot be deleted, so if an assertion above bailed out
-	 * before its own container cleanup, the DELETE below fails and the
-	 * host is left with a real `dnstestnet` bridge.
-	 *
-	 * That leak is not a tidiness problem, it poisons the NEXT run:
-	 * network creation fails with 500 because the bridge already
-	 * exists, and every later assertion cascades into 400s and 404s
-	 * that look exactly like a code regression. It cost a full suite
-	 * run to diagnose, having been caused by an earlier deliberately
-	 * failing run of this same test.
-	 *
-	 * Deleting each unconditionally, ignoring the status: most will be
-	 * 404 in a passing run because the test already removed them, and
-	 * a 404 here is success as far as cleanup is concerned.
-	 */
-	{
-		static const char *const leftovers[] = { "dnsserver", "webapp",  "bareweb", "explicit",
-			                                  "shadow",    "editme",  "svc",     "svc2",
-			                                  "bad",       "badreg" };
-		size_t li;
-
-		for (li = 0; li < sizeof(leftovers) / sizeof(leftovers[0]); li++) {
-			char path[128];
-
-			snprintf(path, sizeof(path), "/v1/containers/%s", leftovers[li]);
-			memset(&r, 0, sizeof(r));
-			cix_client_request(&client, "DELETE", path, NULL, &r);
-			cix_response_free(&r);
-		}
-	}
-
-	memset(&r, 0, sizeof(r));
-	if (cix_client_request(&client, "DELETE", "/v1/networks/" TEST_NETWORK_NAME, NULL, &r) != 0 ||
-	    r.status != 204) {
-		fprintf(stderr, "FAIL: DELETE " TEST_NETWORK_NAME " expected 204, got %d\n", r.status);
+	/* cleanup -- enumerate rather than name, see test_cleanup.h */
+	if (test_cleanup_containers_and_network(&client, TEST_NETWORK_NAME) != 0)
 		ok = 0;
-	}
-	cix_response_free(&r);
 
 	kill(daemon_pid, SIGTERM);
 	{

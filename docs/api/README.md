@@ -203,6 +203,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/dns/servers` | List all registered DNS server bindings |
 | POST | `/dns/servers` | Register a running container as a DNS-serving target |
 | DELETE | `/dns/servers/{container}` | Unregister a DNS server binding |
+| POST | `/dns/provision` | Bring up the whole DNS service in one call: replicas, registration, host resolver |
 | GET | `/dns/forwarders` | The upstream resolvers every registered DNS server forwards through |
 | PUT | `/dns/forwarders` | Replace the forwarder list and apply it live to every registered server (#134) |
 | GET | `/ldap/servers` | List all registered LDAP server bindings |
@@ -1079,6 +1080,26 @@ POST /v1/dns/servers
 This writes every current record into `dns1`'s own `/etc/dnsmasq-hosts` (dnsmasq's `--addn-hosts` format) and sends `SIGHUP` so it reloads immediately. Every subsequent `POST`/`DELETE` on `/v1/dns/records` re-writes that file and re-signals `dns1` — genuinely live updates, not a one-time snapshot at registration.
 
 The write itself goes through `/proc/<pid>/root/<hosts_path>` (the container's own filesystem view via the magic procfs symlink), not the container's raw upperdir directly — writing straight into a running container's upperdir does **not** reliably show up in its mounted view (confirmed empirically; the kernel documents this as unsupported/undefined for an already-mounted overlay). `/proc/<pid>/root/` correctly resolves through the container's real mount namespace without needing any new namespace-entry syscall.
+
+### Provisioning DNS in one call
+
+Standing up DNS by hand is four distinct steps — create each replica from its recipe, register each as a DNS server, read back the addresses they actually got, point the host resolver at them — and getting any one of them wrong leaves a half-configured service that looks healthy. This does all of it:
+
+```
+POST /v1/dns/provision
+{"replicas": ["dns-1", "dns-2"], "set_resolver": true}
+```
+
+Both fields are optional. Omitting `replicas` uses this platform's own default topology (`dns-1`, `dns-2`), so the standard case needs no body at all.
+
+**This is an endpoint rather than a client-side sequence on purpose.** It was briefly implemented as four calls driven from `cixctl`, which the API-First Mandate (see `CLAUDE.md`) forbids outright — and the moment the dashboard wanted the same button, that sequence would have had to be written a second time in JavaScript. The workflow is the product, so the workflow is an endpoint and both clients are thin.
+
+- **Re-runnable by design.** A replica that already exists reports `"created": "exists"` and counts as success, not a conflict. Provisioning is precisely what an operator retries after fixing whatever failed the first time; a call that refused because half its work was already done would be useless there.
+- **Per-replica reporting, not one overall status.** `200` when everything worked, `207 Multi-Status` when anything did not, with `created`/`registered`/`ip` for each replica. "Created but not registered" and "registered but the resolver was not updated" are genuinely different states to be stranded in, and recovery depends on knowing which one happened.
+- **The address comes from the container, not the recipe.** The recipe is intent; the running container is fact, and only the fact is worth writing into `resolv.conf`.
+- **The host resolver is set only if nothing failed.** Pointing the host at a resolver list that is missing a replica, or at one that was never registered, leaves the machine worse off than before the call.
+
+`cixctl dns provision [--replica=NAME ...] [--no-resolver]` is the CLI surface — argument parsing and printing over this one call.
 
 ### Upstream forwarders
 

@@ -131,6 +131,17 @@ enum dns_server_error {
 #define DNS_FORWARDER_LEN 64
 #define DNS_SERVERS_FILE_PATH "/etc/dnsmasq-servers"
 
+/*
+ * Where a DNS server container reads its records from. The path is
+ * still per-binding (POST /v1/dns/servers carries its own hosts_path,
+ * since nothing forces a container to use this layout), but the value
+ * this platform's own recipes and provisioning use lives here rather
+ * than being spelled out again at each call site -- it was previously
+ * a bare string literal in the CLI, which is precisely the sort of
+ * quiet second copy that drifts.
+ */
+#define DNS_DEFAULT_HOSTS_PATH "/etc/dnsmasq-hosts"
+
 /* Fills out[] with the configured forwarders; returns how many. */
 int dns_forwarders_get(char out[][DNS_FORWARDER_LEN], int max);
 
