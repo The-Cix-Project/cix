@@ -13066,7 +13066,18 @@ static int create_container_from_body(const char *body, size_t body_len,
 	return 0;
 }
 
-static void handle_create(int fd, const char *body, size_t body_len)
+/*
+ * Creating a container from a request body, without responding.
+ *
+ * Split out so that anything else needing to create a container uses
+ * this same implementation rather than a second copy of it, or -- worse
+ * -- an HTTP client talking back to this daemon. POST /v1/dns/provision
+ * is the first such caller. Returns 0 on success, otherwise an HTTP
+ * status with err_msg filled in; *out_entry is set only on success.
+ */
+static int create_container_persisted(const char *body, size_t body_len,
+                                       struct registry_entry **out_entry, char *err_msg,
+                                       size_t err_msg_size)
 {
 	struct registry_entry *entry;
 	char restart_policy[16];
@@ -13076,9 +13087,7 @@ static void handle_create(int fd, const char *body, size_t body_len)
 	int has_readiness, readiness_tcp_port, readiness_timeout_seconds;
 	int follow_rolling;
 	int has_follow_rolling_jitter, follow_rolling_jitter_seconds;
-	char err_msg[256];
 	int status;
-	struct json_writer w;
 
 	/* Issue #68: HTTP creates are strict about unknown keys -- see
 	 * container_body_unknown_key()'s own comment. Parsed once extra
@@ -13091,10 +13100,9 @@ static void handle_create(int fd, const char *body, size_t body_len)
 		const char *bad = container_body_unknown_key(root);
 
 		if (bad != NULL) {
-			snprintf(err_msg, sizeof(err_msg), "unknown field: %s", bad);
+			snprintf(err_msg, err_msg_size, "unknown field: %s", bad);
 			json_free(root);
-			respond_error(fd, 400, "Bad Request", err_msg);
-			return;
+			return 400;
 		}
 		json_free(root);
 	}
@@ -13104,11 +13112,9 @@ static void handle_create(int fd, const char *body, size_t body_len)
 	                                     &has_readiness, &readiness_tcp_port,
 	                                     &readiness_timeout_seconds, &follow_rolling,
 	                                     &has_follow_rolling_jitter, &follow_rolling_jitter_seconds,
-	                                     err_msg, sizeof(err_msg));
-	if (status != 0) {
-		respond_error(fd, status, http_status_text(status), err_msg);
-		return;
-	}
+	                                     err_msg, err_msg_size);
+	if (status != 0)
+		return status;
 
 	/*
 	 * ADR-0181 (issue #73), superseding ADR-0027: persist EVERY container's
@@ -13171,6 +13177,23 @@ static void handle_create(int fd, const char *body, size_t body_len)
 			        entry->name, restart_policy);
 		}
 		free(persisted_body);
+	}
+
+	*out_entry = entry;
+	return 0;
+}
+
+static void handle_create(int fd, const char *body, size_t body_len)
+{
+	struct registry_entry *entry = NULL;
+	char err_msg[256];
+	int status;
+	struct json_writer w;
+
+	status = create_container_persisted(body, body_len, &entry, err_msg, sizeof(err_msg));
+	if (status != 0) {
+		respond_error(fd, status, http_status_text(status), err_msg);
+		return;
 	}
 
 	jw_init(&w);
@@ -20446,6 +20469,225 @@ static void handle_dhcp_server_register(int fd, const char *body, size_t body_le
  * and nothing could answer the question at all. Now they are ordinary
  * daemon-owned configuration, applied live to every registered server.
  */
+/*
+ * POST /v1/dns/provision -- bring up this platform's DNS service in one
+ * call: create each replica from its own container recipe, register it
+ * as a DNS server so records reach it live, and point the host's own
+ * resolver at the addresses those containers actually got.
+ *
+ * This exists as an endpoint because it was, briefly, a CLI feature
+ * with no endpoint behind it -- `cixctl dns provision` orchestrated
+ * four REST calls itself. That breaks the API-First Mandate outright
+ * ("a CLI or web feature with no corresponding endpoint is not allowed
+ * to exist") and guarantees a parallel implementation the moment the
+ * dashboard wants the same button, since the sequence would have to be
+ * written a second time in JavaScript. The workflow is the product, so
+ * the workflow is an endpoint, and both clients become thin.
+ *
+ * Each step is reported per replica rather than collapsed into one
+ * status: "created but not registered" and "registered but the host
+ * resolver was not updated" are genuinely different states to be left
+ * in, and an operator recovering from a partial run needs to know
+ * which one happened.
+ *
+ * "already exists" is success, not a conflict -- this is deliberately
+ * re-runnable. Provisioning is exactly the thing an operator retries
+ * after fixing whatever failed the first time, and a call that refuses
+ * because half its work is already done would be useless there.
+ */
+#define DNS_PROVISION_MAX_REPLICAS 8
+
+static void handle_dns_provision(int fd, const char *body, size_t body_len)
+{
+	char replicas[DNS_PROVISION_MAX_REPLICAS][REGISTRY_NAME_MAX];
+	int replica_count = 0;
+	int set_resolver = 1;
+	int problems = 0;
+	char ips[DNS_PROVISION_MAX_REPLICAS][RESOLV_IP_STRLEN];
+	int ip_count = 0;
+	struct json_value *root = NULL;
+	struct json_writer w;
+	int i;
+
+	if (body != NULL && body_len > 0) {
+		const struct json_value *arr;
+		const struct json_value *sr;
+
+		root = json_parse(body, body_len);
+		if (root == NULL) {
+			respond_error(fd, 400, "Bad Request", "invalid JSON body");
+			return;
+		}
+		arr = json_object_get(root, "replicas");
+		if (arr != NULL) {
+			size_t j;
+
+			if (arr->type != JSON_ARRAY) {
+				json_free(root);
+				respond_error(fd, 400, "Bad Request", "\"replicas\" must be an array of names");
+				return;
+			}
+			if (arr->u.array.count > DNS_PROVISION_MAX_REPLICAS) {
+				json_free(root);
+				respond_error(fd, 400, "Bad Request", "too many replicas");
+				return;
+			}
+			for (j = 0; j < arr->u.array.count; j++) {
+				const char *nm = json_as_string(arr->u.array.items[j]);
+
+				if (nm == NULL || nm[0] == '\0') {
+					json_free(root);
+					respond_error(fd, 400, "Bad Request", "replica names must be non-empty");
+					return;
+				}
+				snprintf(replicas[replica_count++], REGISTRY_NAME_MAX, "%s", nm);
+			}
+		}
+		sr = json_object_get(root, "set_resolver");
+		if (sr != NULL && sr->type == JSON_BOOL)
+			set_resolver = sr->u.boolean;
+	}
+	json_free(root);
+
+	/*
+	 * The two replicas this platform ships container recipes for. A
+	 * default rather than a requirement, because "provision DNS" with
+	 * no further detail is the overwhelmingly common request, and
+	 * making the caller restate the standard topology every time adds
+	 * nothing.
+	 */
+	if (replica_count == 0) {
+		snprintf(replicas[replica_count++], REGISTRY_NAME_MAX, "%s", "dns-1");
+		snprintf(replicas[replica_count++], REGISTRY_NAME_MAX, "%s", "dns-2");
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "replicas");
+	jw_arr_open(&w);
+
+	for (i = 0; i < replica_count; i++) {
+		struct registry_entry *entry = registry_find(replicas[i]);
+		char err_msg[256];
+		const char *created;
+		int registered = 0;
+		char ip_str[RESOLV_IP_STRLEN];
+
+		ip_str[0] = '\0';
+		jw_obj_open(&w);
+		jw_key(&w, "name");
+		jw_str(&w, replicas[i]);
+
+		if (entry != NULL) {
+			created = "exists";
+		} else {
+			char *rendered;
+			enum pkg_error perr;
+
+			rendered = container_recipe_render(replicas[i], NULL, &perr);
+			if (rendered == NULL) {
+				created = "no-recipe";
+				problems++;
+				jw_key(&w, "created");
+				jw_str(&w, created);
+				jw_key(&w, "error");
+				jw_str(&w, "no container recipe published for this replica");
+				jw_obj_close(&w);
+				continue;
+			}
+			if (create_container_persisted(rendered, strlen(rendered), &entry, err_msg,
+			                                sizeof(err_msg)) != 0) {
+				free(rendered);
+				problems++;
+				jw_key(&w, "created");
+				jw_str(&w, "failed");
+				jw_key(&w, "error");
+				jw_str(&w, err_msg);
+				jw_obj_close(&w);
+				continue;
+			}
+			free(rendered);
+			created = "created";
+		}
+		jw_key(&w, "created");
+		jw_str(&w, created);
+
+		/*
+		 * Registration is what makes records actually reach this
+		 * container, so a replica that is running but unregistered is
+		 * a silent half-configuration -- reported, never assumed.
+		 */
+		if (entry != NULL && entry->running) {
+			enum dns_server_error derr =
+			    dns_server_register(replicas[i], entry->handle.pid, entry->handle.pidfd,
+			                         DNS_DEFAULT_HOSTS_PATH);
+
+			if (derr == DNS_SERVER_OK || derr == DNS_SERVER_ERR_DUPLICATE)
+				registered = 1;
+			else
+				problems++;
+		} else {
+			problems++;
+		}
+		jw_key(&w, "registered");
+		jw_bool(&w, registered);
+
+		/*
+		 * The recipe is the intent; the container is the fact. Only
+		 * the fact is worth writing into resolv.conf, so the address
+		 * is read back from the running container rather than assumed
+		 * from whatever the recipe pinned.
+		 */
+		if (entry != NULL && entry->net_count > 0) {
+			struct in_addr a;
+
+			a.s_addr = entry->nets[0].ip_be;
+			if (inet_ntop(AF_INET, &a, ip_str, sizeof(ip_str)) != NULL &&
+			    ip_count < DNS_PROVISION_MAX_REPLICAS)
+				snprintf(ips[ip_count++], RESOLV_IP_STRLEN, "%s", ip_str);
+		}
+		jw_key(&w, "ip");
+		if (ip_str[0] != '\0')
+			jw_str(&w, ip_str);
+		else
+			jw_null(&w);
+		jw_obj_close(&w);
+	}
+	jw_arr_close(&w);
+
+	/*
+	 * Only when everything above worked. Pointing the host at a
+	 * resolver set that is missing a replica, or at one that was never
+	 * registered, would leave the machine worse off than before the
+	 * call -- and this is the step that decides whether the host can
+	 * resolve anything at all.
+	 */
+	jw_key(&w, "resolver");
+	if (set_resolver && problems == 0 && ip_count > 0) {
+		const char *ptrs[DNS_PROVISION_MAX_REPLICAS];
+
+		for (i = 0; i < ip_count; i++)
+			ptrs[i] = ips[i];
+		if (resolv_set(ptrs, ip_count) == RESOLV_OK) {
+			jw_arr_open(&w);
+			for (i = 0; i < ip_count; i++)
+				jw_str(&w, ips[i]);
+			jw_arr_close(&w);
+		} else {
+			problems++;
+			jw_null(&w);
+		}
+	} else {
+		jw_null(&w);
+	}
+
+	jw_key(&w, "problems");
+	jw_int(&w, problems);
+	jw_obj_close(&w);
+	respond_json(fd, problems == 0 ? 200 : 207, problems == 0 ? "OK" : "Multi-Status", &w);
+	jw_free(&w);
+}
+
 static void handle_dns_forwarders_get(int fd)
 {
 	char list[DNS_FORWARDERS_MAX][DNS_FORWARDER_LEN];
@@ -22604,6 +22846,12 @@ static void dispatch(int fd, const struct http_request *req)
 		}
 		if (strcmp(req->method, "PUT") == 0) {
 			handle_dns_forwarders_put(fd, req->body, req->body_len);
+			return;
+		}
+	}
+	if (strcmp(req->path, "/v1/dns/provision") == 0) {
+		if (strcmp(req->method, "POST") == 0) {
+			handle_dns_provision(fd, req->body, req->body_len);
 			return;
 		}
 	}

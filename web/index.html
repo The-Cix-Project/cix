@@ -1268,6 +1268,7 @@
 			<div class="tab-bar">
 				<button type="button" class="tab-button active" data-tab="dns-records">Records</button>
 				<button type="button" class="tab-button" data-tab="dns-servers">Servers</button>
+				<button type="button" class="tab-button" data-tab="dns-forwarders">Forwarders</button>
 			</div>
 			<div class="tab-panel" data-tab="dns-records">
 			<div class="view-list">
@@ -1302,6 +1303,31 @@
 						<tr><td colspan="3" class="empty">Loading&hellip;</td></tr>
 					</tbody>
 				</table>
+			</div>
+		</div>
+			<div class="tab-panel" data-tab="dns-forwarders" hidden>
+			<div class="view-list">
+				<h2>Upstream Forwarders</h2>
+				<p class="hint">
+					Where the DNS servers send queries they are not authoritative for.
+					Applied to every registered server at once, so replicas cannot drift
+					apart. With none set they answer only for this platform's own names.
+				</p>
+				<table id="dns-forwarders">
+					<thead>
+						<tr>
+							<th>Address</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody id="dns-forwarders-body">
+						<tr><td colspan="2" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+				<form id="dns-forwarder-add-form" class="inline-form">
+					<input type="text" id="dns-forwarder-ip" placeholder="1.1.1.1" required>
+					<button type="submit">Add forwarder</button>
+				</form>
 			</div>
 		</div>
 		</section>

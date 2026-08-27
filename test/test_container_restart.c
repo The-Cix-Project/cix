@@ -19,6 +19,7 @@
 #include "httpclient.h"
 #include "json.h"
 #include "test_image_fixture.h"
+#include "test_cleanup.h"
 
 #include <limits.h>
 #include <signal.h>
@@ -1181,29 +1182,9 @@ int main(void)
 		ok = 0;
 	}
 
-	/* cleanup */
-	{
-		const char *cleanup[] = { "depA",       "depB",       "cycleA",     "cycleB",
-			                       "needsghost", "innocent",   "depR",       "depS",
-			                       "neverready", "afterNeverReady", "stopalways", "stopunless" };
-		size_t i;
-
-		for (i = 0; i < sizeof(cleanup) / sizeof(cleanup[0]); i++) {
-			char path[128];
-
-			snprintf(path, sizeof(path), "/v1/containers/%s", cleanup[i]);
-			memset(&r, 0, sizeof(r));
-			cix_client_request(&client, "DELETE", path, NULL, &r);
-			cix_response_free(&r);
-		}
-	}
-
-	memset(&r, 0, sizeof(r));
-	if (cix_client_request(&client, "DELETE", "/v1/networks/" READY_NETWORK_NAME, NULL, &r) != 0 ||
-	    r.status != 204) {
-		fprintf(stderr, "FAIL: DELETE " READY_NETWORK_NAME ", status=%d\n", r.status);
+	/* cleanup -- enumerate rather than name, see test_cleanup.h */
+	if (test_cleanup_containers_and_network(&client, READY_NETWORK_NAME) != 0)
 		ok = 0;
-	}
 	cix_response_free(&r);
 
 	if (stop_daemon(daemon_pid) != 0) {

@@ -5681,6 +5681,67 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /dns/provision:
+    post:
+      summary: >
+        Bring up this platform's DNS service in one call: create each
+        replica from its own container recipe, register it as a DNS
+        server so records reach it live, and point the host's own
+        resolver at the addresses those containers actually got.
+        Exists as an endpoint because the workflow IS the product --
+        it was briefly a CLI-only sequence of four calls, which the
+        API-First Mandate forbids and which would have forced the
+        dashboard to reimplement the same sequence in JavaScript.
+        Deliberately re-runnable: a replica that already exists counts
+        as success, not a conflict, because provisioning is exactly
+        what an operator retries after fixing whatever failed.
+      operationId: provisionDns
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                replicas:
+                  type: array
+                  description: >
+                    Container names to provision. Omitted or empty uses this
+                    platform's own default topology (dns-1, dns-2), so the
+                    caller does not restate the standard case every time.
+                    At most 8.
+                  items:
+                    type: string
+                set_resolver:
+                  type: boolean
+                  default: true
+                  description: >
+                    Point GET/PUT /system/resolv at the provisioned replicas.
+                    Skipped when any replica had a problem -- a resolver list
+                    missing a replica leaves the host worse off than before.
+      responses:
+        "200":
+          description: Every replica provisioned; the host resolver was set unless set_resolver was false
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DnsProvisionResult"
+        "207":
+          description: >
+            At least one replica had a problem. The body reports each step
+            per replica -- "created but not registered" and "registered but
+            the resolver was not updated" are different states to be left in,
+            and recovering needs to know which happened.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DnsProvisionResult"
+        "400":
+          description: replicas is not an array of non-empty names, or there are too many
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /dns/servers:
     get:
       summary: List all registered DNS server bindings
@@ -13503,6 +13564,48 @@ components:
             "installed": the host directory its harvested output landed in
             (ARTIFACTS_DIR/<name>/), never merged into any image's rootfs. null for
             every ordinary install, and for a hostbuild entry that hasn't finished yet.
+
+    DnsProvisionResult:
+      type: object
+      required: [replicas, problems]
+      properties:
+        replicas:
+          type: array
+          items:
+            type: object
+            required: [name, created]
+            properties:
+              name:
+                type: string
+              created:
+                type: string
+                enum: [created, exists, no-recipe, failed]
+                description: >
+                  "exists" is success -- this call is re-runnable by design.
+              registered:
+                type: boolean
+                description: >
+                  Whether it is registered as a DNS server. A replica that is
+                  running but unregistered receives no records, which is a
+                  silent half-configuration, so it is reported rather than
+                  assumed.
+              ip:
+                type: string
+                nullable: true
+                description: >
+                  Read back from the running container, not from the recipe --
+                  the recipe is intent, the container is fact, and only the
+                  fact is worth writing into resolv.conf.
+              error:
+                type: string
+        resolver:
+          type: array
+          nullable: true
+          description: The nameservers written to the host, or null if not set
+          items:
+            type: string
+        problems:
+          type: integer
 
     Error:
       type: object

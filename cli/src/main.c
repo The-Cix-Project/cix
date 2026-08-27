@@ -39,12 +39,16 @@ static void print_usage(FILE *out)
 	        "               real PID 1 (an installed system) -- a dev/interactive cixd\n"
 	        "               just exits, same as it always has on SIGTERM\n"
 	        "  reboot    -- stop cixd; restarts the host too when running as PID 1\n"
-	        "  update [--image=PATH] [--kernel=PATH]  -- writes a fresh control-plane\n"
-	        "               squashfs and/or a fresh kernel (already transferred onto the\n"
-	        "               box, e.g. via scp) onto this daemon's own inactive A/B slot and\n"
-	        "               stages a fresh loader entry for it; at least one of --image=/\n"
-	        "               --kernel= required, either or both; does NOT reboot -- call\n"
-	        "               reboot separately once ready to cut over\n"
+	        "  update [--image=PATH | --image-url=URL --image-sha256=HEX] [--kernel=PATH]\n"
+	        "            -- writes a fresh control-plane squashfs and/or a fresh kernel onto\n"
+	        "               this daemon's own inactive A/B slot and stages a fresh loader\n"
+	        "               entry for it. --image=/--kernel= are paths already on the box;\n"
+	        "               --image-url= has the daemon fetch it instead, which is the only\n"
+	        "               option on an installed host (no shell, no scp target, and the\n"
+	        "               API caps a request body well below an image). --image-sha256= is\n"
+	        "               required with it: this writes a boot slot, so an unverified\n"
+	        "               image is refused. At least one of the three required; does NOT\n"
+	        "               reboot -- call reboot separately once ready to cut over\n"
 	        "  backup [--output=PATH]  -- bundles platform configuration state (container\n"
 	        "               defs, networks, DNS records, pkg install state + recipes) --\n"
 	        "               NOT workload data, NOT image content, NEVER PKI keys. Prints the\n"
@@ -3845,6 +3849,8 @@ static void fmt_update(const struct json_value *v)
 static int cmd_update(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *image = NULL;
+	const char *image_url = NULL;
+	const char *image_sha256 = NULL;
 	const char *kernel = NULL;
 	int i;
 	struct json_writer w;
@@ -3853,6 +3859,10 @@ static int cmd_update(const struct cix_client *c, int json_mode, int argc, char 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--image=", 8) == 0)
 			image = argv[i] + 8;
+		else if (strncmp(argv[i], "--image-url=", 12) == 0)
+			image_url = argv[i] + 12;
+		else if (strncmp(argv[i], "--image-sha256=", 15) == 0)
+			image_sha256 = argv[i] + 15;
 		else if (strncmp(argv[i], "--kernel=", 9) == 0)
 			kernel = argv[i] + 9;
 		else {
@@ -3860,13 +3870,39 @@ static int cmd_update(const struct cix_client *c, int json_mode, int argc, char 
 			return 2;
 		}
 	}
-	if (image == NULL && kernel == NULL) {
-		fprintf(stderr, "usage: cixctl update [--image=PATH] [--kernel=PATH]\n");
+	if (image == NULL && image_url == NULL && kernel == NULL) {
+		fprintf(stderr, "usage: cixctl update [--image=PATH | --image-url=URL "
+		                "--image-sha256=HEX] [--kernel=PATH]\n");
+		return 2;
+	}
+	/*
+	 * Caught here as well as server-side, because the two failures read
+	 * very differently to whoever typed the command: a 400 arriving
+	 * after a multi-megabyte download has already run is far more
+	 * annoying than being told up front which flag is missing.
+	 */
+	if (image != NULL && image_url != NULL) {
+		fprintf(stderr, "cixctl: --image= and --image-url= are alternatives, give one\n");
+		return 2;
+	}
+	if (image_url != NULL && image_sha256 == NULL) {
+		fprintf(stderr, "cixctl: --image-url= requires --image-sha256= -- this writes a boot "
+		                "slot, so an unverified image is not accepted\n");
+		return 2;
+	}
+	if (image_url == NULL && image_sha256 != NULL) {
+		fprintf(stderr, "cixctl: --image-sha256= only applies to --image-url=\n");
 		return 2;
 	}
 
 	jw_init(&w);
 	jw_obj_open(&w);
+	if (image_url != NULL) {
+		jw_key(&w, "image_url");
+		jw_str(&w, image_url);
+		jw_key(&w, "image_sha256");
+		jw_str(&w, image_sha256);
+	}
 	if (image != NULL) {
 		jw_key(&w, "image_path");
 		jw_str(&w, image);
@@ -9969,148 +10005,119 @@ static int cmd_dns_forwarders(const struct cix_client *c, int json_mode, int arg
  * re-applies the recipes and re-registers, which is exactly what an
  * operator wants after editing one.
  */
+/*
+ * Thin client over POST /v1/dns/provision.
+ *
+ * This used to orchestrate the whole workflow here -- apply each
+ * recipe, register each server, read back the addresses, set the host
+ * resolver -- four REST calls driven from the CLI. That is exactly what
+ * the API-First Mandate forbids: a CLI feature with no endpoint behind
+ * it, which the dashboard could only match by writing the same sequence
+ * again in JavaScript. The sequence is the product, so it belongs to
+ * the daemon; what is left here is argument parsing and printing.
+ */
+static void fmt_dns_provision(const struct cix_response *r)
+{
+	const struct json_value *reps;
+	const struct json_value *resolver;
+	long problems;
+	size_t i;
+
+	if (r->json == NULL) {
+		printf("dns provision: no response body\n");
+		return;
+	}
+	reps = json_object_get(r->json, "replicas");
+	if (reps != NULL && reps->type == JSON_ARRAY) {
+		for (i = 0; i < reps->u.array.count; i++) {
+			const struct json_value *rep = reps->u.array.items[i];
+			const char *name = json_str_field(rep, "name");
+			const char *created = json_str_field(rep, "created");
+			const char *err = json_str_field(rep, "error");
+			const struct json_value *regd = json_object_get(rep, "registered");
+			const char *ip = json_str_field(rep, "ip");
+
+			printf("%-8s %s", name != NULL ? name : "?", created != NULL ? created : "?");
+			if (regd != NULL && regd->type == JSON_BOOL && regd->u.boolean)
+				printf(", registered");
+			if (ip != NULL && ip[0] != '\0')
+				printf(", %s", ip);
+			if (err != NULL && err[0] != '\0')
+				printf(" -- %s", err);
+			printf("\n");
+		}
+	}
+	resolver = json_object_get(r->json, "resolver");
+	if (resolver != NULL && resolver->type == JSON_ARRAY) {
+		printf("host resolver -> ");
+		for (i = 0; i < resolver->u.array.count; i++)
+			printf("%s%s", i ? ", " : "", json_as_string(resolver->u.array.items[i]));
+		printf("\n");
+	}
+	problems = (long)json_as_number(json_object_get(r->json, "problems"));
+	if (problems > 0) {
+		/* The per-replica lines above went to stdout, which is block-
+		 * buffered when piped -- without this the summary reaches the
+		 * terminal first and reads as if nothing was reported. */
+		fflush(stdout);
+		fprintf(stderr, "\ndns provision finished with %ld problem(s) above.\n", problems);
+	}
+}
+
 static int cmd_dns_provision(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
-	const char *replicas[8];
-	int replica_count = 0;
-	int set_resolver = 1;
-	int i;
-	int failures = 0;
+	struct json_writer w;
 	struct cix_response r;
+	int set_resolver = 1;
+	int replica_count = 0;
+	int i;
 
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "replicas");
+	jw_arr_open(&w);
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--replica=", 10) == 0) {
-			if (replica_count < 8)
-				replicas[replica_count++] = argv[i] + 10;
+			jw_str(&w, argv[i] + 10);
+			replica_count++;
 		} else if (strcmp(argv[i], "--no-resolver") == 0) {
 			set_resolver = 0;
 		} else {
 			fprintf(stderr, "cixctl: unknown dns provision option '%s'\n", argv[i]);
+			jw_free(&w);
 			return 2;
 		}
 	}
-	if (replica_count == 0) {
-		/* The two this platform ships recipes for. */
-		replicas[replica_count++] = "dns-1";
-		replicas[replica_count++] = "dns-2";
-	}
+	jw_arr_close(&w);
+	jw_key(&w, "set_resolver");
+	jw_bool(&w, set_resolver);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
 
-	for (i = 0; i < replica_count; i++) {
-		char path[256];
+	/* An empty replicas array means "use the platform default", which
+	 * the daemon decides -- not restated here, so the two cannot
+	 * disagree about what the standard topology is. */
+	(void)replica_count;
 
-		/* 1. create the container from its own recipe */
-		snprintf(path, sizeof(path), "/v1/containers/recipes/%s/apply", replicas[i]);
-		if (cix_client_request(c, "POST", path, "{}", &r) != 0) {
-			fprintf(stderr, "cixctl: could not reach daemon\n");
-			return 1;
-		}
-		if (r.status == 201) {
-			printf("%-8s created from its recipe\n", replicas[i]);
-		} else if (r.status == 409) {
-			printf("%-8s already exists (left as it is)\n", replicas[i]);
-		} else if (r.status == 404) {
-			fprintf(stderr,
-			        "%-8s NO RECIPE on this host -- publish it first:\n"
-			        "         cixctl container recipe add %s --file=recipes/container/%s/<v>/container.json\n",
-			        replicas[i], replicas[i], replicas[i]);
-			failures++;
-			cix_response_free(&r);
-			continue;
-		} else {
-			const char *msg = (r.json != NULL) ? json_str_field(r.json, "error") : NULL;
-
-			fprintf(stderr, "%-8s could not be created (HTTP %d)%s%s\n", replicas[i], r.status,
-			        msg != NULL ? ": " : "", msg != NULL ? msg : "");
-			failures++;
-			cix_response_free(&r);
-			continue;
-		}
-		cix_response_free(&r);
-
-		/* 2. register it as a DNS server so records reach it live */
-		{
-			char body[256];
-
-			snprintf(body, sizeof(body),
-			         "{\"container\":\"%s\",\"hosts_path\":\"/etc/dnsmasq-hosts\"}",
-			         replicas[i]);
-			if (cix_client_request(c, "POST", "/v1/dns/servers", body, &r) == 0) {
-				if (r.status == 201 || r.status == 409)
-					printf("%-8s registered as a DNS server\n", replicas[i]);
-				else {
-					fprintf(stderr, "%-8s could not be registered (HTTP %d)\n", replicas[i],
-					        r.status);
-					failures++;
-				}
-				cix_response_free(&r);
-			}
-		}
-	}
-
-	/*
-	 * 3. Point the host's own resolver at the replicas we just created,
-	 * reading their real addresses back rather than assuming what the
-	 * recipes pinned -- the recipe is the intent, the container is the
-	 * fact, and only the fact is worth writing into resolv.conf.
-	 */
-	if (set_resolver && failures == 0) {
-		char ips[8][64];
-		int ip_count = 0;
-
-		for (i = 0; i < replica_count && ip_count < 8; i++) {
-			char path[256];
-
-			snprintf(path, sizeof(path), "/v1/containers/%s", replicas[i]);
-			if (cix_client_request(c, "GET", path, NULL, &r) != 0)
-				continue;
-			if (r.status == 200 && r.json != NULL) {
-				const struct json_value *nets = json_object_get(r.json, "networks");
-
-				if (nets != NULL && nets->type == JSON_ARRAY && nets->u.array.count > 0) {
-					const char *ip =
-					    json_str_field(nets->u.array.items[0], "ip");
-
-					if (ip != NULL && ip[0] != '\0')
-						snprintf(ips[ip_count++], sizeof(ips[0]), "%s", ip);
-				}
-			}
-			cix_response_free(&r);
-		}
-		if (ip_count > 0) {
-			struct json_writer w;
-			int j;
-
-			jw_init(&w);
-			jw_obj_open(&w);
-			jw_key(&w, "nameservers");
-			jw_arr_open(&w);
-			for (j = 0; j < ip_count; j++)
-				jw_str(&w, ips[j]);
-			jw_arr_close(&w);
-			jw_obj_close(&w);
-			w.buf[w.len] = '\0';
-			if (cix_client_request(c, "PUT", "/v1/system/resolv", w.buf, &r) == 0) {
-				if (r.status == 200) {
-					printf("host resolver -> ");
-					for (j = 0; j < ip_count; j++)
-						printf("%s%s", j ? ", " : "", ips[j]);
-					printf("\n");
-				} else {
-					fprintf(stderr, "could not set the host resolver (HTTP %d)\n", r.status);
-					failures++;
-				}
-				cix_response_free(&r);
-			}
-			jw_free(&w);
-		}
-	}
-
-	if (failures > 0) {
-		fprintf(stderr, "\ndns provision finished with %d problem(s) above.\n", failures);
+	if (cix_client_request(c, "POST", "/v1/dns/provision", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
-	printf("\nDNS is provisioned. Check it with:  cixctl dns server ls\n");
-	return 0;
+	jw_free(&w);
+
+	/* 207 means some replicas had problems; the body says which. */
+	if (r.status != 200 && r.status != 207)
+		return emit(&r, json_mode, NULL);
+	if (json_mode)
+		return emit(&r, json_mode, NULL);
+	fmt_dns_provision(&r);
+	{
+		long problems = (r.json != NULL) ? (long)json_as_number(json_object_get(r.json, "problems")) : 0;
+
+		cix_response_free(&r);
+		return problems > 0 ? 1 : 0;
+	}
 }
 
 static int cmd_dns(const struct cix_client *c, int json_mode, int argc, char **argv)

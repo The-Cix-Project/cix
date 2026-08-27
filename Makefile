@@ -112,7 +112,7 @@ $(BUILD)/test_esp: test/test_esp.c test/test_image_fixture.c $(CLIENT_SRCS) | $(
 $(BUILD)/test_artifact_export: test/test_artifact_export.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_container_restart: test/test_container_restart.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_container_restart: test/test_container_restart.c test/test_image_fixture.c test/test_cleanup.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
 $(BUILD)/output_child: test/output_child.c | $(BUILD)
@@ -214,7 +214,7 @@ $(BUILD)/test_devices: test/test_devices.c test/test_image_fixture.c $(LIB_SRCS)
 $(BUILD)/test_daemon_devices: test/test_daemon_devices.c test/test_image_fixture.c $(CLIENT_SRCS) netplane/src/rtnetlink.c | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_dns: test/test_dns.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_dns: test/test_dns.c test/test_image_fixture.c test/test_cleanup.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
 $(BUILD)/test_ntp: test/test_ntp.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
