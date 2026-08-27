@@ -734,6 +734,38 @@ int network_alloc_ip(const char *name, uint32_t *out_ip_be)
 		int hi = net->alloc_end_host > 0 ? net->alloc_end_host
 		                                 : host_max_for_prefix(net->prefix_len);
 
+		/*
+		 * Issue #137: REFUSE to auto-allocate on a network that is
+		 * bridged onto real infrastructure and has no declared pool.
+		 *
+		 * An enslaved physical interface is the ground truth for "this
+		 * bridge reaches equipment this platform does not own" -- the
+		 * subnet is then shared with routers, switches, NAS boxes and
+		 * whatever else lives there, none of which this daemon can see
+		 * or ARP for reliably at allocation time. Handing out an
+		 * address from it is a coin flip against someone's production
+		 * LAN.
+		 *
+		 * This is not theoretical: containers auto-allocated .2 and .3
+		 * on exactly such a network and went live on the operator's
+		 * real LAN, inside a range they had explicitly reserved for
+		 * other equipment. Issue #70's floor of 2 (below) skips only
+		 * the .1 gateway convention -- it does nothing about .2
+		 * onwards.
+		 *
+		 * So this fails CLOSED. The two safe ways forward both remain
+		 * fully available and are named in the error: declare the pool
+		 * this platform may draw from, or pin the address explicitly
+		 * per container (an explicit address is deliberately never
+		 * constrained by the pool -- operator intent wins).
+		 *
+		 * An internal, cix-owned bridge has no enslaved interface, so
+		 * it is unaffected and keeps allocating from host-part 1.
+		 */
+		if (net->interface_count > 0 && net->alloc_start_host == 0 &&
+		    net->alloc_end_host == 0)
+			return -2;
+
 		/* Issue #70 safe default: a management network is bridged onto a
 		 * real LAN whose gateway is, by overwhelming convention, .1 --
 		 * never auto-hand-out host-part 1 there unless the operator has

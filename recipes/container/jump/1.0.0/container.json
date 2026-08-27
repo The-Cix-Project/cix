@@ -64,7 +64,7 @@
   "memory_max": 2147483648,
   "cpuset_cpus": "0-1",
   "disk_quota_bytes": 16106127360,
-  "ldap_login": true,
+  "ldap_client": true,
   "volumes": [
     {
       "name": "jump-home",

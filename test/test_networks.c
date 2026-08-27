@@ -14,6 +14,7 @@
 #include <net/if.h>
 #include <signal.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -648,6 +649,181 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	cix_client_request(&client, "DELETE", "/v1/networks/allocwin", NULL, &r);
 	cix_response_free(&r);
+
+	/*
+	 * Issue #137: a network BRIDGED to a physical interface with no
+	 * declared pool must REFUSE to auto-allocate -- a 409, rather than
+	 * what actually happened, which was handing out .2 and .3 on the
+	 * operator's real LAN inside a range they had reserved.
+	 *
+	 * The bridged state is seeded into the persisted network list
+	 * rather than created through the API, deliberately: attaching an
+	 * interface requires a REAL hardware NIC (enumerate_net_one()
+	 * excludes everything under /sys/devices/virtual/net, so a dummy
+	 * or veth is correctly refused), and a test must not enslave this
+	 * machine's actual uplink. Seeding is the same fixture technique
+	 * test_esp.c uses for pkg state, and it exercises exactly the
+	 * field the refusal keys on: interface_count > 0 with no pool.
+	 */
+	{
+		char state_path[PATH_MAX];
+		FILE *sf;
+		pid_t alloc_pid;
+
+		if (stop_daemon(daemon_pid) != 0)
+			fprintf(stderr, "warning: daemon did not stop cleanly before the #137 fixture\n");
+
+		snprintf(state_path, sizeof(state_path), "%s/state/networks.json", g_data_dir);
+		/*
+		 * APPEND, never overwrite: this file already holds networks
+		 * earlier assertions in this test depend on (notably
+		 * "persisted", whose whole point is surviving a restart).
+		 * Rewriting it wholesale silently destroyed them and made an
+		 * unrelated assertion fail -- a good reminder that a fixture
+		 * sharing real state has to preserve it.
+		 */
+		{
+			char *cur = NULL;
+			long curlen = 0;
+			FILE *rf = fopen(state_path, "rb");
+
+			if (rf != NULL) {
+				fseek(rf, 0, SEEK_END);
+				curlen = ftell(rf);
+				fseek(rf, 0, SEEK_SET);
+				cur = malloc((size_t)curlen + 1);
+				if (cur != NULL && fread(cur, 1, (size_t)curlen, rf) == (size_t)curlen)
+					cur[curlen] = '\0';
+				else {
+					free(cur);
+					cur = NULL;
+				}
+				fclose(rf);
+			}
+			/* trim the closing bracket so the two fixtures can be
+			 * appended to whatever is already there */
+			if (cur != NULL) {
+				char *close_bracket = strrchr(cur, ']');
+
+				if (close_bracket != NULL)
+					*close_bracket = '\0';
+			}
+			sf = fopen(state_path, "w");
+			if (sf != NULL && cur != NULL && cur[0] != '\0')
+				fprintf(sf, "%s,", cur);
+			else if (sf != NULL)
+				fprintf(sf, "[");
+			free(cur);
+		}
+		if (sf == NULL) {
+			fprintf(stderr, "FAIL: cannot seed %s\n", state_path);
+			ok = 0;
+		} else {
+			/* one bridged network with NO pool, one with a pool -- same
+			 * enslaved interface name, so the only difference between
+			 * them is the thing under test. */
+			fprintf(sf,
+			        "{\"name\":\"bridgednopool\",\"subnet\":\"172.31.7.0\",\"prefix_len\":24,"
+			        "\"has_address\":false,\"is_management\":false,"
+			        "\"interfaces\":[{\"ifname\":\"cixfake0\",\"vlan_id\":0}]},"
+			        "{\"name\":\"bridgedpool\",\"subnet\":\"172.31.8.0\",\"prefix_len\":24,"
+			        "\"has_address\":false,\"is_management\":false,"
+			        "\"alloc_start_host\":101,\"alloc_end_host\":109,"
+			        "\"interfaces\":[{\"ifname\":\"cixfake0\",\"vlan_id\":0}]}]\n");
+			fclose(sf);
+		}
+
+		alloc_pid = start_daemon();
+		if (alloc_pid < 0 || wait_for_daemon(&client, 100) != 0) {
+			fprintf(stderr, "FAIL: daemon did not restart for the #137 fixture\n");
+			ok = 0;
+		} else {
+			/* 1. bridged + no pool -> auto-allocation REFUSED with 409 */
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/containers",
+			                       "{\"name\":\"c137a\",\"image\":\"networkstest\","
+			                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
+			                       "\"networks\":[\"bridgednopool\"]}",
+			                       &r) == 0) {
+				if (r.status != 409) {
+					fprintf(stderr,
+					        "FAIL: auto-alloc on a bridged pool-less network must be refused "
+					        "with 409, got %d\n",
+					        r.status);
+					ok = 0;
+				}
+				cix_response_free(&r);
+			}
+
+			/* 2. the SAME network still honours an explicit address --
+			 * the refusal is about guessing, never about operator intent */
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/containers",
+			                       "{\"name\":\"c137b\",\"image\":\"networkstest\","
+			                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
+			                       "\"networks\":[{\"name\":\"bridgednopool\","
+			                       "\"ip\":\"172.31.7.55\"}]}",
+			                       &r) == 0) {
+				if (r.status != 201) {
+					fprintf(stderr,
+					        "FAIL: an explicit ip must still be honoured on a bridged "
+					        "pool-less network, got %d\n",
+					        r.status);
+					ok = 0;
+				}
+				cix_response_free(&r);
+				memset(&r, 0, sizeof(r));
+				cix_client_request(&client, "DELETE", "/v1/containers/c137b", NULL, &r);
+				cix_response_free(&r);
+				wait_container_gone(&client, "c137b");
+			}
+
+			/* 3. declaring a pool re-enables auto-allocation, inside it */
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/containers",
+			                       "{\"name\":\"c137c\",\"image\":\"networkstest\","
+			                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
+			                       "\"networks\":[\"bridgedpool\"]}",
+			                       &r) == 0) {
+				const struct json_value *nets =
+				    (r.json != NULL) ? json_object_get(r.json, "networks") : NULL;
+				const char *ip =
+				    (nets != NULL && nets->type == JSON_ARRAY && nets->u.array.count > 0)
+				        ? json_as_string(json_object_get(nets->u.array.items[0], "ip"))
+				        : NULL;
+
+				if (r.status != 201 || ip == NULL || strcmp(ip, "172.31.8.101") != 0) {
+					fprintf(stderr,
+					        "FAIL: with a pool declared, auto-alloc must resume inside it "
+					        "(status=%d ip=%s)\n",
+					        r.status, ip != NULL ? ip : "(null)");
+					ok = 0;
+				}
+				cix_response_free(&r);
+				memset(&r, 0, sizeof(r));
+				cix_client_request(&client, "DELETE", "/v1/containers/c137c", NULL, &r);
+				cix_response_free(&r);
+				wait_container_gone(&client, "c137c");
+			}
+		}
+		/*
+		 * Delete the seeded networks through the API before moving on:
+		 * a network is a REAL kernel bridge that outlives this process,
+		 * so a fixture that seeds two of them and walks away leaves
+		 * debris behind. That debris is not harmless -- a leftover
+		 * bridge makes the next run's create fail with a 500 that
+		 * looks nothing like its actual cause, which is precisely the
+		 * trap this test just fell into.
+		 */
+		memset(&r, 0, sizeof(r));
+		cix_client_request(&client, "DELETE", "/v1/networks/bridgednopool", NULL, &r);
+		cix_response_free(&r);
+		memset(&r, 0, sizeof(r));
+		cix_client_request(&client, "DELETE", "/v1/networks/bridgedpool", NULL, &r);
+		cix_response_free(&r);
+
+		daemon_pid = alloc_pid;
+	}
 
 	/* cleanup */
 	memset(&r, 0, sizeof(r));

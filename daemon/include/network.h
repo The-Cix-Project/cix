@@ -148,6 +148,17 @@ struct network_def *network_find(const char *name);
  * and fills *out_ip_be, or -1 (no such network, or the range is
  * exhausted).
  */
+/*
+ * Auto-allocates a free address. Returns 0 on success, -1 if there is
+ * no such network or the range is exhausted, and -2 (issue #137) when
+ * this network is bridged onto real infrastructure (a physical
+ * interface is enslaved) and has no declared allocation pool -- a
+ * deliberate refusal, not a failure: auto-allocating into a subnet
+ * shared with equipment this platform does not own is how a container
+ * ends up answering on someone's production LAN. Declare a pool, or
+ * pin the address per container (an explicit address is never
+ * constrained by the pool).
+ */
 int network_alloc_ip(const char *name, uint32_t *out_ip_be);
 
 /*

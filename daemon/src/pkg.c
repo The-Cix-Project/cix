@@ -1057,23 +1057,101 @@ static int copy_one_file_preserving(const char *src, const char *dst)
 	return chmod(dst, st.st_mode & 07777);
 }
 
+/*
+ * Issue #132: how much of a failing child's stderr to keep.
+ *
+ * A tool explains its own failures on stderr, and this daemon threw all
+ * of it away -- so the log recorded THAT something failed and never
+ * WHY. On a host with no shell that is unrecoverable: the explanation
+ * existed, was printed, and could not be reached by any API.
+ *
+ * The cost was real and repeated. "unsquashfs: exited with status 2"
+ * took four rebuild-and-retry cycles over a 1.4 GB image and the actual
+ * trigger was still never identified -- unsquashfs names the file and
+ * the reason for every non-fatal error it hits, on the stream that was
+ * being discarded. Two other diagnoses the same session were slow for
+ * exactly this reason.
+ *
+ * A few KB is plenty: the useful part of a tool's complaint is at the
+ * end (the last thing it said before giving up), so when output
+ * overflows the buffer the TAIL is kept, not the head.
+ */
+#define RUN_SUBPROCESS_ERR_MAX 4096
+
 static int run_subprocess(const char *bin, char *const argv[])
 {
 	pid_t pid;
 	int status;
+	int errpipe[2];
+	char errbuf[RUN_SUBPROCESS_ERR_MAX];
+	size_t errlen = 0;
+
+	errbuf[0] = '\0';
+	if (pipe2(errpipe, O_CLOEXEC) != 0) {
+		/* Not fatal -- losing the diagnostic is bad, losing the whole
+		 * operation because of it would be worse. */
+		errpipe[0] = -1;
+		errpipe[1] = -1;
+	}
 
 	pid = fork();
 	if (pid < 0) {
 		perror("fork");
 		logstore_write("cixd", "error", "run_subprocess %s: fork failed: %s", bin,
 		                strerror(errno));
+		if (errpipe[0] >= 0) {
+			close(errpipe[0]);
+			close(errpipe[1]);
+		}
 		return -1;
 	}
 	if (pid == 0) {
+		if (errpipe[1] >= 0) {
+			/* stderr only: stdout is left alone because callers like
+			 * run_subprocess_capture() rely on it, and a tool's
+			 * diagnosis lives on stderr anyway. */
+			dup2(errpipe[1], STDERR_FILENO);
+			close(errpipe[1]);
+			close(errpipe[0]);
+		}
 		execve(bin, argv, environ);
 		perror(bin);
 		_exit(127);
 	}
+	if (errpipe[1] >= 0)
+		close(errpipe[1]);
+
+	/*
+	 * Drain BEFORE waitpid(): a child writing more than a pipe buffer
+	 * would block forever on a full pipe while the parent waited for
+	 * it to exit -- a deadlock this project has already hit once, in
+	 * the pkg build-output path.
+	 */
+	if (errpipe[0] >= 0) {
+		for (;;) {
+			ssize_t n;
+
+			if (errlen >= sizeof(errbuf) - 1) {
+				/* Full: keep the TAIL. Drop the first half and carry
+				 * on reading, so the last thing the tool said always
+				 * survives. */
+				size_t keep = sizeof(errbuf) / 2;
+
+				memmove(errbuf, errbuf + (errlen - keep), keep);
+				errlen = keep;
+			}
+			n = read(errpipe[0], errbuf + errlen, sizeof(errbuf) - 1 - errlen);
+			if (n <= 0)
+				break;
+			errlen += (size_t)n;
+		}
+		errbuf[errlen] = '\0';
+		close(errpipe[0]);
+		/* Trim trailing newlines so the log line reads as one line. */
+		while (errlen > 0 && (errbuf[errlen - 1] == '\n' || errbuf[errlen - 1] == '\r'))
+			errbuf[--errlen] = '\0';
+	}
+
 	if (waitpid(pid, &status, 0) != pid) {
 		perror("waitpid");
 		logstore_write("cixd", "error", "run_subprocess %s: waitpid failed: %s", bin,
@@ -1093,15 +1171,15 @@ static int run_subprocess(const char *bin, char *const argv[])
 		 * invisible from the exit status alone otherwise. */
 		if (WEXITSTATUS(status) == 127)
 			logstore_write("cixd", "error",
-			                "run_subprocess %s: exec failed (missing binary or bad path?)",
-			                bin);
+			                "run_subprocess %s: exec failed (missing binary or bad path?)%s%s",
+			                bin, errbuf[0] != '\0' ? " -- " : "", errbuf);
 		else
-			logstore_write("cixd", "error", "run_subprocess %s: exited with status %d",
-			                bin, WEXITSTATUS(status));
+			logstore_write("cixd", "error", "run_subprocess %s: exited with status %d%s%s",
+			                bin, WEXITSTATUS(status), errbuf[0] != '\0' ? " -- " : "", errbuf);
 	} else if (WIFSIGNALED(status)) {
 		fprintf(stderr, "%s: killed by signal %d\n", bin, WTERMSIG(status));
-		logstore_write("cixd", "error", "run_subprocess %s: killed by signal %d", bin,
-		                WTERMSIG(status));
+		logstore_write("cixd", "error", "run_subprocess %s: killed by signal %d%s%s", bin,
+		                WTERMSIG(status), errbuf[0] != '\0' ? " -- " : "", errbuf);
 	}
 	return -1;
 }
@@ -3527,6 +3605,10 @@ static void pkg_build_log_open(struct pkg_entry *e, const char *version); /* iss
 static void pkg_build_log_close(struct pkg_entry *e);
 static void pkg_cache_save_from_file(const char *name, const char *version, const char *src_path);
 static int pkg_cache_extract(const char *name, const char *version, const char *out_dir);
+/* Issue #139: defined with pkg_cache_extract() further down; called from
+ * the install path's own cache/artifact-hit branch above it. */
+static void warn_unexecutable_binaries(const char *root, const char *pkg_name, int depth,
+                                        int *reported);
 static int pkg_artifact_is_configured(void);
 /* Issue #129: defined with the rest of the push machinery further
  * down; called from pkg_build_completed()'s own fresh-build branch. */
@@ -4346,8 +4428,15 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 				 * starts, purely to keep pkg_build_completed()'s own
 				 * merge/dependency-chaining logic completely unchanged
 				 * for this case too. */
-				if (pkg_cache_extract(e->name, recipe.version, dest_dir) != 0)
+				if (pkg_cache_extract(e->name, recipe.version, dest_dir) != 0) {
 					prep_step = "extract cached artifact";
+				} else {
+					/* Issue #139: a checksum proves an artifact is
+					 * intact, never that it is usable. */
+					int reported = 0;
+
+					warn_unexecutable_binaries(dest_dir, e->name, 0, &reported);
+				}
 			} else if (persist_mkdir_p(src_dir) != 0) {
 				prep_step = "create src dir";
 				prep_errno = errno;
@@ -6744,6 +6833,68 @@ static void pkg_cache_save_from_file(const char *name, const char *version, cons
  * common-top-dir stripping needed since pkg_cache_save() always tars
  * dest_dir's own contents directly (tar -C dest_dir -czf ... .), never
  * a single wrapping directory. */
+/*
+ * Issue #139: does this tree contain a binary that cannot be run?
+ *
+ * A package artifact is verified for INTEGRITY (its sha256 matches the
+ * recipe) but never for USABILITY, and those are not the same thing. An
+ * artifact built by copying files through an API that reports content
+ * but not mode contains perfectly intact, perfectly checksummed,
+ * perfectly non-executable binaries -- which install cleanly, start a
+ * container successfully, and fail at execve with "Permission denied",
+ * an error naming permissions rather than the artifact behind it. That
+ * happened, and it cost a full debugging cycle to trace back.
+ *
+ * The heuristic is deliberately narrow and non-fatal: a regular file
+ * directly inside a bin/ or sbin/ directory with no execute bit for
+ * anyone. That is what a broken artifact looks like, and a legitimate
+ * counter-example is rare enough that saying so out loud is the right
+ * response -- refusing an install on a heuristic is not.
+ */
+static void warn_unexecutable_binaries(const char *root, const char *pkg_name, int depth,
+                                        int *reported)
+{
+	DIR *d;
+	struct dirent *de;
+
+	if (depth > 8 || *reported >= 5)
+		return;
+	d = opendir(root);
+	if (d == NULL)
+		return;
+	while ((de = readdir(d)) != NULL && *reported < 5) {
+		char path[PATH_MAX];
+		struct stat st;
+
+		if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
+			continue;
+		snprintf(path, sizeof(path), "%s/%s", root, de->d_name);
+		if (lstat(path, &st) != 0)
+			continue;
+		if (S_ISDIR(st.st_mode)) {
+			warn_unexecutable_binaries(path, pkg_name, depth + 1, reported);
+			continue;
+		}
+		if (!S_ISREG(st.st_mode) || (st.st_mode & 0111) != 0)
+			continue;
+		{
+			const char *slash = strrchr(root, '/');
+			const char *dir = (slash != NULL) ? slash + 1 : root;
+
+			if (strcmp(dir, "bin") != 0 && strcmp(dir, "sbin") != 0)
+				continue;
+		}
+		logstore_write("cixd", "error",
+		                "pkg %s: \"%s\" sits in a bin/sbin directory but is NOT executable "
+		                "(mode 0%o) -- this artifact will install successfully and then fail "
+		                "at execve with \"Permission denied\". Its checksum is valid; the "
+		                "artifact itself is wrong.",
+		                pkg_name, path, (unsigned)(st.st_mode & 07777));
+		(*reported)++;
+	}
+	closedir(d);
+}
+
 static int pkg_cache_extract(const char *name, const char *version, const char *out_dir)
 {
 	char path[PATH_MAX];
