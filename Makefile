@@ -106,8 +106,8 @@ $(BUILD)/test_network_interfaces: test/test_network_interfaces.c test/test_image
 $(BUILD)/test_images: test/test_images.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_esp: test/test_esp.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
-	$(CC) $(CLIENT_CFLAGS) $^ -o $@
+$(BUILD)/test_esp: test/test_esp.c test/test_image_fixture.c daemon/src/esp.c daemon/src/persist.c $(CLIENT_SRCS) | $(BUILD)
+	$(CC) $(CLIENT_CFLAGS) -Idaemon/include $^ -o $@
 
 $(BUILD)/test_artifact_export: test/test_artifact_export.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@

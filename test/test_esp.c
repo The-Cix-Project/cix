@@ -22,12 +22,15 @@
 #include <limits.h>
 #include <signal.h>
 #include <stdarg.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+#include "esp.h"
 
 extern char **environ;
 
@@ -318,6 +321,69 @@ int main(void)
 	/* restore the stale-pattern fixture for the checks that follow */
 	if (cix_client_request(&c, "PUT", "/v1/system/esp", "{\"default\":\"thinc-*\"}", &r) == 0)
 		cix_response_free(&r);
+
+	/*
+	 * ---- which entry a successful boot confirms ----
+	 *
+	 * After an update the ESP legitimately holds both `cix-a.conf`
+	 * (confirmed, from an earlier cycle) and `cix-a+3.conf` (just
+	 * booted, awaiting confirmation). The counter-bearing one must win.
+	 *
+	 * Getting this wrong is a silent revert rather than a visible
+	 * failure: an implementation taking whichever entry readdir()
+	 * returned first concludes "already confirmed" against the bare one
+	 * and leaves the real counter ticking down, so systemd-boot gives
+	 * up on the new slot two boots later and falls back. That happened
+	 * on a real host after a successful cutover -- the update booted,
+	 * ran, passed every check, and was quietly undone.
+	 *
+	 * Asserted on the rank rather than through a directory ON PURPOSE.
+	 * A directory-driven test cannot catch this: readdir() order is
+	 * unspecified, and this sandbox's filesystem happens to return
+	 * "cix-a+3.conf" first, so the broken implementation passes here
+	 * and fails only on the real ESP's vfat. Verified directly before
+	 * writing this, by reintroducing the bug and watching the
+	 * directory-driven version still report success.
+	 */
+	if (esp_confirm_rank("cix-a+3.conf", "a") != 2)
+		fail("a counter-bearing entry must outrank a confirmed one");
+	if (esp_confirm_rank("cix-a+2-1.conf", "a") != 2)
+		fail("a partially-consumed counter still needs confirming");
+	if (esp_confirm_rank("cix-a.conf", "a") != 1)
+		fail("an already-confirmed entry should rank as a fallback, not as absent");
+	if (esp_confirm_rank("cix-abc.conf", "a") != 0)
+		fail("cix-abc.conf is not slot a's entry -- the prefix needs a '.' or '+' after it");
+	if (esp_confirm_rank("cix-b+3.conf", "a") != 0)
+		fail("another slot's entry must never be confirmed for this one");
+	if (esp_confirm_rank("thinc-a.conf", "a") != 0)
+		fail("a foreign-prefix entry must not be confirmed");
+
+	/* And the scan itself, over a real directory holding both. */
+	{
+		char picked[ESP_ENTRY_NAME_MAX];
+		char dir[PATH_MAX];
+		char path[PATH_MAX];
+		FILE *f;
+
+		snprintf(dir, sizeof(dir), "%s/confirmscan", g_esp_dir);
+		if (mkdir(dir, 0755) != 0 && errno != EEXIST)
+			fail("could not create %s", dir);
+		snprintf(path, sizeof(path), "%s/cix-a.conf", dir);
+		if ((f = fopen(path, "w")) != NULL) {
+			fputs("title x\n", f);
+			fclose(f);
+		}
+		snprintf(path, sizeof(path), "%s/cix-a+3.conf", dir);
+		if ((f = fopen(path, "w")) != NULL) {
+			fputs("title x\n", f);
+			fclose(f);
+		}
+		if (!esp_entry_to_confirm(dir, "a", picked, sizeof(picked)) ||
+		    strcmp(picked, "cix-a+3.conf") != 0)
+			fail("scan picked %s, expected cix-a+3.conf", picked);
+		if (esp_entry_to_confirm(dir, "b", picked, sizeof(picked)))
+			fail("slot b has no entry here, but one was reported: %s", picked);
+	}
 
 	/* ---- a default matching nothing is refused, not warned about ---- */
 	if (cix_client_request(&c, "PUT", "/v1/system/esp", "{\"default\":\"nosuch-*\"}", &r) == 0) {

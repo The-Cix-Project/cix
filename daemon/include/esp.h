@@ -97,6 +97,39 @@ enum esp_error esp_entry_delete(const char *name);
  * subtlety behind issue #128. */
 int esp_pattern_matches(const char *pattern, const char *entry_name);
 
+/*
+ * Names the loader entry for `slot` that a successful boot should
+ * confirm, i.e. the one whose boot counter must be stripped. Writes the
+ * bare filename into out and returns 1, or returns 0 when there is
+ * nothing to confirm.
+ *
+ * Entry-naming semantics live here rather than in the caller because
+ * this module already owns them (see esp_pattern_matches/entry ids),
+ * and because getting this wrong is a silent revert rather than a
+ * visible failure: after an update the ESP legitimately holds both
+ * `cix-<slot>.conf` and `cix-<slot>+N.conf`, and confirming the wrong
+ * one leaves the real entry's counter ticking down until systemd-boot
+ * gives up on it and falls back.
+ */
+int esp_entry_to_confirm(const char *entries_dir, const char *slot, char *out, size_t out_size);
+
+/*
+ * How strong a candidate `entry_name` is for confirming `slot`:
+ *   2 -- matches and still carries a boot counter (the one to confirm)
+ *   1 -- matches and is already confirmed (nothing to do)
+ *   0 -- not this slot's entry at all
+ *
+ * Separate from the directory scan so the decision can be tested
+ * without depending on readdir() order. That is not a stylistic
+ * preference: the bug this replaced was "take the first match", and it
+ * is invisible on a filesystem whose readdir happens to return the
+ * counter-bearing entry first -- which is exactly what this project's
+ * own dev sandbox does, while the real ESP's vfat does not. A test
+ * driven through a directory therefore passes against the broken
+ * implementation here and fails only on the machine that matters.
+ */
+int esp_confirm_rank(const char *entry_name, const char *slot);
+
 void esp_write_json(struct json_writer *w);
 
 #endif /* ESP_H */

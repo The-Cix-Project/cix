@@ -654,3 +654,50 @@ void esp_write_json(struct json_writer *w)
 	jw_arr_close(w);
 	jw_obj_close(w);
 }
+
+int esp_confirm_rank(const char *entry_name, const char *slot)
+{
+	char prefix[32];
+	size_t prefix_len;
+	const char *suffix;
+
+	if (entry_name == NULL || slot == NULL)
+		return 0;
+	snprintf(prefix, sizeof(prefix), "cix-%s", slot);
+	prefix_len = strlen(prefix);
+	if (strncmp(entry_name, prefix, prefix_len) != 0)
+		return 0;
+	suffix = entry_name + prefix_len;
+	/* The prefix alone is not enough: "cix-a" must be followed by '.'
+	 * or '+', so "cix-abc.conf" is not taken for slot a. */
+	if (suffix[0] == '+')
+		return 2;
+	if (suffix[0] == '.')
+		return 1;
+	return 0;
+}
+
+int esp_entry_to_confirm(const char *entries_dir, const char *slot, char *out, size_t out_size)
+{
+	DIR *d;
+	struct dirent *de;
+	int best = 0;
+
+	if (entries_dir == NULL || slot == NULL || out == NULL || out_size == 0)
+		return 0;
+	d = opendir(entries_dir);
+	if (d == NULL)
+		return 0;
+	/* Highest rank wins, so the result cannot depend on readdir()
+	 * order -- which is the whole point (see esp_confirm_rank). */
+	while ((de = readdir(d)) != NULL) {
+		int rank = esp_confirm_rank(de->d_name, slot);
+
+		if (rank > best) {
+			best = rank;
+			snprintf(out, out_size, "%s", de->d_name);
+		}
+	}
+	closedir(d);
+	return best > 0;
+}
