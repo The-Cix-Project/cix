@@ -1646,12 +1646,48 @@ static int boot_init(void)
 	 * today's status quo, not a boot-blocking condition.
 	 */
 	{
-		int rfd = open(RESOLV_CONF_PATH, O_CREAT | O_WRONLY, 0644);
+		int rfd;
 
+		/*
+		 * Issue #138: STATE_DIR must exist before the file inside it
+		 * can be created. On an UPGRADED box it always did, because
+		 * migrate_flat_layout_to_grouped() above made it while moving
+		 * real state in -- but that function returns early precisely
+		 * when there is nothing to migrate, which is every FRESH
+		 * install. So the create failed ENOENT, the bind mount failed
+		 * ENOENT, and PUT /v1/system/resolv wrote to a path nothing
+		 * reads: a freshly installed host could never resolve a
+		 * hostname, no matter what an operator configured, while an
+		 * older migrated one worked fine. That asymmetry is what made
+		 * this look like anything other than what it was.
+		 */
+		if (persist_mkdir_p(STATE_DIR) != 0)
+			fprintf(stderr, "%s: cannot create state dir for resolv.conf: %s\n", STATE_DIR,
+			        strerror(errno));
+
+		rfd = open(RESOLV_CONF_PATH, O_CREAT | O_WRONLY, 0644);
 		if (rfd >= 0)
 			close(rfd);
-		if (mount(RESOLV_CONF_PATH, "/etc/resolv.conf", NULL, MS_BIND, NULL) != 0)
+		else
+			fprintf(stderr, "%s: cannot create: %s\n", RESOLV_CONF_PATH, strerror(errno));
+
+		/*
+		 * Loud, not silent. This failing means the host has no
+		 * outbound DNS at all, and every symptom of it appears far
+		 * away (a package source that will not fetch, a repo sync that
+		 * fails with curl exit 6) with nothing pointing back here.
+		 * perror() alone put it on a console nobody was reading; it
+		 * now also reaches the log store, which is the only place a
+		 * shell-less installed host can be asked what went wrong.
+		 */
+		if (mount(RESOLV_CONF_PATH, "/etc/resolv.conf", NULL, MS_BIND, NULL) != 0) {
 			perror("/etc/resolv.conf bind mount");
+			logstore_write("cixd", "error",
+			                "/etc/resolv.conf bind mount FAILED (%s): this host cannot resolve "
+			                "hostnames, and PUT /v1/system/resolv will have no effect. Every "
+			                "outbound fetch must use a literal IP until this is fixed.",
+			                strerror(errno));
+		}
 	}
 	/* Needed to reach the loader entry confirm_boot() renames once this
 	 * boot proves healthy (Phase 11 part 2) -- writable, not read-only
@@ -12018,10 +12054,28 @@ static int create_container_from_body(const char *body, size_t body_len,
 			 * in-range and free) -- re-parsed only to recover the
 			 * values, no new failure mode expected here. */
 			parse_network_entry(jnetworks->u.array.items[i], n, sizeof(n), &ip_be, &has_ip);
-			if (!has_ip && network_alloc_ip(n, &ip_be) != 0) {
-				json_free(root);
-				snprintf(err_msg, err_msg_size, "no free IP addresses");
-				return 500;
+			if (!has_ip) {
+				int arc = network_alloc_ip(n, &ip_be);
+
+				if (arc == -2) {
+					/* Issue #137: a deliberate refusal, not an
+					 * exhausted range -- so it is a 409 naming the two
+					 * safe ways forward, never a bare 500. */
+					json_free(root);
+					snprintf(err_msg, err_msg_size,
+					         "network \"%s\" is bridged to a physical interface and has no "
+					         "declared allocation pool, so auto-allocating an address could "
+					         "collide with equipment on that LAN. Either give this container "
+					         "an explicit ip, or declare the pool this platform may use "
+					         "(network create --alloc-start=/--alloc-end=).",
+					         n);
+					return 409;
+				}
+				if (arc != 0) {
+					json_free(root);
+					snprintf(err_msg, err_msg_size, "no free IP addresses");
+					return 500;
+				}
 			}
 			memset(&net_attachments[i], 0, sizeof(net_attachments[i]));
 			strncpy(net_attachments[i].name, n, sizeof(net_attachments[i].name) - 1);
@@ -13969,9 +14023,22 @@ static void handle_container_network_attach(int fd, const char *container_name, 
 			respond_error(fd, 400, "Bad Request", "ip is not available on this network");
 			return;
 		}
-	} else if (network_alloc_ip(net_name, &ip_be) != 0) {
-		respond_error(fd, 500, "Internal Server Error", "no free IP addresses");
-		return;
+	} else {
+		int arc = network_alloc_ip(net_name, &ip_be);
+
+		if (arc == -2) {
+			/* Issue #137 -- see the container-create site for the reasoning. */
+			respond_error(fd, 409, "Conflict",
+			              "this network is bridged to a physical interface and has no declared "
+			              "allocation pool, so auto-allocating an address could collide with "
+			              "equipment on that LAN. Pass an explicit ip, or declare the pool "
+			              "(network create --alloc-start=/--alloc-end=).");
+			return;
+		}
+		if (arc != 0) {
+			respond_error(fd, 500, "Internal Server Error", "no free IP addresses");
+			return;
+		}
 	}
 
 	/* Same vh<pid>-<idx>/vc<pid>-<idx> naming scheme
@@ -14820,8 +14887,36 @@ static void handle_container_file_read(int fd, const char *name, const char *rel
 	}
 	close(file_fd);
 
-	http_set_blocking(fd);
-	http_write_response(fd, 200, "OK", "application/octet-stream", buf, total);
+	/*
+	 * Issue #139: report the file's own metadata alongside its bytes.
+	 *
+	 * Without this the endpoint could not round-trip what it stores: a
+	 * tool copying an installed tree got content and nothing else, so
+	 * every binary it wrote came out 0644. That is not hypothetical --
+	 * package artifacts built exactly that way installed dnsmasq
+	 * non-executable, verified their checksums perfectly, and failed
+	 * far away at execve with an error naming permissions rather than
+	 * the artifact. Integrity was checked end to end; usability never
+	 * was.
+	 *
+	 * st was already stat()ed above for the directory check, so this
+	 * costs nothing. Headers, not a JSON envelope: the body stays the
+	 * exact bytes it has always been, so every existing consumer is
+	 * unaffected.
+	 */
+	{
+		char meta[160];
+
+		snprintf(meta, sizeof(meta),
+		         "X-Cix-Mode: 0%o\r\n"
+		         "X-Cix-Uid: %u\r\n"
+		         "X-Cix-Gid: %u\r\n"
+		         "X-Cix-Size: %lld\r\n",
+		         (unsigned)(st.st_mode & 07777), (unsigned)st.st_uid, (unsigned)st.st_gid,
+		         (long long)st.st_size);
+		http_set_blocking(fd);
+		http_write_response_hdrs(fd, 200, "OK", "application/octet-stream", meta, buf, total);
+	}
 	free(buf);
 }
 
@@ -25484,6 +25579,18 @@ static void containerdef_autostart_all(void)
  * a materially different way than "one JSON file didn't parse" and
  * deserve their own dedicated review, not a blanket fix bundled in here.
  */
+/*
+ * Issue #131: is this process PID 1 on a real installed host?
+ *
+ * Needed because returning from main() as PID 1 is a kernel panic --
+ * "Attempted to kill init!" with a full stack trace -- regardless of
+ * WHY it returned, or even whether it succeeded. Every ordinary,
+ * recoverable startup problem therefore presented to an operator as a
+ * crash, which is precisely what made a missing network interface and
+ * a successful recovery run look like the same catastrophic event.
+ */
+static int g_pid1_mode;
+
 static int boot_subsystem_init(int init_mode, const char *name, int rc)
 {
 	if (rc == 0 || !init_mode)
@@ -25492,7 +25599,7 @@ static int boot_subsystem_init(int init_mode, const char *name, int rc)
 	return 0;
 }
 
-int main(int argc, char **argv)
+static int cixd_main(int argc, char **argv)
 {
 	int port = DEFAULT_PORT;
 	int port_explicit = 0; /* --port= was actually passed on argv -- see
@@ -25523,9 +25630,10 @@ int main(int argc, char **argv)
 			bind_addr = argv[i] + 7;
 		else if (strncmp(argv[i], "--web-root=", 11) == 0)
 			web_root = argv[i] + 11;
-		else if (strcmp(argv[i], "--init-mode") == 0)
+		else if (strcmp(argv[i], "--init-mode") == 0) {
 			init_mode = 1;
-		else if (strncmp(argv[i], "--slot=", 7) == 0)
+			g_pid1_mode = 1; /* issue #131: never return from main() below */
+		} else if (strncmp(argv[i], "--slot=", 7) == 0)
 			slot = argv[i] + 7;
 		else if (strcmp(argv[i], "--simulate-unhealthy-boot") == 0)
 			simulate_unhealthy = 1;
@@ -26252,4 +26360,53 @@ int main(int argc, char **argv)
 		return 1;
 	}
 	return 0;
+}
+
+/*
+ * Issue #131: as PID 1, never return.
+ *
+ * The kernel treats init exiting as fatal and prints
+ * "Attempted to kill init!" with a register dump and a call trace. So
+ * an ordinary startup failure -- a directory that could not be created,
+ * a storage placement that would not resolve -- reached the operator
+ * looking exactly like a kernel bug, on a machine whose console may be
+ * the only thing they have. Two real cases this session were mistaken
+ * for crashes on exactly this basis.
+ *
+ * A failure here is genuinely unrecoverable (the control plane could
+ * not start), so this does not pretend otherwise: it stops. What it
+ * does differently is SAY SO, in terms an operator can act on, and
+ * then park quietly instead of burying that message under a panic.
+ *
+ * Not a substitute for the individual fixes -- bootstrap_management_
+ * network() degrading rather than failing (#133) is the better answer
+ * wherever the condition is genuinely survivable. This is the floor
+ * beneath all of them.
+ */
+int main(int argc, char **argv)
+{
+	int rc = cixd_main(argc, argv);
+
+	if (!g_pid1_mode)
+		return rc;
+
+	fprintf(stderr,
+	        "\n=====================================================================\n"
+	        "  cixd could not start, and this machine is running it as PID 1.\n"
+	        "  (exit status %d)\n"
+	        "\n"
+	        "  The reason is logged immediately above this banner. This is NOT a\n"
+	        "  kernel crash -- the control plane stopped deliberately.\n"
+	        "\n"
+	        "  Recovery: boot the installer media and choose \"Cix Recovery\", or\n"
+	        "  boot the other A/B slot from the loader menu.\n"
+	        "=====================================================================\n",
+	        rc);
+	logstore_write("cixd", "error",
+	                "cixd exited with status %d while running as PID 1 -- parked deliberately "
+	                "rather than panicking the kernel; the cause is logged above",
+	                rc);
+	sync();
+	for (;;)
+		pause();
 }

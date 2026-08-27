@@ -199,16 +199,43 @@ int http_conn_try_parse(struct http_conn *c, struct http_request *req)
 int http_write_response(int fd, int status, const char *status_text,
                          const char *content_type, const char *body, size_t body_len)
 {
-	char header[256];
+	return http_write_response_hdrs(fd, status, status_text, content_type, NULL, body, body_len);
+}
+
+/*
+ * Issue #139: the same response, plus caller-supplied extra header
+ * lines. Exists because a raw byte body can carry no metadata about
+ * itself, and that turned out to matter: GET /containers/{name}/files
+ * returned a file's CONTENT with no way to learn its mode, so a tool
+ * copying an installed tree through this API produced non-executable
+ * binaries, checksummed them successfully, cached them, distributed
+ * them, and only failed much later at execve.
+ *
+ * Headers rather than a JSON envelope, deliberately: the body stays
+ * exactly the bytes it always was, so every existing consumer is
+ * untouched, and a new one can ask for what it needs. Same shape the
+ * artifact server's own X-Cix-Sha256 already uses.
+ *
+ * extra_headers, when non-NULL, must already be well-formed and
+ * CRLF-terminated ("X-A: 1\r\nX-B: 2\r\n"); it is caller-built from
+ * fixed formats, never from request input.
+ */
+int http_write_response_hdrs(int fd, int status, const char *status_text,
+                              const char *content_type, const char *extra_headers,
+                              const char *body, size_t body_len)
+{
+	char header[512];
 	int hlen;
 
 	hlen = snprintf(header, sizeof(header),
 	                "HTTP/1.1 %d %s\r\n"
 	                "Content-Type: %s\r\n"
 	                "Content-Length: %zu\r\n"
+	                "%s"
 	                "Connection: close\r\n"
 	                "\r\n",
-	                status, status_text, content_type, body_len);
+	                status, status_text, content_type, body_len,
+	                extra_headers != NULL ? extra_headers : "");
 	if (hlen < 0 || (size_t)hlen >= sizeof(header))
 		return -1;
 

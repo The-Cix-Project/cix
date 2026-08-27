@@ -86,6 +86,16 @@ int http_write_response(int fd, int status, const char *status_text,
                          const char *content_type, const char *body, size_t body_len);
 
 /*
+ * As above, plus caller-supplied extra header lines (issue #139) --
+ * for a raw-bytes response that needs to describe itself, e.g. a
+ * file's mode alongside its content. extra_headers must be
+ * well-formed and CRLF-terminated, or NULL.
+ */
+int http_write_response_hdrs(int fd, int status, const char *status_text,
+                              const char *content_type, const char *extra_headers,
+                              const char *body, size_t body_len);
+
+/*
  * Puts fd back into blocking mode. Every response-writing call site
  * (respond_json() in main.c, static_serve() in staticfile.c) must call
  * this before http_write_response(), per that function's contract
