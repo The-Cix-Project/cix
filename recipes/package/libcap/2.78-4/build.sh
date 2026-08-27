@@ -27,7 +27,7 @@ pkg_sha256="0d621e562fd932ccf67b9660fb018e468a683d7b827541df27813228c996bb11"
 # source; without it the artifact tier is skipped entirely.
 # The checksum lives here, in git, because the artifact server is
 # never a trust boundary -- it serves bytes, this line approves them.
-pkg_artifact_sha256="f7cf4077006754fead93213137ee06678ebbca5123bd354284aa95c9853c337e"
+pkg_artifact_sha256="cfefec995b48aada0af212b33a4716778717d6437d8463df139b5498c7642b88"
 # Nothing at runtime: confirmed with readelf against the built
 # libcap.so.2.78 -- libc.so.6 is its only NEEDED entry.
 pkg_depends=""

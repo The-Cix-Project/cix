@@ -81,7 +81,7 @@ pkg_sha256="3f654908f498ede1ec99eb951b3120c9f907df1fe380db0b5311b6ba46394170"
 # source; without it the artifact tier is skipped entirely.
 # The checksum lives here, in git, because the artifact server is
 # never a trust boundary -- it serves bytes, this line approves them.
-pkg_artifact_sha256="c0c5565bd2bf8b9be2f4e374f01e72eb8c3db6cfed703a01dc249c2b87106cbb"
+pkg_artifact_sha256="e966af7b2cf3d174508208ad98082f14358e1a6eb70cf08f4fa3294963a1b3b8"
 pkg_depends=""
 
 # CGO_ENABLED=1 is load-bearing: mattn/go-sqlite3 compiles SQLite's own C

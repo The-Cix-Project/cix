@@ -203,6 +203,8 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/dns/servers` | List all registered DNS server bindings |
 | POST | `/dns/servers` | Register a running container as a DNS-serving target |
 | DELETE | `/dns/servers/{container}` | Unregister a DNS server binding |
+| GET | `/dns/forwarders` | The upstream resolvers every registered DNS server forwards through |
+| PUT | `/dns/forwarders` | Replace the forwarder list and apply it live to every registered server (#134) |
 | GET | `/ldap/servers` | List all registered LDAP server bindings |
 | POST | `/ldap/servers` | Register a running container as the LDAP-serving target |
 | DELETE | `/ldap/servers/{container}` | Unregister an LDAP server binding |
@@ -516,7 +518,7 @@ POST /v1/system/swap
 {"size_mb": 8192, "disk": "sdc"}
 ```
 
-— placing the swap file on a real disk carrying the `swap` diskrole (`POST /diskroles {"disk": "sdc", "role": "swap"}` first) instead of the default OS-disk location. Validated at the exact moment of this call (present, mounted, currently carrying the `swap` role) — the same "operator names a disk, real validation happens where the real action happens" posture the [backup disk config](#backup) already established, not a separate migration mechanism: there's no existing swap *content* worth preserving across a placement change, unlike state/rebuildable/log storage's own live directories, so this reuses `storageplacement.h`'s pure "which disk" pointer with no `storagemigrate.c`-style move job behind it. Every `POST` repoints, whether `disk` is given or not — omitting it explicitly means the default location, not "whatever the last call left it at." `GET`'s own `disk` field reflects the *configured* placement regardless of whether swap is currently enabled; `path` (like today) is only meaningful while enabled. A disk currently backing active swap placement is protected the same way the other four storage singletons already are — its role can't be removed nor the disk reformatted while it's the active swap placement (`409`).
+— placing the swap file on a real disk carrying the `swap` diskrole (`POST /diskroles {"disk": "sdc", "role": "swap"}` first) instead of the default OS-disk location. Validated at the exact moment of this call (present, mounted, currently carrying the `swap` role) — the same "operator names a disk, real validation happens where the real action happens" posture the [backup disk config](#backup-and-restore) already established, not a separate migration mechanism: there's no existing swap *content* worth preserving across a placement change, unlike state/rebuildable/log storage's own live directories, so this reuses `storageplacement.h`'s pure "which disk" pointer with no `storagemigrate.c`-style move job behind it. Every `POST` repoints, whether `disk` is given or not — omitting it explicitly means the default location, not "whatever the last call left it at." `GET`'s own `disk` field reflects the *configured* placement regardless of whether swap is currently enabled; `path` (like today) is only meaningful while enabled. A disk currently backing active swap placement is protected the same way the other four storage singletons already are — its role can't be removed nor the disk reformatted while it's the active swap placement (`409`).
 
 ## A consolidated log
 
@@ -723,7 +725,7 @@ PUT /v1/system/resolv
 
 A real, installed Cix host has no outbound DNS resolution mechanism at all by default -- `cixd`'s own `curl` subprocess (every `pkg_source` fetch, `pkg bootstrap --toolchain-url=`, `pkg hostbuild`'s git fetch) fails immediately against any real hostname. This endpoint fixes that directly: up to 3 IPv4 addresses (matching glibc's own resolver limit), persisted at `<data-dir>/resolv.conf` and bind-mounted onto the real `/etc/resolv.conf` at boot -- a `PUT` here takes effect **immediately**, no reboot needed, because it writes *in place* (same inode throughout, ADR-0132) to the same file the bind mount already points at, rather than the rename-based atomic write most other persisted state in this daemon uses -- a bind mount binds to the inode, not the path, so a rename-based write would silently swap in a new, unmounted inode and detach `/etc/resolv.conf`'s own bind mount from every write after the first one post-boot (confirmed the hard way; fixed in ADR-0132). An empty `nameservers` array clears it (falls back to no outbound resolution, the historical default).
 
-A real internal `.home.arpa`/`.internal` DNS record (`POST /dns/records`, above) is **not**, by itself, resolvable by this host's own outbound `curl` -- that internal DNS is served by whatever container is registered via `POST /dns/servers` (e.g. `dns-1`/`dns-2`), a separate, containerized DNS server this endpoint has no relationship to unless that container's own IP is explicitly `PUT` here as a nameserver. If that container's own dnsmasq is also configured with real upstream forwarders (`--server=1.1.1.1 --server=8.8.8.8`, the convention `dnsmasq.recipe` already establishes), pointing this endpoint at it resolves both this platform's own internal names and real internet hostnames through the one configured resolver -- the practical fix for "I added a DNS record but the host still can't resolve it."
+A real internal `.home.arpa`/`.internal` DNS record (`POST /dns/records`, above) is **not**, by itself, resolvable by this host's own outbound `curl` -- that internal DNS is served by whatever container is registered via `POST /dns/servers` (e.g. `dns-1`/`dns-2`), a separate, containerized DNS server this endpoint has no relationship to unless that container's own IP is explicitly `PUT` here as a nameserver. If that container's own dnsmasq is also configured with real upstream forwarders (`PUT /dns/forwarders`, see [Upstream forwarders](#upstream-forwarders)), pointing this endpoint at it resolves both this platform's own internal names and real internet hostnames through the one configured resolver -- the practical fix for "I added a DNS record but the host still can't resolve it."
 
 This is deliberately generic -- a plain IP list, no notion of "which container is my DNS server." It covers pointing at one of this platform's own DNS containers (resolve its IP once via `GET /containers/{name}`, `PUT` it here) and pointing at a real external resolver, with the exact same mechanism. `GET /v1/system/resolv` reports the current list.
 
@@ -1067,7 +1069,7 @@ POST /v1/dns/records
 
 `PUT /v1/dns/records/{name}` (task #749) edits an existing record's `ip` in place — `name` is authoritative from the URL path and, unlike `POST`, is never re-qualified with the site suffix (that qualification only ever applies at creation time). `400` on a malformed `ip`, `404` if no record with that name exists.
 
-Once a container running dnsmasq exists (e.g. `cmd: ["/usr/sbin/dnsmasq", "-k", "-u", "root", "-p", "53", "-H", "/etc/dnsmasq-hosts", "-R", "-h", "--pid-file=", "--server=1.1.1.1", "--server=8.8.8.8"]` — `-u root` since a minimal container image typically has no `/etc/passwd` for dnsmasq's default privilege drop to resolve; `-R`/`-h` skip `/etc/resolv.conf`/`/etc/hosts`, which likely don't exist either; `--pid-file=` (empty) disables dnsmasq's own default pidfile write, `/var/run/dnsmasq.pid` — confirmed the hard way, this project's own minimal images have no `/var/run` (only `/run`), so without this flag dnsmasq dies immediately with its own `EC_FILE` (exit status 3) on every single startup attempt, an instant, silent crash-loop under `restart: always` with no REST-visible cause; the two `--server=` flags are real, static upstream forwarders (ADR-0076) — without them `-R` alone leaves this container purely authoritative for `.internal`, with no recursion for anything else, which is what it was until this ADR), register it:
+Once a container running dnsmasq exists (e.g. `cmd: ["/usr/sbin/dnsmasq", "-k", "-u", "root", "-p", "53", "-H", "/etc/dnsmasq-hosts", "-R", "-h", "--pid-file=", "--servers-file=/etc/dnsmasq-servers"]` — `-u root` since a minimal container image typically has no `/etc/passwd` for dnsmasq's default privilege drop to resolve; `-R`/`-h` skip `/etc/resolv.conf`/`/etc/hosts`, which likely don't exist either; `--pid-file=` (empty) disables dnsmasq's own default pidfile write, `/var/run/dnsmasq.pid` — confirmed the hard way, this project's own minimal images have no `/var/run` (only `/run`), so without this flag dnsmasq dies immediately with its own `EC_FILE` (exit status 3) on every single startup attempt, an instant, silent crash-loop under `restart: always` with no REST-visible cause; `--servers-file=` points dnsmasq at a file the daemon owns and rewrites, which is where upstream forwarders now come from — **not** the `--server=1.1.1.1 --server=8.8.8.8` command-line flags this example used to carry (ADR-0076), since baking them into a container's argv meant changing a forwarder required recreating core infrastructure and two replicas could silently disagree; see [Upstream forwarders](#upstream-forwarders) below), register it:
 
 ```
 POST /v1/dns/servers
@@ -1077,6 +1079,24 @@ POST /v1/dns/servers
 This writes every current record into `dns1`'s own `/etc/dnsmasq-hosts` (dnsmasq's `--addn-hosts` format) and sends `SIGHUP` so it reloads immediately. Every subsequent `POST`/`DELETE` on `/v1/dns/records` re-writes that file and re-signals `dns1` — genuinely live updates, not a one-time snapshot at registration.
 
 The write itself goes through `/proc/<pid>/root/<hosts_path>` (the container's own filesystem view via the magic procfs symlink), not the container's raw upperdir directly — writing straight into a running container's upperdir does **not** reliably show up in its mounted view (confirmed empirically; the kernel documents this as unsupported/undefined for an already-mounted overlay). `/proc/<pid>/root/` correctly resolves through the container's real mount namespace without needing any new namespace-entry syscall.
+
+### Upstream forwarders
+
+A registered DNS server is authoritative for this platform's own names and, on its own, nothing else — `-R` tells dnsmasq to ignore `/etc/resolv.conf`, so without upstream forwarders it has no way to answer for anything outside `.home.arpa`/`.internal`. The forwarders are what give it recursion:
+
+```
+GET /v1/dns/forwarders
+PUT /v1/dns/forwarders
+{"forwarders": ["1.1.1.1", "8.8.8.8"]}
+```
+
+These used to be `--server=` flags baked into each DNS container's `cmd` at creation time (ADR-0076). That had three concrete problems, all of which showed up in practice: changing a forwarder meant **recreating core infrastructure**, two replicas could **silently disagree** with each other because nothing tied their argv together, and nothing could answer "what does this platform resolve through?" at all — the value existed only inside a running container's command line.
+
+They are now ordinary daemon-owned configuration. The daemon writes the list into a servers-file each dnsmasq reads (`--servers-file=/etc/dnsmasq-servers`) and `SIGHUP`s every registered server, so **one `PUT` updates every replica consistently** and a newly registered server picks up the current list at registration time without being told about it separately.
+
+- The `PUT` **replaces** the whole list rather than appending; the response echoes the list as applied. At most 8 entries, each a valid IPv4 address — `400` otherwise, with nothing applied.
+- An empty array is legal and means exactly what it says: authoritative-only, no upstream recursion.
+- This is separate from [`/system/resolv`](#the-hosts-own-outbound-dns-resolver-adr-0076), which is what *this host itself* resolves through. The common setup points `/system/resolv` at the DNS containers and `/dns/forwarders` at real upstream resolvers, so host lookups resolve both internal names and the wider internet through one path.
 
 ### Automatic registration: `dns_register`
 
@@ -1633,7 +1653,7 @@ Three states, each meaning something different:
 - **installed, not declared** — the one that matters. It has no recipe, so it **cannot be rebuilt from source control**, which on a platform whose premise is "compiled from source, reproducibly" is exactly what should be visible. Either capture a recipe for it, or it is debris.
 - **declared, not installed** — a recipe nobody has applied. Harmless, but worth knowing.
 
-This is reconciled by the daemon rather than left to each client, because the join spans four endpoints (images, image recipes, packages, package recipes) and two clients each implementing it is how they drift from one another — the same reasoning that folded the disk `role`/`part_label` join server-side for [#90](#partition-level-disk-management).
+This is reconciled by the daemon rather than left to each client, because the join spans four endpoints (images, image recipes, packages, package recipes) and two clients each implementing it is how they drift from one another — the same reasoning that folded the disk `role`/`part_label` join server-side for [#90](#partition-level-disk-management-task-844-adr-0158).
 
 It reports; it does not act. Capturing a recipe from an existing image is a real operation with real choices in it, and deleting an image is destructive — seeing the three states is the piece worth having first.
 
@@ -1723,7 +1743,7 @@ PATCH /v1/containers/{name}   {"cmd": ["/usr/bin/dnsmasq", "-k", "..."], "env": 
 
 Until now, changing a `cmd`, an env var or a staged file meant delete-and-recreate — reconstructing the whole request body by hand, with every chance to drop a field. A `PATCH` merges the fields you give into the stored definition: a key present replaces that key, a key set to `null` removes it, everything else is untouched. The merge is top-level only; a deep merge would make "how do I clear one entry of `files[]`" unanswerable.
 
-**It applies at the container's next start, and the response says so** (`"applies": "next-start"`, plus `"restart_required": true` when it is running right now). That is not a limitation being papered over: a running process's argv cannot be changed without re-exec'ing it, so "change `cmd` on a running container" is `restart` by another name. What genuinely *can* change live already does, through its own endpoints — [volumes](#volumes) and [network attach](#networks).
+**It applies at the container's next start, and the response says so** (`"applies": "next-start"`, plus `"restart_required": true` when it is running right now). That is not a limitation being papered over: a running process's argv cannot be changed without re-exec'ing it, so "change `cmd` on a running container" is `restart` by another name. What genuinely *can* change live already does, through its own endpoints — [volumes](#persistent-volumes-issue-88-adr-0183) and [network attach](#a-dedicated-bind-ip-decoupled-from-the-management-networks-own-address).
 
 Two groups of fields are refused rather than silently ignored:
 
@@ -1898,7 +1918,7 @@ The platform used to make one judgment call on every operator's behalf: a single
 
 **`running_version` comes from `uname()`, not from the recipe pin.** The pin says what was last built; the running kernel says what actually booted, and after a failed A/B update those are not the same fact.
 
-**Selecting a channel never moves the pin and never fetches anything.** It changes what is *reported*. `POST .../refresh` is the only thing that reaches the network, and it returns `202` immediately: the fetch is a forked `curl` watched by a pidfd, never a blocking call inside the event loop — a host with no upstream resolvers set (see [`/system/resolv`](#upstream-dns-resolvers-adr-0076)) would otherwise stall the whole control plane behind a DNS timeout, which is precisely the class of wedge the [stall watchdog](#control-plane-stalls-issue-100) exists to catch. A failed fetch keeps the previous answer and says why in `last_refresh_error`.
+**Selecting a channel never moves the pin and never fetches anything.** It changes what is *reported*. `POST .../refresh` is the only thing that reaches the network, and it returns `202` immediately: the fetch is a forked `curl` watched by a pidfd, never a blocking call inside the event loop — a host with no upstream resolvers set (see [`/system/resolv`](#the-hosts-own-outbound-dns-resolver-adr-0076)) would otherwise stall the whole control plane behind a DNS timeout, which is precisely the class of wedge the [stall watchdog](#control-plane-stalls-issue-100) exists to catch. A failed fetch keeps the previous answer and says why in `last_refresh_error`.
 
 The fetched file is cached on disk, so a box that has resolved once still answers "how far behind am I" after a restart with no network at all.
 
@@ -2246,8 +2266,13 @@ GET /v1/system/boot
 ```
 POST /v1/system/update
 {"image_path": "/var/tmp/new-root.squashfs", "kernel_path": "/var/tmp/new-bzImage"}
+
+POST /v1/system/update
+{"image_url": "http://192.168.15.31:8080/cix-root-2.0.2.squashfs",
+ "image_sha256": "3f7a...c1"}
 ```
 
+- **`image_url` is how a real installed host actually updates itself (#141).** The `image_path` form assumes someone can already put a multi-megabyte file on the box — but an installed Cix host has no shell and no `scp` target, and the API's own 1 MiB request cap rules out sending a squashfs as a request body. That left `/system/update` unable to update the control plane of the machine it runs on, and every deploy in this project's history routed around it instead. With `image_url` the daemon fetches the image itself, writes it to its own staging path, and from there the existing `image_path` logic runs unchanged — one staging code path, not two. `image_sha256` is **required** alongside it and verified before the image is used anywhere: this call writes a boot slot, so an unverified image would only be caught at the next reboot, which is the worst possible moment to catch it. The daemon resolves the URL itself, so on a host with no working upstream resolver (see [`/system/resolv`](#the-hosts-own-outbound-dns-resolver-adr-0076)) only a literal IP will work. `image_url` and `image_path` are alternatives — give one, not both.
 - `image_path`/`kernel_path` are local paths the operator has already transferred onto the box (e.g. `scp`, or a hostbuild artifact already sitting on this same host — see [Hostbuild](#hostbuild-standalone-artifacts-instead-of-merging-into-an-image) above) — there is no upload endpoint; see ADR-0031 for why. Both are optional, but at least one is required — update just the root, just the kernel, or both together in one call. Writes whatever's given onto this daemon's own **inactive** A/B slot (the other one from whichever it's currently running as — `--slot=a` or `--slot=b`) and stages a fresh systemd-boot loader entry with a fresh boot-counter. The kernel is per-slot too (`cix-bzImage-a`/`cix-bzImage-b` on the ESP, both pre-staged identically at install time, ADR-0032). Omitting one of `image_path`/`kernel_path` no longer leaves the inactive slot's own existing copy stale (ADR-0095) — the omitted half is auto-filled from the **active** slot's own currently-running copy instead, so a root-only update still pairs with a kernel that's known-good (already booted), never a leftover from an earlier cycle; the response's own `updated` array is always `["root", "kernel"]` for exactly this reason — both genuinely are fresh in the inactive slot after the call. `400` if this daemon has no `--slot=` (not a real installed system), neither path is given, either path doesn't exist/isn't readable, or either file fails its own on-disk magic check (squashfs's `"hsqs"`, or a bzImage's boot-sector/`setup_header` magic) — checked for both before either is written, so a bad `kernel_path` never leaves a good `image_path` half-applied.
 - Response includes `"updated"`, always `["root", "kernel"]` (see above).
 - Deliberately does **not** reboot — call `POST /system/reboot` separately once ready to cut over; the existing boot-counter/`confirm_boot()` machinery, entirely unchanged, decides whether the fresh slot sticks.

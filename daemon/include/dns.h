@@ -120,6 +120,34 @@ enum dns_server_error {
  * container_name is already registered -- unregister first to change
  * its hosts_path.
  */
+/*
+ * Issue #134: upstream forwarders, owned here rather than frozen into
+ * a container's command line. Applied to every registered DNS server
+ * through the same write-into-the-container + SIGHUP path records
+ * already use (dnsmasq re-reads --servers-file= on SIGHUP), so a
+ * change reaches every replica live and identically.
+ */
+#define DNS_FORWARDERS_MAX 8
+#define DNS_FORWARDER_LEN 64
+#define DNS_SERVERS_FILE_PATH "/etc/dnsmasq-servers"
+
+/* Fills out[] with the configured forwarders; returns how many. */
+int dns_forwarders_get(char out[][DNS_FORWARDER_LEN], int max);
+
+/*
+ * Replaces the list wholesale and pushes it to every registered server
+ * immediately. Wholesale rather than incremental because this is a
+ * single operator decision -- "resolve upstream through these" -- and
+ * merging half-states is how two replicas drift apart. Every entry
+ * must be a valid IPv4 address; an empty list is legitimate and means
+ * "no recursion".
+ */
+enum dns_server_error dns_forwarders_set(const char list[][DNS_FORWARDER_LEN], int count);
+
+/* Re-push the current list to every registered, running server --
+ * called after autostart, exactly like dns_server_sync_all(). */
+void dns_forwarders_sync_all(void);
+
 enum dns_server_error dns_server_register(const char *container_name, pid_t pid, int pidfd,
                                            const char *hosts_path);
 enum dns_server_error dns_server_unregister(const char *container_name);

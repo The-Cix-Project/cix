@@ -21,7 +21,7 @@ pkg_sha256="de23af78fca90ce32dff2dd45b3432b2334740bb9bb7b05bf60fdbfc396ceb9c"
 # source; without it the artifact tier is skipped entirely.
 # The checksum lives here, in git, because the artifact server is
 # never a trust boundary -- it serves bytes, this line approves them.
-pkg_artifact_sha256="a04ef53bcc16df3d1ea078b404b3c55181650e363c0fb287bdcf4afce2bcc327"
+pkg_artifact_sha256="f6feb34a7f3f91dfd413052a6da9f0729fe112f7cd3d82cee0a0a736f50ed25b"
 # Nothing at runtime: tcc links against libc alone, and its own
 # libtcc1.a is part of this package.
 pkg_depends=""
