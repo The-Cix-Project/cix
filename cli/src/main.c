@@ -6862,6 +6862,7 @@ static void fmt_esp(const struct json_value *v)
 	const struct json_value *writable = json_object_get(v, "writable");
 	const char *def = json_str_field(v, "default");
 	const char *selected = json_str_field(v, "selected_entry");
+	const char *boot_next = json_str_field(v, "boot_next");
 	const char *running = json_str_field(v, "running_slot");
 	const struct json_value *timeout = json_object_get(v, "timeout");
 	size_t i;
@@ -6878,6 +6879,11 @@ static void fmt_esp(const struct json_value *v)
 		printf("(unset)\n");
 	printf("running:  slot %s\n", running != NULL ? running : "(unknown)");
 	printf("will boot: %s\n", selected != NULL ? selected : "(nothing matches the default)");
+	/* Say WHY it differs from the default pattern, and say that it
+	 * differs only once -- an operator seeing an unexpected entry here
+	 * needs both facts, not just the name (#154). */
+	if (boot_next != NULL)
+		printf("           (one-shot armed -- this boot only, then normal selection)\n");
 	if (writable != NULL && writable->type == JSON_BOOL && !writable->u.boolean)
 		printf("NOTE: the ESP is mounted read-only -- changes are not possible\n");
 
