@@ -4,6 +4,7 @@
 #include "persist.h"
 #include "pkg.h"
 #include "registry.h"
+#include "btrfs.h"
 
 #include <dirent.h>
 #include <limits.h>
@@ -227,8 +228,24 @@ enum image_error image_create(const char *name)
 		return IMAGE_ERR_CREATE_FAILED;
 
 	image_version_rootfs_path(name, hash, rootfs, sizeof(rootfs));
-	if (persist_mkdir_p(rootfs) != 0)
-		return IMAGE_ERR_CREATE_FAILED;
+	/*
+	 * ADR-0207 phase 1: the version rootfs is a btrfs subvolume where
+	 * the image store is on btrfs, a plain directory on ext4. The
+	 * version directory (rootfs's parent) is created first, since a
+	 * subvolume is created relative to an existing parent; on ext4
+	 * this is exactly the persist_mkdir_p the store did before, split
+	 * into parent-then-leaf.
+	 */
+	{
+		char verdir[PATH_MAX];
+		const char *slash = strrchr(rootfs, '/');
+
+		snprintf(verdir, sizeof(verdir), "%.*s", (int)(slash - rootfs), rootfs);
+		if (persist_mkdir_p(verdir) != 0)
+			return IMAGE_ERR_CREATE_FAILED;
+		if (cix_btrfs_subvol_create_or_dir(rootfs) != 0)
+			return IMAGE_ERR_CREATE_FAILED;
+	}
 	if (pkg_seed_image_baseline(rootfs) != PKG_OK)
 		return IMAGE_ERR_CREATE_FAILED;
 
@@ -314,6 +331,37 @@ enum image_error image_delete(const char *name)
 		return IMAGE_ERR_HAS_PACKAGES;
 
 	snprintf(image_dir, sizeof(image_dir), "%s/%s", g_images_dir, name);
+
+	/*
+	 * ADR-0207 phase 1: destroy each version's rootfs subvolume first,
+	 * so the plain recursive remove below only ever faces ordinary
+	 * directories -- a btrfs subvolume root cannot be rmdir()'d, which
+	 * is why persist_remove_tree alone would fail on btrfs. On ext4
+	 * this removes the rootfs tree that persist_remove_tree would have
+	 * removed anyway (a harmless head start), keeping one code path for
+	 * both filesystems. Errors here are not fatal: persist_remove_tree
+	 * is the backstop and reports the real failure.
+	 */
+	{
+		DIR *d = opendir(image_dir);
+
+		if (d != NULL) {
+			struct dirent *e;
+
+			while ((e = readdir(d)) != NULL) {
+				char rootfs[PATH_MAX];
+				struct stat rst;
+
+				if (e->d_name[0] == '.')
+					continue;
+				snprintf(rootfs, sizeof(rootfs), "%s/%s/rootfs", image_dir, e->d_name);
+				if (lstat(rootfs, &rst) == 0 && S_ISDIR(rst.st_mode))
+					cix_btrfs_subvol_delete_or_rmtree(rootfs);
+			}
+			closedir(d);
+		}
+	}
+
 	if (persist_remove_tree(image_dir) != 0)
 		return IMAGE_ERR_DELETE_FAILED;
 
