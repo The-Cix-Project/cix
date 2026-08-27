@@ -1580,6 +1580,29 @@ static int boot_init(void)
 	if (mount_or_fail("cgroup2", "/sys/fs/cgroup", "cgroup2", 0) != 0)
 		return -1;
 	/*
+	 * efivarfs (issue #154). sysfs above provides /sys/firmware/efi,
+	 * but EFI variables live in a SEPARATE filesystem mounted at
+	 * .../efivars -- without this that directory is simply empty, and
+	 * every attempt to read or write a variable fails against a
+	 * read-only sysfs. POST /v1/system/boot-next would then be dead on
+	 * exactly the real EFI hardware it exists for, while passing every
+	 * test against a simulated directory.
+	 *
+	 * Deliberately NOT mount_or_fail(): a BIOS/CSM machine, or a
+	 * kernel without CONFIG_EFIVAR_FS, legitimately has no efivarfs
+	 * and must still boot. The endpoint reports "not writable here"
+	 * in that case, which is the honest answer rather than a dead
+	 * host.
+	 */
+	if (mount("efivarfs", "/sys/firmware/efi/efivars", "efivarfs",
+	           MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL) != 0 &&
+	    errno != EBUSY /* already mounted */) {
+		logstore_write("cixd", "info",
+		                "efivarfs not mounted (%s) -- boot-slot selection via EFI variables "
+		                "is unavailable on this machine",
+		                strerror(errno));
+	}
+	/*
 	 * task #764: cixd's own exec_into_container() (daemon/src/exec.c,
 	 * the console/exec feature, ADR pending #426) calls posix_openpt()
 	 * and then open()s the slave device ptsname_r() hands back --
