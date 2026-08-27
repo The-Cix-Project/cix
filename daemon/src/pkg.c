@@ -531,6 +531,18 @@ static void fetch_error_sidecar_path(const char *name, char *out, size_t out_siz
 	snprintf(out, out_size, "%s/.fetcherr-%s", g_sources_dir, name);
 }
 
+/*
+ * Sibling of the error sidecar for something worth saying even when the
+ * fetch SUCCEEDS -- currently an artifact that downloaded cleanly but
+ * failed its checksum (#149). The error sidecar is only ever read on
+ * failure, so a note about a fallback that then worked would be lost
+ * there.
+ */
+static void fetch_note_sidecar_path(const char *name, char *out, size_t out_size)
+{
+	snprintf(out, out_size, "%s/.fetchnote-%s", g_sources_dir, name);
+}
+
 
 const char *pkg_failure_kind_name(enum pkg_failure_kind kind)
 {
@@ -3776,6 +3788,50 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 			    strcasecmp(sha_out, recipe.artifact_sha256) == 0) {
 				_exit(0); /* verified -- pkg_fetch_completed() stages straight from this file */
 			}
+			/*
+			 * Issue #149: an artifact that downloaded fine but failed
+			 * its checksum is a different situation from one that was
+			 * simply absent, and it is worth saying so.
+			 *
+			 * "Absent" is ordinary -- most packages have no published
+			 * artifact. A MISMATCH means the cache is serving
+			 * different bytes than the recipe approves, which in
+			 * practice means the recipe's pkg_artifact_sha256 was
+			 * edited in place on an already-published version and can
+			 * never take effect (#145). The install then silently
+			 * falls back to source and fails with whatever that path
+			 * fails with -- on a host without a working resolver, a
+			 * DNS error that says nothing about checksums. That
+			 * misdirection cost a real debugging cycle across 14
+			 * recipes.
+			 *
+			 * Written to the fetch note so it surfaces whether or not
+			 * the source fallback goes on to succeed: a mismatch is
+			 * worth knowing about even when the install works.
+			 */
+			if (sub > 0 && WIFEXITED(status) && WEXITSTATUS(status) == 0 &&
+			    sha_out[0] != '\0') {
+				char note_path[PATH_MAX];
+				int nfd;
+
+				fetch_note_sidecar_path(recipe.name, note_path, sizeof(note_path));
+				nfd = open(note_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+				if (nfd >= 0) {
+					char note[512];
+					int n = snprintf(note, sizeof(note),
+					                  "artifact for %s@%s downloaded but failed checksum "
+					                  "(recipe approves %.16s..., cache served %.16s...) -- "
+					                  "falling back to source; if this recipe version is "
+					                  "already published, an edited pkg_artifact_sha256 "
+					                  "cannot take effect, bump pkg_version instead",
+					                  recipe.name, recipe.version, recipe.artifact_sha256,
+					                  sha_out);
+					ssize_t written = write(nfd, note, (size_t)n);
+
+					(void)written;
+					close(nfd);
+				}
+			}
 			unlink(artifact_path); /* not found / wrong checksum -- discard, fall through */
 		}
 
@@ -4228,6 +4284,35 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 		return 0;
 	}
 	is_final_upgrade = g_chains[chain_idx].dep_queue_is_upgrade && (g_chains[chain_idx].dep_queue_pos + 1 >= g_chains[chain_idx].dep_queue_count);
+
+	/*
+	 * Issue #149: report an artifact checksum mismatch regardless of
+	 * how the fetch went on to end. Read before the exit_status branch
+	 * below precisely because it matters on SUCCESS too -- the source
+	 * fallback may well have worked, and the operator still needs to
+	 * know the cache is serving bytes the recipe does not approve.
+	 * Left unreported, this surfaces later as whatever the fallback
+	 * fails with, which on a resolver-less host is a DNS error that
+	 * mentions nothing about checksums.
+	 */
+	{
+		char note_path[PATH_MAX];
+		char note[512];
+		int nfd;
+
+		fetch_note_sidecar_path(e->name, note_path, sizeof(note_path));
+		nfd = open(note_path, O_RDONLY);
+		if (nfd >= 0) {
+			ssize_t n = read(nfd, note, sizeof(note) - 1);
+
+			close(nfd);
+			unlink(note_path);
+			if (n > 0) {
+				note[n] = '\0';
+				logstore_write("cixd", "warn", "pkg %s@%s: %s", e->name, e->image, note);
+			}
+		}
+	}
 
 	if (exit_status != 0) {
 		char fetch_err_path[PATH_MAX];
