@@ -1176,6 +1176,7 @@ const CATEGORY_VIEWS = {
 	disks: "view-disks",
 	"dns-records": "view-dns-records",
 	"dns-servers": "view-dns-records",
+	"dns-forwarders": "view-dns-records",
 	"ldap-servers": "view-ldap-servers",
 	"ldap-groups": "view-ldap-servers",
 	"ldap-users": "view-ldap-servers",
@@ -1292,6 +1293,7 @@ const SERVICE_TAB_VIEWS = {
 	"pki-certs": "view-pki-ca",
 	"dns-records": "view-dns-records",
 	"dns-servers": "view-dns-records",
+	"dns-forwarders": "view-dns-records",
 	"ldap-servers": "view-ldap-servers",
 	"ldap-groups": "view-ldap-servers",
 	"ldap-users": "view-ldap-servers",
@@ -6752,6 +6754,86 @@ document.getElementById("ldap-config-form").addEventListener("submit", async (ev
 
 /* ---------- NTP (tasks #751-755) ---------- */
 
+/* ---- DNS provisioning: one call, per-replica results (ADR-0205) ---- */
+
+document.getElementById("dns-provision-btn").addEventListener("click", async () => {
+	const btn = document.getElementById("dns-provision-btn");
+
+	btn.disabled = true;
+	try {
+		/* Empty body: the daemon owns the default topology, so the
+		 * dashboard does not restate it and the two cannot disagree. */
+		const result = await apiRequest("POST", "/v1/dns/provision", {});
+		const lines = (result.replicas || []).map((r) => {
+			const bits = [r.name + " " + r.created];
+
+			if (r.registered)
+				bits.push("registered");
+			if (r.ip)
+				bits.push(r.ip);
+			if (r.error)
+				bits.push(r.error);
+			return bits.join(", ");
+		});
+
+		if (result.resolver)
+			lines.push("host resolver -> " + result.resolver.join(", "));
+		clearStatus();
+		/* problems > 0 comes back as 207, which apiRequest treats as
+		 * success -- it IS a real result, just a partial one, so it is
+		 * reported as a warning with the detail rather than an error. */
+		showStatus(lines.join(" | "), result.problems > 0);
+		await refreshDnsServers();
+		await refreshDnsForwarders();
+	} catch (e) {
+		showStatus("Provisioning failed: " + e.message, true);
+	} finally {
+		btn.disabled = false;
+	}
+});
+
+/* ---- DNS Forwarders: where the DNS servers recurse to (#134, ADR-0203) ---- */
+
+let dnsForwardersDirty = false;
+
+async function refreshDnsForwarders() {
+	try {
+		const config = await apiRequest("GET", "/v1/dns/forwarders");
+
+		cache.dnsForwarders = config.forwarders;
+		if (!dnsForwardersDirty)
+			document.getElementById("dnsf-servers").value = config.forwarders.join(", ");
+	} catch (e) {
+		/* Best-effort -- the form just stays at whatever was last shown. */
+	}
+}
+
+document.getElementById("dnsf-servers").addEventListener("input", () => {
+	dnsForwardersDirty = true;
+});
+
+document.getElementById("dns-forwarders-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	const raw = document.getElementById("dnsf-servers").value.trim();
+	const forwarders = raw === "" ? [] : raw.split(/[\s,]+/).filter((s) => s.length > 0);
+
+	try {
+		await apiRequest("PUT", "/v1/dns/forwarders", { forwarders: forwarders });
+		clearStatus();
+		/* Empty is a legitimate setting, not a no-op, so say which
+		 * happened rather than a generic "saved". */
+		showStatus(forwarders.length === 0
+		                   ? "Forwarders cleared -- DNS is authoritative-only"
+		                   : "Forwarders saved and applied to every registered server",
+		           false);
+		dnsForwardersDirty = false;
+		await refreshDnsForwarders();
+	} catch (e) {
+		showStatus("Failed to save forwarders: " + e.message, true);
+	}
+});
+
 /* ---- NTP Config: upstream server address list ---- */
 
 let ntpConfigDirty = false;
@@ -10979,8 +11061,9 @@ const VIEW_REFRESHERS = {
 	"pkg-build-config": [refreshPkgBuildConfig],
 	update: [refreshImages, refreshPkgList],
 	devices: [refreshDevices, refreshDeviceMaps, refreshKmod, refreshKmodConfig],
-	"dns-records": [refreshDnsRecords, refreshDnsServers],
-	"dns-servers": [refreshDnsRecords, refreshDnsServers],
+	"dns-records": [refreshDnsRecords, refreshDnsServers, refreshDnsForwarders],
+	"dns-servers": [refreshDnsRecords, refreshDnsServers, refreshDnsForwarders],
+	"dns-forwarders": [refreshDnsRecords, refreshDnsServers, refreshDnsForwarders],
 	"ldap-servers": [refreshLdapServers, refreshLdapGroups, refreshLdapUsers, refreshLdapConfig],
 	"ldap-groups": [refreshLdapGroups, refreshLdapUsers],
 	"ldap-users": [refreshLdapUsers, refreshLdapGroups],
