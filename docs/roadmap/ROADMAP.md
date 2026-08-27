@@ -2445,6 +2445,18 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 207 (done): the installer gets eyes, and a missing NIC stops killing the box
+
+Issues #131/#133. Three fixes out of one real failed install on a Proxmox VM, with the investigation run on evidence after three earlier theories (a mistyped GRUB edit, a stale kernel binary, missing NSS libraries) were each tested and discarded rather than acted on.
+
+**Video.** Every EFI install had been silently serial-only. Pinned by three QEMU screendump experiments: `gfxpayload=text` fails under EFI, `keep` alone fails identically, and the discriminating fact is that `grub.cfg` never loaded a video driver — GRUB's menu renders via the driver-free EFI text console, which is what hid it. `insmod all_video` + `gfxpayload=keep` produces a live VGA console straight through kernel boot and installer prompts (screendump-verified). The kernel side was exonerated along the way: the config fragment's Phase 18 video block resolves completely under its own documented build procedure, and a freshly built faithful kernel changed nothing by itself.
+
+**The panic.** A first boot whose configured uplink was not found at that instant killed the box: attach failure → `boot_init` failure → PID 1 exit → kernel panic, with an error naming neither the interface sought nor those present. Now log-and-continue: the management bridge and address already exist by that point, so `cixd` serves — the serial `cixctl` console included — and the log lists exactly what was looked for and what existed. The original trigger is honestly unreproduced (the same transitional-virtio-behind-bridges topology works in QEMU on both kernels), so no speculative wait was added; recurrence now self-diagnoses.
+
+**Recovery.** `cix-recover` completed successfully and the kernel still panicked — PID 1 returning from `main()`, even with status 0, is `Attempted to kill init!`. All paths now end in a clear banner plus `sync()` and a permanent `pause()`.
+
+**Verified:** screendumps before/after for video; full scripted install to `install complete` on the fixed ISO; first boot of the installed disk on the exact Proxmox-like NIC topology (transitional virtio-net behind DMI-to-PCI + pci-bridge) reaching `cixd listening on 192.168.15.50:80`; full regression suite on the final tree.
+
 ## Part 206 (done): the ESP is reachable over REST
 
 Issue #128, [ADR-0202](../adr/0202-the-esp-is-reachable-over-rest.md).
