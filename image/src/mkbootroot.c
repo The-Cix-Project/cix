@@ -316,6 +316,34 @@ int main(int argc, char **argv)
 			{ "/usr/bin/tar", "usr/bin/tar" },             /* PKG_TAR_BIN */
 			/* sha256sum/cp/rm/gzip: NOT here -- staged from host_tools_dir
 			 * (coreutils.recipe/gzip.recipe) when given, see below. */
+			/*
+			 * mksquashfs (issue #146). ADR-0078 called the
+			 * host_tools_dir == "" path a safe fallback -- "a box that
+			 * never built this image keeps today's dev-host-sourced
+			 * behavior, never a hard failure." That is true on a dev
+			 * machine and false on an installed host, where
+			 * /usr/bin/mksquashfs does not exist and never has. So the
+			 * fallback was not a fallback: it was a guaranteed failure,
+			 * and a freshly installed host could not deploy an update
+			 * to itself at all. Confirmed on a real fresh install:
+			 * `pkg hostbuild cix --deploy` fetched, harvested and
+			 * installed correctly, then died with "mksquashfs binary
+			 * not found at /usr/bin/mksquashfs".
+			 *
+			 * Staged here so the host genuinely carries what the
+			 * assembly step needs, the same way mkfs.ext4/sfdisk/
+			 * resize2fs already are. Costs nothing extra in libraries:
+			 * unsquashfs below is its sibling from the same package and
+			 * its closure (libz/liblzma/liblzo2/liblz4/libzstd) is
+			 * already staged in shelled_bin_libs[] for exactly that
+			 * reason.
+			 *
+			 * host_tools_dir, when built, still takes precedence and
+			 * still needs its LD_LIBRARY_PATH treatment (ADR-0154) --
+			 * this makes the no-hosttools path work, it does not
+			 * replace the hosttools one.
+			 */
+			{ MKSQUASHFS_BIN, "usr/bin/mksquashfs" },
 			{ "/usr/bin/unsquashfs", "usr/bin/unsquashfs" }, /* PKG_UNSQUASHFS_BIN -- the
 			                                                   * pkg_bootstrap_from_toolchain()
 			                                                   * import path, no mount/loop-device
