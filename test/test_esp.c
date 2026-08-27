@@ -87,12 +87,17 @@ static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 static pid_t start_daemon(void)
 {
 	pid_t pid;
-	char *dargv[6];
+	char *dargv[7];
 	static char data_dir_arg[PATH_MAX + 12];
 	static char esp_arg[PATH_MAX + 24];
+	static char efivars_arg[PATH_MAX + 24];
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
 	snprintf(esp_arg, sizeof(esp_arg), "--test-esp-entries-dir=%s", g_entries_dir);
+	/* The daemon needs the SAME simulated efivars directory this test
+	 * process writes to, or it reports on the real (unwritable) one and
+	 * can never see an armed one-shot. */
+	snprintf(efivars_arg, sizeof(efivars_arg), "--test-efivars-dir=%s", g_efivars_dir);
 	dargv[0] = "build/cixd";
 	dargv[1] = PORT_ARG;
 	dargv[2] = data_dir_arg;
@@ -100,7 +105,8 @@ static pid_t start_daemon(void)
 	/* A real installed host knows which slot it booted; without this the
 	 * running-slot guard has nothing to protect. */
 	dargv[4] = "--slot=a";
-	dargv[5] = NULL;
+	dargv[5] = efivars_arg;
+	dargv[6] = NULL;
 
 	pid = fork();
 	if (pid < 0) {
@@ -462,6 +468,36 @@ int main(void)
 		if (esp_boot_next_set("zz") != ESP_ERR_INVALID &&
 		    esp_boot_next_set("zz") != ESP_ERR_NOT_FOUND)
 			fail("a slot with no loader entry must be refused, not armed");
+
+		/*
+		 * An armed one-shot overrides the default pattern, so the
+		 * reported selection has to follow it. This field said
+		 * "cix-a.conf" on a real host that then booted cix-b, because
+		 * the one-shot was not consulted here -- the same
+		 * confidently-wrong failure ADR-0202 records about this exact
+		 * field, reintroduced by the feature that made one-shots
+		 * possible.
+		 */
+		{
+			struct cix_response rr;
+
+			memset(&rr, 0, sizeof(rr));
+			if (cix_client_request(&c, "GET", "/v1/system/esp", NULL, &rr) == 0 &&
+			    rr.json != NULL) {
+				const char *sel = json_as_string(json_object_get(rr.json, "selected_entry"));
+				const char *bn = json_as_string(json_object_get(rr.json, "boot_next"));
+
+				if (bn == NULL || strcmp(bn, "cix-b.conf") != 0)
+					fail("boot_next should be reported as cix-b.conf, got %s",
+					     bn != NULL ? bn : "(null)");
+				if (sel == NULL || strcmp(sel, "cix-b.conf") != 0)
+					fail("with a one-shot armed, selected_entry must follow it; got %s",
+					     sel != NULL ? sel : "(null)");
+			} else {
+				fail("GET /v1/system/esp failed while a one-shot was armed");
+			}
+			cix_response_free(&rr);
+		}
 
 		if (esp_boot_next_clear() != ESP_OK)
 			fail("disarming should succeed");

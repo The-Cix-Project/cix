@@ -593,6 +593,7 @@ void esp_write_json(struct json_writer *w)
 	struct esp_entry entries[ESP_MAX_ENTRIES];
 	char default_pattern[ESP_DEFAULT_MAX];
 	char selected[ESP_ENTRY_NAME_MAX];
+	char boot_next[ESP_ENTRY_NAME_MAX] = "";
 	int timeout = -1;
 	int writable = 0;
 	int n, i;
@@ -603,6 +604,23 @@ void esp_write_json(struct json_writer *w)
 	if (n < 0)
 		n = 0;
 	selected_entry(entries, n, default_pattern, selected, sizeof(selected));
+
+	/*
+	 * An armed one-shot (issue #154) overrides the default pattern
+	 * entirely, so reporting the pattern's choice while a one-shot is
+	 * set would name the wrong entry. Not hypothetical: this field
+	 * said "cix-a.conf" on a real host that then booted cix-b, because
+	 * the one-shot was ignored here.
+	 *
+	 * That is the same failure ADR-0202 records about this very field
+	 * -- confidently wrong is worse than absent, because its whole
+	 * purpose is to be believed -- so the one-shot is reported
+	 * separately as well, rather than silently folded in. An operator
+	 * needs to know both that the next boot differs AND that it
+	 * differs only once.
+	 */
+	if (esp_boot_next_get(boot_next, sizeof(boot_next)))
+		snprintf(selected, sizeof(selected), "%s", boot_next);
 
 	jw_obj_open(w);
 	jw_key(w, "present");
@@ -629,6 +647,11 @@ void esp_write_json(struct json_writer *w)
 	/* The entry the firmware would actually boot next, and whether that
 	 * is the slot this daemon is running from -- the two-line answer to
 	 * "why did my update not take effect". */
+	jw_key(w, "boot_next");
+	if (boot_next[0] != '\0')
+		jw_str(w, boot_next);
+	else
+		jw_null(w);
 	jw_key(w, "selected_entry");
 	if (selected[0] != '\0')
 		jw_str(w, selected);

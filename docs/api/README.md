@@ -2303,6 +2303,7 @@ A one-shot has the property that matters for rollback: it **self-clears**. A mac
 - `DELETE` is idempotent: disarming an already-disarmed machine is the desired state, so it is safe to call blindly.
 - Needs a real EFI system. Where `efivarfs` is absent or read-only — including a dev sandbox, which mounts `/sys` read-only — arming returns `409` saying so rather than failing obscurely.
 - Distinct from `PUT /system/esp`, which sets the *persistent* default. Use that to fix a wrong pattern; use this to steer one boot.
+- `GET /system/esp` reports an armed one-shot in `boot_next`, and its `selected_entry` follows it. It has to: a one-shot overrides the default pattern entirely, so reporting the pattern's choice while one is armed names the wrong entry — which happened on a real host that said `cix-a.conf` and then booted `cix-b`.
 
 `cixctl boot-next [a|b|clear]` is the CLI surface; with no argument it reports what is armed.
 
