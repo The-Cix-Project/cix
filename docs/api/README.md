@@ -1092,7 +1092,7 @@ PUT /v1/dns/forwarders
 
 These used to be `--server=` flags baked into each DNS container's `cmd` at creation time (ADR-0076). That had three concrete problems, all of which showed up in practice: changing a forwarder meant **recreating core infrastructure**, two replicas could **silently disagree** with each other because nothing tied their argv together, and nothing could answer "what does this platform resolve through?" at all — the value existed only inside a running container's command line.
 
-They are now ordinary daemon-owned configuration. The daemon writes the list into a servers-file each dnsmasq reads (`--servers-file=/etc/dnsmasq-servers`) and `SIGHUP`s every registered server, so **one `PUT` updates every replica consistently** and a newly registered server picks up the current list at registration time without being told about it separately.
+They are now ordinary daemon-owned configuration. The daemon writes the list into a servers-file each dnsmasq reads (`--servers-file=/etc/dnsmasq-servers`) and `SIGHUP`s every registered server, so **one `PUT` updates every replica consistently** and a newly registered server picks up the current list at registration time without being told about it separately (the write happens before the binding is recorded, so a server is never left half-registered with a hosts file but no forwarders).
 
 - The `PUT` **replaces** the whole list rather than appending; the response echoes the list as applied. At most 8 entries, each a valid IPv4 address — `400` otherwise, with nothing applied.
 - An empty array is legal and means exactly what it says: authoritative-only, no upstream recursion.

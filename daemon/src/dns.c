@@ -559,6 +559,7 @@ enum dns_server_error dns_server_register(const char *container_name, pid_t pid,
                                            const char *hosts_path)
 {
 	char full_path[DNS_SERVER_PATH_MAX + 32];
+	char servers_full_path[DNS_SERVER_PATH_MAX + 32];
 	int i, slot = -1;
 
 	if (!hosts_path_is_valid(hosts_path))
@@ -581,6 +582,28 @@ enum dns_server_error dns_server_register(const char *container_name, pid_t pid,
 
 	if (dns_write_hosts_file(full_path) != 0)
 		return DNS_SERVER_ERR_WRITE_FAILED;
+
+	/*
+	 * A server being registered has to receive the current forwarder
+	 * list here, not merely on the next PUT /v1/dns/forwarders. Without
+	 * this it comes up authoritative-only until someone happens to set
+	 * forwarders again -- and since the value is already stored and
+	 * reported by GET /v1/dns/forwarders, the operator has every reason
+	 * to believe it is in effect. Found exactly that way on a real host
+	 * (issue #134): dns-1 was recreated from its recipe and registered,
+	 * GET reported both forwarders correctly, and the container's own
+	 * servers-file was empty.
+	 *
+	 * Written before the binding is recorded, so a failure here cannot
+	 * leave a half-registered server; both files are in place, or the
+	 * registration does not happen at all.
+	 */
+	if (snprintf(servers_full_path, sizeof(servers_full_path), "/proc/%d/root%s", (int)pid,
+	             DNS_SERVERS_FILE_PATH) >= (int)sizeof(servers_full_path))
+		return DNS_SERVER_ERR_INVALID_PATH;
+	if (dns_write_servers_file(servers_full_path) != 0)
+		return DNS_SERVER_ERR_WRITE_FAILED;
+
 	sys_pidfd_send_signal(pidfd, SIGHUP);
 
 	memset(&g_bindings[slot], 0, sizeof(g_bindings[slot]));
