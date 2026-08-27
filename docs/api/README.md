@@ -32,6 +32,9 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | POST | `/system/shutdown` | Stop `cixd`; powers off the host too when running as real PID 1 |
 | POST | `/system/reboot` | Stop `cixd`; restarts the host too when running as real PID 1 |
 | POST | `/system/update` | Write a fresh control-plane squashfs and/or a fresh kernel onto this daemon's own inactive A/B slot |
+| GET | `/system/boot-next` | What is armed to boot next, if anything |
+| POST | `/system/boot-next` | Boot a slot **once**, then revert to normal selection (#154) |
+| DELETE | `/system/boot-next` | Disarm |
 | GET | `/system/backup` | Bundle platform configuration state (container defs, networks, DNS, package state, site config) |
 | POST | `/system/restore` | Write a previously-backed-up bundle back to its real state files |
 | GET | `/system/backup-config` | Which disk (if any) automatic backup snapshots write to, whether enabled, interval |
@@ -2281,6 +2284,27 @@ GET /v1/system/boot
 `GET /health` is deliberately minimal -- both `cixctl` and the web dashboard poll it every few seconds purely for a status dot, and it's excluded from the audit trail (see [A consolidated log](#a-consolidated-log) above) as low-value polling noise. Build/slot/kernel identity is a separate, lower-frequency check: `GET /system/boot` reports `build_version` (`git describe --tags --always --dirty` at build time), `build_time`, `slot` (`"a"`/`"b"`, or `null` for a dev/test daemon started without `--slot=`), and `kernel_version` (the running `uname(2)` release string). This is the deploy/reboot verification signal referenced throughout [`docs/guides/kernel-build-and-ab-updates.md`](../guides/kernel-build-and-ab-updates.md) -- a `200` from `health` alone only proves *some* daemon answered, not that it's the one you just wrote; `slot`/`kernel_version` from `boot` are the direct answer to "did I actually boot into what I just wrote."
 
 `bootroot_assembly_started_generation`/`bootroot_assembly_completed_generation`/`bootroot_assembly_running` (ADR-0105) are a real freshness signal for `pkg hostbuild cix --deploy`'s own server-side follow-on assembly (ADR-0057) — `cixd-root.squashfs` existing at the hostbuild's `artifact_path` is not the same as it being *this* round's own fresh build, since that file is a leftover from whichever assembly last succeeded. `completed_generation` only ever advances on a real, confirmed success; `--deploy` captures it as a baseline before triggering anything and waits for it to advance past that baseline (`running` distinguishes "still working" from "gave up, that attempt failed") rather than trusting file-exists.
+
+## Rolling back: boot a slot once
+
+```
+POST /v1/system/boot-next
+{"slot": "b"}
+```
+
+Before this existed, the answer to "this update is bad, go back" was to wait for the boot counter to exhaust over three reboots, or reinstall (#154).
+
+**The obvious workaround is worse than the problem, which is why this is an endpoint rather than advice.** Repointing the loader `default` at a slot looks like the way to force it — but `default` is *sticky*, so the **next** update stages the *other* slot, matches nothing, and silently never boots. That mistake was made on a real host during this project's own deploy and had to be reverted.
+
+A one-shot has the property that matters for rollback: it **self-clears**. A machine that fails to come back falls back to ordinary selection on its own rather than staying pinned to a broken slot.
+
+- Sets systemd-boot's `LoaderEntryOneShot` EFI variable. The value is the entry id as systemd-boot itself spells it — `.conf` kept, any boot counter stripped, so a file named `cix-b+3.conf` is armed as `cix-b.conf`.
+- **A slot with no loader entry is refused (`409`), not armed.** Booting into an entry that does not exist needs a console to recover from — precisely the situation this endpoint exists to avoid.
+- `DELETE` is idempotent: disarming an already-disarmed machine is the desired state, so it is safe to call blindly.
+- Needs a real EFI system. Where `efivarfs` is absent or read-only — including a dev sandbox, which mounts `/sys` read-only — arming returns `409` saying so rather than failing obscurely.
+- Distinct from `PUT /system/esp`, which sets the *persistent* default. Use that to fix a wrong pattern; use this to steer one boot.
+
+`cixctl boot-next [a|b|clear]` is the CLI surface; with no argument it reports what is armed.
 
 ## Host + package updates
 

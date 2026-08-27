@@ -59,6 +59,34 @@ struct esp_entry {
  */
 void esp_init(const char *loader_dir, const char *entries_dir);
 
+/*
+ * Where EFI variables live. Defaults to the real efivarfs mount; the
+ * override exists so this can be exercised against a temp directory in
+ * tests, since a dev sandbox mounts /sys read-only and cannot write a
+ * real EFI variable at all.
+ */
+void esp_set_efivars_dir(const char *dir);
+
+/*
+ * Arm / read / disarm systemd-boot's LoaderEntryOneShot: boot this slot
+ * ONCE, then revert to normal selection.
+ *
+ * One-shot rather than repointing `default` on purpose, and the
+ * distinction is the whole feature. `default` is sticky, so using it to
+ * force a slot means the NEXT update -- which stages the other slot --
+ * matches nothing and silently never boots. A one-shot self-clears, so
+ * a machine that fails to come back falls back to ordinary selection
+ * instead of staying pinned to a broken slot. That is the property that
+ * makes this safe to use for rollback, which is when it matters.
+ *
+ * esp_boot_next_set() refuses a slot with no loader entry: arming a
+ * boot into nothing is unrecoverable without a console, which is
+ * exactly the situation this exists to avoid.
+ */
+enum esp_error esp_boot_next_set(const char *slot);
+int esp_boot_next_get(char *out, size_t out_size);
+enum esp_error esp_boot_next_clear(void);
+
 /* Which slot the live system booted from ("a"/"b"), so an entry can be
  * flagged as the running one and refused for deletion. */
 void esp_set_running_slot(const char *slot);

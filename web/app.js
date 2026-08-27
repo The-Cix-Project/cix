@@ -6839,8 +6839,48 @@ async function refreshEsp() {
 			    data.timeout === null || data.timeout === undefined ? "" : data.timeout;
 		}
 		renderEspEntries(data);
+		await refreshBootNext();
 	} catch (e) {
 		/* Best-effort, same posture as the other config panels. */
+	}
+}
+
+async function setBootNext(slot) {
+	try {
+		const r = await apiRequest("POST", "/v1/system/boot-next", { slot: slot });
+
+		clearStatus();
+		showStatus("Next boot: " + r.entry + " (once, then normal selection)", false);
+		await refreshEsp();
+	} catch (e) {
+		/* 409 covers both "no entry for that slot" and "no writable EFI
+		 * variables here" -- both are real states an operator needs to
+		 * see verbatim, not flattened into a generic failure. */
+		showStatus("Could not arm slot " + slot + ": " + e.message, true);
+	}
+}
+
+async function clearBootNext() {
+	try {
+		await apiRequest("DELETE", "/v1/system/boot-next");
+		clearStatus();
+		showStatus("Disarmed -- normal selection applies", false);
+		await refreshEsp();
+	} catch (e) {
+		showStatus("Could not disarm: " + e.message, true);
+	}
+}
+
+async function refreshBootNext() {
+	const el = document.getElementById("esp-boot-next-state");
+
+	try {
+		const r = await apiRequest("GET", "/v1/system/boot-next");
+
+		el.textContent = r.entry ? "Armed: " + r.entry + " (next boot only)"
+		                          : "Nothing armed \u2014 normal selection applies";
+	} catch (e) {
+		el.textContent = "";
 	}
 }
 
@@ -6854,6 +6894,10 @@ async function removeEspEntry(name) {
 		showStatus("Failed to remove " + name + ": " + e.message, true);
 	}
 }
+
+document.getElementById("esp-boot-next-a").addEventListener("click", () => setBootNext("a"));
+document.getElementById("esp-boot-next-b").addEventListener("click", () => setBootNext("b"));
+document.getElementById("esp-boot-next-clear").addEventListener("click", clearBootNext);
 
 for (const id of ["esp-default", "esp-timeout"])
 	document.getElementById(id).addEventListener("input", () => {

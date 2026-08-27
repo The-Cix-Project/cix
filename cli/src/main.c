@@ -39,6 +39,11 @@ static void print_usage(FILE *out)
 	        "               real PID 1 (an installed system) -- a dev/interactive cixd\n"
 	        "               just exits, same as it always has on SIGTERM\n"
 	        "  reboot    -- stop cixd; restarts the host too when running as PID 1\n"
+	        "  boot-next [a|b|clear]  -- boot the given slot ONCE on the next boot, then\n"
+	        "               revert to normal selection; no argument reports what is armed.\n"
+	        "               This is the rollback tool: pinning the loader default to a slot\n"
+	        "               instead is sticky and breaks the NEXT update, which stages the\n"
+	        "               other slot and would then match nothing\n"
 	        "  update [--image=PATH | --image-url=URL --image-sha256=HEX] [--kernel=PATH]\n"
 	        "            -- writes a fresh control-plane squashfs and/or a fresh kernel onto\n"
 	        "               this daemon's own inactive A/B slot and stages a fresh loader\n"
@@ -10064,6 +10069,65 @@ static void fmt_dns_provision(const struct cix_response *r)
 	}
 }
 
+/*
+ * boot-next: arm/read/disarm systemd-boot's one-shot entry (#154).
+ *
+ * One-shot rather than repointing the loader default, because
+ * `default` is sticky: forcing a slot that way means the NEXT update,
+ * which stages the other slot, matches nothing and silently never
+ * boots. A one-shot self-clears, so a machine that fails to come back
+ * falls back to normal selection instead of staying pinned to a broken
+ * slot -- the property that makes this usable for rollback.
+ */
+static void fmt_boot_next(const struct json_value *v)
+{
+	const char *entry = (v != NULL) ? json_str_field(v, "entry") : NULL;
+
+	if (entry != NULL && entry[0] != '\0')
+		printf("next boot: %s (once, then back to normal selection)\n", entry);
+	else
+		printf("next boot: (nothing armed -- normal selection applies)\n");
+}
+
+static int cmd_boot_next(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	struct cix_response r;
+	char body[64];
+
+	if (argc == 0) {
+		if (cix_client_request(c, "GET", "/v1/system/boot-next", NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_boot_next);
+	}
+	if (strcmp(argv[0], "clear") == 0) {
+		if (cix_client_request(c, "DELETE", "/v1/system/boot-next", NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		if (r.status == 204) {
+			/* A 204 has no body, so emit() would print "null" -- say
+			 * what the machine will now do instead. */
+			if (!json_mode)
+				printf("next boot: (cleared -- normal selection applies)\n");
+			cix_response_free(&r);
+			return 0;
+		}
+		return emit(&r, json_mode, NULL);
+	}
+	if (strcmp(argv[0], "a") != 0 && strcmp(argv[0], "b") != 0) {
+		fprintf(stderr, "usage: cixctl boot-next [a|b|clear]\n");
+		return 2;
+	}
+	snprintf(body, sizeof(body), "{\"slot\":\"%s\"}", argv[0]);
+	if (cix_client_request(c, "POST", "/v1/system/boot-next", body, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_boot_next);
+}
+
 static int cmd_dns_provision(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	struct json_writer w;
@@ -13233,6 +13297,8 @@ static int dispatch_command(const struct cix_client *client, int json_mode, cons
 		return cmd_reboot(client, json_mode);
 	if (strcmp(cmd, "update") == 0)
 		return cmd_update(client, json_mode, argc, argv);
+	if (strcmp(cmd, "boot-next") == 0)
+		return cmd_boot_next(client, json_mode, argc, argv);
 	if (strcmp(cmd, "backup") == 0)
 		return cmd_backup(client, json_mode, argc, argv);
 	if (strcmp(cmd, "restore") == 0)

@@ -39,6 +39,7 @@ extern char **environ;
 
 static char g_data_dir[PATH_MAX];
 static char g_esp_dir[PATH_MAX];
+static char g_efivars_dir[PATH_MAX];
 static char g_entries_dir[PATH_MAX];
 static char g_loader_conf[PATH_MAX];
 static int g_failures;
@@ -225,6 +226,8 @@ int main(void)
 		return 1;
 	}
 	snprintf(g_esp_dir, sizeof(g_esp_dir), "%s/esp", g_data_dir);
+	snprintf(g_efivars_dir, sizeof(g_efivars_dir), "%s/efivars", g_data_dir);
+	mkdir(g_efivars_dir, 0755);
 	snprintf(g_entries_dir, sizeof(g_entries_dir), "%s/loader/entries", g_esp_dir);
 	snprintf(g_loader_conf, sizeof(g_loader_conf), "%s/loader/loader.conf", g_esp_dir);
 	if (seed_esp() != 0) {
@@ -383,6 +386,91 @@ int main(void)
 			fail("scan picked %s, expected cix-a+3.conf", picked);
 		if (esp_entry_to_confirm(dir, "b", picked, sizeof(picked)))
 			fail("slot b has no entry here, but one was reported: %s", picked);
+	}
+
+	/*
+	 * ---- boot-next: the one-shot (issue #154) ----
+	 *
+	 * The rollback tool. Until it existed, "this update is bad, go
+	 * back" meant waiting for a boot counter to exhaust over three
+	 * reboots, or reinstalling -- and the apparent workaround, pinning
+	 * the loader default to a slot, is worse than the problem because
+	 * `default` is sticky and the NEXT update stages the other slot.
+	 *
+	 * Exercised against a temp directory standing in for efivarfs: a
+	 * dev sandbox mounts /sys read-only and cannot write a real EFI
+	 * variable at all, so without the override none of this could be
+	 * tested anywhere but on hardware.
+	 */
+	{
+		char armed[ESP_ENTRY_NAME_MAX];
+
+		/* This process links esp.c directly, so the module needs the
+		 * same directories the daemon under test was given -- without
+		 * esp_init() it has no entry list and every lookup below would
+		 * fail for the wrong reason. */
+		esp_init(g_esp_dir, g_entries_dir);
+		esp_set_efivars_dir(g_efivars_dir);
+
+		if (esp_boot_next_get(armed, sizeof(armed)))
+			fail("nothing should be armed before anything arms it, got %s", armed);
+
+		/*
+		 * The fixture's slot-b file is "cix-b+3.conf", but the id
+		 * systemd-boot matches on is "cix-b.conf" -- ".conf" kept, the
+		 * boot counter stripped. Taken from real `bootctl list`
+		 * output, because writing the wrong spelling produces a
+		 * variable the bootloader silently ignores, which would look
+		 * exactly like the feature not working.
+		 */
+		if (esp_boot_next_set("b") != ESP_OK)
+			fail("arming slot b should succeed -- cix-b+3.conf is present");
+		if (!esp_boot_next_get(armed, sizeof(armed)) || strcmp(armed, "cix-b.conf") != 0)
+			fail("armed entry should be cix-b.conf, got %s", armed);
+
+		/* The raw variable is what the firmware reads, so its exact
+		 * bytes matter more than the round-trip: a 4-byte attribute
+		 * word (NV|BS|RT) then NUL-terminated UTF-16LE. */
+		{
+			char path[PATH_MAX];
+			unsigned char raw[64];
+			FILE *f;
+			size_t got;
+
+			snprintf(path, sizeof(path),
+			         "%s/LoaderEntryOneShot-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f",
+			         g_efivars_dir);
+			f = fopen(path, "rb");
+			if (f == NULL) {
+				fail("the EFI variable file was not created at %s", path);
+			} else {
+				got = fread(raw, 1, sizeof(raw), f);
+				fclose(f);
+				if (got < 4 || raw[0] != 0x07 || raw[1] != 0 || raw[2] != 0 || raw[3] != 0)
+					fail("attribute word should be NV|BS|RT (0x07), got %02x%02x%02x%02x",
+					     raw[0], raw[1], raw[2], raw[3]);
+				else if (got != 4 + (strlen("cix-b.conf") + 1) * 2)
+					fail("variable is %zu bytes, expected %zu for NUL-terminated UTF-16LE",
+					     got, (size_t)(4 + (strlen("cix-b.conf") + 1) * 2));
+				else if (raw[4] != 'c' || raw[5] != 0 || raw[6] != 'i' || raw[7] != 0)
+					fail("payload is not UTF-16LE");
+			}
+		}
+
+		/* Arming a slot with no entry would need a console to recover
+		 * from -- exactly what this feature exists to avoid. */
+		if (esp_boot_next_set("zz") != ESP_ERR_INVALID &&
+		    esp_boot_next_set("zz") != ESP_ERR_NOT_FOUND)
+			fail("a slot with no loader entry must be refused, not armed");
+
+		if (esp_boot_next_clear() != ESP_OK)
+			fail("disarming should succeed");
+		if (esp_boot_next_get(armed, sizeof(armed)))
+			fail("nothing should be armed after clearing, got %s", armed);
+		/* Disarming an already-disarmed machine is the desired state,
+		 * not an error -- it must be safe to call blindly. */
+		if (esp_boot_next_clear() != ESP_OK)
+			fail("clearing twice should be idempotent");
 	}
 
 	/* ---- a default matching nothing is refused, not warned about ---- */

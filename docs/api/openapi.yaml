@@ -2819,6 +2819,81 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /system/boot-next:
+    get:
+      summary: >
+        What is armed to boot next, if anything. null means normal
+        selection applies.
+      operationId: getBootNext
+      responses:
+        "200":
+          description: The armed entry, or null
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BootNext"
+    post:
+      summary: >
+        Boot the given slot ONCE on the next boot, then revert to
+        normal selection (systemd-boot's LoaderEntryOneShot).
+        This is the rollback tool (issue #154): before it, the only
+        answer to "this update is bad, go back" was to wait for the
+        boot counter to exhaust over three reboots, or reinstall.
+        Deliberately a one-shot rather than repointing the loader
+        `default`: `default` is sticky, so forcing a slot that way
+        means the NEXT update -- which stages the other slot -- matches
+        nothing and silently never boots. A one-shot self-clears, so a
+        machine that fails to come back falls back to ordinary
+        selection instead of staying pinned to a broken slot.
+      operationId: setBootNext
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [slot]
+              properties:
+                slot:
+                  type: string
+                  enum: [a, b]
+      responses:
+        "200":
+          description: Armed; the response names the entry that will boot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BootNext"
+        "400":
+          description: slot missing or not "a"/"b"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >
+            No loader entry for that slot (arming it would leave nothing
+            to boot, which needs a console to recover from -- exactly what
+            this endpoint exists to avoid), no readable entries at all, or
+            EFI variables are not writable here.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      summary: >
+        Disarm. Idempotent -- disarming an already-disarmed machine is
+        the desired state, not an error, so this is safe to call blindly.
+      operationId: clearBootNext
+      responses:
+        "204":
+          description: Nothing is armed; normal selection applies
+        "409":
+          description: EFI variables are not writable here
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /system/boot-console:
     get:
       summary: The installed system's own boot console parameters (issue #24)
@@ -13606,6 +13681,19 @@ components:
             type: string
         problems:
           type: integer
+
+    BootNext:
+      type: object
+      required: [entry]
+      properties:
+        entry:
+          type: string
+          nullable: true
+          description: >
+            The loader entry id armed for the next boot, e.g. "cix-b.conf" --
+            ".conf" kept and any boot counter stripped, which is how
+            systemd-boot itself identifies an entry. null when nothing is
+            armed.
 
     Error:
       type: object
