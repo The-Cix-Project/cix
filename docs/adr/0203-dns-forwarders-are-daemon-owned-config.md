@@ -27,7 +27,7 @@ Forwarders become ordinary daemon-owned configuration, exposed as `GET/PUT /v1/d
 The daemon writes the list to a file each dnsmasq reads via `--servers-file=`, then `SIGHUP`s every registered server. Three consequences follow directly from that mechanism, and they are the point of it:
 
 - **One `PUT` updates every replica**, so `dns-1` and `dns-2` cannot drift apart — the disagreement failure mode is structurally removed, not merely discouraged.
-- **A newly registered server picks up the current list at registration time**, without the caller having to know or restate it.
+- **A newly registered server picks up the current list at registration time**, without the caller having to know or restate it. (This one was claimed by this ADR before it was true: the first implementation synced only on `PUT` and at startup, so a server registered in between came up authoritative-only while `GET /v1/dns/forwarders` reported the configured list — found on a real host, fixed in `dns_server_register()`, and now covered by a regression test that was itself verified to fail without the fix.)
 - **No container is recreated to change a forwarder.** dnsmasq re-reads the file on `SIGHUP`; the process keeps running.
 
 The `PUT` replaces the whole list rather than appending — a forwarder list is a set of peers, and additive semantics would leave no way to remove one. An empty array is legal and means authoritative-only, with no upstream recursion.

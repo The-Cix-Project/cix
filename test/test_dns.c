@@ -652,11 +652,96 @@ int main(void)
 	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
+	/*
+	 * Issue #134: forwarders are set BEFORE this registration on
+	 * purpose. A server being registered has to receive the current
+	 * list at that moment -- not merely on the next PUT -- because the
+	 * value is already stored and already reported by GET, so an
+	 * operator has every reason to believe it is in effect. This
+	 * regressed exactly that way on a real host: GET reported both
+	 * forwarders correctly while the container's own servers-file was
+	 * empty, leaving DNS authoritative-only with nothing saying so.
+	 */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "PUT", "/v1/dns/forwarders",
+	                       "{\"forwarders\":[\"10.7.7.7\",\"10.7.7.8\"]}", &r) != 0 ||
+	    r.status != 200) {
+		fprintf(stderr, "FAIL: PUT forwarders before registration, status=%d\n", r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+
 	if (cix_client_request(&client, "POST", "/v1/dns/servers",
 	                       "{\"container\":\"dnsserver\",\"hosts_path\":\"/etc/dnsmasq-hosts\"}",
 	                       &r) != 0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: register dnsserver, status=%d\n", r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+	/* The registration above must have written the forwarder list into
+	 * the container itself, not just stored it daemon-side. */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "GET",
+	                       "/v1/containers/dnsserver/files?path=/etc/dnsmasq-servers", NULL,
+	                       &r) != 0 ||
+	    r.status != 200) {
+		fprintf(stderr, "FAIL: read dnsmasq-servers from container, status=%d\n", r.status);
+		ok = 0;
+	} else if (r.body == NULL || strstr(r.body, "10.7.7.7") == NULL ||
+	           strstr(r.body, "10.7.7.8") == NULL) {
+		fprintf(stderr,
+		        "FAIL: registration did not sync forwarders into the container; "
+		        "servers-file is: %s\n",
+		        r.body != NULL ? r.body : "(null)");
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+	/* Round-trip through the endpoint, and the validation rules. */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "GET", "/v1/dns/forwarders", NULL, &r) != 0 ||
+	    r.status != 200 || r.body == NULL || strstr(r.body, "10.7.7.7") == NULL) {
+		fprintf(stderr, "FAIL: GET forwarders round-trip, status=%d body=%s\n", r.status,
+		        r.body != NULL ? r.body : "(null)");
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "PUT", "/v1/dns/forwarders",
+	                       "{\"forwarders\":[\"not-an-ip\"]}", &r) != 0 ||
+	    r.status != 400) {
+		fprintf(stderr, "FAIL: non-IPv4 forwarder expected 400, got %d\n", r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "PUT", "/v1/dns/forwarders", "{\"forwarders\":\"1.1.1.1\"}",
+	                       &r) != 0 ||
+	    r.status != 400) {
+		fprintf(stderr, "FAIL: non-array forwarders expected 400, got %d\n", r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+	/* An empty list is legal and means authoritative-only -- it must
+	 * clear, not be rejected as "no forwarders given". */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "PUT", "/v1/dns/forwarders", "{\"forwarders\":[]}", &r) != 0 ||
+	    r.status != 200) {
+		fprintf(stderr, "FAIL: empty forwarder list expected 200, got %d\n", r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "PUT", "/v1/dns/forwarders",
+	                       "{\"forwarders\":[\"10.7.7.7\",\"10.7.7.8\"]}", &r) != 0 ||
+	    r.status != 200) {
+		fprintf(stderr, "FAIL: restore forwarders, status=%d\n", r.status);
 		ok = 0;
 	}
 	cix_response_free(&r);
