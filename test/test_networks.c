@@ -455,6 +455,20 @@ int main(void)
 	    r.status != 409) {
 		fprintf(stderr, "FAIL: already-taken ip expected 409, got %d\n", r.status);
 		ok = 0;
+	} else if (r.body == NULL || strstr(r.body, "c2") == NULL) {
+		/*
+		 * Issue #148: the rejection must NAME the container holding
+		 * the address. The old message said "assigned to a running
+		 * container" and nothing more, which is actively misleading
+		 * after a delete: deletion is asynchronous, so the holder can
+		 * be one already torn down and absent from `container ls`,
+		 * and the operator goes looking for a conflict that does not
+		 * exist. Cost a real debugging detour on a live host.
+		 */
+		fprintf(stderr,
+		        "FAIL: the 409 should name the holding container (c2); body was: %s\n",
+		        r.body != NULL ? r.body : "(null)");
+		ok = 0;
 	}
 	cix_response_free(&r);
 
