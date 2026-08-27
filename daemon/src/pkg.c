@@ -3756,9 +3756,20 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 			char artifact_url[768];
 			char artifact_header[320];
 			char artifact_path[PATH_MAX];
-			char sha_out[128];
+			/*
+			 * Both initialised because the mismatch-note check below
+			 * reuses them after a short-circuited && chain: if
+			 * waitpid() failed, `status` was never written; if curl
+			 * succeeded but pkg_run_capture_sha256() failed, `sha_out`
+			 * was never written. Reading either then is stack garbage
+			 * -- found by review (Fable's audit of #149), not by a
+			 * failure, which is exactly why it gets fixed now rather
+			 * than after it writes a garbage "cache served ..." note.
+			 */
+			char sha_out[128] = "";
 			pid_t sub;
-			int status;
+			int status = -1;
+			int sha_ok = 0;
 
 			pkg_artifact_build_request(recipe.name, recipe.version, artifact_url,
 			                            sizeof(artifact_url), artifact_header,
@@ -3783,9 +3794,9 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 				_exit(127);
 			}
 			if (sub > 0 && waitpid(sub, &status, 0) == sub && WIFEXITED(status) &&
-			    WEXITSTATUS(status) == 0 &&
-			    pkg_run_capture_sha256(artifact_path, sha_out, sizeof(sha_out)) == 0 &&
-			    strcasecmp(sha_out, recipe.artifact_sha256) == 0) {
+			    WEXITSTATUS(status) == 0)
+				sha_ok = pkg_run_capture_sha256(artifact_path, sha_out, sizeof(sha_out)) == 0;
+			if (sha_ok && strcasecmp(sha_out, recipe.artifact_sha256) == 0) {
 				_exit(0); /* verified -- pkg_fetch_completed() stages straight from this file */
 			}
 			/*
@@ -3809,8 +3820,7 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 			 * the source fallback goes on to succeed: a mismatch is
 			 * worth knowing about even when the install works.
 			 */
-			if (sub > 0 && WIFEXITED(status) && WEXITSTATUS(status) == 0 &&
-			    sha_out[0] != '\0') {
+			if (sha_ok) {
 				char note_path[PATH_MAX];
 				int nfd;
 

@@ -475,6 +475,19 @@ static int write_multisrc_recipe(const char *name, const char *version, const ch
 
 /* Polls GET /v1/pkg/{name} until state leaves fetching/building (or
  * max_attempts is exhausted). Writes the final state into out_state. */
+/*
+ * Returns the moment the state leaves fetching/building, so a generous
+ * max_attempts NEVER slows a passing run -- it only sets how long a
+ * genuine hang takes to report. Budgets were widened from 60 (18s
+ * wall) after a real suite run failed with "greeter never left
+ * fetching/building" on a machine measured 4-5x slower than idle at
+ * that moment: greeter takes ~4s idle, so 18s had no margin under
+ * load, and the failure cascaded into six more misleading assertions
+ * downstream (this helper leaves out_state untouched on a non-200, so
+ * later failures printed a stale 'building' from an earlier package).
+ * That cascade cost a multi-hour investigation that concluded the code
+ * was innocent -- the budget was the defect.
+ */
 static int poll_pkg_state(const struct cix_client *c, const char *name, char *out_state,
                            size_t out_state_size, int max_attempts)
 {
@@ -711,7 +724,7 @@ int main(void)
 	/* 5. poll until BOTH greeter and concurrent finish; confirm each
 	 * actually installed and its binary genuinely runs from the base
 	 * image -- the real payoff, not just files with the right names. */
-	if (poll_pkg_state(&client, "greeter", state, sizeof(state), 60) != 0) {
+	if (poll_pkg_state(&client, "greeter", state, sizeof(state), 200) != 0) {
 		fprintf(stderr, "FAIL: greeter never left fetching/building\n");
 		ok = 0;
 	} else if (strcmp(state, "installed") != 0) {
@@ -895,7 +908,7 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"policypkg\"}", &r);
 		cix_response_free(&r);
-		if (poll_pkg_state(&client, "policypkg", state, sizeof(state), 60) != 0 ||
+		if (poll_pkg_state(&client, "policypkg", state, sizeof(state), 200) != 0 ||
 		    strcmp(state, "installed") != 0) {
 			fprintf(stderr, "FAIL: #64 policypkg default install ended '%s'\n", state);
 			ok = 0;
@@ -927,7 +940,7 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"policypkg\"}", &r);
 		cix_response_free(&r);
-		if (poll_pkg_state(&client, "policypkg", state, sizeof(state), 60) != 0 ||
+		if (poll_pkg_state(&client, "policypkg", state, sizeof(state), 200) != 0 ||
 		    strcmp(state, "installed") != 0) {
 			fprintf(stderr, "FAIL: #64 policypkg newest install ended '%s'\n", state);
 			ok = 0;
@@ -965,7 +978,7 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"policypkg\"}", &r);
 		cix_response_free(&r);
-		if (poll_pkg_state(&client, "policypkg", state, sizeof(state), 60) != 0 ||
+		if (poll_pkg_state(&client, "policypkg", state, sizeof(state), 200) != 0 ||
 		    strcmp(state, "installed") != 0) {
 			fprintf(stderr, "FAIL: #64 policypkg pinned install ended '%s'\n", state);
 			ok = 0;
@@ -1029,7 +1042,7 @@ int main(void)
 			ok = 0;
 		}
 		cix_response_free(&r);
-		if (poll_pkg_state(&client, "chatty", state, sizeof(state), 60) != 0 ||
+		if (poll_pkg_state(&client, "chatty", state, sizeof(state), 200) != 0 ||
 		    strcmp(state, "installed") != 0) {
 			fprintf(stderr, "FAIL: #57 chatty ended in state '%s'\n", state);
 			ok = 0;
@@ -1147,7 +1160,7 @@ int main(void)
 			ok = 0;
 		}
 		cix_response_free(&r);
-		if (poll_pkg_state(&client, "budgeted", state, sizeof(state), 60) != 0 ||
+		if (poll_pkg_state(&client, "budgeted", state, sizeof(state), 200) != 0 ||
 		    strcmp(state, "installed") != 0) {
 			fprintf(stderr, "FAIL: #85 budgeted ended in state '%s'\n", state);
 			ok = 0;
@@ -1219,7 +1232,7 @@ int main(void)
 		cix_response_free(&r);
 	}
 
-	if (poll_pkg_state(&client, "concurrent", state, sizeof(state), 60) != 0) {
+	if (poll_pkg_state(&client, "concurrent", state, sizeof(state), 200) != 0) {
 		fprintf(stderr, "FAIL: concurrent never left fetching/building\n");
 		ok = 0;
 	} else if (strcmp(state, "installed") != 0) {
@@ -1263,7 +1276,7 @@ int main(void)
 		ok = 0;
 	}
 	cix_response_free(&r);
-	if (poll_pkg_state(&client, "declaredmissing", state, sizeof(state), 60) != 0 ||
+	if (poll_pkg_state(&client, "declaredmissing", state, sizeof(state), 200) != 0 ||
 	    strcmp(state, "failed") != 0) {
 		fprintf(stderr, "FAIL: #109 a recipe declaring an unavailable build tool ended '%s', "
 		                "expected failed -- it must not fall back to the shared sandbox\n",
@@ -1396,7 +1409,7 @@ int main(void)
 		ok = 0;
 	}
 	cix_response_free(&r);
-	if (poll_pkg_state(&client, "pinnedbad", state, sizeof(state), 60) != 0 ||
+	if (poll_pkg_state(&client, "pinnedbad", state, sizeof(state), 200) != 0 ||
 	    strcmp(state, "failed") != 0) {
 		fprintf(stderr, "FAIL: #127 a pin to an uninstalled version ended '%s', expected "
 		                "failed
@@ -1775,12 +1788,12 @@ int main(void)
 			}
 			cix_response_free(&r);
 
-			if (poll_pkg_state(&client, "leaf", state, sizeof(state), 60) != 0 ||
+			if (poll_pkg_state(&client, "leaf", state, sizeof(state), 200) != 0 ||
 			    strcmp(state, "installed") != 0) {
 				fprintf(stderr, "FAIL: leaf (top's dependency) did not reach installed\n");
 				ok = 0;
 			}
-			if (poll_pkg_state(&client, "top", state, sizeof(state), 60) != 0 ||
+			if (poll_pkg_state(&client, "top", state, sizeof(state), 200) != 0 ||
 			    strcmp(state, "installed") != 0) {
 				fprintf(stderr, "FAIL: top did not reach installed\n");
 				ok = 0;
@@ -1874,7 +1887,7 @@ int main(void)
 			}
 			cix_response_free(&r);
 
-			if (poll_pkg_state(&client, "leaf", state, sizeof(state), 60) != 0 ||
+			if (poll_pkg_state(&client, "leaf", state, sizeof(state), 200) != 0 ||
 			    strcmp(state, "installed") != 0) {
 				fprintf(stderr, "FAIL: leaf upgrade did not reach installed\n");
 				ok = 0;
@@ -1926,7 +1939,7 @@ int main(void)
 		}
 		cix_response_free(&r);
 
-		if (poll_pkg_state(&client, "greeter@router", state, sizeof(state), 60) != 0 ||
+		if (poll_pkg_state(&client, "greeter@router", state, sizeof(state), 200) != 0 ||
 		    strcmp(state, "installed") != 0) {
 			fprintf(stderr, "FAIL: greeter@router did not reach installed\n");
 			ok = 0;
@@ -2008,7 +2021,7 @@ int main(void)
 		}
 		cix_response_free(&r);
 
-		if (poll_pkg_state(&client, "greeter", state, sizeof(state), 60) != 0 ||
+		if (poll_pkg_state(&client, "greeter", state, sizeof(state), 200) != 0 ||
 		    strcmp(state, "installed") != 0) {
 			fprintf(stderr, "FAIL: greeter (base) did not reach installed\n");
 			ok = 0;
@@ -2120,7 +2133,7 @@ int main(void)
 				}
 				cix_response_free(&r);
 
-				if (poll_pkg_state(&client, "top", state, sizeof(state), 60) != 0 ||
+				if (poll_pkg_state(&client, "top", state, sizeof(state), 200) != 0 ||
 				    strcmp(state, "installed") != 0) {
 					fprintf(stderr, "FAIL: top update-all upgrade did not reach installed\n");
 					ok = 0;
@@ -2729,7 +2742,7 @@ skip_recipe_api:
 		}
 		cix_response_free(&r);
 
-		if (poll_pkg_state(&client, "rollpkg@rollingtest", state, sizeof(state), 60) != 0 ||
+		if (poll_pkg_state(&client, "rollpkg@rollingtest", state, sizeof(state), 200) != 0 ||
 		    strcmp(state, "installed") != 0) {
 			fprintf(stderr, "FAIL: rollpkg@rollingtest (1.0) did not reach installed\n");
 			ok = 0;
@@ -2898,7 +2911,7 @@ skip_rolling_rebuild:
 		}
 		cix_response_free(&r);
 
-		if (poll_pkg_state(&client, "pinpkg@pintest", state, sizeof(state), 60) != 0 ||
+		if (poll_pkg_state(&client, "pinpkg@pintest", state, sizeof(state), 200) != 0 ||
 		    strcmp(state, "installed") != 0) {
 			fprintf(stderr, "FAIL: pinpkg@pintest (1.0) did not reach installed\n");
 			ok = 0;
@@ -2968,7 +2981,7 @@ skip_rolling_rebuild:
 		}
 		cix_response_free(&r);
 
-		if (poll_pkg_state(&client, "pinpkg@pintest", state, sizeof(state), 60) != 0 ||
+		if (poll_pkg_state(&client, "pinpkg@pintest", state, sizeof(state), 200) != 0 ||
 		    strcmp(state, "installed") != 0) {
 			fprintf(stderr, "FAIL: pinpkg@pintest (2.0) did not reach installed\n");
 			ok = 0;
@@ -3245,7 +3258,7 @@ skip_pin_isolation:
 		 * hostbuild above) must also have finished by now -- drained
 		 * here, before the hbdepstest busy-check further below, which
 		 * depends on BOTH chain slots genuinely being free again. */
-		if (poll_pkg_state(&client, "hbconcurrent", state, sizeof(state), 60) != 0) {
+		if (poll_pkg_state(&client, "hbconcurrent", state, sizeof(state), 200) != 0) {
 			fprintf(stderr, "FAIL: hbconcurrent (alongside hostbuild) never left fetching/building\n");
 			ok = 0;
 		} else if (strcmp(state, "installed") != 0) {
@@ -3428,7 +3441,7 @@ skip_hostbuild:
 	}
 	cix_response_free(&r);
 
-	if (poll_pkg_state(&client, "overflow", state, sizeof(state), 60) != 0 ||
+	if (poll_pkg_state(&client, "overflow", state, sizeof(state), 200) != 0 ||
 	    strcmp(state, "installed") != 0) {
 		fprintf(stderr, "FAIL: overflow (ceiling=1) ended in state '%s', expected installed\n",
 		        state);
@@ -3457,7 +3470,7 @@ skip_hostbuild:
 	}
 	cix_response_free(&r);
 
-	if (poll_pkg_state(&client, "hbconcurrent", state, sizeof(state), 60) != 0 ||
+	if (poll_pkg_state(&client, "hbconcurrent", state, sizeof(state), 200) != 0 ||
 	    strcmp(state, "installed") != 0) {
 		fprintf(stderr, "FAIL: hbconcurrent (restored ceiling) ended in state '%s'\n", state);
 		ok = 0;
@@ -3513,7 +3526,7 @@ skip_hostbuild:
 		}
 		cix_response_free(&r);
 
-		if (poll_pkg_state(&client, "keepfail", state, sizeof(state), 60) != 0 ||
+		if (poll_pkg_state(&client, "keepfail", state, sizeof(state), 200) != 0 ||
 		    strcmp(state, "failed") != 0) {
 			fprintf(stderr, "FAIL: keepfail (no keep_on_failure) ended in state '%s'\n", state);
 			ok = 0;
@@ -3543,7 +3556,7 @@ skip_hostbuild:
 		}
 		cix_response_free(&r);
 
-		if (poll_pkg_state(&client, "keepfail", state, sizeof(state), 60) != 0 ||
+		if (poll_pkg_state(&client, "keepfail", state, sizeof(state), 200) != 0 ||
 		    strcmp(state, "failed") != 0) {
 			fprintf(stderr, "FAIL: keepfail (keep_on_failure) ended in state '%s'\n", state);
 			ok = 0;
@@ -3720,7 +3733,7 @@ skip_keep_on_failure:
 		}
 		cix_response_free(&r);
 
-		if (poll_pkg_state(&client, "resumeme", state, sizeof(state), 60) != 0 ||
+		if (poll_pkg_state(&client, "resumeme", state, sizeof(state), 200) != 0 ||
 		    strcmp(state, "failed") != 0) {
 			fprintf(stderr, "FAIL: resumeme (v1.0) ended in state '%s'\n", state);
 			ok = 0;
@@ -3794,7 +3807,7 @@ skip_keep_on_failure:
 		}
 		cix_response_free(&r);
 
-		if (poll_pkg_state(&client, "resumeme", state, sizeof(state), 60) != 0 ||
+		if (poll_pkg_state(&client, "resumeme", state, sizeof(state), 200) != 0 ||
 		    strcmp(state, "installed") != 0) {
 			fprintf(stderr, "FAIL: resumeme (resumed) ended in state '%s'\n", state);
 			ok = 0;

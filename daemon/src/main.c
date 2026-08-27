@@ -26822,6 +26822,34 @@ static int cixd_main(int argc, char **argv)
 	sigaction(SIGINT, &sa, NULL);
 
 	/*
+	 * SIGPIPE kills this daemon silently, and any HTTP client can
+	 * deliver one. If a client aborts (a curl with a timeout, a
+	 * dashboard tab closing) while a response write is pending, the
+	 * eventual write() to the reset connection raises SIGPIPE, whose
+	 * default action is process death with no exit path of ours run
+	 * and nothing logged.
+	 *
+	 * Not hypothetical: proven with a minimal repro against an
+	 * otherwise idle daemon -- three `curl -m 1` requests aborted
+	 * during a synchronous stall (pkg bootstrap holds the loop for
+	 * several seconds in do_wait), and the daemon was simply gone,
+	 * zero log output, zero dmesg. Every impatient client is a kill
+	 * switch on a production control plane.
+	 *
+	 * Ignored process-wide rather than MSG_NOSIGNAL at each send:
+	 * writes happen through cix_write_all()/tls_write_all() and
+	 * OpenSSL's own internals, and one missed call site reopens the
+	 * hole. With SIGPIPE ignored, the write fails with EPIPE, which
+	 * the write paths already treat as an ordinary I/O error on that
+	 * one connection. The ignored disposition is inherited by children
+	 * across fork and execve, and that is fine here: a build/fetch
+	 * child writing to a closed pipe fails with EPIPE instead of
+	 * dying, which is the same improvement, and every child's exit
+	 * status is already checked.
+	 */
+	signal(SIGPIPE, SIG_IGN);
+
+	/*
 	 * SOCK_CLOEXEC everywhere below: container_create()
 	 * clone3()'s a new process for every container this daemon runs.
 	 * Without close-on-exec, that child inherits a duplicate of every
