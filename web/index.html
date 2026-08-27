@@ -1303,32 +1303,35 @@
 						<tr><td colspan="3" class="empty">Loading&hellip;</td></tr>
 					</tbody>
 				</table>
+				<p class="hint">
+					Standing DNS up by hand is four steps -- create each replica from its
+					recipe, register each one, read back the addresses they actually got,
+					point the host resolver at them -- and getting any single one wrong
+					leaves a service that looks healthy but is not. Provisioning does all
+					of it in one call, and is safe to re-run: a replica that already
+					exists is left alone (ADR-0205).
+				</p>
+				<button type="button" id="dns-provision-btn">Provision DNS</button>
 			</div>
 		</div>
 			<div class="tab-panel" data-tab="dns-forwarders" hidden>
-			<div class="view-list">
-				<h2>Upstream Forwarders</h2>
-				<p class="hint">
-					Where the DNS servers send queries they are not authoritative for.
-					Applied to every registered server at once, so replicas cannot drift
-					apart. With none set they answer only for this platform's own names.
-				</p>
-				<table id="dns-forwarders">
-					<thead>
-						<tr>
-							<th>Address</th>
-							<th></th>
-						</tr>
-					</thead>
-					<tbody id="dns-forwarders-body">
-						<tr><td colspan="2" class="empty">Loading&hellip;</td></tr>
-					</tbody>
-				</table>
-				<form id="dns-forwarder-add-form" class="inline-form">
-					<input type="text" id="dns-forwarder-ip" placeholder="1.1.1.1" required>
-					<button type="submit">Add forwarder</button>
-				</form>
-			</div>
+			<h2>Upstream Forwarders</h2>
+			<p class="hint">
+				Where the registered <a href="#dns-servers">DNS servers</a> send queries
+				they are not authoritative for. Applied live to every server at once, so
+				replicas cannot drift apart, and a newly registered server picks up this
+				list as it is registered. Same list convention as
+				<a href="#ntp-config">NTP's upstream servers</a>.
+				Leaving this blank clears it -- the servers then answer only for this
+				platform's own names, with no upstream recursion at all (ADR-0203).
+			</p>
+			<form id="dns-forwarders-form">
+				<label class="wide">
+					Forwarders (comma or space separated IPv4 addresses, at most 8)
+					<input type="text" id="dnsf-servers" placeholder="1.1.1.1, 8.8.8.8">
+				</label>
+				<button type="submit">Save</button>
+			</form>
 		</div>
 		</section>
 
