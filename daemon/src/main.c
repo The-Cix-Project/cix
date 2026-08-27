@@ -1470,10 +1470,55 @@ static int bootstrap_management_network(void)
 			}
 			nerr = network_attach_interface(MGMT_NETWORK_NAME, iface, 0);
 			if (nerr != NETWORK_OK) {
+				/*
+				 * Issue #133: a missing uplink NIC must never kill the
+				 * box. Before this, any attach failure here returned -1,
+				 * boot_init failed, cixd exited -- and PID 1 exiting is
+				 * a kernel panic, so a first boot whose configured
+				 * interface wasn't found presented as a crash with a
+				 * stack trace instead of as the one-line fact it is.
+				 * Found on a real install; the bare "(13)" it printed
+				 * didn't even say which interface it looked for, let
+				 * alone what existed -- diagnosing it took days.
+				 *
+				 * The management bridge and its address already exist
+				 * by this point (network_create above succeeded), so
+				 * cixd can still bind and serve -- including the serial
+				 * console's own interactive cixctl shell, from which an
+				 * operator can inspect and attach the uplink live once
+				 * the cause is visible. Degraded and reachable beats
+				 * dead: log precisely, keep booting.
+				 */
+				char known[256];
+				DIR *nd = opendir("/sys/class/net");
+				size_t off = 0;
+
+				known[0] = '\0';
+				if (nd != NULL) {
+					struct dirent *ne;
+
+					while ((ne = readdir(nd)) != NULL) {
+						if (ne->d_name[0] == '.')
+							continue;
+						off += (size_t)snprintf(known + off,
+						                        sizeof(known) - off, "%s%s",
+						                        off > 0 ? " " : "", ne->d_name);
+						if (off >= sizeof(known) - 1)
+							break;
+					}
+					closedir(nd);
+				}
 				fprintf(stderr,
-				        "bootstrap_management_network: network_attach_interface failed (%d)\n",
-				        (int)nerr);
-				return -1;
+				        "bootstrap_management_network: cannot attach uplink \"%s\" "
+				        "(error %d) -- interfaces present: [%s]. Continuing WITHOUT an "
+				        "uplink: the API is only reachable on this machine itself; use "
+				        "the console shell to inspect and run "
+				        "\"network attach-interface\" once the cause is fixed.\n",
+				        iface, (int)nerr, known[0] != '\0' ? known : "none");
+				logstore_write("cixd", "error",
+				                "management network has NO uplink: attaching \"%s\" failed "
+				                "(error %d); interfaces present: [%s]",
+				                iface, (int)nerr, known[0] != '\0' ? known : "none");
 			}
 		}
 	}

@@ -396,18 +396,37 @@ int main(int argc, char **argv)
 	snprintf(grub_cfg, sizeof(grub_cfg),
 	         "set timeout=10\n"
 	         "set default=0\n"
-	         /* Neither menu entry below ever passes a framebuffer-
-	          * dependent console (both use console=tty0 console=ttyS0,
-	          * plain text) -- "text" here skips GRUB's own graphical-
-	          * mode negotiation for the kernel handoff entirely, instead
-	          * of attempting it and failing. Confirmed live on a real
-	          * Proxmox VM: with no gfxpayload set at all, GRUB tried
-	          * anyway and printed "error: no suitable video mode found,
-	          * Booting in blind mode" on every boot -- harmless (it
-	          * still booted, blind just meant no GRUB splash), but a
-	          * real, fixable rough edge on the install experience, not
-	          * a cosmetic no-op warning to ignore. */
-	         "set gfxpayload=text\n"
+	         /* "keep": hand the kernel the EFI console mode GRUB is
+	          * already running in, framebuffer info included. The
+	          * previous value here, "text", was itself an attempted fix
+	          * for GRUB's "no suitable video mode found / Booting in
+	          * blind mode" message -- but text mode does not exist under
+	          * EFI, so the mode-set still failed AND, crucially, a
+	          * failed set means GRUB passes NO video information to the
+	          * kernel at all. Proven by direct experiment (QEMU -vga std,
+	          * QMP screendump): with "text", the kernel boots with zero
+	          * framebuffer -- no sysfb platform device, no simpledrm
+	          * bind, no fbcon -- and the VGA console stays permanently
+	          * blank showing GRUB's frozen error; a kernel faithfully
+	          * built with every video option enabled behaves identically,
+	          * because it was never given a framebuffer to drive. So the
+	          * install was serial-only on every EFI machine, silently.
+	          * "keep" is the mode-set that cannot fail (it sets nothing),
+	          * and it forwards the GOP framebuffer the firmware already
+	          * configured -- which is exactly what SYSFB_SIMPLEFB +
+	          * DRM_SIMPLEDRM (the kernel side of this chain, Phase 18)
+	          * were always waiting for. */
+	         /* Without a video driver loaded, EVERY gfxpayload value
+	          * fails identically ("keep" included -- proven by a second
+	          * screendump experiment after "keep" alone changed nothing):
+	          * GRUB's menu renders via the EFI text console, which needs
+	          * no driver, so the menu working is exactly what made this
+	          * invisible. all_video is GRUB's own meta-module that pulls
+	          * in the right platform driver (efi_gop here); only with it
+	          * loaded does a mode query succeed and framebuffer info
+	          * reach the kernel. */
+	         "insmod all_video\n"
+	         "set gfxpayload=keep\n"
 	         "\n"
 	         "menuentry \"Cix Install\" {\n"
 	         "    linux /boot/cix-bzImage console=tty0 console=ttyS0 root=/dev/sr0 "

@@ -149,7 +149,17 @@ static int write_whole_file_atomic(const char *path, const char *content, size_t
 	return 0;
 }
 
-int main(void)
+/*
+ * Issue #131's purest instance, observed on a real serial capture: this
+ * tool runs as PID 1, so RETURNING from main -- even with exit status 0,
+ * after doing its job perfectly -- makes the kernel panic with
+ * "Attempted to kill init!" and a stack trace. A successful recovery
+ * presented as a crash. So main() no longer returns: every path funnels
+ * into a parked end state that says what happened and waits for the
+ * operator to power off or reset, which is what "done" honestly means
+ * for a single-purpose boot medium.
+ */
+static int recover_main(void)
 {
 	char *raw = NULL;
 	size_t raw_len = 0;
@@ -283,4 +293,21 @@ int main(void)
 	dual_printf("open again until you configure a real admin group (cixctl\n");
 	dual_printf("hostauth-config set --admin-group=...).\n");
 	return 0;
+}
+
+int main(void)
+{
+	int rc = recover_main();
+
+	dual_printf("\n=====================================================================\n");
+	if (rc == 0)
+		dual_printf("  cix-recover finished successfully.\n");
+	else
+		dual_printf("  cix-recover finished with an ERROR (see above) -- nothing partial\n"
+		            "  was left behind.\n");
+	dual_printf("  It is now safe to power off or reset this machine.\n");
+	dual_printf("=====================================================================\n");
+	sync();
+	for (;;)
+		pause();
 }
