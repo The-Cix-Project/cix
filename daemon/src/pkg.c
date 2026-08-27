@@ -2145,14 +2145,78 @@ struct toolchain_seed_ctx {
  * filesystem that cannot store xattrs (e.g. tmpfs, boot_init()'s own
  * containers-partition fallback) even though the extraction fully
  * succeeds; the tool's own diagnostic names this exact flag as the fix.
+ *
+ * -no-exit-code is the general form of that same problem, and the
+ * reason this call does not simply use run_subprocess()'s "any nonzero
+ * is failure" rule. unsquashfs documents three distinct exit codes:
+ *
+ *   0  extracted OK
+ *   1  FATAL -- corruption or I/O error; it aborted partway
+ *   2  NON-FATAL -- "unsquashfs continued and did not abort"; e.g. it
+ *      could not write permissions, or the output filesystem does not
+ *      support something in the archive
+ *
+ * Treating 2 as failure throws away a complete, correct extraction.
+ * That is not hypothetical: a real bootstrap on a freshly installed
+ * host failed with "fetched toolchain failed to stage (invalid
+ * squashfs?)" on a toolchain image that extracts perfectly -- verified
+ * by running this exact binary, with these exact flags, against the
+ * same archive, which exits 0 in one environment and 2 in another while
+ * producing the same tree. The -no-xattrs comment above had already
+ * observed this behaviour once; only the xattr instance of it got
+ * fixed.
+ *
+ * So the exit status is inspected here rather than delegated: 1 stays
+ * fatal, 2 is accepted and said out loud, so a real degradation is
+ * visible in the log instead of either failing the boot or passing
+ * silently.
  */
 static int toolchain_seed_mutate(const char *staging_rootfs, void *ctx_v)
 {
 	struct toolchain_seed_ctx *ctx = ctx_v;
 	char *argv[] = { (char *)PKG_UNSQUASHFS_BIN, "-f", "-no-xattrs", "-d",
 		          (char *)staging_rootfs, (char *)ctx->toolchain_path, NULL };
+	pid_t pid;
+	int status;
 
-	return run_subprocess(PKG_UNSQUASHFS_BIN, argv);
+	pid = fork();
+	if (pid < 0) {
+		logstore_write("cixd", "error", "toolchain seed: fork failed: %s", strerror(errno));
+		return -1;
+	}
+	if (pid == 0) {
+		execve(PKG_UNSQUASHFS_BIN, argv, environ);
+		_exit(127);
+	}
+	if (waitpid(pid, &status, 0) != pid) {
+		logstore_write("cixd", "error", "toolchain seed: waitpid failed: %s", strerror(errno));
+		return -1;
+	}
+	if (!WIFEXITED(status)) {
+		logstore_write("cixd", "error", "toolchain seed: unsquashfs did not exit normally");
+		return -1;
+	}
+	switch (WEXITSTATUS(status)) {
+	case 0:
+		return 0;
+	case 2:
+		logstore_write("cixd", "info",
+		                "toolchain seed: unsquashfs reported non-fatal errors (exit 2) -- the "
+		                "extraction completed and is being kept; some permissions or "
+		                "attributes could not be reproduced on this filesystem");
+		return 0;
+	case 127:
+		logstore_write("cixd", "error",
+		                "toolchain seed: could not execute %s (missing binary or bad path?)",
+		                PKG_UNSQUASHFS_BIN);
+		return -1;
+	default:
+		logstore_write("cixd", "error",
+		                "toolchain seed: unsquashfs failed fatally (exit %d) -- the archive is "
+		                "corrupt or unreadable",
+		                WEXITSTATUS(status));
+		return -1;
+	}
 }
 
 enum pkg_error pkg_bootstrap_from_toolchain(const char *toolchain_path)
