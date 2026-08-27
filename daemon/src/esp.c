@@ -25,6 +25,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <sys/ioctl.h>
 #include <fnmatch.h>
 #include <limits.h>
 #include <stdio.h>
@@ -700,4 +701,181 @@ int esp_entry_to_confirm(const char *entries_dir, const char *slot, char *out, s
 	}
 	closedir(d);
 	return best > 0;
+}
+
+/*
+ * ---- LoaderEntryOneShot: boot a chosen slot exactly once ----
+ *
+ * A different mechanism from everything above: loader entries are files
+ * on the ESP, this is a variable in firmware NVRAM exposed through
+ * efivarfs. Kept in this file because it answers the same question --
+ * what boots next -- and because the guard below needs the entry list
+ * this module already owns.
+ *
+ * Three details are not obvious and each one silently breaks the
+ * variable if missed:
+ *
+ *  - The file's first four bytes are the EFI attribute word, not data.
+ *    NV|BS|RT (0x7) is what systemd uses; a variable written without
+ *    NON_VOLATILE would not survive the reboot it exists for.
+ *  - efivarfs requires attributes and data in a SINGLE write(). A
+ *    second write does not append, it replaces.
+ *  - The kernel sets the immutable attribute on an existing variable
+ *    file, so modifying or removing one means clearing that first. The
+ *    ioctl legitimately fails on a plain filesystem, which is what a
+ *    test directory is, so failure there is ignored rather than fatal.
+ */
+#define ESP_LOADER_GUID "4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"
+#define ESP_ONESHOT_VAR "LoaderEntryOneShot-" ESP_LOADER_GUID
+#define ESP_EFI_ATTRS 0x00000007u /* NON_VOLATILE|BOOTSERVICE_ACCESS|RUNTIME_ACCESS */
+
+/* Self-declared rather than via <linux/fs.h>, which clashes with glibc
+ * headers under TCC the same way <linux/sched.h> does (see
+ * include/linux_compat.h). These are the x86_64 encodings of
+ * _IOR('f', 1, long) / _IOW('f', 2, long). */
+#define ESP_FS_IOC_GETFLAGS 0x80086601UL
+#define ESP_FS_IOC_SETFLAGS 0x40086602UL
+#define ESP_FS_IMMUTABLE_FL 0x00000010L
+
+static char g_efivars_dir[PATH_MAX] = "/sys/firmware/efi/efivars";
+
+void esp_set_efivars_dir(const char *dir)
+{
+	if (dir != NULL && dir[0] != '\0')
+		snprintf(g_efivars_dir, sizeof(g_efivars_dir), "%s", dir);
+}
+
+static void oneshot_path(char *out, size_t out_size)
+{
+	snprintf(out, out_size, "%s/%s", g_efivars_dir, ESP_ONESHOT_VAR);
+}
+
+/* Best-effort: a real efivarfs file is immutable, a test file is not. */
+static void clear_immutable(const char *path)
+{
+	long flags = 0;
+	int fd = open(path, O_RDONLY);
+
+	if (fd < 0)
+		return;
+	if (ioctl(fd, ESP_FS_IOC_GETFLAGS, &flags) == 0 && (flags & ESP_FS_IMMUTABLE_FL) != 0) {
+		flags &= ~ESP_FS_IMMUTABLE_FL;
+		(void)ioctl(fd, ESP_FS_IOC_SETFLAGS, &flags);
+	}
+	close(fd);
+}
+
+enum esp_error esp_boot_next_set(const char *slot)
+{
+	struct esp_entry entries[ESP_MAX_ENTRIES];
+	char wanted[ESP_ENTRY_NAME_MAX];
+	char path[PATH_MAX];
+	unsigned char buf[4 + (ESP_ENTRY_NAME_MAX + 1) * 2];
+	size_t len, i, n;
+	int count, found = 0;
+	int fd;
+
+	if (slot == NULL || slot[0] == '\0')
+		return ESP_ERR_INVALID;
+
+	/*
+	 * systemd-boot identifies an entry by its filename with ".conf"
+	 * kept and any boot counter stripped -- "cix-b.conf" for a file
+	 * named "cix-b+3.conf". Confirmed against real `bootctl list`
+	 * output rather than inferred, since writing the wrong spelling
+	 * produces a variable the bootloader silently ignores.
+	 */
+	snprintf(wanted, sizeof(wanted), "cix-%s.conf", slot);
+
+	count = esp_entries_list(entries, ESP_MAX_ENTRIES);
+	if (count <= 0)
+		return ESP_ERR_NO_ESP;
+	for (i = 0; i < (size_t)count; i++) {
+		char id[ESP_ENTRY_NAME_MAX];
+		char id_conf[ESP_ENTRY_NAME_MAX];
+
+		entry_id(entries[i].name, id, sizeof(id), NULL);
+		snprintf(id_conf, sizeof(id_conf), "%s.conf", id);
+		if (strcmp(id_conf, wanted) == 0) {
+			found = 1;
+			break;
+		}
+	}
+	if (!found)
+		return ESP_ERR_NOT_FOUND;
+
+	len = strlen(wanted);
+	buf[0] = (unsigned char)(ESP_EFI_ATTRS & 0xff);
+	buf[1] = (unsigned char)((ESP_EFI_ATTRS >> 8) & 0xff);
+	buf[2] = (unsigned char)((ESP_EFI_ATTRS >> 16) & 0xff);
+	buf[3] = (unsigned char)((ESP_EFI_ATTRS >> 24) & 0xff);
+	/* UTF-16LE. Entry ids are ASCII by construction here, so the
+	 * high byte is always zero -- no general UTF-8 conversion is
+	 * needed, and pretending otherwise would be dead code. */
+	for (i = 0; i < len; i++) {
+		buf[4 + i * 2] = (unsigned char)wanted[i];
+		buf[4 + i * 2 + 1] = 0;
+	}
+	buf[4 + len * 2] = 0;
+	buf[4 + len * 2 + 1] = 0;
+	n = 4 + (len + 1) * 2;
+
+	oneshot_path(path, sizeof(path));
+	clear_immutable(path);
+	fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	if (fd < 0)
+		return (errno == EROFS || errno == EACCES || errno == EPERM) ? ESP_ERR_READ_ONLY
+		                                                             : ESP_ERR_NO_ESP;
+	if (write(fd, buf, n) != (ssize_t)n) {
+		close(fd);
+		return ESP_ERR_PERSIST_FAILED;
+	}
+	close(fd);
+	return ESP_OK;
+}
+
+int esp_boot_next_get(char *out, size_t out_size)
+{
+	char path[PATH_MAX];
+	unsigned char buf[4 + (ESP_ENTRY_NAME_MAX + 1) * 2];
+	ssize_t got;
+	size_t i, chars;
+	int fd;
+
+	if (out == NULL || out_size == 0)
+		return 0;
+	out[0] = '\0';
+	oneshot_path(path, sizeof(path));
+	fd = open(path, O_RDONLY);
+	if (fd < 0)
+		return 0;
+	got = read(fd, buf, sizeof(buf));
+	close(fd);
+	if (got < 6) /* attributes plus at least one UTF-16 character */
+		return 0;
+	chars = ((size_t)got - 4) / 2;
+	for (i = 0; i < chars && i + 1 < out_size; i++) {
+		unsigned char lo = buf[4 + i * 2];
+
+		if (lo == 0)
+			break;
+		out[i] = (char)lo;
+	}
+	out[i] = '\0';
+	return out[0] != '\0';
+}
+
+enum esp_error esp_boot_next_clear(void)
+{
+	char path[PATH_MAX];
+
+	oneshot_path(path, sizeof(path));
+	clear_immutable(path);
+	if (unlink(path) != 0) {
+		if (errno == ENOENT)
+			return ESP_OK; /* already disarmed -- the desired state */
+		return (errno == EROFS || errno == EACCES || errno == EPERM) ? ESP_ERR_READ_ONLY
+		                                                             : ESP_ERR_PERSIST_FAILED;
+	}
+	return ESP_OK;
 }

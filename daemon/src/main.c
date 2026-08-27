@@ -20491,6 +20491,107 @@ static void handle_dhcp_server_register(int fd, const char *body, size_t body_le
  */
 #define DNS_PROVISION_MAX_REPLICAS 8
 
+/*
+ * GET/POST/DELETE /v1/system/boot-next (issue #154) -- boot a chosen
+ * slot exactly once.
+ *
+ * Until this existed the only answer to "this update is bad, go back"
+ * was to wait for the boot counter to exhaust over three reboots, or
+ * reinstall. The apparent workaround -- repointing the loader `default`
+ * at a slot -- is worse than the problem: `default` is sticky, so the
+ * next update stages the OTHER slot, matches nothing, and silently
+ * never boots. That mistake was made on a real host during this
+ * project's own deploy, which is why the one-shot exists instead.
+ */
+static void handle_boot_next_get(int fd)
+{
+	char armed[ESP_ENTRY_NAME_MAX];
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "entry");
+	if (esp_boot_next_get(armed, sizeof(armed)))
+		jw_str(&w, armed);
+	else
+		jw_null(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_boot_next_set(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root = NULL;
+	const char *slot;
+	enum esp_error err;
+	char armed[ESP_ENTRY_NAME_MAX];
+	struct json_writer w;
+
+	if (body == NULL || body_len == 0 || (root = json_parse(body, body_len)) == NULL) {
+		respond_error(fd, 400, "Bad Request", "body must be JSON");
+		json_free(root);
+		return;
+	}
+	slot = json_as_string(json_object_get(root, "slot"));
+	if (slot == NULL || (strcmp(slot, "a") != 0 && strcmp(slot, "b") != 0)) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "\"slot\" must be \"a\" or \"b\"");
+		return;
+	}
+	err = esp_boot_next_set(slot);
+	json_free(root);
+
+	switch (err) {
+	case ESP_OK:
+		break;
+	case ESP_ERR_NOT_FOUND:
+		/* Refused rather than armed: booting into an entry that does
+		 * not exist needs a console to recover from, which is the
+		 * situation this endpoint exists to avoid. */
+		respond_error(fd, 409, "Conflict",
+		               "no loader entry for that slot -- arming it would leave nothing to boot");
+		return;
+	case ESP_ERR_NO_ESP:
+		respond_error(fd, 409, "Conflict", "no loader entries are readable on this host");
+		return;
+	case ESP_ERR_READ_ONLY:
+		respond_error(fd, 409, "Conflict",
+		               "EFI variables are not writable here (no efivarfs, or mounted "
+		               "read-only) -- this needs a real EFI system");
+		return;
+	default:
+		respond_error(fd, 500, "Internal Server Error", "could not write the EFI variable");
+		return;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "entry");
+	if (esp_boot_next_get(armed, sizeof(armed)))
+		jw_str(&w, armed);
+	else
+		jw_null(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_boot_next_clear(int fd)
+{
+	enum esp_error err = esp_boot_next_clear();
+
+	if (err == ESP_ERR_READ_ONLY) {
+		respond_error(fd, 409, "Conflict", "EFI variables are not writable here");
+		return;
+	}
+	if (err != ESP_OK) {
+		respond_error(fd, 500, "Internal Server Error", "could not remove the EFI variable");
+		return;
+	}
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}
+
 static void handle_dns_provision(int fd, const char *body, size_t body_len)
 {
 	char replicas[DNS_PROVISION_MAX_REPLICAS][REGISTRY_NAME_MAX];
@@ -22840,6 +22941,20 @@ static void dispatch(int fd, const struct http_request *req)
 		}
 		if (strcmp(req->method, "PUT") == 0) {
 			handle_dns_forwarders_put(fd, req->body, req->body_len);
+			return;
+		}
+	}
+	if (strcmp(req->path, "/v1/system/boot-next") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_boot_next_get(fd);
+			return;
+		}
+		if (strcmp(req->method, "POST") == 0) {
+			handle_boot_next_set(fd, req->body, req->body_len);
+			return;
+		}
+		if (strcmp(req->method, "DELETE") == 0) {
+			handle_boot_next_clear(fd);
 			return;
 		}
 	}
@@ -26164,6 +26279,8 @@ static int cixd_main(int argc, char **argv)
 			simulate_unhealthy = 1;
 		else if (strncmp(argv[i], "--test-esp-entries-dir=", 23) == 0)
 			snprintf(g_esp_entries_dir, sizeof(g_esp_entries_dir), "%s", argv[i] + 23);
+		else if (strncmp(argv[i], "--test-efivars-dir=", 19) == 0)
+			esp_set_efivars_dir(argv[i] + 19);
 		else if (strncmp(argv[i], "--test-update-image=", 20) == 0)
 			test_update_image = argv[i] + 20;
 		else if (strncmp(argv[i], "--test-update-kernel=", 21) == 0)

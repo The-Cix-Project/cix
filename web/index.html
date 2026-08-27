@@ -1069,6 +1069,19 @@
 					it to one slot breaks the <em>next</em> update, which stages the other one.
 				</p>
 				<div id="esp-summary" class="pki-ca-status"><p>Loading&hellip;</p></div>
+				<p class="hint">
+					<strong>Boot a slot once.</strong> The rollback control: it applies to the
+					next boot only and then reverts to normal selection, so a machine that
+					fails to come back is not left pinned to a broken slot. Use this to steer
+					one boot; use the default pattern below to fix a persistent mistake
+					(issue #154).
+				</p>
+				<div id="esp-boot-next-row">
+					<span id="esp-boot-next-state">&nbsp;</span>
+					<button type="button" id="esp-boot-next-a">Boot slot A once</button>
+					<button type="button" id="esp-boot-next-b">Boot slot B once</button>
+					<button type="button" id="esp-boot-next-clear">Disarm</button>
+				</div>
 				<form id="esp-loader-form">
 					<label class="wide">
 						Default pattern
