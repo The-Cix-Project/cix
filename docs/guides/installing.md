@@ -93,6 +93,56 @@ This produces `build/cix-install.iso` — attach it as a CD-ROM/optical drive to
 
 It then formats, writes the system, and reboots into a running `cixd` at the IP you gave it — reachable at that address directly (`cixd` binds to the exact IP given via `--ip=`, not just loopback).
 
+### Installing over a serial console
+
+Fully supported, and often the only console a rack or hypervisor VM offers. Both
+the GRUB menu and the installer's own output reach the serial port, as does the
+MokManager Secure Boot screen at first reboot (verified from real serial
+captures). Configure the machine's serial port as you normally would; nothing
+extra is needed on the Cix side.
+
+The video console works too — but note that **installer media built before
+Part 207 rendered the GRUB menu and then nothing else**, showing
+`error: no suitable video mode found / Booting in blind mode` and a black screen
+for the rest of the install. That was a missing `insmod all_video` in the ISO's
+own `grub.cfg`; media built from Part 207 onward do not have it. If you see that
+message, your media predates the fix — the install is still proceeding, and the
+serial console will show it.
+
+### If the first boot comes up without its network
+
+If the interface named by `--interface=` is not present when the daemon starts,
+the box **does not fail** — it logs exactly what it looked for and what it found,
+then continues without an uplink:
+
+```
+bootstrap_management_network: cannot attach uplink "eth0" (error 13) --
+interfaces present: [lo sit0 management]. Continuing WITHOUT an uplink ...
+```
+
+`cixd` is still running and the console shell still works; attach the real
+interface live and no reinstall is needed:
+
+```
+network attach-interface management --interface=<the right name>
+```
+
+(Before Part 207 this condition killed the machine with a kernel panic, which
+looked like a crash rather than a configuration problem.)
+
+### Outbound DNS on a fresh install
+
+**Known limitation (issue #138):** a freshly installed host cannot resolve
+hostnames, and setting resolvers with `cixctl resolv set` does not change that —
+the file those resolvers are written to is never mounted where the system reads
+it. Until that ships, anything the box fetches for itself (an artifact cache, a
+package source) must be addressed by **literal IP**, over plain HTTP — an IP
+against an HTTPS endpoint whose certificate names the host fails verification.
+
+This platform's own `.internal` DNS (the `dns-1`/`dns-2` containers) is a
+separate mechanism and works normally; see the DNS section of
+[`docs/api/README.md`](../api/README.md).
+
 **Console login**: the installed system drops straight into an interactive `cixctl` shell on both the video console and the serial console once boot completes — no username, no password (this platform has no authentication anywhere yet; physical console access is already at least as privileged as the unauthenticated network API). Typing `exit`/`quit`/Ctrl-D ends the session and a fresh one starts automatically a couple of seconds later.
 
 ## Changing the management network, port, or enabling HTTPS after install
