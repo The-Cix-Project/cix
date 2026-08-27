@@ -611,6 +611,74 @@ int main(void)
 				      "the verified artifact was promoted into the local cache");
 			cix_response_free(&r);
 
+			/*
+			 * ---- a cache-hit hostbuild must still run its follow-up ----
+			 *
+			 * An artifact hit skips the build container entirely (#144),
+			 * which is the point. What must NOT be skipped is the work
+			 * that follows a build completing -- and for a hostbuild
+			 * named "cix" that includes triggering the bootroot
+			 * assembly (ADR-0057).
+			 *
+			 * This regressed exactly once and was invisible: the
+			 * cache-hit path chained and pushed but never triggered
+			 * assembly, so `pkg hostbuild cix --deploy` reported the
+			 * package installed and produced no image at all. On a real
+			 * host the only sign was
+			 * bootroot_assembly_started_generation staying at 0 while
+			 * everything else claimed success.
+			 *
+			 * Asserted on the generation counter rather than on a
+			 * finished image: mkbootroot will fail here (no real
+			 * artifacts, no toolchain), and that is fine. The question
+			 * is whether the daemon even TRIED, which is precisely what
+			 * was lost.
+			 */
+			{
+				long gen_before = -1;
+				long gen_after = -1;
+
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "GET", "/v1/system/boot", NULL, &r) == 0 &&
+				    r.json != NULL)
+					gen_before =
+					    cache_json_long(r.json, "bootroot_assembly_started_generation");
+				cix_response_free(&r);
+
+				/* The same bytes, published under the name the daemon
+				 * will ask for: <base>/<name>-<version>.tar.gz. */
+				CHECK(run_cmd("cp '%s' '%s/cix-1.0.tar.gz'", artifact_tarball,
+				               artifact_stage_dir) == 0,
+				      "publish the cix artifact under its own name");
+
+				CHECK(write_recipe(g_pkg_state_dir, "cix", "1.0",
+				                    "file:///nonexistent/cix-1.0.tar", artifact_sha,
+				                    artifact_sha) == 0,
+				      "write a cix recipe served only by the artifact tier");
+
+				memset(&r, 0, sizeof(r));
+				CHECK(cix_client_request(&client, "POST", "/v1/pkg/hostbuild",
+				                         "{\"name\":\"cix\",\"build_image\":\"imgD\"}",
+				                         &r) == 0 &&
+				              r.status == 202,
+				      "POST /v1/pkg/hostbuild cix (artifact tier, no build container)");
+				cix_response_free(&r);
+
+				CHECK(wait_for_pkg_state(&client, "cix", "__hostbuild", "installed", 300) == 0,
+				      "the cix hostbuild reaches state=installed from the artifact");
+
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "GET", "/v1/system/boot", NULL, &r) == 0 &&
+				    r.json != NULL)
+					gen_after =
+					    cache_json_long(r.json, "bootroot_assembly_started_generation");
+				cix_response_free(&r);
+
+				CHECK(gen_after > gen_before,
+				      "a cache-hit cix hostbuild still triggers the bootroot assembly "
+				      "(started_generation advanced past its pre-install value)");
+			}
+
 			stop_http_server(http_pid);
 		}
 	}

@@ -8656,6 +8656,52 @@ static void register_bootroot_assemble_pidfd(pid_t pid, int pidfd)
  * logged, never fatal to the daemon -- the hostbuild itself already
  * succeeded and its own artifacts are still there for a later retry.
  */
+static void artifact_push_pump(void);
+static void spawn_cix_bootroot_assembly(const char *artifact_dir);
+
+/*
+ * The work that follows a pkg build completing, wherever completion
+ * came from: a real build container exiting, or an artifact/cache hit
+ * that had no container to exit at all (#144).
+ *
+ * This exists because the cache-hit path first duplicated it and got it
+ * incomplete -- it chained and pushed but never triggered the bootroot
+ * assembly, so `pkg hostbuild cix --deploy` reported the package
+ * installed and silently produced no image. The build succeeded, the
+ * deploy did nothing, and the only visible sign was
+ * bootroot_assembly_started_generation staying at 0. Two call sites
+ * doing "the same thing" is exactly the shape that maxim warns about,
+ * so there is one of them now.
+ */
+static void pkg_completion_followup(int chained, pid_t pkg_pid, int pkg_pidfd, int pkg_chain_idx,
+                                     const char *hostbuild_done_name)
+{
+	if (chained)
+		register_pkg_fetch_pidfd(pkg_pid, pkg_pidfd, pkg_chain_idx);
+	else
+		try_start_queued_pkg_rebuild();
+
+	/* Issue #129: a build just finished, so there may be something to
+	 * publish. Cheap no-op when the queue is empty or push is off. */
+	artifact_push_pump();
+
+	/*
+	 * ADR-0057: "cix" is the one hostbuild name this daemon gives
+	 * any further meaning to -- everything else pkg.c handles is
+	 * completely generic. Deliberately a plain string match here in
+	 * main.c, not a flag/callback registered in pkg.c itself: pkg.c
+	 * stays fully agnostic to what any package *means*.
+	 */
+	if (hostbuild_done_name != NULL && hostbuild_done_name[0] != '\0' &&
+	    strcmp(hostbuild_done_name, "cix") == 0) {
+		char artifact_dir[PATH_MAX];
+
+		snprintf(artifact_dir, sizeof(artifact_dir), "%s/%s", ARTIFACTS_DIR,
+		         hostbuild_done_name);
+		spawn_cix_bootroot_assembly(artifact_dir);
+	}
+}
+
 static void spawn_cix_bootroot_assembly(const char *artifact_dir)
 {
 	char mkbootroot_bin[PATH_MAX];
@@ -25019,27 +25065,7 @@ static void handle_container_event(struct conn *cc)
 	                               &pkg_chain_idx, hostbuild_done_name, &kept_build_container);
 	if (pkg_build_container_chain_index(entry->name) >= 0 && !kept_build_container)
 		registry_remove(entry->name);
-	if (chained)
-		register_pkg_fetch_pidfd(pkg_pid, pkg_pidfd, pkg_chain_idx);
-	else
-		try_start_queued_pkg_rebuild();
-	/* Issue #129: a build just finished, so there may be something to
-	 * publish. Cheap no-op when the queue is empty or push is off. */
-	artifact_push_pump();
-
-	/*
-	 * ADR-0057: "cix" is the one hostbuild name this daemon gives
-	 * any further meaning to -- everything else pkg.c handles is
-	 * completely generic. Deliberately a plain string match here in
-	 * main.c, not a flag/callback registered in pkg.c itself: pkg.c
-	 * stays fully agnostic to what any package *means*.
-	 */
-	if (hostbuild_done_name[0] != '\0' && strcmp(hostbuild_done_name, "cix") == 0) {
-		char artifact_dir[PATH_MAX];
-
-		snprintf(artifact_dir, sizeof(artifact_dir), "%s/%s", ARTIFACTS_DIR, hostbuild_done_name);
-		spawn_cix_bootroot_assembly(artifact_dir);
-	}
+	pkg_completion_followup(chained, pkg_pid, pkg_pidfd, pkg_chain_idx, hostbuild_done_name);
 
 	/*
 	 * ADR-0180 (issue #67): this exit was an operator-initiated
@@ -25215,17 +25241,16 @@ static void handle_pkg_fetch_event(struct conn *cc)
 			int nc_chain;
 			char nc_hostbuild[PKG_NAME_MAX];
 			int nc_kept = 0;
+			int nc_chained;
 			char nc_name[PKG_NAME_MAX];
 
 			if (stdio_write_fd >= 0)
 				close(stdio_write_fd);
 			pkg_build_container_name(chain_idx, nc_name, sizeof(nc_name));
-			if (pkg_build_completed(nc_name, 0, &nc_pid, &nc_pidfd, &nc_chain, nc_hostbuild,
-			                         &nc_kept))
-				register_pkg_fetch_pidfd(nc_pid, nc_pidfd, nc_chain);
-			else
-				try_start_queued_pkg_rebuild();
-			artifact_push_pump();
+			nc_hostbuild[0] = '\0';
+			nc_chained = pkg_build_completed(nc_name, 0, &nc_pid, &nc_pidfd, &nc_chain,
+			                                  nc_hostbuild, &nc_kept);
+			pkg_completion_followup(nc_chained, nc_pid, nc_pidfd, nc_chain, nc_hostbuild);
 			return;
 		}
 
