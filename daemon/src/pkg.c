@@ -301,6 +301,16 @@ struct pkg_chain {
 	 * shared build-sandbox image every ordinary install uses
 	 * (PKG_BUILD_SANDBOX_IMAGE). */
 	char build_image[PKG_IMAGE_NAME_MAX];
+	/*
+	 * Issue #168: the composed build environment this chain is using
+	 * (a "__buildenv-<hash>" image), empty for a hostbuild or a
+	 * cache hit, which need none. Recorded so it can be torn down when
+	 * the build finishes: a build environment exists for one build and
+	 * should not outlive it. Kept here rather than derived again later
+	 * because the recipe it was composed from may have been superseded
+	 * by then.
+	 */
+	char buildenv_image[PKG_IMAGE_NAME_MAX];
 	/* ADR-0107: the caller-requested explicit version pin for the
 	 * single top-level package this job actually installs/hostbuilds
 	 * (empty == no pin, resolve to the highest available version, the
@@ -2230,24 +2240,33 @@ int pkg_init(const char *pkg_dir, const char *installed_state_path, const char *
  * exactly as it always has.
  */
 /* image_produce_new_version()'s mutate() for the dev/test seed. */
-static int bootstrap_stage_mutate(const char *staging_rootfs, void *ctx_v)
-{
-	(void)ctx_v;
-	return test_image_fixture_stage_toolchain(staging_rootfs);
-}
-
 enum pkg_error pkg_bootstrap_build_image(void)
 {
 	/*
-	 * Issue #40: seeded as a real version of a real image, not written
-	 * straight to a flat directory. "extra identity" is the seed itself
-	 * -- a bootstrap genuinely changes the content without changing any
-	 * manifest, the same reason the accretion merge below needs one.
+	 * Issue #168: refused, permanently.
+	 *
+	 * This used to copy the build host's whole /usr/{include,lib,
+	 * lib64,bin,libexec} into an image. On any real host that is
+	 * everything installed on it -- the image it produced held
+	 * rustup, cargo, chromium, node, go, erlang, qemu, sudo and
+	 * several gcc trees, 88,798 entries of which 93% belonged to no
+	 * package in its manifest.
+	 *
+	 * It cannot be narrowed into correctness, because copying another
+	 * operating system's files is the thing that is wrong, not the
+	 * amount copied. Everything Cix ships is built on a Cix host with
+	 * Cix's own toolchain; a live copy of whatever this machine
+	 * happens to have installed is the opposite of that.
+	 *
+	 * Nothing needs it any more either. Build environments are
+	 * composed from a recipe's declared tools (ADR-0199), and a fresh
+	 * box gets its first packages from checksum-verified artifacts
+	 * built by a Cix host -- which needs no build environment at all
+	 * (the cache-hit path). The remaining honest seed is
+	 * pkg_bootstrap_from_toolchain(), an explicit, checksummed
+	 * artifact the operator names.
 	 */
-	if (image_produce_new_version(PKG_BUILD_SANDBOX_IMAGE, bootstrap_stage_mutate, NULL,
-	                               "bootstrap:host-toolchain") != 0)
-		return PKG_ERR_SPAWN_FAILED;
-	return PKG_OK;
+	return PKG_ERR_INVALID_TOOLCHAIN;
 }
 
 struct toolchain_seed_ctx {
@@ -4557,18 +4576,41 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 			else
 				e->build_lowerdir[0] = '\0';
 		}
+		/* Torn down when this build finishes -- see
+		 * buildenv_release() at pkg_build_completed(). */
+		snprintf(g_chains[chain_idx].buildenv_image, sizeof(g_chains[chain_idx].buildenv_image),
+		         "%s", env_image);
 	} else {
-		/* Issue #40: the shared sandbox resolves exactly like the
-		 * hostbuild image above -- same mechanism, not a second one.
-		 * An empty lowerdir here means the sandbox was never
-		 * bootstrapped, which the caller already handles as the real
-		 * state it is.
+		/*
+		 * Issue #168: there is no fallback. A recipe that does not
+		 * declare its build tools cannot be built, and says so.
 		 *
-		 * Issue #109: this branch is the fungible one, kept only for
-		 * recipes that have not yet declared their build tools. It is
-		 * what a recipe opts OUT of by declaring them. */
-		if (pkg_build_sandbox_rootfs(e->build_lowerdir, sizeof(e->build_lowerdir)) != 0)
-			e->build_lowerdir[0] = '\0';
+		 * Until now this branch resolved to a shared, fungible sandbox
+		 * -- which was the `cix-builder` image itself, grown by every
+		 * successful install on the box and seeded by `pkg bootstrap`
+		 * with the build host's entire /usr. The result was an image
+		 * of 88,798 entries, 93% of them belonging to no package in
+		 * its manifest: rustup, cargo, chromium, node, go, qemu, sudo,
+		 * several gcc trees. A build running against that is not
+		 * reproducible and not honest -- it compiles against whatever
+		 * this particular box happens to have accumulated, which is a
+		 * second source of truth about a recipe's requirements sitting
+		 * outside the recipe.
+		 *
+		 * Refusing is the whole point. A missing declaration now fails
+		 * loudly, naming the recipe, rather than succeeding against
+		 * something fuller than it asked for -- which is precisely how
+		 * a declaration becomes decorative.
+		 */
+		pkg_fail(e, is_final_upgrade, PKG_FAILURE_BUILD,
+		         "recipe declares no pkg_build_depends -- every build environment is composed "
+		         "from a recipe's declared tools and nothing else (issue #168); add them to "
+		         "%s's recipe",
+		         e->name);
+		logstore_write("cixd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
+		g_chains[chain_idx].name[0] = '\0';
+		g_chains[chain_idx].dep_queue_count = 0;
+		return 0;
 	}
 	snprintf(e->build_upperdir, sizeof(e->build_upperdir), "%s/upper", container_base);
 	snprintf(e->build_workdir, sizeof(e->build_workdir), "%s/work", container_base);
@@ -5448,6 +5490,51 @@ static struct pkg_entry *pkg_find_by_build_container(const char *container_name)
 	return NULL;
 }
 
+/*
+ * Issue #168: destroy a composed build environment once nothing is
+ * building against it.
+ *
+ * A build environment is composed from one recipe's declared tools and
+ * exists to serve that build. Leaving it behind is how a box ends up
+ * with a drawer of images nobody can account for -- the same accretion
+ * that made `cix-builder` an 8 GB pile in the first place, just under
+ * prettier names.
+ *
+ * The environment is named for the SET of tools it holds, so two
+ * concurrent builds declaring the same tools legitimately share one
+ * (ADR-0157 allows four builds at once). Deleting it while another
+ * chain is still using it would pull the lowerdir out from under a
+ * running build, so this checks first. That check is why the name is
+ * recorded on the chain rather than recomputed: it must answer "is
+ * anyone else using THIS image", not "would anyone else compose the
+ * same one".
+ */
+static void buildenv_release(int chain_idx)
+{
+	char image[PKG_IMAGE_NAME_MAX];
+	int i;
+
+	if (g_chains[chain_idx].buildenv_image[0] == '\0')
+		return;
+	snprintf(image, sizeof(image), "%s", g_chains[chain_idx].buildenv_image);
+	g_chains[chain_idx].buildenv_image[0] = '\0';
+
+	for (i = 0; i < PKG_MAX_CONCURRENT_JOBS; i++) {
+		if (i == chain_idx)
+			continue;
+		if (g_chains[i].name[0] != '\0' && strcmp(g_chains[i].buildenv_image, image) == 0)
+			return; /* another build is still running against it */
+	}
+
+	/* Best-effort: a leftover environment is untidy, never incorrect,
+	 * and is certainly not worth failing an otherwise-successful
+	 * install over. Reported rather than swallowed so it does not
+	 * accumulate silently, which is exactly what went unnoticed
+	 * before. */
+	if (image_delete(image) != IMAGE_OK)
+		fprintf(stderr, "pkg: could not remove the build environment %s\n", image);
+}
+
 int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_pid,
                          int *out_pidfd, int *out_chain_idx, char *out_hostbuild_done_name,
                          int *out_kept)
@@ -5464,6 +5551,12 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 	chain_idx = pkg_build_container_chain_index(container_name);
 	if (chain_idx < 0)
 		return 0;
+
+	/* Issue #168: this build is over either way -- success, failure, or
+	 * a chained dependency moving on -- so the environment composed for
+	 * it goes now. A later step in the same chain composes its own from
+	 * its own recipe's declared tools; that is the point. */
+	buildenv_release(chain_idx);
 
 	/*
 	 * Issue #98: keyed on the container that actually exited. Resolving
@@ -5794,43 +5887,25 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		}
 
 		/*
-		 * ALSO fold into the shared build sandbox
-		 * (PKG_BUILD_SANDBOX_IMAGE) -- the image every ordinary
-		 * install's own build container uses as its lowerdir -- not
-		 * just the target image above. Found as a real gap, not
-		 * speculative: sbsigntools.recipe needs bfd.h/uuid.h/efi.h
-		 * from binutils-dev/libuuid/gnu-efi, each already merged into
-		 * the "dev" target image by an earlier install, but the
-		 * sandbox was a fixed snapshot staged once and never otherwise
-		 * touched by a package install, so it never had bfd.h at all.
-		 * Every prior recipe with a real pkg_depends happened not to
-		 * expose this: those dependencies' tools already existed in
-		 * the snapshot, masking the gap until a recipe needed
-		 * something only this project's own package manager had ever
-		 * installed.
+		 * Issue #168: a successful install no longer folds into any
+		 * shared sandbox.
 		 *
-		 * Issue #40: this is a real image version now, not a silent
-		 * write into a flat directory -- so what the sandbox contains
-		 * has history, is inspectable through GET /v1/images, and can
-		 * be rolled back. A failure here stays deliberately non-fatal:
-		 * the authoritative install (the target-image merge just
-		 * above) already succeeded, and a future recipe losing this
-		 * particular build-time visibility is a strictly smaller
-		 * problem than unwinding an otherwise-successful install over
-		 * it. It is reported rather than swallowed, which the previous
-		 * best-effort merge_tree() call did not do.
+		 * It used to also merge into PKG_BUILD_SANDBOX_IMAGE -- which
+		 * is the `cix-builder` image -- so that a later recipe's build
+		 * could see it. That was a real fix for a real gap at the
+		 * time (sbsigntools needed bfd.h from binutils-dev, and the
+		 * sandbox was a snapshot nothing ever updated), but ADR-0199
+		 * solved the same problem properly: a build environment is
+		 * composed from the tools a recipe DECLARES, so a build sees
+		 * its dependencies because it named them, not because someone
+		 * happened to install them here first.
+		 *
+		 * Keeping both meant every install grew a user-facing image
+		 * forever, in a way no manifest described -- 66 versions of an
+		 * 8 GB rootfs on the first box to be looked at. Build-time
+		 * visibility now comes from declaration alone, which is the
+		 * only source of truth a recipe should have.
 		 */
-		{
-			struct sandbox_merge_ctx sctx;
-			char identity[PKG_NAME_MAX + PKG_VERSION_MAX + 2];
-
-			sctx.dest_dir = dest_dir;
-			snprintf(identity, sizeof(identity), "%s@%s", e->name, e->version);
-			if (image_produce_new_version(PKG_BUILD_SANDBOX_IMAGE, sandbox_merge_mutate, &sctx,
-			                               identity) != 0)
-				fprintf(stderr, "pkg: could not fold %s into the %s build sandbox\n", e->name,
-				        PKG_BUILD_SANDBOX_IMAGE);
-		}
 	}
 
 	save_state();
