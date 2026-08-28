@@ -46,6 +46,15 @@ pkg_version="2.36-6"
 pkg_source="https://mirrors.kernel.org/gnu/libc/glibc-2.36.tar.xz"
 pkg_sha256="1c959fea240906226062cb4b1e7ebce71a9f0e3c0836c09e7e3423d434fcfe75"
 pkg_depends=""
+# ADR-0199/0209: every tool this recipe actually reaches for, and
+# nothing else -- there is no fallback environment to inherit from any
+# more (#168). Derived by reading the two function bodies below rather
+# than copied from another recipe: pkg_build() runs grep; pkg_install()
+# runs mkdir and cp (coreutils) and one sed. echo/printf/test/for/if
+# are bash builtins and need no package. Note "tar.h" in the header
+# list below is a glibc header, not the tar tool -- a name-match is not
+# a dependency.
+pkg_build_depends="bash coreutils sed grep"
 
 # Deliberately not a real build -- see this recipe's own header
 # comment for why (glibc's own build is its own giant undertaking, out
