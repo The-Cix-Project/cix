@@ -40,6 +40,7 @@ extern char **environ;
 #define SFDISK_BIN "/usr/sbin/sfdisk"
 #define MKFS_VFAT_BIN "/usr/sbin/mkfs.vfat"
 #define MKFS_EXT4_BIN "/usr/sbin/mkfs.ext4"
+#define MKFS_BTRFS_BIN "/usr/sbin/mkfs.btrfs"
 #define MOKUTIL_BIN "/usr/bin/mokutil"
 
 /* Bundled inside this installer's own bootable environment -- see
@@ -378,6 +379,37 @@ static int mkfs_ext4(const char *device, const char *label, int with_quota)
 			          (char *)device, NULL };
 
 		return run_subprocess(MKFS_EXT4_BIN, argv);
+	}
+}
+
+/*
+ * ADR-0207 phase 4: btrfs is the install default for the platform's
+ * own writable partitions -- the substrate the whole snapshot-rootfs +
+ * idmapped-userns model runs on. No force flag: mkfs.btrfs always
+ * overwrites an existing signature when run non-interactively
+ * (confirmed in diskformat.c's own #103 investigation -- no "-F"
+ * equivalent exists to pass). No quota flags either: btrfs quota is
+ * qgroups, enabled at runtime by cixd's own cix_btrfs_qgroup_limit_
+ * excl() per container, not a mkfs-time feature bit like ext4's
+ * prjquota was. with_mixed ("--mixed", data+metadata block groups
+ * combined) is btrfs-progs' own documented answer for a filesystem
+ * this small -- cix-config is 64MiB, below the ~109MiB minimum a
+ * separate-profile filesystem needs; the big containers partition
+ * uses the normal separate profiles.
+ */
+static int mkfs_btrfs(const char *device, const char *label, int with_mixed)
+{
+	if (with_mixed) {
+		char *argv[] = { (char *)MKFS_BTRFS_BIN, "-q", "-L", (char *)label,
+			          "--mixed", (char *)device, NULL };
+
+		return run_subprocess(MKFS_BTRFS_BIN, argv);
+	}
+	{
+		char *argv[] = { (char *)MKFS_BTRFS_BIN, "-q", "-L", (char *)label,
+			          (char *)device, NULL };
+
+		return run_subprocess(MKFS_BTRFS_BIN, argv);
 	}
 }
 
@@ -720,18 +752,14 @@ int main(int argc, char **argv)
 
 	if (mkfs_vfat(esp_dev) != 0)
 		return 1;
-	if (mkfs_ext4(config_dev, "cix-config", 0) != 0)
+	if (mkfs_btrfs(config_dev, "cix-config", 1) != 0)
 		return 1;
-	/* "cix-containers" is 17 characters -- one over ext4's 16-char
-	 * label limit (EXT2_LABEL_LEN), which mke2fs would otherwise
-	 * silently truncate to "cix-container" anyway with just a
-	 * warning. This is purely the filesystem's own cosmetic volume
-	 * label (blkid/lsblk output) -- cix-install itself always
-	 * identifies partitions by their GPT *name* (find_partition_device()
-	 * above, via sfdisk -d), never this label, so truncation here has
-	 * no functional effect either way; picking the fit deliberately
-	 * just avoids the warning. */
-	if (mkfs_ext4(containers_dev, "cix-container", 1) != 0)
+	/* Full "cix-containers" fits now -- the old mkfs_ext4() call here
+	 * had to truncate to "cix-container" for EXT2_LABEL_LEN (16);
+	 * btrfs labels carry 255. Cosmetic either way: partitions are
+	 * always identified by GPT name (find_partition_device()), never
+	 * this label. */
+	if (mkfs_btrfs(containers_dev, "cix-containers", 0) != 0)
 		return 1;
 
 	if (ensure_dir(ESP_MOUNT) != 0)
@@ -757,7 +785,7 @@ int main(int argc, char **argv)
 
 	if (ensure_dir(CONFIG_MOUNT) != 0)
 		return 1;
-	if (mount(config_dev, CONFIG_MOUNT, "ext4", 0, NULL) != 0) {
+	if (mount(config_dev, CONFIG_MOUNT, "btrfs", 0, NULL) != 0) {
 		dual_perror("mount config");
 		return 1;
 	}
@@ -791,7 +819,7 @@ int main(int argc, char **argv)
 	 * mkinstalleriso.c's own staging comment for the exact failure). */
 	if (ensure_dir(CONTAINERS_MOUNT) != 0)
 		return 1;
-	if (mount(containers_dev, CONTAINERS_MOUNT, "ext4", 0, NULL) != 0) {
+	if (mount(containers_dev, CONTAINERS_MOUNT, "btrfs", 0, NULL) != 0) {
 		dual_perror("mount containers");
 		return 1;
 	}

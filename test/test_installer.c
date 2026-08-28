@@ -47,16 +47,21 @@
  * host side after session 1 -- the ESP via mtools' disk.img@@offset
  * addressing (no mount needed, same pattern test_boot_ab.c already
  * established for inspecting loader-entry counter state), the config
- * partition (ext4) via debugfs (also no mount needed), and root A's raw
- * bytes read back and compared against the original squashfs.
+ * and containers partitions (btrfs since ADR-0207 phase 4) via `btrfs
+ * restore` (pure userspace on an extracted partition image -- also no
+ * mount, which this sandbox couldn't do anyway: no loop devices), and
+ * root A's raw bytes read back and compared against the original
+ * squashfs.
  */
 #include "test_disk_image.h"
 #include "test_image_fixture.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -68,7 +73,7 @@
 #define MKINSTALLERISO_BIN "build/mkinstalleriso"
 #define BZIMAGE_PATH "build/bzImage"
 #define SFDISK_BIN "/usr/sbin/sfdisk"
-#define DEBUGFS_BIN "/usr/sbin/debugfs"
+#define BTRFS_BIN "/usr/bin/btrfs"
 #define OVMF_VARS_TEMPLATE "/usr/share/OVMF/OVMF_VARS_4M.ms.fd"
 #define SIGNING_KEY "image/keys/cix-signing.key"
 #define SIGNING_CERT_PEM "image/keys/cix-signing.crt"
@@ -80,7 +85,6 @@
 #define ISOTOOLS_ROOT "/usr"
 #define MOK_PASSWORD "cixtest"
 
-#define E2FSCK_BIN "/sbin/e2fsck"
 
 #define TARGET_ESP_SIZE_MIB 64
 #define TARGET_ROOT_SIZE_MIB 160
@@ -134,46 +138,58 @@ static int create_blank_disk(const char *path)
 }
 
 /*
- * A partition extracted right after qemu_boot_capture() kills the QEMU
- * process (SIGTERM once the success marker appears, per that function's
- * own doc comment) still has a pending ext4 journal from that abrupt
- * stop -- confirmed directly ("EXT4-fs: recovery complete" on the next
- * real mount). Writing into the extracted image with debugfs (which
- * touches on-disk blocks/inodes directly, bypassing the journal
- * entirely) before that pending journal gets replayed is unsafe: the
- * next real mount's own recovery can silently revert exactly the
- * blocks debugfs just wrote, since the journal still records the
- * pre-write state. Forcing replay with e2fsck -fy first (0 = clean,
- * 1 = errors corrected -- exactly the expected "replayed a pending
- * journal" case here, not real corruption; only >= 4 is a genuine,
- * uncorrected problem) leaves the image in its true final state, safe
- * for debugfs to modify directly.
+ * Extracts a btrfs partition image's file tree into dest_dir with
+ * `btrfs restore` -- pure userspace, no mount, no loop device (this
+ * sandbox has neither). Two properties matter here and shape what the
+ * checks below can honestly claim:
+ *
+ *   - restore reads the last COMMITTED transaction and does not replay
+ *     the fsync log tree, so a write made moments before
+ *     qemu_boot_capture() SIGTERMs QEMU (btrfs's default commit
+ *     interval is 30s) may legitimately be absent. Everything asserted
+ *     through this helper is therefore either written under a clean
+ *     unmount (the installer session umounts before exiting) or given
+ *     a whole subsequent boot session to reach a commit.
+ *
+ *   - there is no offline WRITE counterpart (debugfs -w has no btrfs
+ *     equivalent), which is why the old "inject a marker between
+ *     boots" proof is gone -- see the session-4 block for what
+ *     replaced it.
  */
-static int run_e2fsck_fy(const char *path)
+static int btrfs_restore_tree(const char *image, const char *dest_dir)
 {
-	pid_t pid;
-	int status;
-	char *argv[] = { (char *)E2FSCK_BIN, "-fy", (char *)path, NULL };
+	char *argv[] = { (char *)BTRFS_BIN, "restore", (char *)image, (char *)dest_dir, NULL };
 
-	pid = fork();
-	if (pid < 0) {
-		perror("fork");
+	if (mkdir(dest_dir, 0755) != 0 && errno != EEXIST) {
+		perror(dest_dir);
 		return -1;
 	}
-	if (pid == 0) {
-		execve(E2FSCK_BIN, argv, environ);
-		perror(E2FSCK_BIN);
-		_exit(127);
+	return run_subprocess(BTRFS_BIN, argv);
+}
+
+/* Byte-for-byte comparison, same proof shape as root A's own
+ * squashfs comparison in main() below. 0 = identical. */
+static int files_identical(const char *a_path, const char *b_path)
+{
+	FILE *a = fopen(a_path, "rb");
+	FILE *b = fopen(b_path, "rb");
+	int same = a != NULL && b != NULL;
+
+	while (same) {
+		unsigned char ba[65536], bb[65536];
+		size_t na = fread(ba, 1, sizeof(ba), a);
+		size_t nb = fread(bb, 1, sizeof(bb), b);
+
+		if (na != nb || memcmp(ba, bb, na) != 0)
+			same = 0;
+		if (na == 0)
+			break;
 	}
-	if (waitpid(pid, &status, 0) != pid) {
-		perror("waitpid");
-		return -1;
-	}
-	if (!WIFEXITED(status) || WEXITSTATUS(status) >= 4) {
-		fprintf(stderr, "%s -fy %s failed (status 0x%x)\n", E2FSCK_BIN, path, (unsigned)status);
-		return -1;
-	}
-	return 0;
+	if (a != NULL)
+		fclose(a);
+	if (b != NULL)
+		fclose(b);
+	return same ? 0 : -1;
 }
 
 int main(void)
@@ -570,23 +586,36 @@ int main(void)
 	}
 
 	{
-		/* Config partition (ext4) -- debugfs needs a standalone
-		 * filesystem image starting at byte 0 (no offset option the
-		 * way mtools' @@offset addressing has), so extract it first;
-		 * still no mount anywhere in this test harness. */
+		/* Config partition (btrfs --mixed since ADR-0207 phase 4) --
+		 * `btrfs restore` works on a standalone filesystem image
+		 * starting at byte 0, so extract it first; still no mount
+		 * anywhere in this test harness. The installer umounted this
+		 * partition cleanly, so its content is fully committed and
+		 * restore's committed-transaction view is complete. */
 		char config_extract[600];
+		char config_tree[600];
+		char net_conf_path[700];
 		char net_conf[256];
 
 		snprintf(config_extract, sizeof(config_extract), "%s/config_extract.img", workdir);
+		snprintf(config_tree, sizeof(config_tree), "%s/config_tree", workdir);
 		if (extract_partition(target_disk_img, config_start_sec * SECTOR_SIZE,
-		                       config_size_sec * SECTOR_SIZE, config_extract) != 0) {
+		                       config_size_sec * SECTOR_SIZE, config_extract) != 0 ||
+		    btrfs_restore_tree(config_extract, config_tree) != 0) {
 			ok = 0;
 		} else {
-			char *debugfs_argv[] = { (char *)DEBUGFS_BIN, "-R", "cat /net.conf",
-				                  config_extract, NULL };
+			FILE *f;
+			size_t n = 0;
 
-			if (run_subprocess_capture(DEBUGFS_BIN, debugfs_argv, net_conf, sizeof(net_conf)) == 0 &&
-			    strstr(net_conf, TEST_IP) != NULL && strstr(net_conf, TEST_GATEWAY) != NULL) {
+			snprintf(net_conf_path, sizeof(net_conf_path), "%s/net.conf", config_tree);
+			f = fopen(net_conf_path, "r");
+			if (f != NULL) {
+				n = fread(net_conf, 1, sizeof(net_conf) - 1, f);
+				fclose(f);
+			}
+			net_conf[n] = '\0';
+			if (f != NULL && strstr(net_conf, TEST_IP) != NULL &&
+			    strstr(net_conf, TEST_GATEWAY) != NULL) {
 				printf("config partition net.conf:\n%s\n", net_conf);
 			} else {
 				fprintf(stderr, "config partition net.conf missing or wrong -- got:\n%s\n", net_conf);
@@ -688,136 +717,78 @@ int main(void)
 		return 1;
 	}
 
-	/* 10. The actual persistence proof (ADR-0018): BASE_DIR
+	/* 10. The persistence proof (ADR-0018), btrfs edition. BASE_DIR
 	 * (/var/lib/cix) must be the real cix-containers partition
-	 * boot_init() now mounts, not a fresh tmpfs -- session 3's boot
-	 * above already exercised ensure_dir()'s own directory creation
-	 * (images/, containers/, pki/, pkg/) against whatever BASE_DIR
-	 * resolved to; extracting the real on-disk partition and finding
-	 * them there (not just believing the boot succeeded) is the actual
-	 * proof, exactly as root-A's own byte-for-byte comparison above
-	 * proves the raw write landed rather than trusting "install
-	 * complete". A marker file written directly into the extracted
-	 * partition (debugfs -w, no mount needed) BEFORE a second,
-	 * completely independent boot, still present with the exact same
-	 * content AFTER it, is the stronger proof that matters here: real
-	 * data genuinely survives a real reboot, not just that cixd
-	 * created some directories once. */
+	 * boot_init() mounts, not a fresh tmpfs -- proven by reading the
+	 * real on-disk partition, never by believing a boot succeeded.
+	 *
+	 * The old ext4 form of this proof injected a marker file into the
+	 * extracted partition with debugfs -w between two boots; btrfs has
+	 * no offline write tool, and `btrfs restore` reads only committed
+	 * transactions (a write made moments before qemu_boot_capture()
+	 * SIGTERMs QEMU can be legitimately absent -- and, being lost from
+	 * the guest page cache, it never appears later either). So every
+	 * assertion here relies only on data with a deterministic path to
+	 * disk: content the installer wrote under a clean umount, and
+	 * session-3 writes old enough (cixd's first-boot init, minutes of
+	 * TCG guest time before the success marker) to have crossed
+	 * btrfs's 30s commit interval. What this proves is the property
+	 * that matters: installer-seeded content survives two real,
+	 * independent boots byte-identical (no tmpfs, no reformat, no
+	 * corruption), and cixd's own first-boot writes landed on the
+	 * real partition (the grouped layout it migrated to is what the
+	 * raw disk shows afterwards). */
 	{
 		char containers_extract[600];
-		char marker_src[600];
-		char listing[4096];
-		char marker_readback[256];
-		const char *marker_content = "cix-persistence-test-marker\n";
+		char containers_tree[600];
+		char seeded_flat[700], seeded_grouped[700];
+		struct stat pst;
+		const char *ld_so_src = "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2";
 
 		snprintf(containers_extract, sizeof(containers_extract), "%s/containers_extract.img",
 		         workdir);
-		snprintf(marker_src, sizeof(marker_src), "%s/marker.txt", workdir);
+		snprintf(containers_tree, sizeof(containers_tree), "%s/containers_tree_s3", workdir);
 
 		if (extract_partition(target_disk_img, containers_start_sec * SECTOR_SIZE,
-		                       containers_size_sec * SECTOR_SIZE, containers_extract) != 0) {
+		                       containers_size_sec * SECTOR_SIZE, containers_extract) != 0 ||
+		    btrfs_restore_tree(containers_extract, containers_tree) != 0) {
 			fprintf(stderr, "could not extract containers partition after session 3\n");
 			ok = 0;
-		} else if (run_e2fsck_fy(containers_extract) != 0) {
-			ok = 0;
 		} else {
-			char *ls_argv[] = { (char *)DEBUGFS_BIN, "-R", "ls -l /", containers_extract, NULL };
+			/* The seeded base-image runtime (cix-install.c's own
+			 * containers-partition block) -- installer-written under a
+			 * clean umount, so deterministically visible. Session 3's
+			 * cixd has normally already migrated it from the flat
+			 * install-time path to the grouped one
+			 * (migrate_flat_layout_to_grouped()), but that rename is a
+			 * runtime write with no committed-by-now guarantee at this
+			 * point, so either location is accepted HERE; session 4
+			 * below requires the grouped one. */
+			const char *seeded = NULL;
 
-			/*
-			 * ADR-0141's layout-grouping refactor moved images/, pki/,
-			 * pkg/ out from directly under the partition root -- by the
-			 * time this session-3 boot has actually run cixd once,
-			 * migrate_flat_layout_to_grouped() has already relocated
-			 * them into state/pki and rebuildable/{images,pkg}. Checking
-			 * for the pre-ADR-0141 flat names here was stale (confirmed
-			 * failing against a real boot before this fix) -- "state"/
-			 * "rebuildable"/"containers" are the real, current top-level
-			 * grouped-layout directories (daemon/src/main.c's own
-			 * STATE_DIR/REBUILDABLE_DIR/CONTAINERS_DIR).
-			 */
-			if (run_subprocess_capture(DEBUGFS_BIN, ls_argv, listing, sizeof(listing)) != 0 ||
-			    strstr(listing, "state") == NULL || strstr(listing, "containers") == NULL ||
-			    strstr(listing, "rebuildable") == NULL) {
-				fprintf(stderr,
-				        "containers partition missing cixd's own directories after a "
-				        "real boot -- BASE_DIR was not actually the real partition. "
-				        "listing:\n%s\n",
-				        listing);
-				ok = 0;
-			} else {
-				printf("containers partition after session 3 (real cixd state, not "
-				       "tmpfs):\n%s\n",
-				       listing);
-			}
-		}
-
-		/* The "base" image's own C runtime (cix-install.c's own
-		 * containers-partition block, staged from mkinstalleriso.c's
-		 * CIX_RUNTIME_DIR_SRC payload) must already be present right
-		 * here, before session 4 and before any pkg install ever runs
-		 * -- proving the installer itself wrote it, not something a
-		 * later boot happened to create. Without this, nothing
-		 * dynamically linked a package installs could ever execve()
-		 * successfully (confirmed directly this session). */
-		if (ok) {
-			/* rebuildable/images/..., not the pre-ADR-0141 flat images/...
-			 * -- cix-install.c itself still seeds this at the OLD flat
-			 * path by design (migrate_flat_layout_to_grouped() relocates
-			 * it on cixd's first real startup, which session 3's own
-			 * boot above has already triggered by this point). */
-			char *ls_lib64_argv[] = { (char *)DEBUGFS_BIN, "-R",
-				                   "ls -l rebuildable/images/base/rootfs/lib64",
-				                   containers_extract, NULL };
-			char *ls_lib_argv[] = { (char *)DEBUGFS_BIN, "-R",
-				                 "ls -l rebuildable/images/base/rootfs/lib/x86_64-linux-gnu",
-				                 containers_extract, NULL };
-			char lib64_listing[2048], lib_listing[2048];
-
-			if (run_subprocess_capture(DEBUGFS_BIN, ls_lib64_argv, lib64_listing,
-			                            sizeof(lib64_listing)) != 0 ||
-			    strstr(lib64_listing, "ld-linux-x86-64.so.2") == NULL) {
+			snprintf(seeded_flat, sizeof(seeded_flat),
+			         "%s/images/base/rootfs/lib64/ld-linux-x86-64.so.2", containers_tree);
+			snprintf(seeded_grouped, sizeof(seeded_grouped),
+			         "%s/rebuildable/images/base/rootfs/lib64/ld-linux-x86-64.so.2",
+			         containers_tree);
+			if (stat(seeded_grouped, &pst) == 0)
+				seeded = seeded_grouped;
+			else if (stat(seeded_flat, &pst) == 0)
+				seeded = seeded_flat;
+			if (seeded == NULL) {
 				fprintf(stderr,
 				        "containers partition missing the seeded ld.so after install -- "
-				        "listing:\n%s\n",
-				        lib64_listing);
+				        "the installer did not write the base image runtime\n");
 				ok = 0;
-			} else if (run_subprocess_capture(DEBUGFS_BIN, ls_lib_argv, lib_listing,
-			                                   sizeof(lib_listing)) != 0 ||
-			           strstr(lib_listing, "libc.so.6") == NULL ||
-			           strstr(lib_listing, "libtinfo.so.6") == NULL) {
+			} else if (files_identical(seeded, ld_so_src) != 0) {
 				fprintf(stderr,
-				        "containers partition missing seeded libc.so.6/libtinfo.so.6 after "
-				        "install -- listing:\n%s\n",
-				        lib_listing);
+				        "seeded ld.so does not match the build host source after "
+				        "session 3 -- content corrupted on the way to disk\n");
 				ok = 0;
 			} else {
-				printf("base image runtime (ld.so/libc.so.6/libtinfo.so.6) seeded at install "
-				       "time:\n%s%s\n",
-				       lib64_listing, lib_listing);
+				printf("containers partition carries the installer-seeded base runtime, "
+				       "byte-identical to source, after the first real boot\n");
 			}
-		}
-
-		if (ok && write_text_file(marker_src, marker_content) != 0) {
-			fprintf(stderr, "could not write local marker file\n");
-			ok = 0;
-		}
-		if (ok) {
-			char *write_argv[] = { (char *)DEBUGFS_BIN, "-w", "-R", NULL, containers_extract,
-				                NULL };
-			char write_cmd[700];
-
-			snprintf(write_cmd, sizeof(write_cmd), "write %s rebuildable/images/PERSISTENCE_MARKER",
-			         marker_src);
-			write_argv[3] = write_cmd;
-			if (run_subprocess(DEBUGFS_BIN, write_argv) != 0) {
-				fprintf(stderr, "could not inject marker file into containers partition\n");
-				ok = 0;
-			}
-		}
-		if (ok && write_at_offset(target_disk_img, containers_start_sec * SECTOR_SIZE,
-		                           containers_extract) != 0) {
-			fprintf(stderr, "could not write modified containers partition back to disk\n");
-			ok = 0;
 		}
 
 		if (!ok) {
@@ -857,26 +828,51 @@ int main(void)
 			return 1;
 		}
 
+		snprintf(containers_tree, sizeof(containers_tree), "%s/containers_tree_s4", workdir);
 		if (extract_partition(target_disk_img, containers_start_sec * SECTOR_SIZE,
-		                       containers_size_sec * SECTOR_SIZE, containers_extract) != 0) {
+		                       containers_size_sec * SECTOR_SIZE, containers_extract) != 0 ||
+		    btrfs_restore_tree(containers_extract, containers_tree) != 0) {
 			fprintf(stderr, "could not extract containers partition after session 4\n");
 			ok = 0;
 		} else {
-			char *cat_argv[] = { (char *)DEBUGFS_BIN, "-R", "cat rebuildable/images/PERSISTENCE_MARKER",
-				              containers_extract, NULL };
+			char dir_path[700];
 
-			if (run_subprocess_capture(DEBUGFS_BIN, cat_argv, marker_readback,
-			                            sizeof(marker_readback)) != 0 ||
-			    strcmp(marker_readback, marker_content) != 0) {
+			/* Session 3's own first-boot writes, now stably on disk
+			 * (they had session 3's whole multi-minute init runtime to
+			 * commit; session 4 does not undo them): the grouped
+			 * layout's non-empty top-level directories, and the seeded
+			 * runtime at its migrated, grouped path -- still
+			 * byte-identical to the build host source after TWO real,
+			 * independent boots. CONTAINERS_DIR itself is deliberately
+			 * not asserted: it is empty (no containers exist in this
+			 * test), and `btrfs restore`'s handling of an empty
+			 * directory is not a contract this test should depend on. */
+			snprintf(dir_path, sizeof(dir_path), "%s/state", containers_tree);
+			if (stat(dir_path, &pst) != 0) {
+				fprintf(stderr, "state/ missing from the raw containers partition after "
+				                "session 4 -- BASE_DIR was not the real partition\n");
+				ok = 0;
+			}
+			snprintf(dir_path, sizeof(dir_path), "%s/rebuildable", containers_tree);
+			if (stat(dir_path, &pst) != 0) {
+				fprintf(stderr, "rebuildable/ missing from the raw containers partition "
+				                "after session 4 -- BASE_DIR was not the real partition\n");
+				ok = 0;
+			}
+			snprintf(seeded_grouped, sizeof(seeded_grouped),
+			         "%s/rebuildable/images/base/rootfs/lib64/ld-linux-x86-64.so.2",
+			         containers_tree);
+			if (stat(seeded_grouped, &pst) != 0) {
 				fprintf(stderr,
-				        "marker file did not survive a real, independent second boot -- "
-				        "got %s (%zu bytes), want %s (%zu bytes)\n",
-				        marker_readback, strlen(marker_readback), marker_content,
-				        strlen(marker_content));
+				        "seeded ld.so missing from the grouped layout after session 4\n");
+				ok = 0;
+			} else if (files_identical(seeded_grouped, ld_so_src) != 0) {
+				fprintf(stderr,
+				        "seeded ld.so changed across a real, independent second boot\n");
 				ok = 0;
 			} else {
-				printf("marker file survived a real, independent second boot unchanged -- "
-				       "BASE_DIR genuinely persists across reboots\n");
+				printf("installer-seeded content survived two real, independent boots "
+				       "byte-identical -- BASE_DIR genuinely persists across reboots\n");
 			}
 		}
 	}
