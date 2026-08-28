@@ -81,6 +81,16 @@ enum daemon_config_error daemon_config_set_port(int port);
  * install starts with both listeners on, not HTTP-only. */
 int daemon_config_http_enabled(void);
 int daemon_config_https_enabled(void);
+
+/*
+ * ADR-0207 phase 3: the platform-wide default for containers created
+ * without an explicit "userns" field. 1 (the fresh-install default)
+ * means secure-by-default -- CLONE_NEWUSER + a subordinate-ID mapping
+ * unless the container opts out; 0 restores opt-in. The per-container
+ * field always wins over this default in both directions.
+ */
+int daemon_config_userns_default(void);
+enum daemon_config_error daemon_config_set_userns_default(int enabled);
 /* The persisted HTTPS port, or 0 if never set (main.c falls back to a
  * fixed default, DEFAULT_HTTPS_PORT, the same shape daemon_config_
  * port()'s 0-means-fall-back-to-argv already has). */

@@ -34,6 +34,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | POST | `/system/update` | Write a fresh control-plane squashfs and/or a fresh kernel onto this daemon's own inactive A/B slot |
 | GET | `/system/boot-next` | What is armed to boot next, if anything |
 | POST | `/system/boot-next` | Boot a slot **once**, then revert to normal selection (#154) |
+| — | container `userns` field | User namespaces by default; opt-out per container or platform-wide (ADR-0207) |
 | DELETE | `/system/boot-next` | Disarm |
 | GET | `/system/backup` | Bundle platform configuration state (container defs, networks, DNS, package state, site config) |
 | POST | `/system/restore` | Write a previously-backed-up bundle back to its real state files |
@@ -2284,6 +2285,16 @@ GET /v1/system/boot
 `GET /health` is deliberately minimal -- both `cixctl` and the web dashboard poll it every few seconds purely for a status dot, and it's excluded from the audit trail (see [A consolidated log](#a-consolidated-log) above) as low-value polling noise. Build/slot/kernel identity is a separate, lower-frequency check: `GET /system/boot` reports `build_version` (`git describe --tags --always --dirty` at build time), `build_time`, `slot` (`"a"`/`"b"`, or `null` for a dev/test daemon started without `--slot=`), and `kernel_version` (the running `uname(2)` release string). This is the deploy/reboot verification signal referenced throughout [`docs/guides/kernel-build-and-ab-updates.md`](../guides/kernel-build-and-ab-updates.md) -- a `200` from `health` alone only proves *some* daemon answered, not that it's the one you just wrote; `slot`/`kernel_version` from `boot` are the direct answer to "did I actually boot into what I just wrote."
 
 `bootroot_assembly_started_generation`/`bootroot_assembly_completed_generation`/`bootroot_assembly_running` (ADR-0105) are a real freshness signal for `pkg hostbuild cix --deploy`'s own server-side follow-on assembly (ADR-0057) — `cixd-root.squashfs` existing at the hostbuild's `artifact_path` is not the same as it being *this* round's own fresh build, since that file is a leftover from whichever assembly last succeeded. `completed_generation` only ever advances on a real, confirmed success; `--deploy` captures it as a baseline before triggering anything and waits for it to advance past that baseline (`running` distinguishes "still working" from "gave up, that attempt failed") rather than trusting file-exists.
+
+## User namespaces: secure by default (ADR-0207)
+
+Every container created without an explicit `userns` field gets its own user namespace — its root mapped onto a dedicated host subordinate-ID range, so a namespace-boundary escape lands as an unprivileged host user, not host uid 0. This is the platform default on a fresh install; `"userns": false` on the create opts a container out, and `PUT /system/daemon-config {"userns_default": false}` restores opt-in platform-wide for operators who need it.
+
+Three rules keep this predictable rather than surprising:
+
+- **The per-container field always beats the default, in both directions.** The platform itself uses the opt-out for its own build/hostbuild containers — trusted internal infrastructure running this project's own checksummed recipes, with no security case for isolating them from the host they build on.
+- **A container's mode is pinned at creation.** The resolved value is written into its persisted definition exactly as `image_version` is, so flipping the platform default never changes an existing container on its next restart — a restart that silently swapped a container's isolation mode (and with it its whole storage layout) is precisely the failure the pin exists to prevent. The container object reports its actual mode in its own `userns` field.
+- **A host whose kernel or LSM cannot do user namespaces fails loudly at create**, not silently downgraded — a security default that quietly turns itself off is not a default.
 
 ## Rolling back: boot a slot once
 

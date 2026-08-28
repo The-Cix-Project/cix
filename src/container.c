@@ -298,6 +298,31 @@ int container_create(const struct container_spec *spec, struct container_handle 
 			fail_step = "container_create: open_tree(userns_rootfs)";
 			prep_ret = -1;
 		}
+		/*
+		 * ADR-0207 phase 3: an idmap-presented container's volumes are
+		 * detached here too, so the parent can id-map them alongside
+		 * the rootfs once the child's maps are written -- a host-0-
+		 * owned volume is otherwise unmapped inside the userns and
+		 * every write returns EOVERFLOW (ADR-0179's confirmed gap).
+		 * The fds are inherited across clone3, and a fork-inherited fd
+		 * references the SAME mount object, so the parent's
+		 * mount_setattr is visible to the child with no fd passing.
+		 */
+		if (prep_ret == 0 && spec->userns_idmap) {
+			int vi;
+
+			for (vi = 0; vi < spec->volume_count; vi++) {
+				((struct container_spec *)spec)->volume_idmap_fds[vi] =
+				    (int)cix_open_tree(-1, spec->volumes[vi].host_path,
+				                       OPEN_TREE_CLONE | AT_RECURSIVE);
+				if (spec->volume_idmap_fds[vi] < 0) {
+					saved_errno = errno;
+					fail_step = "container_create: open_tree(volume)";
+					prep_ret = -1;
+					break;
+				}
+			}
+		}
 		if (prep_ret != 0) {
 			if (overlay_lower_fd >= 0) {
 				close(overlay_lower_fd);
@@ -498,7 +523,17 @@ int container_create(const struct container_spec *spec, struct container_handle 
 					child_diag(diag_pipe[1], "child: volume mkdir");
 					_exit(125);
 				}
-				if (mount(vol->host_path, target, NULL, MS_BIND | MS_REC, NULL) != 0) {
+				if (spec->userns_idmap && spec->volume_idmap_fds[i] >= 0) {
+					/* The parent's id-mapped detached tree -- attaching
+					 * it is what makes a host-0-owned volume writable
+					 * by this container's mapped root (ADR-0207 ph3). */
+					if (cix_move_mount(spec->volume_idmap_fds[i], "", -1, target,
+					                  MOVE_MOUNT_F_EMPTY_PATH) != 0) {
+						child_diag(diag_pipe[1], "child: volume move_mount idmap");
+						_exit(125);
+					}
+					close(spec->volume_idmap_fds[i]);
+				} else if (mount(vol->host_path, target, NULL, MS_BIND | MS_REC, NULL) != 0) {
 					child_diag(diag_pipe[1], "child: volume bind mount");
 					_exit(125);
 				}
@@ -638,6 +673,13 @@ int container_create(const struct container_spec *spec, struct container_handle 
 	 * at clone3; drop the parent's copy. The detached mount stays alive on
 	 * the child's copy until it move_mounts it into its own namespace.
 	 */
+	if (spec->userns_enabled && spec->userns_idmap) {
+		int vi;
+
+		for (vi = 0; vi < spec->volume_count; vi++)
+			if (spec->volume_idmap_fds[vi] >= 0)
+				close(spec->volume_idmap_fds[vi]);
+	}
 	if (spec->userns_enabled && overlay_lower_fd >= 0)
 		close(overlay_lower_fd);
 
@@ -655,8 +697,45 @@ int container_create(const struct container_spec *spec, struct container_handle 
 
 		close(userns_pipe[0]);
 		userns_ok = (write_userns_maps((pid_t)ret, spec->userns_uid_base,
-		                               spec->userns_len) == 0) &&
-		            (write(userns_pipe[1], "x", 1) == 1);
+		                               spec->userns_len) == 0);
+		/*
+		 * ADR-0207 phase 3: with the maps written, the child's user
+		 * namespace exists and can be named -- id-map the detached
+		 * rootfs (and volumes) NOW, before the release byte, so by the
+		 * time the child move_mounts them every inode already presents
+		 * as its mapped ids. This replaces phase 2b's per-inode chown
+		 * for snapshot-provisioned containers: the disk stays host-0,
+		 * extent sharing intact, and the kernel does the presenting.
+		 */
+		if (userns_ok && spec->userns_idmap) {
+			char uns_path[64];
+			int uns_fd;
+
+			snprintf(uns_path, sizeof(uns_path), "/proc/%d/ns/user", (int)ret);
+			uns_fd = open(uns_path, O_RDONLY | O_CLOEXEC);
+			if (uns_fd < 0) {
+				userns_ok = 0;
+			} else {
+				struct cix_mount_attr mattr;
+				int vi;
+
+				memset(&mattr, 0, sizeof(mattr));
+				mattr.attr_set = MOUNT_ATTR_IDMAP;
+				mattr.userns_fd = (uint64_t)uns_fd;
+				if (cix_mount_setattr(overlay_lower_fd, "",
+				                      CIX_AT_EMPTY_PATH, &mattr) != 0)
+					userns_ok = 0;
+				for (vi = 0; userns_ok && vi < spec->volume_count; vi++) {
+					if (spec->volume_idmap_fds[vi] >= 0 &&
+					    cix_mount_setattr(spec->volume_idmap_fds[vi], "",
+					                      CIX_AT_EMPTY_PATH | AT_RECURSIVE,
+					                      &mattr) != 0)
+						userns_ok = 0;
+				}
+				close(uns_fd);
+			}
+		}
+		userns_ok = userns_ok && (write(userns_pipe[1], "x", 1) == 1);
 		saved_errno = errno;
 		close(userns_pipe[1]);
 		if (!userns_ok) {

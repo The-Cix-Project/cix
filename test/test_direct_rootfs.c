@@ -176,6 +176,53 @@ int main(void)
 		return 1;
 	}
 
+	/*
+	 * 0. ADR-0207 phase 3 plumbing (the kernel-side userns itself
+	 * cannot run in this sandbox -- its LSM forbids the uid_map write
+	 * -- so what is assertable here is that the DEFAULT machinery
+	 * plumbs end to end; the secure default engaging for real is .95's
+	 * verification):
+	 *   - the fixture-seeded config reads back userns_default=false
+	 *   - PUT flips it and it persists through the config channel
+	 *   - a container created under default-off reports userns:false
+	 */
+	{
+		struct cix_response cr;
+
+		memset(&cr, 0, sizeof(cr));
+		if (cix_client_request(&client, "GET", "/v1/system/daemon-config", NULL, &cr) == 0 &&
+		    cr.json != NULL) {
+			const struct json_value *jud = json_object_get(cr.json, "userns_default");
+
+			CHECK(jud != NULL && jud->type == JSON_BOOL && !jud->u.boolean,
+			      "the fixture-seeded userns_default=false should read back");
+		} else {
+			CHECK(0, "GET daemon-config failed");
+		}
+		cix_response_free(&cr);
+
+		memset(&cr, 0, sizeof(cr));
+		if (cix_client_request(&client, "PUT", "/v1/system/daemon-config",
+		                       "{\"userns_default\": true}", &cr) != 0 || cr.status != 200) {
+			CHECK(0, "PUT userns_default=true failed (status=%d)", cr.status);
+		}
+		cix_response_free(&cr);
+		memset(&cr, 0, sizeof(cr));
+		if (cix_client_request(&client, "GET", "/v1/system/daemon-config", NULL, &cr) == 0 &&
+		    cr.json != NULL) {
+			const struct json_value *jud = json_object_get(cr.json, "userns_default");
+
+			CHECK(jud != NULL && jud->type == JSON_BOOL && jud->u.boolean,
+			      "userns_default should flip to true via the API");
+		}
+		cix_response_free(&cr);
+		/* back to off -- this sandbox cannot run a userns container */
+		memset(&cr, 0, sizeof(cr));
+		cix_client_request(&client, "PUT", "/v1/system/daemon-config",
+		                   "{\"userns_default\": false}", &cr);
+		cix_response_free(&cr);
+	}
+
 	/* 1. Create with a files[] entry. Under --test-direct-rootfs this
 	 * must provision <base>/rootfs and stage the file INTO it. */
 	memset(&r, 0, sizeof(r));
@@ -193,6 +240,19 @@ int main(void)
 	}
 	cix_response_free(&r);
 
+	{
+		struct cix_response cr;
+
+		memset(&cr, 0, sizeof(cr));
+		if (cix_client_request(&client, "GET", "/v1/containers/dt", NULL, &cr) == 0 &&
+		    cr.json != NULL) {
+			const struct json_value *ju = json_object_get(cr.json, "userns");
+
+			CHECK(ju != NULL && ju->type == JSON_BOOL && !ju->u.boolean,
+			      "a container created under default-off must report userns:false");
+		}
+		cix_response_free(&cr);
+	}
 	{
 		char base[PATH_MAX];
 
@@ -242,6 +302,20 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	cix_client_request(&client, "POST", "/v1/containers/dt/stop", NULL, &r);
 	cix_response_free(&r);
+
+	/*
+	 * The mode-flap timebomb, directly: flip the platform default to
+	 * userns=ON while dt is stopped. Its revival replays the persisted
+	 * body, into which creation PINNED "userns":false (image_version-
+	 * style) -- so the restart below must come back non-userns and
+	 * healthy. If the pin regressed, the replay would consult the new
+	 * default, attempt CLONE_NEWUSER, and die on this sandbox's own
+	 * LSM -- every assertion after this line would fail, loudly.
+	 */
+	memset(&r, 0, sizeof(r));
+	cix_client_request(&client, "PUT", "/v1/system/daemon-config",
+	                   "{\"userns_default\": true}", &r);
+	cix_response_free(&r);
 	{
 		int i;
 
@@ -265,6 +339,24 @@ int main(void)
 	CHECK(get_file_is(&client, "/v1/containers/dt/files?path=%2Fetc%2Fseed.conf",
 	                  "seeded\n") == 0,
 	      "the staged file must also survive the restart");
+	{
+		struct cix_response cr;
+
+		memset(&cr, 0, sizeof(cr));
+		if (cix_client_request(&client, "GET", "/v1/containers/dt", NULL, &cr) == 0 &&
+		    cr.json != NULL) {
+			const struct json_value *ju = json_object_get(cr.json, "userns");
+
+			CHECK(ju != NULL && ju->type == JSON_BOOL && !ju->u.boolean,
+			      "dt's isolation mode must be PINNED at creation -- a default flip while "
+			      "it was stopped must not flap it to userns on revival");
+		}
+		cix_response_free(&cr);
+	}
+	memset(&r, 0, sizeof(r));
+	cix_client_request(&client, "PUT", "/v1/system/daemon-config",
+	                   "{\"userns_default\": false}", &r);
+	cix_response_free(&r);
 
 	/*
 	 * 5. The exited-but-registered case, deterministically: a container

@@ -6054,6 +6054,8 @@ static void handle_daemon_config_get(int fd)
 	jw_bool(&w, g_listener_conn.fd >= 0);
 	jw_key(&w, "https_enabled");
 	jw_bool(&w, g_https_listener_conn.fd >= 0);
+	jw_key(&w, "userns_default");
+	jw_bool(&w, daemon_config_userns_default());
 	jw_key(&w, "https_port");
 	jw_int(&w, daemon_config_https_port());
 	jw_key(&w, "bind_ip");
@@ -6115,6 +6117,23 @@ static void handle_daemon_config_put(int fd, const char *body, size_t body_len)
 		}
 	}
 
+	{
+		const struct json_value *jud = json_object_get(root, "userns_default");
+
+		if (jud != NULL) {
+			if (jud->type != JSON_BOOL) {
+				json_free(root);
+				respond_error(fd, 400, "Bad Request", "userns_default must be a boolean");
+				return;
+			}
+			if (daemon_config_set_userns_default(jud->u.boolean) != DAEMON_CONFIG_OK) {
+				json_free(root);
+				respond_error(fd, 500, "Internal Server Error",
+				               "failed to persist userns_default");
+				return;
+			}
+		}
+	}
 	jhttp = json_object_get(root, "http_enabled");
 	if (jhttp != NULL && jhttp->type == JSON_BOOL) {
 		want_http = jhttp->u.boolean;
@@ -11581,7 +11600,18 @@ static int create_container_from_body(const char *body, size_t body_len,
 	ip_forward = (jip_forward != NULL && jip_forward->type == JSON_BOOL && jip_forward->u.boolean);
 	capture_output = (jcapture_output != NULL && jcapture_output->type == JSON_BOOL &&
 	                   jcapture_output->u.boolean);
-	userns = (juserns != NULL && juserns->type == JSON_BOOL && juserns->u.boolean);
+	/*
+	 * ADR-0207 phase 3, secure by default: an ABSENT "userns" field
+	 * takes the platform default (daemon_config, fresh installs: on);
+	 * an explicit true/false always wins, in both directions -- that
+	 * explicit false is the opt-out the whole posture rests on, used
+	 * by operators for workloads that genuinely need init-userns and
+	 * by the platform for its own build containers.
+	 */
+	if (juserns != NULL)
+		userns = (juserns->type == JSON_BOOL && juserns->u.boolean);
+	else
+		userns = daemon_config_userns_default();
 	dns_register = (jdns_register != NULL && jdns_register->type == JSON_BOOL &&
 	                jdns_register->u.boolean);
 	pki_issue = (jpki_issue != NULL && jpki_issue->type == JSON_BOOL && jpki_issue->u.boolean);
@@ -12417,7 +12447,46 @@ static int create_container_from_body(const char *body, size_t body_len,
 		struct stat rst;
 
 		snprintf(userns_rootfs, sizeof(userns_rootfs), "%s/rootfs", container_base);
-		if (stat(userns_rootfs, &rst) != 0) {
+		if (stat(userns_rootfs, &rst) == 0) {
+			/*
+			 * Revival: the rootfs IS this container's state; which
+			 * PRESENTATION it needs is read off the filesystem itself,
+			 * the same one-source-of-truth marker the direct-rootfs
+			 * mode uses. A snapshot-provisioned rootfs is owned by
+			 * host uid 0 (never chowned -- the id-mapped mount does
+			 * the presenting); a phase-2b copy is owned by its
+			 * subordinate base. No side state to drift.
+			 */
+			spec.userns_idmap = (rst.st_uid == 0);
+		} else if (cix_btrfs_is_backing(container_base) &&
+		           cix_btrfs_snapshot_or_copy(lowerdir, userns_rootfs) == 0) {
+			/*
+			 * ADR-0207 phase 3: on btrfs a userns container's rootfs
+			 * is the SAME O(1) writable snapshot a non-userns one
+			 * gets -- host-uid-0 owned, extent-sharing fully
+			 * preserved -- presented to the container through an
+			 * id-mapped mount instead of a per-inode chown (which
+			 * would rewrite every inode's metadata and cost the
+			 * sharing). One storage model, two presentations.
+			 */
+			spec.userns_idmap = 1;
+			if (spec.ov.quota_bytes > 0) {
+				if (cix_btrfs_qgroup_limit_excl(userns_rootfs,
+				                                 (unsigned long long)spec.ov.quota_bytes) !=
+				    0) {
+					json_free(root);
+					snprintf(err_msg, err_msg_size,
+					         "failed to set the btrfs qgroup quota on the userns rootfs");
+					return 500;
+				}
+				spec.ov.quota_bytes = 0;
+			}
+		} else {
+			/*
+			 * Non-btrfs (including the dev sandbox and unmigrated ext4
+			 * hosts): the ADR-0179 phase-2b copy+chown presentation,
+			 * proven live on real hardware, unchanged.
+			 */
 			const char *cp_argv[] = { "/usr/bin/cp", "--reflink=auto", "-a",
 			                          lowerdir, userns_rootfs, NULL };
 			long long base = 0;
@@ -12743,6 +12812,14 @@ static int create_container_from_body(const char *body, size_t body_len,
 	}
 
 	memset(&spec, 0, sizeof(spec));
+	{
+		/* fd sentinels: 0 is a valid fd, so "no idmapped volume tree"
+		 * must be -1, not the memset's zero (ADR-0207 phase 3). */
+		int vfi;
+
+		for (vfi = 0; vfi < CONTAINER_MAX_VOLUMES; vfi++)
+			spec.volume_idmap_fds[vfi] = -1;
+	}
 	spec.ns.clone_flags = CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWUTS | CLONE_NEWNET |
 	                       CLONE_NEWCGROUP | CLONE_INTO_CGROUP;
 	/*
@@ -12995,6 +13072,11 @@ static int create_container_from_body(const char *body, size_t body_len,
 	                        ip_forward,
 	                        device_attachments, device_count, file_paths, file_count, disk_name,
 	                        dns_server_ips, dns_server_count, &entry);
+	/* Observability for the ADR-0207 default flip: which isolation mode
+	 * this container actually got is a fact operators and tests need
+	 * readable back, not inferred. */
+	if (rerr == REGISTRY_OK && entry != NULL)
+		entry->userns_enabled = spec.userns_enabled;
 	/* Issue #49: mirror the requested quota for read-back (see
 	 * registry.h's own field comment for why this one isn't read live
 	 * from the kernel like the cgroup limits are). */
@@ -13250,6 +13332,7 @@ static int create_container_persisted(const char *body, size_t body_len,
                                        struct registry_entry **out_entry, char *err_msg,
                                        size_t err_msg_size)
 {
+	int body_has_userns = 0;
 	struct registry_entry *entry;
 	char restart_policy[16];
 	int restart_delay_seconds;
@@ -13275,6 +13358,9 @@ static int create_container_persisted(const char *body, size_t body_len,
 			json_free(root);
 			return 400;
 		}
+		/* Checked on the parsed tree, not with strstr -- "userns" can
+		 * legitimately appear inside a files[] content string. */
+		body_has_userns = json_object_get(root, "userns") != NULL;
 		json_free(root);
 	}
 
@@ -13318,21 +13404,39 @@ static int create_container_persisted(const char *body, size_t body_len,
 		size_t persisted_len = body_len;
 		const char *persist_src = body;
 
-		if (entry->image_version[0] != '\0') {
+		if (entry->image_version[0] != '\0' || !body_has_userns) {
 			size_t trim = body_len;
 
 			while (trim > 0 && (body[trim - 1] == ' ' || body[trim - 1] == '\t' ||
 			                     body[trim - 1] == '\n' || body[trim - 1] == '\r'))
 				trim--;
 			if (trim > 0 && body[trim - 1] == '}') {
-				persisted_body = malloc(trim + 128);
+				persisted_body = malloc(trim + 192);
 				if (persisted_body != NULL) {
-					int n;
+					int n = 0;
 
 					memcpy(persisted_body, body, trim - 1);
-					n = snprintf(persisted_body + (trim - 1), 128,
-					             ",\"image_version\":\"%s\"}", entry->image_version);
-					persisted_len = (trim - 1) + (size_t)n;
+					if (entry->image_version[0] != '\0')
+						n += snprintf(persisted_body + (trim - 1) + n, 96,
+						              ",\"image_version\":\"%s\"", entry->image_version);
+					/*
+					 * ADR-0207 phase 3: pin the RESOLVED isolation mode
+					 * into the persisted definition when the caller left
+					 * it to the default, exactly as image_version is
+					 * pinned above and for the same reason -- a revival
+					 * replays this body, and consulting the CURRENT
+					 * default then would silently flip a container's
+					 * isolation mode (and with it its whole storage
+					 * layout) on some future restart after an operator
+					 * changes the platform default. A container's mode
+					 * is decided once, at creation, visibly.
+					 */
+					if (!body_has_userns)
+						n += snprintf(persisted_body + (trim - 1) + n, 32,
+						              ",\"userns\":%s",
+						              entry->userns_enabled ? "true" : "false");
+					persisted_body[(trim - 1) + n] = '}';
+					persisted_len = (trim - 1) + (size_t)n + 1;
 					persist_src = persisted_body;
 				}
 			}
@@ -22331,6 +22435,16 @@ static void handle_pkg_resume(int fd, const char *body, size_t body_len)
 	 */
 	registry_remove(build_container_name);
 
+	/*
+	 * ADR-0207 phase 3 documented policy: the platform's own build
+	 * containers run WITHOUT a user namespace, explicitly -- trusted
+	 * internal infrastructure executing this project's own checksummed
+	 * recipes, with no security case for isolating them from the host
+	 * they build on. This is the standard opt-out field, stated rather
+	 * than inherited from a memset, so the policy survives any future
+	 * change to how these specs are built.
+	 */
+	spec.userns_enabled = 0;
 	rerr = registry_create(build_container_name, "pkgbuild", "", &spec, NULL, 0, 0, NULL, 0, NULL,
 	                        0, NULL, NULL, 0, &entry);
 	/* See handle_pkg_fetch_event()'s own identical close -- the child
@@ -25865,7 +25979,17 @@ static void handle_pkg_fetch_event(struct conn *cc)
 		}
 
 		pkg_build_container_name(chain_idx, build_container_name, sizeof(build_container_name));
-		rerr = registry_create(build_container_name, "pkgbuild", "", &spec, NULL, 0, 0, NULL, 0,
+		/*
+	 * ADR-0207 phase 3 documented policy: the platform's own build
+	 * containers run WITHOUT a user namespace, explicitly -- trusted
+	 * internal infrastructure executing this project's own checksummed
+	 * recipes, with no security case for isolating them from the host
+	 * they build on. This is the standard opt-out field, stated rather
+	 * than inherited from a memset, so the policy survives any future
+	 * change to how these specs are built.
+	 */
+	spec.userns_enabled = 0;
+	rerr = registry_create(build_container_name, "pkgbuild", "", &spec, NULL, 0, 0, NULL, 0,
 		                        NULL, 0, NULL, NULL, 0, &entry);
 		/*
 		 * This is the one real, queryable place this failure was

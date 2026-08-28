@@ -565,6 +565,8 @@ void registry_write_json_one(const struct registry_entry *entry, struct json_wri
 	jw_str(w, entry->image);
 	jw_key(w, "image_version");
 	jw_str(w, entry->image_version);
+	jw_key(w, "userns");
+	jw_bool(w, entry->userns_enabled);
 	jw_key(w, "status");
 	/* ADR-0180: a running entry mid-async-teardown reports the
 	 * teardown itself ("deleting"/"stopping"), not a misleading
