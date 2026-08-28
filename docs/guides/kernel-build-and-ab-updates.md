@@ -43,14 +43,19 @@ A real GCC toolchain, not TCC — this is unmodified upstream software, not this
 
 Using the [hostbuild](writing-recipes.md#the-hostbuild-variant) mechanism against `recipes/package/kernel/`, which reproduces the identical sequence above (including the modules build + a real `depmod`) inside a build container:
 
-`kernel.recipe`'s own `pkg_source` fetches `image/kernel/qemu-part1.config` from `http://127.0.0.1:8901/qemu-part1.config` (curl'd host-side, before the build container starts, same as the kernel tarball itself) — that address is never automatically served by anything, so start a plain local HTTP server pointed at the config's own directory first, from wherever this daemon's own host filesystem has the repo checked out:
+`kernel.recipe`'s own `pkg_source` fetches both the kernel tarball and `image/kernel/qemu-part1.config` host-side, before the build container starts — the config by its **pinned Gitea raw URL** (`.../raw/image/kernel/qemu-part1.config?ref=<commit>`), so the exact config a given kernel version was built against is fixed in the recipe and reviewable in git, the same as any other `pkg_source` entry. Nothing has to be served locally:
 
 ```
-cd image/kernel && python3 -m http.server 8901 --bind 127.0.0.1 &
-cixctl pkg hostbuild kernel --build-image=dev --wait
+cixctl pkg hostbuild kernel --build-image=<a gcc+kmod image> --wait
 ```
 
-`--build-image=dev` needs a real image with a working GCC toolchain **and `kmod` (`modprobe`/`depmod`/...)** already installed (this project's own "Phase 33" `dev` image, built up via ordinary `pkg install` calls the same way any build image is — see [`building-cix.md`](building-cix.md#1-build-a-toolchain-image) for the general pattern, substituting `gcc`/`make`/`kmod`/etc. for the TCC-specific set used there). Once `--wait` returns with `state: "installed"`, the finished `bzImage` is at that job's own `artifact_path` (`GET /pkg/hostbuild/kernel`), alongside a real `lib/modules/<kernelrelease>/` tree in the same artifact directory — `build/mkbootroot`'s own `<modules-dir>`/`<kmod-bin-dir>` arguments (see [`installing.md`](installing.md#building-the-iso)) stage both onto a real control-plane squashfs, so `cixd`'s own boot-time `modprobe` (ADR-0061) has something real to load on an installed system.
+> Earlier revisions of this recipe fetched that config from a scratch
+> `http://127.0.0.1:8901/` server the operator had to start by hand, and this
+> guide told you to run `python3 -m http.server 8901` first. That step is gone
+> — it predates the recipe being pinned to a real Gitea ref, and running it
+> today serves a port nothing reads.
+
+`--build-image=` needs a real image with a working GCC toolchain **and `kmod` (`modprobe`/`depmod`/...)** already installed, because the recipe compiles with `CC=/usr/bin/gcc` and finishes with a real `depmod`. Note that **`recipes/image/dev` does not currently satisfy this** — its manifest carries `binutils`/`bison`/`flex`/`make`/`tcc` but neither `gcc` nor `kmod` — so `--build-image=dev` against a `dev` image built from that recipe as-published will fail at the first compile. Build the image up with `gcc` and `kmod` added (both are ordinary recipes, and `gcc` installs straight from a cached artifact rather than recompiling), or use another image that has them — see [`building-cix.md`](building-cix.md#1-build-a-toolchain-image) for the general toolchain-image pattern. Once `--wait` returns with `state: "installed"`, the finished `bzImage` is at that job's own `artifact_path` (`GET /pkg/hostbuild/kernel`), alongside a real `lib/modules/<kernelrelease>/` tree in the same artifact directory — `build/mkbootroot`'s own `<modules-dir>`/`<kmod-bin-dir>` arguments (see [`installing.md`](installing.md#building-the-iso)) stage both onto a real control-plane squashfs, so `cixd`'s own boot-time `modprobe` (ADR-0061) has something real to load on an installed system.
 
 **Need a driver that isn't in the curated `=m` set at all?** (ADR-0159 Phase B) — `cixctl kmod-build --build-image=dev --symbol=CONFIG_DUMMY --wait` is the exact same `pkg hostbuild kernel` call above, gaining a `--symbol=` flag (repeatable) that merges extra `CONFIG_*` symbols into the same curated config, each forced to `=m`. No new mechanism, no persistent kernel-build-tree kept around between builds — deliberately not that, per [`docs/api/README.md`](../api/README.md#building-an-extra-kernel-module-adr-0159-phase-b)'s own note on the simpler design that was chosen instead. Applying the result is identical to any other kernel update: `cixctl update --kernel=<artifact_path>/bzImage` then a reboot onto the inactive slot (Step 2 below) — there is no live, same-boot way to add a module the curated set didn't already build.
 
