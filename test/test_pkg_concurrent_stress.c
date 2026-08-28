@@ -171,7 +171,7 @@ static int stage_fixture_tarball(const char *scratch_dir, const char *name, char
 	f = fopen(makefile, "w");
 	if (f == NULL)
 		return -1;
-	fprintf(f, "hello: hello.c\n\tgcc -o hello hello.c\n");
+	fprintf(f, "hello: hello.c\n\ttcc -o hello hello.c\n");
 	fprintf(f, "install:\n\tmkdir -p $(DESTDIR)/usr/bin\n\tcp hello $(DESTDIR)/usr/bin/%s\n", name);
 	fclose(f);
 
@@ -198,8 +198,9 @@ static int write_recipe(const char *pkg_state_dir, const char *name, const char 
 	fprintf(f, "pkg_version=1.0\n");
 	fprintf(f, "pkg_source=file://%s\n", tarball_path);
 	fprintf(f, "pkg_sha256=%s\n", sha256);
-	fprintf(f, "pkg_depends=\"\"\n\n");
-	fprintf(f, "pkg_build() {\n\tgcc -o hello hello.c\n}\n\n");
+	fprintf(f, "pkg_depends=\"\"\n");
+	fprintf(f, "pkg_build_depends=\"tcc libc-dev bash coreutils\"\n\n");
+	fprintf(f, "pkg_build() {\n\ttcc -o hello hello.c\n}\n\n");
 	fprintf(f, "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n\tcp hello "
 	           "\"$PKG_DESTDIR/usr/bin/%s\"\n}\n",
 	        name);
@@ -271,6 +272,13 @@ int main(void)
 
 	if (test_data_dir_create(data_dir_a, sizeof(data_dir_a)) != 0)
 		return 1;
+	/* ADR-0209: the build floor -- real recipe-built artifacts seeded
+	 * into this daemon's cache so installing them needs no build
+	 * environment. */
+	if (test_image_fixture_seed_floor_packages(data_dir_a, "build/floor-artifacts") != 0) {
+		fprintf(stderr, "could not seed the build floor (ADR-0209)\n");
+		return 1;
+	}
 	snprintf(pkg_state_a, sizeof(pkg_state_a), "%s/rebuildable/pkg", data_dir_a);
 	snprintf(images_base_a, sizeof(images_base_a), "%s/rebuildable/images/base", data_dir_a);
 	run_cmd("mkdir -p '%s/recipes'", pkg_state_a);
@@ -289,10 +297,37 @@ int main(void)
 	cix_client_init(&client_a, "127.0.0.1", PORT_A);
 	CHECK(wait_for_daemon(&client_a, 50) == 0, "daemon A became healthy");
 
-	memset(&r, 0, sizeof(r));
-	if (cix_client_request(&client_a, "POST", "/v1/pkg/bootstrap", NULL, &r) != 0 || r.status != 204)
-		CHECK(0, "POST /v1/pkg/bootstrap (daemon A)");
-	cix_response_free(&r);
+	{
+		static const char *const floor[] = { "bash", "coreutils", "tcc", "libc-dev", NULL };
+		int fi;
+
+		/* ADR-0209: the build floor, installed as cache hits from real
+		 * recipe-built artifacts -- no shared sandbox to inherit one
+		 * from, and nothing fabricated. */
+		for (fi = 0; floor[fi] != NULL; fi++) {
+			char fbody[160];
+			int fr;
+
+			snprintf(fbody, sizeof(fbody), "{\"name\":\"%s\"}", floor[fi]);
+			memset(&r, 0, sizeof(r));
+			cix_client_request(&client_a, "POST", "/v1/pkg/install", fbody, &r);
+			cix_response_free(&r);
+			for (fr = 0; fr < 600; fr++) {
+				const char *st = NULL;
+
+				memset(&r, 0, sizeof(r));
+				snprintf(fbody, sizeof(fbody), "/v1/pkg/%s", floor[fi]);
+				if (cix_client_request(&client_a, "GET", fbody, NULL, &r) == 0 && r.json != NULL)
+					st = json_str_field(r.json, "state");
+				if (st != NULL && strcmp(st, "installed") == 0) {
+					cix_response_free(&r);
+					break;
+				}
+				cix_response_free(&r);
+				usleep(300000);
+			}
+		}
+	}
 
 	/* Pin the concurrency ceiling to exactly N -- deterministic, and
 	 * proves the config genuinely governs how many of these N+1
@@ -367,6 +402,13 @@ int main(void)
 	if (test_data_dir_create(data_dir_b, sizeof(data_dir_b)) != 0) {
 		test_data_dir_cleanup(data_dir_a);
 		return 1;
+	/* ADR-0209: the build floor -- real recipe-built artifacts seeded
+	 * into this daemon's cache so installing them needs no build
+	 * environment. */
+	if (test_image_fixture_seed_floor_packages(data_dir_b, "build/floor-artifacts") != 0) {
+		fprintf(stderr, "could not seed the build floor (ADR-0209)\n");
+		return 1;
+	}
 	}
 	snprintf(pkg_state_b, sizeof(pkg_state_b), "%s/rebuildable/pkg", data_dir_b);
 	snprintf(images_base_b, sizeof(images_base_b), "%s/rebuildable/images/base", data_dir_b);
@@ -387,10 +429,37 @@ int main(void)
 	cix_client_init(&client_b, "127.0.0.1", PORT_B);
 	CHECK(wait_for_daemon(&client_b, 50) == 0, "daemon B became healthy");
 
-	memset(&r, 0, sizeof(r));
-	if (cix_client_request(&client_b, "POST", "/v1/pkg/bootstrap", NULL, &r) != 0 || r.status != 204)
-		CHECK(0, "POST /v1/pkg/bootstrap (daemon B)");
-	cix_response_free(&r);
+	{
+		static const char *const floor[] = { "bash", "coreutils", "tcc", "libc-dev", NULL };
+		int fi;
+
+		/* ADR-0209: the build floor, installed as cache hits from real
+		 * recipe-built artifacts -- no shared sandbox to inherit one
+		 * from, and nothing fabricated. */
+		for (fi = 0; floor[fi] != NULL; fi++) {
+			char fbody[160];
+			int fr;
+
+			snprintf(fbody, sizeof(fbody), "{\"name\":\"%s\"}", floor[fi]);
+			memset(&r, 0, sizeof(r));
+			cix_client_request(&client_b, "POST", "/v1/pkg/install", fbody, &r);
+			cix_response_free(&r);
+			for (fr = 0; fr < 600; fr++) {
+				const char *st = NULL;
+
+				memset(&r, 0, sizeof(r));
+				snprintf(fbody, sizeof(fbody), "/v1/pkg/%s", floor[fi]);
+				if (cix_client_request(&client_b, "GET", fbody, NULL, &r) == 0 && r.json != NULL)
+					st = json_str_field(r.json, "state");
+				if (st != NULL && strcmp(st, "installed") == 0) {
+					cix_response_free(&r);
+					break;
+				}
+				cix_response_free(&r);
+				usleep(300000);
+			}
+		}
+	}
 
 	for (i = 0; i < N_PACKAGES; i++) {
 		char body[64];

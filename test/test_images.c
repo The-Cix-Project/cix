@@ -309,8 +309,14 @@ int main(void)
 
 		snprintf(p1, sizeof(p1), "%s/lib64/ld-linux-x86-64.so.2", rootfs);
 		snprintf(p2, sizeof(p2), "%s/lib/x86_64-linux-gnu/libc.so.6", rootfs);
-		snprintf(p3, sizeof(p3), "%s/lib/x86_64-linux-gnu/libtinfo.so.6", rootfs);
-		if (stat(p1, &st) != 0 || stat(p2, &st) != 0 || stat(p3, &st) != 0) {
+		/* ADR-0209: libtinfo is no longer part of the baseline. It is
+		 * ncurses -- a package this project builds itself -- and the
+		 * baseline used to copy the host's copy of it into every image.
+		 * What a fresh image is guaranteed is the glibc floor, which is
+		 * what this asserts; anything needing libtinfo declares
+		 * ncurses. */
+		(void)p3;
+		if (stat(p1, &st) != 0 || stat(p2, &st) != 0) {
 			fprintf(stderr, "FAIL: imgtest_empty missing its own C runtime right after create\n");
 			ok = 0;
 		}

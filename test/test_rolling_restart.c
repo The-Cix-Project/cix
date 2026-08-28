@@ -210,7 +210,8 @@ static int write_binary_recipe(const char *pkg_state_dir, const char *version,
 	fprintf(f, "pkg_version=%s\n", version);
 	fprintf(f, "pkg_source=file://%s\n", tarball_path);
 	fprintf(f, "pkg_sha256=%s\n", sha256);
-	fprintf(f, "pkg_depends=\"\"\n\n");
+	fprintf(f, "pkg_depends=\"\"\n");
+	fprintf(f, "pkg_build_depends=\"tcc libc-dev bash coreutils\"\n\n");
 	/* No compiler needed -- rollsvc is already a real ELF binary. */
 	fprintf(f, "pkg_build() {\n\t:\n}\n\n");
 	fprintf(f, "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n\tcp rollsvc "
@@ -289,6 +290,18 @@ int main(void)
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
+	/*
+	 * ADR-0209: the build floor. Real, recipe-built package artifacts
+	 * seeded into this daemon's own cache, so installing them is a
+	 * cache hit that needs no build environment -- the same way a fresh
+	 * host gets its first packages. There is no shared sandbox to
+	 * inherit one from any more, and nothing here is fabricated.
+	 */
+	if (test_image_fixture_seed_floor_packages(g_data_dir, "build/floor-artifacts") != 0) {
+		fprintf(stderr, "could not seed the build floor -- fetch the real package artifacts "
+		                "into build/floor-artifacts first (ADR-0209)\n");
+		return 1;
+	}
 	if (mkdtemp(scratch_dir) == NULL) {
 		fprintf(stderr, "FAIL: mkdtemp\n");
 		test_data_dir_cleanup(g_data_dir);
@@ -317,10 +330,34 @@ int main(void)
 	 * from this sandbox's own real host environment (same call
 	 * test_pkg.c's own scenario 1 makes), needed before any install
 	 * below can create its build container. */
-	memset(&r, 0, sizeof(r));
-	CHECK(cix_client_request(&client, "POST", "/v1/pkg/bootstrap", NULL, &r) == 0 && r.status == 204,
-	      "POST /v1/pkg/bootstrap");
-	cix_response_free(&r);
+	{
+		static const char *const floor[] = { "bash", "coreutils", "tcc", "libc-dev", NULL };
+		int fi;
+
+		for (fi = 0; floor[fi] != NULL; fi++) {
+			char fbody[128];
+			int fr;
+
+			snprintf(fbody, sizeof(fbody), "{\"name\":\"%s\"}", floor[fi]);
+			memset(&r, 0, sizeof(r));
+			cix_client_request(&client, "POST", "/v1/pkg/install", fbody, &r);
+			cix_response_free(&r);
+			for (fr = 0; fr < 600; fr++) {
+				const char *st = NULL;
+
+				memset(&r, 0, sizeof(r));
+				snprintf(fbody, sizeof(fbody), "/v1/pkg/%s", floor[fi]);
+				if (cix_client_request(&client, "GET", fbody, NULL, &r) == 0 && r.json != NULL)
+					st = json_str_field(r.json, "state");
+				if (st != NULL && strcmp(st, "installed") == 0) {
+					cix_response_free(&r);
+					break;
+				}
+				cix_response_free(&r);
+				usleep(300000);
+			}
+		}
+	}
 
 	/* --- rolling-config GET/PUT round trip, and range validation --- */
 	memset(&r, 0, sizeof(r));
@@ -455,7 +492,8 @@ int main(void)
 
 			snprintf(content, sizeof(content),
 			         "pkg_name=rollsvc\npkg_version=2.0\npkg_source=file://%s\n"
-			         "pkg_sha256=%s\npkg_depends=\"\"\n\n"
+			         "pkg_sha256=%s\npkg_depends=\"\"\n"
+		         "pkg_build_depends=\"tcc libc-dev bash coreutils\"\n\n"
 			         "pkg_build() {\n\t:\n}\n\n"
 			         "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n\tcp rollsvc "
 			         "\"$PKG_DESTDIR/usr/bin/rollsvc\"\n\tchmod +x "
@@ -595,7 +633,8 @@ int main(void)
 
 		snprintf(content, sizeof(content),
 		         "pkg_name=rollsvc\npkg_version=3.0\npkg_source=file://%s\n"
-		         "pkg_sha256=%s\npkg_depends=\"\"\n\n"
+		         "pkg_sha256=%s\npkg_depends=\"\"\n"
+		         "pkg_build_depends=\"tcc libc-dev bash coreutils\"\n\n"
 		         "pkg_build() {\n\t:\n}\n\n"
 		         "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n\tcp rollsvc "
 		         "\"$PKG_DESTDIR/usr/bin/rollsvc\"\n\tchmod +x "

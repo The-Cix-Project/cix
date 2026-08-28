@@ -190,7 +190,7 @@ static int stage_source_tarball(const char *scratch_dir, const char *name, const
 	f = fopen(makefile, "w");
 	if (f == NULL)
 		return -1;
-	fprintf(f, "hello: hello.c\n\tgcc -o hello hello.c\n");
+	fprintf(f, "hello: hello.c\n\ttcc -o hello hello.c\n");
 	fclose(f);
 
 	snprintf(out_tarball_path, tarball_path_size, "%s/%s-%s.tarball", scratch_dir, name, version);
@@ -219,9 +219,10 @@ static int write_recipe(const char *pkg_state_dir, const char *name, const char 
 	fprintf(f, "pkg_source=%s\n", source_url);
 	fprintf(f, "pkg_sha256=%s\n", source_sha256);
 	fprintf(f, "pkg_depends=\"\"\n");
+	fprintf(f, "pkg_build_depends=\"tcc libc-dev bash coreutils\"\n");
 	if (artifact_sha256 != NULL && artifact_sha256[0] != '\0')
 		fprintf(f, "pkg_artifact_sha256=%s\n", artifact_sha256);
-	fprintf(f, "\npkg_build() {\n\tgcc -o hello hello.c\n}\n\n");
+	fprintf(f, "\npkg_build() {\n\ttcc -o hello hello.c\n}\n\n");
 	fprintf(f, "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n\tcp hello "
 	           "\"$PKG_DESTDIR/usr/bin/%s\"\n}\n",
 	        name);
@@ -338,6 +339,18 @@ int main(void)
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
+	/*
+	 * ADR-0209: the build floor. Real, recipe-built package artifacts
+	 * seeded into this daemon's own cache, so installing them is a
+	 * cache hit that needs no build environment -- the same way a fresh
+	 * host gets its first packages. There is no shared sandbox to
+	 * inherit one from any more, and nothing here is fabricated.
+	 */
+	if (test_image_fixture_seed_floor_packages(g_data_dir, "build/floor-artifacts") != 0) {
+		fprintf(stderr, "could not seed the build floor -- fetch the real package artifacts "
+		                "into build/floor-artifacts first (ADR-0209)\n");
+		return 1;
+	}
 	snprintf(g_pkg_state_dir, sizeof(g_pkg_state_dir), "%s/rebuildable/pkg", g_data_dir);
 	snprintf(g_cache_dir, sizeof(g_cache_dir), "%s/cache", g_pkg_state_dir);
 
@@ -367,10 +380,42 @@ int main(void)
 		return 1;
 	}
 
-	memset(&r, 0, sizeof(r));
-	CHECK(cix_client_request(&client, "POST", "/v1/pkg/bootstrap", NULL, &r) == 0 && r.status == 204,
-	      "POST /v1/pkg/bootstrap");
-	cix_response_free(&r);
+	{
+		static const char *const floor[] = { "bash", "coreutils", "tcc", "libc-dev", NULL };
+		int fi;
+
+		for (fi = 0; floor[fi] != NULL; fi++) {
+			char fbody[128];
+			int fr;
+
+			snprintf(fbody, sizeof(fbody), "{\"name\":\"%s\"}", floor[fi]);
+			memset(&r, 0, sizeof(r));
+			cix_client_request(&client, "POST", "/v1/pkg/install", fbody, &r);
+			cix_response_free(&r);
+			for (fr = 0; fr < 600; fr++) {
+				const char *st = NULL;
+
+				memset(&r, 0, sizeof(r));
+				snprintf(fbody, sizeof(fbody), "/v1/pkg/%s", floor[fi]);
+				if (cix_client_request(&client, "GET", fbody, NULL, &r) == 0 && r.json != NULL)
+					st = json_str_field(r.json, "state");
+				if (st != NULL && strcmp(st, "installed") == 0) {
+					cix_response_free(&r);
+					break;
+				}
+				cix_response_free(&r);
+				usleep(300000);
+			}
+		}
+		/* The floor has done its job. Its tarballs are ~90 MB and this
+		 * test reasons about cache size and LRU eviction, so leaving
+		 * them in would change the subject -- and did: they evicted the
+		 * very entries under test. */
+		if (test_image_fixture_clear_floor_cache(g_data_dir) != 0) {
+			fprintf(stderr, "could not clear the floor from the cache\n");
+			return 1;
+		}
+	}
 
 	{
 		char source_url[600];
@@ -466,7 +511,17 @@ int main(void)
 		 * fits at a time (~a few KB each), forcing the older
 		 * cachetest-1.0 entry to be evicted once cachetest2 is cached. */
 		memset(&r, 0, sizeof(r));
-		CHECK(cix_client_request(&client, "PUT", "/v1/pkg/cache-config", "{\"max_bytes\":4096}",
+		/*
+		 * 2048, not 4096. The cap has to admit exactly one artifact and
+		 * refuse the second, and the artifacts got smaller: fixture
+		 * recipes compile with tcc now rather than the host's gcc
+		 * (ADR-0209 -- tcc is what this project builds with, and what
+		 * the seeded floor actually contains). A tcc-built hello packs
+		 * to ~1.1 KB against gcc's ~2.3 KB, so two of them fit under
+		 * 4096 and nothing was ever evicted -- the test passed on
+		 * arithmetic that no longer held. Measured, not guessed.
+		 */
+		CHECK(cix_client_request(&client, "PUT", "/v1/pkg/cache-config", "{\"max_bytes\":2048}",
 		                         &r) == 0 &&
 		              r.status == 200,
 		      "PUT /v1/pkg/cache-config (tiny cap, forces eviction)");
@@ -487,7 +542,7 @@ int main(void)
 		if (r.json != NULL) {
 			long total = cache_json_long(r.json, "current_bytes");
 
-			CHECK(total <= 4096, "cache stays under its own tiny configured cap after eviction");
+			CHECK(total <= 2048, "cache stays under its own tiny configured cap after eviction");
 		}
 		cix_response_free(&r);
 
