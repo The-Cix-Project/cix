@@ -48,4 +48,4 @@
 #             what the image holds computes an artifact URL that does
 #             not resolve.
 #
-image_packages="bash:pinned:5.2.37 binutils:pinned:2.42-8 flex:pinned:2.6.4-4 gawk:pinned:5.3.0-2 grep:pinned:3.11-2 libc-dev:pinned:2.36-5 m4:pinned:1.4.19-2 make:pinned:4.4.1 sed:pinned:4.9-2 tcc:pinned:0.9.27-9 zlib:pinned:1.3.2-6"
+image_packages="bash:pinned:5.2.37 binutils:pinned:2.42-8 flex:pinned:2.6.4-4 gawk:pinned:5.3.0-2 grep:pinned:3.11-2 libc-dev:pinned:2.36-6 m4:pinned:1.4.19-2 make:pinned:4.4.1 sed:pinned:4.9-2 tcc:pinned:0.9.27-9 zlib:pinned:1.3.2-6"
