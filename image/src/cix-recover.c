@@ -192,7 +192,8 @@ static int recover_main(void)
 
 	if (ensure_dir(CONTAINERS_MOUNT) != 0)
 		return 1;
-	if (mount(CONTAINERS_DEVICE, CONTAINERS_MOUNT, "ext4", 0, NULL) != 0) {
+	if (mount(CONTAINERS_DEVICE, CONTAINERS_MOUNT, "btrfs", 0, NULL) != 0 &&
+	    mount(CONTAINERS_DEVICE, CONTAINERS_MOUNT, "ext4", 0, NULL) != 0) {
 		dual_perror("mount " CONTAINERS_DEVICE);
 		dual_printf(
 		    "Could not mount %s -- this recovery tool only supports the standard layout\n"

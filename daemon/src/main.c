@@ -1639,7 +1639,16 @@ static int boot_init(void)
 		perror("mount devpts");
 		return -1;
 	}
-	if (mount(CONTAINERS_DEVICE, g_base_dir, "ext4", MS_NOSUID | MS_NODEV, NULL) != 0 &&
+	/* ADR-0207 phase 4: btrfs is the install default for this
+	 * partition; ext4 is what every not-yet-migrated box still has.
+	 * Tried in that order -- mount(2) needs the type named, and
+	 * probing the superblock here would be a second copy of what the
+	 * kernel's own mount rejection already tells us for free. The
+	 * ext4 branch retires with the rest of ext4 once btrfs has run
+	 * production (the ADR's staged retirement), leaving one type
+	 * again. */
+	if (mount(CONTAINERS_DEVICE, g_base_dir, "btrfs", MS_NOSUID | MS_NODEV, NULL) != 0 &&
+	    mount(CONTAINERS_DEVICE, g_base_dir, "ext4", MS_NOSUID | MS_NODEV, NULL) != 0 &&
 	    mount_or_fail("tmpfs", g_base_dir, "tmpfs", MS_NOSUID | MS_NODEV) != 0)
 		return -1;
 	/*
@@ -1740,7 +1749,8 @@ static int boot_init(void)
 	 * main(), once network_init() has made network_create()/
 	 * network_attach_interface() usable (Part 0.5) -- boot_init() itself
 	 * stays purely about mounts and bringing lo up, as its name implies. */
-	mount(CONFIG_DEVICE, CONFIG_DIR, "ext4", 0, NULL);
+	if (mount(CONFIG_DEVICE, CONFIG_DIR, "btrfs", 0, NULL) != 0)
+		mount(CONFIG_DEVICE, CONFIG_DIR, "ext4", 0, NULL);
 
 	/*
 	 * A fresh kernel boot brings lo up as a device but leaves it

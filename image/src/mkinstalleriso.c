@@ -74,7 +74,10 @@ static const char *const g_lib_closure[] = {
 	 * enroll_signing_key()'s "mokutil --import" call in cix-install.c. */
 	"/lib/x86_64-linux-gnu/libcrypto.so.3",    "/lib/x86_64-linux-gnu/libefivar.so.1",
 	"/lib/x86_64-linux-gnu/libkeyutils.so.1",  "/lib/x86_64-linux-gnu/libcrypt.so.1",
-	"/lib/x86_64-linux-gnu/libdl.so.2",        NULL,
+	"/lib/x86_64-linux-gnu/libdl.so.2",
+	/* mkfs.btrfs's own closure beyond what's above (ldd-checked):
+	 * libuuid/libblkid are already staged, libudev is not. */
+	"/lib/x86_64-linux-gnu/libudev.so.1",      NULL,
 };
 
 static int ensure_dir(const char *path)
@@ -266,6 +269,14 @@ int main(int argc, char **argv)
 		return 1;
 	snprintf(dst, sizeof(dst), "%s/usr/sbin/mkfs.ext4", stage_dir);
 	if (test_image_fixture_copy_file("/usr/sbin/mke2fs", dst) != 0)
+		return 1;
+	/* ADR-0207 phase 4: btrfs is the install default for the platform
+	 * partitions -- cix-install.c's mkfs_btrfs() calls this. ext4
+	 * stays staged through the transition (the tolerant boot mounts
+	 * accept either), retiring only once btrfs has run production on
+	 * .95 -- the staged retirement the ADR specifies. */
+	snprintf(dst, sizeof(dst), "%s/usr/sbin/mkfs.btrfs", stage_dir);
+	if (test_image_fixture_copy_file("/usr/sbin/mkfs.btrfs", dst) != 0)
 		return 1;
 	if (ensure_dir_under(stage_dir, "usr/bin") != 0)
 		return 1;
