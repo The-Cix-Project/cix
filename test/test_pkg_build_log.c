@@ -355,24 +355,26 @@ int main(void)
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
-	/*
-	 * ADR-0209: the build floor. Real, recipe-built package artifacts
-	 * seeded into this daemon's own cache, so installing them is a
-	 * cache hit that needs no build environment -- the same way a fresh
-	 * host gets its first packages. There is no shared sandbox to
-	 * inherit one from any more, and nothing here is fabricated.
-	 */
-	if (test_image_fixture_seed_floor_packages(g_data_dir, "build/floor-artifacts") != 0) {
-		fprintf(stderr, "could not seed the build floor -- fetch the real package artifacts "
-		                "into build/floor-artifacts first (ADR-0209)\n");
-		return 1;
-	}
 	snprintf(g_pkg_state_dir, sizeof(g_pkg_state_dir), "%s/rebuildable/pkg", g_data_dir);
 	snprintf(g_images_base_dir, sizeof(g_images_base_dir), "%s/rebuildable/images/base", g_data_dir);
 	snprintf(g_pkgbuild_rootfs, sizeof(g_pkgbuild_rootfs), "%s/rebuildable/images/pkgbuild", g_data_dir);
 
 	reset_state();
 	run_cmd("mkdir -p '%s/recipes'", g_pkg_state_dir);
+	/*
+	 * ADR-0209: the build floor -- real recipe-built artifacts seeded
+	 * into this daemon's own cache so installing them is a cache hit
+	 * needing no build environment. Seeded AFTER reset_state(), which
+	 * wipes the pkg directory: doing it before meant the recipes were
+	 * deleted moments later and every floor install failed with "no
+	 * such recipe", which then surfaced three screens away as a build
+	 * complaining that tcc was not installed.
+	 */
+	if (test_image_fixture_seed_floor_packages(g_data_dir, "build/floor-artifacts") != 0) {
+		fprintf(stderr, "could not seed the build floor -- fetch the real package artifacts "
+		                "into build/floor-artifacts first (ADR-0209)\n");
+		return 1;
+	}
 
 	if (mkdtemp(scratch_dir) == NULL) {
 		fprintf(stderr, "FAIL: mkdtemp\n");
@@ -409,7 +411,15 @@ int main(void)
 
 			snprintf(fbody, sizeof(fbody), "{\"name\":\"%s\"}", floor[fi]);
 			memset(&r, 0, sizeof(r));
-			cix_client_request(&client, "POST", "/v1/pkg/install", fbody, &r);
+			if (cix_client_request(&client, "POST", "/v1/pkg/install", fbody, &r) != 0 ||
+			    (r.status != 202 && r.status != 200)) {
+				/* A floor install that fails silently is how a later
+				 * build ends up reporting a missing tool that was
+				 * supposed to be here -- say it at the point it goes
+				 * wrong, not three screens later. */
+				fprintf(stderr, "FAIL: floor install of %s: status=%d %.200s\n", floor[fi],
+				        r.status, r.body != NULL ? r.body : "");
+			}
 			cix_response_free(&r);
 			for (fr = 0; fr < 600; fr++) {
 				const char *st = NULL;
@@ -473,8 +483,28 @@ int main(void)
 	}
 	cix_response_free(&r);
 
-	CHECK(wait_for_pkg_state(&client, "slowbuild", "building", 100) == 0,
-	      "slowbuild reached state=building before this test's own timeout");
+	if (wait_for_pkg_state(&client, "slowbuild", "building", 100) != 0) {
+		/* Say WHY, not just that it did not happen: a package that
+		 * fails fast never passes through "building" at all, and the
+		 * reason is sitting in its own error field. Without this the
+		 * failure is indistinguishable from a timeout. */
+		memset(&r, 0, sizeof(r));
+		cix_client_request(&client, "GET", "/v1/pkg/slowbuild", NULL, &r);
+		{
+			char now_sha[128] = { 0 };
+
+			(void)compute_file_sha256(tarball_path, now_sha, sizeof(now_sha));
+			fprintf(stderr,
+			        "FAIL: slowbuild reached state=building before this test's own timeout\n"
+			        "      slowbuild is: %.400s\n"
+			        "      recipe sha : %s\n"
+			        "      tarball now: %s (%s)\n",
+			        r.body != NULL ? r.body : "(no response)", sha256, now_sha,
+			        strcmp(sha256, now_sha) == 0 ? "unchanged" : "CHANGED since the recipe was written");
+		}
+		cix_response_free(&r);
+		g_failures++;
+	}
 
 	fd = raw_connect(TEST_PORT);
 	CHECK(fd >= 0, "raw_connect for live build-log attach");
