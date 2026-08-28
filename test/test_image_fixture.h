@@ -170,4 +170,34 @@ int test_image_fixture_read_current_version(const char *image_dir, char *out_ver
  */
 int test_image_fixture_write_manifest(const char *image_dir, const char *version);
 
+/*
+ * ADR-0209: seeds a test daemon's own package cache with REAL,
+ * recipe-built package artifacts, and copies in the real recipes that
+ * approve them.
+ *
+ * This is how a test gets a working build environment now that there
+ * is no fungible sandbox and no fallback. It is deliberately the same
+ * mechanism a fresh host uses, not a test-specific one: a package
+ * whose tarball is already in the local cache installs as a cache hit,
+ * which needs no build environment at all -- so the chicken-and-egg
+ * ("you need bash to build bash") is broken by an artifact, exactly as
+ * it is in production, rather than by anything invented for tests.
+ *
+ * What it does NOT do is fabricate a toolchain. An earlier draft of
+ * this tarred up the build host's own bash and called it a package;
+ * that is a binary blob wearing a package's name, and it would have
+ * quietly put host content back into the one place we are trying to
+ * make deterministic. These bytes are the real artifacts, built by a
+ * Cix host from the real recipes, and each is checked here against the
+ * pkg_artifact_sha256 committed in its own recipe before use -- if a
+ * file has been tampered with or a recipe re-pinned, the test fails
+ * rather than proceeding on unverified bytes.
+ *
+ * artifacts_dir is a directory holding <name>-<version>.tar.gz files
+ * (build/floor-artifacts in this repo). data_dir is the test's own
+ * --data-dir. Returns 0, or -1 with a diagnostic naming what was
+ * missing or failed verification.
+ */
+int test_image_fixture_seed_floor_packages(const char *data_dir, const char *artifacts_dir);
+
 #endif /* TEST_IMAGE_FIXTURE_H */
