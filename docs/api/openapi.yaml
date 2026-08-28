@@ -4866,6 +4866,49 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /images/gc:
+    post:
+      summary: >
+        Reclaims image versions that nothing references (ADR-0209).
+        Every package install produces a new immutable version
+        (ADR-0107/0108) and nothing else ever removes one -- before this
+        endpoint existed there was no reclamation anywhere in the API,
+        and 66 versions of an 8 GB rootfs filled a 16 GiB partition.
+
+        A version is kept if it is its image's current_version, if a
+        container in the registry pins it, or if a stored container
+        definition names it (a stopped container has no registry entry
+        but will be revived from its definition, so collecting its
+        version would leave it unable to start).
+
+        Refused with 409 while any package job is in flight: a build
+        holds its image's rootfs as its container's lowerdir, and
+        collection is never urgent enough to race one.
+      operationId: imagesGc
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                dry_run:
+                  type: boolean
+                  description: Report what would be reclaimed without removing anything.
+      responses:
+        "200":
+          description: What was reclaimed (or would be, for a dry run)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImageGcResult"
+        "409":
+          description: A package job is in flight
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /images:
     get:
       summary: List every image known to this daemon (each a directory under images_dir with its own rootfs/)
@@ -13167,6 +13210,45 @@ components:
             content:
               type: string
               description: The full text of the image recipe file (image_packages=/image_artifact_sha256=).
+
+    ImageGcResult:
+      type: object
+      required: [dry_run, reclaimed, collected, kept, failed, apparent_bytes_total]
+      properties:
+        dry_run:
+          type: boolean
+        reclaimed:
+          type: array
+          items:
+            type: object
+            required: [image, version, apparent_bytes]
+            properties:
+              image:
+                type: string
+              version:
+                type: string
+              apparent_bytes:
+                type: integer
+                description: >
+                  Apparent size of the removed version, summed over its files.
+                  On btrfs a version is a snapshot sharing extents with its
+                  neighbours, so the space actually returned to the filesystem
+                  is typically well below this. Reported as apparent rather
+                  than omitted because an operator deciding whether to collect
+                  wants the magnitude.
+        collected:
+          type: integer
+        kept:
+          type: integer
+          description: Versions left in place because something still references them.
+        failed:
+          type: integer
+          description: >
+            Versions that were unreferenced but could not be removed. One
+            stubborn version does not stop the rest being reclaimed; the
+            reason is written to the log store.
+        apparent_bytes_total:
+          type: integer
 
     ContainerRecipe:
       type: object

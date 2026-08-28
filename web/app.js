@@ -338,6 +338,8 @@ function openModal(formId, title) {
 	modalOverlay.hidden = false;
 }
 
+document.getElementById("images-gc-preview").addEventListener("click", () => runImageGc(true));
+document.getElementById("images-gc").addEventListener("click", () => runImageGc(false));
 document.getElementById("modal-close").addEventListener("click", closeModal);
 modalOverlay.addEventListener("click", (event) => {
 	if (event.target === modalOverlay)
@@ -4192,6 +4194,61 @@ async function refreshImages() {
 	const data = await apiRequest("GET", "/v1/images");
 	cache.images = data.images;
 	renderImages(cache.images);
+}
+
+/*
+ * ADR-0209: image version collection.
+ *
+ * Preview and reclaim are the same endpoint, differing only by
+ * dry_run. The preview exists because the reclaim is irreversible and
+ * the operator has no other way to see which versions are unreferenced
+ * -- the Versions tab shows what an image HAS, not what is holding it.
+ */
+async function runImageGc(dryRun) {
+	const box = document.getElementById("images-gc-status");
+
+	/* Hidden until it has something to say -- an always-present empty
+	 * panel reads as a broken element rather than an idle one. */
+	box.hidden = false;
+	box.textContent = dryRun ? "Checking…" : "Reclaiming…";
+	try {
+		const res = await apiRequest("POST", "/v1/images/gc", { dry_run: dryRun });
+		const list = res.reclaimed || [];
+
+		box.textContent = "";
+		if (list.length === 0) {
+			const p = document.createElement("p");
+
+			p.textContent = "Nothing to reclaim — every image version is referenced ("
+				+ res.kept + " kept).";
+			box.appendChild(p);
+		} else {
+			for (const e of list) {
+				const p = document.createElement("p");
+
+				p.textContent = (dryRun ? "Would remove " : "Removed ")
+					+ e.image + "@" + String(e.version).slice(0, 12)
+					+ " — " + formatBytes(e.apparent_bytes);
+				box.appendChild(p);
+			}
+			const sum = document.createElement("p");
+
+			/* "apparent" is load-bearing, not a hedge: on btrfs a version is a
+			 * snapshot sharing extents with its neighbours, so the space
+			 * actually returned is usually well below this figure. */
+			sum.textContent = (dryRun ? "Would reclaim " : "Reclaimed ") + list.length
+				+ " version(s), " + formatBytes(res.apparent_bytes_total)
+				+ " apparent; " + res.kept + " kept"
+				+ (res.failed > 0 ? ", " + res.failed + " could not be removed" : "") + ".";
+			box.appendChild(sum);
+		}
+		if (!dryRun)
+			await refreshImages();
+	} catch (e) {
+		box.hidden = true;
+		box.textContent = "";
+		showStatus("Image reclaim failed: " + e.message, true);
+	}
 }
 
 async function removeImage(name) {

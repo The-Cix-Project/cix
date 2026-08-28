@@ -368,6 +368,106 @@ enum image_error image_delete(const char *name)
 	return IMAGE_OK;
 }
 
+/*
+ * ADR-0209: every version directory that exists ON DISK for this image.
+ *
+ * Read from the filesystem rather than from the state file's own
+ * versions[] list, because it is the disk that holds the bytes and the
+ * two can drift: IMAGE_MAX_VERSION_HISTORY caps the recorded list at
+ * 256 while image_record_version() keeps repointing current_version
+ * past that bound, so a long-lived image can own directories its own
+ * history no longer names. A collector that trusted the list would
+ * walk straight past exactly the versions most worth reclaiming.
+ *
+ * ".staging.<pid>" leftovers are skipped by the leading-dot rule, the
+ * same convention image_delete() already relies on.
+ */
+int image_ondisk_versions(const char *name, char out[][IMAGE_VERSION_MAX], int max)
+{
+	char image_dir[PATH_MAX];
+	DIR *d;
+	struct dirent *ent;
+	int count = 0;
+
+	if (!image_name_is_valid(name))
+		return 0;
+	snprintf(image_dir, sizeof(image_dir), "%s/%s", g_images_dir, name);
+	d = opendir(image_dir);
+	if (d == NULL)
+		return 0;
+	while (count < max && (ent = readdir(d)) != NULL) {
+		char rootfs[PATH_MAX];
+		struct stat st;
+
+		if (ent->d_name[0] == '.')
+			continue;
+		/* A version directory is one that actually holds a rootfs.
+		 * manifest.json and any other bookkeeping file sitting beside
+		 * the version directories is skipped by this test rather than
+		 * by name, so a future sibling file needs no change here. */
+		snprintf(rootfs, sizeof(rootfs), "%s/%s/rootfs", image_dir, ent->d_name);
+		if (stat(rootfs, &st) == 0 && S_ISDIR(st.st_mode))
+			snprintf(out[count++], IMAGE_VERSION_MAX, "%s", ent->d_name);
+	}
+	closedir(d);
+	return count;
+}
+
+/*
+ * Deletes one version: its rootfs, its version directory, and its entry
+ * in the recorded history.
+ *
+ * Refuses the current version outright. That is not a convenience
+ * check -- current_version is what a fresh container is created from,
+ * so removing it turns every subsequent create into "image rootfs does
+ * not exist" with nothing to point at the cause.
+ *
+ * Subvolume-aware for the same reason image_delete() is (ADR-0207): on
+ * btrfs a version rootfs is a subvolume, which rmdir() cannot remove,
+ * so persist_remove_tree() alone would fail.
+ */
+enum image_error image_delete_version(const char *name, const char *version)
+{
+	struct image_state st;
+	char rootfs[PATH_MAX], version_dir[PATH_MAX];
+	struct stat vst;
+	int i, w;
+
+	if (!image_name_is_valid(name) || version == NULL || version[0] == '\0' ||
+	    strchr(version, '/') != NULL || strcmp(version, ".") == 0 || strcmp(version, "..") == 0)
+		return IMAGE_ERR_NOT_FOUND;
+	if (load_state(name, &st) != 0)
+		return IMAGE_ERR_NOT_FOUND;
+	if (strcmp(st.current_version, version) == 0)
+		return IMAGE_ERR_PROTECTED;
+
+	snprintf(version_dir, sizeof(version_dir), "%s/%s/%s", g_images_dir, name, version);
+	if (stat(version_dir, &vst) != 0 || !S_ISDIR(vst.st_mode))
+		return IMAGE_ERR_NOT_FOUND;
+
+	image_version_rootfs_path(name, version, rootfs, sizeof(rootfs));
+	cix_btrfs_subvol_delete_or_rmtree(rootfs);
+	if (persist_remove_tree(version_dir) != 0)
+		return IMAGE_ERR_DELETE_FAILED;
+
+	/* Drop it from the recorded history too, so GET .../versions stops
+	 * offering a version whose bytes are gone. Absent from the list is
+	 * not an error: the list is capped and the disk is authoritative. */
+	for (i = 0, w = 0; i < st.version_count; i++) {
+		if (strcmp(st.versions[i].version, version) == 0)
+			continue;
+		if (w != i)
+			st.versions[w] = st.versions[i];
+		w++;
+	}
+	if (w != st.version_count) {
+		st.version_count = w;
+		if (save_state(name, &st) != 0)
+			return IMAGE_ERR_PERSIST_FAILED;
+	}
+	return IMAGE_OK;
+}
+
 int image_list_names(char names[][PKG_IMAGE_NAME_MAX], int max)
 {
 	DIR *d;
