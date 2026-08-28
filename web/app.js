@@ -4241,7 +4241,6 @@ function renderImageDetail(name) {
 	renderImageDetailRecipes(name);
 	refreshImageDetailVersioning(name);
 	renderImageRecipeTab(name);
-	refreshImageRecipeApplyStatus();
 
 	document.getElementById("imgd-remove").onclick = () => removeImage(name);
 	document.getElementById("imgd-add-recipe").onclick = () => openModal("pkg-recipe-form", "Add or update a recipe");
@@ -4314,7 +4313,6 @@ function renderImageRecipeTab(name) {
 					: "Recipe applied for " + name,
 				false
 			);
-			await refreshImageRecipeApplyStatus();
 			await refreshImageDetailVersioning(name);
 		} catch (e) {
 			showStatus("Failed to apply recipe for " + name + ": " + e.message, true);
@@ -4322,32 +4320,6 @@ function renderImageRecipeTab(name) {
 	};
 }
 
-async function refreshImageRecipeApplyStatus() {
-	const box = document.getElementById("imgd-recipe-apply-status");
-	const route = parseHash();
-
-	if (route.category !== "images" || route.name === null)
-		return;
-	try {
-		const status = await apiRequest("GET", "/v1/images/recipe-apply-status");
-
-		box.textContent = "";
-		const lines = [
-			["State", status.state],
-			["Image", status.image || "-"],
-			["Last attempt", status.last_attempt || "(never)"],
-			["Error", status.error || "-"],
-		];
-		for (const [label, value] of lines) {
-			const p = document.createElement("p");
-
-			p.textContent = label + ": " + value;
-			box.appendChild(p);
-		}
-	} catch (e) {
-		box.textContent = "Failed to load apply status: " + e.message;
-	}
-}
 
 document.getElementById("image-recipe-form").addEventListener("submit", async (event) => {
 	event.preventDefault();
@@ -4915,9 +4887,9 @@ function diskRoleFor(diskName) {
 /*
  * Format status is per-disk (GET /disks/{name}/format), unlike every
  * other cached resource here which is one list call -- fetched only
- * while the Disks page is actually showing (same "only while this
- * page is open" guard refreshImageRecipeApplyStatus() already
- * established), and only for disks that could ever have a job at all
+ * while the Disks page is actually showing (the same "only while this
+ * page is open" guard the other per-page refreshers use), and only for
+ * disks that could ever have a job at all
  * (role-assigned, non-OS disks) rather than every disk on the box, to
  * keep this bounded regardless of how many disks exist.
  */
@@ -11228,7 +11200,7 @@ const CORE_REFRESHERS = [
  * addresses the tree and the tab bars use. */
 const VIEW_REFRESHERS = {
 	images: [refreshImages, refreshPkgRecipes, refreshImageRecipesList, refreshContainerRecipesList,
-	         refreshPkgList, refreshImageRecipeApplyStatus],
+	         refreshPkgList],
 	recipes: [refreshPkgRecipes, refreshImageRecipesList, refreshContainerRecipesList,
 	          refreshImages, refreshPkgList],
 	packages: [refreshPkgList, refreshImages, refreshPkgRecipes],
@@ -11275,7 +11247,7 @@ const ALL_REFRESHERS = [
 	refreshPkiIntermediate, refreshPkiCerts, refreshPkgRecipes, refreshImageRecipesList,
 	refreshContainerRecipesList, refreshPkgList, refreshPkgRepoConfig, refreshPkgSyncStatus,
 	refreshPkgCacheConfig, refreshPkgCacheStatus, refreshPkgArtifactConfig,
-	refreshImageRecipeApplyStatus, refreshSiteConfig, refreshDaemonConfig, refreshRollingConfig,
+	refreshSiteConfig, refreshDaemonConfig, refreshRollingConfig,
 	refreshPkgBuildConfig, refreshRoutes, refreshSysctl, refreshKmod, refreshKmodConfig,
 	refreshSwap, refreshTlsThrottleConfig, refreshTlsThrottleStatus,
 ];

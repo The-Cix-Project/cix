@@ -157,31 +157,6 @@ static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 	return -1;
 }
 
-static int wait_for_apply_state(const struct cix_client *c, const char *want, int max_attempts)
-{
-	int i;
-
-	for (i = 0; i < max_attempts; i++) {
-		struct cix_response r;
-		const char *state;
-		int matched;
-
-		memset(&r, 0, sizeof(r));
-		if (cix_client_request(c, "GET", "/v1/images/recipe-apply-status", NULL, &r) != 0 ||
-		    r.status != 200) {
-			cix_response_free(&r);
-			return -1;
-		}
-		state = json_str_field(r.json, "state");
-		matched = state != NULL && strcmp(state, want) == 0;
-		cix_response_free(&r);
-		if (matched)
-			return 0;
-		usleep(100000);
-	}
-	return -1;
-}
-
 static pid_t start_http_server(const char *dir)
 {
 	pid_t pid;
@@ -227,6 +202,7 @@ int main(void)
 	char scratch_dir[] = "/tmp/cix_test_imgrecipe_XXXXXX";
 	char artifact_path[512], artifact_sha256[128];
 	char target_hash[128];
+	char version_before[128];
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
@@ -445,52 +421,74 @@ int main(void)
 		cix_response_free(&r);
 	}
 
+	/*
+	 * ADR-0209: everything the old fast path needed is deliberately in
+	 * place here -- every entry pinned, a real image_artifact_sha256
+	 * in the recipe, a configured artifact server, and a genuine,
+	 * correctly-named, correctly-checksummed tarball actually being
+	 * served. The point is that none of it matters any more. Apply is
+	 * bulk-declare and nothing else.
+	 *
+	 * Asserted as absence, not just as a different status code: an
+	 * available artifact that is quietly fetched anyway would still
+	 * return 204 here, so the checks below look at what is on disk.
+	 */
+	/* Captured before, compared after: "current_version did not change"
+	 * is the property, and asserting it positively beats asserting the
+	 * version merely differs from the artifact's hash -- which any
+	 * wrong value would satisfy. */
+	{
+		const char *cv;
+
+		memset(&r, 0, sizeof(r));
+		CHECK(cix_client_request(&client, "GET", "/v1/images/artifactimg", NULL, &r) == 0 &&
+		          r.status == 200,
+		      "GET /v1/images/artifactimg before apply");
+		cv = r.json != NULL ? json_str_field(r.json, "current_version") : NULL;
+		CHECK(cv != NULL, "image has a current_version before apply");
+		snprintf(version_before, sizeof(version_before), "%s", cv != NULL ? cv : "");
+		cix_response_free(&r);
+	}
+
 	memset(&r, 0, sizeof(r));
 	CHECK(cix_client_request(&client, "POST", "/v1/images/artifactimg/apply-recipe", NULL, &r) == 0 &&
-	          r.status == 202,
-	      "apply-recipe artifactimg is async (202, fully-pinned + matching artifact)");
+	          r.status == 204,
+	      "apply-recipe is synchronous (204) even with a matching artifact available");
 	cix_response_free(&r);
-
-	CHECK(wait_for_apply_state(&client, "success", 50) == 0, "recipe apply reaches success");
 
 	memset(&r, 0, sizeof(r));
 	CHECK(cix_client_request(&client, "GET", "/v1/images/artifactimg", NULL, &r) == 0 &&
 	          r.status == 200,
-	      "GET /v1/images/artifactimg after artifact apply");
+	      "GET /v1/images/artifactimg after apply");
 	if (r.json != NULL) {
 		const char *cv = json_str_field(r.json, "current_version");
 		const struct json_value *manifest = json_object_get(r.json, "manifest");
 
-		CHECK(cv != NULL && strcmp(cv, target_hash) == 0,
-		      "current_version matches the precomputed manifest hash");
 		CHECK(manifest != NULL && manifest->type == JSON_ARRAY && manifest->u.array.count == 1,
-		      "artifact-tier apply also declared the manifest");
+		      "apply declared the manifest");
+		CHECK(cv != NULL && strcmp(cv, version_before) == 0,
+		      "no new version was produced -- current_version is unchanged");
+		CHECK(cv != NULL && strcmp(cv, target_hash) != 0,
+		      "current_version is not the artifact's own manifest hash");
 	}
 	cix_response_free(&r);
 
-	/* g_packages[] mirrored (GET /v1/pkg matches the rootfs the
-	 * artifact tier just wrote, not just manifest.json's own intent). */
+	/* Declaring is not installing: bulk-declare writes a manifest, and
+	 * the package still needs a real install to exist anywhere. */
 	memset(&r, 0, sizeof(r));
 	CHECK(cix_client_request(&client, "GET", "/v1/pkg/artifactpkg@artifactimg", NULL, &r) == 0 &&
-	          r.status == 200,
-	      "GET /v1/pkg/artifactpkg@artifactimg");
-	if (r.json != NULL) {
-		const char *state = json_str_field(r.json, "state");
-		const char *version = json_str_field(r.json, "version");
-
-		CHECK(state != NULL && strcmp(state, "installed") == 0,
-		      "artifact-tier package mirrored as installed");
-		CHECK(version != NULL && strcmp(version, "1.0") == 0, "mirrored version matches recipe");
-	}
+	          r.status == 404,
+	      "a declared package is not reported installed");
 	cix_response_free(&r);
 
-	/* The real rootfs file the artifact tarball actually carried. */
+	/* The artifact's own payload must be nowhere on disk. */
 	{
 		char check_path[PATH_MAX];
 
 		snprintf(check_path, sizeof(check_path), "%s/rebuildable/images/artifactimg/%s/rootfs/usr/bin/imgtool",
 		         g_data_dir, target_hash);
-		CHECK(access(check_path, F_OK) == 0, "artifact payload file exists in the new rootfs");
+		CHECK(access(check_path, F_OK) != 0,
+		      "the artifact was never fetched or extracted");
 	}
 
 	/* --- scenario 6: recipe rm --- */

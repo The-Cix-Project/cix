@@ -38,8 +38,9 @@
 # naming exactly what it wants -- which is how it should be found, one
 # real gap at a time, never speculatively.
 #
-# No image_artifact_sha256 until this exact list has been built and
-# published by a real Cix host.
+# There is no image artifact to publish: ADR-0209 retired the
+# whole-rootfs tier -- the accumulation this image suffered from (#168)
+# is exactly what it enabled to spread.
 #
 #   zlib,flex,m4  not asked for directly -- binutils 2.42-8 declares
 #             zlib and flex (that declaration is exactly why it is

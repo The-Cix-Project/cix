@@ -5359,28 +5359,21 @@ paths:
   /images/{name}/apply-recipe:
     post:
       summary: >
-        Applies name's own already-stored image recipe (ADR-0123). The
-        common case bulk-declares the manifest synchronously (204) --
-        exactly what N manual POST /images/{name}/manifest calls would
-        already do, no rootfs touched; packages still need real
-        POST /pkg/install calls afterward to actually be built. A fully
-        "pinned" recipe with a matching image_artifact_sha256 and a
-        configured plain-HTTP artifact server (PUT /pkg/artifact-config,
-        reused from Part 3 under a distinct images/ URL prefix) instead
-        starts an async whole-rootfs fetch (202) -- poll
-        GET /images/recipe-apply-status for the outcome.
+        Applies name's own already-stored image recipe (ADR-0123):
+        bulk-declares its manifest, exactly what N manual
+        POST /images/{name}/manifest calls would do. No rootfs is
+        touched -- packages still need real POST /pkg/install calls
+        afterward to actually be built. Always synchronous: it has
+        completed by the time this returns. ADR-0209 removed the
+        whole-rootfs artifact fast path this used to have (a 202 plus
+        a pollable status endpoint); package artifacts are the only
+        published binaries now.
       operationId: applyImageRecipe
       parameters:
         - $ref: "#/components/parameters/ImageName"
       responses:
         "204":
-          description: Recipe applied synchronously (bulk-declare path)
-        "202":
-          description: Async artifact fetch started
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ImageRecipeApplyStatus"
+          description: Recipe applied
         "404":
           description: No recipe stored for this image name
           content:
@@ -5388,23 +5381,11 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "409":
-          description: A package install/hostbuild/image-recipe-apply is already in progress
+          description: A package install/hostbuild is already in progress
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-
-  /images/recipe-apply-status:
-    get:
-      summary: The most recent image-recipe-apply artifact fetch's own state/image/error.
-      operationId: getImageRecipeApplyStatus
-      responses:
-        "200":
-          description: Current status
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ImageRecipeApplyStatus"
 
   /containers/recipes:
     get:
@@ -13186,26 +13167,6 @@ components:
             content:
               type: string
               description: The full text of the image recipe file (image_packages=/image_artifact_sha256=).
-
-    ImageRecipeApplyStatus:
-      type: object
-      required: [state]
-      properties:
-        state:
-          type: string
-          enum: [never, running, success, failed]
-        image:
-          type: string
-          nullable: true
-          description: The image the most recent apply attempt targeted; null if one has never run.
-        last_attempt:
-          type: integer
-          nullable: true
-          description: Unix epoch seconds the most recent artifact-fetch apply was started; null if one has never run.
-        error:
-          type: string
-          nullable: true
-          description: Set when state is "failed" (fetch failure, checksum mismatch, or extraction failure).
 
     ContainerRecipe:
       type: object

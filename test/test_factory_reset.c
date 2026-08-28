@@ -180,14 +180,27 @@ int main(void)
 	}
 	cix_response_free(&r);
 
+	/*
+	 * ADR-0210: a reset returns the box to install defaults, and the
+	 * default image is one of those -- the daemon materializes it at
+	 * boot, so it is back by the time this asks. Asserting "exactly
+	 * base, and nothing else" rather than the old "no images at all"
+	 * proves both halves at once: every operator-created image really
+	 * was wiped, AND the box came back usable rather than in the state
+	 * where creating a container fails with "image rootfs does not
+	 * exist".
+	 */
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "GET", "/v1/images", NULL, &r) == 0 && r.status == 200) {
 		const struct json_value *v = json_object_get(r.json, "images");
+		const char *only = NULL;
 
-		check(v != NULL && v->type == JSON_ARRAY && v->u.array.count == 0,
-		      "every image is gone after the reset");
+		if (v != NULL && v->type == JSON_ARRAY && v->u.array.count == 1)
+			only = json_as_string(json_object_get(v->u.array.items[0], "name"));
+		check(only != NULL && strcmp(only, "base") == 0,
+		      "only the default image survives the reset");
 	} else {
-		check(0, "every image is gone after the reset");
+		check(0, "only the default image survives the reset");
 	}
 	cix_response_free(&r);
 

@@ -238,8 +238,7 @@ Attach one at container creation with `--volume=NAME:/path[:ro]`. The volume mus
 | `image recipe show NAME` | Print a recipe's own raw content |
 | `image recipe rm NAME` | Remove a stored image recipe |
 | `image recipe ls` | List image recipes (metadata only) |
-| `image apply-recipe NAME` | Apply `NAME`'s own stored recipe -- bulk-declares the manifest immediately (common case), or starts an async whole-rootfs artifact fetch for a fully-pinned recipe with a matching configured artifact server (poll `image recipe-apply-status`) |
-| `image recipe-apply-status` | State/image/error of the most recent `image apply-recipe` artifact fetch |
+| `image apply-recipe NAME` | Apply `NAME`'s own stored recipe -- bulk-declares its manifest. Synchronous; packages still need a real `pkg install` afterward to be built |
 
 ## Devices
 

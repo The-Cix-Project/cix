@@ -1087,33 +1087,29 @@ int pkg_artifact_push_try_start(pid_t *out_pid, int *out_pidfd, char *out_desc, 
 void pkg_artifact_push_completed(int exit_status);
 
 /*
- * ---- pkg/ redesign Part 4 (ADR-0123): image recipes + image-artifact fetch ----
+ * ---- pkg/ redesign Part 4 (ADR-0123): image recipes ----
  *
  * An image recipe is the image-layer analog of a package recipe: a
  * plain text file declaring an image's intended package set --
  *   image_packages="name:mode:version name2:mode2:version2 ..."
- *   image_artifact_sha256="<optional>"
  * -- git-syncable text, stored one file per image name (no version-
  * keying of its own; the image's own existing content-addressed
  * versioning, ADR-0108, already tracks distinct resolved states).
+ *
  * Applying a recipe (pkg_image_recipe_apply_start()) is synchronous
- * bulk-declare in the common case (image_manifest_set() for every
- * entry, exactly what N manual PUT /v1/images/{name}/manifest calls
- * would already do) -- packages still need real pkg_install() calls
- * afterward to actually build, same as any other manifest edit, v1
- * scope (a "rolling" entry has no single deterministic content, so no
- * artifact checksum could ever validly describe it, and this project
- * doesn't invent multi-package install sequencing to route around
- * that). The one new fast path: when a recipe is entirely "pinned"
- * AND declares image_artifact_sha256 AND a plain-HTTP artifact server
- * is configured (reusing pkg_artifact_* above -- same base_url/token,
- * under a distinct "images/" URL prefix so package and image artifacts
- * never collide in one namespace), applying it becomes async: fetch
- * <base_url>/images/<name>-<hash>.tar.gz, verify against the recipe's
- * own checksum (never trust the server itself), and on success extract
- * it directly as the new version's whole rootfs -- skipping every
- * per-package build entirely, mirroring Part 3's own cache-tier
- * verify-before-trust discipline at the image granularity.
+ * bulk-declare: image_manifest_set() for every entry, exactly what N
+ * manual PUT /v1/images/{name}/manifest calls would do. Packages still
+ * need real pkg_install() calls afterward to actually build, same as
+ * any other manifest edit.
+ *
+ * ADR-0209 removed the second path this used to have. A recipe that
+ * was entirely "pinned" and carried an image_artifact_sha256 could be
+ * applied by fetching one whole-rootfs tarball and extracting it as
+ * the image's new version, skipping every per-package build. That
+ * mechanism shipped one contaminated capture to every host (#168), and
+ * it was a second representation of something a package set plus a
+ * manifest already describes completely. Package artifacts are the
+ * only published binaries now.
  */
 
 /* name-keyed flat file (<pkg_dir>/image-recipes/<name>.recipe) --
@@ -1140,37 +1136,11 @@ void image_recipe_write_json_list(struct json_writer *w);
 
 /*
  * Applies image's own stored recipe (PKG_ERR_NOT_FOUND if none).
- * PKG_ERR_BUSY if a package install/hostbuild/image-recipe-apply is
- * already in flight (shares g_current_job_name's own single-job-in-
- * flight guard -- both a real install and an image-recipe artifact
- * fetch mutate the same shared g_packages[]/image-rootfs state, so
- * they can never safely run concurrently). *out_async is 0 when this
- * call already fully completed synchronously (the bulk-declare path,
- * no job started -- out_pid/out_pidfd untouched); 1 when a real async
- * artifact-fetch job was started (out_pid/out_pidfd valid, register
- * with epoll exactly like any other pkg.c job, poll pkg_image_recipe_
- * apply_write_json_status() for the outcome).
+ * PKG_ERR_BUSY if a package install/hostbuild is already in flight.
+ * Fully synchronous: it has completed (or failed) by the time it
+ * returns, so there is no job to register and no status to poll.
  */
-enum pkg_error pkg_image_recipe_apply_start(const char *image, int *out_async, pid_t *out_pid,
-                                             int *out_pidfd);
-
-/* Called once the curl child from an async pkg_image_recipe_apply_
- * start() exits. A non-zero exit_status, a checksum mismatch, or an
- * extraction failure is a miss -- recorded, image left untouched
- * (never half-applied). On success: extracts the verified tarball as
- * the new version's whole rootfs, records it (image_record_version()),
- * declares every recipe entry in the manifest (image_manifest_set()),
- * and marks each as PKG_STATE_INSTALLED in pkg.c's own g_packages[] so
- * this daemon's own "what's installed" view (GET /v1/pkg, the web
- * dashboard) matches the rootfs it just wrote -- per-package file
- * lists are left empty (a whole-rootfs tarball carries no per-package
- * attribution), the same accepted, documented limitation hostbuild
- * packages already have. */
-void pkg_image_recipe_apply_completed(int exit_status);
-
-/* {"state":"never"|"running"|"success"|"failed","image":<string or
- * null>,"last_attempt":<epoch or null>,"error":<string or null>}. */
-void pkg_image_recipe_apply_write_json_status(struct json_writer *w);
+enum pkg_error pkg_image_recipe_apply_start(const char *image);
 
 /*
  * Container recipes (ADR-0151): a git-syncable, reproducible template

@@ -121,9 +121,8 @@ static void print_usage(FILE *out)
 	        "  image recipe add --name=NAME --file=PATH  -- a declarative package-list\n"
 	        "               definition for an image (ADR-0123); recipe name == image name\n"
 	        "  image recipe show|rm NAME / image recipe ls\n"
-	        "  image apply-recipe NAME  -- bulk-declares the manifest; a fully-pinned\n"
-	        "               recipe with a matching configured artifact server instead does\n"
-	        "               an async whole-rootfs fetch -- poll image recipe-apply-status\n"
+	        "  image apply-recipe NAME  -- bulk-declares the image's manifest from its\n"
+	        "               recipe; packages still need a real install afterward\n"
 	        "  device ls  -- lists host PCI/USB/GPU devices discoverable via sysfs, with\n"
 	        "               each one's id (pass to run --device=ID) and whether it's\n"
 	        "               assignable. A GPU's own bare \"gpu:N\" id (not itself listed --\n"
@@ -9143,35 +9142,9 @@ static int cmd_image_apply_recipe(const struct cix_client *c, int json_mode, int
 		cix_response_free(&r);
 		return 1;
 	}
-	if (r.status == 202)
-		printf("recipe apply started for '%s' (async artifact fetch) -- poll `image "
-		       "recipe-apply-status`\n",
-		       name);
-	else
-		printf("recipe applied for '%s'\n", name);
+	printf("recipe applied for '%s'\n", name);
 	cix_response_free(&r);
 	return 0;
-}
-
-static void fmt_image_recipe_apply_status(const struct json_value *v)
-{
-	const char *state = json_str_field(v, "state");
-	const char *image = json_str_field(v, "image");
-	const char *error = json_str_field(v, "error");
-
-	printf("state=%s image=%s error=%s\n", state != NULL ? state : "unknown",
-	       image != NULL ? image : "-", error != NULL ? error : "-");
-}
-
-static int cmd_image_recipe_apply_status(const struct cix_client *c, int json_mode)
-{
-	struct cix_response r;
-
-	if (cix_client_request(c, "GET", "/v1/images/recipe-apply-status", NULL, &r) != 0) {
-		fprintf(stderr, "cixctl: could not reach daemon\n");
-		return 1;
-	}
-	return emit(&r, json_mode, fmt_image_recipe_apply_status);
 }
 
 /* ---- ADR-0151: container recipes ---- */
@@ -9447,8 +9420,7 @@ static int cmd_image(const struct cix_client *c, int json_mode, int argc, char *
 		                "       cixctl image recipe add --name=NAME --file=PATH\n"
 		                "       cixctl image recipe show|rm NAME\n"
 		                "       cixctl image recipe ls\n"
-		                "       cixctl image apply-recipe NAME\n"
-		                "       cixctl image recipe-apply-status\n");
+		                "       cixctl image apply-recipe NAME\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -9466,8 +9438,6 @@ static int cmd_image(const struct cix_client *c, int json_mode, int argc, char *
 		return cmd_image_recipe(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "apply-recipe") == 0)
 		return cmd_image_apply_recipe(c, json_mode, argc - 1, argv + 1);
-	if (strcmp(sub, "recipe-apply-status") == 0)
-		return cmd_image_recipe_apply_status(c, json_mode);
 
 	fprintf(stderr, "cixctl: unknown image subcommand '%s'\n", sub);
 	return 2;
