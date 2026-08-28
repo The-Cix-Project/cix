@@ -700,9 +700,7 @@ int main(void)
 	 * resolve against these.
 	 */
 	{
-		static const char *const floor[] = { "bash",     "coreutils", "tcc",      "make",
-			                             "sed",      "grep",      "gawk",     "libc-dev",
-			                             "binutils", NULL };
+		static const char *const floor[] = { "bash", "coreutils", "tcc", "libc-dev", NULL };
 		char fstate[64];
 		int i;
 
@@ -720,10 +718,10 @@ int main(void)
 			}
 			cix_response_free(&r);
 			/*
-			 * Polled in rounds rather than once: extracting a large
-			 * artifact (binutils is 57 MB) runs synchronously in this
-			 * single-threaded daemon, so an individual status request
-			 * can genuinely time out while the install is healthy.
+			 * Polled in rounds rather than once: extracting an
+			 * artifact runs synchronously in this single-threaded
+			 * daemon, so an individual status request can genuinely
+			 * time out while the install is perfectly healthy.
 			 * Treating that as failure made a working install look
 			 * broken -- the state it printed was "installed".
 			 */
@@ -2344,8 +2342,7 @@ int main(void)
 		 * rather than what was lying around when it finished.
 		 */
 		if (write_observing_recipe("usesstamped", "1.0", tarball_path, sha256,
-		                            "stamped@1.9 tcc make libc-dev bash coreutils sed grep gawk "
-		                            "binutils") != 0)
+		                            "stamped@1.9 tcc libc-dev bash coreutils") != 0)
 			ok = 0;
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/pkg/install",

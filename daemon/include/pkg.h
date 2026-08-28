@@ -233,6 +233,10 @@ int pkg_init(const char *pkg_dir, const char *installed_state_path, const char *
  */
 void pkg_check_build_stalls(void);
 
+/* Seconds between pkg_check_build_stalls() runs -- derived from the
+ * configured stall threshold so the two cannot drift apart. */
+long pkg_build_stall_check_interval(void);
+
 void pkg_repoint(const char *pkg_dir, const char *installed_state_path, const char *images_dir,
                   const char *artifacts_dir);
 

@@ -5042,18 +5042,16 @@ static void handle_serverhealth_probe_event(struct conn *cc)
 
 /*
  * How often to LOOK for a stalled build, not how long a build may be
- * quiet -- that threshold lives in pkg.c. A minute is far more often
- * than needed to notice a ten-minute silence, and costs a /proc walk
- * only when something is actually stalled.
+ * quiet -- both live in pkg.c now, the interval derived from the
+ * threshold so the two cannot disagree. This used to be a fixed minute
+ * here, which quietly put a floor under what the threshold could mean.
  */
-#define BUILD_STALL_CHECK_INTERVAL_SEC 60
-
 static void arm_build_stall_timer(void)
 {
 	struct itimerspec its;
 
 	memset(&its, 0, sizeof(its));
-	its.it_value.tv_sec = BUILD_STALL_CHECK_INTERVAL_SEC;
+	its.it_value.tv_sec = pkg_build_stall_check_interval();
 	if (timerfd_settime(g_build_stall_conn.fd, 0, &its, NULL) != 0)
 		perror("timerfd_settime (build stall re-arm)");
 }

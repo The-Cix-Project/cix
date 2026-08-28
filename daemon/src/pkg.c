@@ -5299,6 +5299,27 @@ static long pkg_build_stall_seconds(void)
 	return cached;
 }
 
+/*
+ * How often pkg_check_build_stalls() runs. Derived from the threshold
+ * rather than fixed, because a fixed granularity silently bounds what
+ * the threshold can mean: with a 60-second tick, asking for a
+ * 15-second stall threshold still took up to 75 seconds to report one,
+ * so the knob did not do what it said. A quarter of the threshold
+ * keeps detection latency proportionate (at most 1.25x the configured
+ * value), and the 60-second ceiling keeps the production default (600)
+ * ticking exactly as often as it always has.
+ */
+long pkg_build_stall_check_interval(void)
+{
+	long interval = pkg_build_stall_seconds() / 4;
+
+	if (interval < 1)
+		interval = 1;
+	if (interval > 60)
+		interval = 60;
+	return interval;
+}
+
 static void pkg_report_stalled_build(struct pkg_entry *e)
 {
 	struct hostproc_entry *procs = NULL;
