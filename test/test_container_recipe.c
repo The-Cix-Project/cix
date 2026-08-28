@@ -111,9 +111,13 @@ int main(void)
 		return 1;
 	}
 
+	/* ADR-0210: the daemon materializes the default image at boot, so
+	 * it already exists here -- creating it again is a duplicate, not
+	 * a fresh 201. This used to be the test's own job precisely
+	 * because nothing else did it, which was the bug. */
 	CHECK(cix_client_request(&client, "POST", "/v1/images", "{\"name\":\"base\"}", &r) == 0 &&
-	          r.status == 201,
-	      "image create base");
+	          r.status == 409,
+	      "the default image already exists at boot");
 	cix_response_free(&r);
 
 	/* --- scenario 1: fresh recipe list is empty --- */

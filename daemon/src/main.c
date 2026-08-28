@@ -988,7 +988,6 @@ enum conn_kind {
 	CONN_PKG_SYNC_FETCH,    /* pkg sync's own repo-archive curl fetch (ADR-0121) */
 	CONN_PKG_SYNC_PERIODIC_TIMER, /* permanent, re-arms itself -- fires pkg_sync_start() periodically if configured (ADR-0121) */
 	CONN_BACKUP_PERIODIC_TIMER, /* permanent, re-arms itself -- fires do_backup_snapshot_now() periodically if enabled+configured (ADR-0141 Phase 5) */
-	CONN_IMAGE_RECIPE_FETCH, /* image-recipe-apply's own whole-rootfs artifact curl fetch (ADR-0123) */
 	CONN_DISK_FORMAT,       /* disk format+mount job (multi-disk management Phase C) */
 	CONN_STORAGE_MIGRATE,   /* state/rebuildable/log-storage migration job (ADR-0141 Phase 2) */
 	CONN_CONTAINER_STORAGE_MIGRATE, /* one container's own overlay-storage migration job (ADR-0142 Section 4) */
@@ -9758,51 +9757,6 @@ static void handle_pkg_sync_fetch_event(struct conn *cc)
 	pkg_sync_completed(exit_status);
 }
 
-/* ADR-0123: same shape as register_pkg_sync_fetch_pidfd() immediately
- * above, for an image-recipe-apply's own whole-rootfs artifact curl
- * fetch. */
-static void register_image_recipe_fetch_pidfd(pid_t pid, int pidfd)
-{
-	struct conn *cc;
-	struct cix_epoll_event ev;
-
-	cc = malloc(sizeof(*cc));
-	if (cc == NULL) {
-		perror("malloc (image recipe fetch reactor conn)");
-		abort();
-	}
-	cc->kind = CONN_IMAGE_RECIPE_FETCH;
-	cc->fd = pidfd;
-	cc->pkg_fetch_pid = pid;
-
-	memset(&ev, 0, sizeof(ev));
-	ev.events = EPOLLIN;
-	ev.data.ptr = cc;
-	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
-		perror("epoll_ctl ADD image recipe fetch pidfd");
-		abort();
-	}
-}
-
-/* Reaps the curl child pkg_image_recipe_apply_start() spawned and
- * hands its exit status to pkg_image_recipe_apply_completed(), which
- * does the real work (verify checksum, extract as the new version's
- * whole rootfs, record it, mirror g_packages[]). */
-static void handle_image_recipe_fetch_event(struct conn *cc)
-{
-	int status;
-	int exit_status;
-
-	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
-	if (waitpid(cc->pkg_fetch_pid, &status, 0) == cc->pkg_fetch_pid && WIFEXITED(status))
-		exit_status = WEXITSTATUS(status);
-	else
-		exit_status = -1;
-	close(cc->fd);
-	free(cc);
-
-	pkg_image_recipe_apply_completed(exit_status);
-}
 
 /* Permanent, re-arming itself every configured interval -- identical
  * shape to arm_ntp_periodic_timer()/handle_ntp_periodic_timer_event()
@@ -18173,47 +18127,23 @@ static void handle_image_recipe_delete(int fd, const char *name)
 }
 
 /*
- * POST /v1/images/{name}/apply-recipe -- 204 for the common, synchronous
- * bulk-declare case (async == 0, see pkg_image_recipe_apply_start()'s
- * own doc comment); 202 + a registered pidfd for the async artifact-
- * fetch fast path, poll GET /v1/images/recipe-apply-status for the
- * outcome, exactly the same "202, poll a status endpoint" convention
- * every other async pkg.c job here already has.
+ * POST /v1/images/{name}/apply-recipe -- always 204. ADR-0209 retired
+ * the async artifact-fetch fast path this used to have a 202 branch
+ * for, so applying a recipe is bulk-declare and nothing else: it has
+ * finished by the time this returns.
  */
 static void handle_image_recipe_apply(int fd, const char *name)
 {
-	int async = 0;
-	pid_t pid;
-	int pidfd;
-	enum pkg_error perr;
-	struct json_writer w;
+	enum pkg_error perr = pkg_image_recipe_apply_start(name);
 
-	perr = pkg_image_recipe_apply_start(name, &async, &pid, &pidfd);
 	if (perr != PKG_OK) {
 		respond_image_recipe_error(fd, perr);
 		return;
 	}
-	if (!async) {
-		http_set_blocking(fd);
-		http_write_response(fd, 204, "No Content", "application/json", "", 0);
-		return;
-	}
-	register_image_recipe_fetch_pidfd(pid, pidfd);
-	jw_init(&w);
-	pkg_image_recipe_apply_write_json_status(&w);
-	respond_json(fd, 202, "Accepted", &w);
-	jw_free(&w);
+	http_set_blocking(fd);
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
 }
 
-static void handle_image_recipe_apply_status_get(int fd)
-{
-	struct json_writer w;
-
-	jw_init(&w);
-	pkg_image_recipe_apply_write_json_status(&w);
-	respond_json(fd, 200, "OK", &w);
-	jw_free(&w);
-}
 
 /*
  * Container recipes (ADR-0151) -- same shape as the image-recipe
@@ -22447,6 +22377,91 @@ static void handle_pkg_hostbuild(int fd, const char *body, size_t body_len)
  * since build_container_name here is a reuse of the kept container's
  * own name, not a fresh one.
  */
+/*
+ * ADR-0209: one function brings a package-build container into being.
+ *
+ * There were two copies of this -- the fetch-completed path and the
+ * resume path -- identical down to a pasted comment: each set the
+ * userns policy, called registry_create() with the same fourteen
+ * arguments, closed the daemon's own now-redundant copy of the stdio
+ * write end, logged the same three registry failures under a different
+ * prefix, and wired the same two registrations on success. Two copies
+ * of "how a build container comes into being" is the parallel
+ * implementation ADR-0209 exists to remove.
+ *
+ * what is the log prefix ("container spawn" / "resume"), the only
+ * thing that genuinely differed.
+ *
+ * On REGISTRY_OK the pidfd and build-output fd are already registered.
+ * On anything else the job did not start and pkg_build_spawn_failed()
+ * plus try_start_queued_pkg_rebuild() have already run, so a caller
+ * with an HTTP request in hand only has to answer it.
+ */
+static enum registry_error spawn_pkgbuild_container(int chain_idx, const char *what,
+                                                     struct container_spec *spec,
+                                                     int stdio_write_fd)
+{
+	char build_container_name[PKG_NAME_MAX];
+	struct registry_entry *entry;
+	enum registry_error rerr;
+
+	pkg_build_container_name(chain_idx, build_container_name, sizeof(build_container_name));
+
+	/*
+	 * ADR-0207 phase 3 documented policy: the platform's own build
+	 * containers run WITHOUT a user namespace, explicitly -- trusted
+	 * internal infrastructure executing this project's own checksummed
+	 * recipes, with no security case for isolating them from the host
+	 * they build on. This is the standard opt-out field, stated rather
+	 * than inherited from a memset, so the policy survives any future
+	 * change to how these specs are built.
+	 */
+	spec->userns_enabled = 0;
+	rerr = registry_create(build_container_name, "pkgbuild", "", spec, NULL, 0, 0, NULL, 0, NULL,
+	                        0, NULL, NULL, 0, &entry);
+
+	/*
+	 * The child (if registry_create() actually forked one) already
+	 * inherited its own copy of the write end via clone3 -- this is the
+	 * daemon's own copy, closed immediately regardless of outcome so a
+	 * failed spawn does not leak it.
+	 *
+	 * container_create_last_error_step() stays valid across this
+	 * close(): it is a plain static buffer set by container_create()'s
+	 * own last failure, untouched by anything here. That buffer is the
+	 * one real, queryable place this failure was ever diagnosable
+	 * from -- cgroup_create()'s and container_create()'s own perror()
+	 * calls go to this daemon's stderr, which nothing mirrors into the
+	 * log store (confirmed the hard way, chasing a real ADR-0165
+	 * production regression on a box with no shell to read stderr from
+	 * at all: logstore_write() is a one-way "also print to stderr for
+	 * boot visibility" call, never the reverse).
+	 */
+	if (stdio_write_fd >= 0)
+		close(stdio_write_fd);
+
+	if (rerr == REGISTRY_ERR_CREATE_FAILED)
+		logstore_write("cixd", "error", "pkgbuild %s (%s): container_create failed: %s", what,
+		                build_container_name, container_create_last_error_step());
+	else if (rerr == REGISTRY_ERR_DUPLICATE)
+		logstore_write("cixd", "error",
+		                "pkgbuild %s (%s): a registry entry with this name already exists "
+		                "(stale leftover?)",
+		                what, build_container_name);
+	else if (rerr == REGISTRY_ERR_FULL)
+		logstore_write("cixd", "error", "pkgbuild %s (%s): registry table full", what,
+		                build_container_name);
+
+	if (rerr != REGISTRY_OK) {
+		pkg_build_spawn_failed(chain_idx);
+		try_start_queued_pkg_rebuild();
+		return rerr;
+	}
+	register_container_pidfd(entry);
+	register_pkg_build_output(pkg_build_output_fd(chain_idx), chain_idx);
+	return REGISTRY_OK;
+}
+
 static void handle_pkg_resume(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root;
@@ -22469,8 +22484,6 @@ static void handle_pkg_resume(int fd, const char *body, size_t body_len)
 	 * root's storage would dangle by the time pkg_get_one() ran). */
 	char image[PKG_IMAGE_NAME_MAX];
 	char build_container_name[PKG_NAME_MAX];
-	struct registry_entry *entry;
-	enum registry_error rerr;
 	struct json_writer w;
 
 	root = json_parse(body, body_len);
@@ -22518,44 +22531,10 @@ static void handle_pkg_resume(int fd, const char *body, size_t body_len)
 	 */
 	registry_remove(build_container_name);
 
-	/*
-	 * ADR-0207 phase 3 documented policy: the platform's own build
-	 * containers run WITHOUT a user namespace, explicitly -- trusted
-	 * internal infrastructure executing this project's own checksummed
-	 * recipes, with no security case for isolating them from the host
-	 * they build on. This is the standard opt-out field, stated rather
-	 * than inherited from a memset, so the policy survives any future
-	 * change to how these specs are built.
-	 */
-	spec.userns_enabled = 0;
-	rerr = registry_create(build_container_name, "pkgbuild", "", &spec, NULL, 0, 0, NULL, 0, NULL,
-	                        0, NULL, NULL, 0, &entry);
-	/* See handle_pkg_fetch_event()'s own identical close -- the child
-	 * (if registry_create() actually forked one) already inherited its
-	 * own copy via clone3. */
-	if (stdio_write_fd >= 0)
-		close(stdio_write_fd);
-
-	if (rerr == REGISTRY_ERR_CREATE_FAILED)
-		logstore_write("cixd", "error", "pkgbuild resume (%s): container_create failed: %s",
-		                build_container_name, container_create_last_error_step());
-	else if (rerr == REGISTRY_ERR_DUPLICATE)
-		logstore_write("cixd", "error",
-		                "pkgbuild resume (%s): a registry entry with this name already exists "
-		                "(stale leftover?)",
-		                build_container_name);
-	else if (rerr == REGISTRY_ERR_FULL)
-		logstore_write("cixd", "error", "pkgbuild resume (%s): registry table full",
-		                build_container_name);
-
-	if (rerr != REGISTRY_OK) {
-		pkg_build_spawn_failed(chain_idx);
-		try_start_queued_pkg_rebuild();
+	if (spawn_pkgbuild_container(chain_idx, "resume", &spec, stdio_write_fd) != REGISTRY_OK) {
 		respond_error(fd, 500, "Internal Server Error", "resume failed to spawn build container");
 		return;
 	}
-	register_container_pidfd(entry);
-	register_pkg_build_output(pkg_build_output_fd(chain_idx), chain_idx);
 
 	jw_init(&w);
 	if (pkg_get_one(name, image, &w) != PKG_OK) {
@@ -24115,12 +24094,6 @@ static void dispatch(int fd, const struct http_request *req)
 		}
 		if (strcmp(req->method, "POST") == 0) {
 			handle_image_recipe_add(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/images/recipe-apply-status") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_image_recipe_apply_status_get(fd);
 			return;
 		}
 	}
@@ -25990,10 +25963,11 @@ static void handle_container_event(struct conn *cc)
  * step's plain fork()'d curl subprocess: reap it (non-blocking here --
  * EPOLLIN on its pidfd already means it has exited), hand the exit
  * status to pkg_fetch_completed(), and if it says a build should
- * start, spawn it through the exact same registry_create() +
- * register_container_pidfd() path every other container already
- * goes through -- one source of truth for "what's running," the
- * package build container included.
+ * start, spawn it through spawn_pkgbuild_container() -- the same
+ * registry_create() + register_container_pidfd() path every other
+ * container goes through, and (ADR-0209) the same single function the
+ * resume path uses, so "what's running" has one source of truth and
+ * a build container has one way of coming into being.
  */
 static void handle_pkg_fetch_event(struct conn *cc)
 {
@@ -26012,9 +25986,6 @@ static void handle_pkg_fetch_event(struct conn *cc)
 	free(cc);
 
 	if (pkg_fetch_completed(chain_idx, exit_status, &spec, &stdio_write_fd)) {
-		struct registry_entry *entry;
-		char build_container_name[PKG_NAME_MAX];
-		enum registry_error rerr;
 
 		/*
 		 * Issue #144: a precompiled package needs no container at all.
@@ -26061,65 +26032,7 @@ static void handle_pkg_fetch_event(struct conn *cc)
 			return;
 		}
 
-		pkg_build_container_name(chain_idx, build_container_name, sizeof(build_container_name));
-		/*
-	 * ADR-0207 phase 3 documented policy: the platform's own build
-	 * containers run WITHOUT a user namespace, explicitly -- trusted
-	 * internal infrastructure executing this project's own checksummed
-	 * recipes, with no security case for isolating them from the host
-	 * they build on. This is the standard opt-out field, stated rather
-	 * than inherited from a memset, so the policy survives any future
-	 * change to how these specs are built.
-	 */
-	spec.userns_enabled = 0;
-	rerr = registry_create(build_container_name, "pkgbuild", "", &spec, NULL, 0, 0, NULL, 0,
-		                        NULL, 0, NULL, NULL, 0, &entry);
-		/*
-		 * This is the one real, queryable place this failure was
-		 * ever diagnosable from: cgroup_create()'s/container_create()'s
-		 * own perror() calls write to this daemon's real stderr,
-		 * which nothing mirrors into the log store (confirmed live,
-		 * the hard way, chasing a real ADR-0165 production regression
-		 * on a box with no shell to read raw stderr from at all --
-		 * logstore_write() is a one-way "also print to stderr for
-		 * boot visibility" call, never the reverse).
-		 * container_create_last_error_step() (read below, in the
-		 * REGISTRY_ERR_CREATE_FAILED branch) stays valid across the
-		 * close() just below -- it's a plain static buffer set by
-		 * container_create()'s own last failure, untouched by
-		 * anything this function does afterward.
-		 */
-		{
-		/*
-		 * The child (if registry_create() actually forked one)
-		 * already inherited its own copy of the write end via
-		 * clone3 -- this is the daemon's own now-redundant copy,
-		 * closed immediately regardless of outcome so a failed
-		 * spawn doesn't leak it.
-		 */
-		if (stdio_write_fd >= 0)
-			close(stdio_write_fd);
-
-		if (rerr == REGISTRY_ERR_CREATE_FAILED)
-			logstore_write("cixd", "error", "pkgbuild container spawn (%s): container_create failed: %s",
-			                build_container_name, container_create_last_error_step());
-		else if (rerr == REGISTRY_ERR_DUPLICATE)
-			logstore_write("cixd", "error",
-			                "pkgbuild container spawn (%s): a registry entry with this name "
-			                "already exists (stale leftover?)",
-			                build_container_name);
-		else if (rerr == REGISTRY_ERR_FULL)
-			logstore_write("cixd", "error",
-			                "pkgbuild container spawn (%s): registry table full", build_container_name);
-
-		if (rerr != REGISTRY_OK) {
-			pkg_build_spawn_failed(chain_idx);
-			try_start_queued_pkg_rebuild();
-		} else {
-			register_container_pidfd(entry);
-			register_pkg_build_output(pkg_build_output_fd(chain_idx), chain_idx);
-		}
-		}
+		spawn_pkgbuild_container(chain_idx, "container spawn", &spec, stdio_write_fd);
 	} else {
 		try_start_queued_pkg_rebuild();
 	}
@@ -27423,8 +27336,6 @@ static int cixd_main(int argc, char **argv)
 				arm_serverhealth_timer();
 			} else if (cc->kind == CONN_SERVERHEALTH_PROBE)
 				handle_serverhealth_probe_event(cc);
-			else if (cc->kind == CONN_IMAGE_RECIPE_FETCH)
-				handle_image_recipe_fetch_event(cc);
 			else if (cc->kind == CONN_DISK_FORMAT)
 				handle_disk_format_event(cc);
 			else if (cc->kind == CONN_STORAGE_MIGRATE)

@@ -270,13 +270,11 @@ static char g_artifacts_dir[PATH_MAX];
  * Sized to PKG_MAX_CONCURRENT_JOBS (pkg.h -- shared with main.c, see
  * that definition's own comment for why it lives there).
  *
- * ADR-0157 Phase 2: pkg_image_recipe_apply_start() (a third, unrelated
- * job kind: a bulk artifact fetch with no pkg_entry of its own at all)
- * used to double-use a chain slot's name/image fields directly as its
- * own busy marker -- that stopped being correct once a free chain slot
- * no longer means "nothing running" (another chain could be mid-job),
- * so it now has its own dedicated g_image_apply_busy/g_image_apply_image
- * pair instead (see pkg_any_job_busy()).
+ * ADR-0157 Phase 2 gave pkg_image_recipe_apply_start() a dedicated
+ * busy flag, because as a bulk artifact fetch it was a third, unrelated
+ * job kind with no pkg_entry of its own. ADR-0209 retired that fetch:
+ * applying a recipe is now synchronous bulk-declare, so it holds
+ * nothing across an event-loop turn and the flag is gone.
  */
 
 struct pkg_chain {
@@ -360,8 +358,6 @@ static struct pkg_chain g_chains[PKG_MAX_CONCURRENT_JOBS];
  * gates (pkg_install_start(), pkg_hostbuild_start(),
  * pkg_image_recipe_apply_start() itself).
  */
-static int g_image_apply_busy;
-static char g_image_apply_image[PKG_IMAGE_NAME_MAX];
 
 /* Finds a free chain slot (name[0] == '\0'). Returns its index, or -1
  * if every slot is already in use. */
@@ -378,12 +374,12 @@ static int chain_alloc(void)
 }
 
 /* True if there is no room for a new top-level job right now -- every
- * chain slot in use, or an image-recipe-apply already in flight (a
- * third, unrelated job kind sharing the same one-daemon-process
- * "how much can genuinely run at once" ceiling). */
+ * chain slot in use. Image-recipe-apply used to be counted here too;
+ * ADR-0209 made it fully synchronous, so it can never be "in flight"
+ * across an event-loop turn and has no flag left to check. */
 static int pkg_any_job_busy(void)
 {
-	return g_image_apply_busy || chain_alloc() < 0;
+	return chain_alloc() < 0;
 }
 
 /*
@@ -2220,7 +2216,6 @@ int pkg_init(const char *pkg_dir, const char *installed_state_path, const char *
 	memset(g_packages, 0, sizeof(g_packages));
 	memset(g_chains, 0, sizeof(g_chains));
 	memset(g_build_output_entries, 0, sizeof(g_build_output_entries));
-	g_image_apply_busy = 0;
 	image_recipe_init(pkg_dir);
 	container_recipe_init(pkg_dir);
 	return load_state();
@@ -4917,7 +4912,7 @@ enum pkg_error pkg_resume_build(const char *name, const char *image, const char 
 	 * (pkg_build_completed()), which this same parser always accepts. */
 	if (chain_idx < 0)
 		return PKG_ERR_NOT_FOUND;
-	if (g_image_apply_busy || g_chains[chain_idx].name[0] != '\0')
+	if (g_chains[chain_idx].name[0] != '\0')
 		return PKG_ERR_BUSY;
 
 	if (find_recipe_path(name, version, recipe_path, sizeof(recipe_path)) != 0 ||
@@ -7918,32 +7913,21 @@ static void artifact_sentinel_path(const char *name, const char *version, char *
 struct image_recipe {
 	struct image_manifest_entry entries[IMAGE_MANIFEST_MAX_PACKAGES];
 	int entry_count;
-	char artifact_sha256[PKG_SHA256_MAX];
 };
 
 static char g_image_recipes_dir[PATH_MAX];
 
-/* Own single-job tracker (distinct from g_sync_last_state above --
- * this job mutates shared g_packages[]/image rootfs state, g_current_
- * job_name is the real mutual-exclusion guard; this is status-
- * reporting only, mirroring pkg_sync's own state/last_attempt/error
- * shape for GET /v1/images/recipe-apply-status). */
-enum image_apply_state { IMAGE_APPLY_NEVER = 0, IMAGE_APPLY_RUNNING, IMAGE_APPLY_SUCCESS,
-                          IMAGE_APPLY_FAILED };
-static enum image_apply_state g_image_apply_last_state;
-static char g_image_apply_last_image[PKG_IMAGE_NAME_MAX];
-static time_t g_image_apply_last_attempt;
-static char g_image_apply_last_error[PKG_ERROR_MAX];
-static char g_image_apply_target_version[IMAGE_VERSION_MAX];
-static char g_image_apply_tarball_path[PATH_MAX];
-
+/*
+ * ADR-0209: applying an image recipe is synchronous, always. The
+ * async half of this -- fetch a whole-rootfs artifact, verify it,
+ * extract it as the image's new version -- is retired along with the
+ * rest of ADR-0123's fast path, so there is no in-flight job to track
+ * and no separate status to poll. The last-apply state fields, the
+ * IMAGE_APPLY_* enum and the busy flag all went with it.
+ */
 void image_recipe_init(const char *pkg_dir)
 {
 	snprintf(g_image_recipes_dir, sizeof(g_image_recipes_dir), "%s/image-recipes", pkg_dir);
-	g_image_apply_last_state = IMAGE_APPLY_NEVER;
-	g_image_apply_last_image[0] = '\0';
-	g_image_apply_last_attempt = 0;
-	g_image_apply_last_error[0] = '\0';
 }
 
 /* ADR-0141 Phase 4: path-only repoint, called from pkg_repoint() --
@@ -7972,11 +7956,6 @@ static int parse_image_recipe_buf(char *buf, struct image_recipe *out)
 	memset(out, 0, sizeof(*out));
 	if (extract_line_value(buf, "image_packages=", raw_packages, sizeof(raw_packages)) != 0)
 		return -1;
-	/* Optional -- empty means "never opts into the artifact fast path,
-	 * apply always bulk-declares the manifest and nothing more." */
-	extract_line_value(buf, "image_artifact_sha256=", out->artifact_sha256,
-	                    sizeof(out->artifact_sha256));
-
 	n = tokenize_into(raw_packages, (char *)tokens, IMAGE_RECIPE_TOKEN_MAX,
 	                   IMAGE_MANIFEST_MAX_PACKAGES);
 	if (n <= 0)
@@ -8450,42 +8429,33 @@ static void image_recipe_manifest_string(const struct image_recipe *r, char *out
 	}
 }
 
-/* out_url: <pkg_artifact base_url>/images/<name>-<hash>.tar.gz --
- * deliberately under an "images/" prefix so package artifacts
- * (pkg_artifact_build_request()) and whole-image-rootfs artifacts
- * never collide in the same server namespace even though they share
- * one base_url/token config (Part 3's pkg_artifact_*, reused as-is --
- * a second, near-identical config surface would violate One Source of
- * Truth for what is genuinely the same "plain HTTP + bearer token"
- * server). */
-static void image_artifact_build_request(const char *name, const char *hash, char *out_url,
-                                          size_t out_url_size, char *out_header,
-                                          size_t out_header_size)
-{
-	size_t len = strlen(g_artifact_base_url);
-
-	if (len > 0 && g_artifact_base_url[len - 1] == '/')
-		len--;
-	snprintf(out_url, out_url_size, "%.*s/images/%s-%s.tar.gz", (int)len, g_artifact_base_url,
-	         name, hash);
-	if (g_artifact_token[0] != '\0')
-		snprintf(out_header, out_header_size, "Authorization: Bearer %s", g_artifact_token);
-	else
-		out_header[0] = '\0';
-}
-
-enum pkg_error pkg_image_recipe_apply_start(const char *image, int *out_async, pid_t *out_pid,
-                                             int *out_pidfd)
+/*
+ * ADR-0209: apply is bulk-declare, and only bulk-declare.
+ *
+ * ADR-0123 added a second path here: a recipe that was entirely
+ * "pinned" and carried an image_artifact_sha256 could be applied by
+ * fetching one whole-rootfs tarball, verifying it, and extracting it
+ * as the image's new version -- skipping every per-package build. That
+ * is exactly the mechanism that took one contaminated capture and
+ * shipped it to every host (#168), and it is a second representation
+ * of something already fully described by a package set plus a
+ * manifest. It is gone: package artifacts are the only published
+ * binaries now, each checksummed and traceable to a recipe and the
+ * Cix host that built it.
+ *
+ * What remains is what the common case always did -- declare every
+ * entry into the image's manifest, exactly what N manual
+ * PUT /v1/images/{name}/manifest calls would do. Realizing a declared
+ * entry into a real rootfs still needs an explicit pkg install, the
+ * same as any other manifest edit.
+ */
+enum pkg_error pkg_image_recipe_apply_start(const char *image)
 {
 	char path[PATH_MAX];
 	char *buf;
 	size_t len;
 	struct image_recipe recipe;
-	char manifest_str[PKG_MANIFEST_STRING_MAX];
-	int all_pinned, i;
-	pid_t pid;
-	int pidfd;
-	char url[768], header[320];
+	int i;
 
 	if (!pkg_image_is_valid(image))
 		return PKG_ERR_INVALID_NAME;
@@ -8501,226 +8471,17 @@ enum pkg_error pkg_image_recipe_apply_start(const char *image, int *out_async, p
 	}
 	free(buf);
 
-	all_pinned = 1;
 	for (i = 0; i < recipe.entry_count; i++) {
-		if (recipe.entries[i].mode != IMAGE_PKG_PINNED) {
-			all_pinned = 0;
-			break;
-		}
+		enum image_error ierr =
+		    image_manifest_set(image, recipe.entries[i].package, recipe.entries[i].mode,
+		                        recipe.entries[i].version);
+
+		if (ierr == IMAGE_ERR_NOT_FOUND)
+			return PKG_ERR_TARGET_IMAGE_NOT_FOUND;
+		if (ierr != IMAGE_OK)
+			return PKG_ERR_INVALID_RECIPE;
 	}
-
-	if (recipe.artifact_sha256[0] == '\0' || !all_pinned || !pkg_artifact_is_configured()) {
-		/* v1 scope (deliberate, not a stop-gap -- see pkg.h's own doc
-		 * comment): bulk-declare only. A "rolling" entry has no single
-		 * deterministic content an artifact checksum could ever
-		 * validly describe; realizing any declared entry into a real
-		 * built rootfs still needs an explicit pkg install, exactly
-		 * like any other manifest edit already requires today. */
-		for (i = 0; i < recipe.entry_count; i++) {
-			enum image_error ierr =
-			    image_manifest_set(image, recipe.entries[i].package, recipe.entries[i].mode,
-			                        recipe.entries[i].version);
-
-			if (ierr == IMAGE_ERR_NOT_FOUND)
-				return PKG_ERR_TARGET_IMAGE_NOT_FOUND;
-			if (ierr != IMAGE_OK)
-				return PKG_ERR_INVALID_RECIPE;
-		}
-		*out_async = 0;
-		return PKG_OK;
-	}
-
-	image_recipe_manifest_string(&recipe, manifest_str, sizeof(manifest_str));
-	if (image_hash_manifest_string(manifest_str, g_image_apply_target_version,
-	                                sizeof(g_image_apply_target_version)) != 0)
-		return PKG_ERR_PERSIST_FAILED;
-
-	image_artifact_build_request(image, g_image_apply_target_version, url, sizeof(url), header,
-	                              sizeof(header));
-	snprintf(g_image_apply_tarball_path, sizeof(g_image_apply_tarball_path),
-	         "%s/.image-artifact-%s.tar.gz", g_sources_dir, image);
-	if (persist_mkdir_p(g_sources_dir) != 0)
-		return PKG_ERR_PERSIST_FAILED;
-	unlink(g_image_apply_tarball_path);
-
-	pid = fork();
-	if (pid < 0)
-		return PKG_ERR_SPAWN_FAILED;
-	if (pid == 0) {
-		if (header[0] != '\0') {
-			char *argv[] = { (char *)PKG_CURL_BIN, "-fsSL", "-H",  header,
-				          "-o",                  g_image_apply_tarball_path, url, NULL };
-
-			execve(PKG_CURL_BIN, argv, environ);
-		} else {
-			char *argv[] = { (char *)PKG_CURL_BIN, "-fsSL", "-o", g_image_apply_tarball_path,
-				          url, NULL };
-
-			execve(PKG_CURL_BIN, argv, environ);
-		}
-		_exit(127);
-	}
-
-	pidfd = sys_pidfd_open(pid, 0);
-	if (pidfd < 0) {
-		kill(pid, SIGKILL);
-		waitpid(pid, NULL, 0);
-		return PKG_ERR_SPAWN_FAILED;
-	}
-
-	g_image_apply_busy = 1;
-	snprintf(g_image_apply_image, sizeof(g_image_apply_image), "%s", image);
-	g_image_apply_last_state = IMAGE_APPLY_RUNNING;
-	snprintf(g_image_apply_last_image, sizeof(g_image_apply_last_image), "%s", image);
-	g_image_apply_last_attempt = time(NULL);
-	g_image_apply_last_error[0] = '\0';
-	*out_async = 1;
-	*out_pid = pid;
-	*out_pidfd = pidfd;
 	return PKG_OK;
-}
-
-static void image_apply_fail(const char *fmt, ...)
-{
-	va_list ap;
-
-	va_start(ap, fmt);
-	vsnprintf(g_image_apply_last_error, sizeof(g_image_apply_last_error), fmt, ap);
-	va_end(ap);
-	g_image_apply_last_state = IMAGE_APPLY_FAILED;
-	g_image_apply_busy = 0;
-	unlink(g_image_apply_tarball_path);
-}
-
-void pkg_image_recipe_apply_completed(int exit_status)
-{
-	char image[PKG_IMAGE_NAME_MAX];
-	char path[PATH_MAX];
-	char *buf;
-	size_t len;
-	struct image_recipe recipe;
-	char sha_out[128];
-	char rootfs_dir[PATH_MAX], version_dir[PATH_MAX], *slash;
-	int i, slot;
-	struct pkg_entry *e;
-
-	snprintf(image, sizeof(image), "%s", g_image_apply_image);
-
-	if (exit_status != 0) {
-		image_apply_fail("image artifact fetch failed (curl exit status %d)", exit_status);
-		return;
-	}
-
-	image_recipe_path(image, path, sizeof(path));
-	if (persist_read_file(path, &buf, &len) != 0 || buf == NULL) {
-		image_apply_fail("image recipe for '%s' vanished mid-apply", image);
-		return;
-	}
-	if (parse_image_recipe_buf(buf, &recipe) != 0) {
-		free(buf);
-		image_apply_fail("image recipe for '%s' became invalid mid-apply", image);
-		return;
-	}
-	free(buf);
-
-	if (pkg_run_capture_sha256(g_image_apply_tarball_path, sha_out, sizeof(sha_out)) != 0 ||
-	    strcasecmp(sha_out, recipe.artifact_sha256) != 0) {
-		image_apply_fail("image artifact checksum mismatch for '%s'", image);
-		return;
-	}
-
-	image_version_rootfs_path(image, g_image_apply_target_version, rootfs_dir, sizeof(rootfs_dir));
-	snprintf(version_dir, sizeof(version_dir), "%s", rootfs_dir);
-	slash = strrchr(version_dir, '/'); /* drop trailing "/rootfs" */
-	if (slash != NULL)
-		*slash = '\0';
-	if (persist_mkdir_p(rootfs_dir) != 0) {
-		image_apply_fail("could not create rootfs directory for '%s'", image);
-		return;
-	}
-	{
-		char *argv[] = { (char *)PKG_TAR_BIN, "-C", rootfs_dir, "-xzf", g_image_apply_tarball_path,
-			          NULL };
-
-		if (run_subprocess(PKG_TAR_BIN, argv) != 0) {
-			persist_remove_tree(version_dir);
-			image_apply_fail("extracting image artifact for '%s' failed", image);
-			return;
-		}
-	}
-
-	if (image_record_version(image, g_image_apply_target_version) != IMAGE_OK) {
-		persist_remove_tree(version_dir);
-		image_apply_fail("recording new version for '%s' failed", image);
-		return;
-	}
-
-	for (i = 0; i < recipe.entry_count; i++) {
-		image_manifest_set(image, recipe.entries[i].package, recipe.entries[i].mode,
-		                    recipe.entries[i].version);
-
-		/* Mirrors g_packages[] against the rootfs this job just wrote,
-		 * so GET /v1/pkg matches reality -- the same slot-reuse-or-
-		 * first-free-slot convention start_fetch_for() already uses.
-		 * files[] is deliberately left empty: a whole-rootfs artifact
-		 * carries no per-package attribution, the same accepted,
-		 * documented gap hostbuild packages already have. */
-		e = pkg_find(recipe.entries[i].package, image);
-		if (e == NULL) {
-			slot = -1;
-			for (int j = 0; j < PKG_MAX_PACKAGES; j++) {
-				if (!g_packages[j].in_use) {
-					slot = j;
-					break;
-				}
-			}
-			if (slot < 0)
-				continue; /* table full -- manifest is still correct, just not mirrored here */
-			e = &g_packages[slot];
-			memset(e, 0, sizeof(*e));
-			e->in_use = 1;
-			snprintf(e->name, sizeof(e->name), "%s", recipe.entries[i].package);
-			snprintf(e->image, sizeof(e->image), "%s", image);
-		} else {
-			pkg_entry_free_files(e);
-		}
-		e->state = PKG_STATE_INSTALLED;
-		e->error[0] = '\0';
-		snprintf(e->version, sizeof(e->version), "%s", recipe.entries[i].version);
-	}
-	save_state();
-
-	unlink(g_image_apply_tarball_path);
-	g_image_apply_last_state = IMAGE_APPLY_SUCCESS;
-	g_image_apply_busy = 0;
-}
-
-void pkg_image_recipe_apply_write_json_status(struct json_writer *w)
-{
-	const char *state_str = g_image_apply_last_state == IMAGE_APPLY_NEVER     ? "never"
-	                         : g_image_apply_last_state == IMAGE_APPLY_RUNNING ? "running"
-	                         : g_image_apply_last_state == IMAGE_APPLY_SUCCESS ? "success"
-	                                                                            : "failed";
-
-	jw_obj_open(w);
-	jw_key(w, "state");
-	jw_str(w, state_str);
-	jw_key(w, "image");
-	if (g_image_apply_last_image[0] != '\0')
-		jw_str(w, g_image_apply_last_image);
-	else
-		jw_null(w);
-	jw_key(w, "last_attempt");
-	if (g_image_apply_last_attempt > 0)
-		jw_int(w, (long long)g_image_apply_last_attempt);
-	else
-		jw_null(w);
-	jw_key(w, "error");
-	if (g_image_apply_last_error[0] != '\0')
-		jw_str(w, g_image_apply_last_error);
-	else
-		jw_null(w);
-	jw_obj_close(w);
 }
 
 /*
