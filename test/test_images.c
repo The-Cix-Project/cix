@@ -732,6 +732,18 @@ int main(void)
 			fprintf(stderr, "FAIL: gc dry run, status=%d\n", r.status);
 			ok = 0;
 		} else {
+			/* Sizes are opt-in: the walk that produces them blocks this
+			 * single-threaded daemon, measurably (117s on a real host
+			 * with 80 collectable versions). Absent by default is the
+			 * contract, so assert it rather than let it drift back. */
+			const struct json_value *tot = json_object_get(r.json, "apparent_bytes_total");
+
+			if (tot == NULL || tot->type != JSON_NULL) {
+				fprintf(stderr,
+				        "FAIL: gc reported sizes without measure:true -- the walk is supposed "
+				        "to be opt-in\n");
+				ok = 0;
+			}
 			collected = json_as_number(json_object_get(r.json, "collected"));
 			if (collected != 2) {
 				fprintf(stderr,

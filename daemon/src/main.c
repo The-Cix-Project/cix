@@ -17790,12 +17790,23 @@ static int image_version_is_referenced(const char *image, const char *version)
  * subtly wrong, this simply does not run concurrently with a build.
  * Collection is never urgent enough to justify racing one.
  *
- * "bytes" is the APPARENT size of what was removed. On btrfs a version
+ * Sizes are OPT-IN ("measure":true), and that is not a preference.
+ * Measuring means an nftw() walk of every collectable version, and
+ * this daemon is single-threaded: on a real box with 80 collectable
+ * versions the walk took 117 seconds, during which nothing else in the
+ * REST API could be served. Deletion needs no size at all, so the
+ * common call now costs nothing and only a caller who actually wants
+ * the magnitude pays for it.
+ *
+ * When measured, "apparent_bytes" is APPARENT size. On btrfs a version
  * is a snapshot sharing extents with its neighbours, so the space
- * actually returned to the filesystem is typically far less. Reported
- * as apparent rather than omitted, and named as such in the API docs,
- * because an operator deciding whether to collect wants the magnitude;
- * pretending it is exact would be worse than either.
+ * actually returned is typically far less -- on that same box the walk
+ * reported 390 GB while the filesystem returned 4.5 GB. Reported as
+ * apparent rather than omitted, and named so everywhere, because an
+ * operator deciding whether to collect wants the magnitude; presenting
+ * it as exact would be worse than either. (btrfs qgroup EXCL bytes
+ * would give the real figure in O(1) -- worth doing once the platform
+ * is btrfs-only.)
  */
 static void handle_images_gc(int fd, const char *body, size_t body_len)
 {
@@ -17803,6 +17814,7 @@ static void handle_images_gc(int fd, const char *body, size_t body_len)
 	struct json_writer w;
 	int active[PKG_MAX_CONCURRENT_JOBS];
 	int dry_run = 0;
+	int measure = 0;
 	int image_count, i, j;
 	int collected = 0, kept = 0, failed = 0;
 	long long total_bytes = 0;
@@ -17819,7 +17831,10 @@ static void handle_images_gc(int fd, const char *body, size_t body_len)
 		if (root != NULL) {
 			const struct json_value *dr = json_object_get(root, "dry_run");
 
+			const struct json_value *me = json_object_get(root, "measure");
+
 			dry_run = dr != NULL && dr->type == JSON_BOOL && dr->u.boolean;
+			measure = me != NULL && me->type == JSON_BOOL && me->u.boolean;
 			json_free(root);
 		}
 	}
@@ -17828,6 +17843,8 @@ static void handle_images_gc(int fd, const char *body, size_t body_len)
 	jw_obj_open(&w);
 	jw_key(&w, "dry_run");
 	jw_bool(&w, dry_run);
+	jw_key(&w, "measured");
+	jw_bool(&w, measure);
 	jw_key(&w, "reclaimed");
 	jw_arr_open(&w);
 
@@ -17845,9 +17862,11 @@ static void handle_images_gc(int fd, const char *body, size_t body_len)
 				kept++;
 				continue;
 			}
-			image_version_rootfs_path(names[i], versions[j], rootfs, sizeof(rootfs));
-			if (overlay_upperdir_size(rootfs, &bytes) != 0)
-				bytes = 0;
+			if (measure) {
+				image_version_rootfs_path(names[i], versions[j], rootfs, sizeof(rootfs));
+				if (overlay_upperdir_size(rootfs, &bytes) != 0)
+					bytes = 0;
+			}
 
 			if (!dry_run) {
 				ierr = image_delete_version(names[i], versions[j]);
@@ -17868,7 +17887,10 @@ static void handle_images_gc(int fd, const char *body, size_t body_len)
 			jw_key(&w, "version");
 			jw_str(&w, versions[j]);
 			jw_key(&w, "apparent_bytes");
-			jw_int(&w, bytes);
+			if (measure)
+				jw_int(&w, bytes);
+			else
+				jw_null(&w);
 			jw_obj_close(&w);
 			collected++;
 			total_bytes += bytes;
@@ -17882,7 +17904,10 @@ static void handle_images_gc(int fd, const char *body, size_t body_len)
 	jw_key(&w, "failed");
 	jw_int(&w, failed);
 	jw_key(&w, "apparent_bytes_total");
-	jw_int(&w, total_bytes);
+	if (measure)
+		jw_int(&w, total_bytes);
+	else
+		jw_null(&w);
 	jw_obj_close(&w);
 
 	if (!dry_run && collected > 0)

@@ -239,7 +239,7 @@ Attach one at container creation with `--volume=NAME:/path[:ro]`. The volume mus
 | `image recipe rm NAME` | Remove a stored image recipe |
 | `image recipe ls` | List image recipes (metadata only) |
 | `image apply-recipe NAME` | Apply `NAME`'s own stored recipe -- bulk-declares its manifest. Synchronous; packages still need a real `pkg install` afterward to be built |
-| `image gc [--dry-run]` | Reclaim image versions nothing references. Every install leaves an immutable version behind and nothing else removes one; `--dry-run` previews. Refused while a package job is running |
+| `image gc [--dry-run] [--measure]` | Reclaim image versions nothing references. Every install leaves an immutable version behind and nothing else removes one; `--dry-run` previews. `--measure` sizes what it finds and can block the daemon for minutes, so it is off by default. Refused while a package job is running |
 
 ## Devices
 
