@@ -641,6 +641,87 @@ static int migrate_ldap_login_key(void)
 	return 0;
 }
 
+/*
+ * ADR-0207 phase 3/4: pin "userns": false into every persisted
+ * definition that lacks the key.
+ *
+ * Since phase 3 the create path resolves an omitted "userns" against
+ * the platform default and splices the RESOLVED value into the body
+ * it persists (create_container_persisted()), so a definition written
+ * by that code always carries the key. A definition without it
+ * therefore predates the default flip -- and the mode it actually ran
+ * with was non-userns, because before phase 3 an omitted "userns"
+ * meant false unconditionally. Pinning that history in, once at load,
+ * is what keeps flipping the platform default from silently swapping
+ * a pre-existing container's isolation mode (and with it its whole
+ * storage layout) on its first revival after an upgrade -- the exact
+ * flap the creation-time pin already prevents for post-flip
+ * containers.
+ *
+ * Parsed and rebuilt rather than string-spliced, same reasoning as
+ * migrate_ldap_login_key() above: "userns" could legitimately appear
+ * inside a value (a cmd, an env var, a staged file's content).
+ */
+static int migrate_pin_userns_absent(void)
+{
+	int i, migrated = 0;
+
+	for (i = 0; i < CONTAINERDEF_MAX; i++) {
+		struct container_def *d = &g_defs[i];
+		struct json_value *root;
+		struct json_writer w;
+		size_t k;
+		int found = 0;
+
+		if (!d->in_use || d->body == NULL)
+			continue;
+		root = json_parse(d->body, d->body_len);
+		if (root == NULL || root->type != JSON_OBJECT) {
+			json_free(root);
+			continue;
+		}
+		for (k = 0; k < root->u.object.count; k++)
+			if (strcmp(root->u.object.keys[k], "userns") == 0)
+				found = 1;
+		if (found) {
+			json_free(root);
+			continue;
+		}
+
+		jw_init(&w);
+		jw_obj_open(&w);
+		for (k = 0; k < root->u.object.count; k++) {
+			jw_key(&w, root->u.object.keys[k]);
+			jw_value(&w, root->u.object.values[k]);
+		}
+		jw_key(&w, "userns");
+		jw_bool(&w, 0);
+		jw_obj_close(&w);
+		json_free(root);
+
+		if (w.buf != NULL) {
+			free(d->body);
+			d->body = malloc(w.len + 1);
+			if (d->body != NULL) {
+				memcpy(d->body, w.buf, w.len);
+				d->body[w.len] = '\0';
+				d->body_len = w.len;
+				migrated++;
+			} else {
+				d->body_len = 0;
+			}
+		}
+		jw_free(&w);
+	}
+	if (migrated > 0) {
+		fprintf(stderr,
+		        "containerdef: pinned userns:false into %d pre-existing definition(s)\n",
+		        migrated);
+		return save_state();
+	}
+	return 0;
+}
+
 int containerdef_init(const char *state_path)
 {
 	if (snprintf(g_state_path, sizeof(g_state_path), "%s", state_path) >=
@@ -652,7 +733,12 @@ int containerdef_init(const char *state_path)
 	/* Issue #76: convert any pre-rename state once, before anything
 	 * replays a definition through the create path that would now
 	 * reject the old key. */
-	return migrate_ldap_login_key();
+	if (migrate_ldap_login_key() != 0)
+		return -1;
+	/* ADR-0207: pin pre-flip definitions to the mode they actually
+	 * ran with, before autostart replays any of them against the new
+	 * default. */
+	return migrate_pin_userns_absent();
 }
 
 /*
