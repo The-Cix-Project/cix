@@ -613,6 +613,41 @@ static int resolve_rebuildable_storage_placement(void)
  * unconditionally on every single boot, with no separate "have I
  * already run" flag needed.
  */
+/*
+ * ADR-0210: the default image is an ordinary image with an empty
+ * manifest, materialized here rather than seeded by the installer.
+ *
+ * It has to exist before anything can use it: "base" is where
+ * `pkg install` puts a package when no --image is named, and what a
+ * container falls back to when it names no image. Until the first
+ * install happened to create it as a side effect, neither worked --
+ * a freshly installed box answered POST /v1/containers with "image
+ * rootfs does not exist", confirmed directly against a fresh data
+ * directory rather than reasoned about.
+ *
+ * cix-install.c used to copy a C runtime into images/base/rootfs to
+ * cover this. That path stopped being read when ADR-0107/0108 made
+ * images versioned (<images>/<name>/<version>/rootfs), so the seeding
+ * had been writing to a location nothing consults -- it did not
+ * actually make the default image usable.
+ *
+ * Idempotent by construction: image_create() returns DUPLICATE once a
+ * manifest exists, so this is a no-op on every boot after the first,
+ * and the content it produces is exactly the baseline every other
+ * image already gets.
+ */
+static void ensure_default_image(void)
+{
+	enum image_error ierr = image_create(PKG_DEFAULT_IMAGE);
+
+	if (ierr != IMAGE_OK && ierr != IMAGE_ERR_DUPLICATE)
+		logstore_write("cixd", "error",
+		               "could not create the default image \"%s\" (%d) -- installs that name "
+		               "no image, and containers that name no image, will fail until this "
+		               "succeeds",
+		               PKG_DEFAULT_IMAGE, (int)ierr);
+}
+
 static void migrate_one_flat_entry(const char *basename, const char *new_dir)
 {
 	char old_path[PATH_MAX];
@@ -27055,6 +27090,7 @@ static int cixd_main(int argc, char **argv)
 	}
 
 	image_init(IMAGES_DIR);
+	ensure_default_image();
 	if (boot_subsystem_init(init_mode, "containerdef", containerdef_init(CONTAINER_DEFS_STATE_PATH)) != 0)
 		return 1;
 	if (boot_subsystem_init(init_mode, "containerdef_rolling_config", containerdef_rolling_config_init(ROLLING_CONFIG_PATH)) != 0)

@@ -61,10 +61,6 @@ extern char **environ;
 #define SIGNING_CERT_SRC "/payload/cix-signing.cer"
 #define BZIMAGE_SRC "/boot/cix-bzImage"
 #define ROOT_SQUASHFS_SRC "/payload/cix-root.squashfs"
-/* image/src/mkinstalleriso.c stages a C runtime (ld.so, libc.so.6,
- * libtinfo.so.6) here -- see the containers-partition block below for
- * why the shared "base" container image needs it. */
-#define CIX_RUNTIME_DIR_SRC "/payload/cix-runtime"
 
 #define ESP_MOUNT "/mnt/esp"
 #define CONFIG_MOUNT "/mnt/config"
@@ -807,78 +803,30 @@ int main(int argc, char **argv)
 	}
 
 	/* Containers partition: cixd's own existing ensure_dir()/
-	 * pkg_init() machinery populates most of it at first real boot, the
-	 * same "fall through to unmodified existing logic" precedent parts
-	 * 1-2 already established for BASE_DIR's own subdirectories -- but
-	 * the shared "base" image's own C runtime is seeded here, at install
-	 * time, since nothing else ever will be: pkg_install() (daemon/src/
-	 * pkg.c) only ever merges a package's own build output into that
-	 * image, never system runtime libraries, so without this, nothing
-	 * dynamically linked a package installs could ever execve()
-	 * successfully (confirmed directly this session -- see
-	 * mkinstalleriso.c's own staging comment for the exact failure). */
+	 * pkg_init()/image_create() machinery populates all of it at first
+	 * real boot -- the same "fall through to unmodified existing logic"
+	 * precedent parts 1-2 established for BASE_DIR's own subdirectories.
+	 *
+	 * ADR-0210: this block used to copy a C runtime (ld.so, libc.so.6,
+	 * libtinfo.so.6) into images/base/rootfs, on the stated grounds
+	 * that nothing else ever would. That stopped being true, and then
+	 * stopped being read at all: ADR-0107/0108 made images versioned
+	 * (<images>/<name>/<version>/rootfs), and container creation
+	 * resolves strictly through image_current_version() -- so the flat
+	 * path this wrote was consulted by nothing. Verified directly, not
+	 * inferred: a fresh daemon reported no images at all and refused a
+	 * container on "base" with "image rootfs does not exist", proving
+	 * the seeding was not what made the default image work.
+	 *
+	 * ensure_default_image() in the daemon now creates it the same way
+	 * every other image is created, with the same baseline. The
+	 * partition itself still needs to exist and be mountable, which is
+	 * all this does now. */
 	if (ensure_dir(CONTAINERS_MOUNT) != 0)
 		return 1;
 	if (mount(containers_dev, CONTAINERS_MOUNT, "btrfs", 0, NULL) != 0) {
 		dual_perror("mount containers");
 		return 1;
-	}
-	{
-		char path[600];
-		char src[600];
-
-		snprintf(path, sizeof(path), "%s/images", CONTAINERS_MOUNT);
-		if (ensure_dir(path) != 0) {
-			umount(CONTAINERS_MOUNT);
-			return 1;
-		}
-		snprintf(path, sizeof(path), "%s/images/base", CONTAINERS_MOUNT);
-		if (ensure_dir(path) != 0) {
-			umount(CONTAINERS_MOUNT);
-			return 1;
-		}
-		snprintf(path, sizeof(path), "%s/images/base/rootfs", CONTAINERS_MOUNT);
-		if (ensure_dir(path) != 0) {
-			umount(CONTAINERS_MOUNT);
-			return 1;
-		}
-		snprintf(path, sizeof(path), "%s/images/base/rootfs/lib64", CONTAINERS_MOUNT);
-		if (ensure_dir(path) != 0) {
-			umount(CONTAINERS_MOUNT);
-			return 1;
-		}
-		snprintf(path, sizeof(path), "%s/images/base/rootfs/lib", CONTAINERS_MOUNT);
-		if (ensure_dir(path) != 0) {
-			umount(CONTAINERS_MOUNT);
-			return 1;
-		}
-		snprintf(path, sizeof(path), "%s/images/base/rootfs/lib/x86_64-linux-gnu", CONTAINERS_MOUNT);
-		if (ensure_dir(path) != 0) {
-			umount(CONTAINERS_MOUNT);
-			return 1;
-		}
-
-		snprintf(src, sizeof(src), "%s/lib64/ld-linux-x86-64.so.2", CIX_RUNTIME_DIR_SRC);
-		snprintf(path, sizeof(path), "%s/images/base/rootfs/lib64/ld-linux-x86-64.so.2",
-		         CONTAINERS_MOUNT);
-		if (copy_file(src, path) != 0) {
-			umount(CONTAINERS_MOUNT);
-			return 1;
-		}
-		snprintf(src, sizeof(src), "%s/lib/x86_64-linux-gnu/libc.so.6", CIX_RUNTIME_DIR_SRC);
-		snprintf(path, sizeof(path), "%s/images/base/rootfs/lib/x86_64-linux-gnu/libc.so.6",
-		         CONTAINERS_MOUNT);
-		if (copy_file(src, path) != 0) {
-			umount(CONTAINERS_MOUNT);
-			return 1;
-		}
-		snprintf(src, sizeof(src), "%s/lib/x86_64-linux-gnu/libtinfo.so.6", CIX_RUNTIME_DIR_SRC);
-		snprintf(path, sizeof(path), "%s/images/base/rootfs/lib/x86_64-linux-gnu/libtinfo.so.6",
-		         CONTAINERS_MOUNT);
-		if (copy_file(src, path) != 0) {
-			umount(CONTAINERS_MOUNT);
-			return 1;
-		}
 	}
 	if (umount(CONTAINERS_MOUNT) != 0) {
 		dual_perror("umount containers");

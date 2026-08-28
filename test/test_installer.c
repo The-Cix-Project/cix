@@ -56,6 +56,7 @@
 #include "test_disk_image.h"
 #include "test_image_fixture.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -169,6 +170,45 @@ static int btrfs_restore_tree(const char *image, const char *dest_dir)
 
 /* Byte-for-byte comparison, same proof shape as root A's own
  * squashfs comparison in main() below. 0 = identical. */
+/*
+ * ADR-0210: find the C runtime inside the daemon-created default image.
+ *
+ * The installer no longer seeds images/base/rootfs -- that flat path
+ * predates versioned images (ADR-0107/0108) and container creation
+ * stopped reading it. ensure_default_image() now materializes "base"
+ * from an empty manifest at boot, so the runtime lives under a VERSION
+ * directory. The version is scanned for rather than hardcoded: it is a
+ * hash of the manifest, and pinning it here would make this test fail
+ * for the wrong reason the day the hashing changes.
+ */
+static int find_default_image_runtime(const char *containers_tree, char *out, size_t out_size)
+{
+	char base_dir[700];
+	DIR *d;
+	struct dirent *e;
+	int found = 0;
+
+	snprintf(base_dir, sizeof(base_dir), "%s/rebuildable/images/base", containers_tree);
+	d = opendir(base_dir);
+	if (d == NULL)
+		return -1;
+	while (!found && (e = readdir(d)) != NULL) {
+		char candidate[900];
+		struct stat st;
+
+		if (e->d_name[0] == '.')
+			continue;
+		snprintf(candidate, sizeof(candidate), "%s/%s/rootfs/lib64/ld-linux-x86-64.so.2",
+		         base_dir, e->d_name);
+		if (stat(candidate, &st) == 0) {
+			snprintf(out, out_size, "%s", candidate);
+			found = 1;
+		}
+	}
+	closedir(d);
+	return found ? 0 : -1;
+}
+
 static int files_identical(const char *a_path, const char *b_path)
 {
 	FILE *a = fopen(a_path, "rb");
@@ -741,7 +781,6 @@ int main(void)
 	{
 		char containers_extract[600];
 		char containers_tree[600];
-		char seeded_flat[700], seeded_grouped[700];
 		struct stat pst;
 		const char *ld_so_src = "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2";
 
@@ -755,39 +794,32 @@ int main(void)
 			fprintf(stderr, "could not extract containers partition after session 3\n");
 			ok = 0;
 		} else {
-			/* The seeded base-image runtime (cix-install.c's own
-			 * containers-partition block) -- installer-written under a
-			 * clean umount, so deterministically visible. Session 3's
-			 * cixd has normally already migrated it from the flat
-			 * install-time path to the grouped one
-			 * (migrate_flat_layout_to_grouped()), but that rename is a
-			 * runtime write with no committed-by-now guarantee at this
-			 * point, so either location is accepted HERE; session 4
-			 * below requires the grouped one. */
-			const char *seeded = NULL;
+			/* ADR-0210: the default image is created by the DAEMON at
+			 * boot (ensure_default_image()), not written by the
+			 * installer, so what is asserted here is that the first
+			 * real boot produced a usable "base" -- a version
+			 * directory carrying the baseline C runtime. This is the
+			 * property that actually matters and the one the old
+			 * installer-seeding check never established: it proved
+			 * bytes had been written to images/base/rootfs, a path
+			 * container creation stopped reading when images became
+			 * versioned. */
+			char runtime_path[900];
 
-			snprintf(seeded_flat, sizeof(seeded_flat),
-			         "%s/images/base/rootfs/lib64/ld-linux-x86-64.so.2", containers_tree);
-			snprintf(seeded_grouped, sizeof(seeded_grouped),
-			         "%s/rebuildable/images/base/rootfs/lib64/ld-linux-x86-64.so.2",
-			         containers_tree);
-			if (stat(seeded_grouped, &pst) == 0)
-				seeded = seeded_grouped;
-			else if (stat(seeded_flat, &pst) == 0)
-				seeded = seeded_flat;
-			if (seeded == NULL) {
+			if (find_default_image_runtime(containers_tree, runtime_path,
+			                               sizeof(runtime_path)) != 0) {
 				fprintf(stderr,
-				        "containers partition missing the seeded ld.so after install -- "
-				        "the installer did not write the base image runtime\n");
+				        "no default-image runtime on the containers partition after the "
+				        "first boot -- ensure_default_image() did not materialize \"base\"\n");
 				ok = 0;
-			} else if (files_identical(seeded, ld_so_src) != 0) {
+			} else if (files_identical(runtime_path, ld_so_src) != 0) {
 				fprintf(stderr,
-				        "seeded ld.so does not match the build host source after "
-				        "session 3 -- content corrupted on the way to disk\n");
+				        "the default image's ld.so does not match the build host source "
+				        "after session 3 -- content corrupted on the way to disk\n");
 				ok = 0;
 			} else {
-				printf("containers partition carries the installer-seeded base runtime, "
-				       "byte-identical to source, after the first real boot\n");
+				printf("first boot materialized the default image with its baseline "
+				       "runtime, byte-identical to source\n");
 			}
 		}
 
@@ -859,20 +891,22 @@ int main(void)
 				                "after session 4 -- BASE_DIR was not the real partition\n");
 				ok = 0;
 			}
-			snprintf(seeded_grouped, sizeof(seeded_grouped),
-			         "%s/rebuildable/images/base/rootfs/lib64/ld-linux-x86-64.so.2",
-			         containers_tree);
-			if (stat(seeded_grouped, &pst) != 0) {
-				fprintf(stderr,
-				        "seeded ld.so missing from the grouped layout after session 4\n");
-				ok = 0;
-			} else if (files_identical(seeded_grouped, ld_so_src) != 0) {
-				fprintf(stderr,
-				        "seeded ld.so changed across a real, independent second boot\n");
-				ok = 0;
-			} else {
-				printf("installer-seeded content survived two real, independent boots "
-				       "byte-identical -- BASE_DIR genuinely persists across reboots\n");
+			{
+				char runtime_path[900];
+
+				if (find_default_image_runtime(containers_tree, runtime_path,
+				                               sizeof(runtime_path)) != 0) {
+					fprintf(stderr, "the default image is missing after session 4\n");
+					ok = 0;
+				} else if (files_identical(runtime_path, ld_so_src) != 0) {
+					fprintf(stderr,
+					        "the default image's ld.so changed across a real, independent "
+					        "second boot\n");
+					ok = 0;
+				} else {
+					printf("the default image survived two real, independent boots "
+					       "byte-identical -- BASE_DIR genuinely persists across reboots\n");
+				}
 			}
 		}
 	}

@@ -321,48 +321,17 @@ int main(int argc, char **argv)
 		return 1;
 
 	/*
-	 * A C runtime for the shared "base" container image, staged onto
-	 * the target's containers partition by cix-install.c itself
-	 * (CIX_RUNTIME_DIR_SRC there). `pkg install` (daemon/src/pkg.c)
-	 * only ever merges a package's own build output into that image --
-	 * never system runtime libraries -- so without this, nothing
-	 * dynamically linked that a package installs can ever execve()
-	 * successfully: confirmed directly, a container running a freshly
-	 * pkg-installed bash failed outright ("No such file or directory")
-	 * because /lib64/ld-linux-x86-64.so.2 didn't exist anywhere in the
-	 * image. ld.so/libc.so.6 use the exact fixed-destination convention
-	 * test_image_fixture_build() already uses for cixd's own two
-	 * (source read from their real /usr/lib/x86_64-linux-gnu location,
-	 * written to the /lib64 and /lib/x86_64-linux-gnu paths a binary's
-	 * own compiled-in interpreter string and glibc's default search
-	 * path respectively expect); libtinfo.so.6 is the one extra library
-	 * a real, non-trivial dynamically-linked program (bash, via
-	 * readline) commonly needs beyond that minimal pair -- already
-	 * staged this same host-path-preserving way for this installer's
-	 * own environment, in g_lib_closure[] above.
+	 * ADR-0210: a "payload/cix-runtime" C runtime used to be staged
+	 * here for cix-install.c to copy into the base image. Both are
+	 * gone. The copy wrote to the pre-versioning images/base/rootfs
+	 * path, which container creation stopped reading when ADR-0107/0108
+	 * made images versioned -- so it was shipping ~3 MB on every
+	 * installer ISO to populate a directory nothing consulted. The
+	 * daemon's ensure_default_image() now materializes the default
+	 * image from an empty manifest with the same baseline every other
+	 * image gets. The installer's OWN library closure is unaffected --
+	 * that is g_lib_closure[] above, a separate thing.
 	 */
-	if (ensure_dir_under(stage_dir, "payload/cix-runtime") != 0)
-		return 1;
-	if (ensure_dir_under(stage_dir, "payload/cix-runtime/lib64") != 0)
-		return 1;
-	if (ensure_dir_under(stage_dir, "payload/cix-runtime/lib") != 0)
-		return 1;
-	if (ensure_dir_under(stage_dir, "payload/cix-runtime/lib/x86_64-linux-gnu") != 0)
-		return 1;
-	snprintf(dst, sizeof(dst), "%s/payload/cix-runtime/lib64/ld-linux-x86-64.so.2", stage_dir);
-	if (test_image_fixture_copy_file("/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2", dst) != 0)
-		return 1;
-	snprintf(dst, sizeof(dst), "%s/payload/cix-runtime/lib/x86_64-linux-gnu/libc.so.6",
-	         stage_dir);
-	if (test_image_fixture_copy_file("/usr/lib/x86_64-linux-gnu/libc.so.6", dst) != 0)
-		return 1;
-	{
-		char runtime_dir[600];
-
-		snprintf(runtime_dir, sizeof(runtime_dir), "%s/payload/cix-runtime", stage_dir);
-		if (test_image_fixture_add_lib(runtime_dir, "/lib/x86_64-linux-gnu/libtinfo.so.6") != 0)
-			return 1;
-	}
 
 	/* Same PID-1 boot shape cixd's own image needs (build/mkbootroot)
 	 * -- cix-install.c's own early_mounts() mounts proc/sysfs here
