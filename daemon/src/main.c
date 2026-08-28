@@ -8999,6 +8999,12 @@ static char g_artifact_export_name[PKG_IMAGE_NAME_MAX];
 static char g_artifact_export_version[IMAGE_VERSION_MAX];
 static char g_artifact_export_path[PATH_MAX];
 static char g_artifact_export_error[256];
+/* Read end of the tar child's stderr pipe -- -1 when no export is
+ * running. Drained (bounded) at completion so a failure names its
+ * actual cause instead of only an exit status; "tar failed (status
+ * 0x200)" with the real complaint invisible is precisely the
+ * diagnostic gap issue #125/#132 already document for other paths. */
+static int g_artifact_export_errfd = -1;
 
 static void register_artifact_export_pidfd(pid_t pid, int pidfd)
 {
@@ -9078,6 +9084,9 @@ static void handle_artifact_export_event(struct conn *cc)
 {
 	int status;
 
+	char errbuf[192];
+	ssize_t errn = 0;
+
 	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	if (waitpid(cc->pkg_fetch_pid, &status, 0) == cc->pkg_fetch_pid && WIFEXITED(status) &&
 	    WEXITSTATUS(status) == 0) {
@@ -9085,12 +9094,27 @@ static void handle_artifact_export_event(struct conn *cc)
 		logstore_write("cixd", "info", "image export: %s@%s ready at %s", g_artifact_export_name,
 		               g_artifact_export_version, g_artifact_export_path);
 	} else {
+		/* The child has fully exited, so a bounded read of its whole
+		 * stderr can't block past the pipe's own buffered content --
+		 * O_NONBLOCK on this end guards the empty case. */
+		if (g_artifact_export_errfd >= 0)
+			errn = read(g_artifact_export_errfd, errbuf, sizeof(errbuf) - 1);
+		if (errn < 0)
+			errn = 0;
+		errbuf[errn] = '\0';
+		while (errn > 0 && (errbuf[errn - 1] == '\n' || errbuf[errn - 1] == '\r'))
+			errbuf[--errn] = '\0';
 		g_artifact_export_state = ARTIFACT_EXPORT_FAILED;
 		snprintf(g_artifact_export_error, sizeof(g_artifact_export_error),
-		         "tar failed (status 0x%x)", (unsigned)status);
+		         "tar failed (status 0x%x)%s%s", (unsigned)status, errn > 0 ? ": " : "",
+		         errbuf);
 		unlink(g_artifact_export_path);
 		logstore_write("cixd", "error", "image export: %s failed -- %s", g_artifact_export_name,
 		               g_artifact_export_error);
+	}
+	if (g_artifact_export_errfd >= 0) {
+		close(g_artifact_export_errfd);
+		g_artifact_export_errfd = -1;
 	}
 	close(cc->fd);
 	free(cc);
@@ -9185,21 +9209,48 @@ static int artifact_export_start(enum artifact_export_kind kind, const char *nam
 	argv[11] = (char *)".";
 	argv[12] = NULL;
 
-	pid = fork();
-	if (pid < 0) {
-		snprintf(err_msg, err_msg_size, "fork failed: %s", strerror(errno));
-		return -1;
-	}
-	if (pid == 0) {
-		execve(argv[0], argv, environ);
-		perror("child: execve tar (image export)");
-		_exit(127);
+	{
+		int errpipe[2];
+
+		/* Nonblocking read end: the completion handler drains after
+		 * exit; an empty pipe must return 0/EAGAIN, never block the
+		 * event loop. Loss of the pipe is not fatal -- same posture
+		 * as pkg.c's run_subprocess(). */
+		if (pipe2(errpipe, O_CLOEXEC | O_NONBLOCK) != 0) {
+			errpipe[0] = -1;
+			errpipe[1] = -1;
+		}
+		pid = fork();
+		if (pid < 0) {
+			snprintf(err_msg, err_msg_size, "fork failed: %s", strerror(errno));
+			if (errpipe[0] >= 0) {
+				close(errpipe[0]);
+				close(errpipe[1]);
+			}
+			return -1;
+		}
+		if (pid == 0) {
+			if (errpipe[1] >= 0)
+				dup2(errpipe[1], 2);
+			execve(argv[0], argv, environ);
+			perror("child: execve tar (image export)");
+			_exit(127);
+		}
+		if (errpipe[1] >= 0)
+			close(errpipe[1]);
+		if (g_artifact_export_errfd >= 0)
+			close(g_artifact_export_errfd);
+		g_artifact_export_errfd = errpipe[0];
 	}
 	pidfd = sys_pidfd_open(pid, 0);
 	if (pidfd < 0) {
 		snprintf(err_msg, err_msg_size, "pidfd_open failed: %s", strerror(errno));
 		kill(pid, SIGKILL);
 		waitpid(pid, NULL, 0);
+		if (g_artifact_export_errfd >= 0) {
+			close(g_artifact_export_errfd);
+			g_artifact_export_errfd = -1;
+		}
 		return -1;
 	}
 	register_artifact_export_pidfd(pid, pidfd);
