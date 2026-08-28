@@ -721,10 +721,43 @@ int container_create(const struct container_spec *spec, struct container_handle 
 
 				memset(&mattr, 0, sizeof(mattr));
 				mattr.attr_set = MOUNT_ATTR_IDMAP;
+				/*
+				 * Clear nodev on the container's own rootfs.
+				 *
+				 * boot_init() mounts the containers partition
+				 * MS_NOSUID|MS_NODEV -- correct hardening for the host
+				 * -- and this detached rootfs is a bind from it, so it
+				 * inherits nodev. The result was that a userns
+				 * container could not open ANY device node: not
+				 * /dev/null, not /dev/zero, read or write, even though
+				 * every node was present with mode 0666 and mapped to
+				 * container-root (issue #173). Non-userns containers
+				 * never hit it because OverlayFS is a fresh mount that
+				 * inherits nothing.
+				 *
+				 * A container's rootfs device nodes are deliberate
+				 * content, not something a workload smuggled in:
+				 * pkg_seed_image_baseline() stages /dev/null,
+				 * /dev/zero, /dev/full and /dev/ptmx into every image.
+				 * What a container may actually DO with a device is
+				 * enforced by the BPF_CGROUP_DEVICE program attached
+				 * unconditionally in container_create() (ADR-0017) --
+				 * a default-deny allow-list, which is the real control
+				 * and is unaffected by this. nodev here was redundant
+				 * against that and broke /dev/null, which shell
+				 * redirection and almost every configure script needs.
+				 */
+				mattr.attr_clr = MOUNT_ATTR_NODEV;
 				mattr.userns_fd = (uint64_t)uns_fd;
 				if (cix_mount_setattr(overlay_lower_fd, "",
 				                      CIX_AT_EMPTY_PATH, &mattr) != 0)
 					userns_ok = 0;
+				/*
+				 * Volumes keep nodev: they carry workload data, and
+				 * nothing stages device nodes into one. Clearing it
+				 * there would widen the attack surface for no need.
+				 */
+				mattr.attr_clr = 0;
 				for (vi = 0; userns_ok && vi < spec->volume_count; vi++) {
 					if (spec->volume_idmap_fds[vi] >= 0 &&
 					    cix_mount_setattr(spec->volume_idmap_fds[vi], "",
