@@ -788,7 +788,7 @@ Read-modify-write, matching `daemon-config`'s own established `PUT` shape -- eit
 
 ```
 POST /v1/system/kmod-build
-{"build_image": "dev", "config_symbols": ["CONFIG_DUMMY"]}
+{"build_image": "kernel-builder", "config_symbols": ["CONFIG_DUMMY"]}
 ```
 
 For a driver that isn't already in this platform's own curated `=m` module set, but does live in mainline Linux (the overwhelmingly common case) -- an ordinary hostbuild against the `kernel` recipe itself, the exact same mechanism `POST /pkg/hostbuild` drives (same shared pool of pkg-build chain slots, same `409`/`PkgEntry` response shape, progress polled the identical way via `GET /pkg/hostbuild/kernel`), gaining only an optional `config_symbols` list. Each entry (a bare `CONFIG_*` name) is merged into the same curated kernel config this platform already builds from, forced to `=m`, via a second `merge_config.sh` fragment -- strictly additive: an empty or omitted list reproduces the exact existing kernel build unchanged. `build_image` needs a real GCC toolchain and `kmod` installed, same requirement as any other kernel hostbuild (see [`kernel-build-and-ab-updates.md`](../guides/kernel-build-and-ab-updates.md)).
