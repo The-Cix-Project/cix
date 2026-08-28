@@ -299,6 +299,43 @@ int container_create(const struct container_spec *spec, struct container_handle 
 			prep_ret = -1;
 		}
 		/*
+		 * Clear nodev on the container's own rootfs (issue #173).
+		 *
+		 * boot_init() mounts the containers partition MS_NOSUID|
+		 * MS_NODEV -- correct hardening for the host -- and this
+		 * detached rootfs is cloned from it, so it inherits nodev.
+		 * The effect was that a userns container could open NO device
+		 * node at all: not /dev/null, not /dev/zero, read or write,
+		 * with every node present at mode 0666 and correctly mapped to
+		 * container-root. Non-userns containers never hit it because
+		 * OverlayFS is a fresh mount inheriting nothing.
+		 *
+		 * Done HERE, right after open_tree, rather than beside the
+		 * MOUNT_ATTR_IDMAP call below, because that call only runs for
+		 * idmap-presented containers. A first attempt put it there and
+		 * changed nothing on a real ext4 host, which takes the phase-2b
+		 * copy+chown path instead -- the fix has to cover both.
+		 *
+		 * Rootfs device nodes are deliberate content:
+		 * pkg_seed_image_baseline() stages /dev/null, /dev/zero,
+		 * /dev/full and /dev/ptmx into every image. What a container
+		 * may DO with a device is enforced by the BPF_CGROUP_DEVICE
+		 * program attached unconditionally in this function (ADR-0017),
+		 * a default-deny allow-list -- the real control, unaffected by
+		 * this. Volumes are untouched and keep nodev.
+		 */
+		if (prep_ret == 0) {
+			struct cix_mount_attr devattr;
+
+			memset(&devattr, 0, sizeof(devattr));
+			devattr.attr_clr = MOUNT_ATTR_NODEV;
+			if (cix_mount_setattr(overlay_lower_fd, "", CIX_AT_EMPTY_PATH, &devattr) != 0) {
+				saved_errno = errno;
+				fail_step = "container_create: mount_setattr(clear nodev)";
+				prep_ret = -1;
+			}
+		}
+		/*
 		 * ADR-0207 phase 3: an idmap-presented container's volumes are
 		 * detached here too, so the parent can id-map them alongside
 		 * the rootfs once the child's maps are written -- a host-0-
@@ -747,17 +784,10 @@ int container_create(const struct container_spec *spec, struct container_handle 
 				 * against that and broke /dev/null, which shell
 				 * redirection and almost every configure script needs.
 				 */
-				mattr.attr_clr = MOUNT_ATTR_NODEV;
 				mattr.userns_fd = (uint64_t)uns_fd;
 				if (cix_mount_setattr(overlay_lower_fd, "",
 				                      CIX_AT_EMPTY_PATH, &mattr) != 0)
 					userns_ok = 0;
-				/*
-				 * Volumes keep nodev: they carry workload data, and
-				 * nothing stages device nodes into one. Clearing it
-				 * there would widen the attack surface for no need.
-				 */
-				mattr.attr_clr = 0;
 				for (vi = 0; userns_ok && vi < spec->volume_count; vi++) {
 					if (spec->volume_idmap_fds[vi] >= 0 &&
 					    cix_mount_setattr(spec->volume_idmap_fds[vi], "",
