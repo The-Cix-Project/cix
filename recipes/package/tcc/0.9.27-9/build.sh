@@ -10,18 +10,18 @@
 # tcc (0.9.27, confirmed via `tcc -v`) -- the same compiler already
 # proven, this whole project long, to build this codebase cleanly.
 #
-# -8 adds __has_include support (see the patch below). Without it,
+# -9 adds __has_include support (see the patch below). Without it,
 # util-linux 2.42's own include/c.h cannot be preprocessed at all, so
 # libblkid -- and therefore btrfs-progs, and therefore mkfs.btrfs --
 # could not be built by this compiler.
 #
 pkg_name="tcc"
-pkg_version="0.9.27-8"
+pkg_version="0.9.27-9"
 pkg_source="https://download.savannah.nongnu.org/releases/tinycc/tcc-0.9.27.tar.bz2"
 pkg_sha256="de23af78fca90ce32dff2dd45b3432b2334740bb9bb7b05bf60fdbfc396ceb9c"
 
 # No pkg_artifact_sha256 for this version, deliberately: that line
-# approves one specific byte sequence, and no -8 artifact has been
+# approves one specific byte sequence, and no -9 artifact has been
 # built and published by a Cix host yet. Carrying -7's checksum
 # forward would approve bytes that are not this build. It gets added
 # once a real host has produced the artifact -- never from a tarball
@@ -228,7 +228,7 @@ ATOMIC_EOF
 		exit 1
 	}
 
-	# -8: __has_include, which upstream 0.9.27 does not implement at
+	# -9: __has_include, which upstream 0.9.27 does not implement at
 	# all (nor any of the __has_* operators). In a preprocessor
 	# conditional an unknown identifier evaluates to 0, so a real use
 	#     #if __has_include(<stdcountof.h>)
@@ -237,38 +237,46 @@ ATOMIC_EOF
 	# pointing at a blank line, which is about as unhelpful as a
 	# compiler error gets.
 	#
-	# This is not a theoretical gap. util-linux 2.42's own include/c.h
-	# uses it, so libblkid could not be compiled by this compiler at
-	# all -- and libblkid is what btrfs-progs needs, which provides
+	# Not a theoretical gap: util-linux 2.42's own include/c.h uses
+	# it, so libblkid could not be compiled by this compiler at all --
+	# and libblkid is what btrfs-progs needs, which provides
 	# mkfs.btrfs, which ADR-0207 makes the platform's own storage
-	# depend on. Confirmed by bisecting the real failure to c.h's own
-	# line and reproducing it with a three-line file.
+	# depend on.
 	#
 	# Only __has_include is added, on purpose. Its siblings
 	# (__has_attribute/__has_feature/__has_extension) need no compiler
-	# support because portable code can define its own fallback for
+	# support, because portable code can define its own fallback for
 	# them -- util-linux does exactly that a few lines above the line
 	# that broke, which is why the build got as far as it did.
-	# __has_include is the one that cannot be faked, because any
-	# fallback would have to answer the very question it asks.
+	# __has_include is the one that cannot be faked: any fallback
+	# would have to answer the very question it asks.
 	#
 	# Matched on the token TEXT rather than adding a TOK_ entry to
-	# tcctok.h: that table's ordering is load-bearing (token ids are
-	# positional), so a one-file change with no numbering impact is
-	# the smaller, safer edit.
+	# tcctok.h, whose ordering is load-bearing (token ids are
+	# positional) -- a one-file change with no numbering impact is the
+	# smaller, safer edit.
 	#
-	# Resolution walks the same search list in the same order as a
-	# real #include -- absolute name, then the including file's own
-	# directory for the "quoted" form, then -I paths, then system
-	# paths -- but only tests openability: nothing is opened as a
-	# translation unit, pushed on the include stack, or added to
-	# target deps.
-	python3 - <<'PATCH_EOF'
-import sys
-
-src = open('tccpp.c').read()
-
-fn = r'''
+	# (-8 was this same patch driven by python3, which does not exist
+	# in a composed build environment -- only declared build tools do,
+	# and this recipe rightly declares none. It failed on the box with
+	# "python3: command not found" before compiling a line. Recipe
+	# versions are immutable once published, so the fix is -9 rather
+	# than an edit. sed and a heredoc are what -7's own do-while patch
+	# uses, for exactly this reason.)
+	cat > pp_has_include.inc <<'INC_EOF'
+/*
+ * __has_include(<header>) / __has_include("header"), for #if and #elif.
+ *
+ * Resolution walks the same search list in the same order as a real
+ * #include -- absolute name, then the including file's own directory
+ * for the "quoted" form, then -I paths, then system paths -- but only
+ * tests openability: nothing is opened as a translation unit, pushed
+ * on the include stack, or added to target deps. The header name
+ * arrives as ordinary tokens ('<', name, '.', name, '>'), so it is
+ * reassembled by concatenating token text up to the closing ')' --
+ * the technique tcc's own "computed #include" branch already uses for
+ * the identical problem.
+ */
 static int pp_has_include(void)
 {
     TCCState *s1 = tcc_state;
@@ -329,43 +337,34 @@ static int pp_has_include(void)
     return found;
 }
 
-/* eval an expression for #if/#elif */'''
+/* eval an expression for #if/#elif */
+INC_EOF
 
-anchor = '/* eval an expression for #if/#elif */'
-if src.count(anchor) != 1:
-    sys.exit('tcc: __has_include anchor not found exactly once in tccpp.c')
-src = src.replace(anchor, fn, 1)
+	# Replace the anchor comment line with the function followed by
+	# that same comment (the r-then-d idiom): the function lands
+	# immediately before expr_preprocess(), and the comment still sits
+	# on the function it actually describes.
+	sed -i -e '/^\/\* eval an expression for #if\/#elif \*\/$/{r pp_has_include.inc' -e 'd}' tccpp.c
 
-old = """        } else if (tok >= TOK_IDENT) {
-            /* if undefined macro */
-            tok = TOK_CINT;
-            tokc.i = 0;
-        }"""
-new = """        } else if (tok >= TOK_IDENT &&
-                   strcmp(get_tok_str(tok, &tokc), \"__has_include\") == 0) {
-            c = pp_has_include();
-            tok = TOK_CINT;
-            tokc.i = c;
-        } else if (tok >= TOK_IDENT) {
-            /* if undefined macro */
-            tok = TOK_CINT;
-            tokc.i = 0;
-        }"""
-if src.count(old) != 1:
-    sys.exit('tcc: __has_include hook site not found exactly once in tccpp.c')
-src = src.replace(old, new, 1)
-open('tccpp.c', 'w').write(src)
-PATCH_EOF
+	# The call site, inserted ahead of the catch-all that turns every
+	# remaining identifier into 0 -- which is precisely what swallowed
+	# __has_include before.
+	sed -i '/^        } else if (tok >= TOK_IDENT) {$/i\
+        } else if (tok >= TOK_IDENT \&\&\
+                   strcmp(get_tok_str(tok, \&tokc), "__has_include") == 0) {\
+            c = pp_has_include();\
+            tok = TOK_CINT;\
+            tokc.i = c;' tccpp.c
 
-	grep -q 'pp_has_include' tccpp.c || {
-		echo "tcc: __has_include patch did not land -- re-check it against tccpp.c" >&2
+	grep -q 'pp_has_include()' tccpp.c || {
+		echo "tcc: __has_include patch did not land -- re-check the seds against tccpp.c" >&2
 		exit 1
 	}
 
 	./configure --prefix=/usr --cc=tcc
 	make -j"$(nproc)"
 
-	# The __has_include gate (-8): all three answers must be right, not
+	# The __has_include gate: all three answers must be RIGHT, not
 	# merely "it compiled". An unpatched tcc fails this file with
 	# "function pointer expected" before any #error is even reached.
 	cat > has_include_check.c <<'CHECK_EOF'
