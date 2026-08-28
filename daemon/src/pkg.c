@@ -5572,11 +5572,29 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 	if (chain_idx < 0)
 		return 0;
 
-	/* Issue #168: this build is over either way -- success, failure, or
-	 * a chained dependency moving on -- so the environment composed for
-	 * it goes now. A later step in the same chain composes its own from
-	 * its own recipe's declared tools; that is the point. */
-	buildenv_release(chain_idx);
+	/*
+	 * Issue #168: the environment composed for this build goes when the
+	 * build is over -- success, failure, or a chained dependency moving
+	 * on. A later step in the same chain composes its own from its own
+	 * recipe's declared tools; that is the point.
+	 *
+	 * Except when the build container is being PRESERVED (ADR-0175's
+	 * keep_on_failure): that container's whole purpose is to be
+	 * inspected and resumed afterwards, and the composed environment is
+	 * its overlay lowerdir. Destroying it leaves a container that
+	 * cannot be read or resumed -- which is exactly what happened when
+	 * this released unconditionally: `pkg resume` failed on a container
+	 * whose environment had been deleted out from under it, and the
+	 * test suite caught it.
+	 *
+	 * A resumed build ends in this same function and releases then, so
+	 * the resume path does not leak. A kept container the operator
+	 * simply deletes does leave its environment behind -- untidy, never
+	 * incorrect, and preferable to breaking the feature that asked for
+	 * the container to be kept in the first place.
+	 */
+	if (exit_status == 0 || !g_chains[chain_idx].keep_on_failure)
+		buildenv_release(chain_idx);
 
 	/*
 	 * Issue #98: keyed on the container that actually exited. Resolving
