@@ -180,7 +180,50 @@ static int treecopy_walk(const char *src_root, const char *dst_root, const char 
 	return 0;
 }
 
+/* mkdir -p for the destination root, in place rather than pulling in
+ * persist.c -- this module is deliberately dependency-free so the
+ * forked copy child stays trivial. */
+static int mkdir_p(const char *path)
+{
+	char tmp[PATH_MAX];
+	size_t len;
+	char *p;
+
+	len = (size_t)snprintf(tmp, sizeof(tmp), "%s", path);
+	if (len >= sizeof(tmp))
+		return -1;
+	for (p = tmp + 1; *p != '\0'; p++) {
+		if (*p != '/')
+			continue;
+		*p = '\0';
+		if (mkdir(tmp, 0755) != 0 && errno != EEXIST)
+			return -1;
+		*p = '/';
+	}
+	if (mkdir(tmp, 0755) != 0 && errno != EEXIST)
+		return -1;
+	return 0;
+}
+
 int treecopy_recursive(const char *src_root, const char *dst_root)
 {
+	/*
+	 * Create the destination ROOT, not just the subdirectories inside
+	 * it. treecopy_walk() mkdirs each directory it finds under the
+	 * source, but nothing created the root itself -- so a migration to
+	 * a freshly formatted disk failed on its very first entry:
+	 *
+	 *   bulk copy failed -- mkdir:
+	 *     /var/lib/cix/disks/sda/rebuildable/pkg: No such file or directory
+	 *
+	 * because .../rebuildable did not exist to hold pkg. That is issue
+	 * #172's third defect and it means rebuildable-storage migration
+	 * has never worked; it was invisible for as long as the only
+	 * report was the words "bulk copy failed".
+	 */
+	if (mkdir_p(dst_root) != 0) {
+		treecopy_fail("create destination root", dst_root);
+		return -1;
+	}
 	return treecopy_walk(src_root, dst_root, "");
 }

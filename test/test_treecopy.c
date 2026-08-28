@@ -247,6 +247,42 @@ int main(void)
 		}
 	}
 
+	/*
+	 * Issue #172, third defect: the destination ROOT must be created.
+	 * treecopy_walk() mkdirs every directory it finds under the source
+	 * but nothing created the root itself, so a migration onto a
+	 * freshly formatted disk died on its first entry with
+	 *   mkdir: .../sda/rebuildable/pkg: No such file or directory
+	 * because .../rebuildable did not exist to hold pkg. That means
+	 * rebuildable-storage migration had never once worked, invisible
+	 * for as long as the only report was "bulk copy failed".
+	 */
+	{
+		char rootsrc[PATH_MAX], rootdst[PATH_MAX], cmd[PATH_MAX * 2 + 64];
+		struct stat st;
+
+		snprintf(rootsrc, sizeof(rootsrc), "%s/rootcheck", src);
+		/* deliberately several levels deep and NOT created first */
+		snprintf(rootdst, sizeof(rootdst), "%s/rootcheck-dst/deeper/still", dst);
+		snprintf(cmd, sizeof(cmd), "rm -rf '%s' '%s' && mkdir -p '%s/inner' && echo x > '%s/inner/f'",
+		         rootsrc, rootdst, rootsrc, rootsrc);
+		system(cmd);
+
+		if (treecopy_recursive(rootsrc, rootdst) != 0) {
+			fprintf(stderr, "FAIL: treecopy did not create its destination root: %s\n",
+			        treecopy_last_error());
+			ok = 0;
+		} else {
+			char inner[PATH_MAX];
+
+			snprintf(inner, sizeof(inner), "%s/inner/f", rootdst);
+			if (stat(inner, &st) != 0) {
+				fprintf(stderr, "FAIL: content missing under a created destination root\n");
+				ok = 0;
+			}
+		}
+	}
+
 	if (ok)
 		printf("TREECOPY RESULT: PASS\n");
 	else
