@@ -427,11 +427,12 @@ static int write_builddeps_recipe(const char *name, const char *version, const c
 	fprintf(f, "pkg_source=file://%s\n", tarball_path);
 	fprintf(f, "pkg_sha256=%s\n", sha256);
 	fprintf(f, "pkg_depends=\"\"\n");
-	/* ADR-0209: every recipe declares its build tools -- there is no
-	 * fallback environment to inherit one from. These are exactly the
-	 * floor packages seeded into this daemon's cache, and tcc rather
-	 * than gcc because tcc is what this project builds with. */
-	fprintf(f, "pkg_build_depends=\"tcc make libc-dev bash coreutils sed grep gawk binutils\"\n");
+	/* This writer takes its declaration from the caller -- that is its
+	 * whole purpose (proving a recipe's declared tools are honoured,
+	 * including a deliberately unavailable one). It must NOT also get
+	 * the standard floor: two pkg_build_depends lines mean the parser
+	 * reads the first, the caller's is silently ignored, and a test
+	 * that should fail passes instead. Which is exactly what happened. */
 	fprintf(f, "pkg_build_depends=\"%s\"\n\n", build_depends);
 	fprintf(f, "pkg_build() {\n\ttcc -o hello hello.c\n}\n\n");
 	fprintf(f, "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n\tcp hello "
@@ -447,6 +448,42 @@ static int write_builddeps_recipe(const char *name, const char *version, const c
  * deliberately copies extra1.txt into PKG_DESTDIR so the caller can
  * check its real byte content afterward -- proof the file was
  * genuinely there during the build, not just that the job succeeded. */
+/*
+ * Like write_builddeps_recipe(), but its pkg_install() copies the
+ * stamp file its declared build tool left in the environment into its
+ * own PKG_DESTDIR. The installed package therefore records which
+ * version of that tool the build genuinely ran against -- observable
+ * afterwards without the environment still existing, which it will not
+ * (ADR-0209 tears it down with the build).
+ */
+static int write_observing_recipe(const char *name, const char *version, const char *tarball_path,
+                                   const char *sha256, const char *build_depends)
+{
+	char name_dir[256];
+	char path[300];
+	FILE *f;
+
+	snprintf(name_dir, sizeof(name_dir), "%s/recipes/%s", g_pkg_state_dir, name);
+	mkdir(name_dir, 0755);
+	snprintf(path, sizeof(path), "%s/%s", name_dir, version);
+	mkdir(path, 0755);
+	snprintf(path, sizeof(path), "%s/recipes/%s/%s/build.sh", g_pkg_state_dir, name, version);
+	f = fopen(path, "w");
+	if (f == NULL)
+		return -1;
+	fprintf(f, "pkg_name=%s\n", name);
+	fprintf(f, "pkg_version=%s\n", version);
+	fprintf(f, "pkg_source=file://%s\n", tarball_path);
+	fprintf(f, "pkg_sha256=%s\n", sha256);
+	fprintf(f, "pkg_depends=\"\"\n");
+	fprintf(f, "pkg_build_depends=\"%s\"\n\n", build_depends);
+	fprintf(f, "pkg_build() {\n\ttrue\n}\n\n");
+	fprintf(f, "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/share\"\n"
+	           "\tcp /usr/share/stamped.version \"$PKG_DESTDIR/usr/share/observed.version\"\n}\n");
+	fclose(f);
+	return 0;
+}
+
 static int write_multisrc_recipe(const char *name, const char *version, const char *tarball_path,
                                   const char *tarball_sha256, const char *extra1_path,
                                   const char *extra1_sha256, const char *extra2_path,
@@ -814,22 +851,34 @@ int main(void)
 		fprintf(stderr, "FAIL: greeter ended in state '%s', not installed\n", state);
 		ok = 0;
 	} else {
-		/* Issue #40: the sandbox moved forward, and can be seen to
-		 * have. If this ever reads equal, the accretion is being
-		 * discarded and every build after it is running against stale
-		 * content while reporting success. */
-		memset(&r, 0, sizeof(r));
-		if (cix_client_request(&client, "GET", "/v1/images/cix-builder", NULL, &r) != 0 ||
-		    r.status != 200 || json_str_field(r.json, "current_version") == NULL) {
-			fprintf(stderr, "FAIL: #40 the build sandbox is not a real image\n");
-			ok = 0;
-		} else if (sandbox_version_before[0] != '\0' &&
-		           strcmp(sandbox_version_before, json_str_field(r.json, "current_version")) == 0) {
-			fprintf(stderr, "FAIL: #40 an install did not produce a new build-sandbox version -- "
-			                "the merge into it is being silently discarded\n");
-			ok = 0;
+		/*
+		 * Issue #168 / ADR-0209, inverted from what #40 asserted here.
+		 *
+		 * This used to require that every successful install grew the
+		 * `cix-builder` image, because every install folded into it as
+		 * the shared build sandbox. That fold is gone: build
+		 * environments are composed from a recipe's declared tools, so
+		 * an install has no business touching an unrelated image at
+		 * all. Left as-is, this check would have passed only while the
+		 * bug it now guards against was present.
+		 *
+		 * So the assertion is the opposite one, and it is worth having:
+		 * installing a package must NOT move cix-builder. If this ever
+		 * fails, accumulation has come back and an image is once again
+		 * growing content its manifest never declared.
+		 */
+		if (sandbox_version_before[0] != '\0') {
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/images/cix-builder", NULL, &r) == 0 &&
+			    r.status == 200 && json_str_field(r.json, "current_version") != NULL &&
+			    strcmp(sandbox_version_before, json_str_field(r.json, "current_version")) != 0) {
+				fprintf(stderr,
+				        "FAIL: #168 an install moved the cix-builder image -- nothing should "
+				        "fold into a shared sandbox any more (ADR-0209)\n");
+				ok = 0;
+			}
+			cix_response_free(&r);
 		}
-		cix_response_free(&r);
 	}
 	if (strcmp(state, "installed") == 0) {
 		char run_out[256] = { 0 };
@@ -1530,8 +1579,23 @@ int main(void)
 			fprintf(stderr, "FAIL: #109 could not list images to check the composed env\n");
 			ok = 0;
 		} else {
+			/*
+			 * ADR-0209, replacing what #109 asserted here.
+			 *
+			 * This used to hunt for a surviving "__buildenv-*" image as
+			 * proof that composition had happened. A build environment
+			 * is now destroyed the moment its build ends, so the thing
+			 * it looked for is exactly what must NOT be there --
+			 * leftovers are how a box accumulates images nobody can
+			 * account for, which is the whole disease being cured.
+			 *
+			 * Composition is still proven, just not by debris: with no
+			 * fallback environment anywhere, a build that succeeds
+			 * could only have run in one composed from its declared
+			 * tools. The successful installs above are that proof. What
+			 * remains to check is that nothing was left behind.
+			 */
 			const struct json_value *arr = json_object_get(r.json, "images");
-			int found = 0;
 			size_t n = (arr != NULL && arr->type == JSON_ARRAY) ? arr->u.array.count : 0;
 			size_t k;
 
@@ -1540,56 +1604,12 @@ int main(void)
 				const char *nm = im != NULL ? json_str_field(im, "name") : NULL;
 
 				if (nm != NULL && strncmp(nm, "__buildenv-", 11) == 0) {
-					struct cix_response ir;
-					char ipath[256];
-					const char *v;
-
-					found = 1;
-					snprintf(ipath, sizeof(ipath), "/v1/images/%s", nm);
-					memset(&ir, 0, sizeof(ir));
-					if (cix_client_request(&client, "GET", ipath, NULL, &ir) != 0 ||
-					    ir.status != 200) {
-						fprintf(stderr, "FAIL: #109 could not GET composed env %s\n", nm);
-						ok = 0;
-					} else {
-						v = json_str_field(ir.json, "current_version");
-						if (v == NULL || v[0] == '\0') {
-							fprintf(stderr, "FAIL: #109 composed env %s has no version\n", nm);
-							ok = 0;
-						} else if (strcmp(v, EMPTY_MANIFEST_VERSION) == 0) {
-							fprintf(stderr,
-							        "FAIL: #109 composed env %s is EMPTY (still at the "
-							        "empty-manifest version) -- created but never filled\n",
-							        nm);
-							ok = 0;
-						} else {
-							/*
-							 * And it must actually contain the declared
-							 * tool's own file. "Not empty" only proves
-							 * the baseline was seeded; this proves the
-							 * tool arrived.
-							 */
-							char tool_path[PATH_MAX];
-							struct stat tst;
-
-							snprintf(tool_path, sizeof(tool_path),
-							         "%s/rebuildable/images/%s/%s/rootfs/usr/bin/greeter",
-							         g_data_dir, nm, v);
-							if (stat(tool_path, &tst) != 0) {
-								fprintf(stderr,
-								        "FAIL: #109 composed env %s does not contain its "
-								        "declared tool (%s missing)\n",
-								        nm, tool_path);
-								ok = 0;
-							}
-						}
-					}
-					cix_response_free(&ir);
+					fprintf(stderr,
+					        "FAIL: #168 build environment %s outlived its build -- it must be "
+					        "torn down when the build ends (ADR-0209)\n",
+					        nm);
+					ok = 0;
 				}
-			}
-			if (!found) {
-				fprintf(stderr, "FAIL: #109 no composed build environment image exists\n");
-				ok = 0;
 			}
 		}
 		cix_response_free(&r);
@@ -2035,10 +2055,17 @@ int main(void)
 			}
 			/* Phase 12 part A: runtime seeding is no longer base-only --
 			 * a non-default image's first install must land the same C
-			 * runtime greeter itself needs to execve() at all. */
+			 * runtime greeter itself needs to execve() at all.
+			 *
+			 * ADR-0209: libtinfo is deliberately NOT checked any more.
+			 * It is ncurses, a package this project builds itself, and
+			 * the baseline used to copy Debian's copy of it into every
+			 * image -- content arriving by mechanism rather than by
+			 * declaration. A package needing it now declares ncurses.
+			 * What the baseline still provides is the glibc floor, and
+			 * that is what this asserts. */
 			if (stat(router_path("/lib64/ld-linux-x86-64.so.2"), &st) != 0 ||
-			    stat(router_path("/lib/x86_64-linux-gnu/libc.so.6"), &st) != 0 ||
-			    stat(router_path("/lib/x86_64-linux-gnu/libtinfo.so.6"), &st) != 0) {
+			    stat(router_path("/lib/x86_64-linux-gnu/libc.so.6"), &st) != 0) {
 				fprintf(stderr,
 				        "FAIL: router image missing its own C runtime after first install\n");
 				ok = 0;
@@ -2305,7 +2332,20 @@ int main(void)
 			ok = 0;
 		}
 
-		if (write_builddeps_recipe("usesstamped", "1.0", tarball_path, sha256, "stamped") != 0)
+		/*
+		 * ADR-0209: the consuming recipe now REPORTS what it saw.
+		 *
+		 * This property -- that declaring a tool gets you the version
+		 * you declared -- used to be checked by rummaging in a
+		 * surviving __buildenv-* image afterwards. Build environments
+		 * are destroyed with their builds now, so there is nothing to
+		 * rummage in; and observing from inside the build is a better
+		 * test anyway, because it proves what the build actually had
+		 * rather than what was lying around when it finished.
+		 */
+		if (write_observing_recipe("usesstamped", "1.0", tarball_path, sha256,
+		                            "stamped@1.9 tcc make libc-dev bash coreutils sed grep gawk "
+		                            "binutils") != 0)
 			ok = 0;
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/pkg/install",
@@ -2318,58 +2358,44 @@ int main(void)
 			ok = 0;
 		}
 
-		/* Which copy landed in the composed environment? */
-		memset(&r, 0, sizeof(r));
-		if (cix_client_request(&client, "GET", "/v1/images", NULL, &r) == 0 &&
-		    r.status == 200) {
-			const struct json_value *arr = json_object_get(r.json, "images");
-			size_t n = (arr != NULL && arr->type == JSON_ARRAY) ? arr->u.array.count : 0;
-			size_t k;
-			int checked = 0;
+		/*
+		 * Which version did the build actually run against? Asked of
+		 * the build's own output, not of leftover images: usesstamped
+		 * copied the stamp its declared tool left in the environment
+		 * into its own package, so the installed file is a first-hand
+		 * record. 1.9 is what it declared; 1.10 exists purely to prove
+		 * "newest wins" is not what happens.
+		 */
+		{
+			char observed[128] = { 0 };
+			char bver[128];
+			FILE *of;
 
-			for (k = 0; k < n; k++) {
-				const struct json_value *im = arr->u.array.items[k];
-				const char *nm = im != NULL ? json_str_field(im, "name") : NULL;
-				struct cix_response ir;
-				const char *v;
-
-				if (nm == NULL || strncmp(nm, "__buildenv-", 11) != 0)
-					continue;
-				memset(&ir, 0, sizeof(ir));
-				snprintf(stamp_path, sizeof(stamp_path), "/v1/images/%s", nm);
-				if (cix_client_request(&client, "GET", stamp_path, NULL, &ir) != 0 ||
-				    ir.status != 200) {
-					cix_response_free(&ir);
-					continue;
-				}
-				v = json_str_field(ir.json, "current_version");
-				if (v != NULL && v[0] != '\0') {
-					snprintf(stamp_path, sizeof(stamp_path),
-					         "%s/rebuildable/images/%s/%s/rootfs/usr/share/stamped.version",
-					         g_data_dir, nm, v);
-					sf = fopen(stamp_path, "r");
-					if (sf != NULL) {
-						checked = 1;
-						line[0] = '\0';
-						if (fgets(line, sizeof(line), sf) == NULL)
-							line[0] = '\0';
-						fclose(sf);
-						line[strcspn(line, "\r\n")] = '\0';
-						if (strcmp(line, "1.10") != 0) {
-							fprintf(stderr,
-							        "FAIL: #109 composed env took stamped '%s', expected the "
-							        "newest (1.10) -- resolution is not version-ordered\n",
-							        line);
-							ok = 0;
-						}
-					}
-				}
-				cix_response_free(&ir);
-			}
-			if (!checked) {
+			if (test_image_fixture_read_current_version(g_images_base_dir, bver, sizeof(bver)) != 0)
+				bver[0] = '\0';
+			snprintf(stamp_path, sizeof(stamp_path),
+			         "%s/rebuildable/images/base/%s/rootfs/usr/share/observed.version", g_data_dir,
+			         bver);
+			of = fopen(stamp_path, "r");
+			if (of == NULL) {
 				fprintf(stderr,
-				        "FAIL: #109 no composed environment contained the stamped package\n");
+				        "FAIL: #109 usesstamped did not record which stamped version its "
+				        "environment held (%s)\n",
+				        stamp_path);
 				ok = 0;
+			} else {
+				if (fgets(observed, sizeof(observed), of) == NULL)
+					observed[0] = '\0';
+				fclose(of);
+				observed[strcspn(observed, "\r\n")] = '\0';
+				if (strcmp(observed, "1.9") != 0) {
+					fprintf(stderr,
+					        "FAIL: #109 the composed environment held stamped '%s', expected the "
+					        "declared 1.9 -- a declaration must pin the version, not resolve to "
+					        "the newest\n",
+					        observed);
+					ok = 0;
+				}
 			}
 		}
 		cix_response_free(&r);
