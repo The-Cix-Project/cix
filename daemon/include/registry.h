@@ -235,6 +235,7 @@ struct registry_entry {
 	struct registry_network_attachment nets[CONTAINER_MAX_NETWORKS];
 	int net_count;     /* 0 = not attached to any network */
 	int ip_forward;    /* mirrors container_spec.ip_forward, for display */
+	int userns_enabled; /* mirrors container_spec.userns_enabled (ADR-0207), for display */
 	struct registry_device_attachment devices[CONTAINER_MAX_DEVICES];
 	int device_count;  /* 0 = no devices granted */
 	/*

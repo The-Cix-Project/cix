@@ -787,7 +787,8 @@ paths:
         network.c's own is_management flag live (GET /networks), the
         one source of truth for which network cixd is bound to.
         Always 200s -- defaults (port 80, http_enabled true,
-        https_enabled true, https_port 443, ADR-0171) apply until the
+        https_enabled true, https_port 443, ADR-0171; userns_default
+        true, ADR-0207 -- secure by default) apply until the
         first PUT. A fresh, pre-PKI-bootstrap install just has the
         HTTPS listener silently not come up at boot (logged, non-fatal)
         until a host certificate exists.
@@ -9929,6 +9930,23 @@ components:
             container. Format only is validated (dest/via must be
             well-formed IPv4, prefix_len 0-32) -- whether via is
             actually reachable is the caller's responsibility.
+        userns:
+          type: boolean
+          description: >
+            Whether this container runs in its own user namespace, its
+            root mapped onto a dedicated host subordinate-ID range
+            (ADR-0179/ADR-0207). ABSENT means the platform default
+            (daemon-config's userns_default -- ON on a fresh install:
+            secure by default, the owner's stated posture); an explicit
+            true/false always wins over the default, in both
+            directions. The RESOLVED value is pinned into the persisted
+            definition at creation, exactly as image_version is pinned
+            and for the same reason: a revival replays that definition,
+            and consulting the then-current default would silently flip
+            a container's isolation mode -- and with it its whole
+            storage layout -- on some future restart. A container's
+            mode is decided once, at creation, and reported back as the
+            container object's own userns field.
         capture_output:
           type: boolean
           default: false

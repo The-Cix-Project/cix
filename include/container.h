@@ -327,6 +327,26 @@ struct container_spec {
 	struct container_volume volumes[CONTAINER_MAX_VOLUMES];
 	int volume_count;
 	/*
+	 * ADR-0207 phase 3: when set, this userns container's rootfs is a
+	 * host-uid-0-owned btrfs snapshot presented through an id-mapped
+	 * mount, NOT a chowned copy -- container_create() applies
+	 * MOUNT_ATTR_IDMAP to the already-open detached rootfs (and
+	 * volume) fds after the child's uid/gid maps are written; a
+	 * fork-inherited fd references the same mount object, so the
+	 * child's move_mount sees the mapping with no fd-passing at all.
+	 * 0 keeps the ADR-0179 phase-2b copy+chown presentation, which is
+	 * the proven path on non-btrfs backing.
+	 */
+	int userns_idmap;
+	/*
+	 * Parent-opened detached trees (open_tree(OPEN_TREE_CLONE)) for
+	 * each volume of a userns_idmap container, id-mapped alongside the
+	 * rootfs so a host-0-owned volume is writable by the mapped root
+	 * (the EOVERFLOW gap ADR-0179 flagged). -1 = no fd, the child does
+	 * its ordinary bind mount. Parallel to volumes[] by index.
+	 */
+	int volume_idmap_fds[CONTAINER_MAX_VOLUMES];
+	/*
 	 * ADR-0179 (issue #29): user-namespace mapping. userns_enabled
 	 * requests CLONE_NEWUSER with the container's own 0..userns_len-1
 	 * mapped onto host [userns_uid_base, +len) / [userns_gid_base,

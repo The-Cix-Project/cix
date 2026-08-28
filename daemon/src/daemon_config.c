@@ -10,7 +10,20 @@
 static char g_state_path[512];
 static int g_port;          /* 0: no persisted override */
 static int g_http_enabled;  /* defaults to 1 */
-static int g_https_enabled; /* defaults to 1 too (ADR-0171) -- every fresh install
+static int g_https_enabled;
+/*
+ * ADR-0207 phase 3: whether a container created WITHOUT an explicit
+ * "userns" field gets a user namespace. Defaults to 1 -- secure by
+ * default, the owner's stated posture: every workload runs as a mapped
+ * unprivileged uid unless it (or the platform, for its own trusted
+ * build containers) opts out. An operator can flip the platform-wide
+ * default off here; the per-container "userns" field always wins over
+ * either default. The test fixture seeds this to 0 because the dev
+ * sandbox's own LSM forbids uid_map writes entirely (documented in
+ * CLAUDE.md) -- through this same ordinary config channel, not a
+ * test-only code path.
+ */
+static int g_userns_default = 1; /* defaults to 1 too (ADR-0171) -- every fresh install
                               * starts both listeners on, matching this project's
                               * own already-correct port defaults (80/443, see
                               * DEFAULT_PORT/DEFAULT_HTTPS_PORT). A pre-PKI-
@@ -61,6 +74,12 @@ static int load_state(void)
 	jhttps = json_object_get(root, "https_enabled");
 	if (jhttps != NULL && jhttps->type == JSON_BOOL)
 		g_https_enabled = jhttps->u.boolean;
+	{
+		const struct json_value *jud = json_object_get(root, "userns_default");
+
+		if (jud != NULL && jud->type == JSON_BOOL)
+			g_userns_default = jud->u.boolean;
+	}
 
 	jhttps_port = json_object_get(root, "https_port");
 	if (jhttps_port != NULL) {
@@ -102,6 +121,8 @@ static int save_state(void)
 	jw_bool(&w, g_http_enabled);
 	jw_key(&w, "https_enabled");
 	jw_bool(&w, g_https_enabled);
+	jw_key(&w, "userns_default");
+	jw_bool(&w, g_userns_default);
 	jw_key(&w, "https_port");
 	jw_int(&w, g_https_port);
 	jw_key(&w, "bind_ip");
@@ -256,4 +277,15 @@ void daemon_config_write_json(struct json_writer *w)
 	else
 		jw_null(w);
 	jw_obj_close(w);
+}
+
+int daemon_config_userns_default(void)
+{
+	return g_userns_default;
+}
+
+enum daemon_config_error daemon_config_set_userns_default(int enabled)
+{
+	g_userns_default = enabled ? 1 : 0;
+	return save_state() == 0 ? DAEMON_CONFIG_OK : DAEMON_CONFIG_ERR_PERSIST_FAILED;
 }

@@ -54,6 +54,39 @@ static inline int cix_move_mount(int from_dfd, const char *from_path, int to_dfd
 	return (int)syscall(SYS_move_mount, from_dfd, from_path, to_dfd, to_path, flags);
 }
 
+/*
+ * mount_setattr(2) (ADR-0207 phase 3): applies MOUNT_ATTR_IDMAP to a
+ * detached mount, presenting host-uid-0 ownership as the target
+ * userns's mapped ids -- the primitive ADR-0179 proved works on plain
+ * mounts (and only overlay could not use). The struct is the kernel's
+ * own mount_attr, all-u64, naturally aligned -- no packing concerns.
+ * The syscall takes sizeof() explicitly, so the kernel knows exactly
+ * which fields this caller speaks.
+ */
+#ifndef SYS_mount_setattr
+#define SYS_mount_setattr 442
+#endif
+#ifndef MOUNT_ATTR_IDMAP
+#define MOUNT_ATTR_IDMAP 0x00100000
+#endif
+#ifndef CIX_AT_EMPTY_PATH
+#define CIX_AT_EMPTY_PATH 0x1000
+#endif
+
+struct cix_mount_attr {
+	uint64_t attr_set;
+	uint64_t attr_clr;
+	uint64_t propagation;
+	uint64_t userns_fd;
+};
+
+static inline int cix_mount_setattr(int dfd, const char *path, unsigned int flags,
+                                   struct cix_mount_attr *attr)
+{
+	return (int)syscall(SYS_mount_setattr, dfd, path, flags, attr,
+	                    sizeof(struct cix_mount_attr));
+}
+
 #ifndef SYS_pivot_root
 #define SYS_pivot_root 155
 #endif

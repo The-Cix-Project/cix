@@ -461,6 +461,31 @@ int test_data_dir_create(char *out_path, size_t out_size)
 		errno = ENAMETOOLONG;
 		return -1;
 	}
+	/*
+	 * ADR-0207 phase 3: the platform default is userns ON, but this dev
+	 * sandbox's own LSM forbids the uid_map write outright (documented
+	 * in CLAUDE.md -- even a "0 0 1" self-map is EPERM here), so every
+	 * container a test daemon created would die in its handshake.
+	 * Seeded through the ordinary daemon-config channel -- the same
+	 * knob an operator has -- not a test-only code path. A test that
+	 * wants the secure default exercises it on the .95 VM, the one
+	 * environment whose kernel actually permits it.
+	 */
+	{
+		char cfg_dir[PATH_MAX];
+		char cfg[PATH_MAX];
+		FILE *f;
+
+		snprintf(cfg_dir, sizeof(cfg_dir), "%s/state", tmpl);
+		if (mkdir(cfg_dir, 0755) != 0 && errno != EEXIST)
+			return -1;
+		snprintf(cfg, sizeof(cfg), "%s/daemon_config.json", cfg_dir);
+		f = fopen(cfg, "w");
+		if (f == NULL)
+			return -1;
+		fputs("{\"userns_default\": false}\n", f);
+		fclose(f);
+	}
 	return 0;
 }
 
