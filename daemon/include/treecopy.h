@@ -49,4 +49,14 @@
  */
 int treecopy_recursive(const char *src_root, const char *dst_root);
 
+/*
+ * Why the last treecopy_recursive() failed: "<what>: <path>: <strerror>".
+ * errno alone is useless to an operator -- "No such file or directory"
+ * out of a multi-gigabyte migration names neither the entry nor the
+ * operation. Issue #172: a real rebuildable-storage migration failed
+ * twice with nothing but "bulk copy failed" recorded anywhere.
+ * Valid until the next treecopy_recursive() call.
+ */
+const char *treecopy_last_error(void);
+
 #endif /* TREECOPY_H */

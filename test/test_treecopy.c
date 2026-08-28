@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <unistd.h>
 
 static int write_file(const char *path, const char *content, mode_t mode)
@@ -55,6 +56,16 @@ static int mode_of(const char *path, mode_t *out)
 		return -1;
 	*out = st.st_mode & 07777;
 	return 0;
+}
+
+/* Separate so the test can report "needs real root" rather than a
+ * confusing copy failure when run unprivileged. */
+static int mknod_null(const char *dir)
+{
+	char path[PATH_MAX];
+
+	snprintf(path, sizeof(path), "%s/null", dir);
+	return mknod(path, S_IFCHR | 0666, makedev(1, 3));
 }
 
 int main(void)
@@ -163,6 +174,74 @@ int main(void)
 			target[len] = '\0';
 			if (strcmp(target, "cert.pem") != 0) {
 				fprintf(stderr, "FAIL: link-to-cert target = '%s', expected 'cert.pem'\n", target);
+				ok = 0;
+			}
+		}
+	}
+
+	/*
+	 * Issue #172: a device node must survive the copy, WITH its mode.
+	 *
+	 * treecopy used to skip device nodes silently, on a comment
+	 * asserting they are "never expected under any of this project's
+	 * own storage-placement trees". That is true for state-storage and
+	 * log-storage and false for the image store, which is exactly what
+	 * rebuildable-storage migration moves: pkg_seed_image_baseline()
+	 * stages /dev/null, /dev/zero, /dev/full and /dev/ptmx into every
+	 * image rootfs (ADR-0150 added ptmx so posix_openpt() works). A
+	 * migration that "succeeded" would have produced an image store
+	 * whose containers fail on /dev/null and cannot allocate a PTY,
+	 * with no error at any point and the symptom appearing nowhere
+	 * near the cause.
+	 *
+	 * The mode half matters just as much as the node existing: mknod()
+	 * applies the umask, so a 0666 /dev/null lands at 0644 and any
+	 * container not running as host root -- the default since ADR-0207
+	 * phase 3 -- can no longer write to it.
+	 */
+	{
+		char devsrc[PATH_MAX], devdst[PATH_MAX], cmd[PATH_MAX * 2 + 64];
+		struct stat sst, dst_st;
+
+		snprintf(devsrc, sizeof(devsrc), "%s/devnode", src);
+		snprintf(devdst, sizeof(devdst), "%s/devnode", dst);
+		snprintf(cmd, sizeof(cmd), "rm -rf '%s' '%s' && mkdir -p '%s' '%s'", devsrc, devdst,
+		         devsrc, devdst);
+		system(cmd);
+
+		if (mknod_null(devsrc) != 0) {
+			fprintf(stderr, "SKIP: cannot create a device node here (needs real root)\n");
+		} else {
+			char nullsrc[PATH_MAX], nulldst[PATH_MAX];
+
+			snprintf(nullsrc, sizeof(nullsrc), "%s/null", devsrc);
+			snprintf(nulldst, sizeof(nulldst), "%s/null", devdst);
+			/* 0666 explicitly: mknod() above was subject to the umask,
+			 * so without this the source itself would not exercise the
+			 * mode-preservation half at all. */
+			if (chmod(nullsrc, 0666) != 0)
+				fprintf(stderr, "FAIL: could not chmod the source device node\n"), ok = 0;
+
+			if (treecopy_recursive(devsrc, devdst) != 0) {
+				fprintf(stderr, "FAIL: treecopy over a device node: %s\n",
+				        treecopy_last_error());
+				ok = 0;
+			} else if (lstat(nulldst, &dst_st) != 0) {
+				fprintf(stderr, "FAIL: the device node was dropped by the copy (#172)\n");
+				ok = 0;
+			} else if (!S_ISCHR(dst_st.st_mode)) {
+				fprintf(stderr, "FAIL: copied /dev/null is not a character device\n");
+				ok = 0;
+			} else if (lstat(nullsrc, &sst) == 0 &&
+			           (dst_st.st_mode & 07777) != (sst.st_mode & 07777)) {
+				fprintf(stderr,
+				        "FAIL: device node mode not preserved -- source %o, copy %o; mknod's "
+				        "umask makes a 0666 /dev/null land at 0644, which no non-root "
+				        "container can write to\n",
+				        sst.st_mode & 07777, dst_st.st_mode & 07777);
+				ok = 0;
+			} else if (dst_st.st_rdev != sst.st_rdev) {
+				fprintf(stderr, "FAIL: device node major/minor not preserved\n");
 				ok = 0;
 			}
 		}

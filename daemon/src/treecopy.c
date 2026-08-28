@@ -7,7 +7,28 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <unistd.h>
+
+/*
+ * Why the last treecopy_recursive() failed, in a form worth reporting.
+ * errno alone is not enough -- "No such file or directory" out of a
+ * 15 GB image-store migration tells an operator nothing about WHICH
+ * entry stopped it, which is exactly the gap that made a real
+ * rebuildable-storage migration failure undiagnosable (issue #172).
+ */
+static char g_treecopy_error[PATH_MAX + 128];
+
+const char *treecopy_last_error(void)
+{
+	return g_treecopy_error[0] != '\0' ? g_treecopy_error : "no error recorded";
+}
+
+static void treecopy_fail(const char *what, const char *path)
+{
+	snprintf(g_treecopy_error, sizeof(g_treecopy_error), "%s: %s: %s", what, path,
+	         strerror(errno));
+}
 
 /* Real permission-preserving file copy -- fstat()s src to learn its
  * real mode, then open()s dst with that same mode from the start
@@ -71,12 +92,14 @@ static int treecopy_walk(const char *src_root, const char *dst_root, const char 
 		snprintf(dst_path, sizeof(dst_path), "%s/%s", dst_root, child_rel);
 
 		if (lstat(src_path, &st) != 0) {
+			treecopy_fail("stat", src_path);
 			closedir(d);
 			return -1;
 		}
 
 		if (S_ISDIR(st.st_mode)) {
 			if (mkdir(dst_path, 0755) != 0 && errno != EEXIST) {
+				treecopy_fail("mkdir", dst_path);
 				closedir(d);
 				return -1;
 			}
@@ -100,14 +123,58 @@ static int treecopy_walk(const char *src_root, const char *dst_root, const char 
 			}
 		} else if (S_ISREG(st.st_mode)) {
 			if (copy_file_preserve_mode(src_path, dst_path) != 0) {
+				treecopy_fail("copy file", src_path);
 				closedir(d);
 				return -1;
 			}
+		} else if (S_ISCHR(st.st_mode) || S_ISBLK(st.st_mode) || S_ISFIFO(st.st_mode)) {
+			/*
+			 * Device nodes are REAL content here, not stray junk.
+			 * pkg_seed_image_baseline() stages /dev/null, /dev/zero,
+			 * /dev/full and /dev/ptmx into every image rootfs
+			 * (ADR-0150 added ptmx specifically so posix_openpt()
+			 * works), so an image-store migration that dropped them
+			 * would produce images whose containers fail on /dev/null
+			 * and cannot allocate a PTY -- symptoms appearing much
+			 * later and nowhere near the migration that caused them.
+			 *
+			 * This code used to skip them SILENTLY, on a comment
+			 * asserting they are "never expected under any of this
+			 * project's own storage-placement trees". True for
+			 * state-storage and log-storage; false for the image
+			 * store (issue #172).
+			 */
+			if (mknod(dst_path, st.st_mode, st.st_rdev) != 0 && errno != EEXIST) {
+				treecopy_fail("create device node", dst_path);
+				closedir(d);
+				return -1;
+			}
+			/*
+			 * mknod() applies the umask, so the node lands at 0644
+			 * where the source was 0666 -- and a /dev/null a
+			 * non-root process cannot write to breaks any container
+			 * that is not running as host root, which is now the
+			 * default (ADR-0207 phase 3). Set the real mode
+			 * explicitly rather than inheriting whatever umask the
+			 * daemon happens to have.
+			 */
+			if (chmod(dst_path, st.st_mode & 07777) != 0) {
+				treecopy_fail("set device node mode", dst_path);
+				closedir(d);
+				return -1;
+			}
+		} else {
+			/*
+			 * Sockets and anything else: fail, do not skip. A
+			 * storage migration silently dropping content is the one
+			 * behaviour that must never be the default -- the caller
+			 * repoints live state at this copy believing it complete.
+			 */
+			errno = EINVAL;
+			treecopy_fail("unsupported entry type", src_path);
+			closedir(d);
+			return -1;
 		}
-		/* Anything else (a device node, fifo, socket) is never
-		 * expected under any of this project's own storage-placement
-		 * trees -- silently skipped rather than failing the whole
-		 * copy over content that was never supposed to be there. */
 	}
 	closedir(d);
 	return 0;

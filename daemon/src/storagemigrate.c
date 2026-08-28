@@ -6,6 +6,7 @@
 #include "treecopy.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <signal.h>
 #include <stdio.h>
@@ -21,9 +22,34 @@ struct migrate_job {
 	char target_dir[PATH_MAX];
 	char target_disk[DISKROLE_DISK_NAME_MAX]; /* empty: migrated back to the default placement */
 	char error[256];
+	/*
+	 * Issue #172: the copy runs in a forked child, so its reason for
+	 * failing died with it -- two real migrations of a 15 GB image
+	 * store failed with nothing recorded anywhere but the words "bulk
+	 * copy failed". The child writes treecopy_last_error() here before
+	 * exiting; the parent drains it at completion. Same shape as the
+	 * artifact-export stderr capture that fixed the identical gap for
+	 * image exports.
+	 */
+	int err_fd; /* read end, -1 when no job has run */
 };
 
 static struct migrate_job g_jobs[STORAGE_KIND_COUNT];
+
+/* err_fd is 0 from static zero-init, which is a real fd (stdin) -- set
+ * the sentinel explicitly the first time any job is touched rather than
+ * relying on a value that happens to be wrong. */
+static void jobs_init_once(void)
+{
+	static int done;
+	int i;
+
+	if (done)
+		return;
+	for (i = 0; i < STORAGE_KIND_COUNT; i++)
+		g_jobs[i].err_fd = -1;
+	done = 1;
+}
 
 static const char *role_str_for_kind(enum storage_kind kind)
 {
@@ -63,6 +89,7 @@ enum storagemigrate_error storagemigrate_start(enum storage_kind kind, const cha
 	pid_t pid;
 	int pidfd;
 
+	jobs_init_once();
 	if (kind < STORAGE_KIND_STATE || kind > STORAGE_KIND_LOG)
 		return STORAGEMIGRATE_ERR_NOT_FOUND;
 	job = &g_jobs[kind];
@@ -88,14 +115,39 @@ enum storagemigrate_error storagemigrate_start(enum storage_kind kind, const cha
 	    job->state == STORAGEMIGRATE_STATE_READY)
 		return STORAGEMIGRATE_ERR_ALREADY_ACTIVE;
 
-	pid = fork();
-	if (pid < 0)
-		return STORAGEMIGRATE_ERR_SPAWN_FAILED;
-	if (pid == 0) {
-		/* Deliberately does NOT execve() itself -- same reasoning as
-		 * diskformat_start()'s own forked child: this is real C logic
-		 * (treecopy_recursive()), not an external binary invocation. */
-		_exit(treecopy_recursive(source_dir, target_dir) == 0 ? 0 : 1);
+	{
+		int errpipe[2];
+
+		if (pipe2(errpipe, O_CLOEXEC) != 0)
+			return STORAGEMIGRATE_ERR_SPAWN_FAILED;
+
+		pid = fork();
+		if (pid < 0) {
+			close(errpipe[0]);
+			close(errpipe[1]);
+			return STORAGEMIGRATE_ERR_SPAWN_FAILED;
+		}
+		if (pid == 0) {
+			/* Deliberately does NOT execve() itself -- same reasoning
+			 * as diskformat_start()'s own forked child: this is real C
+			 * logic (treecopy_recursive()), not an external binary
+			 * invocation. */
+			int rc = treecopy_recursive(source_dir, target_dir);
+
+			if (rc != 0) {
+				const char *why = treecopy_last_error();
+
+				/* Best effort: if this write fails the parent simply
+				 * falls back to the generic message, which is what it
+				 * always did. */
+				(void)!write(errpipe[1], why, strlen(why));
+			}
+			_exit(rc == 0 ? 0 : 1);
+		}
+		close(errpipe[1]);
+		if (job->err_fd >= 0)
+			close(job->err_fd);
+		job->err_fd = errpipe[0];
 	}
 
 	pidfd = sys_pidfd_open(pid, 0);
@@ -120,19 +172,38 @@ void storagemigrate_completed(enum storage_kind kind, int exit_status)
 {
 	struct migrate_job *job;
 
+	jobs_init_once();
 	if (kind < STORAGE_KIND_STATE || kind > STORAGE_KIND_LOG)
 		return;
 	job = &g_jobs[kind];
 
 	if (exit_status == 0) {
+		if (job->err_fd >= 0) {
+			close(job->err_fd);
+			job->err_fd = -1;
+		}
 		job->state = STORAGEMIGRATE_STATE_READY;
 		job->error[0] = '\0';
 		return;
 	}
 	job->state = STORAGEMIGRATE_STATE_FAILED;
-	if (exit_status == 1)
-		snprintf(job->error, sizeof(job->error), "bulk copy failed");
-	else
+	if (exit_status == 1) {
+		char why[256];
+		ssize_t n = -1;
+
+		if (job->err_fd >= 0) {
+			n = read(job->err_fd, why, sizeof(why) - 1);
+			close(job->err_fd);
+			job->err_fd = -1;
+		}
+		if (n > 0) {
+			why[n] = '\0';
+			snprintf(job->error, sizeof(job->error), "bulk copy failed -- %s", why);
+		} else {
+			snprintf(job->error, sizeof(job->error),
+			         "bulk copy failed (no reason reported by the copy child)");
+		}
+	} else
 		snprintf(job->error, sizeof(job->error), "migration job process exited abnormally (status %d)",
 		         exit_status);
 }
