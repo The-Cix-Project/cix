@@ -123,9 +123,11 @@ static void print_usage(FILE *out)
 	        "  image recipe show|rm NAME / image recipe ls\n"
 	        "  image apply-recipe NAME  -- bulk-declares the image's manifest from its\n"
 	        "               recipe; packages still need a real install afterward\n"
-	        "  image gc [--dry-run]  -- reclaims image versions nothing references. Every\n"
-	        "               install leaves an immutable version behind (ADR-0107/0108) and\n"
-	        "               nothing else ever removes one\n"
+	        "  image gc [--dry-run] [--measure]  -- reclaims image versions nothing\n"
+	        "               references. Every install leaves an immutable version behind\n"
+	        "               (ADR-0107/0108) and nothing else ever removes one. --measure\n"
+	        "               sizes what it finds, which walks every collectable version and\n"
+	        "               can block the daemon for minutes -- off by default\n"
 	        "  device ls  -- lists host PCI/USB/GPU devices discoverable via sysfs, with\n"
 	        "               each one's id (pass to run --device=ID) and whether it's\n"
 	        "               assignable. A GPU's own bare \"gpu:N\" id (not itself listed --\n"
@@ -9136,19 +9138,30 @@ static void fmt_image_gc(const struct json_value *v)
 			 * returns a double, and handing that straight to %lld is
 			 * undefined -- it printed garbage per entry while the
 			 * total (which went through a variable) was correct. */
-			long long bytes = (long long)json_as_number(json_object_get(e, "apparent_bytes"));
+			const struct json_value *b = json_object_get(e, "apparent_bytes");
 
-			printf("%s %s@%.12s  %lld bytes\n", dry ? "would remove" : "removed",
-			       img != NULL ? img : "?", ver != NULL ? ver : "?", bytes);
+			if (b != NULL && b->type == JSON_NUMBER)
+				printf("%s %s@%.12s  %lld bytes\n", dry ? "would remove" : "removed",
+				       img != NULL ? img : "?", ver != NULL ? ver : "?",
+				       (long long)json_as_number(b));
+			else
+				printf("%s %s@%.12s\n", dry ? "would remove" : "removed",
+				       img != NULL ? img : "?", ver != NULL ? ver : "?");
 		}
 	}
 	/* "apparent" is not hedging: on btrfs a version is a snapshot
 	 * sharing extents with its neighbours, so the space actually
 	 * returned is typically well below this. Saying so beats printing
 	 * a number the operator will later find was wrong. */
-	printf("%s %lld version(s), %lld apparent bytes; kept %lld",
-	       dry ? "would reclaim" : "reclaimed",
-	       arr != NULL && arr->type == JSON_ARRAY ? (long long)arr->u.array.count : 0, total, kept);
+	printf("%s %lld version(s)", dry ? "would reclaim" : "reclaimed",
+	       arr != NULL && arr->type == JSON_ARRAY ? (long long)arr->u.array.count : 0);
+	{
+		const struct json_value *t = json_object_get(v, "apparent_bytes_total");
+
+		if (t != NULL && t->type == JSON_NUMBER)
+			printf(", %lld apparent bytes", total);
+	}
+	printf("; kept %lld", kept);
 	if (failed > 0)
 		printf(", %lld could not be removed (see the log store)", failed);
 	printf("\n");
@@ -9157,19 +9170,28 @@ static void fmt_image_gc(const struct json_value *v)
 static int cmd_image_gc(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	struct cix_response r;
+	char body[64];
 	int dry_run = 0;
+	int measure = 0;
 	int i;
 
 	for (i = 0; i < argc; i++) {
 		if (strcmp(argv[i], "--dry-run") == 0)
 			dry_run = 1;
+		else if (strcmp(argv[i], "--measure") == 0)
+			measure = 1;
 		else {
 			fprintf(stderr, "cixctl: unknown image gc option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
-	if (cix_client_request(c, "POST", "/v1/images/gc",
-	                       dry_run ? "{\"dry_run\":true}" : "{}", &r) != 0) {
+	/* --measure walks every collectable version to size it, and the
+	 * daemon is single-threaded -- on a box with 80 of them that walk
+	 * took nearly two minutes, blocking every other request. Off by
+	 * default for that reason, not to hide the number. */
+	snprintf(body, sizeof(body), "{\"dry_run\":%s,\"measure\":%s}",
+	         dry_run ? "true" : "false", measure ? "true" : "false");
+	if (cix_client_request(c, "POST", "/v1/images/gc", body, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -9487,7 +9509,7 @@ static int cmd_image(const struct cix_client *c, int json_mode, int argc, char *
 		                "       cixctl image recipe show|rm NAME\n"
 		                "       cixctl image recipe ls\n"
 		                "       cixctl image apply-recipe NAME\n"
-		                "       cixctl image gc [--dry-run]\n");
+		                "       cixctl image gc [--dry-run] [--measure]\n");
 		return 2;
 	}
 	sub = argv[0];

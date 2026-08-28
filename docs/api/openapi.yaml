@@ -4895,6 +4895,14 @@ paths:
                 dry_run:
                   type: boolean
                   description: Report what would be reclaimed without removing anything.
+                measure:
+                  type: boolean
+                  description: >
+                    Compute the apparent size of each collectable version.
+                    OFF by default: measuring walks every collectable version
+                    and the daemon is single-threaded, so on a real host with
+                    80 of them the walk took 117 seconds during which no other
+                    request could be served. Deletion needs no size at all.
       responses:
         "200":
           description: What was reclaimed (or would be, for a dry run)
@@ -13213,10 +13221,13 @@ components:
 
     ImageGcResult:
       type: object
-      required: [dry_run, reclaimed, collected, kept, failed, apparent_bytes_total]
+      required: [dry_run, measured, reclaimed, collected, kept, failed]
       properties:
         dry_run:
           type: boolean
+        measured:
+          type: boolean
+          description: Whether sizes were computed; when false every apparent_bytes field is null.
         reclaimed:
           type: array
           items:
@@ -13229,7 +13240,9 @@ components:
                 type: string
               apparent_bytes:
                 type: integer
+                nullable: true
                 description: >
+                  Null unless measure was requested.
                   Apparent size of the removed version, summed over its files.
                   On btrfs a version is a snapshot sharing extents with its
                   neighbours, so the space actually returned to the filesystem
@@ -13249,6 +13262,8 @@ components:
             reason is written to the log store.
         apparent_bytes_total:
           type: integer
+          nullable: true
+          description: Null unless measure was requested.
 
     ContainerRecipe:
       type: object

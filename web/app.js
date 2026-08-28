@@ -4212,7 +4212,11 @@ async function runImageGc(dryRun) {
 	box.hidden = false;
 	box.textContent = dryRun ? "Checking…" : "Reclaiming…";
 	try {
-		const res = await apiRequest("POST", "/v1/images/gc", { dry_run: dryRun });
+		/* measure:false deliberately -- sizing walks every collectable
+		 * version and the daemon is single-threaded; on a real box with
+		 * 80 of them that blocked the whole API for nearly two minutes.
+		 * The dashboard shows what would go, not how big it is. */
+		const res = await apiRequest("POST", "/v1/images/gc", { dry_run: dryRun, measure: false });
 		const list = res.reclaimed || [];
 
 		box.textContent = "";
@@ -4228,7 +4232,8 @@ async function runImageGc(dryRun) {
 
 				p.textContent = (dryRun ? "Would remove " : "Removed ")
 					+ e.image + "@" + String(e.version).slice(0, 12)
-					+ " — " + formatBytes(e.apparent_bytes);
+					+ (e.apparent_bytes === null || e.apparent_bytes === undefined
+						? "" : " — " + formatBytes(e.apparent_bytes));
 				box.appendChild(p);
 			}
 			const sum = document.createElement("p");
@@ -4237,8 +4242,10 @@ async function runImageGc(dryRun) {
 			 * snapshot sharing extents with its neighbours, so the space
 			 * actually returned is usually well below this figure. */
 			sum.textContent = (dryRun ? "Would reclaim " : "Reclaimed ") + list.length
-				+ " version(s), " + formatBytes(res.apparent_bytes_total)
-				+ " apparent; " + res.kept + " kept"
+				+ " version(s)"
+				+ (res.apparent_bytes_total === null || res.apparent_bytes_total === undefined
+					? "" : ", " + formatBytes(res.apparent_bytes_total) + " apparent")
+				+ "; " + res.kept + " kept"
 				+ (res.failed > 0 ? ", " + res.failed + " could not be removed" : "") + ".";
 			box.appendChild(sum);
 		}
