@@ -17721,6 +17721,178 @@ static void write_image_version_fields(const char *name, struct json_writer *w)
 	image_version_history_write_json(name, w);
 }
 
+/*
+ * ADR-0209: is this image version still referenced by anything?
+ *
+ * Three sources, and all three are needed. A running container pins the
+ * version it was created with (ADR-0108), so the registry is the live
+ * answer. A container that is merely stopped has no registry entry but
+ * will be revived from its persisted definition, which names the same
+ * version -- collecting that version would turn a stopped container
+ * into one that can never start again. And current_version is what a
+ * fresh container is created from.
+ */
+static int image_version_is_referenced(const char *image, const char *version)
+{
+	char names[REGISTRY_MAX_CONTAINERS][REGISTRY_NAME_MAX];
+	char order[CONTAINERDEF_MAX][REGISTRY_NAME_MAX];
+	char current[IMAGE_VERSION_MAX];
+	int count, i;
+
+	if (image_current_version(image, current, sizeof(current)) == IMAGE_OK &&
+	    strcmp(current, version) == 0)
+		return 1;
+
+	count = registry_list_names(names, REGISTRY_MAX_CONTAINERS);
+	for (i = 0; i < count; i++) {
+		struct registry_entry *e = registry_find(names[i]);
+
+		if (e != NULL && strcmp(e->image, image) == 0 && strcmp(e->image_version, version) == 0)
+			return 1;
+	}
+
+	count = containerdef_resolve_order(order);
+	for (i = 0; i < count; i++) {
+		struct container_def *def = containerdef_find(order[i]);
+		struct json_value *root;
+		const char *dimg, *dver;
+		int hit;
+
+		if (def == NULL || def->body == NULL)
+			continue;
+		root = json_parse(def->body, def->body_len);
+		if (root == NULL)
+			continue;
+		dimg = json_as_string(json_object_get(root, "image"));
+		dver = json_as_string(json_object_get(root, "image_version"));
+		hit = dimg != NULL && dver != NULL && strcmp(dimg, image) == 0 &&
+		      strcmp(dver, version) == 0;
+		json_free(root);
+		if (hit)
+			return 1;
+	}
+	return 0;
+}
+
+/*
+ * POST /v1/images/gc -- reclaim image versions nothing references.
+ *
+ * This exists because there was no reclamation anywhere in the API at
+ * all, and the consequence was not theoretical: 66 versions of an 8 GB
+ * rootfs filled a 16 GiB partition, and the disk filling up is how it
+ * was noticed. Every install produces a new immutable version
+ * (ADR-0107/0108) and nothing ever removed one.
+ *
+ * Refuses while any package job is in flight. A build holds its image's
+ * rootfs as the lowerdir its container is running on, and that
+ * reference lives in pkg.c rather than in the registry -- so rather
+ * than reach into another module's in-flight state and risk being
+ * subtly wrong, this simply does not run concurrently with a build.
+ * Collection is never urgent enough to justify racing one.
+ *
+ * "bytes" is the APPARENT size of what was removed. On btrfs a version
+ * is a snapshot sharing extents with its neighbours, so the space
+ * actually returned to the filesystem is typically far less. Reported
+ * as apparent rather than omitted, and named as such in the API docs,
+ * because an operator deciding whether to collect wants the magnitude;
+ * pretending it is exact would be worse than either.
+ */
+static void handle_images_gc(int fd, const char *body, size_t body_len)
+{
+	char names[IMAGE_LIST_MAX][PKG_IMAGE_NAME_MAX];
+	struct json_writer w;
+	int active[PKG_MAX_CONCURRENT_JOBS];
+	int dry_run = 0;
+	int image_count, i, j;
+	int collected = 0, kept = 0, failed = 0;
+	long long total_bytes = 0;
+
+	if (pkg_active_chain_indices(active) > 0) {
+		respond_error(fd, 409, "Conflict",
+		              "a package job is in flight -- image collection does not run "
+		              "concurrently with a build");
+		return;
+	}
+	if (body != NULL && body_len > 0) {
+		struct json_value *root = json_parse(body, body_len);
+
+		if (root != NULL) {
+			const struct json_value *dr = json_object_get(root, "dry_run");
+
+			dry_run = dr != NULL && dr->type == JSON_BOOL && dr->u.boolean;
+			json_free(root);
+		}
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "dry_run");
+	jw_bool(&w, dry_run);
+	jw_key(&w, "reclaimed");
+	jw_arr_open(&w);
+
+	image_count = image_list_names(names, IMAGE_LIST_MAX);
+	for (i = 0; i < image_count; i++) {
+		char versions[IMAGE_MAX_VERSION_HISTORY][IMAGE_VERSION_MAX];
+		int vcount = image_ondisk_versions(names[i], versions, IMAGE_MAX_VERSION_HISTORY);
+
+		for (j = 0; j < vcount; j++) {
+			char rootfs[PATH_MAX];
+			long long bytes = 0;
+			enum image_error ierr;
+
+			if (image_version_is_referenced(names[i], versions[j])) {
+				kept++;
+				continue;
+			}
+			image_version_rootfs_path(names[i], versions[j], rootfs, sizeof(rootfs));
+			if (overlay_upperdir_size(rootfs, &bytes) != 0)
+				bytes = 0;
+
+			if (!dry_run) {
+				ierr = image_delete_version(names[i], versions[j]);
+				if (ierr != IMAGE_OK) {
+					/* Reported, not fatal: one stubborn version must not
+					 * stop the rest being reclaimed, and the operator
+					 * needs to know which one resisted. */
+					logstore_write("cixd", "error",
+					                "image gc: could not remove %s@%s (%d)", names[i],
+					                versions[j], (int)ierr);
+					failed++;
+					continue;
+				}
+			}
+			jw_obj_open(&w);
+			jw_key(&w, "image");
+			jw_str(&w, names[i]);
+			jw_key(&w, "version");
+			jw_str(&w, versions[j]);
+			jw_key(&w, "apparent_bytes");
+			jw_int(&w, bytes);
+			jw_obj_close(&w);
+			collected++;
+			total_bytes += bytes;
+		}
+	}
+	jw_arr_close(&w);
+	jw_key(&w, "collected");
+	jw_int(&w, collected);
+	jw_key(&w, "kept");
+	jw_int(&w, kept);
+	jw_key(&w, "failed");
+	jw_int(&w, failed);
+	jw_key(&w, "apparent_bytes_total");
+	jw_int(&w, total_bytes);
+	jw_obj_close(&w);
+
+	if (!dry_run && collected > 0)
+		logstore_write("cixd", "info",
+		                "image gc: reclaimed %d version(s), %lld apparent bytes, kept %d",
+		                collected, total_bytes, kept);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
 static void handle_image_create(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root;
@@ -24108,6 +24280,12 @@ static void dispatch(int fd, const struct http_request *req)
 				handle_image_recipe_delete(fd, name);
 				return;
 			}
+		}
+	}
+	if (strcmp(req->path, "/v1/images/gc") == 0) {
+		if (strcmp(req->method, "POST") == 0) {
+			handle_images_gc(fd, req->body, req->body_len);
+			return;
 		}
 	}
 	if (strcmp(req->path, "/v1/images") == 0) {

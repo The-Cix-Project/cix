@@ -123,6 +123,9 @@ static void print_usage(FILE *out)
 	        "  image recipe show|rm NAME / image recipe ls\n"
 	        "  image apply-recipe NAME  -- bulk-declares the image's manifest from its\n"
 	        "               recipe; packages still need a real install afterward\n"
+	        "  image gc [--dry-run]  -- reclaims image versions nothing references. Every\n"
+	        "               install leaves an immutable version behind (ADR-0107/0108) and\n"
+	        "               nothing else ever removes one\n"
 	        "  device ls  -- lists host PCI/USB/GPU devices discoverable via sysfs, with\n"
 	        "               each one's id (pass to run --device=ID) and whether it's\n"
 	        "               assignable. A GPU's own bare \"gpu:N\" id (not itself listed --\n"
@@ -9110,6 +9113,69 @@ static int cmd_image_recipe(const struct cix_client *c, int json_mode, int argc,
  * status`, 204 means it already fully finished (nothing more to wait
  * for).
  */
+static void fmt_image_gc(const struct json_value *v)
+{
+	const struct json_value *arr = json_object_get(v, "reclaimed");
+	long long total = json_as_number(json_object_get(v, "apparent_bytes_total"));
+	long long kept = json_as_number(json_object_get(v, "kept"));
+	long long failed = json_as_number(json_object_get(v, "failed"));
+	int dry = 0;
+	size_t i;
+
+	{
+		const struct json_value *d = json_object_get(v, "dry_run");
+
+		dry = d != NULL && d->type == JSON_BOOL && d->u.boolean;
+	}
+	if (arr != NULL && arr->type == JSON_ARRAY) {
+		for (i = 0; i < arr->u.array.count; i++) {
+			const struct json_value *e = arr->u.array.items[i];
+			const char *img = json_str_field(e, "image");
+			const char *ver = json_str_field(e, "version");
+			/* Bound to a long long before printing: json_as_number()
+			 * returns a double, and handing that straight to %lld is
+			 * undefined -- it printed garbage per entry while the
+			 * total (which went through a variable) was correct. */
+			long long bytes = (long long)json_as_number(json_object_get(e, "apparent_bytes"));
+
+			printf("%s %s@%.12s  %lld bytes\n", dry ? "would remove" : "removed",
+			       img != NULL ? img : "?", ver != NULL ? ver : "?", bytes);
+		}
+	}
+	/* "apparent" is not hedging: on btrfs a version is a snapshot
+	 * sharing extents with its neighbours, so the space actually
+	 * returned is typically well below this. Saying so beats printing
+	 * a number the operator will later find was wrong. */
+	printf("%s %lld version(s), %lld apparent bytes; kept %lld",
+	       dry ? "would reclaim" : "reclaimed",
+	       arr != NULL && arr->type == JSON_ARRAY ? (long long)arr->u.array.count : 0, total, kept);
+	if (failed > 0)
+		printf(", %lld could not be removed (see the log store)", failed);
+	printf("\n");
+}
+
+static int cmd_image_gc(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	struct cix_response r;
+	int dry_run = 0;
+	int i;
+
+	for (i = 0; i < argc; i++) {
+		if (strcmp(argv[i], "--dry-run") == 0)
+			dry_run = 1;
+		else {
+			fprintf(stderr, "cixctl: unknown image gc option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (cix_client_request(c, "POST", "/v1/images/gc",
+	                       dry_run ? "{\"dry_run\":true}" : "{}", &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_image_gc);
+}
+
 static int cmd_image_apply_recipe(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	struct cix_response r;
@@ -9420,7 +9486,8 @@ static int cmd_image(const struct cix_client *c, int json_mode, int argc, char *
 		                "       cixctl image recipe add --name=NAME --file=PATH\n"
 		                "       cixctl image recipe show|rm NAME\n"
 		                "       cixctl image recipe ls\n"
-		                "       cixctl image apply-recipe NAME\n");
+		                "       cixctl image apply-recipe NAME\n"
+		                "       cixctl image gc [--dry-run]\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -9438,6 +9505,8 @@ static int cmd_image(const struct cix_client *c, int json_mode, int argc, char *
 		return cmd_image_recipe(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "apply-recipe") == 0)
 		return cmd_image_apply_recipe(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "gc") == 0)
+		return cmd_image_gc(c, json_mode, argc - 1, argv + 1);
 
 	fprintf(stderr, "cixctl: unknown image subcommand '%s'\n", sub);
 	return 2;

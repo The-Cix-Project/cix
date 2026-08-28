@@ -671,6 +671,147 @@ int main(void)
 	}
 	cix_response_free(&r);
 
+	/*
+	 * ADR-0209: image version garbage collection.
+	 *
+	 * Before this existed there was no reclamation anywhere in the API,
+	 * and every install produced another immutable version. That is not
+	 * a theoretical leak: 66 versions of an 8 GB rootfs filled a 16 GiB
+	 * partition, and the disk filling up is how anyone found out.
+	 *
+	 * The three properties worth proving are that it collects what
+	 * nothing references, that it does NOT collect what something does,
+	 * and that the second is a real check rather than an accident of
+	 * everything happening to be current. The last is why this pins a
+	 * container to a deliberately NON-current version: if the reference
+	 * scan were broken, current_version alone would still protect every
+	 * version in a simple test and it would pass anyway.
+	 */
+	{
+		char vdir[PATH_MAX];
+		const struct json_value *arr;
+		long long collected;
+
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/images", "{\"name\":\"gcimg\"}", &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: gc: create gcimg, status=%d\n", r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		/* Two unreferenced versions and one that a container will pin.
+		 * Fabricated directly on disk: producing three real versions
+		 * would need three real installs, and what is under test here
+		 * is the collector, not the installer. */
+		snprintf(vdir, sizeof(vdir), "%s/gcimg", g_images_dir);
+		if (run_cmd("mkdir -p '%s/junk1/rootfs/usr/bin' '%s/junk2/rootfs/usr/bin' "
+		            "'%s/pinnedv/rootfs/usr/bin' && echo x > '%s/junk1/rootfs/usr/bin/f' && "
+		            "echo x > '%s/junk2/rootfs/usr/bin/f' && echo x > '%s/pinnedv/rootfs/usr/bin/f'",
+		            vdir, vdir, vdir, vdir, vdir, vdir) != 0) {
+			fprintf(stderr, "FAIL: gc: could not fabricate versions\n");
+			ok = 0;
+		}
+
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/containers",
+		                       "{\"name\":\"gcpin\",\"image\":\"gcimg\","
+		                       "\"image_version\":\"pinnedv\",\"cmd\":[\"/usr/bin/true\"]}",
+		                       &r) != 0 ||
+		    (r.status != 201 && r.status != 200)) {
+			fprintf(stderr, "FAIL: gc: could not pin a container to pinnedv, status=%d\n",
+			        r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		/* Dry run: names the two unreferenced versions, removes nothing. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/images/gc", "{\"dry_run\":true}", &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: gc dry run, status=%d\n", r.status);
+			ok = 0;
+		} else {
+			collected = json_as_number(json_object_get(r.json, "collected"));
+			if (collected != 2) {
+				fprintf(stderr,
+				        "FAIL: gc dry run collected %lld, expected exactly the 2 unreferenced "
+				        "versions -- body=%.200s\n",
+				        collected, r.body != NULL ? r.body : "");
+				ok = 0;
+			}
+		}
+		cix_response_free(&r);
+
+		if (run_cmd("test -d '%s/junk1'", vdir) != 0) {
+			fprintf(stderr, "FAIL: gc dry run deleted junk1 -- a dry run must not touch disk\n");
+			ok = 0;
+		}
+
+		/* Real run: the two go, the pinned one and the current one stay. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/images/gc", "{}", &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: gc real run, status=%d\n", r.status);
+			ok = 0;
+		} else {
+			arr = json_object_get(r.json, "reclaimed");
+			if (arr == NULL || arr->type != JSON_ARRAY || arr->u.array.count != 2) {
+				fprintf(stderr, "FAIL: gc real run reclaimed list wrong -- body=%.200s\n",
+				        r.body != NULL ? r.body : "");
+				ok = 0;
+			}
+		}
+		cix_response_free(&r);
+
+		if (run_cmd("test -d '%s/junk1'", vdir) == 0 || run_cmd("test -d '%s/junk2'", vdir) == 0) {
+			fprintf(stderr, "FAIL: gc did not actually remove the unreferenced versions\n");
+			ok = 0;
+		}
+		if (run_cmd("test -d '%s/pinnedv/rootfs'", vdir) != 0) {
+			fprintf(stderr,
+			        "FAIL: gc removed a version a live container is pinned to -- that container "
+			        "can never start again\n");
+			ok = 0;
+		}
+
+		/* The discriminating half: with the container gone, the very
+		 * same version becomes collectable. Without this, "kept" could
+		 * mean the scan works or could mean it never collects anything. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "DELETE", "/v1/containers/gcpin", NULL, &r) != 0 ||
+		    (r.status != 204 && r.status != 200)) {
+			fprintf(stderr, "FAIL: gc: could not delete the pinning container, status=%d\n",
+			        r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+		usleep(1500000); /* the delete is async (ADR-0180) */
+
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/images/gc", "{}", &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: gc after unpin, status=%d\n", r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+		if (run_cmd("test -d '%s/pinnedv'", vdir) == 0) {
+			fprintf(stderr,
+			        "FAIL: pinnedv survived after its container was deleted -- the reference "
+			        "scan is not actually discriminating\n");
+			ok = 0;
+		}
+
+		/* The current version is never collectable, at any point. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "GET", "/v1/images/gcimg", NULL, &r) != 0 ||
+		    r.status != 200 || json_str_field(r.json, "current_version") == NULL) {
+			fprintf(stderr, "FAIL: gcimg lost its current version to the collector\n");
+			ok = 0;
+		}
+		cix_response_free(&r);
+	}
+
 	/* cleanup */
 	run_cmd("rm -rf '%s'", scratch_dir);
 

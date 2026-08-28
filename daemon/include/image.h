@@ -153,6 +153,32 @@ int image_empty_manifest_version(char *out, size_t out_size);
  * rebuild trigger (which needs to enumerate every image's manifest,
  * not just report names over REST) -- one real directory-scan
  * implementation, not two. */
+/*
+ * ADR-0209: the version directories that exist on disk for this image,
+ * read from the filesystem rather than the recorded history -- the two
+ * can drift (IMAGE_MAX_VERSION_HISTORY caps the list; the disk is not
+ * capped), and the disk is what holds the bytes. Returns how many were
+ * written to out.
+ */
+int image_ondisk_versions(const char *name, char out[][IMAGE_VERSION_MAX], int max);
+
+/*
+ * Deletes one non-current version: its rootfs (subvolume-aware, so it
+ * works on btrfs), its version directory, and its entry in the
+ * recorded history.
+ *
+ * IMAGE_ERR_PROTECTED if version is the image's current_version --
+ * removing that makes every subsequent container create fail with
+ * "image rootfs does not exist". IMAGE_ERR_NOT_FOUND if the image or
+ * the version directory does not exist.
+ *
+ * Deliberately knows nothing about who might still be USING the
+ * version: reference collection needs the registry and the persisted
+ * container definitions, which live above this module. Callers must
+ * establish that a version is unreferenced before calling this.
+ */
+enum image_error image_delete_version(const char *name, const char *version);
+
 int image_list_names(char names[][PKG_IMAGE_NAME_MAX], int max);
 
 /* {"images": [...]} entries, each just {"name": "..."} -- deliberately

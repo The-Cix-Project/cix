@@ -1939,6 +1939,16 @@
 			<div class="tab-panel" data-tab="cat-images" hidden>
 			<div class="view-list">
 				<h2>Images</h2>
+				<p class="hint">Every package install leaves an immutable image version behind
+					(ADR-0107/0108), and a container pins the version it was created with. Reclaim
+					removes only versions that nothing references &mdash; never an image's current
+					version, and never one a container or a stored container definition still points
+					at. Preview first: it lists what would go without touching anything.</p>
+				<div class="form-row">
+					<button type="button" id="images-gc-preview">Preview reclaimable&hellip;</button>
+					<button type="button" id="images-gc" class="button-danger">Reclaim unused versions</button>
+				</div>
+				<div id="images-gc-status" class="pki-ca-status" hidden></div>
 				<table id="images">
 					<thead>
 						<tr>
