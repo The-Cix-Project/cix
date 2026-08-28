@@ -182,7 +182,8 @@ static int write_slowbuild_recipe(const char *tarball_path, const char *sha256)
 	fprintf(f, "pkg_version=1.0\n");
 	fprintf(f, "pkg_source=file://%s\n", tarball_path);
 	fprintf(f, "pkg_sha256=%s\n", sha256);
-	fprintf(f, "pkg_depends=\"\"\n\n");
+	fprintf(f, "pkg_depends=\"\"\n");
+	fprintf(f, "pkg_build_depends=\"tcc libc-dev bash coreutils\"\n\n");
 	fprintf(f, "pkg_build() {\n"
 	           "\techo marker-1\n"
 	           "\tsleep 1\n"
@@ -354,6 +355,18 @@ int main(void)
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
+	/*
+	 * ADR-0209: the build floor. Real, recipe-built package artifacts
+	 * seeded into this daemon's own cache, so installing them is a
+	 * cache hit that needs no build environment -- the same way a fresh
+	 * host gets its first packages. There is no shared sandbox to
+	 * inherit one from any more, and nothing here is fabricated.
+	 */
+	if (test_image_fixture_seed_floor_packages(g_data_dir, "build/floor-artifacts") != 0) {
+		fprintf(stderr, "could not seed the build floor -- fetch the real package artifacts "
+		                "into build/floor-artifacts first (ADR-0209)\n");
+		return 1;
+	}
 	snprintf(g_pkg_state_dir, sizeof(g_pkg_state_dir), "%s/rebuildable/pkg", g_data_dir);
 	snprintf(g_images_base_dir, sizeof(g_images_base_dir), "%s/rebuildable/images/base", g_data_dir);
 	snprintf(g_pkgbuild_rootfs, sizeof(g_pkgbuild_rootfs), "%s/rebuildable/images/pkgbuild", g_data_dir);
@@ -386,11 +399,34 @@ int main(void)
 	}
 
 	memset(&r, 0, sizeof(r));
-	if (cix_client_request(&client, "POST", "/v1/pkg/bootstrap", NULL, &r) != 0 || r.status != 204) {
-		fprintf(stderr, "FAIL: POST /v1/pkg/bootstrap, status=%d\n", r.status);
-		g_failures++;
+	{
+		static const char *const floor[] = { "bash", "coreutils", "tcc", "libc-dev", NULL };
+		int fi;
+
+		for (fi = 0; floor[fi] != NULL; fi++) {
+			char fbody[128];
+			int fr;
+
+			snprintf(fbody, sizeof(fbody), "{\"name\":\"%s\"}", floor[fi]);
+			memset(&r, 0, sizeof(r));
+			cix_client_request(&client, "POST", "/v1/pkg/install", fbody, &r);
+			cix_response_free(&r);
+			for (fr = 0; fr < 600; fr++) {
+				const char *st = NULL;
+
+				memset(&r, 0, sizeof(r));
+				snprintf(fbody, sizeof(fbody), "/v1/pkg/%s", floor[fi]);
+				if (cix_client_request(&client, "GET", fbody, NULL, &r) == 0 && r.json != NULL)
+					st = json_str_field(r.json, "state");
+				if (st != NULL && strcmp(st, "installed") == 0) {
+					cix_response_free(&r);
+					break;
+				}
+				cix_response_free(&r);
+				usleep(300000);
+			}
+		}
 	}
-	cix_response_free(&r);
 
 	/* --- scenario 1: no build in progress yet -> 404 --- */
 	fd = raw_connect(TEST_PORT);

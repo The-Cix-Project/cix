@@ -200,4 +200,17 @@ int test_image_fixture_write_manifest(const char *image_dir, const char *version
  */
 int test_image_fixture_seed_floor_packages(const char *data_dir, const char *artifacts_dir);
 
+/*
+ * Removes the floor tarballs that test_image_fixture_seed_floor_packages()
+ * put in this daemon's cache, once they have served their purpose.
+ *
+ * The floor exists to bootstrap a build environment; it is not part of
+ * whatever a test is actually examining. Leaving ~90 MB of it behind
+ * silently changes the subject for any test that reasons about cache
+ * contents or size -- test_pkg_cache sets a small cap and checks LRU
+ * eviction, and the floor evicted the very entries under test. Call
+ * this after the floor packages are installed.
+ */
+int test_image_fixture_clear_floor_cache(const char *data_dir);
+
 #endif /* TEST_IMAGE_FIXTURE_H */

@@ -577,26 +577,23 @@ static const struct {
 	const char *name;
 	const char *version;
 } floor_packages[] = {
-	{ "bash", "5.2.37-2" },   { "coreutils", "9.11-3" }, { "tcc", "0.9.27-7" },
-	{ "make", "4.4.1-4" },    { "sed", "4.9-2" },        { "grep", "3.11-4" },
-	{ "gawk", "5.3.0-2" },    { "binutils", "2.42-8" },
 	/*
-	 * The closure, not just the names above: binutils declares
-	 * pkg_depends="zlib flex" and flex declares "m4", so an install of
-	 * binutils resolves all three before it will start. Leaving them
-	 * out fails as "no such recipe, or it failed to parse", which
-	 * names the recipe being installed rather than the dependency
-	 * actually missing -- found exactly that way.
+	 * Exactly what a fixture build uses and nothing more, which is the
+	 * same discipline the recipes themselves are now held to. A fixture
+	 * pkg_build() runs `tcc -o hello hello.c` and its pkg_install()
+	 * runs mkdir/cp, so: bash to run recipe.sh at all, coreutils for
+	 * those two, tcc to compile, libc-dev for the headers and CRT it
+	 * needs.
+	 *
+	 * binutils used to be here and is deliberately gone: tcc has its
+	 * own linker, nothing in a fixture reaches for ar or ld, and at
+	 * 57 MB it dominated the cost -- copying it into every test's cache
+	 * pushed the package tests past a ten-minute timeout. Its own
+	 * declared closure (zlib, flex, m4) went with it. If a future
+	 * fixture genuinely needs a linker, it declares binutils and this
+	 * table gains it back, deliberately.
 	 */
-	{ "zlib", "1.3.2-6" },    { "flex", "2.6.4-4" },     { "m4", "1.4.19-2" },
-	/*
-	 * libc-dev: headers and the CRT startup objects, without which tcc
-	 * cannot compile anything at all. Pinned to 2.36-3 because that is
-	 * the newest version a Cix host has actually built and published --
-	 * 2.36-5 and 2.36-6 exist as recipes but have no artifact yet, and
-	 * a version with no artifact cannot seed a floor that exists
-	 * precisely to avoid needing a build environment.
-	 */
+	{ "bash", "5.2.37-2" }, { "coreutils", "9.11-3" }, { "tcc", "0.9.27-7" },
 	{ "libc-dev", "2.36-3" },
 };
 
@@ -735,6 +732,23 @@ int test_image_fixture_seed_floor_packages(const char *data_dir, const char *art
 			return -1;
 		snprintf(recipe_src, sizeof(recipe_src), "recipes/package/%s/%s", name, version);
 		if (copy_tree_via_cp(recipe_src, recipe_dst_dir) != 0)
+			return -1;
+	}
+	return 0;
+}
+
+int test_image_fixture_clear_floor_cache(const char *data_dir)
+{
+	char cache_dir[PATH_MAX];
+	size_t i;
+
+	snprintf(cache_dir, sizeof(cache_dir), "%s/rebuildable/pkg/cache", data_dir);
+	for (i = 0; i < sizeof(floor_packages) / sizeof(floor_packages[0]); i++) {
+		char path[PATH_MAX];
+
+		snprintf(path, sizeof(path), "%s/%s-%s.tar.gz", cache_dir, floor_packages[i].name,
+		         floor_packages[i].version);
+		if (unlink(path) != 0 && errno != ENOENT)
 			return -1;
 	}
 	return 0;
