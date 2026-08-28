@@ -104,8 +104,22 @@ enum diskformat_error diskformat_start(const char *disk_name, const char *os_con
 			execve(mkfs_bin, argv, environ);
 			_exit(127);
 		}
-		if (waitpid(sub, &status, 0) != sub || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
+		/*
+		 * Propagate the mkfs child's OWN 127 rather than collapsing
+		 * every failure into 1. diskformat_completed()'s 127 branch
+		 * carries the one message that actually names the cause ("the
+		 * control-plane image was built without it") -- flattening it
+		 * here made that branch unreachable for exactly the case it
+		 * was written for, so a host missing mkfs.btrfs reported the
+		 * useless "mkfs.btrfs failed" instead. Confirmed live on
+		 * 192.168.15.95: a real format attempt against a control-plane
+		 * image built without btrfs-progs reported the generic text
+		 * while the specific message sat right there, dead.
+		 */
+		if (waitpid(sub, &status, 0) != sub || !WIFEXITED(status))
 			_exit(1);
+		if (WEXITSTATUS(status) != 0)
+			_exit(WEXITSTATUS(status) == 127 ? 127 : 1);
 
 		/* A plain fork() (no CLONE_NEWNS) shares the parent's mount
 		 * namespace -- this becomes visible daemon-wide immediately. */
