@@ -2972,6 +2972,28 @@ enum pkg_error pkg_seed_image_baseline(const char *rootfs_path)
 	 * sandbox's own /lib64 -> /usr/lib symlink chain (confirmed via
 	 * readlink -f) resolves it to the identical real file either way.
 	 */
+	/*
+	 * ADR-0209: THE GLIBC FLOOR -- the last unclosed link in this
+	 * project's bootstrap, and the only files in any image that this
+	 * project did not build.
+	 *
+	 * These are glibc: the dynamic loader, libc itself, libm, and the
+	 * `files` NSS backend. Nothing can start without them, and there is
+	 * no glibc package to take them from -- libc-dev stages headers and
+	 * link objects, it has never built glibc. So they are still copied
+	 * from the host root, which got them from mkbootroot, which got
+	 * them from a Debian machine. That is stated plainly rather than
+	 * buried: closing it means building glibc from source on a Cix
+	 * host, and until then every image rests on it.
+	 *
+	 * libtinfo and libgcc_s used to be in this table and are NOT any
+	 * more. They are not glibc -- they belong to ncurses and gcc, both
+	 * of which this project builds itself, so copying Debian's copies
+	 * of them into every image was pure accumulation: content arriving
+	 * by mechanism rather than by declaration, which is exactly what
+	 * ADR-0209 removes. A package that needs them declares them, and
+	 * gets ours.
+	 */
 	static const struct {
 		const char *src;
 		const char *rel_dst;
@@ -2994,8 +3016,6 @@ enum pkg_error pkg_seed_image_baseline(const char *rootfs_path)
 		 */
 		{ "/lib64/ld-linux-x86-64.so.2", "lib/x86_64-linux-gnu/ld-linux-x86-64.so.2" },
 		{ "/lib/x86_64-linux-gnu/libc.so.6", "lib/x86_64-linux-gnu/libc.so.6" },
-		{ "/lib/x86_64-linux-gnu/libtinfo.so.6", "lib/x86_64-linux-gnu/libtinfo.so.6" },
-		{ "/lib/x86_64-linux-gnu/libgcc_s.so.1", "lib/x86_64-linux-gnu/libgcc_s.so.1" },
 		{ "/lib/x86_64-linux-gnu/libm.so.6", "lib/x86_64-linux-gnu/libm.so.6" },
 		/*
 		 * Task #731: glibc's NSS modules (getpwnam()/getgrnam(), needed
