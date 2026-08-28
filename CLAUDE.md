@@ -68,6 +68,19 @@ For each micro-step:
 
 Never generate code for multiple systems/phases at once.
 
+## Build Provenance Mandate (no exceptions)
+
+**Everything Cix ships is built on a Cix host, by Cix, with Cix's own toolchain. Nothing else ever enters a binary, a library, an image, a package, or the artifact cache.**
+
+Not "preferably". There is no case where a faster route justifies a foreign binary — if a Cix host cannot build something, that is the problem to solve or report, never to route around. Concretely:
+
+- **Never publish to the artifact cache anything not produced by a Cix host through a recipe.** The cache is implicitly trusted: an artifact is downloaded, checksum-verified, installed, and *booted*. A foreign binary there silently breaks the self-hosting property this whole project exists to establish, and it spreads — every host that pulls it inherits it, with nothing marking it as foreign.
+- **Never build "just this once" on the dev sandbox** because a box is missing a toolchain, an image, or a dependency. Check whether the cache already has the Cix-built thing you need (it usually does — a missing *image* is not a missing *capability*; building one is ordinary `pkg install` calls). If it genuinely cannot be built on a Cix host, say so and stop.
+- **`pkg_artifact_sha256=` / `image_artifact_sha256=` approve one specific byte sequence.** Add one only after a real Cix host has produced and published those exact bytes. Never carry a checksum forward from a previous version, and never compute one over something built elsewhere.
+- **No host `/usr` content is ever copied into an image.** An image contains its declared packages plus the deliberate baseline (`pkg_seed_image_baseline()`), and nothing else. Wholesale copies of a build machine's filesystem are how 8 GB of rustup/cargo/chromium/node/qemu/sudo ended up inside `cix-builder` (issue #168) — a developer workstation's `/usr`, shipped as a build image, inherited by every host that installed it.
+
+This was written after a real incident: a kernel was compiled in the dev sandbox with that sandbox's Debian gcc, published to the cache, and installed on 192.168.15.95. It was caught and fully reversed (artifact deleted, package uninstalled, box returned to its own kernel, recipe reverted), but only because the owner spotted it. The correct move at that moment was to build a `dev` image on the box from the Cix-built gcc already sitting in the cache — which took two ordinary installs once actually looked for.
+
 ## API-First Mandate (no exceptions)
 
 The REST daemon is the **only** process with direct access to the runtime library (`container.h`) and any other host/network/DNS/PKI primitive. The CLI and the web dashboard are pure REST API clients — they hold no namespace, cgroup, mount, rtnetlink, or filesystem logic of their own, and never link against the runtime library directly. Every capability either surface offers must first exist as a REST endpoint; a CLI or web feature with no corresponding endpoint is not allowed to exist. This applies to every subsystem as it's built (containers, networking, DNS, PKI), not just the ones designed so far.
