@@ -560,3 +560,164 @@ int test_image_fixture_read_current_version(const char *image_dir, char *out_ver
 	out_version[len] = '\0';
 	return 0;
 }
+
+/*
+ * The floor: the packages a build environment cannot be composed
+ * without. Every build container is spawned as `/usr/bin/bash -c`
+ * (daemon/src/pkg.c), so bash and its runtime are structural, not a
+ * preference; the rest are what an autotools-style recipe reaches for
+ * and what this project's own declared recipes already name.
+ *
+ * Versions are pinned to exactly the artifacts this repo carries under
+ * build/floor-artifacts, and each is verified against the checksum in
+ * its own recipe before it is used. Bumping one means fetching the new
+ * artifact and re-verifying -- not editing this table alone.
+ */
+static const struct {
+	const char *name;
+	const char *version;
+} floor_packages[] = {
+	{ "bash", "5.2.37-2" },   { "coreutils", "9.11-3" }, { "tcc", "0.9.27-7" },
+	{ "make", "4.4.1-4" },    { "sed", "4.9-2" },        { "grep", "3.11-4" },
+	{ "gawk", "5.3.0-2" },    { "binutils", "2.42-8" },
+};
+
+static int sha256_file_hex(const char *path, char *out, size_t out_size)
+{
+	char cmd_path[] = "/usr/bin/sha256sum";
+	int pfd[2];
+	pid_t pid;
+	ssize_t n;
+	int status;
+
+	if (out_size < 65 || pipe(pfd) != 0)
+		return -1;
+	pid = fork();
+	if (pid < 0) {
+		close(pfd[0]);
+		close(pfd[1]);
+		return -1;
+	}
+	if (pid == 0) {
+		char *argv[] = { cmd_path, (char *)path, NULL };
+
+		dup2(pfd[1], 1);
+		close(pfd[0]);
+		close(pfd[1]);
+		execve(cmd_path, argv, environ);
+		_exit(127);
+	}
+	close(pfd[1]);
+	n = read(pfd[0], out, out_size - 1);
+	close(pfd[0]);
+	waitpid(pid, &status, 0);
+	if (n < 64)
+		return -1;
+	out[64] = '\0';
+	return 0;
+}
+
+/* Reads pkg_artifact_sha256="..." out of a recipe -- the line that
+ * approves those exact bytes, and the only thing that makes a cached
+ * artifact trustworthy. */
+static int recipe_artifact_sha(const char *name, const char *version, char *out, size_t out_size)
+{
+	char path[PATH_MAX];
+	char line[512];
+	FILE *f;
+	int found = 0;
+
+	snprintf(path, sizeof(path), "recipes/package/%s/%s/build.sh", name, version);
+	f = fopen(path, "r");
+	if (f == NULL)
+		return -1;
+	while (fgets(line, sizeof(line), f) != NULL) {
+		const char *p = strstr(line, "pkg_artifact_sha256=\"");
+
+		if (line == strstr(line, "pkg_artifact_sha256=\"") && p != NULL) {
+			p += strlen("pkg_artifact_sha256=\"");
+			snprintf(out, out_size, "%.64s", p);
+			found = 1;
+			break;
+		}
+	}
+	fclose(f);
+	return found ? 0 : -1;
+}
+
+static int copy_tree_via_cp(const char *src, const char *dst)
+{
+	char *argv[] = { (char *)"/bin/cp", (char *)"-a", (char *)src, (char *)dst, NULL };
+	pid_t pid = fork();
+	int status;
+
+	if (pid < 0)
+		return -1;
+	if (pid == 0) {
+		execve("/bin/cp", argv, environ);
+		_exit(127);
+	}
+	if (waitpid(pid, &status, 0) != pid || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
+		return -1;
+	return 0;
+}
+
+int test_image_fixture_seed_floor_packages(const char *data_dir, const char *artifacts_dir)
+{
+	char pkg_dir[PATH_MAX], cache_dir[PATH_MAX], recipes_dir[PATH_MAX];
+	size_t i;
+
+	snprintf(pkg_dir, sizeof(pkg_dir), "%s/rebuildable/pkg", data_dir);
+	snprintf(cache_dir, sizeof(cache_dir), "%s/cache", pkg_dir);
+	snprintf(recipes_dir, sizeof(recipes_dir), "%s/recipes", pkg_dir);
+	if (mkdir_p(cache_dir) != 0 || mkdir_p(recipes_dir) != 0)
+		return -1;
+
+	for (i = 0; i < sizeof(floor_packages) / sizeof(floor_packages[0]); i++) {
+		const char *name = floor_packages[i].name;
+		const char *version = floor_packages[i].version;
+		char src[PATH_MAX], dst[PATH_MAX];
+		char want[128], got[128];
+		char recipe_src[PATH_MAX], recipe_dst_dir[PATH_MAX];
+
+		snprintf(src, sizeof(src), "%s/%s-%s.tar.gz", artifacts_dir, name, version);
+		if (access(src, R_OK) != 0) {
+			fprintf(stderr,
+			        "floor package %s@%s is not present at %s -- fetch the real artifacts "
+			        "before running this test; they are not fabricated here\n",
+			        name, version, src);
+			return -1;
+		}
+		if (recipe_artifact_sha(name, version, want, sizeof(want)) != 0) {
+			fprintf(stderr, "recipe for %s@%s has no pkg_artifact_sha256 to verify against\n",
+			        name, version);
+			return -1;
+		}
+		if (sha256_file_hex(src, got, sizeof(got)) != 0 || strcmp(want, got) != 0) {
+			fprintf(stderr,
+			        "floor package %s@%s does not match the checksum its own recipe approves "
+			        "(recipe %.16s..., file %.16s...)\n",
+			        name, version, want, got);
+			return -1;
+		}
+
+		/* Into the cache: pkg_cache_has() is a stat(), so a present
+		 * tarball makes this install a cache hit -- no build
+		 * environment, no network, exactly as on a fresh host. */
+		snprintf(dst, sizeof(dst), "%s/%s-%s.tar.gz", cache_dir, name, version);
+		if (copy_tree_via_cp(src, dst) != 0)
+			return -1;
+
+		/* And the real recipe alongside it: the cache holds bytes, the
+		 * recipe is what approves them. Copying the genuine recipe
+		 * keeps one source of truth rather than a test-shaped
+		 * imitation of one. */
+		snprintf(recipe_dst_dir, sizeof(recipe_dst_dir), "%s/%s", recipes_dir, name);
+		if (mkdir(recipe_dst_dir, 0755) != 0 && errno != EEXIST)
+			return -1;
+		snprintf(recipe_src, sizeof(recipe_src), "recipes/package/%s/%s", name, version);
+		if (copy_tree_via_cp(recipe_src, recipe_dst_dir) != 0)
+			return -1;
+	}
+	return 0;
+}

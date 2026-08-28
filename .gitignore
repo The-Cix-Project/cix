@@ -4,3 +4,9 @@ core.*
 image/keys/*.key
 .claude/
 backups/
+
+# Real, recipe-built package artifacts fetched for the test floor
+# (ADR-0209). Not committed: they are large binaries whose one source
+# of truth is the artifact cache plus the checksum in each recipe --
+# committing copies would be a second place the same bytes live.
+build/floor-artifacts/
