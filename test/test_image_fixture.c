@@ -580,6 +580,24 @@ static const struct {
 	{ "bash", "5.2.37-2" },   { "coreutils", "9.11-3" }, { "tcc", "0.9.27-7" },
 	{ "make", "4.4.1-4" },    { "sed", "4.9-2" },        { "grep", "3.11-4" },
 	{ "gawk", "5.3.0-2" },    { "binutils", "2.42-8" },
+	/*
+	 * The closure, not just the names above: binutils declares
+	 * pkg_depends="zlib flex" and flex declares "m4", so an install of
+	 * binutils resolves all three before it will start. Leaving them
+	 * out fails as "no such recipe, or it failed to parse", which
+	 * names the recipe being installed rather than the dependency
+	 * actually missing -- found exactly that way.
+	 */
+	{ "zlib", "1.3.2-6" },    { "flex", "2.6.4-4" },     { "m4", "1.4.19-2" },
+	/*
+	 * libc-dev: headers and the CRT startup objects, without which tcc
+	 * cannot compile anything at all. Pinned to 2.36-3 because that is
+	 * the newest version a Cix host has actually built and published --
+	 * 2.36-5 and 2.36-6 exist as recipes but have no artifact yet, and
+	 * a version with no artifact cannot seed a floor that exists
+	 * precisely to avoid needing a build environment.
+	 */
+	{ "libc-dev", "2.36-3" },
 };
 
 static int sha256_file_hex(const char *path, char *out, size_t out_size)
