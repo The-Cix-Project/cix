@@ -28,7 +28,26 @@
 #   bash,coreutils,sed,grep,gawk,tar,xz,zlib  the shell and text tools
 #             the kernel's own scripts/ and Makefiles shell out to
 #
-# No image_artifact_sha256: never built yet. It is added once a real
-# Cix host has produced and published the artifact.
+# Built on 192.168.15.95 and published from there -- the artifact is
+# that host's own export, never a tarball produced anywhere else. Image
+# version 34f75b92d958d80b334f1243aa5eb8464ff63891c4ba3550586479fd26bf49da,
+# 558842422 bytes.
 #
-image_packages="bash:pinned:5.2.37-2 bc:pinned:1.08.1-2 binutils:pinned:2.42-8 bison:pinned:3.8.2-2 coreutils:pinned:9.11-3 elfutils:pinned:0.192-8 flex:pinned:2.6.4-4 gawk:pinned:5.3.0-2 gcc:pinned:16.2.0-11 grep:pinned:3.11-4 kmod:pinned:34.2-2 libc-dev:pinned:2.36-5 make:pinned:4.4.1-4 sed:pinned:4.9-2 tar:pinned:1.35-5 xz:pinned:5.8.3-4 zlib:pinned:1.3.2-6"
+# The checksum below approves those exact bytes. It is worth knowing
+# how it can go wrong: GET /images/{name}/export/download is chunked
+# and clamps each read to 8 MiB, so an unlooped fetch yields exactly
+# the first 8 MiB -- and a truncated artifact still hashes, and still
+# "verifies" against a checksum computed over the truncation. Integrity
+# checking cannot catch a short read; only comparing against the
+# export's own declared size_bytes can.
+#
+#   bzip2, m4  not asked for directly -- pulled in as declared runtime
+#             dependencies (elfutils needs bzip2 for compressed
+#             debuginfo; bison and flex both need m4). They are named
+#             here because a manifest must list what the image
+#             actually contains: the image version IS the hash of that
+#             list, so an entry short of reality computes an artifact
+#             URL that does not resolve.
+#
+image_packages="bash:pinned:5.2.37-2 bc:pinned:1.08.1-2 binutils:pinned:2.42-8 bison:pinned:3.8.2-2 bzip2:pinned:1.0.8 coreutils:pinned:9.11-3 elfutils:pinned:0.192-8 flex:pinned:2.6.4-4 gawk:pinned:5.3.0-2 gcc:pinned:16.2.0-11 grep:pinned:3.11-4 kmod:pinned:34.2-2 libc-dev:pinned:2.36-5 m4:pinned:1.4.19-2 make:pinned:4.4.1-4 sed:pinned:4.9-2 tar:pinned:1.35-5 xz:pinned:5.8.3-4 zlib:pinned:1.3.2-6"
+image_artifact_sha256="a6166dbe1002505cc1582346180f7da8032bac2b5b8732d6b08ed41e6413ae7c"
