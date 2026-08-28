@@ -437,6 +437,119 @@ int main(void)
 		CHECK(stat(base, &st) != 0, "the container base should be gone after delete");
 	}
 
+	/*
+	 * 7. The UPGRADE migration (containerdef.c's
+	 * migrate_pin_userns_absent): a definition persisted before the
+	 * phase-3 default flip has no "userns" key at all -- replaying it
+	 * against a userns_default:true platform would silently flap the
+	 * container to userns on its first post-upgrade revival. The
+	 * migration pins "userns":false into such a definition at load.
+	 * Simulated the only honest way: create a def, stop the daemon,
+	 * strip the pinned key from the persisted file (exactly what a
+	 * pre-upgrade file looks like), set the default to true, restart.
+	 */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "POST", "/v1/containers",
+	                       "{\"name\":\"dt3\",\"image\":\"dtest\","
+	                       "\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"],"
+	                       "\"restart\":\"no\"}",
+	                       &r) != 0 ||
+	    r.status != 201) {
+		fprintf(stderr, "FAIL: create dt3, status=%d\n", r.status);
+		failures++;
+	}
+	cix_response_free(&r);
+	kill(daemon_pid, SIGTERM);
+	{
+		int status;
+
+		if (waitpid(daemon_pid, &status, 0) != daemon_pid) {
+			fprintf(stderr, "FAIL: daemon did not exit for the migration restart\n");
+			failures++;
+		}
+	}
+	{
+		char defs_path[PATH_MAX], cfg_path[PATH_MAX];
+		FILE *f;
+		static char defs[65536];
+		size_t n = 0;
+		char *hit;
+		/* the creation-time pin, as it appears escaped inside the
+		 * stored body string */
+		static const char pin[] = ",\\\"userns\\\":false";
+
+		snprintf(defs_path, sizeof(defs_path), "%s/state/container_defs.json", g_data_dir);
+		f = fopen(defs_path, "r");
+		if (f != NULL) {
+			n = fread(defs, 1, sizeof(defs) - 1, f);
+			fclose(f);
+		}
+		defs[n] = '\0';
+		hit = strstr(defs, pin);
+		CHECK(hit != NULL, "dt3's persisted body must carry the creation-time pin");
+		if (hit != NULL) {
+			/* excise the pin -- the file is now byte-for-byte what a
+			 * pre-phase-3 daemon would have written */
+			memmove(hit, hit + sizeof(pin) - 1, n - (size_t)(hit - defs) - (sizeof(pin) - 1) + 1);
+			f = fopen(defs_path, "w");
+			if (f != NULL) {
+				fputs(defs, f);
+				fclose(f);
+			}
+		}
+		snprintf(cfg_path, sizeof(cfg_path), "%s/state/daemon_config.json", g_data_dir);
+		f = fopen(cfg_path, "w");
+		if (f != NULL) {
+			fputs("{\"userns_default\": true}", f);
+			fclose(f);
+		}
+	}
+	daemon_pid = start_daemon();
+	if (daemon_pid < 0) {
+		test_data_dir_cleanup(g_data_dir);
+		return 1;
+	}
+	if (wait_for_daemon(&client, 100) != 0) {
+		fprintf(stderr, "FAIL: daemon did not come back for the migration check\n");
+		failures++;
+	}
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "POST", "/v1/containers/dt3/start", NULL, &r) != 0 ||
+	    r.status != 200) {
+		fprintf(stderr, "FAIL: start dt3 after migration, status=%d body=%.120s\n", r.status,
+		        r.body != NULL ? r.body : "");
+		failures++;
+	}
+	cix_response_free(&r);
+	{
+		int i;
+		const struct json_value *ju = NULL;
+
+		for (i = 0; i < 50; i++) {
+			const char *st_field = NULL;
+
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/containers/dt3", NULL, &r) == 0 &&
+			    r.json != NULL)
+				st_field = json_str_field(r.json, "status");
+			if (st_field != NULL &&
+			    (strcmp(st_field, "exited") == 0 || strcmp(st_field, "running") == 0)) {
+				ju = json_object_get(r.json, "userns");
+				CHECK(ju != NULL && ju->type == JSON_BOOL && !ju->u.boolean,
+				      "a pre-flip definition must be MIGRATED to userns:false at load -- "
+				      "not resolved against the new default on revival");
+				cix_response_free(&r);
+				break;
+			}
+			cix_response_free(&r);
+			usleep(200000);
+		}
+		CHECK(i < 50, "dt3 never came up after the migration restart");
+	}
+	memset(&r, 0, sizeof(r));
+	cix_client_request(&client, "DELETE", "/v1/containers/dt3", NULL, &r);
+	cix_response_free(&r);
+
 	kill(daemon_pid, SIGTERM);
 	{
 		int status;
