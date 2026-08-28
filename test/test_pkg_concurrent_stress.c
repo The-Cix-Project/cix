@@ -310,7 +310,9 @@ int main(void)
 
 			snprintf(fbody, sizeof(fbody), "{\"name\":\"%s\"}", floor[fi]);
 			memset(&r, 0, sizeof(r));
-			cix_client_request(&client_a, "POST", "/v1/pkg/install", fbody, &r);
+			if (cix_client_request(&client_a, "POST", "/v1/pkg/install", fbody, &r) != 0 ||
+			    (r.status != 202 && r.status != 200))
+				fprintf(stderr, "FAIL: floor install of %s: status=%d %.200s\n", floor[fi], r.status, r.body != NULL ? r.body : "");
 			cix_response_free(&r);
 			for (fr = 0; fr < 600; fr++) {
 				const char *st = NULL;
@@ -320,6 +322,15 @@ int main(void)
 				if (cix_client_request(&client_a, "GET", fbody, NULL, &r) == 0 && r.json != NULL)
 					st = json_str_field(r.json, "state");
 				if (st != NULL && strcmp(st, "installed") == 0) {
+					cix_response_free(&r);
+					break;
+				}
+				if (st != NULL && strcmp(st, "failed") == 0) {
+					/* Say it here. A floor package that fails leaves
+					 * every later build reporting a missing tool, which
+					 * is three screens away from the real cause. */
+					fprintf(stderr, "FAIL: floor package %s failed: %.240s\n", floor[fi],
+					        r.body != NULL ? r.body : "");
 					cix_response_free(&r);
 					break;
 				}
@@ -402,13 +413,15 @@ int main(void)
 	if (test_data_dir_create(data_dir_b, sizeof(data_dir_b)) != 0) {
 		test_data_dir_cleanup(data_dir_a);
 		return 1;
+	}
 	/* ADR-0209: the build floor -- real recipe-built artifacts seeded
 	 * into this daemon's cache so installing them needs no build
 	 * environment. */
 	if (test_image_fixture_seed_floor_packages(data_dir_b, "build/floor-artifacts") != 0) {
 		fprintf(stderr, "could not seed the build floor (ADR-0209)\n");
+		test_data_dir_cleanup(data_dir_a);
+		test_data_dir_cleanup(data_dir_b);
 		return 1;
-	}
 	}
 	snprintf(pkg_state_b, sizeof(pkg_state_b), "%s/rebuildable/pkg", data_dir_b);
 	snprintf(images_base_b, sizeof(images_base_b), "%s/rebuildable/images/base", data_dir_b);
@@ -442,7 +455,9 @@ int main(void)
 
 			snprintf(fbody, sizeof(fbody), "{\"name\":\"%s\"}", floor[fi]);
 			memset(&r, 0, sizeof(r));
-			cix_client_request(&client_b, "POST", "/v1/pkg/install", fbody, &r);
+			if (cix_client_request(&client_b, "POST", "/v1/pkg/install", fbody, &r) != 0 ||
+			    (r.status != 202 && r.status != 200))
+				fprintf(stderr, "FAIL: floor install of %s: status=%d %.200s\n", floor[fi], r.status, r.body != NULL ? r.body : "");
 			cix_response_free(&r);
 			for (fr = 0; fr < 600; fr++) {
 				const char *st = NULL;
@@ -452,6 +467,15 @@ int main(void)
 				if (cix_client_request(&client_b, "GET", fbody, NULL, &r) == 0 && r.json != NULL)
 					st = json_str_field(r.json, "state");
 				if (st != NULL && strcmp(st, "installed") == 0) {
+					cix_response_free(&r);
+					break;
+				}
+				if (st != NULL && strcmp(st, "failed") == 0) {
+					/* Say it here. A floor package that fails leaves
+					 * every later build reporting a missing tool, which
+					 * is three screens away from the real cause. */
+					fprintf(stderr, "FAIL: floor package %s failed: %.240s\n", floor[fi],
+					        r.body != NULL ? r.body : "");
 					cix_response_free(&r);
 					break;
 				}
@@ -526,12 +550,32 @@ int main(void)
 	 * merge determinism), not because it might legitimately differ. */
 	if (version_a[0] != '\0' && version_b[0] != '\0') {
 		char rootfs_a[PATH_MAX], rootfs_b[PATH_MAX];
-		char diff_cmd[2 * PATH_MAX + 64];
+		char diff_cmd[4 * PATH_MAX + 160];
 
 		snprintf(rootfs_a, sizeof(rootfs_a), "%s/%s/rootfs", images_base_a, version_a);
 		snprintf(rootfs_b, sizeof(rootfs_b), "%s/%s/rootfs", images_base_b, version_b);
-		snprintf(diff_cmd, sizeof(diff_cmd), "diff -rq --exclude=dev '%s' '%s' >/dev/null 2>&1",
-		         rootfs_a, rootfs_b);
+		/*
+		 * Print WHAT differs, not just that something does: a
+		 * determinism failure is only actionable if you can see which
+		 * paths diverged.
+		 *
+		 * --no-dereference compares symlinks as symlinks instead of
+		 * following them. Without it, a link pointing outside the
+		 * image makes diff fail with "No such file or directory" and
+		 * report a difference where none exists -- which is exactly
+		 * what happened here: libc-dev 2.36-3 stages the build host's
+		 * whole /usr/include (issue #169), Erlang's erl_nif.h among
+		 * it, and those links dangle inside an image. Both trees
+		 * carried the identical dangling links; only diff's dereference
+		 * turned that into a false determinism failure. Comparing
+		 * links by target is the correct comparison for a rootfs in any
+		 * case, and it stops this test from depending on whether a
+		 * package happens to ship a link out of the tree.
+		 */
+		snprintf(diff_cmd, sizeof(diff_cmd),
+		         "diff -rq --no-dereference --exclude=dev '%s' '%s' 2>&1 | head -20 >&2; "
+		         "diff -rq --no-dereference --exclude=dev '%s' '%s' >/dev/null 2>&1",
+		         rootfs_a, rootfs_b, rootfs_a, rootfs_b);
 		CHECK(system(diff_cmd) == 0,
 		      "concurrent-run and serial-run base image rootfs trees are byte-for-byte identical");
 	}

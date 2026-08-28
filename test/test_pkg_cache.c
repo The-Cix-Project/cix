@@ -390,7 +390,15 @@ int main(void)
 
 			snprintf(fbody, sizeof(fbody), "{\"name\":\"%s\"}", floor[fi]);
 			memset(&r, 0, sizeof(r));
-			cix_client_request(&client, "POST", "/v1/pkg/install", fbody, &r);
+			if (cix_client_request(&client, "POST", "/v1/pkg/install", fbody, &r) != 0 ||
+			    (r.status != 202 && r.status != 200)) {
+				/* A floor install that fails silently is how a later
+				 * build ends up reporting a missing tool that was
+				 * supposed to be here -- say it at the point it goes
+				 * wrong, not three screens later. */
+				fprintf(stderr, "FAIL: floor install of %s: status=%d %.200s\n", floor[fi],
+				        r.status, r.body != NULL ? r.body : "");
+			}
 			cix_response_free(&r);
 			for (fr = 0; fr < 600; fr++) {
 				const char *st = NULL;
