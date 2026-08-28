@@ -66,6 +66,10 @@ static inline int cix_move_mount(int from_dfd, const char *from_path, int to_dfd
 #ifndef SYS_mount_setattr
 #define SYS_mount_setattr 442
 #endif
+#ifndef MOUNT_ATTR_NODEV
+#define MOUNT_ATTR_NODEV 0x00000004
+#endif
+
 #ifndef MOUNT_ATTR_IDMAP
 #define MOUNT_ATTR_IDMAP 0x00100000
 #endif
