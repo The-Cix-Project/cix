@@ -1,4 +1,5 @@
 #include "pkg.h"
+#include "targz.h"
 #include "pkgpolicy.h"
 #include "hostproc.h"
 #include "image.h"
@@ -38,7 +39,7 @@ extern char **environ;
 
 /* PKG_CURL_BIN now lives in pkg.h -- shared with main.c's own
  * bootstrap-fetch mechanism (ADR-0065), one real definition. */
-#define PKG_TAR_BIN "/usr/bin/tar"
+#define PKG_TAR_BIN TARGZ_TAR_BIN
 /*
  * Issue #125: tar's own -z shells out to a BARE "gzip", resolved
  * through PATH -- and this daemon runs as PID 1 from the kernel, whose
@@ -48,7 +49,7 @@ extern char **environ;
  * lookup; mkbootroot stages this exact path into the control-plane
  * image (its own host_tool_bins list, from gzip.recipe).
  */
-#define PKG_GZIP_BIN "/usr/bin/gzip"
+#define PKG_GZIP_BIN TARGZ_GZIP_BIN
 #define PKG_SHA256SUM_BIN "/usr/bin/sha256sum"
 #define PKG_RM_BIN "/bin/rm"
 #define PKG_UNSQUASHFS_BIN "/usr/bin/unsquashfs"
@@ -6977,18 +6978,17 @@ static void pkg_cache_save(const char *name, const char *version, const char *de
 		 * rule into permanent noise. With it, a rejected push means
 		 * what it should: two builds genuinely diverged.
 		 */
-		char *argv[] = { (char *)PKG_TAR_BIN,
-			         "--use-compress-program=" PKG_GZIP_BIN,
-			         "--sort=name",
-			         "--mtime=@0",
-			         "--owner=0",
-			         "--group=0",
-			         "--numeric-owner",
-			         "-C",   (char *)dest_dir,
-			         "-cf",  tmp_path,
-			         ".",    NULL };
-
-		if (run_subprocess(PKG_TAR_BIN, argv) != 0) {
+		/*
+		 * Issue #164: built through targz_create(), which pipes tar
+		 * into gzip itself instead of asking tar to spawn the
+		 * compressor. tar's own --use-compress-program goes through
+		 * /bin/sh, which this platform's control-plane root does not
+		 * have -- so on every real installed host this call failed
+		 * and NOTHING was ever cached, silently, because a cache save
+		 * is best-effort. The normalizing flags moved into targz.c
+		 * with the tar invocation itself; the bytes are unchanged.
+		 */
+		if (targz_create(dest_dir, tmp_path, NULL) != 0) {
 			/* Best-effort stays best-effort, but never silent again:
 			 * a host whose cache save fails on EVERY build looked
 			 * exactly like a host with nothing to cache, for months

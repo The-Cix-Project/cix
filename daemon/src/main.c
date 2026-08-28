@@ -51,6 +51,7 @@
 #include "pkg.h"
 #include "quotamap.h"
 #include "registry.h"
+#include "targz.h"
 #include "rtnetlink.h"
 #include "siteconfig.h"
 #include "daemon_config.h"
@@ -9141,7 +9142,6 @@ static int artifact_export_start(enum artifact_export_kind kind, const char *nam
 	char version[IMAGE_VERSION_MAX];
 	char src[PATH_MAX];
 	char out_dir[PATH_MAX];
-	char *argv[13];
 	pid_t pid;
 	int pidfd;
 
@@ -9186,28 +9186,19 @@ static int artifact_export_start(enum artifact_export_kind kind, const char *nam
 	         version);
 	unlink(g_artifact_export_path);
 
-	/* Issue #125: name the compressor absolutely -- tar's own -z shells
-	 * out to a bare "gzip" through PATH, and this daemon runs as PID 1
-	 * with no PATH, so that lookup fails and tar exits 2. */
-	argv[0] = (char *)"/usr/bin/tar";
-	argv[1] = (char *)"--use-compress-program=/usr/bin/gzip";
-	/* Same normalizing flags pkg_cache_save() uses, for the same reason
-	 * (ADR-0201): an export is named exactly what the artifact server
-	 * serves it at, so it can be pushed verbatim -- and a push is only
-	 * coherent against an immutable store if two hosts exporting the
-	 * same tree produce the same bytes. Without these, per-file mtimes
-	 * ride in the tar headers and every host's export differs. */
-	argv[2] = (char *)"--sort=name";
-	argv[3] = (char *)"--mtime=@0";
-	argv[4] = (char *)"--owner=0";
-	argv[5] = (char *)"--group=0";
-	argv[6] = (char *)"--numeric-owner";
-	argv[7] = (char *)"-C";
-	argv[8] = src;
-	argv[9] = (char *)"-cf";
-	argv[10] = g_artifact_export_path;
-	argv[11] = (char *)".";
-	argv[12] = NULL;
+	/*
+	 * Issue #164: the archive is built by targz_run() below, which
+	 * pipes tar into gzip directly. Asking tar to spawn the compressor
+	 * itself (--use-compress-program, issue #125's own fix for the
+	 * bare-"gzip"-on-no-PATH problem) routes the spawn through
+	 * /bin/sh, which the control-plane root deliberately does not have
+	 * -- so every export on a real installed host died reporting
+	 * "/usr/bin/gzip: Cannot exec" against a gzip that was present and
+	 * working. The normalizing flags (ADR-0201/issue #129) travel with
+	 * the tar invocation into targz.c; an export is named exactly what
+	 * the artifact server serves it at, so two hosts exporting the same
+	 * tree must still produce identical bytes -- and they do.
+	 */
 
 	{
 		int errpipe[2];
@@ -9232,9 +9223,7 @@ static int artifact_export_start(enum artifact_export_kind kind, const char *nam
 		if (pid == 0) {
 			if (errpipe[1] >= 0)
 				dup2(errpipe[1], 2);
-			execve(argv[0], argv, environ);
-			perror("child: execve tar (image export)");
-			_exit(127);
+			_exit(targz_run(src, g_artifact_export_path));
 		}
 		if (errpipe[1] >= 0)
 			close(errpipe[1]);
