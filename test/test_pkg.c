@@ -543,6 +543,25 @@ int main(void)
 	reset_pkg_state();
 	run_cmd("mkdir -p '%s/recipes'", g_pkg_state_dir);
 
+	/*
+	 * ADR-0209: the build floor, seeded before the daemon starts.
+	 * Real, recipe-built package artifacts go into this daemon's own
+	 * cache, and the real recipes that approve them go beside them --
+	 * so the installs below are cache hits needing no build
+	 * environment, which is the only honest way to have one at all now
+	 * that there is no fungible sandbox. Verified against each
+	 * recipe's own pkg_artifact_sha256 on the way in; if the artifacts
+	 * are absent this fails here, loudly, rather than the suite
+	 * mysteriously failing later.
+	 */
+	if (test_image_fixture_seed_floor_packages(g_data_dir, "build/floor-artifacts") != 0) {
+		fprintf(stderr,
+		        "FAIL: could not seed the build floor -- fetch the real package artifacts into "
+		        "build/floor-artifacts first (see ADR-0209); they are never fabricated\n");
+		test_data_dir_cleanup(g_data_dir);
+		return 1;
+	}
+
 	if (mkdtemp(scratch_dir) == NULL) {
 		fprintf(stderr, "FAIL: mkdtemp\n");
 		test_data_dir_cleanup(g_data_dir);
@@ -618,13 +637,51 @@ int main(void)
 	}
 	cix_response_free(&r);
 
-	/* 1. bootstrap the build toolchain image */
-	memset(&r, 0, sizeof(r));
-	if (cix_client_request(&client, "POST", "/v1/pkg/bootstrap", NULL, &r) != 0 || r.status != 204) {
-		fprintf(stderr, "FAIL: POST /v1/pkg/bootstrap, status=%d\n", r.status);
-		ok = 0;
+	/*
+	 * 1. The build floor (ADR-0209). This used to be
+	 * `POST /v1/pkg/bootstrap`, which copied the build host's whole
+	 * /usr into an image -- the mechanism that put rustup, chromium
+	 * and qemu inside cix-builder (issue #168). It is gone, and so is
+	 * every other route by which a build could inherit something it
+	 * did not declare.
+	 *
+	 * What replaces it is what a fresh host actually does: real,
+	 * recipe-built package artifacts are already in this daemon's own
+	 * cache (seeded by test_data_dir_create()), so installing them is
+	 * a cache hit that needs no build environment at all. Every later
+	 * build composes from tools it declares, and those declarations
+	 * resolve against these.
+	 */
+	{
+		static const char *const floor[] = { "bash",      "coreutils", "tcc",  "make",
+			                             "sed",       "grep",      "gawk", "binutils",
+			                             NULL };
+		char fstate[64];
+		int i;
+
+		for (i = 0; floor[i] != NULL; i++) {
+			char body[160];
+
+			snprintf(body, sizeof(body), "{\"name\":\"%s\"}", floor[i]);
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/pkg/install", body, &r) != 0 ||
+			    (r.status != 202 && r.status != 200)) {
+				fprintf(stderr, "FAIL: installing floor package %s, status=%d body=%.120s\n",
+				        floor[i], r.status, r.body != NULL ? r.body : "");
+				ok = 0;
+				continue;
+			}
+			cix_response_free(&r);
+			if (poll_pkg_state(&client, floor[i], fstate, sizeof(fstate), 300) != 0 ||
+			    strcmp(fstate, "installed") != 0) {
+				fprintf(stderr,
+				        "FAIL: floor package %s ended in state '%s', not installed -- a cache "
+				        "hit needs no build environment, so this should not be possible\n",
+				        floor[i], fstate);
+				ok = 0;
+			}
+		}
 	}
-	cix_response_free(&r);
 
 	/* ADR-0157 Phase 3 raised the real default ceiling to 10 -- lowered
 	 * here to a small, deterministic 2 so every "N chains busy" boundary
