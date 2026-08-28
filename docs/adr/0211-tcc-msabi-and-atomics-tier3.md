@@ -45,11 +45,22 @@ Python matters here only because `grub`'s own `configure` hard-requires a
 Python interpreter, even from an official release tarball, to run its
 build-time generators.
 
+**`grub` itself then declined TCC outright.** With python available, its
+configure gets one step further and stops with:
+
+```
+configure: error: GCC is required
+```
+
+GRUB probes for GCC-specific attributes and code generation its EFI targets
+depend on. This one needs no analysis at all — the build system states the
+requirement itself.
+
 ## Decision
 
-`gnu-efi` and `python` join the Tier-3 TCC exception list and are built with
-**gcc 16.2.0-11 from this project's own artifact cache**, invoked by absolute
-path (`CC=/usr/bin/gcc`).
+`gnu-efi`, `python` and `grub` join the Tier-3 TCC exception list and are
+built with **gcc 16.2.0-11 from this project's own artifact cache**, invoked
+by absolute path (`CC=/usr/bin/gcc`).
 
 `binutils-dev` and `sbsigntools` follow them: `sbsigntools` depends on both
 `gnu-efi` and `binutils-dev`, and `binutils-dev` fails under TCC with a parse
