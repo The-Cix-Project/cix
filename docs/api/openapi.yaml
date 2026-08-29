@@ -1250,6 +1250,97 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /system/signing-keys:
+    get:
+      summary: Whether this host holds a Secure Boot signing key pair (ADR-0212)
+      description: >
+        Reports only whether the key pair is present and, when it is,
+        the certificate's own public identity -- subject, expiry and
+        SHA-256 fingerprint. The private key is never returned by any
+        endpoint, in any form, exactly as the repo and artifact-cache
+        tokens report auth_token_set rather than the token itself.
+      operationId: getSystemSigningKeys
+      responses:
+        "200":
+          description: Current signing-key state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SigningKeys"
+    put:
+      summary: Install an operator-supplied Secure Boot signing key pair (ADR-0212)
+      description: >
+        Supersedes ADR-0064's out-of-band-only precondition, which
+        assumed a shell or scp transport that a real Cix host does not
+        have -- POST /system/iso was therefore unusable on every real
+        box. The key pair is pasted in as two PEM blocks; the DER .cer
+        that mokutil needs for MOK enrolment is derived here rather
+        than being a third thing to supply and keep consistent.
+        ADR-0064's actual security property is preserved: cixd still
+        never generates, fetches or copies this key onto a box by
+        itself -- installing it stays a deliberate operator act
+        against one designated release host.
+        The certificate's public key is checked against the private
+        key before anything is written, because a mismatched paste is
+        the realistic failure here and would otherwise only surface
+        much later as an unbootable signed image. All three files are
+        written atomically, so a rejected or interrupted PUT leaves
+        the previous pair intact rather than a half-installed one.
+      operationId: putSystemSigningKeys
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [key, cert]
+              properties:
+                key:
+                  type: string
+                  description: The signing private key, PEM ("-----BEGIN ... PRIVATE KEY-----").
+                cert:
+                  type: string
+                  description: The matching certificate, PEM ("-----BEGIN CERTIFICATE-----"). The DER .cer is derived from it.
+      responses:
+        "200":
+          description: Installed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SigningKeys"
+        "400":
+          description: Invalid JSON body, unparseable PEM, or the certificate does not match the private key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Could not persist the key pair
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      summary: Remove this host's Secure Boot signing key pair (ADR-0212)
+      description: >
+        Erases all three files. A release host that is being
+        decommissioned or repurposed should not keep signing material
+        it no longer needs, and without this the only way to remove it
+        would be to reinstall the box.
+      operationId: deleteSystemSigningKeys
+      responses:
+        "200":
+          description: Removed, or already absent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SigningKeys"
+        "500":
+          description: Could not remove the key pair
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /system/sysctl:
     get:
       summary: Every sysctl this daemon currently manages (ADR-0160)
@@ -11044,6 +11135,28 @@ components:
           type: array
           items:
             type: string
+    SigningKeys:
+      type: object
+      required: [key_set, cert_set]
+      properties:
+        key_set:
+          type: boolean
+          description: Whether a private key is installed. The key itself is never returned.
+        cert_set:
+          type: boolean
+          description: Whether the matching certificate (PEM) and derived DER .cer are installed.
+        subject:
+          type: string
+          nullable: true
+          description: The certificate's subject, when one is installed.
+        not_after:
+          type: string
+          nullable: true
+          description: The certificate's expiry, as openssl reports it.
+        fingerprint_sha256:
+          type: string
+          nullable: true
+          description: SHA-256 fingerprint of the certificate -- what an operator compares against the cert they enrolled as a MOK.
     SysctlEntry:
       type: object
       required: [key, value]

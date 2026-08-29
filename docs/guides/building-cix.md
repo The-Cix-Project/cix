@@ -84,7 +84,14 @@ The same round above also produces `cix-install` and `mkinstalleriso` — enough
 cixctl pkg hostbuild isotools --build-image=iso-builder
 ```
 
-(`iso-builder` is the image whose one job this is — its manifest names `grub`/`sbsigntools`/`xorriso`/`mtools` directly, so the four no longer have to be installed by hand first; see [ADR-0208](../adr/0208-build-image-taxonomy.md). It was called `dev` until that ADR renamed it: a name meaning "general" had it prescribed for kernel builds it could not do. It carries the full toolchain those four recipes need to build from source — gcc/binutils/autotools, see [`writing-recipes.md`](writing-recipes.md); `isotools.recipe` itself doesn't rebuild them, it harvests the four binaries + their real shared-library closure the four installs above just produced into a single, portable, host-executable artifact.) Then, with a real Secure Boot signing key pair staged out of band at `<data-dir>/keys/cix-signing.{key,crt,cer}` (never generated or fetched by `cixd` itself — see `POST /system/iso`'s own entry in [`../api/README.md`](../api/README.md) for why):
+(`iso-builder` is the image whose one job this is — its manifest names `grub`/`sbsigntools`/`xorriso`/`mtools` directly, so the four no longer have to be installed by hand first; see [ADR-0208](../adr/0208-build-image-taxonomy.md). It was called `dev` until that ADR renamed it: a name meaning "general" had it prescribed for kernel builds it could not do. It carries the full toolchain those four recipes need to build from source — gcc/binutils/autotools, see [`writing-recipes.md`](writing-recipes.md); `isotools.recipe` itself doesn't rebuild them, it harvests the four binaries + their real shared-library closure the four installs above just produced into a single, portable, host-executable artifact.) Then, with a real Secure Boot signing key pair installed on the host at `<data-dir>/keys/cix-signing.{key,crt,cer}`:
+
+```
+cixctl signing-keys set --key=image/keys/cix-signing.key --cert=image/keys/cix-signing.crt
+cixctl signing-keys            # confirm: subject, expiry, fingerprint
+```
+
+This guide used to say the pair was "staged out of band", which is what ADR-0064 specified — but a real Cix host runs no sshd and has no console, so there was no out-of-band channel and this step could not actually be performed. [ADR-0212](../adr/0212-signing-keys-over-rest.md) makes it a REST operation; `cixctl` sends the file contents, so the private key never appears in shell history or the host's process list. `cixd` still never generates or fetches this key on its own, and only the public DER `.cer` is ever staged onto an installed target — put it on the one host that cuts media, not on every box. Then:
 
 ```
 cixctl iso build --disk=/dev/CHANGEME --wait

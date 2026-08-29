@@ -48,6 +48,9 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | PUT | `/system/daemon-config` | Live-reconfigure the listen port, HTTP/HTTPS listeners, or repoint the management network -- no restart |
 | GET | `/system/iso` | Status of the most recent server-side installer ISO build |
 | POST | `/system/iso` | Assemble a fresh installer ISO server-side, non-blocking |
+| GET | `/system/signing-keys` | Whether this host holds a Secure Boot signing key pair, and which identity |
+| PUT | `/system/signing-keys` | Install an operator-supplied signing key pair (two PEM blocks) |
+| DELETE | `/system/signing-keys` | Remove this host's signing key pair |
 | GET | `/system/routes` | The box's own real kernel IPv4 routing table |
 | POST | `/system/routes` | Add a real kernel route (gone on next reboot unless something else re-applies it) |
 | DELETE | `/system/routes` | Remove a real kernel route |
@@ -2272,7 +2275,30 @@ POST /v1/system/iso
 {"disk": "/dev/sda", "ip": "10.0.0.5", "prefix": "24", "gateway": "10.0.0.1", "interface": "eth0"}
 ```
 
-Every field is optional — an empty body reproduces the tool's original default, a generic ISO with its kernel arguments left as the `CHANGEME` placeholder an operator edits at the GRUB boot menu. `202`, polled via `GET /system/iso` (`state`: `none`/`building`/`ready`/`failed`, `iso_path` once ready). Reuses whatever the most recent `cix`/`kernel`/`isotools` hostbuild rounds already harvested — it does not trigger any of them itself, and fails fast (`400`) naming exactly which one is missing rather than a background failure the caller has to poll for to discover. Requires a real Secure Boot signing key pair, staged out of band by the operator at `<data-dir>/keys/cix-signing.{key,crt,cer}` — deliberately never generated, fetched, or copied there by `cixd` itself (see ADR-0064: a release-signing private key must never propagate onto every deployed box, only whichever specific instance is actually cutting installer media). `cixctl iso build [--disk=... --ip=... --prefix=... --gateway=... --interface=...] [--wait]` / `cixctl iso status` is the CLI surface.
+Every field is optional — an empty body reproduces the tool's original default, a generic ISO with its kernel arguments left as the `CHANGEME` placeholder an operator edits at the GRUB boot menu. `202`, polled via `GET /system/iso` (`state`: `none`/`building`/`ready`/`failed`, `iso_path` once ready). Reuses whatever the most recent `cix`/`kernel`/`isotools` hostbuild rounds already harvested — it does not trigger any of them itself, and fails fast (`400`) naming exactly which one is missing rather than a background failure the caller has to poll for to discover. Requires a real Secure Boot signing key pair at `<data-dir>/keys/cix-signing.{key,crt,cer}`, installed via `PUT /system/signing-keys` (ADR-0212 — see below; it was an out-of-band-only precondition until then, which no real Cix host had any way to satisfy) — deliberately never generated, fetched, or copied there by `cixd` itself (see ADR-0064: a release-signing private key must never propagate onto every deployed box, only whichever specific instance is actually cutting installer media). `cixctl iso build [--disk=... --ip=... --prefix=... --gateway=... --interface=...] [--wait]` / `cixctl iso status` is the CLI surface.
+
+## The Secure Boot signing key pair
+
+```
+GET /v1/system/signing-keys
+PUT /v1/system/signing-keys
+{"key": "-----BEGIN PRIVATE KEY-----\n...", "cert": "-----BEGIN CERTIFICATE-----\n..."}
+DELETE /v1/system/signing-keys
+```
+
+`POST /system/iso` above needs this pair, and until ADR-0212 there was no way to put it on a box. ADR-0064 called it an operator-populated-out-of-band precondition and compared it to a file already `scp`'d onto the machine — but a real Cix host runs no sshd, exposes no host-side exec, and has no console, so **that endpoint has never been servable on any real installed host.** Not a bug in it: a required input with no supported way to supply it.
+
+So the pair is pasted in as two PEM blocks. The DER `.cer` that `mokutil` needs for MOK enrolment is **derived here from the certificate** rather than accepted as a third input — accepting it separately would only create a way for the two to disagree, and that disagreement means an enrolled identity that does not match what actually signed the image.
+
+The certificate is checked against the private key **before anything is written**, and the write is atomic. A mismatched paste is the realistic mistake here — both blobs are individually valid, so nothing else would catch it, and the consequence surfaces much later as an image that signs cleanly and then refuses to boot. A rejected `PUT` leaves the previous pair exactly as it was, which matters on a host actively cutting media. `400` distinguishes an unparseable key, an unparseable certificate, and a well-formed pair that simply is not a pair.
+
+**The private key goes in and never comes back.** `GET` returns `key_set`/`cert_set` booleans plus the certificate's own public identity (`subject`, `not_after`, `fingerprint_sha256` — the fingerprint being what an operator compares against the certificate they enrolled as a MOK). No endpoint, error, or log line ever emits key material. That is the same shape `GET /pkg/repo-config` already has for the git token, which it reports as `auth_token_set`.
+
+ADR-0064's security property is unchanged: `cixd` still never generates, fetches, or copies this key on its own initiative, and only the public DER `.cer` is ever staged onto an installed target. **Install it on the one host that cuts media, not on every box** — a release-signing private key present fleet-wide means any single machine's compromise leaks the fleet's Secure Boot identity. `DELETE` exists so a host being decommissioned or repurposed can drop signing material it no longer needs without being reinstalled.
+
+One caveat worth stating plainly: on a host with `https_enabled: false` and no authentication configured, the pasted key crosses the management network in clear text and anyone on that network can replace it. Enable HTTPS and host auth before treating a host that holds signing material as production.
+
+`cixctl signing-keys [show]` / `cixctl signing-keys set --key=PATH --cert=PATH` / `cixctl signing-keys clear` is the CLI surface — it takes **paths**, not the PEM text, so a private key never lands in shell history or this host's process list. The dashboard's Host → Signing Keys tab is the paste box.
 
 ## Liveness vs. boot identity (ADR-0077)
 

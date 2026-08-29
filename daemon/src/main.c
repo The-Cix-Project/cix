@@ -21,6 +21,7 @@
 #include "ntp.h"
 #include "ping.h"
 #include "resolv.h"
+#include "signingkeys.h"
 #include "swap.h"
 #include "syslogfwd.h"
 #include "dns.h"
@@ -5633,6 +5634,106 @@ static void handle_resolv_put(int fd, const char *body, size_t body_len)
 }
 
 /*
+ * ADR-0212: GET/PUT/DELETE /v1/system/signing-keys -- the Secure Boot
+ * signing key pair POST /v1/system/iso requires. See signingkeys.h for
+ * why this is a REST surface at all rather than the out-of-band-only
+ * precondition ADR-0064 originally specified.
+ *
+ * The PUT body carries a private key. It is therefore never echoed
+ * back, never logged, and never quoted in an error -- the responses
+ * below are the same key_set/cert_set summary GET returns, exactly as
+ * pkg_repo_write_json_config() reports auth_token_set and not the git
+ * token it was given.
+ */
+static void handle_signing_keys_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	signingkeys_write_json(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void respond_signingkeys_error(int fd, enum signingkeys_error err)
+{
+	switch (err) {
+	case SIGNINGKEYS_ERR_BAD_KEY:
+		respond_error(fd, 400, "Bad Request",
+		              "key is not a parseable PEM private key");
+		return;
+	case SIGNINGKEYS_ERR_BAD_CERT:
+		respond_error(fd, 400, "Bad Request", "cert is not a parseable PEM certificate");
+		return;
+	case SIGNINGKEYS_ERR_MISMATCH:
+		/*
+		 * Worth its own message rather than a generic 400: both blobs
+		 * are individually valid here, so "invalid PEM" would send an
+		 * operator looking at the wrong thing. Pasting two halves that
+		 * do not belong together is the realistic mistake this
+		 * interface enables.
+		 */
+		respond_error(fd, 400, "Bad Request",
+		              "the certificate's public key does not match the private key -- they are "
+		              "not a pair");
+		return;
+	case SIGNINGKEYS_ERR_PERSIST_FAILED:
+	default:
+		respond_error(fd, 500, "Internal Server Error", "could not persist the signing key pair");
+		return;
+	}
+}
+
+static void handle_signing_keys_put(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const char *key_pem;
+	const char *cert_pem;
+	enum signingkeys_error serr;
+	struct json_writer w;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	key_pem = json_as_string(json_object_get(root, "key"));
+	cert_pem = json_as_string(json_object_get(root, "cert"));
+	if (key_pem == NULL || cert_pem == NULL) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "key and cert (both PEM strings) are required");
+		return;
+	}
+
+	serr = signingkeys_set(key_pem, cert_pem);
+	json_free(root);
+	if (serr != SIGNINGKEYS_OK) {
+		respond_signingkeys_error(fd, serr);
+		return;
+	}
+
+	jw_init(&w);
+	signingkeys_write_json(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_signing_keys_delete(int fd)
+{
+	enum signingkeys_error serr = signingkeys_clear();
+	struct json_writer w;
+
+	if (serr != SIGNINGKEYS_OK) {
+		respond_signingkeys_error(fd, serr);
+		return;
+	}
+	jw_init(&w);
+	signingkeys_write_json(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/*
  * ADR-0160: GET/PUT/DELETE /v1/system/sysctl/{key}, GET /v1/system/sysctl
  * -- host-level /proc/sys REST surface, live, fully open passthrough
  * (host-auth write-gating is the only access control -- no allowlist,
@@ -10564,6 +10665,7 @@ static void finalize_state_storage_migration(void)
 	volume_repoint(VOLUMES_STATE_PATH);
 	volumebackup_repoint(VOLUME_BACKUP_CONFIG_PATH);
 	pki_repoint(PKI_DIR, PKI_CERTS_STATE_PATH);
+	signingkeys_repoint(SIGNING_KEYS_DIR);
 	containerdef_repoint(CONTAINER_DEFS_STATE_PATH);
 	containerdef_rolling_config_repoint(ROLLING_CONFIG_PATH);
 	siteconfig_repoint(SITE_CONFIG_PATH);
@@ -23381,6 +23483,20 @@ static void dispatch(int fd, const struct http_request *req)
 			return;
 		}
 	}
+	if (strcmp(req->path, "/v1/system/signing-keys") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_signing_keys_get(fd);
+			return;
+		}
+		if (strcmp(req->method, "PUT") == 0) {
+			handle_signing_keys_put(fd, req->body, req->body_len);
+			return;
+		}
+		if (strcmp(req->method, "DELETE") == 0) {
+			handle_signing_keys_delete(fd);
+			return;
+		}
+	}
 	if (strcmp(req->path, "/v1/system/resolv") == 0) {
 		if (strcmp(req->method, "GET") == 0) {
 			handle_resolv_get(fd);
@@ -27163,6 +27279,8 @@ static int cixd_main(int argc, char **argv)
 	if (boot_subsystem_init(init_mode, "ldap_config", ldap_config_init(LDAP_CONFIG_STATE_PATH)) != 0)
 		return 1;
 	if (boot_subsystem_init(init_mode, "pki", pki_init(PKI_DIR, PKI_CERTS_STATE_PATH)) != 0)
+		return 1;
+	if (boot_subsystem_init(init_mode, "signing_keys", signingkeys_init(SIGNING_KEYS_DIR)) != 0)
 		return 1;
 	if (boot_subsystem_init(init_mode, "siteconfig", siteconfig_init(SITE_CONFIG_PATH)) != 0)
 		return 1;
