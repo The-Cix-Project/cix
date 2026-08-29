@@ -6027,6 +6027,25 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 			g_chains[chain_idx].is_hostbuild = 0;
 			return 0;
 		}
+		/*
+		 * Publish it, exactly as the ordinary branch below does for a
+		 * freshly built package (issue #129).
+		 *
+		 * This branch never enqueued one, so no hostbuild artifact has
+		 * ever auto-published: the cache's newest `cix` was
+		 * v2.2.0-rc6, and `kernel` and `isotools` had no entry at all,
+		 * while ordinary packages published on every build. Nothing
+		 * about a hostbuild makes its output less worth distributing --
+		 * it is the most worth distributing, since `cix` and `kernel`
+		 * are what other hosts install to update themselves, and
+		 * rebuilding one is the most expensive thing this platform
+		 * does.
+		 *
+		 * Only a fresh build, same as below: a cache hit's bytes
+		 * already came from the cache.
+		 */
+		if (!e->cache_hit)
+			pkg_artifact_push_enqueue(e->name, e->version);
 	} else {
 		struct install_mutate_ctx ctx;
 
@@ -7831,6 +7850,24 @@ static void pkg_artifact_push_enqueue(const char *name, const char *version)
 	snprintf(g_push_queue[g_push_queue_count].name, PKG_NAME_MAX, "%s", name);
 	snprintf(g_push_queue[g_push_queue_count].version, PKG_VERSION_MAX, "%s", version);
 	g_push_queue_count++;
+}
+
+enum pkg_error pkg_artifact_publish(const char *name)
+{
+	int i;
+
+	if (!g_artifact_push_enabled || g_artifact_base_url[0] == '\0')
+		return PKG_ERR_INVALID_RECIPE;
+
+	for (i = 0; i < PKG_MAX_PACKAGES; i++) {
+		if (!g_packages[i].in_use || g_packages[i].state != PKG_STATE_INSTALLED)
+			continue;
+		if (strcmp(g_packages[i].name, name) != 0)
+			continue;
+		pkg_artifact_push_enqueue(g_packages[i].name, g_packages[i].version);
+		return PKG_OK;
+	}
+	return PKG_ERR_NOT_FOUND;
 }
 
 /*
