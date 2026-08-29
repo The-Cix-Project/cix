@@ -45,6 +45,24 @@ static int find_disk(const char *disk_name, const char *os_containers_dir, struc
 	return 0;
 }
 
+/*
+ * mkfs's own stdout/stderr. Without this a failed format reported
+ * "mkfs.btrfs failed" and nothing else -- the tool knew exactly what was
+ * wrong and had nowhere to say it. That gap has now cost a debugging
+ * cycle four separate times in this codebase (#125, #132, the
+ * artifact-export stderr fix, and mkinstalleriso's), so it is closed
+ * here the same way: capture the child's own words and put them in the
+ * error an operator actually reads.
+ *
+ * Read once at completion rather than drained incrementally, unlike the
+ * ISO assembly's: mkfs prints a few lines, not a progress stream, so a
+ * 64K pipe cannot fill and block the child. Safe as a bare static --
+ * diskformat_start() refuses a second job while one is in flight.
+ */
+#define DISKFORMAT_OUTPUT_MAX 1024
+static int g_output_rd = -1;
+static char g_output[DISKFORMAT_OUTPUT_MAX + 1];
+
 enum diskformat_error diskformat_start(const char *disk_name, const char *os_containers_dir,
                                         const char *mount_base_dir, enum diskformat_fs_type fs_type,
                                         pid_t *out_pid, int *out_pidfd)
@@ -52,6 +70,7 @@ enum diskformat_error diskformat_start(const char *disk_name, const char *os_con
 	struct discovered_disk d;
 	pid_t pid;
 	int pidfd;
+	int output_pipe[2];
 
 	if (!simple_name_is_valid(disk_name, DISKROLE_DISK_NAME_MAX))
 		return DISKFORMAT_ERR_INVALID_DISK_NAME;
@@ -70,10 +89,27 @@ enum diskformat_error diskformat_start(const char *disk_name, const char *os_con
 	if (mkdir(g_mount_path, 0755) != 0 && errno != EEXIST)
 		return DISKFORMAT_ERR_MKDIR_FAILED;
 
+	if (g_output_rd >= 0) {
+		close(g_output_rd);
+		g_output_rd = -1;
+	}
+	g_output[0] = '\0';
+	if (pipe2(output_pipe, O_CLOEXEC) != 0)
+		output_pipe[0] = output_pipe[1] = -1;
+
 	pid = fork();
-	if (pid < 0)
+	if (pid < 0) {
+		if (output_pipe[0] >= 0) {
+			close(output_pipe[0]);
+			close(output_pipe[1]);
+		}
 		return DISKFORMAT_ERR_SPAWN_FAILED;
+	}
 	if (pid == 0) {
+		if (output_pipe[1] >= 0) {
+			dup2(output_pipe[1], STDOUT_FILENO);
+			dup2(output_pipe[1], STDERR_FILENO);
+		}
 		/*
 		 * Deliberately does NOT execve() itself (unlike every other
 		 * async job's forked child in this daemon) -- see diskformat.h's
@@ -128,10 +164,18 @@ enum diskformat_error diskformat_start(const char *disk_name, const char *os_con
 		_exit(0);
 	}
 
+	if (output_pipe[1] >= 0)
+		close(output_pipe[1]);
+	g_output_rd = output_pipe[0];
+
 	pidfd = sys_pidfd_open(pid, 0);
 	if (pidfd < 0) {
 		kill(pid, SIGKILL);
 		waitpid(pid, NULL, 0);
+		if (g_output_rd >= 0) {
+			close(g_output_rd);
+			g_output_rd = -1;
+		}
 		return DISKFORMAT_ERR_SPAWN_FAILED;
 	}
 
@@ -162,6 +206,40 @@ void diskformat_completed(int exit_status)
 		return;
 	}
 	g_state = DISKFORMAT_STATE_FAILED;
+	/*
+	 * Whatever mkfs said before it gave up. Read here, after the child
+	 * has exited, so this either returns what is still buffered or an
+	 * immediate EOF -- it never blocks.
+	 */
+	if (g_output_rd >= 0) {
+		ssize_t n;
+		size_t total = 0;
+
+		while (total + 1 < sizeof(g_output)) {
+			n = read(g_output_rd, g_output + total, sizeof(g_output) - total - 1);
+			if (n <= 0)
+				break;
+			total += (size_t)n;
+		}
+		g_output[total] = '\0';
+		close(g_output_rd);
+		g_output_rd = -1;
+		while (total > 0 && (g_output[total - 1] == '\n' || g_output[total - 1] == '\r'))
+			g_output[--total] = '\0';
+		/*
+		 * Keep the LAST line. mkfs prints a version banner and progress
+		 * before it ever prints a complaint, so a message truncated from
+		 * the front would faithfully report the banner and drop the
+		 * reason -- which is worse than saying nothing, because it looks
+		 * like an answer.
+		 */
+		{
+			char *nl = strrchr(g_output, '\n');
+
+			if (nl != NULL)
+				memmove(g_output, nl + 1, strlen(nl + 1) + 1);
+		}
+	}
 	if (exit_status == 127)
 		/*
 		 * The child's own execve() failed, and by far the likeliest
@@ -178,6 +256,10 @@ void diskformat_completed(int exit_status)
 		         "image was built without it)",
 		         fs_type_str(g_fs_type));
 	else if (exit_status == 1)
+		if (g_output[0] != '\0')
+		snprintf(g_error, sizeof(g_error), "mkfs.%s failed: %s", fs_type_str(g_fs_type),
+		         g_output);
+	else
 		snprintf(g_error, sizeof(g_error), "mkfs.%s failed", fs_type_str(g_fs_type));
 	else if (exit_status == 2)
 		snprintf(g_error, sizeof(g_error), "mkfs.%s succeeded but mount(2) failed: %s",
