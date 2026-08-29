@@ -365,6 +365,24 @@ paths:
                       lets a client distinguish "still working" from
                       "gave up, that attempt failed" instead of polling
                       completed_generation forever after a failure.
+                  bootroot_image_path:
+                    type: string
+                    description: >
+                      Absolute path to the assembled control-plane
+                      squashfs this daemon would deploy, so a client does
+                      not have to know the daemon's own filesystem layout
+                      to use it. `cixctl pkg hostbuild cix --deploy`
+                      reads this and passes it to POST /system/update as
+                      image_path. Reported whether or not the file exists
+                      yet: its absence is a normal state (no assembly has
+                      run this daemon lifetime), and /system/update
+                      already reports a missing or unreadable image_path
+                      honestly. Issue #178 -- the image used to live
+                      inside the "cix" hostbuild's own artifact
+                      directory, so the CLI composed this path itself and
+                      every published artifact carried a ~10 MB squashfs
+                      plus a ~12 MB staging tree it had no business
+                      shipping.
 
   /system/shutdown:
     post:
