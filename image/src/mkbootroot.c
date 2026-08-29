@@ -24,6 +24,7 @@
  */
 #include "test_image_fixture.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <limits.h>
 #include <stdio.h>
@@ -284,72 +285,85 @@ int main(int argc, char **argv)
 	if (test_image_fixture_build(image_root, cixd_bin, "cixd") != 0)
 		return 1;
 	/*
-	 * Replace the C library the fixture just staged with the one from
-	 * cix-hosttools, i.e. the glibc THIS PLATFORM BUILT (#181).
+	 * Replace the C library the fixture just staged with the one this
+	 * platform BUILT, taken from cix-hosttools (#181).
 	 *
-	 * test_image_fixture_build() reads /lib/x86_64-linux-gnu/libc.so.6
-	 * and ld-linux off the machine it runs on. For a server-side
-	 * assembly that machine IS the control-plane root, so the root
-	 * copies its own C library forward, forever -- which is precisely
-	 * how a glibc that came from Debian years ago is still the one
-	 * every Cix binary links today. The cycle cannot be broken from
-	 * inside it.
+	 * test_image_fixture_build() reads libc.so.6 and ld-linux off the
+	 * machine it runs on. For a server-side assembly that machine IS
+	 * the control-plane root, so the root copies its own C library
+	 * forward, forever -- which is how a glibc that came from Debian is
+	 * still the one every Cix binary links. The cycle cannot be broken
+	 * from inside it.
 	 *
-	 * Ordering is the whole point, and getting it backwards took the
-	 * box down: a cixd built against the self-built 2.44 was deployed
-	 * onto a root still carrying the copied 2.36, and init died with
-	 * exit 127 (a binary needs the glibc it was built against, or
-	 * newer). So the ROOT must gain the new libc before anything built
-	 * against it is deployed, never after.
+	 * EVERY shared library in the host-tools image is copied, not a
+	 * chosen few, and that is the whole design. A first attempt
+	 * replaced libc.so.6, libm.so.6 and the loader by name and left
+	 * libpthread.so.0 and libresolv.so.2 -- also glibc's, also
+	 * GLIBC_PRIVATE-coupled to libc -- sitting at the old version. The
+	 * result booted nothing: cixd links OpenSSL, OpenSSL pulls
+	 * libpthread, and a 2.36 libpthread against a 2.44 libc is the same
+	 * mismatched-halves failure as a stale loader. "libc and its loader
+	 * ship together" was understated; it is the entire glibc, 24 shared
+	 * objects, and any hand-written subset of it is a partial
+	 * replacement waiting to happen.
 	 *
-	 * libc.so.6 and its loader are replaced together and asserted
-	 * together -- they share a private, version-locked interface, and a
-	 * mismatched pair breaks every process on the image at once.
-	 * Skipped entirely when no host-tools image is given, which is the
-	 * bare dev-machine case.
+	 * So the rule is structural rather than enumerated: whatever
+	 * libraries that image has, the root takes. It also self-maintains
+	 * -- as more of this platform's libraries are built rather than
+	 * borrowed, they land in cix-hosttools and the root picks them up
+	 * with no list to update here.
+	 *
+	 * ORDERING, learned by taking the box down twice: the root must
+	 * gain the new libc BEFORE anything built against it is deployed. A
+	 * binary needs the glibc it was built against, or newer, never
+	 * older.
 	 */
 	if (host_tools_dir != NULL && host_tools_dir[0] != '\0') {
-		static const struct {
-			const char *rel;
-			const char *dst;
-		} libc_files[] = {
-			{ "lib/x86_64-linux-gnu/libc.so.6", "lib/x86_64-linux-gnu/libc.so.6" },
-			{ "lib/x86_64-linux-gnu/libm.so.6", "lib/x86_64-linux-gnu/libm.so.6" },
-			{ "lib64/ld-linux-x86-64.so.2", "lib64/ld-linux-x86-64.so.2" },
-			{ "lib64/ld-linux-x86-64.so.2", "lib/x86_64-linux-gnu/ld-linux-x86-64.so.2" },
-		};
-		size_t li;
-		struct stat lst;
-		char probe[PATH_MAX];
+		static const char *const lib_dirs[] = { "lib/x86_64-linux-gnu", "lib64", NULL };
+		int staged_libs = 0;
+		int d;
 
-		snprintf(probe, sizeof(probe), "%s/lib/x86_64-linux-gnu/libc.so.6", host_tools_dir);
-		if (stat(probe, &lst) == 0) {
-			for (li = 0; li < sizeof(libc_files) / sizeof(libc_files[0]); li++) {
+		for (d = 0; lib_dirs[d] != NULL; d++) {
+			char src_dir[PATH_MAX];
+			DIR *dh;
+			struct dirent *de;
+
+			snprintf(src_dir, sizeof(src_dir), "%s/%s", host_tools_dir, lib_dirs[d]);
+			dh = opendir(src_dir);
+			if (dh == NULL)
+				continue;
+			while ((de = readdir(dh)) != NULL) {
 				char src[PATH_MAX], dst[PATH_MAX];
+				struct stat fst;
 
-				snprintf(src, sizeof(src), "%s/%s", host_tools_dir, libc_files[li].rel);
-				snprintf(dst, sizeof(dst), "%s/%s", image_root, libc_files[li].dst);
+				if (strstr(de->d_name, ".so") == NULL)
+					continue;
+				snprintf(src, sizeof(src), "%s/%s", src_dir, de->d_name);
+				if (stat(src, &fst) != 0 || !S_ISREG(fst.st_mode))
+					continue;
+				snprintf(dst, sizeof(dst), "%s/%s/%s", image_root, lib_dirs[d],
+				         de->d_name);
 				if (test_image_fixture_copy_file(src, dst) != 0) {
 					fprintf(stderr,
-					        "staging the platform's own C library: %s is missing "
-					        "from the host-tools image -- libc and its loader must "
-					        "be replaced together, so this cannot be a partial "
-					        "copy\n",
-					        libc_files[li].rel);
+					        "staging the platform's own libraries: %s/%s failed -- "
+					        "a partial copy is worse than none, since glibc's "
+					        "objects share a private, version-locked interface\n",
+					        lib_dirs[d], de->d_name);
+					closedir(dh);
 					return 1;
 				}
+				staged_libs++;
 			}
-			fprintf(stderr, "staged the platform's own glibc from %s\n", host_tools_dir);
-		} else {
-			/* An older cix-hosttools with no glibc installed: the
-			 * fixture's host-copied libc stands, exactly as before.
-			 * Reported rather than silent, because which C library a
-			 * control-plane root carries is not a detail. */
-			fprintf(stderr,
-			        "note: %s has no glibc -- the control-plane root keeps the "
-			        "build host's C library\n",
-			        host_tools_dir);
+			closedir(dh);
 		}
+		if (staged_libs > 0)
+			fprintf(stderr, "staged %d of this platform's own shared libraries from %s\n",
+			        staged_libs, host_tools_dir);
+		else
+			fprintf(stderr,
+			        "note: %s carries no shared libraries -- the control-plane root "
+			        "keeps the build host's C library\n",
+			        host_tools_dir);
 	}
 	/*
 	 * cixctl itself: staged so cixd --init-mode (Phase 19) has
