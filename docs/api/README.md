@@ -2319,12 +2319,14 @@ GET /v1/health
 {"status": "ok"}
 
 GET /v1/system/boot
-{"build_version": "v1.6.0-9-gc59e482-dirty", "build_time": "2026-08-08T00:52:00Z", "slot": "b", "kernel_version": "6.18.40", "bootroot_assembly_started_generation": 3, "bootroot_assembly_completed_generation": 3, "bootroot_assembly_running": false}
+{"build_version": "v1.6.0-9-gc59e482-dirty", "build_time": "2026-08-08T00:52:00Z", "slot": "b", "kernel_version": "6.18.40", "bootroot_assembly_started_generation": 3, "bootroot_assembly_completed_generation": 3, "bootroot_assembly_running": false, "bootroot_image_path": "/var/lib/cix/rebuildable/bootroot/cixd-root.squashfs"}
 ```
 
 `GET /health` is deliberately minimal -- both `cixctl` and the web dashboard poll it every few seconds purely for a status dot, and it's excluded from the audit trail (see [A consolidated log](#a-consolidated-log) above) as low-value polling noise. Build/slot/kernel identity is a separate, lower-frequency check: `GET /system/boot` reports `build_version` (`git describe --tags --always --dirty` at build time), `build_time`, `slot` (`"a"`/`"b"`, or `null` for a dev/test daemon started without `--slot=`), and `kernel_version` (the running `uname(2)` release string). This is the deploy/reboot verification signal referenced throughout [`docs/guides/kernel-build-and-ab-updates.md`](../guides/kernel-build-and-ab-updates.md) -- a `200` from `health` alone only proves *some* daemon answered, not that it's the one you just wrote; `slot`/`kernel_version` from `boot` are the direct answer to "did I actually boot into what I just wrote."
 
 `bootroot_assembly_started_generation`/`bootroot_assembly_completed_generation`/`bootroot_assembly_running` (ADR-0105) are a real freshness signal for `pkg hostbuild cix --deploy`'s own server-side follow-on assembly (ADR-0057) — `cixd-root.squashfs` existing at the hostbuild's `artifact_path` is not the same as it being *this* round's own fresh build, since that file is a leftover from whichever assembly last succeeded. `completed_generation` only ever advances on a real, confirmed success; `--deploy` captures it as a baseline before triggering anything and waits for it to advance past that baseline (`running` distinguishes "still working" from "gave up, that attempt failed") rather than trusting file-exists.
+
+`bootroot_image_path` is where that assembled image actually is, so a client never has to compose the path itself. It used to sit inside the `cix` hostbuild's own artifact directory, and `--deploy` built the path from `artifact_path` — which meant the published artifact carried a ~10 MB squashfs and a ~12 MB staging tree on top of ~1.5 MB of real package content, taking `cix` from 561 KB to 22.8 MB (issue #178). The assembly output lives beside the artifacts now rather than inside one, and the daemon reports where.
 
 ## User namespaces: secure by default (ADR-0207)
 

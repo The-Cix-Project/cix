@@ -219,6 +219,16 @@ static char QUOTAMAP_STATE_PATH[PATH_MAX];
  */
 static char SIGNING_KEYS_DIR[PATH_MAX];
 static char ISO_DIR[PATH_MAX];
+/*
+ * Where the assembled control-plane image and its staging tree live
+ * (#178). Both used to sit inside the "cix" hostbuild's own artifact
+ * directory, which meant the published artifact carried them: a ~10 MB
+ * squashfs plus a ~12 MB uncompressed staging tree on top of about 1.5
+ * MB of actual package, so `cix` went from 561 KB at v2.1.1 to 22.8 MB.
+ * Build output is not package content; it belongs beside the artifacts
+ * rather than inside one.
+ */
+static char BOOTROOT_DIR[PATH_MAX];
 /* POST /v1/pkg/bootstrap's own toolchain_url mode (ADR-0065) -- a
  * fixed scratch path for the curl'd artifact, same "one fixed spot,
  * overwritten each time" convention ISO_OUTPUT_PATH already uses. */
@@ -386,6 +396,7 @@ static void compute_rebuildable_dir_relative_paths(void)
 	snprintf(PKG_BUILD_CONFIG_PATH, sizeof(PKG_BUILD_CONFIG_PATH), "%s/build_config.json", PKG_DIR);
 	snprintf(ARTIFACTS_DIR, sizeof(ARTIFACTS_DIR), "%s/artifacts", REBUILDABLE_DIR);
 	snprintf(ISO_DIR, sizeof(ISO_DIR), "%s/iso", REBUILDABLE_DIR);
+	snprintf(BOOTROOT_DIR, sizeof(BOOTROOT_DIR), "%s/bootroot", REBUILDABLE_DIR);
 	snprintf(SYSTEM_UPDATE_FETCH_PATH, sizeof(SYSTEM_UPDATE_FETCH_PATH),
 	         "%s/system_update_image.squashfs", REBUILDABLE_DIR);
 	snprintf(PKGBUILD_TOOLCHAIN_FETCH_PATH, sizeof(PKGBUILD_TOOLCHAIN_FETCH_PATH),
@@ -2032,6 +2043,25 @@ static void handle_system_boot(int fd)
 	jw_int(&w, g_bootroot_assembly_completed);
 	jw_key(&w, "bootroot_assembly_running");
 	jw_bool(&w, g_bootroot_assembly_running);
+	/*
+	 * Where the assembled control-plane image is, so a client that
+	 * wants to deploy it does not have to know this daemon's own
+	 * filesystem layout. `cixctl pkg hostbuild cix --deploy` used to
+	 * compose <artifact_path>/cixd-root.squashfs itself (ADR-0057),
+	 * which only worked while the image lived inside the artifact --
+	 * exactly the arrangement #178 removed. Reported whether or not the
+	 * file exists yet: its absence is a normal state (no assembly has
+	 * run on this boot), and /system/update already reports a missing
+	 * or unreadable image_path honestly.
+	 */
+	{
+		char bootroot_image[PATH_MAX];
+
+		snprintf(bootroot_image, sizeof(bootroot_image), "%s/cixd-root.squashfs",
+		         BOOTROOT_DIR);
+		jw_key(&w, "bootroot_image_path");
+		jw_str(&w, bootroot_image);
+	}
 	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
@@ -9004,8 +9034,17 @@ static void spawn_cix_bootroot_assembly(const char *artifact_dir)
 	snprintf(cixd_bin, sizeof(cixd_bin), "%s/cixd", artifact_dir);
 	snprintf(cixctl_bin, sizeof(cixctl_bin), "%s/cixctl", artifact_dir);
 	snprintf(web_dir, sizeof(web_dir), "%s/web", artifact_dir);
-	snprintf(out_squashfs, sizeof(out_squashfs), "%s/cixd-root.squashfs", artifact_dir);
-	snprintf(stage_dir, sizeof(stage_dir), "%s/.bootroot-stage", artifact_dir);
+	/*
+	 * BOOTROOT_DIR, not artifact_dir (#178). These are build OUTPUT:
+	 * the artifact directory is tarred wholesale when the package is
+	 * exported or published, so anything left here rode along -- a
+	 * ~10 MB squashfs and a ~12 MB staging tree on top of ~1.5 MB of
+	 * real package content. Every host pulling `cix` downloaded 22 MB
+	 * to use 1.5 MB of it, and got a stale squashfs it would never
+	 * read.
+	 */
+	snprintf(out_squashfs, sizeof(out_squashfs), "%s/cixd-root.squashfs", BOOTROOT_DIR);
+	snprintf(stage_dir, sizeof(stage_dir), "%s/stage", BOOTROOT_DIR);
 
 	/*
 	 * ADR-0107/0108: resolved via HOST_TOOLS_IMAGE's own current
@@ -9736,7 +9775,7 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 	    {cix_recover_bin, "cix-recover (from a \"cix\" hostbuild, ADR-0146)"},
 	    {cix_boot_bin, "cix-boot.efi (from a \"cix\" hostbuild, ADR-0215)"},
 	    {bzimage_path, "bzImage (from a \"kernel\" hostbuild)"},
-	    {squashfs_path, "cixd-root.squashfs (from a \"cix\" hostbuild)"},
+	    {squashfs_path, "cixd-root.squashfs (assembled after a \"cix\" hostbuild)"},
 	    {isotools_root, "isotools artifact directory (from an \"isotools\" hostbuild)"},
 	    {signing_key, "signing key (operator-provided at SIGNING_KEYS_DIR)"},
 	    {signing_cert_pem, "signing cert .crt (operator-provided at SIGNING_KEYS_DIR)"},
@@ -9752,8 +9791,7 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 	         ARTIFACTS_DIR);
 	snprintf(cix_boot_bin, sizeof(cix_boot_bin), "%s/cix/cix-boot.efi", ARTIFACTS_DIR);
 	snprintf(bzimage_path, sizeof(bzimage_path), "%s/kernel/bzImage", ARTIFACTS_DIR);
-	snprintf(squashfs_path, sizeof(squashfs_path), "%s/cix/cixd-root.squashfs",
-	         ARTIFACTS_DIR);
+	snprintf(squashfs_path, sizeof(squashfs_path), "%s/cixd-root.squashfs", BOOTROOT_DIR);
 	snprintf(isotools_root, sizeof(isotools_root), "%s/isotools", ARTIFACTS_DIR);
 	snprintf(signing_key, sizeof(signing_key), "%s/cix-signing.key", SIGNING_KEYS_DIR);
 	snprintf(signing_cert_pem, sizeof(signing_cert_pem), "%s/cix-signing.crt", SIGNING_KEYS_DIR);
@@ -26534,6 +26572,7 @@ static void handle_pkg_fetch_event(struct conn *cc)
  */
 static void handle_bootroot_assemble_event(struct conn *cc)
 {
+	char stage_dir[PATH_MAX];
 	int status;
 	pid_t reaped;
 	char output[BOOTROOT_OUTPUT_CAPTURE_MAX + 1];
@@ -26541,6 +26580,18 @@ static void handle_bootroot_assemble_event(struct conn *cc)
 
 	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	reaped = waitpid(cc->pkg_fetch_pid, &status, 0);
+
+	/*
+	 * The staging tree is a pure intermediate -- mksquashfs has already
+	 * consumed it, and nothing reads it afterwards. Removed on every
+	 * outcome, success or failure, because a failed assembly leaves one
+	 * behind just as surely as a successful one, and it is a full
+	 * uncompressed copy of the control-plane root (#178: it was never
+	 * cleaned up at all, and being inside the artifact directory it was
+	 * then published along with the package).
+	 */
+	snprintf(stage_dir, sizeof(stage_dir), "%s/stage", BOOTROOT_DIR);
+	persist_remove_tree(stage_dir);
 	/*
 	 * ADR-0087: g_bootroot_output.buf has already been
 	 * incrementally filled by child_output_readable() (see its own
@@ -27323,8 +27374,37 @@ static int cixd_main(int argc, char **argv)
 	    ensure_dir(CONTAINERS_DIR) != 0 || ensure_dir(PKI_DIR) != 0 ||
 	    ensure_dir(PKI_CERTS_DIR) != 0 || ensure_dir(PKG_DIR) != 0 ||
 	    ensure_dir(ARTIFACTS_DIR) != 0 || ensure_dir(SIGNING_KEYS_DIR) != 0 ||
-	    ensure_dir(ISO_DIR) != 0 || ensure_dir(SWAP_DIR) != 0 || ensure_dir(LOG_DIR) != 0)
+	    ensure_dir(ISO_DIR) != 0 || ensure_dir(BOOTROOT_DIR) != 0 ||
+	    ensure_dir(SWAP_DIR) != 0 || ensure_dir(LOG_DIR) != 0)
 		return 1;
+
+	/*
+	 * Clear the assembly output earlier versions left inside the "cix"
+	 * artifact directory (#178). It writes to BOOTROOT_DIR now, but a
+	 * hostbuild MERGES into the artifact directory rather than
+	 * replacing it (pkg.c's merge_tree()), so without this the old
+	 * ~10 MB squashfs and ~12 MB staging tree would sit there
+	 * permanently and keep riding along in every published artifact --
+	 * which is what took `cix` from 561 KB to 22.8 MB.
+	 *
+	 * Not a compatibility shim: these files were never package content
+	 * and nothing reads them at these paths any more, so this is just
+	 * finishing the move. Best-effort and silent when absent, which is
+	 * the normal case on any host installed after this.
+	 */
+	{
+		char stale[PATH_MAX];
+
+		snprintf(stale, sizeof(stale), "%s/cix/cixd-root.squashfs", ARTIFACTS_DIR);
+		if (unlink(stale) == 0)
+			logstore_write("cixd", "info",
+			               "removed stale assembly output from the cix artifact: %s",
+			               stale);
+		snprintf(stale, sizeof(stale), "%s/cix/.bootroot-stage", ARTIFACTS_DIR);
+		if (persist_remove_tree(stale) == 0)
+			logstore_write("cixd", "info",
+			               "removed stale assembly staging tree: %s", stale);
+	}
 
 	if (boot_subsystem_init(init_mode, "network", network_init(NETWORKS_STATE_PATH)) != 0)
 		return 1;

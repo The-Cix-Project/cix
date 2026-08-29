@@ -12442,10 +12442,12 @@ static int poll_hostbuild(const struct cix_client *c, const char *name, struct c
  * became unreachable.
  */
 static int get_bootroot_assembly_generation(const struct cix_client *c, long *out_completed,
-                                             int *out_running)
+                                             int *out_running, char *out_image_path,
+                                             size_t out_image_path_size)
 {
 	struct cix_response r;
 	const struct json_value *jrunning;
+	const char *image_path;
 
 	if (cix_client_request(c, "GET", "/v1/system/boot", NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
@@ -12454,6 +12456,19 @@ static int get_bootroot_assembly_generation(const struct cix_client *c, long *ou
 	*out_completed = (long)json_as_number(json_object_get(r.json, "bootroot_assembly_completed_generation"));
 	jrunning = json_object_get(r.json, "bootroot_assembly_running");
 	*out_running = jrunning != NULL && jrunning->type == JSON_BOOL && jrunning->u.boolean;
+	/*
+	 * The daemon reports where it put the assembled image (#178). This
+	 * client used to compose that path itself from the artifact
+	 * directory, which stopped being true when the image moved out of
+	 * the artifact -- and was always the CLI knowing a server-side
+	 * filesystem layout it has no business knowing.
+	 */
+	if (out_image_path != NULL) {
+		out_image_path[0] = '\0';
+		image_path = json_as_string(json_object_get(r.json, "bootroot_image_path"));
+		if (image_path != NULL)
+			snprintf(out_image_path, out_image_path_size, "%s", image_path);
+	}
 	cix_response_free(&r);
 	return 0;
 }
@@ -12472,13 +12487,15 @@ static int get_bootroot_assembly_generation(const struct cix_client *c, long *ou
  * Returns 0 once a genuinely fresh artifact is confirmed on disk, -1
  * otherwise (daemon unreachable, or the assembly failed).
  */
-static int wait_for_fresh_bootroot_assembly(const struct cix_client *c, long baseline_completed)
+static int wait_for_fresh_bootroot_assembly(const struct cix_client *c, long baseline_completed,
+                                            char *out_image_path, size_t out_image_path_size)
 {
 	for (;;) {
 		long completed;
 		int running;
 
-		if (get_bootroot_assembly_generation(c, &completed, &running) != 0)
+		if (get_bootroot_assembly_generation(c, &completed, &running, out_image_path,
+		                                     out_image_path_size) != 0)
 			return -1;
 		if (completed > baseline_completed)
 			return 0;
@@ -12545,7 +12562,8 @@ static int cmd_pkg_hostbuild(const struct cix_client *c, int json_mode, int argc
 	if (deploy && strcmp(name, "cix") == 0) {
 		int running;
 
-		if (get_bootroot_assembly_generation(c, &bootroot_baseline_completed, &running) != 0)
+		if (get_bootroot_assembly_generation(c, &bootroot_baseline_completed, &running,
+		                                     NULL, 0) != 0)
 			return 1;
 	}
 
@@ -12632,12 +12650,23 @@ static int cmd_pkg_hostbuild(const struct cix_client *c, int json_mode, int argc
 			 * ADR-0057-follow-on) to confirm a genuinely new success
 			 * before trusting the path below at all.
 			 */
-			if (wait_for_fresh_bootroot_assembly(c, bootroot_baseline_completed) != 0) {
+			char bootroot_image[PATH_MAX];
+
+			if (wait_for_fresh_bootroot_assembly(c, bootroot_baseline_completed,
+			                                     bootroot_image,
+			                                     sizeof(bootroot_image)) != 0) {
 				cix_response_free(&r);
 				return 1;
 			}
-			snprintf(deploy_arg, sizeof(deploy_arg), "--image=%s/cixd-root.squashfs",
-			         artifact_path);
+			if (bootroot_image[0] == '\0') {
+				cix_response_free(&r);
+				fprintf(stderr,
+				        "cixctl: the daemon did not report where it put the "
+				        "assembled image (bootroot_image_path) -- it predates "
+				        "the field\n");
+				return 1;
+			}
+			snprintf(deploy_arg, sizeof(deploy_arg), "--image=%s", bootroot_image);
 		} else {
 			cix_response_free(&r);
 			fprintf(stderr, "cixctl: --deploy has no rule for hostbuild '%s' yet\n", name);
