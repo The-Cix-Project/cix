@@ -30,7 +30,34 @@
 
 #define MAX_ENTRIES 32
 #define ENTRY_TEXT_MAX 4096
+#define CMDLINE_MAX 1024
 #define NAME_MAX_CHARS 128
+
+/*
+ * SBAT metadata (Secure Boot Advanced Targeting). REQUIRED: shim
+ * generation 4 and later refuses to load any image without a .sbat
+ * section, and reports it as
+ *
+ *   Verification failed: (0x1A) Security Violation
+ *
+ * -- the same message a bad signature produces, which is what made this
+ * cost three QEMU rounds to find. The image was signed correctly the
+ * whole time; sbsign and sbverify both accepted it, because they check
+ * signatures and shim additionally checks this.
+ *
+ * The format is CSV: component, generation, vendor name, package name,
+ * version, URL. The generation number is the revocation lever -- if a
+ * security hole is ever found in this program, shipping a shim with
+ * "cix-boot,2" refuses every copy still declaring 1. That is the entire
+ * point of the mechanism, so the number is meaningful and must only be
+ * incremented for a real security fix, never routinely.
+ *
+ * The first line declares which SBAT revision this follows and is
+ * required verbatim.
+ */
+static const char sbat_metadata[] __attribute__((used, section(".sbat"), aligned(512))) =
+	"sbat,1,SBAT Version,sbat,1,https://github.com/rhboot/shim/blob/main/SBAT.md\n"
+	"cix-boot,1,Cix,cix-boot,1,https://git.home.arpa/itdlabs/cix\n";
 
 static EFI_SYSTEM_TABLE *ST;
 static EFI_BOOT_SERVICES *BS;
@@ -376,7 +403,22 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st)
 {
 	EFI_GUID li_guid = EFI_LOADED_IMAGE_PROTOCOL_GUID;
 	EFI_FILE_PROTOCOL *root, *entries;
-	static struct entry list[MAX_ENTRIES];
+	/*
+	 * The entry table and the command-line buffer come from the
+	 * firmware's pool, not from static storage, and that is a hard
+	 * requirement rather than a style choice.
+	 *
+	 * As static arrays they landed in .bss -- about 55 KB of it -- and
+	 * ld's PE writer computes SizeOfImage from file-backed sections
+	 * only. The result was a header claiming SizeOfImage 0x13000 while
+	 * .bss and .idata actually extended past 0x22000: a malformed image
+	 * that sbsign and sbverify both accepted (they only hash it) and
+	 * shim rejected on a real boot with "Verification failed: (0x1A)
+	 * Security Violation". Pool allocation leaves .bss essentially
+	 * empty, so the header describes the file.
+	 */
+	struct entry *list;
+	CHAR16 *cmdline;
 	int count = 0, chosen;
 	EFI_STATUS status;
 	CHAR16 entries_path[] = { '\\', 'l', 'o', 'a', 'd', 'e', 'r', '\\',
@@ -384,6 +426,14 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st)
 
 	ST = st;
 	BS = st->BootServices;
+
+	if (EFI_ERROR(BS->AllocatePool(EfiLoaderData, MAX_ENTRIES * sizeof(struct entry),
+	                               (void **)&list)) ||
+	    EFI_ERROR(BS->AllocatePool(EfiLoaderData, CMDLINE_MAX * sizeof(CHAR16),
+	                               (void **)&cmdline))) {
+		print(L16("cix-boot: out of pool memory\r\n"));
+		return EFI_LOAD_ERROR;
+	}
 
 	status = open_esp_root(image, &root);
 	if (EFI_ERROR(status)) {
@@ -454,7 +504,6 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st)
 		UINTN ksize = 0;
 		EFI_HANDLE kimage;
 		EFI_LOADED_IMAGE_PROTOCOL *kli;
-		static CHAR16 cmdline[1024];
 		UINTN i;
 
 		/* The BLS "linux" value is an absolute path with forward
@@ -484,7 +533,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st)
 
 		/* The Linux EFI stub takes its whole command line from
 		 * LoadOptions, as UCS-2. */
-		ascii_to_utf16(list[chosen].options, cmdline, 1024);
+		ascii_to_utf16(list[chosen].options, cmdline, CMDLINE_MAX);
 		if (!EFI_ERROR(BS->HandleProtocol(kimage, &li_guid, (void **)&kli))) {
 			kli->LoadOptions = cmdline;
 			kli->LoadOptionsSize = (UINT32)((str16_len(cmdline) + 1) * sizeof(CHAR16));

@@ -334,11 +334,35 @@ $(BUILD)/cix-install: image/src/cix-install.c image/src/dual_console.c | $(BUILD
 EFI_CC ?= /usr/bin/gcc
 EFI_LD ?= ld
 EFI_CFLAGS := -ffreestanding -fno-stack-protector -fno-strict-aliasing -fno-ident \
+              -fno-asynchronous-unwind-tables \
               -fpic -fshort-wchar -mno-red-zone -Wall -Werror -Iinclude
 
+#
+# -s on the link is load-bearing for SECURE BOOT, not a size
+# optimisation, and it cost a full QEMU install round to find.
+#
+# ld appends a COFF symbol table AFTER the last section. Nothing maps
+# it, so the file is larger than the sum of its sections -- sbsign says
+# so out loud:
+#
+#   warning: data remaining[9216 vs 11422]: gaps between PE/COFF sections?
+#
+# Authenticode hashes a PE by walking its sections, and a signer and a
+# verifier that disagree about trailing bytes compute different hashes.
+# sbsign signed it happily and sbverify accepted it (both used the same
+# rules), while shim -- which is stricter, and is the one that matters --
+# refused the image on a real boot:
+#
+#   Verification failed: (0x1A) Security Violation
+#
+# Stripping removes the symbol table, the file becomes exactly its
+# sections, and every hasher agrees. -fno-asynchronous-unwind-tables
+# drops .eh_frame for the same reason it is pointless here: nothing
+# unwinds in an EFI application.
+#
 $(BUILD)/cix-boot.efi: image/src/cix-boot.c include/uefi.h | $(BUILD)
 	$(EFI_CC) -c $(EFI_CFLAGS) image/src/cix-boot.c -o $(BUILD)/cix-boot.o
-	$(EFI_LD) -m i386pep --subsystem=10 -e efi_main --image-base=0x10000 \
+	$(EFI_LD) -m i386pep --subsystem=10 -e efi_main --image-base=0x10000 -s \
 	          -o $@ $(BUILD)/cix-boot.o
 
 $(BUILD)/cix-recover: image/src/cix-recover.c image/src/dual_console.c daemon/src/json.c | $(BUILD)
