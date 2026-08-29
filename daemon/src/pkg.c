@@ -633,16 +633,83 @@ static void pkg_entry_free_files(struct pkg_entry *e)
  * mutate() callback -- rootfs is always a scratch copy-forward staging
  * directory (ADR-0107/0108), never a version's own immutable,
  * possibly-already-in-use-by-a-running-container rootfs directly. */
+/*
+ * Does any OTHER installed package in the same image also claim `rel`?
+ *
+ * Issue #175. Two packages legitimately install the same path -- glibc
+ * and linux-headers both own parts of usr/include, and any package
+ * built from a shared upstream tree overlaps its siblings -- and the
+ * LAST one installed is what is actually on disk. So removing a
+ * package's manifest blindly deletes files that belong to a package
+ * nobody touched.
+ *
+ * That is not hypothetical. Uninstalling libc-dev to make way for a
+ * self-built glibc silently gutted linux-headers, which shares
+ * usr/include with it, and the damage only surfaced later and
+ * elsewhere:
+ *
+ *   build environment: copying usr/include/asm-generic/resource.h from
+ *   declared tool linux-headers@6.18.40-4 (image cix-builder) failed:
+ *   No such file or directory
+ *
+ * -- a package reported as installed, with a recorded manifest, whose
+ * files were gone. Nothing failed at the time of the delete.
+ *
+ * Scoped to one image because that is the unit a manifest describes:
+ * the same package installed into two images owns two independent sets
+ * of files, and one image's contents say nothing about another's.
+ */
+static int path_claimed_by_another_package(const struct pkg_entry *self, const char *rel)
+{
+	const char *self_image = normalize_image(self->image);
+	int i, f;
+
+	for (i = 0; i < PKG_MAX_PACKAGES; i++) {
+		const struct pkg_entry *o = &g_packages[i];
+
+		if (o == self || !o->in_use || o->state != PKG_STATE_INSTALLED)
+			continue;
+		if (strcmp(normalize_image(o->image), self_image) != 0)
+			continue;
+		for (f = 0; f < o->file_count; f++) {
+			if (strcmp(o->files[f], rel) == 0)
+				return 1;
+		}
+	}
+	return 0;
+}
+
+/*
+ * Removes the files a package's manifest claims -- except any that
+ * another installed package in the same image also claims, which are
+ * left alone and reported (issue #175).
+ *
+ * Leaving a shared path behind is the conservative direction on
+ * purpose. The file demonstrably belongs to something still installed,
+ * so keeping it costs disk; deleting it breaks a package that was
+ * never touched, in a way that surfaces far from the cause. Where two
+ * packages disagree about a path's CONTENT the last install wins, as
+ * it always has -- this changes only who may delete it.
+ */
 static void unlink_manifest_files(const struct pkg_entry *e, const char *rootfs)
 {
-	int i;
+	int i, kept = 0;
 
 	for (i = 0; i < e->file_count; i++) {
 		char path[PATH_MAX];
 
+		if (path_claimed_by_another_package(e, e->files[i])) {
+			kept++;
+			continue;
+		}
 		snprintf(path, sizeof(path), "%s/%s", rootfs, e->files[i]);
 		unlink(path);
 	}
+	if (kept > 0)
+		logstore_write("cixd", "info",
+		               "pkg %s@%s: kept %d of %d file(s) that another installed "
+		               "package in this image also owns",
+		               e->name, normalize_image(e->image), kept, e->file_count);
 }
 
 static int pkg_entry_add_file(struct pkg_entry *e, const char *relpath)
