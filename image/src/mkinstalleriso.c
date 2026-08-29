@@ -226,9 +226,14 @@ int main(int argc, char **argv)
 	 * own research) by literal name via $PATH -- these child processes
 	 * inherit this process's own environ, so PATH must include
 	 * isotools_bin_dir before grub-mkrescue ever runs.
-	 * LD_LIBRARY_PATH covers isotools.recipe's own real, confirmed
+	 * LD_LIBRARY_PATH covers isotools.recipe's own real, measured
 	 * shared-library closure for a deployed host whose own system
-	 * paths don't otherwise carry it (e.g. liblzma.so.5, libbz2.so.1.0).
+	 * paths don't otherwise carry it: libz.so.1 (xorriso) and
+	 * libcrypto.so.3 (sbsign/sbverify), plus libc.so.6. It named
+	 * liblzma.so.5 and libbz2.so.1.0 until isotools 2.14-2 -- neither
+	 * is linked by any of these binaries at any level of the closure;
+	 * both were read off the pre-ADR-0199 shared build sandbox that
+	 * carried the build host's entire /usr (issue #168).
 	 */
 	setenv("PATH", isotools_bin_dir, 1);
 	setenv("LD_LIBRARY_PATH", isotools_lib_dir, 1);
