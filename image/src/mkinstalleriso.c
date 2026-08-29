@@ -239,7 +239,43 @@ int main(int argc, char **argv)
 	         g_isotools_root);
 	snprintf(g_sbsign_bin, sizeof(g_sbsign_bin), "%s/bin/sbsign", g_isotools_root);
 	snprintf(grub_module_dir, sizeof(grub_module_dir), "%s/lib/grub/x86_64-efi", g_isotools_root);
+	/*
+	 * grub-mkrescue is pointed at cix-xorriso, not at xorriso itself.
+	 * That filter strips the Apple HFS+ metadata arguments
+	 * grub-mkrescue adds unconditionally and then runs the real
+	 * xorriso, which is handed to it through the environment. See
+	 * image/src/cix-xorriso.c for why the arguments cannot simply be
+	 * turned off: libisofs needs glibc gconv modules to convert
+	 * filenames for HFS+, no Cix image has any, and importing Debian's
+	 * to satisfy a feature this platform does not want would be the
+	 * wrong fix.
+	 *
+	 * Found beside this binary rather than passed as another argument:
+	 * both ship in the same "cix" hostbuild artifact and are always
+	 * co-located, so deriving the path keeps the caller's contract
+	 * unchanged.
+	 */
 	snprintf(xorriso_bin, sizeof(xorriso_bin), "%s/bin/xorriso", g_isotools_root);
+	setenv("CIX_REAL_XORRISO", xorriso_bin, 1);
+	{
+		char self_dir[PATH_MAX];
+		const char *slash;
+
+		snprintf(self_dir, sizeof(self_dir), "%s", argv[0]);
+		slash = strrchr(self_dir, '/');
+		if (slash != NULL) {
+			snprintf(xorriso_bin, sizeof(xorriso_bin), "%.*s/cix-xorriso",
+			         (int)(slash - self_dir), self_dir);
+		} else {
+			snprintf(xorriso_bin, sizeof(xorriso_bin), "./cix-xorriso");
+		}
+		if (access(xorriso_bin, X_OK) != 0) {
+			perror(xorriso_bin);
+			fprintf(stderr, "cix-xorriso must sit beside mkinstalleriso "
+			                "(both come from the same \"cix\" hostbuild)\n");
+			return 1;
+		}
+	}
 	snprintf(isotools_bin_dir, sizeof(isotools_bin_dir), "%s/bin", g_isotools_root);
 	snprintf(isotools_lib_dir, sizeof(isotools_lib_dir), "%s/lib/x86_64-linux-gnu",
 	         g_isotools_root);

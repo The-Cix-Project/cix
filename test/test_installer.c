@@ -155,6 +155,11 @@
  *                                  to by name has to be here
  *   sbin/    mkfs.fat
  *   lib/grub/x86_64-efi/        -- grub's own module tree
+ *   share/grub/                 -- grub's own data files, above all
+ *                                  unicode.pf2: grub-mkrescue always
+ *                                  embeds a font for the media label and
+ *                                  reads it from the directory
+ *                                  mkinstalleriso points "pkgdatadir" at
  *   shim/    shimx64.efi.signed, mmx64.efi.signed
  *   lib/x86_64-linux-gnu/       -- the closure staged INTO the installer
  *                                  image, measured off THIS machine's
@@ -272,10 +277,23 @@ static int build_isotools_fixture(const char *workdir, char *out_root, size_t ou
 	{
 		char grub_parent[PATH_MAX];
 
+		char share_grub[PATH_MAX];
+
 		snprintf(grub_parent, sizeof(grub_parent), "%s/lib/grub", out_root);
 		if (fixture_mkdir_p(grub_parent) != 0)
 			return -1;
 		if (test_image_fixture_copy_dir_recursive("/usr/lib/grub/x86_64-efi", grub_dir) != 0)
+			return -1;
+
+		/* grub's data files, which mkinstalleriso resolves through
+		 * GRUB's own "pkgdatadir" variable. A real isotools artifact
+		 * carries these because grub 2.14-7 generates them; this
+		 * fixture stands in for one. */
+		snprintf(share_grub, sizeof(share_grub), "%s/share", out_root);
+		if (fixture_mkdir_p(share_grub) != 0)
+			return -1;
+		snprintf(share_grub, sizeof(share_grub), "%s/share/grub", out_root);
+		if (test_image_fixture_copy_dir_recursive("/usr/share/grub", share_grub) != 0)
 			return -1;
 	}
 	return 0;
