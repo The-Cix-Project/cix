@@ -1,7 +1,7 @@
 /*
- * cix-install: takes a raw disk (already partitioned by the operator
- * via a real, interactive fdisk session -- or pre-partitioned by other
- * tooling, see --skip-partition) and produces the real Phase 11 layout:
+ * cix-install: takes a raw disk (partitioned here with a fixed,
+ * scripted layout -- or pre-partitioned by other tooling, see
+ * --skip-partition) and produces the real Phase 11 layout:
  * ESP, root A, root B, config, containers (docs/roadmap/ROADMAP.md's Phase 11
  * design). Boots as its own init= target, in its own squashfs image
  * bundling the payload it installs (a control-plane squashfs, the
@@ -36,7 +36,6 @@
 
 extern char **environ;
 
-#define FDISK_BIN "/usr/sbin/fdisk"
 #define SFDISK_BIN "/usr/sbin/sfdisk"
 #define MKFS_VFAT_BIN "/usr/sbin/mkfs.vfat"
 #define MKFS_EXT4_BIN "/usr/sbin/mkfs.ext4"
@@ -73,10 +72,16 @@ extern char **environ;
  * byte identical GPT names/types to what a real interactive fdisk/cfdisk
  * session produces, per find_partition_device()'s own read-back below,
  * which doesn't care how the table was written). Not configurable here: an
- * operator who needs different sizing has --interactive for that, and a
+ * operator who needs different sizing changes it here, and a
  * running host has the REST partition API for everything after install --
  * which is where layout changes belong, since ADR-0190 leaves the
- * remainder of the disk unallocated precisely so they can be made there. */
+ * remainder of the disk unallocated precisely so they can be made there.
+ *
+ * These four sizes are the only thing a hand-partitioning operator could
+ * ever have varied -- the STRUCTURE is fixed by find_partition_device()'s
+ * read-back, which requires exactly these five names -- and none of them
+ * is something an operator is better placed to choose than this constant
+ * is. That is why ADR-0214 removed the interactive path entirely. */
 #define AUTO_ESP_SIZE_MIB 64
 #define AUTO_ROOT_SIZE_MIB 160
 #define AUTO_CONFIG_SIZE_MIB 64
@@ -415,8 +420,10 @@ static int mkfs_btrfs(const char *device, const char *label, int with_mixed)
  * mechanism (and the same GPT names/types/order) a real interactive fdisk
  * session produces.
  *
- * This became the default rather than an --auto-partition opt-in because
- * the interactive path was never the safer of the two. It reads roles back
+ * This is now the only path that writes a partition table (ADR-0214;
+ * --skip-partition still accepts one prepared elsewhere). It replaced an
+ * interactive fdisk session that was never the safer of the two, despite
+ * feeling like it. cix-install reads roles back
  * from GPT partition NAMES (find_partition_device()), so an operator
  * driving fdisk by hand has to reproduce "cix-esp", "cix-root-a",
  * "cix-root-b", "cix-config" and "cix-containers" byte-for-byte, in order,
@@ -660,7 +667,6 @@ int main(int argc, char **argv)
 	const char *iface = NULL;
 	int prefix = -1;
 	int skip_partition = 0;
-	int interactive_partition = 0;
 	int unknown_arg = 0;
 	int i;
 	struct stat st;
@@ -689,8 +695,6 @@ int main(int argc, char **argv)
 			iface = argv[i] + 12;
 		else if (strcmp(argv[i], "--skip-partition") == 0)
 			skip_partition = 1;
-		else if (strcmp(argv[i], "--interactive") == 0)
-			interactive_partition = 1;
 		else if (strcmp(argv[i], "--") != 0) {
 			/*
 			 * Anything unrecognised is fatal, and that is a safety
@@ -712,18 +716,17 @@ int main(int argc, char **argv)
 	}
 
 	if (unknown_arg || disk == NULL || ip == NULL || gateway == NULL || iface == NULL ||
-	    prefix <= 0 || prefix > 32 || (skip_partition && interactive_partition)) {
+	    prefix <= 0 || prefix > 32) {
 		dual_printf("usage: %s --disk=/dev/sdX --ip=A.B.C.D --prefix=N --gateway=A.B.C.D "
-		            "--interface=IFNAME [--skip-partition | --interactive]\n"
+		            "--interface=IFNAME [--skip-partition]\n"
 		            "  (--interface=: the physical NIC to bind the management IP to, e.g.\n"
 		            "  eth0 -- see `ip link`/`ls /sys/class/net` from a rescue shell if\n"
-		            "  unsure. By default the disk is partitioned here, non-interactively,\n"
-		            "  with the standard layout, sized to the disk and leaving the\n"
-		            "  remainder unallocated. --skip-partition: the disk is already\n"
-		            "  partitioned by other means. --interactive: drive fdisk by hand --\n"
-		            "  the installer reads partition roles back from GPT names, so they\n"
-		            "  must be cix-esp, cix-root-a, cix-root-b, cix-config and\n"
-		            "  cix-containers exactly. The two flags are mutually exclusive.)\n",
+		            "  unsure. The disk is partitioned here, with the standard layout,\n"
+		            "  sized to the disk and leaving the remainder unallocated for you to\n"
+		            "  use afterwards. --skip-partition: the disk is already partitioned\n"
+		            "  by other means -- it must carry five GPT partitions named exactly\n"
+		            "  cix-esp, cix-root-a, cix-root-b, cix-config and cix-containers,\n"
+		            "  since roles are read back from those names.)\n",
 		            argv[0]);
 		return 2;
 	}
@@ -735,14 +738,7 @@ int main(int argc, char **argv)
 
 	dual_printf("cix-install: target disk %s -- ALL DATA ON THIS DISK WILL BE DESTROYED\n", disk);
 
-	if (interactive_partition) {
-		char *fdisk_argv[] = { (char *)FDISK_BIN, (char *)disk, NULL };
-
-		if (run_subprocess_dual_console(FDISK_BIN, fdisk_argv) != 0) {
-			dual_printf("fdisk did not complete successfully -- aborting\n");
-			return 1;
-		}
-	} else if (!skip_partition) {
+	if (!skip_partition) {
 		if (auto_partition(disk) != 0) {
 			dual_printf("partitioning did not complete successfully -- aborting\n");
 			return 1;

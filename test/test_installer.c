@@ -1,8 +1,7 @@
 /*
  * Phase 11 part 4/5 demonstrable test: proves the actual installer *and*
  * its real, distributable .iso packaging both work -- given a raw,
- * blank target disk and the same 5-partition layout an operator would
- * leave behind after a real, interactive fdisk session, cix-install
+ * blank target disk, cix-install
  * (booted from the real .iso build/mkinstalleriso produces, via QEMU's
  * -cdrom, not a test-only disk-image approximation) partitions its role-
  * detection, formats, writes the real payload, and configures a static
@@ -15,16 +14,16 @@
  * own test built a private squashfs-based disk instead -- this part
  * replaces that with the real thing).
  *
- * Two disks, five QEMU sessions -- two smoke tests proving the real,
- * unmodified boot/partitioning mechanisms an operator actually drives
- * (GRUB's own menu; fdisk's own interactive UI, see step 4's own comment
- * for why this replaced cfdisk), then the three-session Secure Boot flow:
+ * Two disks, four QEMU sessions -- one smoke test proving the real,
+ * unmodified boot mechanism an operator actually drives (GRUB's own
+ * menu), then the three-session Secure Boot flow. A second smoke test
+ * covering an interactive fdisk session sat alongside it until ADR-0214
+ * removed that path; see step 4's own comment:
  *   1. build/mkinstalleriso's real .iso + a blank target disk,
- *      partitioned by cix-install itself, which is now what it does by default (its
- *      own scripted sfdisk, the exact same layout a real fdisk session
- *      produces -- this session's own job is proving the installer's
- *      role-detection/format/write logic, not re-proving *interactive*
- *      partitioning itself, which is step 4's job). Since the boot
+ *      partitioned by cix-install itself, which is what it does unless
+ *      told otherwise (its own scripted sfdisk -- this session's own job
+ *      is proving the installer's role-detection/format/write logic).
+ *      This is now the only partitioning path there is. Since the boot
  *      medium is a CD-ROM (a separate ATAPI/SCSI bus), the target disk
  *      is the *only* virtio-blk device
  *      present and is /dev/vda, not /dev/vdb. Booted via direct_kernel
@@ -352,119 +351,26 @@ int main(void)
 		}
 	}
 
-	/* 4. fdisk-interactive smoke test: cix-install's real partitioning
-	 * path -- without --skip-partition, it shells out to a real,
-	 * interactive fdisk (switched from cfdisk: fdisk's own ncurses-free,
-	 * command-letter/line-based UI can actually be scripted via plain
-	 * piped stdin, the same technique sfdisk's own script already uses;
-	 * cfdisk's full-screen curses UI genuinely couldn't be, which is
-	 * exactly why this path had zero coverage and shipped with a real
-	 * bug -- cfdisk's terminfo database was never staged, so it failed
-	 * outright with "Error opening terminal: linux." on a real install).
-	 * The exact command sequence below was verified directly against a
-	 * real fdisk first (not guessed): create a GPT label, five
-	 * partitions sized to match this project's own layout, set
-	 * partition 1's type to EFI System, then (fdisk's expert submenu)
-	 * name all five to the exact GPT names cix-install itself reads
-	 * back -- confirmed byte-for-byte via `sfdisk -d` against the
-	 * existing sfdisk-scripted layout used elsewhere in this project.
-	 * Boots via direct_kernel with kernel_args built fresh here, passing
-	 * --interactive -- which is what selects this path now that scripted
-	 * partitioning is the default (it used to be the other way round: the
-	 * interactive session was what you got with no flag at all)
-	 * against the same already-built installer_iso -- direct_kernel's own
-	 * command line is supplied per-boot, independent of whatever's baked
-	 * into the ISO's own grub.cfg, so no separate ISO build is needed. */
-	{
-		char fdisk_smoke_disk[600], fdisk_smoke_vars[600], fdisk_kernel_args[300];
-		struct qemu_boot_opts opts;
-		struct qemu_scripted_input fdisk_script[] = {
-			{ "Command (m for help): ", "g\n" },
-			{ "Command (m for help): ", "n\n" },
-			{ "Partition number (", "1\n" },
-			{ "First sector (", "\n" },
-			{ "size{K,M,G,T,P} (", "+64M\n" },
-			{ "Command (m for help): ", "n\n" },
-			{ "Partition number (", "2\n" },
-			{ "First sector (", "\n" },
-			{ "size{K,M,G,T,P} (", "+160M\n" },
-			{ "Command (m for help): ", "n\n" },
-			{ "Partition number (", "3\n" },
-			{ "First sector (", "\n" },
-			{ "size{K,M,G,T,P} (", "+160M\n" },
-			{ "Command (m for help): ", "n\n" },
-			{ "Partition number (", "4\n" },
-			{ "First sector (", "\n" },
-			{ "size{K,M,G,T,P} (", "+64M\n" },
-			{ "Command (m for help): ", "n\n" },
-			{ "Partition number (", "5\n" },
-			{ "First sector (", "\n" },
-			{ "size{K,M,G,T,P} (", "\n" },
-			{ "Command (m for help): ", "t\n" },
-			{ "Partition number (", "1\n" },
-			{ "Partition type or alias", "1\n" },
-			{ "Command (m for help): ", "x\n" },
-			{ "Expert command (m for help): ", "n\n" },
-			{ "Partition number (", "1\n" },
-			{ "New name: ", "cix-esp\n" },
-			{ "Expert command (m for help): ", "n\n" },
-			{ "Partition number (", "2\n" },
-			{ "New name: ", "cix-root-a\n" },
-			{ "Expert command (m for help): ", "n\n" },
-			{ "Partition number (", "3\n" },
-			{ "New name: ", "cix-root-b\n" },
-			{ "Expert command (m for help): ", "n\n" },
-			{ "Partition number (", "4\n" },
-			{ "New name: ", "cix-config\n" },
-			{ "Expert command (m for help): ", "n\n" },
-			{ "Partition number (", "5\n" },
-			{ "New name: ", "cix-containers\n" },
-			{ "Expert command (m for help): ", "r\n" },
-			{ "Command (m for help): ", "w\n" },
-			{ "input password: ", MOK_PASSWORD "\n" },
-			{ "input password again: ", MOK_PASSWORD "\n" },
-		};
-
-		snprintf(fdisk_smoke_disk, sizeof(fdisk_smoke_disk), "%s/fdisk_smoke_disk.img", workdir);
-		snprintf(fdisk_smoke_vars, sizeof(fdisk_smoke_vars), "%s/fdisk_smoke_vars.fd", workdir);
-		snprintf(fdisk_kernel_args, sizeof(fdisk_kernel_args),
-		         "console=ttyS0 root=/dev/sr0 rootfstype=iso9660 ro init=/bin/cix-install -- "
-		         "--disk=/dev/vda --ip=%s --prefix=%d --gateway=%s --interface=%s --interactive",
-		         TEST_IP, TEST_PREFIX, TEST_GATEWAY, TEST_IFACE);
-		{
-			int fd = open(fdisk_smoke_disk, O_CREAT | O_WRONLY, 0644);
-
-			if (fd < 0 || ftruncate(fd, TARGET_DISK_SIZE_BYTES) != 0) {
-				perror(fdisk_smoke_disk);
-				if (fd >= 0)
-					close(fd);
-				return 1;
-			}
-			close(fd);
-		}
-		if (test_image_fixture_copy_file("/usr/share/OVMF/OVMF_VARS_4M.fd", fdisk_smoke_vars) != 0)
-			return 1;
-
-		memset(&opts, 0, sizeof(opts));
-		opts.disk_img = installer_iso;
-		opts.disk_img_is_cdrom = 1;
-		opts.disk_img2 = fdisk_smoke_disk;
-		opts.direct_kernel = BZIMAGE_PATH;
-		opts.direct_kernel_args = fdisk_kernel_args;
-		opts.ovmf_vars = fdisk_smoke_vars;
-		opts.success_marker = INSTALL_SUCCESS_MARKER;
-		opts.timeout_seconds = INSTALL_TIMEOUT_SECONDS;
-		opts.scripted_input = fdisk_script;
-		opts.n_scripted_input = sizeof(fdisk_script) / sizeof(fdisk_script[0]);
-		outcome = qemu_boot_capture(&opts, captured, sizeof(captured));
-		if (outcome != QEMU_BOOT_SUCCESS) {
-			fprintf(stderr, "real interactive fdisk partitioning did not complete (outcome=%d)\n",
-			        (int)outcome);
-			printf("INSTALLER RESULT: FAIL\n");
-			return 1;
-		}
-	}
-
+	/* An interactive-fdisk smoke test used to sit here, covering
+	 * cix-install's default partitioning path when that path WAS an
+	 * interactive fdisk session: a full scripted fdisk run under QEMU,
+	 * driving a GPT label, five partitions, a type change and five
+	 * expert-menu partition names through piped stdin. It earned its
+	 * keep -- it was written after that path shipped a real bug
+	 * (cfdisk's terminfo database was never staged, so it failed
+	 * outright with "Error opening terminal: linux." on a real
+	 * install), and switching cfdisk to fdisk was what made the path
+	 * scriptable enough to test at all.
+	 *
+	 * ADR-0214 removed the interactive path, so its test goes with it.
+	 * Keeping the feature in order to keep its own test would have been
+	 * circular -- the test was never evidence that the feature was
+	 * needed, only that it worked. What the path could actually vary,
+	 * given find_partition_device()'s fixed five-name read-back, was
+	 * partition SIZES; the scripted layout sizes itself from the disk
+	 * and leaves the remainder unallocated for the REST partition API,
+	 * which is a better answer to the same need. Session 1 below covers
+	 * the partitioning path that remains. */
 	/* 5. Target disk: blank -- session 1's own default partitioning (kernel_args
 	 * above) partitions it, same as a real install would. */
 	if (create_blank_disk(target_disk_img) != 0)
