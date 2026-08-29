@@ -71,6 +71,12 @@ static char g_sbsign_bin[600];
 #define MOKMANAGER_EFI_REL "/shim/mmx64.efi.signed"
 #define MOKUTIL_REL "/bin/mokutil"
 
+/* The two installer tools no Cix control-plane root carries -- see the
+ * staging block in build_installer_root() for why they come from the
+ * artifact while sfdisk and the mkfs pair come off the host. */
+#define FDISK_REL "/bin/fdisk"
+#define MKFS_FAT_REL "/bin/mkfs.fat"
+
 /* The real tools cix-install shells out to, and their full ldd
  * closures (checked directly against this host) -- staged the same way
  * test_image_fixture_add_lib() already stages dnsmasq's own closure
@@ -80,9 +86,28 @@ static const char *const g_lib_closure[] = {
 	"/lib/x86_64-linux-gnu/libtinfo.so.6",     "/lib/x86_64-linux-gnu/libuuid.so.1",
 	"/lib/x86_64-linux-gnu/libblkid.so.1",     "/lib/x86_64-linux-gnu/libreadline.so.8",
 	"/lib/x86_64-linux-gnu/libext2fs.so.2",    "/lib/x86_64-linux-gnu/libcom_err.so.2",
-	"/lib/x86_64-linux-gnu/libe2p.so.2",       "/lib/x86_64-linux-gnu/libudev.so.1",
+	"/lib/x86_64-linux-gnu/libe2p.so.2",       "/lib/x86_64-linux-gnu/libz.so.1",
 	NULL,
 };
+/*
+ * That list was measured with ldd on a Debian development box, and two
+ * entries were wrong for a real Cix host in opposite directions.
+ *
+ * libudev.so.1 was in it and is gone: no Cix control-plane root has it.
+ * mkbootroot.c stages a fixed library set and libudev is not in it, yet
+ * .95 formats disks with both mkfs.ext4 and mkfs.btrfs from that root --
+ * so the Cix-built binaries demonstrably do not need it, and copying it
+ * could only ever fail the ISO build on the very machines this tool is
+ * meant to run on.
+ *
+ * libz.so.1 was missing and is now here: mkfs.btrfs links zlib
+ * unconditionally through pkg-config (btrfs-progs.recipe documents this,
+ * and mkbootroot.c stages libz.so.1 into the control-plane root for
+ * exactly that reason). Its absence would not have failed an ISO build
+ * -- staging only copies files -- it would have produced an installer
+ * whose mkfs.btrfs cannot start, discovered at install time, on the
+ * filesystem ADR-0207 phase 4 makes the default.
+ */
 
 /*
  * mokutil's own closure, taken from the isotools artifact rather than
@@ -301,17 +326,56 @@ int main(int argc, char **argv)
 		return 1;
 	if (ensure_dir_under(stage_dir, "usr/sbin") != 0)
 		return 1;
-	snprintf(dst, sizeof(dst), "%s/usr/sbin/fdisk", stage_dir);
-	if (test_image_fixture_copy_file("/usr/sbin/fdisk", dst) != 0)
-		return 1;
+	/*
+	 * fdisk and mkfs.fat come out of the isotools artifact; sfdisk,
+	 * mkfs.ext4 and mkfs.btrfs come off this host. The split is not
+	 * arbitrary -- it follows what a Cix control-plane root actually
+	 * contains, which is exactly the set mkbootroot.c stages, which is
+	 * in turn exactly the set cixd itself shells out to (sfdisk for
+	 * diskpart, mkfs.ext4/mkfs.btrfs for diskformat).
+	 *
+	 * cixd never partitions interactively and never formats FAT, so
+	 * fdisk and mkfs.fat have no reason to be in that root and are not
+	 * in it. Reading them from /usr/sbin anyway is the same class of
+	 * bug shim and mokutil had: an absolute path true on a Debian
+	 * development box and on no Cix host, and one of the reasons POST
+	 * /v1/system/iso has never been servable on a real machine. They
+	 * are packages now (fdisk 2.42.2-2, dosfstools 4.2-1) and isotools
+	 * harvests them.
+	 *
+	 * Neither needs a library beyond libc -- fdisk links util-linux's
+	 * own libraries statically and mkfs.fat has no dependencies to
+	 * begin with, both asserted in their recipes against the real ELF
+	 * -- so neither adds anything to the closures staged below.
+	 */
+	{
+		char tool_src[700];
+
+		snprintf(tool_src, sizeof(tool_src), "%s" FDISK_REL, g_isotools_root);
+		snprintf(dst, sizeof(dst), "%s/usr/sbin/fdisk", stage_dir);
+		if (test_image_fixture_copy_file(tool_src, dst) != 0)
+			return 1;
+		snprintf(tool_src, sizeof(tool_src), "%s" MKFS_FAT_REL, g_isotools_root);
+		snprintf(dst, sizeof(dst), "%s/usr/sbin/mkfs.vfat", stage_dir);
+		if (test_image_fixture_copy_file(tool_src, dst) != 0)
+			return 1;
+	}
 	snprintf(dst, sizeof(dst), "%s/usr/sbin/sfdisk", stage_dir);
 	if (test_image_fixture_copy_file("/usr/sbin/sfdisk", dst) != 0)
 		return 1;
-	snprintf(dst, sizeof(dst), "%s/usr/sbin/mkfs.vfat", stage_dir);
-	if (test_image_fixture_copy_file("/usr/sbin/mkfs.fat", dst) != 0)
-		return 1;
+	/*
+	 * Read as mkfs.ext4, not mke2fs. They are the same binary on a
+	 * Debian box (mkfs.ext4 is a link to mke2fs, which switches
+	 * behaviour on argv[0]), which is why reading either name worked
+	 * there and hid the difference. A Cix control-plane root has only
+	 * the mkfs.ext4 name, because that is the name
+	 * DISKFORMAT_MKFS_EXT4_BIN uses and mkbootroot stages exactly the
+	 * _BIN macros -- so mke2fs was a guaranteed miss on a real host.
+	 * It is also the name this tool stages it under, so the two ends
+	 * now agree.
+	 */
 	snprintf(dst, sizeof(dst), "%s/usr/sbin/mkfs.ext4", stage_dir);
-	if (test_image_fixture_copy_file("/usr/sbin/mke2fs", dst) != 0)
+	if (test_image_fixture_copy_file("/usr/sbin/mkfs.ext4", dst) != 0)
 		return 1;
 	/* ADR-0207 phase 4: btrfs is the install default for the platform
 	 * partitions -- cix-install.c's mkfs_btrfs() calls this. ext4
