@@ -27,6 +27,7 @@
  */
 #include "test_image_fixture.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -46,9 +47,18 @@ extern char **environ;
  * isotools hostbuild artifact (recipes/package/isotools) instead of
  * whatever happens to be pre-installed on the machine running this
  * tool. g_isotools_root is set once in main() from argv and used by
- * every helper below; a bare manual/dev invocation passes a plain
- * /usr prefix (e.g. "/usr") and gets the exact same host-borrowed
- * behavior this tool always had. */
+ * every helper below.
+ *
+ * It used to be documented that a bare dev invocation could pass a
+ * plain "/usr" and get the host-borrowed behaviour this tool always
+ * had. That stopped being true the moment the tool began reading
+ * Cix-BUILT binaries -- their library closure is not a Debian box's,
+ * and a plain /usr carries none of the shim/, sbin/mkfs.fat or
+ * bin/mokutil layout this reads. Continuing to assert it produced a
+ * dev path that failed on files nobody had noticed were Cix-specific. test/test_installer.c
+ * builds a real isotools-root fixture instead: the same layout, filled
+ * from the development machine's own tools. A fixture is honest about
+ * what it is; "/usr" was pretending to be an artifact. */
 static char g_isotools_root[512];
 static char g_grub_mkrescue_bin[600];
 static char g_sbsign_bin[600];
@@ -76,101 +86,13 @@ static char g_sbsign_bin[600];
  * the staging block in build_installer_root() for why it comes from the
  * artifact while sfdisk and the mkfs pair come off the host.
  *
- * "/sbin/", not "/bin/", and that is load-bearing rather than cosmetic.
- * g_isotools_root is "/usr" for a bare dev-machine invocation
- * (test/test_installer.c's ISOTOOLS_ROOT), which is exactly how this
- * tool keeps working outside a Cix host -- so this path has to land
- * where a development machine really keeps the binary,
- * /usr/sbin/mkfs.fat. Spelling it "/bin/..." by analogy with
- * MOKUTIL_REL above resolved to /usr/bin/mkfs.fat, which exists on no
- * Debian box, and broke the dev fallback while the Cix path kept
- * working. isotools.recipe stages it under sbin/ to match. */
+ * "/sbin/", not "/bin/", matching where isotools.recipe stages it and
+ * where a development machine keeps its own copy (/usr/sbin/mkfs.fat),
+ * which is what test_installer's fixture fills this slot from. */
 #define MKFS_FAT_REL "/sbin/mkfs.fat"
 
-/* The real tools cix-install shells out to, and their full ldd
- * closures (checked directly against this host) -- staged the same way
- * test_image_fixture_add_lib() already stages dnsmasq's own closure
- * (Phase 8), just for a different set of real, unmodified binaries. */
-static const char *const g_lib_closure[] = {
-	"/lib/x86_64-linux-gnu/libsmartcols.so.1", "/lib/x86_64-linux-gnu/libfdisk.so.1",
-	"/lib/x86_64-linux-gnu/libtinfo.so.6",     "/lib/x86_64-linux-gnu/libuuid.so.1",
-	"/lib/x86_64-linux-gnu/libblkid.so.1",     "/lib/x86_64-linux-gnu/libreadline.so.8",
-	"/lib/x86_64-linux-gnu/libext2fs.so.2",    "/lib/x86_64-linux-gnu/libcom_err.so.2",
-	"/lib/x86_64-linux-gnu/libe2p.so.2",       "/lib/x86_64-linux-gnu/libz.so.1",
-	NULL,
-};
-/*
- * That list was measured with ldd on a Debian development box, and two
- * entries were wrong for a real Cix host in opposite directions.
- *
- * libudev.so.1 was in it and is gone: no Cix control-plane root has it.
- * mkbootroot.c stages a fixed library set and libudev is not in it, yet
- * .95 formats disks with both mkfs.ext4 and mkfs.btrfs from that root --
- * so the Cix-built binaries demonstrably do not need it, and copying it
- * could only ever fail the ISO build on the very machines this tool is
- * meant to run on.
- *
- * libz.so.1 was missing and is now here: mkfs.btrfs links zlib
- * unconditionally through pkg-config (btrfs-progs.recipe documents this,
- * and mkbootroot.c stages libz.so.1 into the control-plane root for
- * exactly that reason). Its absence would not have failed an ISO build
- * -- staging only copies files -- it would have produced an installer
- * whose mkfs.btrfs cannot start, discovered at install time, on the
- * filesystem ADR-0207 phase 4 makes the default.
- */
 
-/*
- * mokutil's own closure, taken from the isotools artifact rather than
- * from this machine -- paths are relative to <isotools-root>.
- *
- * MEASURED against the mokutil this project builds, not copied from
- * Debian's, because the two genuinely differ:
- *
- *   ours     libssl.so.3 libcrypto.so.3 libefivar.so.1 libkeyutils.so.1
- *            libcrypt.so.2 libc.so.6
- *   Debian's libcrypto.so.3 libefivar.so.1 libkeyutils.so.1
- *            libcrypt.so.1 libc.so.6
- *
- * Ours pulls libssl because openssl.pc's Libs names both libraries, and
- * libcrypt.so.2 because our libxcrypt drops the obsolete DES/NIS ABI --
- * a different soname, not a different version. libdl.so.2 was in the old
- * hardcoded list for Debian's libefivar and is gone: ours does not link
- * it, glibc having folded libdl into libc at 2.34.
- *
- * Each SONAME entry is listed with its real target, because
- * test_image_fixture_add_lib() copies one file and a symlink whose
- * target was never copied fails at load time rather than at build time.
- */
-static const char *const g_isotools_lib_closure[] = {
-	"/lib/x86_64-linux-gnu/libssl.so.3",      "/lib/x86_64-linux-gnu/libcrypto.so.3",
-	"/lib/x86_64-linux-gnu/libefivar.so.1",   "/lib/x86_64-linux-gnu/libkeyutils.so.1",
-	"/lib/x86_64-linux-gnu/libcrypt.so.2",
-	NULL,
-};
-/*
- * SONAMEs only. This list used to carry the fully-versioned filenames
- * alongside them -- libefivar.so.1.39, libkeyutils.so.1.10,
- * libcrypt.so.2.0.0 -- mirroring the symlink structure of the isotools
- * artifact these are read from. Both wrong and unnecessary:
- *
- *   Unnecessary, because test_image_fixture_add_lib() copies through
- *   open(), which follows symlinks, so staging the SONAME already
- *   lands a real file holding the target's content. And the SONAME is
- *   the only name that matters at run time -- it is what DT_NEEDED
- *   records and what the dynamic linker opens.
- *
- *   Wrong, because those version numbers are OUR build's. This same
- *   list is resolved against a plain "/usr" when the tool runs on a
- *   development machine, where libefivar is whatever Debian ships --
- *   so the versioned entries could only ever resolve on a Cix host.
- *   That is what test_installer hit the first time it was run after
- *   this closure was introduced:
- *     /usr/lib/x86_64-linux-gnu/libefivar.so.1.39: No such file or
- *     directory
- *   Pinning a version here buys nothing: an artifact carrying a
- *   different efivar would still be staged correctly, because the
- *   SONAME resolves to whatever that artifact actually holds.
- */
+
 
 static int ensure_dir(const char *path)
 {
@@ -188,6 +110,7 @@ static int ensure_dir_under(const char *root, const char *rel)
 	snprintf(path, sizeof(path), "%s/%s", root, rel);
 	return ensure_dir(path);
 }
+
 
 static int write_text_file(const char *path, const char *content)
 {
@@ -426,25 +349,59 @@ int main(int argc, char **argv)
 			return 1;
 	}
 
-	for (i = 0; g_lib_closure[i] != NULL; i++) {
-		if (test_image_fixture_add_lib(stage_dir, g_lib_closure[i]) != 0)
-			return 1;
-	}
 	/*
-	 * The second closure comes out of the isotools artifact. Staged to
-	 * the same paths inside the installer image -- only the source
-	 * moves, so nothing about the image's own layout changes.
+	 * Every staged binary's shared-library closure, derived from the
+	 * binary itself and resolved against the tree it came from.
+	 *
+	 * There used to be two hand-maintained arrays here, one per source
+	 * tree, and neither could have been right: a single list cannot
+	 * describe two different sets of binaries, and these are two
+	 * different sets. Debian's mkfs.btrfs needs libudev.so.1 and ours
+	 * does not; ours links libz.so.1 and Debian's does not; Debian
+	 * keeps libcrypt's obsolete DES/NIS ABI at soname .so.1 while our
+	 * libxcrypt drops it and ships .so.2. Every correction made for one
+	 * host broke the other, and it broke quietly -- the ISO built, and
+	 * the installer died at exec time inside a QEMU boot with
+	 * "mkfs.btrfs failed (status 0x7f00)".
+	 *
+	 * The closure follows the binary now. Host tools resolve against
+	 * this machine's library directories, artifact tools against the
+	 * artifact's own -- so each set gets exactly what it was linked
+	 * against, and a library that cannot be found is a hard error here
+	 * rather than a silent failure at install time.
 	 */
-	for (i = 0; g_isotools_lib_closure[i] != NULL; i++) {
-		char lib_src[700];
+	{
+		static const char *const host_dirs[] = {
+			"/lib/x86_64-linux-gnu", "/usr/lib/x86_64-linux-gnu",
+			"/lib", "/usr/lib", NULL,
+		};
+		char artifact_lib[700], artifact_lib64[700];
+		const char *artifact_dirs[3];
+		size_t bi;
+		static const char *const host_bins[] = {
+			"/usr/sbin/sfdisk", "/usr/sbin/mkfs.ext4", "/usr/sbin/mkfs.btrfs", NULL,
+		};
+		char staged[PATH_MAX];
 
-		snprintf(lib_src, sizeof(lib_src), "%s%s", g_isotools_root,
-		         g_isotools_lib_closure[i]);
-		snprintf(dst, sizeof(dst), "%s%s", stage_dir, g_isotools_lib_closure[i]);
-		if (ensure_dir_under(stage_dir, "lib") != 0 ||
-		    ensure_dir_under(stage_dir, "lib/x86_64-linux-gnu") != 0)
+		snprintf(artifact_lib, sizeof(artifact_lib), "%s/lib/x86_64-linux-gnu",
+		         g_isotools_root);
+		snprintf(artifact_lib64, sizeof(artifact_lib64), "%s/lib64", g_isotools_root);
+		artifact_dirs[0] = artifact_lib;
+		artifact_dirs[1] = artifact_lib64;
+		artifact_dirs[2] = NULL;
+
+		for (bi = 0; host_bins[bi] != NULL; bi++) {
+			if (test_image_fixture_stage_closure(stage_dir, host_bins[bi], host_dirs) != 0)
+				return 1;
+		}
+		/* Resolved from the artifact, but read from where they were
+		 * staged -- same bytes either way, and this keeps the call
+		 * uniform. */
+		snprintf(staged, sizeof(staged), "%s/usr/bin/mokutil", stage_dir);
+		if (test_image_fixture_stage_closure(stage_dir, staged, artifact_dirs) != 0)
 			return 1;
-		if (test_image_fixture_copy_file(lib_src, dst) != 0)
+		snprintf(staged, sizeof(staged), "%s/usr/sbin/mkfs.vfat", stage_dir);
+		if (test_image_fixture_stage_closure(stage_dir, staged, artifact_dirs) != 0)
 			return 1;
 	}
 

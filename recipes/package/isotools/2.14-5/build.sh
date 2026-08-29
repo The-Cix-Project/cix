@@ -219,22 +219,28 @@ pkg_install() {
 	mkdir -p "$PKG_DESTDIR/sbin"
 	cp -a /usr/sbin/mkfs.fat "$PKG_DESTDIR/sbin/"
 
-	# mokutil's closure, MEASURED off the binary this project builds
-	# rather than copied from Debian's. The two differ in ways that
-	# matter: ours pulls libssl (openssl.pc's Libs names both libraries)
-	# and libcrypt.so.2 (our libxcrypt drops the obsolete DES/NIS ABI,
-	# which is a different soname -- Debian ships .so.1 because it keeps
-	# that compat surface).
+	# mokutil's closure, kept in this artifact's own lib directory
+	# alongside the ISO tools' libraries.
+	#
+	# mkinstalleriso no longer carries a list of which of these to stage
+	# into the installer image: it reads mokutil's real DT_NEEDED
+	# entries and resolves them against this directory, transitively. So
+	# what matters here is only that everything mokutil links is
+	# PRESENT -- the tool works out which, and fails loudly naming any
+	# library it cannot find.
+	#
+	# MEASURED off the binary this project builds, not copied from
+	# Debian's, because the two genuinely differ:
 	#
 	#   ours     libssl.so.3 libcrypto.so.3 libefivar.so.1
 	#            libkeyutils.so.1 libcrypt.so.2 libc.so.6
 	#   Debian's libcrypto.so.3 libefivar.so.1 libkeyutils.so.1
-	#            libcrypt.so.1 libc.so.6
+	#            libcrypt.so.1 libc.so.6 libdl.so.2
 	#
-	# libdl.so.2 is deliberately absent: the old hardcoded list carried
-	# it for Debian's libefivar, and ours does not link it at all --
-	# glibc folded libdl into libc at 2.34. Confirmed with readelf
-	# against our own published artifact, not assumed.
+	# Ours pulls libssl because openssl.pc's Libs names both libraries,
+	# and libcrypt.so.2 because our libxcrypt drops the obsolete DES/NIS
+	# ABI -- a different soname, not a different version. Ours does not
+	# link libdl at all; glibc folded it into libc at 2.34.
 	#
 	# Each SONAME symlink is copied with its real target, since cp -a
 	# preserves a symlink as a symlink and a dangling one is worse than

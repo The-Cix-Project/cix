@@ -78,6 +78,47 @@ int test_image_fixture_copy_dir_files(const char *src_dir, const char *dst_dir);
 int test_image_fixture_copy_dir_recursive(const char *src_dir, const char *dst_dir);
 
 /*
+ * Stages `binary_path`'s REAL shared-library closure into image_root,
+ * derived from the binary itself (its ELF DT_NEEDED entries, followed
+ * transitively) rather than from a list someone maintained by hand.
+ * Each library is resolved by SONAME against `search_dirs` in order --
+ * first match wins, the way the loader itself behaves -- and staged at
+ * image_root/lib/x86_64-linux-gnu/<soname>.
+ *
+ * This exists because the hand-maintained lists were wrong twice, in
+ * both directions, and could not have been right: ONE list cannot serve
+ * two different sets of binaries. The same array named the libraries
+ * for Debian's tools on a development machine and for Cix's tools on an
+ * installed host, and those genuinely differ -- Debian's mkfs.btrfs
+ * needs libudev.so.1 and ours does not; ours links libz.so.1 and
+ * Debian's does not; Debian keeps libcrypt's obsolete DES/NIS ABI at
+ * soname .so.1 while our libxcrypt drops it and ships .so.2. Every
+ * correction for one host broke the other, and the failures were of the
+ * worst kind: the ISO built fine and the installer died at exec time,
+ * `mkfs.btrfs failed (status 0x7f00)`, inside a QEMU boot.
+ *
+ * `search_dirs` is NULL-terminated. Pass the host's own library
+ * directories for a binary taken off this machine, or the isotools
+ * artifact's for one taken out of it -- which is the point: the closure
+ * follows the binary, so each set resolves against the tree it came
+ * from.
+ *
+ * libc.so.6 and ld-linux-x86-64.so.2 are deliberately never staged
+ * here: test_image_fixture_build() has already put the runtime in
+ * place, and re-staging them from a different tree would overwrite a
+ * working loader with one the image's other binaries were never linked
+ * against.
+ *
+ * A DT_NEEDED entry that cannot be resolved in `search_dirs` is a hard
+ * error naming the library and the binary that wanted it -- the whole
+ * value here is finding that at build time instead of at install time.
+ * Returns 0, or -1 with a message on stderr.
+ */
+int test_image_fixture_stage_closure(const char *image_root, const char *binary_path,
+                                     const char *const *search_dirs);
+
+
+/*
  * Stages a full package-build toolchain at image_root: this build
  * host's own /usr/{include,lib,lib64,bin,libexec} (wholesale, real
  * `cp -a` -- correct symlink/permission handling a hand-rolled copier

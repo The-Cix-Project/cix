@@ -78,11 +78,31 @@
 #define SIGNING_KEY "image/keys/cix-signing.key"
 #define SIGNING_CERT_PEM "image/keys/cix-signing.crt"
 #define SIGNING_CERT_DER "image/keys/cix-signing.cer"
-/* ADR-0064: mkinstalleriso now takes an explicit isotools-root rather
- * than a hardcoded /usr/bin/grub-mkrescue -- "/usr" reproduces this
- * tool's original host-borrowed behavior, exactly what this dev
- * sandbox's own real grub-mkrescue/sbsign install already is. */
-#define ISOTOOLS_ROOT "/usr"
+/*
+ * ADR-0064: mkinstalleriso takes an explicit isotools-root rather than
+ * a hardcoded /usr/bin/grub-mkrescue. This test used to pass a plain
+ * "/usr", on the reasoning that it reproduced the tool's original
+ * host-borrowed behaviour.
+ *
+ * That reasoning expired without anyone noticing. Once mkinstalleriso
+ * started reading Cix-BUILT binaries out of the artifact -- shim,
+ * MokManager, mokutil, mkfs.fat -- their library closure stopped being
+ * a Debian box's. A development machine has no libcrypt.so.2 at all
+ * (it keeps the obsolete DES/NIS ABI and ships .so.1; our libxcrypt
+ * drops it, so the soname differs), and no /usr has the shim/ or
+ * bin/mokutil layout this reads. "/usr" was pretending to be an
+ * artifact, and the pretence failed the first time this test was run
+ * afterwards:
+ *
+ *   /usr/lib/x86_64-linux-gnu/libcrypt.so.2: No such file or directory
+ *
+ * So build a real one instead. build_isotools_fixture() below fills the
+ * artifact's own layout from this machine's tools -- the same
+ * directory structure isotools.recipe produces, with Debian's binaries
+ * and Debian's measured closure in it. A fixture is honest about being
+ * a stand-in; "/usr" was not.
+ */
+#define ISOTOOLS_FIXTURE_DIRNAME "isotools_fixture"
 #define MOK_PASSWORD "cixtest"
 
 
@@ -123,6 +143,143 @@
  * partitioning host-side -- one source of truth for the partition
  * layout, not two copies of the same sfdisk script kept in sync by
  * hand. */
+/*
+ * Builds a stand-in isotools artifact from this development machine's
+ * own tools, in exactly the layout isotools.recipe produces and
+ * mkinstalleriso reads:
+ *
+ *   bin/     grub-mkrescue, sbsign, xorriso, mtools (+ mcopy/mformat),
+ *            mokutil            -- PATH is set to ONLY this directory,
+ *                                  so anything grub-mkrescue shells out
+ *                                  to by name has to be here
+ *   sbin/    mkfs.fat
+ *   lib/grub/x86_64-efi/        -- grub's own module tree
+ *   shim/    shimx64.efi.signed, mmx64.efi.signed
+ *   lib/x86_64-linux-gnu/       -- the closure staged INTO the installer
+ *                                  image, measured off THIS machine's
+ *                                  mokutil rather than copied from the
+ *                                  Cix one, since it is this machine's
+ *                                  mokutil that goes in
+ *
+ * Every file named here must exist: a missing one fails the test now,
+ * with the path, rather than producing an ISO whose mokutil dies at
+ * load time inside a QEMU boot nobody can see into.
+ */
+/* Creates every component of `path`, EEXIST tolerated. test_image_fixture
+ * exposes no mkdir_p and the fixture needs nested directories. */
+static int fixture_mkdir_p(const char *path)
+{
+	char buf[PATH_MAX];
+	char *p;
+
+	if ((size_t)snprintf(buf, sizeof(buf), "%s", path) >= sizeof(buf))
+		return -1;
+	for (p = buf + 1; *p != '\0'; p++) {
+		if (*p != '/')
+			continue;
+		*p = '\0';
+		if (mkdir(buf, 0755) != 0 && errno != EEXIST) {
+			perror(buf);
+			return -1;
+		}
+		*p = '/';
+	}
+	if (mkdir(buf, 0755) != 0 && errno != EEXIST) {
+		perror(buf);
+		return -1;
+	}
+	return 0;
+}
+
+static int copy_into(const char *dir, const char *src)
+{
+	const char *base = strrchr(src, '/');
+	char dst[PATH_MAX];
+
+	base = base != NULL ? base + 1 : src;
+	snprintf(dst, sizeof(dst), "%s/%s", dir, base);
+	return test_image_fixture_copy_file(src, dst);
+}
+
+static int build_isotools_fixture(const char *workdir, char *out_root, size_t out_root_len)
+{
+	/* mkinstalleriso sets PATH to <root>/bin alone, so grub-mkrescue's
+	 * own children (xorriso, and mformat/mcopy, which it execs by
+	 * literal name with no override flag) must resolve there. */
+	static const char *const bin_tools[] = {
+		"/usr/bin/grub-mkrescue", "/usr/bin/sbsign",  "/usr/bin/sbverify",
+		"/usr/bin/xorriso",       "/usr/bin/mtools",  "/usr/bin/mcopy",
+		"/usr/bin/mformat",       "/usr/bin/mokutil", NULL,
+	};
+	/*
+	 * THIS machine's mokutil closure, not the Cix artifact's. They
+	 * differ, and that difference is the whole reason this fixture
+	 * exists: Debian keeps libcrypt's obsolete DES/NIS ABI and ships
+	 * libcrypt.so.1, while our libxcrypt drops it and so has a
+	 * different soname; Debian's mokutil links libdl where ours does
+	 * not, and does not link libssl where ours does. Taken from a real
+	 * `ldd /usr/bin/mokutil` on this machine, not guessed.
+	 */
+	static const char *const artifact_libs[] = {
+		"/lib/x86_64-linux-gnu/libcrypto.so.3",   "/lib/x86_64-linux-gnu/libefivar.so.1",
+		"/lib/x86_64-linux-gnu/libkeyutils.so.1", "/lib/x86_64-linux-gnu/libcrypt.so.1",
+		"/lib/x86_64-linux-gnu/libdl.so.2",       NULL,
+	};
+	char bin_dir[PATH_MAX], sbin_dir[PATH_MAX], shim_dir[PATH_MAX];
+	char lib_dir[PATH_MAX], grub_dir[PATH_MAX], artifact_lib_dir[PATH_MAX];
+	int i;
+
+	if ((size_t)snprintf(out_root, out_root_len, "%s/" ISOTOOLS_FIXTURE_DIRNAME, workdir) >=
+	    out_root_len)
+		return -1;
+
+	snprintf(bin_dir, sizeof(bin_dir), "%s/bin", out_root);
+	snprintf(sbin_dir, sizeof(sbin_dir), "%s/sbin", out_root);
+	snprintf(shim_dir, sizeof(shim_dir), "%s/shim", out_root);
+	snprintf(lib_dir, sizeof(lib_dir), "%s/lib", out_root);
+	snprintf(grub_dir, sizeof(grub_dir), "%s/lib/grub/x86_64-efi", out_root);
+	snprintf(artifact_lib_dir, sizeof(artifact_lib_dir), "%s/lib/x86_64-linux-gnu", out_root);
+
+	if (fixture_mkdir_p(bin_dir) != 0 ||
+	    fixture_mkdir_p(sbin_dir) != 0 ||
+	    fixture_mkdir_p(shim_dir) != 0 ||
+	    fixture_mkdir_p(lib_dir) != 0 ||
+	    fixture_mkdir_p(artifact_lib_dir) != 0)
+		return -1;
+
+	for (i = 0; bin_tools[i] != NULL; i++) {
+		if (copy_into(bin_dir, bin_tools[i]) != 0)
+			return -1;
+	}
+	if (copy_into(sbin_dir, "/usr/sbin/mkfs.fat") != 0)
+		return -1;
+	if (copy_into(shim_dir, "/usr/lib/shim/shimx64.efi.signed") != 0 ||
+	    copy_into(shim_dir, "/usr/lib/shim/mmx64.efi.signed") != 0)
+		return -1;
+	for (i = 0; artifact_libs[i] != NULL; i++) {
+		if (copy_into(artifact_lib_dir, artifact_libs[i]) != 0)
+			return -1;
+	}
+
+	/*
+	 * grub's module tree, copied wholesale -- grub-mkrescue reads a
+	 * great many of these by name and there is no useful subset.
+	 * copy_dir_recursive() requires its destination NOT to exist (it is
+	 * `cp -a` underneath, which nests rather than merges otherwise), so
+	 * only the parent is created here.
+	 */
+	{
+		char grub_parent[PATH_MAX];
+
+		snprintf(grub_parent, sizeof(grub_parent), "%s/lib/grub", out_root);
+		if (fixture_mkdir_p(grub_parent) != 0)
+			return -1;
+		if (test_image_fixture_copy_dir_recursive("/usr/lib/grub/x86_64-efi", grub_dir) != 0)
+			return -1;
+	}
+	return 0;
+}
+
 static int create_blank_disk(const char *path)
 {
 	int fd = open(path, O_CREAT | O_WRONLY, 0644);
@@ -288,13 +445,20 @@ int main(void)
 	         "--disk=/dev/vda --ip=%s --prefix=%d --gateway=%s --interface=%s", TEST_IP,
 	         TEST_PREFIX, TEST_GATEWAY, TEST_IFACE);
 	{
+		char isotools_root[PATH_MAX];
 		char *mkiso_argv[] = { (char *)MKINSTALLERISO_BIN, installer_stage,
 			                (char *)CIX_INSTALL_BIN,    (char *)CIX_RECOVER_BIN,
 			                (char *)BZIMAGE_PATH,          control_plane_squashfs,
 			                (char *)SIGNING_KEY,           (char *)SIGNING_CERT_PEM,
 			                (char *)SIGNING_CERT_DER,      installer_iso,
-			                kernel_args,                   (char *)ISOTOOLS_ROOT,
+			                kernel_args,                   isotools_root,
 			                NULL };
+
+		if (build_isotools_fixture(workdir, isotools_root, sizeof(isotools_root)) != 0) {
+			fprintf(stderr, "could not build the isotools fixture\n");
+			printf("INSTALLER RESULT: FAIL\n");
+			return 1;
+		}
 		if (run_subprocess(MKINSTALLERISO_BIN, mkiso_argv) != 0)
 			return 1;
 	}
