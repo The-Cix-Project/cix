@@ -21,6 +21,7 @@ pkg_name="libblkid"
 pkg_version="2.42.2-3"
 pkg_source="https://www.kernel.org/pub/linux/utils/util-linux/v2.42/util-linux-2.42.2.tar.xz"
 pkg_sha256="03a05d3adf9602ef128f2da05b84b3205ce60c351e5737c0370f74000679ce8a"
+pkg_artifact_sha256="f5815f6053b424a9ff3499fbf7287eb8d1fb5b9f3e0726d061c3549f606787cc"
 pkg_depends="libuuid pkgconf"
 # ADR-0199/0209: composed from exactly these, no fallback (#168). 2.42.2
 # declared none and so could not be built, which blocked btrfs-progs --

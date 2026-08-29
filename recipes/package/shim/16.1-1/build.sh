@@ -53,6 +53,7 @@ pkg_name="shim"
 pkg_version="16.1-1"
 pkg_source="https://github.com/rhboot/shim/releases/download/16.1/shim-16.1.tar.bz2 http://deb.debian.org/debian/pool/main/s/shim-signed/shim-signed_1.51~1+deb12u1+16.1-2~deb12u1_amd64.deb http://deb.debian.org/debian/pool/main/s/shim-helpers-amd64-signed/shim-helpers-amd64-signed_1+16.1+2~deb12u1_amd64.deb"
 pkg_sha256="46319cd228d8f2c06c744241c0f342412329a7c630436fce7f82cf6936b1d603 c2acf5e559664bbadb7ce5789f9a321f39754a34854d3097b8cc0369df513b3b 26acac35133946c1642a09f3fda353ee3b849e5fc643fadb97a8dfec9e2b55fb"
+pkg_artifact_sha256="30d7f210bc2d9e0e28ac1cab064d6d6949139c4f478214d114bbd43ecfe5b024"
 pkg_depends=""
 
 # ADR-0199/0209: the build environment is composed from exactly these

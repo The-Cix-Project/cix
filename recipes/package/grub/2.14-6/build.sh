@@ -34,6 +34,7 @@ pkg_name="grub"
 pkg_version="2.14-6"
 pkg_source="https://ftp.gnu.org/gnu/grub/grub-2.14.tar.xz"
 pkg_sha256="bc8d3c73535b8838d8c8e2654d73edc4e6ae8c8acdb45d5df5dc9a1547446d43"
+pkg_artifact_sha256="b0bb816b55102836f35c4bb035ec90cdb8a201f7daacaf196cb3521608c56480"
 # gettext dropped, with --disable-nls below. It was here only so grub
 # could build translated messages, and pulling it in meant building
 # gettext under TCC -- which fails twice over: libtool passes

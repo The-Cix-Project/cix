@@ -12,6 +12,7 @@ pkg_name="ncurses"
 pkg_version="6.6-5"
 pkg_source="https://invisible-island.net/archives/ncurses/ncurses-6.6.tar.gz"
 pkg_sha256="355b4cbbed880b0381a04c46617b7656e362585d52e9cf84a67e2009b749ff11"
+pkg_artifact_sha256="726e5628195fef53c21ba2d0ebe5c12844a1f6db465e15c7a21012be6c91a0bf"
 # Nothing at runtime: ncurses links against libc alone.
 pkg_depends=""
 #

@@ -41,6 +41,7 @@ pkg_name="btrfs-progs"
 pkg_version="7.1-5"
 pkg_source="https://www.kernel.org/pub/linux/kernel/people/kdave/btrfs-progs/btrfs-progs-v7.1.tar.xz"
 pkg_sha256="d1f55cc2971398c9142eaa79d203e63d586a3b4b867f956664a1d68322cd4e34"
+pkg_artifact_sha256="976f66e3e0cccbdf758a2df26630724c586ceefc3a3048cc8b26a3cfb1546843"
 pkg_depends="zlib libuuid libblkid pkgconf"
 # ADR-0199/0209: the build environment is composed from exactly these
 # and nothing else -- there is no fallback (#168). 7.1 declared none, so

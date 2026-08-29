@@ -14,6 +14,7 @@ pkg_name="xorriso"
 pkg_version="1.5.8.pl02-3"
 pkg_source="https://ftp.gnu.org/gnu/xorriso/xorriso-1.5.8.pl02.tar.gz"
 pkg_sha256="b1455ecafbf0692ddafe1d71002a96f2ce2d77f4deae602678261ce033f97bc8"
+pkg_artifact_sha256="f4feb5fe0c8cb58b52e342a197e883fca8d54283a556d9b3b0460688a3bfcabd"
 pkg_depends=""
 
 # ADR-0199/0209: the build environment is composed from exactly

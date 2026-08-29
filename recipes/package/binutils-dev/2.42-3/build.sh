@@ -20,6 +20,7 @@ pkg_name="binutils-dev"
 pkg_version="2.42-3"
 pkg_source="https://ftp.gnu.org/gnu/binutils/binutils-2.42.tar.xz"
 pkg_sha256="f6e4d41fd5fc778b06b7891457b3620da5ecea1006c6a4a41ae998109f85a800"
+pkg_artifact_sha256="9fb090b5949cf16e50eac47b3026e83e295fab05bec36c1a79c24551b03068ce"
 pkg_depends=""
 
 # ADR-0199/0209: the build environment is composed from exactly

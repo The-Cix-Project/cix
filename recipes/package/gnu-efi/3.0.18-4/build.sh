@@ -18,6 +18,7 @@ pkg_name="gnu-efi"
 pkg_version="3.0.18-4"
 pkg_source="https://sourceforge.net/projects/gnu-efi/files/gnu-efi-3.0.18.tar.bz2/download"
 pkg_sha256="7f212c96ee66547eeefb531267b641e5473d7d8529f0bd8ccdefd33cf7413f5c"
+pkg_artifact_sha256="1a4e01e9e36b976ec1ee6ac68b87af6f8b1b50703fa3113c8ee2bc4670c7b770"
 pkg_depends=""
 
 # ADR-0199/0209: the build environment is composed from exactly

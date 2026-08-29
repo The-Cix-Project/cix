@@ -19,6 +19,7 @@ pkg_name="tcc"
 pkg_version="0.9.27-9"
 pkg_source="https://download.savannah.nongnu.org/releases/tinycc/tcc-0.9.27.tar.bz2"
 pkg_sha256="de23af78fca90ce32dff2dd45b3432b2334740bb9bb7b05bf60fdbfc396ceb9c"
+pkg_artifact_sha256="d32aa3931ebde6b35768e481434b05a2f073fa24f254725338944222053970c6"
 
 # No pkg_artifact_sha256 for this version, deliberately: that line
 # approves one specific byte sequence, and no -9 artifact has been
