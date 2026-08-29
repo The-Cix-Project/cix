@@ -117,18 +117,27 @@ enum diskformat_error diskformat_start(const char *disk_name, const char *os_con
 		 * steps and execve() can't be "returned from" to run the
 		 * second one.
 		 *
-		 * mkfs.btrfs takes no "-F" (force) flag of its own -- it
-		 * always overwrites an existing signature without prompting
-		 * when run non-interactively (confirmed via a real local
-		 * build+run of mkfs.btrfs --version/-h: no equivalent flag
-		 * exists, and btrfs-progs' own docs describe this as the
-		 * default non-tty behavior), so the mkfs.ext4 branch's own
-		 * "-F" is simply omitted rather than passed as a no-op.
+		 * BOTH branches force. The btrfs one used to omit it on the
+		 * stated grounds that "mkfs.btrfs takes no -F flag of its own
+		 * -- it always overwrites an existing signature without
+		 * prompting when run non-interactively". That is wrong, and it
+		 * meant btrfs formatting had never worked on a disk that
+		 * already had a filesystem -- which is every real case.
+		 *
+		 * btrfs-progs uses lowercase -f, not -F: mkfs/main.c's own
+		 * option table reads
+		 *   OPTLINE("-f, --force", "force overwrite of existing filesystem")
+		 * and test_dev_for_mkfs(file, force_overwrite) refuses outright
+		 * when a filesystem is present and force is false. Confirmed
+		 * live: formatting a real ext4 sda on 192.168.15.95 failed
+		 * every time, and only said so once this function started
+		 * capturing mkfs's own output.
 		 */
 		const char *mkfs_bin = fs_type == DISKFORMAT_FS_BTRFS ?
 		                        DISKFORMAT_MKFS_BTRFS_BIN : DISKFORMAT_MKFS_EXT4_BIN;
 		char *ext4_argv[] = { (char *)DISKFORMAT_MKFS_EXT4_BIN, "-F", (char *)d.dev_path, NULL };
-		char *btrfs_argv[] = { (char *)DISKFORMAT_MKFS_BTRFS_BIN, (char *)d.dev_path, NULL };
+		char *btrfs_argv[] = { (char *)DISKFORMAT_MKFS_BTRFS_BIN, "-f", (char *)d.dev_path,
+		                        NULL };
 		char **argv = fs_type == DISKFORMAT_FS_BTRFS ? btrfs_argv : ext4_argv;
 		pid_t sub;
 		int status;
@@ -234,10 +243,32 @@ void diskformat_completed(int exit_status)
 		 * like an answer.
 		 */
 		{
-			char *nl = strrchr(g_output, '\n');
+			/*
+			 * Prefer the last line that actually starts a diagnostic
+			 * over the literal last line. mkfs.btrfs ends its failures
+			 * with "See https://btrfs.readthedocs.io for more
+			 * information." -- a footer, not a reason -- and reporting
+			 * that instead of the ERROR line above it is how the first
+			 * capture here still failed to say what was wrong.
+			 */
+			char *best = NULL;
+			char *line = g_output;
 
-			if (nl != NULL)
-				memmove(g_output, nl + 1, strlen(nl + 1) + 1);
+			for (;;) {
+				char *nl = strchr(line, '\n');
+
+				if (nl != NULL)
+					*nl = '\0';
+				if (strncmp(line, "ERROR", 5) == 0 || strncmp(line, "error", 5) == 0)
+					best = line;
+				else if (best == NULL && line[0] != '\0')
+					best = line;
+				if (nl == NULL)
+					break;
+				line = nl + 1;
+			}
+			if (best != NULL && best != g_output)
+				memmove(g_output, best, strlen(best) + 1);
 		}
 	}
 	if (exit_status == 127)
