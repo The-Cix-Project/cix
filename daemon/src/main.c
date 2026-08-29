@@ -22,6 +22,7 @@
 #include "ping.h"
 #include "resolv.h"
 #include "signingkeys.h"
+#include "childdiag.h"
 #include "swap.h"
 #include "syslogfwd.h"
 #include "dns.h"
@@ -9884,22 +9885,28 @@ static void handle_iso_assemble_event(struct conn *cc)
 		 * made this failure undiagnosable.
 		 */
 		if (output_len > 0) {
-			const char *tail = output;
-
-			/* The last line is nearly always the real complaint;
-			 * everything before it is progress output. */
-			{
-				const char *nl;
-
-				while ((nl = strrchr(tail, '\n')) != NULL && nl[1] == '\0')
-					*(char *)nl = '\0';
-				nl = strrchr(tail, '\n');
-				if (nl != NULL)
-					tail = nl + 1;
-			}
-			snprintf(g_iso_build_error, sizeof(g_iso_build_error),
-			         "mkinstalleriso failed (status 0x%x): %s", (unsigned)status, tail);
+			/*
+			 * Log the whole capture first: reducing it to one line
+			 * is for the operator-facing error field, and the full
+			 * output is exactly what the next investigation wants.
+			 *
+			 * "The last line" was wrong here, and wrong in a way that
+			 * cost a diagnosis round. mkinstalleriso ends a failure
+			 * with its own summary of which tool exited nonzero --
+			 *   /var/.../isotools/bin/sbsign failed (status 0x100)
+			 * -- one line below the reason sbsign itself printed:
+			 *   Error reading file /usr/lib/systemd/boot/efi/
+			 *   systemd-bootx64.efi: No such file or directory
+			 * The summary names the tool and hides what it could not
+			 * find. childdiag_reduce_to_error_line() prefers the line
+			 * that opens a diagnostic, which is the same rule
+			 * diskformat.c needed for the opposite reason (its last
+			 * line is a documentation-URL footer).
+			 */
 			logstore_write("cixd", "error", "iso assembly: output: %s", output);
+			childdiag_reduce_to_error_line(output);
+			snprintf(g_iso_build_error, sizeof(g_iso_build_error),
+			         "mkinstalleriso failed (status 0x%x): %s", (unsigned)status, output);
 		} else {
 			snprintf(g_iso_build_error, sizeof(g_iso_build_error),
 			         "mkinstalleriso failed (status 0x%x)", (unsigned)status);

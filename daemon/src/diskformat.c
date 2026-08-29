@@ -1,4 +1,5 @@
 #include "diskformat.h"
+#include "childdiag.h"
 #include "disk.h"
 #include "diskrole.h"
 #include "linux_compat.h"
@@ -242,34 +243,17 @@ void diskformat_completed(int exit_status)
 		 * reason -- which is worse than saying nothing, because it looks
 		 * like an answer.
 		 */
-		{
-			/*
-			 * Prefer the last line that actually starts a diagnostic
-			 * over the literal last line. mkfs.btrfs ends its failures
-			 * with "See https://btrfs.readthedocs.io for more
-			 * information." -- a footer, not a reason -- and reporting
-			 * that instead of the ERROR line above it is how the first
-			 * capture here still failed to say what was wrong.
-			 */
-			char *best = NULL;
-			char *line = g_output;
-
-			for (;;) {
-				char *nl = strchr(line, '\n');
-
-				if (nl != NULL)
-					*nl = '\0';
-				if (strncmp(line, "ERROR", 5) == 0 || strncmp(line, "error", 5) == 0)
-					best = line;
-				else if (best == NULL && line[0] != '\0')
-					best = line;
-				if (nl == NULL)
-					break;
-				line = nl + 1;
-			}
-			if (best != NULL && best != g_output)
-				memmove(g_output, best, strlen(best) + 1);
-		}
+		/*
+		 * Which line to report is a question this daemon answers in one
+		 * place now (daemon/src/childdiag.c): mkfs.btrfs ends its
+		 * failures with "See https://btrfs.readthedocs.io for more
+		 * information." -- a footer, not a reason -- and reporting that
+		 * instead of the ERROR line above it is how the first capture
+		 * here still failed to say what was wrong. The ISO assembly hit
+		 * the mirror image of the same bug, which is why the rule moved
+		 * out of this file rather than being copied into that one.
+		 */
+		childdiag_reduce_to_error_line(g_output);
 	}
 	if (exit_status == 127)
 		/*
