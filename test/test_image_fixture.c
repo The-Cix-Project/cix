@@ -1,5 +1,7 @@
 #include "test_image_fixture.h"
 
+#include <elf.h>
+
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -752,4 +754,236 @@ int test_image_fixture_clear_floor_cache(const char *data_dir)
 			return -1;
 	}
 	return 0;
+}
+
+/* ---- real shared-library closure derivation (see the header) ---- */
+
+#define CLOSURE_MAX_SEEN 128
+#define CLOSURE_NAME_MAX 96
+
+struct closure_seen {
+	char name[CLOSURE_MAX_SEEN][CLOSURE_NAME_MAX];
+	int n;
+};
+
+/* The runtime test_image_fixture_build() already stages. Re-staging
+ * either from a different tree would replace a working loader. */
+static int closure_is_runtime(const char *soname)
+{
+	return strcmp(soname, "libc.so.6") == 0 || strcmp(soname, "ld-linux-x86-64.so.2") == 0;
+}
+
+static int closure_seen_add(struct closure_seen *seen, const char *name)
+{
+	int i;
+
+	for (i = 0; i < seen->n; i++) {
+		if (strcmp(seen->name[i], name) == 0)
+			return 1; /* already handled */
+	}
+	if (seen->n >= CLOSURE_MAX_SEEN) {
+		fprintf(stderr, "shared-library closure exceeded %d entries at %s\n",
+		        CLOSURE_MAX_SEEN, name);
+		return -1;
+	}
+	snprintf(seen->name[seen->n], CLOSURE_NAME_MAX, "%s", name);
+	seen->n++;
+	return 0;
+}
+
+/*
+ * Reads an ELF64 file's DT_NEEDED entries. Returns 0 with *out_n set
+ * (0 for a static binary, or one with no PT_DYNAMIC), or -1.
+ *
+ * The whole file is read into memory rather than seeked around: these
+ * are binaries and libraries of a few hundred KB, the parse touches the
+ * program headers, one PT_DYNAMIC segment and one string table, and a
+ * single read is both simpler and harder to get wrong than a series of
+ * pread()s whose offsets all come from the file's own untrusted fields.
+ */
+static int elf_needed(const char *path, char out[][CLOSURE_NAME_MAX], int max, int *out_n)
+{
+	unsigned char *buf = NULL;
+	off_t size;
+	int fd, i, rc = -1;
+	ssize_t got, off = 0;
+	Elf64_Ehdr *eh;
+	Elf64_Phdr *ph;
+	Elf64_Dyn *dyn = NULL;
+	size_t dyn_count = 0;
+	Elf64_Addr strtab_vaddr = 0;
+	const char *strtab = NULL;
+
+	*out_n = 0;
+	fd = open(path, O_RDONLY);
+	if (fd < 0) {
+		perror(path);
+		return -1;
+	}
+	size = lseek(fd, 0, SEEK_END);
+	if (size <= 0 || lseek(fd, 0, SEEK_SET) != 0) {
+		fprintf(stderr, "%s: cannot determine size\n", path);
+		close(fd);
+		return -1;
+	}
+	buf = malloc((size_t)size);
+	if (buf == NULL) {
+		perror("malloc");
+		close(fd);
+		return -1;
+	}
+	while (off < (ssize_t)size) {
+		got = read(fd, buf + off, (size_t)size - (size_t)off);
+		if (got <= 0) {
+			perror(path);
+			goto out;
+		}
+		off += got;
+	}
+	close(fd);
+	fd = -1;
+
+	if ((size_t)size < sizeof(Elf64_Ehdr) || memcmp(buf, ELFMAG, SELFMAG) != 0 ||
+	    buf[EI_CLASS] != ELFCLASS64) {
+		/* Not an ELF64 object at all -- a script, or something else
+		 * entirely. It has no closure to stage, which is not an error. */
+		rc = 0;
+		goto out;
+	}
+	eh = (Elf64_Ehdr *)buf;
+	if (eh->e_phoff == 0 || eh->e_phentsize != sizeof(Elf64_Phdr) ||
+	    eh->e_phoff + (off_t)eh->e_phnum * eh->e_phentsize > size) {
+		fprintf(stderr, "%s: malformed program headers\n", path);
+		goto out;
+	}
+
+	/* PT_DYNAMIC holds the entries; its DT_STRTAB is a virtual address,
+	 * so a PT_LOAD segment is needed to map it back to a file offset. */
+	for (i = 0; i < eh->e_phnum; i++) {
+		ph = (Elf64_Phdr *)(buf + eh->e_phoff + (size_t)i * sizeof(Elf64_Phdr));
+		if (ph->p_type != PT_DYNAMIC)
+			continue;
+		if (ph->p_offset + ph->p_filesz > (Elf64_Xword)size) {
+			fprintf(stderr, "%s: PT_DYNAMIC out of range\n", path);
+			goto out;
+		}
+		dyn = (Elf64_Dyn *)(buf + ph->p_offset);
+		dyn_count = ph->p_filesz / sizeof(Elf64_Dyn);
+		break;
+	}
+	if (dyn == NULL) {
+		rc = 0; /* static, or no dynamic section */
+		goto out;
+	}
+	for (i = 0; (size_t)i < dyn_count && dyn[i].d_tag != DT_NULL; i++) {
+		if (dyn[i].d_tag == DT_STRTAB)
+			strtab_vaddr = dyn[i].d_un.d_ptr;
+	}
+	if (strtab_vaddr == 0) {
+		fprintf(stderr, "%s: dynamic section has no DT_STRTAB\n", path);
+		goto out;
+	}
+	for (i = 0; i < eh->e_phnum; i++) {
+		ph = (Elf64_Phdr *)(buf + eh->e_phoff + (size_t)i * sizeof(Elf64_Phdr));
+		if (ph->p_type != PT_LOAD)
+			continue;
+		if (strtab_vaddr < ph->p_vaddr || strtab_vaddr >= ph->p_vaddr + ph->p_filesz)
+			continue;
+		strtab = (const char *)(buf + ph->p_offset + (strtab_vaddr - ph->p_vaddr));
+		break;
+	}
+	if (strtab == NULL) {
+		fprintf(stderr, "%s: DT_STRTAB is in no PT_LOAD segment\n", path);
+		goto out;
+	}
+	for (i = 0; (size_t)i < dyn_count && dyn[i].d_tag != DT_NULL; i++) {
+		const char *name;
+
+		if (dyn[i].d_tag != DT_NEEDED)
+			continue;
+		name = strtab + dyn[i].d_un.d_val;
+		if (name < (const char *)buf || name >= (const char *)buf + size) {
+			fprintf(stderr, "%s: DT_NEEDED name out of range\n", path);
+			goto out;
+		}
+		if (*out_n >= max) {
+			fprintf(stderr, "%s: more than %d DT_NEEDED entries\n", path, max);
+			goto out;
+		}
+		snprintf(out[*out_n], CLOSURE_NAME_MAX, "%s", name);
+		(*out_n)++;
+	}
+	rc = 0;
+out:
+	if (fd >= 0)
+		close(fd);
+	free(buf);
+	return rc;
+}
+
+static int stage_closure_rec(const char *image_root, const char *binary_path,
+                             const char *const *search_dirs, struct closure_seen *seen)
+{
+	char needed[32][CLOSURE_NAME_MAX];
+	int n = 0, i, d;
+
+	if (elf_needed(binary_path, needed, 32, &n) != 0)
+		return -1;
+
+	for (i = 0; i < n; i++) {
+		char resolved[PATH_MAX];
+		char dst[PATH_MAX];
+		int added, found = 0;
+
+		if (closure_is_runtime(needed[i]))
+			continue;
+		added = closure_seen_add(seen, needed[i]);
+		if (added < 0)
+			return -1;
+		if (added == 1)
+			continue;
+
+		for (d = 0; search_dirs[d] != NULL; d++) {
+			struct stat st;
+
+			snprintf(resolved, sizeof(resolved), "%s/%s", search_dirs[d], needed[i]);
+			if (stat(resolved, &st) == 0 && S_ISREG(st.st_mode)) {
+				found = 1;
+				break;
+			}
+		}
+		if (!found) {
+			fprintf(stderr, "%s needs %s, which is in none of the search directories:\n",
+			        binary_path, needed[i]);
+			for (d = 0; search_dirs[d] != NULL; d++)
+				fprintf(stderr, "  %s\n", search_dirs[d]);
+			return -1;
+		}
+
+		{
+			char libdir[PATH_MAX];
+
+			snprintf(libdir, sizeof(libdir), "%s/lib/x86_64-linux-gnu", image_root);
+			if (mkdir_p(libdir) != 0)
+				return -1;
+		}
+		snprintf(dst, sizeof(dst), "%s/lib/x86_64-linux-gnu/%s", image_root, needed[i]);
+		if (test_image_fixture_copy_file(resolved, dst) != 0)
+			return -1;
+
+		/* A library has its own DT_NEEDED entries, resolved from the
+		 * same tree it was found in. */
+		if (stage_closure_rec(image_root, resolved, search_dirs, seen) != 0)
+			return -1;
+	}
+	return 0;
+}
+
+int test_image_fixture_stage_closure(const char *image_root, const char *binary_path,
+                                     const char *const *search_dirs)
+{
+	struct closure_seen seen;
+
+	seen.n = 0;
+	return stage_closure_rec(image_root, binary_path, search_dirs, &seen);
 }
