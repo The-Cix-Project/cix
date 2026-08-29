@@ -47,8 +47,15 @@ int cix_btrfs_subvol_create_or_dir(const char *path);
  * (BTRFS_IOC_SNAP_CREATE_V2 -- O(1), copy-on-write, sharing every
  * unchanged extent with `src`); otherwise recursively copy `src` to a
  * new plain directory `dst`. `dst` must not already exist; its parent
- * must. `src` must be a subvolume in the btrfs case and any directory
- * in the fallback case.
+ * must.
+ *
+ * `src` no longer has to be a subvolume. It used to, and a plain
+ * directory on btrfs made the ioctl fail with EINVAL -- which is what
+ * a storage migration produces, since copying content faithfully turns
+ * subvolumes into ordinary directories (#180). Such a `src` is now
+ * copied into a freshly created subvolume instead: one full copy, once,
+ * after which `dst` is a real subvolume and every later call snapshots
+ * from it in O(1).
  *
  * Returns 0 on success, -1 with errno set otherwise.
  */

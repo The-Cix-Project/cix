@@ -175,6 +175,30 @@ static int copy_tree(const char *src, const char *dst)
 	return 0;
 }
 
+/*
+ * Is `path` a btrfs SUBVOLUME, as opposed to an ordinary directory that
+ * merely lives on btrfs?
+ *
+ * Every subvolume's root directory has inode number 256
+ * (BTRFS_FIRST_FREE_OBJECTID) -- the same test btrfs-progs itself uses.
+ * An ordinary directory on the same filesystem has an arbitrary inode
+ * number and essentially never 256.
+ *
+ * This distinction is not academic: BTRFS_IOC_SNAP_CREATE_V2 fails with
+ * EINVAL when handed a plain directory, and that is exactly how an
+ * image store carried across a storage migration breaks (#180). The
+ * migration copies content faithfully, which turns subvolumes into
+ * plain directories, and nothing notices until the next snapshot.
+ */
+static int is_subvolume(const char *path)
+{
+	struct stat st;
+
+	if (stat(path, &st) != 0)
+		return 0;
+	return S_ISDIR(st.st_mode) && st.st_ino == 256;
+}
+
 int cix_btrfs_snapshot_or_copy(const char *src, const char *dst)
 {
 	char parent[PATH_MAX];
@@ -184,6 +208,26 @@ int cix_btrfs_snapshot_or_copy(const char *src, const char *dst)
 
 	if (!cix_btrfs_is_backing(src))
 		return copy_tree(src, dst);
+
+	/*
+	 * On btrfs, but `src` is a plain directory rather than a subvolume
+	 * -- so there is nothing to snapshot. Create `dst` as a real
+	 * subvolume and copy into it (copy_tree tolerates an existing
+	 * destination directory).
+	 *
+	 * That costs one full copy, once, and then the problem is gone:
+	 * `dst` becomes the image's current version, it IS a subvolume, and
+	 * every later version snapshots from it in O(1) as intended. The
+	 * alternative -- failing, as this did before #180 -- leaves an
+	 * image that can never gain another version, and since uninstall
+	 * and delete both go through this same call, one that can never be
+	 * repaired or removed either.
+	 */
+	if (!is_subvolume(src)) {
+		if (cix_btrfs_subvol_create_or_dir(dst) != 0)
+			return -1;
+		return copy_tree(src, dst);
+	}
 
 	if (split_parent_leaf(dst, parent, sizeof(parent), &leaf) != 0)
 		return -1;

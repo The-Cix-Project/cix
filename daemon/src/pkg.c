@@ -1797,15 +1797,39 @@ static const char *build_image_manifest_string(const char *image)
  * the caller left to guess which step and which errno. The step name
  * and errno are the two things that make it a one-read diagnosis.
  */
+/*
+ * The reason the last image_produce_new_version() gave up, so a caller
+ * can report it instead of blaming whatever package happened to be
+ * installing (#180).
+ *
+ * Without this, an image that could not snapshot itself forward failed
+ * as "zlib failed to merge installed files into the target image" --
+ * naming a package that was entirely innocent, while the actual cause
+ * ("snapshotting the current rootfs forward failed: Invalid argument")
+ * reached only the log store. That is the same mistake childdiag.c
+ * exists to prevent: the message an operator reads should name what
+ * actually went wrong.
+ */
+static char g_produce_fail_reason[256];
+
+const char *pkg_last_image_produce_failure(void)
+{
+	return g_produce_fail_reason[0] != '\0' ? g_produce_fail_reason : NULL;
+}
+
 static int produce_fail(const char *image, const char *staging, const char *step, int use_errno)
 {
-	if (use_errno)
+	if (use_errno) {
+		snprintf(g_produce_fail_reason, sizeof(g_produce_fail_reason),
+		         "%s failed: %s", step, strerror(errno));
 		logstore_write("cixd", "error",
 		               "image %s: could not produce a new version -- %s failed: %s", image,
 		               step, strerror(errno));
-	else
+	} else {
+		snprintf(g_produce_fail_reason, sizeof(g_produce_fail_reason), "%s failed", step);
 		logstore_write("cixd", "error",
 		               "image %s: could not produce a new version -- %s failed", image, step);
+	}
 	if (staging != NULL)
 		cix_btrfs_subvol_delete_or_rmtree(staging);
 	return -1;
@@ -6011,8 +6035,16 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		ctx.is_upgrade = is_upgrade;
 		if (image_produce_new_version(g_chains[chain_idx].image, install_mutate, &ctx, NULL) !=
 		    0) {
-			pkg_fail(e, 0, PKG_FAILURE_INSTALL,
-			         "failed to merge installed files into the target image");
+			const char *why = pkg_last_image_produce_failure();
+			char msg[320];
+
+			/* Name the image and what it could not do, not this
+			 * package -- the package is usually blameless (#180). */
+			snprintf(msg, sizeof(msg),
+			         "image \"%s\" could not produce a new version%s%s",
+			         g_chains[chain_idx].image, why != NULL ? ": " : "",
+			         why != NULL ? why : "");
+			pkg_fail(e, 0, PKG_FAILURE_INSTALL, msg);
 			g_chains[chain_idx].name[0] = '\0';
 			g_chains[chain_idx].dep_queue_count = 0;
 			return 0;
