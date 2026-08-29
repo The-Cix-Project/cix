@@ -57,8 +57,19 @@ static char g_sbsign_bin[600];
 /* Secure Boot chain for the *target* disk's ESP (cix-install.c's own
  * populate_esp() writes these three under EFI/BOOT/ -- see ADR-0015).
  * Both are pre-signed by Debian directly; no re-signing needed. */
-#define SHIM_EFI_SRC "/usr/lib/shim/shimx64.efi.signed"
-#define MOKMANAGER_EFI_SRC "/usr/lib/shim/mmx64.efi.signed"
+/*
+ * shim, MokManager and mokutil come out of the isotools artifact, not
+ * off this machine. They used to be read from /usr/lib/shim/ and
+ * /usr/bin/mokutil -- absolute paths that exist on a Debian development
+ * box and on no Cix control-plane root, which is a large part of why
+ * POST /v1/system/iso has never been servable on a real host. They are
+ * packages now (shim 16.1-1, mokutil 0.7.2-2) and isotools 2.14-3
+ * harvests them, so this tool reads them the same way it already reads
+ * grub-mkrescue, xorriso, sbsign and mtools.
+ */
+#define SHIM_EFI_REL "/shim/shimx64.efi.signed"
+#define MOKMANAGER_EFI_REL "/shim/mmx64.efi.signed"
+#define MOKUTIL_REL "/bin/mokutil"
 
 /* The real tools cix-install shells out to, and their full ldd
  * closures (checked directly against this host) -- staged the same way
@@ -69,15 +80,38 @@ static const char *const g_lib_closure[] = {
 	"/lib/x86_64-linux-gnu/libtinfo.so.6",     "/lib/x86_64-linux-gnu/libuuid.so.1",
 	"/lib/x86_64-linux-gnu/libblkid.so.1",     "/lib/x86_64-linux-gnu/libreadline.so.8",
 	"/lib/x86_64-linux-gnu/libext2fs.so.2",    "/lib/x86_64-linux-gnu/libcom_err.so.2",
-	"/lib/x86_64-linux-gnu/libe2p.so.2",
-	/* mokutil's own closure (ldd-checked against this host), for
-	 * enroll_signing_key()'s "mokutil --import" call in cix-install.c. */
-	"/lib/x86_64-linux-gnu/libcrypto.so.3",    "/lib/x86_64-linux-gnu/libefivar.so.1",
-	"/lib/x86_64-linux-gnu/libkeyutils.so.1",  "/lib/x86_64-linux-gnu/libcrypt.so.1",
-	"/lib/x86_64-linux-gnu/libdl.so.2",
-	/* mkfs.btrfs's own closure beyond what's above (ldd-checked):
-	 * libuuid/libblkid are already staged, libudev is not. */
-	"/lib/x86_64-linux-gnu/libudev.so.1",      NULL,
+	"/lib/x86_64-linux-gnu/libe2p.so.2",       "/lib/x86_64-linux-gnu/libudev.so.1",
+	NULL,
+};
+
+/*
+ * mokutil's own closure, taken from the isotools artifact rather than
+ * from this machine -- paths are relative to <isotools-root>.
+ *
+ * MEASURED against the mokutil this project builds, not copied from
+ * Debian's, because the two genuinely differ:
+ *
+ *   ours     libssl.so.3 libcrypto.so.3 libefivar.so.1 libkeyutils.so.1
+ *            libcrypt.so.2 libc.so.6
+ *   Debian's libcrypto.so.3 libefivar.so.1 libkeyutils.so.1
+ *            libcrypt.so.1 libc.so.6
+ *
+ * Ours pulls libssl because openssl.pc's Libs names both libraries, and
+ * libcrypt.so.2 because our libxcrypt drops the obsolete DES/NIS ABI --
+ * a different soname, not a different version. libdl.so.2 was in the old
+ * hardcoded list for Debian's libefivar and is gone: ours does not link
+ * it, glibc having folded libdl into libc at 2.34.
+ *
+ * Each SONAME entry is listed with its real target, because
+ * test_image_fixture_add_lib() copies one file and a symlink whose
+ * target was never copied fails at load time rather than at build time.
+ */
+static const char *const g_isotools_lib_closure[] = {
+	"/lib/x86_64-linux-gnu/libssl.so.3",       "/lib/x86_64-linux-gnu/libcrypto.so.3",
+	"/lib/x86_64-linux-gnu/libefivar.so.1",    "/lib/x86_64-linux-gnu/libefivar.so.1.39",
+	"/lib/x86_64-linux-gnu/libkeyutils.so.1",  "/lib/x86_64-linux-gnu/libkeyutils.so.1.10",
+	"/lib/x86_64-linux-gnu/libcrypt.so.2",     "/lib/x86_64-linux-gnu/libcrypt.so.2.0.0",
+	NULL,
 };
 
 static int ensure_dir(const char *path)
@@ -189,11 +223,15 @@ int main(int argc, char **argv)
 		        "  (a deliberately-invalid placeholder -- edit it at the GRUB boot menu\n"
 		        "  with 'e' before booting; cix-install's own stat() check on --disk=\n"
 		        "  fails safely if it's left unedited)\n"
-		        "  isotools-root: directory holding <root>/bin/{grub-mkrescue,sbsign,\n"
-		        "  xorriso,mcopy,mformat} and <root>/lib/grub/x86_64-efi/ (pkg/recipes/\n"
-		        "  isotools.recipe's own hostbuild artifact layout, ADR-0064) -- a plain\n"
-		        "  \"/usr\" reproduces this tool's original host-borrowed behavior for\n"
-		        "  manual/dev use.\n",
+		"  isotools-root: directory holding <root>/bin/{grub-mkrescue,sbsign,\n"
+		        "  xorriso,mcopy,mformat,mokutil}, <root>/shim/{shimx64,mmx64}.efi.signed,\n"
+		        "  <root>/lib/grub/x86_64-efi/ and <root>/lib/x86_64-linux-gnu/ (isotools\n"
+		        "  2.14-3's hostbuild artifact layout, ADR-0064). mokutil, shim and\n"
+		        "  mokutil's library closure moved here from absolute host paths: they\n"
+		        "  exist on a Debian development box and on no Cix control-plane root,\n"
+		        "  so reading them from the host is why this tool could not run on a\n"
+		        "  real installed machine. A plain \"/usr\" no longer reproduces the old\n"
+		        "  host-borrowed behaviour for those inputs.\n",
 		        argv[0]);
 		return 2;
 	}
@@ -285,12 +323,34 @@ int main(int argc, char **argv)
 		return 1;
 	if (ensure_dir_under(stage_dir, "usr/bin") != 0)
 		return 1;
-	snprintf(dst, sizeof(dst), "%s/usr/bin/mokutil", stage_dir);
-	if (test_image_fixture_copy_file("/usr/bin/mokutil", dst) != 0)
-		return 1;
+	{
+		char mokutil_src[700];
+
+		snprintf(mokutil_src, sizeof(mokutil_src), "%s" MOKUTIL_REL, g_isotools_root);
+		snprintf(dst, sizeof(dst), "%s/usr/bin/mokutil", stage_dir);
+		if (test_image_fixture_copy_file(mokutil_src, dst) != 0)
+			return 1;
+	}
 
 	for (i = 0; g_lib_closure[i] != NULL; i++) {
 		if (test_image_fixture_add_lib(stage_dir, g_lib_closure[i]) != 0)
+			return 1;
+	}
+	/*
+	 * The second closure comes out of the isotools artifact. Staged to
+	 * the same paths inside the installer image -- only the source
+	 * moves, so nothing about the image's own layout changes.
+	 */
+	for (i = 0; g_isotools_lib_closure[i] != NULL; i++) {
+		char lib_src[700];
+
+		snprintf(lib_src, sizeof(lib_src), "%s%s", g_isotools_root,
+		         g_isotools_lib_closure[i]);
+		snprintf(dst, sizeof(dst), "%s%s", stage_dir, g_isotools_lib_closure[i]);
+		if (ensure_dir_under(stage_dir, "lib") != 0 ||
+		    ensure_dir_under(stage_dir, "lib/x86_64-linux-gnu") != 0)
+			return 1;
+		if (test_image_fixture_copy_file(lib_src, dst) != 0)
 			return 1;
 	}
 
@@ -310,11 +370,17 @@ int main(int argc, char **argv)
 	if (ensure_dir_under(stage_dir, "payload") != 0)
 		return 1;
 	snprintf(dst, sizeof(dst), "%s/payload/cix-shim.efi", stage_dir);
-	if (test_image_fixture_copy_file(SHIM_EFI_SRC, dst) != 0)
-		return 1;
-	snprintf(dst, sizeof(dst), "%s/payload/cix-mm.efi", stage_dir);
-	if (test_image_fixture_copy_file(MOKMANAGER_EFI_SRC, dst) != 0)
-		return 1;
+	{
+		char shim_src[700];
+
+		snprintf(shim_src, sizeof(shim_src), "%s" SHIM_EFI_REL, g_isotools_root);
+		if (test_image_fixture_copy_file(shim_src, dst) != 0)
+			return 1;
+		snprintf(dst, sizeof(dst), "%s/payload/cix-mm.efi", stage_dir);
+		snprintf(shim_src, sizeof(shim_src), "%s" MOKMANAGER_EFI_REL, g_isotools_root);
+		if (test_image_fixture_copy_file(shim_src, dst) != 0)
+			return 1;
+	}
 	snprintf(dst, sizeof(dst), "%s/payload/cix-grubx64.efi", stage_dir);
 	if (sbsign_to(signing_key, signing_cert_pem, SYSTEMD_BOOT_EFI, dst) != 0)
 		return 1;
