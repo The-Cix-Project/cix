@@ -54,11 +54,11 @@ This produces `build/cix-install.iso` — attach it as a CD-ROM/optical drive to
 
 **Target disk**: **VirtIO Block** disks (`/dev/vda`) and real **SATA/PATA** disks (`/dev/sda`, `CONFIG_BLK_DEV_SD`, ADR-0061/Part 3) both work — NVMe (`/dev/nvme0n1`) and software RAID (`/dev/mdN`) too. VirtIO-SCSI-attached disks specifically are not yet covered (no `CONFIG_SCSI_VIRTIO`). On Proxmox, attach the target disk with Bus/Device: `VirtIO Block` (simplest) or `SATA`.
 
-**Partitioning** — three ways; the first needs no flag, the other two are `cix-install` flags baked into the last argument above:
+**Partitioning** — two ways; the first needs no flag:
 
 - **(no flag, the default)**: `cix-install` partitions the disk itself, non-interactively, with the standard layout below — no typing required. This is what the example above uses, and what `test/test_installer.c`'s own install session actually exercises.
 
-  This became the default in place of an `--auto-partition` opt-in because the interactive path was never the safer of the two. `cix-install` reads partition **roles back from GPT names**, so driving `fdisk` by hand means reproducing five exact names in the right order with the right types — a contract `fdisk`'s own UI says nothing about, whose failure shows up much later as a role that cannot be found. The scripted path removes the one step where a typo is both easy to make and expensive to discover.
+  This replaced an interactive `fdisk` session, which used to be what you got by passing no flag ([ADR-0214](../adr/0214-no-interactive-partitioning.md)). `cix-install` reads partition **roles back from GPT names**, so driving `fdisk` by hand meant reproducing five exact names in the right order with the right types — a contract `fdisk`'s own UI says nothing about, whose failure shows up much later as a role that cannot be found. And because that read-back fixes the *structure*, hand-partitioning could only ever vary the partition **sizes** — which is exactly what the layout below already handles, sizing itself to the disk and leaving the remainder for you to claim through the REST partition API afterwards.
 
   **It does not take the whole disk** ([ADR-0190](../adr/0190-install-leaves-the-disk-mostly-unallocated.md), issue #104). `cix-containers` is the smaller of 16 GiB and half of what remains after the system partitions, and everything past it is left unallocated for you. The installer prints what it did:
 
@@ -67,31 +67,9 @@ This produces `build/cix-install.iso` — attach it as a CD-ROM/optical drive to
   ```
 
   Grow that data partition into the free space whenever you want (`cixctl disks partition resize`, issue #94), or partition the remainder yourself and give it a role. The reason for the conservative default is that the reversible direction should be the one left open: growing into free space is safe, shrinking a filesystem that already holds the system's state is not.
-- **`--interactive`**: drops into a real, interactive `fdisk` session — use this if you need different partition sizes than the standard layout. Kept as a deliberate escape hatch rather than removed: the installer media carries no shell, so without it a machine the standard layout does not suit could not be partitioned from this ISO at all. Note that most layout changes do **not** need it — the default deliberately leaves the disk mostly unallocated, and a running host partitions the remainder through the REST API. GPT, five partitions, named exactly (`cix-esp`, `cix-root-a`, `cix-root-b`, `cix-config`, `cix-containers` — see `docs/roadmap/ROADMAP.md`'s Phase 11 part 3 write-up for the role each one plays):
+- **`--skip-partition`**: the disk is already partitioned correctly by other means (e.g. scripted provisioning that ran `sfdisk` itself beforehand) — `cix-install` just reads the existing table back. It must carry all five partitions, named exactly `cix-esp`, `cix-root-a`, `cix-root-b`, `cix-config` and `cix-containers`, since that is how roles are identified.
 
-  ```
-  g                                  # new GPT label
-  n  1    +64M                       # cix-esp   (partition 1, default first sector, then Enter for each)
-  n  2    +160M                      # cix-root-a
-  n  3    +160M                      # cix-root-b
-  n  4    +64M                       # cix-config
-  n  5    +16G                       # cix-containers (or whatever size suits -- see the note above)
-  t  1  1                            # partition 1 -> EFI System type
-  x                                  # expert menu, to set partition names
-  n  1  cix-esp
-  n  2  cix-root-a
-  n  3  cix-root-b
-  n  4  cix-config
-  n  5  cix-containers
-  r                                  # back to the main menu
-  w                                  # write and exit
-  ```
-
-  (Each `n  <number>  <size>` above is really three separate prompts: partition number, first sector — just press Enter for the default — then last sector/size, where you type `+64M` etc. Pressing Enter alone on the last one takes the rest of the disk, which is exactly what the default partitioning deliberately no longer does — but interactively it is your call.)
-
-- **`--skip-partition`**: the disk is already partitioned correctly by other means (e.g. scripted provisioning that ran `sfdisk` itself beforehand) — `cix-install` just reads the existing table back.
-
-`--skip-partition` and `--interactive` are mutually exclusive; omitting both is the default, scripted partitioning.
+Omitting `--skip-partition` is the default: `cix-install` writes the layout itself.
 
 It then formats, writes the system, and reboots into a running `cixd` at the IP you gave it — reachable at that address directly (`cixd` binds to the exact IP given via `--ip=`, not just loopback).
 

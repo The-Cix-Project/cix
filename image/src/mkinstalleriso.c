@@ -71,22 +71,20 @@ static char g_sbsign_bin[600];
 #define MOKMANAGER_EFI_REL "/shim/mmx64.efi.signed"
 #define MOKUTIL_REL "/bin/mokutil"
 
-/* The two installer tools no Cix control-plane root carries -- see the
- * staging block in build_installer_root() for why they come from the
+/* mkfs.fat: the ESP formatter, which no Cix control-plane root carries
+ * and rightly so -- cixd never formats FAT, only the installer does. See
+ * the staging block in build_installer_root() for why it comes from the
  * artifact while sfdisk and the mkfs pair come off the host.
  *
- * "/sbin/", not "/bin/", and that is load-bearing rather than
- * cosmetic. g_isotools_root is "/usr" for a bare dev-machine
- * invocation (test/test_installer.c's ISOTOOLS_ROOT), which is exactly
- * how this tool keeps working outside a Cix host -- so these paths
- * have to land where a development machine really keeps these two
- * binaries, /usr/sbin/fdisk and /usr/sbin/mkfs.fat. Spelling them
- * "/bin/..." by analogy with MOKUTIL_REL above resolved to
- * /usr/bin/fdisk, which exists on no Debian box, and broke the dev
- * fallback while the Cix path kept working -- the failure a QEMU
- * install test would have caught and a real box never would.
- * isotools.recipe stages them under sbin/ to match. */
-#define FDISK_REL "/sbin/fdisk"
+ * "/sbin/", not "/bin/", and that is load-bearing rather than cosmetic.
+ * g_isotools_root is "/usr" for a bare dev-machine invocation
+ * (test/test_installer.c's ISOTOOLS_ROOT), which is exactly how this
+ * tool keeps working outside a Cix host -- so this path has to land
+ * where a development machine really keeps the binary,
+ * /usr/sbin/mkfs.fat. Spelling it "/bin/..." by analogy with
+ * MOKUTIL_REL above resolved to /usr/bin/mkfs.fat, which exists on no
+ * Debian box, and broke the dev fallback while the Cix path kept
+ * working. isotools.recipe stages it under sbin/ to match. */
 #define MKFS_FAT_REL "/sbin/mkfs.fat"
 
 /* The real tools cix-install shells out to, and their full ldd
@@ -362,34 +360,31 @@ int main(int argc, char **argv)
 	if (ensure_dir_under(stage_dir, "usr/sbin") != 0)
 		return 1;
 	/*
-	 * fdisk and mkfs.fat come out of the isotools artifact; sfdisk,
+	 * mkfs.fat comes out of the isotools artifact; sfdisk,
 	 * mkfs.ext4 and mkfs.btrfs come off this host. The split is not
 	 * arbitrary -- it follows what a Cix control-plane root actually
 	 * contains, which is exactly the set mkbootroot.c stages, which is
 	 * in turn exactly the set cixd itself shells out to (sfdisk for
 	 * diskpart, mkfs.ext4/mkfs.btrfs for diskformat).
 	 *
-	 * cixd never partitions interactively and never formats FAT, so
-	 * fdisk and mkfs.fat have no reason to be in that root and are not
-	 * in it. Reading them from /usr/sbin anyway is the same class of
-	 * bug shim and mokutil had: an absolute path true on a Debian
-	 * development box and on no Cix host, and one of the reasons POST
-	 * /v1/system/iso has never been servable on a real machine. They
-	 * are packages now (fdisk 2.42.2-2, dosfstools 4.2-1) and isotools
-	 * harvests them.
+	 * cixd never formats FAT -- only the installer does, for the ESP --
+	 * so mkfs.fat has no reason to be in that root and is not in it.
+	 * Reading it from /usr/sbin anyway was the same class of bug shim
+	 * and mokutil had: an absolute path true on a Debian development
+	 * box and on no Cix host, and one of the reasons POST
+	 * /v1/system/iso has never been servable on a real machine. It is a
+	 * package now (dosfstools 4.2-1) and isotools harvests it.
 	 *
-	 * Neither needs a library beyond libc -- fdisk links util-linux's
-	 * own libraries statically and mkfs.fat has no dependencies to
-	 * begin with, both asserted in their recipes against the real ELF
-	 * -- so neither adds anything to the closures staged below.
+	 * It needs no library beyond libc -- asserted in its own recipe
+	 * against the real ELF -- so it adds nothing to the closures staged
+	 * below.
+	 *
+	 * fdisk used to be staged here too, for an interactive partitioning
+	 * path that no longer exists (ADR-0214).
 	 */
 	{
 		char tool_src[700];
 
-		snprintf(tool_src, sizeof(tool_src), "%s" FDISK_REL, g_isotools_root);
-		snprintf(dst, sizeof(dst), "%s/usr/sbin/fdisk", stage_dir);
-		if (test_image_fixture_copy_file(tool_src, dst) != 0)
-			return 1;
 		snprintf(tool_src, sizeof(tool_src), "%s" MKFS_FAT_REL, g_isotools_root);
 		snprintf(dst, sizeof(dst), "%s/usr/sbin/mkfs.vfat", stage_dir);
 		if (test_image_fixture_copy_file(tool_src, dst) != 0)

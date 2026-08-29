@@ -2,7 +2,14 @@
 
 ## Status
 
-Accepted.
+Superseded by [ADR-0214](0214-no-interactive-partitioning.md).
+
+Its first decision stands: scripted partitioning is the install default
+and `--auto-partition` is gone. Its second — keeping the interactive
+`fdisk` session behind `--interactive` — was reversed almost immediately,
+once the two arguments below for keeping it were actually checked against
+the code. ADR-0214 records why neither held. The reasoning here is left
+intact rather than edited, since the mistake is the useful part.
 
 ## Context
 

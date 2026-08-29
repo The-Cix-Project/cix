@@ -80,14 +80,10 @@ pkg_build() {
 		echo "MokManager not found -- install shim onto --build-image= first" >&2
 		exit 1
 	}
-	# fdisk and mkfs.fat, for the same reason shim and mokutil moved
-	# here: they are installer inputs that a Cix control-plane root has
-	# no reason to carry, so mkinstalleriso's old /usr/sbin reads could
-	# only ever work on a Debian development box.
-	test -x /usr/sbin/fdisk || {
-		echo "fdisk not found -- install fdisk onto --build-image= first" >&2
-		exit 1
-	}
+	# mkfs.fat, for the same reason shim and mokutil moved here: it is
+	# an installer input that a Cix control-plane root has no reason to
+	# carry, so mkinstalleriso's old /usr/sbin read could only ever work
+	# on a Debian development box.
 	test -x /usr/sbin/mkfs.fat || {
 		echo "mkfs.fat not found -- install dosfstools onto --build-image= first" >&2
 		exit 1
@@ -205,22 +201,23 @@ pkg_install() {
 	      "$PKG_DESTDIR/shim/"
 	cp -a /usr/bin/mokutil "$PKG_DESTDIR/bin/"
 
-	# The interactive partition editor and the ESP formatter. Both are
-	# built to need nothing beyond libc (fdisk links util-linux's own
-	# libraries statically; mkfs.fat has no dependencies at all), each
-	# asserted against the real ELF in its own recipe -- so unlike
-	# mokutil below, neither contributes anything to the closure this
-	# artifact carries.
+	# The ESP formatter. Built to need nothing beyond libc (mkfs.fat has
+	# no dependencies at all), asserted against the real ELF in its own
+	# recipe -- so unlike mokutil below, it contributes nothing to the
+	# closure this artifact carries.
 	#
-	# sbin/, not bin/, and deliberately: mkinstalleriso resolves these
-	# as <isotools-root>/sbin/..., and <isotools-root> is a plain
-	# "/usr" for a bare dev-machine invocation. Staging them under
-	# bin/ (as 2.14-4 did) made that resolve to /usr/bin/fdisk, which
+	# sbin/, not bin/, and deliberately: mkinstalleriso resolves this as
+	# <isotools-root>/sbin/mkfs.fat, and <isotools-root> is a plain
+	# "/usr" for a bare dev-machine invocation. Staging it under bin/
+	# (as 2.14-4 did) made that resolve to /usr/bin/mkfs.fat, which
 	# exists on no development box -- the Cix path kept working while
 	# the dev fallback silently broke.
 	#
+	# 2.14-4 also harvested fdisk, for cix-install's interactive
+	# partitioning path. ADR-0214 removed that path, and fdisk with it.
+	#
 	mkdir -p "$PKG_DESTDIR/sbin"
-	cp -a /usr/sbin/fdisk /usr/sbin/mkfs.fat "$PKG_DESTDIR/sbin/"
+	cp -a /usr/sbin/mkfs.fat "$PKG_DESTDIR/sbin/"
 
 	# mokutil's closure, MEASURED off the binary this project builds
 	# rather than copied from Debian's. The two differ in ways that
