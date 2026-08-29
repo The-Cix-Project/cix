@@ -297,6 +297,28 @@ int main(int argc, char **argv)
 		setenv("TMPDIR", tmp_dir, 1);
 	}
 
+	/*
+	 * grub-mkrescue reads its own data files -- unicode.pf2 above all --
+	 * from a pkgdatadir compiled in at /usr/share/grub, which exists on
+	 * the machine that built GRUB and on no Cix control-plane root:
+	 *
+	 *   grub-mkrescue: error: cannot open `/usr/share/grub/unicode.pf2':
+	 *   No such file or directory.
+	 *
+	 * GRUB's own utility code resolves that directory through a
+	 * "pkgdatadir" environment variable before falling back to the
+	 * compiled default. Verified directly rather than assumed: a bogus
+	 * value makes it complain about that exact path, and a real staged
+	 * one builds an ISO. The module directory needs no equivalent --
+	 * grub-mkrescue is already given it explicitly with -d.
+	 */
+	{
+		char grub_data_dir[700];
+
+		snprintf(grub_data_dir, sizeof(grub_data_dir), "%s/share/grub", g_isotools_root);
+		setenv("pkgdatadir", grub_data_dir, 1);
+	}
+
 	if (ensure_dir(stage_dir) != 0)
 		return 1;
 	if (test_image_fixture_build(stage_dir, cix_install_bin, "cix-install") != 0)
