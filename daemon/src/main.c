@@ -2535,6 +2535,53 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
 		return 500;
 	}
 
+	/*
+	 * One entry per slot. Any other entry for this slot is removed
+	 * first, because a slot with two entries cannot be rolled back
+	 * reliably.
+	 *
+	 * Seen on 192.168.15.95 after a bad update: the ESP held both
+	 * cix-b+0-3.conf (this update's entry, its three boot attempts
+	 * spent) and cix-b.conf (the same slot, left over from an earlier
+	 * update after a successful boot stripped its counter). An entry
+	 * with no counter is never considered expired -- that is what
+	 * "confirmed good" means -- so the failed slot stayed permanently
+	 * bootable through its own stale entry, and which slot won came
+	 * down to how the two versions happened to compare. Automatic Boot
+	 * Assessment cannot mean anything while a second, un-counted door
+	 * into the same root is still open.
+	 */
+	{
+		DIR *ed = opendir(g_esp_entries_dir);
+		struct dirent *de;
+		char prefix[64];
+
+		snprintf(prefix, sizeof(prefix), "cix-%s", inactive_slot);
+		if (ed != NULL) {
+			while ((de = readdir(ed)) != NULL) {
+				char stale[PATH_MAX];
+				size_t nlen = strlen(de->d_name);
+				size_t plen = strlen(prefix);
+
+				if (nlen <= 5 || strcmp(de->d_name + nlen - 5, ".conf") != 0)
+					continue;
+				if (strncmp(de->d_name, prefix, plen) != 0)
+					continue;
+				/* Same slot only: "cix-b" must not match "cix-b2".
+				 * What follows the slot is either the counter or
+				 * nothing at all. */
+				if (de->d_name[plen] != '+' && de->d_name[plen] != '.')
+					continue;
+				snprintf(stale, sizeof(stale), "%s/%s", g_esp_entries_dir, de->d_name);
+				if (unlink(stale) == 0)
+					logstore_write("cixd", "info",
+					               "esp: removed a previous boot entry for slot %s: %s",
+					               inactive_slot, de->d_name);
+			}
+			closedir(ed);
+		}
+	}
+
 	snprintf(entry_path, sizeof(entry_path), "%s/cix-%s+%d.conf", g_esp_entries_dir,
 	         inactive_slot, ROOT_UPDATE_TRIES);
 	/* version is this boot's own current timestamp -- always higher
@@ -2549,7 +2596,22 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
 		 * configuration rather than being fixed here. Everything else
 		 * on this line -- root=, rw, init= and the daemon's own
 		 * arguments -- stays this function's business: those decide
-		 * whether the machine boots at all, not what it displays. */
+		 * whether the machine boots at all, not what it displays.
+		 *
+		 * panic=10 is what makes Automatic Boot Assessment work
+		 * unattended. A panicking kernel HALTS; it does not reboot. So
+		 * a slot that dies during boot consumes one try and then just
+		 * sits there, and the counter only drains if somebody power-
+		 * cycles the machine. That is exactly what happened on
+		 * 192.168.15.95 after a bad update: the counter worked
+		 * perfectly, 3 -> 0 across three resets, and every one of
+		 * those resets was a human at the box.
+		 *
+		 * A Cix host has no console and no BMC by assumption -- that
+		 * is why ADR-0212 exists at all -- so "an operator power-cycles
+		 * it" is not a recovery path, it is an outage. Ten seconds is
+		 * long enough for a serial capture to be read and short enough
+		 * that three failed attempts cost well under a minute. */
 		char console_opts[512];
 
 		bootconsole_render(console_opts, sizeof(console_opts));
@@ -2558,7 +2620,7 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
 		         "sort-key cix\n"
 		         "version %ld\n"
 		         "linux /cix-bzImage-%s\n"
-		         "options %s%sroot=%s rw init=/bin/cixd -- --init-mode "
+		         "options %s%sroot=%s rw panic=10 init=/bin/cixd -- --init-mode "
 		         "--slot=%s --bind=%s\n",
 		         inactive_slot[0] == 'a' ? "A" : "B", (long)time(NULL), inactive_slot,
 		         console_opts, console_opts[0] != '\0' ? " " : "", device, inactive_slot,

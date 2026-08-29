@@ -511,7 +511,13 @@ static int auto_partition(const char *disk)
 	return run_subprocess_stdin(SFDISK_BIN, sfdisk_argv, script);
 }
 
-/* systemd-boot itself, the kernel, and root A's loader entry -- carrying
+/* panic=10 on the kernel command line: a panicking kernel halts rather
+ * than reboots, so without it a slot that dies during boot spends one
+ * try and then waits for a human. On a host with no console and no BMC
+ * that is an outage, not a recovery path -- ADR-0014's counted A/B
+ * assessment only drains its counter across actual boot attempts.
+ *
+ * systemd-boot itself, the kernel, and root A's loader entry -- carrying
  * an initial tries-left counter, the same Automatic Boot Assessment
  * convention part 2 already proved, applied uniformly to the very first
  * install rather than treating it as a special pre-trusted case.
@@ -582,8 +588,8 @@ static int populate_esp(const char *esp_mount, const char *ip)
 	         "sort-key cix\n"
 	         "version 1\n"
 	         "linux /cix-bzImage-a\n"
-	         "options console=tty0 console=ttyS0 root=%s2 rw init=/bin/cixd -- --init-mode "
-	         "--slot=a --bind=%s\n",
+	         "options console=tty0 console=ttyS0 root=%s2 rw panic=10 init=/bin/cixd "
+	         "-- --init-mode --slot=a --bind=%s\n",
 	         BOOT_TIME_DISK_PREFIX, ip);
 	if (write_text_file(path, loader_conf) != 0)
 		return -1;
