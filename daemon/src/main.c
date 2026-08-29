@@ -25142,6 +25142,47 @@ static void dispatch(int fd, const struct http_request *req)
 			{
 				size_t nlen = strlen(name);
 
+				/*
+				 * Publish an artifact that already exists (issue
+				 * #171). Publishing was previously reachable only as
+				 * a side effect of building, so an artifact that
+				 * failed to push, or was built before push was
+				 * configured, could never be published without being
+				 * rebuilt -- and for "cix" or "kernel" that is the
+				 * most expensive thing this platform does.
+				 */
+				if (nlen > 17 && strcmp(name + nlen - 17, "/artifact/publish") == 0 &&
+				    nlen - 17 < PKG_NAME_MAX && strcmp(req->method, "POST") == 0) {
+					char pkg_name[PKG_NAME_MAX];
+					enum pkg_error perr;
+
+					memcpy(pkg_name, name, nlen - 17);
+					pkg_name[nlen - 17] = '\0';
+					perr = pkg_artifact_publish(pkg_name);
+					if (perr == PKG_ERR_NOT_FOUND) {
+						respond_error(fd, 404, "Not Found",
+						              "no such installed package");
+						return;
+					}
+					if (perr != PKG_OK) {
+						respond_error(fd, 400, "Bad Request",
+						              "artifact publishing is not configured "
+						              "(see PUT /v1/pkg/artifact-config)");
+						return;
+					}
+					{
+						struct json_writer w;
+
+						jw_init(&w);
+						jw_obj_open(&w);
+						jw_key(&w, "status");
+						jw_str(&w, "queued");
+						jw_obj_close(&w);
+						respond_json(fd, 202, "Accepted", &w);
+					}
+					return;
+				}
+
 				if (nlen > 16 && strcmp(name + nlen - 16, "/artifact/export") == 0 &&
 				    nlen - 16 < PKG_NAME_MAX) {
 					char pkg_name[PKG_NAME_MAX];

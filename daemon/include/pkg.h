@@ -366,6 +366,21 @@ void pkg_write_json_recipes(struct json_writer *w);
  * build container.
  * PKG_ERR_INVALID_NAME / PKG_ERR_NOT_FOUND (missing or fails to parse).
  */
+/*
+ * Queues an already-built, installed artifact for publication to the
+ * configured artifact cache, exactly as a fresh build would (issue
+ * #171). Returns PKG_OK if queued, PKG_ERR_NOT_FOUND if no installed
+ * package of that name exists, PKG_ERR_INVALID_RECIPE if publishing is
+ * not configured.
+ *
+ * Publishing used to be reachable only as a side effect of building,
+ * so an artifact that failed to push, or was built before push was
+ * configured, or predates a rule change, could never be published
+ * again without rebuilding it -- which for `cix` or `kernel` is the
+ * most expensive thing this platform does.
+ */
+enum pkg_error pkg_artifact_publish(const char *name);
+
 enum pkg_error pkg_recipe_get(const char *name, const char *version, struct json_writer *w);
 
 /*
