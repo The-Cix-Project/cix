@@ -9714,6 +9714,7 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 	char mkinstalleriso_bin[PATH_MAX];
 	char cix_install_bin[PATH_MAX];
 	char cix_recover_bin[PATH_MAX];
+	char cix_boot_bin[PATH_MAX];
 	char bzimage_path[PATH_MAX];
 	char squashfs_path[PATH_MAX];
 	char isotools_root[PATH_MAX];
@@ -9722,7 +9723,7 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 	char signing_cert_der[PATH_MAX];
 	char stage_dir[PATH_MAX];
 	char kernel_args[512];
-	char *argv[13];
+	char *argv[14];
 	pid_t pid;
 	int pidfd;
 	int output_pipe[2];
@@ -9733,6 +9734,7 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 	    {mkinstalleriso_bin, "mkinstalleriso (from a \"cix\" hostbuild)"},
 	    {cix_install_bin, "cix-install (from a \"cix\" hostbuild)"},
 	    {cix_recover_bin, "cix-recover (from a \"cix\" hostbuild, ADR-0146)"},
+	    {cix_boot_bin, "cix-boot.efi (from a \"cix\" hostbuild, ADR-0215)"},
 	    {bzimage_path, "bzImage (from a \"kernel\" hostbuild)"},
 	    {squashfs_path, "cixd-root.squashfs (from a \"cix\" hostbuild)"},
 	    {isotools_root, "isotools artifact directory (from an \"isotools\" hostbuild)"},
@@ -9748,6 +9750,7 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 	         ARTIFACTS_DIR);
 	snprintf(cix_recover_bin, sizeof(cix_recover_bin), "%s/cix/cix-recover",
 	         ARTIFACTS_DIR);
+	snprintf(cix_boot_bin, sizeof(cix_boot_bin), "%s/cix/cix-boot.efi", ARTIFACTS_DIR);
 	snprintf(bzimage_path, sizeof(bzimage_path), "%s/kernel/bzImage", ARTIFACTS_DIR);
 	snprintf(squashfs_path, sizeof(squashfs_path), "%s/cix/cixd-root.squashfs",
 	         ARTIFACTS_DIR);
@@ -9778,15 +9781,16 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 	argv[1] = stage_dir;
 	argv[2] = cix_install_bin;
 	argv[3] = cix_recover_bin;
-	argv[4] = bzimage_path;
-	argv[5] = squashfs_path;
-	argv[6] = signing_key;
-	argv[7] = signing_cert_pem;
-	argv[8] = signing_cert_der;
-	argv[9] = ISO_OUTPUT_PATH;
-	argv[10] = kernel_args;
-	argv[11] = isotools_root;
-	argv[12] = NULL;
+	argv[4] = cix_boot_bin;
+	argv[5] = bzimage_path;
+	argv[6] = squashfs_path;
+	argv[7] = signing_key;
+	argv[8] = signing_cert_pem;
+	argv[9] = signing_cert_der;
+	argv[10] = ISO_OUTPUT_PATH;
+	argv[11] = kernel_args;
+	argv[12] = isotools_root;
+	argv[13] = NULL;
 
 	/*
 	 * Capture the child's stdout and stderr. Not fatal if it fails --

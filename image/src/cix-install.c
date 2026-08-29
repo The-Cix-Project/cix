@@ -56,7 +56,11 @@ extern char **environ;
  * once enroll_signing_key() below stages a pending enrollment request. */
 #define SHIM_EFI_SRC "/payload/cix-shim.efi"
 #define MOKMANAGER_EFI_SRC "/payload/cix-mm.efi"
-#define SIGNED_SYSTEMD_BOOT_SRC "/payload/cix-grubx64.efi"
+/* The Cix-signed boot manager, staged by mkinstalleriso. "grubx64.efi"
+ * is shim's own fixed name for the second stage it chainloads, not a
+ * statement about which program that is -- it was systemd-boot and is
+ * cix-boot now (ADR-0215). */
+#define SIGNED_BOOT_MANAGER_SRC "/payload/cix-grubx64.efi"
 #define SIGNING_CERT_SRC "/payload/cix-signing.cer"
 #define BZIMAGE_SRC "/boot/cix-bzImage"
 #define ROOT_SQUASHFS_SRC "/payload/cix-root.squashfs"
@@ -534,7 +538,7 @@ static int populate_esp(const char *esp_mount, const char *ip)
 	if (copy_file(SHIM_EFI_SRC, path) != 0)
 		return -1;
 	snprintf(path, sizeof(path), "%s/EFI/BOOT/grubx64.efi", esp_mount);
-	if (copy_file(SIGNED_SYSTEMD_BOOT_SRC, path) != 0)
+	if (copy_file(SIGNED_BOOT_MANAGER_SRC, path) != 0)
 		return -1;
 	snprintf(path, sizeof(path), "%s/EFI/BOOT/mmx64.efi", esp_mount);
 	if (copy_file(MOKMANAGER_EFI_SRC, path) != 0)

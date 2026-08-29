@@ -70,6 +70,7 @@
 #define CIXCTL_BIN "build/cixctl"
 #define CIX_INSTALL_BIN "build/cix-install"
 #define CIX_RECOVER_BIN "build/cix-recover"
+#define CIX_BOOT_BIN "build/cix-boot.efi"
 #define MKINSTALLERISO_BIN "build/mkinstalleriso"
 #define BZIMAGE_PATH "build/bzImage"
 #define SFDISK_BIN "/usr/sbin/sfdisk"
@@ -448,6 +449,7 @@ int main(void)
 		char isotools_root[PATH_MAX];
 		char *mkiso_argv[] = { (char *)MKINSTALLERISO_BIN, installer_stage,
 			                (char *)CIX_INSTALL_BIN,    (char *)CIX_RECOVER_BIN,
+			                (char *)CIX_BOOT_BIN,
 			                (char *)BZIMAGE_PATH,          control_plane_squashfs,
 			                (char *)SIGNING_KEY,           (char *)SIGNING_CERT_PEM,
 			                (char *)SIGNING_CERT_DER,      installer_iso,
