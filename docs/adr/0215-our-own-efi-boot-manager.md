@@ -114,6 +114,34 @@ while trying to build gnu-efi itself).
   shim still chainloads a Cix-signed second stage; only the bytes being
   signed change.
 
+## What it cost to get right
+
+Three findings, none of which a signature check reveals, and all of
+which produce identical symptoms — `Verification failed: (0x1A) Security
+Violation` — while `sbsign` and `sbverify` both report the image as
+correctly signed. They are recorded here because the error message says
+"signature" and the causes were not:
+
+1. **A `.sbat` section is mandatory.** shim generation 4 and later
+   refuses any image without SBAT metadata. This was the actual blocker.
+   The generation number in it is a revocation lever: shipping a shim
+   that requires `cix-boot,2` refuses every copy still declaring 1, so
+   it is incremented only for a real security fix.
+2. **`ld` appends a COFF symbol table after the last section.** Nothing
+   maps it, so the file is larger than the sum of its sections and
+   Authenticode hashers disagree about the trailing bytes. `sbsign`
+   warns (`data remaining[9216 vs 11422]: gaps between PE/COFF
+   sections?`) and `-s` on the link removes it.
+3. **`ld` computes `SizeOfImage` from file-backed sections only.** A
+   large `.bss` — 55 KB of static arrays here — produced a header
+   claiming `SizeOfImage 0x13000` while sections extended past
+   `0x22000`. Taking that memory from the firmware pool instead leaves
+   `.bss` at 16 bytes and the header describes the file.
+
+Verified end to end: `test_installer` installs to a blank disk and boots
+the installed system under real Secure Boot with the Cix key enrolled as
+a MOK, through shim, `cix-boot` and the kernel, twice.
+
 ## Alternatives considered
 
 **Package sd-boot.** Rejected on the eight-package chain above. It works
