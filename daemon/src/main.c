@@ -979,6 +979,7 @@ enum conn_kind {
 	                          * the SAME bytes are ALSO mirrored into this container's
 	                          * own registry_entry->captured_output tail. */
 	CONN_BOOTROOT_ASSEMBLE, /* server-side mkbootroot invocation (ADR-0057) */
+	CONN_ISO_OUTPUT,        /* mkinstalleriso's own captured stdout/stderr (ADR-0064) */
 	CONN_BOOTROOT_OUTPUT,   /* mkbootroot's own captured stdout/stderr, drained
 	                          * incrementally exactly like CONN_PKG_BUILD_OUTPUT (ADR-0087) */
 	CONN_ISO_ASSEMBLE,      /* server-side mkinstalleriso invocation (ADR-0064) */
@@ -8691,42 +8692,58 @@ static void handle_container_output_event(struct conn *cc)
  * one-job-at-a-time invariant) -- the same reasoning pkg.c's own
  * module-level build state statics already document.
  */
-static int g_bootroot_output_rd = -1;
 #define BOOTROOT_OUTPUT_CAPTURE_MAX 2000
-static char g_bootroot_output_captured[BOOTROOT_OUTPUT_CAPTURE_MAX + 1];
-static int g_bootroot_output_captured_len;
 
-static void bootroot_output_append(const char *data, int len)
+/*
+ * One captured child's output. Made a struct rather than a second set
+ * of module globals because the ISO assembly needs exactly this and
+ * copying it would be a parallel implementation of the same buffer --
+ * and because the gap it closes has now appeared three times (#125,
+ * #132, and the artifact-export stderr fix): a child fails, its own
+ * account of why goes to a pipe nobody reads, and the operator gets an
+ * exit status. Each instance is still safe as a bare static for the
+ * same reason the original was: at most one bootroot assembly and at
+ * most one ISO build can be in flight at a time, the latter enforced
+ * by handle_system_iso_post()'s own 409.
+ */
+struct child_output {
+	int rd;
+	char buf[BOOTROOT_OUTPUT_CAPTURE_MAX + 1];
+	int len;
+};
+
+static struct child_output g_bootroot_output = {-1, {0}, 0};
+
+static void child_output_append(struct child_output *c, const char *data, int len)
 {
 	int take = (len > BOOTROOT_OUTPUT_CAPTURE_MAX) ? BOOTROOT_OUTPUT_CAPTURE_MAX : len;
-	int new_total = g_bootroot_output_captured_len + take;
+	int new_total = c->len + take;
 
 	if (new_total > BOOTROOT_OUTPUT_CAPTURE_MAX) {
 		int overflow = new_total - BOOTROOT_OUTPUT_CAPTURE_MAX;
 
-		memmove(g_bootroot_output_captured, g_bootroot_output_captured + overflow,
-		        g_bootroot_output_captured_len - overflow);
-		g_bootroot_output_captured_len -= overflow;
+		memmove(c->buf, c->buf + overflow, c->len - overflow);
+		c->len -= overflow;
 	}
-	memcpy(g_bootroot_output_captured + g_bootroot_output_captured_len, data + (len - take), take);
-	g_bootroot_output_captured_len += take;
+	memcpy(c->buf + c->len, data + (len - take), take);
+	c->len += take;
 }
 
 /* Returns 1 once every write end has closed (EOF/real read error --
  * the caller should tear down its own epoll registration and call
- * bootroot_output_close()), 0 if there may still be more to come. */
-static int bootroot_output_readable(void)
+ * child_output_close()), 0 if there may still be more to come. */
+static int child_output_readable(struct child_output *c)
 {
 	char chunk[2048];
 	ssize_t n;
 
-	if (g_bootroot_output_rd < 0)
+	if (c->rd < 0)
 		return 1;
 
 	for (;;) {
-		n = read(g_bootroot_output_rd, chunk, sizeof(chunk));
+		n = read(c->rd, chunk, sizeof(chunk));
 		if (n > 0) {
-			bootroot_output_append(chunk, (int)n);
+			child_output_append(c, chunk, (int)n);
 			continue;
 		}
 		if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
@@ -8735,15 +8752,15 @@ static int bootroot_output_readable(void)
 	}
 }
 
-static void bootroot_output_close(void)
+static void child_output_close(struct child_output *c)
 {
-	if (g_bootroot_output_rd >= 0) {
-		close(g_bootroot_output_rd);
-		g_bootroot_output_rd = -1;
+	if (c->rd >= 0) {
+		close(c->rd);
+		c->rd = -1;
 	}
 }
 
-/* Registers g_bootroot_output_rd with epoll -- same CONN_KMSG-style
+/* Registers g_bootroot_output.rd with epoll -- same CONN_KMSG-style
  * direct-fd pattern as register_pkg_build_output() above, not the
  * pidfd-then-single-read shape the CONN_BOOTROOT_ASSEMBLE conn itself
  * still uses for tracking mkbootroot's own exit. No-op if the fd is
@@ -8753,7 +8770,7 @@ static void register_bootroot_output(void)
 	struct conn *cc;
 	struct cix_epoll_event ev;
 
-	if (g_bootroot_output_rd < 0)
+	if (g_bootroot_output.rd < 0)
 		return;
 
 	cc = malloc(sizeof(*cc));
@@ -8762,7 +8779,7 @@ static void register_bootroot_output(void)
 		abort();
 	}
 	cc->kind = CONN_BOOTROOT_OUTPUT;
-	cc->fd = g_bootroot_output_rd;
+	cc->fd = g_bootroot_output.rd;
 
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
@@ -8775,9 +8792,61 @@ static void register_bootroot_output(void)
 
 static void handle_bootroot_output_event(struct conn *cc)
 {
-	if (bootroot_output_readable()) {
+	if (child_output_readable(&g_bootroot_output)) {
 		cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
-		bootroot_output_close();
+		child_output_close(&g_bootroot_output);
+		free(cc);
+	}
+}
+
+/*
+ * mkinstalleriso's own captured output. Until this existed a failed
+ * ISO build reported "mkinstalleriso failed (status 0x100)" and
+ * nothing else -- the tool's own account of what went wrong went to a
+ * pipe nobody created. That is the third time this exact gap has cost
+ * a debugging cycle (#125, #132, and the artifact-export stderr fix),
+ * and an ISO build has more ways to fail than most: it stages a dozen
+ * host libraries, shells out to grub-mkrescue, xorriso, mformat and
+ * sbsign, and any of them can fail for a reason only it can state.
+ */
+static struct child_output g_iso_output = {-1, {0}, 0};
+
+static void register_iso_output(void)
+{
+	struct conn *cc;
+	struct cix_epoll_event ev;
+
+	if (g_iso_output.rd < 0)
+		return;
+
+	cc = malloc(sizeof(*cc));
+	if (cc == NULL) {
+		perror("malloc (iso output reactor conn)");
+		abort();
+	}
+	cc->kind = CONN_ISO_OUTPUT;
+	cc->fd = g_iso_output.rd;
+
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = cc;
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+		perror("epoll_ctl ADD iso output fd");
+		abort();
+	}
+}
+
+/*
+ * Drained incrementally, exactly like the bootroot one and for the
+ * same reason: grub-mkrescue and mksquashfs are chatty enough to fill
+ * a 64K pipe, and a full pipe blocks the child forever rather than
+ * failing it -- which would turn a diagnostic aid into a hang.
+ */
+static void handle_iso_output_event(struct conn *cc)
+{
+	if (child_output_readable(&g_iso_output)) {
+		cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+		child_output_close(&g_iso_output);
 		free(cc);
 	}
 }
@@ -8785,7 +8854,7 @@ static void handle_bootroot_output_event(struct conn *cc)
 /* Same shape as register_pkg_fetch_pidfd(), for the mkbootroot child
  * spawn_cix_bootroot_assembly() below just forked -- tracks only
  * its exit; its captured stdout/stderr is a separate, directly-
- * registered conn (register_bootroot_output()/g_bootroot_output_rd
+ * registered conn (register_bootroot_output()/g_bootroot_output.rd
  * above, ADR-0087), not this one. */
 static void register_bootroot_assemble_pidfd(pid_t pid, int pidfd)
 {
@@ -9047,8 +9116,8 @@ static void spawn_cix_bootroot_assembly(const char *artifact_dir)
 		g_bootroot_assembly_running = 0;
 		return;
 	}
-	g_bootroot_output_captured_len = 0;
-	g_bootroot_output_rd = output_pipe[0];
+	g_bootroot_output.len = 0;
+	g_bootroot_output.rd = output_pipe[0];
 	register_bootroot_output();
 	register_bootroot_assemble_pidfd(pid, pidfd);
 }
@@ -9655,6 +9724,7 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 	char *argv[13];
 	pid_t pid;
 	int pidfd;
+	int output_pipe[2];
 	struct {
 		const char *path;
 		const char *what;
@@ -9717,16 +9787,46 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 	argv[11] = isotools_root;
 	argv[12] = NULL;
 
+	/*
+	 * Capture the child's stdout and stderr. Not fatal if it fails --
+	 * the build still runs exactly as it did before this existed, just
+	 * back to bare exit-status reporting. O_NONBLOCK on the read end
+	 * only; the write end becomes mkinstalleriso's own stdio and must
+	 * stay blocking.
+	 */
+	if (pipe2(output_pipe, O_CLOEXEC) != 0) {
+		perror("pipe2 (iso assembly output capture)");
+		output_pipe[0] = output_pipe[1] = -1;
+	} else if (fcntl(output_pipe[0], F_SETFL, O_NONBLOCK) != 0) {
+		perror("fcntl O_NONBLOCK (iso assembly output capture)");
+		close(output_pipe[0]);
+		close(output_pipe[1]);
+		output_pipe[0] = output_pipe[1] = -1;
+	}
+
 	pid = fork();
 	if (pid < 0) {
 		snprintf(err_msg, err_msg_size, "fork failed: %s", strerror(errno));
+		if (output_pipe[0] >= 0) {
+			close(output_pipe[0]);
+			close(output_pipe[1]);
+		}
 		return -1;
 	}
 	if (pid == 0) {
+		if (output_pipe[1] >= 0) {
+			dup2(output_pipe[1], STDOUT_FILENO);
+			dup2(output_pipe[1], STDERR_FILENO);
+		}
 		execve(mkinstalleriso_bin, argv, environ);
 		perror("child: execve mkinstalleriso");
 		_exit(127);
 	}
+	if (output_pipe[1] >= 0)
+		close(output_pipe[1]);
+	g_iso_output.len = 0;
+	g_iso_output.rd = output_pipe[0];
+	register_iso_output();
 
 	pidfd = sys_pidfd_open(pid, 0);
 	if (pidfd < 0) {
@@ -9749,17 +9849,63 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 static void handle_iso_assemble_event(struct conn *cc)
 {
 	int status;
+	char output[BOOTROOT_OUTPUT_CAPTURE_MAX + 1];
+	int output_len;
 
 	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	/*
+	 * One last non-blocking drain before reporting: the incremental
+	 * CONN_ISO_OUTPUT reader may not have been scheduled between
+	 * mkinstalleriso's final write() and its exit. By the time waitpid()
+	 * confirms the exit the child's fds are gone, so this returns
+	 * whatever is still buffered or immediate EOF -- it never blocks.
+	 */
+	child_output_readable(&g_iso_output);
+	output_len = g_iso_output.len;
+	memcpy(output, g_iso_output.buf, (size_t)output_len);
+	output[output_len] = '\0';
+
 	if (waitpid(cc->pkg_fetch_pid, &status, 0) == cc->pkg_fetch_pid && WIFEXITED(status) &&
 	    WEXITSTATUS(status) == 0) {
 		g_iso_build_state = ISO_BUILD_READY;
 		fprintf(stderr, "iso assembly: succeeded (%s)\n", ISO_OUTPUT_PATH);
+		logstore_write("cixd", "info", "iso assembly: succeeded (%s)", ISO_OUTPUT_PATH);
+		/* A successful run that still printed something is worth
+		 * seeing -- ADR-0154's mksquashfs bug exited 0 and produced
+		 * wrong output, and said so on stderr the whole time. */
+		if (output_len > 0)
+			logstore_write("cixd", "info", "iso assembly: output: %s", output);
 	} else {
 		g_iso_build_state = ISO_BUILD_FAILED;
-		snprintf(g_iso_build_error, sizeof(g_iso_build_error), "mkinstalleriso failed (status 0x%x)",
-		         (unsigned)status);
+		/*
+		 * The child's own last words go into the error GET /system/iso
+		 * reports, not just the log store: this is the field an
+		 * operator actually reads, and "status 0x100" alone is what
+		 * made this failure undiagnosable.
+		 */
+		if (output_len > 0) {
+			const char *tail = output;
+
+			/* The last line is nearly always the real complaint;
+			 * everything before it is progress output. */
+			{
+				const char *nl;
+
+				while ((nl = strrchr(tail, '\n')) != NULL && nl[1] == '\0')
+					*(char *)nl = '\0';
+				nl = strrchr(tail, '\n');
+				if (nl != NULL)
+					tail = nl + 1;
+			}
+			snprintf(g_iso_build_error, sizeof(g_iso_build_error),
+			         "mkinstalleriso failed (status 0x%x): %s", (unsigned)status, tail);
+			logstore_write("cixd", "error", "iso assembly: output: %s", output);
+		} else {
+			snprintf(g_iso_build_error, sizeof(g_iso_build_error),
+			         "mkinstalleriso failed (status 0x%x)", (unsigned)status);
+		}
 		fprintf(stderr, "iso assembly: failed\n");
+		logstore_write("cixd", "error", "iso assembly: %s", g_iso_build_error);
 	}
 	close(cc->fd);
 	free(cc);
@@ -26385,8 +26531,8 @@ static void handle_bootroot_assemble_event(struct conn *cc)
 	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	reaped = waitpid(cc->pkg_fetch_pid, &status, 0);
 	/*
-	 * ADR-0087: g_bootroot_output_captured has already been
-	 * incrementally filled by bootroot_output_readable() (see its own
+	 * ADR-0087: g_bootroot_output.buf has already been
+	 * incrementally filled by child_output_readable() (see its own
 	 * comment) as mkbootroot ran, via its own directly-registered
 	 * epoll conn (CONN_BOOTROOT_OUTPUT) -- NOT read here in one shot,
 	 * which is what used to deadlock mkbootroot itself the moment its
@@ -26400,9 +26546,9 @@ static void handle_bootroot_assemble_event(struct conn *cc)
 	 * line) isn't exclusively a failure-path signal, though only the
 	 * failure branches below actually log it.
 	 */
-	bootroot_output_readable();
-	output_len = g_bootroot_output_captured_len;
-	memcpy(output, g_bootroot_output_captured, output_len);
+	child_output_readable(&g_bootroot_output);
+	output_len = g_bootroot_output.len;
+	memcpy(output, g_bootroot_output.buf, output_len);
 	output[output_len] = '\0';
 	/*
 	 * task #737: only a real, confirmed success ever advances the
@@ -27611,6 +27757,8 @@ static int cixd_main(int argc, char **argv)
 				handle_container_output_event(cc);
 			else if (cc->kind == CONN_BOOTROOT_ASSEMBLE)
 				handle_bootroot_assemble_event(cc);
+			else if (cc->kind == CONN_ISO_OUTPUT)
+				handle_iso_output_event(cc);
 			else if (cc->kind == CONN_BOOTROOT_OUTPUT)
 				handle_bootroot_output_event(cc);
 			else if (cc->kind == CONN_ISO_ASSEMBLE)
