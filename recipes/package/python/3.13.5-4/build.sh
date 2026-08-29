@@ -13,6 +13,7 @@ pkg_name="python"
 pkg_version="3.13.5-4"
 pkg_source="https://www.python.org/ftp/python/3.13.5/Python-3.13.5.tgz"
 pkg_sha256="e6190f52699b534ee203d9f417bdbca05a92f23e35c19c691a50ed2942835385"
+pkg_artifact_sha256="f385ffac7aa87d03dd422503af29b1b538c382694d20e3fe1a9b2232c8f5d26f"
 pkg_depends=""
 
 # ADR-0199/0209: the build environment is composed from exactly

@@ -14,6 +14,7 @@ pkg_name="autoconf"
 pkg_version="2.71-2"
 pkg_source="https://ftp.gnu.org/gnu/autoconf/autoconf-2.71.tar.xz"
 pkg_sha256="f14c83cfebcc9427f2c3cea7258bd90df972d92eb26752da4ddad81c87a0faa4"
+pkg_artifact_sha256="afb2428bf4343f14d2e6d6467acfc56dd90e6db705c28d725a8c9c48567e06fb"
 pkg_depends="m4 perl gawk"
 
 # ADR-0199/0209: the build environment is composed from exactly

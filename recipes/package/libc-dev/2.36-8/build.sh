@@ -45,6 +45,7 @@ pkg_version="2.36-8"
 # need the same treatment as a batch -- see #167.
 pkg_source="https://mirrors.kernel.org/gnu/libc/glibc-2.36.tar.xz"
 pkg_sha256="1c959fea240906226062cb4b1e7ebce71a9f0e3c0836c09e7e3423d434fcfe75"
+pkg_artifact_sha256="d932ad2d06d050c612f4a64d1d5f3b0b18d208a19d274449e0c822b1ad953faf"
 pkg_depends=""
 # ADR-0199/0209: every tool this recipe actually reaches for, and
 # nothing else -- there is no fallback environment to inherit from any

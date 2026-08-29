@@ -24,6 +24,7 @@ pkg_name="kmod"
 pkg_version="34.2-3"
 pkg_source="https://www.kernel.org/pub/linux/utils/kernel/kmod/kmod-34.2.tar.xz"
 pkg_sha256="5a5d5073070cc7e0c7a7a3c6ec2a0e1780850c8b47b3e3892226b93ffcb9cb54"
+pkg_artifact_sha256="8bb4612b0867143fc7ad6b71b52aec533f254a6666c8dae41c7fe209e160f05a"
 pkg_depends=""
 # ADR-0199/0209: the build environment is composed from exactly these
 # and nothing else -- there is no fallback to inherit a missing tool
