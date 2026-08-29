@@ -264,6 +264,39 @@ int main(int argc, char **argv)
 	setenv("PATH", isotools_bin_dir, 1);
 	setenv("LD_LIBRARY_PATH", isotools_lib_dir, 1);
 
+	/*
+	 * grub-mkrescue makes itself a temporary directory, and a Cix
+	 * control-plane root has no /tmp at all -- so with no TMPDIR set it
+	 * fails with
+	 *
+	 *   grub-mkrescue: error: cannot make temporary directory:
+	 *   No such file or directory
+	 *
+	 * on the very last step, after every input has been staged and
+	 * signed. Same class of gap as this project's own container images
+	 * having no /tmp (CLAUDE.md), one layer out.
+	 *
+	 * Pointed NEXT TO the staging directory rather than inside it:
+	 * stage_dir is the ISO's content root, so anything created within
+	 * it would be published on the media. Created here rather than
+	 * assumed, since the whole point is that the usual location does
+	 * not exist.
+	 */
+	{
+		char tmp_dir[700];
+		const char *slash = strrchr(stage_dir, '/');
+
+		if (slash != NULL) {
+			snprintf(tmp_dir, sizeof(tmp_dir), "%.*s/.mkrescue-tmp",
+			         (int)(slash - stage_dir), stage_dir);
+		} else {
+			snprintf(tmp_dir, sizeof(tmp_dir), ".mkrescue-tmp");
+		}
+		if (ensure_dir(tmp_dir) != 0)
+			return 1;
+		setenv("TMPDIR", tmp_dir, 1);
+	}
+
 	if (ensure_dir(stage_dir) != 0)
 		return 1;
 	if (test_image_fixture_build(stage_dir, cix_install_bin, "cix-install") != 0)
