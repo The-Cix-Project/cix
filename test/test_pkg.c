@@ -288,6 +288,47 @@ static int write_recipe(const char *name, const char *version, const char *tarba
 }
 
 /*
+ * A recipe that installs one file of its own AND one deliberately
+ * shared with another package (issue #175). Two packages owning one
+ * path is normal, not pathological: glibc and linux-headers both own
+ * parts of usr/include, and any two packages built from a shared
+ * upstream tree overlap.
+ */
+static int write_shared_path_recipe(const char *name, const char *version,
+                                    const char *tarball_path, const char *sha256,
+                                    const char *shared_rel)
+{
+	char name_dir[256];
+	char path[300];
+	FILE *f;
+
+	snprintf(name_dir, sizeof(name_dir), "%s/recipes/%s", g_pkg_state_dir, name);
+	mkdir(name_dir, 0755);
+	snprintf(path, sizeof(path), "%s/%s", name_dir, version);
+	mkdir(path, 0755);
+	snprintf(path, sizeof(path), "%s/recipes/%s/%s/build.sh", g_pkg_state_dir, name, version);
+	f = fopen(path, "w");
+	if (f == NULL)
+		return -1;
+	fprintf(f, "pkg_name=%s\n", name);
+	fprintf(f, "pkg_version=%s\n", version);
+	fprintf(f, "pkg_source=file://%s\n", tarball_path);
+	fprintf(f, "pkg_sha256=%s\n", sha256);
+	fprintf(f, "pkg_depends=\"\"\n");
+	fprintf(f, "pkg_build_depends=\"tcc libc-dev bash coreutils\"\n\n");
+	fprintf(f, "pkg_build() {\n\ttcc -o hello hello.c\n}\n\n");
+	fprintf(f, "pkg_install() {\n"
+	           "\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n"
+	           "\tcp hello \"$PKG_DESTDIR/usr/bin/%s\"\n"
+	           "\tmkdir -p \"$(dirname \"$PKG_DESTDIR/%s\")\"\n"
+	           "\techo %s > \"$PKG_DESTDIR/%s\"\n"
+	           "}\n",
+	        name, shared_rel, name, shared_rel);
+	fclose(f);
+	return 0;
+}
+
+/*
  * The version image_create() gives a brand-new image: SHA-256 of the
  * empty string, because a new image's manifest is empty. Spelled out
  * here rather than derived, so this test would still catch a composed
@@ -4024,6 +4065,103 @@ skip_resume:
 		}
 	}
 
+	/*
+	 * Issue #175: removing a package must not delete files another
+	 * installed package also owns.
+	 *
+	 * Two packages sharing a path is ordinary -- glibc and
+	 * linux-headers both own parts of usr/include -- and whichever
+	 * installed last is what is on disk. Deleting one used to unlink
+	 * every path in its manifest regardless, so the survivor was left
+	 * reported as installed, with a recorded manifest, and its files
+	 * gone. Nothing failed at the time; the damage surfaced later and
+	 * somewhere else entirely, as a build environment that could not
+	 * be composed.
+	 *
+	 * The shared file must still be there after deleting the package
+	 * that happens to have written it, because the other one claims it
+	 * too.
+	 */
+	{
+		const char *shared_rel = "usr/share/shared175/common.txt";
+		char sha[65];
+		char tarball[PATH_MAX];
+		int stage_ok;
+
+		stage_ok = stage_fixture_tarball(scratch_dir, "shareda", "1.0", tarball,
+		                                 sizeof(tarball), sha, sizeof(sha)) == 0;
+		if (stage_ok &&
+		    (write_shared_path_recipe("shareda", "1.0", tarball, sha, shared_rel) != 0 ||
+		     write_shared_path_recipe("sharedb", "1.0", tarball, sha, shared_rel) != 0)) {
+			fprintf(stderr, "FAIL: could not write the shared-path recipes\n");
+			ok = 0;
+			stage_ok = 0;
+		}
+		if (stage_ok) {
+			static const char *const both[] = { "shareda", "sharedb", NULL };
+			int i, installed = 1;
+
+			for (i = 0; both[i] != NULL && installed; i++) {
+				char body[128], st[64];
+
+				snprintf(body, sizeof(body), "{\"name\":\"%s\"}", both[i]);
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "POST", "/v1/pkg/install", body, &r) != 0 ||
+				    (r.status != 202 && r.status != 200)) {
+					fprintf(stderr, "FAIL: #175 install %s status=%d\n", both[i],
+					        r.status);
+					ok = 0;
+					installed = 0;
+				}
+				cix_response_free(&r);
+				if (installed &&
+				    (poll_pkg_state(&client, both[i], st, sizeof(st), 240) != 0 ||
+				     !str_eq(st, "installed"))) {
+					fprintf(stderr, "FAIL: #175 %s did not install (state=%s)\n",
+					        both[i], st);
+					ok = 0;
+					installed = 0;
+				}
+			}
+
+			if (installed && access(base_path("/usr/share/shared175/common.txt"), F_OK) != 0) {
+				fprintf(stderr, "FAIL: #175 shared file absent before the delete\n");
+				ok = 0;
+				installed = 0;
+			}
+
+			if (installed) {
+				memset(&r, 0, sizeof(r));
+				cix_client_request(&client, "DELETE", "/v1/pkg/shareda", NULL, &r);
+				if (r.status != 204 && r.status != 200) {
+					fprintf(stderr, "FAIL: #175 deleting shareda status=%d\n",
+					        r.status);
+					ok = 0;
+				}
+				cix_response_free(&r);
+
+				/* The survivor's own file, and the shared one it
+				 * also claims, must both still be present. */
+				if (access(base_path("/usr/bin/sharedb"), F_OK) != 0) {
+					fprintf(stderr,
+					        "FAIL: #175 deleting shareda removed sharedb's own file\n");
+					ok = 0;
+				}
+				if (access(base_path("/usr/share/shared175/common.txt"), F_OK) != 0) {
+					fprintf(stderr,
+					        "FAIL: #175 deleting shareda deleted a path sharedb "
+					        "also owns -- silent cross-package deletion\n");
+					ok = 0;
+				}
+				/* And its own, unshared file must be gone -- the fix
+				 * must not turn delete into a no-op. */
+				if (access(base_path("/usr/bin/shareda"), F_OK) == 0) {
+					fprintf(stderr, "FAIL: #175 shareda's own file survived the delete\n");
+					ok = 0;
+				}
+			}
+		}
+	}
 
 	if (stop_daemon(daemon_pid) != 0) {
 		fprintf(stderr, "FAIL: daemon did not exit cleanly on SIGTERM\n");
