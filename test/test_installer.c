@@ -20,7 +20,7 @@
  * (GRUB's own menu; fdisk's own interactive UI, see step 4's own comment
  * for why this replaced cfdisk), then the three-session Secure Boot flow:
  *   1. build/mkinstalleriso's real .iso + a blank target disk,
- *      partitioned by cix-install itself via --auto-partition (its
+ *      partitioned by cix-install itself, which is now what it does by default (its
  *      own scripted sfdisk, the exact same layout a real fdisk session
  *      produces -- this session's own job is proving the installer's
  *      role-detection/format/write logic, not re-proving *interactive*
@@ -119,7 +119,7 @@
 /* A blank disk file of the standard test size -- shared by the real
  * GRUB-path smoke test and the main Secure Boot flow below, each
  * against its own disk file. Unpartitioned: every session in this file
- * now boots with --auto-partition (cix-install's own scripted
+ * now boots with no partition flag at all, i.e. cix-install's own scripted
  * sfdisk, image/src/cix-install.c) rather than this test pre-
  * partitioning host-side -- one source of truth for the partition
  * layout, not two copies of the same sfdisk script kept in sync by
@@ -279,14 +279,14 @@ int main(void)
 
 	/* 2. The real, distributable installer .iso -- the same tool and the
 	 * same kind of artifact an operator would actually use, just with
-	 * real test values plus --auto-partition standing in for a real
+	 * real test values; partitioning is now the default, standing in for a real
 	 * operator's own --disk=/--ip=/... choice at the GRUB boot-menu edit
-	 * prompt (--auto-partition itself -- cix-install's own scripted
+	 * prompt (the default path itself -- cix-install's own scripted
 	 * sfdisk, added as a convenience once typing the fixed fdisk sequence
 	 * by hand for every VM/scripted install proved to be pure friction --
 	 * gets exercised for real right here, this session's own install). */
 	snprintf(kernel_args, sizeof(kernel_args),
-	         "--disk=/dev/vda --ip=%s --prefix=%d --gateway=%s --interface=%s --auto-partition", TEST_IP,
+	         "--disk=/dev/vda --ip=%s --prefix=%d --gateway=%s --interface=%s", TEST_IP,
 	         TEST_PREFIX, TEST_GATEWAY, TEST_IFACE);
 	{
 		char *mkiso_argv[] = { (char *)MKINSTALLERISO_BIN, installer_stage,
@@ -368,10 +368,11 @@ int main(void)
 	 * name all five to the exact GPT names cix-install itself reads
 	 * back -- confirmed byte-for-byte via `sfdisk -d` against the
 	 * existing sfdisk-scripted layout used elsewhere in this project.
-	 * Boots via direct_kernel with kernel_args built fresh here (neither
-	 * --skip-partition nor --auto-partition, unlike every other session
-	 * in this file, so it falls through to the default: interactive
-	 * fdisk) against the same already-built installer_iso -- direct_kernel's own
+	 * Boots via direct_kernel with kernel_args built fresh here, passing
+	 * --interactive -- which is what selects this path now that scripted
+	 * partitioning is the default (it used to be the other way round: the
+	 * interactive session was what you got with no flag at all)
+	 * against the same already-built installer_iso -- direct_kernel's own
 	 * command line is supplied per-boot, independent of whatever's baked
 	 * into the ISO's own grub.cfg, so no separate ISO build is needed. */
 	{
@@ -428,7 +429,7 @@ int main(void)
 		snprintf(fdisk_smoke_vars, sizeof(fdisk_smoke_vars), "%s/fdisk_smoke_vars.fd", workdir);
 		snprintf(fdisk_kernel_args, sizeof(fdisk_kernel_args),
 		         "console=ttyS0 root=/dev/sr0 rootfstype=iso9660 ro init=/bin/cix-install -- "
-		         "--disk=/dev/vda --ip=%s --prefix=%d --gateway=%s --interface=%s",
+		         "--disk=/dev/vda --ip=%s --prefix=%d --gateway=%s --interface=%s --interactive",
 		         TEST_IP, TEST_PREFIX, TEST_GATEWAY, TEST_IFACE);
 		{
 			int fd = open(fdisk_smoke_disk, O_CREAT | O_WRONLY, 0644);
@@ -464,7 +465,7 @@ int main(void)
 		}
 	}
 
-	/* 5. Target disk: blank -- session 1's own --auto-partition (kernel_args
+	/* 5. Target disk: blank -- session 1's own default partitioning (kernel_args
 	 * above) partitions it, same as a real install would. */
 	if (create_blank_disk(target_disk_img) != 0)
 		return 1;

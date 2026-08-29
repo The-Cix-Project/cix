@@ -73,9 +73,21 @@ static char g_sbsign_bin[600];
 
 /* The two installer tools no Cix control-plane root carries -- see the
  * staging block in build_installer_root() for why they come from the
- * artifact while sfdisk and the mkfs pair come off the host. */
-#define FDISK_REL "/bin/fdisk"
-#define MKFS_FAT_REL "/bin/mkfs.fat"
+ * artifact while sfdisk and the mkfs pair come off the host.
+ *
+ * "/sbin/", not "/bin/", and that is load-bearing rather than
+ * cosmetic. g_isotools_root is "/usr" for a bare dev-machine
+ * invocation (test/test_installer.c's ISOTOOLS_ROOT), which is exactly
+ * how this tool keeps working outside a Cix host -- so these paths
+ * have to land where a development machine really keeps these two
+ * binaries, /usr/sbin/fdisk and /usr/sbin/mkfs.fat. Spelling them
+ * "/bin/..." by analogy with MOKUTIL_REL above resolved to
+ * /usr/bin/fdisk, which exists on no Debian box, and broke the dev
+ * fallback while the Cix path kept working -- the failure a QEMU
+ * install test would have caught and a real box never would.
+ * isotools.recipe stages them under sbin/ to match. */
+#define FDISK_REL "/sbin/fdisk"
+#define MKFS_FAT_REL "/sbin/mkfs.fat"
 
 /* The real tools cix-install shells out to, and their full ldd
  * closures (checked directly against this host) -- staged the same way
@@ -132,12 +144,35 @@ static const char *const g_lib_closure[] = {
  * target was never copied fails at load time rather than at build time.
  */
 static const char *const g_isotools_lib_closure[] = {
-	"/lib/x86_64-linux-gnu/libssl.so.3",       "/lib/x86_64-linux-gnu/libcrypto.so.3",
-	"/lib/x86_64-linux-gnu/libefivar.so.1",    "/lib/x86_64-linux-gnu/libefivar.so.1.39",
-	"/lib/x86_64-linux-gnu/libkeyutils.so.1",  "/lib/x86_64-linux-gnu/libkeyutils.so.1.10",
-	"/lib/x86_64-linux-gnu/libcrypt.so.2",     "/lib/x86_64-linux-gnu/libcrypt.so.2.0.0",
+	"/lib/x86_64-linux-gnu/libssl.so.3",      "/lib/x86_64-linux-gnu/libcrypto.so.3",
+	"/lib/x86_64-linux-gnu/libefivar.so.1",   "/lib/x86_64-linux-gnu/libkeyutils.so.1",
+	"/lib/x86_64-linux-gnu/libcrypt.so.2",
 	NULL,
 };
+/*
+ * SONAMEs only. This list used to carry the fully-versioned filenames
+ * alongside them -- libefivar.so.1.39, libkeyutils.so.1.10,
+ * libcrypt.so.2.0.0 -- mirroring the symlink structure of the isotools
+ * artifact these are read from. Both wrong and unnecessary:
+ *
+ *   Unnecessary, because test_image_fixture_add_lib() copies through
+ *   open(), which follows symlinks, so staging the SONAME already
+ *   lands a real file holding the target's content. And the SONAME is
+ *   the only name that matters at run time -- it is what DT_NEEDED
+ *   records and what the dynamic linker opens.
+ *
+ *   Wrong, because those version numbers are OUR build's. This same
+ *   list is resolved against a plain "/usr" when the tool runs on a
+ *   development machine, where libefivar is whatever Debian ships --
+ *   so the versioned entries could only ever resolve on a Cix host.
+ *   That is what test_installer hit the first time it was run after
+ *   this closure was introduced:
+ *     /usr/lib/x86_64-linux-gnu/libefivar.so.1.39: No such file or
+ *     directory
+ *   Pinning a version here buys nothing: an artifact carrying a
+ *   different efivar would still be staged correctly, because the
+ *   SONAME resolves to whatever that artifact actually holds.
+ */
 
 static int ensure_dir(const char *path)
 {

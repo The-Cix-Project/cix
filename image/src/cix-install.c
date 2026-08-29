@@ -68,13 +68,15 @@ extern char **environ;
 
 #define ROOT_A_TRIES 3
 
-/* --auto-partition's fixed layout -- the same sizes test/test_installer.c's
+/* The automatic layout's fixed sizes -- the same ones test/test_installer.c's
  * own create_target_disk() already uses and has proven correct (byte-for-
  * byte identical GPT names/types to what a real interactive fdisk/cfdisk
  * session produces, per find_partition_device()'s own read-back below,
- * which doesn't care how the table was written). Not configurable: an
- * operator who needs different sizing already has the interactive fdisk
- * path (the default, no flag) for that. */
+ * which doesn't care how the table was written). Not configurable here: an
+ * operator who needs different sizing has --interactive for that, and a
+ * running host has the REST partition API for everything after install --
+ * which is where layout changes belong, since ADR-0190 leaves the
+ * remainder of the disk unallocated precisely so they can be made there. */
 #define AUTO_ESP_SIZE_MIB 64
 #define AUTO_ROOT_SIZE_MIB 160
 #define AUTO_CONFIG_SIZE_MIB 64
@@ -409,11 +411,19 @@ static int mkfs_btrfs(const char *device, const char *label, int with_mixed)
 	}
 }
 
-/* --auto-partition: sfdisk, scripted, no operator interaction -- the same
+/* The default: sfdisk, scripted, no operator interaction -- the same
  * mechanism (and the same GPT names/types/order) a real interactive fdisk
- * session produces, for VM/scripted-provisioning use where an operator
- * typing the same fixed command sequence by hand every time is pure
- * friction, not a meaningful safety check. */
+ * session produces.
+ *
+ * This became the default rather than an --auto-partition opt-in because
+ * the interactive path was never the safer of the two. It reads roles back
+ * from GPT partition NAMES (find_partition_device()), so an operator
+ * driving fdisk by hand has to reproduce "cix-esp", "cix-root-a",
+ * "cix-root-b", "cix-config" and "cix-containers" byte-for-byte, in order,
+ * with the right types -- an exacting contract the fdisk UI says nothing
+ * about, and whose failure surfaces much later, as a partition role that
+ * cannot be found. Scripting it removes the one step where a typo is both
+ * easy to make and expensive to discover. */
 /*
  * The disk's own size in MiB, read from sysfs rather than computed from
  * anything this installer was told: /sys/class/block/<name>/size is in
@@ -650,7 +660,8 @@ int main(int argc, char **argv)
 	const char *iface = NULL;
 	int prefix = -1;
 	int skip_partition = 0;
-	int auto_partition_flag = 0;
+	int interactive_partition = 0;
+	int unknown_arg = 0;
 	int i;
 	struct stat st;
 	char sfdisk_dump[16384];
@@ -678,20 +689,41 @@ int main(int argc, char **argv)
 			iface = argv[i] + 12;
 		else if (strcmp(argv[i], "--skip-partition") == 0)
 			skip_partition = 1;
-		else if (strcmp(argv[i], "--auto-partition") == 0)
-			auto_partition_flag = 1;
+		else if (strcmp(argv[i], "--interactive") == 0)
+			interactive_partition = 1;
+		else if (strcmp(argv[i], "--") != 0) {
+			/*
+			 * Anything unrecognised is fatal, and that is a safety
+			 * property, not tidiness. This loop used to ignore what it
+			 * did not know, which meant a mistyped "--skip-partiton"
+			 * silently became "partition this disk" -- the installer
+			 * destroying a disk the operator was explicitly trying to
+			 * preserve, with no diagnostic anywhere. The one flag whose
+			 * typo is most costly was the one least protected.
+			 *
+			 * A bare "--" is tolerated because the kernel command line
+			 * carries one (init=/bin/cix-install -- --disk=...) and
+			 * whether it reaches init's argv is the bootloader's
+			 * business, not something to be strict about.
+			 */
+			dual_printf("cix-install: unrecognised argument: %s\n", argv[i]);
+			unknown_arg = 1;
+		}
 	}
 
-	if (disk == NULL || ip == NULL || gateway == NULL || iface == NULL || prefix <= 0 ||
-	    prefix > 32 || (skip_partition && auto_partition_flag)) {
+	if (unknown_arg || disk == NULL || ip == NULL || gateway == NULL || iface == NULL ||
+	    prefix <= 0 || prefix > 32 || (skip_partition && interactive_partition)) {
 		dual_printf("usage: %s --disk=/dev/sdX --ip=A.B.C.D --prefix=N --gateway=A.B.C.D "
-		            "--interface=IFNAME [--skip-partition | --auto-partition]\n"
+		            "--interface=IFNAME [--skip-partition | --interactive]\n"
 		            "  (--interface=: the physical NIC to bind the management IP to, e.g.\n"
 		            "  eth0 -- see `ip link`/`ls /sys/class/net` from a rescue shell if\n"
-		            "  unsure; default: interactive fdisk; --skip-partition: disk is\n"
-		            "  already partitioned by other means; --auto-partition: partition it\n"
-		            "  here, non-interactively, with the standard fixed layout -- the two\n"
-		            "  partition flags are mutually exclusive)\n",
+		            "  unsure. By default the disk is partitioned here, non-interactively,\n"
+		            "  with the standard layout, sized to the disk and leaving the\n"
+		            "  remainder unallocated. --skip-partition: the disk is already\n"
+		            "  partitioned by other means. --interactive: drive fdisk by hand --\n"
+		            "  the installer reads partition roles back from GPT names, so they\n"
+		            "  must be cix-esp, cix-root-a, cix-root-b, cix-config and\n"
+		            "  cix-containers exactly. The two flags are mutually exclusive.)\n",
 		            argv[0]);
 		return 2;
 	}
@@ -703,16 +735,16 @@ int main(int argc, char **argv)
 
 	dual_printf("cix-install: target disk %s -- ALL DATA ON THIS DISK WILL BE DESTROYED\n", disk);
 
-	if (auto_partition_flag) {
-		if (auto_partition(disk) != 0) {
-			dual_printf("auto-partition did not complete successfully -- aborting\n");
-			return 1;
-		}
-	} else if (!skip_partition) {
+	if (interactive_partition) {
 		char *fdisk_argv[] = { (char *)FDISK_BIN, (char *)disk, NULL };
 
 		if (run_subprocess_dual_console(FDISK_BIN, fdisk_argv) != 0) {
 			dual_printf("fdisk did not complete successfully -- aborting\n");
+			return 1;
+		}
+	} else if (!skip_partition) {
+		if (auto_partition(disk) != 0) {
+			dual_printf("partitioning did not complete successfully -- aborting\n");
 			return 1;
 		}
 	}
