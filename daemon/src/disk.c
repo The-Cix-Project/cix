@@ -291,18 +291,36 @@ void disk_probe_fs_type(const char *dev_path, char *out, size_t out_size)
 			return;
 		}
 	}
+	/*
+	 * btrfs BEFORE ext4, and the order is load-bearing rather than
+	 * stylistic. mkfs.btrfs does not zero the ext4 superblock at offset
+	 * 1024, so a disk converted from ext4 to btrfs still carries a
+	 * valid-looking 0xEF53 there. With ext4 checked first, every such
+	 * disk was reported as ext4 forever after -- which is precisely the
+	 * ADR-0207 migration path, where the answer matters most and the
+	 * wrong one is most convincing.
+	 *
+	 * Confirmed on 192.168.15.95: sda, freshly and successfully made
+	 * btrfs, reported fs_type "ext4" here while diskrole's own
+	 * persisted value (written by the format that had just succeeded)
+	 * correctly said btrfs.
+	 *
+	 * btrfs's magic sits at 0x10040, far outside anything ext4 writes,
+	 * so testing it first is unambiguous in both directions: a real
+	 * ext4 filesystem has nothing there, and a btrfs one is no longer
+	 * shadowed by a stale signature underneath it.
+	 */
+	if (pread(fd, buf, 8, 0x10040) == 8 && memcmp(buf, "_BHRfS_M", 8) == 0) {
+		snprintf(out, out_size, "btrfs");
+		close(fd);
+		return;
+	}
 	/* ext2/3/4: magic 0xEF53 at byte 56 of the superblock, which
 	 * itself starts at 1024. Reported as "ext4" -- the only ext
 	 * variant this project's own mkfs ever produces, and the string
 	 * mount(2) is given. */
 	if (pread(fd, buf, 2, 1024 + 56) == 2 && buf[0] == 0x53 && buf[1] == 0xEF) {
 		snprintf(out, out_size, "ext4");
-		close(fd);
-		return;
-	}
-	/* btrfs: "_BHRfS_M" at 0x10040. */
-	if (pread(fd, buf, 8, 0x10040) == 8 && memcmp(buf, "_BHRfS_M", 8) == 0) {
-		snprintf(out, out_size, "btrfs");
 		close(fd);
 		return;
 	}
