@@ -62,7 +62,6 @@ extern char **environ;
 static char g_isotools_root[512];
 static char g_grub_mkrescue_bin[600];
 static char g_sbsign_bin[600];
-#define SYSTEMD_BOOT_EFI "/usr/lib/systemd/boot/efi/systemd-bootx64.efi"
 
 /* Secure Boot chain for the *target* disk's ESP (cix-install.c's own
  * populate_esp() writes these three under EFI/BOOT/ -- see ADR-0015).
@@ -168,6 +167,7 @@ int main(int argc, char **argv)
 	const char *stage_dir;
 	const char *cix_install_bin;
 	const char *cix_recover_bin;
+	const char *cix_boot_bin;
 	const char *bzimage_path;
 	const char *control_plane_squashfs;
 	const char *signing_key;
@@ -184,14 +184,20 @@ int main(int argc, char **argv)
 	char isotools_lib_dir[600];
 	int i;
 
-	if (argc != 12) {
+	if (argc != 13) {
 		fprintf(stderr,
 		        "usage: %s <staging-dir> <cix-install-bin> <cix-recover-bin> "
-		        "<bzImage> <control-plane-squashfs> <signing-key> <signing-cert.crt> "
-		        "<signing-cert.cer> <out.iso> <kernel-args> <isotools-root>\n"
+		        "<cix-boot.efi> <bzImage> <control-plane-squashfs> <signing-key> "
+		        "<signing-cert.crt> <signing-cert.cer> <out.iso> <kernel-args> "
+		        "<isotools-root>\n"
 		        "  cix-recover-bin: the break-glass recovery tool (ADR-0146), staged as\n"
 		        "  a second GRUB menu entry on the SAME media -- boots straight to a\n"
 		        "  console prompt, no kernel-args needed (it takes none).\n"
+		        "  cix-boot.efi: the UEFI boot manager (ADR-0215), signed here and\n"
+		        "  written to the TARGET disk's ESP as shim's second stage. Built from\n"
+		        "  this repo alongside cix-install, which is why it is an argument\n"
+		        "  rather than something read off the build machine -- it used to be\n"
+		        "  systemd-boot, at an absolute path no Cix host has.\n"
 		        "  signing-key/signing-cert.crt/signing-cert.cer: the Cix Secure Boot\n"
 		        "  signing key pair (image/keys/cix-signing.{key,crt,cer} -- .crt is\n"
 		        "  PEM, for sbsign; .cer is DER, for mokutil) -- used to sign systemd-boot\n"
@@ -219,14 +225,15 @@ int main(int argc, char **argv)
 	stage_dir = argv[1];
 	cix_install_bin = argv[2];
 	cix_recover_bin = argv[3];
-	bzimage_path = argv[4];
-	control_plane_squashfs = argv[5];
-	signing_key = argv[6];
-	signing_cert_pem = argv[7];
-	signing_cert_der = argv[8];
-	out_iso = argv[9];
-	kernel_args = argv[10];
-	snprintf(g_isotools_root, sizeof(g_isotools_root), "%s", argv[11]);
+	cix_boot_bin = argv[4];
+	bzimage_path = argv[5];
+	control_plane_squashfs = argv[6];
+	signing_key = argv[7];
+	signing_cert_pem = argv[8];
+	signing_cert_der = argv[9];
+	out_iso = argv[10];
+	kernel_args = argv[11];
+	snprintf(g_isotools_root, sizeof(g_isotools_root), "%s", argv[12]);
 
 	snprintf(g_grub_mkrescue_bin, sizeof(g_grub_mkrescue_bin), "%s/bin/grub-mkrescue",
 	         g_isotools_root);
@@ -432,8 +439,20 @@ int main(int argc, char **argv)
 		if (test_image_fixture_copy_file(shim_src, dst) != 0)
 			return 1;
 	}
+	/*
+	 * The boot manager, signed with the Cix key and staged as the
+	 * second stage shim will chainload on the target (ADR-0015 --
+	 * "grubx64.efi" is shim's own fixed name for that slot, not a
+	 * claim about GRUB).
+	 *
+	 * This used to be systemd-boot, read from an absolute path on
+	 * whatever machine ran this tool. It is cix-boot now (ADR-0215),
+	 * built from this repo by the same round that builds cix-install
+	 * and cix-recover, and passed in the same way -- so it needs no
+	 * package, no artifact harvest and no isotools involvement at all.
+	 */
 	snprintf(dst, sizeof(dst), "%s/payload/cix-grubx64.efi", stage_dir);
-	if (sbsign_to(signing_key, signing_cert_pem, SYSTEMD_BOOT_EFI, dst) != 0)
+	if (sbsign_to(signing_key, signing_cert_pem, cix_boot_bin, dst) != 0)
 		return 1;
 	snprintf(dst, sizeof(dst), "%s/payload/cix-signing.cer", stage_dir);
 	if (test_image_fixture_copy_file(signing_cert_der, dst) != 0)

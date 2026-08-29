@@ -1,0 +1,498 @@
+/*
+ * cix-boot -- the UEFI boot manager an installed Cix host boots through
+ * (ADR-0215).
+ *
+ * It replaces systemd-boot, and does only what this platform actually
+ * used systemd-boot for:
+ *
+ *   1. read /loader/loader.conf and the /loader/entries files off the ESP
+ *      it was itself loaded from
+ *   2. pick the best entry -- highest version, and an entry that has
+ *      run out of boot attempts only ever as a last resort
+ *   3. decrement that entry's Automatic Boot Assessment counter by
+ *      renaming its file (cix-a+3.conf -> cix-a+2-1.conf)
+ *   4. load the kernel it names and start it, with the entry's own
+ *      "options" line as the kernel command line
+ *
+ * The entry format is the Boot Loader Specification, unchanged --
+ * ADR-0014's counted A/B slots, cix-install's ESP layout and the
+ * daemon's own esp.c all keep working, because only the reader changed.
+ *
+ * The kernel is itself a PE32+ EFI application (the Linux EFI stub), so
+ * starting it is LoadImage()+StartImage() with LoadOptions set. There is
+ * no filesystem driver, no scripting language and no module loader here,
+ * because none of that is needed to do the four things above.
+ *
+ * No libc: this runs before any operating system exists. The handful of
+ * string operations used are written out below rather than pulled in.
+ */
+#include "uefi.h"
+
+#define MAX_ENTRIES 32
+#define ENTRY_TEXT_MAX 4096
+#define NAME_MAX_CHARS 128
+
+static EFI_SYSTEM_TABLE *ST;
+static EFI_BOOT_SERVICES *BS;
+
+struct entry {
+	CHAR16 filename[NAME_MAX_CHARS]; /* as it appears in /loader/entries */
+	char id[NAME_MAX_CHARS];         /* filename minus ".conf" and minus the counter */
+	char linux_path[256];            /* the "linux" key, e.g. /cix-bzImage-a */
+	char options[1024];              /* the "options" key -- the kernel command line */
+	int version;                     /* the "version" key; 0 when absent */
+	int tries_left;                  /* -1 when the entry carries no counter */
+	int tries_done;
+};
+
+/* ---- freestanding string helpers ---- */
+
+static UINTN str16_len(const CHAR16 *s)
+{
+	UINTN n = 0;
+
+	while (s[n] != 0)
+		n++;
+	return n;
+}
+
+static void str_copy(char *dst, UINTN dst_size, const char *src, UINTN n)
+{
+	UINTN i;
+
+	for (i = 0; i < n && i + 1 < dst_size && src[i] != '\0'; i++)
+		dst[i] = src[i];
+	dst[i] = '\0';
+}
+
+static int str_eq(const char *a, const char *b)
+{
+	while (*a != '\0' && *a == *b) {
+		a++;
+		b++;
+	}
+	return *a == '\0' && *b == '\0';
+}
+
+static void print(const CHAR16 *s)
+{
+	ST->ConOut->OutputString(ST->ConOut, (CHAR16 *)s);
+}
+
+/* ASCII to UCS-2, for handing a command line to the kernel. */
+static void ascii_to_utf16(const char *src, CHAR16 *dst, UINTN dst_chars)
+{
+	UINTN i;
+
+	for (i = 0; i + 1 < dst_chars && src[i] != '\0'; i++)
+		dst[i] = (CHAR16)(unsigned char)src[i];
+	dst[i] = 0;
+}
+
+static int digit_value(CHAR16 c)
+{
+	return (c >= '0' && c <= '9') ? (int)(c - '0') : -1;
+}
+
+/* ---- entry filename parsing ----
+ *
+ * "cix-a+3.conf"   -> id "cix-a", tries_left 3, tries_done 0
+ * "cix-a+2-1.conf" -> id "cix-a", tries_left 2, tries_done 1
+ * "cix-a.conf"     -> id "cix-a", tries_left -1 (a confirmed entry)
+ *
+ * The id excludes the counter deliberately: an entry keeps its identity
+ * as its counter changes, which is what makes "this is the same entry I
+ * booted last time" answerable at all.
+ */
+static int parse_entry_name(const CHAR16 *name, struct entry *e)
+{
+	UINTN len = str16_len(name);
+	UINTN stem_len, i;
+	int seen_plus = -1;
+
+	if (len < 6)
+		return -1;
+	/* Must end in ".conf". */
+	if (name[len - 5] != '.' || name[len - 4] != 'c' || name[len - 3] != 'o' ||
+	    name[len - 2] != 'n' || name[len - 1] != 'f')
+		return -1;
+	stem_len = len - 5;
+
+	for (i = 0; i < stem_len; i++) {
+		if (name[i] == '+')
+			seen_plus = (int)i;
+	}
+
+	e->tries_left = -1;
+	e->tries_done = 0;
+
+	if (seen_plus < 0) {
+		/* No counter: the whole stem is the id. */
+		for (i = 0; i < stem_len && i + 1 < NAME_MAX_CHARS; i++)
+			e->id[i] = (char)name[i];
+		e->id[i] = '\0';
+		return 0;
+	}
+
+	for (i = 0; (int)i < seen_plus && i + 1 < NAME_MAX_CHARS; i++)
+		e->id[i] = (char)name[i];
+	e->id[i] = '\0';
+
+	{
+		int left = 0, done = 0, have_left = 0, in_done = 0;
+
+		for (i = (UINTN)seen_plus + 1; i < stem_len; i++) {
+			int d = digit_value(name[i]);
+
+			if (name[i] == '-' && have_left && !in_done) {
+				in_done = 1;
+				continue;
+			}
+			if (d < 0)
+				return -1;
+			if (in_done)
+				done = done * 10 + d;
+			else {
+				left = left * 10 + d;
+				have_left = 1;
+			}
+		}
+		if (!have_left)
+			return -1;
+		e->tries_left = left;
+		e->tries_done = done;
+	}
+	return 0;
+}
+
+/* ---- entry file parsing ---- */
+
+static void parse_entry_text(char *text, UINTN len, struct entry *e)
+{
+	UINTN i = 0;
+
+	e->linux_path[0] = '\0';
+	e->options[0] = '\0';
+	e->version = 0;
+
+	while (i < len) {
+		UINTN start = i, key_end, val_start;
+
+		while (i < len && text[i] != '\n')
+			i++;
+		/* [start, i) is one line. */
+		key_end = start;
+		while (key_end < i && text[key_end] != ' ' && text[key_end] != '\t')
+			key_end++;
+		val_start = key_end;
+		while (val_start < i && (text[val_start] == ' ' || text[val_start] == '\t'))
+			val_start++;
+
+		{
+			char key[32];
+			UINTN klen = key_end - start;
+			UINTN vlen = i - val_start;
+
+			/* Trim a trailing CR, so a file written on any host parses. */
+			if (vlen > 0 && text[val_start + vlen - 1] == '\r')
+				vlen--;
+
+			if (klen > 0 && klen < sizeof(key)) {
+				str_copy(key, sizeof(key), text + start, klen);
+				if (str_eq(key, "linux"))
+					str_copy(e->linux_path, sizeof(e->linux_path),
+					         text + val_start, vlen);
+				else if (str_eq(key, "options"))
+					str_copy(e->options, sizeof(e->options),
+					         text + val_start, vlen);
+				else if (str_eq(key, "version")) {
+					UINTN k;
+					int v = 0;
+
+					for (k = 0; k < vlen; k++) {
+						char c = text[val_start + k];
+
+						if (c < '0' || c > '9')
+							break;
+						v = v * 10 + (c - '0');
+					}
+					e->version = v;
+				}
+			}
+		}
+		i++; /* step over the newline */
+	}
+}
+
+/* ---- ESP access ---- */
+
+static EFI_STATUS open_esp_root(EFI_HANDLE image, EFI_FILE_PROTOCOL **root)
+{
+	EFI_GUID li_guid = EFI_LOADED_IMAGE_PROTOCOL_GUID;
+	EFI_GUID fs_guid = EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID;
+	EFI_LOADED_IMAGE_PROTOCOL *li;
+	EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *fs;
+	EFI_STATUS st;
+
+	/* The volume this program was itself loaded from -- so entries are
+	 * read from the ESP that booted us, never from a guess about which
+	 * disk is which. */
+	st = BS->HandleProtocol(image, &li_guid, (void **)&li);
+	if (EFI_ERROR(st))
+		return st;
+	st = BS->HandleProtocol(li->DeviceHandle, &fs_guid, (void **)&fs);
+	if (EFI_ERROR(st))
+		return st;
+	return fs->OpenVolume(fs, root);
+}
+
+static EFI_STATUS read_whole_file(EFI_FILE_PROTOCOL *dir, CHAR16 *name, void **buf, UINTN *size)
+{
+	EFI_GUID info_guid = EFI_FILE_INFO_GUID;
+	EFI_FILE_PROTOCOL *f;
+	EFI_STATUS st;
+	UINT8 info_buf[sizeof(EFI_FILE_INFO) + NAME_MAX_CHARS * sizeof(CHAR16)];
+	UINTN info_size = sizeof(info_buf);
+	EFI_FILE_INFO *info = (EFI_FILE_INFO *)info_buf;
+
+	st = dir->Open(dir, &f, name, EFI_FILE_MODE_READ, 0);
+	if (EFI_ERROR(st))
+		return st;
+	st = f->GetInfo(f, &info_guid, &info_size, info_buf);
+	if (EFI_ERROR(st)) {
+		f->Close(f);
+		return st;
+	}
+	*size = (UINTN)info->FileSize;
+	st = BS->AllocatePool(EfiLoaderData, *size + 1, buf);
+	if (EFI_ERROR(st)) {
+		f->Close(f);
+		return st;
+	}
+	st = f->Read(f, size, *buf);
+	f->Close(f);
+	if (EFI_ERROR(st)) {
+		BS->FreePool(*buf);
+		return st;
+	}
+	((char *)*buf)[*size] = '\0';
+	return EFI_SUCCESS;
+}
+
+/*
+ * Decrements the entry's counter by renaming its file, which is how the
+ * Boot Loader Specification records a boot attempt: the count lives in
+ * the filename, so the record survives a machine that never reaches
+ * userspace -- which is the entire point of the mechanism.
+ *
+ * A failure here is deliberately NOT fatal. Refusing to boot because a
+ * counter could not be written would turn a read-only or full ESP into
+ * an unbootable machine, which is a far worse outcome than booting with
+ * an un-decremented counter.
+ */
+static void decrement_tries(EFI_FILE_PROTOCOL *entries, struct entry *e)
+{
+	EFI_GUID info_guid = EFI_FILE_INFO_GUID;
+	EFI_FILE_PROTOCOL *f;
+	UINT8 info_buf[sizeof(EFI_FILE_INFO) + NAME_MAX_CHARS * sizeof(CHAR16)];
+	UINTN info_size = sizeof(info_buf);
+	EFI_FILE_INFO *info = (EFI_FILE_INFO *)info_buf;
+	EFI_STATUS st;
+	CHAR16 newname[NAME_MAX_CHARS];
+	UINTN n = 0;
+	int left = e->tries_left - 1;
+	int done = e->tries_done + 1;
+	UINTN i;
+
+	if (e->tries_left <= 0)
+		return;
+
+	st = entries->Open(entries, &f, e->filename,
+	                   EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE, 0);
+	if (EFI_ERROR(st))
+		return;
+	st = f->GetInfo(f, &info_guid, &info_size, info_buf);
+	if (EFI_ERROR(st)) {
+		f->Close(f);
+		return;
+	}
+
+	for (i = 0; e->id[i] != '\0' && n + 12 < NAME_MAX_CHARS; i++)
+		newname[n++] = (CHAR16)e->id[i];
+	newname[n++] = '+';
+	if (left >= 10)
+		newname[n++] = (CHAR16)('0' + (left / 10) % 10);
+	newname[n++] = (CHAR16)('0' + left % 10);
+	newname[n++] = '-';
+	if (done >= 10)
+		newname[n++] = (CHAR16)('0' + (done / 10) % 10);
+	newname[n++] = (CHAR16)('0' + done % 10);
+	newname[n++] = '.';
+	newname[n++] = 'c';
+	newname[n++] = 'o';
+	newname[n++] = 'n';
+	newname[n++] = 'f';
+	newname[n] = 0;
+
+	/* SetInfo with a changed FileName is the UEFI way to rename. */
+	for (i = 0; i <= n; i++)
+		info->FileName[i] = newname[i];
+	info->Size = sizeof(EFI_FILE_INFO) + (n + 1) * sizeof(CHAR16);
+	f->SetInfo(f, &info_guid, (UINTN)info->Size, info_buf);
+	f->Close(f);
+}
+
+/*
+ * Best entry: highest version wins. An entry whose counter has reached
+ * zero is chosen only when nothing else is available -- it is a failed
+ * slot, but a machine with two failed slots should still try to boot
+ * rather than sit at firmware.
+ */
+static int pick_entry(struct entry *list, int n)
+{
+	int best = -1, i;
+
+	for (i = 0; i < n; i++) {
+		if (list[i].linux_path[0] == '\0')
+			continue;
+		if (list[i].tries_left == 0)
+			continue;
+		if (best < 0 || list[i].version > list[best].version)
+			best = i;
+	}
+	if (best >= 0)
+		return best;
+
+	for (i = 0; i < n; i++) {
+		if (list[i].linux_path[0] == '\0')
+			continue;
+		if (best < 0 || list[i].version > list[best].version)
+			best = i;
+	}
+	return best;
+}
+
+EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st)
+{
+	EFI_GUID li_guid = EFI_LOADED_IMAGE_PROTOCOL_GUID;
+	EFI_FILE_PROTOCOL *root, *entries;
+	static struct entry list[MAX_ENTRIES];
+	int count = 0, chosen;
+	EFI_STATUS status;
+	CHAR16 entries_path[] = { '\\', 'l', 'o', 'a', 'd', 'e', 'r', '\\',
+		                  'e',  'n', 't', 'r', 'i', 'e', 's', 0 };
+
+	ST = st;
+	BS = st->BootServices;
+
+	status = open_esp_root(image, &root);
+	if (EFI_ERROR(status)) {
+		print(L16("cix-boot: cannot open the ESP this image was loaded from\r\n"));
+		return status;
+	}
+	status = root->Open(root, &entries, entries_path, EFI_FILE_MODE_READ, 0);
+	if (EFI_ERROR(status)) {
+		print(L16("cix-boot: no \\loader\\entries directory on the ESP\r\n"));
+		return status;
+	}
+
+	for (;;) {
+		UINT8 info_buf[sizeof(EFI_FILE_INFO) + NAME_MAX_CHARS * sizeof(CHAR16)];
+		UINTN info_size = sizeof(info_buf);
+		EFI_FILE_INFO *info = (EFI_FILE_INFO *)info_buf;
+		struct entry *e;
+		void *text = 0;
+		UINTN text_size = 0;
+		UINTN i;
+
+		status = entries->Read(entries, &info_size, info_buf);
+		if (EFI_ERROR(status) || info_size == 0)
+			break;
+		if (info->Attribute & EFI_FILE_DIRECTORY)
+			continue;
+		if (count >= MAX_ENTRIES)
+			break;
+
+		e = &list[count];
+		if (parse_entry_name(info->FileName, e) != 0)
+			continue; /* not an entry file */
+		for (i = 0; i < NAME_MAX_CHARS - 1 && info->FileName[i] != 0; i++)
+			e->filename[i] = info->FileName[i];
+		e->filename[i] = 0;
+
+		if (EFI_ERROR(read_whole_file(entries, e->filename, &text, &text_size)))
+			continue;
+		if (text_size > ENTRY_TEXT_MAX)
+			text_size = ENTRY_TEXT_MAX;
+		parse_entry_text((char *)text, text_size, e);
+		BS->FreePool(text);
+		count++;
+	}
+	entries->Close(entries);
+
+	chosen = pick_entry(list, count);
+	if (chosen < 0) {
+		print(L16("cix-boot: no bootable entry found\r\n"));
+		return EFI_NOT_FOUND;
+	}
+
+	/* Record the attempt BEFORE handing control to the kernel: a kernel
+	 * that hangs must still have consumed one try, or the counter never
+	 * makes progress and a broken slot is retried forever. */
+	if (list[chosen].tries_left > 0) {
+		status = root->Open(root, &entries, entries_path,
+		                    EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE, 0);
+		if (!EFI_ERROR(status)) {
+			decrement_tries(entries, &list[chosen]);
+			entries->Close(entries);
+		}
+	}
+
+	{
+		CHAR16 kernel_path[256];
+		void *kbuf = 0;
+		UINTN ksize = 0;
+		EFI_HANDLE kimage;
+		EFI_LOADED_IMAGE_PROTOCOL *kli;
+		static CHAR16 cmdline[1024];
+		UINTN i;
+
+		/* The BLS "linux" value is an absolute path with forward
+		 * slashes; EFI file paths use backslashes. */
+		for (i = 0; i < 255 && list[chosen].linux_path[i] != '\0'; i++) {
+			char c = list[chosen].linux_path[i];
+
+			kernel_path[i] = (CHAR16)(c == '/' ? '\\' : c);
+		}
+		kernel_path[i] = 0;
+
+		if (EFI_ERROR(read_whole_file(root, kernel_path, &kbuf, &ksize))) {
+			print(L16("cix-boot: cannot read the kernel named by the entry\r\n"));
+			root->Close(root);
+			return EFI_NOT_FOUND;
+		}
+		root->Close(root);
+
+		/* SourceBuffer form: the kernel is already in memory, so no
+		 * device path has to be constructed for it. */
+		status = BS->LoadImage(0, image, 0, kbuf, ksize, &kimage);
+		BS->FreePool(kbuf);
+		if (EFI_ERROR(status)) {
+			print(L16("cix-boot: firmware refused to load the kernel image\r\n"));
+			return status;
+		}
+
+		/* The Linux EFI stub takes its whole command line from
+		 * LoadOptions, as UCS-2. */
+		ascii_to_utf16(list[chosen].options, cmdline, 1024);
+		if (!EFI_ERROR(BS->HandleProtocol(kimage, &li_guid, (void **)&kli))) {
+			kli->LoadOptions = cmdline;
+			kli->LoadOptionsSize = (UINT32)((str16_len(cmdline) + 1) * sizeof(CHAR16));
+		}
+
+		status = BS->StartImage(kimage, 0, 0);
+		print(L16("cix-boot: the kernel returned, which it should never do\r\n"));
+	}
+
+	return status;
+}

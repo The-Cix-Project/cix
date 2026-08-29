@@ -37,7 +37,8 @@ sudo build/mkbootroot  /tmp/root_stage build/cixd build/cixctl web /tmp/cixd-roo
      /tmp/linux-firmware/amdgpu \  # or "" to skip GPU firmware entirely
      /path/to/kernel-hostbuild-artifact/lib/modules \  # or "" to skip kernel modules
      /path/to/kmod-usr-bin                             # or "" to skip modprobe/depmod/etc
-sudo build/mkinstalleriso build/iso_stage build/cix-install build/cix-recover build/bzImage \
+sudo build/mkinstalleriso build/iso_stage build/cix-install build/cix-recover \
+     build/cix-boot.efi build/bzImage \
      /tmp/cixd-root.squashfs \
      image/keys/cix-signing.key image/keys/cix-signing.crt image/keys/cix-signing.cer \
      build/cix-install.iso \

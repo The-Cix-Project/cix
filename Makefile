@@ -12,7 +12,7 @@ NETPLANE_SRCS := netplane/src/rtnetlink.c
 
 .PHONY: all clean
 
-all: $(BUILD)/test_toolchain $(BUILD)/test_harness $(BUILD)/harness_child $(BUILD)/test_overlay $(BUILD)/overlay_child $(BUILD)/test_container_pty $(BUILD)/pty_child $(BUILD)/cixd $(BUILD)/test_daemon $(BUILD)/daemon_child $(BUILD)/cixctl $(BUILD)/test_cli $(BUILD)/test_web $(BUILD)/test_rtnetlink $(BUILD)/test_container_net $(BUILD)/net_child $(BUILD)/net_connect $(BUILD)/test_daemon_net $(BUILD)/test_networks $(BUILD)/test_network_interfaces $(BUILD)/test_images $(BUILD)/test_container_restart $(BUILD)/test_container_files $(BUILD)/tcp_listen_child $(BUILD)/test_dns $(BUILD)/test_ntp $(BUILD)/test_ldap $(BUILD)/test_pki $(BUILD)/test_pkg $(BUILD)/mkbootroot $(BUILD)/test_mkbootroot_firmware $(BUILD)/test_boot $(BUILD)/test_boot_ab $(BUILD)/cix-install $(BUILD)/cix-recover $(BUILD)/test_dual_console $(BUILD)/dual_console_child $(BUILD)/mkinstalleriso $(BUILD)/test_installer $(BUILD)/test_devices $(BUILD)/dev_child $(BUILD)/test_daemon_devices $(BUILD)/test_system_update $(BUILD)/test_boot_update $(BUILD)/test_system_backup $(BUILD)/test_console_shell $(BUILD)/mktoolchainimage $(BUILD)/test_console_pki_bootstrap $(BUILD)/test_console_exec $(BUILD)/test_container_lifecycle $(BUILD)/output_child $(BUILD)/stats_child $(BUILD)/test_container_stats $(BUILD)/test_disk_quota $(BUILD)/test_diskpart $(BUILD)/test_sysctl $(BUILD)/test_kmod $(BUILD)/test_kmod_build $(BUILD)/test_routes $(BUILD)/test_daemon_bind_ip $(BUILD)/test_pkg_build_log $(BUILD)/test_pkg_concurrent_stress $(BUILD)/test_pkg_sync $(BUILD)/test_pkg_cache $(BUILD)/test_image_recipe $(BUILD)/test_container_recipe $(BUILD)/test_rolling_restart $(BUILD)/syslog_recv_child $(BUILD)/test_syslogfwd $(BUILD)/test_hostproc $(BUILD)/test_tls_throttle $(BUILD)/test_https_chain $(BUILD)/test_layout_upgrade $(BUILD)/test_treecopy $(BUILD)/test_storage_placement $(BUILD)/test_backup_config $(BUILD)/test_container_storage_migrate $(BUILD)/test_container_dns_servers $(BUILD)/test_hostauth $(BUILD)/test_device_hotplug $(BUILD)/test_subid $(BUILD)/test_volume $(BUILD)/volume_child $(BUILD)/test_factory_reset $(BUILD)/test_boot_console $(BUILD)/test_signing_keys $(BUILD)/test_pkg_recipe_approval $(BUILD)/test_stallwatch $(BUILD)/test_kernelpolicy $(BUILD)/test_dhcp $(BUILD)/test_artifact_export $(BUILD)/test_esp $(BUILD)/test_btrfs $(BUILD)/test_direct_rootfs $(BUILD)/test_targz $(BUILD)/targz_probe $(BUILD)/test_childdiag
+all: $(BUILD)/test_toolchain $(BUILD)/test_harness $(BUILD)/harness_child $(BUILD)/test_overlay $(BUILD)/overlay_child $(BUILD)/test_container_pty $(BUILD)/pty_child $(BUILD)/cixd $(BUILD)/test_daemon $(BUILD)/daemon_child $(BUILD)/cixctl $(BUILD)/test_cli $(BUILD)/test_web $(BUILD)/test_rtnetlink $(BUILD)/test_container_net $(BUILD)/net_child $(BUILD)/net_connect $(BUILD)/test_daemon_net $(BUILD)/test_networks $(BUILD)/test_network_interfaces $(BUILD)/test_images $(BUILD)/test_container_restart $(BUILD)/test_container_files $(BUILD)/tcp_listen_child $(BUILD)/test_dns $(BUILD)/test_ntp $(BUILD)/test_ldap $(BUILD)/test_pki $(BUILD)/test_pkg $(BUILD)/mkbootroot $(BUILD)/test_mkbootroot_firmware $(BUILD)/test_boot $(BUILD)/test_boot_ab $(BUILD)/cix-install $(BUILD)/cix-recover $(BUILD)/test_dual_console $(BUILD)/dual_console_child $(BUILD)/mkinstalleriso $(BUILD)/test_installer $(BUILD)/test_devices $(BUILD)/dev_child $(BUILD)/test_daemon_devices $(BUILD)/test_system_update $(BUILD)/test_boot_update $(BUILD)/test_system_backup $(BUILD)/test_console_shell $(BUILD)/mktoolchainimage $(BUILD)/test_console_pki_bootstrap $(BUILD)/test_console_exec $(BUILD)/test_container_lifecycle $(BUILD)/output_child $(BUILD)/stats_child $(BUILD)/test_container_stats $(BUILD)/test_disk_quota $(BUILD)/test_diskpart $(BUILD)/test_sysctl $(BUILD)/test_kmod $(BUILD)/test_kmod_build $(BUILD)/test_routes $(BUILD)/test_daemon_bind_ip $(BUILD)/test_pkg_build_log $(BUILD)/test_pkg_concurrent_stress $(BUILD)/test_pkg_sync $(BUILD)/test_pkg_cache $(BUILD)/test_image_recipe $(BUILD)/test_container_recipe $(BUILD)/test_rolling_restart $(BUILD)/syslog_recv_child $(BUILD)/test_syslogfwd $(BUILD)/test_hostproc $(BUILD)/test_tls_throttle $(BUILD)/test_https_chain $(BUILD)/test_layout_upgrade $(BUILD)/test_treecopy $(BUILD)/test_storage_placement $(BUILD)/test_backup_config $(BUILD)/test_container_storage_migrate $(BUILD)/test_container_dns_servers $(BUILD)/test_hostauth $(BUILD)/test_device_hotplug $(BUILD)/test_subid $(BUILD)/test_volume $(BUILD)/volume_child $(BUILD)/test_factory_reset $(BUILD)/test_boot_console $(BUILD)/test_signing_keys $(BUILD)/test_pkg_recipe_approval $(BUILD)/test_stallwatch $(BUILD)/test_kernelpolicy $(BUILD)/test_dhcp $(BUILD)/test_artifact_export $(BUILD)/test_esp $(BUILD)/test_btrfs $(BUILD)/test_direct_rootfs $(BUILD)/test_targz $(BUILD)/targz_probe $(BUILD)/test_childdiag $(BUILD)/cix-boot.efi
 
 $(BUILD):
 	mkdir -p $(BUILD)
@@ -318,6 +318,28 @@ $(BUILD)/test_console_pkg_bootstrap: test/test_console_pkg_bootstrap.c test/test
 
 $(BUILD)/cix-install: image/src/cix-install.c image/src/dual_console.c | $(BUILD)
 	$(CC) $(CFLAGS) $^ -o $@
+
+#
+# cix-boot: the UEFI boot manager (ADR-0215). The one thing in this
+# repo not built with TCC, and not by preference -- UEFI uses the
+# Microsoft calling convention, and TCC implements no
+# __builtin_ms_va_list at all (ADR-0211 proved this directly while
+# trying to build gnu-efi).
+#
+# Linked straight to PE/COFF with `ld -m i386pep`. No ELF-to-PE
+# conversion step, which is what systemd's sd-boot needs Python and
+# pyelftools for. --subsystem=10 is EFI_APPLICATION; --image-base is
+# set so no section lands at address zero.
+#
+EFI_CC ?= /usr/bin/gcc
+EFI_LD ?= ld
+EFI_CFLAGS := -ffreestanding -fno-stack-protector -fno-strict-aliasing -fno-ident \
+              -fpic -fshort-wchar -mno-red-zone -Wall -Werror -Iinclude
+
+$(BUILD)/cix-boot.efi: image/src/cix-boot.c include/uefi.h | $(BUILD)
+	$(EFI_CC) -c $(EFI_CFLAGS) image/src/cix-boot.c -o $(BUILD)/cix-boot.o
+	$(EFI_LD) -m i386pep --subsystem=10 -e efi_main --image-base=0x10000 \
+	          -o $@ $(BUILD)/cix-boot.o
 
 $(BUILD)/cix-recover: image/src/cix-recover.c image/src/dual_console.c daemon/src/json.c | $(BUILD)
 	$(CC) $(CFLAGS) -Idaemon/include $^ -o $@
