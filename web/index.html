@@ -788,6 +788,7 @@
 				<button type="button" class="tab-button" data-tab="control-plane-reservation">Control Plane</button>
 				<button type="button" class="tab-button" data-tab="boot-console">Boot Console</button>
 				<button type="button" class="tab-button" data-tab="esp">Boot Entries</button>
+				<button type="button" class="tab-button" data-tab="signing-keys">Signing Keys</button>
 				<button type="button" class="tab-button" data-tab="kernel-policy">Kernel Line</button>
 				<button type="button" class="tab-button" data-tab="backup">Backup</button>
 				<button type="button" class="tab-button" data-tab="volume-backup-config">Volume Backups</button>
@@ -1048,6 +1049,52 @@
 				</table>
 			</div>
 		</div>
+			<div class="tab-panel" data-tab="signing-keys" hidden>
+			<div class="view-list">
+				<h2>Secure Boot Signing Keys</h2>
+				<p class="hint">
+					The key pair this host signs installer media with. <strong>Building an ISO
+					 needs it</strong> &mdash; without it <code>POST /system/iso</code> refuses,
+					naming this as the missing input.
+				</p>
+				<p class="hint">
+					ADR-0064 originally required this to be placed here out of band, comparing it
+					to a file already <code>scp</code>'d onto the box. A real Cix host runs no
+					sshd and has no console, so there was never a way to do that &mdash; which
+					meant ISO assembly could not actually run on any installed machine. Pasting
+					the pair in is that missing transport (ADR-0212).
+				</p>
+				<p class="hint">
+					<strong>Install this on the one host that cuts media, not on every box.</strong>
+					A release-signing private key on every machine means any single machine's
+					compromise leaks the fleet's Secure Boot identity. Only the public
+					<code>.cer</code> is ever staged onto an installed target, for MOK enrolment.
+				</p>
+				<div id="signing-keys-summary" class="pki-ca-status"><p>Loading&hellip;</p></div>
+				<h3>Install a key pair</h3>
+				<p class="hint">
+					Paste both PEM blocks. The DER <code>.cer</code> that <code>mokutil</code>
+					needs is derived from the certificate here, so there is no third thing to
+					keep in step. The certificate is checked against the private key before
+					anything is written: a mismatched pair is refused outright rather than
+					discovered later as an image that signs cleanly and then will not boot.
+				</p>
+				<form id="signing-keys-form">
+					<label class="wide">
+						Private key (PEM)
+						<textarea id="signing-key-pem" rows="8" spellcheck="false"
+							placeholder="-----BEGIN PRIVATE KEY-----"></textarea>
+					</label>
+					<label class="wide">
+						Certificate (PEM)
+						<textarea id="signing-cert-pem" rows="8" spellcheck="false"
+							placeholder="-----BEGIN CERTIFICATE-----"></textarea>
+					</label>
+					<button type="submit">Install key pair</button>
+					<button type="button" id="signing-keys-clear" class="button-danger">Remove from this host</button>
+				</form>
+			</div>
+			</div>
 			<div class="tab-panel" data-tab="esp" hidden>
 			<div class="view-list">
 				<h2>Boot Entries (ESP)</h2>

@@ -338,6 +338,11 @@ function openModal(formId, title) {
 	modalOverlay.hidden = false;
 }
 
+document.getElementById("signing-keys-form").addEventListener("submit", (event) => {
+	event.preventDefault();
+	installSigningKeys();
+});
+document.getElementById("signing-keys-clear").addEventListener("click", clearSigningKeys);
 document.getElementById("images-gc-preview").addEventListener("click", () => runImageGc(true));
 document.getElementById("images-gc").addEventListener("click", () => runImageGc(false));
 document.getElementById("modal-close").addEventListener("click", closeModal);
@@ -1207,6 +1212,7 @@ const CATEGORY_VIEWS = {
 	"control-plane-reservation": "view-daemon-config",
 	"boot-console": "view-daemon-config",
 	esp: "view-daemon-config",
+	"signing-keys": "view-daemon-config",
 	"kernel-policy": "view-daemon-config",
 	logs: "view-monitoring",
 	kmsg: "view-monitoring",
@@ -1288,6 +1294,7 @@ const SERVICE_TAB_VIEWS = {
 	"control-plane-reservation": "view-daemon-config",
 	"boot-console": "view-daemon-config",
 	esp: "view-daemon-config",
+	"signing-keys": "view-daemon-config",
 	"kernel-policy": "view-daemon-config",
 	backup: "view-daemon-config",
 	"volume-backup-config": "view-daemon-config",
@@ -1380,6 +1387,8 @@ function renderCurrentView() {
 			refreshBootConsole();
 		else if (route.category === "esp")
 			refreshEsp();
+		else if (route.category === "signing-keys")
+			refreshSigningKeys();
 		else if (route.category === "kernel-policy")
 			refreshKernelPolicy();
 		else if (route.category === "logs")
@@ -6843,6 +6852,102 @@ function renderEspEntries(data) {
 		row.appendChild(actionCell);
 
 		body.appendChild(row);
+	}
+}
+
+/*
+ * ADR-0212: the Secure Boot signing key pair `iso build` needs. The
+ * private key goes in and never comes back -- GET reports only whether
+ * it is set, plus the certificate's own public identity, so nothing on
+ * this page can ever display key material.
+ *
+ * The paste box exists because a real Cix host has no shell, no scp
+ * target and no console, so ADR-0064's "operator places it out of
+ * band" had no band to be out of.
+ */
+async function refreshSigningKeys() {
+	const box = document.getElementById("signing-keys-summary");
+
+	if (box === null)
+		return;
+	try {
+		const data = await apiRequest("GET", "/v1/system/signing-keys");
+
+		box.textContent = "";
+		if (!data.key_set && !data.cert_set) {
+			const p = document.createElement("p");
+
+			p.textContent =
+			    "No key pair installed -- this host cannot build an ISO until one is.";
+			box.appendChild(p);
+			return;
+		}
+		const rows = [["Private key", data.key_set ? "installed" : "MISSING"],
+		              ["Certificate", data.cert_set ? "installed" : "MISSING"]];
+
+		if (data.subject)
+			rows.push(["Subject", data.subject]);
+		if (data.not_after)
+			rows.push(["Expires", data.not_after]);
+		if (data.fingerprint_sha256)
+			rows.push(["Fingerprint", data.fingerprint_sha256]);
+		for (const [label, value] of rows) {
+			const p = document.createElement("p");
+
+			p.textContent = label + ": " + value;
+			box.appendChild(p);
+		}
+		if (data.key_set !== data.cert_set) {
+			const p = document.createElement("p");
+
+			p.textContent = "Only half the pair is present -- building an ISO needs both.";
+			box.appendChild(p);
+		}
+	} catch (e) {
+		box.textContent = "";
+		const p = document.createElement("p");
+
+		p.textContent = "Could not read signing-key state.";
+		box.appendChild(p);
+	}
+}
+
+async function installSigningKeys() {
+	const key = document.getElementById("signing-key-pem").value.trim();
+	const cert = document.getElementById("signing-cert-pem").value.trim();
+
+	if (key === "" || cert === "") {
+		clearStatus();
+		showStatus("Paste both the private key and the certificate.", true);
+		return;
+	}
+	try {
+		await apiRequest("PUT", "/v1/system/signing-keys", { key: key, cert: cert });
+		clearStatus();
+		showStatus("Signing key pair installed.", false);
+		/*
+		 * Cleared on success only. A rejected paste stays in the boxes
+		 * so a correctable mistake -- the wrong half of a pair, most
+		 * likely -- does not have to be pasted again from scratch.
+		 */
+		document.getElementById("signing-key-pem").value = "";
+		document.getElementById("signing-cert-pem").value = "";
+		await refreshSigningKeys();
+	} catch (e) {
+		clearStatus();
+		showStatus(e.message, true);
+	}
+}
+
+async function clearSigningKeys() {
+	try {
+		await apiRequest("DELETE", "/v1/system/signing-keys");
+		clearStatus();
+		showStatus("Signing key pair removed from this host.", false);
+		await refreshSigningKeys();
+	} catch (e) {
+		clearStatus();
+		showStatus(e.message, true);
 	}
 }
 

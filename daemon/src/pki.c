@@ -48,7 +48,7 @@ static struct pki_cert_record g_certs[PKI_MAX_CERTS];
  * (ADR-0009), so the child only ever inherits the one pipe fd it's
  * meant to.
  */
-static int run_openssl(char *const argv[], char *out, size_t out_size)
+int pki_run_openssl(char *const argv[], char *out, size_t out_size)
 {
 	int pipefd[2];
 	pid_t pid;
@@ -361,7 +361,7 @@ enum pki_error pki_ca_create(const char *common_name, int days)
 	argv[6] = "-out";
 	argv[7] = g_ca_key_path;
 	argv[8] = NULL;
-	if (run_openssl(argv, errbuf, sizeof(errbuf)) != 0) {
+	if (pki_run_openssl(argv, errbuf, sizeof(errbuf)) != 0) {
 		fprintf(stderr, "pki: CA genpkey failed: %s\n", errbuf);
 		unlink(g_ca_key_path);
 		return PKI_ERR_OPENSSL_FAILED;
@@ -381,7 +381,7 @@ enum pki_error pki_ca_create(const char *common_name, int days)
 	argv[10] = "-out";
 	argv[11] = g_ca_cert_path;
 	argv[12] = NULL;
-	if (run_openssl(argv, errbuf, sizeof(errbuf)) != 0) {
+	if (pki_run_openssl(argv, errbuf, sizeof(errbuf)) != 0) {
 		fprintf(stderr, "pki: CA req -x509 failed: %s\n", errbuf);
 		unlink(g_ca_key_path);
 		unlink(g_ca_cert_path);
@@ -416,7 +416,7 @@ enum pki_error pki_ca_get(struct json_writer *w)
 	argv[7] = "-startdate";
 	argv[8] = "-enddate";
 	argv[9] = NULL;
-	if (run_openssl(argv, output, sizeof(output)) != 0)
+	if (pki_run_openssl(argv, output, sizeof(output)) != 0)
 		return PKI_ERR_OPENSSL_FAILED;
 
 	if (extract_field(output, "subject=", subject, sizeof(subject)) != 0 ||
@@ -491,7 +491,7 @@ enum pki_error pki_intermediate_create(const char *common_name, int days)
 	argv[6] = "-out";
 	argv[7] = g_intermediate_key_path;
 	argv[8] = NULL;
-	if (run_openssl(argv, errbuf, sizeof(errbuf)) != 0) {
+	if (pki_run_openssl(argv, errbuf, sizeof(errbuf)) != 0) {
 		fprintf(stderr, "pki: intermediate genpkey failed: %s\n", errbuf);
 		unlink(g_intermediate_key_path);
 		return PKI_ERR_OPENSSL_FAILED;
@@ -516,7 +516,7 @@ enum pki_error pki_intermediate_create(const char *common_name, int days)
 	argv[11] = "-out";
 	argv[12] = csr_path;
 	argv[13] = NULL;
-	if (run_openssl(argv, errbuf, sizeof(errbuf)) != 0) {
+	if (pki_run_openssl(argv, errbuf, sizeof(errbuf)) != 0) {
 		fprintf(stderr, "pki: intermediate req failed: %s\n", errbuf);
 		unlink(g_intermediate_key_path);
 		unlink(csr_path);
@@ -542,7 +542,7 @@ enum pki_error pki_intermediate_create(const char *common_name, int days)
 	argv[14] = "-out";
 	argv[15] = g_intermediate_cert_path;
 	argv[16] = NULL;
-	if (run_openssl(argv, errbuf, sizeof(errbuf)) != 0) {
+	if (pki_run_openssl(argv, errbuf, sizeof(errbuf)) != 0) {
 		fprintf(stderr, "pki: intermediate x509 sign failed: %s\n", errbuf);
 		unlink(g_intermediate_key_path);
 		unlink(csr_path);
@@ -579,7 +579,7 @@ enum pki_error pki_intermediate_get(struct json_writer *w)
 	argv[7] = "-startdate";
 	argv[8] = "-enddate";
 	argv[9] = NULL;
-	if (run_openssl(argv, output, sizeof(output)) != 0)
+	if (pki_run_openssl(argv, output, sizeof(output)) != 0)
 		return PKI_ERR_OPENSSL_FAILED;
 
 	if (extract_field(output, "subject=", subject, sizeof(subject)) != 0 ||
@@ -671,7 +671,7 @@ enum pki_error pki_cert_create(const char *name, const char *const *sans, int sa
 	argv[6] = "-out";
 	argv[7] = key_path;
 	argv[8] = NULL;
-	if (run_openssl(argv, errbuf, sizeof(errbuf)) != 0) {
+	if (pki_run_openssl(argv, errbuf, sizeof(errbuf)) != 0) {
 		fprintf(stderr, "pki: genpkey (leaf %s) failed: %s\n", name, errbuf);
 		unlink(key_path);
 		return PKI_ERR_OPENSSL_FAILED;
@@ -694,7 +694,7 @@ enum pki_error pki_cert_create(const char *name, const char *const *sans, int sa
 	argv[9] = "-out";
 	argv[10] = csr_path;
 	argv[11] = NULL;
-	if (run_openssl(argv, errbuf, sizeof(errbuf)) != 0) {
+	if (pki_run_openssl(argv, errbuf, sizeof(errbuf)) != 0) {
 		fprintf(stderr, "pki: req (leaf %s) failed: %s\n", name, errbuf);
 		unlink(key_path);
 		unlink(csr_path);
@@ -722,7 +722,7 @@ enum pki_error pki_cert_create(const char *name, const char *const *sans, int sa
 	argv[14] = "-out";
 	argv[15] = crt_path;
 	argv[16] = NULL;
-	if (run_openssl(argv, errbuf, sizeof(errbuf)) != 0) {
+	if (pki_run_openssl(argv, errbuf, sizeof(errbuf)) != 0) {
 		fprintf(stderr, "pki: x509 sign (leaf %s) failed: %s\n", name, errbuf);
 		unlink(key_path);
 		unlink(csr_path);
@@ -741,7 +741,7 @@ enum pki_error pki_cert_create(const char *name, const char *const *sans, int sa
 	argv[5] = "-serial";
 	argv[6] = "-enddate";
 	argv[7] = NULL;
-	if (run_openssl(argv, output, sizeof(output)) != 0 ||
+	if (pki_run_openssl(argv, output, sizeof(output)) != 0 ||
 	    extract_field(output, "serial=", serial, sizeof(serial)) != 0 ||
 	    extract_field(output, "notAfter=", not_after, sizeof(not_after)) != 0) {
 		fprintf(stderr, "pki: could not read back metadata for leaf %s\n", name);

@@ -333,6 +333,9 @@ static void print_usage(FILE *out)
 	        "  ping HOST  -- real ICMP echo against an IPv4 address, waits for the result\n"
 	        "               (~2s max) and exits nonzero if unreachable\n"
 	        "  resolv [show]  -- the host's own outbound DNS resolver config (ADR-0076)\n"
+	        "  signing-keys [show]  -- the Secure Boot signing key pair `iso build` needs\n"
+	        "  signing-keys set --key=PATH --cert=PATH  -- install it (ADR-0212)\n"
+	        "  signing-keys clear  -- remove it from this host\n"
 	        "  resolv set [--nameserver=A.B.C.D ...]  -- replace it; no flags clears it\n"
 	        "  sysctl [show]  -- every persisted (daemon-managed) host-level sysctl (ADR-0160)\n"
 	        "  sysctl get KEY  -- live current value (e.g. net.ipv4.ip_forward), persisted or not\n"
@@ -5916,6 +5919,146 @@ static int read_local_file(const char *path, char **out_buf, size_t *out_len)
 	*out_len = (size_t)size;
 	return 0;
 }
+
+/*
+ * cixctl signing-keys [show] / set --key=PATH --cert=PATH / clear
+ * (ADR-0212) -- the Secure Boot signing key pair `cixctl iso build`
+ * needs on the host that cuts installer media.
+ *
+ * Takes file paths rather than the PEM text itself: the key is
+ * already a file wherever it is kept, and a private key on a command
+ * line would land in shell history and in this host's own process
+ * list. The web dashboard offers the paste box instead, where the
+ * material never becomes an argv entry.
+ *
+ * There is no "get" of the private key, here or anywhere -- see
+ * signingkeys.h.
+ */
+static void fmt_signing_keys(const struct json_value *v)
+{
+	const struct json_value *key_set = json_object_get(v, "key_set");
+	const struct json_value *cert_set = json_object_get(v, "cert_set");
+	const char *subject = json_as_string(json_object_get(v, "subject"));
+	const char *not_after = json_as_string(json_object_get(v, "not_after"));
+	const char *fp = json_as_string(json_object_get(v, "fingerprint_sha256"));
+	int have_key = key_set != NULL && key_set->type == JSON_BOOL && key_set->u.boolean;
+	int have_cert = cert_set != NULL && cert_set->type == JSON_BOOL && cert_set->u.boolean;
+
+	if (!have_key && !have_cert) {
+		printf("no signing key pair installed -- `cixctl iso build` cannot run on this host\n");
+		return;
+	}
+	printf("private key   %s\n", have_key ? "installed" : "MISSING");
+	printf("certificate   %s\n", have_cert ? "installed" : "MISSING");
+	if (subject != NULL)
+		printf("subject       %s\n", subject);
+	if (not_after != NULL)
+		printf("expires       %s\n", not_after);
+	if (fp != NULL)
+		printf("fingerprint   %s\n", fp);
+	if (have_key != have_cert)
+		printf("\nOnly half the pair is present -- POST /v1/system/iso needs both.\n");
+}
+
+static int cmd_signing_keys_show(const struct cix_client *c, int json_mode)
+{
+	struct cix_response r;
+
+	if (cix_client_request(c, "GET", "/v1/system/signing-keys", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_signing_keys);
+}
+
+static int cmd_signing_keys_set(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	const char *key_path = NULL;
+	const char *cert_path = NULL;
+	char *key_buf = NULL;
+	char *cert_buf = NULL;
+	size_t key_len = 0;
+	size_t cert_len = 0;
+	struct json_writer w;
+	struct cix_response r;
+	int i;
+	int rc;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--key=", 6) == 0)
+			key_path = argv[i] + 6;
+		else if (strncmp(argv[i], "--cert=", 7) == 0)
+			cert_path = argv[i] + 7;
+		else {
+			fprintf(stderr, "cixctl: unknown signing-keys set option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (key_path == NULL || cert_path == NULL) {
+		fprintf(stderr, "cixctl: signing-keys set needs both --key=PATH and --cert=PATH\n");
+		return 2;
+	}
+	if (read_local_file(key_path, &key_buf, &key_len) != 0)
+		return 1;
+	if (read_local_file(cert_path, &cert_buf, &cert_len) != 0) {
+		free(key_buf);
+		return 1;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "key");
+	jw_str(&w, key_buf);
+	jw_key(&w, "cert");
+	jw_str(&w, cert_buf);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+	free(key_buf);
+	free(cert_buf);
+
+	if (cix_client_request(c, "PUT", "/v1/system/signing-keys", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+	rc = emit(&r, json_mode, fmt_signing_keys);
+	return rc;
+}
+
+static int cmd_signing_keys_clear(const struct cix_client *c, int json_mode)
+{
+	struct cix_response r;
+
+	if (cix_client_request(c, "DELETE", "/v1/system/signing-keys", NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_signing_keys);
+}
+
+static int cmd_signing_keys(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1)
+		return cmd_signing_keys_show(c, json_mode);
+
+	sub = argv[0];
+	if (strcmp(sub, "show") == 0)
+		return cmd_signing_keys_show(c, json_mode);
+	if (strcmp(sub, "set") == 0)
+		return cmd_signing_keys_set(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "clear") == 0)
+		return cmd_signing_keys_clear(c, json_mode);
+
+	fprintf(stderr,
+	        "usage: cixctl signing-keys [show]\n"
+	        "       cixctl signing-keys set --key=PATH --cert=PATH\n"
+	        "       cixctl signing-keys clear\n");
+	return 2;
+}
+
 
 /*
  * Percent-encodes a query-string value (this CLI's first one -- see
@@ -13434,6 +13577,8 @@ static int dispatch_command(const struct cix_client *client, int json_mode, cons
 		return cmd_ping(client, json_mode, argc, argv);
 	if (strcmp(cmd, "resolv") == 0)
 		return cmd_resolv(client, json_mode, argc, argv);
+	if (strcmp(cmd, "signing-keys") == 0)
+		return cmd_signing_keys(client, json_mode, argc, argv);
 	if (strcmp(cmd, "sysctl") == 0)
 		return cmd_sysctl(client, json_mode, argc, argv);
 	if (strcmp(cmd, "kmod") == 0)

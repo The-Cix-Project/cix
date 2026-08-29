@@ -50,6 +50,21 @@ enum pki_error {
  * not the source of truth for correctness; the key/cert files on disk
  * are authoritative). Loads that index, if any, at startup.
  */
+/*
+ * Forks and execve()s PKI_OPENSSL_BIN with argv (NULL-terminated,
+ * argv[0] conventionally the binary path), capturing the child's
+ * stdout AND stderr into out when non-NULL. Returns 0 only when the
+ * child exited 0.
+ *
+ * Exported, rather than kept static here, so signingkeys.c can reuse
+ * the one place this project talks to the openssl binary instead of
+ * growing a second copy of the same fork/exec/capture logic. The
+ * captured output is for server-side diagnostics and for parsing
+ * `-noout` query results -- never echo it raw into an HTTP response,
+ * since openssl's own errors can quote input material.
+ */
+int pki_run_openssl(char *const argv[], char *out, size_t out_size);
+
 int pki_init(const char *pki_dir, const char *certs_state_path);
 
 /* ADR-0141 Phase 2: repoints without reloading g_certs[] -- see
