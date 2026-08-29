@@ -91,6 +91,32 @@ static int run_mksquashfs(const char *mksquashfs_bin, const char *image_root,
 	struct stat st;
 	char *argv[] = { (char *)mksquashfs_bin, (char *)image_root, (char *)out_path,
 		          "-noappend", "-comp", "xz", "-quiet", NULL };
+	/*
+	 * Invoked THROUGH the host-tools image's own dynamic loader, when
+	 * that image has one, rather than relying on LD_LIBRARY_PATH alone.
+	 *
+	 * ADR-0154 pointed LD_LIBRARY_PATH at this image so a binary
+	 * exec'd off the bare host would find its libraries. But the
+	 * loader itself is chosen by the binary's PT_INTERP, which is the
+	 * fixed path /lib64/ld-linux-x86-64.so.2 -- on the HOST. So the
+	 * process got the host's loader and the image's libc, and once
+	 * those two came from different glibc builds it stopped working
+	 * entirely:
+	 *
+	 *   mksquashfs: symbol lookup error: .../libc.so.6:
+	 *   undefined symbol: __pointer_chk_guard, version GLIBC_PRIVATE
+	 *
+	 * ld.so and libc.so.6 share a private, version-locked interface.
+	 * Naming the loader explicitly and letting it resolve the rest
+	 * keeps both halves from the same tree, which is the only
+	 * arrangement that is correct rather than merely lucky. It is also
+	 * the standard way to run a binary against a libc other than the
+	 * system's.
+	 */
+	char ld_so[PATH_MAX];
+	char lib_path[PATH_MAX];
+	char *ld_argv[11];
+	char **use_argv = argv;
 	char ld_library_path[PATH_MAX];
 	char *child_envp[64];
 	int envc;
@@ -144,13 +170,40 @@ static int run_mksquashfs(const char *mksquashfs_bin, const char *image_root,
 	}
 	child_envp[envc] = NULL;
 
+	/*
+	 * Use the image's own loader when it ships one. An older
+	 * host-tools image without it falls back to the plain invocation,
+	 * which is exactly what happened before this existed.
+	 */
+	if (host_tools_dir != NULL && host_tools_dir[0] != '\0') {
+		struct stat lst;
+
+		snprintf(ld_so, sizeof(ld_so), "%s/lib64/ld-linux-x86-64.so.2", host_tools_dir);
+		snprintf(lib_path, sizeof(lib_path), "%s/lib/x86_64-linux-gnu:%s/usr/lib:%s/lib",
+		         host_tools_dir, host_tools_dir, host_tools_dir);
+		if (stat(ld_so, &lst) == 0) {
+			ld_argv[0] = ld_so;
+			ld_argv[1] = (char *)"--library-path";
+			ld_argv[2] = lib_path;
+			ld_argv[3] = (char *)mksquashfs_bin;
+			ld_argv[4] = (char *)image_root;
+			ld_argv[5] = (char *)out_path;
+			ld_argv[6] = (char *)"-noappend";
+			ld_argv[7] = (char *)"-comp";
+			ld_argv[8] = (char *)"xz";
+			ld_argv[9] = (char *)"-quiet";
+			ld_argv[10] = NULL;
+			use_argv = ld_argv;
+		}
+	}
+
 	pid = fork();
 	if (pid < 0) {
 		perror("fork");
 		return -1;
 	}
 	if (pid == 0) {
-		execve(mksquashfs_bin, argv, envc > 0 ? child_envp : environ);
+		execve(use_argv[0], use_argv, envc > 0 ? child_envp : environ);
 		fprintf(stderr, "execve %s: %s\n", mksquashfs_bin, strerror(errno));
 		_exit(127);
 	}
