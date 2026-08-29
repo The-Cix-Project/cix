@@ -216,7 +216,19 @@ pkg_sha256="58bf6728c82dcb0cb7e5743e041244f1ea815b56d666962905101c5fd8cc4d74"
 # and mkdir from coreutils; recipe.sh itself is executed by bash.
 # Nothing here reaches for sed, grep, awk or a linker -- tcc links its
 # own output, and this project builds no static archives.
-pkg_build_depends="bash coreutils make tcc libc-dev"
+# openssl: new in rc11, and NOT a new dependency -- cixd has linked
+# -lssl -lcrypto and included <openssl/ssl.h> since Phase 9. It built
+# anyway because libc-dev 2.36-5 staged `cp -a /usr/include/.`, the
+# whole tree, so OpenSSL's headers arrived as a side effect of a
+# package that has nothing to do with OpenSSL. libc-dev 2.36-8 stages
+# 106 named glibc headers and nothing else (#169), so the side effect
+# is gone and this recipe has to say what it actually needs.
+#
+# Found by reading rather than by a failed build: every non-glibc
+# system header included anywhere in this repository's own sources was
+# swept, and openssl/{ssl,bio,err,pem}.h are the only ones. So this is
+# the whole of the correction, not the first instalment of it.
+pkg_build_depends="bash coreutils make tcc libc-dev openssl"
 #
 # The artifact tier (ADR-0122/ADR-0201) matters more for this recipe
 # than for any other one here, and for a reason specific to it: a host
