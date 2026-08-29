@@ -2277,6 +2277,18 @@ POST /v1/system/iso
 
 Every field is optional — an empty body reproduces the tool's original default, a generic ISO with its kernel arguments left as the `CHANGEME` placeholder an operator edits at the GRUB boot menu. `202`, polled via `GET /system/iso` (`state`: `none`/`building`/`ready`/`failed`, `iso_path` once ready). Reuses whatever the most recent `cix`/`kernel`/`isotools` hostbuild rounds already harvested — it does not trigger any of them itself, and fails fast (`400`) naming exactly which one is missing rather than a background failure the caller has to poll for to discover. Requires a real Secure Boot signing key pair at `<data-dir>/keys/cix-signing.{key,crt,cer}`, installed via `PUT /system/signing-keys` (ADR-0212 — see below; it was an out-of-band-only precondition until then, which no real Cix host had any way to satisfy) — deliberately never generated, fetched, or copied there by `cixd` itself (see ADR-0064: a release-signing private key must never propagate onto every deployed box, only whichever specific instance is actually cutting installer media). `cixctl iso build [--disk=... --ip=... --prefix=... --gateway=... --interface=...] [--wait]` / `cixctl iso status` is the CLI surface.
 
+## Approving a published recipe's artifact
+
+A published `(name, version)` recipe is immutable (ADR-0107) — `POST /v1/pkg/recipes` answers `409` for one that already exists. There is exactly one edit it will accept: **adding `pkg_artifact_sha256=` when the recipe does not already have one, changing nothing else.**
+
+The asymmetry is the point. A recipe's build instructions must not change under a version already installed somewhere — that is the drift immutability prevents. But the artifact checksum is not an instruction, it is an *approval of the bytes those instructions produced*, and it cannot be known until after the version has been built and published — strictly later than the recipe has to exist.
+
+Without this, the circularity had a real cost. `pkg.c` enters the artifact tier only when a recipe declares a checksum, so a package built on a Cix host and pushed to the cache was still rebuilt **from source** on every other host: the artifact existed, was checksum-verified on upload, and was never consulted. On the first real box, **12 of 37 installed packages** sat in the cache unapproved — including `grub`, `python`, `openssl` and `tcc`, the expensive ones. "Rebuild the box from the cache" could not work.
+
+Only absent → present is accepted. Replacing an existing checksum is refused, because one version naming two different byte sequences is exactly what immutability protects against — and it is the failure [#145](https://git.home.arpa/itdlabs/cix/issues/145) documents, where an edited checksum silently stops matching and every install falls back to source with an error that never mentions checksums. An approval smuggled in alongside any other change is refused too; otherwise this would be mutability with extra steps.
+
+The workflow is therefore: publish the recipe, build it on a Cix host, let the artifact push to the cache, then re-post the same recipe with the checksum of those exact bytes added. `pkg_artifact_sha256` still approves one specific byte sequence, and still may only be computed over something a Cix host actually produced (see the Build Provenance Mandate).
+
 ## The Secure Boot signing key pair
 
 ```

@@ -3442,6 +3442,78 @@ int pkg_try_start_queued_rebuild(pid_t *out_pid, int *out_pidfd, int *out_chain_
 	return 0;
 }
 
+/*
+ * True when `updated` is `stored` plus a pkg_artifact_sha256= line, and
+ * differs in nothing else.
+ *
+ * This is the one edit a published recipe version may take, and the
+ * asymmetry is the point. A recipe's build instructions must be
+ * immutable: they are what a source build follows, and letting them
+ * change under a version already installed somewhere is the drift
+ * ADR-0107's immutability rule exists to prevent. But the artifact
+ * checksum is not an instruction -- it is an APPROVAL of the bytes
+ * those instructions produced, and it cannot be known until after the
+ * version is built and published, which is strictly later than the
+ * recipe has to exist.
+ *
+ * That circularity had a real cost. `pkg.c`'s artifact tier is entered
+ * only when a recipe declares a checksum, so a package built here and
+ * pushed to the cache was still rebuilt from source on every other
+ * host: the artifact existed, was verified, and was never consulted.
+ * Of 37 packages installed on the first real box, 12 sat in the cache
+ * unapproved -- including grub, python, openssl and tcc, the expensive
+ * ones. "Rebuild the box from the cache" could not work.
+ *
+ * Only absent -> present is accepted. Replacing an existing checksum
+ * would let one version name two different byte sequences, which is
+ * exactly what immutability protects against, and is the failure #145
+ * documents: an edited checksum that silently stops matching, sending
+ * every install down the source path with an error that never mentions
+ * checksums.
+ */
+static int recipe_adds_only_artifact_sha256(const char *stored, const char *updated)
+{
+	const char *key = "pkg_artifact_sha256=";
+	const char *sp = stored;
+	const char *up = updated;
+	int saw_new_approval = 0;
+
+	for (;;) {
+		size_t slen, ulen;
+		const char *snl = strchr(sp, '\n');
+		const char *unl;
+
+		/* A pkg_artifact_sha256= line in the STORED copy means this
+		 * version is already approved -- nothing further may change
+		 * it. */
+		if (strncmp(sp, key, strlen(key)) == 0)
+			return 0;
+
+		unl = strchr(up, '\n');
+		if (strncmp(up, key, strlen(key)) == 0) {
+			/* The added approval: skip it and keep comparing. */
+			if (saw_new_approval)
+				return 0; /* more than one -- not a simple addition */
+			saw_new_approval = 1;
+			up = (unl != NULL) ? unl + 1 : up + strlen(up);
+			continue;
+		}
+
+		if (*sp == '\0' && *up == '\0')
+			return saw_new_approval;
+		if (*sp == '\0' || *up == '\0')
+			return 0;
+
+		slen = (snl != NULL) ? (size_t)(snl - sp) : strlen(sp);
+		ulen = (unl != NULL) ? (size_t)(unl - up) : strlen(up);
+		if (slen != ulen || memcmp(sp, up, slen) != 0)
+			return 0;
+
+		sp = (snl != NULL) ? snl + 1 : sp + slen;
+		up = (unl != NULL) ? unl + 1 : up + ulen;
+	}
+}
+
 enum pkg_error pkg_recipe_add(const char *name, const char *content)
 {
 	char name_dir[PATH_MAX];
@@ -3478,8 +3550,30 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content)
 	snprintf(version_dir, sizeof(version_dir), "%s/%s", name_dir, parsed.version);
 	snprintf(recipe_path, sizeof(recipe_path), "%s/build.sh", version_dir);
 	if (stat(recipe_path, &st) == 0) {
-		unlink(staging_path);
-		return PKG_ERR_DUPLICATE;
+		char *stored = NULL;
+		size_t stored_len = 0;
+		int only_approval = 0;
+
+		/* The one permitted edit: adding the artifact checksum for
+		 * bytes this very version produced. See
+		 * recipe_adds_only_artifact_sha256() for why this is not a
+		 * hole in immutability but the completion of it. */
+		if (persist_read_file(recipe_path, &stored, &stored_len) == 0 && stored != NULL) {
+			only_approval = recipe_adds_only_artifact_sha256(stored, content);
+			free(stored);
+		}
+		if (!only_approval) {
+			unlink(staging_path);
+			return PKG_ERR_DUPLICATE;
+		}
+		if (rename(staging_path, recipe_path) != 0) {
+			unlink(staging_path);
+			return PKG_ERR_PERSIST_FAILED;
+		}
+		logstore_write("cixd", "info",
+		                "pkg: recipe %s@%s approved its published artifact", name,
+		                parsed.version);
+		return PKG_OK;
 	}
 
 	if (persist_mkdir_p(version_dir) != 0) {
