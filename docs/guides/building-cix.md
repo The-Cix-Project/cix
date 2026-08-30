@@ -15,7 +15,7 @@ make clean
 
 `make` builds every binary this repo produces — `cixd`, `cixctl`, the installer tools (`mkbootroot`, `mkinstalleriso`, `cix-install`, `cix-recover`), and one test binary per phase/part (each self-contained, forking and `exec`ing its own `cixd` instance where needed — e.g. `sudo build/test_pkg` runs standalone). There is no `make install` target and no other named target beyond `all`/`clean` — everything beyond `make`/`make clean` is a manually-invoked binary out of `build/`.
 
-`build/bzImage` (the kernel Cix boots) is intentionally **not** part of this build — see [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md) for how that's produced, on a dev machine or self-hosted.
+`build-inputs/bzImage` (the kernel Cix boots) is intentionally **not** part of this build — see [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md) for how that's produced, on a dev machine or self-hosted.
 
 ## From a running Cix host (self-hosted rebuild)
 

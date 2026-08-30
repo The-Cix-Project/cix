@@ -32,7 +32,7 @@ make allnoconfig ARCH=x86_64
 make olddefconfig ARCH=x86_64
 make -j$(nproc) ARCH=x86_64 bzImage
 make -j$(nproc) ARCH=x86_64 modules
-cp arch/x86/boot/bzImage <repo>/build/bzImage
+cp arch/x86/boot/bzImage <repo>/build-inputs/bzImage
 make ARCH=x86_64 INSTALL_MOD_PATH=<repo>/build modules_install
 depmod -b <repo>/build "$(make -s ARCH=x86_64 kernelrelease)"
 ```

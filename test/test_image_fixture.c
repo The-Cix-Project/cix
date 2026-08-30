@@ -572,7 +572,7 @@ int test_image_fixture_read_current_version(const char *image_dir, char *out_ver
  * and what this project's own declared recipes already name.
  *
  * Versions are pinned to exactly the artifacts this repo carries under
- * build/floor-artifacts, and each is verified against the checksum in
+ * build-inputs/floor-artifacts, and each is verified against the checksum in
  * its own recipe before it is used. Bumping one means fetching the new
  * artifact and re-verifying -- not editing this table alone.
  */

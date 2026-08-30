@@ -1,6 +1,6 @@
 # Installing Cix
 
-Building and using the installer ISO — from a set of already-built binaries (`build/cixd`, `build/cix-install`, a kernel `build/bzImage`, see [`building-cix.md`](building-cix.md) and [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md)) to a real, booted, network-reachable install.
+Building and using the installer ISO — from a set of already-built binaries (`build/cixd`, `build/cix-install`, a kernel `build-inputs/bzImage`, see [`building-cix.md`](building-cix.md) and [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md)) to a real, booted, network-reachable install.
 
 ## One-time: the Cix Secure Boot signing key
 
@@ -30,7 +30,7 @@ This gives you `/tmp/linux-firmware/amdgpu` — pass that path as `mkbootroot`'s
 
 This section covers the dev-machine path (`mkbootroot`/`mkinstalleriso` run by hand). A running Cix host can also assemble a fresh ISO itself, no separate dev machine involved — see [`building-cix.md`'s "Build a fresh installer ISO, server-side"](building-cix.md#4-build-a-fresh-installer-iso-server-side) (`POST /system/iso` / `cixctl iso build`, ADR-0064). Either path produces the same kind of ISO, described below.
 
-Once `build/cixd`, `build/cix-install`, `build/cix-recover`, `build/bzImage`, and the signing key above all exist:
+Once `build/cixd`, `build/cix-install`, `build/cix-recover`, `build-inputs/bzImage`, and the signing key above all exist:
 
 ```sh
 sudo build/mkbootroot  /tmp/root_stage build/cixd build/cixctl web /tmp/cixd-root.squashfs \
@@ -38,12 +38,18 @@ sudo build/mkbootroot  /tmp/root_stage build/cixd build/cixctl web /tmp/cixd-roo
      /path/to/kernel-hostbuild-artifact/lib/modules \  # or "" to skip kernel modules
      /path/to/kmod-usr-bin                             # or "" to skip modprobe/depmod/etc
 sudo build/mkinstalleriso build/iso_stage build/cix-install build/cix-recover \
-     build/cix-boot.efi build/bzImage \
+     build/cix-boot.efi build-inputs/bzImage \
      /tmp/cixd-root.squashfs \
      image/keys/cix-signing.key image/keys/cix-signing.crt image/keys/cix-signing.cer \
      build/cix-install.iso \
-     "--disk=/dev/CHANGEME --ip=CHANGEME --prefix=24 --gateway=CHANGEME --interface=CHANGEME"
+     "--disk=/dev/CHANGEME --ip=CHANGEME --prefix=24 --gateway=CHANGEME --interface=CHANGEME" \
+     /path/to/isotools-artifact \
+     /path/to/seed                                     # or "" for no package seed
 ```
+
+The last two arguments are worth a word. **isotools-root** is the harvested `isotools` hostbuild artifact (ADR-0064) holding `grub-mkrescue`, `xorriso`, `sbsign`, `mokutil`, shim and their libraries — it is an argument rather than something read off the build machine precisely so this tool can run on a real Cix host, which has none of those at Debian's absolute paths. This example previously omitted it altogether and would not have run.
+
+**seed** is optional (`""` for none) and is what makes a freshly installed box able to run a container without a network: a directory of `recipes/` and `artifacts/` copied onto the installed system's own package directories, from which the daemon installs a C library into the default image at first boot (#189). Without it, a fresh install comes up healthy but its default image has no C library, and `POST /v1/containers` refuses with a message naming what to install.
 
 The generated media carries a second GRUB entry, "Cix Recovery" — a break-glass tool for resetting host-auth admin_groups on an already-installed system if you're ever locked out of the API; see [`security.md`'s recovery section](security.md#break-glass-recovery) and [ADR-0146](../adr/0146-ldap-startup-resync-and-break-glass-recovery.md). It never reformats or reinstalls anything, so keeping this same ISO around after a normal install is worthwhile on its own.
 

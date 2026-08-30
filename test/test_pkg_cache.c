@@ -346,9 +346,9 @@ int main(void)
 	 * host gets its first packages. There is no shared sandbox to
 	 * inherit one from any more, and nothing here is fabricated.
 	 */
-	if (test_image_fixture_seed_floor_packages(g_data_dir, "build/floor-artifacts") != 0) {
+	if (test_image_fixture_seed_floor_packages(g_data_dir, "build-inputs/floor-artifacts") != 0) {
 		fprintf(stderr, "could not seed the build floor -- fetch the real package artifacts "
-		                "into build/floor-artifacts first (ADR-0209)\n");
+		                "into build-inputs/floor-artifacts first (ADR-0209)\n");
 		return 1;
 	}
 	snprintf(g_pkg_state_dir, sizeof(g_pkg_state_dir), "%s/rebuildable/pkg", g_data_dir);

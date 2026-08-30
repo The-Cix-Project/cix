@@ -559,3 +559,24 @@ enum qemu_boot_outcome qemu_boot_capture(const struct qemu_boot_opts *opts, char
 
 	return outcome;
 }
+
+int test_disk_image_require_kernel(void)
+{
+	struct stat st;
+
+	if (stat(BZIMAGE_PATH, &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0)
+		return 0;
+	fprintf(stderr,
+	        "%s is missing -- this boot test cannot run without it.\n"
+	        "It is an INPUT, not a build output: `make` does not produce it and\n"
+	        "`make clean` used to delete it (#191). The quickest correct way to\n"
+	        "put it back is to take the one a Cix host already built, out of the\n"
+	        "kernel package artifact:\n"
+	        "    curl -H 'Authorization: Bearer <token>' -o /tmp/k.tar.gz \\\n"
+	        "         <artifact-cache>/kernel-<version>.tar.gz\n"
+	        "    tar xzf /tmp/k.tar.gz -C /tmp ./bzImage && cp /tmp/bzImage %s\n"
+	        "Building one locally also works, but the cached artifact is the\n"
+	        "kernel this platform actually shipped.\n",
+	        BZIMAGE_PATH, BZIMAGE_PATH);
+	return -1;
+}

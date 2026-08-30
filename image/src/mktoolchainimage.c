@@ -12,7 +12,7 @@
  * own /usr has nothing under it beyond cixd/cixctl and their bare
  * runtime libs). Run manually, occasionally, on a real toolchain-having
  * machine -- the same "explicit one-time action, not part of the fast
- * default `make` loop" posture build/bzImage itself already has.
+ * default `make` loop" posture build-inputs/bzImage itself already has.
  *
  * All the actual staging logic (what a toolchain needs, tolerant of
  * what a given build host doesn't have) lives in

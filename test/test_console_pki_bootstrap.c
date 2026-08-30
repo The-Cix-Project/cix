@@ -27,7 +27,6 @@
 #define MKBOOTROOT_BIN "build/mkbootroot"
 #define CIXD_BIN "build/cixd"
 #define CIXCTL_BIN "build/cixctl"
-#define BZIMAGE_PATH "build/bzImage"
 #define SFDISK_BIN "/usr/sbin/sfdisk"
 #define SYSTEMD_BOOT_EFI "/usr/lib/systemd/boot/efi/systemd-bootx64.efi"
 #define OVMF_VARS_TEMPLATE "/usr/share/OVMF/OVMF_VARS_4M.fd"
@@ -84,6 +83,10 @@ static int build_esp_image(const char *esp_img, const char *workdir)
 
 int main(void)
 {
+	/* An input, not a build output -- says how to restore it (#191). */
+	if (test_disk_image_require_kernel() != 0)
+		return 1;
+
 	char workdir[] = "/tmp/cix_test_console_pki_XXXXXX";
 	char stage_dir[600];
 	char root_squashfs[600];

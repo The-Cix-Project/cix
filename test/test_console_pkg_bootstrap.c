@@ -20,7 +20,7 @@
  * /tmp/toolchain.squashfs` against a real toolchain-having machine --
  * not reproduced by this test itself, the same "explicit one-time
  * build-time artifact, not part of the fast default suite" posture
- * build/bzImage already has).
+ * build-inputs/bzImage already has).
  */
 #include "test_disk_image.h"
 #include "test_image_fixture.h"
@@ -35,7 +35,6 @@
 #define MKBOOTROOT_BIN "build/mkbootroot"
 #define CIXD_BIN "build/cixd"
 #define CIXCTL_BIN "build/cixctl"
-#define BZIMAGE_PATH "build/bzImage"
 #define TOOLCHAIN_SQUASHFS_PATH "/tmp/toolchain.squashfs"
 #define SFDISK_BIN "/usr/sbin/sfdisk"
 #define SYSTEMD_BOOT_EFI "/usr/lib/systemd/boot/efi/systemd-bootx64.efi"
