@@ -8075,17 +8075,37 @@ enum pkg_error pkg_seed_default_image_libc(pid_t *out_pid, int *out_pidfd, int *
 			return PKG_ERR_NOT_FOUND;
 	}
 
+	/*
+	 * Past this point the default image genuinely has no runtime, so
+	 * every refusal below is a state an operator may need to act on --
+	 * and each says which one it is. Returning a bare "not found" for
+	 * four different reasons is how a box ends up unable to run a
+	 * container with nothing anywhere saying why.
+	 */
+
 	/* A recipe, so we know which version we would be installing... */
 	if (find_recipe_path(PKG_BASE_LIBC, NULL, recipe_path, sizeof(recipe_path)) != 0 ||
-	    parse_recipe(recipe_path, &recipe) != 0 || strcmp(recipe.name, PKG_BASE_LIBC) != 0)
+	    parse_recipe(recipe_path, &recipe) != 0 || strcmp(recipe.name, PKG_BASE_LIBC) != 0) {
+		logstore_write("cixd", "info",
+		               "the default image \"%s\" has no C library and there is no %s recipe to "
+		               "install one from -- containers created from it will be refused until "
+		               "a package source is configured",
+		               PKG_DEFAULT_IMAGE, PKG_BASE_LIBC);
 		return PKG_ERR_NOT_FOUND;
+	}
 
 	/* ...and its artifact already here, so the install is a cache hit
 	 * needing no build environment. Without this a fresh box would try
 	 * to BUILD glibc with no toolchain -- a long, loud failure in place
 	 * of a box that simply says what to install. */
-	if (!pkg_artifact_cache_has(PKG_BASE_LIBC, recipe.version))
+	if (!pkg_artifact_cache_has(PKG_BASE_LIBC, recipe.version)) {
+		logstore_write("cixd", "info",
+		               "the default image \"%s\" has no C library and %s@%s is not in the local "
+		               "artifact cache -- not building it here, since a box with no toolchain "
+		               "would fail slowly instead of saying what it needs",
+		               PKG_DEFAULT_IMAGE, PKG_BASE_LIBC, recipe.version);
 		return PKG_ERR_NOT_FOUND;
+	}
 
 	/*
 	 * And it must be the bytes the recipe approves.

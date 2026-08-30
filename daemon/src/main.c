@@ -3673,6 +3673,10 @@ static int rebind_listener(const char *new_bind_addr, int new_port)
  * invocation, or a kernel with /dev/kmsg unreadable for any other
  * reason, simply never gets kernel-source log entries; every other
  * source (cixd's own diagnostics, the audit trail) is unaffected. */
+/* Set while the default image's own C library install is in flight (#189). */
+static int g_default_image_seed_pending;
+static void report_default_image_seed_result(void);
+
 /* Forward declaration -- defined further down beside the other reactor
  * registrations, which all sit after the startup helpers that use them. */
 static void register_pkg_fetch_pidfd(pid_t pid, int pidfd, int chain_idx);
@@ -3704,9 +3708,46 @@ static void start_default_image_libc_seed(void)
 		return;
 	}
 	register_pkg_fetch_pidfd(pid, pidfd, chain_idx);
+	g_default_image_seed_pending = 1;
 	logstore_write("cixd", "info",
 	               "the default image \"%s\" had no C library -- installing %s into it",
 	               PKG_DEFAULT_IMAGE, PKG_BASE_LIBC);
+	/* Console too, not just the log store: this is a first boot, the
+	 * log store is not reachable yet, and an operator watching a fresh
+	 * install being made ready should see it happening. */
+	printf("default image: no C library -- installing %s\n", PKG_BASE_LIBC);
+	fflush(stdout);
+}
+
+/*
+ * Says when the install above has actually landed, once.
+ *
+ * Called from the same place every other "a pkg job may have just
+ * finished" follow-up runs, so it needs no completion hook of its own.
+ * Checks the thing that actually matters -- the image can run something
+ * now -- rather than a job status, which is the same reason the
+ * container-create guard looks for a loader rather than a package name.
+ */
+static void report_default_image_seed_result(void)
+{
+	char version[IMAGE_VERSION_MAX];
+	char rootfs[PATH_MAX];
+	char loader[PATH_MAX];
+	struct stat st;
+
+	if (!g_default_image_seed_pending)
+		return;
+	if (image_current_version(PKG_DEFAULT_IMAGE, version, sizeof(version)) != IMAGE_OK)
+		return;
+	image_version_rootfs_path(PKG_DEFAULT_IMAGE, version, rootfs, sizeof(rootfs));
+	snprintf(loader, sizeof(loader), "%s/%s", rootfs, PKG_IMAGE_LOADER_REL);
+	if (stat(loader, &st) != 0)
+		return; /* still running */
+	g_default_image_seed_pending = 0;
+	logstore_write("cixd", "info", "default image \"%s\" is ready -- %s installed",
+	               PKG_DEFAULT_IMAGE, PKG_BASE_LIBC);
+	printf("default image: ready\n");
+	fflush(stdout);
 }
 
 static void start_kmsg_watch(void)
@@ -8492,6 +8533,7 @@ static void try_start_queued_pkg_rebuild(void)
 
 	if (pkg_try_start_queued_rebuild(&pkg_pid, &pkg_pidfd, &pkg_chain_idx))
 		register_pkg_fetch_pidfd(pkg_pid, pkg_pidfd, pkg_chain_idx);
+	report_default_image_seed_result(); /* #189 -- says once when the default image became runnable */
 	apply_rolling_container_restarts();
 }
 

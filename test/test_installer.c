@@ -54,6 +54,9 @@
  */
 #include "test_disk_image.h"
 #include "test_image_fixture.h"
+/* For PKG_IMAGE_LOADER_REL -- the one definition of "what proves an
+ * image can run anything", shared with the daemon rather than restated. */
+#include "pkg.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -125,6 +128,25 @@
 #define BOOT_TIMEOUT_SECONDS 120
 #define INSTALL_SUCCESS_MARKER "cix-install: install complete"
 #define BOOT_SUCCESS_MARKER "cixd listening on"
+/*
+ * The first boot of a seeded install does one more thing before it is
+ * really ready: it installs a C library into the default image from the
+ * seed the ISO carried (#189). That is asynchronous, so "cixd listening"
+ * arrives well before the image is runnable -- waiting on this marker
+ * instead is what makes the persistence proof below examine a finished
+ * box rather than one still working. Printed to the console
+ * deliberately: on a first boot the log store is not reachable yet.
+ */
+#define SEED_READY_MARKER "default image: ready"
+
+/*
+ * That first boot now does real work before it is ready -- unpacking a
+ * ~50 MB C library into the default image -- so it gets its own budget
+ * rather than the ordinary boot timeout. This sandbox has no /dev/kvm
+ * (documented), so QEMU is software-emulated and every second of real
+ * work costs several here; on real hardware this is far quicker.
+ */
+#define SEED_BOOT_TIMEOUT_SECONDS 600
 
 #define TEST_IP "192.168.50.10"
 #define TEST_PREFIX 24
@@ -205,6 +227,70 @@ static int copy_into(const char *dir, const char *src)
 	base = base != NULL ? base + 1 : src;
 	snprintf(dst, sizeof(dst), "%s/%s", dir, base);
 	return test_image_fixture_copy_file(src, dst);
+}
+
+/*
+ * The package seed this ISO carries (#189): the real glibc recipe out
+ * of this repo, and the real artifact that recipe approves out of the
+ * shared ADR-0209 floor.
+ *
+ * Never fabricated, for the same reason the floor states in its own
+ * fixture: the daemon verifies the artifact against the recipe before
+ * installing it, so a made-up artifact would prove the verification
+ * works and nothing else. What this test needs to prove is that a
+ * freshly installed box can run a container, which needs the real bytes.
+ */
+#define SEED_LIBC_VERSION "2.44-6"
+
+static int build_seed_fixture(const char *workdir, char *out_root, size_t out_root_len)
+{
+	char recipe_dir[PATH_MAX], artifact_dir[PATH_MAX];
+	char src[PATH_MAX], dst[PATH_MAX];
+
+	snprintf(out_root, out_root_len, "%s/seed", workdir);
+	snprintf(recipe_dir, sizeof(recipe_dir), "%s/recipes/glibc/%s", out_root, SEED_LIBC_VERSION);
+	snprintf(artifact_dir, sizeof(artifact_dir), "%s/artifacts", out_root);
+	if (fixture_mkdir_p(recipe_dir) != 0 || fixture_mkdir_p(artifact_dir) != 0)
+		return -1;
+
+	snprintf(src, sizeof(src), "recipes/package/glibc/%s/build.sh", SEED_LIBC_VERSION);
+	snprintf(dst, sizeof(dst), "%s/build.sh", recipe_dir);
+	if (test_image_fixture_copy_file(src, dst) != 0)
+		return -1;
+
+	snprintf(src, sizeof(src), "build/floor-artifacts/glibc-%s.tar.gz", SEED_LIBC_VERSION);
+	snprintf(dst, sizeof(dst), "%s/glibc-%s.tar.gz", artifact_dir, SEED_LIBC_VERSION);
+	if (access(src, R_OK) != 0) {
+		fprintf(stderr,
+		        "the seed needs the real glibc artifact at %s -- fetch the floor artifacts "
+		        "first (see ADR-0209); they are never fabricated\n",
+		        src);
+		return -1;
+	}
+	if (test_image_fixture_copy_file(src, dst) != 0)
+		return -1;
+	return 0;
+}
+
+/*
+ * Pulls the dynamic loader out of the seeded glibc artifact, so the
+ * persistence proof compares the installed box against what this ISO
+ * actually shipped rather than against the machine running the test.
+ */
+static int extract_seed_loader(const char *workdir, char *out_path, size_t out_path_len)
+{
+	char dir[PATH_MAX], cmd[PATH_MAX * 2];
+
+	snprintf(dir, sizeof(dir), "%s/seed_loader", workdir);
+	if (fixture_mkdir_p(dir) != 0)
+		return -1;
+	snprintf(cmd, sizeof(cmd),
+	         "tar xzf 'build/floor-artifacts/glibc-%s.tar.gz' -C '%s' './%s' 2>/dev/null",
+	         SEED_LIBC_VERSION, dir, PKG_IMAGE_LOADER_REL);
+	if (system(cmd) != 0)
+		return -1;
+	snprintf(out_path, out_path_len, "%s/%s", dir, PKG_IMAGE_LOADER_REL);
+	return access(out_path, R_OK) == 0 ? 0 : -1;
 }
 
 static int build_isotools_fixture(const char *workdir, char *out_root, size_t out_root_len)
@@ -465,6 +551,7 @@ int main(void)
 	         TEST_PREFIX, TEST_GATEWAY, TEST_IFACE);
 	{
 		char isotools_root[PATH_MAX];
+		char seed_root[PATH_MAX];
 		char *mkiso_argv[] = { (char *)MKINSTALLERISO_BIN, installer_stage,
 			                (char *)CIX_INSTALL_BIN,    (char *)CIX_RECOVER_BIN,
 			                (char *)CIX_BOOT_BIN,
@@ -472,10 +559,21 @@ int main(void)
 			                (char *)SIGNING_KEY,           (char *)SIGNING_CERT_PEM,
 			                (char *)SIGNING_CERT_DER,      installer_iso,
 			                kernel_args,                   isotools_root,
+			                seed_root,
 			                NULL };
 
 		if (build_isotools_fixture(workdir, isotools_root, sizeof(isotools_root)) != 0) {
 			fprintf(stderr, "could not build the isotools fixture\n");
+			printf("INSTALLER RESULT: FAIL\n");
+			return 1;
+		}
+		/* The package seed (#189): the real glibc recipe and the real
+		 * artifact it approves, so the installed box has a package
+		 * source before it has a network. Both come from this repo and
+		 * the shared floor -- never fabricated, same rule the ADR-0209
+		 * floor fixture states for itself. */
+		if (build_seed_fixture(workdir, seed_root, sizeof(seed_root)) != 0) {
+			fprintf(stderr, "could not build the package seed fixture\n");
 			printf("INSTALLER RESULT: FAIL\n");
 			return 1;
 		}
@@ -831,9 +929,9 @@ int main(void)
 		opts.secure_boot = 1;
 		opts.with_nic = 1;
 		opts.ovmf_vars = ovmf_vars;
-		opts.success_marker = BOOT_SUCCESS_MARKER;
+		opts.success_marker = SEED_READY_MARKER;
 		opts.panic_marker = "Kernel panic";
-		opts.timeout_seconds = BOOT_TIMEOUT_SECONDS;
+		opts.timeout_seconds = SEED_BOOT_TIMEOUT_SECONDS;
 		outcome = qemu_boot_capture(&opts, captured, sizeof(captured));
 	}
 	if (outcome != QEMU_BOOT_SUCCESS) {
@@ -873,8 +971,24 @@ int main(void)
 		char containers_extract[600];
 		char containers_tree[600];
 		struct stat pst;
-		const char *ld_so_src = "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2";
+		/*
+		 * Truth is the loader inside the artifact this ISO seeded, not
+		 * the build host's own (#189/ADR-0216).
+		 *
+		 * This used to point at /usr/lib/x86_64-linux-gnu on the
+		 * machine running the test, which made the assertion a
+		 * contamination check pointing exactly the wrong way: it
+		 * passed only while every image carried a runtime copied off
+		 * the build host, and that is the thing that was removed.
+		 * Extracted once, from the same artifact the seed carries.
+		 */
+		char ld_so_src[PATH_MAX];
 
+		if (extract_seed_loader(workdir, ld_so_src, sizeof(ld_so_src)) != 0) {
+			fprintf(stderr, "could not extract the seeded artifact's own loader\n");
+			printf("INSTALLER RESULT: FAIL\n");
+			return 1;
+		}
 		snprintf(containers_extract, sizeof(containers_extract), "%s/containers_extract.img",
 		         workdir);
 		snprintf(containers_tree, sizeof(containers_tree), "%s/containers_tree_s3", workdir);

@@ -316,8 +316,8 @@ $(BUILD)/test_console_pki_bootstrap: test/test_console_pki_bootstrap.c test/test
 $(BUILD)/test_console_pkg_bootstrap: test/test_console_pkg_bootstrap.c test/test_disk_image.c test/test_image_fixture.c | $(BUILD)
 	$(CC) $(CFLAGS) -Itest $^ -o $@
 
-$(BUILD)/cix-install: image/src/cix-install.c image/src/dual_console.c | $(BUILD)
-	$(CC) $(CFLAGS) $^ -o $@
+$(BUILD)/cix-install: image/src/cix-install.c image/src/dual_console.c daemon/src/treecopy.c | $(BUILD)
+	$(CC) $(CFLAGS) -Idaemon/include $^ -o $@
 
 #
 # cix-boot: the UEFI boot manager (ADR-0215). The one thing in this
@@ -384,7 +384,7 @@ $(BUILD)/mktoolchainimage: image/src/mktoolchainimage.c test/test_image_fixture.
 	$(CC) $(CFLAGS) -Itest $^ -o $@
 
 $(BUILD)/test_installer: test/test_installer.c test/test_disk_image.c test/test_image_fixture.c | $(BUILD)
-	$(CC) $(CFLAGS) -Itest $^ -o $@
+	$(CC) $(CFLAGS) -Itest -Idaemon/include $^ -o $@
 
 clean:
 	rm -rf $(BUILD)
