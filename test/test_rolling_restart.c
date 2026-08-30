@@ -211,7 +211,7 @@ static int write_binary_recipe(const char *pkg_state_dir, const char *version,
 	fprintf(f, "pkg_source=file://%s\n", tarball_path);
 	fprintf(f, "pkg_sha256=%s\n", sha256);
 	fprintf(f, "pkg_depends=\"\"\n");
-	fprintf(f, "pkg_build_depends=\"tcc libc-dev bash coreutils\"\n\n");
+	fprintf(f, "pkg_build_depends=\"tcc linux-headers bash coreutils\"\n\n");
 	/* No compiler needed -- rollsvc is already a real ELF binary. */
 	fprintf(f, "pkg_build() {\n\t:\n}\n\n");
 	fprintf(f, "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n\tcp rollsvc "
@@ -331,7 +331,7 @@ int main(void)
 	 * test_pkg.c's own scenario 1 makes), needed before any install
 	 * below can create its build container. */
 	{
-		static const char *const floor[] = { "bash", "coreutils", "tcc", "libc-dev", NULL };
+		static const char *const floor[] = { "bash", "coreutils", "tcc", "linux-headers", NULL };
 		int fi;
 
 		for (fi = 0; floor[fi] != NULL; fi++) {
@@ -419,7 +419,7 @@ int main(void)
 	              r.status == 202,
 	      "POST install glibc@rollctrimg");
 	cix_response_free(&r);
-	CHECK(poll_pkg_installed_version(&client, "glibc@rollctrimg", "2.44-6", ROLL_POLL_ATTEMPTS) == 0,
+	CHECK(poll_pkg_installed_version(&client, "glibc@rollctrimg", TEST_FLOOR_GLIBC_VERSION, ROLL_POLL_ATTEMPTS) == 0,
 	      "glibc@rollctrimg reaches installed");
 
 	memset(&r, 0, sizeof(r));
@@ -513,7 +513,7 @@ int main(void)
 			snprintf(content, sizeof(content),
 			         "pkg_name=rollsvc\npkg_version=2.0\npkg_source=file://%s\n"
 			         "pkg_sha256=%s\npkg_depends=\"\"\n"
-		         "pkg_build_depends=\"tcc libc-dev bash coreutils\"\n\n"
+		         "pkg_build_depends=\"tcc linux-headers bash coreutils\"\n\n"
 			         "pkg_build() {\n\t:\n}\n\n"
 			         "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n\tcp rollsvc "
 			         "\"$PKG_DESTDIR/usr/bin/rollsvc\"\n\tchmod +x "
@@ -654,7 +654,7 @@ int main(void)
 		snprintf(content, sizeof(content),
 		         "pkg_name=rollsvc\npkg_version=3.0\npkg_source=file://%s\n"
 		         "pkg_sha256=%s\npkg_depends=\"\"\n"
-		         "pkg_build_depends=\"tcc libc-dev bash coreutils\"\n\n"
+		         "pkg_build_depends=\"tcc linux-headers bash coreutils\"\n\n"
 		         "pkg_build() {\n\t:\n}\n\n"
 		         "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n\tcp rollsvc "
 		         "\"$PKG_DESTDIR/usr/bin/rollsvc\"\n\tchmod +x "

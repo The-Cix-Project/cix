@@ -259,7 +259,7 @@ static int copy_into(const char *dir, const char *src)
  * works and nothing else. What this test needs to prove is that a
  * freshly installed box can run a container, which needs the real bytes.
  */
-#define SEED_LIBC_VERSION "2.44-6"
+#define SEED_LIBC_VERSION TEST_FLOOR_GLIBC_VERSION
 
 static int build_seed_fixture(const char *workdir, char *out_root, size_t out_root_len)
 {

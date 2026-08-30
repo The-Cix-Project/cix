@@ -229,6 +229,18 @@ int test_image_fixture_read_current_version(const char *image_dir, char *out_ver
 int test_image_fixture_write_manifest(const char *image_dir, const char *version);
 
 /*
+ * The glibc version the test floor seeds, in ONE place.
+ *
+ * It was written out by hand in three: the floor table itself, the
+ * installer test's seed check, and the rolling-restart test's install
+ * poll. Moving the floor off libc-dev (#187) changed the table and left
+ * the other two asserting a version that is no longer installed -- a
+ * drift that reports as a package "never reaching installed" rather
+ * than as a stale literal, which is a long way from the cause.
+ */
+#define TEST_FLOOR_GLIBC_VERSION "2.44-12"
+
+/*
  * ADR-0209: seeds a test daemon's own package cache with REAL,
  * recipe-built package artifacts, and copies in the real recipes that
  * approve them.

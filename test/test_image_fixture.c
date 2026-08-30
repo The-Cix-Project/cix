@@ -585,8 +585,9 @@ static const struct {
 	 * same discipline the recipes themselves are now held to. A fixture
 	 * pkg_build() runs `tcc -o hello hello.c` and its pkg_install()
 	 * runs mkdir/cp, so: bash to run recipe.sh at all, coreutils for
-	 * those two, tcc to compile, libc-dev for the headers and CRT it
-	 * needs.
+	 * those two, tcc to compile, glibc for the headers and CRT it needs,
+	 * and linux-headers for the kernel UAPI headers glibc's own
+	 * limits.h chain includes.
 	 *
 	 * binutils used to be here and is deliberately gone: tcc has its
 	 * own linker, nothing in a fixture reaches for ar or ld, and at
@@ -604,8 +605,21 @@ static const struct {
 	 * floor for exactly the reason the others do: an install that must
 	 * be a cache hit, from a real artifact this platform built.
 	 */
+	/*
+	 * libc-dev is gone from this floor (#187/#117), and its two jobs
+	 * are split the way every real recipe now splits them: glibc owns
+	 * the C headers and CRT objects, linux-headers owns the kernel UAPI
+	 * headers glibc's own limits.h chain includes.
+	 *
+	 * This is not tidying. The floor was pinned to libc-dev 2.36-3 and
+	 * glibc 2.44-6 -- so a package here compiled against glibc 2.36's
+	 * headers while linking 2.44's library, which is exactly the defect
+	 * #187 found on the real box, reproduced faithfully in the one
+	 * place meant to catch it. Every local test run was validating the
+	 * world being retired.
+	 */
 	{ "bash", "5.2.37-2" }, { "coreutils", "9.11-3" }, { "tcc", "0.9.27-7" },
-	{ "libc-dev", "2.36-3" }, { "glibc", "2.44-6" },
+	{ "glibc", "2.44-12" }, { "linux-headers", "6.18.40-4" },
 };
 
 static int sha256_file_hex(const char *path, char *out, size_t out_size)

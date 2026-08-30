@@ -219,7 +219,7 @@ static int write_recipe(const char *pkg_state_dir, const char *name, const char 
 	fprintf(f, "pkg_source=%s\n", source_url);
 	fprintf(f, "pkg_sha256=%s\n", source_sha256);
 	fprintf(f, "pkg_depends=\"\"\n");
-	fprintf(f, "pkg_build_depends=\"tcc libc-dev bash coreutils\"\n");
+	fprintf(f, "pkg_build_depends=\"tcc linux-headers bash coreutils\"\n");
 	if (artifact_sha256 != NULL && artifact_sha256[0] != '\0')
 		fprintf(f, "pkg_artifact_sha256=%s\n", artifact_sha256);
 	fprintf(f, "\npkg_build() {\n\ttcc -o hello hello.c\n}\n\n");
@@ -381,7 +381,7 @@ int main(void)
 	}
 
 	{
-		static const char *const floor[] = { "bash", "coreutils", "tcc", "libc-dev", NULL };
+		static const char *const floor[] = { "bash", "coreutils", "tcc", "linux-headers", NULL };
 		int fi;
 
 		for (fi = 0; floor[fi] != NULL; fi++) {
@@ -948,7 +948,7 @@ int main(void)
 						        "pkg_name=hbpush\npkg_version=1.0\n"
 						        "pkg_source=file://%s\npkg_sha256=%s\n"
 						        "pkg_depends=\"\"\n"
-						        "pkg_build_depends=\"tcc libc-dev bash coreutils\"\n\n"
+						        "pkg_build_depends=\"tcc linux-headers bash coreutils\"\n\n"
 						        "pkg_build() {\n\ttcc -o hello hello.c\n}\n\n"
 						        "pkg_install() {\n\tcp hello \"$PKG_DESTDIR/hello\"\n}\n",
 						        hb_tarball, hb_sha256);

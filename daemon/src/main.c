@@ -9112,6 +9112,14 @@ static void register_bootroot_assemble_pidfd(pid_t pid, int pidfd)
  * succeeded and its own artifacts are still there for a later retry.
  */
 static void artifact_push_pump(void);
+/*
+ * Issue #200 -- both defined lower down, next to the export machinery
+ * they drive; declared here because pkg_completion_followup() runs
+ * before either in this file.
+ */
+static int artifact_export_start(enum artifact_export_kind kind, const char *name,
+                                 const char *dest_override, char *err_msg, size_t err_msg_size);
+static void publish_hostbuild_artifact(const char *name);
 static void spawn_cix_bootroot_assembly(const char *artifact_dir);
 
 /* ADR-0207 phase 2: force the direct-rootfs container path with a COPY
@@ -9201,6 +9209,15 @@ static void pkg_completion_followup(int chained, pid_t pkg_pid, int pkg_pidfd, i
 		register_pkg_fetch_pidfd(pkg_pid, pkg_pidfd, pkg_chain_idx);
 	else
 		try_start_queued_pkg_rebuild();
+
+	/*
+	 * Issue #200: a hostbuild's output is a directory, so pkg.c's own
+	 * post-build enqueue had no tarball for the pusher to upload and
+	 * every push was skipped. Build one first; its completion queues
+	 * the push. Before the pump, so the pump below still handles every
+	 * other package that finished.
+	 */
+	publish_hostbuild_artifact(hostbuild_done_name);
 
 	/* Issue #129: a build just finished, so there may be something to
 	 * publish. Cheap no-op when the queue is empty or push is off. */
@@ -9457,6 +9474,53 @@ static char g_artifact_export_error[256];
  * operator-requested one.
  */
 static char g_artifact_export_publish_name[PKG_NAME_MAX];
+
+/*
+ * Issue #200: make a hostbuild's output publishable.
+ *
+ * A hostbuild's artifact is a DIRECTORY this host assembled, never a
+ * tarball it fetched, so pkg.c's post-build enqueue had nothing for the
+ * pusher to upload and every push was skipped. The artifact cache's
+ * newest `cix` sat at v2.2.0-rc30 while the box that built it ran rc35;
+ * `kernel` and `isotools` were affected identically. Ordinary
+ * source-built packages were fine only because their branch calls
+ * pkg_cache_save() before enqueuing; a hostbuild's never did.
+ *
+ * Build the tarball from the installed tree first -- the same export
+ * the manual publish endpoint uses, so there is one way to produce
+ * these bytes rather than two -- and let its completion queue the push
+ * through g_artifact_export_publish_name, exactly as that path does.
+ *
+ * Silent when there is nothing to do: not a hostbuild, or already
+ * cached (a cache hit, which pkg.c does not enqueue anyway).
+ */
+static void publish_hostbuild_artifact(const char *name)
+{
+	char version[PKG_VERSION_MAX];
+	int is_hostbuild = 0;
+	char dest[PATH_MAX];
+	char err[256];
+
+	if (name == NULL || name[0] == '\0')
+		return;
+	if (pkg_artifact_publish_resolve(name, version, sizeof(version), &is_hostbuild) != PKG_OK)
+		return;
+	if (!is_hostbuild || pkg_artifact_cache_has(name, version))
+		return;
+
+	pkg_artifact_cache_path(name, version, dest, sizeof(dest));
+	snprintf(g_artifact_export_publish_name, sizeof(g_artifact_export_publish_name), "%s", name);
+	if (artifact_export_start(ARTIFACT_EXPORT_KIND_HOSTBUILD, name, dest, err, sizeof(err)) != 0) {
+		g_artifact_export_publish_name[0] = '\0';
+		/* Name the package and the reason: this whole class went
+		 * unnoticed for five releases behind a message that asserted
+		 * the wrong cause. */
+		logstore_write("cixd", "warning",
+		                "artifact publish: could not build a tarball for %s@%s, so it will "
+		                "not be published: %s",
+		                name, version, err);
+	}
+}
 /* Read end of the tar child's stderr pipe -- -1 when no export is
  * running. Drained (bounded) at completion so a failure names its
  * actual cause instead of only an exit status; "tar failed (status
