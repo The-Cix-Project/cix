@@ -437,9 +437,26 @@ static int create_blank_disk(const char *path)
  *     boots" proof is gone -- see the session-4 block for what
  *     replaced it.
  */
+/*
+ * "-s" is load-bearing: without it this recovers a faithful copy of the
+ * wrong subvolume.
+ *
+ * `btrfs restore` skips snapshots by default, and an image version is a
+ * snapshot the moment a package is installed into one --
+ * image_produce_new_version() creates the new version with
+ * BTRFS_IOC_SNAP_CREATE_V2 (ADR-0207 phase 1), which is a separate tree
+ * root. So a default image with one version (the subvolume
+ * image_create() made) restored fine, and the same image after an
+ * install came back missing everything the install added, with no error
+ * from restore at all -- it did exactly what it was asked.
+ *
+ * Found when the default image started carrying a real C library (#189):
+ * the daemon printed "default image: ready" on the booted machine and
+ * this extraction of that same partition then reported no runtime.
+ */
 static int btrfs_restore_tree(const char *image, const char *dest_dir)
 {
-	char *argv[] = { (char *)BTRFS_BIN, "restore", (char *)image, (char *)dest_dir, NULL };
+	char *argv[] = { (char *)BTRFS_BIN, "restore", "-s", (char *)image, (char *)dest_dir, NULL };
 
 	if (mkdir(dest_dir, 0755) != 0 && errno != EEXIST) {
 		perror(dest_dir);
