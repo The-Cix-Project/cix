@@ -583,8 +583,13 @@ int main(int argc, char **argv)
 	if (seed_dir != NULL && seed_dir[0] != '\0') {
 		char seed_dst[PATH_MAX];
 
-		if (ensure_dir_under(stage_dir, "payload/seed") != 0)
-			return 1;
+		/*
+		 * Deliberately NOT pre-created: this copy is `cp -a src dst`,
+		 * and cp's rule is that an existing directory destination means
+		 * "copy INTO here" -- which silently produced payload/seed/seed
+		 * and an installed box that found no recipes. The destination
+		 * must not exist so it becomes the copy rather than its parent.
+		 */
 		snprintf(seed_dst, sizeof(seed_dst), "%s/payload/seed", stage_dir);
 		if (test_image_fixture_copy_dir_recursive(seed_dir, seed_dst) != 0) {
 			fprintf(stderr, "staging the package seed from %s failed\n", seed_dir);
