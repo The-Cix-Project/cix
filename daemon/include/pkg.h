@@ -66,6 +66,27 @@
  * "image" field could reference is valid here too. */
 #define PKG_IMAGE_NAME_MAX 64
 #define PKG_DEFAULT_IMAGE "base"
+
+/*
+ * The C library every composed build environment gets, whether or not a
+ * recipe names it (#186).
+ *
+ * Every binary in every package links against libc, and nothing in an
+ * environment can exec at all without the loader -- so this is a
+ * property of an environment being usable, not of any one recipe. Named
+ * once here rather than repeated across sixty recipes, where sixty
+ * chances to omit it would each fail only at exec time with a bare
+ * ENOENT that names nothing.
+ *
+ * A recipe may still name it explicitly to pin a version
+ * ("glibc@2.44-6"); declared tools are resolved first and
+ * buildenv_add_tool() dedups by name, so an explicit pin always wins.
+ *
+ * Until #186 these files were COPIED into every image off whatever
+ * distribution the build host ran (ADR-0209's "glibc floor") -- the
+ * last bytes in the system this project did not build.
+ */
+#define PKG_BASE_LIBC "glibc"
 #define PKG_VERSION_MAX 64
 #define PKG_URL_MAX 512
 #define PKG_SHA256_MAX 65

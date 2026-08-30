@@ -2853,6 +2853,21 @@ static int buildenv_resolve_tools(const char *declared, struct buildenv_tool *ou
 		snprintf(err, err_size, "pkg_build_depends is set but names no packages");
 		return -1;
 	}
+	/*
+	 * The C library, last, so a recipe that pinned its own version
+	 * above already occupies the slot -- buildenv_add_tool() dedups by
+	 * name and returns success for one already present.
+	 *
+	 * Checked here rather than assumed: an environment holds exactly
+	 * its tools' own manifest files, and no tool's manifest carries
+	 * libc, so before this the loader arrived only because
+	 * pkg_seed_image_baseline() copied one off the build host. With
+	 * that gone and this absent, every build dies at
+	 * execve(/usr/bin/bash) with ENOENT -- which reads as a missing
+	 * bash and is really a missing loader (#186).
+	 */
+	if (buildenv_add_tool(PKG_BASE_LIBC, NULL, out, max, &n, err, err_size, 0) != 0)
+		return -1;
 	return n;
 }
 
@@ -2863,6 +2878,107 @@ static int buildenv_tool_cmp(const void *a, const void *b)
 	int c = strcmp(ta->name, tb->name);
 
 	return c != 0 ? c : strcmp(ta->version, tb->version);
+}
+
+/*
+ * Byte-for-byte, because "both files exist" is not the question -- the
+ * question is whether the one in the environment is the one the package
+ * built. Streamed rather than stat-compared: two different glibc builds
+ * can be the same size.
+ */
+static int buildenv_files_identical(const char *a, const char *b)
+{
+	FILE *fa, *fb;
+	int same = 1;
+
+	fa = fopen(a, "rb");
+	if (fa == NULL)
+		return 0;
+	fb = fopen(b, "rb");
+	if (fb == NULL) {
+		fclose(fa);
+		return 0;
+	}
+	for (;;) {
+		char ba[65536], bb[65536];
+		size_t na = fread(ba, 1, sizeof(ba), fa);
+		size_t nb = fread(bb, 1, sizeof(bb), fb);
+
+		if (na != nb || memcmp(ba, bb, na) != 0) {
+			same = 0;
+			break;
+		}
+		if (na == 0)
+			break;
+	}
+	fclose(fa);
+	fclose(fb);
+	return same;
+}
+
+/*
+ * The environment must carry the C library this platform built, and
+ * carry it intact.
+ *
+ * Composition copies each tool's files in turn, so whichever package is
+ * copied last wins any path two packages both claim. glibc's own
+ * objects share a private, version-locked interface (GLIBC_PRIVATE):
+ * mixing halves of two builds produces something that fails at exec
+ * with no useful diagnostic. Nothing in the catalogue collides with
+ * these paths today -- libc-dev ships headers and link objects, not
+ * libc.so.6 -- and this exists so that stays true by being checked
+ * rather than by being remembered.
+ *
+ * This is the same discipline mkbootroot gained after the build host's
+ * libm/libpthread/libresolv landed on top of the platform's own and
+ * panicked a real machine at boot, twice, while assembly reported
+ * success both times. Copying files is not the same as producing an
+ * environment that runs.
+ */
+static int buildenv_verify_libc_intact(const char *staging_rootfs, const struct buildenv_ctx *ctx)
+{
+	static const char *const critical[] = {
+		"lib64/ld-linux-x86-64.so.2",
+		"lib/x86_64-linux-gnu/libc.so.6",
+	};
+	const struct pkg_entry *libc = NULL;
+	char src_rootfs[PATH_MAX];
+	char version[IMAGE_VERSION_MAX];
+	size_t k;
+	int i;
+
+	for (i = 0; i < ctx->tool_count; i++) {
+		if (strcmp(ctx->tools[i].name, PKG_BASE_LIBC) == 0) {
+			libc = ctx->tools[i].entry;
+			break;
+		}
+	}
+	if (libc == NULL) {
+		logstore_write("cixd", "error",
+		               "build environment: no %s in the composed tool set -- nothing in it "
+		               "could exec", PKG_BASE_LIBC);
+		return -1;
+	}
+	if (image_current_version(normalize_image(libc->image), version, sizeof(version)) != IMAGE_OK)
+		return -1;
+	image_version_rootfs_path(normalize_image(libc->image), version, src_rootfs,
+	                           sizeof(src_rootfs));
+
+	for (k = 0; k < sizeof(critical) / sizeof(critical[0]); k++) {
+		char want[PATH_MAX], got[PATH_MAX];
+
+		snprintf(want, sizeof(want), "%s/%s", src_rootfs, critical[k]);
+		snprintf(got, sizeof(got), "%s/%s", staging_rootfs, critical[k]);
+		if (!buildenv_files_identical(want, got)) {
+			logstore_write("cixd", "error",
+			               "build environment: %s is not the copy %s@%s installed -- another "
+			               "declared tool overwrote it, and an environment holding halves of "
+			               "two C libraries cannot exec",
+			               critical[k], libc->name, libc->version);
+			return -1;
+		}
+	}
+	return 0;
 }
 
 static int buildenv_mutate(const char *staging_rootfs, void *ctx_v)
@@ -2912,7 +3028,7 @@ static int buildenv_mutate(const char *staging_rootfs, void *ctx_v)
 			}
 		}
 	}
-	return 0;
+	return buildenv_verify_libc_intact(staging_rootfs, ctx);
 }
 
 /*

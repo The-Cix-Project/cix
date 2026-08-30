@@ -741,7 +741,7 @@ int main(void)
 	 * resolve against these.
 	 */
 	{
-		static const char *const floor[] = { "bash", "coreutils", "tcc", "libc-dev", NULL };
+		static const char *const floor[] = { "glibc", "bash", "coreutils", "tcc", "libc-dev", NULL };
 		char fstate[64];
 		int i;
 
@@ -4255,6 +4255,173 @@ skip_resume:
 					fprintf(stderr, "FAIL: #175 shareda's own file survived the delete\n");
 					ok = 0;
 				}
+			}
+		}
+	}
+
+	/*
+	 * #186: a build environment must carry the C library this platform
+	 * built, and carry it INTACT.
+	 *
+	 * Composition copies each declared tool's files in turn, in sorted
+	 * name order, so a tool sorting after "glibc" that ships a path
+	 * glibc also owns silently wins it. glibc's objects share a
+	 * private, version-locked interface -- an environment holding
+	 * halves of two C libraries cannot exec, and would fail later with
+	 * a bare ENOENT naming nothing.
+	 *
+	 * So this stages exactly that collision on purpose: "zzlibc" ships
+	 * its own lib/x86_64-linux-gnu/libc.so.6, is declared as a build
+	 * tool, and sorts last. Composition must REFUSE, and say which file
+	 * was overwritten. Asserting the message, not merely the failure --
+	 * a build can fail for a hundred reasons and only one of them is
+	 * this one.
+	 *
+	 * Measured with the gate removed, which is the whole argument for
+	 * having it: the build still fails, but as "build failed (exit
+	 * 127)" -- the opaque broken-loader exit that names no file, no
+	 * package, and no cause. That is what an operator would have had
+	 * to diagnose. With the gate, composition stops and says which
+	 * file is not the copy glibc installed.
+	 */
+	{
+		char zz_dir[300];
+		char zz_path[400];
+		char state[64];
+		char zz_scratch[] = "/tmp/cix_test_186_XXXXXX";
+		char zz_tarball[512];
+		char zz_sha[128];
+		FILE *zf;
+		int ok186 = 1;
+
+		/* Its own scratch: the suite's shared one is removed well
+		 * before this point, and a recipe still has to fetch and
+		 * verify a real source like any other. */
+		if (mkdtemp(zz_scratch) == NULL ||
+		    stage_fixture_tarball(zz_scratch, "zzlibc", "1.0", zz_tarball, sizeof(zz_tarball),
+		                           zz_sha, sizeof(zz_sha)) != 0) {
+			fprintf(stderr, "FAIL: #186 could not stage a source tarball\n");
+			ok = 0;
+			ok186 = 0;
+		}
+
+		snprintf(zz_dir, sizeof(zz_dir), "%s/recipes/zzlibc", g_pkg_state_dir);
+		mkdir(zz_dir, 0755);
+		snprintf(zz_dir, sizeof(zz_dir), "%s/recipes/zzlibc/1.0", g_pkg_state_dir);
+		mkdir(zz_dir, 0755);
+		snprintf(zz_path, sizeof(zz_path), "%s/build.sh", zz_dir);
+		zf = ok186 ? fopen(zz_path, "w") : NULL;
+		if (zf == NULL && ok186) {
+			fprintf(stderr, "FAIL: #186 could not write zzlibc recipe\n");
+			ok = 0;
+			ok186 = 0;
+		} else {
+			fprintf(zf,
+			        "pkg_name=zzlibc\npkg_version=1.0\npkg_source=file://%s\n"
+			        "pkg_sha256=%s\npkg_depends=\"\"\n"
+			        "pkg_build_depends=\"tcc libc-dev bash coreutils\"\n\n"
+			        "pkg_build() {\n\ttcc -o hello hello.c\n}\n\n"
+			        "pkg_install() {\n"
+			        "\tmkdir -p \"$PKG_DESTDIR/lib/x86_64-linux-gnu\"\n"
+			        "\techo not-a-real-libc > "
+			        "\"$PKG_DESTDIR/lib/x86_64-linux-gnu/libc.so.6\"\n}\n",
+			        zz_tarball, zz_sha);
+			fclose(zf);
+		}
+
+		if (ok186) {
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/pkg/install",
+			                        "{\"name\":\"zzlibc\",\"image\":\"libcollide\"}", &r) != 0 ||
+			    r.status != 202) {
+				fprintf(stderr, "FAIL: #186 install zzlibc, status=%d\n", r.status);
+				ok = 0;
+				ok186 = 0;
+			}
+			cix_response_free(&r);
+		}
+		if (ok186 && (poll_pkg_state(&client, "zzlibc@libcollide", state, sizeof(state), 300) != 0 ||
+		              strcmp(state, "installed") != 0)) {
+			{
+				const char *em = NULL;
+
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "GET", "/v1/pkg/zzlibc@libcollide", NULL, &r) == 0 &&
+				    r.status == 200)
+					em = json_str_field(r.json, "error");
+				fprintf(stderr, "FAIL: #186 zzlibc did not install (state=%s): %s\n", state,
+				        em != NULL ? em : "(no error)");
+				cix_response_free(&r);
+			}
+			ok = 0;
+			ok186 = 0;
+		}
+
+		/* Into an image of its own, never "base": this package exists
+		 * to ship a deliberately broken libc, and every later step in
+		 * this suite builds against base. A declared tool is resolved
+		 * from whichever image holds it, so isolating it costs
+		 * nothing. */
+		/* Now a package declaring it, so composition must copy zzlibc
+		 * after glibc and land on the same path. */
+		if (ok186) {
+			snprintf(zz_dir, sizeof(zz_dir), "%s/recipes/collide", g_pkg_state_dir);
+			mkdir(zz_dir, 0755);
+			snprintf(zz_dir, sizeof(zz_dir), "%s/recipes/collide/1.0", g_pkg_state_dir);
+			mkdir(zz_dir, 0755);
+			snprintf(zz_path, sizeof(zz_path), "%s/build.sh", zz_dir);
+			zf = fopen(zz_path, "w");
+			if (zf == NULL) {
+				fprintf(stderr, "FAIL: #186 could not write collide recipe\n");
+				ok = 0;
+				ok186 = 0;
+			} else {
+				fprintf(zf,
+				        "pkg_name=collide\npkg_version=1.0\npkg_source=file://%s\n"
+				        "pkg_sha256=%s\npkg_depends=\"\"\n"
+				        "pkg_build_depends=\"tcc libc-dev bash coreutils zzlibc\"\n\n"
+				        "pkg_build() {\n\ttcc -o hello hello.c\n}\n\n"
+				        "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n"
+				        "\tcp hello \"$PKG_DESTDIR/usr/bin/collide\"\n}\n",
+				        zz_tarball, zz_sha);
+				fclose(zf);
+			}
+		}
+
+		if (ok186) {
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/pkg/install",
+			                        "{\"name\":\"collide\",\"image\":\"base\"}", &r) != 0 ||
+			    r.status != 202) {
+				fprintf(stderr, "FAIL: #186 install collide, status=%d\n", r.status);
+				ok = 0;
+				ok186 = 0;
+			}
+			cix_response_free(&r);
+		}
+		if (ok186) {
+			if (poll_pkg_state(&client, "collide", state, sizeof(state), 300) != 0 ||
+			    strcmp(state, "failed") != 0) {
+				fprintf(stderr,
+				        "FAIL: #186 a build environment carrying two C libraries was accepted "
+				        "(collide state=%s, expected failed)\n",
+				        state);
+				ok = 0;
+			} else {
+				const char *msg;
+
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "GET", "/v1/pkg/collide", NULL, &r) == 0 &&
+				    r.status == 200) {
+					msg = json_str_field(r.json, "error");
+					if (msg == NULL || strstr(msg, "compose") == NULL) {
+						fprintf(stderr,
+						        "FAIL: #186 collide failed for the wrong reason: %s\n",
+						        msg != NULL ? msg : "(no error)");
+						ok = 0;
+					}
+				}
+				cix_response_free(&r);
 			}
 		}
 	}
