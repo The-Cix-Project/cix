@@ -6,7 +6,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define STORAGE_KIND_COUNT 4
 
 static char g_state_path[512];
 /* Empty string: no placement set for this kind (default OS-disk). */
