@@ -3773,6 +3773,55 @@ skip_hostbuild:
 	}
 	cix_response_free(&r);
 
+	/*
+	 * The 409 asserted below is only true while THIS job still holds
+	 * the single slot, and nothing here made that true -- it was left
+	 * to whether the box was slow enough (#192). It failed roughly one
+	 * run in eight, as "expected 409, got 202" plus a downstream wake,
+	 * and neither message named timing, so it read like a real fault in
+	 * the ceiling logic rather than a test that got unlucky.
+	 *
+	 * So wait for the precondition instead of hoping for it, and fail
+	 * with a message that says which thing went wrong if it is lost.
+	 */
+	{
+		char ost[64];
+		int held = 0;
+		int w;
+
+		for (w = 0; w < 100; w++) {
+			ost[0] = '\0';
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/pkg/overflow", NULL, &r) == 0 &&
+			    r.status == 200) {
+				const char *st = json_str_field(r.json, "state");
+
+				if (st != NULL)
+					snprintf(ost, sizeof(ost), "%s", st);
+			}
+			cix_response_free(&r);
+			if (strcmp(ost, "fetching") == 0 || strcmp(ost, "building") == 0) {
+				held = 1;
+				break;
+			}
+			if (ost[0] != '\0' && strcmp(ost, "installed") != 0 && strcmp(ost, "failed") != 0) {
+				usleep(50000);
+				continue;
+			}
+			if (strcmp(ost, "installed") == 0 || strcmp(ost, "failed") == 0)
+				break; /* already terminal -- the window is gone */
+			usleep(50000);
+		}
+		if (!held) {
+			fprintf(stderr,
+			        "FAIL: #192 test precondition lost -- overflow reached '%s' before the "
+			        "build ceiling could be probed, so the 409 below would be asserting "
+			        "timing, not the ceiling\n",
+			        ost[0] != '\0' ? ost : "no state");
+			ok = 0;
+		}
+	}
+
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"hbconcurrent\"}", &r) !=
 	        0 ||

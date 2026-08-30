@@ -902,11 +902,29 @@ int main(int argc, char **argv)
 			snprintf(dst, sizeof(dst), "%s/rebuildable/pkg", CONTAINERS_MOUNT);
 			if (ensure_dir(dst) != 0)
 				return 1;
-			/* treecopy_recursive() is the daemon's own, linked here
-			 * rather than reimplemented: it already reports WHICH
-			 * entry stopped it, which is the difference between a
-			 * diagnosable install failure and "No such file or
-			 * directory". */
+			/*
+			 * Both subdirectories must genuinely be there.
+			 *
+			 * treecopy_recursive() deliberately returns SUCCESS for a
+			 * source root that does not exist -- "nothing to copy" --
+			 * so an ISO whose seed was staged to the wrong path
+			 * reported a clean install and produced a box with no
+			 * recipes. That really happened, and is why this checks
+			 * rather than trusts: a seed that is present but
+			 * misplaced must fail the install, not pass it quietly.
+			 *
+			 * The copy itself is the daemon's own, linked here rather
+			 * than reimplemented: it already reports WHICH entry
+			 * stopped it, the difference between a diagnosable
+			 * failure and "No such file or directory".
+			 */
+			if (stat(SEED_SRC "/recipes", &sst) != 0 ||
+			    stat(SEED_SRC "/artifacts", &sst) != 0) {
+				dual_printf("cix-install: the media carries a seed but it has no "
+				            "recipes/ and artifacts/ -- refusing to install a box that "
+				            "would come up unable to run anything\n");
+				return 1;
+			}
 			if (treecopy_recursive(SEED_SRC "/recipes",
 			                        CONTAINERS_MOUNT "/rebuildable/pkg/recipes") != 0) {
 				dual_printf("cix-install: staging the seed recipes failed: %s\n",
