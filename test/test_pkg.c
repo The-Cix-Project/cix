@@ -3480,6 +3480,35 @@ skip_pin_isolation:
 		fclose(f);
 
 		/* start it -> 202, fetching */
+		/*
+		 * Issue #200: configure artifact publishing BEFORE the build,
+		 * because the tarball a hostbuild must leave behind is built at
+		 * build completion.
+		 *
+		 * It is only built when publishing is configured --
+		 * pkg_artifact_publish_resolve() refuses outright with no
+		 * base_url, and tarring a whole installed tree with nowhere to
+		 * send it would be waste. So what is under test is "when
+		 * publishing is configured, a hostbuild produces something
+		 * publishable", and the configuration is part of the test
+		 * rather than an assumption about the daemon's defaults.
+		 *
+		 * The URL is deliberately unreachable: the upload is not what
+		 * broke and is not what this asserts. The push fails against
+		 * it, harmlessly, after the tarball exists.
+		 */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "PUT", "/v1/pkg/artifact-config",
+		                       "{\"base_url\":\"http://127.0.0.1:9/artifacts\","
+		                       "\"push_enabled\":true}",
+		                       &r) != 0 ||
+		    (r.status != 200 && r.status != 204)) {
+			fprintf(stderr, "FAIL: #200 could not configure artifact push, status=%d\n",
+			        r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/pkg/hostbuild",
 		                       "{\"name\":\"hbtest\",\"build_image\":\"hbimage\"}", &r) != 0 ||
@@ -3567,6 +3596,50 @@ skip_pin_isolation:
 			        hb_state);
 			ok = 0;
 			goto skip_hostbuild;
+		}
+
+		/*
+		 * Issue #200: a hostbuild must end up with a real tarball in
+		 * the local cache, because that is the only thing the push
+		 * worker can upload.
+		 *
+		 * A hostbuild's artifact is a DIRECTORY this host assembled,
+		 * and the post-build path used to enqueue a push without ever
+		 * building a tarball from it -- so the pusher looked in the
+		 * cache, found nothing, and skipped, every single time. The
+		 * artifact cache's newest `cix` sat at v2.2.0-rc30 while the
+		 * box that built it ran rc35, and `kernel` and `isotools` were
+		 * in the same state. Ordinary packages were unaffected only
+		 * because their branch saves to the cache before enqueuing.
+		 *
+		 * Asserting the tarball rather than the upload deliberately:
+		 * there is no artifact server here, and the upload is not what
+		 * broke. The missing tarball is.
+		 *
+		 * Polled, because the tarball is produced by an asynchronous
+		 * export that starts when the build completes -- so the state
+		 * reaching "installed" above does not mean it exists yet.
+		 */
+		{
+			char hb_tarball[PATH_MAX];
+			struct stat hb_st;
+			int hb_i;
+
+			snprintf(hb_tarball, sizeof(hb_tarball), "%s/cache/hbtest-1.0.tar.gz",
+			         g_pkg_state_dir);
+			for (hb_i = 0; hb_i < 200; hb_i++) {
+				if (stat(hb_tarball, &hb_st) == 0 && hb_st.st_size > 0)
+					break;
+				usleep(100000);
+			}
+			if (stat(hb_tarball, &hb_st) != 0 || hb_st.st_size <= 0) {
+				fprintf(stderr,
+				        "FAIL: #200 a completed hostbuild left no tarball at %s, so nothing "
+				        "could ever be published from it -- this is how cix stayed five "
+				        "releases behind in the artifact cache\n",
+				        hb_tarball);
+				ok = 0;
+			}
 		}
 
 		/* hbconcurrent's own chain (started alongside hbtest's
