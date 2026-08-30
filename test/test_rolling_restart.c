@@ -331,7 +331,7 @@ int main(void)
 	 * test_pkg.c's own scenario 1 makes), needed before any install
 	 * below can create its build container. */
 	{
-		static const char *const floor[] = { "glibc", "bash", "coreutils", "tcc", "libc-dev", NULL };
+		static const char *const floor[] = { "bash", "coreutils", "tcc", "libc-dev", NULL };
 		int fi;
 
 		for (fi = 0; floor[fi] != NULL; fi++) {

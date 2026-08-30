@@ -741,9 +741,58 @@ int main(void)
 	 * resolve against these.
 	 */
 	{
-		static const char *const floor[] = { "glibc", "bash", "coreutils", "tcc", "libc-dev", NULL };
+		static const char *const floor[] = { "bash", "coreutils", "tcc", "libc-dev", NULL };
 		char fstate[64];
 		int i;
+
+		/*
+		 * glibc is deliberately NOT in that list: the daemon installs
+		 * it into the default image itself, at startup, and this
+		 * asserts that it did (#189).
+		 *
+		 * A fresh install materializes "base" with the ordinary
+		 * baseline, which since ADR-0216 carries no runtime borrowed
+		 * from the build host -- so the one image a fresh box has
+		 * could not run a container at all. The daemon now installs a
+		 * C library through the ordinary pipeline whenever the default
+		 * image lacks one and the artifact is already cached, which is
+		 * exactly the situation here: the floor is seeded before the
+		 * daemon starts.
+		 *
+		 * Asserted through the package manifest, not by looking for
+		 * the file: the whole point of #189 over a copy is that the
+		 * image ends up with a real, versioned, upgradable entry.
+		 */
+		{
+			const char *ver = NULL;
+
+			/* poll_pkg_state() leaves this untouched when it never
+			 * saw a state at all, and a diagnostic that prints an
+			 * uninitialized buffer is worse than one that says
+			 * nothing -- caught by reintroducing the bug this
+			 * assertion is for. */
+			fstate[0] = '\0';
+			if (poll_pkg_state(&client, "glibc", fstate, sizeof(fstate), 300) != 0 ||
+			    strcmp(fstate, "installed") != 0) {
+				fprintf(stderr,
+				        "FAIL: #189 the daemon did not install a C library into the default "
+				        "image on its own (state=%s)\n",
+				        fstate[0] != '\0' ? fstate : "never reported");
+				ok = 0;
+			} else {
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "GET", "/v1/pkg/glibc", NULL, &r) == 0 &&
+				    r.status == 200)
+					ver = json_str_field(r.json, "version");
+				if (ver == NULL || ver[0] == '\0') {
+					fprintf(stderr,
+					        "FAIL: #189 the default image's C library has no recorded "
+					        "version -- it arrived as a copy, not a package\n");
+					ok = 0;
+				}
+				cix_response_free(&r);
+			}
+		}
 
 		for (i = 0; floor[i] != NULL; i++) {
 			char body[160];

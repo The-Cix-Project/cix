@@ -3673,6 +3673,42 @@ static int rebind_listener(const char *new_bind_addr, int new_port)
  * invocation, or a kernel with /dev/kmsg unreadable for any other
  * reason, simply never gets kernel-source log entries; every other
  * source (cixd's own diagnostics, the audit trail) is unaffected. */
+/* Forward declaration -- defined further down beside the other reactor
+ * registrations, which all sit after the startup helpers that use them. */
+static void register_pkg_fetch_pidfd(pid_t pid, int pidfd, int chain_idx);
+
+/* Gives the default image a C library if it has none and one can be
+ * installed without building anything (#189, see pkg_seed_default_
+ * image_libc()). Same "needs g_epfd, never block startup" posture as
+ * the watches below: the install is asynchronous like any other, so
+ * the box finishes booting and the image becomes runnable a moment
+ * later rather than the daemon waiting on it.
+ *
+ * Silent on the ordinary path -- an image that already has a runtime
+ * is the case on every boot after the first, and logging it would be
+ * noise on every boot forever. */
+static void start_default_image_libc_seed(void)
+{
+	pid_t pid;
+	int pidfd, chain_idx;
+	enum pkg_error perr = pkg_seed_default_image_libc(&pid, &pidfd, &chain_idx);
+
+	if (perr == PKG_ERR_NOT_FOUND)
+		return;
+	if (perr != PKG_OK) {
+		logstore_write("cixd", "error",
+		               "could not give the default image \"%s\" a C library (%d) -- it has "
+		               "none, so containers created from it will be refused until one is "
+		               "installed",
+		               PKG_DEFAULT_IMAGE, (int)perr);
+		return;
+	}
+	register_pkg_fetch_pidfd(pid, pidfd, chain_idx);
+	logstore_write("cixd", "info",
+	               "the default image \"%s\" had no C library -- installing %s into it",
+	               PKG_DEFAULT_IMAGE, PKG_BASE_LIBC);
+}
+
 static void start_kmsg_watch(void)
 {
 	struct cix_epoll_event ev;
@@ -12799,7 +12835,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	{
 		char loader[PATH_MAX];
 
-		snprintf(loader, sizeof(loader), "%s/lib64/ld-linux-x86-64.so.2", lowerdir);
+		snprintf(loader, sizeof(loader), "%s/%s", lowerdir, PKG_IMAGE_LOADER_REL);
 		if (stat(loader, &st) != 0) {
 			/* Formatted BEFORE the tree is freed: `image` points into
 			 * that JSON, so reading it afterwards prints whatever the
@@ -27982,6 +28018,7 @@ static int cixd_main(int argc, char **argv)
 		return 1;
 	}
 	start_kmsg_watch(); /* needs g_epfd, only just created above -- best-effort, see its own comment */
+	start_default_image_libc_seed(); /* #189 -- same posture; no-op once the image has a runtime */
 	start_uevent_watch(); /* ADR-0161 Phase C -- same g_epfd/best-effort posture as start_kmsg_watch() */
 	start_ntp_periodic_timer(); /* same g_epfd/best-effort posture, task #751 */
 	start_build_stall_timer();  /* reports an in-flight build that has gone quiet */

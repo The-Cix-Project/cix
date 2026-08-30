@@ -2938,7 +2938,7 @@ static int buildenv_files_identical(const char *a, const char *b)
 static int buildenv_verify_libc_intact(const char *staging_rootfs, const struct buildenv_ctx *ctx)
 {
 	static const char *const critical[] = {
-		"lib64/ld-linux-x86-64.so.2",
+		PKG_IMAGE_LOADER_REL,
 		"lib/x86_64-linux-gnu/libc.so.6",
 	};
 	const struct pkg_entry *libc = NULL;
@@ -8046,6 +8046,49 @@ enum pkg_error pkg_artifact_publish_resolve(const char *name, char *out_version,
 		return PKG_OK;
 	}
 	return PKG_ERR_NOT_FOUND;
+}
+
+/*
+ * See pkg.h for why this exists. Everything here is a refusal except
+ * the last two lines -- the point is to start an ordinary install, and
+ * to do it only when that install cannot turn into a build.
+ */
+enum pkg_error pkg_seed_default_image_libc(pid_t *out_pid, int *out_pidfd, int *out_chain_idx)
+{
+	char version[IMAGE_VERSION_MAX];
+	char rootfs[PATH_MAX];
+	char recipe_path[PATH_MAX];
+	struct pkg_recipe recipe;
+	struct stat st;
+	char started[PKG_NAME_MAX];
+
+	/* Already runnable -- the ordinary case on every boot after the
+	 * first, and the reason this is safe to call unconditionally. */
+	if (image_current_version(PKG_DEFAULT_IMAGE, version, sizeof(version)) != IMAGE_OK)
+		return PKG_ERR_NOT_FOUND;
+	image_version_rootfs_path(PKG_DEFAULT_IMAGE, version, rootfs, sizeof(rootfs));
+	{
+		char loader[PATH_MAX];
+
+		snprintf(loader, sizeof(loader), "%s/%s", rootfs, PKG_IMAGE_LOADER_REL);
+		if (stat(loader, &st) == 0)
+			return PKG_ERR_NOT_FOUND;
+	}
+
+	/* A recipe, so we know which version we would be installing... */
+	if (find_recipe_path(PKG_BASE_LIBC, NULL, recipe_path, sizeof(recipe_path)) != 0 ||
+	    parse_recipe(recipe_path, &recipe) != 0 || strcmp(recipe.name, PKG_BASE_LIBC) != 0)
+		return PKG_ERR_NOT_FOUND;
+
+	/* ...and its artifact already here, so the install is a cache hit
+	 * needing no build environment. Without this a fresh box would try
+	 * to BUILD glibc with no toolchain -- a long, loud failure in place
+	 * of a box that simply says what to install. */
+	if (!pkg_artifact_cache_has(PKG_BASE_LIBC, recipe.version))
+		return PKG_ERR_NOT_FOUND;
+
+	return pkg_install_start(PKG_BASE_LIBC, PKG_DEFAULT_IMAGE, NULL, 0, 0, started,
+	                          sizeof(started), out_pid, out_pidfd, out_chain_idx);
 }
 
 enum pkg_error pkg_artifact_publish(const char *name)
