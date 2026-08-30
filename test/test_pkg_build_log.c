@@ -183,7 +183,7 @@ static int write_slowbuild_recipe(const char *tarball_path, const char *sha256)
 	fprintf(f, "pkg_source=file://%s\n", tarball_path);
 	fprintf(f, "pkg_sha256=%s\n", sha256);
 	fprintf(f, "pkg_depends=\"\"\n");
-	fprintf(f, "pkg_build_depends=\"tcc libc-dev bash coreutils\"\n\n");
+	fprintf(f, "pkg_build_depends=\"tcc linux-headers bash coreutils\"\n\n");
 	fprintf(f, "pkg_build() {\n"
 	           "\techo marker-1\n"
 	           "\tsleep 1\n"
@@ -402,7 +402,7 @@ int main(void)
 
 	memset(&r, 0, sizeof(r));
 	{
-		static const char *const floor[] = { "bash", "coreutils", "tcc", "libc-dev", NULL };
+		static const char *const floor[] = { "bash", "coreutils", "tcc", "linux-headers", NULL };
 		int fi;
 
 		for (fi = 0; floor[fi] != NULL; fi++) {

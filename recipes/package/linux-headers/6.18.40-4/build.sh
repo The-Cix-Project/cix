@@ -20,6 +20,14 @@
 #
 pkg_name="linux-headers"
 pkg_version="6.18.40-4"
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# Built and published by 192.168.15.95; added after publication, never
+# carried forward from another version. Required for test-floor
+# membership (ADR-0209), which verifies each artifact against the
+# checksum in its own recipe -- this is the package that replaces
+# libc-dev's kernel UAPI headers there, as it already has in every real
+# recipe (#187).
+pkg_artifact_sha256="5cd03e3376c4640bd7a05b578855935ca6ae880a6c6cfe6e516e914ea880e315"
 pkg_source="https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.40.tar.xz"
 pkg_sha256="3712fc1ec839e4daac981176c8518912e8f452650aaedfe4381da4419613a431"
 pkg_depends=""

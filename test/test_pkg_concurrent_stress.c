@@ -199,7 +199,7 @@ static int write_recipe(const char *pkg_state_dir, const char *name, const char 
 	fprintf(f, "pkg_source=file://%s\n", tarball_path);
 	fprintf(f, "pkg_sha256=%s\n", sha256);
 	fprintf(f, "pkg_depends=\"\"\n");
-	fprintf(f, "pkg_build_depends=\"tcc libc-dev bash coreutils\"\n\n");
+	fprintf(f, "pkg_build_depends=\"tcc linux-headers bash coreutils\"\n\n");
 	fprintf(f, "pkg_build() {\n\ttcc -o hello hello.c\n}\n\n");
 	fprintf(f, "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n\tcp hello "
 	           "\"$PKG_DESTDIR/usr/bin/%s\"\n}\n",
@@ -298,7 +298,7 @@ int main(void)
 	CHECK(wait_for_daemon(&client_a, 50) == 0, "daemon A became healthy");
 
 	{
-		static const char *const floor[] = { "bash", "coreutils", "tcc", "libc-dev", NULL };
+		static const char *const floor[] = { "bash", "coreutils", "tcc", "linux-headers", NULL };
 		int fi;
 
 		/* ADR-0209: the build floor, installed as cache hits from real
@@ -443,7 +443,7 @@ int main(void)
 	CHECK(wait_for_daemon(&client_b, 50) == 0, "daemon B became healthy");
 
 	{
-		static const char *const floor[] = { "bash", "coreutils", "tcc", "libc-dev", NULL };
+		static const char *const floor[] = { "bash", "coreutils", "tcc", "linux-headers", NULL };
 		int fi;
 
 		/* ADR-0209: the build floor, installed as cache hits from real

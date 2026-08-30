@@ -8304,10 +8304,24 @@ int pkg_artifact_push_try_start(pid_t *out_pid, int *out_pidfd, char *out_desc, 
 		                   sizeof(tarball));
 		if (stat(tarball, &st) == 0)
 			break;
-		/* Evicted by the cache's own LRU between build and push --
-		 * real, and worth saying out loud rather than failing mutely. */
+		/*
+		 * Two different causes, and the message used to assert the
+		 * wrong one. "No longer in the local cache" claims eviction --
+		 * and the comment here said so outright -- but for a hostbuild
+		 * the tarball was NEVER there: its output is a directory, and
+		 * nothing built a tarball from it before this enqueue. Anyone
+		 * reading the old line went looking for an LRU-sizing problem
+		 * that did not exist, which is how `cix` sat five releases
+		 * behind on the artifact cache without being noticed (#200).
+		 *
+		 * A message confidently wrong about its own cause is worse
+		 * than a vague one. This one now says only what it knows: the
+		 * tarball is not there. #200's fix means a hostbuild builds
+		 * one before this point, so reaching here really is eviction
+		 * -- but the message no longer bets on that.
+		 */
 		logstore_write("cixd", "info",
-		                "artifact push: %s@%s is no longer in the local cache -- not published",
+		                "artifact push: %s@%s has no tarball in the local cache -- not published",
 		                g_push_current.name, g_push_current.version);
 	}
 	pkg_artifact_build_request(g_push_current.name, g_push_current.version, url, sizeof(url),

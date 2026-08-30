@@ -32,6 +32,20 @@
 #
 pkg_name="glibc"
 pkg_version="2.44-12"
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+#
+# Built on 192.168.15.95 by Cix's own toolchain and published from
+# there; this line approves those exact bytes and nothing else. Added
+# after publication, which is the only order the Build Provenance
+# Mandate permits -- a checksum is never carried forward from a
+# previous version, and never computed over something built elsewhere.
+#
+# It is also what lets this version seed the test floor (ADR-0209): the
+# floor verifies every artifact it uses against the checksum in its own
+# recipe, so an artifact with no checksum here cannot be a floor member
+# at all. The floor moves off libc-dev onto this plus linux-headers,
+# which is the same pair every real recipe now declares (#187).
+pkg_artifact_sha256="6ea13d0c3e998e3e123475cb4ffaadb71a6e028481bc688adea8a20a1365afdd"
 pkg_source="https://mirrors.kernel.org/gnu/libc/glibc-2.44.tar.xz"
 pkg_sha256="37f600f2bef3c5e8300147059568b2a2e40a7ad6ccc65ce942556d49429cc667"
 pkg_depends=""
