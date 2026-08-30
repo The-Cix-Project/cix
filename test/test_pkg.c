@@ -3852,6 +3852,30 @@ skip_hostbuild:
 	}
 	cix_response_free(&r);
 
+	/*
+	 * Let the ceiling=1 job finish before asking for another (#192).
+	 *
+	 * The wait added above makes "overflow" genuinely still hold the
+	 * slot when the 409 is asserted -- which is the point -- so it is
+	 * still holding it here too. Without draining it first, this step
+	 * asserts a 202 while the pipeline is legitimately busy and gets a
+	 * 409, which is the first race's echo rather than a fault in
+	 * raising the ceiling. Same defect as the one being fixed, one step
+	 * later: a timing assumption left implicit.
+	 */
+	{
+		char dst[64];
+
+		dst[0] = '\0';
+		if (poll_pkg_state(&client, "overflow", dst, sizeof(dst), 300) != 0) {
+			fprintf(stderr,
+			        "FAIL: #192 overflow never reached a terminal state (last='%s'), so the "
+			        "ceiling-restore check below would be asserting timing\n",
+			        dst[0] != '\0' ? dst : "no state");
+			ok = 0;
+		}
+	}
+
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"hbconcurrent\"}", &r) !=
 	        0 ||
