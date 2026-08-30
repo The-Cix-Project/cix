@@ -887,6 +887,122 @@ int main(void)
 			CHECK(access(pushed, R_OK) != 0,
 			      "a cache hit does NOT re-publish what it did not build");
 
+
+			/*
+			 * A hostbuild's artifact can be published on request.
+			 *
+			 * This is the gap that made "cix", "kernel" and
+			 * isotools -- everything this platform actually builds
+			 * for itself -- silently unpublishable on a real box,
+			 * while ordinary source-built packages published
+			 * themselves automatically and looked like proof the
+			 * mechanism worked. Two distinct defects, both of
+			 * which this exercises end to end:
+			 *
+			 * A hostbuild's artifact is a DIRECTORY assembled on
+			 * this host, so nothing ever tarred it into the local
+			 * cache the pusher reads from, and the push found
+			 * nothing to send. And the publish endpoint only
+			 * enqueued -- nothing pumps that queue except a
+			 * completing build, so even a package WITH a tarball
+			 * answered 202 and then sat there indefinitely.
+			 *
+			 * Deliberately asserts the bytes ARRIVE rather than
+			 * that the request was accepted: 202 was exactly what
+			 * the broken endpoint returned.
+			 */
+			{
+				char hb_recipe_dir[PATH_MAX];
+				char hb_recipe_path[PATH_MAX];
+				char hb_pushed[PATH_MAX];
+				char hb_headers[PATH_MAX];
+				char hb_tarball[512];
+				char hb_sha256[128];
+				int hb_ok = 1;
+				FILE *hf;
+
+				if (test_image_fixture_stage_build_image(g_data_dir, "hbimage") != 0)
+					hb_ok = 0;
+				CHECK(hb_ok, "stage a resolvable hostbuild build_image");
+
+				if (hb_ok && stage_source_tarball(scratch_dir, "hbpush", "1.0", hb_tarball,
+				                                   sizeof(hb_tarball), hb_sha256,
+				                                   sizeof(hb_sha256)) != 0)
+					hb_ok = 0;
+				CHECK(hb_ok, "stage hbpush source tarball");
+
+				if (hb_ok) {
+					snprintf(hb_recipe_dir, sizeof(hb_recipe_dir), "%s/recipes/hbpush",
+					         g_pkg_state_dir);
+					mkdir(hb_recipe_dir, 0755);
+					snprintf(hb_recipe_dir, sizeof(hb_recipe_dir),
+					         "%s/recipes/hbpush/1.0", g_pkg_state_dir);
+					mkdir(hb_recipe_dir, 0755);
+					snprintf(hb_recipe_path, sizeof(hb_recipe_path),
+					         "%s/recipes/hbpush/1.0/build.sh", g_pkg_state_dir);
+					hf = fopen(hb_recipe_path, "w");
+					if (hf == NULL) {
+						hb_ok = 0;
+					} else {
+						fprintf(hf,
+						        "pkg_name=hbpush\npkg_version=1.0\n"
+						        "pkg_source=file://%s\npkg_sha256=%s\n"
+						        "pkg_depends=\"\"\n"
+						        "pkg_build_depends=\"tcc libc-dev bash coreutils\"\n\n"
+						        "pkg_build() {\n\ttcc -o hello hello.c\n}\n\n"
+						        "pkg_install() {\n\tcp hello \"$PKG_DESTDIR/hello\"\n}\n",
+						        hb_tarball, hb_sha256);
+						fclose(hf);
+					}
+					CHECK(hb_ok, "write hbpush hostbuild recipe");
+				}
+
+				if (hb_ok) {
+					memset(&r, 0, sizeof(r));
+					CHECK(cix_client_request(&client, "POST", "/v1/pkg/hostbuild",
+					                          "{\"name\":\"hbpush\","
+					                          "\"build_image\":\"hbimage\"}",
+					                          &r) == 0 &&
+					              r.status == 202,
+					      "POST /v1/pkg/hostbuild hbpush");
+					cix_response_free(&r);
+					if (wait_for_pkg_state(&client, "hbpush", "__hostbuild", "installed",
+					                        300) != 0)
+						hb_ok = 0;
+					CHECK(hb_ok, "hbpush reaches state=installed as a hostbuild");
+				}
+
+				if (hb_ok) {
+					snprintf(hb_pushed, sizeof(hb_pushed), "%s/hbpush-1.0.tar.gz",
+					         push_dir);
+					snprintf(hb_headers, sizeof(hb_headers),
+					         "%s/hbpush-1.0.tar.gz.headers", push_dir);
+					/* Nothing should have published it yet -- a
+					 * hostbuild produces no cache tarball, which
+					 * is the whole defect. */
+					run_cmd("rm -f '%s' '%s'", hb_pushed, hb_headers);
+
+					memset(&r, 0, sizeof(r));
+					CHECK(cix_client_request(&client, "POST",
+					                          "/v1/pkg/hbpush/artifact/publish", "",
+					                          &r) == 0 &&
+					              r.status == 202,
+					      "POST /v1/pkg/hbpush/artifact/publish accepted");
+					cix_response_free(&r);
+
+					for (i = 0; i < 150; i++) {
+						if (access(hb_headers, R_OK) == 0)
+							break;
+						usleep(200000);
+					}
+					CHECK(access(hb_pushed, R_OK) == 0,
+					      "the hostbuild artifact actually arrived at the "
+					      "artifact server");
+					CHECK(run_cmd("gzip -t '%s' 2>/dev/null", hb_pushed) == 0,
+					      "the published hostbuild artifact is a valid gzip");
+				}
+			}
+
 			kill(push_pid, SIGTERM);
 			waitpid(push_pid, NULL, 0);
 		}

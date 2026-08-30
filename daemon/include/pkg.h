@@ -380,6 +380,10 @@ void pkg_write_json_recipes(struct json_writer *w);
  * most expensive thing this platform does.
  */
 enum pkg_error pkg_artifact_publish(const char *name);
+void pkg_artifact_cache_path(const char *name, const char *version, char *out, size_t out_size);
+int pkg_artifact_cache_has(const char *name, const char *version);
+enum pkg_error pkg_artifact_publish_resolve(const char *name, char *out_version,
+                                             size_t out_version_size, int *out_is_hostbuild);
 
 enum pkg_error pkg_recipe_get(const char *name, const char *version, struct json_writer *w);
 

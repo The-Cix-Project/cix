@@ -3237,7 +3237,6 @@ skip_pin_isolation:
 	 * entry point instead of an ordinary install.
 	 */
 	{
-		char hb_image_rootfs[PATH_MAX];
 		char hb_recipe_path[PATH_MAX];
 		char hb_artifact_file[PATH_MAX];
 		char hb_state[32];
@@ -3260,29 +3259,10 @@ skip_pin_isolation:
 		 * validates it as a real sha256, so a fixture-chosen literal
 		 * is exactly as valid as a real one.
 		 */
-		snprintf(hb_image_rootfs, sizeof(hb_image_rootfs), "%s/rebuildable/images/hbimage/hbfixture/rootfs",
-		         g_data_dir);
-		if (test_image_fixture_stage_toolchain(hb_image_rootfs) != 0) {
-			fprintf(stderr, "FAIL: could not stage hostbuild build_image toolchain\n");
+		if (test_image_fixture_stage_build_image(g_data_dir, "hbimage") != 0) {
+			fprintf(stderr, "FAIL: could not stage hostbuild build_image\n");
 			ok = 0;
 			goto skip_hostbuild;
-		}
-		{
-			char hb_manifest_path[PATH_MAX];
-
-			snprintf(hb_manifest_path, sizeof(hb_manifest_path), "%s/rebuildable/images/hbimage/manifest.json",
-			         g_data_dir);
-			f = fopen(hb_manifest_path, "w");
-			if (f == NULL) {
-				fprintf(stderr, "FAIL: could not write hbimage manifest.json\n");
-				ok = 0;
-				goto skip_hostbuild;
-			}
-			fprintf(f,
-			        "{\"packages\":[],\"current_version\":\"hbfixture\","
-			        "\"versions\":[{\"version\":\"hbfixture\",\"created_at\":%ld}]}",
-			        (long)time(NULL));
-			fclose(f);
 		}
 
 		/* A plain hand-written recipe (not stage_fixture_tarball(), no

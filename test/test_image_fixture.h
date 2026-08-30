@@ -144,6 +144,23 @@ int test_image_fixture_stage_closure(const char *image_root, const char *binary_
 int test_image_fixture_stage_toolchain(const char *image_root);
 
 /*
+ * Stages a complete, resolvable build_image for a hostbuild: the
+ * toolchain above, plus the manifest.json + versioned rootfs layout
+ * ADR-0107/0108 requires an image to have before pkg_hostbuild_start()
+ * will resolve it. Bypasses the daemon's own image_create()/pkg install
+ * pipeline deliberately -- staging a toolchain through a real install
+ * is far too slow for this suite -- and hand-writes the same shape
+ * image.c itself produces, pointed at a fixed fixture version. image.c
+ * only ever reads that field back as an opaque string, so a chosen
+ * literal is exactly as valid as a real hash. Shared rather than
+ * copied: test_pkg.c proves the hostbuild pipeline and test_pkg_cache.c
+ * proves a hostbuild's artifact can be published, and two hand-rolled
+ * copies of this layout would drift the moment the layout changed.
+ * Returns 0, or -1 (with perror or a message on the failing path).
+ */
+int test_image_fixture_stage_build_image(const char *data_dir, const char *image_name);
+
+/*
  * Creates a fresh, unique directory under /tmp (via mkdtemp(), same
  * "/tmp/cix_test_<name>_XXXXXX" convention test_pki.c/
  * test_installer.c/test_boot_ab.c already each hand-roll on their own)

@@ -1,3 +1,4 @@
+#include <time.h>
 #include "test_image_fixture.h"
 
 #include <elf.h>
@@ -986,4 +987,30 @@ int test_image_fixture_stage_closure(const char *image_root, const char *binary_
 
 	seen.n = 0;
 	return stage_closure_rec(image_root, binary_path, search_dirs, &seen);
+}
+
+int test_image_fixture_stage_build_image(const char *data_dir, const char *image_name)
+{
+	char rootfs[PATH_MAX];
+	char manifest[PATH_MAX];
+	FILE *f;
+
+	snprintf(rootfs, sizeof(rootfs), "%s/rebuildable/images/%s/hbfixture/rootfs", data_dir,
+	         image_name);
+	if (test_image_fixture_stage_toolchain(rootfs) != 0)
+		return -1;
+
+	snprintf(manifest, sizeof(manifest), "%s/rebuildable/images/%s/manifest.json", data_dir,
+	         image_name);
+	f = fopen(manifest, "w");
+	if (f == NULL) {
+		perror(manifest);
+		return -1;
+	}
+	fprintf(f,
+	        "{\"packages\":[],\"current_version\":\"hbfixture\","
+	        "\"versions\":[{\"version\":\"hbfixture\",\"created_at\":%ld}]}",
+	        (long)time(NULL));
+	fclose(f);
+	return 0;
 }
