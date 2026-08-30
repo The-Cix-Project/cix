@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted. Supersedes [ADR-0123](0123-image-artifact-fast-path.md)'s
+Accepted. Supersedes [ADR-0123](0123-pkg-redesign-part4-image-recipes-and-artifact.md)'s
 whole-rootfs artifact fast path. Refines
 [ADR-0199](0199-recipes-declare-their-build-tools.md) by removing the
 fallback it left open, and [ADR-0208](0208-build-image-taxonomy.md) by

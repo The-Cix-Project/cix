@@ -3,7 +3,7 @@
 ## Status
 
 Accepted. Replaces sd-boot as the boot manager an installed host runs.
-Does **not** supersede [ADR-0014](0014-ab-slots-with-boot-counting.md):
+Does **not** supersede [ADR-0014](0014-squashfs-ab-root-with-native-boot-counting.md):
 its counted A/B slot mechanism, its on-disk layout and its Boot Loader
 Specification entry format all stay exactly as they are. Only the
 program that reads them changes.
@@ -110,7 +110,7 @@ while trying to build gnu-efi itself).
   host needs `BOOTAA64.EFI` built from the same source with a different
   emulation. Writing it ourselves makes that a build-matrix question
   rather than a packaging one — see issue #179.
-- Secure Boot is unaffected in mechanism ([ADR-0015](0015-secure-boot-shim-and-mok.md)):
+- Secure Boot is unaffected in mechanism ([ADR-0015](0015-shim-mok-secure-boot-signing.md)):
   shim still chainloads a Cix-signed second stage; only the bytes being
   signed change.
 

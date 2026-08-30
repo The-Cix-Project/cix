@@ -3,8 +3,7 @@
 ## Status
 
 Accepted; phased. Supersedes the OverlayFS shared-lower storage model
-([ADR-0079](0079-shared-image-rootfs-as-overlay-lowerdir.md),
-[ADR-0080](0080-per-container-upperdir-diffs.md)). Completes issue #29 /
+([ADR-0004](0004-overlayfs-dedicated-lowerdir.md)). Completes issue #29 /
 [ADR-0179](0179-user-namespaces-by-default-subordinate-id-allocation.md)'s
 user-namespace goal (issue #156) by a different mechanism than id-mapped
 overlay. Retires ext4 from the platform's own storage once btrfs is proven in
@@ -15,7 +14,7 @@ production.
 Today an image version is an immutable, content-addressed rootfs *directory*
 (`IMAGES_DIR/<name>/<version>/rootfs`), and it is the shared **overlay
 lowerdir** for every container built from it; a running container owns only its
-upperdir diff (ADR-0079/0080). The backing filesystem is ext4. An upperdir is a
+upperdir diff (ADR-0004). The backing filesystem is ext4. An upperdir is a
 btrfs subvolume only where an operator happened to format btrfs, and only for
 quota (ADR-0103).
 
