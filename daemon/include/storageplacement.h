@@ -65,15 +65,23 @@ enum storage_kind {
  */
 #define STORAGE_KIND_MIGRATABLE_COUNT (STORAGE_KIND_LOG + 1)
 
-/* TCC 0.9.27 supports _Static_assert -- probed directly with a trivial
- * `tcc -Wall -Werror` compile before relying on it here, rather than
- * assumed, the same discipline the -Dlinux=1 and __STDC_NO_VLA__ gaps
- * were found by. */
-_Static_assert(STORAGE_KIND_SWAP + 1 == STORAGE_KIND_COUNT,
-                "swap must remain the last storage kind -- storagemigrate.c's guards and array "
-                "size both assume every migratable kind sorts before it");
-_Static_assert(STORAGE_KIND_MIGRATABLE_COUNT == STORAGE_KIND_SWAP,
-                "the migratable kinds must be a contiguous prefix ending just before swap");
+/*
+ * Compile-time tripwires, in the portable form.
+ *
+ * A negative array size, not _Static_assert: the local sandbox's tcc
+ * accepts _Static_assert and **this platform's own tcc 0.9.27-9 does
+ * not** -- it fails with "',' expected (got \"+\")" on the first
+ * expression. Probing the compiler that happens to be on the dev box
+ * proves nothing about the one that builds the platform, which is the
+ * whole reason this project keeps a list of TCC's real gaps.
+ *
+ * A typedef'd array of size (cond ? 1 : -1) is C89 and works on every
+ * compiler; the name is what a reader sees in the error.
+ */
+typedef char cix_storage_kind_swap_must_be_last
+    [(STORAGE_KIND_SWAP + 1 == STORAGE_KIND_COUNT) ? 1 : -1];
+typedef char cix_storage_migratable_kinds_must_be_a_prefix
+    [(STORAGE_KIND_MIGRATABLE_COUNT == STORAGE_KIND_SWAP) ? 1 : -1];
 
 enum storageplacement_error {
 	STORAGEPLACEMENT_OK = 0,
