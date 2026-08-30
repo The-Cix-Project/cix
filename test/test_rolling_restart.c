@@ -411,6 +411,18 @@ int main(void)
 	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
+	/* Containers run from this image below, so it needs a C library to
+	 * execve anything (#186) -- a package now, not four files the
+	 * baseline used to copy off the build host. */
+	CHECK(cix_client_request(&client, "POST", "/v1/pkg/install",
+	                         "{\"name\":\"glibc\",\"image\":\"rollctrimg\"}", &r) == 0 &&
+	              r.status == 202,
+	      "POST install glibc@rollctrimg");
+	cix_response_free(&r);
+	CHECK(poll_pkg_installed_version(&client, "glibc@rollctrimg", "2.44-6", ROLL_POLL_ATTEMPTS) == 0,
+	      "glibc@rollctrimg reaches installed");
+
+	memset(&r, 0, sizeof(r));
 	CHECK(cix_client_request(&client, "POST", "/v1/pkg/install",
 	                         "{\"name\":\"rollsvc\",\"image\":\"rollctrimg\"}", &r) == 0 &&
 	          r.status == 202,

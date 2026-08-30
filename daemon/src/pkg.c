@@ -3175,68 +3175,35 @@ enum pkg_error pkg_seed_image_baseline(const char *rootfs_path)
 	 * readlink -f) resolves it to the identical real file either way.
 	 */
 	/*
-	 * ADR-0209: THE GLIBC FLOOR -- the last unclosed link in this
-	 * project's bootstrap, and the only files in any image that this
-	 * project did not build.
+	 * THE GLIBC FLOOR IS CLOSED (#186).
 	 *
-	 * These are glibc: the dynamic loader, libc itself, libm, and the
-	 * `files` NSS backend. Nothing can start without them, and there is
-	 * no glibc package to take them from -- libc-dev stages headers and
-	 * link objects, it has never built glibc. So they are still copied
-	 * from the host root, which got them from mkbootroot, which got
-	 * them from a Debian machine. That is stated plainly rather than
-	 * buried: closing it means building glibc from source on a Cix
-	 * host, and until then every image rests on it.
+	 * Four files used to be copied here straight off the build host --
+	 * the dynamic loader, libc, libm and the files-NSS backend --
+	 * because nothing in this project had ever built glibc, and an
+	 * image with no C library cannot run anything at all. ADR-0209
+	 * named them plainly as "the only files in any image that this
+	 * project did not build", and said closing it meant building glibc
+	 * from source on a Cix host.
 	 *
-	 * libtinfo and libgcc_s used to be in this table and are NOT any
-	 * more. They are not glibc -- they belong to ncurses and gcc, both
-	 * of which this project builds itself, so copying Debian's copies
-	 * of them into every image was pure accumulation: content arriving
-	 * by mechanism rather than by declaration, which is exactly what
-	 * ADR-0209 removes. A package that needs them declares them, and
-	 * gets ours.
+	 * That is done. `glibc` is an ordinary recipe now, built on a Cix
+	 * host with this platform's own gcc against its own kernel headers,
+	 * and its package carries all four of those paths -- both spellings
+	 * of the loader included. So an image gets its C library the same
+	 * way it gets everything else: by installing a package, recorded in
+	 * its manifest, with a version that can be upgraded and an origin
+	 * that can be audited. Every composed build environment gets one
+	 * implicitly (PKG_BASE_LIBC, see buildenv_resolve_tools()), and an
+	 * image that runs containers declares one like any other package.
+	 *
+	 * A freshly created image therefore has NO runtime, and that is
+	 * correct rather than a gap: POST /v1/containers refuses an image
+	 * with no loader and names what to install, instead of letting it
+	 * surface later as a container exiting 127.
+	 *
+	 * Nothing in any image is copied off the build host any more. What
+	 * this function still does below -- device nodes, directories, a
+	 * written nsswitch.conf -- it CREATES; it does not borrow.
 	 */
-	static const struct {
-		const char *src;
-		const char *rel_dst;
-	} runtime_libs[] = {
-		{ "/lib64/ld-linux-x86-64.so.2", "lib64/ld-linux-x86-64.so.2" },
-		/*
-		 * Second copy of the same file, ADR-0057: glibc >= 2.34's own
-		 * libc.so.6 carries a DT_NEEDED entry on "ld-linux-x86-64.so.2"
-		 * itself (confirmed via tinycc's own tccelf.c load_dll() walking
-		 * libc.so.6's DT_NEEDED list and calling tcc_add_dll() on each
-		 * name found) -- TCC resolves that lookup through its ordinary,
-		 * general library-search-path list, which does NOT include
-		 * /lib64 (confirmed via `tcc -vv`; only its separate, single-path
-		 * ELF-interpreter default does). A hostbuild inside a container
-		 * whose only libc.so.6 is this staged one therefore needs this
-		 * exact file reachable from a path TCC's general search actually
-		 * covers too, not just /lib64 (GCC never hit this because it
-		 * never needs to resolve its own runtime linker as a DT_NEEDED
-		 * lookup at build time the way TCC's loader does).
-		 */
-		{ "/lib64/ld-linux-x86-64.so.2", "lib/x86_64-linux-gnu/ld-linux-x86-64.so.2" },
-		{ "/lib/x86_64-linux-gnu/libc.so.6", "lib/x86_64-linux-gnu/libc.so.6" },
-		{ "/lib/x86_64-linux-gnu/libm.so.6", "lib/x86_64-linux-gnu/libm.so.6" },
-		/*
-		 * Task #731: glibc's NSS modules (getpwnam()/getgrnam(), needed
-		 * by anything doing real Unix account lookups -- sshd's pubkey
-		 * auth being the case that surfaced this) are dlopen()'d at
-		 * runtime based on /etc/nsswitch.conf, never a direct ELF
-		 * NEEDED dependency -- so no ldd-based shared-lib-closure
-		 * staging (this table, or any individual recipe's own lib
-		 * copying) has ever caught this gap; nothing built by this
-		 * platform needed real user/group resolution before task #730's
-		 * jump box. Confirmed the hard way: sshd silently rejected
-		 * every pubkey auth attempt with no diagnostic pointing at the
-		 * real cause until this was staged (getpwnam() just returns
-		 * NULL, indistinguishable from "no such user" without directly
-		 * nsenter-ing the container to test account lookup in
-		 * isolation from SSH-specific causes).
-		 */
-		{ "/lib/x86_64-linux-gnu/libnss_files.so.2", "lib/x86_64-linux-gnu/libnss_files.so.2" },
-	};
 	/*
 	 * ADR-0041: the same real, generic gap Phase 23 (iptables' own
 	 * /run/xtables.lock) and Phase 24 (bird hard-crashing with no
@@ -3260,25 +3227,6 @@ enum pkg_error pkg_seed_image_baseline(const char *rootfs_path)
 	const char *target_rootfs = rootfs_path;
 	size_t i;
 
-	for (i = 0; i < sizeof(runtime_libs) / sizeof(runtime_libs[0]); i++) {
-		char dst[PATH_MAX], dst_parent[PATH_MAX], *slash;
-		struct stat src_st, dst_st;
-
-		snprintf(dst, sizeof(dst), "%s/%s", target_rootfs, runtime_libs[i].rel_dst);
-		if (stat(dst, &dst_st) == 0)
-			continue; /* already staged -- idempotent */
-		if (stat(runtime_libs[i].src, &src_st) != 0)
-			continue; /* not present on this host -- skip, not fatal, same
-			           * precedent pkg_bootstrap_build_image() already sets */
-
-		snprintf(dst_parent, sizeof(dst_parent), "%s", dst);
-		slash = strrchr(dst_parent, '/');
-		if (slash != NULL)
-			*slash = '\0';
-
-		if (persist_mkdir_p(dst_parent) != 0 || copy_file_simple(runtime_libs[i].src, dst) != 0)
-			return PKG_ERR_PERSIST_FAILED;
-	}
 
 	/*
 	 * Dev nodes and /run have no "host source" that might legitimately
