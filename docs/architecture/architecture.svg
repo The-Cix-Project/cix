@@ -227,7 +227,7 @@
   <rect x="33" y="258" width="7" height="438" rx="3.5" fill="#4338ca"/>
   <use href="#i-server" x="46" y="266" width="20" height="20" style="color:#4338ca"/>
   <text x="530" y="278" text-anchor="middle" class="box-title">cixd — single-threaded, non-blocking epoll reactor (ADR-0007, ADR-0009)</text>
-  <text x="530" y="294" text-anchor="middle" class="small-text">hand-rolled HTTP/1.1 + JSON, no external libraries, dynamically linked against system glibc, TCC-compiled</text>
+  <text x="530" y="294" text-anchor="middle" class="small-text">hand-rolled HTTP/1.1 + JSON, no external libraries, dynamically linked against Cix's own glibc, TCC-compiled</text>
 
   <!-- module row A: five REST-exposed subsystems, one card each -->
   <rect x="50" y="314" width="180" height="82" class="card" fill="#ffffff" stroke="#e2e5f7"/>
