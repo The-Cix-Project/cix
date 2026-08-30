@@ -9304,6 +9304,13 @@ static char g_artifact_export_name[PKG_IMAGE_NAME_MAX];
 static char g_artifact_export_version[IMAGE_VERSION_MAX];
 static char g_artifact_export_path[PATH_MAX];
 static char g_artifact_export_error[256];
+/*
+ * A publish that had to build its own tarball first: the export runs to
+ * the cache path a push reads from, and the push is enqueued only once
+ * the bytes are actually there. Empty when the export is an ordinary
+ * operator-requested one.
+ */
+static char g_artifact_export_publish_name[PKG_NAME_MAX];
 /* Read end of the tar child's stderr pipe -- -1 when no export is
  * running. Drained (bounded) at completion so a failure names its
  * actual cause instead of only an exit status; "tar failed (status
@@ -9398,6 +9405,20 @@ static void handle_artifact_export_event(struct conn *cc)
 		g_artifact_export_state = ARTIFACT_EXPORT_READY;
 		logstore_write("cixd", "info", "image export: %s@%s ready at %s", g_artifact_export_name,
 		               g_artifact_export_version, g_artifact_export_path);
+		/* The tarball exists now, which is the whole reason this
+		 * export ran -- enqueue the push it was built for. */
+		if (g_artifact_export_publish_name[0] != '\0') {
+			enum pkg_error perr = pkg_artifact_publish(g_artifact_export_publish_name);
+
+			if (perr == PKG_OK)
+				artifact_push_pump();
+			else
+				logstore_write("cixd", "error",
+				                "artifact publish: %s was exported for publishing but "
+				                "could not be queued",
+				                g_artifact_export_publish_name);
+			g_artifact_export_publish_name[0] = '\0';
+		}
 	} else {
 		/* The child has fully exited, so a bounded read of its whole
 		 * stderr can't block past the pipe's own buffered content --
@@ -9416,6 +9437,13 @@ static void handle_artifact_export_event(struct conn *cc)
 		unlink(g_artifact_export_path);
 		logstore_write("cixd", "error", "image export: %s failed -- %s", g_artifact_export_name,
 		               g_artifact_export_error);
+		if (g_artifact_export_publish_name[0] != '\0') {
+			logstore_write("cixd", "error",
+			                "artifact publish: %s not published -- could not build its "
+			                "tarball from the installed tree",
+			                g_artifact_export_publish_name);
+			g_artifact_export_publish_name[0] = '\0';
+		}
 	}
 	if (g_artifact_export_errfd >= 0) {
 		close(g_artifact_export_errfd);
@@ -9440,8 +9468,8 @@ static void handle_artifact_export_event(struct conn *cc)
  * an export can be pushed to the cache verbatim, with no renaming
  * step that could drift from what a puller later asks for.
  */
-static int artifact_export_start(enum artifact_export_kind kind, const char *name, char *err_msg,
-                                 size_t err_msg_size)
+static int artifact_export_start(enum artifact_export_kind kind, const char *name,
+                                 const char *dest_override, char *err_msg, size_t err_msg_size)
 {
 	char version[IMAGE_VERSION_MAX];
 	char src[PATH_MAX];
@@ -9486,8 +9514,11 @@ static int artifact_export_start(enum artifact_export_kind kind, const char *nam
 		snprintf(err_msg, err_msg_size, "could not create %s: %s", out_dir, strerror(errno));
 		return -1;
 	}
-	snprintf(g_artifact_export_path, sizeof(g_artifact_export_path), "%s/%s-%s.tar.gz", out_dir, name,
-	         version);
+	if (dest_override != NULL)
+		snprintf(g_artifact_export_path, sizeof(g_artifact_export_path), "%s", dest_override);
+	else
+		snprintf(g_artifact_export_path, sizeof(g_artifact_export_path), "%s/%s-%s.tar.gz",
+		         out_dir, name, version);
 	unlink(g_artifact_export_path);
 
 	/*
@@ -9707,7 +9738,7 @@ static void handle_artifact_export_post(int fd, enum artifact_export_kind kind, 
 {
 	char err_msg[256];
 
-	if (artifact_export_start(kind, name, err_msg, sizeof(err_msg)) != 0) {
+	if (artifact_export_start(kind, name, NULL, err_msg, sizeof(err_msg)) != 0) {
 		int code = (strstr(err_msg, "already running") != NULL)  ? 409
 		           : (strstr(err_msg, "no such") != NULL)        ? 404
 		           : (strstr(err_msg, "is not installed") != NULL) ? 409
@@ -25220,7 +25251,78 @@ static void dispatch(int fd, const struct http_request *req)
 
 					memcpy(pkg_name, name, nlen - 17);
 					pkg_name[nlen - 17] = '\0';
+					{
+						char pv[IMAGE_VERSION_MAX];
+						int is_hostbuild = 0;
+
+						perr = pkg_artifact_publish_resolve(pkg_name, pv, sizeof(pv),
+						                                     &is_hostbuild);
+						/*
+						 * A hostbuild's artifact is a directory this
+						 * host assembled, never a tarball it fetched,
+						 * so nothing had ever put one in the cache the
+						 * pusher reads from. Ordinary source-built
+						 * packages publish themselves at build time
+						 * and so were all present; every hostbuild --
+						 * cix, kernel, isotools, the things this
+						 * platform actually produces -- was silently
+						 * unpublishable. Build the tarball from the
+						 * installed tree first, with the same export
+						 * that already guarantees byte-identical
+						 * output across hosts, and let its completion
+						 * queue the push.
+						 */
+						if (perr == PKG_OK && !pkg_artifact_cache_has(pkg_name, pv)) {
+							char dest[PATH_MAX];
+							char eerr[256];
+
+							if (!is_hostbuild) {
+								respond_error(fd, 409, "Conflict",
+								              "this package's artifact is not in "
+								              "the local cache and cannot be "
+								              "rebuilt from the installed tree");
+								return;
+							}
+							pkg_artifact_cache_path(pkg_name, pv, dest, sizeof(dest));
+							snprintf(g_artifact_export_publish_name,
+							         sizeof(g_artifact_export_publish_name), "%s",
+							         pkg_name);
+							if (artifact_export_start(ARTIFACT_EXPORT_KIND_HOSTBUILD,
+							                           pkg_name, dest, eerr,
+							                           sizeof(eerr)) != 0) {
+								g_artifact_export_publish_name[0] = '\0';
+								respond_error(fd, 409, "Conflict", eerr);
+								return;
+							}
+							{
+								struct json_writer w;
+
+								jw_init(&w);
+								jw_obj_open(&w);
+								jw_key(&w, "status");
+								jw_str(&w, "building artifact tarball");
+								jw_obj_close(&w);
+								respond_json(fd, 202, "Accepted", &w);
+							}
+							return;
+						}
+					}
 					perr = pkg_artifact_publish(pkg_name);
+					/*
+					 * Enqueuing is not starting. Nothing pumps this
+					 * queue on its own -- a push is only ever kicked
+					 * off after something else finishes a build, and
+					 * after each push completes so the queue drains.
+					 * Without this call the endpoint answered 202
+					 * "queued" and then sat there until an unrelated
+					 * build happened along, which is exactly what it
+					 * did for cix/kernel/isotools: accepted, logged,
+					 * never published, nothing in the log saying so.
+					 * Publishing on request has to schedule its own
+					 * work, like every other caller of the pump does.
+					 */
+					if (perr == PKG_OK)
+						artifact_push_pump();
 					if (perr == PKG_ERR_NOT_FOUND) {
 						respond_error(fd, 404, "Not Found",
 						              "no such installed package");

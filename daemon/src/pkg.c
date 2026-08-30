@@ -7919,6 +7919,59 @@ static void pkg_artifact_push_enqueue(const char *name, const char *version)
 	g_push_queue_count++;
 }
 
+/*
+ * Where a push will look for this package's tarball, and whether it is
+ * there yet. A hostbuild's artifact is a DIRECTORY -- it is assembled on
+ * this host rather than fetched, so nothing ever tarred it into the
+ * cache, and pkg_artifact_push_try_start() found nothing to send. That
+ * is why "cix", "kernel" and "isotools" could never be published while
+ * ordinary source-built packages published themselves automatically:
+ * the difference was never the request, it was that half the packages
+ * on a box had no tarball for the pusher to find. The caller builds one
+ * from the installed tree before enqueuing.
+ */
+void pkg_artifact_cache_path(const char *name, const char *version, char *out, size_t out_size)
+{
+	cache_tarball_path(name, version, out, out_size);
+}
+
+int pkg_artifact_cache_has(const char *name, const char *version)
+{
+	char path[PATH_MAX];
+	struct stat st;
+
+	cache_tarball_path(name, version, path, sizeof(path));
+	return stat(path, &st) == 0 && S_ISREG(st.st_mode);
+}
+
+/*
+ * Resolves what pkg_artifact_publish() would publish, without enqueuing
+ * anything -- same validation, same version selection, so the two can
+ * never disagree about which version a publish means.
+ */
+enum pkg_error pkg_artifact_publish_resolve(const char *name, char *out_version,
+                                             size_t out_version_size, int *out_is_hostbuild)
+{
+	int i;
+
+	if (!g_artifact_push_enabled || g_artifact_base_url[0] == '\0')
+		return PKG_ERR_INVALID_RECIPE;
+
+	for (i = 0; i < PKG_MAX_PACKAGES; i++) {
+		if (!g_packages[i].in_use || g_packages[i].state != PKG_STATE_INSTALLED)
+			continue;
+		if (strcmp(g_packages[i].name, name) != 0)
+			continue;
+		snprintf(out_version, out_version_size, "%s", g_packages[i].version);
+		/* Derived from the image, never a stored flag -- the same
+		 * One Source of Truth rule the listing follows (ADR-0056). */
+		if (out_is_hostbuild != NULL)
+			*out_is_hostbuild = strcmp(g_packages[i].image, PKG_HOSTBUILD_IMAGE) == 0;
+		return PKG_OK;
+	}
+	return PKG_ERR_NOT_FOUND;
+}
+
 enum pkg_error pkg_artifact_publish(const char *name)
 {
 	int i;
