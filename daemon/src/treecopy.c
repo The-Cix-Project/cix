@@ -77,8 +77,34 @@ static int treecopy_walk(const char *src_root, const char *dst_root, const char 
 
 	snprintf(src_dir, sizeof(src_dir), "%s%s%s", src_root, relpath[0] ? "/" : "", relpath);
 	d = opendir(src_dir);
-	if (d == NULL)
-		return relpath[0] == '\0' ? 0 : -1;
+	if (d == NULL) {
+		/*
+		 * A source that cannot be opened is a failure at EVERY level,
+		 * including the root. This used to read
+		 *
+		 *   return relpath[0] == '\0' ? 0 : -1;
+		 *
+		 * so a missing source ROOT was success -- "nothing to copy,
+		 * fine". Every caller of this primitive is a migration, a
+		 * backup or a restore (issue #194 lists all eight sites), and
+		 * for those "moved nothing" and "moved everything" then look
+		 * identical: the caller repoints live state at an empty
+		 * destination and reports success. That is how the installer's
+		 * package seed was copied from a path that did not exist and
+		 * still produced a clean install.
+		 *
+		 * No caller needs the tolerance. A volume's directory is
+		 * created when the volume is (volume.c:218, and creation fails
+		 * if it cannot be), and every storage-migration source is a
+		 * live tree the daemon is currently serving from.
+		 *
+		 * The subdirectory case failed already but recorded no reason,
+		 * so treecopy_last_error() reported the previous call's error
+		 * or "no error recorded". Both paths now name the directory.
+		 */
+		treecopy_fail("open source directory", src_dir);
+		return -1;
+	}
 
 	while ((de = readdir(d)) != NULL) {
 		char child_rel[PATH_MAX];

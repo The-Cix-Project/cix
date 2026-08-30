@@ -905,13 +905,19 @@ int main(int argc, char **argv)
 			/*
 			 * Both subdirectories must genuinely be there.
 			 *
-			 * treecopy_recursive() deliberately returns SUCCESS for a
-			 * source root that does not exist -- "nothing to copy" --
-			 * so an ISO whose seed was staged to the wrong path
-			 * reported a clean install and produced a box with no
-			 * recipes. That really happened, and is why this checks
-			 * rather than trusts: a seed that is present but
-			 * misplaced must fail the install, not pass it quietly.
+			 * treecopy_recursive() used to return SUCCESS for a source
+			 * root that did not exist -- "nothing to copy" -- so an ISO
+			 * whose seed was staged to the wrong path reported a clean
+			 * install and produced a box with no recipes. That really
+			 * happened. It is fixed at the source now (#194): a missing
+			 * source root is a failure there, for every caller.
+			 *
+			 * This check stays anyway, and earns its place twice over.
+			 * It names the actual problem -- media carrying a seed that
+			 * is malformed -- rather than reporting a copy failure two
+			 * layers down, and it verifies BOTH subdirectories before
+			 * copying either, so a half-staged seed cannot leave a box
+			 * with recipes and no artifacts.
 			 *
 			 * The copy itself is the daemon's own, linked here rather
 			 * than reimplemented: it already reports WHICH entry

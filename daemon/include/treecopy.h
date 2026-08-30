@@ -39,6 +39,11 @@
  * sensitive content the way a file's contents might be -- no real
  * caller here has a directory that needs anything stricter).
  *
+ * A source root that does not exist, or cannot be opened, is a
+ * FAILURE -- not an empty success. Every caller is a migration, a
+ * backup or a restore, and for those a copy that moved nothing must
+ * never be indistinguishable from one that moved everything (#194).
+ *
  * Returns 0 on success, -1 (errno set to the first failure
  * encountered) otherwise -- a partial copy may be left behind on
  * failure, which is fine: every caller here only ever proceeds to
