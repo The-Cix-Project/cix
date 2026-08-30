@@ -87,6 +87,20 @@
  * last bytes in the system this project did not build.
  */
 #define PKG_BASE_LIBC "glibc"
+
+/*
+ * The one file that proves an image can run anything: the dynamic
+ * loader every binary in it needs before its first instruction.
+ *
+ * Named once because three separate places ask the same question and
+ * must not drift on the answer -- whether a composed build environment
+ * still carries the C library it was given, whether a container can be
+ * created from an image at all, and whether the default image has been
+ * given a runtime yet. Deliberately a path and not a package name: the
+ * requirement is a working runtime, and which package provides it is
+ * the catalogue's business, not the daemon's.
+ */
+#define PKG_IMAGE_LOADER_REL "lib64/ld-linux-x86-64.so.2"
 #define PKG_VERSION_MAX 64
 #define PKG_URL_MAX 512
 #define PKG_SHA256_MAX 65
@@ -511,6 +525,30 @@ enum pkg_error pkg_recipe_delete(const char *name, const char *version);
  * removes it exactly like any other exited container, no new
  * mechanism needed (see pkg_build_completed()'s own comment).
  */
+/*
+ * Gives the default image a C library, once, if it has none and one can
+ * be installed without building anything (#189).
+ *
+ * A freshly installed host materializes "base" at first boot with the
+ * ordinary image baseline, which -- since ADR-0216 closed the glibc
+ * floor -- no longer includes a runtime borrowed from the build host.
+ * Correct, but it leaves the one image a fresh box actually has unable
+ * to run a container until an operator installs a libc into it.
+ *
+ * This installs one through the ordinary pipeline, so the image ends up
+ * with a real manifest entry, a version and an upgrade path -- never a
+ * copy, which is the distinction ADR-0216 exists to hold.
+ *
+ * Deliberately refuses unless it would be a cache hit: a recipe alone is
+ * not enough, because building glibc on a box that has no toolchain yet
+ * is a long failure, not a fix. Returns PKG_OK with the child's pid and
+ * pidfd for the caller to register (asynchronous, like every other
+ * install), or PKG_ERR_NOT_FOUND when there is nothing to do -- already
+ * has a runtime, no recipe, or no cached artifact -- which is the
+ * ordinary case on every boot after the first.
+ */
+enum pkg_error pkg_seed_default_image_libc(pid_t *out_pid, int *out_pidfd, int *out_chain_idx);
+
 enum pkg_error pkg_install_start(const char *name, const char *image, const char *version,
                                   int upgrade, int keep_on_failure, char *out_started_name,
                                   size_t out_started_name_size, pid_t *out_pid, int *out_pidfd,
