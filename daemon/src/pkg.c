@@ -8087,6 +8087,38 @@ enum pkg_error pkg_seed_default_image_libc(pid_t *out_pid, int *out_pidfd, int *
 	if (!pkg_artifact_cache_has(PKG_BASE_LIBC, recipe.version))
 		return PKG_ERR_NOT_FOUND;
 
+	/*
+	 * And it must be the bytes the recipe approves.
+	 *
+	 * A cache hit deliberately skips fetching AND verifying -- the
+	 * fetch child exits immediately and the install stages straight
+	 * from the cache. That is sound only because of an invariant:
+	 * everything in that cache was verified on the way IN, either a
+	 * download checked against pkg_artifact_sha256 or an artifact this
+	 * host built itself.
+	 *
+	 * This path is the first that can be handed a cached artifact from
+	 * somewhere else -- an installer seed written before the daemon
+	 * ever ran (#189). Verifying here keeps the invariant true rather
+	 * than widening the daemon's trust to whatever wrote its cache
+	 * directory: the artifact server was never a trust boundary, and
+	 * neither is install media.
+	 */
+	if (recipe.artifact_sha256[0] != '\0') {
+		char cached[PATH_MAX];
+		char got[80];
+
+		pkg_artifact_cache_path(PKG_BASE_LIBC, recipe.version, cached, sizeof(cached));
+		if (pkg_run_capture_sha256(cached, got, sizeof(got)) != 0 ||
+		    strcmp(got, recipe.artifact_sha256) != 0) {
+			logstore_write("cixd", "error",
+			               "not seeding the default image: the cached %s@%s artifact is not "
+			               "the bytes its own recipe approves -- refusing to install it",
+			               PKG_BASE_LIBC, recipe.version);
+			return PKG_ERR_NOT_FOUND;
+		}
+	}
+
 	return pkg_install_start(PKG_BASE_LIBC, PKG_DEFAULT_IMAGE, NULL, 0, 0, started,
 	                          sizeof(started), out_pid, out_pidfd, out_chain_idx);
 }
