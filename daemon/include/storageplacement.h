@@ -39,7 +39,41 @@ enum storage_kind {
 	 * resolves and repoints directly, no migration step involved.
 	 */
 	STORAGE_KIND_SWAP,
+
+	/*
+	 * Always last: how many kinds there are. storageplacement.c sizes
+	 * its per-kind disk pointers from this.
+	 */
+	STORAGE_KIND_COUNT,
 };
+
+/*
+ * How many of those kinds have a live directory that can be MIGRATED --
+ * the first three. Swap is deliberately excluded, for the reason given
+ * above: its file's content is transient by definition, so there is no
+ * move job for it and never will be.
+ *
+ * Named, rather than left implicit in a `kind > STORAGE_KIND_LOG` test,
+ * because storagemigrate.c sizes an array from it AND guards every
+ * entry point with it. Those two agreed only by way of SWAP happening
+ * to sort last; reorder this enum and they would disagree silently,
+ * with an out-of-bounds write behind the disagreement. The asserts
+ * below turn that into a compile error instead.
+ *
+ * Both constants used to be private `#define`s in two different .c
+ * files, spelled the same and meaning different things (3 and 4).
+ */
+#define STORAGE_KIND_MIGRATABLE_COUNT (STORAGE_KIND_LOG + 1)
+
+/* TCC 0.9.27 supports _Static_assert -- probed directly with a trivial
+ * `tcc -Wall -Werror` compile before relying on it here, rather than
+ * assumed, the same discipline the -Dlinux=1 and __STDC_NO_VLA__ gaps
+ * were found by. */
+_Static_assert(STORAGE_KIND_SWAP + 1 == STORAGE_KIND_COUNT,
+                "swap must remain the last storage kind -- storagemigrate.c's guards and array "
+                "size both assume every migratable kind sorts before it");
+_Static_assert(STORAGE_KIND_MIGRATABLE_COUNT == STORAGE_KIND_SWAP,
+                "the migratable kinds must be a contiguous prefix ending just before swap");
 
 enum storageplacement_error {
 	STORAGEPLACEMENT_OK = 0,

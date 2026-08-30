@@ -14,7 +14,6 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#define STORAGE_KIND_COUNT 3
 
 struct migrate_job {
 	enum storagemigrate_state state;
@@ -34,7 +33,7 @@ struct migrate_job {
 	int err_fd; /* read end, -1 when no job has run */
 };
 
-static struct migrate_job g_jobs[STORAGE_KIND_COUNT];
+static struct migrate_job g_jobs[STORAGE_KIND_MIGRATABLE_COUNT];
 
 /* err_fd is 0 from static zero-init, which is a real fd (stdin) -- set
  * the sentinel explicitly the first time any job is touched rather than
@@ -46,7 +45,7 @@ static void jobs_init_once(void)
 
 	if (done)
 		return;
-	for (i = 0; i < STORAGE_KIND_COUNT; i++)
+	for (i = 0; i < STORAGE_KIND_MIGRATABLE_COUNT; i++)
 		g_jobs[i].err_fd = -1;
 	done = 1;
 }
@@ -90,7 +89,7 @@ enum storagemigrate_error storagemigrate_start(enum storage_kind kind, const cha
 	int pidfd;
 
 	jobs_init_once();
-	if (kind < STORAGE_KIND_STATE || kind > STORAGE_KIND_LOG)
+	if (kind < STORAGE_KIND_STATE || kind >= STORAGE_KIND_MIGRATABLE_COUNT)
 		return STORAGEMIGRATE_ERR_NOT_FOUND;
 	job = &g_jobs[kind];
 	if (job->state == STORAGEMIGRATE_STATE_RUNNING)
@@ -173,7 +172,7 @@ void storagemigrate_completed(enum storage_kind kind, int exit_status)
 	struct migrate_job *job;
 
 	jobs_init_once();
-	if (kind < STORAGE_KIND_STATE || kind > STORAGE_KIND_LOG)
+	if (kind < STORAGE_KIND_STATE || kind >= STORAGE_KIND_MIGRATABLE_COUNT)
 		return;
 	job = &g_jobs[kind];
 
@@ -212,7 +211,7 @@ int storagemigrate_finalize(enum storage_kind kind)
 {
 	struct migrate_job *job;
 
-	if (kind < STORAGE_KIND_STATE || kind > STORAGE_KIND_LOG)
+	if (kind < STORAGE_KIND_STATE || kind >= STORAGE_KIND_MIGRATABLE_COUNT)
 		return -1;
 	job = &g_jobs[kind];
 
@@ -227,21 +226,21 @@ int storagemigrate_finalize(enum storage_kind kind)
 
 const char *storagemigrate_job_source_dir(enum storage_kind kind)
 {
-	if (kind < STORAGE_KIND_STATE || kind > STORAGE_KIND_LOG)
+	if (kind < STORAGE_KIND_STATE || kind >= STORAGE_KIND_MIGRATABLE_COUNT)
 		return "";
 	return g_jobs[kind].source_dir;
 }
 
 const char *storagemigrate_job_target_dir(enum storage_kind kind)
 {
-	if (kind < STORAGE_KIND_STATE || kind > STORAGE_KIND_LOG)
+	if (kind < STORAGE_KIND_STATE || kind >= STORAGE_KIND_MIGRATABLE_COUNT)
 		return "";
 	return g_jobs[kind].target_dir;
 }
 
 const char *storagemigrate_job_target_disk(enum storage_kind kind)
 {
-	if (kind < STORAGE_KIND_STATE || kind > STORAGE_KIND_LOG)
+	if (kind < STORAGE_KIND_STATE || kind >= STORAGE_KIND_MIGRATABLE_COUNT)
 		return "";
 	return g_jobs[kind].target_disk;
 }
@@ -265,7 +264,7 @@ void storagemigrate_write_status_json(struct json_writer *w, enum storage_kind k
 {
 	const struct migrate_job *job;
 
-	if (kind < STORAGE_KIND_STATE || kind > STORAGE_KIND_LOG || g_jobs[kind].state == STORAGEMIGRATE_STATE_NONE) {
+	if (kind < STORAGE_KIND_STATE || kind >= STORAGE_KIND_MIGRATABLE_COUNT || g_jobs[kind].state == STORAGEMIGRATE_STATE_NONE) {
 		jw_obj_open(w);
 		jw_key(w, "state");
 		jw_str(w, "none");

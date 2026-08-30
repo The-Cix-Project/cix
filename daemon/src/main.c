@@ -653,12 +653,20 @@ static void ensure_default_image(void)
 {
 	enum image_error ierr = image_create(PKG_DEFAULT_IMAGE);
 
-	if (ierr != IMAGE_OK && ierr != IMAGE_ERR_DUPLICATE)
+	if (ierr != IMAGE_OK && ierr != IMAGE_ERR_DUPLICATE) {
 		logstore_write("cixd", "error",
 		               "could not create the default image \"%s\" (%d) -- installs that name "
 		               "no image, and containers that name no image, will fail until this "
 		               "succeeds",
 		               PKG_DEFAULT_IMAGE, (int)ierr);
+		/* Console too. This runs before the log store is reachable, on
+		 * the one boot where it matters most: a first boot that cannot
+		 * create the default image produces a host where nothing can
+		 * be installed or run, and until now said so only somewhere
+		 * nobody could read yet. */
+		printf("default image: could not create \"%s\" (%d)\n", PKG_DEFAULT_IMAGE, (int)ierr);
+		fflush(stdout);
+	}
 }
 
 static void migrate_one_flat_entry(const char *basename, const char *new_dir)

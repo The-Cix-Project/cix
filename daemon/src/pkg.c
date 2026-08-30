@@ -8091,6 +8091,9 @@ enum pkg_error pkg_seed_default_image_libc(pid_t *out_pid, int *out_pidfd, int *
 		               "install one from -- containers created from it will be refused until "
 		               "a package source is configured",
 		               PKG_DEFAULT_IMAGE, PKG_BASE_LIBC);
+		printf("default image: no C library and no %s recipe to install one from\n",
+		       PKG_BASE_LIBC);
+		fflush(stdout);
 		return PKG_ERR_NOT_FOUND;
 	}
 
@@ -8104,6 +8107,9 @@ enum pkg_error pkg_seed_default_image_libc(pid_t *out_pid, int *out_pidfd, int *
 		               "artifact cache -- not building it here, since a box with no toolchain "
 		               "would fail slowly instead of saying what it needs",
 		               PKG_DEFAULT_IMAGE, PKG_BASE_LIBC, recipe.version);
+		printf("default image: no C library and %s@%s is not in the artifact cache\n",
+		       PKG_BASE_LIBC, recipe.version);
+		fflush(stdout);
 		return PKG_ERR_NOT_FOUND;
 	}
 
