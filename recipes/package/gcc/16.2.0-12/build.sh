@@ -63,6 +63,43 @@ pkg_sha256="e6738e29597f733270731aa90600f37ffdc045079dfc27ec7e8192cc81085c3e ac2
 # because this version's own --image target (gcc-tcc-bootstrap) has no
 # such incidental history to lean on.
 pkg_depends="binutils m4 zlib linux-headers"
+
+# ADR-0199/#199: gcc declares its build tools, like every other recipe.
+#
+# It never did. Every gcc on this platform came from a prebuilt
+# artifact, verified by pkg_artifact_sha256 but never actually produced
+# through the composed-environment path -- so the one package whose
+# declarations most affect everything else was the one package that
+# could not be rebuilt. That is why dropping libc-dev from pkg_depends
+# above needed this first: the change is worthless if the recipe
+# carrying it cannot be built.
+#
+# Derived from what pkg_build() below actually invokes, not guessed:
+#
+#   gcc        /usr/bin/gcc and g++ as the stage-1 seed. GCC's
+#              --enable-bootstrap then rebuilds itself with itself
+#              twice more and compares stage 2 against stage 3, so the
+#              seed is discarded rather than shipped -- the deliberate,
+#              documented exception in this recipe's own history.
+#   tcc        compiles the in-recipe miniextract.c helper.
+#   binutils   as/ld/ar for every stage.
+#   make       the whole build; bash runs pkg_build() itself.
+#   coreutils  cat/cp/mv/mkdir/ln/install/rm throughout.
+#   sed grep   configure rewrites its own output constantly.
+#   m4         autoconf machinery inside the tree.
+#   findutils  find, used to prune and locate build output.
+#   patch      applied to the tree before configure.
+#   tar        unpacking the extra sources.
+#   bzip2      gmp and mpfr arrive as .tar.bz2.
+#   gzip       mpc arrives as .tar.gz.
+#   zlib       --with-system-zlib needs it genuinely present.
+#   linux-headers  the kernel uapi headers glibc's own limits.h
+#              chain includes; glibc itself is implicit (ADR-0216).
+#
+# gmp/mpfr/mpc are NOT here: they are extra pkg_source entries
+# extracted in-tree, exactly as contrib/download_prerequisites would
+# leave them, because the build container has no network.
+pkg_build_depends="gcc tcc binutils make bash coreutils sed grep m4 findutils patch tar bzip2 gzip zlib linux-headers"
 # 16.2.0-12 (#187): libc-dev -> linux-headers, and this is the last
 # thread of the contamination rather than a tidy-up.
 #
