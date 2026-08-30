@@ -642,10 +642,10 @@ int main(void)
 	 * are absent this fails here, loudly, rather than the suite
 	 * mysteriously failing later.
 	 */
-	if (test_image_fixture_seed_floor_packages(g_data_dir, "build/floor-artifacts") != 0) {
+	if (test_image_fixture_seed_floor_packages(g_data_dir, "build-inputs/floor-artifacts") != 0) {
 		fprintf(stderr,
 		        "FAIL: could not seed the build floor -- fetch the real package artifacts into "
-		        "build/floor-artifacts first (see ADR-0209); they are never fabricated\n");
+		        "build-inputs/floor-artifacts first (see ADR-0209); they are never fabricated\n");
 		test_data_dir_cleanup(g_data_dir);
 		return 1;
 	}

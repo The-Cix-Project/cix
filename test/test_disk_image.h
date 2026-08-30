@@ -1,4 +1,22 @@
 #ifndef TEST_DISK_IMAGE_H
+
+/*
+ * The kernel every boot test boots. Defined once here because seven
+ * test files each had their own copy of this literal, and because it
+ * lives OUTSIDE build/ deliberately: `make clean` is `rm -rf build/`,
+ * and this file is not reproducible by make (#191).
+ *
+ * If it is missing, test_disk_image_require_kernel() says how to get it
+ * back rather than letting six boot tests fail with a bare
+ * "No such file or directory" that reads like a code regression.
+ */
+#define BZIMAGE_PATH "build-inputs/bzImage"
+
+/*
+ * 0 if the kernel is present, -1 with an actionable message if not.
+ * Call it before doing anything expensive.
+ */
+int test_disk_image_require_kernel(void);
 #define TEST_DISK_IMAGE_H
 
 #include <stddef.h>

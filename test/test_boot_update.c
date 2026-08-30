@@ -43,7 +43,6 @@
 #define MKBOOTROOT_BIN "build/mkbootroot"
 #define CIXD_BIN "build/cixd"
 #define CIXCTL_BIN "build/cixctl"
-#define BZIMAGE_PATH "build/bzImage"
 #define SFDISK_BIN "/usr/sbin/sfdisk"
 #define MDIR_BIN "/usr/bin/mdir"
 #define SYSTEMD_BOOT_EFI "/usr/lib/systemd/boot/efi/systemd-bootx64.efi"
@@ -198,6 +197,10 @@ static int files_prefix_equal(const char *a_path, const char *b_path, long n)
 
 int main(void)
 {
+	/* An input, not a build output -- says how to restore it (#191). */
+	if (test_disk_image_require_kernel() != 0)
+		return 1;
+
 	char workdir[] = "/tmp/cix_test_boot_update_XXXXXX";
 	char stage_dir[600], stage_dir_new[600], web_new_dir[600];
 	char root_squashfs_a[600], root_squashfs_new[600];
@@ -241,7 +244,7 @@ int main(void)
 	/* 1. Two genuinely different-content squashfs images: slot A's own
 	 * (built from the real web/ dir) and the "update" payload (built
 	 * from web_new/, with one extra marker file). The "new" kernel
-	 * reuses the same real, already-built build/bzImage bytes -- see
+	 * reuses the same real, already-built build-inputs/bzImage bytes -- see
 	 * this file's own header comment for why a second real kernel
 	 * build isn't needed for what this test is actually proving. */
 	{

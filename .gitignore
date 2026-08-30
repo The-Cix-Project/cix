@@ -1,4 +1,9 @@
 build/
+# Inputs, not outputs: hand-fetched or separately built, and NOT
+# reproducible by make. Kept out of build/ precisely so `make clean`
+# (rm -rf build/) cannot destroy them -- it did, once, silently
+# disarming seven test binaries (#191).
+build-inputs/
 core
 core.*
 image/keys/*.key
@@ -9,4 +14,3 @@ backups/
 # (ADR-0209). Not committed: they are large binaries whose one source
 # of truth is the artifact cache plus the checksum in each recipe --
 # committing copies would be a second place the same bytes live.
-build/floor-artifacts/

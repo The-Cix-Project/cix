@@ -275,7 +275,7 @@ int main(void)
 	/* ADR-0209: the build floor -- real recipe-built artifacts seeded
 	 * into this daemon's cache so installing them needs no build
 	 * environment. */
-	if (test_image_fixture_seed_floor_packages(data_dir_a, "build/floor-artifacts") != 0) {
+	if (test_image_fixture_seed_floor_packages(data_dir_a, "build-inputs/floor-artifacts") != 0) {
 		fprintf(stderr, "could not seed the build floor (ADR-0209)\n");
 		return 1;
 	}
@@ -417,7 +417,7 @@ int main(void)
 	/* ADR-0209: the build floor -- real recipe-built artifacts seeded
 	 * into this daemon's cache so installing them needs no build
 	 * environment. */
-	if (test_image_fixture_seed_floor_packages(data_dir_b, "build/floor-artifacts") != 0) {
+	if (test_image_fixture_seed_floor_packages(data_dir_b, "build-inputs/floor-artifacts") != 0) {
 		fprintf(stderr, "could not seed the build floor (ADR-0209)\n");
 		test_data_dir_cleanup(data_dir_a);
 		test_data_dir_cleanup(data_dir_b);

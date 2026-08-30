@@ -75,7 +75,6 @@
 #define CIX_RECOVER_BIN "build/cix-recover"
 #define CIX_BOOT_BIN "build/cix-boot.efi"
 #define MKINSTALLERISO_BIN "build/mkinstalleriso"
-#define BZIMAGE_PATH "build/bzImage"
 #define SFDISK_BIN "/usr/sbin/sfdisk"
 #define BTRFS_BIN "/usr/bin/btrfs"
 #define OVMF_VARS_TEMPLATE "/usr/share/OVMF/OVMF_VARS_4M.ms.fd"
@@ -258,7 +257,7 @@ static int build_seed_fixture(const char *workdir, char *out_root, size_t out_ro
 	if (test_image_fixture_copy_file(src, dst) != 0)
 		return -1;
 
-	snprintf(src, sizeof(src), "build/floor-artifacts/glibc-%s.tar.gz", SEED_LIBC_VERSION);
+	snprintf(src, sizeof(src), "build-inputs/floor-artifacts/glibc-%s.tar.gz", SEED_LIBC_VERSION);
 	snprintf(dst, sizeof(dst), "%s/glibc-%s.tar.gz", artifact_dir, SEED_LIBC_VERSION);
 	if (access(src, R_OK) != 0) {
 		fprintf(stderr,
@@ -285,7 +284,7 @@ static int extract_seed_loader(const char *workdir, char *out_path, size_t out_p
 	if (fixture_mkdir_p(dir) != 0)
 		return -1;
 	snprintf(cmd, sizeof(cmd),
-	         "tar xzf 'build/floor-artifacts/glibc-%s.tar.gz' -C '%s' './%s' 2>/dev/null",
+	         "tar xzf 'build-inputs/floor-artifacts/glibc-%s.tar.gz' -C '%s' './%s' 2>/dev/null",
 	         SEED_LIBC_VERSION, dir, PKG_IMAGE_LOADER_REL);
 	if (system(cmd) != 0)
 		return -1;
@@ -495,6 +494,10 @@ static int files_identical(const char *a_path, const char *b_path)
 
 int main(void)
 {
+	/* An input, not a build output -- says how to restore it (#191). */
+	if (test_disk_image_require_kernel() != 0)
+		return 1;
+
 	char workdir[] = "/tmp/cix_test_installer_XXXXXX";
 	char stage_dir[600], control_plane_squashfs[600], installer_stage[600], installer_iso[600];
 	char target_disk_img[600];

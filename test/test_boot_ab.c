@@ -32,7 +32,6 @@
 #define MKBOOTROOT_BIN "build/mkbootroot"
 #define CIXD_BIN "build/cixd"
 #define CIXCTL_BIN "build/cixctl"
-#define BZIMAGE_PATH "build/bzImage"
 #define SFDISK_BIN "/usr/sbin/sfdisk"
 #define MDIR_BIN "/usr/bin/mdir"
 #define SYSTEMD_BOOT_EFI "/usr/lib/systemd/boot/efi/systemd-bootx64.efi"
@@ -137,6 +136,10 @@ static int list_loader_entries(const char *disk_img, long esp_start_sec, char *o
 
 int main(void)
 {
+	/* An input, not a build output -- says how to restore it (#191). */
+	if (test_disk_image_require_kernel() != 0)
+		return 1;
+
 	char workdir[] = "/tmp/cix_test_boot_ab_XXXXXX";
 	char stage_dir[600];
 	char root_squashfs[600];

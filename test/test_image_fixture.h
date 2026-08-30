@@ -252,7 +252,7 @@ int test_image_fixture_write_manifest(const char *image_dir, const char *version
  * rather than proceeding on unverified bytes.
  *
  * artifacts_dir is a directory holding <name>-<version>.tar.gz files
- * (build/floor-artifacts in this repo). data_dir is the test's own
+ * (build-inputs/floor-artifacts in this repo). data_dir is the test's own
  * --data-dir. Returns 0, or -1 with a diagnostic naming what was
  * missing or failed verification.
  */
