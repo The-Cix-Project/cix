@@ -115,7 +115,7 @@ struct pkg_entry {
 	char build_workdir[PATH_MAX], build_merged[PATH_MAX];
 	char build_argv_cmd[512];
 	char *build_argv[4];
-	char *build_envp[6];
+	char *build_envp[5];
 	/* Backing storage for build_envp's own optional 4th entry (ADR-0159
 	 * Phase B) -- "CIX_KMOD_EXTRA_SYMBOLS=<value>", built once
 	 * g_chains[chain_idx].hostbuild_extra_config_symbols is known, in
@@ -5069,31 +5069,6 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 	e->build_envp[0] = "PKG_DESTDIR=/build/pkg-dest";
 	e->build_envp[1] = "PATH=/usr/bin:/bin";
 	e->build_envp[2] = "HOME=/build";
-	/*
-	 * #196: our own glibc does not search /usr/lib.
-	 *
-	 * Its compiled-in search path is exactly slibdir + libdir --
-	 * /lib/x86_64-linux-gnu and /usr/lib/x86_64-linux-gnu -- and glibc
-	 * offers no way to add a third. Debian's libc searched /usr/lib as
-	 * well, so nothing noticed until this platform shipped its own.
-	 *
-	 * Eleven installed packages put libraries there, zlib's libz.so.1
-	 * and flex's libfl.so.2 among them, and a composed environment has
-	 * no ld.so.cache to widen the search. The symptom is a tool that
-	 * cannot start at all -- "ar: error while loading shared libraries:
-	 * libfl.so.2" -- for a file sitting readable at the path it names.
-	 *
-	 * This is the unblock, not the fix: glibc 2.44-7 moves libdir to
-	 * /usr/lib so the loader searches it properly, and building that
-	 * needs a working environment, which is what this provides. Same
-	 * shape as ADR-0154, which already sets LD_LIBRARY_PATH for a
-	 * host-exec'd binary whose libraries are not where the loader looks.
-	 *
-	 * Build containers only: a runtime container's libraries are its
-	 * own image's business, and papering over the same gap there would
-	 * hide it rather than close it.
-	 */
-	e->build_envp[3] = "LD_LIBRARY_PATH=/usr/lib";
 	/* ADR-0159 Phase B: only kernel.recipe's own pkg_build() actually
 	 * reads this -- every other recipe simply never references it.
 	 * Omitted entirely (not just empty) when g_chains[chain_idx] carried nothing,
@@ -5102,10 +5077,10 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 	if (g_chains[chain_idx].hostbuild_extra_config_symbols[0] != '\0') {
 		snprintf(e->build_envp_extra, sizeof(e->build_envp_extra),
 		         "CIX_KMOD_EXTRA_SYMBOLS=%s", g_chains[chain_idx].hostbuild_extra_config_symbols);
-		e->build_envp[4] = e->build_envp_extra;
-		e->build_envp[5] = NULL;
-	} else {
+		e->build_envp[3] = e->build_envp_extra;
 		e->build_envp[4] = NULL;
+	} else {
+		e->build_envp[3] = NULL;
 	}
 
 	return start_build_container_spec(chain_idx, e, spec_out, out_stdio_write_fd);
@@ -5218,18 +5193,15 @@ enum pkg_error pkg_resume_build(const char *name, const char *image, const char 
 	e->build_envp[0] = "PKG_DESTDIR=/build/pkg-dest";
 	e->build_envp[1] = "PATH=/usr/bin:/bin";
 	e->build_envp[2] = "HOME=/build";
-	/* #196 -- see the ordinary build path above for why our glibc has
-	 * to be told about /usr/lib. */
-	e->build_envp[3] = "LD_LIBRARY_PATH=/usr/lib";
 	/* See pkg_fetch_completed()'s own identical block -- omitted
 	 * entirely (not just empty) when no extra symbols are given. */
 	if (extra_config_symbols != NULL && extra_config_symbols[0] != '\0') {
 		snprintf(e->build_envp_extra, sizeof(e->build_envp_extra),
 		         "CIX_KMOD_EXTRA_SYMBOLS=%s", extra_config_symbols);
-		e->build_envp[4] = e->build_envp_extra;
-		e->build_envp[5] = NULL;
-	} else {
+		e->build_envp[3] = e->build_envp_extra;
 		e->build_envp[4] = NULL;
+	} else {
+		e->build_envp[3] = NULL;
 	}
 
 	g_chains[chain_idx].is_hostbuild = (strcmp(e->image, PKG_HOSTBUILD_IMAGE) == 0);
