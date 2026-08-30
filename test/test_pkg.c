@@ -4573,28 +4573,30 @@ skip_resume:
 			cix_response_free(&r);
 		}
 		if (ok186) {
+			/*
+			 * It must SUCCEED, and that is the assertion (#187).
+			 *
+			 * This block used to require a refusal, because a tool
+			 * sorting after "glibc" genuinely won any path they both
+			 * claimed and the only defence was to notice afterwards.
+			 * The C library is now copied last, so a colliding
+			 * package cannot win -- glibc overwrites it -- and the
+			 * collision is prevented rather than detected.
+			 *
+			 * A successful build IS the proof: zzlibc's libc.so.6 is
+			 * the text "not-a-real-libc", so if it were the one that
+			 * survived, nothing in the environment could exec and the
+			 * build could not finish. The gate remains as a tripwire
+			 * against a future reordering, and is proven by removing
+			 * the ordering rather than by a permanent failing case.
+			 */
 			if (poll_pkg_state(&client, "collide", state, sizeof(state), 300) != 0 ||
-			    strcmp(state, "failed") != 0) {
+			    strcmp(state, "installed") != 0) {
 				fprintf(stderr,
-				        "FAIL: #186 a build environment carrying two C libraries was accepted "
-				        "(collide state=%s, expected failed)\n",
+				        "FAIL: #187 a colliding libc was not overridden by glibc "
+				        "(collide state=%s, expected installed)\n",
 				        state);
 				ok = 0;
-			} else {
-				const char *msg;
-
-				memset(&r, 0, sizeof(r));
-				if (cix_client_request(&client, "GET", "/v1/pkg/collide", NULL, &r) == 0 &&
-				    r.status == 200) {
-					msg = json_str_field(r.json, "error");
-					if (msg == NULL || strstr(msg, "compose") == NULL) {
-						fprintf(stderr,
-						        "FAIL: #186 collide failed for the wrong reason: %s\n",
-						        msg != NULL ? msg : "(no error)");
-						ok = 0;
-					}
-				}
-				cix_response_free(&r);
 			}
 		}
 	}

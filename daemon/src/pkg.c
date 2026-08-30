@@ -2940,6 +2940,18 @@ static int buildenv_verify_libc_intact(const char *staging_rootfs, const struct 
 	static const char *const critical[] = {
 		PKG_IMAGE_LOADER_REL,
 		"lib/x86_64-linux-gnu/libc.so.6",
+		/*
+		 * A HEADER, not just a library, and it earns its place: this
+		 * is the one another package actually did overwrite. libc-dev
+		 * stages the build host's whole /usr/include, whose
+		 * multiarch sys/cdefs.h is glibc 2.36's, and GCC searches
+		 * that directory before /usr/include -- so our 2.44 header
+		 * was never read and __COLD went undefined. Ordering now
+		 * prevents it; this makes a future reordering fail loudly
+		 * instead of silently compiling against the wrong libc's
+		 * headers again (#187).
+		 */
+		"usr/include/sys/cdefs.h",
 	};
 	const struct pkg_entry *libc = NULL;
 	char src_rootfs[PATH_MAX];
@@ -2985,6 +2997,7 @@ static int buildenv_mutate(const char *staging_rootfs, void *ctx_v)
 {
 	struct buildenv_ctx *ctx = ctx_v;
 	int i;
+	int pass;
 
 	/* The same baseline every image gets: device nodes and the handful
 	 * of files a process needs to start at all. Not a "tool", and not
@@ -2994,11 +3007,42 @@ static int buildenv_mutate(const char *staging_rootfs, void *ctx_v)
 		               "build environment: seeding the image baseline failed");
 		return -1;
 	}
+	/*
+	 * Two passes, and the order is the point: everything else first,
+	 * the C library LAST (#187).
+	 *
+	 * Tools are copied in sorted name order, so whichever sorts later
+	 * wins any path two packages both claim. That put "libc-dev" after
+	 * "glibc", and libc-dev stages the build host's entire
+	 * /usr/include -- including a glibc 2.36
+	 * /usr/include/x86_64-linux-gnu/sys/cdefs.h. GCC searches the
+	 * multiarch include directory BEFORE /usr/include, so our own 2.44
+	 * cdefs.h was never read: the 2.36 copy set the include guard
+	 * first, __COLD was never defined, and 2.44's stdio.h fell apart on
+	 * it. binutils reported that three steps downstream as "cannot run
+	 * C compiled programs".
+	 *
+	 * This is exactly what mkbootroot had to learn: the platform's own
+	 * C library must be the final word, or something else quietly
+	 * becomes it. There it was libm/libpthread landing on top of ours
+	 * and panicking a machine at boot; here it is headers, and the
+	 * damage is a build compiled against one libc's headers while
+	 * linking another's.
+	 *
+	 * The environment's identity is the sorted tool SET, not the copy
+	 * order, so this changes no hash and reuses every existing
+	 * environment unchanged.
+	 */
+	for (pass = 0; pass < 2; pass++)
 	for (i = 0; i < ctx->tool_count; i++) {
 		const struct pkg_entry *e = ctx->tools[i].entry;
 		char src_rootfs[PATH_MAX];
 		char version[IMAGE_VERSION_MAX];
 		int f;
+		int is_libc = strcmp(ctx->tools[i].name, PKG_BASE_LIBC) == 0;
+
+		if ((pass == 0) == is_libc)
+			continue;
 
 		if (image_current_version(normalize_image(e->image), version, sizeof(version)) != IMAGE_OK) {
 			logstore_write("cixd", "error",
