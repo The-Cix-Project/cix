@@ -35,6 +35,7 @@ pkg_version="2.44-7"
 pkg_source="https://mirrors.kernel.org/gnu/libc/glibc-2.44.tar.xz"
 pkg_sha256="37f600f2bef3c5e8300147059568b2a2e40a7ad6ccc65ce942556d49429cc667"
 pkg_depends=""
+pkg_artifact_sha256="6bc2319dc1191c32583281d6ffaa02d2ea9b68d36fef592698dd505f2f6eaa2d"
 
 
 # ADR-0199/0209: composed from exactly these, no fallback (#168).
