@@ -12782,6 +12782,34 @@ static int create_container_from_body(const char *body, size_t body_len,
 		return 400;
 	}
 
+	/*
+	 * An image with no C library cannot run anything, and used not to
+	 * be possible: image creation copied the loader and libc straight
+	 * off the build host into every image (ADR-0209's "glibc floor").
+	 * It borrows nothing now -- a C library arrives as a package, the
+	 * same way everything else does -- so an image nobody installed one
+	 * into is a real, reachable state.
+	 *
+	 * Said plainly here rather than left to surface as the container
+	 * exiting 127 with "execve failed", which describes the symptom and
+	 * names nothing. Checked by looking for the loader itself, not for
+	 * a package called glibc: the requirement is a working runtime, and
+	 * whichever package provides it is the catalogue's business.
+	 */
+	{
+		char loader[PATH_MAX];
+
+		snprintf(loader, sizeof(loader), "%s/lib64/ld-linux-x86-64.so.2", lowerdir);
+		if (stat(loader, &st) != 0) {
+			json_free(root);
+			snprintf(err_msg, err_msg_size,
+			         "image \"%s\" has no C library -- install a libc package (glibc) "
+			         "into it before running a container from it",
+			         image);
+			return 400;
+		}
+	}
+
 	if (registry_find(name) != NULL) {
 		json_free(root);
 		snprintf(err_msg, err_msg_size, "a container with this name already exists");

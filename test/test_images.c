@@ -183,8 +183,14 @@ static int poll_pkg_state(const struct cix_client *c, const char *name, char *ou
 
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(c, "GET", path, NULL, &r) != 0 || r.status != 200) {
+			/* Not there YET is not the same as not coming: an entry
+			 * is created when its turn in the chain arrives, and a
+			 * package now queues behind the base C library, so the
+			 * first poll can legitimately land before it exists.
+			 * Keep waiting within the same attempt budget. */
 			cix_response_free(&r);
-			return -1;
+			usleep(200000);
+			continue;
 		}
 		state = json_str_field(r.json, "state");
 		if (state == NULL) {
@@ -705,10 +711,15 @@ int main(void)
 		 * would need three real installs, and what is under test here
 		 * is the collector, not the installer. */
 		snprintf(vdir, sizeof(vdir), "%s/gcimg", g_images_dir);
+		/* A loader too, not just a binary: a container cannot be
+		 * created from an image with no C library, and these versions
+		 * stand in for real ones. */
 		if (run_cmd("mkdir -p '%s/junk1/rootfs/usr/bin' '%s/junk2/rootfs/usr/bin' "
 		            "'%s/pinnedv/rootfs/usr/bin' && echo x > '%s/junk1/rootfs/usr/bin/f' && "
-		            "echo x > '%s/junk2/rootfs/usr/bin/f' && echo x > '%s/pinnedv/rootfs/usr/bin/f'",
-		            vdir, vdir, vdir, vdir, vdir, vdir) != 0) {
+		            "echo x > '%s/junk2/rootfs/usr/bin/f' && echo x > '%s/pinnedv/rootfs/usr/bin/f' "
+		            "&& mkdir -p '%s/pinnedv/rootfs/lib64' "
+		            "&& echo x > '%s/pinnedv/rootfs/lib64/ld-linux-x86-64.so.2'",
+		            vdir, vdir, vdir, vdir, vdir, vdir, vdir, vdir) != 0) {
 			fprintf(stderr, "FAIL: gc: could not fabricate versions\n");
 			ok = 0;
 		}
