@@ -3445,6 +3445,122 @@ skip_pin_isolation:
 		}
 		cix_response_free(&r);
 
+		/*
+		 * Rebuilding must not grow the file list (#185). A hostbuild
+		 * MERGES into its artifact directory rather than replacing it,
+		 * and this branch was appending to e->files each round without
+		 * ever forgetting the previous one -- so the real `cix`
+		 * package reported its twelve files five times over, once per
+		 * rebuild since the entry was created, and would have kept
+		 * growing. The ordinary install path has always reset the list
+		 * first; this one was added later, for reporting alone, and
+		 * never picked that up.
+		 *
+		 * Asserts the count is UNCHANGED, not merely non-zero: the
+		 * broken version reported a perfectly non-empty list too.
+		 */
+		{
+			int files_before = -1, files_after = -1;
+			const struct json_value *fv;
+
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/pkg/hostbuild/hbtest", NULL, &r) == 0 &&
+			    r.status == 200) {
+				fv = json_object_get(r.json, "files");
+				if (fv != NULL && fv->type == JSON_ARRAY)
+					files_before = (int)fv->u.array.count;
+			}
+			cix_response_free(&r);
+
+			/*
+			 * A NEW version, because rebuilding the same one is
+			 * refused outright (PKG_ERR_DUPLICATE) -- which is
+			 * exactly the shape the real growth took: `cix` went
+			 * rc24, rc25, rc26, rc27, rc28 through one entry, and
+			 * the list grew by twelve at each step.
+			 */
+			{
+				char v11_dir[PATH_MAX];
+				char v11_path[PATH_MAX];
+				FILE *vf;
+				int started = 0;
+
+				snprintf(v11_dir, sizeof(v11_dir), "%s/recipes/hbtest/1.1",
+				         g_pkg_state_dir);
+				mkdir(v11_dir, 0755);
+				snprintf(v11_path, sizeof(v11_path), "%s/build.sh", v11_dir);
+				vf = fopen(v11_path, "w");
+				if (vf == NULL) {
+					fprintf(stderr, "FAIL: could not write hbtest 1.1 recipe\n");
+					ok = 0;
+				} else {
+					fprintf(vf,
+					        "pkg_name=hbtest\npkg_version=1.1\npkg_source=file://%s\n"
+					        "pkg_sha256=%s\npkg_depends=\"\"\n"
+					        "pkg_build_depends=\"tcc libc-dev bash coreutils\"\n\n"
+					        "pkg_build() {\n\ttcc -o hello hello.c\n}\n\n"
+					        "pkg_install() {\n\tcp hello \"$PKG_DESTDIR/hello\"\n}\n",
+					        tarball_path, sha256);
+					fclose(vf);
+				}
+
+				/* 409 can also mean an earlier job is still
+				 * draining -- retry rather than race it. */
+				for (i = 0; ok && i < 100; i++) {
+					memset(&r, 0, sizeof(r));
+					if (cix_client_request(&client, "POST", "/v1/pkg/hostbuild",
+					                        "{\"name\":\"hbtest\","
+					                        "\"build_image\":\"hbimage\","
+					                        "\"version\":\"1.1\",\"upgrade\":true}",
+					                        &r) == 0 &&
+					    r.status == 202) {
+						cix_response_free(&r);
+						started = 1;
+						break;
+					}
+					cix_response_free(&r);
+					usleep(300000);
+				}
+				if (ok && !started) {
+					fprintf(stderr, "FAIL: hbtest 1.1 hostbuild never started\n");
+					ok = 0;
+				}
+			}
+
+			hb_state[0] = '\0';
+			for (i = 0; i < 200; i++) {
+				const char *st2;
+
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "GET", "/v1/pkg/hostbuild/hbtest", NULL,
+				                        &r) != 0 ||
+				    r.status != 200) {
+					cix_response_free(&r);
+					break;
+				}
+				st2 = json_str_field(r.json, "state");
+				if (st2 != NULL)
+					snprintf(hb_state, sizeof(hb_state), "%s", st2);
+				fv = json_object_get(r.json, "files");
+				if (fv != NULL && fv->type == JSON_ARRAY)
+					files_after = (int)fv->u.array.count;
+				cix_response_free(&r);
+				if (st2 == NULL ||
+				    (strcmp(hb_state, "fetching") != 0 && strcmp(hb_state, "building") != 0))
+					break;
+				usleep(300000);
+			}
+			if (strcmp(hb_state, "installed") != 0) {
+				fprintf(stderr, "FAIL: hbtest second hostbuild ended in '%s'\n", hb_state);
+				ok = 0;
+			} else if (files_before <= 0 || files_after != files_before) {
+				fprintf(stderr,
+				        "FAIL: rebuilding a hostbuild grew its file list: %d -> %d\n",
+				        files_before, files_after);
+				ok = 0;
+			}
+		}
+
 		/* the real payoff: a real file landed on disk under
 		 * ARTIFACTS_DIR/hbtest/ -- not merged into any image's
 		 * rootfs (base/router's own rootfs must NOT have gained a
