@@ -175,6 +175,7 @@ int main(int argc, char **argv)
 	const char *signing_cert_der;
 	const char *out_iso;
 	const char *kernel_args;
+	const char *seed_dir;
 	char dst[600];
 	char grub_cfg_path[600];
 	char grub_cfg[1024];
@@ -184,12 +185,12 @@ int main(int argc, char **argv)
 	char isotools_lib_dir[600];
 	int i;
 
-	if (argc != 13) {
+	if (argc != 14) {
 		fprintf(stderr,
 		        "usage: %s <staging-dir> <cix-install-bin> <cix-recover-bin> "
 		        "<cix-boot.efi> <bzImage> <control-plane-squashfs> <signing-key> "
 		        "<signing-cert.crt> <signing-cert.cer> <out.iso> <kernel-args> "
-		        "<isotools-root>\n"
+		        "<isotools-root> <seed-dir>\n"
 		        "  cix-recover-bin: the break-glass recovery tool (ADR-0146), staged as\n"
 		        "  a second GRUB menu entry on the SAME media -- boots straight to a\n"
 		        "  console prompt, no kernel-args needed (it takes none).\n"
@@ -218,7 +219,13 @@ int main(int argc, char **argv)
 		        "  exist on a Debian development box and on no Cix control-plane root,\n"
 		        "  so reading them from the host is why this tool could not run on a\n"
 		        "  real installed machine. A plain \"/usr\" no longer reproduces the old\n"
-		        "  host-borrowed behaviour for those inputs.\n",
+		        "  host-borrowed behaviour for those inputs.\n"
+		        "  seed-dir: optional (pass \"\" for none) -- a directory holding\n"
+		        "  <seed>/recipes/ and <seed>/artifacts/, staged onto the media so a\n"
+		        "  freshly installed box has a package source before it has a network\n"
+		        "  (#189/#135). Its artifacts are verified against their own recipes by\n"
+		        "  the daemon before anything is installed from them, so this is a\n"
+		        "  delivery mechanism and not a trust boundary.\n",
 		        argv[0]);
 		return 2;
 	}
@@ -234,6 +241,7 @@ int main(int argc, char **argv)
 	out_iso = argv[10];
 	kernel_args = argv[11];
 	snprintf(g_isotools_root, sizeof(g_isotools_root), "%s", argv[12]);
+	seed_dir = argv[13];
 
 	snprintf(g_grub_mkrescue_bin, sizeof(g_grub_mkrescue_bin), "%s/bin/grub-mkrescue",
 	         g_isotools_root);
@@ -551,6 +559,39 @@ int main(int argc, char **argv)
 	snprintf(dst, sizeof(dst), "%s/payload/cix-root.squashfs", stage_dir);
 	if (test_image_fixture_copy_file(control_plane_squashfs, dst) != 0)
 		return 1;
+
+	/*
+	 * The package seed (#189): recipes and artifacts a freshly
+	 * installed box needs before it has a network or a configured
+	 * package source.
+	 *
+	 * Deliberately NOT the thing ADR-0210 removed, and the difference
+	 * is the whole point. That was a C runtime copied into the base
+	 * image directly -- content arriving by mechanism, into a path
+	 * nothing read. This stages *packages*: cix-install copies them
+	 * into the daemon's own recipe and cache directories, and the
+	 * daemon then installs from them through the ordinary pipeline,
+	 * verifying each artifact against its own recipe first. What the
+	 * image ends up with is a real manifest entry with a version, not
+	 * files someone put there.
+	 *
+	 * Optional: an empty seed-dir stages nothing, and such a box
+	 * behaves exactly as it does today -- the default image has no C
+	 * library and POST /v1/containers refuses with a message naming
+	 * what to install.
+	 */
+	if (seed_dir != NULL && seed_dir[0] != '\0') {
+		char seed_dst[PATH_MAX];
+
+		if (ensure_dir_under(stage_dir, "payload/seed") != 0)
+			return 1;
+		snprintf(seed_dst, sizeof(seed_dst), "%s/payload/seed", stage_dir);
+		if (test_image_fixture_copy_dir_recursive(seed_dir, seed_dst) != 0) {
+			fprintf(stderr, "staging the package seed from %s failed\n", seed_dir);
+			return 1;
+		}
+		printf("staged the package seed from %s\n", seed_dir);
+	}
 
 	/*
 	 * ADR-0210: a "payload/cix-runtime" C runtime used to be staged

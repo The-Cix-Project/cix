@@ -22,6 +22,7 @@
  * cix-containers.
  */
 #include "dual_console.h"
+#include "treecopy.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -54,6 +55,13 @@ extern char **environ;
  * systemd-boot itself, Cix-signed and deliberately kept under that
  * name. mmx64.efi is MokManager (Debian-signed), auto-invoked by shim
  * once enroll_signing_key() below stages a pending enrollment request. */
+/* The package seed (#189), when the media carries one -- recipes and
+ * artifacts copied onto the containers partition so the daemon has a
+ * package source at first boot, before any network exists. Absent on
+ * media built without a seed, which is a supported state, not an
+ * error. */
+#define SEED_SRC "/payload/seed"
+
 #define SHIM_EFI_SRC "/payload/cix-shim.efi"
 #define MOKMANAGER_EFI_SRC "/payload/cix-mm.efi"
 /* The Cix-signed boot manager, staged by mkinstalleriso. "grubx64.efi"
@@ -866,6 +874,55 @@ int main(int argc, char **argv)
 		dual_perror("mount containers");
 		return 1;
 	}
+
+	/*
+	 * The package seed, if this media carries one (#189).
+	 *
+	 * Copied to the exact paths the daemon already reads -- its recipe
+	 * directory and its artifact cache -- so nothing new has to know
+	 * about "a seed" after this moment. The daemon installs from them
+	 * through its ordinary pipeline and verifies every artifact against
+	 * its own recipe first, so what lands here is delivered, not
+	 * trusted.
+	 *
+	 * Failing to copy is fatal rather than best-effort: an installer
+	 * told to carry a seed and silently shipping a box without one
+	 * produces exactly the "installed, boots, cannot run anything"
+	 * state this exists to prevent.
+	 */
+	{
+		struct stat sst;
+
+		if (stat(SEED_SRC, &sst) == 0 && S_ISDIR(sst.st_mode)) {
+			char dst[512];
+
+			snprintf(dst, sizeof(dst), "%s/rebuildable", CONTAINERS_MOUNT);
+			if (ensure_dir(dst) != 0)
+				return 1;
+			snprintf(dst, sizeof(dst), "%s/rebuildable/pkg", CONTAINERS_MOUNT);
+			if (ensure_dir(dst) != 0)
+				return 1;
+			/* treecopy_recursive() is the daemon's own, linked here
+			 * rather than reimplemented: it already reports WHICH
+			 * entry stopped it, which is the difference between a
+			 * diagnosable install failure and "No such file or
+			 * directory". */
+			if (treecopy_recursive(SEED_SRC "/recipes",
+			                        CONTAINERS_MOUNT "/rebuildable/pkg/recipes") != 0) {
+				dual_printf("cix-install: staging the seed recipes failed: %s\n",
+				            treecopy_last_error());
+				return 1;
+			}
+			if (treecopy_recursive(SEED_SRC "/artifacts",
+			                        CONTAINERS_MOUNT "/rebuildable/pkg/cache") != 0) {
+				dual_printf("cix-install: staging the seed artifacts failed: %s\n",
+				            treecopy_last_error());
+				return 1;
+			}
+			dual_printf("cix-install: staged the package seed\n");
+		}
+	}
+
 	if (umount(CONTAINERS_MOUNT) != 0) {
 		dual_perror("umount containers");
 		return 1;
