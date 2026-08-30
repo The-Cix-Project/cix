@@ -9143,6 +9143,43 @@ static void container_writable_path(const char *container_root, const char *name
 	snprintf(out, out_size, "%s%s", wbase, rel_path);
 }
 
+/* Defined below, next to the disk-placement code it belongs with. */
+static void container_root_for(const char *disk_name, char *out, size_t out_size);
+
+/*
+ * Issue #162: where a container's tree lives when it has NO registry
+ * entry -- which is what a cleanly stopped container is.
+ *
+ * POST /containers/{name}/stop kills the child and the async completion
+ * then removes the registry entry, so the files API was a race against
+ * that teardown and a hard 404 afterwards, even though the container
+ * still exists: startable, definition persisted, on-disk state intact.
+ * The asymmetry was the confusing part -- a container that exited ON
+ * ITS OWN keeps its entry indefinitely, so ITS files stayed readable
+ * while a deliberately stopped one's did not, and nothing said why.
+ *
+ * The disk comes from the persisted create body, which is the same
+ * field a start would use to place it, so read and write resolve to
+ * exactly the tree the next start will run from. Returns 0, or -1 when
+ * there is genuinely no such container.
+ */
+static int container_root_from_def(const char *name, char *out, size_t out_size)
+{
+	struct container_def *def = containerdef_find(name);
+	struct json_value *root;
+
+	if (def == NULL)
+		return -1;
+	root = json_parse(def->body, def->body_len);
+	/* container_root_for() copies into out before this frees the tree
+	 * the disk string points into, and treats NULL as the default OS-disk
+	 * placement -- which is exactly right for a body with no "disk". */
+	container_root_for(root != NULL ? json_as_string(json_object_get(root, "disk")) : NULL,
+	                   out, out_size);
+	json_free(root);
+	return 0;
+}
+
 /*
  * The work that follows a pkg build completing, wherever completion
  * came from: a real build container exiting, or an artifact/cache hit
@@ -15857,6 +15894,8 @@ static void handle_container_dir_list(int fd, const char *name, const char *rel_
 static void handle_container_file_read(int fd, const char *name, const char *rel_path)
 {
 	struct registry_entry *e = registry_find(name);
+	char container_root[PATH_MAX];
+	int stopped = 0;
 	char full_path[PATH_MAX];
 	int file_fd;
 	struct stat st;
@@ -15864,8 +15903,12 @@ static void handle_container_file_read(int fd, const char *name, const char *rel
 	size_t total;
 
 	if (e == NULL) {
-		respond_error(fd, 404, "Not Found", "no such container");
-		return;
+		/* Issue #162: no entry does not mean no container. */
+		if (container_root_from_def(name, container_root, sizeof(container_root)) != 0) {
+			respond_error(fd, 404, "Not Found", "no such container");
+			return;
+		}
+		stopped = 1;
 	}
 	if (rel_path == NULL || rel_path[0] != '/' || strlen(rel_path) >= CONTAINER_FILE_PATH_MAX ||
 	    !file_path_is_safe(rel_path)) {
@@ -15874,7 +15917,7 @@ static void handle_container_file_read(int fd, const char *name, const char *rel
 	}
 
 	file_fd = -1;
-	if (e->running) {
+	if (!stopped && e->running) {
 		snprintf(full_path, sizeof(full_path), "/proc/%d/root%s", (int)e->handle.pid, rel_path);
 		file_fd = open(full_path, O_RDONLY);
 	}
@@ -15893,12 +15936,11 @@ static void handle_container_file_read(int fd, const char *name, const char *rel
 	 * by name, never a reused pid.
 	 */
 	if (file_fd < 0) {
-		char container_root[PATH_MAX];
-
-		container_root_for(e->disk_name, container_root, sizeof(container_root));
+		if (!stopped)
+			container_root_for(e->disk_name, container_root, sizeof(container_root));
 		container_writable_path(container_root, name, rel_path, full_path, sizeof(full_path));
 		file_fd = open(full_path, O_RDONLY);
-		if (file_fd < 0) {
+		if (file_fd < 0 && !stopped) {
 			/*
 			 * Not in the upper layer -- fall back to the container's
 			 * own read-only lowerdir, i.e. the exact tree its overlay
@@ -16035,14 +16077,25 @@ static void handle_container_file_write(int fd, const char *name, const char *re
 	uid_t owner;
 	gid_t group;
 	size_t content_len;
+	char container_root[PATH_MAX];
+	int stopped = 0;
 	char full_path[PATH_MAX];
 	char target_dir[PATH_MAX];
 	char *slash;
 	int file_fd;
 
 	if (e == NULL) {
-		respond_error(fd, 404, "Not Found", "no such container");
-		return;
+		/*
+		 * Issue #162: editing a file before a start is exactly the
+		 * operation an operator wants on a container that is down, so
+		 * write falls back to the persisted definition the same way
+		 * read does.
+		 */
+		if (container_root_from_def(name, container_root, sizeof(container_root)) != 0) {
+			respond_error(fd, 404, "Not Found", "no such container");
+			return;
+		}
+		stopped = 1;
 	}
 	if (rel_path == NULL || rel_path[0] != '/' || strlen(rel_path) >= CONTAINER_FILE_PATH_MAX ||
 	    !file_path_is_safe(rel_path)) {
@@ -16097,7 +16150,7 @@ static void handle_container_file_write(int fd, const char *name, const char *re
 	{
 		int use_proc = 0;
 
-		if (e->running) {
+		if (!stopped && e->running) {
 			char proc_root[64];
 
 			snprintf(proc_root, sizeof(proc_root), "/proc/%d/root", (int)e->handle.pid);
@@ -16106,9 +16159,8 @@ static void handle_container_file_write(int fd, const char *name, const char *re
 		if (use_proc) {
 			snprintf(full_path, sizeof(full_path), "/proc/%d/root%s", (int)e->handle.pid, rel_path);
 		} else {
-			char container_root[PATH_MAX];
-
-			container_root_for(e->disk_name, container_root, sizeof(container_root));
+			if (!stopped)
+				container_root_for(e->disk_name, container_root, sizeof(container_root));
 			container_writable_path(container_root, name, rel_path, full_path,
 			                         sizeof(full_path));
 		}

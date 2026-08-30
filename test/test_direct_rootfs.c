@@ -293,15 +293,77 @@ int main(void)
 	 * state back from the RUNNING container. If the restart had
 	 * re-provisioned the rootfs instead of reusing it, state.conf
 	 * would be gone -- the exact silent data loss the on-disk mode
-	 * marker exists to prevent. (The files API on a CLEANLY stopped
-	 * container is deliberately not asserted here: a clean stop
-	 * removes the registry entry asynchronously, so those calls are
-	 * a race against teardown -- a separate, pre-existing gap, filed
-	 * as its own issue, not a phase-2 concern.)
+	 * marker exists to prevent.
 	 */
 	memset(&r, 0, sizeof(r));
 	cix_client_request(&client, "POST", "/v1/containers/dt/stop", NULL, &r);
 	cix_response_free(&r);
+
+	/*
+	 * Issue #162: the files API on a CLEANLY stopped container.
+	 *
+	 * This is where that bug was found, and the comment here used to
+	 * say it was deliberately not asserted because the calls raced the
+	 * teardown. They no longer do. A clean stop removes the registry
+	 * entry asynchronously, and both handlers then fell back to the
+	 * persisted definition instead of 404ing -- so the operation an
+	 * operator actually wants on a container that is down, editing a
+	 * file before starting it, works.
+	 *
+	 * Wait for the entry to be GONE first. Asserting before teardown
+	 * completes would pass for the old reason (the entry was still
+	 * there) and prove nothing -- which is exactly the race that made
+	 * this untestable before.
+	 */
+	{
+		int i;
+		int last = 0;
+		char last_body[200];
+
+		last_body[0] = '\0';
+		for (i = 0; i < 100; i++) {
+			memset(&r, 0, sizeof(r));
+			cix_client_request(&client, "GET", "/v1/containers/dt", NULL, &r);
+			last = r.status;
+			snprintf(last_body, sizeof(last_body), "%.190s", r.body != NULL ? r.body : "");
+			if (r.status == 404 ||
+			    (r.body != NULL && strstr(r.body, "\"status\":\"stopped\"") != NULL)) {
+				cix_response_free(&r);
+				break;
+			}
+			cix_response_free(&r);
+			usleep(100000);
+		}
+		/*
+		 * Either answer means teardown finished: 404 if the entry is
+		 * gone, or a def-backed "stopped" record with a null pid.
+		 * Waiting for "stopping" to clear is the point -- asserting
+		 * during teardown would exercise the still-registered running
+		 * path and prove nothing, which is the race that made this
+		 * untestable when #162 was filed.
+		 */
+		CHECK(i < 100, "#162 dt never finished stopping (last status=%d body=%s), so the "
+		               "assertions below would be testing the running path", last, last_body);
+	}
+	/* Read: content written while it was running, served from the
+	 * stopped tree. */
+	CHECK(get_file_is(&client, "/v1/containers/dt/files?path=%2Fetc%2Fstate.conf",
+	                  "written-live\n") == 0,
+	      "#162 reading a cleanly stopped container's file must work -- it still exists, is "
+	      "startable, and its state is on disk");
+	/* Write: the edit-before-start case. */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "PUT", "/v1/containers/dt/files?path=%2Fetc%2Fstopped.conf",
+	                       "{\"content\":\"written-while-stopped\"}", &r) != 0 ||
+	    r.status != 204) {
+		fprintf(stderr, "FAIL: #162 writing to a cleanly stopped container, status=%d\n",
+		        r.status);
+		failures++;
+	}
+	cix_response_free(&r);
+	CHECK(get_file_is(&client, "/v1/containers/dt/files?path=%2Fetc%2Fstopped.conf",
+	                  "written-while-stopped") == 0,
+	      "#162 a file written while stopped must read back from the stopped tree");
 
 	/*
 	 * The mode-flap timebomb, directly: flip the platform default to
