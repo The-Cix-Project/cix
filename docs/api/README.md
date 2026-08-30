@@ -59,6 +59,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | DELETE | `/system/swap` | Disable and remove the host swap file |
 | GET | `/system/zswap` | The compressed swap cache: configured intent, what the kernel actually has, and which compressors it was built with (issue #51) |
 | PUT | `/system/zswap` | Configure it -- partial update, applied to the running kernel and persisted |
+| GET | `/system/kmsg` | Tail the kernel ring buffer directly (`tail` filter) -- dmesg for a host with no shell |
 | GET | `/system/logs` | Query the consolidated log store (`source`/`level`/`container`/`regex`/`since`/`tail` filters) |
 | GET | `/system/logs/config` | The consolidated log store's size cap |
 | PUT | `/system/logs/config` | Set the log store's size cap |
@@ -550,6 +551,22 @@ One consolidated, size-capped log (ADR-0070): real kernel `dmesg` (source `kerne
 Storage is 8 rotating segment files, not a byte-exact ring buffer — the oldest whole segment is dropped once the configured `max_bytes` cap is reached (enforced at segment granularity, so expect a few percent of slop against the exact number, the same tradeoff `logrotate`/`journald` already make). `tail` defaults to 1000 and is capped at 5000; `since` is Unix seconds.
 
 `PUT .../config`'s two fields — `max_bytes` and `min_level` — are independent; a real request only ever needs to give the one actually changing, and the response always echoes back the resulting full config. `min_level` (any real syslog severity name: `emerg`/`alert`/`crit`/`err` or `error`/`warning` or `warn`/`notice`/`info`/`debug`, default `debug` — log everything) is checked *at write time*, before an entry ever touches a segment file — genuinely different from `GET`'s own `level` query filter, which only ever filters what's already stored. Each captured log message itself is capped at 4096 bytes (`LOGSTORE_MSG_MAX`, raised from an original, too-small 512 after a real deployment failure's own build-output capture was silently truncated away before the actual error line) — a real build failure's captured output (`pkg %s@%s: build output: ...`) keeps the *tail* of the output, not the head, since the actual error is almost always the last thing printed.
+
+### The kernel's own ring buffer
+
+```
+GET /v1/system/kmsg?tail=200
+```
+
+```json
+{"entries": [{"ts_usec": 4213377, "priority": 4, "message": "overlayfs: fs on '/lower' does not support file handles, falling back to xino=off"}]}
+```
+
+`GET /system/logs` above already carries kernel entries — but only the ones cixd was running to witness, and only for as long as the size cap keeps them. This reads `/dev/kmsg` itself, so it also carries what the kernel said *before* cixd started, and is unaffected by the log store's own rotation. Use it when the question is what the kernel did; use `/system/logs` when the question is what happened on the host.
+
+An installed host deliberately has no shell, so this is the only way to read dmesg on one. That is not hypothetical: it is what made overlayfs's own `mounting read-only` warning visible on a real box while proving out user namespaces (ADR-0179 phase 2c) — a message nothing else on the machine could have surfaced.
+
+Entries come back oldest-first. `tail` defaults to 200 and is clamped to 1..512 (the daemon drains the buffer through a fixed 512-entry window, so asking for more cannot return more). `priority` is the raw syslog level from the kernel's own prefix — 0 `emerg` through 7 `debug`. A kernel whose `/dev/kmsg` cannot be opened answers `500`.
 
 ## Creating a container
 

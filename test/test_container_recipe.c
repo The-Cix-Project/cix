@@ -120,6 +120,41 @@ int main(void)
 	      "the default image already exists at boot");
 	cix_response_free(&r);
 
+	/*
+	 * Give that image a real C runtime before anything is run out of
+	 * it (#186, ADR-0216). Containers here are created with
+	 * cmd=/bin/true, and until the glibc floor was closed both the
+	 * loader and libc arrived by being copied into every image off the
+	 * build host -- so this test was creating containers from an image
+	 * that had a runtime nobody had put there, and /bin/true never
+	 * existed at all. POST /v1/containers now refuses an image with no
+	 * loader, which is what surfaced it.
+	 *
+	 * Staged with the same fixture helper every other container test
+	 * uses, so there is one answer to "how does a test image become
+	 * runnable" rather than a second one written here: it places a
+	 * real binary at /bin/<name> alongside the ld.so + libc pair it
+	 * needs. daemon_child with no arguments exits immediately, which
+	 * is the behaviour /bin/true is standing in for.
+	 */
+	{
+		char image_dir[PATH_MAX];
+		char version[128];
+		char rootfs[PATH_MAX];
+
+		snprintf(image_dir, sizeof(image_dir), "%s/rebuildable/images/base", g_data_dir);
+		if (test_image_fixture_read_current_version(image_dir, version, sizeof(version)) != 0) {
+			fprintf(stderr, "FAIL: could not read the base image's current version\n");
+			g_failures++;
+		} else {
+			snprintf(rootfs, sizeof(rootfs), "%s/%s/rootfs", image_dir, version);
+			if (test_image_fixture_build(rootfs, "build/daemon_child", "true") != 0) {
+				fprintf(stderr, "FAIL: could not stage a C runtime into the base image\n");
+				g_failures++;
+			}
+		}
+	}
+
 	/* --- scenario 1: fresh recipe list is empty --- */
 	memset(&r, 0, sizeof(r));
 	CHECK(cix_client_request(&client, "GET", "/v1/containers/recipes", NULL, &r) == 0 &&

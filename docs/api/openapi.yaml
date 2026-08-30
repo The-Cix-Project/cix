@@ -3545,6 +3545,65 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /system/kmsg:
+    get:
+      summary: Tail the kernel ring buffer (/dev/kmsg) -- dmesg for a host with no shell
+      description: >
+        The kernel's own messages, read straight from /dev/kmsg: mount
+        failures, driver probes, OOM kills. Distinct from
+        GET /system/logs, which is cixd's consolidated store -- that
+        includes kernel entries too, but only those cixd was running to
+        witness. This reads the ring buffer itself, so it also carries
+        what the kernel said before cixd started, and survives the log
+        store's own size cap.
+
+
+        This is the only kernel-log window an installed host has, since
+        it deliberately has no shell to run dmesg in. It is what made
+        overlayfs's own "mounting read-only" pr_warn readable on a real
+        box during ADR-0179 phase 2c.
+
+
+        Entries are returned oldest-first. Priority is the raw syslog
+        level from the kernel's own prefix (0 emerg .. 7 debug).
+      operationId: getSystemKmsg
+      parameters:
+        - name: tail
+          in: query
+          required: false
+          description: >
+            How many of the most recent entries to return. Defaults to
+            200, and is clamped to 1..512 -- the daemon holds a fixed
+            512-entry window while draining the buffer, so a larger
+            value cannot return more.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 512
+            default: 200
+      responses:
+        "200":
+          description: Kernel ring buffer entries, oldest first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  entries:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        ts_usec:
+                          type: integer
+                          description: Monotonic timestamp in microseconds since boot, as the kernel reports it.
+                        priority:
+                          type: integer
+                          description: Syslog priority, 0 (emerg) to 7 (debug).
+                        message:
+                          type: string
+        "500":
+          description: /dev/kmsg could not be opened
   /system/logs:
     get:
       summary: Tail the consolidated log (kernel dmesg + cixd diagnostics + per-request audit trail + every container's own stdout/stderr, ADR-0070/ADR-0126)
