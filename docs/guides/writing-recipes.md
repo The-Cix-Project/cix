@@ -101,6 +101,18 @@ Declare what you *use*. Each declared tool arrives with its own runtime dependen
 
 A declared tool that cannot be provided (not installed anywhere, or with no recorded files to compose from) **fails the build and names it**. There is deliberately no fallback to a fuller environment: falling back would let the build succeed against something it never declared, which is the exact problem this replaces.
 
+**The one thing you never declare: the C library.** `glibc` is added to every composed environment automatically ([ADR-0216](../adr/0216-the-glibc-floor-is-closed.md)), because every binary in every package links against it and nothing in the environment can `execve` at all without the loader. That is a property of an environment being usable, not something that distinguishes one recipe from another — so it is named once in the mechanism rather than in sixty recipes, where sixty chances to omit it would each fail only at exec time with a bare `ENOENT` naming nothing.
+
+You *may* still name it, and the only reason to is to pin a version:
+
+```sh
+pkg_build_depends="tcc make bash coreutils glibc@2.44-6"
+```
+
+Declared tools resolve first and duplicates collapse by name, so an explicit pin always wins over the implicit one. Naming it unpinned is harmless and simply redundant.
+
+Before ADR-0216 the loader and libc were *copied into every image off the build host* rather than coming from a package at all. If a build ever fails with `execve(/usr/bin/bash): No such file or directory` for a binary you can see was staged, that is a missing loader, not a missing binary.
+
 Write the list by building and reading the failures. Each one names precisely the next thing to add, and it converges quickly — `zlib` needs seven packages and its declaration says why each one earns its place, including the two it learned the hard way on a real box.
 
 The composed environment is cached as an image named for the hash of your declared set, so recipes sharing a tool set share one environment and it is built once. Declaration order does not matter; the set is sorted before hashing.
