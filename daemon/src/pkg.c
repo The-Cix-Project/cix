@@ -6087,6 +6087,18 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		char artifact_dir[PATH_MAX];
 
 		snprintf(artifact_dir, sizeof(artifact_dir), "%s/%s", g_artifacts_dir, e->name);
+		/*
+		 * Forget the previous round's list before merge_tree() fills
+		 * it in again, exactly as install_mutate() does for an
+		 * ordinary install (#185). Without this the list is APPENDED
+		 * to on every rebuild: `cix` reported its twelve files five
+		 * times over, once per hostbuild since the entry was created,
+		 * growing without bound. The paths on disk were always right;
+		 * only the record of them was wrong. This branch was added
+		 * later, for GET-visibility alone, and never picked up the
+		 * reset the ordinary path had always had.
+		 */
+		pkg_entry_free_files(e);
 		if (persist_mkdir_p(artifact_dir) != 0 || merge_tree(dest_dir, artifact_dir, "", e) != 0) {
 			pkg_fail(e, 0, PKG_FAILURE_INSTALL, "failed to harvest the built artifact");
 			g_chains[chain_idx].name[0] = '\0';
