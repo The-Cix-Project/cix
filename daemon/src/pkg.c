@@ -8053,6 +8053,25 @@ enum pkg_error pkg_artifact_publish_resolve(const char *name, char *out_version,
  * the last two lines -- the point is to start an ordinary install, and
  * to do it only when that install cannot turn into a build.
  */
+int pkg_default_image_libc_failed(char *out_error, size_t out_error_size)
+{
+	int i;
+
+	for (i = 0; i < PKG_MAX_PACKAGES; i++) {
+		if (!g_packages[i].in_use)
+			continue;
+		if (strcmp(g_packages[i].name, PKG_BASE_LIBC) != 0)
+			continue;
+		if (strcmp(normalize_image(g_packages[i].image), PKG_DEFAULT_IMAGE) != 0)
+			continue;
+		if (g_packages[i].state != PKG_STATE_FAILED)
+			return 0;
+		snprintf(out_error, out_error_size, "%s", g_packages[i].error);
+		return 1;
+	}
+	return 0;
+}
+
 enum pkg_error pkg_seed_default_image_libc(pid_t *out_pid, int *out_pidfd, int *out_chain_idx)
 {
 	char version[IMAGE_VERSION_MAX];
