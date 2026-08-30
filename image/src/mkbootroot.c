@@ -219,6 +219,99 @@ static int run_mksquashfs(const char *mksquashfs_bin, const char *image_root,
 	return 0;
 }
 
+/*
+ * Every library the platform built must still be the one the root carries.
+ *
+ * Staging order decides this: whatever is copied last wins, and a later
+ * host-sourced copy silently replacing one of glibc's own objects leaves the
+ * root with mismatched halves of a version-locked set -- init dies with exit
+ * 127 and the machine panics on boot. That is exactly what happened, twice,
+ * and assembly reported success both times, because copying files is not the
+ * same as producing a root that runs.
+ *
+ * So the invariant is checked rather than merely arranged for: right before
+ * the image is sealed, re-read every platform library and confirm the root's
+ * copy is still byte-identical. Reordering this file cannot quietly reopen
+ * the hole again.
+ */
+static int files_identical(const char *a, const char *b)
+{
+	FILE *fa, *fb;
+	int same = 1;
+
+	fa = fopen(a, "rb");
+	if (fa == NULL)
+		return 0;
+	fb = fopen(b, "rb");
+	if (fb == NULL) {
+		fclose(fa);
+		return 0;
+	}
+	for (;;) {
+		char ba[65536], bb[65536];
+		size_t na = fread(ba, 1, sizeof(ba), fa);
+		size_t nb = fread(bb, 1, sizeof(bb), fb);
+
+		if (na != nb || memcmp(ba, bb, na) != 0) {
+			same = 0;
+			break;
+		}
+		if (na == 0)
+			break;
+	}
+	fclose(fa);
+	fclose(fb);
+	return same;
+}
+
+static int verify_platform_libs_intact(const char *image_root, const char *host_tools_dir)
+{
+	static const char *const lib_dirs[] = { "lib/x86_64-linux-gnu", "lib64" };
+	size_t d;
+	int checked = 0;
+
+	if (host_tools_dir[0] == '\0')
+		return 0;
+
+	for (d = 0; d < sizeof(lib_dirs) / sizeof(lib_dirs[0]); d++) {
+		char src_dir[PATH_MAX];
+		DIR *dh;
+		struct dirent *de;
+
+		snprintf(src_dir, sizeof(src_dir), "%s/%s", host_tools_dir, lib_dirs[d]);
+		dh = opendir(src_dir);
+		if (dh == NULL)
+			continue;
+		while ((de = readdir(dh)) != NULL) {
+			char src[PATH_MAX], dst[PATH_MAX];
+			struct stat fst;
+
+			if (strstr(de->d_name, ".so") == NULL)
+				continue;
+			snprintf(src, sizeof(src), "%s/%s", src_dir, de->d_name);
+			if (stat(src, &fst) != 0 || !S_ISREG(fst.st_mode))
+				continue;
+			snprintf(dst, sizeof(dst), "%s/%s/%s", image_root, lib_dirs[d], de->d_name);
+			if (!files_identical(src, dst)) {
+				fprintf(stderr,
+				        "%s/%s in the assembled root is not the copy this "
+				        "platform built -- something staged after the platform's "
+				        "own libraries overwrote it. Shipping a mixed glibc set "
+				        "panics the machine at boot, so this image is refused "
+				        "rather than written.\n",
+				        lib_dirs[d], de->d_name);
+				closedir(dh);
+				return 1;
+			}
+			checked++;
+		}
+		closedir(dh);
+	}
+	if (checked > 0)
+		fprintf(stderr, "verified %d platform libraries survived staging intact\n", checked);
+	return 0;
+}
+
 int main(int argc, char **argv)
 {
 	const char *image_root;
@@ -284,87 +377,6 @@ int main(int argc, char **argv)
 		return 1;
 	if (test_image_fixture_build(image_root, cixd_bin, "cixd") != 0)
 		return 1;
-	/*
-	 * Replace the C library the fixture just staged with the one this
-	 * platform BUILT, taken from cix-hosttools (#181).
-	 *
-	 * test_image_fixture_build() reads libc.so.6 and ld-linux off the
-	 * machine it runs on. For a server-side assembly that machine IS
-	 * the control-plane root, so the root copies its own C library
-	 * forward, forever -- which is how a glibc that came from Debian is
-	 * still the one every Cix binary links. The cycle cannot be broken
-	 * from inside it.
-	 *
-	 * EVERY shared library in the host-tools image is copied, not a
-	 * chosen few, and that is the whole design. A first attempt
-	 * replaced libc.so.6, libm.so.6 and the loader by name and left
-	 * libpthread.so.0 and libresolv.so.2 -- also glibc's, also
-	 * GLIBC_PRIVATE-coupled to libc -- sitting at the old version. The
-	 * result booted nothing: cixd links OpenSSL, OpenSSL pulls
-	 * libpthread, and a 2.36 libpthread against a 2.44 libc is the same
-	 * mismatched-halves failure as a stale loader. "libc and its loader
-	 * ship together" was understated; it is the entire glibc, 24 shared
-	 * objects, and any hand-written subset of it is a partial
-	 * replacement waiting to happen.
-	 *
-	 * So the rule is structural rather than enumerated: whatever
-	 * libraries that image has, the root takes. It also self-maintains
-	 * -- as more of this platform's libraries are built rather than
-	 * borrowed, they land in cix-hosttools and the root picks them up
-	 * with no list to update here.
-	 *
-	 * ORDERING, learned by taking the box down twice: the root must
-	 * gain the new libc BEFORE anything built against it is deployed. A
-	 * binary needs the glibc it was built against, or newer, never
-	 * older.
-	 */
-	if (host_tools_dir != NULL && host_tools_dir[0] != '\0') {
-		static const char *const lib_dirs[] = { "lib/x86_64-linux-gnu", "lib64", NULL };
-		int staged_libs = 0;
-		int d;
-
-		for (d = 0; lib_dirs[d] != NULL; d++) {
-			char src_dir[PATH_MAX];
-			DIR *dh;
-			struct dirent *de;
-
-			snprintf(src_dir, sizeof(src_dir), "%s/%s", host_tools_dir, lib_dirs[d]);
-			dh = opendir(src_dir);
-			if (dh == NULL)
-				continue;
-			while ((de = readdir(dh)) != NULL) {
-				char src[PATH_MAX], dst[PATH_MAX];
-				struct stat fst;
-
-				if (strstr(de->d_name, ".so") == NULL)
-					continue;
-				snprintf(src, sizeof(src), "%s/%s", src_dir, de->d_name);
-				if (stat(src, &fst) != 0 || !S_ISREG(fst.st_mode))
-					continue;
-				snprintf(dst, sizeof(dst), "%s/%s/%s", image_root, lib_dirs[d],
-				         de->d_name);
-				if (test_image_fixture_copy_file(src, dst) != 0) {
-					fprintf(stderr,
-					        "staging the platform's own libraries: %s/%s failed -- "
-					        "a partial copy is worse than none, since glibc's "
-					        "objects share a private, version-locked interface\n",
-					        lib_dirs[d], de->d_name);
-					closedir(dh);
-					return 1;
-				}
-				staged_libs++;
-			}
-			closedir(dh);
-		}
-		if (staged_libs > 0)
-			fprintf(stderr, "staged %d of this platform's own shared libraries from %s\n",
-			        staged_libs, host_tools_dir);
-		else
-			fprintf(stderr,
-			        "note: %s carries no shared libraries -- the control-plane root "
-			        "keeps the build host's C library\n",
-			        host_tools_dir);
-	}
 	/*
 	 * cixctl itself: staged so cixd --init-mode (Phase 19) has
 	 * something to execve() when it spawns a managed shell on each
@@ -765,6 +777,104 @@ int main(int argc, char **argv)
 		}
 
 		/*
+		 * The platform's own libraries go on LAST, after every
+		 * host-sourced library above, because whichever is copied last
+		 * is what the root actually carries.
+		 *
+		 * This block used to sit right after cixd was staged, near the
+		 * top of this function -- and shelled_bin_libs[] above then
+		 * overwrote libm.so.6, libpthread.so.0 and libresolv.so.2 with
+		 * the build host's copies. Those are glibc's own objects, so
+		 * the root ended up with a 2.44 libc.so.6 beside a 2.36
+		 * libpthread, which is the mismatched-halves failure again:
+		 * init dies with exit 127 and the machine panics. It took two
+		 * outages to find, because assembly reported success every
+		 * time -- copying files is not the same as producing an image
+		 * that runs.
+		 */
+		/*
+		 * Replace the C library the fixture just staged with the one this
+		 * platform BUILT, taken from cix-hosttools (#181).
+		 *
+		 * test_image_fixture_build() reads libc.so.6 and ld-linux off the
+		 * machine it runs on. For a server-side assembly that machine IS
+		 * the control-plane root, so the root copies its own C library
+		 * forward, forever -- which is how a glibc that came from Debian is
+		 * still the one every Cix binary links. The cycle cannot be broken
+		 * from inside it.
+		 *
+		 * EVERY shared library in the host-tools image is copied, not a
+		 * chosen few, and that is the whole design. A first attempt
+		 * replaced libc.so.6, libm.so.6 and the loader by name and left
+		 * libpthread.so.0 and libresolv.so.2 -- also glibc's, also
+		 * GLIBC_PRIVATE-coupled to libc -- sitting at the old version. The
+		 * result booted nothing: cixd links OpenSSL, OpenSSL pulls
+		 * libpthread, and a 2.36 libpthread against a 2.44 libc is the same
+		 * mismatched-halves failure as a stale loader. "libc and its loader
+		 * ship together" was understated; it is the entire glibc, 24 shared
+		 * objects, and any hand-written subset of it is a partial
+		 * replacement waiting to happen.
+		 *
+		 * So the rule is structural rather than enumerated: whatever
+		 * libraries that image has, the root takes. It also self-maintains
+		 * -- as more of this platform's libraries are built rather than
+		 * borrowed, they land in cix-hosttools and the root picks them up
+		 * with no list to update here.
+		 *
+		 * ORDERING, learned by taking the box down twice: the root must
+		 * gain the new libc BEFORE anything built against it is deployed. A
+		 * binary needs the glibc it was built against, or newer, never
+		 * older.
+		 */
+		if (host_tools_dir != NULL && host_tools_dir[0] != '\0') {
+			static const char *const lib_dirs[] = { "lib/x86_64-linux-gnu", "lib64", NULL };
+			int staged_libs = 0;
+			int d;
+
+			for (d = 0; lib_dirs[d] != NULL; d++) {
+				char src_dir[PATH_MAX];
+				DIR *dh;
+				struct dirent *de;
+
+				snprintf(src_dir, sizeof(src_dir), "%s/%s", host_tools_dir, lib_dirs[d]);
+				dh = opendir(src_dir);
+				if (dh == NULL)
+					continue;
+				while ((de = readdir(dh)) != NULL) {
+					char src[PATH_MAX], dst[PATH_MAX];
+					struct stat fst;
+
+					if (strstr(de->d_name, ".so") == NULL)
+						continue;
+					snprintf(src, sizeof(src), "%s/%s", src_dir, de->d_name);
+					if (stat(src, &fst) != 0 || !S_ISREG(fst.st_mode))
+						continue;
+					snprintf(dst, sizeof(dst), "%s/%s/%s", image_root, lib_dirs[d],
+					         de->d_name);
+					if (test_image_fixture_copy_file(src, dst) != 0) {
+						fprintf(stderr,
+						        "staging the platform's own libraries: %s/%s failed -- "
+						        "a partial copy is worse than none, since glibc's "
+						        "objects share a private, version-locked interface\n",
+						        lib_dirs[d], de->d_name);
+						closedir(dh);
+						return 1;
+					}
+					staged_libs++;
+				}
+				closedir(dh);
+			}
+			if (staged_libs > 0)
+				fprintf(stderr, "staged %d of this platform's own shared libraries from %s\n",
+				        staged_libs, host_tools_dir);
+			else
+				fprintf(stderr,
+				        "note: %s carries no shared libraries -- the control-plane root "
+				        "keeps the build host's C library\n",
+				        host_tools_dir);
+		}
+
+		/*
 		 * openssl's own default config path -- found by an actual "pki
 		 * ca bootstrap" failing, not guessed at: "req -x509 failed:
 		 * Can't open /usr/lib/ssl/openssl.cnf". On this build host that
@@ -1004,6 +1114,8 @@ int main(int argc, char **argv)
 		} else {
 			use_mksquashfs = MKSQUASHFS_BIN;
 		}
+		if (verify_platform_libs_intact(image_root, host_tools_dir) != 0)
+			return 1;
 		if (run_mksquashfs(use_mksquashfs, image_root, out_path, host_tools_dir) != 0)
 			return 1;
 	}
