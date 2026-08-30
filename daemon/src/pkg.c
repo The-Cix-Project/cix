@@ -2775,7 +2775,41 @@ static int buildenv_add_tool(const char *name, const char *via, struct buildenv_
 	for (i = 0; i < PKG_MAX_PACKAGES; i++) {
 		const char *img;
 
-		if (!g_packages[i].in_use || g_packages[i].state != PKG_STATE_INSTALLED)
+		if (!g_packages[i].in_use)
+			continue;
+		/*
+		 * INSTALLED, or mid-upgrade with a previous install's files
+		 * still recorded (issue #166).
+		 *
+		 * A package that honestly declares ITSELF as a build tool --
+		 * tcc, which compiles tcc; gcc, which bootstraps gcc -- could
+		 * never be upgraded. start_fetch_for() sets the entry to
+		 * FETCHING before composing anything, so the only entry that
+		 * matches the name is no longer INSTALLED, and composition
+		 * failed with "declared build tool \"tcc\" is not installed
+		 * anywhere" while GET /v1/pkg showed it installed the whole
+		 * time. The message was accurate about what it looked for and
+		 * wrong about the world.
+		 *
+		 * The files are genuinely there. Image versions are immutable
+		 * (ADR-0107/0108), so the target image's CURRENT version still
+		 * holds the old package's files, unchanged, until a new
+		 * version is produced at the very end -- which is exactly what
+		 * start_fetch_for() already documents about why it leaves
+		 * e->version/e->files alone through an in-place upgrade. This
+		 * check was simply stricter than that invariant requires.
+		 *
+		 * file_count is the honest test rather than a new flag: it is
+		 * "a previous install left files here to copy", which is the
+		 * whole of what the composer needs. A first-time install gets
+		 * a memset() fresh slot (0 files, correctly refused), and a
+		 * retry after a FAILED attempt frees its files first (also 0,
+		 * also correctly refused -- that build's files are not there).
+		 */
+		if (g_packages[i].state != PKG_STATE_INSTALLED &&
+		    !((g_packages[i].state == PKG_STATE_FETCHING ||
+		       g_packages[i].state == PKG_STATE_BUILDING) &&
+		      g_packages[i].file_count > 0))
 			continue;
 		if (strcmp(g_packages[i].name, bare_name) != 0)
 			continue;

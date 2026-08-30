@@ -1652,6 +1652,94 @@ int main(void)
 	}
 
 	/*
+	 * Issue #166: a package that honestly declares ITSELF as a build
+	 * tool must still be upgradable in place.
+	 *
+	 * tcc compiles tcc; gcc bootstraps gcc. Both correctly name
+	 * themselves in pkg_build_depends, and neither could ever be
+	 * upgraded: start_fetch_for() sets the entry to FETCHING before
+	 * composing anything, so the only entry matching the name was no
+	 * longer INSTALLED and composition failed with "declared build
+	 * tool ... is not installed anywhere" -- while GET /v1/pkg showed
+	 * it installed throughout.
+	 *
+	 * The files are genuinely present the whole time. Image versions
+	 * are immutable, so the image's current version still holds the
+	 * old package until a new version is produced at the end, which is
+	 * why start_fetch_for() deliberately leaves e->version/e->files
+	 * alone through an in-place upgrade.
+	 *
+	 * Install 1.0 with the ordinary build floor so it genuinely
+	 * reaches INSTALLED -- an in-place upgrade is only an in-place
+	 * upgrade from a real prior install -- then upgrade to 2.0, which
+	 * adds ITSELF to that same floor. The proof is that the upgrade
+	 * does not come back with the composition refusal.
+	 */
+	if (write_builddeps_recipe("selfdep", "1.0", tarball_path, sha256,
+	                           "tcc libc-dev bash coreutils") != 0) {
+		fprintf(stderr, "FAIL: could not write the self-dependency recipe\n");
+		ok = 0;
+	}
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"selfdep\"}", &r) != 0 ||
+	    r.status != 202) {
+		fprintf(stderr, "FAIL: #166 install of selfdep 1.0, status=%d\n", r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+	if (poll_pkg_state(&client, "selfdep", state, sizeof(state), 600) != 0) {
+		fprintf(stderr, "FAIL: #166 selfdep 1.0 never settled (last state '%s')\n", state);
+		ok = 0;
+	} else if (strcmp(state, "installed") != 0) {
+		/*
+		 * The upgrade below is only meaningful from a genuinely
+		 * INSTALLED entry -- that is the whole precondition. Say so
+		 * rather than letting the real assertion report something
+		 * that is really about this step.
+		 */
+		fprintf(stderr, "FAIL: #166 precondition lost -- selfdep 1.0 ended '%s', not "
+		                "'installed', so the self-declaring upgrade below would not be "
+		                "exercising an in-place upgrade at all\n", state);
+		ok = 0;
+	} else {
+		if (write_builddeps_recipe("selfdep", "2.0", tarball_path, sha256,
+		                           "selfdep tcc libc-dev bash coreutils") != 0) {
+			fprintf(stderr, "FAIL: could not write the self-declaring upgrade recipe\n");
+			ok = 0;
+		}
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/pkg/install",
+		                       "{\"name\":\"selfdep\",\"version\":\"2.0\",\"upgrade\":true}",
+		                       &r) != 0 ||
+		    r.status != 202) {
+			fprintf(stderr, "FAIL: #166 self-declaring upgrade, status=%d\n", r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+		if (poll_pkg_state(&client, "selfdep", state, sizeof(state), 600) != 0) {
+			fprintf(stderr, "FAIL: #166 self-declaring upgrade never settled (last state '%s')\n",
+			        state);
+			ok = 0;
+		} else {
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/pkg/selfdep", NULL, &r) == 0 &&
+			    r.status == 200) {
+				const char *err = json_str_field(r.json, "error");
+
+				if (err != NULL && strstr(err, "not installed anywhere") != NULL) {
+					fprintf(stderr,
+					        "FAIL: #166 a package declaring itself as a build tool cannot be "
+					        "upgraded -- its own entry is mid-upgrade, but its files are still "
+					        "in the image's current version the whole time: %s\n",
+					        err);
+					ok = 0;
+				}
+			}
+			cix_response_free(&r);
+		}
+	}
+
+	/*
 	 * ...and the environment it composed must not be EMPTY. image_create()
 	 * gives every new image a current version straight away, so an image
 	 * that exists is not the same thing as an image that was filled --
