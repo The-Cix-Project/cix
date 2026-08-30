@@ -2071,6 +2071,32 @@ int main(void)
 	 * with a fresh, unrelated install of the SAME name back into the
 	 * default "base" image. */
 	{
+		char rstate[64];
+
+		/*
+		 * The C library first, because this image is going to run
+		 * something (#186). It used to arrive by itself: creation and
+		 * every install copied a loader and libc off the build host
+		 * into whatever image was being written. Now an image gets one
+		 * the same way it gets anything else, so the guarantee below --
+		 * that greeter can actually execve() out of this image -- is
+		 * still asserted, but it is earned by a package rather than
+		 * granted by a copy.
+		 */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/pkg/install",
+		                       "{\"name\":\"glibc\",\"image\":\"router\"}", &r) != 0 ||
+		    r.status != 202) {
+			fprintf(stderr, "FAIL: POST install glibc@router, status=%d\n", r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+		if (poll_pkg_state(&client, "glibc@router", rstate, sizeof(rstate), 300) != 0 ||
+		    strcmp(rstate, "installed") != 0) {
+			fprintf(stderr, "FAIL: glibc@router did not install (state=%s)\n", rstate);
+			ok = 0;
+		}
+
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/pkg/install",
 		                       "{\"name\":\"greeter\",\"image\":\"router\"}", &r) != 0 ||
@@ -2092,17 +2118,19 @@ int main(void)
 				fprintf(stderr, "FAIL: greeter@router binary missing from router image\n");
 				ok = 0;
 			}
-			/* Phase 12 part A: runtime seeding is no longer base-only --
-			 * a non-default image's first install must land the same C
-			 * runtime greeter itself needs to execve() at all.
+			/* The same guarantee this has always asserted -- an image
+			 * carries the C runtime the binaries in it need to
+			 * execve() -- reached by the right route (#186). It used
+			 * to be a side effect of installing anything at all, since
+			 * the baseline copied a loader and libc off the build host
+			 * on every install. It is now what installing the glibc
+			 * package above actually delivers, which is why that
+			 * install is part of this step rather than assumed.
 			 *
-			 * ADR-0209: libtinfo is deliberately NOT checked any more.
-			 * It is ncurses, a package this project builds itself, and
-			 * the baseline used to copy Debian's copy of it into every
-			 * image -- content arriving by mechanism rather than by
-			 * declaration. A package needing it now declares ncurses.
-			 * What the baseline still provides is the glibc floor, and
-			 * that is what this asserts. */
+			 * libtinfo is deliberately NOT checked (ADR-0209): it is
+			 * ncurses, a package this project builds itself, and
+			 * copying the host's copy into every image was content
+			 * arriving by mechanism rather than declaration. */
 			if (stat(router_path("/lib64/ld-linux-x86-64.so.2"), &st) != 0 ||
 			    stat(router_path("/lib/x86_64-linux-gnu/libc.so.6"), &st) != 0) {
 				fprintf(stderr,
@@ -3047,6 +3075,29 @@ skip_rolling_rebuild:
 			fprintf(stderr, "FAIL: could not stage/write pinpkg 1.0\n");
 			ok = 0;
 			goto skip_pin_isolation;
+		}
+
+		/* A container is created from this image further down, so it
+		 * needs a C library to execve pinpkg at all (#186). That used
+		 * to be a side effect of any install; it is a package now, and
+		 * POST /v1/containers refuses an image without one rather than
+		 * letting it fail later as exit 127. */
+		{
+			char pstate[64];
+
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/pkg/install",
+			                       "{\"name\":\"glibc\",\"image\":\"pintest\"}", &r) != 0 ||
+			    r.status != 202) {
+				fprintf(stderr, "FAIL: POST install glibc@pintest, status=%d\n", r.status);
+				ok = 0;
+			}
+			cix_response_free(&r);
+			if (poll_pkg_state(&client, "glibc@pintest", pstate, sizeof(pstate), 300) != 0 ||
+			    strcmp(pstate, "installed") != 0) {
+				fprintf(stderr, "FAIL: glibc@pintest did not install (state=%s)\n", pstate);
+				ok = 0;
+			}
 		}
 
 		memset(&r, 0, sizeof(r));

@@ -315,15 +315,29 @@ int main(void)
 
 		snprintf(p1, sizeof(p1), "%s/lib64/ld-linux-x86-64.so.2", rootfs);
 		snprintf(p2, sizeof(p2), "%s/lib/x86_64-linux-gnu/libc.so.6", rootfs);
-		/* ADR-0209: libtinfo is no longer part of the baseline. It is
-		 * ncurses -- a package this project builds itself -- and the
-		 * baseline used to copy the host's copy of it into every image.
-		 * What a fresh image is guaranteed is the glibc floor, which is
-		 * what this asserts; anything needing libtinfo declares
-		 * ncurses. */
+		/*
+		 * A freshly created image has NO C runtime, and that is the
+		 * point (#186).
+		 *
+		 * This asserted the exact opposite until the glibc floor was
+		 * closed: image creation copied the loader and libc straight
+		 * off the build host into every image -- ADR-0209 named those
+		 * four files as the only ones in any image this project had
+		 * not built. glibc is a real recipe now, so a C library
+		 * arrives the way everything else does, by installing a
+		 * package, and creation borrows nothing from the machine it
+		 * happens to be running on.
+		 *
+		 * Asserted rather than simply deleted: if either file ever
+		 * appears here again, something has started copying a runtime
+		 * off the build host, and that regression is exactly what this
+		 * closes. An image with no runtime is not a broken state --
+		 * POST /v1/containers refuses one and names what to install.
+		 */
 		(void)p3;
-		if (stat(p1, &st) != 0 || stat(p2, &st) != 0) {
-			fprintf(stderr, "FAIL: imgtest_empty missing its own C runtime right after create\n");
+		if (stat(p1, &st) == 0 || stat(p2, &st) == 0) {
+			fprintf(stderr, "FAIL: imgtest_empty has a C runtime nothing installed -- "
+			                "something is copying one off the build host again\n");
 			ok = 0;
 		}
 	}
