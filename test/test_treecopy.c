@@ -283,6 +283,38 @@ int main(void)
 		}
 	}
 
+	/*
+	 * Issue #194: a source root that does not exist is a FAILURE, not
+	 * an empty success.
+	 *
+	 * This is the shape that let the installer's package seed be
+	 * copied from a path that never existed and still report a clean
+	 * install. Every caller of this primitive is a migration, a backup
+	 * or a restore, so "moved nothing" must never look like "moved
+	 * everything" -- the caller repoints live state on a 0 return.
+	 *
+	 * The error must also NAME the directory. The subdirectory case
+	 * already returned -1 but recorded nothing, so an operator got the
+	 * previous call's message or "no error recorded".
+	 */
+	{
+		char missing[PATH_MAX], into[PATH_MAX];
+
+		snprintf(missing, sizeof(missing), "%s/definitely-not-here/nor-this", src);
+		snprintf(into, sizeof(into), "%s/from-missing", dst);
+
+		if (treecopy_recursive(missing, into) == 0) {
+			fprintf(stderr, "FAIL: treecopy reported success for a source root "
+			                "that does not exist -- a migration that moved nothing "
+			                "is indistinguishable from one that worked (#194)\n");
+			ok = 0;
+		} else if (strstr(treecopy_last_error(), "definitely-not-here") == NULL) {
+			fprintf(stderr, "FAIL: treecopy failed on a missing source root but did "
+			                "not name it: %s\n", treecopy_last_error());
+			ok = 0;
+		}
+	}
+
 	if (ok)
 		printf("TREECOPY RESULT: PASS\n");
 	else
