@@ -549,6 +549,15 @@ enum pkg_error pkg_recipe_delete(const char *name, const char *version);
  */
 enum pkg_error pkg_seed_default_image_libc(pid_t *out_pid, int *out_pidfd, int *out_chain_idx);
 
+/*
+ * 1 if that install has finished and FAILED, with its own error text
+ * copied into out_error. Lets a first boot say why the default image is
+ * still unusable instead of appearing to hang: the install is
+ * asynchronous, so without this the only observable difference between
+ * "still working" and "gave up" is that nothing ever happens.
+ */
+int pkg_default_image_libc_failed(char *out_error, size_t out_error_size);
+
 enum pkg_error pkg_install_start(const char *name, const char *image, const char *version,
                                   int upgrade, int keep_on_failure, char *out_started_name,
                                   size_t out_started_name_size, pid_t *out_pid, int *out_pidfd,

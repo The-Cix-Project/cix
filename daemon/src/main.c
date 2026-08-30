@@ -3749,8 +3749,21 @@ static void report_default_image_seed_result(void)
 		return;
 	image_version_rootfs_path(PKG_DEFAULT_IMAGE, version, rootfs, sizeof(rootfs));
 	snprintf(loader, sizeof(loader), "%s/%s", rootfs, PKG_IMAGE_LOADER_REL);
-	if (stat(loader, &st) != 0)
-		return; /* still running */
+	if (stat(loader, &st) != 0) {
+		char why[256];
+
+		/* Still running -- unless it finished and failed, in which case
+		 * saying so beats looking like a hang forever. */
+		if (pkg_default_image_libc_failed(why, sizeof(why))) {
+			g_default_image_seed_pending = 0;
+			logstore_write("cixd", "error",
+			               "default image \"%s\" has no C library: installing %s failed -- %s",
+			               PKG_DEFAULT_IMAGE, PKG_BASE_LIBC, why);
+			printf("default image: installing %s FAILED -- %s\n", PKG_BASE_LIBC, why);
+			fflush(stdout);
+		}
+		return;
+	}
 	g_default_image_seed_pending = 0;
 	logstore_write("cixd", "info", "default image \"%s\" is ready -- %s installed",
 	               PKG_DEFAULT_IMAGE, PKG_BASE_LIBC);

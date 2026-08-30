@@ -144,8 +144,13 @@
  * rather than the ordinary boot timeout. This sandbox has no /dev/kvm
  * (documented), so QEMU is software-emulated and every second of real
  * work costs several here; on real hardware this is far quicker.
+ *
+ * A failed install does NOT consume this budget: the daemon prints
+ * "default image: installing glibc FAILED" and the panic marker below
+ * is not the only way this session can end badly -- a failure is
+ * visible in the capture rather than looking like a hang.
  */
-#define SEED_BOOT_TIMEOUT_SECONDS 600
+#define SEED_BOOT_TIMEOUT_SECONDS 1200
 
 #define TEST_IP "192.168.50.10"
 #define TEST_PREFIX 24
