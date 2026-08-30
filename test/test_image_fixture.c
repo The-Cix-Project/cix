@@ -596,8 +596,16 @@ static const struct {
 	 * fixture genuinely needs a linker, it declares binutils and this
 	 * table gains it back, deliberately.
 	 */
+	/*
+	 * glibc is the C library every composed build environment now gets
+	 * implicitly (#186) -- the loader and libc that used to be copied
+	 * off the build host by pkg_seed_image_baseline(). A fixture build
+	 * cannot exec anything at all without it, so it belongs in the
+	 * floor for exactly the reason the others do: an install that must
+	 * be a cache hit, from a real artifact this platform built.
+	 */
 	{ "bash", "5.2.37-2" }, { "coreutils", "9.11-3" }, { "tcc", "0.9.27-7" },
-	{ "libc-dev", "2.36-3" },
+	{ "libc-dev", "2.36-3" }, { "glibc", "2.44-6" },
 };
 
 static int sha256_file_hex(const char *path, char *out, size_t out_size)
