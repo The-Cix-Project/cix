@@ -3765,6 +3765,16 @@ static void report_default_image_seed_result(void)
 		return;
 	}
 	g_default_image_seed_pending = 0;
+	/*
+	 * On disk before it is announced. btrfs commits on its own schedule
+	 * (~30s), and this is a first boot: the machine may well be powered
+	 * off moments after being told the image is ready, and losing a
+	 * freshly materialized default image to that would be the same
+	 * "reported success, produced nothing" failure this project keeps
+	 * having to fix. Costs one sync, once, on the only boot that does
+	 * this work.
+	 */
+	sync();
 	logstore_write("cixd", "info", "default image \"%s\" is ready -- %s installed",
 	               PKG_DEFAULT_IMAGE, PKG_BASE_LIBC);
 	printf("default image: ready\n");

@@ -120,7 +120,22 @@
  * leaves ~568 MiB, of which the data partition takes half. The file is
  * sparse, so the extra size costs nothing.
  */
-#define TARGET_DISK_SIZE_BYTES (1024 * 1024 * 1024)
+/*
+ * 3 GiB, raised from 1 GiB when the default image started carrying a
+ * real C library (#189).
+ *
+ * The system partitions take a fixed 448 MiB (ESP 64 + two 160 MiB root
+ * slots + config 64), which left ~576 MiB of btrfs for everything else.
+ * That was ample while "base" was an empty manifest; glibc unpacks to
+ * ~126 MB, and btrfs allocates metadata in 256 MB chunks, so a volume
+ * that size runs out far earlier than the arithmetic suggests. The
+ * install itself reported it honestly -- "image base could not produce
+ * a new version: the caller's own mutate step failed" -- which is what
+ * pointed here.
+ *
+ * The image is a sparse file, so this costs allocation, not disk.
+ */
+#define TARGET_DISK_SIZE_BYTES (3LL * 1024 * 1024 * 1024)
 #define SECTOR_SIZE 512
 
 #define INSTALL_TIMEOUT_SECONDS 180
