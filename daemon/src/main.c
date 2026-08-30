@@ -12801,11 +12801,17 @@ static int create_container_from_body(const char *body, size_t body_len,
 
 		snprintf(loader, sizeof(loader), "%s/lib64/ld-linux-x86-64.so.2", lowerdir);
 		if (stat(loader, &st) != 0) {
-			json_free(root);
+			/* Formatted BEFORE the tree is freed: `image` points into
+			 * that JSON, so reading it afterwards prints whatever the
+			 * allocator has since put there. Caught on a real box --
+			 * the message named the image as a few bytes of garbage,
+			 * which is exactly the sort of diagnostic this guard
+			 * exists to avoid producing. */
 			snprintf(err_msg, err_msg_size,
 			         "image \"%s\" has no C library -- install a libc package (glibc) "
 			         "into it before running a container from it",
 			         image);
+			json_free(root);
 			return 400;
 		}
 	}
@@ -13320,13 +13326,19 @@ static int create_container_from_body(const char *body, size_t body_len,
 				}
 				vol = volume_find(vname);
 				if (vol == NULL) {
-					json_free(root);
+					/* Formatted before the free: vname points into the
+					 * JSON tree, so naming it afterwards prints
+					 * whatever the allocator has since put there.
+					 * Same defect as the C-library guard above, found
+					 * by looking for the pattern once that one had
+					 * been seen printing garbage on a real box. */
 					snprintf(err_msg, err_msg_size, "no such volume: %s", vname);
+					json_free(root);
 					return 400;
 				}
 				if (volume_host_path(vol, hostpath, sizeof(hostpath)) != 0) {
-					json_free(root);
 					snprintf(err_msg, err_msg_size, "could not resolve volume %s", vname);
+					json_free(root);
 					return 500;
 				}
 				snprintf(spec.volumes[spec.volume_count].host_path,

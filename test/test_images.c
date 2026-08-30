@@ -340,6 +340,44 @@ int main(void)
 			                "something is copying one off the build host again\n");
 			ok = 0;
 		}
+
+		/*
+		 * And the consequence, stated to the operator: a container
+		 * cannot be created from an image with no C library, and the
+		 * refusal must NAME the image.
+		 *
+		 * Asserting the name, not just the 400 -- the first version of
+		 * this guard formatted the message after json_free(), so
+		 * `image` pointed into the freed tree and a real box reported
+		 * `image "\xef\xbf\xbd\x12" has no C library`. A diagnostic
+		 * that exists to save someone from an opaque exit 127 is worth
+		 * nothing if it cannot say which image it means.
+		 */
+		{
+			struct cix_response cr;
+
+			memset(&cr, 0, sizeof(cr));
+			if (cix_client_request(&client, "POST", "/v1/containers",
+			                        "{\"name\":\"nolibc-ctr\",\"image\":\"imgtest_empty\","
+			                        "\"cmd\":[\"/usr/bin/true\"]}", &cr) != 0 ||
+			    cr.status != 400) {
+				fprintf(stderr,
+				        "FAIL: a container from an image with no C library was not refused "
+				        "(status=%d)\n",
+				        cr.status);
+				ok = 0;
+			} else {
+				const char *em = json_str_field(cr.json, "error");
+
+				if (em == NULL || strstr(em, "imgtest_empty") == NULL) {
+					fprintf(stderr,
+					        "FAIL: the refusal does not name the image: %s\n",
+					        em != NULL ? em : "(no error)");
+					ok = 0;
+				}
+			}
+			cix_response_free(&cr);
+		}
 	}
 
 	/* 4. "base" is protected -- under --data-dir= isolation this daemon
