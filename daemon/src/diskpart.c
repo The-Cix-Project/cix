@@ -450,6 +450,54 @@ static int read_appended_partition(const char *dev_path, int *out_pno,
 	return best > 0 ? 0 : -1;
 }
 
+#define CIX_BLKPG_DEL_PARTITION 2
+
+/*
+ * Issue #140: tell the kernel to forget a partition we just removed
+ * from the table.
+ *
+ * Found by deleting the test partition appended to a live OS disk:
+ * `sfdisk --delete` updated the table correctly -- free space returned
+ * to exactly its previous extent -- and the kernel went on exposing
+ * /dev/vda6 for a region now marked free. The API returned 204, so it
+ * reported complete success for a half-done job.
+ *
+ * That stale node is worse than untidy. The space it maps is free, so
+ * the very next append hands the same sectors to a new partition while
+ * the old node still points at them: two device nodes, one region, and
+ * whichever is written first loses. Removing the entry from the kernel
+ * is part of deleting the partition, not a cosmetic follow-up.
+ *
+ * ENXIO/EINVAL mean the kernel does not have this partition, which is
+ * the desired end state -- treated as success for the same reason
+ * EBUSY is on the add path.
+ */
+static int blkpg_del_partition(const char *dev_path, int pno)
+{
+	struct cix_blkpg_partition part;
+	struct cix_blkpg_ioctl_arg arg;
+	int fd;
+	int rc;
+
+	memset(&part, 0, sizeof(part));
+	memset(&arg, 0, sizeof(arg));
+	part.pno = pno;
+
+	arg.op = CIX_BLKPG_DEL_PARTITION;
+	arg.flags = 0;
+	arg.datalen = (int)sizeof(part);
+	arg.data = &part;
+
+	fd = open(dev_path, O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return -1;
+	rc = ioctl(fd, CIX_BLKPG, &arg);
+	if (rc != 0 && (errno == ENXIO || errno == EINVAL))
+		rc = 0;
+	close(fd);
+	return rc == 0 ? 0 : -1;
+}
+
 /* Returns 0, or -1 with errno set. EBUSY here means the kernel already
  * knows about this partition number, which is success for our purposes
  * rather than a failure. */
@@ -613,6 +661,23 @@ enum diskpart_error diskpart_delete(const char *disk_name, const char *partition
 		return DISKPART_ERR_SFDISK_MISSING;
 	if (rc != 0)
 		return DISKPART_ERR_SFDISK_FAILED;
+
+	/*
+	 * The table no longer has this partition; the kernel still does
+	 * until told. Leaving that gap open means the next append can
+	 * allocate the same sectors while the old device node still maps
+	 * them -- see blkpg_del_partition()'s own comment. Reported rather
+	 * than swallowed: a 204 for a half-done delete is what made this
+	 * invisible in the first place.
+	 */
+	if (blkpg_del_partition(parent.dev_path, atoi(partno_str)) != 0) {
+		snprintf(g_sfdisk_last_error, sizeof(g_sfdisk_last_error),
+		         "partition %s was removed from the table, but the kernel still has its device "
+		         "node (%s) -- do not create another partition on this disk until it has been "
+		         "rebooted",
+		         partno_str, strerror(errno));
+		return DISKPART_ERR_SFDISK_FAILED;
+	}
 	return DISKPART_OK;
 }
 
