@@ -92,6 +92,38 @@ tcc: error: undefined symbol 'crypt'      -> libxcrypt (glibc 2.44 moved crypt()
 
 That loop is what makes this safe to do without a perfect first guess. What is *not* safe is declaring a set and never building it: an unverified `pkg_build_depends` is indistinguishable from a correct one until someone needs it.
 
+### TCC does not support `--version-script`
+
+Symbol versioning is the single most common reason a library fails to link under TCC:
+
+```
+CCLD     libmnl.la
+tcc: error: unsupported linker option '--version-script=./libmnl.map'
+```
+
+Strip it out of the **generated** Makefile after `configure`, never out of upstream's source:
+
+```sh
+sed -i 's/-Wl,--version-script[=,][^ ]*//g' src/Makefile
+grep -q -- '--version-script' src/Makefile && exit 1
+```
+
+The `grep` guard matters: a `sed` that silently matched nothing leaves the original failure to be rediscovered at link time, and looks like the fix simply did not work.
+
+Dropping it costs symbol versioning and nothing else — same soname, same exported symbols — and nothing in this project links against a specific symbol version. `libmnl`, `ipset`, `nss-pam-ldapd` and `zlib 1.3.2-6` all make the same trade.
+
+Note the difference between how packages fail here. `libmnl` and `ipset` **fail loudly** at the link step, which is the good case. `zlib`'s configure merely *probed*, printed "No shared library support", built a static library instead and installed cleanly — and the next thing to link against it died. That is issue #113, and it is why a recipe should assert what it built rather than trust that `make` exited 0.
+
+### Consuming another package's pkg-config file
+
+Set `PKG_CONFIG_PATH` explicitly. Packages here do not all use one convention — `libmnl` and `libuuid` install to `usr/lib/pkgconfig`, while a package configured with a multiarch `--libdir` lands in `lib/x86_64-linux-gnu/pkgconfig` — and a consumer should not have to know which its dependency happened to pick:
+
+```sh
+export PKG_CONFIG_PATH="/usr/lib/pkgconfig:/lib/x86_64-linux-gnu/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig"
+```
+
+Without it, a dependency that is genuinely installed still reports missing (`checking for libmnl >= 1... no`), which reads like a packaging failure rather than a search-path one.
+
 ### pkg-config files: ship one exactly when you ship what it describes
 
 A `.pc` file is a **claim about what your package provides** — include paths, a link line, a version. So the rule is not "always keep them" or "always strip them", it is that the claim must be true:
