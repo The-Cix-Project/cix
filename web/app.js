@@ -3573,6 +3573,35 @@ function renderDhcpRanges(networks) {
 		edit.textContent = "Edit";
 		edit.addEventListener("click", () => openDhcpRangeModal(n.network));
 		actions.appendChild(edit);
+		{
+			/*
+			 * Remove deletes the configuration outright, which is not
+			 * what unticking "Serve DHCP" does -- that disables it and
+			 * keeps the range. Until now the config could be created
+			 * and edited here but never taken back from either channel
+			 * (ADR-0218 layer 2 turned that from an accident into a
+			 * visible gap).
+			 */
+			const remove = document.createElement("button");
+
+			remove.type = "button";
+			remove.className = "button-small";
+			remove.textContent = "Remove";
+			remove.addEventListener("click", async () => {
+				if (!confirm('Remove the DHCP configuration for "' + n.network +
+				             '"? The range and its server assignments are deleted. To stop ' +
+				             'serving but keep them, edit the range and untick "Serve DHCP".'))
+					return;
+				try {
+					await apiRequest("DELETE", CIX_API.deleteDhcpNetwork(n.network));
+					showStatus("DHCP configuration removed for " + n.network + ".", false);
+					refreshDhcp();
+				} catch (e) {
+					showStatus("Failed to remove the configuration: " + e.message, true);
+				}
+			});
+			actions.appendChild(remove);
+		}
 		row.appendChild(actions);
 		body.appendChild(row);
 	}

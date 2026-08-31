@@ -2339,7 +2339,7 @@ paths:
     delete:
       summary: Remove a network's DHCP range (ADR-0197)
       operationId: deleteDhcpNetwork
-      x-cix-expose: []
+      x-cix-expose: [cli, web]
       parameters:
         - name: network
           in: path
@@ -7568,7 +7568,7 @@ paths:
         (correctly) refused to route an operation the spec did not
         declare. Exactly the drift that ADR exists to make impossible.
       operationId: publishPkgArtifact
-      x-cix-expose: []
+      x-cix-expose: [cli]
       parameters:
         - $ref: "#/components/parameters/PkgName"
       responses:

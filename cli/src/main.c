@@ -3344,6 +3344,30 @@ static int cmd_dhcp(const struct cix_client *c, int json_mode, int argc, char **
 			mac = argv[i];
 	}
 
+	/*
+	 * `remove` deletes a network's DHCP configuration outright, which
+	 * is not what `disable` does -- that keeps the range and stops
+	 * serving it. Without this the config could be created and edited
+	 * from here but never taken back, and DELETE /dhcp/networks/{n}
+	 * had no interface on either channel at all (ADR-0218 layer 2
+	 * turned that from an accident into a visible gap).
+	 */
+	if (strcmp(sub, "remove") == 0) {
+		if (network == NULL) {
+			fprintf(stderr,
+			        "usage: cixctl dhcp remove --network=NAME\n"
+			        "  Deletes this network's DHCP configuration entirely. To stop serving\n"
+			        "  while keeping the range, use `cixctl dhcp disable --network=NAME`.\n");
+			return 2;
+		}
+		snprintf(path, sizeof(path), CIX_API_deleteDhcpNetwork, network);
+		if (cix_client_request(c, CIX_API_deleteDhcpNetwork_METHOD, path, NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, NULL);
+	}
+
 	if (strcmp(sub, "enable") == 0 || strcmp(sub, "disable") == 0) {
 		int enable = strcmp(sub, "enable") == 0;
 
@@ -3353,6 +3377,7 @@ static int cmd_dhcp(const struct cix_client *c, int json_mode, int argc, char **
 			        "                            --server=CONTAINER [--server=CONTAINER ...]\n"
 			        "                            [--lease-seconds=N] [--router=IP]\n"
 			        "       cixctl dhcp disable --network=NAME\n"
+			        "       cixctl dhcp remove --network=NAME   -- delete the config entirely\n"
 			        "  --server= is repeatable. dnsmasq has no failover protocol, so a range\n"
 			        "  named to more than one server is split into disjoint slices: all of\n"
 			        "  them answer, and no two hold the same address. Register servers first\n"
@@ -11988,6 +12013,43 @@ static int cmd_pkg_artifact_config(const struct cix_client *c, int json_mode, in
  */
 #define ARTIFACT_EXPORT_CHUNK (8 * 1024 * 1024)
 
+/*
+ * `cixctl pkg artifact-publish NAME` -- issue #171's endpoint, which
+ * had no interface on either channel until now. It was reachable only
+ * with a hand-written curl, which is exactly how this session's own
+ * artifact backfill had to be done: `cix` sat five releases behind in
+ * the cache, and the one command that could fix it did not exist.
+ *
+ * Publishing an artifact that already exists matters because the local
+ * cache does not survive a reinstall, and a rebuild of `cix` or
+ * `kernel` is the most expensive thing this platform does. A push that
+ * failed, or happened before the artifact server was configured, must
+ * not cost that.
+ */
+static int cmd_pkg_artifact_publish(const struct cix_client *c, int json_mode, int argc,
+                                     char **argv)
+{
+	char path[512];
+	struct cix_response r;
+
+	if (argc < 1 || argv[0][0] == '-') {
+		fprintf(stderr,
+		        "usage: cixctl pkg artifact-publish NAME\n"
+		        "  Publishes an already-built artifact to the configured artifact server\n"
+		        "  without rebuilding it. For a hostbuild whose tarball does not exist yet\n"
+		        "  the tarball is built from the installed tree first, and the push follows\n"
+		        "  when that completes -- so a 202 here can mean either \"queued\" or\n"
+		        "  \"building artifact tarball\"; the response says which.\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), CIX_API_publishPkgArtifact, argv[0]);
+	if (cix_client_request(c, CIX_API_publishPkgArtifact_METHOD, path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, NULL);
+}
+
 static int cmd_pkg_artifact_export(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name = NULL;
@@ -13116,7 +13178,9 @@ static int cmd_pkg(const struct cix_client *c, int json_mode, int argc, char **a
 		                "       cixctl pkg artifact-config show\n"
 		                "       cixctl pkg artifact-config set [--url=URL] "
 		                "[--token=TOKEN | --clear-token] [--push | --no-push]\n"
-		                "       cixctl pkg artifact-export NAME [--out=FILE]\n");
+		                "       cixctl pkg artifact-export NAME [--out=FILE]\n"
+		                "       cixctl pkg artifact-publish NAME  -- publish an already-built\n"
+		                "               artifact without rebuilding it\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -13160,6 +13224,8 @@ static int cmd_pkg(const struct cix_client *c, int json_mode, int argc, char **a
 		return cmd_pkg_cache_clear(c, json_mode);
 	if (strcmp(sub, "artifact-export") == 0)
 		return cmd_pkg_artifact_export(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "artifact-publish") == 0)
+		return cmd_pkg_artifact_publish(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "artifact-config") == 0)
 		return cmd_pkg_artifact_config(c, json_mode, argc - 1, argv + 1);
 
