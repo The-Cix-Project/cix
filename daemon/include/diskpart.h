@@ -105,6 +105,32 @@ enum diskpart_error {
  * disk is being repurposed from whole-disk to partitioned use), or is
  * currently mounted (DISKPART_ERR_MOUNTED).
  */
+/*
+ * Issue #140: the OS disk's first four partitions are structurally
+ * untouchable -- cix-esp, cix-root-a, cix-root-b, cix-config, in the
+ * fixed order image/src/cix-install.c lays down. Destroy any of them
+ * and the machine does not boot, with no remote recovery. Everything
+ * after them is ordinary allocatable space.
+ *
+ * Exposed rather than kept private so the policy can be tested
+ * directly: it is a rule about which operations are OFFERED, and a
+ * rule that can only be observed by attempting the dangerous thing on
+ * real hardware is a rule nothing will ever check.
+ */
+#define DISKPART_OS_PROTECTED_PARTITIONS 4
+
+/* Trailing partition number: "vda5" -> 5, "nvme0n1p5" -> 5, 0 when
+ * there is no numeric suffix. */
+int diskpart_partition_number(const char *name);
+
+/*
+ * Whether this partition must never be offered for delete or resize.
+ * Fails CLOSED: a partition on the OS disk whose number cannot be
+ * determined counts as protected -- being wrong that way costs an
+ * operator some manual work, the other way costs a bootable machine.
+ */
+int diskpart_partition_protected(const char *name, int is_os_disk);
+
 enum diskpart_error diskpart_create_table(const char *disk_name, const char *os_containers_dir);
 
 /*

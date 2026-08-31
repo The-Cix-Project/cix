@@ -121,11 +121,111 @@ static int find_disk(const char *name, const char *os_containers_dir, struct dis
 	return 0;
 }
 
-/* Shared preconditions for both diskpart_create_table() and
- * diskpart_add(): disk_name must be a currently-present whole disk,
- * not the OS disk, carrying no role of its own, and not mounted -- the
- * exact set of states in which rewriting/growing its partition table
- * is safe. */
+/*
+ * Issue #140: which partitions on the OS disk are structurally
+ * untouchable.
+ *
+ * The installer lays the OS disk out in a fixed order (see
+ * image/src/cix-install.c): 1 cix-esp, 2 cix-root-a, 3 cix-root-b,
+ * 4 cix-config, then 5 cix-containers, then whatever the operator left
+ * unallocated. The first four carry the ESP, both A/B root slots and
+ * /config -- destroy any of them and the machine does not boot, with
+ * no remote recovery.
+ *
+ * Everything AFTER them is ordinary space. The previous blanket
+ * `is_os_disk` refusal made no such distinction, so an operator who
+ * had deliberately sized cix-containers smaller than the disk -- in
+ * order to keep the remainder allocatable -- could not use the space
+ * they had reserved for themselves. That is the whole bug.
+ *
+ * Keyed on the partition NUMBER rather than the label, deliberately.
+ * The number is what sfdisk operates on and what the kernel exposes;
+ * a label is cosmetic, can be edited by any tool that writes the
+ * table, and a protection that a rename can lift is not a protection.
+ */
+/*
+ * The trailing partition number: "vda5" -> 5, "nvme0n1p5" -> 5.
+ * Returns 0 when there is no numeric suffix, which callers treat as
+ * "cannot tell" and therefore as protected.
+ */
+int diskpart_partition_number(const char *name)
+{
+	size_t len = strlen(name);
+	size_t i = len;
+
+	while (i > 0 && name[i - 1] >= '0' && name[i - 1] <= '9')
+		i--;
+	if (i == len)
+		return 0;
+	return atoi(name + i);
+}
+
+/*
+ * True when this partition must never be offered for delete or resize.
+ *
+ * Fails CLOSED: a partition on the OS disk whose number cannot be
+ * determined is treated as protected. The cost of being wrong in that
+ * direction is an operator having to do something by hand; the cost of
+ * being wrong in the other direction is an unbootable machine.
+ */
+int diskpart_partition_protected(const char *name, int is_os_disk)
+{
+	int n;
+
+	if (!is_os_disk)
+		return 0;
+	n = diskpart_partition_number(name);
+	if (n <= 0)
+		return 1;
+	return n <= DISKPART_OS_PROTECTED_PARTITIONS;
+}
+
+/*
+ * Preconditions for APPENDING a partition (diskpart_add).
+ *
+ * Issue #140: deliberately weaker than the create-table check below,
+ * because the two operations are not comparably dangerous.
+ *
+ * `sfdisk --append` adds an entry and does not rewrite the existing
+ * ones. That is the whole safety argument, and it is why this is
+ * allowed on the OS disk while rewriting its table stays refused: the
+ * ESP, both root slots and /config are not read, moved or modified by
+ * appending after them.
+ *
+ * Mounted partitions are likewise no obstacle to appending -- the OS
+ * disk always has some (root, /config, containers), so refusing on
+ * that basis is what made the reserved free space unusable. A mounted
+ * WHOLE-disk device is still refused: that is a disk being used
+ * un-partitioned, where a table is not a table yet.
+ */
+static enum diskpart_error check_disk_appendable(const char *disk_name,
+                                                   const char *os_containers_dir,
+                                                   struct discovered_disk *out)
+{
+	if (!simple_name_is_valid(disk_name, DISKROLE_DISK_NAME_MAX))
+		return DISKPART_ERR_INVALID_DISK_NAME;
+	if (!find_disk(disk_name, os_containers_dir, out))
+		return DISKPART_ERR_NOT_FOUND;
+	if (out->is_partition)
+		return DISKPART_ERR_IS_PARTITION;
+	if (diskrole_lookup(disk_name) != NULL)
+		return DISKPART_ERR_HAS_ROLE;
+	if (out->mounted)
+		return DISKPART_ERR_MOUNTED;
+	return DISKPART_OK;
+}
+
+/* Preconditions for REWRITING a disk's partition table
+ * (diskpart_create_table): disk_name must be a currently-present whole
+ * disk, not the OS disk, carrying no role of its own, and not mounted
+ * -- the exact set of states in which rewriting its partition table is
+ * safe.
+ *
+ * The OS-disk refusal here is permanent and deliberate (issue #140):
+ * a table rewrite is precisely the operation that can destroy the ESP
+ * and both root slots, and no amount of free space at the end makes
+ * that safe. Appending is a different operation and has its own,
+ * weaker check above. */
 static enum diskpart_error check_whole_disk_writable(const char *disk_name,
                                                        const char *os_containers_dir,
                                                        struct discovered_disk *out)
@@ -182,7 +282,7 @@ enum diskpart_error diskpart_add(const char *disk_name, const char *os_container
 	if (!simple_name_is_valid(part_name, DISKPART_NAME_MAX))
 		return DISKPART_ERR_INVALID_PART_NAME;
 
-	err = check_whole_disk_writable(disk_name, os_containers_dir, &d);
+	err = check_disk_appendable(disk_name, os_containers_dir, &d);
 	if (err != DISKPART_OK)
 		return err;
 
@@ -224,7 +324,9 @@ enum diskpart_error diskpart_delete(const char *disk_name, const char *partition
 		return DISKPART_ERR_NOT_A_PARTITION;
 	if (strcmp(part.parent_disk, disk_name) != 0)
 		return DISKPART_ERR_WRONG_PARENT;
-	if (part.is_os_disk)
+	/* Issue #140: only the OS disk's first four are untouchable, not
+	 * the whole disk -- see partition_is_protected(). */
+	if (diskpart_partition_protected(part.name, part.is_os_disk))
 		return DISKPART_ERR_IS_OS_DISK;
 	if (diskrole_lookup(partition_name) != NULL)
 		return DISKPART_ERR_HAS_ROLE;
@@ -504,7 +606,8 @@ enum diskpart_error diskpart_resize(const char *disk_name, const char *partition
 		return DISKPART_ERR_NOT_A_PARTITION;
 	if (strcmp(part.parent_disk, disk_name) != 0)
 		return DISKPART_ERR_WRONG_PARENT;
-	if (part.is_os_disk)
+	/* Issue #140: only the OS disk's first four are untouchable. */
+	if (diskpart_partition_protected(part.name, part.is_os_disk))
 		return DISKPART_ERR_IS_OS_DISK;
 	/*
 	 * Unmounted only. resize2fs can grow a mounted ext4 online, but
