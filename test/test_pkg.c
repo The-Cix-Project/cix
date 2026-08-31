@@ -3959,6 +3959,64 @@ skip_pin_isolation:
 			ok = 0;
 		}
 
+		/*
+		 * Issue #165: uninstalling a hostbuild must take its bytes
+		 * with it.
+		 *
+		 * Deleting the package used to clear the record and leave the
+		 * whole artifact directory on disk. That is not untidy, it is
+		 * dangerous: these paths are consumed BY PATH, not by package
+		 * -- an ISO build reads <artifacts>/kernel/bzImage directly --
+		 * so an uninstalled hostbuild stayed fully deployable and
+		 * bootable while GET /v1/pkg showed nothing to explain where
+		 * the bytes came from.
+		 *
+		 * Asserted on the FILE, not on the API's own answer. The
+		 * record disappearing was never the bug; the record
+		 * disappearing while the bytes stayed was.
+		 */
+		{
+			char hb_dir[PATH_MAX];
+			char *slash;
+
+			snprintf(hb_dir, sizeof(hb_dir), "%s", hb_artifact_file);
+			slash = strrchr(hb_dir, '/');
+			if (slash != NULL)
+				*slash = '\0';
+
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "DELETE", "/v1/pkg/hbtest@__hostbuild", NULL, &r) != 0 ||
+			    (r.status != 200 && r.status != 204)) {
+				fprintf(stderr, "FAIL: DELETE hbtest@__hostbuild, status=%d\n", r.status);
+				ok = 0;
+			}
+			cix_response_free(&r);
+
+			if (stat(hb_artifact_file, &st) == 0) {
+				fprintf(stderr,
+				        "FAIL: uninstalled hostbuild left its artifact on disk at '%s' -- still "
+				        "deployable with no package to explain it (#165)\n",
+				        hb_artifact_file);
+				ok = 0;
+			}
+			if (stat(hb_dir, &st) == 0) {
+				fprintf(stderr,
+				        "FAIL: uninstalled hostbuild left its artifact directory '%s' behind "
+				        "(#165)\n",
+				        hb_dir);
+				ok = 0;
+			}
+			/* And the record really is gone -- so this proves the two
+			 * agree, rather than only that one of them changed. */
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/pkg/hostbuild/hbtest", NULL, &r) == 0 &&
+			    r.status == 200) {
+				fprintf(stderr, "FAIL: hbtest still present after DELETE\n");
+				ok = 0;
+			}
+			cix_response_free(&r);
+		}
+
 		/* a hostbuild recipe with a non-empty pkg_depends must be
 		 * rejected outright -- dependency resolution targets "merge
 		 * into an image," meaningless for a one-shot harvest. The

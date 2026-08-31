@@ -6518,6 +6518,49 @@ static int delete_mutate(const char *staging_rootfs, void *ctx_v)
 	return 0;
 }
 
+/*
+ * Issue #165: a hostbuild's real output is a directory of files, and
+ * deleting the package record left every one of them on disk.
+ *
+ * An ordinary package is removed by producing a new image version with
+ * its files unlinked (ADR-0107/0108). A hostbuild has no image to
+ * unlink from -- its output lives at <artifacts>/<name>/ -- so the
+ * delete cleared the record and nothing else. That is not merely
+ * untidy: those paths are consumed BY PATH, not by package.
+ * iso_build_start() reads <artifacts>/kernel/bzImage directly, and a
+ * deploy passes --kernel=<artifact_path>/bzImage. So an uninstalled
+ * hostbuild stayed fully deployable and bootable, with GET /v1/pkg
+ * showing nothing at all to explain where the bytes came from.
+ *
+ * Removing it is safe for an already-deployed slot: a deploy COPIES
+ * these bytes into the slot, so the running system holds its own copy
+ * and does not read this path again. What disappears is only the
+ * ability to deploy this artifact AGAIN -- which is exactly what
+ * "uninstalled" should mean, and the property that was missing.
+ *
+ * Failure to remove is reported, not swallowed. A half-removed
+ * artifact directory is the one outcome worse than either extreme:
+ * the record says gone, the bytes say deployable, and nothing says
+ * which.
+ */
+static int remove_hostbuild_artifacts(const char *name, char *out_err, size_t err_size)
+{
+	char artifact_dir[PATH_MAX];
+	struct stat st;
+
+	snprintf(artifact_dir, sizeof(artifact_dir), "%s/%s", g_artifacts_dir, name);
+	if (stat(artifact_dir, &st) != 0) {
+		/* Never built, or already gone -- both are the desired end
+		 * state, so neither is an error. */
+		return 0;
+	}
+	if (persist_remove_tree(artifact_dir) != 0) {
+		snprintf(out_err, err_size, "%s", strerror(errno));
+		return -1;
+	}
+	return 0;
+}
+
 enum pkg_error pkg_delete(const char *name, const char *image)
 {
 	struct pkg_entry *e = pkg_find(name, image);
@@ -6559,6 +6602,24 @@ enum pkg_error pkg_delete(const char *name, const char *image)
 	 * consistency with the branch below.
 	 */
 	if (e->state == PKG_STATE_FAILED) {
+		char rmerr[128];
+
+		/*
+		 * A FAILED hostbuild can still have left a partial artifact
+		 * directory behind -- the build got far enough to write
+		 * something and then died. Those bytes are consumed by path
+		 * like any other, so leaving them is the same bug in its
+		 * worst form: output from a build that is on record as having
+		 * failed.
+		 */
+		if (strcmp(normalize_image(image), PKG_HOSTBUILD_IMAGE) == 0 &&
+		    remove_hostbuild_artifacts(name, rmerr, sizeof(rmerr)) != 0) {
+			logstore_write("cixd", "error",
+			               "pkg delete: %s: could not remove the artifact directory: %s -- the "
+			               "package record was left in place so the two do not disagree",
+			               name, rmerr);
+			return PKG_ERR_PERSIST_FAILED;
+		}
 		pkg_entry_free_files(e);
 		memset(e, 0, sizeof(*e));
 		return save_state() == 0 ? PKG_OK : PKG_ERR_PERSIST_FAILED;
@@ -6576,6 +6637,26 @@ enum pkg_error pkg_delete(const char *name, const char *image)
 	 * has unlinked the files -- correctly excludes this package from
 	 * the new version's manifest.
 	 */
+	/*
+	 * Removed BEFORE the record is cleared, deliberately. If this
+	 * fails, the package stays installed and still describes the bytes
+	 * that are still there -- the two agree. Clearing the record first
+	 * and failing here would leave exactly the state this issue is
+	 * about: no package, and a fully deployable artifact.
+	 */
+	if (strcmp(normalize_image(image), PKG_HOSTBUILD_IMAGE) == 0) {
+		char rmerr[128];
+
+		if (remove_hostbuild_artifacts(name, rmerr, sizeof(rmerr)) != 0) {
+			logstore_write("cixd", "error",
+			               "pkg delete: %s: could not remove the artifact directory: %s -- the "
+			               "package was left installed so its record still describes the bytes "
+			               "on disk",
+			               name, rmerr);
+			return PKG_ERR_PERSIST_FAILED;
+		}
+	}
+
 	saved = *e;
 	memset(e, 0, sizeof(*e));
 	ctx.e = &saved;
