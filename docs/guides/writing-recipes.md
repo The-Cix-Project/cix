@@ -201,8 +201,19 @@ Rewrite them before building, and assert the rewrite took:
 
 ```sh
 find . -name '*.sh' -exec sed -i '1s|^#!/bin/bash|#!/usr/bin/bash|' {} +
-grep -rl '^#!/bin/bash' --include='*.sh' . | grep -q . && exit 1
+
+bad=""
+for f in $(find . -name '*.sh'); do
+	case "$(head -1 "$f")" in
+	"#!/bin/bash"*) bad="$bad $f" ;;
+	esac
+done
+[ -n "$bad" ] && { echo "shebang survived:$bad" >&2; exit 1; }
 ```
+
+**Check line 1 only.** A whole-file `grep` for `^#!/bin/bash` is wrong, and libcap is the concrete reason: its `progs/quicktest.sh` contains `#!/bin/bash` inside two heredocs that write a test script at run time. Those are not shebangs of that file, nothing should rewrite them, and a whole-file guard reports them forever — which cost two revisions before the guard was narrowed to match what the `sed` actually changes.
+
+The `head`/`case` form is also deliberate: it cannot fail for its own reasons the way a mis-specified `grep` invocation can. **A guard that can fail on its own error message is worse than no guard**, because it reports a problem that is not there — the failure then looks like the fix did not work.
 
 `libcap`'s recipe is the reference. This one is worth knowing because of what it blocks: libcap is a build dependency of iproute2, so a single unrunnable script stopped a completely unrelated package from building, with the failure reported against libcap rather than against the thing being installed.
 

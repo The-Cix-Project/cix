@@ -17,7 +17,7 @@
 # Source is kernel.org's own canonical libcap2 release directory.
 #
 pkg_name="libcap"
-pkg_version="2.78-8"
+pkg_version="2.78-10"
 pkg_source="https://mirrors.edge.kernel.org/pub/linux/libs/security/linux-privs/libcap2/libcap-2.78.tar.xz"
 pkg_sha256="0d621e562fd932ccf67b9660fb018e468a683d7b827541df27813228c996bb11"
 
@@ -72,7 +72,7 @@ pkg_depends=""
 # Sufficiency is enforced by the build itself. Minimality is review,
 # not enforcement (ADR-0199).
 pkg_build_depends="tcc make linux-headers bash coreutils sed grep binutils diffutils findutils"
-pkg_changelog="2.78-8: declares findutils -- the -7 shebang fix used find, which this recipe had never needed before and so had not declared, and the build died at line 153 with 'find: command not found'. 2.78-7: rewrites #!/bin/bash shebangs to /usr/bin/bash -- the bash package ships bin/sh and usr/bin/bash but no /bin/bash, so progs/mkcapshdoc.sh died with exit 127 and blocked every dependent build. 2.78-6: libc-dev retired; linux-headers declared for the kernel uapi headers glibc's own limits.h needs (#187)"
+pkg_changelog="2.78-10: the guard now checks LINE 1 only, which is what the sed rewrites. -8 flagged progs/quicktest.sh because that file contains #!/bin/bash inside two heredocs that generate a test script at run time -- not a shebang, and nothing the rewrite should touch. The -9 explanation blaming grep --include was wrong and is retracted."
 
 # Three overrides, each for a real reason:
 #
@@ -151,8 +151,24 @@ pkg_build() {
 	# container images; it applies to the build sandbox too.
 	#
 	find . -name '*.sh' -exec sed -i '1s|^#!/bin/bash|#!/usr/bin/bash|' {} +
-	if grep -rl '^#!/bin/bash' --include='*.sh' . | grep -q .; then
-		echo "a #!/bin/bash shebang survived the rewrite" >&2
+	# Check LINE 1 ONLY -- that is what the sed above rewrites, and a
+	# whole-file search is wrong here for a concrete reason: libcap's
+	# progs/quicktest.sh contains #!/bin/bash inside two heredocs that
+	# write a test script at run time (lines 172 and 216). Those are not
+	# shebangs of this file, nothing should rewrite them, and a guard
+	# that greps the whole file reports them forever.
+	#
+	# Done with head + case rather than another grep invocation, so the
+	# check cannot fail for its own reasons -- which two earlier
+	# revisions of this guard both managed to do.
+	bad=""
+	for f in $(find . -name '*.sh'); do
+		case "$(head -1 "$f")" in
+		"#!/bin/bash"*) bad="$bad $f" ;;
+		esac
+	done
+	if [ -n "$bad" ]; then
+		echo "a #!/bin/bash shebang survived the rewrite:$bad" >&2
 		exit 1
 	fi
 
