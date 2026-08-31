@@ -63,7 +63,8 @@ enum pki_error {
  * `-noout` query results -- never echo it raw into an HTTP response,
  * since openssl's own errors can quote input material.
  */
-int pki_run_openssl(char *const argv[], char *out, size_t out_size);
+/* Defined in opensslrun.c -- see opensslrun.h for why it lives there. */
+#include "opensslrun.h"
 
 int pki_init(const char *pki_dir, const char *certs_state_path);
 
