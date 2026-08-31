@@ -1198,6 +1198,27 @@ enum pkg_error pkg_artifact_push_request(const char *remote_name, char *out_url,
 int pkg_artifact_push_is_enabled(void);
 
 /*
+ * ---- ADR-0221 / issue #112: build-environment reclamation ----
+ *
+ * Composed environments are reclaimed by LAST USE rather than by
+ * reachability over the recipe catalogue. Deleting one that turns out
+ * to be wanted costs a recomposition, not a failure -- see the ADR for
+ * why that reframing settles the whole design.
+ */
+
+/* {"buildenvs":[{name,last_used_seconds_ago,in_use,size_note}]}. */
+void pkg_buildenv_write_json(struct json_writer *w);
+
+enum pkg_error pkg_buildenv_delete(const char *name);
+
+/*
+ * Reclaims every environment idle beyond the retention window, never
+ * touching one an in-flight build holds. Returns how many were removed.
+ * Safe to call at any time: being wrong costs a recomposition.
+ */
+int pkg_buildenv_reclaim(void);
+
+/*
  * ---- pkg/ redesign Part 4 (ADR-0123): image recipes ----
  *
  * An image recipe is the image-layer analog of a package recipe: a

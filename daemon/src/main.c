@@ -24626,6 +24626,51 @@ static void op_publishSystemIso(const struct api_ctx *ctx)
 	handle_system_iso_publish(ctx->fd);
 }
 
+/* GET /v1/pkg/buildenv (ADR-0221) */
+static void op_listBuildEnvironments(const struct api_ctx *ctx)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	pkg_buildenv_write_json(&w);
+	respond_json(ctx->fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/* DELETE /v1/pkg/buildenv/{name} (ADR-0221) */
+static void op_deleteBuildEnvironment(const struct api_ctx *ctx)
+{
+	enum pkg_error err = pkg_buildenv_delete(ctx->p[0]);
+
+	switch (err) {
+	case PKG_OK:
+		http_write_response(ctx->fd, 204, "No Content", "application/json", "", 0);
+		return;
+	case PKG_ERR_INVALID_NAME:
+		respond_error(ctx->fd, 400, "Bad Request",
+		              "not a build-environment name -- these are named \"__buildenv-<hash>\"");
+		return;
+	case PKG_ERR_NOT_FOUND:
+		respond_error(ctx->fd, 404, "Not Found", "no such build environment");
+		return;
+	case PKG_ERR_BUSY:
+		/*
+		 * The one hard rule (ADR-0221). Worth its own status and its
+		 * own sentence: every other refusal here is about the name,
+		 * and an operator who reads "not found" for a live build's
+		 * environment would go looking in the wrong place.
+		 */
+		respond_error(ctx->fd, 409, "Conflict",
+		              "a build is using this environment right now -- it will be reclaimed "
+		              "automatically once it has been idle long enough");
+		return;
+	default:
+		respond_error(ctx->fd, 500, "Internal Server Error",
+		              "could not remove the build environment");
+		return;
+	}
+}
+
 /* GET /v1/system/release-key */
 static void op_getSystemReleaseKey(const struct api_ctx *ctx)
 {
@@ -28656,6 +28701,15 @@ static int cixd_main(int argc, char **argv)
 	 * log store, learned a third time.
 	 */
 	iso_recover_state();
+	/*
+	 * ADR-0221: reclaim build environments idle beyond the retention
+	 * window. At boot rather than on a timer -- the growth is slow
+	 * (one per corrected tool list), so a daemon restart is a frequent
+	 * enough opportunity, and it keeps this off the hot path of every
+	 * build. After logstore_init above, so what it removed is visible
+	 * where an operator looks.
+	 */
+	pkg_buildenv_reclaim();
 	if (boot_subsystem_init(init_mode, "resolv", resolv_init(RESOLV_CONF_PATH)) != 0)
 		return 1;
 
