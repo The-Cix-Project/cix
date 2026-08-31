@@ -207,6 +207,16 @@ void storagemigrate_completed(enum storage_kind kind, int exit_status)
 		         exit_status);
 }
 
+const char *storagemigrate_job_error(enum storage_kind kind)
+{
+	struct migrate_job *job;
+
+	if (kind < STORAGE_KIND_STATE || kind >= STORAGE_KIND_MIGRATABLE_COUNT)
+		return "";
+	job = &g_jobs[kind];
+	return job->error;
+}
+
 int storagemigrate_finalize(enum storage_kind kind)
 {
 	struct migrate_job *job;

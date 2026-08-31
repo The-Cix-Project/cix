@@ -101,6 +101,18 @@ int storagemigrate_finalize(enum storage_kind kind);
  * recently STARTED job was given -- valid for the caller's own
  * finalize-time repoint logic once storagemigrate_finalize() returns
  * 0. Empty string if no job has ever run for this kind. */
+/*
+ * This kind's current error text, or "" when there is none.
+ *
+ * Issue #172: the failure reason used to be readable ONLY by polling
+ * GET .../migrate. That is the wrong place for it to live alone -- an
+ * operator reconstructing what happened on a host reads the log store,
+ * and a migration that failed hours ago has usually stopped being
+ * polled by then. Exposed so the event loop can put the real reason
+ * where that operator will actually look.
+ */
+const char *storagemigrate_job_error(enum storage_kind kind);
+
 const char *storagemigrate_job_source_dir(enum storage_kind kind);
 const char *storagemigrate_job_target_dir(enum storage_kind kind);
 const char *storagemigrate_job_target_disk(enum storage_kind kind);
