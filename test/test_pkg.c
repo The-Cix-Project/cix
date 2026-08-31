@@ -3523,9 +3523,38 @@ skip_pin_isolation:
 			ok = 0;
 			goto skip_hostbuild;
 		}
+		/*
+		 * This build sleeps for the same reason slowhold's and
+		 * hbconcurrent's do -- see write_recipe(), which explains the
+		 * race in full.
+		 *
+		 * That fix was applied to the packages occupying the SECOND
+		 * chain slot and stopped there. The hostbuild ceiling check
+		 * needs BOTH slots provably busy, and hbtest is the occupant
+		 * of the first one. Its build was `tcc -o hello hello.c`,
+		 * milliseconds, while the probe that follows first waits up
+		 * to five seconds for hbconcurrent to be seen holding the
+		 * other slot. hbtest routinely finished inside that wait, so
+		 * by the time the third request landed a slot really was
+		 * free and 202 was the CORRECT answer -- the test failed
+		 * while the daemon was right, roughly half of all runs.
+		 *
+		 * Confirmed pre-existing rather than assumed: reproduced at
+		 * the commit before POST /v1/pkg/cancel was added (2 of 4
+		 * runs) as well as at HEAD (2 of 3), which is what ruled that
+		 * change out as the cause.
+		 *
+		 * The precondition guard below detects a lost window and says
+		 * so, which is worth keeping, but detecting a lost
+		 * precondition is not the same as not losing it -- the same
+		 * sentence write_recipe() already had to write once.
+		 *
+		 * coreutils is in this recipe's own declared build tools, so
+		 * `sleep` is genuinely present rather than assumed.
+		 */
 		fprintf(f, "pkg_name=hbtest\npkg_version=1.0\npkg_source=file://%s\n"
 		           "pkg_sha256=%s\npkg_depends=\"\"\npkg_build_depends=\"tcc linux-headers bash coreutils\"\n\n"
-		           "pkg_build() {\n\ttcc -o hello hello.c\n}\n\n"
+		           "pkg_build() {\n\tsleep 5\n\ttcc -o hello hello.c\n}\n\n"
 		           "pkg_install() {\n\tcp hello \"$PKG_DESTDIR/hello\"\n}\n",
 		        tarball_path, sha256);
 		fclose(f);
@@ -3640,6 +3669,37 @@ skip_pin_isolation:
 				        "'%s' before the ceiling could be probed, so the 409 below would be "
 				        "asserting timing, not the ceiling\n",
 				        hst[0] != '\0' ? hst : "(unknown)");
+				ok = 0;
+			}
+		}
+
+		/*
+		 * The same check for the OTHER occupant. hbconcurrent being
+		 * seen in flight proves one slot is held; the 409 below is
+		 * only about the ceiling if the hostbuild still holds the
+		 * other one. Asserting that here means a future regression
+		 * reports the precondition it actually lost, instead of
+		 * reporting a ceiling fault that never happened.
+		 */
+		{
+			char bst[64];
+
+			bst[0] = '\0';
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/pkg/hostbuild/hbtest", NULL, &r) == 0 &&
+			    r.status == 200) {
+				const char *st = json_str_field(r.json, "state");
+
+				if (st != NULL)
+					snprintf(bst, sizeof(bst), "%s", st);
+			}
+			cix_response_free(&r);
+			if (strcmp(bst, "fetching") != 0 && strcmp(bst, "building") != 0) {
+				fprintf(stderr,
+				        "FAIL: hostbuild ceiling precondition lost -- hbtest reached '%s' "
+				        "before the ceiling could be probed, so the 409 below would be "
+				        "asserting timing, not the ceiling\n",
+				        bst[0] != '\0' ? bst : "(unknown)");
 				ok = 0;
 			}
 		}
