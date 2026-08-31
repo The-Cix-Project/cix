@@ -11813,6 +11813,45 @@ static void handle_storage_migrate_event(struct conn *cc)
 	free(cc);
 
 	storagemigrate_completed(kind, exit_status);
+	/*
+	 * Issue #172: the outcome goes to the LOG STORE, not only to
+	 * stderr and the polling endpoint.
+	 *
+	 * The original report was "fails after ~20 seconds and writes
+	 * nothing whatsoever to the log store". Capturing the copy child's
+	 * stderr fixed *what* the reason is, but it was still readable
+	 * only by polling GET .../migrate -- and an operator working out
+	 * what happened to a host hours later reads the log store, by
+	 * which time nobody is polling anything. stderr does not help
+	 * either: this daemon never mirrors stderr into the log store
+	 * (only the reverse), so on a real installed box with no shell
+	 * that line goes nowhere at all -- the same gap #125/#132 already
+	 * document.
+	 *
+	 * Success is logged too, deliberately. "Did that migration ever
+	 * actually finish?" is a question an operator asks about a job
+	 * that moved 15 GB, and silence is a poor answer to it.
+	 */
+	{
+		const char *kind_name = kind == STORAGE_KIND_STATE         ? "state"
+		                        : kind == STORAGE_KIND_REBUILDABLE ? "rebuildable"
+		                        : kind == STORAGE_KIND_LOG         ? "log"
+		                                                           : "unknown";
+
+		if (exit_status == 0) {
+			logstore_write("cixd", "info",
+			               "storage migrate: %s-storage bulk copy finished successfully (%s -> %s)",
+			               kind_name, storagemigrate_job_source_dir(kind),
+			               storagemigrate_job_target_dir(kind));
+		} else {
+			const char *why = storagemigrate_job_error(kind);
+
+			logstore_write("cixd", "error",
+			               "storage migrate: %s-storage bulk copy failed (%s -> %s): %s", kind_name,
+			               storagemigrate_job_source_dir(kind), storagemigrate_job_target_dir(kind),
+			               (why != NULL && why[0] != '\0') ? why : "no reason reported");
+		}
+	}
 	fprintf(stderr, "storage migrate: bulk copy job finished (kind=%d exit_status=%d)\n", (int)kind,
 	        exit_status);
 	if (exit_status == 0 && kind == STORAGE_KIND_STATE)
