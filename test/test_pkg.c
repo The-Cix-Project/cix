@@ -303,7 +303,22 @@ static int write_recipe(const char *name, const char *version, const char *tarba
 	 * coreutils is in this recipe's own declared build tools, so
 	 * `sleep` is genuinely present rather than assumed.
 	 */
-	if (strcmp(name, "slowhold") == 0)
+	/*
+	 * "hbconcurrent" is here for the same reason, found the same way.
+	 * #192 fixed the ordinary-install ceiling check by giving it a
+	 * package that genuinely holds its slot -- and fixed only that
+	 * one. The hostbuild ceiling check below has the identical race
+	 * and was left with the identical bug: it occupies the second
+	 * chain slot with an ordinary install and then expects a third
+	 * request to be refused, but nothing made that install slow. Its
+	 * own comment claimed it "takes a genuine gcc build to finish",
+	 * which was never true of these fixture recipes -- they compile
+	 * one 5-line hello.c with tcc. When that finishes before the
+	 * overflow request lands, the slot is legitimately free and 202
+	 * is the CORRECT answer, so the test failed while the daemon was
+	 * right. Intermittent, roughly one run in three.
+	 */
+	if (strcmp(name, "slowhold") == 0 || strcmp(name, "hbconcurrent") == 0)
 		fprintf(f, "pkg_build() {\n\tsleep 5\n\ttcc -o hello hello.c\n}\n\n");
 	else
 		fprintf(f, "pkg_build() {\n\ttcc -o hello hello.c\n}\n\n");
@@ -3561,13 +3576,20 @@ skip_pin_isolation:
 		 * the two chain slots, not two ordinary installs). A fresh,
 		 * never-yet-installed name ("hbconcurrent") -- unlike badsum,
 		 * this one has a real, valid tarball/checksum, so it takes a
-		 * genuine gcc build to finish rather than failing fast on a
-		 * checksum mismatch during the fetch step alone; the overflow
-		 * check right below needs both chains to still be provably
-		 * busy by the time it fires, which a same-tick fetch failure
-		 * could otherwise race past (confirmed live: badsum's own
-		 * checksum failure was fast enough to free its chain slot
-		 * before the overflow request even landed). */
+		 * real build to run rather than failing fast on a checksum
+		 * mismatch during the fetch step alone; the overflow check
+		 * right below needs both chains to still be provably busy by
+		 * the time it fires, which a same-tick fetch failure could
+		 * otherwise race past (confirmed live: badsum's own checksum
+		 * failure was fast enough to free its chain slot before the
+		 * overflow request even landed).
+		 *
+		 * A valid tarball is necessary but was NOT sufficient, and
+		 * this comment used to claim it was ("takes a genuine gcc
+		 * build to finish"). These fixture recipes compile one
+		 * five-line hello.c with tcc; that is fast enough to lose the
+		 * race outright about one run in three. hbconcurrent now
+		 * holds its slot deliberately -- see write_recipe(). */
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"hbconcurrent\"}", &r) !=
 		        0 ||
