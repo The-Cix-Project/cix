@@ -1843,3 +1843,43 @@ td.empty {
 		animation: none;
 	}
 }
+
+/*
+ * Issue #140: the partition-allocation donut on a disk's Partitions
+ * tab. Chart and legend sit side by side on a wide screen and stack on
+ * a narrow one -- the legend carries the actual numbers, so it must
+ * never be the thing that gets clipped.
+ */
+.alloc-chart {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 1.25rem;
+	margin: 0.75rem 0 1rem;
+}
+
+.alloc-legend {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 0.3rem;
+	font-size: 0.85rem;
+	/* Digits in a column of sizes line up, so two partitions of
+	 * different magnitude are comparable at a glance. */
+	font-variant-numeric: tabular-nums;
+}
+
+.alloc-legend li {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+}
+
+.alloc-swatch {
+	width: 0.75rem;
+	height: 0.75rem;
+	border-radius: 2px;
+	flex: 0 0 auto;
+}
