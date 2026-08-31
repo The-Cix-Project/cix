@@ -75,6 +75,23 @@ These are genuine, confirmed environment facts about this project's own minimal 
 - **Absolute tool paths inside a container, not bare names.** `gcc`/`ld` resolve their own installation prefix differently depending on how they're invoked (see `CLAUDE.md`'s own environment notes) — prefer `/usr/bin/gcc` over a bare `gcc` if a recipe's own build step execs a compiler directly rather than through `make`'s normal `$(CC)` indirection.
 - **A recipe only ever sees what it declared, or (if it declared nothing) whatever its build image already has.** With `pkg_build_depends` set, the environment is exactly your declared packages — nothing is auto-detected or auto-installed on demand, and anything missing fails the build by name.
 
+### Working out a recipe's build tools
+
+A recipe with no `pkg_build_depends` cannot be built at all — ADR-0199 composes every build environment from a recipe's declared tools **and nothing else**, so it is refused before it starts. Working out the right set is not guesswork; it comes from three real sources:
+
+1. **The baseline.** For an autotools-shaped package, the recipes that already declare their tools converge on `tcc make linux-headers bash coreutils sed grep gawk binutils findutils`. `findutils` is easy to forget and easy to justify: autotools trees shell out to `find` (openldap's own `shtool mkln` does).
+2. **What your own `pkg_build()` invokes.** Read it back and take the tools literally — `autoreconf`, `perl`, `python`, `bison`, `m4`, `go`, `cargo`. If the script runs it, declare it.
+3. **What you link against.** A library needed at *build* time belongs in `pkg_build_depends` even when it is already in `pkg_depends` — the two answer different questions. `--with-tls=openssl` or `LIBS="-llber"` makes those build-time needs.
+
+**Then build it, and let the failure correct you.** An incomplete set does not fail vaguely — it names what is missing:
+
+```
+tcc: error: undefined symbol 'crypt'      -> libxcrypt (glibc 2.44 moved crypt() out)
+/bin/sh: find: command not found          -> findutils
+```
+
+That loop is what makes this safe to do without a perfect first guess. What is *not* safe is declaring a set and never building it: an unverified `pkg_build_depends` is indistinguishable from a correct one until someone needs it.
+
 ### pkg-config files: ship one exactly when you ship what it describes
 
 A `.pc` file is a **claim about what your package provides** — include paths, a link line, a version. So the rule is not "always keep them" or "always strip them", it is that the claim must be true:
