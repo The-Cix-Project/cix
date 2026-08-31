@@ -114,6 +114,50 @@ Dropping it costs symbol versioning and nothing else — same soname, same expor
 
 Note the difference between how packages fail here. `libmnl` and `ipset` **fail loudly** at the link step, which is the good case. `zlib`'s configure merely *probed*, printed "No shared library support", built a static library instead and installed cleanly — and the next thing to link against it died. That is issue #113, and it is why a recipe should assert what it built rather than trust that `make` exited 0.
 
+### TCC implements none of the bit-twiddling builtins
+
+TCC does not implement `__builtin_ffs`, `__builtin_clz`, `__builtin_clzll`,
+`__builtin_popcount`, `__builtin_bswap16`, `__builtin_bswap32` or
+`__builtin_bswap64`. It does not reject them either — it emits each as an
+ordinary undefined external symbol. (`__builtin_constant_p`,
+`__builtin_expect`, `__builtin_types_compatible_p` and
+`__builtin_choose_expr` *are* implemented.)
+
+Whether that is loud or silent depends entirely on what you are building:
+
+- an **executable** fails at link — `tcc: error: undefined symbol '__builtin_ffs'`
+- a **shared library** links fine, because undefined symbols are legal in a
+  `.so`. It installs, publishes, and stays broken until something calls it.
+
+Both real cases so far have been shared libraries, which is not a
+coincidence. `libblkid` shipped an undefined `__builtin_clz` (#176); libnl
+needed four of them at once (#207). The install-time gate catches these now
+and fails the build rather than publishing — see #176 — but the gate tells
+you *that* a builtin is missing, not what to do about it.
+
+The fix in a recipe is a small compatibility header force-included via
+`CPPFLAGS`. `libnl`'s recipe is the reference. Two traps it had to avoid,
+both of which cost a build each:
+
+**Use plain `static`, never `static inline`.** TCC emits a `static inline`
+function defined in a shared header as a strong global in *every*
+translation unit that includes it, so the link fails with "defined twice"
+— the same gap m4 hit. Verify with `nm` that the symbols come out
+lowercase `t` (file-local), not `T`.
+
+**Include no system headers in the shim.** A `-include` header is processed
+before the translation unit can define `_GNU_SOURCE`, so pulling in any libc
+header there latches glibc's feature-test macros too early. libnl's first
+attempt included `<strings.h>` for `ffs()` and hid `struct ucred` from an
+unrelated header, failing with `field 'nm_creds' has incomplete type` — an
+error naming nothing to do with builtins. Write the implementations out by
+hand instead, using plain `unsigned int`/`unsigned long long` rather than
+`<stdint.h>` types.
+
+This is a workaround, not the fix. #208 tracks implementing the builtins in
+TCC itself, after which these shims should be deleted rather than copied
+into a third recipe.
+
 ### Consuming another package's pkg-config file
 
 Set `PKG_CONFIG_PATH` explicitly. Packages here do not all use one convention — `libmnl` and `libuuid` install to `usr/lib/pkgconfig`, while a package configured with a multiarch `--libdir` lands in `lib/x86_64-linux-gnu/pkgconfig` — and a consumer should not have to know which its dependency happened to pick:
