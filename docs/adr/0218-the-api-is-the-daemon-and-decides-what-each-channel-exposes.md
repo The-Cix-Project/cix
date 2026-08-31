@@ -5,7 +5,7 @@
 Accepted. Extends the API-First Mandate (`CLAUDE.md`) from a rule people follow
 into a property the build enforces. Prerequisite for [#182](https://git.home.arpa/itdlabs/cix/issues/182),
 which regroups the API into five lifecycle domains and would otherwise be
-re-typed by hand across three surfaces.
+re-typed by hand in three separate places.
 
 ## Context
 
@@ -39,7 +39,8 @@ That is the finding. The true numbers (174 spec paths, 163 CLI, 160 web, 143
 shared) are less important than the fact that **coverage cannot be determined
 by reading the code**. If it takes three attempts and still nearly produces a
 false claim, no reviewer will do better, and no amount of discipline keeps
-three surfaces aligned. Every drift found in this project so far was found by
+three hand-maintained implementations aligned. Every drift found in this project
+so far was found by
 a human noticing, late: a stale API contract, an ADR index stopped at 0214, an
 artifact cache five releases behind.
 
@@ -53,8 +54,13 @@ documentation, not a contract.
 
 ## Decision
 
-**One machine-readable route table, extracted from `openapi.yaml`, generates
-the routing layer of all three surfaces.**
+**One route table, extracted from `openapi.yaml`. The daemon's dispatcher is
+generated from it unconditionally. The presentation channels declare which
+operations they expose, and are checked against it.**
+
+Those are two different kinds of guarantee, deliberately: the daemon side
+admits no wrong state, so there is nothing to validate; the channel side
+admits one, so it must be.
 
 1. **`openapi.yaml` stays the single source of truth.** It is not demoted to a
    generated artifact — the Documentation Map's existing rule stands, and its
@@ -90,12 +96,26 @@ the routing layer of all three surfaces.**
    - a coverage assertion per presentation channel: every operation whose
      `x-cix-expose` names that channel must be reachable from it.
 
-5. **Only routing is generated. UX is not.** Commands, flags, wording, page
+5. **What the table does not cover, stated so "unconditionally" has no silent
+   asterisk.** Everything under `/v1` is an API operation and goes through the
+   table without exception. Two things are deliberately outside it and stay
+   hand-routed, because they are not API operations at all:
+
+   - **static assets** for the dashboard (`static_serve()`), which serve files
+     from a directory rather than invoking a capability;
+   - anything served outside the `/v1` prefix.
+
+   Note that the console and exec **WebSocket upgrades are inside** the table:
+   they are declared operations in the spec and get dispatch entries like any
+   other, even though what happens after the upgrade is not request/response.
+   The boundary is "is it a declared API operation", not "is it ordinary HTTP".
+
+6. **Only routing is generated. UX is not.** Commands, flags, wording, page
    layout and the dashboard's information design stay hand-written. Generating
    those produces a worse CLI and a worse dashboard, and this decision does not
    pretend otherwise.
 
-6. **The extractor is deliberately restricted, and fails loudly.** It reads
+7. **The extractor is deliberately restricted, and fails loudly.** It reads
    only `paths:` → method → `operationId`/`x-cix-expose`, an
    indentation-regular subset — not general YAML, which this project has no
    parser for and does not need one for. It **refuses to skip** anything it
@@ -103,12 +123,53 @@ the routing layer of all three surfaces.**
    the worst possible outcome here: a tool confidently wrong about its own
    subject, which is the exact failure class this ADR exists to remove.
 
+
+## How exposure is validated
+
+The daemon needs no validation: an operation with no handler does not link.
+`x-cix-expose` is different — it is a claim about hand-written code, so it can
+be false, and the obvious way to check it is the one this ADR already rejects.
+Parsing `cli/src/main.c` and `web/app.js` to enumerate which operations they
+reach is precisely the extraction that gave three different answers above.
+
+The way out is to stop asking the unreliable question. **It is not possible to
+reliably enumerate which URLs a channel builds. It is trivial to assert that it
+builds none.** A negative check needs no understanding of the code, which is
+exactly why it can be trusted.
+
+Three layers, each proving strictly less than the next:
+
+| layer | mechanism | proves | does not prove |
+|---|---|---|---|
+| **1. Construction** | one generated entry point per operation; a raw `"/v1/…"` literal outside generated files fails the build | a channel cannot invent, misspell or drift a path | that the entry point is ever used |
+| **2. Declaration** | the channel's claimed set is cross-checked against `x-cix-expose` | nothing declared-but-absent, nothing present-but-undeclared | that a person can reach it |
+| **3. Reachability** | the channel reports its own live coverage; a test asserts it against the declaration | the capability is wired to a real command or control | — |
+
+Layer 1 is the load-bearing one, and it is a build lock rather than a check:
+today there are ~250 raw path literals in the CLI and ~226 in the dashboard,
+and converting them to generated entry points deletes the whole class of
+misspelling and drift instead of policing it.
+
+**Layers 1 and 2 prove a symbol exists. Only layer 3 proves it is reachable.**
+A generated function called from dead code satisfies every static check while
+the operator still cannot do the thing. That distinction is not pedantry — it
+is the same error made in #192, where a guard that *detected* a lost
+precondition was reported as a fix for the race it merely described. Detecting
+is not preventing; existing is not reachable. Layer 3 is therefore part of the
+decision, not a later nicety.
+
+What this deliberately does not attempt: proving that every exposed capability
+*works*, end to end, through the channel. That is ordinary testing, it is
+expensive across 263 operations and two channels, and it is a separate
+judgement about which capabilities are worth that. Layer 3 answers "is it
+wired", not "is it correct".
+
 ## Consequences
 
 **Drift becomes a build failure rather than a discovery.** The property is
 sufficiency, enforced the way ADR-0199 enforces build tools: *"Sufficiency is
 enforced by the build. Minimality is review, not enforcement."* Whether an
-endpoint *should* exist on a surface stays a judgement; whether a declared one
+operation *should* be exposed in a channel stays a judgement; whether a declared one
 *does* stops being one.
 
 **The dispatcher becomes generated, which is the largest part of this, and the
@@ -120,9 +181,9 @@ three-sided problem while leaving the one side everything else depends on
 unenforced.
 
 **#182 becomes tractable.** Regrouping ~174 endpoints into five lifecycle
-domains, by hand, across three surfaces is the highest-drift-risk operation
+domains, by hand, in three separate places is the highest-drift-risk operation
 this project has attempted. With one table it is an edit to the table plus
-whatever UX each surface deserves.
+whatever UX each channel deserves.
 
 **A build-time generator is new to this project.** The Makefile has exactly one
 existing exception — a `git describe` for the version string, documented at the
@@ -133,7 +194,7 @@ already been measured and it does not work.
 ## Alternatives considered
 
 **A conformance test instead of generation.** Cheaper, and it would catch
-divergence — but only by parsing three hand-written surfaces, which is exactly
+divergence — but only by parsing three hand-written implementations, which is exactly
 the operation that produced three different answers above. A checker built on
 unreliable extraction inherits the unreliability, and a green check would be
 worth less than no check.
