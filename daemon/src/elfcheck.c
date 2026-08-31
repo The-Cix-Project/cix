@@ -55,6 +55,116 @@ static int read_at(int fd, void *buf, size_t len, off_t off)
 	return (n == (ssize_t)len) ? 0 : -1;
 }
 
+/*
+ * Section-name lookup, needed only by the .comment reader below: the
+ * undefined-builtin check finds its section by TYPE, which needs no
+ * name table at all.
+ */
+static int section_name_matches(int fd, unsigned long long shstr_off, unsigned long long shstr_size,
+                                 unsigned int name_off, const char *want)
+{
+	char buf[64];
+	size_t want_len = strlen(want);
+
+	if ((unsigned long long)name_off + want_len + 1 > shstr_size)
+		return 0;
+	if (want_len + 1 > sizeof(buf))
+		return 0;
+	if (read_at(fd, buf, want_len + 1, (off_t)(shstr_off + name_off)) != 0)
+		return 0;
+	buf[want_len] = '\0';
+	return strcmp(buf, want) == 0;
+}
+
+int elfcheck_built_by_gcc(const char *path, char *out_version, size_t version_size)
+{
+	int fd;
+	unsigned char ehdr[64];
+	unsigned long long e_shoff, shstr_off = 0, shstr_size = 0;
+	unsigned int e_shentsize, e_shnum, e_shstrndx, i;
+	struct stat st;
+	int found = 0;
+
+	if (out_version != NULL && version_size > 0)
+		out_version[0] = '\0';
+
+	fd = open(path, O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return -1;
+	if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+		close(fd);
+		return -1;
+	}
+	if (read_at(fd, ehdr, sizeof(ehdr), 0) != 0) {
+		close(fd);
+		return 0;
+	}
+	if (memcmp(ehdr, "\177ELF", 4) != 0 || ehdr[4] != ELFCLASS64_LOCAL) {
+		close(fd);
+		return 0;
+	}
+	e_shoff = rd(ehdr + 0x28, 8);
+	e_shentsize = (unsigned int)rd(ehdr + 0x3a, 2);
+	e_shnum = (unsigned int)rd(ehdr + 0x3c, 2);
+	e_shstrndx = (unsigned int)rd(ehdr + 0x3e, 2);
+	if (e_shoff == 0 || e_shentsize < 64 || e_shnum == 0 || e_shnum > ELFCHECK_MAX_SECTIONS ||
+	    e_shstrndx >= e_shnum) {
+		close(fd);
+		return 0;
+	}
+	{
+		unsigned char sh[64];
+
+		if (read_at(fd, sh, sizeof(sh),
+		            (off_t)(e_shoff + (unsigned long long)e_shstrndx * e_shentsize)) != 0) {
+			close(fd);
+			return 0;
+		}
+		shstr_off = rd(sh + 0x18, 8);
+		shstr_size = rd(sh + 0x20, 8);
+	}
+
+	for (i = 0; i < e_shnum && !found; i++) {
+		unsigned char sh[64];
+		unsigned long long off, size;
+		char *body;
+		unsigned int name_off;
+
+		if (read_at(fd, sh, sizeof(sh), (off_t)(e_shoff + (unsigned long long)i * e_shentsize)) != 0)
+			break;
+		name_off = (unsigned int)rd(sh + 0x00, 4);
+		if (!section_name_matches(fd, shstr_off, shstr_size, name_off, ".comment"))
+			continue;
+		off = rd(sh + 0x18, 8);
+		size = rd(sh + 0x20, 8);
+		if (size == 0 || size > 64 * 1024)
+			continue;
+		body = malloc((size_t)size + 1);
+		if (body == NULL)
+			continue;
+		if (read_at(fd, body, (size_t)size, (off_t)off) == 0) {
+			size_t j;
+
+			body[size] = '\0';
+			/* .comment is a run of NUL-separated strings; a producer
+			 * that is not first must still be found. */
+			for (j = 0; j < (size_t)size; j++) {
+				if (strncmp(body + j, "GCC: ", 5) == 0) {
+					if (out_version != NULL && version_size > 0)
+						snprintf(out_version, version_size, "%s", body + j);
+					found = 1;
+					break;
+				}
+				while (j < (size_t)size && body[j] != '\0')
+					j++;
+			}
+		}
+		free(body);
+	}
+	close(fd);
+	return found;
+}
+
 int elfcheck_undefined_builtin(const char *path, char *out_sym, size_t sym_size)
 {
 	int fd;

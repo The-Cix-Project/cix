@@ -41,4 +41,30 @@
  */
 int elfcheck_undefined_builtin(const char *path, char *out_sym, size_t sym_size);
 
+/*
+ * Issue #113: whether this binary was produced by GCC.
+ *
+ * GCC stamps its identity into an ELF `.comment` section
+ * ("GCC: (Debian 12.2.0-14) 12.2.0"); TCC emits no `.comment` at all.
+ * So a GCC marker in a binary from a recipe pinning `CC=tcc` is proof
+ * the build did not go the way the recipe says it did.
+ *
+ * That matters because the failure is silent by construction. A
+ * configure script that PROBES for a capability rather than requiring
+ * it does not fail when the probe fails -- zlib quietly built a static
+ * library instead of a shared one, installed cleanly, and the next
+ * thing to link against it died. Where the ambient compiler was really
+ * GCC, the probe instead PASSED and produced a GCC artifact from a
+ * TCC-pinned recipe. Neither shows up as a build error.
+ *
+ * Returns 1 when a GCC marker is present, 0 when the file is ELF with
+ * no such marker or is not ELF at all, -1 when it cannot be read.
+ *
+ * Deliberately narrow: this answers "did GCC touch this", not "was the
+ * whole thing built by GCC". A TCC link against one GCC-built object
+ * carries the marker too -- which is still worth knowing for a recipe
+ * that claims to be pure TCC.
+ */
+int elfcheck_built_by_gcc(const char *path, char *out_version, size_t version_size);
+
 #endif /* ELFCHECK_H */
