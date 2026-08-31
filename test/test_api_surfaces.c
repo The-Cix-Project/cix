@@ -259,6 +259,217 @@ static void check_declared_exposure(void)
 	}
 }
 
+
+/*
+ * ADR-0218 layer 3: reachability.
+ *
+ * Layers 1 and 2 prove an operation's helper EXISTS and is referenced.
+ * Neither proves a person can reach it: a generated helper called from
+ * a function nothing ever calls satisfies both perfectly while the
+ * operator still cannot do the thing. That gap is #192's lesson in
+ * another costume -- detecting is not preventing, existing is not
+ * reachable -- so it is checked rather than assumed.
+ *
+ * The check walks the CLI's call graph from main() and fails if any
+ * API call sits in a function that graph cannot reach.
+ *
+ * Two things learned building it, both worth keeping:
+ *
+ * 1. A first version treated every "type name(" line as a function
+ *    DEFINITION, including forward declarations. A prototype then
+ *    claimed the byte range of the code after it, every later boundary
+ *    shifted, and the walk reported six live commands as dead --
+ *    cmd_files_get among them, which is called two lines from where
+ *    the checker said nothing called it. A checker that cries wolf on
+ *    working code is worse than none, so a definition here must have a
+ *    body: '{' ending the signature, or alone on the next line.
+ *
+ * 2. It is deliberately conservative. An unknown construct makes a
+ *    function look REACHABLE, never dead -- a false pass is a missed
+ *    warning, a false failure is a broken build for correct code.
+ */
+#define MAXFN 1024
+#define FNNAME 128
+
+struct fn {
+	char name[FNNAME];
+	size_t start, end;
+	int reachable;
+};
+
+static struct fn g_fn[MAXFN];
+static int g_fn_count;
+
+static int is_ident_char(char c)
+{
+	return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+	       c == '_';
+}
+
+/* The next non-blank line's first character. */
+static char peek_next_nonblank(const char *s, size_t from)
+{
+	size_t i = from;
+
+	while (s[i] != '\0') {
+		if (s[i] == '\n') {
+			size_t j = i + 1;
+
+			while (s[j] == ' ' || s[j] == '\t' || s[j] == '\n')
+				j++;
+			return s[j];
+		}
+		i++;
+	}
+	return '\0';
+}
+
+static void collect_functions(const char *s)
+{
+	size_t i = 0;
+	int at_line_start = 1;
+
+	g_fn_count = 0;
+	while (s[i] != '\0' && g_fn_count < MAXFN) {
+		if (at_line_start && (is_ident_char(s[i]))) {
+			size_t j = i, last_ident_start = i, paren = 0;
+
+			/* scan the candidate signature to its '(' */
+			while (s[j] != '\0' && s[j] != '\n' && s[j] != '(') {
+				if (!is_ident_char(s[j - 1 < j ? j - 1 : j]) && is_ident_char(s[j]))
+					last_ident_start = j;
+				j++;
+			}
+			if (s[j] == '(') {
+				size_t name_end = j;
+				size_t k = j;
+				int depth = 0;
+
+				/* balance the parameter list, possibly across lines */
+				while (s[k] != '\0') {
+					if (s[k] == '(')
+						depth++;
+					else if (s[k] == ')') {
+						depth--;
+						if (depth == 0)
+							break;
+					}
+					k++;
+				}
+				if (s[k] == ')') {
+					size_t t = k + 1;
+
+					while (s[t] == ' ' || s[t] == '\t')
+						t++;
+					/* a DEFINITION has a body; a prototype ends in ';' */
+					if (s[t] == '{' || (s[t] == '\n' && peek_next_nonblank(s, k) == '{')) {
+						size_t n = name_end - last_ident_start;
+
+						if (n > 0 && n < FNNAME) {
+							memcpy(g_fn[g_fn_count].name, s + last_ident_start, n);
+							g_fn[g_fn_count].name[n] = '\0';
+							g_fn[g_fn_count].start = i;
+							g_fn[g_fn_count].reachable = 0;
+							g_fn_count++;
+						}
+					}
+				}
+			}
+		}
+		at_line_start = (s[i] == '\n');
+		i++;
+	}
+	for (i = 0; (int)i < g_fn_count; i++)
+		g_fn[i].end = ((int)i + 1 < g_fn_count) ? g_fn[i + 1].start : strlen(s);
+}
+
+static int fn_index(const char *name)
+{
+	int i;
+
+	for (i = 0; i < g_fn_count; i++)
+		if (strcmp(g_fn[i].name, name) == 0)
+			return i;
+	return -1;
+}
+
+/* Marks f and everything it calls. Depth-bounded rather than
+ * unbounded recursion: a cycle is normal in C and must not blow the
+ * stack of a test. */
+static void mark_reachable(const char *s, int f, int depth)
+{
+	size_t i;
+
+	if (f < 0 || f >= g_fn_count || g_fn[f].reachable || depth > 64)
+		return;
+	g_fn[f].reachable = 1;
+	for (i = g_fn[f].start; i < g_fn[f].end; i++) {
+		if (!is_ident_char(s[i]) || (i > 0 && is_ident_char(s[i - 1])))
+			continue;
+		{
+			size_t j = i;
+			char word[FNNAME];
+			size_t n = 0;
+
+			while (is_ident_char(s[j]) && n + 1 < sizeof(word))
+				word[n++] = s[j++];
+			word[n] = '\0';
+			while (s[j] == ' ' || s[j] == '\t')
+				j++;
+			if (s[j] == '(')
+				mark_reachable(s, fn_index(word), depth + 1);
+			i = j > i ? j - 1 : i;
+		}
+	}
+}
+
+static void check_reachability(void)
+{
+	char *s = slurp("cli/src/main.c");
+	int i, dead = 0;
+
+	if (s == NULL) {
+		fprintf(stderr, "FAIL: cannot read cli/src/main.c for reachability\n");
+		failures++;
+		return;
+	}
+	collect_functions(s);
+	if (g_fn_count < 100) {
+		/* The parser found implausibly few functions, so a clean result
+		 * would mean nothing. Say so instead of passing. */
+		fprintf(stderr,
+		        "FAIL: reachability found only %d function definitions in cli/src/main.c -- "
+		        "the parser is wrong, and a pass here would be meaningless\n",
+		        g_fn_count);
+		failures++;
+		free(s);
+		return;
+	}
+	mark_reachable(s, fn_index("main"), 0);
+	for (i = 0; i < g_fn_count; i++) {
+		size_t j;
+
+		if (g_fn[i].reachable)
+			continue;
+		for (j = g_fn[i].start; j + 8 < g_fn[i].end; j++) {
+			if (strncmp(s + j, "CIX_API_", 8) != 0)
+				continue;
+			if (dead == 0)
+				fprintf(stderr,
+				        "FAIL: the CLI calls the API from code nothing reaches. A generated\n"
+				        "      helper referenced from a function main() cannot reach is a\n"
+				        "      capability the contract promises and no operator can use\n"
+				        "      (ADR-0218 layer 3).\n");
+			fprintf(stderr, "      %s() is unreachable but calls the API\n", g_fn[i].name);
+			dead++;
+			break;
+		}
+	}
+	if (dead > 0)
+		failures++;
+	free(s);
+}
+
 int main(void)
 {
 	/*
@@ -275,6 +486,7 @@ int main(void)
 	scan("web/app.js", "the dashboard", "CIX_API.<operationId>() helpers from the generated web/api.js");
 
 	check_declared_exposure();
+	check_reachability();
 
 	if (failures == 0)
 		printf("API SURFACES RESULT: PASS\n");
