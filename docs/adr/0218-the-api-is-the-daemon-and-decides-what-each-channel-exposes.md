@@ -1,4 +1,4 @@
-# 0218 — One route table, three surfaces
+# 0218 — The API is the daemon, and it decides what each channel exposes
 
 ## Status
 
@@ -62,27 +62,41 @@ the routing layer of all three surfaces.**
    `operationId`, which becomes the join key between spec, handler, CLI
    command and dashboard call.
 
-2. **Each operation declares which surfaces must implement it**, via an
-   `x-cix-surfaces` extension (`[daemon, cli, web]`). Not every endpoint
-   belongs everywhere — a dashboard has no business exposing `pkg hostbuild`,
-   and the CLI needs no `esp/entries` view. The 20 CLI-only and 17 web-only
-   paths become either **declared** or **failures**, never silently either.
+2. **The daemon is not a surface, and has nothing to declare.** The contract
+   and the daemon are the same statement: every operation in `openapi.yaml`
+   has exactly one handler, generated unconditionally, with no opt-out and no
+   extension field governing it. There is no valid state in which the daemon
+   does not serve what the contract says it serves, so there is nothing to
+   express. Treating the daemon as one of three declarable surfaces — as an
+   earlier draft of this ADR did — smuggles in the idea that it might
+   legitimately not implement something, which is exactly the circumvention
+   API-First exists to forbid.
 
-3. **A generator, built with TCC, emits the routing layer**:
+3. **Only the presentation channels opt in**, via `x-cix-expose`
+   (`[cli, web]`, either, both, or empty). Not every capability belongs in
+   every channel — a dashboard has no business exposing `pkg hostbuild`, and
+   the CLI needs no `esp/entries` view. **The API decides this**, in one
+   place, rather than each channel deciding for itself and drifting. The 20
+   CLI-only and 17 web-only paths become either **declared** or **failures**,
+   never silently either.
+
+4. **A generator, built with TCC, emits the routing layer**:
    - the daemon's dispatch table — `(method, pattern) -> handler symbol`
-     derived from `operationId`. **A declared operation whose handler does not
-     exist becomes a link error**, and a handler no operation names becomes
-     unreachable, because dispatch happens only through the table.
-   - a coverage assertion for the CLI and for the dashboard: every operation
-     marked for that surface must be reachable from it.
+     derived from `operationId`, for **every** operation without exception.
+     **An operation whose handler does not exist becomes a link error**, and a
+     handler no operation names becomes unreachable, because dispatch happens
+     only through the table. That pair of properties is what makes the
+     contract and the daemon one thing rather than two that agree.
+   - a coverage assertion per presentation channel: every operation whose
+     `x-cix-expose` names that channel must be reachable from it.
 
-4. **Only routing is generated. UX is not.** Commands, flags, wording, page
+5. **Only routing is generated. UX is not.** Commands, flags, wording, page
    layout and the dashboard's information design stay hand-written. Generating
    those produces a worse CLI and a worse dashboard, and this decision does not
    pretend otherwise.
 
-5. **The extractor is deliberately restricted, and fails loudly.** It reads
-   only `paths:` → method → `operationId`/`x-cix-surfaces`, an
+6. **The extractor is deliberately restricted, and fails loudly.** It reads
+   only `paths:` → method → `operationId`/`x-cix-expose`, an
    indentation-regular subset — not general YAML, which this project has no
    parser for and does not need one for. It **refuses to skip** anything it
    does not recognise. A generator that silently mis-parses its input would be
@@ -97,12 +111,13 @@ enforced by the build. Minimality is review, not enforcement."* Whether an
 endpoint *should* exist on a surface stays a judgement; whether a declared one
 *does* stops being one.
 
-**The dispatcher becomes generated, which is the largest part of this.** Its
-handlers are untouched — only the table and the matching move. This is
-deliberate and was chosen over the smaller option of generating CLI and
-dashboard only: leaving the daemon hand-routed keeps the spec able to disagree
-with the code, which is where #162's drift actually came from, so excluding it
-would fix two thirds of a three-sided problem.
+**The dispatcher becomes generated, which is the largest part of this, and the
+non-negotiable part.** Its handlers are untouched — only the table and the
+matching move. Generating CLI and dashboard alone was considered and rejected:
+it leaves the spec able to disagree with the code that serves it, which is
+where #162's stale contract came from, and it would fix two thirds of a
+three-sided problem while leaving the one side everything else depends on
+unenforced.
 
 **#182 becomes tractable.** Regrouping ~174 endpoints into five lifecycle
 domains, by hand, across three surfaces is the highest-drift-risk operation
