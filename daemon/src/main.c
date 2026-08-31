@@ -221,6 +221,10 @@ static char QUOTAMAP_STATE_PATH[PATH_MAX];
  */
 static char SIGNING_KEYS_DIR[PATH_MAX];
 static char ISO_DIR[PATH_MAX];
+/* Set once at startup beside ISO_DIR, so a restart can find an ISO it
+ * already built (#205) -- it used to be derived only inside the build
+ * handler, which is why nothing knew the path until a build ran. */
+static char ISO_OUTPUT_PATH[PATH_MAX];
 /*
  * Where the assembled control-plane image and its staging tree live
  * (#178). Both used to sit inside the "cix" hostbuild's own artifact
@@ -398,6 +402,13 @@ static void compute_rebuildable_dir_relative_paths(void)
 	snprintf(PKG_BUILD_CONFIG_PATH, sizeof(PKG_BUILD_CONFIG_PATH), "%s/build_config.json", PKG_DIR);
 	snprintf(ARTIFACTS_DIR, sizeof(ARTIFACTS_DIR), "%s/artifacts", REBUILDABLE_DIR);
 	snprintf(ISO_DIR, sizeof(ISO_DIR), "%s/iso", REBUILDABLE_DIR);
+	/*
+	 * Computed here rather than inside the build handler, which is
+	 * where it used to be derived and nowhere else (#205). Nothing
+	 * knew the ISO's path until a build ran in this process, so a
+	 * restart could not look for an ISO it already had.
+	 */
+	snprintf(ISO_OUTPUT_PATH, sizeof(ISO_OUTPUT_PATH), "%s/cix-install.iso", ISO_DIR);
 	snprintf(BOOTROOT_DIR, sizeof(BOOTROOT_DIR), "%s/bootroot", REBUILDABLE_DIR);
 	snprintf(SYSTEM_UPDATE_FETCH_PATH, sizeof(SYSTEM_UPDATE_FETCH_PATH),
 	         "%s/system_update_image.squashfs", REBUILDABLE_DIR);
@@ -9522,7 +9533,19 @@ static char g_iso_build_error[256];
  * ISO, so a missing key does not fail the build.
  */
 static char g_iso_signature_path[PATH_MAX];
-static char ISO_OUTPUT_PATH[PATH_MAX];
+
+/*
+ * The cixd version that built the current ISO, read back out of the
+ * trusted comment inside its own signature.
+ *
+ * Deliberately taken from the artifact rather than from
+ * CIX_BUILD_VERSION, because state is recovered from disk (#205) and a
+ * surviving ISO may predate the running daemon. Reading it from the
+ * signature means this describes the ISO, not whatever happens to be
+ * running -- and the trusted comment is covered by the global
+ * signature, so it is a signed claim rather than an editable label.
+ */
+static char g_iso_built_version[64];
 
 static int url_query_param(const char *full_path, const char *key, char *out, size_t out_size);
 
@@ -10228,7 +10251,7 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 	         (interface != NULL && interface[0] != '\0') ? interface : "CHANGEME");
 
 	snprintf(stage_dir, sizeof(stage_dir), "%s/.stage", ISO_DIR);
-	snprintf(ISO_OUTPUT_PATH, sizeof(ISO_OUTPUT_PATH), "%s/cix-install.iso", ISO_DIR);
+	/* ISO_OUTPUT_PATH is set once at startup -- see its own note there. */
 
 	argv[0] = mkinstalleriso_bin;
 	argv[1] = stage_dir;
@@ -10322,6 +10345,96 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 
 /* Reaps iso_build_start()'s own mkinstalleriso child, same shape as
 /*
+ * Reads the version out of a minisign signature's trusted comment.
+ *
+ * The file's third line is "trusted comment: cix installer iso, vX.Y.Z"
+ * -- this project's own wording, written by sign_finished_iso(). A
+ * signature that does not carry it (someone else's, or a future format
+ * change) simply yields nothing rather than a guess.
+ */
+static void read_iso_signed_version(const char *sig_path, char *out, size_t out_size)
+{
+	FILE *f;
+	char line[512];
+	const char *marker = "trusted comment:";
+	const char *prefix = "cix installer iso, ";
+
+	out[0] = '\0';
+	f = fopen(sig_path, "r");
+	if (f == NULL)
+		return;
+	while (fgets(line, sizeof(line), f) != NULL) {
+		char *p;
+
+		if (strncmp(line, marker, strlen(marker)) != 0)
+			continue;
+		p = strstr(line, prefix);
+		if (p == NULL)
+			break;
+		p += strlen(prefix);
+		p[strcspn(p, "\r\n")] = '\0';
+		snprintf(out, out_size, "%s", p);
+		break;
+	}
+	fclose(f);
+}
+
+/*
+ * Recovers ISO state from disk at startup (#205).
+ *
+ * An ISO is a file. Keeping the only record of it in memory meant a
+ * restart reported "none" while the artifact sat there untouched, and
+ * POST /system/iso/publish refused it with "no ISO has been built on
+ * this host" -- a false statement about a file the daemon could see.
+ * Any restart between building and publishing stranded a finished,
+ * signed ISO with no route out but a full rebuild.
+ *
+ * Derived rather than persisted, deliberately: a stored claim about
+ * the ISO would be a second source of truth able to disagree with the
+ * filesystem, and the thing it describes is already on the filesystem.
+ *
+ * A recovered ISO may predate the running daemon, and that is reported
+ * (built_version) rather than hidden. It is still a real, bootable,
+ * correctly signed artifact -- refusing to admit it exists would not
+ * make it any less publishable by hand, only harder to notice.
+ */
+static void iso_recover_state(void)
+{
+	char sig_path[PATH_MAX];
+	struct stat st;
+
+	if (stat(ISO_OUTPUT_PATH, &st) != 0 || !S_ISREG(st.st_mode))
+		return;
+
+	g_iso_build_state = ISO_BUILD_READY;
+	snprintf(sig_path, sizeof(sig_path), "%s.minisig", ISO_OUTPUT_PATH);
+	if (stat(sig_path, &st) == 0 && S_ISREG(st.st_mode)) {
+		snprintf(g_iso_signature_path, sizeof(g_iso_signature_path), "%s", sig_path);
+		read_iso_signed_version(sig_path, g_iso_built_version, sizeof(g_iso_built_version));
+	}
+
+	/*
+	 * Said out loud at boot, because a recovered ISO is exactly the
+	 * one an operator might publish without having built it in this
+	 * session -- and if it came from an older cixd, that is worth
+	 * knowing before it is published as current.
+	 */
+	if (g_iso_signature_path[0] == '\0')
+		logstore_write("cixd", "info",
+		               "iso: found an unsigned ISO from a previous run (%s) -- it cannot be "
+		               "published until it is rebuilt with a release key installed",
+		               ISO_OUTPUT_PATH);
+	else if (g_iso_built_version[0] != '\0' && strcmp(g_iso_built_version, CIX_BUILD_VERSION) != 0)
+		logstore_write("cixd", "info",
+		               "iso: found a signed ISO from a previous run, built by %s (this daemon is "
+		               "%s) -- rebuild it if the installer should carry the running version",
+		               g_iso_built_version, CIX_BUILD_VERSION);
+	else
+		logstore_write("cixd", "info", "iso: found a signed ISO from a previous run (%s)",
+		               ISO_OUTPUT_PATH);
+}
+
+/*
  * Signs the finished ISO (ADR-0220), if this host holds a release key.
  *
  * Deliberately does NOT fail the build when no key is installed: an
@@ -10342,6 +10455,7 @@ static void sign_finished_iso(void)
 	char sig_path[PATH_MAX];
 
 	g_iso_signature_path[0] = '\0';
+	g_iso_built_version[0] = '\0';
 	if (!releasekey_is_set()) {
 		logstore_write("cixd", "info",
 		               "iso assembly: no release key installed -- ISO is unsigned");
@@ -10366,6 +10480,10 @@ static void sign_finished_iso(void)
 		return;
 	}
 	snprintf(g_iso_signature_path, sizeof(g_iso_signature_path), "%s", sig_path);
+	/* Read back from the signature just written, rather than assigned
+	 * from CIX_BUILD_VERSION: one answer to "where does built_version
+	 * come from", and it round-trips what was actually signed. */
+	read_iso_signed_version(sig_path, g_iso_built_version, sizeof(g_iso_built_version));
 	logstore_write("cixd", "info", "iso assembly: signed (%s)", g_iso_signature_path);
 }
 
@@ -11750,6 +11868,11 @@ static void write_iso_status(struct json_writer *w)
 	jw_key(w, "publish_error");
 	if (g_iso_publish_state == ISO_PUB_FAILED)
 		jw_str(w, g_iso_publish_error);
+	else
+		jw_null(w);
+	jw_key(w, "built_version");
+	if (g_iso_build_state == ISO_BUILD_READY && g_iso_built_version[0] != '\0')
+		jw_str(w, g_iso_built_version);
 	else
 		jw_null(w);
 	jw_obj_close(w);
@@ -28402,6 +28525,16 @@ static int cixd_main(int argc, char **argv)
 	 * reaching the log store, learned again.
 	 */
 	pkg_migrate_build_sandbox();
+	/*
+	 * After logstore_init for the same reason as the migration above:
+	 * this reports whether a surviving ISO was found and which cixd
+	 * built it, and an operator about to publish one needs that where
+	 * they actually look. It sat before logstore_init on the first cut
+	 * of #205's fix, so every one of its lines went nowhere -- this
+	 * project's own recorded lesson about stderr never reaching the
+	 * log store, learned a third time.
+	 */
+	iso_recover_state();
 	if (boot_subsystem_init(init_mode, "resolv", resolv_init(RESOLV_CONF_PATH)) != 0)
 		return 1;
 

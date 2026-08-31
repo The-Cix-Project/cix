@@ -3963,6 +3963,13 @@ paths:
     get:
       summary: Status of the most recent server-side installer ISO build (ADR-0064)
       description: >
+        Recovers its answer from disk at startup (#205): an ISO is a
+        file, so a restart that forgot one while the file sat there
+        reported "none" about an artifact that plainly existed, and
+        refused to publish it. State is derived from what is actually
+        on disk rather than from a stored claim about it, which is the
+        same posture the rest of this daemon takes and leaves nothing
+        that can disagree with the filesystem.
         Polling endpoint for POST /system/iso's own async job -- the
         exact shape GET /pkg/hostbuild/{name} already established for
         its own fire-and-forget job. state is "none" until the first
@@ -13497,6 +13504,21 @@ components:
           type: string
           nullable: true
           description: Non-null only when publish_state is "failed".
+        built_version:
+          type: string
+          nullable: true
+          description: >
+            The cixd version this ISO was built by, read back from the
+            trusted comment inside its own signature -- so it describes
+            the artifact rather than whatever is running now.
+            This matters because state is recovered from disk (#205): a
+            surviving ISO may predate the running daemon, and it is
+            still a real, bootable, correctly signed artifact. Reporting
+            which version it carries lets an operator notice a stale one
+            before publishing it as current, rather than hiding the
+            situation by pretending the ISO is not there.
+            Null for an unsigned ISO, which has no signature to read it
+            from.
 
     IsoBuildRequest:
       type: object
