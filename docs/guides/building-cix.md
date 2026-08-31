@@ -111,6 +111,24 @@ cixctl iso build --disk=/dev/CHANGEME --wait
 cixctl iso status
 ```
 
+The ISO exists on that host's own disk and nothing else can reach it yet. To put it where a machine being installed can actually fetch it:
+
+```
+cixctl iso publish --wait
+```
+
+That uploads the **signature first, then the ISO** — the artifact cache refuses an ISO with no signature beside it, which is the correct refusal: an unsigned installer is exactly the thing that must not be downloadable. If you skipped the release key above, this step refuses and says so, rather than publishing something no one can verify.
+
+Published as `cix-installer-<version>-1-<arch>.iso`, alongside its `.minisig`. On the far side, with no Cix software involved:
+
+```
+curl -fsSLO http://<cache>:8080/cix-installer-<version>-1-<arch>.iso
+curl -fsSLO http://<cache>:8080/cix-installer-<version>-1-<arch>.iso.minisig
+minisign -Vm cix-installer-<version>-1-<arch>.iso -p cix-release.pub
+```
+
+Verify on a machine you already trust, before writing the stick. An installer that checks its own signature is the code being checked doing the checking — a substituted ISO would report success.
+
 An empty `iso build` (no flags at all) works too — it just leaves every kernel argument as the `CHANGEME` placeholder, editable at the GRUB boot menu before installing, exactly like a manually-run `mkinstalleriso` always has.
 
 ### A real, TCC-specific gap worth knowing about
