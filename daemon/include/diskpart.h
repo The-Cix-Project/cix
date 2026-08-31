@@ -141,6 +141,12 @@ int diskpart_partition_number(const char *name);
  */
 int diskpart_partition_protected(const char *name, int is_os_disk);
 
+/*
+ * What the partitioning tool itself last said, or "" if nothing.
+ * Only meaningful immediately after a DISKPART_ERR_SFDISK_FAILED.
+ */
+const char *diskpart_last_tool_error(void);
+
 enum diskpart_error diskpart_create_table(const char *disk_name, const char *os_containers_dir);
 
 /*

@@ -4668,10 +4668,16 @@ paths:
       summary: Appends one new partition to a disk's existing partition table (task #844)
       description: >
         Never touches any partition already on the disk (sfdisk
-        --append). Same disk_name preconditions as POST .../partition-table
-        (must be a present, non-partition, non-OS whole disk with no role
-        of its own and not mounted). Synchronous, same reasoning as
-        partition-table creation above.
+        --append) -- which is precisely why this is allowed on the OS
+        disk while rewriting its table is not (issue #140). Appending
+        after the system partitions cannot read, move or modify them.
+        Preconditions are therefore weaker than POST
+        .../partition-table: a present, non-partition whole disk with
+        no role of its own, whose whole-disk device is not itself
+        mounted. The OS disk qualifies, and so does a disk with mounted
+        partitions -- refusing on that basis is what made an operator's
+        deliberately-reserved free space unusable. Synchronous, same
+        reasoning as partition-table creation above.
       operationId: addDiskPartition
       x-cix-expose: [cli, web]
       parameters:
@@ -4695,8 +4701,9 @@ paths:
                 $ref: "#/components/schemas/DiskPartitionsResponse"
         "400":
           description: >
-            name missing/invalid, invalid disk name, disk is itself a
-            partition, or disk is the OS disk
+            name missing/invalid, invalid disk name, or disk is itself
+            a partition. No longer refused merely for being the OS disk
+            (#140)
           content:
             application/json:
               schema:
