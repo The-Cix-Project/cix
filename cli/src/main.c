@@ -694,8 +694,33 @@ static void fmt_network_line(const struct json_value *v)
 	long prefix_len = (long)json_as_number(json_object_get(v, "prefix_len"));
 	const char *address = json_str_field(v, "address"); /* NULL when this network has none */
 
-	printf("%-20s %s/%-3ld address=%s\n", name, subnet, prefix_len,
+	const struct json_value *as = json_object_get(v, "alloc_start_host");
+	const struct json_value *ae = json_object_get(v, "alloc_end_host");
+
+	printf("%-20s %s/%-3ld address=%s", name, subnet, prefix_len,
 	       address != NULL ? address : "none");
+	/*
+	 * Show the auto-allocation window (issue #137). Worth a column
+	 * because its ABSENCE is meaningful on a bridged network -- that is
+	 * the state where auto-allocation is refused outright -- and a
+	 * `set-pool` that printed nothing about the pool would leave an
+	 * operator with no confirmation of what they just changed.
+	 */
+	if ((as != NULL && as->type == JSON_NUMBER) || (ae != NULL && ae->type == JSON_NUMBER)) {
+		printf(" pool=");
+		if (as != NULL && as->type == JSON_NUMBER)
+			printf(".%ld", (long)json_as_number(as));
+		else
+			printf("(low)");
+		printf("-");
+		if (ae != NULL && ae->type == JSON_NUMBER)
+			printf(".%ld", (long)json_as_number(ae));
+		else
+			printf("(high)");
+	} else {
+		printf(" pool=none");
+	}
+	printf("\n");
 }
 
 static void fmt_network_list(const struct json_value *v)
@@ -9010,6 +9035,79 @@ static int cmd_network_ports(const struct cix_client *c, int json_mode, int argc
 	return emit(&r, json_mode, fmt_network_ports);
 }
 
+/*
+ * cixctl network set-pool NAME [--alloc-start=IP] [--alloc-end=IP]
+ * (issue #137)
+ *
+ * The window used to be settable only at `network create`, which put
+ * it out of reach on a bridged management network -- that one cannot
+ * be deleted while it is the management network, so there was no
+ * recreate-with-a-pool route.
+ *
+ * "none" clears a bound. Clearing both on a bridged network returns it
+ * to refusing auto-allocation, which is the safe state rather than a
+ * regression.
+ */
+static int cmd_network_set_pool(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	const char *name = NULL, *start = NULL, *end = NULL;
+	struct json_writer w;
+	struct cix_response r;
+	char path[256];
+	int i, rc, any = 0;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--alloc-start=", 14) == 0) {
+			start = argv[i] + 14;
+			any = 1;
+		} else if (strncmp(argv[i], "--alloc-end=", 12) == 0) {
+			end = argv[i] + 12;
+			any = 1;
+		} else if (name == NULL) {
+			name = argv[i];
+		} else {
+			fprintf(stderr, "cixctl: unknown network set-pool option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (name == NULL || !any) {
+		fprintf(stderr,
+		        "usage: cixctl network set-pool NAME [--alloc-start=IP] [--alloc-end=IP]\n"
+		        "       use 'none' to clear a bound\n");
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	if (start != NULL) {
+		jw_key(&w, "alloc_start");
+		if (strcmp(start, "none") == 0)
+			jw_null(&w);
+		else
+			jw_str(&w, start);
+	}
+	if (end != NULL) {
+		jw_key(&w, "alloc_end");
+		if (strcmp(end, "none") == 0)
+			jw_null(&w);
+		else
+			jw_str(&w, end);
+	}
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	snprintf(path, sizeof(path), CIX_API_updateNetwork, name);
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(c, CIX_API_updateNetwork_METHOD, path, w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+	rc = emit(&r, json_mode, fmt_network_line);
+	return rc;
+}
+
 static int cmd_network(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
@@ -9019,6 +9117,7 @@ static int cmd_network(const struct cix_client *c, int json_mode, int argc, char
 		        "usage: cixctl network create --name=NAME --subnet=A.B.C.D --prefix=N "
 		        "[--address=A.B.C.D]\n"
 		        "       cixctl network ls\n"
+		        "       cixctl network set-pool NAME [--alloc-start=IP] [--alloc-end=IP]\n"
 		        "       cixctl network rm NAME\n"
 	        "       cixctl network ports NAME  -- what is plugged into this network's\n"
 	        "                                       bridge right now, and each port's traffic\n"
@@ -9031,6 +9130,8 @@ static int cmd_network(const struct cix_client *c, int json_mode, int argc, char
 		return cmd_network_create(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "ls") == 0)
 		return cmd_network_ls(c, json_mode);
+	if (strcmp(sub, "set-pool") == 0)
+		return cmd_network_set_pool(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "rm") == 0)
 		return cmd_network_rm(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "ports") == 0)

@@ -18799,6 +18799,82 @@ static void handle_network_get_one(int fd, const char *name)
 	jw_free(&w);
 }
 
+/*
+ * Issue #137: PUT /v1/networks/{name} -- change the auto-allocation
+ * window on an existing network.
+ *
+ * The window was settable only at creation, which put it out of reach
+ * on the network that needs it most. A bridged management network
+ * cannot be deleted while it is the management network (409, by
+ * design), so "delete and recreate with a pool" was never a route that
+ * existed, and a real LAN had no way to gain the pool that keeps
+ * auto-allocation off live equipment.
+ */
+static void handle_network_update(int fd, const char *name, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const struct json_value *js, *je;
+	const char *start = NULL, *end = NULL;
+	enum network_error nerr;
+	struct network_def *net;
+	struct json_writer w;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	/*
+	 * Absent and explicit-null mean different things and are kept
+	 * apart: absent leaves the bound alone, null clears it. Collapsing
+	 * them would make it impossible to clear one bound without also
+	 * restating the other -- the same distinction POST /pkg/repo-config
+	 * and PUT /system/daemon-config already draw for partial updates.
+	 */
+	js = json_object_get(root, "alloc_start");
+	je = json_object_get(root, "alloc_end");
+	if (js != NULL)
+		start = (js->type == JSON_NULL) ? "" : json_as_string(js);
+	if (je != NULL)
+		end = (je->type == JSON_NULL) ? "" : json_as_string(je);
+
+	if ((js != NULL && start == NULL) || (je != NULL && end == NULL)) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request",
+		              "alloc_start and alloc_end must each be a dotted-quad string or null");
+		return;
+	}
+
+	nerr = network_set_alloc_window(name, start, end);
+	json_free(root);
+
+	if (nerr == NETWORK_ERR_NOT_FOUND) {
+		respond_error(fd, 404, "Not Found", "no such network");
+		return;
+	}
+	if (nerr == NETWORK_ERR_INVALID_ADDRESS) {
+		respond_error(fd, 400, "Bad Request",
+		              "alloc_start/alloc_end must be inside this network's subnet, and "
+		              "alloc_end must not be below alloc_start");
+		return;
+	}
+	if (nerr != NETWORK_OK) {
+		respond_error(fd, 500, "Internal Server Error",
+		              "the allocation window was changed but could not be persisted");
+		return;
+	}
+
+	net = network_find(name);
+	if (net == NULL) {
+		respond_error(fd, 404, "Not Found", "no such network");
+		return;
+	}
+	jw_init(&w);
+	network_write_json_one(net, &w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
 static void handle_network_delete(int fd, const char *name)
 {
 	enum network_error nerr = network_delete(name);
@@ -25531,6 +25607,12 @@ static void op_deleteVolumeSnapshot(const struct api_ctx *ctx)
 static void op_getNetwork(const struct api_ctx *ctx)
 {
 	handle_network_get_one(ctx->fd, ctx->p[0]);
+}
+
+/* PUT /v1/networks/{name} */
+static void op_updateNetwork(const struct api_ctx *ctx)
+{
+	handle_network_update(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);
 }
 
 static void op_deleteNetwork(const struct api_ctx *ctx)
