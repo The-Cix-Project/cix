@@ -778,6 +778,59 @@ int network_alloc_ip(const char *name, uint32_t *out_ip_be)
 	}
 }
 
+enum network_error network_set_alloc_window(const char *name, const char *alloc_start_str,
+                                             const char *alloc_end_str)
+{
+	struct network_def *net = network_find(name);
+	int as, ae;
+
+	if (net == NULL)
+		return NETWORK_ERR_NOT_FOUND;
+
+	/*
+	 * Both bounds are resolved against the CURRENT values first, so a
+	 * partial update validates the pair it will actually end up with
+	 * rather than the pair it was handed. Setting only alloc_end below
+	 * an existing alloc_start must be rejected, and it would not be if
+	 * the unchanged bound were treated as absent.
+	 */
+	as = net->alloc_start_host;
+	ae = net->alloc_end_host;
+
+	if (alloc_start_str != NULL) {
+		if (alloc_start_str[0] == '\0')
+			as = 0; /* explicit clear */
+		else if (parse_alloc_bound(alloc_start_str, net->base_be, net->prefix_len, &as) != 0)
+			return NETWORK_ERR_INVALID_ADDRESS;
+	}
+	if (alloc_end_str != NULL) {
+		if (alloc_end_str[0] == '\0')
+			ae = 0;
+		else if (parse_alloc_bound(alloc_end_str, net->base_be, net->prefix_len, &ae) != 0)
+			return NETWORK_ERR_INVALID_ADDRESS;
+	}
+	if (as != 0 && ae != 0 && ae < as)
+		return NETWORK_ERR_INVALID_ADDRESS;
+
+	net->alloc_start_host = as;
+	net->alloc_end_host = ae;
+
+	/*
+	 * Persisted immediately. A window that survives only until the next
+	 * restart is worse than none: it would silently revert a bridged
+	 * network from "pool declared" back to "fails closed", and the
+	 * operator would have no reason to look.
+	 *
+	 * CREATE_FAILED rather than a new code: the caller maps it to 500,
+	 * which is the honest answer for "the change is in memory but did
+	 * not reach disk", and adding a code used by exactly one call site
+	 * would not tell an operator anything the message does not.
+	 */
+	if (save_state() != 0)
+		return NETWORK_ERR_CREATE_FAILED;
+	return NETWORK_OK;
+}
+
 enum network_error network_ip_available(const char *name, uint32_t ip_be)
 {
 	struct network_def *net = network_find(name);

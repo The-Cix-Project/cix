@@ -5171,6 +5171,78 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+    put:
+      summary: Update a network's auto-allocation window (issue #137)
+      description: >
+        The allocation window was settable only at creation, which made
+        it unreachable on the one network that most needs it: the
+        management network cannot be deleted while it is the management
+        network (409, by design -- it is how the daemon is reached), so
+        "delete and recreate with a pool" is not a route that exists.
+        A real bridged LAN therefore had no way to gain the pool that
+        stops auto-allocation wandering into live equipment.
+        Only the window is mutable. Subnet, prefix and host address are
+        not: those define the network's identity and its bridge, and
+        changing them under running containers would invalidate
+        addresses already handed out. The window only constrains
+        FUTURE auto-allocation, so narrowing or widening it is safe
+        with containers attached -- addresses already assigned are
+        untouched, exactly as an explicitly-requested address is never
+        constrained by the window in the first place.
+        Both fields are optional and independent; an omitted field is
+        left unchanged, and an explicit null clears that bound. Clearing
+        both on a bridged network deliberately returns it to failing
+        closed rather than to allocating from the bottom of the subnet.
+      operationId: updateNetwork
+      x-cix-expose: [cli]
+      parameters:
+        - $ref: "#/components/parameters/NetworkName"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                alloc_start:
+                  type: string
+                  nullable: true
+                  description: >
+                    Lowest address auto-allocation may hand out, dotted-quad
+                    and within the subnet. Null clears the bound.
+                alloc_end:
+                  type: string
+                  nullable: true
+                  description: >
+                    Highest address auto-allocation may hand out. Null clears
+                    the bound.
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Network"
+        "400":
+          description: >
+            Invalid JSON body, an address outside the subnet, or a
+            window whose start is above its end
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No network with this name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: The change could not be persisted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
     delete:
       summary: Remove a network (deletes its bridge)
       operationId: deleteNetwork

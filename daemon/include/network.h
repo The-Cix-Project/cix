@@ -127,6 +127,27 @@ void network_repoint(const char *new_state_path);
  * real one -- a crash mid-write must never corrupt this state). *out
  * points at the stored entry on NETWORK_OK.
  */
+/*
+ * Issue #137: change an existing network's auto-allocation window.
+ *
+ * Only the window, deliberately. Subnet, prefix and host address define
+ * the network's identity and its real bridge; changing them under
+ * running containers would invalidate addresses already handed out. The
+ * window constrains only FUTURE auto-allocation, so it is safe to
+ * narrow or widen with containers attached.
+ *
+ * Exists because the window was previously settable only at creation,
+ * which put it out of reach on the network that needs it most: the
+ * management network cannot be deleted while it is the management
+ * network, so "delete and recreate with a pool" was never a route.
+ *
+ * NULL for either string leaves that bound unchanged; the empty string
+ * clears it. Clearing both on a bridged network returns it to failing
+ * closed, which is the safe end state, not a regression.
+ */
+enum network_error network_set_alloc_window(const char *name, const char *alloc_start_str,
+                                             const char *alloc_end_str);
+
 enum network_error network_create(const char *name, const char *subnet_str, int prefix_len,
                                    const char *address_str, const char *alloc_start_str,
                                    const char *alloc_end_str, struct network_def **out);
