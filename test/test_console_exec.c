@@ -358,6 +358,51 @@ int main(void)
 		close(fd);
 	}
 
+	/* --- scenario 2b: the container exists, the exec target does not
+	 * (issue #108) ---
+	 *
+	 * This is the case that hung. exec_into_container() handed back a
+	 * valid grandchild pid before that grandchild had tried to
+	 * execve() anything, so a command missing from the container still
+	 * looked like success: the daemon sent its 101, the client
+	 * attached to a pty whose process was already dead, and then
+	 * waited forever with no banner, no error and no exit. Really hit
+	 * on a live container whose image has no shell at all.
+	 *
+	 * The assertion that matters is NOT the pty relay -- it is that
+	 * the failure is reported before the upgrade, while an HTTP status
+	 * can still carry it. A 101 here is the bug, whatever happens
+	 * afterwards. */
+	fd = raw_connect(TEST_PORT);
+	CHECK(fd >= 0, "raw_connect for missing-exec-target scenario");
+	if (fd >= 0) {
+		rlen = snprintf(req, sizeof(req),
+		                 "GET /v1/containers/consoletest/console HTTP/1.1\r\n"
+		                 "Host: 127.0.0.1\r\n"
+		                 "Upgrade: websocket\r\n"
+		                 "Connection: Upgrade\r\n"
+		                 "Sec-WebSocket-Key: %s\r\n"
+		                 "Sec-WebSocket-Version: 13\r\n"
+		                 "X-Cix-Exec-Cmd: /bin/definitely-not-in-this-image\r\n"
+		                 "\r\n",
+		                 TEST_WS_KEY);
+		write_all_raw(fd, req, (size_t)rlen);
+		n = read(fd, resp, sizeof(resp) - 1);
+		CHECK(n > 0, "response for missing-exec-target console request");
+		if (n > 0) {
+			resp[n] = '\0';
+			CHECK(strncmp(resp, "HTTP/1.1 101", 12) != 0,
+			      "a missing exec target must NOT be upgraded to a websocket (#108)");
+			CHECK(strstr(resp, "500") != NULL, "missing exec target -> 500");
+			/* Naming the reason is the difference between a bug report
+			 * and a shrug: "failed to start console session" alone is
+			 * what made this undiagnosable in the first place. */
+			CHECK(strstr(resp, "No such file or directory") != NULL,
+			      "the 500 names the real errno, not just a generic failure");
+		}
+		close(fd);
+	}
+
 	/* --- scenario 3: the real thing -- upgrade, exec dual_console_child,
 	 * exchange real lines, confirm clean teardown --- */
 	fd = raw_connect(TEST_PORT);

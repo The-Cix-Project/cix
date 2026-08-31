@@ -13897,6 +13897,18 @@ static int dispatch_command(const struct cix_client *client, int json_mode, cons
 		return cmd_ping(client, json_mode, argc, argv);
 	if (strcmp(cmd, "resolv") == 0)
 		return cmd_resolv(client, json_mode, argc, argv);
+	/*
+	 * Issue #108: `cixctl console NAME` was advertised and unroutable.
+	 * cmd_console()'s own usage string has always said "cixctl console
+	 * NAME", so the CLI was promising a form the dispatcher did not
+	 * carry -- an operator typing exactly what the error told them to
+	 * got "unknown command". Routed here as a convenience alias for
+	 * `container console`, the same shape `logs` already has; both
+	 * spellings reach one function, so this is an alias, not a second
+	 * implementation.
+	 */
+	if (strcmp(cmd, "console") == 0)
+		return cmd_console(client, argc, argv);
 	if (strcmp(cmd, "release-key") == 0)
 		return cmd_release_key(client, json_mode, argc, argv);
 	if (strcmp(cmd, "signing-keys") == 0)
