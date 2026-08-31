@@ -586,6 +586,66 @@ static int test_partition_grow(void)
 	return ok;
 }
 
+/*
+ * Issue #140: which partitions the OS disk protects.
+ *
+ * A pure predicate, tested directly -- the behaviour it governs can
+ * otherwise only be observed by attempting a destructive operation on
+ * a real boot disk, which is exactly the kind of rule that never gets
+ * checked. Every case below is one an operator can actually hit.
+ */
+static int test_protected_policy(void)
+{
+	int bad = 0;
+
+	struct {
+		const char *name;
+		int is_os_disk;
+		int want_protected;
+		const char *why;
+	} cases[] = {
+		/* The four the installer lays down: ESP, both root slots,
+		 * /config. Destroying any means an unbootable machine. */
+		{ "vda1", 1, 1, "cix-esp on the OS disk" },
+		{ "vda2", 1, 1, "cix-root-a on the OS disk" },
+		{ "vda3", 1, 1, "cix-root-b on the OS disk" },
+		{ "vda4", 1, 1, "cix-config on the OS disk" },
+		/* The whole point of the issue: everything after them is
+		 * ordinary space the operator deliberately reserved. */
+		{ "vda5", 1, 0, "cix-containers is ordinary space" },
+		{ "vda6", 1, 0, "space past the containers partition" },
+		{ "vda12", 1, 0, "two-digit number is not a prefix match on 1" },
+		/* Nothing on a non-OS disk is ever protected. */
+		{ "sda1", 0, 0, "first partition of a data disk" },
+		{ "sda4", 0, 0, "fourth partition of a data disk" },
+		/* nvme naming carries a "p" separator. */
+		{ "nvme0n1p3", 1, 1, "nvme OS disk, protected number" },
+		{ "nvme0n1p5", 1, 0, "nvme OS disk, ordinary number" },
+		/* Fails closed: no number means "cannot tell", and on the OS
+		 * disk that must count as protected. */
+		{ "vda", 1, 1, "no numeric suffix on the OS disk fails closed" },
+	};
+	size_t i;
+
+	for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+		int got = diskpart_partition_protected(cases[i].name, cases[i].is_os_disk);
+
+		if (got != cases[i].want_protected) {
+			fprintf(stderr, "FAIL: %s (%s): protected=%d, expected %d\n", cases[i].name,
+			        cases[i].why, got, cases[i].want_protected);
+			bad++;
+		}
+	}
+
+	/* The parser itself, since the predicate leans entirely on it. */
+	if (diskpart_partition_number("vda5") != 5 || diskpart_partition_number("nvme0n1p12") != 12 ||
+	    diskpart_partition_number("vda") != 0 || diskpart_partition_number("") != 0) {
+		fprintf(stderr, "FAIL: diskpart_partition_number parsed a suffix wrong\n");
+		bad++;
+	}
+	return bad;
+}
+
 int main(void)
 {
 	pid_t daemon_pid;
@@ -597,6 +657,9 @@ int main(void)
 	char other_part_name[64] = "";
 	char other_part_parent[64] = "";
 	int partitions_found = 0;
+
+	if (test_protected_policy() != 0)
+		ok = 0;
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
