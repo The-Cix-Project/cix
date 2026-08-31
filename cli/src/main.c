@@ -8,6 +8,12 @@
  */
 #include "console.h"
 #include "httpclient.h"
+/*
+ * ADR-0218 layer 1: every API path this client uses comes from the
+ * contract, regenerated each build. A hand-typed path compiles and
+ * fails at runtime; a wrong CIX_API_ name does not build at all.
+ */
+#include "generated/cix_api.h"
 #include "json.h"
 
 #include <ctype.h>
@@ -1235,7 +1241,7 @@ static int cmd_health(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/health", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_getHealth_METHOD, CIX_API_getHealth, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -1246,7 +1252,7 @@ static int cmd_boot(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/system/boot", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_getSystemBoot_METHOD, CIX_API_getSystemBoot, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -1257,7 +1263,7 @@ static int cmd_routes_ls(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/system/routes", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_getSystemRoutes_METHOD, CIX_API_getSystemRoutes, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -1311,7 +1317,7 @@ static int cmd_routes_add(const struct cix_client *c, int json_mode, int argc, c
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (cix_client_request(c, "POST", "/v1/system/routes", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_postSystemRoute_METHOD, CIX_API_postSystemRoute, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -1361,7 +1367,7 @@ static int cmd_routes_rm(const struct cix_client *c, int json_mode, int argc, ch
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (cix_client_request(c, "DELETE", "/v1/system/routes", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_deleteSystemRoute_METHOD, CIX_API_deleteSystemRoute, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -1399,7 +1405,7 @@ static int cmd_disks_ls(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/disks", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_listDisks_METHOD, CIX_API_listDisks, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -1457,7 +1463,7 @@ static int cmd_disks_format(const struct cix_client *c, int json_mode, int argc,
 		if (strncmp(argv[i], "--fs-type=", 10) == 0)
 			fs_type = argv[i] + 10;
 	}
-	snprintf(path, sizeof(path), "/v1/disks/%s/format", disk_name);
+	snprintf(path, sizeof(path), CIX_API_formatDisk, disk_name);
 
 	jw_init(&w);
 	jw_obj_open(&w);
@@ -1490,7 +1496,7 @@ static int cmd_disks_format_status(const struct cix_client *c, int json_mode, in
 		return 2;
 	}
 	disk_name = argv[0];
-	snprintf(path, sizeof(path), "/v1/disks/%s/format", disk_name);
+	snprintf(path, sizeof(path), CIX_API_getDiskFormatStatus, disk_name);
 	if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -1520,7 +1526,7 @@ static int cmd_disks_unmount(const struct cix_client *c, int json_mode, int argc
 		return 2;
 	}
 	disk_name = argv[0];
-	snprintf(path, sizeof(path), "/v1/disks/%s/unmount", disk_name);
+	snprintf(path, sizeof(path), CIX_API_unmountDisk, disk_name);
 
 	jw_init(&w);
 	jw_obj_open(&w);
@@ -1626,7 +1632,7 @@ static int cmd_disks_grow_partition(const struct cix_client *c, int json_mode, i
 		                "  The partition must be unmounted, and ext4 or unformatted.\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), "/v1/disks/%s/partitions/%s/resize", disk_name, part_name);
+	snprintf(path, sizeof(path), CIX_API_resizeDiskPartition, disk_name, part_name);
 
 	jw_init(&w);
 	jw_obj_open(&w);
@@ -1653,7 +1659,7 @@ static int cmd_disks_free_space(const struct cix_client *c, int json_mode, int a
 		fprintf(stderr, "usage: cixctl disks free-space NAME\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), "/v1/disks/%s/free-space", argv[0]);
+	snprintf(path, sizeof(path), CIX_API_getDiskFreeSpace, argv[0]);
 	if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -1673,7 +1679,7 @@ static int cmd_disks_partition_table(const struct cix_client *c, int json_mode, 
 		return 2;
 	}
 	disk_name = argv[0];
-	snprintf(path, sizeof(path), "/v1/disks/%s/partition-table", disk_name);
+	snprintf(path, sizeof(path), CIX_API_createDiskPartitionTable, disk_name);
 
 	jw_init(&w);
 	jw_obj_open(&w);
@@ -1718,7 +1724,7 @@ static int cmd_disks_add_partition(const struct cix_client *c, int json_mode, in
 		fprintf(stderr, "cixctl: disks add-partition requires --name=PART_NAME\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), "/v1/disks/%s/partitions", disk_name);
+	snprintf(path, sizeof(path), CIX_API_addDiskPartition, disk_name);
 
 	jw_init(&w);
 	jw_obj_open(&w);
@@ -1749,7 +1755,7 @@ static int cmd_disks_rm_partition(const struct cix_client *c, int json_mode, int
 		fprintf(stderr, "usage: cixctl disks rm-partition DISK_NAME PARTITION_NAME\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), "/v1/disks/%s/partitions/%s", argv[0], argv[1]);
+	snprintf(path, sizeof(path), CIX_API_deleteDiskPartition, argv[0], argv[1]);
 	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -1844,16 +1850,25 @@ static void fmt_storage_migrate_status(const struct json_value *v)
 	printf("\n");
 }
 
-/* endpoint is "state-storage" or "log-storage" -- cixctl storage
- * {state,logs} both share this identical shape, only the REST path
- * segment (and thus which daemon-side storage_kind ends up acted on)
- * differs. */
-static int cmd_storage_kind_show(const struct cix_client *c, int json_mode, const char *endpoint)
+/*
+ * cixctl storage {state,logs,rebuildable} all share this shape; only
+ * which storage kind is acted on differs.
+ *
+ * That used to be expressed by interpolating a URL segment --
+ * snprintf(path, "/v1/system/%s", endpoint) with endpoint being
+ * "state-storage" / "log-storage" / "rebuildable-storage". Convenient,
+ * and exactly the drift ADR-0218 removes: a path assembled from a
+ * variable is a path no generated constant covers, so a renamed
+ * endpoint would compile here and 404 at runtime. The three paths now
+ * come from the contract and are passed in, so the shared shape is
+ * kept without any client-side path synthesis.
+ */
+static int cmd_storage_kind_show(const struct cix_client *c, int json_mode, const char *path_fmt)
 {
 	char path[64];
 	struct cix_response r;
 
-	snprintf(path, sizeof(path), "/v1/system/%s", endpoint);
+	snprintf(path, sizeof(path), "%s", path_fmt);
 	if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -1861,7 +1876,7 @@ static int cmd_storage_kind_show(const struct cix_client *c, int json_mode, cons
 	return emit(&r, json_mode, fmt_storage_placement);
 }
 
-static int cmd_storage_kind_migrate(const struct cix_client *c, int json_mode, const char *endpoint,
+static int cmd_storage_kind_migrate(const struct cix_client *c, int json_mode, const char *path_fmt,
                                      int argc, char **argv)
 {
 	const char *disk = NULL;
@@ -1889,7 +1904,7 @@ static int cmd_storage_kind_migrate(const struct cix_client *c, int json_mode, c
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	snprintf(path, sizeof(path), "/v1/system/%s/migrate", endpoint);
+	snprintf(path, sizeof(path), "%s", path_fmt);
 	if (cix_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
@@ -1899,12 +1914,12 @@ static int cmd_storage_kind_migrate(const struct cix_client *c, int json_mode, c
 	return emit(&r, json_mode, fmt_storage_migrate_status);
 }
 
-static int cmd_storage_kind_migrate_status(const struct cix_client *c, int json_mode, const char *endpoint)
+static int cmd_storage_kind_migrate_status(const struct cix_client *c, int json_mode, const char *path_fmt)
 {
 	char path[64];
 	struct cix_response r;
 
-	snprintf(path, sizeof(path), "/v1/system/%s/migrate", endpoint);
+	snprintf(path, sizeof(path), "%s", path_fmt);
 	if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -1913,20 +1928,21 @@ static int cmd_storage_kind_migrate_status(const struct cix_client *c, int json_
 }
 
 static int cmd_storage_kind(const struct cix_client *c, int json_mode, const char *name,
-                             const char *endpoint, int argc, char **argv)
+                             const char *show_path, const char *migrate_path, int argc,
+                             char **argv)
 {
 	const char *sub;
 
 	if (argc < 1)
-		return cmd_storage_kind_show(c, json_mode, endpoint);
+		return cmd_storage_kind_show(c, json_mode, show_path);
 
 	sub = argv[0];
 	if (strcmp(sub, "show") == 0)
-		return cmd_storage_kind_show(c, json_mode, endpoint);
+		return cmd_storage_kind_show(c, json_mode, show_path);
 	if (strcmp(sub, "migrate") == 0)
-		return cmd_storage_kind_migrate(c, json_mode, endpoint, argc - 1, argv + 1);
+		return cmd_storage_kind_migrate(c, json_mode, migrate_path, argc - 1, argv + 1);
 	if (strcmp(sub, "migrate-status") == 0)
-		return cmd_storage_kind_migrate_status(c, json_mode, endpoint);
+		return cmd_storage_kind_migrate_status(c, json_mode, migrate_path);
 
 	fprintf(stderr,
 	        "usage: cixctl storage %s [show]\n"
@@ -1947,11 +1963,14 @@ static int cmd_storage(const struct cix_client *c, int json_mode, int argc, char
 	}
 	sub = argv[0];
 	if (strcmp(sub, "state") == 0)
-		return cmd_storage_kind(c, json_mode, "state", "state-storage", argc - 1, argv + 1);
+		return cmd_storage_kind(c, json_mode, "state", CIX_API_getStateStorage,
+		                         CIX_API_migrateStateStorage, argc - 1, argv + 1);
 	if (strcmp(sub, "logs") == 0)
-		return cmd_storage_kind(c, json_mode, "logs", "log-storage", argc - 1, argv + 1);
+		return cmd_storage_kind(c, json_mode, "logs", CIX_API_getLogStorage,
+		                         CIX_API_migrateLogStorage, argc - 1, argv + 1);
 	if (strcmp(sub, "rebuildable") == 0)
-		return cmd_storage_kind(c, json_mode, "rebuildable", "rebuildable-storage", argc - 1, argv + 1);
+		return cmd_storage_kind(c, json_mode, "rebuildable", CIX_API_getRebuildableStorage,
+		                         CIX_API_migrateRebuildableStorage, argc - 1, argv + 1);
 
 	fprintf(stderr, "usage: cixctl storage state|logs|rebuildable [show|migrate|migrate-status]\n");
 	return 2;
@@ -2013,7 +2032,7 @@ static int cmd_sysctl_show(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/system/sysctl", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_listSystemSysctl_METHOD, CIX_API_listSystemSysctl, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -2029,7 +2048,7 @@ static int cmd_sysctl_get(const struct cix_client *c, int json_mode, int argc, c
 		fprintf(stderr, "usage: cixctl sysctl get KEY\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), "/v1/system/sysctl/%s", argv[0]);
+	snprintf(path, sizeof(path), CIX_API_getSystemSysctl, argv[0]);
 	if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -2098,7 +2117,7 @@ static int cmd_sysctl_set(const struct cix_client *c, int json_mode, int argc, c
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	snprintf(path, sizeof(path), "/v1/system/sysctl/%s", key);
+	snprintf(path, sizeof(path), CIX_API_putSystemSysctl, key);
 	if (cix_client_request(c, "PUT", path, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
@@ -2117,7 +2136,7 @@ static int cmd_sysctl_rm(const struct cix_client *c, int json_mode, int argc, ch
 		fprintf(stderr, "usage: cixctl sysctl rm KEY\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), "/v1/system/sysctl/%s", argv[0]);
+	snprintf(path, sizeof(path), CIX_API_deleteSystemSysctl, argv[0]);
 	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -2257,7 +2276,7 @@ static int cmd_kmod_ls(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/system/kmod", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_listKmod_METHOD, CIX_API_listKmod, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -2273,7 +2292,7 @@ static int cmd_kmod_show(const struct cix_client *c, int json_mode, int argc, ch
 		fprintf(stderr, "usage: cixctl kmod show NAME\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), "/v1/system/kmod/%s", argv[0]);
+	snprintf(path, sizeof(path), CIX_API_getKmodInfo, argv[0]);
 	if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -2335,7 +2354,7 @@ static int cmd_kmod_load(const struct cix_client *c, int json_mode, int argc, ch
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	snprintf(path, sizeof(path), "/v1/system/kmod/%s", name);
+	snprintf(path, sizeof(path), CIX_API_postKmodLoad, name);
 	if (cix_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
@@ -2364,7 +2383,7 @@ static int cmd_kmod_unload(const struct cix_client *c, int json_mode, int argc, 
 		fprintf(stderr, "usage: cixctl kmod unload NAME\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), "/v1/system/kmod/%s", argv[0]);
+	snprintf(path, sizeof(path), CIX_API_deleteKmod, argv[0]);
 	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -2433,7 +2452,7 @@ static int cmd_kmodconfig_ls(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/system/kmod-config", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_listKmodConfig_METHOD, CIX_API_listKmodConfig, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -2514,7 +2533,7 @@ static int cmd_kmodconfig_set(const struct cix_client *c, int json_mode, int arg
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	snprintf(path, sizeof(path), "/v1/system/kmod-config/%s", name);
+	snprintf(path, sizeof(path), CIX_API_putKmodConfig, name);
 	if (cix_client_request(c, "PUT", path, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
@@ -2533,7 +2552,7 @@ static int cmd_kmodconfig_rm(const struct cix_client *c, int json_mode, int argc
 		fprintf(stderr, "usage: cixctl kmod-config rm NAME\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), "/v1/system/kmod-config/%s", argv[0]);
+	snprintf(path, sizeof(path), CIX_API_deleteKmodConfig, argv[0]);
 	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -2592,7 +2611,7 @@ static int cmd_resolv_show(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/system/resolv", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_getSystemResolv_METHOD, CIX_API_getSystemResolv, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -2637,7 +2656,7 @@ static int cmd_resolv_set(const struct cix_client *c, int json_mode, int argc, c
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (cix_client_request(c, "PUT", "/v1/system/resolv", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_putSystemResolv_METHOD, CIX_API_putSystemResolv, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -2691,7 +2710,7 @@ static int cmd_ntp_config_show(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/system/ntp", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_getSystemNtp_METHOD, CIX_API_getSystemNtp, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -2730,7 +2749,7 @@ static int cmd_ntp_config_set(const struct cix_client *c, int json_mode, int arg
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (cix_client_request(c, "PUT", "/v1/system/ntp", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_putSystemNtp_METHOD, CIX_API_putSystemNtp, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -2776,7 +2795,7 @@ static int cmd_ntp_status(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/system/ntp/status", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_getSystemNtpStatus_METHOD, CIX_API_getSystemNtpStatus, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -2790,7 +2809,7 @@ static int cmd_ntp_sync(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "POST", "/v1/system/ntp/sync", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_postSystemNtpSync_METHOD, CIX_API_postSystemNtpSync, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -2855,7 +2874,7 @@ static int cmd_ntp_server_register(const struct cix_client *c, int json_mode, in
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (cix_client_request(c, "POST", "/v1/ntp/servers", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_createNtpServer_METHOD, CIX_API_createNtpServer, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -2868,7 +2887,7 @@ static int cmd_ntp_server_ls(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/ntp/servers", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_listNtpServers_METHOD, CIX_API_listNtpServers, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -2885,7 +2904,7 @@ static int cmd_ntp_server_unregister(const struct cix_client *c, int json_mode, 
 		fprintf(stderr, "cixctl: ntp server unregister requires a container name\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), "/v1/ntp/servers/%s", argv[0]);
+	snprintf(path, sizeof(path), CIX_API_deleteNtpServer, argv[0]);
 	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -2991,7 +3010,7 @@ static int cmd_syslog_target_register(const struct cix_client *c, int json_mode,
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (cix_client_request(c, "POST", "/v1/syslog/targets", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_createSyslogTarget_METHOD, CIX_API_createSyslogTarget, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -3004,7 +3023,7 @@ static int cmd_syslog_target_ls(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/syslog/targets", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_listSyslogTargets_METHOD, CIX_API_listSyslogTargets, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -3021,7 +3040,7 @@ static int cmd_syslog_target_unregister(const struct cix_client *c, int json_mod
 		fprintf(stderr, "cixctl: syslog target unregister requires a container name\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), "/v1/syslog/targets/%s", argv[0]);
+	snprintf(path, sizeof(path), CIX_API_deleteSyslogTarget, argv[0]);
 	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -3088,7 +3107,7 @@ static int cmd_time_show(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/system/time", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_getSystemTime_METHOD, CIX_API_getSystemTime, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -3122,7 +3141,7 @@ static int cmd_time_set(const struct cix_client *c, int json_mode, int argc, cha
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (cix_client_request(c, "PUT", "/v1/system/time", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_putSystemTime_METHOD, CIX_API_putSystemTime, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -3280,14 +3299,14 @@ static int cmd_dhcp(const struct cix_client *c, int json_mode, int argc, char **
 	int i;
 
 	if (strcmp(sub, "show") == 0) {
-		if (cix_client_request(c, "GET", "/v1/dhcp", NULL, &r) != 0) {
+		if (cix_client_request(c, CIX_API_getDhcp_METHOD, CIX_API_getDhcp, NULL, &r) != 0) {
 			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
 		}
 		return emit(&r, json_mode, fmt_dhcp);
 	}
 	if (strcmp(sub, "leases") == 0) {
-		if (cix_client_request(c, "GET", "/v1/dhcp/leases", NULL, &r) != 0) {
+		if (cix_client_request(c, CIX_API_getDhcpLeases_METHOD, CIX_API_getDhcpLeases, NULL, &r) != 0) {
 			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
 		}
@@ -3382,7 +3401,7 @@ static int cmd_dhcp(const struct cix_client *c, int json_mode, int argc, char **
 		}
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
-		snprintf(path, sizeof(path), "/v1/dhcp/networks/%s", network);
+		snprintf(path, sizeof(path), CIX_API_setDhcpNetwork, network);
 		if (cix_client_request(c, "PUT", path, w.buf, &r) != 0) {
 			jw_free(&w);
 			fprintf(stderr, "cixctl: could not reach daemon\n");
@@ -3402,7 +3421,7 @@ static int cmd_dhcp(const struct cix_client *c, int json_mode, int argc, char **
 			jw_str(&w, argv[2]);
 			jw_obj_close(&w);
 			w.buf[w.len] = '\0';
-			if (cix_client_request(c, "POST", "/v1/dhcp/servers", w.buf, &r) != 0) {
+			if (cix_client_request(c, CIX_API_registerDhcpServer_METHOD, CIX_API_registerDhcpServer, w.buf, &r) != 0) {
 				jw_free(&w);
 				fprintf(stderr, "cixctl: could not reach daemon\n");
 				return 1;
@@ -3411,7 +3430,7 @@ static int cmd_dhcp(const struct cix_client *c, int json_mode, int argc, char **
 			return emit(&r, json_mode, fmt_dhcp_servers);
 		}
 		if (strcmp(op, "rm") == 0 && argc > 2) {
-			snprintf(path, sizeof(path), "/v1/dhcp/servers/%s", argv[2]);
+			snprintf(path, sizeof(path), CIX_API_unregisterDhcpServer, argv[2]);
 			if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
 				fprintf(stderr, "cixctl: could not reach daemon\n");
 				return 1;
@@ -3419,7 +3438,7 @@ static int cmd_dhcp(const struct cix_client *c, int json_mode, int argc, char **
 			return emit(&r, json_mode, NULL);
 		}
 		if (strcmp(op, "ls") == 0 || op[0] == '\0') {
-			if (cix_client_request(c, "GET", "/v1/dhcp/servers", NULL, &r) != 0) {
+			if (cix_client_request(c, CIX_API_getDhcpServers_METHOD, CIX_API_getDhcpServers, NULL, &r) != 0) {
 				fprintf(stderr, "cixctl: could not reach daemon\n");
 				return 1;
 			}
@@ -3449,7 +3468,7 @@ static int cmd_dhcp(const struct cix_client *c, int json_mode, int argc, char **
 			}
 			jw_obj_close(&w);
 			w.buf[w.len] = '\0';
-			if (cix_client_request(c, "POST", "/v1/dhcp/static", w.buf, &r) != 0) {
+			if (cix_client_request(c, CIX_API_addDhcpReservation_METHOD, CIX_API_addDhcpReservation, w.buf, &r) != 0) {
 				jw_free(&w);
 				fprintf(stderr, "cixctl: could not reach daemon\n");
 				return 1;
@@ -3462,7 +3481,7 @@ static int cmd_dhcp(const struct cix_client *c, int json_mode, int argc, char **
 				fprintf(stderr, "usage: cixctl dhcp static rm MAC\n");
 				return 2;
 			}
-			snprintf(path, sizeof(path), "/v1/dhcp/static/%s", argv[2]);
+			snprintf(path, sizeof(path), CIX_API_deleteDhcpReservation, argv[2]);
 			if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
 				fprintf(stderr, "cixctl: could not reach daemon\n");
 				return 1;
@@ -3537,7 +3556,7 @@ static int cmd_zswap(const struct cix_client *c, int json_mode, int argc, char *
 	struct json_writer w;
 
 	if (strcmp(sub, "show") == 0) {
-		if (cix_client_request(c, "GET", "/v1/system/zswap", NULL, &r) != 0) {
+		if (cix_client_request(c, CIX_API_getZswap_METHOD, CIX_API_getZswap, NULL, &r) != 0) {
 			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
 		}
@@ -3588,7 +3607,7 @@ static int cmd_zswap(const struct cix_client *c, int json_mode, int argc, char *
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (cix_client_request(c, "PUT", "/v1/system/zswap", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_setZswap_METHOD, CIX_API_setZswap, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -3601,7 +3620,7 @@ static int cmd_swap_status(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/system/swap", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_getSystemSwap_METHOD, CIX_API_getSystemSwap, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -3645,7 +3664,7 @@ static int cmd_swap_enable(const struct cix_client *c, int json_mode, int argc, 
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (cix_client_request(c, "POST", "/v1/system/swap", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_postSystemSwap_METHOD, CIX_API_postSystemSwap, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -3659,7 +3678,7 @@ static int cmd_swap_disable(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "DELETE", "/v1/system/swap", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_deleteSystemSwap_METHOD, CIX_API_deleteSystemSwap, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -3709,7 +3728,7 @@ static int cmd_logs(const struct cix_client *c, int json_mode, int argc, char **
 		}
 	}
 
-	o = (size_t)snprintf(path, sizeof(path), "/v1/system/logs?");
+	o = (size_t)snprintf(path, sizeof(path), CIX_API_getSystemLogs);
 	if (source != NULL)
 		o += (size_t)snprintf(path + o, sizeof(path) - o, "source=%s&", source);
 	if (level != NULL)
@@ -3760,7 +3779,7 @@ static int cmd_logs_config(const struct cix_client *c, int json_mode, int argc, 
 	}
 
 	if (max_bytes == NULL && min_level == NULL) {
-		if (cix_client_request(c, "GET", "/v1/system/logs/config", NULL, &r) != 0) {
+		if (cix_client_request(c, CIX_API_getSystemLogsConfig_METHOD, CIX_API_getSystemLogsConfig, NULL, &r) != 0) {
 			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
 		}
@@ -3783,7 +3802,7 @@ static int cmd_logs_config(const struct cix_client *c, int json_mode, int argc, 
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
 
-		if (cix_client_request(c, "PUT", "/v1/system/logs/config", w.buf, &r) != 0) {
+		if (cix_client_request(c, CIX_API_putSystemLogsConfig_METHOD, CIX_API_putSystemLogsConfig, w.buf, &r) != 0) {
 			jw_free(&w);
 			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
@@ -3826,7 +3845,7 @@ static int cmd_shutdown(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "POST", "/v1/system/shutdown", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_shutdownSystem_METHOD, CIX_API_shutdownSystem, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -3837,7 +3856,7 @@ static int cmd_reboot(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "POST", "/v1/system/reboot", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_rebootSystem_METHOD, CIX_API_rebootSystem, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -3926,7 +3945,7 @@ static int cmd_update(const struct cix_client *c, int json_mode, int argc, char 
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (cix_client_request(c, "POST", "/v1/system/update", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_updateSystem_METHOD, CIX_API_updateSystem, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -3940,7 +3959,7 @@ static int cmd_ps(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/containers", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_listContainers_METHOD, CIX_API_listContainers, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -4005,7 +4024,7 @@ static int cmd_container_network_attach(const struct cix_client *c, int json_mod
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	snprintf(path, sizeof(path), "/v1/containers/%s/networks", name);
+	snprintf(path, sizeof(path), CIX_API_attachContainerNetwork, name);
 	if (cix_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
@@ -4025,7 +4044,7 @@ static int cmd_container_network_detach(const struct cix_client *c, int json_mod
 		fprintf(stderr, "usage: cixctl container network detach NAME NETWORK\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), "/v1/containers/%s/networks/%s", argv[0], argv[1]);
+	snprintf(path, sizeof(path), CIX_API_detachContainerNetwork, argv[0], argv[1]);
 	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -4121,7 +4140,7 @@ static int cmd_container_volume_attach(const struct cix_client *c, int json_mode
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	snprintf(path, sizeof(path), "/v1/containers/%s/volumes", name);
+	snprintf(path, sizeof(path), CIX_API_attachContainerVolume, name);
 	if (cix_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
@@ -4141,7 +4160,7 @@ static int cmd_container_volume_detach(const struct cix_client *c, int json_mode
 		fprintf(stderr, "usage: cixctl container volume detach NAME VOLUME\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), "/v1/containers/%s/volumes/%s", argv[0], argv[1]);
+	snprintf(path, sizeof(path), CIX_API_detachContainerVolume, argv[0], argv[1]);
 	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -4187,7 +4206,7 @@ static int cmd_container_device_attach(const struct cix_client *c, int json_mode
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	snprintf(path, sizeof(path), "/v1/containers/%s/devices", argv[0]);
+	snprintf(path, sizeof(path), CIX_API_attachContainerDevice, argv[0]);
 	if (cix_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
@@ -4207,7 +4226,7 @@ static int cmd_container_device_detach(const struct cix_client *c, int json_mode
 		fprintf(stderr, "usage: cixctl container device detach NAME ID\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), "/v1/containers/%s/devices/%s", argv[0], argv[1]);
+	snprintf(path, sizeof(path), CIX_API_detachContainerDevice, argv[0], argv[1]);
 	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -4314,7 +4333,7 @@ static int cmd_inspect(const struct cix_client *c, int json_mode, int argc, char
 		fprintf(stderr, "cixctl: inspect requires a container name\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), "/v1/containers/%s", argv[0]);
+	snprintf(path, sizeof(path), CIX_API_getContainer, argv[0]);
 	if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -4331,7 +4350,7 @@ static int cmd_rm(const struct cix_client *c, int json_mode, int argc, char **ar
 		fprintf(stderr, "cixctl: rm requires a container name\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), "/v1/containers/%s", argv[0]);
+	snprintf(path, sizeof(path), CIX_API_deleteContainer, argv[0]);
 	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -4348,7 +4367,7 @@ static int cmd_stop(const struct cix_client *c, int json_mode, int argc, char **
 		fprintf(stderr, "cixctl: stop requires a container name\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), "/v1/containers/%s/stop", argv[0]);
+	snprintf(path, sizeof(path), CIX_API_stopContainer, argv[0]);
 	if (cix_client_request(c, "POST", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -4394,7 +4413,7 @@ static int cmd_migrate_storage(const struct cix_client *c, int json_mode, int ar
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	snprintf(path, sizeof(path), "/v1/containers/%s/migrate-storage", argv[0]);
+	snprintf(path, sizeof(path), CIX_API_migrateContainerStorage, argv[0]);
 	if (cix_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
@@ -4413,7 +4432,7 @@ static int cmd_migrate_storage_status(const struct cix_client *c, int json_mode,
 		fprintf(stderr, "cixctl: migrate-storage-status requires a container name\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), "/v1/containers/%s/migrate-storage", argv[0]);
+	snprintf(path, sizeof(path), CIX_API_getContainerStorageMigrateStatus, argv[0]);
 	if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -4430,7 +4449,7 @@ static int cmd_start(const struct cix_client *c, int json_mode, int argc, char *
 		fprintf(stderr, "cixctl: start requires a container name\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), "/v1/containers/%s/start", argv[0]);
+	snprintf(path, sizeof(path), CIX_API_startContainer, argv[0]);
 	if (cix_client_request(c, "POST", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -4447,7 +4466,7 @@ static int cmd_pause(const struct cix_client *c, int json_mode, int argc, char *
 		fprintf(stderr, "cixctl: pause requires a container name\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), "/v1/containers/%s/pause", argv[0]);
+	snprintf(path, sizeof(path), CIX_API_pauseContainer, argv[0]);
 	if (cix_client_request(c, "POST", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -4464,7 +4483,7 @@ static int cmd_unpause(const struct cix_client *c, int json_mode, int argc, char
 		fprintf(stderr, "cixctl: unpause requires a container name\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), "/v1/containers/%s/unpause", argv[0]);
+	snprintf(path, sizeof(path), CIX_API_unpauseContainer, argv[0]);
 	if (cix_client_request(c, "POST", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -4622,9 +4641,9 @@ static int cmd_kmsg(const struct cix_client *c, int json_mode, int argc, char **
 		}
 	}
 	if (tail > 0)
-		snprintf(path, sizeof(path), "/v1/system/kmsg?tail=%ld", tail);
+		snprintf(path, sizeof(path), CIX_API_getSystemKmsg "?tail=%ld", tail);
 	else
-		snprintf(path, sizeof(path), "/v1/system/kmsg");
+		snprintf(path, sizeof(path), CIX_API_getSystemKmsg);
 
 	if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
@@ -4691,7 +4710,7 @@ static int cmd_server_health(const struct cix_client *c, int json_mode, int argc
 	struct cix_response r;
 
 	if (argc == 0 || strcmp(argv[0], "ls") == 0) {
-		if (cix_client_request(c, "GET", "/v1/system/server-health", NULL, &r) != 0) {
+		if (cix_client_request(c, CIX_API_getServerHealth_METHOD, CIX_API_getServerHealth, NULL, &r) != 0) {
 			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
 		}
@@ -4702,7 +4721,7 @@ static int cmd_server_health(const struct cix_client *c, int json_mode, int argc
 		struct json_writer w;
 		int rc;
 
-		snprintf(path, sizeof(path), "/v1/system/server-health/%s/%s", argv[1], argv[2]);
+		snprintf(path, sizeof(path), CIX_API_setServerHealthDrain, argv[1], argv[2]);
 		jw_init(&w);
 		jw_obj_open(&w);
 		jw_key(&w, "drained");
@@ -4898,7 +4917,7 @@ static int cmd_container_exec(const struct cix_client *c, int json_mode, int arg
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	snprintf(path, sizeof(path), "/v1/containers/%s/exec", name);
+	snprintf(path, sizeof(path), CIX_API_execInContainer, name);
 	if (cix_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
@@ -4989,7 +5008,7 @@ static int cmd_factory_reset(const struct cix_client *c, int json_mode, int argc
 	jw_str(&w, confirm);
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
-	if (cix_client_request(c, "POST", "/v1/system/factory-reset", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_factoryReset_METHOD, CIX_API_factoryReset, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -5002,7 +5021,7 @@ static int cmd_software(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/software", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_listSoftware_METHOD, CIX_API_listSoftware, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -5023,7 +5042,7 @@ static int cmd_volume_quota(const struct cix_client *c, int json_mode, int argc,
 		return 2;
 	}
 	bytes = atoll(argv[2]);
-	snprintf(path, sizeof(path), "/v1/volumes/%s/quota", argv[1]);
+	snprintf(path, sizeof(path), CIX_API_setVolumeQuota, argv[1]);
 
 	jw_init(&w);
 	jw_obj_open(&w);
@@ -5071,7 +5090,7 @@ static int cmd_volume_backups(const struct cix_client *c, int json_mode, int arg
 		else if (strncmp(argv[i], "--while-running=", 16) == 0)
 			while_running = argv[i] + 16;
 	}
-	snprintf(path, sizeof(path), "/v1/volumes/%s/backups", argv[1]);
+	snprintf(path, sizeof(path), CIX_API_getVolumeBackups, argv[1]);
 
 	if (enable < 0 && retain == 0 && while_running == NULL) {
 		if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
@@ -5112,7 +5131,7 @@ static int cmd_volume_backup_now(const struct cix_client *c, int json_mode, int 
 		fprintf(stderr, "usage: cixctl volume backup NAME\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), "/v1/volumes/%s/backup", argv[1]);
+	snprintf(path, sizeof(path), CIX_API_takeVolumeBackup, argv[1]);
 	if (cix_client_request(c, "POST", path, "{}", &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -5131,7 +5150,7 @@ static int cmd_volume_restore(const struct cix_client *c, int json_mode, int arg
 		                "  Replaces everything currently in the volume with that snapshot.\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), "/v1/volumes/%s/restore", argv[1]);
+	snprintf(path, sizeof(path), CIX_API_restoreVolume, argv[1]);
 
 	jw_init(&w);
 	jw_obj_open(&w);
@@ -5156,7 +5175,7 @@ static int cmd_volume(const struct cix_client *c, int json_mode, int argc, char 
 	const char *sub = argc > 0 ? argv[0] : "ls";
 
 	if (strcmp(sub, "ls") == 0) {
-		if (cix_client_request(c, "GET", "/v1/volumes", NULL, &r) != 0) {
+		if (cix_client_request(c, CIX_API_listVolumes_METHOD, CIX_API_listVolumes, NULL, &r) != 0) {
 			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
 		}
@@ -5201,7 +5220,7 @@ static int cmd_volume(const struct cix_client *c, int json_mode, int argc, char 
 		}
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
-		rc = cix_client_request(c, "POST", "/v1/volumes", w.buf, &r);
+		rc = cix_client_request(c, CIX_API_createVolume_METHOD, CIX_API_createVolume, w.buf, &r);
 		jw_free(&w);
 		if (rc != 0) {
 			fprintf(stderr, "cixctl: could not reach daemon\n");
@@ -5257,7 +5276,7 @@ static int cmd_volume(const struct cix_client *c, int json_mode, int argc, char 
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
 
-		snprintf(path, sizeof(path), "/v1/volumes/%s/owner", argv[1]);
+		snprintf(path, sizeof(path), CIX_API_setVolumeOwner, argv[1]);
 		rc = cix_client_request(c, "PUT", path, w.buf, &r);
 		jw_free(&w);
 		if (rc != 0) {
@@ -5269,7 +5288,7 @@ static int cmd_volume(const struct cix_client *c, int json_mode, int argc, char 
 	if (strcmp(sub, "show") == 0 && argc == 2) {
 		char path[128];
 
-		snprintf(path, sizeof(path), "/v1/volumes/%s", argv[1]);
+		snprintf(path, sizeof(path), CIX_API_getVolume, argv[1]);
 		if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
 			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
@@ -5279,7 +5298,7 @@ static int cmd_volume(const struct cix_client *c, int json_mode, int argc, char 
 	if (strcmp(sub, "rm") == 0 && argc == 2) {
 		char path[128];
 
-		snprintf(path, sizeof(path), "/v1/volumes/%s", argv[1]);
+		snprintf(path, sizeof(path), CIX_API_deleteVolume, argv[1]);
 		if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
 			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
@@ -5310,7 +5329,7 @@ static int cmd_volume(const struct cix_client *c, int json_mode, int argc, char 
 			if (strncmp(argv[i], "--disk=", 7) == 0)
 				disk = argv[i] + 7;
 		}
-		snprintf(path, sizeof(path), "/v1/volumes/%s/migrate", argv[1]);
+		snprintf(path, sizeof(path), CIX_API_migrateVolume, argv[1]);
 
 		jw_init(&w);
 		jw_obj_open(&w);
@@ -5346,7 +5365,7 @@ static int cmd_host_stats(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/system/stats", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_getSystemStats_METHOD, CIX_API_getSystemStats, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -5388,7 +5407,7 @@ static int cmd_process_ls(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/system/processes", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_listSystemProcesses_METHOD, CIX_API_listSystemProcesses, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -5404,7 +5423,7 @@ static int cmd_process_kill(const struct cix_client *c, int json_mode, int argc,
 		fprintf(stderr, "cixctl: process kill requires a pid\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), "/v1/system/processes/%s", argv[0]);
+	snprintf(path, sizeof(path), CIX_API_killSystemProcess, argv[0]);
 	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -5458,7 +5477,7 @@ static int poll_ping(const struct cix_client *c, struct cix_response *out)
 	for (;;) {
 		const char *state;
 
-		if (cix_client_request(c, "GET", "/v1/system/ping", NULL, out) != 0) {
+		if (cix_client_request(c, CIX_API_getSystemPing_METHOD, CIX_API_getSystemPing, NULL, out) != 0) {
 			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return -1;
 		}
@@ -5488,7 +5507,7 @@ static int cmd_ping(const struct cix_client *c, int json_mode, int argc, char **
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (cix_client_request(c, "POST", "/v1/system/ping", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_postSystemPing_METHOD, CIX_API_postSystemPing, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -5585,7 +5604,7 @@ static int cmd_container_stats(const struct cix_client *c, int json_mode, int ar
 		fprintf(stderr, "cixctl: stats requires a container name\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), "/v1/containers/%s/stats", argv[0]);
+	snprintf(path, sizeof(path), CIX_API_getContainerStats, argv[0]);
 	if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -5964,7 +5983,7 @@ static int cmd_signing_keys_show(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/system/signing-keys", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_getSystemSigningKeys_METHOD, CIX_API_getSystemSigningKeys, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -6016,7 +6035,7 @@ static int cmd_signing_keys_set(const struct cix_client *c, int json_mode, int a
 	free(key_buf);
 	free(cert_buf);
 
-	if (cix_client_request(c, "PUT", "/v1/system/signing-keys", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_putSystemSigningKeys_METHOD, CIX_API_putSystemSigningKeys, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -6030,7 +6049,7 @@ static int cmd_signing_keys_clear(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "DELETE", "/v1/system/signing-keys", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_deleteSystemSigningKeys_METHOD, CIX_API_deleteSystemSigningKeys, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -6119,7 +6138,7 @@ static int cmd_files_get(const struct cix_client *c, int argc, char **argv)
 	}
 
 	url_encode_query_value(path_arg, encoded_path, sizeof(encoded_path));
-	snprintf(path, sizeof(path), "/v1/containers/%s/files?path=%s", name, encoded_path);
+	snprintf(path, sizeof(path), CIX_API_getContainerFile "?path=%s", name, encoded_path);
 
 	if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
@@ -6220,7 +6239,7 @@ static int cmd_files_put(const struct cix_client *c, int argc, char **argv)
 	free(content);
 
 	url_encode_query_value(path_arg, encoded_path, sizeof(encoded_path));
-	snprintf(path, sizeof(path), "/v1/containers/%s/files?path=%s", name, encoded_path);
+	snprintf(path, sizeof(path), CIX_API_putContainerFile "?path=%s", name, encoded_path);
 
 	if (cix_client_request(c, "PUT", path, w.buf, &r) != 0) {
 		jw_free(&w);
@@ -6276,7 +6295,7 @@ static int cmd_backup(const struct cix_client *c, int json_mode, int argc, char 
 		}
 	}
 
-	if (cix_client_request(c, "GET", "/v1/system/backup", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_getSystemBackup_METHOD, CIX_API_getSystemBackup, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -6337,7 +6356,7 @@ static int cmd_restore(const struct cix_client *c, int json_mode, int argc, char
 		return 1;
 	}
 
-	if (cix_client_request(c, "POST", "/v1/system/restore", buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_postSystemRestore_METHOD, CIX_API_postSystemRestore, buf, &r) != 0) {
 		free(buf);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -6363,7 +6382,7 @@ static int cmd_site_show(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/system/site", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_getSystemSite_METHOD, CIX_API_getSystemSite, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -6409,7 +6428,7 @@ static int cmd_site_set(const struct cix_client *c, int json_mode, int argc, cha
 		return 2;
 	}
 
-	if (cix_client_request(c, "GET", "/v1/system/site", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_getSystemSite_METHOD, CIX_API_getSystemSite, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -6444,7 +6463,7 @@ static int cmd_site_set(const struct cix_client *c, int json_mode, int argc, cha
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (cix_client_request(c, "PUT", "/v1/system/site", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_putSystemSite_METHOD, CIX_API_putSystemSite, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -6496,7 +6515,7 @@ static int cmd_daemon_config_show(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/system/daemon-config", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_getDaemonConfig_METHOD, CIX_API_getDaemonConfig, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -6592,7 +6611,7 @@ static int cmd_daemon_config_set(const struct cix_client *c, int json_mode, int 
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (cix_client_request(c, "PUT", "/v1/system/daemon-config", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_putDaemonConfig_METHOD, CIX_API_putDaemonConfig, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -6654,7 +6673,7 @@ static int cmd_backup_config_show(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/system/backup-config", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_getBackupConfig_METHOD, CIX_API_getBackupConfig, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -6718,7 +6737,7 @@ static int cmd_backup_config_set(const struct cix_client *c, int json_mode, int 
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (cix_client_request(c, "PUT", "/v1/system/backup-config", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_putBackupConfig_METHOD, CIX_API_putBackupConfig, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -6731,7 +6750,7 @@ static int cmd_backup_config_status(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/system/backup-config/status", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_getBackupConfigStatus_METHOD, CIX_API_getBackupConfigStatus, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -6742,7 +6761,7 @@ static int cmd_backup_config_snapshot_now(const struct cix_client *c, int json_m
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "POST", "/v1/system/backup-config/snapshot-now", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_postBackupConfigSnapshotNow_METHOD, CIX_API_postBackupConfigSnapshotNow, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -6785,7 +6804,7 @@ static int cmd_rolling_config_show(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/system/rolling-config", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_getSystemRollingConfig_METHOD, CIX_API_getSystemRollingConfig, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -6819,7 +6838,7 @@ static int cmd_rolling_config_set(const struct cix_client *c, int json_mode, int
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (cix_client_request(c, "PUT", "/v1/system/rolling-config", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_putSystemRollingConfig_METHOD, CIX_API_putSystemRollingConfig, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -6869,7 +6888,7 @@ static int cmd_pkg_build_config_show(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/system/pkg-build-config", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_getSystemPkgBuildConfig_METHOD, CIX_API_getSystemPkgBuildConfig, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -6920,7 +6939,7 @@ static int cmd_pkg_build_config_set(const struct cix_client *c, int json_mode, i
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (cix_client_request(c, "PUT", "/v1/system/pkg-build-config", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_putSystemPkgBuildConfig_METHOD, CIX_API_putSystemPkgBuildConfig, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -6983,7 +7002,7 @@ static int cmd_stalls(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/system/stalls", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_getStalls_METHOD, CIX_API_getStalls, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -7056,7 +7075,7 @@ static int cmd_esp(const struct cix_client *c, int json_mode, int argc, char **a
 	const char *sub = argc > 0 ? argv[0] : "show";
 
 	if (strcmp(sub, "show") == 0) {
-		if (cix_client_request(c, "GET", "/v1/system/esp", NULL, &r) != 0) {
+		if (cix_client_request(c, CIX_API_getEsp_METHOD, CIX_API_getEsp, NULL, &r) != 0) {
 			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
 		}
@@ -7094,7 +7113,7 @@ static int cmd_esp(const struct cix_client *c, int json_mode, int argc, char **a
 		}
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
-		if (cix_client_request(c, "PUT", "/v1/system/esp", w.buf, &r) != 0) {
+		if (cix_client_request(c, CIX_API_putEsp_METHOD, CIX_API_putEsp, w.buf, &r) != 0) {
 			jw_free(&w);
 			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
@@ -7109,7 +7128,7 @@ static int cmd_esp(const struct cix_client *c, int json_mode, int argc, char **a
 			fprintf(stderr, "usage: cixctl esp rm-entry NAME\n");
 			return 2;
 		}
-		snprintf(path, sizeof(path), "/v1/system/esp/entries/%s", argv[1]);
+		snprintf(path, sizeof(path), CIX_API_deleteEspEntry, argv[1]);
 		if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
 			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
@@ -7171,7 +7190,7 @@ static int cmd_boot_console(const struct cix_client *c, int json_mode, int argc,
 	struct json_writer w;
 
 	if (strcmp(sub, "show") == 0) {
-		if (cix_client_request(c, "GET", "/v1/system/boot-console", NULL, &r) != 0) {
+		if (cix_client_request(c, CIX_API_getBootConsole_METHOD, CIX_API_getBootConsole, NULL, &r) != 0) {
 			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
 		}
@@ -7219,7 +7238,7 @@ static int cmd_boot_console(const struct cix_client *c, int json_mode, int argc,
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (cix_client_request(c, "PUT", "/v1/system/boot-console", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_setBootConsole_METHOD, CIX_API_setBootConsole, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -7289,14 +7308,14 @@ static int cmd_kernel_policy(const struct cix_client *c, int json_mode, int argc
 	struct json_writer w;
 
 	if (strcmp(sub, "show") == 0) {
-		if (cix_client_request(c, "GET", "/v1/system/kernel-policy", NULL, &r) != 0) {
+		if (cix_client_request(c, CIX_API_getKernelPolicy_METHOD, CIX_API_getKernelPolicy, NULL, &r) != 0) {
 			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
 		}
 		return emit(&r, json_mode, fmt_kernel_policy);
 	}
 	if (strcmp(sub, "refresh") == 0) {
-		if (cix_client_request(c, "POST", "/v1/system/kernel-policy/refresh", "{}", &r) != 0) {
+		if (cix_client_request(c, CIX_API_refreshKernelPolicy_METHOD, CIX_API_refreshKernelPolicy, "{}", &r) != 0) {
 			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
 		}
@@ -7331,7 +7350,7 @@ static int cmd_kernel_policy(const struct cix_client *c, int json_mode, int argc
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (cix_client_request(c, "PUT", "/v1/system/kernel-policy", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_setKernelPolicy_METHOD, CIX_API_setKernelPolicy, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -7383,7 +7402,7 @@ static int cmd_cpreserve(const struct cix_client *c, int json_mode, int argc, ch
 	struct json_writer w;
 
 	if (strcmp(sub, "show") == 0) {
-		if (cix_client_request(c, "GET", "/v1/system/control-plane-reservation", NULL, &r) != 0) {
+		if (cix_client_request(c, CIX_API_getControlPlaneReservation_METHOD, CIX_API_getControlPlaneReservation, NULL, &r) != 0) {
 			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
 		}
@@ -7433,7 +7452,7 @@ static int cmd_cpreserve(const struct cix_client *c, int json_mode, int argc, ch
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (cix_client_request(c, "PUT", "/v1/system/control-plane-reservation", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_setControlPlaneReservation_METHOD, CIX_API_setControlPlaneReservation, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -7466,7 +7485,7 @@ static int cmd_tls_throttle_show(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/system/tls-throttle", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_getSystemTlsThrottle_METHOD, CIX_API_getSystemTlsThrottle, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -7534,7 +7553,7 @@ static int cmd_tls_throttle_set(const struct cix_client *c, int json_mode, int a
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (cix_client_request(c, "PUT", "/v1/system/tls-throttle", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_putSystemTlsThrottle_METHOD, CIX_API_putSystemTlsThrottle, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -7573,7 +7592,7 @@ static int cmd_tls_throttle_status(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/system/tls-throttle/status", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_getSystemTlsThrottleStatus_METHOD, CIX_API_getSystemTlsThrottleStatus, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -7647,7 +7666,7 @@ static int cmd_hostauth_config_show(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/system/hostauth-config", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_getHostauthConfig_METHOD, CIX_API_getHostauthConfig, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -7715,7 +7734,7 @@ static int cmd_hostauth_config_set(const struct cix_client *c, int json_mode, in
 	/* Read-modify-write: fetch the current config so any flag NOT
 	 * given here is preserved exactly, not reset by the server's own
 	 * full-replacement PUT semantics. */
-	if (cix_client_request(c, "GET", "/v1/system/hostauth-config", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_getHostauthConfig_METHOD, CIX_API_getHostauthConfig, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -7781,7 +7800,7 @@ static int cmd_hostauth_config_set(const struct cix_client *c, int json_mode, in
 	w.buf[w.len] = '\0';
 	cix_response_free(&r);
 
-	if (cix_client_request(c, "PUT", "/v1/system/hostauth-config", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_putHostauthConfig_METHOD, CIX_API_putHostauthConfig, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -7844,7 +7863,7 @@ static int cmd_hostauth_sessions_ls(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/system/hostauth/sessions", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_listHostauthSessions_METHOD, CIX_API_listHostauthSessions, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -7861,7 +7880,7 @@ static int cmd_hostauth_sessions_revoke(const struct cix_client *c, int json_mod
 		fprintf(stderr, "usage: cixctl hostauth-sessions revoke USERNAME\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), "/v1/system/hostauth/sessions/%s", argv[0]);
+	snprintf(path, sizeof(path), CIX_API_revokeHostauthSessions, argv[0]);
 	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -8568,7 +8587,7 @@ static int cmd_run(const struct cix_client *c, int json_mode, int argc, char **a
 	 */
 	w.buf[w.len] = '\0';
 
-	if (cix_client_request(c, "POST", "/v1/containers", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_createContainer_METHOD, CIX_API_createContainer, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -8641,7 +8660,7 @@ static int cmd_network_create(const struct cix_client *c, int json_mode, int arg
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (cix_client_request(c, "POST", "/v1/networks", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_createNetwork_METHOD, CIX_API_createNetwork, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -8655,7 +8674,7 @@ static int cmd_network_ls(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/networks", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_listNetworks_METHOD, CIX_API_listNetworks, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -8671,7 +8690,7 @@ static int cmd_network_rm(const struct cix_client *c, int json_mode, int argc, c
 		fprintf(stderr, "cixctl: network rm requires a network name\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), "/v1/networks/%s", argv[0]);
+	snprintf(path, sizeof(path), CIX_API_deleteNetwork, argv[0]);
 	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -8722,7 +8741,7 @@ static int cmd_network_attach_interface(const struct cix_client *c, int json_mod
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	snprintf(path, sizeof(path), "/v1/networks/%s/interfaces", net_name);
+	snprintf(path, sizeof(path), CIX_API_attachNetworkInterface, net_name);
 	if (cix_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
@@ -8760,7 +8779,7 @@ static int cmd_network_detach_interface(const struct cix_client *c, int json_mod
 		return 2;
 	}
 
-	snprintf(path, sizeof(path), "/v1/networks/%s/interfaces/%s", net_name, ifname);
+	snprintf(path, sizeof(path), CIX_API_detachNetworkInterface, net_name, ifname);
 	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -8828,7 +8847,7 @@ static int cmd_network_ports(const struct cix_client *c, int json_mode, int argc
 		fprintf(stderr, "usage: cixctl network ports NAME\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), "/v1/networks/%s/ports", argv[0]);
+	snprintf(path, sizeof(path), CIX_API_getNetworkPorts, argv[0]);
 	if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -8898,7 +8917,7 @@ static int cmd_image_create(const struct cix_client *c, int json_mode, int argc,
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (cix_client_request(c, "POST", "/v1/images", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_createImage_METHOD, CIX_API_createImage, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -8912,7 +8931,7 @@ static int cmd_image_ls(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/images", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_listImages_METHOD, CIX_API_listImages, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -8928,7 +8947,7 @@ static int cmd_image_rm(const struct cix_client *c, int json_mode, int argc, cha
 		fprintf(stderr, "cixctl: image rm requires an image name\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), "/v1/images/%s", argv[0]);
+	snprintf(path, sizeof(path), CIX_API_deleteImage, argv[0]);
 	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -8945,7 +8964,7 @@ static int cmd_image_show(const struct cix_client *c, int json_mode, int argc, c
 		fprintf(stderr, "usage: cixctl image show NAME\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), "/v1/images/%s", argv[0]);
+	snprintf(path, sizeof(path), CIX_API_getImage, argv[0]);
 	if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -8998,7 +9017,7 @@ static int cmd_image_manifest_set(const struct cix_client *c, int json_mode, int
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	snprintf(path, sizeof(path), "/v1/images/%s/manifest", image);
+	snprintf(path, sizeof(path), CIX_API_setImageManifestEntry, image);
 	if (cix_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
@@ -9042,7 +9061,7 @@ static int cmd_image_manifest_rm(const struct cix_client *c, int json_mode, int 
 		return 2;
 	}
 
-	snprintf(path, sizeof(path), "/v1/images/%s/manifest/%s", image, package);
+	snprintf(path, sizeof(path), CIX_API_unsetImageManifestEntry, image, package);
 	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -9095,7 +9114,7 @@ static int cmd_image_recipe_ls(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/images/recipes", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_listImageRecipes_METHOD, CIX_API_listImageRecipes, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -9144,7 +9163,7 @@ static int cmd_image_recipe_add(const struct cix_client *c, int json_mode, int a
 	w.buf[w.len] = '\0';
 	free(content);
 
-	if (cix_client_request(c, "POST", "/v1/images/recipes", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_addImageRecipe_METHOD, CIX_API_addImageRecipe, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -9190,7 +9209,7 @@ static int cmd_image_recipe_show(const struct cix_client *c, int json_mode, int 
 		fprintf(stderr, "usage: cixctl image recipe show NAME\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), "/v1/images/recipes/%s", name);
+	snprintf(path, sizeof(path), CIX_API_getImageRecipe, name);
 	if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -9217,7 +9236,7 @@ static int cmd_image_recipe_rm(const struct cix_client *c, int json_mode, int ar
 		fprintf(stderr, "usage: cixctl image recipe rm NAME\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), "/v1/images/recipes/%s", name);
+	snprintf(path, sizeof(path), CIX_API_deleteImageRecipe, name);
 	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -9334,7 +9353,7 @@ static int cmd_image_gc(const struct cix_client *c, int json_mode, int argc, cha
 	 * default for that reason, not to hide the number. */
 	snprintf(body, sizeof(body), "{\"dry_run\":%s,\"measure\":%s}",
 	         dry_run ? "true" : "false", measure ? "true" : "false");
-	if (cix_client_request(c, "POST", "/v1/images/gc", body, &r) != 0) {
+	if (cix_client_request(c, CIX_API_imagesGc_METHOD, CIX_API_imagesGc, body, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -9360,7 +9379,7 @@ static int cmd_image_apply_recipe(const struct cix_client *c, int json_mode, int
 		fprintf(stderr, "usage: cixctl image apply-recipe NAME\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), "/v1/images/%s/apply-recipe", name);
+	snprintf(path, sizeof(path), CIX_API_applyImageRecipe, name);
 	if (cix_client_request(c, "POST", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -9402,7 +9421,7 @@ static int cmd_container_recipe_ls(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/containers/recipes", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_listContainerRecipes_METHOD, CIX_API_listContainerRecipes, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -9454,7 +9473,7 @@ static int cmd_container_recipe_add(const struct cix_client *c, int json_mode, i
 	w.buf[w.len] = '\0';
 	free(content);
 
-	if (cix_client_request(c, "POST", "/v1/containers/recipes", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_addContainerRecipe_METHOD, CIX_API_addContainerRecipe, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -9501,7 +9520,7 @@ static int cmd_container_recipe_show(const struct cix_client *c, int json_mode, 
 		fprintf(stderr, "usage: cixctl container recipe show NAME\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), "/v1/containers/recipes/%s", name);
+	snprintf(path, sizeof(path), CIX_API_getContainerRecipe, name);
 	if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -9529,7 +9548,7 @@ static int cmd_container_recipe_rm(const struct cix_client *c, int json_mode, in
 		fprintf(stderr, "usage: cixctl container recipe rm NAME\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), "/v1/containers/recipes/%s", name);
+	snprintf(path, sizeof(path), CIX_API_deleteContainerRecipe, name);
 	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -9617,7 +9636,7 @@ static int cmd_container_apply_recipe(const struct cix_client *c, int json_mode,
 		return 2;
 	}
 
-	snprintf(path, sizeof(path), "/v1/containers/recipes/%s/apply", name);
+	snprintf(path, sizeof(path), CIX_API_applyContainerRecipe, name);
 	if (cix_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
@@ -9681,7 +9700,7 @@ static int cmd_device_ls(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/devices", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_listDevices_METHOD, CIX_API_listDevices, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -9737,7 +9756,7 @@ static int cmd_diskrole_create(const struct cix_client *c, int json_mode, int ar
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (cix_client_request(c, "POST", "/v1/diskroles", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_createDiskRole_METHOD, CIX_API_createDiskRole, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -9751,7 +9770,7 @@ static int cmd_diskrole_ls(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/diskroles", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_listDiskRoles_METHOD, CIX_API_listDiskRoles, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -9767,7 +9786,7 @@ static int cmd_diskrole_rm(const struct cix_client *c, int json_mode, int argc, 
 		fprintf(stderr, "cixctl: diskrole rm requires a disk name\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), "/v1/diskroles/%s", argv[0]);
+	snprintf(path, sizeof(path), CIX_API_deleteDiskRole, argv[0]);
 	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -9836,7 +9855,7 @@ static int cmd_devicemap_create(const struct cix_client *c, int json_mode, int a
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (cix_client_request(c, "POST", "/v1/devicemaps", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_createDeviceMap_METHOD, CIX_API_createDeviceMap, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -9850,7 +9869,7 @@ static int cmd_devicemap_ls(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/devicemaps", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_listDeviceMaps_METHOD, CIX_API_listDeviceMaps, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -9866,7 +9885,7 @@ static int cmd_devicemap_rm(const struct cix_client *c, int json_mode, int argc,
 		fprintf(stderr, "cixctl: devicemap rm requires a mapping name\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), "/v1/devicemaps/%s", argv[0]);
+	snprintf(path, sizeof(path), CIX_API_deleteDeviceMap, argv[0]);
 	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -9931,7 +9950,7 @@ static int cmd_dns_record_create(const struct cix_client *c, int json_mode, int 
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (cix_client_request(c, "POST", "/v1/dns/records", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_createDnsRecord_METHOD, CIX_API_createDnsRecord, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -9945,7 +9964,7 @@ static int cmd_dns_record_ls(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/dns/records", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_listDnsRecords_METHOD, CIX_API_listDnsRecords, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -9984,7 +10003,7 @@ static int cmd_dns_record_update(const struct cix_client *c, int json_mode, int 
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	snprintf(path, sizeof(path), "/v1/dns/records/%s", name);
+	snprintf(path, sizeof(path), CIX_API_updateDnsRecord, name);
 	if (cix_client_request(c, "PUT", path, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
@@ -10004,7 +10023,7 @@ static int cmd_dns_record_rm(const struct cix_client *c, int json_mode, int argc
 		fprintf(stderr, "cixctl: dns record rm requires a record name\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), "/v1/dns/records/%s", argv[0]);
+	snprintf(path, sizeof(path), CIX_API_deleteDnsRecord, argv[0]);
 	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -10072,7 +10091,7 @@ static int cmd_dns_server_register(const struct cix_client *c, int json_mode, in
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (cix_client_request(c, "POST", "/v1/dns/servers", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_createDnsServer_METHOD, CIX_API_createDnsServer, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -10086,7 +10105,7 @@ static int cmd_dns_server_ls(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/dns/servers", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_listDnsServers_METHOD, CIX_API_listDnsServers, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -10103,7 +10122,7 @@ static int cmd_dns_server_unregister(const struct cix_client *c, int json_mode, 
 		fprintf(stderr, "cixctl: dns server unregister requires a container name\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), "/v1/dns/servers/%s", argv[0]);
+	snprintf(path, sizeof(path), CIX_API_deleteDnsServer, argv[0]);
 	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -10160,7 +10179,7 @@ static int cmd_dns_forwarders(const struct cix_client *c, int json_mode, int arg
 	const char *sub = argc > 0 ? argv[0] : "show";
 
 	if (strcmp(sub, "show") == 0) {
-		if (cix_client_request(c, "GET", "/v1/dns/forwarders", NULL, &r) != 0) {
+		if (cix_client_request(c, CIX_API_getDnsForwarders_METHOD, CIX_API_getDnsForwarders, NULL, &r) != 0) {
 			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
 		}
@@ -10186,7 +10205,7 @@ static int cmd_dns_forwarders(const struct cix_client *c, int json_mode, int arg
 		jw_arr_close(&w);
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
-		if (cix_client_request(c, "PUT", "/v1/dns/forwarders", w.buf, &r) != 0) {
+		if (cix_client_request(c, CIX_API_setDnsForwarders_METHOD, CIX_API_setDnsForwarders, w.buf, &r) != 0) {
 			jw_free(&w);
 			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
@@ -10305,14 +10324,14 @@ static int cmd_boot_next(const struct cix_client *c, int json_mode, int argc, ch
 	char body[64];
 
 	if (argc == 0) {
-		if (cix_client_request(c, "GET", "/v1/system/boot-next", NULL, &r) != 0) {
+		if (cix_client_request(c, CIX_API_getBootNext_METHOD, CIX_API_getBootNext, NULL, &r) != 0) {
 			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
 		}
 		return emit(&r, json_mode, fmt_boot_next);
 	}
 	if (strcmp(argv[0], "clear") == 0) {
-		if (cix_client_request(c, "DELETE", "/v1/system/boot-next", NULL, &r) != 0) {
+		if (cix_client_request(c, CIX_API_clearBootNext_METHOD, CIX_API_clearBootNext, NULL, &r) != 0) {
 			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
 		}
@@ -10331,7 +10350,7 @@ static int cmd_boot_next(const struct cix_client *c, int json_mode, int argc, ch
 		return 2;
 	}
 	snprintf(body, sizeof(body), "{\"slot\":\"%s\"}", argv[0]);
-	if (cix_client_request(c, "POST", "/v1/system/boot-next", body, &r) != 0) {
+	if (cix_client_request(c, CIX_API_setBootNext_METHOD, CIX_API_setBootNext, body, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -10373,7 +10392,7 @@ static int cmd_dns_provision(const struct cix_client *c, int json_mode, int argc
 	 * disagree about what the standard topology is. */
 	(void)replica_count;
 
-	if (cix_client_request(c, "POST", "/v1/dns/provision", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_provisionDns_METHOD, CIX_API_provisionDns, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -10453,7 +10472,7 @@ static int cmd_ldap_server_register(const struct cix_client *c, int json_mode, i
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (cix_client_request(c, "POST", "/v1/ldap/servers", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_createLdapServer_METHOD, CIX_API_createLdapServer, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -10467,7 +10486,7 @@ static int cmd_ldap_server_ls(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/ldap/servers", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_listLdapServers_METHOD, CIX_API_listLdapServers, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -10484,7 +10503,7 @@ static int cmd_ldap_server_unregister(const struct cix_client *c, int json_mode,
 		fprintf(stderr, "cixctl: ldap server unregister requires a container name\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), "/v1/ldap/servers/%s", argv[0]);
+	snprintf(path, sizeof(path), CIX_API_deleteLdapServer, argv[0]);
 	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -10552,7 +10571,7 @@ static int cmd_ldap_group_add(const struct cix_client *c, int json_mode, int arg
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (cix_client_request(c, "POST", "/v1/ldap/groups", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_createLdapGroup_METHOD, CIX_API_createLdapGroup, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -10566,7 +10585,7 @@ static int cmd_ldap_group_ls(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/ldap/groups", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_listLdapGroups_METHOD, CIX_API_listLdapGroups, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -10617,7 +10636,7 @@ static int cmd_ldap_group_update(const struct cix_client *c, int json_mode, int 
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	snprintf(path, sizeof(path), "/v1/ldap/groups/%s", name);
+	snprintf(path, sizeof(path), CIX_API_updateLdapGroup, name);
 	if (cix_client_request(c, "PUT", path, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
@@ -10637,7 +10656,7 @@ static int cmd_ldap_group_rm(const struct cix_client *c, int json_mode, int argc
 		fprintf(stderr, "cixctl: ldap group rm requires a group name\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), "/v1/ldap/groups/%s", argv[0]);
+	snprintf(path, sizeof(path), CIX_API_deleteLdapGroup, argv[0]);
 	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -10769,7 +10788,7 @@ static int cmd_ldap_user_add(const struct cix_client *c, int json_mode, int argc
 	}
 	w.buf[w.len] = '\0';
 
-	if (cix_client_request(c, "POST", "/v1/ldap/users", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_createLdapUser_METHOD, CIX_API_createLdapUser, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -10802,7 +10821,7 @@ static int cmd_ldap_user_update(const struct cix_client *c, int json_mode, int a
 	}
 	w.buf[w.len] = '\0';
 
-	snprintf(path, sizeof(path), "/v1/ldap/users/%s", name);
+	snprintf(path, sizeof(path), CIX_API_updateLdapUser, name);
 	if (cix_client_request(c, "PUT", path, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
@@ -10817,7 +10836,7 @@ static int cmd_ldap_user_ls(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/ldap/users", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_listLdapUsers_METHOD, CIX_API_listLdapUsers, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -10833,7 +10852,7 @@ static int cmd_ldap_user_rm(const struct cix_client *c, int json_mode, int argc,
 		fprintf(stderr, "cixctl: ldap user rm requires a user name\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), "/v1/ldap/users/%s", argv[0]);
+	snprintf(path, sizeof(path), CIX_API_deleteLdapUser, argv[0]);
 	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -10871,7 +10890,7 @@ static int cmd_ldap_config_show(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/ldap/config", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_getLdapConfig_METHOD, CIX_API_getLdapConfig, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -10949,7 +10968,7 @@ static int cmd_ldap_config_set(const struct cix_client *c, int json_mode, int ar
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (cix_client_request(c, "PUT", "/v1/ldap/config", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_updateLdapConfig_METHOD, CIX_API_updateLdapConfig, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -11035,7 +11054,7 @@ static int cmd_pki_ca_bootstrap(const struct cix_client *c, int json_mode, int a
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (cix_client_request(c, "POST", "/v1/pki/ca", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_createPkiCa_METHOD, CIX_API_createPkiCa, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -11049,7 +11068,7 @@ static int cmd_pki_ca_show(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/pki/ca", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_getPkiCa_METHOD, CIX_API_getPkiCa, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -11109,7 +11128,7 @@ static int cmd_pki_intermediate_bootstrap(const struct cix_client *c, int json_m
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (cix_client_request(c, "POST", "/v1/pki/intermediate", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_createPkiIntermediate_METHOD, CIX_API_createPkiIntermediate, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -11123,7 +11142,7 @@ static int cmd_pki_intermediate_show(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/pki/intermediate", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_getPkiIntermediate_METHOD, CIX_API_getPkiIntermediate, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -11201,7 +11220,7 @@ static int cmd_pki_cert_create(const struct cix_client *c, int json_mode, int ar
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (cix_client_request(c, "POST", "/v1/pki/certs", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_createPkiCert_METHOD, CIX_API_createPkiCert, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -11215,7 +11234,7 @@ static int cmd_pki_cert_ls(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/pki/certs", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_listPkiCerts_METHOD, CIX_API_listPkiCerts, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -11231,7 +11250,7 @@ static int cmd_pki_cert_rm(const struct cix_client *c, int json_mode, int argc, 
 		fprintf(stderr, "cixctl: pki cert rm requires a cert name\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), "/v1/pki/certs/%s", argv[0]);
+	snprintf(path, sizeof(path), CIX_API_deletePkiCert, argv[0]);
 	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -11323,7 +11342,7 @@ static int cmd_pki_reset(const struct cix_client *c, int json_mode, int argc, ch
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (cix_client_request(c, "POST", "/v1/pki/reset", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_resetPki_METHOD, CIX_API_resetPki, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -11394,7 +11413,7 @@ static int poll_bootstrap_fetch(const struct cix_client *c, struct cix_response 
 	for (;;) {
 		const char *state;
 
-		if (cix_client_request(c, "GET", "/v1/pkg/bootstrap", NULL, out) != 0) {
+		if (cix_client_request(c, CIX_API_getPkgBootstrapStatus_METHOD, CIX_API_getPkgBootstrapStatus, NULL, out) != 0) {
 			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return -1;
 		}
@@ -11467,7 +11486,7 @@ static int cmd_pkg_bootstrap_status(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/pkg/bootstrap", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_getPkgBootstrapStatus_METHOD, CIX_API_getPkgBootstrapStatus, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -11512,7 +11531,7 @@ static int cmd_pkg_bootstrap(const struct cix_client *c, int json_mode, int argc
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
 
-		if (cix_client_request(c, "POST", "/v1/pkg/bootstrap", w.buf, &r) != 0) {
+		if (cix_client_request(c, CIX_API_pkgBootstrap_METHOD, CIX_API_pkgBootstrap, w.buf, &r) != 0) {
 			jw_free(&w);
 			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
@@ -11528,7 +11547,7 @@ static int cmd_pkg_bootstrap(const struct cix_client *c, int json_mode, int argc
 	}
 
 	if (toolchain == NULL) {
-		if (cix_client_request(c, "POST", "/v1/pkg/bootstrap", NULL, &r) != 0) {
+		if (cix_client_request(c, CIX_API_pkgBootstrap_METHOD, CIX_API_pkgBootstrap, NULL, &r) != 0) {
 			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
 		}
@@ -11542,7 +11561,7 @@ static int cmd_pkg_bootstrap(const struct cix_client *c, int json_mode, int argc
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
 
-		if (cix_client_request(c, "POST", "/v1/pkg/bootstrap", w.buf, &r) != 0) {
+		if (cix_client_request(c, CIX_API_pkgBootstrap_METHOD, CIX_API_pkgBootstrap, w.buf, &r) != 0) {
 			jw_free(&w);
 			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
@@ -11576,7 +11595,7 @@ static int cmd_pkg_repo_config_show(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/pkg/repo-config", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_getPkgRepoConfig_METHOD, CIX_API_getPkgRepoConfig, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -11638,7 +11657,7 @@ static int cmd_pkg_repo_config_set(const struct cix_client *c, int json_mode, in
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (cix_client_request(c, "PUT", "/v1/pkg/repo-config", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_putPkgRepoConfig_METHOD, CIX_API_putPkgRepoConfig, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -11690,7 +11709,7 @@ static int poll_pkg_sync(const struct cix_client *c, struct cix_response *out)
 	for (;;) {
 		const char *state;
 
-		if (cix_client_request(c, "GET", "/v1/pkg/sync", NULL, out) != 0) {
+		if (cix_client_request(c, CIX_API_getPkgSyncStatus_METHOD, CIX_API_getPkgSyncStatus, NULL, out) != 0) {
 			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return -1;
 		}
@@ -11726,7 +11745,7 @@ static int cmd_pkg_sync(const struct cix_client *c, int json_mode, int argc, cha
 	if (refetch != NULL)
 		snprintf(body, sizeof(body), "{\"refetch\":\"%s\"}", refetch);
 
-	if (cix_client_request(c, "POST", "/v1/pkg/sync", refetch != NULL ? body : NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_pkgSync_METHOD, CIX_API_pkgSync, refetch != NULL ? body : NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -11740,7 +11759,7 @@ static int cmd_pkg_sync(const struct cix_client *c, int json_mode, int argc, cha
 	if (wait) {
 		if (poll_pkg_sync(c, &r) != 0)
 			return 1;
-	} else if (cix_client_request(c, "GET", "/v1/pkg/sync", NULL, &r) != 0) {
+	} else if (cix_client_request(c, CIX_API_getPkgSyncStatus_METHOD, CIX_API_getPkgSyncStatus, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -11751,7 +11770,7 @@ static int cmd_pkg_sync_status(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/pkg/sync", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_getPkgSyncStatus_METHOD, CIX_API_getPkgSyncStatus, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -11772,7 +11791,7 @@ static int cmd_pkg_cache_config_show(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/pkg/cache-config", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_getPkgCacheConfig_METHOD, CIX_API_getPkgCacheConfig, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -11800,7 +11819,7 @@ static int cmd_pkg_cache_config_set(const struct cix_client *c, int json_mode, i
 	}
 
 	snprintf(body, sizeof(body), "{\"max_bytes\":%ld}", max_bytes);
-	if (cix_client_request(c, "PUT", "/v1/pkg/cache-config", body, &r) != 0) {
+	if (cix_client_request(c, CIX_API_putPkgCacheConfig_METHOD, CIX_API_putPkgCacheConfig, body, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -11829,7 +11848,7 @@ static int cmd_pkg_cache_status(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/pkg/cache", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_getPkgCache_METHOD, CIX_API_getPkgCache, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -11840,7 +11859,7 @@ static int cmd_pkg_cache_clear(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "DELETE", "/v1/pkg/cache", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_deletePkgCache_METHOD, CIX_API_deletePkgCache, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -11872,7 +11891,7 @@ static int cmd_pkg_artifact_config_show(const struct cix_client *c, int json_mod
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/pkg/artifact-config", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_getPkgArtifactConfig_METHOD, CIX_API_getPkgArtifactConfig, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -11923,7 +11942,7 @@ static int cmd_pkg_artifact_config_set(const struct cix_client *c, int json_mode
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (cix_client_request(c, "PUT", "/v1/pkg/artifact-config", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_putPkgArtifactConfig_METHOD, CIX_API_putPkgArtifactConfig, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -11991,7 +12010,7 @@ static int cmd_pkg_artifact_export(const struct cix_client *c, int json_mode, in
 		return 2;
 	}
 
-	snprintf(path, sizeof(path), "/v1/pkg/%s/artifact/export", name);
+	snprintf(path, sizeof(path), CIX_API_exportPkgArtifact, name);
 	if (cix_client_request(c, "POST", path, "", &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -12056,7 +12075,7 @@ static int cmd_pkg_artifact_export(const struct cix_client *c, int json_mode, in
 		if (want > ARTIFACT_EXPORT_CHUNK)
 			want = ARTIFACT_EXPORT_CHUNK;
 		snprintf(path, sizeof(path),
-		         "/v1/pkg/%s/artifact/export/download?offset=%lld&length=%lld", name, got, want);
+		         CIX_API_downloadPkgArtifactExport "?offset=%lld&length=%lld", name, got, want);
 		if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
 			fprintf(stderr, "cixctl: could not reach daemon\n");
 			fclose(out);
@@ -12090,7 +12109,7 @@ static int cmd_pkg_recipes(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/pkg/recipes", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_listPkgRecipes_METHOD, CIX_API_listPkgRecipes, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -12142,7 +12161,7 @@ static int cmd_pkg_recipe_add(const struct cix_client *c, int json_mode, int arg
 	w.buf[w.len] = '\0';
 	free(content);
 
-	if (cix_client_request(c, "POST", "/v1/pkg/recipes", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_addPkgRecipe_METHOD, CIX_API_addPkgRecipe, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -12195,9 +12214,9 @@ static int cmd_pkg_recipe_show(const struct cix_client *c, int json_mode, int ar
 		return 2;
 	}
 	if (version != NULL)
-		snprintf(path, sizeof(path), "/v1/pkg/recipes/%s?version=%s", name, version);
+		snprintf(path, sizeof(path), CIX_API_getPkgRecipe "?version=%s", name, version);
 	else
-		snprintf(path, sizeof(path), "/v1/pkg/recipes/%s", name);
+		snprintf(path, sizeof(path), CIX_API_getPkgRecipe, name);
 	if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -12230,9 +12249,9 @@ static int cmd_pkg_recipe_rm(const struct cix_client *c, int json_mode, int argc
 		return 2;
 	}
 	if (version != NULL)
-		snprintf(path, sizeof(path), "/v1/pkg/recipes/%s?version=%s", name, version);
+		snprintf(path, sizeof(path), CIX_API_deletePkgRecipe "?version=%s", name, version);
 	else
-		snprintf(path, sizeof(path), "/v1/pkg/recipes/%s", name);
+		snprintf(path, sizeof(path), CIX_API_deletePkgRecipe, name);
 	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -12323,7 +12342,7 @@ static int cmd_pkg_install(const struct cix_client *c, int json_mode, int argc, 
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (cix_client_request(c, "POST", "/v1/pkg/install", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_pkgInstall_METHOD, CIX_API_pkgInstall, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -12398,7 +12417,7 @@ static int cmd_pkg_resume(const struct cix_client *c, int json_mode, int argc, c
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (cix_client_request(c, "POST", "/v1/pkg/resume", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_pkgResume_METHOD, CIX_API_pkgResume, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -12419,7 +12438,7 @@ static int poll_hostbuild(const struct cix_client *c, const char *name, struct c
 {
 	char path[300];
 
-	snprintf(path, sizeof(path), "/v1/pkg/hostbuild/%s", name);
+	snprintf(path, sizeof(path), CIX_API_getPkgHostbuild, name);
 	for (;;) {
 		const char *state;
 
@@ -12449,7 +12468,7 @@ static int get_bootroot_assembly_generation(const struct cix_client *c, long *ou
 	const struct json_value *jrunning;
 	const char *image_path;
 
-	if (cix_client_request(c, "GET", "/v1/system/boot", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_getSystemBoot_METHOD, CIX_API_getSystemBoot, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return -1;
 	}
@@ -12587,7 +12606,7 @@ static int cmd_pkg_hostbuild(const struct cix_client *c, int json_mode, int argc
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (cix_client_request(c, "POST", "/v1/pkg/hostbuild", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_pkgHostbuild_METHOD, CIX_API_pkgHostbuild, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -12754,7 +12773,7 @@ static int cmd_kmod_build(const struct cix_client *c, int json_mode, int argc, c
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (cix_client_request(c, "POST", "/v1/system/kmod-build", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_postKmodBuild_METHOD, CIX_API_postKmodBuild, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -12775,7 +12794,7 @@ static int cmd_pkg_ls(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/pkg", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_listPkg_METHOD, CIX_API_listPkg, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -12791,7 +12810,7 @@ static int cmd_pkg_rm(const struct cix_client *c, int json_mode, int argc, char 
 		fprintf(stderr, "cixctl: pkg rm requires a package name\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), "/v1/pkg/%s", argv[0]);
+	snprintf(path, sizeof(path), CIX_API_deletePkg, argv[0]);
 	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -12818,7 +12837,7 @@ static int cmd_pkg_update_all(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "POST", "/v1/pkg/update-all", "{}", &r) != 0) {
+	if (cix_client_request(c, CIX_API_pkgUpdateAll_METHOD, CIX_API_pkgUpdateAll, "{}", &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -12868,7 +12887,7 @@ static int cmd_container_edit(const struct cix_client *c, int json_mode, int arg
 		fprintf(stderr, "cixctl: container edit needs --json='{...}'\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), "/v1/containers/%s", argv[0]);
+	snprintf(path, sizeof(path), CIX_API_patchContainer, argv[0]);
 	if (cix_client_request(c, "PATCH", path, argv[1] + 7, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -12919,7 +12938,7 @@ static int cmd_pkg_build_logs(const struct cix_client *c, int json_mode, int arg
 		}
 	}
 
-	if (cix_client_request(c, "GET", "/v1/pkg/build-logs", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_listBuildLogs_METHOD, CIX_API_listBuildLogs, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -12946,7 +12965,7 @@ static int cmd_pkg_build_logs(const struct cix_client *c, int json_mode, int arg
 	{
 		char path[512];
 
-		snprintf(path, sizeof(path), "/v1/pkg/build-logs/%s", file);
+		snprintf(path, sizeof(path), CIX_API_getBuildLog, file);
 		if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
 			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
@@ -12997,14 +13016,14 @@ static int cmd_pkg_policy(const struct cix_client *c, int json_mode, int argc, c
 	char path[256];
 
 	if (strcmp(sub, "ls") == 0) {
-		if (cix_client_request(c, "GET", "/v1/pkg/policies", NULL, &r) != 0) {
+		if (cix_client_request(c, CIX_API_listPkgPolicies_METHOD, CIX_API_listPkgPolicies, NULL, &r) != 0) {
 			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
 		}
 		return emit(&r, json_mode, fmt_pkg_policies);
 	}
 	if (strcmp(sub, "clear") == 0 && argc >= 2) {
-		snprintf(path, sizeof(path), "/v1/pkg/policies/%s", argv[1]);
+		snprintf(path, sizeof(path), CIX_API_clearPkgPolicy, argv[1]);
 		if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
 			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
@@ -13042,7 +13061,7 @@ static int cmd_pkg_policy(const struct cix_client *c, int json_mode, int argc, c
 			snprintf(body, sizeof(body), "{\"policy\":\"%s\",\"version\":\"%s\"}", policy, version);
 		else
 			snprintf(body, sizeof(body), "{\"policy\":\"%s\"}", policy);
-		snprintf(path, sizeof(path), "/v1/pkg/policies/%s", argv[1]);
+		snprintf(path, sizeof(path), CIX_API_setPkgPolicy, argv[1]);
 		if (cix_client_request(c, "PUT", path, body, &r) != 0) {
 			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
@@ -13164,7 +13183,7 @@ static int poll_iso(const struct cix_client *c, struct cix_response *out)
 	for (;;) {
 		const char *state;
 
-		if (cix_client_request(c, "GET", "/v1/system/iso", NULL, out) != 0) {
+		if (cix_client_request(c, CIX_API_getSystemIso_METHOD, CIX_API_getSystemIso, NULL, out) != 0) {
 			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return -1;
 		}
@@ -13180,7 +13199,7 @@ static int cmd_iso_status(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, "GET", "/v1/system/iso", NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_getSystemIso_METHOD, CIX_API_getSystemIso, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -13243,7 +13262,7 @@ static int cmd_iso_build(const struct cix_client *c, int json_mode, int argc, ch
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (cix_client_request(c, "POST", "/v1/system/iso", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_postSystemIso_METHOD, CIX_API_postSystemIso, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -13434,7 +13453,7 @@ static int cmd_login(const struct cix_client *c, int json_mode, int argc, char *
 	w.buf[w.len] = '\0';
 
 	memset(&r, 0, sizeof(r));
-	if (cix_client_request(c, "POST", "/v1/login", w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_postLogin_METHOD, CIX_API_postLogin, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -13493,7 +13512,7 @@ static int cmd_logout(const struct cix_client *c, int json_mode)
 
 	if (load_token_file(token, sizeof(token)) == 0) {
 		memset(&r, 0, sizeof(r));
-		if (cix_client_request_with_auth(c, "POST", "/v1/logout", token, NULL, &r) == 0)
+		if (cix_client_request_with_auth(c, "POST", CIX_API_postLogout, token, NULL, &r) == 0)
 			cix_response_free(&r);
 	}
 	clear_token_file();
@@ -13725,7 +13744,7 @@ static void shell_prompt_init(const struct cix_client *client)
 	char fqdn[SHELL_PROMPT_MAX] = "cix";
 	int authenticated = 0;
 
-	if (cix_client_request(client, "GET", "/v1/system/site", NULL, &site_r) == 0) {
+	if (cix_client_request(client, CIX_API_getSystemSite_METHOD, CIX_API_getSystemSite, NULL, &site_r) == 0) {
 		if (site_r.status == 200) {
 			const char *instance_name = json_str_field(site_r.json, "instance_name");
 			const char *site_name = json_str_field(site_r.json, "site_name");
@@ -13742,7 +13761,7 @@ static void shell_prompt_init(const struct cix_client *client)
 		cix_response_free(&site_r);
 	}
 
-	if (cix_client_request(client, "GET", "/v1/whoami", NULL, &whoami_r) == 0) {
+	if (cix_client_request(client, CIX_API_getWhoami_METHOD, CIX_API_getWhoami, NULL, &whoami_r) == 0) {
 		if (whoami_r.status == 200) {
 			const struct json_value *jauth = json_object_get(whoami_r.json, "authenticated");
 
