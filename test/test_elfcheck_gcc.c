@@ -75,6 +75,48 @@ int main(void)
 		printf("  (skipped the GCC fixture -- gcc unavailable here)\n");
 	}
 
+	/*
+	 * The case that produced a confident wrong answer: an EXECUTABLE.
+	 *
+	 * Cix's own glibc crt1.o carries a GCC marker, so every TCC-linked
+	 * executable on the platform inherits one. A check that reported
+	 * "GCC built this" for an executable would be true of everything
+	 * and would distinguish nothing -- which is precisely the mistake
+	 * this guard exists to prevent, so it is tested rather than
+	 * trusted.
+	 */
+	{
+		char exe_src[256], tcc_exe[256], gcc_exe[256];
+
+		snprintf(exe_src, sizeof(exe_src), "%s/e.c", dir);
+		snprintf(tcc_exe, sizeof(tcc_exe), "%s/tcc_e", dir);
+		snprintf(gcc_exe, sizeof(gcc_exe), "%s/gcc_e", dir);
+		f = fopen(exe_src, "w");
+		if (f != NULL) {
+			fprintf(f, "int main(void) { return 0; }\n");
+			fclose(f);
+
+			snprintf(cmd, sizeof(cmd), "tcc -o %s %s 2>/dev/null", tcc_exe, exe_src);
+			if (system(cmd) == 0 && access(tcc_exe, R_OK) == 0) {
+				check(elfcheck_built_by_gcc(tcc_exe, ver, sizeof(ver)) ==
+				          ELFCHECK_GCC_INCONCLUSIVE,
+				      "a TCC-built executable is INCONCLUSIVE, never a clean 'no'");
+			}
+			/* Even a genuinely GCC-built executable must come back
+			 * inconclusive: the answer is unusable either way, and
+			 * pretending otherwise is what went wrong. */
+			snprintf(cmd, sizeof(cmd), "gcc -o %s %s 2>/dev/null", gcc_exe, exe_src);
+			if (system(cmd) == 0 && access(gcc_exe, R_OK) == 0) {
+				check(elfcheck_built_by_gcc(gcc_exe, ver, sizeof(ver)) ==
+				          ELFCHECK_GCC_INCONCLUSIVE,
+				      "even a GCC-built executable is INCONCLUSIVE, not a positive");
+			}
+			unlink(exe_src);
+			unlink(tcc_exe);
+			unlink(gcc_exe);
+		}
+	}
+
 	unlink(src);
 	unlink(tcc_so);
 	unlink(gcc_so);

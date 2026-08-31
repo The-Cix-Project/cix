@@ -103,6 +103,59 @@ int elfcheck_built_by_gcc(const char *path, char *out_version, size_t version_si
 		close(fd);
 		return 0;
 	}
+	/*
+	 * Refuse to answer for an executable.
+	 *
+	 * Cix's own glibc ships crt1.o/Scrt1.o carrying
+	 * "GCC: (GNU) 16.2.0" -- correctly, because glibc is built with
+	 * Cix's GCC. Every executable TCC links therefore inherits that
+	 * marker regardless of what compiled the package's own code, so
+	 * "GCC touched this executable" is true of every binary on the
+	 * platform and distinguishes nothing.
+	 *
+	 * A shared library links crti.o/crtn.o (no marker) and not crt1.o,
+	 * so a marker there really does come from compiled code.
+	 *
+	 * This was found the hard way: an earlier version of this check
+	 * flagged seven current recipes as GCC-built on the strength of
+	 * their executables, and a local rebuild of one of them from the
+	 * identical recipe came out fully TCC-clean. The first version
+	 * looked right only because DEBIAN's crt1.o happens to carry no
+	 * marker -- a property of one dev sandbox, generalised to the
+	 * platform. Hence ELFCHECK_GCC_INCONCLUSIVE rather than a quiet 0:
+	 * "cannot tell" and "no" are different answers and collapsing them
+	 * is how the wrong conclusion got drawn in the first place.
+	 */
+	{
+		unsigned int e_type = (unsigned int)rd(ehdr + 0x10, 2);
+		unsigned long long e_phoff = rd(ehdr + 0x20, 8);
+		unsigned int e_phentsize = (unsigned int)rd(ehdr + 0x36, 2);
+		unsigned int e_phnum = (unsigned int)rd(ehdr + 0x38, 2);
+		unsigned int p;
+		int is_executable = (e_type == 2); /* ET_EXEC */
+
+		/* ET_DYN is both a library and a PIE executable; only the
+		 * latter has a PT_INTERP. */
+		if (!is_executable && e_type == 3 && e_phoff != 0 && e_phentsize >= 56 &&
+		    e_phnum > 0 && e_phnum < 256) {
+			for (p = 0; p < e_phnum; p++) {
+				unsigned char ph[56];
+
+				if (read_at(fd, ph, sizeof(ph),
+				            (off_t)(e_phoff + (unsigned long long)p * e_phentsize)) != 0)
+					break;
+				if (rd(ph + 0x00, 4) == 3) { /* PT_INTERP */
+					is_executable = 1;
+					break;
+				}
+			}
+		}
+		if (is_executable) {
+			close(fd);
+			return ELFCHECK_GCC_INCONCLUSIVE;
+		}
+	}
+
 	e_shoff = rd(ehdr + 0x28, 8);
 	e_shentsize = (unsigned int)rd(ehdr + 0x3a, 2);
 	e_shnum = (unsigned int)rd(ehdr + 0x3c, 2);

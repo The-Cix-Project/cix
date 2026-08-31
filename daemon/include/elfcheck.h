@@ -57,14 +57,29 @@ int elfcheck_undefined_builtin(const char *path, char *out_sym, size_t sym_size)
  * GCC, the probe instead PASSED and produced a GCC artifact from a
  * TCC-pinned recipe. Neither shows up as a build error.
  *
- * Returns 1 when a GCC marker is present, 0 when the file is ELF with
- * no such marker or is not ELF at all, -1 when it cannot be read.
+ * ONLY ANSWERS FOR SHARED LIBRARIES. Cix's own glibc ships
+ * crt1.o/Scrt1.o carrying "GCC: (GNU) 16.2.0" -- correctly, since
+ * glibc is built with Cix's GCC -- so every EXECUTABLE that TCC links
+ * inherits that marker whatever compiled the package's own code. The
+ * marker is therefore true of every executable on the platform and
+ * distinguishes nothing. A shared library links crti.o/crtn.o (no
+ * marker) and not crt1.o, so a marker there does come from compiled
+ * code.
  *
- * Deliberately narrow: this answers "did GCC touch this", not "was the
- * whole thing built by GCC". A TCC link against one GCC-built object
- * carries the marker too -- which is still worth knowing for a recipe
- * that claims to be pure TCC.
+ * Returns 1 when a GCC marker is present, 0 when the file is a shared
+ * object with no such marker or is not ELF at all,
+ * ELFCHECK_GCC_INCONCLUSIVE for an executable, -1 when unreadable.
+ *
+ * "Cannot tell" is a distinct answer from "no" on purpose: collapsing
+ * them is exactly how an earlier version of this check produced a
+ * confident, wrong conclusion that seven current recipes were
+ * GCC-built, on the strength of their executables.
+ *
+ * Deliberately narrow even for a library: it answers "did GCC touch
+ * this", not "was the whole thing built by GCC". A TCC link against
+ * one GCC-built object carries the marker too.
  */
+#define ELFCHECK_GCC_INCONCLUSIVE 2
 int elfcheck_built_by_gcc(const char *path, char *out_version, size_t version_size);
 
 #endif /* ELFCHECK_H */
