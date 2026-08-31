@@ -9203,7 +9203,7 @@ static void register_bootroot_assemble_pidfd(pid_t pid, int pidfd)
  * cp/rm/sha256sum/gzip (coreutils.recipe/gzip.recipe) plus openssl/
  * curl/tar/bzip2/xz/squashfs-tools/e2fsprogs, one real `pkg install
  * --image=cix-hosttools` per recipe -- an operator builds this
- * exactly like "cix-builder"/"dev" (docs/guides/building-cix.md),
+ * exactly like "cix-builder"/"iso-builder" (docs/guides/building-cix.md),
  * no special-cased creation path. spawn_cix_bootroot_assembly()
  * below passes its rootfs to mkbootroot.c's own host_tools_dir
  * argument when present, purely additive: a box that never built this
