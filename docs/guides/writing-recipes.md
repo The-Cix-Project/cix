@@ -89,7 +89,7 @@ A recipe answers two different questions, and they are **not** the same list:
 ### `pkg_build_depends` — declare your build tools (ADR-0199)
 
 ```sh
-pkg_build_depends="tcc make libc-dev bash coreutils sed"
+pkg_build_depends="tcc make glibc linux-headers bash coreutils sed"
 ```
 
 **The build container is composed from exactly these packages and nothing else.** Not a suggestion, not documentation — it *is* the environment. Two properties follow, and both are enforced rather than trusted:
