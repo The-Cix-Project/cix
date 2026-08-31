@@ -1,0 +1,200 @@
+#
+# perl -- Perl 5. Needed as a real runtime by autoconf/automake (both
+# already hardcode #!/usr/bin/perl into their generated tools -- see
+# autoconf.recipe/automake.recipe's own pkg_depends="... perl ..."),
+# and useful as its own real scripting language for anything built in
+# a "dev" image.
+#
+# Source is CPAN's own canonical distribution point, checksum verified
+# against a second, independent CPAN mirror (cpan.metacpan.org's own
+# authors/id path) -- byte-identical, same sha256. (5.40.1, not 5.40.0:
+# an initial guess at .0 was corrected after failing to find a second
+# independent source to cross-check it against; .1 is the real current
+# stable patch release and has one.)
+#
+pkg_name="perl"
+pkg_version="5.40.1-3"
+pkg_source="https://www.cpan.org/src/5.0/perl-5.40.1.tar.gz"
+pkg_sha256="02f8c45bb379ed0c3de7514fad48c714fd46be8f0b536bfd5320050165a1ee26"
+
+# Prebuilt artifact for THIS exact version (ADR-0122 package tier).
+# With it set, an install fetches <artifact base_url>/perl-5.40.1.tar.gz
+# and verifies it against this checksum instead of building from
+# source; without it the artifact tier is skipped entirely.
+# The checksum lives here, in git, because the artifact server is
+# never a trust boundary -- it serves bytes, this line approves them.
+pkg_depends=""
+#
+# Build tools derived rather than guessed: the baseline the declaring
+# recipes converge on, plus what this recipe's own pkg_build() invokes
+# and the libraries it already declares. See
+# docs/guides/writing-recipes.md.
+#
+pkg_build_depends="tcc make linux-headers bash coreutils sed grep gawk binutils findutils diffutils"
+pkg_changelog="5.40.1-3: the tcc wrapper rewrote a bare -E (preprocess-and-stop) as though it were -Wl,-E (export-dynamic), so Configure could not find a C preprocessor and stopped to ask for one by name -- hanging the build indefinitely. Only the linker form is rewritten now, Configure runs with stdin closed so an unanswerable prompt fails instead of hanging, and the preprocessor Configure records is exercised for real before make starts (#214)"
+#
+# Build tools derived rather than guessed: the baseline the declaring
+# recipes converge on, plus what this recipe's own pkg_build() invokes
+# and the libraries it already declares. See
+# docs/guides/writing-recipes.md.
+#
+pkg_build_depends="tcc make linux-headers bash coreutils sed grep gawk binutils findutils diffutils"
+
+# Perl's own Configure (not autotools -- a hand-rolled, interactive-by-
+# default script, -des makes it non-interactive with defaults) --
+# confirmed to work directly inside the isolated build container.
+# -Dusethreads matches this build host's own perl (confirmed via
+# `perl -V:usethreads` on the host), so anything that assumes a
+# thread-capable perl still works the same way here. -Dcc=tcc is
+# Perl's own documented Configure flag for overriding the compiler
+# (not a bare CC= environment guess -- Configure's own interactive-
+# default-skipping logic under -des doesn't reliably honor environment
+# overrides the way autotools' ./configure does) -- added as part of
+# task #845's audit of every recipe missing an explicit tcc pin.
+#
+# Real, first-ever TCC rebuild verification of this recipe (issue #25's
+# own hostapd work needed a working perl -> openssl chain and hit this
+# live) found one genuine, precisely-isolated gap: perl.h's own
+# PERL_DIAG_STR_(x) macro expands to a PARENTHESIZED string-literal
+# concatenation, `("" x "")`, used in dquote.c (and elsewhere) as a
+# `char[]` array initializer. GCC/Clang accept a parenthesized string-
+# literal expression there; TCC's stricter array-initializer parser
+# does not ("character array initializer must be a literal, optionally
+# enclosed in braces") -- confirmed via two minimal, isolated probes:
+# `char x[] = ("" "s" "");` fails, `char x[] = "" "s" "";` (identical,
+# parens removed) succeeds. The parens are not semantically load-
+# bearing here (a string-literal-concatenation is already a single,
+# complete primary expression in every context this macro is actually
+# used, function-argument or array-initializer) -- stripping them is
+# correct, not a hack. Applied as a targeted sed against the extracted
+# source rather than a maintained patch file, matching this project's
+# own established convention for a single-line third-party compat fix
+# (see m4/1.4.19's own gnulib _GL_EXTERN_INLINE_STDHEADER_BUG fix,
+# squashfs-tools' -Dlinux=1 fix -- same class of narrow, well-justified
+# TCC gap, not upstream perl being wrong).
+#
+# A second, separate gap found immediately after the first: perl's own
+# hints/linux.sh sets ccdlflags to a dynamic-symbol-export flag spelled
+# `-E`/`-Wl,-E` (the traditional ld shorthand for --export-dynamic),
+# which TCC's own linker frontend doesn't recognize at all ("tcc: error:
+# unsupported linker option '-E'"). This one is genuinely load-bearing,
+# not a spurious flag to strip -- confirmed the hard way: stripping it
+# outright let the link succeed, but then every dynamically-loaded XS
+# module failed at runtime ("Cwd.so: undefined symbol:
+# Perl_croak_nocontext"), since the main perl binary's own symbols
+# were never exported for its own .so modules to resolve against. TCC
+# does support the underlying capability, just under its own spelling
+# (`tcc --help`: "-rdynamic export all global symbols to dynamic
+# linker") -- fixed with a thin cc wrapper translating -E/-Wl,-E to
+# -rdynamic (matching chrony.recipe's own toolwrap pattern) rather than
+# a bare -Dcc=tcc. Verified end-to-end, not just "link succeeded":
+# `./perl -Ilib -e 'use Cwd; print Cwd::getcwd()'` and `use POSIX;
+# POSIX::floor(3.7)` both load their real, dynamically-linked .so and
+# run correctly.
+pkg_build() {
+	sed -i 's/#define PERL_DIAG_STR_(x)[[:space:]]*("" x "")/#define PERL_DIAG_STR_(x) "" x ""/' perl.h
+	grep -q '#define PERL_DIAG_STR_(x) "" x ""' perl.h || exit 1
+
+	mkdir -p /build/toolwrap
+	cat > /build/toolwrap/tcc-perl <<'WRAP'
+#!/usr/bin/bash
+args=()
+for a in "$@"; do
+	case "$a" in
+		#
+		# ONLY the linker form is rewritten here. `-Wl,-E` asks the
+		# LINKER to export dynamic symbols -- TCC does not accept that
+		# spelling and `-rdynamic` is its equivalent. A bare `-E` is a
+		# completely different flag: it asks the COMPILER to preprocess
+		# and stop, which TCC supports perfectly well.
+		#
+		# Rewriting both was one flag being mistaken for another
+		# because they look alike. Configure probes for a preprocessor
+		# by running `$cc -E`; this wrapper turned that into
+		# `-rdynamic`, so tcc tried to LINK and reported `undefined
+		# symbol 'main'`, and Configure concluded no C preprocessor
+		# existed and stopped to ask a human:
+		#
+		#     No dice.  I can't find a C preprocessor.  Name one:
+		#
+		# Nothing was ever going to type an answer. Two builds on the
+		# real box sat at that prompt for 110 and 125 minutes holding a
+		# build slot, with no output to say why (#213, #214).
+		#
+		# Verified directly: `tcc -E` preprocesses correctly on its own
+		# and is broken only on the way through this wrapper.
+		#
+		-Wl,-E) args+=("-rdynamic") ;;
+		*) args+=("$a") ;;
+	esac
+done
+exec tcc "${args[@]}"
+WRAP
+	chmod +x /build/toolwrap/tcc-perl
+
+	#
+	# stdin closed: Configure is interactive by nature. `-des` accepts
+	# every default it *can* answer itself, but a probe that fails
+	# outright still falls through to a prompt, and a prompt with a
+	# terminal-less stdin inherited from the builder waits forever --
+	# which is exactly how #214 presented (110 and 125 minutes, no
+	# output). With stdin at /dev/null such a prompt reads EOF and
+	# Configure dies, so the same class of fault fails loudly and fast
+	# instead of silently holding a build slot.
+	#
+	./Configure -des -Dcc=/build/toolwrap/tcc-perl -Dprefix=/usr -Dusethreads </dev/null
+
+	#
+	# Verify the preprocessor Configure actually RECORDED, not that
+	# Configure merely finished. Configure caches its answers in
+	# config.sh and a wrong one is accepted silently, then produces
+	# broken output much later (the #113 failure shape). So read the
+	# recorded command back out and preprocess a real file with it:
+	# a string match would only prove the variable is set, this proves
+	# the thing it names works.
+	#
+	for v in cpprun cppstdin; do
+		cmd=$(sed -n "s/^$v='\\(.*\\)'$/\\1/p" config.sh)
+		if [ -z "$cmd" ]; then
+			echo "FATAL: Configure recorded no $v in config.sh" >&2
+			exit 1
+		fi
+		echo "  config.sh $v=$cmd"
+		printf '#define CIX_PROBE 1\nint cix = CIX_PROBE;\n' > /run/cix-cpp-probe.c
+		if ! eval "$cmd" /run/cix-cpp-probe.c > /run/cix-cpp-probe.out 2>/run/cix-cpp-probe.err; then
+			echo "FATAL: recorded $v failed to run:" >&2
+			cat /run/cix-cpp-probe.err >&2
+			exit 1
+		fi
+		if ! grep -q 'int cix = 1;' /run/cix-cpp-probe.out; then
+			echo "FATAL: recorded $v ran but did not preprocess." >&2
+			echo "       expected 'int cix = 1;' in its output, got:" >&2
+			head -20 /run/cix-cpp-probe.out >&2
+			exit 1
+		fi
+		echo "  $v preprocesses correctly"
+	done
+
+	make -j"$(nproc)"
+}
+
+# Confirmed via ldd against the real perl binary and every one of its
+# core XS (compiled) modules under lib/perl5: everything links only
+# against libm, libcrypt.so.1 (crypt()/password hashing, a real,
+# separate glibc-family library, not part of libc itself), and libc --
+# libcrypt is staged the same SONAME-symlink-plus-real-target pattern
+# every other recipe's own runtime libs already use. usr/lib/perl5
+# (the real standard library -- core modules, not documentation) is
+# kept in full; it's what makes perl actually usable, the same
+# "load-bearing runtime data" reasoning autoconf.recipe's own
+# usr/share/autoconf staging already established. Man pages
+# (usr/share/man, ~20MB, real pod-to-man output for every core module)
+# are dropped -- no image in this project's own set ships man
+# infrastructure for anything else either.
+pkg_install() {
+	make install DESTDIR="$PKG_DESTDIR"
+	rm -rf "$PKG_DESTDIR/usr/share/man"
+	mkdir -p "$PKG_DESTDIR/lib/x86_64-linux-gnu"
+	cp -a /lib/x86_64-linux-gnu/libcrypt.so.1 /lib/x86_64-linux-gnu/libcrypt.so.1.1.0 \
+	   "$PKG_DESTDIR/lib/x86_64-linux-gnu/"
+}
