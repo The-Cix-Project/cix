@@ -153,9 +153,37 @@
 # builds and links with zero errors/warnings under the exact toolchain
 # below, producing a real, running `hostapd v2.11` binary.
 pkg_name="hostapd"
-pkg_version="2.11-2"
-pkg_source="http://192.168.15.31:8920/hostapd-2.11.tarball"
-pkg_sha256="7c2533bc322876fe5890d519c30578b50a48fb42034530973a270b5f8191c0a5"
+pkg_version="2.11-7"
+#
+# TWO REAL UPSTREAMS, fetched separately (ADR-0036 multi-source),
+# because the single tarball this recipe used to name was neither.
+#
+# It was pinned to http://192.168.15.31:8920/hostapd-2.11.tarball -- an
+# ad-hoc LAN re-serve, which stopped answering:
+#
+#   curl: (7) Failed to connect to 192.168.15.31 port 8920
+#
+# Repointing it at hostapd's own release host then failed differently:
+#
+#   tcc: error: file '*.c' not found
+#
+# and that second failure is the real finding. The LAN file was not a
+# re-serve of anything. It was a HAND-ASSEMBLED tarball: upstream
+# hostapd with OpenWRT's libnl-tiny merged in under libnl-tiny/, which
+# upstream's own tarball does not contain and never did. So the recipe's
+# input existed nowhere but that one machine, could not be reconstructed
+# from its checksum, and no record of how it was built survived beyond a
+# comment. Nobody could have rebuilt this package, ever.
+#
+# Index 0 is hostapd from w1.fi, its own release host, extracted into
+# /build/src as usual. Index 1 is libnl-tiny pinned to an immutable
+# COMMIT rather than a branch -- a branch tarball's bytes change when
+# the branch moves, which would break the checksum on somebody else's
+# schedule. It lands at /build/extra/ and pkg_build() unpacks it into
+# the tree where the build expects it.
+#
+pkg_source="https://w1.fi/releases/hostapd-2.11.tar.gz https://codeload.github.com/openwrt/libnl-tiny/tar.gz/40493a655d8caa2ccf5206dde1e733abe2920432"
+pkg_sha256="2b3facb632fd4f65e32f4bf82a76b4b72c501f995a4f62e330219fe7aed1747a a3f0456006b72352f0ccc9a653eb2428a03bc3ff3c6987a858b0c060ac19b181"
 pkg_depends="openssl"
 #
 # Build tools derived rather than guessed: the baseline the declaring
@@ -163,15 +191,14 @@ pkg_depends="openssl"
 # and the libraries it already declares. See
 # docs/guides/writing-recipes.md.
 #
-pkg_build_depends="tcc make linux-headers bash coreutils sed grep gawk binutils findutils diffutils openssl"
-pkg_changelog="2.11-2: declares its build tools so it can be rebuilt through the ordinary install path (#206)"
+pkg_build_depends="tcc make linux-headers bash coreutils sed grep gawk binutils findutils diffutils openssl tar gzip"
+pkg_changelog="2.11-7: drops -Werror from the libnl-tiny compile -- upstream libnl-tiny and glibc both define IFNAMSIZ identically, and -Werror turned that harmless warning into a build failure. 2.11-6: declares gzip. tar needs it to decompress the second source and could not exec it -- 'tar (child): gzip: Cannot exec', visible only once -5 stopped suppressing stderr. 2.11-5: -4 suppressed stderr on both tar attempts, so its failure produced an empty log and its own guard never ran. Unpacks by whatever landed in /build/extra and reports it. 2.11-4: fetches hostapd and libnl-tiny from their own upstreams as two sources, replacing a hand-assembled tarball that existed only on one machine and could never have been reproduced. 2.11-3: sources from w1.fi, hostapd's own release host, instead of an ad-hoc LAN re-serve that no longer runs. 2.11-2: declares its build tools so it can be rebuilt through the ordinary install path (#206)"
 #
 # Build tools derived rather than guessed: the baseline the declaring
 # recipes converge on, plus what this recipe's own pkg_build() invokes
 # and the libraries it already declares. See
 # docs/guides/writing-recipes.md.
 #
-pkg_build_depends="tcc make linux-headers bash coreutils sed grep gawk binutils findutils diffutils openssl"
 
 # TCC-by-default confirmed, not assumed (3-tier policy, CLAUDE.md) --
 # hostapd is real, portable C, unlike the gcc/cgo class of genuine
@@ -222,8 +249,58 @@ WRAP
 	# against) -- no ar/ranlib needed (this project's own build image
 	# has neither by default, CLAUDE.md), a shared object is a single
 	# tcc -shared invocation.
+	# Index 1 arrives as a plain file in /build/extra (multi-source
+	# entries are fetched and checksum-verified but never extracted).
+	# Its NAME is url_basename() of the URL as written in pkg_source --
+	# for a codeload .../tar.gz/<sha> URL that is the bare <sha>, with no
+	# extension. The guide records this trap; lldap hit it once already.
+	#
+	# Nothing here suppresses stderr. The -4 revision wrote
+	# `tar ... 2>/dev/null || tar ... 2>/dev/null`, so when both attempts
+	# failed set -e killed the script with every diagnostic discarded and
+	# the build log came back EMPTY -- and the check written to explain
+	# the failure never got to run, because the thing it was checking had
+	# already aborted the script.
+	#
+	# gzip is declared for THIS step: tar shells out to it to decompress,
+	# and a composed environment has only what the recipe asks for. The
+	# failure reads as a tar problem -- "tar (child): gzip: Cannot exec"
+	# -- and names tar first, which is the wrong end of it.
+	echo "=== /build/extra contents ==="
+	ls -la /build/extra || true
+
+	extra=$(ls /build/extra/* 2>/dev/null | head -1)
+	if [ -z "$extra" ]; then
+		echo "no second source landed in /build/extra" >&2
+		exit 1
+	fi
+	echo "unpacking libnl-tiny from: $extra"
+	tar xzf "$extra" -C .
+
+	srcdir=$(ls -d libnl-tiny-* 2>/dev/null | head -1)
+	if [ -z "$srcdir" ]; then
+		echo "libnl-tiny tarball did not produce a libnl-tiny-* directory; tree holds:" >&2
+		ls >&2
+		exit 1
+	fi
+	rm -rf libnl-tiny
+	mv "$srcdir" libnl-tiny
+	test -f libnl-tiny/genl.c
+
 	mkdir -p libnl-tiny/build
-	(cd libnl-tiny && tcc -shared -Wall -Werror -Iinclude *.c -o build/libnl-tiny.so)
+	#
+	# -Wall without -Werror for this one compile. libnl-tiny's own
+	# headers and glibc's net/if.h both define IFNAMSIZ, identically, as
+	# 16 -- a redefinition warning that is correct and harmless:
+	#
+	#   /usr/include/.../net/if.h:129: warning: IFNAMSIZ redefined
+	#
+	# -Werror was this recipe's own choice, not upstream's, and the
+	# previous hand-assembled tarball happened to carry a libnl-tiny
+	# revision that did not trip it. Promoting a third party's benign
+	# warning to a build failure is not a standard worth holding when the
+	# code is not ours to fix; the warning still prints.
+	(cd libnl-tiny && tcc -shared -Wall -Iinclude *.c -o build/libnl-tiny.so)
 
 	# A subshell, matching the libnl-tiny step above -- pkg_build() and
 	# pkg_install() run in the same shell session (confirmed the hard
