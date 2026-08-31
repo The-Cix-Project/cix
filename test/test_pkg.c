@@ -318,7 +318,7 @@ static int write_recipe(const char *name, const char *version, const char *tarba
 	 * is the CORRECT answer, so the test failed while the daemon was
 	 * right. Intermittent, roughly one run in three.
 	 */
-	if (strcmp(name, "slowhold") == 0)
+	if (strcmp(name, "slowhold") == 0 || strcmp(name, "hbconcurrent") == 0)
 		fprintf(f, "pkg_build() {\n\tsleep 5\n\ttcc -o hello hello.c\n}\n\n");
 	else
 		fprintf(f, "pkg_build() {\n\ttcc -o hello hello.c\n}\n\n");
