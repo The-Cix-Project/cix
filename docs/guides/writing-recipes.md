@@ -156,13 +156,24 @@ The fix in a recipe is a small compatibility header force-included via
 `CPPFLAGS`. `libnl`'s recipe is the reference. Two traps it had to avoid,
 both of which cost a build each:
 
-**Use plain `static`.** TCC handles `static inline`, plain `static` and
-bare `inline` correctly — all three come out file-local — so plain
-`static` is chosen here simply as the least surprising of the three, not
-to dodge a bug. The spelling that does break is `extern inline`, which
-TCC emits as a strong global in every translation unit; that is the
-"defined twice" failure m4 hit, via gnulib's `_GL_EXTERN_INLINE`. Verify
-with `nm` that your symbols come out lowercase `t`, not `T`.
+**Use plain `static`.** Measured on Cix's own tcc (via
+`recipes/package/probe-tcc-conformance`, not a dev sandbox's tcc — see
+below): `static inline`, plain `static` and `extern inline` all come out
+file-local and link correctly. The one spelling that breaks is **bare
+`inline`**, which TCC emits as a strong global in every translation unit
+— that is the "defined twice" failure m4 hit, via gnulib's `_GL_INLINE`.
+Plain `static` is chosen here as the least surprising of the safe three.
+Verify with `nm` that your symbols come out lowercase `t`, not `T`.
+
+**Probe compiler behaviour on a Cix host, never in a dev sandbox.** This
+sandbox's `/usr/bin/tcc` is Debian's, and it demonstrably answers
+differently from Cix's `tcc@0.9.27-10`: it accepts a compound-literal
+array initializer Cix's rejects, rejects anonymous unions Cix's parses,
+and reports six builtins as present that Cix's does not implement. A
+conclusion from it is not a conclusion about this platform.
+`recipes/package/probe-tcc-conformance` is the pattern — a recipe that
+runs the probes and deliberately exits nonzero so its output is kept in
+the build log.
 
 **Include no system headers in the shim.** A `-include` header is processed
 before the translation unit can define `_GNU_SOURCE`, so pulling in any libc
