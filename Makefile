@@ -64,7 +64,7 @@ $(BUILD)/test_container_pty: test/test_container_pty.c test/test_image_fixture.c
 $(BUILD)/pty_child: test/pty_child.c | $(BUILD)
 	$(CC) $(CFLAGS) $< -o $@
 
-$(BUILD)/cixd: daemon/src/main.c $(DAEMON_SRCS) $(LIB_SRCS) test/test_image_fixture.c $(BUILD)/version.h $(BUILD)/generated/api_routes.h | $(BUILD)
+$(BUILD)/cixd: daemon/src/main.c $(DAEMON_SRCS) $(LIB_SRCS) test/test_image_fixture.c $(BUILD)/version.h $(BUILD)/generated/api_routes.h web/api.js | $(BUILD)
 	$(CC) $(DAEMON_CFLAGS) daemon/src/main.c $(DAEMON_SRCS) $(LIB_SRCS) test/test_image_fixture.c -lssl -lcrypto -o $@
 
 $(BUILD)/test_daemon: test/test_daemon.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
@@ -305,6 +305,15 @@ $(BUILD)/test_layout_upgrade: test/test_layout_upgrade.c test/test_image_fixture
 $(BUILD)/generated/cix_api.h: docs/api/openapi.yaml $(BUILD)/apigen
 	@mkdir -p $(BUILD)/generated
 	$(BUILD)/apigen docs/api/openapi.yaml --emit-cli $@
+
+# The dashboard's API map (ADR-0218). Unlike the C headers this cannot
+# live under $(BUILD): the file is SERVED, so it has to be in the web
+# root the daemon and the cix recipe both read. The property that
+# matters -- never committed -- is kept by .gitignore instead, and the
+# cix recipe's own `cp -r web/*` picks it up because pkg_build() runs
+# make first.
+web/api.js: docs/api/openapi.yaml $(BUILD)/apigen
+	$(BUILD)/apigen docs/api/openapi.yaml --emit-web $@
 
 $(BUILD)/generated/api_routes.h: docs/api/openapi.yaml $(BUILD)/apigen
 	@mkdir -p $(BUILD)/generated

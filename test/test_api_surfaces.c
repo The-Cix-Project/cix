@@ -89,7 +89,9 @@ static void scan(const char *path, const char *channel, const char *how)
 
 int main(void)
 {
-	scan("cli/src/main.c", "the CLI", "CIX_API_<operationId> constants from build/generated/cix_api.h");
+	scan("cli/src/main.c", "the CLI",
+	     "CIX_API_<operationId> constants from build/generated/cix_api.h");
+	scan("web/app.js", "the dashboard", "CIX_API.<operationId>() helpers from the generated web/api.js");
 
 	if (failures == 0)
 		printf("API SURFACES RESULT: PASS\n");
