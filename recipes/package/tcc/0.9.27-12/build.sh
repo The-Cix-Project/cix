@@ -16,7 +16,7 @@
 # could not be built by this compiler.
 #
 pkg_name="tcc"
-pkg_version="0.9.27-11"
+pkg_version="0.9.27-12"
 pkg_source="https://download.savannah.nongnu.org/releases/tinycc/tcc-0.9.27.tar.bz2"
 pkg_sha256="de23af78fca90ce32dff2dd45b3432b2334740bb9bb7b05bf60fdbfc396ceb9c"
 
@@ -61,7 +61,7 @@ pkg_depends=""
 # Sufficiency is enforced by the build itself. Minimality is
 # review, not enforcement (ADR-0199).
 pkg_build_depends="tcc make linux-headers bash coreutils sed grep gawk binutils"
-pkg_changelog="0.9.27-11: fixes the initializer bug (#211) that made TCC reject a designated compound literal used as an array element -- it blocked nftables outright and cost iproute2 its 'ip vrf' command. Unfixed in every lineage: vanilla 0.9.27, upstream mob 2020, and Debian's package all fail identically. 0.9.27-10: libc-dev retired; linux-headers declared for the kernel uapi headers glibc's own limits.h needs (#187)"
+pkg_changelog="0.9.27-12: -11 applied the #211 seds AFTER make, so tccgen.c was edited and never recompiled; its own regression gate caught it and the installed compiler was left untouched. 0.9.27-11: fixes the initializer bug (#211) that made TCC reject a designated compound literal used as an array element -- it blocked nftables outright and cost iproute2 its 'ip vrf' command. Unfixed in every lineage: vanilla 0.9.27, upstream mob 2020, and Debian's package all fail identically. 0.9.27-10: libc-dev retired; linux-headers declared for the kernel uapi headers glibc's own limits.h needs (#187)"
 
 
 # lib/bcheck.c (TCC's own optional bounds-checking runtime, only used
@@ -363,56 +363,6 @@ INC_EOF
 	}
 
 	./configure --prefix=/usr --cc=tcc
-	make -j"$(nproc)"
-
-	# The __has_include gate: all three answers must be RIGHT, not
-	# merely "it compiled". An unpatched tcc fails this file with
-	# "function pointer expected" before any #error is even reached.
-	cat > has_include_check.c <<'CHECK_EOF'
-#if __has_include(<stdio.h>)
-int present = 1;
-#else
-#error "__has_include said an existing system header is absent"
-#endif
-#if __has_include(<cix_definitely_not_a_real_header.h>)
-#error "__has_include said a nonexistent header is present"
-#endif
-#if __has_include("cix_definitely_not_here_either.h")
-#error "__has_include said a nonexistent quoted header is present"
-#endif
-int main(void) { return present ? 0 : 1; }
-CHECK_EOF
-	./tcc -B. has_include_check.c -o has_include_check
-	./has_include_check || { echo "tcc: __has_include is present but wrong" >&2; exit 1; }
-
-	# Prove the compiler that was just built actually provides them,
-	# the way a caller uses them: no header, no library flag. A tcc
-	# that silently lost this would otherwise only be discovered by
-	# whatever package needed it next.
-	cat > atomic_check.c <<'CHECK_EOF'
-static char mutex;
-int main(void)
-{
-	if (__atomic_test_and_set(&mutex, __ATOMIC_SEQ_CST))
-		return 1;                       /* was free, must report free */
-	if (!__atomic_test_and_set(&mutex, __ATOMIC_SEQ_CST))
-		return 2;                       /* now held, must report held */
-	__atomic_clear(&mutex, __ATOMIC_SEQ_CST);
-	if (__atomic_test_and_set(&mutex, __ATOMIC_SEQ_CST))
-		return 3;                       /* released, must report free */
-	return 0;
-}
-CHECK_EOF
-	./tcc -B. atomic_check.c -o atomic_check
-	./atomic_check || { echo "tcc: __atomic_* runtime is present but wrong" >&2; exit 1; }
-
-	# And that __dso_handle resolves out of the archive with no help
-	# from the caller -- the whole point of moving it here.
-	printf 'extern void *__dso_handle;\nint main(void){return __dso_handle != (void *)0;}\n' \
-	    > dso_check.c
-	./tcc -B. dso_check.c -o dso_check
-	./dso_check || { echo "tcc: __dso_handle did not resolve from libtcc1.a" >&2; exit 1; }
-
 	#
 	# ---- issue #211: designated compound literals as array elements ----
 	#
@@ -484,6 +434,56 @@ CHECK_EOF
 		echo "tcc: #211 vpop sed did not land -- would leak the value stack" >&2
 		exit 1
 	}
+
+	make -j"$(nproc)"
+
+	# The __has_include gate: all three answers must be RIGHT, not
+	# merely "it compiled". An unpatched tcc fails this file with
+	# "function pointer expected" before any #error is even reached.
+	cat > has_include_check.c <<'CHECK_EOF'
+#if __has_include(<stdio.h>)
+int present = 1;
+#else
+#error "__has_include said an existing system header is absent"
+#endif
+#if __has_include(<cix_definitely_not_a_real_header.h>)
+#error "__has_include said a nonexistent header is present"
+#endif
+#if __has_include("cix_definitely_not_here_either.h")
+#error "__has_include said a nonexistent quoted header is present"
+#endif
+int main(void) { return present ? 0 : 1; }
+CHECK_EOF
+	./tcc -B. has_include_check.c -o has_include_check
+	./has_include_check || { echo "tcc: __has_include is present but wrong" >&2; exit 1; }
+
+	# Prove the compiler that was just built actually provides them,
+	# the way a caller uses them: no header, no library flag. A tcc
+	# that silently lost this would otherwise only be discovered by
+	# whatever package needed it next.
+	cat > atomic_check.c <<'CHECK_EOF'
+static char mutex;
+int main(void)
+{
+	if (__atomic_test_and_set(&mutex, __ATOMIC_SEQ_CST))
+		return 1;                       /* was free, must report free */
+	if (!__atomic_test_and_set(&mutex, __ATOMIC_SEQ_CST))
+		return 2;                       /* now held, must report held */
+	__atomic_clear(&mutex, __ATOMIC_SEQ_CST);
+	if (__atomic_test_and_set(&mutex, __ATOMIC_SEQ_CST))
+		return 3;                       /* released, must report free */
+	return 0;
+}
+CHECK_EOF
+	./tcc -B. atomic_check.c -o atomic_check
+	./atomic_check || { echo "tcc: __atomic_* runtime is present but wrong" >&2; exit 1; }
+
+	# And that __dso_handle resolves out of the archive with no help
+	# from the caller -- the whole point of moving it here.
+	printf 'extern void *__dso_handle;\nint main(void){return __dso_handle != (void *)0;}\n' \
+	    > dso_check.c
+	./tcc -B. dso_check.c -o dso_check
+	./dso_check || { echo "tcc: __dso_handle did not resolve from libtcc1.a" >&2; exit 1; }
 
 	# The do-while regression gate (issue #122): the loop must run 3
 	# times and the condition must be evaluated 3 times, through a
