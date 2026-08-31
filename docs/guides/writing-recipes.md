@@ -177,6 +177,37 @@ This is a workaround, not the fix. #208 tracks implementing the builtins in
 TCC itself, after which these shims should be deleted rather than copied
 into a third recipe.
 
+### `#!/bin/bash` does not work in the build sandbox
+
+The bash package ships exactly two entry points:
+
+```
+bin/sh
+usr/bin/bash
+```
+
+There is **no `/bin/bash`**. So any script a build actually *runs* — not just ships — fails if it starts `#!/bin/bash`. Note `/bin/sh` does exist, so make's own recipe lines are fine; only the bash shebang is not.
+
+The error is badly misleading. The kernel returns ENOENT for the missing *interpreter*, and the shell reports it against the *script*:
+
+```
+/bin/sh: line 1: ./mkcapshdoc.sh: cannot execute: required file not found
+make[1]: *** [Makefile:56: capshdoc.c.cf] Error 127
+```
+
+which reads as though `mkcapshdoc.sh` is missing. It is present and executable. `/bin/bash` is what is missing. **Exit status 127 plus "required file not found" on a script that visibly exists means a bad shebang, not a bad path.**
+
+Rewrite them before building, and assert the rewrite took:
+
+```sh
+find . -name '*.sh' -exec sed -i '1s|^#!/bin/bash|#!/usr/bin/bash|' {} +
+grep -rl '^#!/bin/bash' --include='*.sh' . | grep -q . && exit 1
+```
+
+`libcap`'s recipe is the reference. This one is worth knowing because of what it blocks: libcap is a build dependency of iproute2, so a single unrunnable script stopped a completely unrelated package from building, with the failure reported against libcap rather than against the thing being installed.
+
+CLAUDE.md records the same trap for this project's runtime container images. It applies to the build sandbox for the same reason.
+
 ### Consuming another package's pkg-config file
 
 Set `PKG_CONFIG_PATH` explicitly. Packages here do not all use one convention — `libmnl` and `libuuid` install to `usr/lib/pkgconfig`, while a package configured with a multiarch `--libdir` lands in `lib/x86_64-linux-gnu/pkgconfig` — and a consumer should not have to know which its dependency happened to pick:
