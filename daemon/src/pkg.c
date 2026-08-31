@@ -7,6 +7,7 @@
 #include "ldap.h"
 #include "linux_compat.h"
 #include "logstore.h"
+#include "elfcheck.h"
 #include "namecheck.h"
 #include "persist.h"
 #include "pki.h"
@@ -1632,6 +1633,42 @@ static int merge_tree(const char *src_root, const char *dst_root, const char *re
 			 * The symlink branch below has always unlinked first for
 			 * the same reason. This one should have too.
 			 */
+			/*
+			 * Issue #176: refuse a binary carrying an undefined
+			 * `__builtin_*`.
+			 *
+			 * Checked on the SOURCE, before anything is copied, so a
+			 * rejected build leaves nothing of itself behind.
+			 *
+			 * TCC does not implement every GCC builtin and does not
+			 * fail on the ones it lacks -- it emits them as ordinary
+			 * undefined externals. `libblkid.so` was published that
+			 * way with an undefined `__builtin_clz`: it compiled,
+			 * installed and uploaded without one error, and only broke
+			 * much later when something tried to link against it. Same
+			 * shape as the do-while miscompile (#122) -- a clean exit
+			 * and a wrong artifact -- except this one is mechanically
+			 * detectable, so it is detected.
+			 *
+			 * No compiler ever DEFINES a `__builtin_*` symbol; a
+			 * builtin is expanded inline by definition. So a hit is
+			 * never a false alarm, which is what makes it safe to fail
+			 * the whole install rather than merely warn.
+			 */
+			{
+				char bad_sym[128];
+
+				if (elfcheck_undefined_builtin(src_path, bad_sym, sizeof(bad_sym)) == 1) {
+					closedir(d);
+					logstore_write("cixd", "error",
+					               "pkg install: %s carries an undefined compiler builtin '%s' -- "
+					               "the compiler did not implement it and emitted it as an "
+					               "external symbol instead, so this binary is broken (#176)",
+					               child_rel, bad_sym);
+					return merge_fail(child_rel, "carrying an undefined compiler builtin", 0);
+				}
+			}
+
 			unlink(dst_path);
 			if (copy_file_simple(src_path, dst_path) != 0) {
 				closedir(d);
