@@ -1392,6 +1392,7 @@ paths:
         token (e.g. net.ipv4.tcp_wmem's real 3-tuple) is reported as a
         JSON array of strings; a single-token value is a plain string.
       operationId: getSystemSysctl
+      x-cix-rest-param: true
       parameters:
         - name: key
           in: path
@@ -1431,6 +1432,7 @@ paths:
         key/value is reapplied on every future boot) -- pass
         `"persist": false` for a genuinely one-shot change.
       operationId: putSystemSysctl
+      x-cix-rest-param: true
       parameters:
         - name: key
           in: path
@@ -1482,6 +1484,7 @@ paths:
         touches the live /proc/sys value (there is no general, reliable
         "value before this project touched it" to revert to).
       operationId: deleteSystemSysctl
+      x-cix-rest-param: true
       parameters:
         - name: key
           in: path
@@ -1532,6 +1535,7 @@ paths:
         can't be replaced by GET .../kmod above, which only shows
         what's currently *loaded*, not what's available to load.
       operationId: getKmodInfo
+      x-cix-rest-param: true
       parameters:
         - name: name
           in: path
@@ -1567,6 +1571,7 @@ paths:
         persisted kmod-config default_options, if one exists, otherwise
         loads with none.
       operationId: postKmodLoad
+      x-cix-rest-param: true
       parameters:
         - name: name
           in: path
@@ -1619,6 +1624,7 @@ paths:
         not a bare rmmod that would leave now-unused dependencies
         loaded.
       operationId: deleteKmod
+      x-cix-rest-param: true
       parameters:
         - name: name
           in: path
@@ -7319,6 +7325,63 @@ paths:
                     description: -1 until the export is ready.
                   error:
                     type: string
+
+  /pkg/{name}/artifact/publish:
+    post:
+      summary: >
+        Publish an already-built artifact to the configured artifact
+        server (issue #171).
+      description: >
+        Publishing used to be reachable only as a side effect of
+        building, so an artifact that failed to push, or was built
+        before push was configured, could never be published without
+        being rebuilt -- and for "cix" or "kernel" a rebuild is the most
+        expensive thing this platform does.
+
+
+        For an ordinary source-built package this queues the tarball
+        already sitting in the local cache. For a hostbuild package
+        whose tarball does not exist yet (its artifact is a directory
+        this host assembled, never a tarball it fetched), the tarball is
+        first built from the installed tree via the same export
+        machinery as POST .../artifact/export, and its completion queues
+        the push -- the same repair #200 gave the automatic post-build
+        path.
+
+
+        This operation was implemented and in use by the CLI before it
+        appeared here; it entered the contract during the ADR-0218
+        cutover, whose generated dispatch would otherwise have
+        (correctly) refused to route an operation the spec did not
+        declare. Exactly the drift that ADR exists to make impossible.
+      operationId: publishPkgArtifact
+      parameters:
+        - $ref: "#/components/parameters/PkgName"
+      responses:
+        "202":
+          description: >
+            Queued (status "queued"), or the tarball build has started
+            first (status "building artifact tarball")
+        "400":
+          description: Artifact publishing is not configured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No such installed package
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >
+            Not in the local cache and not a hostbuild (nothing to build
+            a tarball from), or an export is already running
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /pkg/{name}/artifact/export/download:
     get:

@@ -65,6 +65,7 @@
 #include <openssl/pem.h>
 #include <openssl/ssl.h>
 #include "staticfile.h"
+#include "apiroute.h"
 #include "websocket.h"
 
 #include <arpa/inet.h>
@@ -23697,9 +23698,1672 @@ static void handle_pkg_delete(int fd, const char *raw_name)
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
 }
 
+/*
+ * ADR-0218: the operation functions. One per operation in
+ * docs/api/openapi.yaml, named op_<operationId>, dispatched only
+ * through the generated table included just below -- which also
+ * forward-declares every one of them, so an operation the spec
+ * declares and nothing here defines fails this compile naming the
+ * missing op. These are ordinary hand-maintained code (only the
+ * ROUTING is generated); each body is the exact work the old
+ * dispatch chain did for that operation.
+ */
+#include "generated/api_routes.h"
+
+/* GET /v1/health */
+static void op_getHealth(const struct api_ctx *ctx)
+{
+	handle_health(ctx->fd);
+}
+
+/* POST /v1/login */
+static void op_postLogin(const struct api_ctx *ctx)
+{
+	handle_login(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* POST /v1/logout */
+static void op_postLogout(const struct api_ctx *ctx)
+{
+	handle_logout(ctx->fd, ctx->req->headers, ctx->req->headers_len);
+}
+
+/* GET /v1/whoami */
+static void op_getWhoami(const struct api_ctx *ctx)
+{
+	handle_whoami(ctx->fd, ctx->req->headers, ctx->req->headers_len);
+}
+
+/* GET /v1/system/hostauth-config */
+static void op_getHostauthConfig(const struct api_ctx *ctx)
+{
+	handle_hostauth_config_get(ctx->fd);
+}
+
+/* PUT /v1/system/hostauth-config */
+static void op_putHostauthConfig(const struct api_ctx *ctx)
+{
+	handle_hostauth_config_put(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/system/hostauth/sessions */
+static void op_listHostauthSessions(const struct api_ctx *ctx)
+{
+	handle_hostauth_sessions_get(ctx->fd);
+}
+
+/* GET /v1/system/boot */
+static void op_getSystemBoot(const struct api_ctx *ctx)
+{
+	handle_system_boot(ctx->fd);
+}
+
+/* POST /v1/system/shutdown */
+static void op_shutdownSystem(const struct api_ctx *ctx)
+{
+	handle_shutdown(ctx->fd);
+}
+
+/* POST /v1/system/reboot */
+static void op_rebootSystem(const struct api_ctx *ctx)
+{
+	handle_reboot(ctx->fd);
+}
+
+/* POST /v1/system/update */
+static void op_updateSystem(const struct api_ctx *ctx)
+{
+	handle_system_update(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/system/backup */
+static void op_getSystemBackup(const struct api_ctx *ctx)
+{
+	handle_system_backup(ctx->fd);
+}
+
+/* POST /v1/system/restore */
+static void op_postSystemRestore(const struct api_ctx *ctx)
+{
+	handle_system_restore(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/system/backup-config */
+static void op_getBackupConfig(const struct api_ctx *ctx)
+{
+	handle_backup_config_get(ctx->fd);
+}
+
+/* PUT /v1/system/backup-config */
+static void op_putBackupConfig(const struct api_ctx *ctx)
+{
+	handle_backup_config_put(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/system/backup-config/status */
+static void op_getBackupConfigStatus(const struct api_ctx *ctx)
+{
+	handle_backup_config_status_get(ctx->fd);
+}
+
+/* POST /v1/system/backup-config/snapshot-now */
+static void op_postBackupConfigSnapshotNow(const struct api_ctx *ctx)
+{
+	handle_backup_config_snapshot_now_post(ctx->fd);
+}
+
+/* GET /v1/system/site */
+static void op_getSystemSite(const struct api_ctx *ctx)
+{
+	handle_site_get(ctx->fd);
+}
+
+/* PUT /v1/system/site */
+static void op_putSystemSite(const struct api_ctx *ctx)
+{
+	handle_site_put(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/system/daemon-config */
+static void op_getDaemonConfig(const struct api_ctx *ctx)
+{
+	handle_daemon_config_get(ctx->fd);
+}
+
+/* PUT /v1/system/daemon-config */
+static void op_putDaemonConfig(const struct api_ctx *ctx)
+{
+	handle_daemon_config_put(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/system/routes */
+static void op_getSystemRoutes(const struct api_ctx *ctx)
+{
+	handle_route_list(ctx->fd);
+}
+
+/* POST /v1/system/routes */
+static void op_postSystemRoute(const struct api_ctx *ctx)
+{
+	handle_route_add(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* DELETE /v1/system/routes */
+static void op_deleteSystemRoute(const struct api_ctx *ctx)
+{
+	handle_route_del(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/system/stats */
+static void op_getSystemStats(const struct api_ctx *ctx)
+{
+	handle_system_stats(ctx->fd);
+}
+
+/* GET /v1/system/server-health */
+static void op_getServerHealth(const struct api_ctx *ctx)
+{
+	handle_serverhealth_list(ctx->fd);
+}
+
+/* GET /v1/system/processes */
+static void op_listSystemProcesses(const struct api_ctx *ctx)
+{
+	handle_hostproc_list(ctx->fd);
+}
+
+/* GET /v1/system/ping */
+static void op_getSystemPing(const struct api_ctx *ctx)
+{
+	handle_ping_get(ctx->fd);
+}
+
+/* POST /v1/system/ping */
+static void op_postSystemPing(const struct api_ctx *ctx)
+{
+	handle_ping_post(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/system/resolv */
+static void op_getSystemResolv(const struct api_ctx *ctx)
+{
+	handle_resolv_get(ctx->fd);
+}
+
+/* PUT /v1/system/resolv */
+static void op_putSystemResolv(const struct api_ctx *ctx)
+{
+	handle_resolv_put(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/system/signing-keys */
+static void op_getSystemSigningKeys(const struct api_ctx *ctx)
+{
+	handle_signing_keys_get(ctx->fd);
+}
+
+/* PUT /v1/system/signing-keys */
+static void op_putSystemSigningKeys(const struct api_ctx *ctx)
+{
+	handle_signing_keys_put(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* DELETE /v1/system/signing-keys */
+static void op_deleteSystemSigningKeys(const struct api_ctx *ctx)
+{
+	handle_signing_keys_delete(ctx->fd);
+}
+
+/* GET /v1/system/sysctl */
+static void op_listSystemSysctl(const struct api_ctx *ctx)
+{
+	handle_sysctl_list(ctx->fd);
+}
+
+/* GET /v1/system/kmod */
+static void op_listKmod(const struct api_ctx *ctx)
+{
+	handle_kmod_list(ctx->fd);
+}
+
+/* GET /v1/system/kmod-config */
+static void op_listKmodConfig(const struct api_ctx *ctx)
+{
+	handle_kmodconfig_list(ctx->fd);
+}
+
+/* POST /v1/system/kmod-build */
+static void op_postKmodBuild(const struct api_ctx *ctx)
+{
+	handle_kmod_build_post(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/system/state-storage */
+static void op_getStateStorage(const struct api_ctx *ctx)
+{
+	handle_state_storage_get(ctx->fd);
+}
+
+/* GET /v1/system/state-storage/migrate */
+static void op_getStateStorageMigrateStatus(const struct api_ctx *ctx)
+{
+	handle_state_storage_migrate_get(ctx->fd);
+}
+
+/* POST /v1/system/state-storage/migrate */
+static void op_migrateStateStorage(const struct api_ctx *ctx)
+{
+	handle_state_storage_migrate_post(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/system/log-storage */
+static void op_getLogStorage(const struct api_ctx *ctx)
+{
+	handle_log_storage_get(ctx->fd);
+}
+
+/* GET /v1/system/log-storage/migrate */
+static void op_getLogStorageMigrateStatus(const struct api_ctx *ctx)
+{
+	handle_log_storage_migrate_get(ctx->fd);
+}
+
+/* POST /v1/system/log-storage/migrate */
+static void op_migrateLogStorage(const struct api_ctx *ctx)
+{
+	handle_log_storage_migrate_post(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/system/rebuildable-storage */
+static void op_getRebuildableStorage(const struct api_ctx *ctx)
+{
+	handle_rebuildable_storage_get(ctx->fd);
+}
+
+/* GET /v1/system/rebuildable-storage/migrate */
+static void op_getRebuildableStorageMigrateStatus(const struct api_ctx *ctx)
+{
+	handle_rebuildable_storage_migrate_get(ctx->fd);
+}
+
+/* POST /v1/system/rebuildable-storage/migrate */
+static void op_migrateRebuildableStorage(const struct api_ctx *ctx)
+{
+	handle_rebuildable_storage_migrate_post(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/dhcp */
+static void op_getDhcp(const struct api_ctx *ctx)
+{
+	handle_dhcp_get(ctx->fd);
+}
+
+/* GET /v1/dhcp/servers */
+static void op_getDhcpServers(const struct api_ctx *ctx)
+{
+	handle_dhcp_servers_get(ctx->fd);
+}
+
+/* POST /v1/dhcp/servers */
+static void op_registerDhcpServer(const struct api_ctx *ctx)
+{
+	handle_dhcp_server_register(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/dhcp/leases */
+static void op_getDhcpLeases(const struct api_ctx *ctx)
+{
+	handle_dhcp_leases_get(ctx->fd);
+}
+
+/* POST /v1/dhcp/static */
+static void op_addDhcpReservation(const struct api_ctx *ctx)
+{
+	handle_dhcp_static_post(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/system/zswap */
+static void op_getZswap(const struct api_ctx *ctx)
+{
+	handle_zswap_get(ctx->fd);
+}
+
+/* PUT /v1/system/zswap */
+static void op_setZswap(const struct api_ctx *ctx)
+{
+	handle_zswap_put(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/system/swap */
+static void op_getSystemSwap(const struct api_ctx *ctx)
+{
+	handle_swap_get(ctx->fd);
+}
+
+/* POST /v1/system/swap */
+static void op_postSystemSwap(const struct api_ctx *ctx)
+{
+	handle_swap_enable(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* DELETE /v1/system/swap */
+static void op_deleteSystemSwap(const struct api_ctx *ctx)
+{
+	handle_swap_disable(ctx->fd);
+}
+
+/* GET /v1/system/rolling-config */
+static void op_getSystemRollingConfig(const struct api_ctx *ctx)
+{
+	handle_rolling_config_get(ctx->fd);
+}
+
+/* PUT /v1/system/rolling-config */
+static void op_putSystemRollingConfig(const struct api_ctx *ctx)
+{
+	handle_rolling_config_put(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/system/pkg-build-config */
+static void op_getSystemPkgBuildConfig(const struct api_ctx *ctx)
+{
+	handle_pkg_build_config_get(ctx->fd);
+}
+
+/* PUT /v1/system/pkg-build-config */
+static void op_putSystemPkgBuildConfig(const struct api_ctx *ctx)
+{
+	handle_pkg_build_config_put(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/system/kernel-policy */
+static void op_getKernelPolicy(const struct api_ctx *ctx)
+{
+	handle_kernel_policy_get(ctx->fd);
+}
+
+/* PUT /v1/system/kernel-policy */
+static void op_setKernelPolicy(const struct api_ctx *ctx)
+{
+	handle_kernel_policy_put(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* POST /v1/system/kernel-policy/refresh */
+static void op_refreshKernelPolicy(const struct api_ctx *ctx)
+{
+	handle_kernel_policy_refresh(ctx->fd);
+}
+
+/* GET /v1/system/esp */
+static void op_getEsp(const struct api_ctx *ctx)
+{
+	handle_esp_get(ctx->fd);
+}
+
+/* PUT /v1/system/esp */
+static void op_putEsp(const struct api_ctx *ctx)
+{
+	handle_esp_put(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/system/boot-next */
+static void op_getBootNext(const struct api_ctx *ctx)
+{
+	handle_boot_next_get(ctx->fd);
+}
+
+/* POST /v1/system/boot-next */
+static void op_setBootNext(const struct api_ctx *ctx)
+{
+	handle_boot_next_set(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* DELETE /v1/system/boot-next */
+static void op_clearBootNext(const struct api_ctx *ctx)
+{
+	handle_boot_next_clear(ctx->fd);
+}
+
+/* GET /v1/system/boot-console */
+static void op_getBootConsole(const struct api_ctx *ctx)
+{
+	handle_bootconsole_get(ctx->fd);
+}
+
+/* PUT /v1/system/boot-console */
+static void op_setBootConsole(const struct api_ctx *ctx)
+{
+	handle_bootconsole_put(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/system/control-plane-reservation */
+static void op_getControlPlaneReservation(const struct api_ctx *ctx)
+{
+	handle_cpreserve_get(ctx->fd);
+}
+
+/* PUT /v1/system/control-plane-reservation */
+static void op_setControlPlaneReservation(const struct api_ctx *ctx)
+{
+	handle_cpreserve_put(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/system/tls-throttle */
+static void op_getSystemTlsThrottle(const struct api_ctx *ctx)
+{
+	handle_tls_throttle_get(ctx->fd);
+}
+
+/* PUT /v1/system/tls-throttle */
+static void op_putSystemTlsThrottle(const struct api_ctx *ctx)
+{
+	handle_tls_throttle_put(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/system/tls-throttle/status */
+static void op_getSystemTlsThrottleStatus(const struct api_ctx *ctx)
+{
+	handle_tls_throttle_status_get(ctx->fd);
+}
+
+/* GET /v1/system/ntp */
+static void op_getSystemNtp(const struct api_ctx *ctx)
+{
+	handle_ntp_config_get(ctx->fd);
+}
+
+/* PUT /v1/system/ntp */
+static void op_putSystemNtp(const struct api_ctx *ctx)
+{
+	handle_ntp_config_put(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/system/ntp/status */
+static void op_getSystemNtpStatus(const struct api_ctx *ctx)
+{
+	handle_ntp_status_get(ctx->fd);
+}
+
+/* POST /v1/system/ntp/sync */
+static void op_postSystemNtpSync(const struct api_ctx *ctx)
+{
+	handle_ntp_sync_post(ctx->fd);
+}
+
+/* GET /v1/system/time */
+static void op_getSystemTime(const struct api_ctx *ctx)
+{
+	handle_time_get(ctx->fd);
+}
+
+/* PUT /v1/system/time */
+static void op_putSystemTime(const struct api_ctx *ctx)
+{
+	handle_time_put(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/ntp/servers */
+static void op_listNtpServers(const struct api_ctx *ctx)
+{
+	handle_ntp_server_list(ctx->fd);
+}
+
+/* POST /v1/ntp/servers */
+static void op_createNtpServer(const struct api_ctx *ctx)
+{
+	handle_ntp_server_create(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/syslog/targets */
+static void op_listSyslogTargets(const struct api_ctx *ctx)
+{
+	handle_syslog_target_list(ctx->fd);
+}
+
+/* POST /v1/syslog/targets */
+static void op_createSyslogTarget(const struct api_ctx *ctx)
+{
+	handle_syslog_target_create(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/system/logs/config */
+static void op_getSystemLogsConfig(const struct api_ctx *ctx)
+{
+	handle_logs_config_get(ctx->fd);
+}
+
+/* PUT /v1/system/logs/config */
+static void op_putSystemLogsConfig(const struct api_ctx *ctx)
+{
+	handle_logs_config_put(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/system/iso */
+static void op_getSystemIso(const struct api_ctx *ctx)
+{
+	handle_system_iso_get(ctx->fd);
+}
+
+/* POST /v1/system/iso */
+static void op_postSystemIso(const struct api_ctx *ctx)
+{
+	handle_system_iso_post(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/containers */
+static void op_listContainers(const struct api_ctx *ctx)
+{
+	handle_list(ctx->fd);
+}
+
+/* POST /v1/containers */
+static void op_createContainer(const struct api_ctx *ctx)
+{
+	handle_create(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/devices */
+static void op_listDevices(const struct api_ctx *ctx)
+{
+	handle_device_list(ctx->fd);
+}
+
+/* GET /v1/disks */
+static void op_listDisks(const struct api_ctx *ctx)
+{
+	handle_disk_list(ctx->fd);
+}
+
+/* GET /v1/devicemaps */
+static void op_listDeviceMaps(const struct api_ctx *ctx)
+{
+	handle_devicemap_list(ctx->fd);
+}
+
+/* POST /v1/devicemaps */
+static void op_createDeviceMap(const struct api_ctx *ctx)
+{
+	handle_devicemap_create(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/diskroles */
+static void op_listDiskRoles(const struct api_ctx *ctx)
+{
+	handle_diskrole_list(ctx->fd);
+}
+
+/* POST /v1/diskroles */
+static void op_createDiskRole(const struct api_ctx *ctx)
+{
+	handle_diskrole_create(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/volumes */
+static void op_listVolumes(const struct api_ctx *ctx)
+{
+	handle_volume_list(ctx->fd);
+}
+
+/* POST /v1/volumes */
+static void op_createVolume(const struct api_ctx *ctx)
+{
+	handle_volume_create(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/networks */
+static void op_listNetworks(const struct api_ctx *ctx)
+{
+	handle_network_list(ctx->fd);
+}
+
+/* POST /v1/networks */
+static void op_createNetwork(const struct api_ctx *ctx)
+{
+	handle_network_create(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* POST /v1/images/gc */
+static void op_imagesGc(const struct api_ctx *ctx)
+{
+	handle_images_gc(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/images */
+static void op_listImages(const struct api_ctx *ctx)
+{
+	handle_image_list(ctx->fd);
+}
+
+/* POST /v1/images */
+static void op_createImage(const struct api_ctx *ctx)
+{
+	handle_image_create(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/images/recipes */
+static void op_listImageRecipes(const struct api_ctx *ctx)
+{
+	handle_image_recipe_list(ctx->fd);
+}
+
+/* POST /v1/images/recipes */
+static void op_addImageRecipe(const struct api_ctx *ctx)
+{
+	handle_image_recipe_add(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/containers/recipes */
+static void op_listContainerRecipes(const struct api_ctx *ctx)
+{
+	handle_container_recipe_list(ctx->fd);
+}
+
+/* POST /v1/containers/recipes */
+static void op_addContainerRecipe(const struct api_ctx *ctx)
+{
+	handle_container_recipe_add(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/dns/records */
+static void op_listDnsRecords(const struct api_ctx *ctx)
+{
+	handle_dns_record_list(ctx->fd);
+}
+
+/* POST /v1/dns/records */
+static void op_createDnsRecord(const struct api_ctx *ctx)
+{
+	handle_dns_record_create(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/dns/forwarders */
+static void op_getDnsForwarders(const struct api_ctx *ctx)
+{
+	handle_dns_forwarders_get(ctx->fd);
+}
+
+/* PUT /v1/dns/forwarders */
+static void op_setDnsForwarders(const struct api_ctx *ctx)
+{
+	handle_dns_forwarders_put(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* POST /v1/dns/provision */
+static void op_provisionDns(const struct api_ctx *ctx)
+{
+	handle_dns_provision(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/dns/servers */
+static void op_listDnsServers(const struct api_ctx *ctx)
+{
+	handle_dns_server_list(ctx->fd);
+}
+
+/* POST /v1/dns/servers */
+static void op_createDnsServer(const struct api_ctx *ctx)
+{
+	handle_dns_server_create(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/ldap/servers */
+static void op_listLdapServers(const struct api_ctx *ctx)
+{
+	handle_ldap_server_list(ctx->fd);
+}
+
+/* POST /v1/ldap/servers */
+static void op_createLdapServer(const struct api_ctx *ctx)
+{
+	handle_ldap_server_create(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/ldap/groups */
+static void op_listLdapGroups(const struct api_ctx *ctx)
+{
+	handle_ldap_group_list(ctx->fd);
+}
+
+/* POST /v1/ldap/groups */
+static void op_createLdapGroup(const struct api_ctx *ctx)
+{
+	handle_ldap_group_create(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/ldap/users */
+static void op_listLdapUsers(const struct api_ctx *ctx)
+{
+	handle_ldap_user_list(ctx->fd);
+}
+
+/* POST /v1/ldap/users */
+static void op_createLdapUser(const struct api_ctx *ctx)
+{
+	handle_ldap_user_create(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/ldap/config */
+static void op_getLdapConfig(const struct api_ctx *ctx)
+{
+	handle_ldap_config_get(ctx->fd);
+}
+
+/* PUT /v1/ldap/config */
+static void op_updateLdapConfig(const struct api_ctx *ctx)
+{
+	handle_ldap_config_put(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/pki/ca */
+static void op_getPkiCa(const struct api_ctx *ctx)
+{
+	handle_pki_ca_get(ctx->fd);
+}
+
+/* POST /v1/pki/ca */
+static void op_createPkiCa(const struct api_ctx *ctx)
+{
+	handle_pki_ca_create(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/pki/intermediate */
+static void op_getPkiIntermediate(const struct api_ctx *ctx)
+{
+	handle_pki_intermediate_get(ctx->fd);
+}
+
+/* POST /v1/pki/intermediate */
+static void op_createPkiIntermediate(const struct api_ctx *ctx)
+{
+	handle_pki_intermediate_create(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/pki/certs */
+static void op_listPkiCerts(const struct api_ctx *ctx)
+{
+	handle_pki_cert_list(ctx->fd);
+}
+
+/* POST /v1/pki/certs */
+static void op_createPkiCert(const struct api_ctx *ctx)
+{
+	handle_pki_cert_create(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* POST /v1/pki/reset */
+static void op_resetPki(const struct api_ctx *ctx)
+{
+	handle_pki_reset(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* POST /v1/pkg/bootstrap */
+static void op_pkgBootstrap(const struct api_ctx *ctx)
+{
+	handle_pkg_bootstrap(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/pkg/bootstrap */
+static void op_getPkgBootstrapStatus(const struct api_ctx *ctx)
+{
+	handle_pkg_bootstrap_get(ctx->fd);
+}
+
+/* GET /v1/pkg/recipes */
+static void op_listPkgRecipes(const struct api_ctx *ctx)
+{
+	handle_pkg_recipes_list(ctx->fd);
+}
+
+/* POST /v1/pkg/recipes */
+static void op_addPkgRecipe(const struct api_ctx *ctx)
+{
+	handle_pkg_recipe_add(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/pkg/repo-config */
+static void op_getPkgRepoConfig(const struct api_ctx *ctx)
+{
+	handle_pkg_repo_config_get(ctx->fd);
+}
+
+/* PUT /v1/pkg/repo-config */
+static void op_putPkgRepoConfig(const struct api_ctx *ctx)
+{
+	handle_pkg_repo_config_put(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* POST /v1/pkg/sync */
+static void op_pkgSync(const struct api_ctx *ctx)
+{
+	handle_pkg_sync_post(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/pkg/sync */
+static void op_getPkgSyncStatus(const struct api_ctx *ctx)
+{
+	handle_pkg_sync_get(ctx->fd);
+}
+
+/* GET /v1/pkg/cache-config */
+static void op_getPkgCacheConfig(const struct api_ctx *ctx)
+{
+	handle_pkg_cache_config_get(ctx->fd);
+}
+
+/* PUT /v1/pkg/cache-config */
+static void op_putPkgCacheConfig(const struct api_ctx *ctx)
+{
+	handle_pkg_cache_config_put(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/pkg/cache */
+static void op_getPkgCache(const struct api_ctx *ctx)
+{
+	handle_pkg_cache_get(ctx->fd);
+}
+
+/* DELETE /v1/pkg/cache */
+static void op_deletePkgCache(const struct api_ctx *ctx)
+{
+	handle_pkg_cache_delete(ctx->fd);
+}
+
+/* GET /v1/pkg/artifact-config */
+static void op_getPkgArtifactConfig(const struct api_ctx *ctx)
+{
+	handle_pkg_artifact_config_get(ctx->fd);
+}
+
+/* PUT /v1/pkg/artifact-config */
+static void op_putPkgArtifactConfig(const struct api_ctx *ctx)
+{
+	handle_pkg_artifact_config_put(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/pkg/policies */
+static void op_listPkgPolicies(const struct api_ctx *ctx)
+{
+	handle_pkg_policies_get(ctx->fd);
+}
+
+/* GET /v1/pkg/build-logs */
+static void op_listBuildLogs(const struct api_ctx *ctx)
+{
+	handle_pkg_build_logs_list(ctx->fd);
+}
+
+/* POST /v1/pkg/install */
+static void op_pkgInstall(const struct api_ctx *ctx)
+{
+	handle_pkg_install(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* POST /v1/pkg/update-all */
+static void op_pkgUpdateAll(const struct api_ctx *ctx)
+{
+	handle_pkg_update_all(ctx->fd);
+}
+
+/* POST /v1/pkg/hostbuild */
+static void op_pkgHostbuild(const struct api_ctx *ctx)
+{
+	handle_pkg_hostbuild(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* POST /v1/pkg/resume */
+static void op_pkgResume(const struct api_ctx *ctx)
+{
+	handle_pkg_resume(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/pkg */
+static void op_listPkg(const struct api_ctx *ctx)
+{
+	handle_pkg_list(ctx->fd);
+}
+
+/* GET /v1/software */
+static void op_listSoftware(const struct api_ctx *ctx)
+{
+	handle_software_list(ctx->fd);
+}
+
+/* POST /v1/system/factory-reset */
+static void op_factoryReset(const struct api_ctx *ctx)
+{
+	handle_factory_reset(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/system/volume-backup-config */
+static void op_getVolumeBackupConfig(const struct api_ctx *ctx)
+{
+	handle_volume_backup_config_get(ctx->fd);
+}
+
+/* PUT /v1/system/volume-backup-config */
+static void op_setVolumeBackupConfig(const struct api_ctx *ctx)
+{
+	handle_volume_backup_config_put(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+
+/*
+ * Parameterised operations, converted by hand from the dispatch chain
+ * (ADR-0218 step 2). Path parameters arrive already extracted, in spec
+ * order, as ctx->p[0]/ctx->p[1] -- the per-route memcpy/suffix logic
+ * the old chain repeated ~40 times lives once in api_route_match() now.
+ */
+
+/* -- containers ------------------------------------------------- */
+
+static void op_getContainerRecipe(const struct api_ctx *ctx)
+{
+	handle_container_recipe_get(ctx->fd, ctx->p[0]);
+}
+
+static void op_deleteContainerRecipe(const struct api_ctx *ctx)
+{
+	handle_container_recipe_delete(ctx->fd, ctx->p[0]);
+}
+
+static void op_applyContainerRecipe(const struct api_ctx *ctx)
+{
+	handle_container_recipe_apply(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);
+}
+
+static void op_getContainer(const struct api_ctx *ctx)
+{
+	handle_get_one(ctx->fd, ctx->p[0]);
+}
+
+/* Issue #11: edit the stored definition in place, instead of
+ * delete-and-recreate being the only way to change a cmd, an env var
+ * or a file. */
+static void op_patchContainer(const struct api_ctx *ctx)
+{
+	handle_container_patch(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);
+}
+
+static void op_deleteContainer(const struct api_ctx *ctx)
+{
+	handle_delete(ctx->fd, ctx->p[0]);
+}
+
+static void op_startContainer(const struct api_ctx *ctx)
+{
+	handle_start(ctx->fd, ctx->p[0]);
+	/*
+	 * ADR-0197: a server that has just come back gets the current DHCP
+	 * files. Creation already stages them, so this covers the narrow
+	 * window where a reservation changed while the container was still
+	 * starting -- during which dhcp_sync_all() skips it for not being
+	 * running yet, and nothing would otherwise revisit it. No restart:
+	 * the conf it started with is this one.
+	 */
+	dhcp_sync_all(NULL, 0, NULL);
+}
+
+static void op_stopContainer(const struct api_ctx *ctx)
+{
+	handle_stop(ctx->fd, ctx->p[0]);
+}
+
+static void op_pauseContainer(const struct api_ctx *ctx)
+{
+	handle_pause(ctx->fd, ctx->p[0]);
+}
+
+static void op_unpauseContainer(const struct api_ctx *ctx)
+{
+	handle_unpause(ctx->fd, ctx->p[0]);
+}
+
+static void op_getContainerStats(const struct api_ctx *ctx)
+{
+	handle_container_stats(ctx->fd, ctx->p[0]);
+}
+
+static void op_migrateContainerStorage(const struct api_ctx *ctx)
+{
+	handle_container_migrate_storage_post(ctx->fd, ctx->p[0], ctx->req->body,
+	                                       ctx->req->body_len);
+}
+
+static void op_getContainerStorageMigrateStatus(const struct api_ctx *ctx)
+{
+	handle_container_migrate_storage_get(ctx->fd, ctx->p[0]);
+}
+
+/*
+ * The console is not a REST operation: it is an HTTP/1.1 Upgrade,
+ * handled BEFORE dispatch() by try_console_upgrade() (which owns every
+ * request carrying the right headers, and answers 400 itself when they
+ * are missing on a well-formed name). This op is reachable only for a
+ * name try_console_upgrade() refused to recognise -- so the honest
+ * answer is the same one it gives for a recognisable name without the
+ * headers, not a bare 404 that would read as "no such route".
+ */
+static void op_consoleContainer(const struct api_ctx *ctx)
+{
+	respond_error(ctx->fd, 400, "Bad Request", "this endpoint requires Upgrade: websocket");
+}
+
+static void op_getContainerFile(const struct api_ctx *ctx)
+{
+	char rel_path[CONTAINER_FILE_PATH_MAX];
+	char list_flag[8];
+
+	if (url_query_param(ctx->req->path, "path", rel_path, sizeof(rel_path)) != 0) {
+		respond_error(ctx->fd, 400, "Bad Request", "missing path query parameter");
+		return;
+	}
+	/* ?list=1 asks for a directory listing instead of file content --
+	 * a separate mode rather than "GET a directory implicitly lists
+	 * it", so a client that meant to read a file and hit a directory
+	 * still gets told so. */
+	if (url_query_param(ctx->req->path, "list", list_flag, sizeof(list_flag)) == 0 &&
+	    list_flag[0] != '\0' && strcmp(list_flag, "0") != 0)
+		handle_container_dir_list(ctx->fd, ctx->p[0], rel_path);
+	else
+		handle_container_file_read(ctx->fd, ctx->p[0], rel_path);
+}
+
+static void op_putContainerFile(const struct api_ctx *ctx)
+{
+	char rel_path[CONTAINER_FILE_PATH_MAX];
+
+	if (url_query_param(ctx->req->path, "path", rel_path, sizeof(rel_path)) != 0) {
+		respond_error(ctx->fd, 400, "Bad Request", "missing path query parameter");
+		return;
+	}
+	handle_container_file_write(ctx->fd, ctx->p[0], rel_path, ctx->req->body,
+	                             ctx->req->body_len);
+}
+
+static void op_execInContainer(const struct api_ctx *ctx)
+{
+	handle_container_exec_post(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);
+}
+
+static void op_getContainerExec(const struct api_ctx *ctx)
+{
+	handle_container_exec_get(ctx->fd, ctx->p[0]);
+}
+
+static void op_attachContainerNetwork(const struct api_ctx *ctx)
+{
+	handle_container_network_attach(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);
+}
+
+static void op_detachContainerNetwork(const struct api_ctx *ctx)
+{
+	handle_container_network_detach(ctx->fd, ctx->p[0], ctx->p[1]);
+}
+
+static void op_attachContainerVolume(const struct api_ctx *ctx)
+{
+	handle_container_volume_attach(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);
+}
+
+static void op_detachContainerVolume(const struct api_ctx *ctx)
+{
+	handle_container_volume_detach(ctx->fd, ctx->p[0], ctx->p[1]);
+}
+
+static void op_attachContainerDevice(const struct api_ctx *ctx)
+{
+	handle_container_device_attach(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);
+}
+
+static void op_detachContainerDevice(const struct api_ctx *ctx)
+{
+	handle_container_device_detach(ctx->fd, ctx->p[0], ctx->p[1]);
+}
+
+/* -- volumes ---------------------------------------------------- */
+
+static void op_getVolume(const struct api_ctx *ctx)
+{
+	handle_volume_get(ctx->fd, ctx->p[0]);
+}
+
+static void op_deleteVolume(const struct api_ctx *ctx)
+{
+	handle_volume_delete(ctx->fd, ctx->p[0]);
+}
+
+static void op_migrateVolume(const struct api_ctx *ctx)
+{
+	handle_volume_migrate(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);
+}
+
+static void op_setVolumeOwner(const struct api_ctx *ctx)
+{
+	handle_volume_owner_put(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);
+}
+
+static void op_setVolumeQuota(const struct api_ctx *ctx)
+{
+	handle_volume_quota_put(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);
+}
+
+static void op_getVolumeBackups(const struct api_ctx *ctx)
+{
+	handle_volume_backups_get(ctx->fd, ctx->p[0]);
+}
+
+static void op_setVolumeBackupPolicy(const struct api_ctx *ctx)
+{
+	handle_volume_backup_policy_put(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);
+}
+
+static void op_takeVolumeBackup(const struct api_ctx *ctx)
+{
+	handle_volume_backup_now(ctx->fd, ctx->p[0]);
+}
+
+static void op_restoreVolume(const struct api_ctx *ctx)
+{
+	handle_volume_restore(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);
+}
+
+static void op_deleteVolumeSnapshot(const struct api_ctx *ctx)
+{
+	handle_volume_backup_delete(ctx->fd, ctx->p[0], ctx->p[1]);
+}
+
+/* -- networks --------------------------------------------------- */
+
+static void op_getNetwork(const struct api_ctx *ctx)
+{
+	handle_network_get_one(ctx->fd, ctx->p[0]);
+}
+
+static void op_deleteNetwork(const struct api_ctx *ctx)
+{
+	handle_network_delete(ctx->fd, ctx->p[0]);
+}
+
+static void op_getNetworkPorts(const struct api_ctx *ctx)
+{
+	handle_network_ports_get(ctx->fd, ctx->p[0]);
+}
+
+static void op_attachNetworkInterface(const struct api_ctx *ctx)
+{
+	handle_network_attach_interface(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);
+}
+
+static void op_detachNetworkInterface(const struct api_ctx *ctx)
+{
+	handle_network_detach_interface(ctx->fd, ctx->p[0], ctx->p[1]);
+}
+
+/* -- images ----------------------------------------------------- */
+
+static void op_getImage(const struct api_ctx *ctx)
+{
+	handle_image_get_one(ctx->fd, ctx->p[0]);
+}
+
+static void op_deleteImage(const struct api_ctx *ctx)
+{
+	handle_image_delete(ctx->fd, ctx->p[0]);
+}
+
+static void op_setImageManifestEntry(const struct api_ctx *ctx)
+{
+	handle_image_manifest_set(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);
+}
+
+static void op_unsetImageManifestEntry(const struct api_ctx *ctx)
+{
+	handle_image_manifest_unset(ctx->fd, ctx->p[0], ctx->p[1]);
+}
+
+static void op_getImageRecipe(const struct api_ctx *ctx)
+{
+	handle_image_recipe_get(ctx->fd, ctx->p[0]);
+}
+
+static void op_deleteImageRecipe(const struct api_ctx *ctx)
+{
+	handle_image_recipe_delete(ctx->fd, ctx->p[0]);
+}
+
+static void op_applyImageRecipe(const struct api_ctx *ctx)
+{
+	handle_image_recipe_apply(ctx->fd, ctx->p[0]);
+}
+
+static void op_renameImage(const struct api_ctx *ctx)
+{
+	handle_image_rename(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);
+}
+
+static void op_exportImage(const struct api_ctx *ctx)
+{
+	handle_artifact_export_post(ctx->fd, ARTIFACT_EXPORT_KIND_IMAGE, ctx->p[0]);
+}
+
+static void op_getImageExport(const struct api_ctx *ctx)
+{
+	handle_artifact_export_get(ctx->fd, ARTIFACT_EXPORT_KIND_IMAGE, ctx->p[0]);
+}
+
+static void op_downloadImageExport(const struct api_ctx *ctx)
+{
+	/* The full original path goes along: ?offset=&length= live there. */
+	handle_artifact_export_download(ctx->fd, ARTIFACT_EXPORT_KIND_IMAGE, ctx->p[0],
+	                                 ctx->req->path);
+}
+
+/* -- dns / ldap / pki ------------------------------------------- */
+
+static void op_getDnsRecord(const struct api_ctx *ctx)
+{
+	handle_dns_record_get_one(ctx->fd, ctx->p[0]);
+}
+
+static void op_updateDnsRecord(const struct api_ctx *ctx)
+{
+	handle_dns_record_update(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);
+}
+
+static void op_deleteDnsRecord(const struct api_ctx *ctx)
+{
+	handle_dns_record_delete(ctx->fd, ctx->p[0]);
+}
+
+static void op_deleteDnsServer(const struct api_ctx *ctx)
+{
+	handle_dns_server_delete(ctx->fd, ctx->p[0]);
+}
+
+static void op_deleteLdapServer(const struct api_ctx *ctx)
+{
+	handle_ldap_server_delete(ctx->fd, ctx->p[0]);
+}
+
+static void op_getLdapGroup(const struct api_ctx *ctx)
+{
+	handle_ldap_group_get_one(ctx->fd, ctx->p[0]);
+}
+
+static void op_updateLdapGroup(const struct api_ctx *ctx)
+{
+	handle_ldap_group_update(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);
+}
+
+static void op_deleteLdapGroup(const struct api_ctx *ctx)
+{
+	handle_ldap_group_delete(ctx->fd, ctx->p[0]);
+}
+
+static void op_getLdapUser(const struct api_ctx *ctx)
+{
+	handle_ldap_user_get_one(ctx->fd, ctx->p[0]);
+}
+
+static void op_updateLdapUser(const struct api_ctx *ctx)
+{
+	handle_ldap_user_update(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);
+}
+
+static void op_deleteLdapUser(const struct api_ctx *ctx)
+{
+	handle_ldap_user_delete(ctx->fd, ctx->p[0]);
+}
+
+static void op_getPkiCert(const struct api_ctx *ctx)
+{
+	handle_pki_cert_get_one(ctx->fd, ctx->p[0]);
+}
+
+static void op_deletePkiCert(const struct api_ctx *ctx)
+{
+	handle_pki_cert_delete(ctx->fd, ctx->p[0]);
+}
+
+/* -- pkg -------------------------------------------------------- */
+
+static void op_getPkgRecipe(const struct api_ctx *ctx)
+{
+	/* ADR-0107: an optional ?version= narrows to one immutable
+	 * revision; the raw path still carries it. */
+	char version[PKG_VERSION_MAX];
+	const char *version_ptr = NULL;
+
+	if (url_query_param(ctx->req->path, "version", version, sizeof(version)) == 0)
+		version_ptr = version;
+	handle_pkg_recipe_get(ctx->fd, ctx->p[0], version_ptr);
+}
+
+static void op_deletePkgRecipe(const struct api_ctx *ctx)
+{
+	char version[PKG_VERSION_MAX];
+	const char *version_ptr = NULL;
+
+	if (url_query_param(ctx->req->path, "version", version, sizeof(version)) == 0)
+		version_ptr = version;
+	handle_pkg_recipe_delete(ctx->fd, ctx->p[0], version_ptr);
+}
+
+static void op_setPkgPolicy(const struct api_ctx *ctx)
+{
+	handle_pkg_policy_put(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);
+}
+
+static void op_clearPkgPolicy(const struct api_ctx *ctx)
+{
+	handle_pkg_policy_delete(ctx->fd, ctx->p[0]);
+}
+
+static void op_getBuildLog(const struct api_ctx *ctx)
+{
+	handle_pkg_build_log_get(ctx->fd, ctx->p[0]);
+}
+
+static void op_getPkgHostbuild(const struct api_ctx *ctx)
+{
+	handle_pkg_hostbuild_get(ctx->fd, ctx->p[0]);
+}
+
+static void op_getPkg(const struct api_ctx *ctx)
+{
+	handle_pkg_get_one(ctx->fd, ctx->p[0]);
+}
+
+static void op_deletePkg(const struct api_ctx *ctx)
+{
+	handle_pkg_delete(ctx->fd, ctx->p[0]);
+}
+
+static void op_exportPkgArtifact(const struct api_ctx *ctx)
+{
+	handle_artifact_export_post(ctx->fd, ARTIFACT_EXPORT_KIND_HOSTBUILD, ctx->p[0]);
+}
+
+static void op_getPkgArtifactExport(const struct api_ctx *ctx)
+{
+	handle_artifact_export_get(ctx->fd, ARTIFACT_EXPORT_KIND_HOSTBUILD, ctx->p[0]);
+}
+
+static void op_downloadPkgArtifactExport(const struct api_ctx *ctx)
+{
+	handle_artifact_export_download(ctx->fd, ARTIFACT_EXPORT_KIND_HOSTBUILD, ctx->p[0],
+	                                 ctx->req->path);
+}
+
+/*
+ * Publish an artifact that already exists (issue #171). Publishing was
+ * previously reachable only as a side effect of building, so an
+ * artifact that failed to push, or was built before push was
+ * configured, could never be published without being rebuilt -- and
+ * for "cix" or "kernel" that is the most expensive thing this
+ * platform does.
+ */
+static void op_publishPkgArtifact(const struct api_ctx *ctx)
+{
+	const char *pkg_name = ctx->p[0];
+	enum pkg_error perr;
+
+	{
+		char pv[IMAGE_VERSION_MAX];
+		int is_hostbuild = 0;
+
+		perr = pkg_artifact_publish_resolve(pkg_name, pv, sizeof(pv), &is_hostbuild);
+		/*
+		 * A hostbuild's artifact is a directory this host assembled,
+		 * never a tarball it fetched, so nothing had ever put one in
+		 * the cache the pusher reads from. Build the tarball from the
+		 * installed tree first, with the same export that already
+		 * guarantees byte-identical output across hosts, and let its
+		 * completion queue the push (#200 fixed the automatic path the
+		 * same way).
+		 */
+		if (perr == PKG_OK && !pkg_artifact_cache_has(pkg_name, pv)) {
+			char dest[PATH_MAX];
+			char eerr[256];
+
+			if (!is_hostbuild) {
+				respond_error(ctx->fd, 409, "Conflict",
+				              "this package's artifact is not in the local cache and "
+				              "cannot be rebuilt from the installed tree");
+				return;
+			}
+			pkg_artifact_cache_path(pkg_name, pv, dest, sizeof(dest));
+			snprintf(g_artifact_export_publish_name,
+			         sizeof(g_artifact_export_publish_name), "%s", pkg_name);
+			if (artifact_export_start(ARTIFACT_EXPORT_KIND_HOSTBUILD, pkg_name, dest,
+			                           eerr, sizeof(eerr)) != 0) {
+				g_artifact_export_publish_name[0] = '\0';
+				respond_error(ctx->fd, 409, "Conflict", eerr);
+				return;
+			}
+			{
+				struct json_writer w;
+
+				jw_init(&w);
+				jw_obj_open(&w);
+				jw_key(&w, "status");
+				jw_str(&w, "building artifact tarball");
+				jw_obj_close(&w);
+				respond_json(ctx->fd, 202, "Accepted", &w);
+			}
+			return;
+		}
+	}
+	perr = pkg_artifact_publish(pkg_name);
+	/*
+	 * Enqueuing is not starting. Nothing pumps this queue on its own --
+	 * a push is only ever kicked off after something else finishes a
+	 * build, and after each push completes so the queue drains.
+	 * Publishing on request has to schedule its own work, like every
+	 * other caller of the pump does.
+	 */
+	if (perr == PKG_OK)
+		artifact_push_pump();
+	if (perr == PKG_ERR_NOT_FOUND) {
+		respond_error(ctx->fd, 404, "Not Found", "no such installed package");
+		return;
+	}
+	if (perr != PKG_OK) {
+		respond_error(ctx->fd, 400, "Bad Request",
+		              "artifact publishing is not configured "
+		              "(see PUT /v1/pkg/artifact-config)");
+		return;
+	}
+	{
+		struct json_writer w;
+
+		jw_init(&w);
+		jw_obj_open(&w);
+		jw_key(&w, "status");
+		jw_str(&w, "queued");
+		jw_obj_close(&w);
+		respond_json(ctx->fd, 202, "Accepted", &w);
+	}
+}
+
+/*
+ * The live build-log follow is a WebSocket upgrade, owned by
+ * try_pkg_build_log_upgrade() before dispatch() -- same situation as
+ * op_consoleContainer above, same honest answer.
+ */
+static void op_pkgBuildLog(const struct api_ctx *ctx)
+{
+	respond_error(ctx->fd, 400, "Bad Request", "this endpoint requires Upgrade: websocket");
+}
+
+/* -- system ----------------------------------------------------- */
+
+static void op_revokeHostauthSessions(const struct api_ctx *ctx)
+{
+	handle_hostauth_sessions_revoke(ctx->fd, ctx->p[0]);
+}
+
+static void op_setServerHealthDrain(const struct api_ctx *ctx)
+{
+	handle_serverhealth_set(ctx->fd, ctx->p[0], ctx->p[1], ctx->req->body,
+	                         ctx->req->body_len);
+}
+
+static void op_killSystemProcess(const struct api_ctx *ctx)
+{
+	handle_hostproc_kill(ctx->fd, ctx->p[0]);
+}
+
+static void op_getSystemSysctl(const struct api_ctx *ctx)
+{
+	handle_sysctl_get(ctx->fd, ctx->p[0]);
+}
+
+static void op_putSystemSysctl(const struct api_ctx *ctx)
+{
+	handle_sysctl_put(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);
+}
+
+static void op_deleteSystemSysctl(const struct api_ctx *ctx)
+{
+	handle_sysctl_delete(ctx->fd, ctx->p[0]);
+}
+
+static void op_getKmodInfo(const struct api_ctx *ctx)
+{
+	handle_kmod_get(ctx->fd, ctx->p[0]);
+}
+
+static void op_postKmodLoad(const struct api_ctx *ctx)
+{
+	handle_kmod_post(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);
+}
+
+static void op_deleteKmod(const struct api_ctx *ctx)
+{
+	handle_kmod_delete(ctx->fd, ctx->p[0]);
+}
+
+static void op_putKmodConfig(const struct api_ctx *ctx)
+{
+	handle_kmodconfig_put(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);
+}
+
+static void op_deleteKmodConfig(const struct api_ctx *ctx)
+{
+	handle_kmodconfig_delete(ctx->fd, ctx->p[0]);
+}
+
+static void op_deleteEspEntry(const struct api_ctx *ctx)
+{
+	handle_esp_entry_delete(ctx->fd, ctx->p[0]);
+}
+
+static void op_getStalls(const struct api_ctx *ctx)
+{
+	handle_stalls_get(ctx->fd, ctx->req);
+}
+
+static void op_getSystemKmsg(const struct api_ctx *ctx)
+{
+	handle_kmsg(ctx->fd, ctx->req);
+}
+
+static void op_getSystemLogs(const struct api_ctx *ctx)
+{
+	handle_logs_get(ctx->fd, ctx->req);
+}
+
+/* -- dhcp / ntp / syslog / devices / disks ---------------------- */
+
+static void op_unregisterDhcpServer(const struct api_ctx *ctx)
+{
+	handle_dhcp_server_unregister(ctx->fd, ctx->p[0]);
+}
+
+static void op_getDhcpNetwork(const struct api_ctx *ctx)
+{
+	handle_network_dhcp_get(ctx->fd, ctx->p[0]);
+}
+
+static void op_setDhcpNetwork(const struct api_ctx *ctx)
+{
+	handle_network_dhcp_put(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);
+}
+
+static void op_deleteDhcpNetwork(const struct api_ctx *ctx)
+{
+	handle_network_dhcp_delete(ctx->fd, ctx->p[0]);
+}
+
+static void op_deleteDhcpReservation(const struct api_ctx *ctx)
+{
+	handle_dhcp_static_delete(ctx->fd, ctx->p[0]);
+}
+
+static void op_deleteNtpServer(const struct api_ctx *ctx)
+{
+	handle_ntp_server_delete(ctx->fd, ctx->p[0]);
+}
+
+static void op_deleteSyslogTarget(const struct api_ctx *ctx)
+{
+	handle_syslog_target_delete(ctx->fd, ctx->p[0]);
+}
+
+static void op_deleteDeviceMap(const struct api_ctx *ctx)
+{
+	handle_devicemap_delete(ctx->fd, ctx->p[0]);
+}
+
+static void op_deleteDiskRole(const struct api_ctx *ctx)
+{
+	handle_diskrole_delete(ctx->fd, ctx->p[0]);
+}
+
+static void op_getDiskFormatStatus(const struct api_ctx *ctx)
+{
+	handle_disk_format_get(ctx->fd, ctx->p[0]);
+}
+
+static void op_formatDisk(const struct api_ctx *ctx)
+{
+	handle_disk_format_post(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);
+}
+
+static void op_unmountDisk(const struct api_ctx *ctx)
+{
+	handle_disk_unmount_post(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);
+}
+
+static void op_getDiskFreeSpace(const struct api_ctx *ctx)
+{
+	handle_disk_free_space(ctx->fd, ctx->p[0]);
+}
+
+static void op_createDiskPartitionTable(const struct api_ctx *ctx)
+{
+	handle_disk_partition_table_post(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);
+}
+
+static void op_addDiskPartition(const struct api_ctx *ctx)
+{
+	handle_disk_partitions_post(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);
+}
+
+static void op_resizeDiskPartition(const struct api_ctx *ctx)
+{
+	handle_disk_partition_resize(ctx->fd, ctx->p[0], ctx->p[1], ctx->req->body,
+	                              ctx->req->body_len);
+}
+
+static void op_deleteDiskPartition(const struct api_ctx *ctx)
+{
+	handle_disk_partition_delete(ctx->fd, ctx->p[0], ctx->p[1]);
+}
+
 static void dispatch(int fd, const struct http_request *req)
 {
-	const char *name;
 	/*
 	 * Issue #100: what the loop is working on, readable by the
 	 * watchdog process. Set before any handler runs and cleared after,
@@ -23736,19 +25400,6 @@ static void dispatch(int fd, const struct http_request *req)
 	if (strcmp(req->method, "GET") != 0)
 		logstore_write("audit", "info", "%s %s", req->method, req->path);
 
-	if (strcmp(req->method, "POST") == 0 && strcmp(req->path, "/v1/login") == 0) {
-		handle_login(fd, req->body, req->body_len);
-		return;
-	}
-	if (strcmp(req->method, "POST") == 0 && strcmp(req->path, "/v1/logout") == 0) {
-		handle_logout(fd, req->headers, req->headers_len);
-		return;
-	}
-	if (strcmp(req->method, "GET") == 0 && strcmp(req->path, "/v1/whoami") == 0) {
-		handle_whoami(fd, req->headers, req->headers_len);
-		return;
-	}
-
 	/*
 	 * ADR-0144: write-gating -- the one authorization check every
 	 * mutating request goes through, dispatch-wide, before any route
@@ -23761,16 +25412,24 @@ static void dispatch(int fd, const struct http_request *req)
 	 * one specifically isn't). hostauth_authorize_write() itself
 	 * returns true unconditionally while gating isn't active yet (no
 	 * admin-group user exists) -- a fresh install is never locked out
-	 * of its own API by this. /v1/login (above) and /v1/logout are
-	 * the only two paths that bypass this block entirely; every other
-	 * GET is already exempt by construction (needs_auth stays 0).
+	 * of its own API by this. POST /v1/login and POST /v1/logout are
+	 * the only two requests exempted by path -- login is how a token
+	 * is obtained at all, and logout only ever revokes the caller's
+	 * own token (it used to be exempt by being routed before this
+	 * block; now that every operation dispatches through the one
+	 * generated table below, the exemption is stated instead of
+	 * implied by ordering, ADR-0218). Every other GET is already
+	 * exempt by construction (needs_auth stays 0).
 	 */
 	{
 		size_t path_len = strlen(req->path);
 		int is_console = strcmp(req->method, "GET") == 0 &&
 		                  strncmp(req->path, CONTAINERS_PREFIX, strlen(CONTAINERS_PREFIX)) == 0 &&
 		                  path_len > 8 && strcmp(req->path + path_len - 8, "/console") == 0;
-		int needs_auth = strcmp(req->method, "GET") != 0 || is_console;
+		int is_login = strcmp(req->method, "POST") == 0 &&
+		               (strcmp(req->path, "/v1/login") == 0 ||
+		                strcmp(req->path, "/v1/logout") == 0);
+		int needs_auth = (strcmp(req->method, "GET") != 0 && !is_login) || is_console;
 
 		if (needs_auth) {
 			char token_hdr[HOSTAUTH_TOKEN_LEN + 32];
@@ -23788,1856 +25447,32 @@ static void dispatch(int fd, const struct http_request *req)
 		}
 	}
 
-	if (strcmp(req->method, "GET") == 0 && strcmp(req->path, "/v1/health") == 0) {
-		handle_health(fd);
-		return;
-	}
-	if (strcmp(req->method, "GET") == 0 && strcmp(req->path, "/v1/system/boot") == 0) {
-		handle_system_boot(fd);
-		return;
-	}
-	if (strcmp(req->method, "POST") == 0 && strcmp(req->path, "/v1/system/shutdown") == 0) {
-		handle_shutdown(fd);
-		return;
-	}
-	if (strcmp(req->method, "POST") == 0 && strcmp(req->path, "/v1/system/factory-reset") == 0) {
-		handle_factory_reset(fd, req->body, req->body_len);
-		return;
-	}
-	if (strcmp(req->method, "POST") == 0 && strcmp(req->path, "/v1/system/reboot") == 0) {
-		handle_reboot(fd);
-		return;
-	}
-	if (strcmp(req->method, "POST") == 0 && strcmp(req->path, "/v1/system/update") == 0) {
-		handle_system_update(fd, req->body, req->body_len);
-		return;
-	}
-	if (strcmp(req->method, "GET") == 0 && strcmp(req->path, "/v1/system/backup") == 0) {
-		handle_system_backup(fd);
-		return;
-	}
-	if (strcmp(req->path, "/v1/system/backup-config") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_backup_config_get(fd);
-			return;
-		}
-		if (strcmp(req->method, "PUT") == 0) {
-			handle_backup_config_put(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strcmp(req->method, "GET") == 0 && strcmp(req->path, "/v1/system/backup-config/status") == 0) {
-		handle_backup_config_status_get(fd);
-		return;
-	}
-	if (strcmp(req->method, "POST") == 0 &&
-	    strcmp(req->path, "/v1/system/backup-config/snapshot-now") == 0) {
-		handle_backup_config_snapshot_now_post(fd);
-		return;
-	}
-	if (strcmp(req->path, "/v1/system/hostauth-config") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_hostauth_config_get(fd);
-			return;
-		}
-		if (strcmp(req->method, "PUT") == 0) {
-			handle_hostauth_config_put(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/system/hostauth/sessions") == 0 && strcmp(req->method, "GET") == 0) {
-		handle_hostauth_sessions_get(fd);
-		return;
-	}
-	if (strncmp(req->path, "/v1/system/hostauth/sessions/", 29) == 0 &&
-	    strcmp(req->method, "DELETE") == 0) {
-		const char *username = req->path + 29;
-
-		if (username[0] != '\0') {
-			handle_hostauth_sessions_revoke(fd, username);
-			return;
-		}
-	}
-	if (strcmp(req->method, "POST") == 0 && strcmp(req->path, "/v1/system/restore") == 0) {
-		handle_system_restore(fd, req->body, req->body_len);
-		return;
-	}
-	if (strcmp(req->path, "/v1/system/site") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_site_get(fd);
-			return;
-		}
-		if (strcmp(req->method, "PUT") == 0) {
-			handle_site_put(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/system/daemon-config") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_daemon_config_get(fd);
-			return;
-		}
-		if (strcmp(req->method, "PUT") == 0) {
-			handle_daemon_config_put(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/system/routes") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_route_list(fd);
-			return;
-		}
-		if (strcmp(req->method, "POST") == 0) {
-			handle_route_add(fd, req->body, req->body_len);
-			return;
-		}
-		if (strcmp(req->method, "DELETE") == 0) {
-			handle_route_del(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/system/stats") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_system_stats(fd);
-			return;
-		}
-	}
-	/* Issue #88: persistent volumes. */
-	if (strcmp(req->path, "/v1/volumes") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_volume_list(fd);
-			return;
-		}
-		if (strcmp(req->method, "POST") == 0) {
-			handle_volume_create(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strncmp(req->path, "/v1/volumes/", 12) == 0) {
-		const char *vname = req->path + 12;
-
-		if (vname[0] != '\0') {
-			/*
-			 * Sub-resources are matched BEFORE the plain volume GET and
-			 * DELETE below. A volume name can never contain '/', so a
-			 * path with one is unambiguously a sub-resource -- and
-			 * checking the bare handlers first made GET .../backups
-			 * look up a volume literally named "bk/backups" and 404.
-			 */
-			const char *slash = strchr(vname, '/');
-
-			if (slash != NULL && (size_t)(slash - vname) < VOLUME_NAME_MAX) {
-				char volume_name[VOLUME_NAME_MAX];
-
-				memcpy(volume_name, vname, slash - vname);
-				volume_name[slash - vname] = '\0';
-
-				if (strcmp(slash, "/migrate") == 0 && strcmp(req->method, "POST") == 0) {
-					handle_volume_migrate(fd, volume_name, req->body, req->body_len);
-					return;
-				}
-				if (strcmp(slash, "/owner") == 0 && strcmp(req->method, "PUT") == 0) {
-					handle_volume_owner_put(fd, volume_name, req->body, req->body_len);
-					return;
-				}
-				if (strcmp(slash, "/quota") == 0 && strcmp(req->method, "PUT") == 0) {
-					handle_volume_quota_put(fd, volume_name, req->body, req->body_len);
-					return;
-				}
-				if (strcmp(slash, "/backups") == 0 && strcmp(req->method, "GET") == 0) {
-					handle_volume_backups_get(fd, volume_name);
-					return;
-				}
-				if (strcmp(slash, "/backups") == 0 && strcmp(req->method, "PUT") == 0) {
-					handle_volume_backup_policy_put(fd, volume_name, req->body, req->body_len);
-					return;
-				}
-				if (strcmp(slash, "/backup") == 0 && strcmp(req->method, "POST") == 0) {
-					handle_volume_backup_now(fd, volume_name);
-					return;
-				}
-				if (strcmp(slash, "/restore") == 0 && strcmp(req->method, "POST") == 0) {
-					handle_volume_restore(fd, volume_name, req->body, req->body_len);
-					return;
-				}
-				if (strncmp(slash, "/backups/", 9) == 0 && strcmp(req->method, "DELETE") == 0 &&
-				    slash[9] != '\0') {
-					handle_volume_backup_delete(fd, volume_name, slash + 9);
-					return;
-				}
-			}
-			if (strcmp(req->method, "GET") == 0) {
-				handle_volume_get(fd, vname);
-				return;
-			}
-			if (strcmp(req->method, "DELETE") == 0) {
-				handle_volume_delete(fd, vname);
-				return;
-			}
-		}
-	}
-	if (strcmp(req->path, "/v1/software") == 0 && strcmp(req->method, "GET") == 0) {
-		handle_software_list(fd);
-		return;
-	}
-	if (strcmp(req->path, "/v1/system/volume-backup-config") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_volume_backup_config_get(fd);
-			return;
-		}
-		if (strcmp(req->method, "PUT") == 0) {
-			handle_volume_backup_config_put(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/system/server-health") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_serverhealth_list(fd);
-			return;
-		}
-	}
-	if (strncmp(req->path, "/v1/system/server-health/", 25) == 0) {
-		/* .../{kind}/{container} -- split on the one separating slash. */
-		const char *rest = req->path + 25;
-		const char *slash = strchr(rest, '/');
-
-		if (slash != NULL && slash[1] != '\0' && strcmp(req->method, "PUT") == 0) {
-			char kindbuf[SERVERHEALTH_KIND_MAX];
-			size_t klen = (size_t)(slash - rest);
-
-			if (klen > 0 && klen < sizeof(kindbuf)) {
-				memcpy(kindbuf, rest, klen);
-				kindbuf[klen] = '\0';
-				handle_serverhealth_set(fd, kindbuf, slash + 1, req->body, req->body_len);
-				return;
-			}
-		}
-	}
-	if (strcmp(req->path, "/v1/system/processes") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_hostproc_list(fd);
-			return;
-		}
-	}
-	if (strncmp(req->path, PROCESSES_PREFIX, strlen(PROCESSES_PREFIX)) == 0) {
-		name = req->path + strlen(PROCESSES_PREFIX);
-		if (name[0] != '\0' && strcmp(req->method, "DELETE") == 0) {
-			handle_hostproc_kill(fd, name);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/system/ping") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_ping_get(fd);
-			return;
-		}
-		if (strcmp(req->method, "POST") == 0) {
-			handle_ping_post(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/system/signing-keys") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_signing_keys_get(fd);
-			return;
-		}
-		if (strcmp(req->method, "PUT") == 0) {
-			handle_signing_keys_put(fd, req->body, req->body_len);
-			return;
-		}
-		if (strcmp(req->method, "DELETE") == 0) {
-			handle_signing_keys_delete(fd);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/system/resolv") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_resolv_get(fd);
-			return;
-		}
-		if (strcmp(req->method, "PUT") == 0) {
-			handle_resolv_put(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/system/sysctl") == 0 && strcmp(req->method, "GET") == 0) {
-		handle_sysctl_list(fd);
-		return;
-	}
-	if (strncmp(req->path, SYSCTL_PREFIX, strlen(SYSCTL_PREFIX)) == 0) {
-		name = req->path + strlen(SYSCTL_PREFIX);
-		if (name[0] != '\0') {
-			if (strcmp(req->method, "GET") == 0) {
-				handle_sysctl_get(fd, name);
-				return;
-			}
-			if (strcmp(req->method, "PUT") == 0) {
-				handle_sysctl_put(fd, name, req->body, req->body_len);
-				return;
-			}
-			if (strcmp(req->method, "DELETE") == 0) {
-				handle_sysctl_delete(fd, name);
-				return;
-			}
-		}
-	}
-	if (strcmp(req->path, "/v1/system/kmod") == 0 && strcmp(req->method, "GET") == 0) {
-		handle_kmod_list(fd);
-		return;
-	}
-	if (strncmp(req->path, KMOD_PREFIX, strlen(KMOD_PREFIX)) == 0) {
-		name = req->path + strlen(KMOD_PREFIX);
-		if (name[0] != '\0') {
-			if (strcmp(req->method, "GET") == 0) {
-				handle_kmod_get(fd, name);
-				return;
-			}
-			if (strcmp(req->method, "POST") == 0) {
-				handle_kmod_post(fd, name, req->body, req->body_len);
-				return;
-			}
-			if (strcmp(req->method, "DELETE") == 0) {
-				handle_kmod_delete(fd, name);
-				return;
-			}
-		}
-	}
-	if (strcmp(req->path, "/v1/system/kmod-config") == 0 && strcmp(req->method, "GET") == 0) {
-		handle_kmodconfig_list(fd);
-		return;
-	}
-	if (strncmp(req->path, KMODCONFIG_PREFIX, strlen(KMODCONFIG_PREFIX)) == 0) {
-		name = req->path + strlen(KMODCONFIG_PREFIX);
-		if (name[0] != '\0') {
-			if (strcmp(req->method, "PUT") == 0) {
-				handle_kmodconfig_put(fd, name, req->body, req->body_len);
-				return;
-			}
-			if (strcmp(req->method, "DELETE") == 0) {
-				handle_kmodconfig_delete(fd, name);
-				return;
-			}
-		}
-	}
-	if (strcmp(req->path, "/v1/system/kmod-build") == 0 && strcmp(req->method, "POST") == 0) {
-		handle_kmod_build_post(fd, req->body, req->body_len);
-		return;
-	}
-	if (strcmp(req->path, "/v1/system/state-storage") == 0 && strcmp(req->method, "GET") == 0) {
-		handle_state_storage_get(fd);
-		return;
-	}
-	if (strcmp(req->path, "/v1/system/state-storage/migrate") == 0) {
-		if (strcmp(req->method, "POST") == 0) {
-			handle_state_storage_migrate_post(fd, req->body, req->body_len);
-			return;
-		}
-		if (strcmp(req->method, "GET") == 0) {
-			handle_state_storage_migrate_get(fd);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/system/log-storage") == 0 && strcmp(req->method, "GET") == 0) {
-		handle_log_storage_get(fd);
-		return;
-	}
-	if (strcmp(req->path, "/v1/system/log-storage/migrate") == 0) {
-		if (strcmp(req->method, "POST") == 0) {
-			handle_log_storage_migrate_post(fd, req->body, req->body_len);
-			return;
-		}
-		if (strcmp(req->method, "GET") == 0) {
-			handle_log_storage_migrate_get(fd);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/system/rebuildable-storage") == 0 && strcmp(req->method, "GET") == 0) {
-		handle_rebuildable_storage_get(fd);
-		return;
-	}
-	if (strcmp(req->path, "/v1/system/rebuildable-storage/migrate") == 0) {
-		if (strcmp(req->method, "POST") == 0) {
-			handle_rebuildable_storage_migrate_post(fd, req->body, req->body_len);
-			return;
-		}
-		if (strcmp(req->method, "GET") == 0) {
-			handle_rebuildable_storage_migrate_get(fd);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/system/rolling-config") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_rolling_config_get(fd);
-			return;
-		}
-		if (strcmp(req->method, "PUT") == 0) {
-			handle_rolling_config_put(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/system/pkg-build-config") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_pkg_build_config_get(fd);
-			return;
-		}
-		if (strcmp(req->method, "PUT") == 0) {
-			handle_pkg_build_config_put(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strncmp(req->path, "/v1/system/stalls", 17) == 0 &&
-	    (req->path[17] == '\0' || req->path[17] == '?') && strcmp(req->method, "GET") == 0) {
-		handle_stalls_get(fd, req);
-		return;
-	}
-	if (strcmp(req->path, "/v1/system/boot-console") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_bootconsole_get(fd);
-			return;
-		}
-		if (strcmp(req->method, "PUT") == 0) {
-			handle_bootconsole_put(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/dns/forwarders") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_dns_forwarders_get(fd);
-			return;
-		}
-		if (strcmp(req->method, "PUT") == 0) {
-			handle_dns_forwarders_put(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/system/boot-next") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_boot_next_get(fd);
-			return;
-		}
-		if (strcmp(req->method, "POST") == 0) {
-			handle_boot_next_set(fd, req->body, req->body_len);
-			return;
-		}
-		if (strcmp(req->method, "DELETE") == 0) {
-			handle_boot_next_clear(fd);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/dns/provision") == 0) {
-		if (strcmp(req->method, "POST") == 0) {
-			handle_dns_provision(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/system/esp") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_esp_get(fd);
-			return;
-		}
-		if (strcmp(req->method, "PUT") == 0) {
-			handle_esp_put(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strncmp(req->path, "/v1/system/esp/entries/", 23) == 0 &&
-	    strcmp(req->method, "DELETE") == 0) {
-		handle_esp_entry_delete(fd, req->path + 23);
-		return;
-	}
-	if (strcmp(req->path, "/v1/system/kernel-policy") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_kernel_policy_get(fd);
-			return;
-		}
-		if (strcmp(req->method, "PUT") == 0) {
-			handle_kernel_policy_put(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/system/kernel-policy/refresh") == 0 &&
-	    strcmp(req->method, "POST") == 0) {
-		handle_kernel_policy_refresh(fd);
-		return;
-	}
-	if (strcmp(req->path, "/v1/system/control-plane-reservation") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_cpreserve_get(fd);
-			return;
-		}
-		if (strcmp(req->method, "PUT") == 0) {
-			handle_cpreserve_put(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/system/tls-throttle") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_tls_throttle_get(fd);
-			return;
-		}
-		if (strcmp(req->method, "PUT") == 0) {
-			handle_tls_throttle_put(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/system/tls-throttle/status") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_tls_throttle_status_get(fd);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/system/ntp") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_ntp_config_get(fd);
-			return;
-		}
-		if (strcmp(req->method, "PUT") == 0) {
-			handle_ntp_config_put(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/system/ntp/status") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_ntp_status_get(fd);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/system/ntp/sync") == 0) {
-		if (strcmp(req->method, "POST") == 0) {
-			handle_ntp_sync_post(fd);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/system/time") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_time_get(fd);
-			return;
-		}
-		if (strcmp(req->method, "PUT") == 0) {
-			handle_time_put(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/ntp/servers") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_ntp_server_list(fd);
-			return;
-		}
-		if (strcmp(req->method, "POST") == 0) {
-			handle_ntp_server_create(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strncmp(req->path, NTP_SERVERS_PREFIX, strlen(NTP_SERVERS_PREFIX)) == 0) {
-		name = req->path + strlen(NTP_SERVERS_PREFIX);
-		if (name[0] != '\0' && strcmp(req->method, "DELETE") == 0) {
-			handle_ntp_server_delete(fd, name);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/syslog/targets") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_syslog_target_list(fd);
-			return;
-		}
-		if (strcmp(req->method, "POST") == 0) {
-			handle_syslog_target_create(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strncmp(req->path, SYSLOG_TARGETS_PREFIX, strlen(SYSLOG_TARGETS_PREFIX)) == 0) {
-		name = req->path + strlen(SYSLOG_TARGETS_PREFIX);
-		if (name[0] != '\0' && strcmp(req->method, "DELETE") == 0) {
-			handle_syslog_target_delete(fd, name);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/dhcp/servers") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_dhcp_servers_get(fd);
-			return;
-		}
-		if (strcmp(req->method, "POST") == 0) {
-			handle_dhcp_server_register(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strncmp(req->path, "/v1/dhcp/servers/", 17) == 0 && strcmp(req->method, "DELETE") == 0) {
-		handle_dhcp_server_unregister(fd, req->path + 17);
-		return;
-	}
-	if (strncmp(req->path, "/v1/dhcp/networks/", 18) == 0) {
-		const char *net_name = req->path + 18;
-
-		if (net_name[0] != '\0') {
-			if (strcmp(req->method, "GET") == 0) {
-				handle_network_dhcp_get(fd, net_name);
-				return;
-			}
-			if (strcmp(req->method, "PUT") == 0) {
-				handle_network_dhcp_put(fd, net_name, req->body, req->body_len);
-				return;
-			}
-			if (strcmp(req->method, "DELETE") == 0) {
-				handle_network_dhcp_delete(fd, net_name);
-				return;
-			}
-		}
-	}
-	if (strcmp(req->path, "/v1/dhcp") == 0 && strcmp(req->method, "GET") == 0) {
-		handle_dhcp_get(fd);
-		return;
-	}
-	if (strcmp(req->path, "/v1/dhcp/leases") == 0 && strcmp(req->method, "GET") == 0) {
-		handle_dhcp_leases_get(fd);
-		return;
-	}
-	if (strcmp(req->path, "/v1/dhcp/static") == 0 && strcmp(req->method, "POST") == 0) {
-		handle_dhcp_static_post(fd, req->body, req->body_len);
-		return;
-	}
-	if (strncmp(req->path, "/v1/dhcp/static/", 16) == 0 && strcmp(req->method, "DELETE") == 0) {
-		handle_dhcp_static_delete(fd, req->path + 16);
-		return;
-	}
-	if (strcmp(req->path, "/v1/system/zswap") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_zswap_get(fd);
-			return;
-		}
-		if (strcmp(req->method, "PUT") == 0) {
-			handle_zswap_put(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/system/swap") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_swap_get(fd);
-			return;
-		}
-		if (strcmp(req->method, "POST") == 0) {
-			handle_swap_enable(fd, req->body, req->body_len);
-			return;
-		}
-		if (strcmp(req->method, "DELETE") == 0) {
-			handle_swap_disable(fd);
-			return;
-		}
-	}
+	/*
+	 * ADR-0218: every API operation dispatches through the one table
+	 * generated from docs/api/openapi.yaml. There is no second route
+	 * to a handler and no handler outside the table -- an operation
+	 * the spec declares but nothing implements fails the build of
+	 * this very file, and a handler the spec does not name is
+	 * unreachable. The ~1900 lines of hand-ordered strcmp chains this
+	 * replaces got their precedence from source order; the matcher
+	 * derives the same precedence (literal beats parameter, leftmost
+	 * first) from the routes themselves.
+	 */
 	{
-		/* "/v1/system/logs" may carry a trailing "?tail=.../source=..."
-		 * query string (this codebase's own established shape for a
-		 * GET route with query params, matching .../files' own
-		 * "?path=..." handling above) -- matched by base-path length,
-		 * not a raw strcmp against the full req->path. */
-		size_t qlen = strcspn(req->path, "?");
+		char params[APIROUTE_MAX_PARAMS][APIROUTE_PARAM_MAX];
+		int idx = api_route_match(g_api_routes,
+		                          (int)(sizeof(g_api_routes) / sizeof(g_api_routes[0])),
+		                          req->method, req->path, params);
 
-		if (qlen == strlen("/v1/system/logs") &&
-		    strncmp(req->path, "/v1/system/logs", qlen) == 0) {
-			if (strcmp(req->method, "GET") == 0) {
-				handle_logs_get(fd, req);
-				return;
-			}
-		}
-		if (qlen == strlen("/v1/system/kmsg") &&
-		    strncmp(req->path, "/v1/system/kmsg", qlen) == 0) {
-			if (strcmp(req->method, "GET") == 0) {
-				handle_kmsg(fd, req);
-				return;
-			}
-		}
-	}
-	if (strcmp(req->path, "/v1/system/logs/config") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_logs_config_get(fd);
-			return;
-		}
-		if (strcmp(req->method, "PUT") == 0) {
-			handle_logs_config_put(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/system/iso") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_system_iso_get(fd);
-			return;
-		}
-		if (strcmp(req->method, "POST") == 0) {
-			handle_system_iso_post(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	/*
-	 * ADR-0151: container recipes' own reserved paths, checked before
-	 * the generic CONTAINERS_PREFIX/{name} fallback below -- same
-	 * "recipes" reserved-word boundary ADR-0123's own image recipes
-	 * already established one level up (a container literally named
-	 * "recipes" would otherwise be unreachable via GET/DELETE
-	 * /v1/containers/{name}).
-	 */
-	if (strcmp(req->path, "/v1/containers/recipes") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_container_recipe_list(fd);
-			return;
-		}
-		if (strcmp(req->method, "POST") == 0) {
-			handle_container_recipe_add(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strncmp(req->path, CONTAINER_RECIPES_PREFIX, strlen(CONTAINER_RECIPES_PREFIX)) == 0) {
-		name = req->path + strlen(CONTAINER_RECIPES_PREFIX);
-		if (name[0] != '\0') {
-			size_t nlen = strlen(name);
+		if (idx >= 0) {
+			struct api_ctx ctx;
 
-			if (nlen > 6 && strcmp(name + nlen - 6, "/apply") == 0 &&
-			    strcmp(req->method, "POST") == 0 && nlen - 6 < PKG_NAME_MAX) {
-				char recipe_name[PKG_NAME_MAX];
-
-				memcpy(recipe_name, name, nlen - 6);
-				recipe_name[nlen - 6] = '\0';
-				handle_container_recipe_apply(fd, recipe_name, req->body, req->body_len);
-				return;
-			}
-			if (strcmp(req->method, "GET") == 0) {
-				handle_container_recipe_get(fd, name);
-				return;
-			}
-			if (strcmp(req->method, "DELETE") == 0) {
-				handle_container_recipe_delete(fd, name);
-				return;
-			}
-		}
-	}
-	if (strcmp(req->path, "/v1/containers") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_list(fd);
+			ctx.fd = fd;
+			ctx.req = req;
+			ctx.p[0] = params[0];
+			ctx.p[1] = params[1];
+			g_api_routes[idx].fn(&ctx);
 			return;
-		}
-		if (strcmp(req->method, "POST") == 0) {
-			handle_create(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strncmp(req->path, CONTAINERS_PREFIX, strlen(CONTAINERS_PREFIX)) == 0) {
-		name = req->path + strlen(CONTAINERS_PREFIX);
-		if (name[0] != '\0') {
-			/*
-			 * Container names are [A-Za-z0-9_-] only (namecheck.h) --
-			 * never contain '/' -- so a trailing "/stop" is unambiguous
-			 * to detect with a plain suffix check, no generic
-			 * sub-router needed for this one action endpoint.
-			 */
-			size_t nlen = strlen(name);
-
-			if (nlen > 6 && strcmp(name + nlen - 6, "/start") == 0 &&
-			    strcmp(req->method, "POST") == 0 && nlen - 6 < REGISTRY_NAME_MAX) {
-				char container_name[REGISTRY_NAME_MAX];
-
-				memcpy(container_name, name, nlen - 6);
-				container_name[nlen - 6] = '\0';
-				handle_start(fd, container_name);
-				/*
-				 * ADR-0197: a server that has just come back gets the
-				 * current DHCP files. Creation already stages them, so
-				 * this covers the narrow window where a reservation
-				 * changed while the container was still starting --
-				 * during which dhcp_sync_all() skips it for not being
-				 * running yet, and nothing would otherwise revisit it.
-				 * No restart: the conf it started with is this one.
-				 */
-				dhcp_sync_all(NULL, 0, NULL);
-				return;
-			}
-			if (nlen > 5 && strcmp(name + nlen - 5, "/stop") == 0 &&
-			    strcmp(req->method, "POST") == 0 && nlen - 5 < REGISTRY_NAME_MAX) {
-				char container_name[REGISTRY_NAME_MAX];
-
-				memcpy(container_name, name, nlen - 5);
-				container_name[nlen - 5] = '\0';
-				handle_stop(fd, container_name);
-				return;
-			}
-			if (nlen > 8 && strcmp(name + nlen - 8, "/unpause") == 0 &&
-			    strcmp(req->method, "POST") == 0 && nlen - 8 < REGISTRY_NAME_MAX) {
-				char container_name[REGISTRY_NAME_MAX];
-
-				memcpy(container_name, name, nlen - 8);
-				container_name[nlen - 8] = '\0';
-				handle_unpause(fd, container_name);
-				return;
-			}
-			if (nlen > 6 && strcmp(name + nlen - 6, "/pause") == 0 &&
-			    strcmp(req->method, "POST") == 0 && nlen - 6 < REGISTRY_NAME_MAX) {
-				char container_name[REGISTRY_NAME_MAX];
-
-				memcpy(container_name, name, nlen - 6);
-				container_name[nlen - 6] = '\0';
-				handle_pause(fd, container_name);
-				return;
-			}
-			if (nlen > 6 && strcmp(name + nlen - 6, "/stats") == 0 &&
-			    strcmp(req->method, "GET") == 0 && nlen - 6 < REGISTRY_NAME_MAX) {
-				char container_name[REGISTRY_NAME_MAX];
-
-				memcpy(container_name, name, nlen - 6);
-				container_name[nlen - 6] = '\0';
-				handle_container_stats(fd, container_name);
-				return;
-			}
-			if (nlen > 16 && strcmp(name + nlen - 16, "/migrate-storage") == 0 &&
-			    nlen - 16 < REGISTRY_NAME_MAX &&
-			    (strcmp(req->method, "POST") == 0 || strcmp(req->method, "GET") == 0)) {
-				char container_name[REGISTRY_NAME_MAX];
-
-				memcpy(container_name, name, nlen - 16);
-				container_name[nlen - 16] = '\0';
-				if (strcmp(req->method, "POST") == 0)
-					handle_container_migrate_storage_post(fd, container_name, req->body,
-					                                       req->body_len);
-				else
-					handle_container_migrate_storage_get(fd, container_name);
-				return;
-			}
-			{
-				/*
-				 * Unlike every other suffix here, "/files" can carry a
-				 * trailing "?path=..." query string -- container names
-				 * are still '/'-free, but qlen (not nlen) is the part
-				 * that actually ends in "/files"; the raw, un-truncated
-				 * name (with its "?..." intact) is what url_query_param()
-				 * needs to find "path" in.
-				 */
-				size_t qlen = strcspn(name, "?");
-
-				if (qlen > 6 && strncmp(name + qlen - 6, "/files", 6) == 0 &&
-				    qlen - 6 < REGISTRY_NAME_MAX &&
-				    (strcmp(req->method, "GET") == 0 || strcmp(req->method, "PUT") == 0)) {
-					char container_name[REGISTRY_NAME_MAX];
-					char rel_path[CONTAINER_FILE_PATH_MAX];
-
-					memcpy(container_name, name, qlen - 6);
-					container_name[qlen - 6] = '\0';
-					if (url_query_param(req->path, "path", rel_path, sizeof(rel_path)) != 0) {
-						respond_error(fd, 400, "Bad Request", "missing path query parameter");
-						return;
-					}
-					if (strcmp(req->method, "GET") == 0) {
-						char list_flag[8];
-
-						/* ?list=1 asks for a directory listing instead of
-						 * file content -- a separate mode rather than
-						 * "GET a directory implicitly lists it", so a
-						 * client that meant to read a file and hit a
-						 * directory still gets told so. */
-						if (url_query_param(req->path, "list", list_flag, sizeof(list_flag)) == 0 &&
-						    list_flag[0] != '\0' && strcmp(list_flag, "0") != 0)
-							handle_container_dir_list(fd, container_name, rel_path);
-						else
-							handle_container_file_read(fd, container_name, rel_path);
-					}
-					else
-						handle_container_file_write(fd, container_name, rel_path, req->body,
-						                             req->body_len);
-					return;
-				}
-			}
-			{
-				/*
-				 * "/networks" (attach) and "/networks/{network}"
-				 * (detach) -- container names are '/'-free, so the
-				 * first '/' in name (if any) unambiguously starts this
-				 * sub-resource, same reasoning the "/files" block above
-				 * already uses.
-				 */
-				char *slash = strchr(name, '/');
-
-				if (slash != NULL && (size_t)(slash - name) < REGISTRY_NAME_MAX) {
-					if (strcmp(slash, "/networks") == 0 && strcmp(req->method, "POST") == 0) {
-						char container_name[REGISTRY_NAME_MAX];
-
-						memcpy(container_name, name, slash - name);
-						container_name[slash - name] = '\0';
-						handle_container_network_attach(fd, container_name, req->body,
-						                                 req->body_len);
-						return;
-					}
-					if (strncmp(slash, "/networks/", 10) == 0 &&
-					    strcmp(req->method, "DELETE") == 0 && slash[10] != '\0' &&
-					    strlen(slash + 10) < NETWORK_NAME_MAX) {
-						char container_name[REGISTRY_NAME_MAX];
-
-						memcpy(container_name, name, slash - name);
-						container_name[slash - name] = '\0';
-						handle_container_network_detach(fd, container_name, slash + 10);
-						return;
-					}
-					/* "/volumes" (attach) / "/volumes/{volume}" (detach),
-					 * issue #92 -- same splitting as "/networks" above.
-					 * Both edit the persisted definition and apply on the
-					 * container's next start, never live. */
-					if (strcmp(slash, "/exec") == 0 && strcmp(req->method, "POST") == 0) {
-						char container_name[REGISTRY_NAME_MAX];
-
-						memcpy(container_name, name, slash - name);
-						container_name[slash - name] = '\0';
-						handle_container_exec_post(fd, container_name, req->body, req->body_len);
-						return;
-					}
-					if (strcmp(slash, "/exec") == 0 && strcmp(req->method, "GET") == 0) {
-						char container_name[REGISTRY_NAME_MAX];
-
-						memcpy(container_name, name, slash - name);
-						container_name[slash - name] = '\0';
-						handle_container_exec_get(fd, container_name);
-						return;
-					}
-					if (strcmp(slash, "/volumes") == 0 && strcmp(req->method, "POST") == 0) {
-						char container_name[REGISTRY_NAME_MAX];
-
-						memcpy(container_name, name, slash - name);
-						container_name[slash - name] = '\0';
-						handle_container_volume_attach(fd, container_name, req->body,
-						                                req->body_len);
-						return;
-					}
-					if (strncmp(slash, "/volumes/", 9) == 0 &&
-					    strcmp(req->method, "DELETE") == 0 && slash[9] != '\0') {
-						char container_name[REGISTRY_NAME_MAX];
-
-						memcpy(container_name, name, slash - name);
-						container_name[slash - name] = '\0';
-						handle_container_volume_detach(fd, container_name, slash + 9);
-						return;
-					}
-					/* "/devices" (attach)/"/devices/{id}" (detach)
-					 * (ADR-0161 Phase D) -- same shape as "/networks"
-					 * above, a real device id can itself contain '/'
-					 * (e.g. "usb:1058:2630:port2-1.3"), so this only
-					 * ever splits on the FIRST '/' after the container
-					 * name, never a second one inside id itself. */
-					if (strcmp(slash, "/devices") == 0 && strcmp(req->method, "POST") == 0) {
-						char container_name[REGISTRY_NAME_MAX];
-
-						memcpy(container_name, name, slash - name);
-						container_name[slash - name] = '\0';
-						handle_container_device_attach(fd, container_name, req->body,
-						                                req->body_len);
-						return;
-					}
-					if (strncmp(slash, "/devices/", 9) == 0 && strcmp(req->method, "DELETE") == 0 &&
-					    slash[9] != '\0') {
-						char container_name[REGISTRY_NAME_MAX];
-
-						memcpy(container_name, name, slash - name);
-						container_name[slash - name] = '\0';
-						handle_container_device_detach(fd, container_name, slash + 9);
-						return;
-					}
-				}
-			}
-			if (strcmp(req->method, "GET") == 0) {
-				handle_get_one(fd, name);
-				return;
-			}
-			/* Issue #11: edit the stored definition in place, instead
-			 * of delete-and-recreate being the only way to change a
-			 * cmd, an env var or a file. */
-			if (strcmp(req->method, "PATCH") == 0) {
-				handle_container_patch(fd, name, req->body, req->body_len);
-				return;
-			}
-			if (strcmp(req->method, "DELETE") == 0) {
-				handle_delete(fd, name);
-				return;
-			}
-		}
-	}
-	if (strcmp(req->path, "/v1/devices") == 0 && strcmp(req->method, "GET") == 0) {
-		handle_device_list(fd);
-		return;
-	}
-	if (strcmp(req->path, "/v1/disks") == 0 && strcmp(req->method, "GET") == 0) {
-		handle_disk_list(fd);
-		return;
-	}
-	if (strncmp(req->path, DISKS_PREFIX, strlen(DISKS_PREFIX)) == 0) {
-		name = req->path + strlen(DISKS_PREFIX);
-		size_t nlen = strlen(name);
-
-		if (nlen > 7 && strcmp(name + nlen - 7, "/format") == 0 &&
-		    nlen - 7 < DISKROLE_DISK_NAME_MAX) {
-			char disk_name[DISKROLE_DISK_NAME_MAX];
-
-			memcpy(disk_name, name, nlen - 7);
-			disk_name[nlen - 7] = '\0';
-			if (strcmp(req->method, "POST") == 0) {
-				handle_disk_format_post(fd, disk_name, req->body, req->body_len);
-				return;
-			}
-			if (strcmp(req->method, "GET") == 0) {
-				handle_disk_format_get(fd, disk_name);
-				return;
-			}
-		}
-		if (nlen > 8 && strcmp(name + nlen - 8, "/unmount") == 0 &&
-		    nlen - 8 < DISKROLE_DISK_NAME_MAX && strcmp(req->method, "POST") == 0) {
-			char disk_name[DISKROLE_DISK_NAME_MAX];
-
-			memcpy(disk_name, name, nlen - 8);
-			disk_name[nlen - 8] = '\0';
-			handle_disk_unmount_post(fd, disk_name, req->body, req->body_len);
-			return;
-		}
-		{
-			/*
-			 * "/partition-table" (create), "/partitions" (add),
-			 * "/partitions/{partition_name}" (delete) -- disk
-			 * names are '/'-free, so the first '/' in name (if
-			 * any) unambiguously starts this sub-resource, same
-			 * reasoning the container "/networks" block already
-			 * uses.
-			 */
-			char *slash = strchr(name, '/');
-
-			if (slash != NULL && (size_t)(slash - name) < DISKROLE_DISK_NAME_MAX) {
-				char disk_name[DISKROLE_DISK_NAME_MAX];
-
-				memcpy(disk_name, name, slash - name);
-				disk_name[slash - name] = '\0';
-
-				if (strcmp(slash, "/free-space") == 0 && strcmp(req->method, "GET") == 0) {
-					handle_disk_free_space(fd, disk_name);
-					return;
-				}
-				if (strcmp(slash, "/partition-table") == 0 &&
-				    strcmp(req->method, "POST") == 0) {
-					handle_disk_partition_table_post(fd, disk_name, req->body,
-					                                  req->body_len);
-					return;
-				}
-				if (strcmp(slash, "/partitions") == 0 && strcmp(req->method, "POST") == 0) {
-					handle_disk_partitions_post(fd, disk_name, req->body, req->body_len);
-					return;
-				}
-				if (strncmp(slash, "/partitions/", 12) == 0 &&
-				    strcmp(req->method, "POST") == 0) {
-					const char *rest = slash + 12;
-					const char *tail = strstr(rest, "/resize");
-
-					if (tail != NULL && tail[7] == '\0' && tail != rest &&
-					    (size_t)(tail - rest) < DISKROLE_DISK_NAME_MAX) {
-						char part_name[DISKROLE_DISK_NAME_MAX];
-
-						memcpy(part_name, rest, tail - rest);
-						part_name[tail - rest] = '\0';
-						handle_disk_partition_resize(fd, disk_name, part_name, req->body,
-						                              req->body_len);
-						return;
-					}
-				}
-				if (strncmp(slash, "/partitions/", 12) == 0 &&
-				    strcmp(req->method, "DELETE") == 0 && slash[12] != '\0' &&
-				    strlen(slash + 12) < DISKROLE_DISK_NAME_MAX) {
-					handle_disk_partition_delete(fd, disk_name, slash + 12);
-					return;
-				}
-			}
-		}
-	}
-	if (strcmp(req->path, "/v1/diskroles") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_diskrole_list(fd);
-			return;
-		}
-		if (strcmp(req->method, "POST") == 0) {
-			handle_diskrole_create(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strncmp(req->path, DISKROLES_PREFIX, strlen(DISKROLES_PREFIX)) == 0) {
-		name = req->path + strlen(DISKROLES_PREFIX);
-		if (name[0] != '\0' && strcmp(req->method, "DELETE") == 0) {
-			handle_diskrole_delete(fd, name);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/devicemaps") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_devicemap_list(fd);
-			return;
-		}
-		if (strcmp(req->method, "POST") == 0) {
-			handle_devicemap_create(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strncmp(req->path, DEVICEMAPS_PREFIX, strlen(DEVICEMAPS_PREFIX)) == 0) {
-		name = req->path + strlen(DEVICEMAPS_PREFIX);
-		if (name[0] != '\0' && strcmp(req->method, "DELETE") == 0) {
-			handle_devicemap_delete(fd, name);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/networks") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_network_list(fd);
-			return;
-		}
-		if (strcmp(req->method, "POST") == 0) {
-			handle_network_create(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strncmp(req->path, NETWORKS_PREFIX, strlen(NETWORKS_PREFIX)) == 0) {
-		name = req->path + strlen(NETWORKS_PREFIX);
-		if (name[0] != '\0') {
-			/*
-			 * Network and interface names are both [A-Za-z0-9_-] only
-			 * (namecheck.h) -- never contain '/' -- so "/interfaces" and
-			 * "/interfaces/<ifname>" are unambiguous to detect with plain
-			 * suffix/substring checks, the same precedent CONTAINERS_PREFIX's
-			 * own "/stop" suffix check above already established, just one
-			 * level deeper for the DELETE-a-specific-interface case.
-			 */
-			static const char iface_mid[] = "/interfaces/";
-			char *sep = strstr(name, iface_mid);
-			size_t nlen = strlen(name);
-
-			if (sep != NULL && strcmp(req->method, "DELETE") == 0) {
-				size_t net_name_len = (size_t)(sep - name);
-				const char *ifname = sep + (sizeof(iface_mid) - 1);
-
-				if (net_name_len > 0 && net_name_len < NETWORK_NAME_MAX && ifname[0] != '\0') {
-					char net_name[NETWORK_NAME_MAX];
-
-					memcpy(net_name, name, net_name_len);
-					net_name[net_name_len] = '\0';
-					handle_network_detach_interface(fd, net_name, ifname);
-					return;
-				}
-			}
-			if (nlen > 11 && strcmp(name + nlen - 11, "/interfaces") == 0 &&
-			    strcmp(req->method, "POST") == 0 && nlen - 11 < NETWORK_NAME_MAX) {
-				char net_name[NETWORK_NAME_MAX];
-
-				memcpy(net_name, name, nlen - 11);
-				net_name[nlen - 11] = '\0';
-				handle_network_attach_interface(fd, net_name, req->body, req->body_len);
-				return;
-			}
-			if (nlen > 6 && strcmp(name + nlen - 6, "/ports") == 0 &&
-			    strcmp(req->method, "GET") == 0 && nlen - 6 < NETWORK_NAME_MAX) {
-				char net_name[NETWORK_NAME_MAX];
-
-				memcpy(net_name, name, nlen - 6);
-				net_name[nlen - 6] = '\0';
-				handle_network_ports_get(fd, net_name);
-				return;
-			}
-			if (strcmp(req->method, "GET") == 0) {
-				handle_network_get_one(fd, name);
-				return;
-			}
-			if (strcmp(req->method, "DELETE") == 0) {
-				handle_network_delete(fd, name);
-				return;
-			}
-		}
-	}
-	/*
-	 * ADR-0123: image recipes' own reserved paths, checked before the
-	 * generic IMAGES_PREFIX/{name} fallback below -- same "recipes"/
-	 * "recipe-apply-status" reserved-words boundary PKG_RECIPES_PREFIX
-	 * already established for package recipes, one level up (an image
-	 * literally named "recipes" would otherwise be unreachable via
-	 * GET/DELETE /v1/images/{name}).
-	 */
-	if (strcmp(req->path, "/v1/images/recipes") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_image_recipe_list(fd);
-			return;
-		}
-		if (strcmp(req->method, "POST") == 0) {
-			handle_image_recipe_add(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strncmp(req->path, IMAGE_RECIPES_PREFIX, strlen(IMAGE_RECIPES_PREFIX)) == 0) {
-		name = req->path + strlen(IMAGE_RECIPES_PREFIX);
-		if (name[0] != '\0') {
-			if (strcmp(req->method, "GET") == 0) {
-				handle_image_recipe_get(fd, name);
-				return;
-			}
-			if (strcmp(req->method, "DELETE") == 0) {
-				handle_image_recipe_delete(fd, name);
-				return;
-			}
-		}
-	}
-	if (strcmp(req->path, "/v1/images/gc") == 0) {
-		if (strcmp(req->method, "POST") == 0) {
-			handle_images_gc(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/images") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_image_list(fd);
-			return;
-		}
-		if (strcmp(req->method, "POST") == 0) {
-			handle_image_create(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strncmp(req->path, IMAGES_PREFIX, strlen(IMAGES_PREFIX)) == 0) {
-		name = req->path + strlen(IMAGES_PREFIX);
-		if (name[0] != '\0') {
-			size_t nlen = strlen(name);
-
-			/* ADR-0107: /v1/images/{name}/manifest (POST, upsert one
-			 * entry) and /v1/images/{name}/manifest/{package} (DELETE,
-			 * remove one). Image/package names are both '/'-free
-			 * (namecheck.h), so plain suffix/substring checks
-			 * unambiguously split them, the same precedent
-			 * CONTAINERS_PREFIX's own "/start"-style suffixes and the
-			 * pkg recipes route's "/manifest/" split above already
-			 * established. */
-			if (nlen > 9 && strcmp(name + nlen - 9, "/manifest") == 0 &&
-			    strcmp(req->method, "POST") == 0 && nlen - 9 < PKG_IMAGE_NAME_MAX) {
-				char image_name[PKG_IMAGE_NAME_MAX];
-
-				memcpy(image_name, name, nlen - 9);
-				image_name[nlen - 9] = '\0';
-				handle_image_manifest_set(fd, image_name, req->body, req->body_len);
-				return;
-			}
-			/* Issue #126: /v1/images/{name}/export/download -- bytes of
-			 * a ready export, in bounded chunks. Checked BEFORE the
-			 * "/export" suffix below, which it would otherwise not
-			 * match anyway (different suffix) but keeping them adjacent
-			 * makes the pair obvious. */
-			{
-				/* Like "/files" above, this one carries a trailing
-				 * "?offset=&length=" query -- image names are
-				 * '?'-free, so the name ends at the first '?'. */
-				size_t qlen = strcspn(name, "?");
-
-				if (qlen > 16 && strncmp(name + qlen - 16, "/export/download", 16) == 0 &&
-				    strcmp(req->method, "GET") == 0 && qlen - 16 < PKG_IMAGE_NAME_MAX) {
-					char image_name[PKG_IMAGE_NAME_MAX];
-
-					memcpy(image_name, name, qlen - 16);
-					image_name[qlen - 16] = '\0';
-					handle_artifact_export_download(fd, ARTIFACT_EXPORT_KIND_IMAGE, image_name, req->path);
-					return;
-				}
-			}
-			/* Issue #124: /v1/images/{name}/rename (POST). */
-			if (nlen > 7 && strcmp(name + nlen - 7, "/rename") == 0 &&
-			    strcmp(req->method, "POST") == 0 && nlen - 7 < PKG_IMAGE_NAME_MAX) {
-				char image_name[PKG_IMAGE_NAME_MAX];
-
-				memcpy(image_name, name, nlen - 7);
-				image_name[nlen - 7] = '\0';
-				handle_image_rename(fd, image_name, req->body, req->body_len);
-				return;
-			}
-			/* Issue #126: /v1/images/{name}/export -- POST starts a
-			 * whole-rootfs tarball, GET reports it. */
-			if (nlen > 7 && strcmp(name + nlen - 7, "/export") == 0 &&
-			    nlen - 7 < PKG_IMAGE_NAME_MAX) {
-				char image_name[PKG_IMAGE_NAME_MAX];
-
-				memcpy(image_name, name, nlen - 7);
-				image_name[nlen - 7] = '\0';
-				if (strcmp(req->method, "POST") == 0) {
-					handle_artifact_export_post(fd, ARTIFACT_EXPORT_KIND_IMAGE, image_name);
-					return;
-				}
-				if (strcmp(req->method, "GET") == 0) {
-					handle_artifact_export_get(fd, ARTIFACT_EXPORT_KIND_IMAGE, image_name);
-					return;
-				}
-			}
-			/* ADR-0123: /v1/images/{name}/apply-recipe (POST) --
-			 * applies image's own already-stored recipe. */
-			if (nlen > 13 && strcmp(name + nlen - 13, "/apply-recipe") == 0 &&
-			    strcmp(req->method, "POST") == 0 && nlen - 13 < PKG_IMAGE_NAME_MAX) {
-				char image_name[PKG_IMAGE_NAME_MAX];
-
-				memcpy(image_name, name, nlen - 13);
-				image_name[nlen - 13] = '\0';
-				handle_image_recipe_apply(fd, image_name);
-				return;
-			}
-			{
-				const char *marker = strstr(name, "/manifest/");
-
-				if (marker != NULL && strcmp(req->method, "DELETE") == 0) {
-					size_t image_len = (size_t)(marker - name);
-					const char *package = marker + strlen("/manifest/");
-
-					if (image_len < PKG_IMAGE_NAME_MAX && package[0] != '\0') {
-						char image_name[PKG_IMAGE_NAME_MAX];
-
-						memcpy(image_name, name, image_len);
-						image_name[image_len] = '\0';
-						handle_image_manifest_unset(fd, image_name, package);
-						return;
-					}
-				}
-			}
-			if (strcmp(req->method, "GET") == 0) {
-				handle_image_get_one(fd, name);
-				return;
-			}
-			if (strcmp(req->method, "DELETE") == 0) {
-				handle_image_delete(fd, name);
-				return;
-			}
-		}
-	}
-	if (strcmp(req->path, "/v1/dns/records") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_dns_record_list(fd);
-			return;
-		}
-		if (strcmp(req->method, "POST") == 0) {
-			handle_dns_record_create(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strncmp(req->path, DNS_RECORDS_PREFIX, strlen(DNS_RECORDS_PREFIX)) == 0) {
-		name = req->path + strlen(DNS_RECORDS_PREFIX);
-		if (name[0] != '\0') {
-			if (strcmp(req->method, "GET") == 0) {
-				handle_dns_record_get_one(fd, name);
-				return;
-			}
-			if (strcmp(req->method, "PUT") == 0) {
-				handle_dns_record_update(fd, name, req->body, req->body_len);
-				return;
-			}
-			if (strcmp(req->method, "DELETE") == 0) {
-				handle_dns_record_delete(fd, name);
-				return;
-			}
-		}
-	}
-	if (strcmp(req->path, "/v1/dns/servers") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_dns_server_list(fd);
-			return;
-		}
-		if (strcmp(req->method, "POST") == 0) {
-			handle_dns_server_create(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strncmp(req->path, DNS_SERVERS_PREFIX, strlen(DNS_SERVERS_PREFIX)) == 0) {
-		name = req->path + strlen(DNS_SERVERS_PREFIX);
-		if (name[0] != '\0' && strcmp(req->method, "DELETE") == 0) {
-			handle_dns_server_delete(fd, name);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/ldap/servers") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_ldap_server_list(fd);
-			return;
-		}
-		if (strcmp(req->method, "POST") == 0) {
-			handle_ldap_server_create(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strncmp(req->path, LDAP_SERVERS_PREFIX, strlen(LDAP_SERVERS_PREFIX)) == 0) {
-		name = req->path + strlen(LDAP_SERVERS_PREFIX);
-		if (name[0] != '\0' && strcmp(req->method, "DELETE") == 0) {
-			handle_ldap_server_delete(fd, name);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/ldap/config") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_ldap_config_get(fd);
-			return;
-		}
-		if (strcmp(req->method, "PUT") == 0) {
-			handle_ldap_config_put(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/ldap/groups") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_ldap_group_list(fd);
-			return;
-		}
-		if (strcmp(req->method, "POST") == 0) {
-			handle_ldap_group_create(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strncmp(req->path, LDAP_GROUPS_PREFIX, strlen(LDAP_GROUPS_PREFIX)) == 0) {
-		name = req->path + strlen(LDAP_GROUPS_PREFIX);
-		if (name[0] != '\0') {
-			if (strcmp(req->method, "GET") == 0) {
-				handle_ldap_group_get_one(fd, name);
-				return;
-			}
-			if (strcmp(req->method, "PUT") == 0) {
-				handle_ldap_group_update(fd, name, req->body, req->body_len);
-				return;
-			}
-			if (strcmp(req->method, "DELETE") == 0) {
-				handle_ldap_group_delete(fd, name);
-				return;
-			}
-		}
-	}
-	if (strcmp(req->path, "/v1/ldap/users") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_ldap_user_list(fd);
-			return;
-		}
-		if (strcmp(req->method, "POST") == 0) {
-			handle_ldap_user_create(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strncmp(req->path, LDAP_USERS_PREFIX, strlen(LDAP_USERS_PREFIX)) == 0) {
-		name = req->path + strlen(LDAP_USERS_PREFIX);
-		if (name[0] != '\0') {
-			if (strcmp(req->method, "GET") == 0) {
-				handle_ldap_user_get_one(fd, name);
-				return;
-			}
-			if (strcmp(req->method, "PUT") == 0) {
-				handle_ldap_user_update(fd, name, req->body, req->body_len);
-				return;
-			}
-			if (strcmp(req->method, "DELETE") == 0) {
-				handle_ldap_user_delete(fd, name);
-				return;
-			}
-		}
-	}
-	if (strcmp(req->path, "/v1/pki/ca") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_pki_ca_get(fd);
-			return;
-		}
-		if (strcmp(req->method, "POST") == 0) {
-			handle_pki_ca_create(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/pki/intermediate") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_pki_intermediate_get(fd);
-			return;
-		}
-		if (strcmp(req->method, "POST") == 0) {
-			handle_pki_intermediate_create(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/pki/certs") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_pki_cert_list(fd);
-			return;
-		}
-		if (strcmp(req->method, "POST") == 0) {
-			handle_pki_cert_create(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strncmp(req->path, PKI_CERTS_PREFIX, strlen(PKI_CERTS_PREFIX)) == 0) {
-		name = req->path + strlen(PKI_CERTS_PREFIX);
-		if (name[0] != '\0') {
-			if (strcmp(req->method, "GET") == 0) {
-				handle_pki_cert_get_one(fd, name);
-				return;
-			}
-			if (strcmp(req->method, "DELETE") == 0) {
-				handle_pki_cert_delete(fd, name);
-				return;
-			}
-		}
-	}
-	if (strcmp(req->path, "/v1/pki/reset") == 0) {
-		if (strcmp(req->method, "POST") == 0) {
-			handle_pki_reset(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	/*
-	 * These reserved paths are checked before the generic
-	 * PKG_PREFIX/{name} fallback below, exactly like every other
-	 * resource's exact-match-then-prefix ordering in this dispatch --
-	 * a package named "bootstrap"/"recipes"/"install"/"update-all"/
-	 * "repo-config"/"sync" (ADR-0121)/"cache-config"/"cache"/
-	 * "artifact-config" (ADR-0122) would be unreachable via
-	 * GET/DELETE /v1/pkg/{name}, a deliberate, documented
-	 * reserved-words boundary. PKG_RECIPES_PREFIX
-	 * (/v1/pkg/recipes/{name}, DELETE) is checked here too, before the
-	 * generic PKG_PREFIX/{name} fallback -- otherwise
-	 * "/v1/pkg/recipes/bash" would wrongly match that fallback with
-	 * name="recipes/bash" instead (ADR-0040: recipes are now a real,
-	 * operator-managed catalog via this API, not baked into the ISO).
-	 */
-	if (strcmp(req->path, "/v1/pkg/bootstrap") == 0) {
-		if (strcmp(req->method, "POST") == 0) {
-			handle_pkg_bootstrap(fd, req->body, req->body_len);
-			return;
-		}
-		if (strcmp(req->method, "GET") == 0) {
-			handle_pkg_bootstrap_get(fd);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/pkg/repo-config") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_pkg_repo_config_get(fd);
-			return;
-		}
-		if (strcmp(req->method, "PUT") == 0) {
-			handle_pkg_repo_config_put(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/pkg/sync") == 0) {
-		if (strcmp(req->method, "POST") == 0) {
-			handle_pkg_sync_post(fd, req->body, req->body_len);
-			return;
-		}
-		if (strcmp(req->method, "GET") == 0) {
-			handle_pkg_sync_get(fd);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/pkg/cache-config") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_pkg_cache_config_get(fd);
-			return;
-		}
-		if (strcmp(req->method, "PUT") == 0) {
-			handle_pkg_cache_config_put(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/pkg/cache") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_pkg_cache_get(fd);
-			return;
-		}
-		if (strcmp(req->method, "DELETE") == 0) {
-			handle_pkg_cache_delete(fd);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/pkg/artifact-config") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_pkg_artifact_config_get(fd);
-			return;
-		}
-		if (strcmp(req->method, "PUT") == 0) {
-			handle_pkg_artifact_config_put(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/pkg/policies") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_pkg_policies_get(fd);
-			return;
-		}
-	}
-	if (strncmp(req->path, "/v1/pkg/policies/", 17) == 0) {
-		const char *pname = req->path + 17;
-
-		if (pname[0] != '\0') {
-			if (strcmp(req->method, "PUT") == 0) {
-				handle_pkg_policy_put(fd, pname, req->body, req->body_len);
-				return;
-			}
-			if (strcmp(req->method, "DELETE") == 0) {
-				handle_pkg_policy_delete(fd, pname);
-				return;
-			}
-		}
-	}
-	if (strcmp(req->path, "/v1/pkg/build-logs") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_pkg_build_logs_list(fd);
-			return;
-		}
-	}
-	if (strncmp(req->path, "/v1/pkg/build-logs/", 19) == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_pkg_build_log_get(fd, req->path + 19);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/pkg/recipes") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_pkg_recipes_list(fd);
-			return;
-		}
-		if (strcmp(req->method, "POST") == 0) {
-			handle_pkg_recipe_add(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strncmp(req->path, PKG_RECIPES_PREFIX, strlen(PKG_RECIPES_PREFIX)) == 0) {
-		name = req->path + strlen(PKG_RECIPES_PREFIX);
-		if (name[0] != '\0' && (strcmp(req->method, "DELETE") == 0 || strcmp(req->method, "GET") == 0)) {
-			/* ADR-0107: an optional ?version= query param can follow
-			 * the package name -- same "qlen, not nlen" pattern
-			 * CONTAINERS_PREFIX's own .../files route already
-			 * established for a path suffix that can carry a query
-			 * string (name is still '/'-free, so a plain strcspn()
-			 * unambiguously finds where it ends). */
-			size_t qlen = strcspn(name, "?");
-			char pkg_name[PKG_NAME_MAX];
-			char version[PKG_VERSION_MAX];
-			const char *version_ptr = NULL;
-
-			if (qlen < sizeof(pkg_name)) {
-				memcpy(pkg_name, name, qlen);
-				pkg_name[qlen] = '\0';
-				if (url_query_param(req->path, "version", version, sizeof(version)) == 0)
-					version_ptr = version;
-				if (strcmp(req->method, "DELETE") == 0) {
-					handle_pkg_recipe_delete(fd, pkg_name, version_ptr);
-					return;
-				}
-				handle_pkg_recipe_get(fd, pkg_name, version_ptr);
-				return;
-			}
-		}
-	}
-	if (strcmp(req->path, "/v1/pkg/install") == 0) {
-		if (strcmp(req->method, "POST") == 0) {
-			handle_pkg_install(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/pkg/update-all") == 0) {
-		if (strcmp(req->method, "POST") == 0) {
-			handle_pkg_update_all(fd);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/pkg/hostbuild") == 0) {
-		if (strcmp(req->method, "POST") == 0) {
-			handle_pkg_hostbuild(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strcmp(req->path, "/v1/pkg/resume") == 0) {
-		if (strcmp(req->method, "POST") == 0) {
-			handle_pkg_resume(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	{
-		/* Checked before the generic PKG_PREFIX fallback below, the
-		 * same "specific route before the catch-all" ordering
-		 * PKG_RECIPES_PREFIX already establishes -- otherwise
-		 * "hostbuild/<name>" would fall through as if it were a
-		 * literal package named that. */
-		static const char hostbuild_prefix[] = "/v1/pkg/hostbuild/";
-
-		if (strncmp(req->path, hostbuild_prefix, sizeof(hostbuild_prefix) - 1) == 0) {
-			name = req->path + sizeof(hostbuild_prefix) - 1;
-			if (name[0] != '\0' && strcmp(req->method, "GET") == 0) {
-				handle_pkg_hostbuild_get(fd, name);
-				return;
-			}
-		}
-	}
-	if (strcmp(req->path, "/v1/pkg") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_pkg_list(fd);
-			return;
-		}
-	}
-	if (strncmp(req->path, PKG_PREFIX, strlen(PKG_PREFIX)) == 0) {
-		name = req->path + strlen(PKG_PREFIX);
-		if (name[0] != '\0') {
-			/*
-			 * Issue #129: /v1/pkg/{name}/artifact/export{,/download}
-			 * -- a hostbuild's harvested output (ADR-0056), which
-			 * lives in a host directory no container can see and so
-			 * had no retrieval route at all. Checked before the
-			 * bare-name GET/DELETE below, which would otherwise
-			 * swallow these as a package literally named
-			 * "kernel/artifact/export". Package names are '/'-free
-			 * (namecheck.h), the same property the images routes
-			 * above rely on to split suffixes unambiguously.
-			 */
-			{
-				/* Carries a trailing "?offset=&length=" query;
-				 * package names are '?'-free, so the name ends at
-				 * the first '?'. */
-				size_t qlen = strcspn(name, "?");
-
-				if (qlen > 25 &&
-				    strncmp(name + qlen - 25, "/artifact/export/download", 25) == 0 &&
-				    strcmp(req->method, "GET") == 0 && qlen - 25 < PKG_NAME_MAX) {
-					char pkg_name[PKG_NAME_MAX];
-
-					memcpy(pkg_name, name, qlen - 25);
-					pkg_name[qlen - 25] = '\0';
-					handle_artifact_export_download(
-					    fd, ARTIFACT_EXPORT_KIND_HOSTBUILD, pkg_name, req->path);
-					return;
-				}
-			}
-			{
-				size_t nlen = strlen(name);
-
-				/*
-				 * Publish an artifact that already exists (issue
-				 * #171). Publishing was previously reachable only as
-				 * a side effect of building, so an artifact that
-				 * failed to push, or was built before push was
-				 * configured, could never be published without being
-				 * rebuilt -- and for "cix" or "kernel" that is the
-				 * most expensive thing this platform does.
-				 */
-				if (nlen > 17 && strcmp(name + nlen - 17, "/artifact/publish") == 0 &&
-				    nlen - 17 < PKG_NAME_MAX && strcmp(req->method, "POST") == 0) {
-					char pkg_name[PKG_NAME_MAX];
-					enum pkg_error perr;
-
-					memcpy(pkg_name, name, nlen - 17);
-					pkg_name[nlen - 17] = '\0';
-					{
-						char pv[IMAGE_VERSION_MAX];
-						int is_hostbuild = 0;
-
-						perr = pkg_artifact_publish_resolve(pkg_name, pv, sizeof(pv),
-						                                     &is_hostbuild);
-						/*
-						 * A hostbuild's artifact is a directory this
-						 * host assembled, never a tarball it fetched,
-						 * so nothing had ever put one in the cache the
-						 * pusher reads from. Ordinary source-built
-						 * packages publish themselves at build time
-						 * and so were all present; every hostbuild --
-						 * cix, kernel, isotools, the things this
-						 * platform actually produces -- was silently
-						 * unpublishable. Build the tarball from the
-						 * installed tree first, with the same export
-						 * that already guarantees byte-identical
-						 * output across hosts, and let its completion
-						 * queue the push.
-						 */
-						if (perr == PKG_OK && !pkg_artifact_cache_has(pkg_name, pv)) {
-							char dest[PATH_MAX];
-							char eerr[256];
-
-							if (!is_hostbuild) {
-								respond_error(fd, 409, "Conflict",
-								              "this package's artifact is not in "
-								              "the local cache and cannot be "
-								              "rebuilt from the installed tree");
-								return;
-							}
-							pkg_artifact_cache_path(pkg_name, pv, dest, sizeof(dest));
-							snprintf(g_artifact_export_publish_name,
-							         sizeof(g_artifact_export_publish_name), "%s",
-							         pkg_name);
-							if (artifact_export_start(ARTIFACT_EXPORT_KIND_HOSTBUILD,
-							                           pkg_name, dest, eerr,
-							                           sizeof(eerr)) != 0) {
-								g_artifact_export_publish_name[0] = '\0';
-								respond_error(fd, 409, "Conflict", eerr);
-								return;
-							}
-							{
-								struct json_writer w;
-
-								jw_init(&w);
-								jw_obj_open(&w);
-								jw_key(&w, "status");
-								jw_str(&w, "building artifact tarball");
-								jw_obj_close(&w);
-								respond_json(fd, 202, "Accepted", &w);
-							}
-							return;
-						}
-					}
-					perr = pkg_artifact_publish(pkg_name);
-					/*
-					 * Enqueuing is not starting. Nothing pumps this
-					 * queue on its own -- a push is only ever kicked
-					 * off after something else finishes a build, and
-					 * after each push completes so the queue drains.
-					 * Without this call the endpoint answered 202
-					 * "queued" and then sat there until an unrelated
-					 * build happened along, which is exactly what it
-					 * did for cix/kernel/isotools: accepted, logged,
-					 * never published, nothing in the log saying so.
-					 * Publishing on request has to schedule its own
-					 * work, like every other caller of the pump does.
-					 */
-					if (perr == PKG_OK)
-						artifact_push_pump();
-					if (perr == PKG_ERR_NOT_FOUND) {
-						respond_error(fd, 404, "Not Found",
-						              "no such installed package");
-						return;
-					}
-					if (perr != PKG_OK) {
-						respond_error(fd, 400, "Bad Request",
-						              "artifact publishing is not configured "
-						              "(see PUT /v1/pkg/artifact-config)");
-						return;
-					}
-					{
-						struct json_writer w;
-
-						jw_init(&w);
-						jw_obj_open(&w);
-						jw_key(&w, "status");
-						jw_str(&w, "queued");
-						jw_obj_close(&w);
-						respond_json(fd, 202, "Accepted", &w);
-					}
-					return;
-				}
-
-				if (nlen > 16 && strcmp(name + nlen - 16, "/artifact/export") == 0 &&
-				    nlen - 16 < PKG_NAME_MAX) {
-					char pkg_name[PKG_NAME_MAX];
-
-					memcpy(pkg_name, name, nlen - 16);
-					pkg_name[nlen - 16] = '\0';
-					if (strcmp(req->method, "POST") == 0) {
-						handle_artifact_export_post(
-						    fd, ARTIFACT_EXPORT_KIND_HOSTBUILD, pkg_name);
-						return;
-					}
-					if (strcmp(req->method, "GET") == 0) {
-						handle_artifact_export_get(
-						    fd, ARTIFACT_EXPORT_KIND_HOSTBUILD, pkg_name);
-						return;
-					}
-				}
-			}
-			if (strcmp(req->method, "GET") == 0) {
-				handle_pkg_get_one(fd, name);
-				return;
-			}
-			if (strcmp(req->method, "DELETE") == 0) {
-				handle_pkg_delete(fd, name);
-				return;
-			}
 		}
 	}
 
