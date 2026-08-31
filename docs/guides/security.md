@@ -144,3 +144,35 @@ Host-auth write-gating (`GET`/`PUT /system/hostauth-config`, [`docs/api/README.m
 5. Remove the recovery media and reboot into the normal installed system. Every API write is open again — reconfigure a real admin group (`cixctl hostauth-config set --admin-group=...`) before anyone relies on gating again.
 
 This is deliberately **not** a network-reachable escape hatch: reaching this tool at all requires the same level of access needed to attach different boot media and power-cycle the machine, which a remote attacker manipulating the REST API alone can never do. The typed confirmation is a second, independent gate on top of that physical-access requirement — a stray or accidental boot into this entry can't silently disable write-gating.
+
+## Verifying a downloaded installer ISO
+
+An installer ISO is the one artifact with no host on the far side to
+check it — that is the whole reason it is stored and served rather than
+composed locally. So it is signed, and the check happens on a machine
+you already trust, before the stick is written:
+
+```
+minisign -Vm cix-installer-<version>-<release>-<arch>.iso -p cix-release.pub
+```
+
+Use **stock `minisign`**, not a Cix tool: an installer verifying its own
+signature is the code being checked doing the checking, and a
+substituted ISO either reports success or never implements the check at
+all. A stranger with no Cix software must be able to tell a genuine
+installer from a fabricated one — the last step deliberately is not
+ours.
+
+The key is committed at [`docs/keys/cix-release.pub`](../keys/cix-release.pub);
+pin a copy once rather than re-fetching it, and see
+[`docs/keys/README.md`](../keys/README.md) for why it lives in git and
+not beside the ISO.
+
+**This is a different key from the Secure Boot pair above.** That one is
+RSA, because UEFI requires it, and it decides whether firmware will boot
+an image. This one is Ed25519, because minisign requires it, and it
+tells a downloader the bytes really came from us. One key doing both
+jobs would mean whoever can sign a download can also sign a bootloader,
+and the recovery costs are nothing alike: republishing a public key,
+versus re-enrolling firmware on every host in the fleet
+([ADR-0220](../adr/0220-a-separate-release-signing-key.md)).
