@@ -342,6 +342,9 @@ static void print_usage(FILE *out)
 	        "  signing-keys [show]  -- the Secure Boot signing key pair `iso build` needs\n"
 	        "  signing-keys set --key=PATH --cert=PATH  -- install it (ADR-0212)\n"
 	        "  signing-keys clear  -- remove it from this host\n"
+	        "  release-key [show]  -- the Ed25519 key that signs published artifacts\n"
+	        "  release-key set --key=PATH  -- install it (ADR-0220)\n"
+	        "  release-key clear  -- remove it from this host\n"
 	        "  resolv set [--nameserver=A.B.C.D ...]  -- replace it; no flags clears it\n"
 	        "  sysctl [show]  -- every persisted (daemon-managed) host-level sysctl (ADR-0160)\n"
 	        "  sysctl get KEY  -- live current value (e.g. net.ipv4.ip_forward), persisted or not\n"
@@ -6108,6 +6111,127 @@ static int cmd_signing_keys(const struct cix_client *c, int json_mode, int argc,
 	return 2;
 }
 
+
+/*
+ * cixctl release-key [show] / set --key=PATH / clear (ADR-0220) -- the
+ * Ed25519 key that signs published artifacts, distinct from the RSA
+ * Secure Boot pair above.
+ *
+ * Same argument as signing-keys for taking a path rather than the PEM
+ * text: a private key on a command line lands in shell history and in
+ * this host's process list.
+ *
+ * `show` prints the public key in full, because that is the whole
+ * point of holding it -- an operator publishes that exact text and
+ * whoever downloads a Cix ISO verifies against it with stock minisign.
+ */
+static void fmt_release_key(const struct json_value *v)
+{
+	const struct json_value *key_set = json_object_get(v, "key_set");
+	const char *pub = json_as_string(json_object_get(v, "public_key"));
+	const char *key_id = json_as_string(json_object_get(v, "key_id"));
+	int have = key_set != NULL && key_set->type == JSON_BOOL && key_set->u.boolean;
+
+	if (!have) {
+		printf("no release key installed -- ISOs built here will be unsigned\n");
+		return;
+	}
+	printf("release key   installed\n");
+	if (key_id != NULL)
+		printf("key id        %s\n", key_id);
+	if (pub != NULL)
+		printf("\npublic key (publish this -- verifiers need it):\n%s", pub);
+}
+
+static int cmd_release_key_show(const struct cix_client *c, int json_mode)
+{
+	struct cix_response r;
+
+	if (cix_client_request(c, CIX_API_getSystemReleaseKey_METHOD, CIX_API_getSystemReleaseKey,
+	                       NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_release_key);
+}
+
+static int cmd_release_key_set(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	const char *key_path = NULL;
+	char *key_buf = NULL;
+	size_t key_len = 0;
+	struct json_writer w;
+	struct cix_response r;
+	int i;
+	int rc;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--key=", 6) == 0)
+			key_path = argv[i] + 6;
+		else {
+			fprintf(stderr, "cixctl: unknown release-key set option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (key_path == NULL) {
+		fprintf(stderr, "cixctl: release-key set needs --key=PATH\n");
+		return 2;
+	}
+	if (read_local_file(key_path, &key_buf, &key_len) != 0)
+		return 1;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "key");
+	jw_str(&w, key_buf);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+	free(key_buf);
+
+	if (cix_client_request(c, CIX_API_putSystemReleaseKey_METHOD, CIX_API_putSystemReleaseKey,
+	                       w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+	rc = emit(&r, json_mode, fmt_release_key);
+	return rc;
+}
+
+static int cmd_release_key_clear(const struct cix_client *c, int json_mode)
+{
+	struct cix_response r;
+
+	if (cix_client_request(c, CIX_API_deleteSystemReleaseKey_METHOD,
+	                       CIX_API_deleteSystemReleaseKey, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_release_key);
+}
+
+static int cmd_release_key(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1)
+		return cmd_release_key_show(c, json_mode);
+
+	sub = argv[0];
+	if (strcmp(sub, "show") == 0)
+		return cmd_release_key_show(c, json_mode);
+	if (strcmp(sub, "set") == 0)
+		return cmd_release_key_set(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "clear") == 0)
+		return cmd_release_key_clear(c, json_mode);
+
+	fprintf(stderr,
+	        "usage: cixctl release-key [show]\n"
+	        "       cixctl release-key set --key=PATH\n"
+	        "       cixctl release-key clear\n");
+	return 2;
+}
 
 /*
  * Percent-encodes a query-string value (this CLI's first one -- see
@@ -13696,6 +13820,8 @@ static int dispatch_command(const struct cix_client *client, int json_mode, cons
 		return cmd_ping(client, json_mode, argc, argv);
 	if (strcmp(cmd, "resolv") == 0)
 		return cmd_resolv(client, json_mode, argc, argv);
+	if (strcmp(cmd, "release-key") == 0)
+		return cmd_release_key(client, json_mode, argc, argv);
 	if (strcmp(cmd, "signing-keys") == 0)
 		return cmd_signing_keys(client, json_mode, argc, argv);
 	if (strcmp(cmd, "sysctl") == 0)

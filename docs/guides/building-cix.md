@@ -94,6 +94,18 @@ cixctl signing-keys            # confirm: subject, expiry, fingerprint
 
 This guide used to say the pair was "staged out of band", which is what ADR-0064 specified — but a real Cix host runs no sshd and has no console, so there was no out-of-band channel and this step could not actually be performed. [ADR-0212](../adr/0212-signing-keys-over-rest.md) makes it a REST operation; `cixctl` sends the file contents, so the private key never appears in shell history or the host's process list. `cixd` still never generates or fetches this key on its own, and only the public DER `.cer` is ever staged onto an installed target — put it on the one host that cuts media, not on every box. Then:
 
+Optionally, install a **release-signing key** as well ([ADR-0220](../adr/0220-a-separate-release-signing-key.md)) so the finished ISO is signed:
+
+```
+openssl genpkey -algorithm ed25519 -out cix-release.key   # once, kept offline
+cixctl release-key set --key=cix-release.key
+cixctl release-key                                        # prints the public key -- publish this
+```
+
+This is a **second, separate** key, not the pair above in another encoding. That one is RSA because UEFI requires it and it decides whether firmware will boot an image; this one is Ed25519 because minisign requires it and it tells a downloader the bytes really came from you. One key doing both jobs would mean whoever can sign a download can also sign a bootloader.
+
+Skipping this step is fine — the build still succeeds and simply produces no signature. Whoever downloads a signed ISO verifies it with stock `minisign -Vm cix-install.iso -p cix-release.pub`, no Cix software needed on their side.
+
 ```
 cixctl iso build --disk=/dev/CHANGEME --wait
 cixctl iso status

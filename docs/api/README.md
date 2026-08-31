@@ -51,6 +51,9 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/system/signing-keys` | Whether this host holds a Secure Boot signing key pair, and which identity |
 | PUT | `/system/signing-keys` | Install an operator-supplied signing key pair (two PEM blocks) |
 | DELETE | `/system/signing-keys` | Remove this host's signing key pair |
+| GET | `/system/release-key` | Whether this host holds an Ed25519 release-signing key, and its publishable public half |
+| PUT | `/system/release-key` | Install the operator's Ed25519 release key (one PEM block) |
+| DELETE | `/system/release-key` | Remove this host's release key |
 | GET | `/system/routes` | The box's own real kernel IPv4 routing table |
 | POST | `/system/routes` | Add a real kernel route (gone on next reboot unless something else re-applies it) |
 | DELETE | `/system/routes` | Remove a real kernel route |
@@ -2299,7 +2302,7 @@ POST /v1/system/iso
 {"disk": "/dev/sda", "ip": "10.0.0.5", "prefix": "24", "gateway": "10.0.0.1", "interface": "eth0"}
 ```
 
-Every field is optional — an empty body reproduces the tool's original default, a generic ISO with its kernel arguments left as the `CHANGEME` placeholder an operator edits at the GRUB boot menu. `202`, polled via `GET /system/iso` (`state`: `none`/`building`/`ready`/`failed`, `iso_path` once ready). Reuses whatever the most recent `cix`/`kernel`/`isotools` hostbuild rounds already harvested — it does not trigger any of them itself, and fails fast (`400`) naming exactly which one is missing rather than a background failure the caller has to poll for to discover. Requires a real Secure Boot signing key pair at `<data-dir>/keys/cix-signing.{key,crt,cer}`, installed via `PUT /system/signing-keys` (ADR-0212 — see below; it was an out-of-band-only precondition until then, which no real Cix host had any way to satisfy) — deliberately never generated, fetched, or copied there by `cixd` itself (see ADR-0064: a release-signing private key must never propagate onto every deployed box, only whichever specific instance is actually cutting installer media). `cixctl iso build [--disk=... --ip=... --prefix=... --gateway=... --interface=...] [--wait]` / `cixctl iso status` is the CLI surface.
+Every field is optional — an empty body reproduces the tool's original default, a generic ISO with its kernel arguments left as the `CHANGEME` placeholder an operator edits at the GRUB boot menu. `202`, polled via `GET /system/iso` (`state`: `none`/`building`/`ready`/`failed`, `iso_path` once ready). Reuses whatever the most recent `cix`/`kernel`/`isotools` hostbuild rounds already harvested — it does not trigger any of them itself, and fails fast (`400`) naming exactly which one is missing rather than a background failure the caller has to poll for to discover. Requires a real Secure Boot signing key pair at `<data-dir>/keys/cix-signing.{key,crt,cer}`, installed via `PUT /system/signing-keys` (ADR-0212 — see below; it was an out-of-band-only precondition until then, which no real Cix host had any way to satisfy) — deliberately never generated, fetched, or copied there by `cixd` itself (see ADR-0064: a release-signing private key must never propagate onto every deployed box, only whichever specific instance is actually cutting installer media). `cixctl iso build [--disk=... --ip=... --prefix=... --gateway=... --interface=...] [--wait]` / `cixctl iso status` is the CLI surface. When a release key is installed (`PUT /system/release-key`, ADR-0220) the finished ISO is also minisign-signed and `signature_path` names the `.minisig` beside it; without one the build still succeeds and that field stays `null`.
 
 ## Approving a published recipe's artifact
 
@@ -2335,6 +2338,35 @@ ADR-0064's security property is unchanged: `cixd` still never generates, fetches
 One caveat worth stating plainly: on a host with `https_enabled: false` and no authentication configured, the pasted key crosses the management network in clear text and anyone on that network can replace it. Enable HTTPS and host auth before treating a host that holds signing material as production.
 
 `cixctl signing-keys [show]` / `cixctl signing-keys set --key=PATH --cert=PATH` / `cixctl signing-keys clear` is the CLI surface — it takes **paths**, not the PEM text, so a private key never lands in shell history or this host's process list. The dashboard's Host → Signing Keys tab is the paste box.
+
+## The release-signing key (ADR-0220)
+
+```
+GET /v1/system/release-key
+PUT /v1/system/release-key
+{"key": "-----BEGIN PRIVATE KEY-----\n..."}
+DELETE /v1/system/release-key
+```
+
+A **second, separate** key, and the separation is the design rather than an accident of implementation. The pair above is RSA because UEFI mandates RSA, and it answers *may this firmware boot this image?* This one is Ed25519 because minisign mandates Ed25519, and it answers *did Cix publish these bytes?* They are not two encodings of one secret. Sharing a key between those questions would mean whoever can sign a download can also sign a bootloader — and the blast radii are nothing alike: recovering from a leaked release key is republishing a public key, recovering from a leaked Secure Boot key is re-enrolling firmware on every host in the fleet.
+
+This is also why issue #197 could not be built as it was written. It asked for the existing platform key *and* Ed25519 signatures; those are mutually exclusive, and the mismatch would not have surfaced until the first signing call on a real release.
+
+`POST /system/iso` signs its finished ISO with this key when one is installed, writing `cix-install.iso.minisig` beside it and reporting it as `signature_path`. **A missing key does not fail the build** — an unsigned ISO still installs, and most hosts able to build one are not the designated release host and should hold no signing material at all. The absence is reported honestly (`signature_path` stays `null`) rather than being inferred from a successful build. A signing failure *with* a key present is a different thing and is logged as an error: the key is there and did not work, which an operator needs to know before shipping the result as signed.
+
+The signature is plain [minisign](https://jedisct1.github.io/minisign/) in legacy `Ed` mode — Ed25519 over the ISO's own bytes, not over a hash of them, because OpenSSL's Ed25519 is PureEdDSA and signs the message directly, so `cixd` needs no BLAKE2b of its own. Stock minisign verifies both modes. Anyone who downloads a Cix ISO checks it with:
+
+```
+minisign -Vm cix-install.iso -p cix-release.pub
+```
+
+with no Cix software involved on their side, which is the point: the last check between a substituted ISO and a machine should not be code from the project that produced the ISO. Cix's own test for this uses stock minisign as its oracle, never a verifier written here.
+
+Two format details are load-bearing. The **key id** is the first 8 bytes of `SHA-256(public key)` rather than minisign's random one — the daemon holds a bare PEM key with nowhere to keep a random id, and deriving it means the public key file and every signature agree by construction, with no stored id to drift. The **global signature** covers `signature ‖ trusted comment`, not just the file; omitting it is the usual mistake in hand-rolled minisign writers, and upstream rejects the result. That second signature is what makes the trusted comment a real claim about the artifact — it names the build that produced the ISO, so a verifier learns *which release* these bytes are, not merely that Cix signed something.
+
+**The private key goes in and never comes back**, the same rule the pair above follows. The public key is the deliberate exception: `GET` returns it in minisign's own public-key-file format, verbatim and publishable, because a signature nobody can check is not a signature. `PUT` validates by deriving the public half before writing anything, so an **RSA key is refused here** — the realistic mistake, given the Secure Boot key sitting right beside it — rather than at signing time on a real release. `DELETE` is for a host being decommissioned; signatures it already published stay verifiable, since they are checked against the published public key and not against anything still held on the box.
+
+Generate one with `openssl genpkey -algorithm ed25519`. `cixctl release-key [show]` / `cixctl release-key set --key=PATH` / `cixctl release-key clear` is the CLI surface, taking a **path** rather than PEM text for the same reason as `signing-keys`. The dashboard's Host → Signing Keys tab carries the paste box, below the Secure Boot pair. The same clear-text caveat above applies: enable HTTPS and host auth before a host holds this key.
 
 ## Liveness vs. boot identity (ADR-0077)
 

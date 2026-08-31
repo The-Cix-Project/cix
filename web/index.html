@@ -1093,6 +1093,42 @@
 					<button type="submit">Install key pair</button>
 					<button type="button" id="signing-keys-clear" class="button-danger">Remove from this host</button>
 				</form>
+
+				<h2>Release Signing Key</h2>
+				<p class="hint">
+					A <strong>separate</strong> key, and deliberately so (ADR-0220). The pair
+					above is RSA because UEFI mandates RSA, and answers &ldquo;may this firmware
+					boot this image?&rdquo; This one is Ed25519 because
+					<code>minisign</code> mandates Ed25519, and answers &ldquo;did Cix publish
+					these bytes?&rdquo; One key for both would mean whoever can sign a download
+					can also sign a bootloader &mdash; and the two have very different blast
+					radii: republishing a public key, versus re-enrolling firmware on every host.
+				</p>
+				<p class="hint">
+					Installer ISOs built here are signed with it. Anyone who downloads one
+					verifies with stock <code>minisign</code> against the public key below
+					&mdash; no Cix software required on their side, which is the point: the last
+					check between a substituted ISO and a machine should not be code from the
+					project that produced the ISO.
+				</p>
+				<div id="release-key-summary" class="pki-ca-status"><p>Loading&hellip;</p></div>
+				<h3>Install a release key</h3>
+				<p class="hint">
+					Generate one with
+					<code>openssl genpkey -algorithm ed25519</code> and paste it here. The key is
+					validated by deriving its public half before anything is written, so an RSA
+					key &mdash; the realistic mistake, given the pair sitting right above &mdash;
+					is refused now rather than at signing time on a real release.
+				</p>
+				<form id="release-key-form">
+					<label class="wide">
+						Ed25519 private key (PEM)
+						<textarea id="release-key-pem" rows="5" spellcheck="false"
+							placeholder="-----BEGIN PRIVATE KEY-----"></textarea>
+					</label>
+					<button type="submit">Install release key</button>
+					<button type="button" id="release-key-clear" class="button-danger">Remove from this host</button>
+				</form>
 			</div>
 			</div>
 			<div class="tab-panel" data-tab="esp" hidden>

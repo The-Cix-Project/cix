@@ -343,6 +343,11 @@ document.getElementById("signing-keys-form").addEventListener("submit", (event) 
 	installSigningKeys();
 });
 document.getElementById("signing-keys-clear").addEventListener("click", clearSigningKeys);
+document.getElementById("release-key-form").addEventListener("submit", (event) => {
+	event.preventDefault();
+	installReleaseKey();
+});
+document.getElementById("release-key-clear").addEventListener("click", clearReleaseKey);
 document.getElementById("images-gc-preview").addEventListener("click", () => runImageGc(true));
 document.getElementById("images-gc").addEventListener("click", () => runImageGc(false));
 document.getElementById("modal-close").addEventListener("click", closeModal);
@@ -1387,8 +1392,10 @@ function renderCurrentView() {
 			refreshBootConsole();
 		else if (route.category === "esp")
 			refreshEsp();
-		else if (route.category === "signing-keys")
+		else if (route.category === "signing-keys") {
 			refreshSigningKeys();
+			refreshReleaseKey();
+		}
 		else if (route.category === "kernel-policy")
 			refreshKernelPolicy();
 		else if (route.category === "logs")
@@ -6968,6 +6975,85 @@ async function clearSigningKeys() {
 		clearStatus();
 		showStatus("Signing key pair removed from this host.", false);
 		await refreshSigningKeys();
+	} catch (e) {
+		clearStatus();
+		showStatus(e.message, true);
+	}
+}
+
+/*
+ * The release key (ADR-0220). Same no-key-material-leaves rule as the
+ * pair above, with one deliberate difference: the PUBLIC key is shown
+ * in full and is meant to be copied out. Publishing it is what makes
+ * every signature this host produces verifiable by someone who runs no
+ * Cix software at all.
+ */
+async function refreshReleaseKey() {
+	const box = document.getElementById("release-key-summary");
+
+	if (box === null)
+		return;
+	try {
+		const data = await apiRequest("GET", CIX_API.getSystemReleaseKey());
+
+		box.textContent = "";
+		if (!data.key_set) {
+			const p = document.createElement("p");
+
+			p.textContent = "No release key installed -- ISOs built here will be unsigned.";
+			box.appendChild(p);
+			return;
+		}
+		const head = document.createElement("p");
+
+		head.textContent = "Release key: installed" +
+		    (data.key_id ? " (key id " + data.key_id + ")" : "");
+		box.appendChild(head);
+		if (data.public_key) {
+			const label = document.createElement("p");
+			const pre = document.createElement("pre");
+
+			label.textContent = "Public key -- publish this; verifiers need it:";
+			box.appendChild(label);
+			pre.textContent = data.public_key;
+			box.appendChild(pre);
+		}
+	} catch (e) {
+		box.textContent = "";
+		const p = document.createElement("p");
+
+		p.textContent = "Could not read release-key state.";
+		box.appendChild(p);
+	}
+}
+
+async function installReleaseKey() {
+	const key = document.getElementById("release-key-pem").value.trim();
+
+	if (key === "") {
+		clearStatus();
+		showStatus("Paste an Ed25519 private key.", true);
+		return;
+	}
+	try {
+		await apiRequest("PUT", CIX_API.putSystemReleaseKey(), { key: key });
+		clearStatus();
+		showStatus("Release key installed.", false);
+		/* Cleared on success only -- same reasoning as the pair above. */
+		document.getElementById("release-key-pem").value = "";
+		await refreshReleaseKey();
+	} catch (e) {
+		clearStatus();
+		showStatus(e.message, true);
+	}
+}
+
+async function clearReleaseKey() {
+	try {
+		await apiRequest("DELETE", CIX_API.deleteSystemReleaseKey());
+		clearStatus();
+		showStatus("Release key removed from this host.", false);
+		await refreshReleaseKey();
 	} catch (e) {
 		clearStatus();
 		showStatus(e.message, true);
