@@ -36,7 +36,7 @@
 # the exact cargo/msgfmt failures these disable in the first place.
 #
 pkg_name="git"
-pkg_version="2.55.0-6"
+pkg_version="2.55.0-7"
 pkg_source="https://www.kernel.org/pub/software/scm/git/git-2.55.0.tar.xz"
 pkg_sha256="457fdb04dc8728e007d4688695e6912e6f680727920f2a40bf11eacc17505357"
 pkg_depends=""
@@ -46,8 +46,8 @@ pkg_depends=""
 # and the libraries it already declares. See
 # docs/guides/writing-recipes.md.
 #
-pkg_build_depends="tcc make linux-headers bash coreutils sed grep gawk binutils findutils diffutils pkgconf zlib perl"
-pkg_changelog="2.55.0-6: declares perl -- git's install step builds its Perl modules and died with exit 127 without it, after the build itself had fully succeeded. 2.55.0-5: empties FUZZ_OBJS at source -- a command-line FUZZ_PROGRAMS= did not survive config.mak.autogen. Also drops a duplicated pkg_build_depends. 2.55.0-4: excludes the oss-fuzz harnesses, which link with an option TCC does not implement and which this package does not install. 2.55.0-3: -D__STDC_NO_VLA__=1 for glibc regex.h, whose regexec() prototype TCC cannot parse. 2.55.0-2: declares its build tools so it can be rebuilt through the ordinary install path (#206)"
+pkg_build_depends="tcc make linux-headers bash coreutils sed grep gawk binutils findutils diffutils pkgconf zlib perl tar"
+pkg_changelog="2.55.0-7: declares tar. configure found none, set TAR empty, and the install step's 'tar cf - | tar xof -' degraded into 'cf -' and 'xof -' -- reported as 'cf: command not found', which names neither tar nor the real problem. 2.55.0-6: declares perl -- git's install step builds its Perl modules and died with exit 127 without it, after the build itself had fully succeeded. 2.55.0-5: empties FUZZ_OBJS at source -- a command-line FUZZ_PROGRAMS= did not survive config.mak.autogen. Also drops a duplicated pkg_build_depends. 2.55.0-4: excludes the oss-fuzz harnesses, which link with an option TCC does not implement and which this package does not install. 2.55.0-3: -D__STDC_NO_VLA__=1 for glibc regex.h, whose regexec() prototype TCC cannot parse. 2.55.0-2: declares its build tools so it can be rebuilt through the ordinary install path (#206)"
 #
 # Build tools derived rather than guessed: the baseline the declaring
 # recipes converge on, plus what this recipe's own pkg_build() invokes
