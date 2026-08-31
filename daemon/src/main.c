@@ -17945,12 +17945,35 @@ static void respond_diskpart_error(int fd, enum diskpart_error err)
 		              "/usr/sbin/sfdisk, which this control-plane image does not carry. "
 		              "Update to an image built after this was fixed.");
 		break;
-	case DISKPART_ERR_SFDISK_FAILED:
+	case DISKPART_ERR_SFDISK_FAILED: {
+		/*
+		 * Report what the tool ACTUALLY said, not a guess at it.
+		 *
+		 * This used to offer a fixed list of things that might be
+		 * wrong ("may already have the layout, or not enough free
+		 * space"). Found the hard way while first appending to a live
+		 * OS disk: the real reason was on sfdisk's own stderr and went
+		 * nowhere, and the guess sent the reader looking at free space
+		 * that was demonstrably there. A guess presented as a
+		 * diagnosis is worse than none, because it is confidently
+		 * wrong about its own cause -- the same lesson #125/#132/#172
+		 * already record for other paths.
+		 */
+		const char *why = diskpart_last_tool_error();
+		char msg[640];
+
+		if (why != NULL && why[0] != '\0')
+			snprintf(msg, sizeof(msg), "sfdisk rejected the request: %s", why);
+		else
+			snprintf(msg, sizeof(msg),
+			         "sfdisk rejected the request and said nothing about why");
+		logstore_write("cixd", "error", "diskpart: %s", msg);
+		respond_error(fd, 500, "Internal Server Error", msg);
+		break;
+	}
 	default:
 		respond_error(fd, 500, "Internal Server Error",
-		              "sfdisk ran and rejected the request -- the disk may already have the "
-		              "partition table or layout being asked for, or there is not enough free "
-		              "space left on it for the requested size");
+		              "the partitioning tool could not be run");
 		break;
 	}
 }

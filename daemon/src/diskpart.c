@@ -45,31 +45,95 @@ static int sfdisk_status_to_rc(int status)
  * shared across the daemon/image build boundary, this project's own
  * established convention for small process helpers with no other
  * coupling (see disk.c's own read_sysfs_attr() comment). */
+/*
+ * sfdisk's own last words, kept for the caller to report.
+ *
+ * Found the hard way: appending a partition to a live OS disk was
+ * refused, and the only thing reaching an operator was the daemon's
+ * own generic guess ("the disk may already have the partition table or
+ * layout being asked for, or there is not enough free space"). sfdisk
+ * had said something specific on stderr and it went nowhere -- the
+ * same class as #125/#132/#172, where a real failure's only
+ * explanation is unreadable. A guess presented as a diagnosis is worse
+ * than no diagnosis, because it sends the reader somewhere wrong.
+ */
+static char g_sfdisk_last_error[512];
+
+const char *diskpart_last_tool_error(void)
+{
+	return g_sfdisk_last_error;
+}
+
+/* Drains what the child wrote, bounded, and trims it to one line's
+ * worth of the most useful part -- sfdisk is chatty on success and
+ * terse on failure, so the tail is what matters. */
+static void capture_tool_stderr(int fd)
+{
+	char buf[sizeof(g_sfdisk_last_error)];
+	size_t total = 0;
+	ssize_t n;
+
+	g_sfdisk_last_error[0] = '\0';
+	while (total < sizeof(buf) - 1) {
+		n = read(fd, buf + total, sizeof(buf) - 1 - total);
+		if (n <= 0)
+			break;
+		total += (size_t)n;
+	}
+	buf[total] = '\0';
+	/* Collapse newlines so the whole thing survives a single-line
+	 * error field and a single log entry. */
+	{
+		size_t i;
+
+		for (i = 0; i < total; i++) {
+			if (buf[i] == '\n' || buf[i] == '\r')
+				buf[i] = ' ';
+		}
+	}
+	snprintf(g_sfdisk_last_error, sizeof(g_sfdisk_last_error), "%s", buf);
+}
+
 static int run_sfdisk_stdin(char *const argv[], const char *script)
 {
 	int pipefd[2];
+	int errpipe[2];
 	pid_t pid;
 	int status;
 	size_t len = strlen(script);
 	size_t written = 0;
 	ssize_t n;
 
+	g_sfdisk_last_error[0] = '\0';
 	if (pipe2(pipefd, O_CLOEXEC) != 0)
 		return -1;
+	if (pipe2(errpipe, O_CLOEXEC) != 0) {
+		close(pipefd[0]);
+		close(pipefd[1]);
+		return -1;
+	}
 	pid = fork();
 	if (pid < 0) {
 		close(pipefd[0]);
 		close(pipefd[1]);
+		close(errpipe[0]);
+		close(errpipe[1]);
 		return -1;
 	}
 	if (pid == 0) {
 		dup2(pipefd[0], STDIN_FILENO);
+		/* Both streams: sfdisk puts some of its complaint on stdout. */
+		dup2(errpipe[1], STDOUT_FILENO);
+		dup2(errpipe[1], STDERR_FILENO);
 		close(pipefd[0]);
 		close(pipefd[1]);
+		close(errpipe[0]);
+		close(errpipe[1]);
 		execve(DISKPART_SFDISK_BIN, argv, environ);
 		_exit(127);
 	}
 	close(pipefd[0]);
+	close(errpipe[1]);
 	while (written < len) {
 		n = write(pipefd[1], script + written, len - written);
 		if (n < 0) {
@@ -80,6 +144,10 @@ static int run_sfdisk_stdin(char *const argv[], const char *script)
 		written += (size_t)n;
 	}
 	close(pipefd[1]);
+	/* Drained BEFORE waitpid: sfdisk can fill the pipe and block on
+	 * write while we wait for it to exit, which would deadlock. */
+	capture_tool_stderr(errpipe[0]);
+	close(errpipe[0]);
 	if (waitpid(pid, &status, 0) != pid)
 		return -1;
 	return sfdisk_status_to_rc(status);
