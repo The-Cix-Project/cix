@@ -8645,6 +8645,27 @@ async function refreshPkgList() {
 		renderPackagesView(parseHash().name);
 }
 
+/*
+ * Issue #213: stop an in-flight build.
+ *
+ * Offered only while a build is actually running, because the endpoint
+ * refuses anything else -- a button that exists to return 409 teaches
+ * people to ignore buttons. The judgement it supports is the operator's:
+ * a build silent for an hour is either a long link or something waiting
+ * on stdin, and the package row shows how long it has been quiet.
+ */
+async function cancelPkgBuild(name, image) {
+	const key = image && image !== "base" ? name + "@" + image : name;
+
+	try {
+		await apiRequest("POST", CIX_API.pkgCancel(), { name: name, image: image });
+		clearStatus();
+		await refreshPkgList();
+	} catch (e) {
+		showStatus("Failed to cancel the build of " + key + ": " + e.message, true);
+	}
+}
+
 async function removePkg(name, image) {
 	const key = image && image !== "base" ? name + "@" + image : name;
 

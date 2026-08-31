@@ -21116,6 +21116,16 @@ static void respond_pkg_error(int fd, enum pkg_error err)
 	case PKG_ERR_FULL:
 		respond_error(fd, 500, "Internal Server Error", "package table full");
 		break;
+	case PKG_ERR_NOT_BUILDING:
+		/*
+		 * Issue #213: the entry exists and has no build in flight.
+		 * 409 rather than 404 -- the package is plainly there, and
+		 * saying "no such package" would send the caller looking for
+		 * the wrong problem.
+		 */
+		respond_error(fd, 409, "Conflict",
+		              "no build is in flight for that package and image");
+		break;
 	case PKG_ERR_INVALID_TOOLCHAIN:
 		respond_error(fd, 400, "Bad Request", "toolchain_path missing, unreadable, or not a regular file");
 		break;
@@ -24008,6 +24018,115 @@ static enum registry_error spawn_pkgbuild_container(int chain_idx, const char *w
 	return REGISTRY_OK;
 }
 
+/*
+ * POST /v1/pkg/cancel -- issue #213.
+ *
+ * pkg_cancel() marks the entry and hands back the build container's
+ * name; killing it belongs here, because main.c alone owns every
+ * registry_* call (pkg.c has never linked registry.h). Same hand-back
+ * shape handle_pkg_resume() below already uses.
+ *
+ * The kill is what produces the outcome: the container's death runs
+ * pkg_build_completed() exactly as any other build death, which sees
+ * the cancel flag and records failure_kind "cancelled" through the one
+ * pkg_fail() path. Nothing here writes the failure, so there is no race
+ * over which description survives.
+ */
+static void handle_pkg_cancel(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const char *name_ptr;
+	const char *image_ptr;
+	enum pkg_error perr;
+	char name[PKG_NAME_MAX];
+	char image[PKG_IMAGE_NAME_MAX];
+	char build_container_name[PKG_NAME_MAX];
+	struct json_writer w;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	name_ptr = json_as_string(json_object_get(root, "name"));
+	if (name_ptr == NULL) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "name missing");
+		return;
+	}
+	snprintf(name, sizeof(name), "%s", name_ptr);
+	image_ptr = json_as_string(json_object_get(root, "image"));
+	image[0] = '\0';
+	if (image_ptr != NULL)
+		snprintf(image, sizeof(image), "%s", image_ptr);
+	json_free(root);
+
+	perr = pkg_cancel(name, image[0] != '\0' ? image : NULL,
+	                  build_container_name, sizeof(build_container_name));
+	if (perr != PKG_OK) {
+		respond_pkg_error(fd, perr);
+		return;
+	}
+
+	/*
+	 * Empty when the entry was still FETCHING: the fetch is a host-side
+	 * subprocess, not a container, so there is nothing to remove. The
+	 * flag is set either way and the next completion path reports it.
+	 */
+	if (build_container_name[0] != '\0') {
+		struct registry_entry *re = registry_find(build_container_name);
+		pid_t pkg_pid;
+		int pkg_pidfd;
+		int pkg_chain_idx;
+		int kept_ignored;
+		char hostbuild_done_name[PKG_NAME_MAX];
+
+		registry_remove(build_container_name);
+
+		/*
+		 * registry_remove() kills and reaps the container directly, so
+		 * the exit NEVER reaches handle_container_event()'s epoll-driven
+		 * path -- and that is the only place pkg_build_completed()
+		 * normally gets called. Without driving it here the container
+		 * really does die, and the entry sits in "building" forever
+		 * with its chain slot still held: a cancel that reports success
+		 * and stops nothing observable.
+		 *
+		 * handle_stop() found and documented exactly this for a manual
+		 * stop of a __pkgbuild container; this is the same case arriving
+		 * through a different verb, so it uses the same remedy rather
+		 * than a second one. exit_status is read AFTER removal on
+		 * purpose: registry_remove()'s own registry_mark_exited() sets
+		 * it, and the slot is flagged not-in-use rather than freed.
+		 *
+		 * keep_on_failure is deliberately ignored, as it is there: that
+		 * flag is about an unprompted build failure, never a
+		 * deliberately-killed one.
+		 */
+		if (re != NULL) {
+			if (pkg_build_completed(build_container_name, re->exit_status, &pkg_pid,
+			                        &pkg_pidfd, &pkg_chain_idx, hostbuild_done_name,
+			                        &kept_ignored))
+				register_pkg_fetch_pidfd(pkg_pid, pkg_pidfd, pkg_chain_idx);
+			else
+				try_start_queued_pkg_rebuild();
+			artifact_push_pump(); /* issue #129 -- see the other call sites */
+		}
+	}
+
+	jw_init(&w);
+	if (pkg_get_one(name, image, &w) != PKG_OK) {
+		/* shouldn't happen -- pkg_cancel() just resolved this exact
+		 * entry above. */
+		jw_free(&w);
+		respond_error(fd, 500, "Internal Server Error",
+		              "cancelled but could not be read back");
+		return;
+	}
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
 static void handle_pkg_resume(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root;
@@ -25411,6 +25530,12 @@ static void op_listBuildLogs(const struct api_ctx *ctx)
 static void op_pkgInstall(const struct api_ctx *ctx)
 {
 	handle_pkg_install(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* POST /v1/pkg/cancel */
+static void op_pkgCancel(const struct api_ctx *ctx)
+{
+	handle_pkg_cancel(ctx->fd, ctx->req->body, ctx->req->body_len);
 }
 
 /* POST /v1/pkg/update-all */

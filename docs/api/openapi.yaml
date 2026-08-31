@@ -8270,6 +8270,64 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /pkg/cancel:
+    post:
+      summary: >
+        Cancels an in-flight package build. A build that will never finish -- one whose
+        own configure script is waiting on stdin, say -- otherwise holds its slot until
+        the daemon restarts, because nothing else can stop it.
+
+        Deliberately operator-initiated rather than an automatic timeout on silence.
+        "No output for N minutes" does not mean "hung": gcc's bootstrap goes quiet for
+        long stretches and a large link produces nothing for minutes. A threshold tight
+        enough to catch a real hang eventually kills a legitimate build, mid-way through,
+        on nobody's schedule. The asymmetry decides it -- failing to kill a hung build
+        costs a slot, killing a live one costs the whole build. GET /pkg reports
+        last_output_seconds_ago so a person can tell the two apart; this is the verb that
+        acts on that judgement.
+
+        The cancelled build is recorded with failure_kind "cancelled", which is not
+        "build": a build stopped by an operator did not fail on its own merits, and a
+        reader who cannot tell the difference is being misled. An upgrade that is
+        cancelled leaves the package installed at the version it already had, exactly as
+        any other failed upgrade does.
+      operationId: pkgCancel
+      x-cix-expose: [cli, web]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PkgCancelRequest"
+      responses:
+        "200":
+          description: The build was cancelled; the entry is now failed with kind "cancelled"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PkgEntry"
+        "400":
+          description: name missing
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No such package entry for that name and image
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >
+            That entry has no build in flight -- it is installed, or already failed.
+            Refused rather than half-acted on, so a cancel that arrives after the build
+            has finished cannot mark a completed install as cancelled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /pkg/update-all:
     post:
       summary: >
@@ -14497,6 +14555,19 @@ components:
           type: integer
           description: Unix seconds the block lifts at, or 0 if not currently blocked.
 
+    PkgCancelRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          description: The package whose in-flight build should be stopped.
+        image:
+          type: string
+          description: >
+            Which image's build to cancel. Defaults to "base". A package can be building
+            into more than one image at once, and those are separate builds -- so this
+            names one of them rather than cancelling whatever is found first.
     PkgInstallRequest:
       type: object
       required: [name]
