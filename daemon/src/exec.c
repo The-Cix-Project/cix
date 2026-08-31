@@ -191,10 +191,31 @@ int exec_into_container(pid_t target_pid, char *const cmd_argv[],
 				close(slave_fd);
 			chdir("/");
 			execve(cmd_argv[0], cmd_argv, environ);
-			/* Diagnostic goes nowhere useful here -- stdio was just
-			 * redirected onto the pty slave, so this reaches the
-			 * console's own client, which is the right audience for
-			 * "the command you asked for doesn't exist in here." */
+			/*
+			 * Issue #108: report the failure back to the daemon, not
+			 * just to the pty.
+			 *
+			 * This used to _exit(127) and nothing else, on the stated
+			 * reasoning that stdio now points at the pty slave so the
+			 * console's own client is the right audience. It is not
+			 * reachable in practice: the daemon has not sent its 101
+			 * yet, so there IS no client attached to read it, and
+			 * anything written here lands in a pty nobody is holding.
+			 * The observable result was a console that accepted the
+			 * upgrade and then produced nothing at all, forever --
+			 * indistinguishable from a working session with nothing
+			 * to say.
+			 *
+			 * pipefd is O_CLOEXEC, so a SUCCESSFUL execve closes it
+			 * and the daemon's read below sees a clean EOF. Only a
+			 * failure ever puts bytes here, which is what makes the
+			 * absence of bytes a trustworthy success signal.
+			 */
+			{
+				int exec_errno = errno;
+
+				(void)!write(pipefd[1], &exec_errno, sizeof(exec_errno));
+			}
 			_exit(127);
 		}
 
@@ -226,13 +247,41 @@ int exec_into_container(pid_t target_pid, char *const cmd_argv[],
 		ssize_t n;
 
 		n = read(pipefd[0], &grandchild_pid, sizeof(grandchild_pid));
-		close(pipefd[0]);
 		waitpid(intermediate, NULL, 0);
 
 		if (n != (ssize_t)sizeof(grandchild_pid) || grandchild_pid <= 0) {
+			close(pipefd[0]);
 			close(master_fd);
 			errno = ECHILD;
 			return -1;
+		}
+
+		/*
+		 * Issue #108: a second read, and it is the whole point of this
+		 * change. The pid above is written BEFORE the grandchild has
+		 * tried to execve() anything, so a valid pid proved only that
+		 * fork() worked -- this function returned success for a
+		 * command that does not exist in the container, the caller
+		 * sent its 101, and the client then waited forever on a pty
+		 * whose process was already dead. Really hit on a container
+		 * whose image has no shell at all.
+		 *
+		 * The write end is O_CLOEXEC in the grandchild, so a
+		 * successful execve() closes it and this read sees EOF
+		 * immediately once the intermediate has exited. It therefore
+		 * cannot block waiting on a healthy long-lived session.
+		 */
+		{
+			int exec_errno = 0;
+			ssize_t en = read(pipefd[0], &exec_errno, sizeof(exec_errno));
+
+			close(pipefd[0]);
+			if (en == (ssize_t)sizeof(exec_errno) && exec_errno != 0) {
+				waitpid(grandchild_pid, NULL, 0);
+				close(master_fd);
+				errno = exec_errno;
+				return -1;
+			}
 		}
 
 		*out_pty_master_fd = master_fd;
