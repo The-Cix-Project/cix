@@ -22,6 +22,7 @@
  */
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdlib.h>
 #include <string.h>
 
 static int failures;
@@ -87,11 +88,193 @@ static void scan(const char *path, const char *channel, const char *how)
 		failures++;
 }
 
+/*
+ * ADR-0218 layer 2: the declaration check.
+ *
+ * `x-cix-expose` in the spec says which presentation channels must
+ * expose an operation. The API decides that -- in one place -- rather
+ * than each channel deciding for itself and drifting, which is the
+ * situation that produced 32 CLI-only and 5 web-only operations with
+ * nothing recording whether any of them was intended.
+ *
+ * Enforced BOTH ways, because each direction catches a different
+ * mistake:
+ *   declared but absent  -- the contract promises a capability through
+ *                           a channel that does not offer it
+ *   present but undeclared -- a channel grew a capability the contract
+ *                           never sanctioned
+ *
+ * This is only checkable at all because of layer 1. Enumerating which
+ * operations a channel implements used to mean reconstructing URLs
+ * from string concatenation, which gave three different answers in
+ * three attempts. Now every call site names its operation --
+ * CIX_API_getContainer / CIX_API.getContainer -- so this is an
+ * identifier scan, and identifiers are not built by concatenation.
+ *
+ * What it does NOT prove: that a person can reach the capability. A
+ * generated helper referenced from dead code passes this happily.
+ * That is layer 3, and the distinction is #192's lesson -- detecting
+ * is not preventing, and existing is not reachable.
+ */
+/*
+ * Whether `pattern` occurs as a WHOLE identifier, not merely as a
+ * substring. The distinction is load-bearing: CIX_API.getVolume occurs
+ * inside CIX_API.getVolumeBackups, getNetwork inside getNetworkPorts,
+ * getPkg inside getPkgRecipe. A plain strstr() therefore credits a
+ * channel with operations it never calls -- this check reported six
+ * such phantoms on its first run, every one of them a longer name
+ * swallowing a shorter one.
+ *
+ * Only the trailing edge needs testing: every caller passes a pattern
+ * that already begins with the CIX_API_ / CIX_API. prefix, so the
+ * leading edge is fixed by construction.
+ */
+static int mentions(const char *haystack, const char *pattern)
+{
+	size_t n = strlen(pattern);
+	const char *p = haystack;
+
+	while ((p = strstr(p, pattern)) != NULL) {
+		char after = p[n];
+
+		if (!((after >= 'A' && after <= 'Z') || (after >= 'a' && after <= 'z') ||
+		      (after >= '0' && after <= '9') || after == '_'))
+			return 1;
+		p += n;
+	}
+	return 0;
+}
+
+static char *slurp(const char *path)
+{
+	FILE *f = fopen(path, "rb");
+	char *buf;
+	long n;
+
+	if (f == NULL)
+		return NULL;
+	fseek(f, 0, SEEK_END);
+	n = ftell(f);
+	fseek(f, 0, SEEK_SET);
+	buf = malloc((size_t)n + 1);
+	if (buf == NULL) {
+		fclose(f);
+		return NULL;
+	}
+	if (fread(buf, 1, (size_t)n, f) != (size_t)n) {
+		free(buf);
+		fclose(f);
+		return NULL;
+	}
+	buf[n] = '\0';
+	fclose(f);
+	return buf;
+}
+
+static void check_declared_exposure(void)
+{
+	/* Both halves of the CLI, concatenated: an operation used by either
+	 * file is exposed by the channel. */
+	char *cli_main = slurp("cli/src/main.c");
+	char *cli_console = slurp("client/src/console.c");
+	char *cli = NULL;
+	char *web = slurp("web/app.js");
+	FILE *p;
+	char line[1024];
+	int checked = 0;
+
+	if (cli_main != NULL && cli_console != NULL) {
+		size_t n = strlen(cli_main) + strlen(cli_console) + 1;
+
+		cli = malloc(n);
+		if (cli != NULL) {
+			snprintf(cli, n, "%s%s", cli_main, cli_console);
+		}
+	}
+	free(cli_main);
+	free(cli_console);
+	if (cli == NULL || web == NULL) {
+		fprintf(stderr, "FAIL: cannot read a channel source\n");
+		failures++;
+		free(cli);
+		free(web);
+		return;
+	}
+	p = popen("./build/apigen docs/api/openapi.yaml --list", "r");
+	if (p == NULL) {
+		fprintf(stderr, "FAIL: cannot run apigen\n");
+		failures++;
+		free(cli);
+		free(web);
+		return;
+	}
+	while (fgets(line, sizeof(line), p) != NULL) {
+		char method[16], path[256], op_id[128], expose[64];
+		char want_cli[160], want_web[160];
+		int decl_cli, decl_web, has_cli, has_web;
+
+		if (sscanf(line, "%15s %255s %127s %63s", method, path, op_id, expose) != 4)
+			continue;
+		checked++;
+		decl_cli = mentions(expose, "cli");
+		decl_web = mentions(expose, "web");
+		snprintf(want_cli, sizeof(want_cli), "CIX_API_%s", op_id);
+		snprintf(want_web, sizeof(want_web), "CIX_API.%s", op_id);
+		has_cli = mentions(cli, want_cli);
+		has_web = mentions(web, want_web);
+
+		if (decl_cli && !has_cli) {
+			fprintf(stderr,
+			        "FAIL: %s is declared x-cix-expose [cli] but the CLI never calls it\n",
+			        op_id);
+			failures++;
+		}
+		if (!decl_cli && has_cli) {
+			fprintf(stderr,
+			        "FAIL: the CLI calls %s but the contract does not expose it to cli --\n"
+			        "      the API decides which channel offers a capability, not the channel\n",
+			        op_id);
+			failures++;
+		}
+		if (decl_web && !has_web) {
+			fprintf(stderr,
+			        "FAIL: %s is declared x-cix-expose [web] but the dashboard never calls it\n",
+			        op_id);
+			failures++;
+		}
+		if (!decl_web && has_web) {
+			fprintf(stderr,
+			        "FAIL: the dashboard calls %s but the contract does not expose it to web\n",
+			        op_id);
+			failures++;
+		}
+	}
+	pclose(p);
+	free(cli);
+	free(web);
+	if (checked == 0) {
+		fprintf(stderr, "FAIL: no operations checked -- apigen produced nothing, so a green "
+		                "result here would mean nothing\n");
+		failures++;
+	}
+}
+
 int main(void)
 {
+	/*
+	 * A channel is not one file. client/src/console.c builds the two
+	 * WebSocket paths (container console, pkg build-log) and was
+	 * missed by the first version of this check -- which is how an
+	 * operation can look "exposed by neither channel" while the CLI
+	 * has used it all along.
+	 */
 	scan("cli/src/main.c", "the CLI",
 	     "CIX_API_<operationId> constants from build/generated/cix_api.h");
+	scan("client/src/console.c", "the CLI's client library",
+	     "CIX_API_<operationId> constants from build/generated/cix_api.h");
 	scan("web/app.js", "the dashboard", "CIX_API.<operationId>() helpers from the generated web/api.js");
+
+	check_declared_exposure();
 
 	if (failures == 0)
 		printf("API SURFACES RESULT: PASS\n");

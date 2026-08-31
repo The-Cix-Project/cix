@@ -21,6 +21,7 @@ paths:
         every few seconds purely for a status dot. Build/slot/kernel
         identity (a lower-frequency check) is `GET /system/boot`.
       operationId: getHealth
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Daemon is up
@@ -53,6 +54,7 @@ paths:
         that presents it, matching that configuration's own documented
         "every write re-authenticates" contract.
       operationId: postLogin
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -105,6 +107,7 @@ paths:
         `POST /login` (a client that isn't authenticated has nothing
         meaningful to log out of, but the call still succeeds).
       operationId: postLogout
+      x-cix-expose: [cli, web]
       security:
         - bearerAuth: []
       responses:
@@ -131,6 +134,7 @@ paths:
         (`host.site.tld>` unauthenticated, `host.site.tld#`
         authenticated) is the first real caller.
       operationId: getWhoami
+      x-cix-expose: [cli]
       responses:
         "200":
           description: Always 200, whether authenticated or not -- see authenticated field
@@ -151,6 +155,7 @@ paths:
     get:
       summary: Current host-authentication configuration (ADR-0144)
       operationId: getHostauthConfig
+      x-cix-expose: [cli]
       responses:
         "200":
           description: Current config
@@ -173,6 +178,7 @@ paths:
         misconfiguring this endpoint, no separate break-glass
         credential exists or is needed.
       operationId: putHostauthConfig
+      x-cix-expose: [cli]
       security:
         - bearerAuth: []
       requestBody:
@@ -252,6 +258,7 @@ paths:
         and expires_in_seconds only, never the raw token (it is shown
         exactly once, in POST /login's own response, and never again).
       operationId: listHostauthSessions
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Active session list
@@ -278,6 +285,7 @@ paths:
         idempotent posture POST /logout already has for an unknown
         token).
       operationId: revokeHostauthSessions
+      x-cix-expose: [cli, web]
       parameters:
         - name: username
           in: path
@@ -306,6 +314,7 @@ paths:
         against the real running daemon instead of inferred. Split out
         of `GET /health` (ADR-0077) so the liveness poll stays cheap.
       operationId: getSystemBoot
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Build/slot/kernel identity
@@ -394,6 +403,7 @@ paths:
         it as "init exited" and panicking. A dev/interactive cixd
         (no --init-mode) just exits, same as it always has on SIGTERM.
       operationId: shutdownSystem
+      x-cix-expose: [cli, web]
       responses:
         "202":
           description: Shutdown accepted; the connection may drop before a reply completes
@@ -411,6 +421,7 @@ paths:
     post:
       summary: Like /system/shutdown, but restarts the host instead of powering it off
       operationId: rebootSystem
+      x-cix-expose: [cli, web]
       responses:
         "202":
           description: Reboot accepted; the connection may drop before a reply completes
@@ -466,6 +477,7 @@ paths:
         confirm_boot() machinery, unchanged, decides whether the fresh
         slot sticks.
       operationId: updateSystem
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -558,6 +570,7 @@ paths:
         backing it up is a separate, host-level concern entirely, not
         partially folded into this mechanism.
       operationId: getSystemBackup
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: The platform state bundle
@@ -586,6 +599,7 @@ paths:
         ready, the same "write, don't reboot, caller decides when to
         cut over" shape /system/update already established (ADR-0031).
       operationId: postSystemRestore
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -635,6 +649,7 @@ paths:
         `disk: null` means no automatic snapshots are possible
         regardless of `enabled` -- a disk must be configured first.
       operationId: getBackupConfig
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Current backup-snapshot configuration
@@ -657,6 +672,7 @@ paths:
         trigger. When `enabled` or `interval_hours` actually change,
         the daemon's own periodic timer is re-armed immediately.
       operationId: putBackupConfig
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -693,6 +709,7 @@ paths:
         not an in-flight job the way disk format/storage migration
         status does.
       operationId: getBackupConfigStatus
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Most recent snapshot attempt outcome
@@ -717,6 +734,7 @@ paths:
         way, since this endpoint's own response is that same status
         object.
       operationId: postBackupConfigSnapshotNow
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: >
@@ -747,6 +765,7 @@ paths:
         "cix", site_name "", domain_suffix "internal") apply until
         the first PUT.
       operationId: getSystemSite
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Current site config
@@ -765,6 +784,7 @@ paths:
         The DNS record is also reconciled once at daemon startup, so it exists without
         needing a PUT after every restart.
       operationId: putSystemSite
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -811,6 +831,7 @@ paths:
         HTTPS listener silently not come up at boot (logged, non-fatal)
         until a host certificate exists.
       operationId: getDaemonConfig
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Current daemon configuration
@@ -850,6 +871,7 @@ paths:
         change has actually succeeded, so a stored value never claims
         a state that isn't really running.
       operationId: putDaemonConfig
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -905,6 +927,7 @@ paths:
         the kernel derives automatically from each network's own
         assigned address (see GET /networks).
       operationId: getSystemRoutes
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: The kernel's current IPv4 routing table
@@ -933,6 +956,7 @@ paths:
         supports -- no interface/RTA_OIF binding, no route-replace
         semantics beyond plain NLM_F_CREATE.
       operationId: postSystemRoute
+      x-cix-expose: [cli, web]
       requestBody:
         required: false
         content:
@@ -963,6 +987,7 @@ paths:
         The mirror-image of the POST above, via rtnl_route_del_ipv4() --
         same body shape identifies which route to remove.
       operationId: deleteSystemRoute
+      x-cix-expose: [cli, web]
       requestBody:
         required: false
         content:
@@ -1002,6 +1027,7 @@ paths:
         field is best-effort: a missing/unreadable source leaves that
         section zeroed rather than failing the whole request.
       operationId: getSystemStats
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Current host stats snapshot
@@ -1037,6 +1063,7 @@ paths:
         would leave NOTHING, the unfiltered list is used instead: handing a
         client a possibly-down server beats handing it none at all.
       operationId: getServerHealth
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: One entry per registered server, across all four kinds
@@ -1060,6 +1087,7 @@ paths:
         drained server reports `in_service: false` and is withheld from
         generated client configuration regardless of how healthy it looks.
       operationId: setServerHealthDrain
+      x-cix-expose: [cli, web]
       parameters:
         - name: kind
           in: path
@@ -1114,6 +1142,7 @@ paths:
         A point-in-time snapshot, same as GET /system/stats -- no
         history, call again for a fresh one.
       operationId: listSystemProcesses
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Current process list
@@ -1135,6 +1164,7 @@ paths:
         that container crashing on its own; the existing exit handling
         already covers it).
       operationId: killSystemProcess
+      x-cix-expose: [cli, web]
       parameters:
         - name: pid
           in: path
@@ -1160,6 +1190,7 @@ paths:
     get:
       summary: Poll the current/last ICMP ping job's status (ADR-0075)
       operationId: getSystemPing
+      x-cix-expose: [cli]
       responses:
         "200":
           description: Current ping job status
@@ -1176,6 +1207,7 @@ paths:
         fixed ~2s timeout either way. v1 single-job constraint: 409 if
         a ping is already in flight.
       operationId: postSystemPing
+      x-cix-expose: [cli]
       requestBody:
         required: true
         content:
@@ -1216,6 +1248,7 @@ paths:
     get:
       summary: The host's own outbound DNS resolver config (ADR-0076)
       operationId: getSystemResolv
+      x-cix-expose: [cli]
       responses:
         "200":
           description: Current nameservers
@@ -1235,6 +1268,7 @@ paths:
         this endpoint has no notion of containers, just a plain IP
         list.
       operationId: putSystemResolv
+      x-cix-expose: [cli]
       requestBody:
         required: true
         content:
@@ -1278,6 +1312,7 @@ paths:
         endpoint, in any form, exactly as the repo and artifact-cache
         tokens report auth_token_set rather than the token itself.
       operationId: getSystemSigningKeys
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Current signing-key state
@@ -1305,6 +1340,7 @@ paths:
         written atomically, so a rejected or interrupted PUT leaves
         the previous pair intact rather than a half-installed one.
       operationId: putSystemSigningKeys
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -1346,6 +1382,7 @@ paths:
         it no longer needs, and without this the only way to remove it
         would be to reinstall the box.
       operationId: deleteSystemSigningKeys
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Removed, or already absent
@@ -1369,6 +1406,7 @@ paths:
         (persist:true, the default). A key not in this list can still
         be read directly via GET .../sysctl/{key}.
       operationId: listSystemSysctl
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Persisted sysctl entries
@@ -1392,6 +1430,7 @@ paths:
         token (e.g. net.ipv4.tcp_wmem's real 3-tuple) is reported as a
         JSON array of strings; a single-token value is a plain string.
       operationId: getSystemSysctl
+      x-cix-expose: [cli]
       x-cix-rest-param: true
       parameters:
         - name: key
@@ -1432,6 +1471,7 @@ paths:
         key/value is reapplied on every future boot) -- pass
         `"persist": false` for a genuinely one-shot change.
       operationId: putSystemSysctl
+      x-cix-expose: [cli, web]
       x-cix-rest-param: true
       parameters:
         - name: key
@@ -1484,6 +1524,7 @@ paths:
         touches the live /proc/sys value (there is no general, reliable
         "value before this project touched it" to revert to).
       operationId: deleteSystemSysctl
+      x-cix-expose: [cli, web]
       x-cix-rest-param: true
       parameters:
         - name: key
@@ -1514,6 +1555,7 @@ paths:
         currently has loaded, whether or not this daemon's own
         kmod-config has a persisted entry for it.
       operationId: listKmod
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Currently-loaded modules
@@ -1535,6 +1577,7 @@ paths:
         can't be replaced by GET .../kmod above, which only shows
         what's currently *loaded*, not what's available to load.
       operationId: getKmodInfo
+      x-cix-expose: [cli]
       x-cix-rest-param: true
       parameters:
         - name: name
@@ -1571,6 +1614,7 @@ paths:
         persisted kmod-config default_options, if one exists, otherwise
         loads with none.
       operationId: postKmodLoad
+      x-cix-expose: [cli, web]
       x-cix-rest-param: true
       parameters:
         - name: name
@@ -1624,6 +1668,7 @@ paths:
         not a bare rmmod that would leave now-unused dependencies
         loaded.
       operationId: deleteKmod
+      x-cix-expose: [cli, web]
       x-cix-rest-param: true
       parameters:
         - name: name
@@ -1650,6 +1695,7 @@ paths:
     get:
       summary: Every module with a persisted default_options/autoload config (ADR-0159)
       operationId: listKmodConfig
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Persisted kmod-config entries
@@ -1675,6 +1721,7 @@ paths:
         REST-managed list, distinct from ADR-0061's hardcoded
         hardware-detection boot module list).
       operationId: putKmodConfig
+      x-cix-expose: [cli, web]
       parameters:
         - name: name
           in: path
@@ -1713,6 +1760,7 @@ paths:
         Clears both default_options and autoload. Never touches
         whether the module is currently loaded.
       operationId: deleteKmodConfig
+      x-cix-expose: [cli, web]
       parameters:
         - name: name
           in: path
@@ -1749,6 +1797,7 @@ paths:
         (see docs/guides/kernel-build-and-ab-updates.md), never a
         live, same-boot addition.
       operationId: postKmodBuild
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -1825,6 +1874,7 @@ paths:
         separate `rebuildable-storage` concern), never logs (`log-
         storage`, its own separate concern).
       operationId: getStateStorage
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Current state-storage placement
@@ -1840,6 +1890,7 @@ paths:
         Reports `{"state":"none"}` if no migration has ever run this
         daemon lifetime.
       operationId: getStateStorageMigrateStatus
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Migration job status
@@ -1869,6 +1920,7 @@ paths:
         for completion -- a `state:"failed"` migration leaves the
         daemon still using the old location, completely untouched.
       operationId: migrateStateStorage
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -1928,6 +1980,7 @@ paths:
         the per-request audit trail, and every container's stdout/
         stderr) -- never state, never rebuildable content.
       operationId: getLogStorage
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Current log-storage placement
@@ -1944,6 +1997,7 @@ paths:
         (independent of any concurrent state-storage migration, each
         kind has its own job slot).
       operationId: getLogStorageMigrateStatus
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Migration job status
@@ -1965,6 +2019,7 @@ paths:
         re-opened against the new location as part of the repoint, not
         left silently writing to the old disk.
       operationId: migrateLogStorage
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -2020,6 +2075,7 @@ paths:
         if lost -- container images, installed packages, build
         artifacts, staged ISOs -- never state, never logs.
       operationId: getRebuildableStorage
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Current rebuildable-storage placement
@@ -2035,6 +2091,7 @@ paths:
         independent job slot, alongside any concurrent state-storage or
         log-storage migration.
       operationId: getRebuildableStorageMigrateStatus
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Migration job status
@@ -2055,6 +2112,7 @@ paths:
         with no persistently-open file handle of its own, so the
         finalize step is a straightforward repoint of each.
       operationId: migrateRebuildableStorage
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -2105,6 +2163,7 @@ paths:
     get:
       summary: Every DHCP range and reservation (ADR-0197)
       operationId: getDhcp
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Ranges and reservations
@@ -2127,6 +2186,7 @@ paths:
         makes leases resolve the instant they are issued. Reported, not
         required.
       operationId: getDhcpServers
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Every registered DHCP server
@@ -2142,6 +2202,7 @@ paths:
     post:
       summary: Register a container as a DHCP server (ADR-0197)
       operationId: registerDhcpServer
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -2168,6 +2229,7 @@ paths:
         nobody serves from is a slice of addresses handed to nothing,
         which looks like coverage and is not.
       operationId: unregisterDhcpServer
+      x-cix-expose: [cli, web]
       parameters:
         - name: container
           in: path
@@ -2188,6 +2250,7 @@ paths:
         with. The `lease_seconds` reported for such a network is the
         same default a PUT would start from.
       operationId: getDhcpNetwork
+      x-cix-expose: []
       parameters:
         - name: network
           in: path
@@ -2234,6 +2297,7 @@ paths:
         would leave a setting that says it is in force and is not. Only
         the servers whose own rendered conf changed are restarted.
       operationId: setDhcpNetwork
+      x-cix-expose: [cli, web]
       parameters:
         - name: network
           in: path
@@ -2275,6 +2339,7 @@ paths:
     delete:
       summary: Remove a network's DHCP range (ADR-0197)
       operationId: deleteDhcpNetwork
+      x-cix-expose: []
       parameters:
         - name: network
           in: path
@@ -2298,6 +2363,7 @@ paths:
         durable operator intent (`/dns/records`); a lease is short-lived
         state owned by its server.
       operationId: getDhcpLeases
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Every current lease across every running server
@@ -2324,6 +2390,7 @@ paths:
         that already has a reservation, or an address already reserved
         for a different MAC, is a `409`.
       operationId: addDhcpReservation
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -2349,6 +2416,7 @@ paths:
     delete:
       summary: Remove a reservation (ADR-0197)
       operationId: deleteDhcpReservation
+      x-cix-expose: [cli, web]
       parameters:
         - name: mac
           in: path
@@ -2386,6 +2454,7 @@ paths:
         swapping, and at that point there is no reading of "off by
         default" that helps the operator whose box is thrashing.
       operationId: getZswap
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Configured intent, the kernel's own state, and the compressors it has
@@ -2413,6 +2482,7 @@ paths:
         state the machine is not in is worse than the failure it was
         trying to record.
       operationId: setZswap
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -2446,6 +2516,7 @@ paths:
     get:
       summary: Whether the host swap file is enabled (ADR-0069)
       operationId: getSystemSwap
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Current swap state
@@ -2461,6 +2532,7 @@ paths:
         directly, and activates it via swapon(2). 409 if swap is
         already enabled -- disable it first to resize.
       operationId: postSystemSwap
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -2517,6 +2589,7 @@ paths:
     delete:
       summary: Deactivate and remove the host swap file (ADR-0069)
       operationId: deleteSystemSwap
+      x-cix-expose: [cli, web]
       responses:
         "204":
           description: Swap disabled
@@ -2540,6 +2613,7 @@ paths:
         apart a rolling image's own follow_rolling containers spread their
         restarts when that image auto-rebuilds.
       operationId: getSystemRollingConfig
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Current rolling-restart config
@@ -2557,6 +2631,7 @@ paths:
         containers following the same rolling image instead of firing them
         all in the same instant.
       operationId: putSystemRollingConfig
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -2589,6 +2664,7 @@ paths:
         The configured pkg install/hostbuild concurrency ceiling (ADR-0157)
         and per-build memory/CPU cgroup limits (ADR-0165).
       operationId: getSystemPkgBuildConfig
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Current pkg-build config
@@ -2610,6 +2686,7 @@ paths:
         build's cgroup is not retroactively adjusted) -- 0/null means
         unlimited for either, a deliberate opt-out, not a validation error.
       operationId: putSystemPkgBuildConfig
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -2665,6 +2742,7 @@ paths:
         followed by a restart, and a diagnostic that dies with what it
         was diagnosing is not one.
       operationId: getStalls
+      x-cix-expose: [cli, web]
       parameters:
         - name: limit
           in: query
@@ -2733,6 +2811,7 @@ paths:
         `running_series_maintained` says which of those happened, and
         `newest_longterm` reports the newest line regardless.
       operationId: getKernelPolicy
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: The channel, what it currently points at, and the running kernel
@@ -2752,6 +2831,7 @@ paths:
         Selecting a channel changes what is **reported**; it never moves
         the pin, and never fetches anything on its own.
       operationId: setKernelPolicy
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -2791,6 +2871,7 @@ paths:
         once can still answer "how far behind am I" after a restart with
         no network at all.
       operationId: refreshKernelPolicy
+      x-cix-expose: [cli, web]
       responses:
         "202":
           description: A refresh was started; the body is the current (pre-refresh) state
@@ -2821,6 +2902,7 @@ paths:
         current default selects it (`matches_default`) and whether it
         belongs to the slot this daemon booted from (`is_running_slot`).
       operationId: getEsp
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: >
@@ -2844,6 +2926,7 @@ paths:
         next boot, and by construction the caller is not at the console.
         The error names the entries that do exist.
       operationId: putEsp
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -2898,6 +2981,7 @@ paths:
         remote operator makes a machine they cannot physically reach
         unbootable.
       operationId: deleteEspEntry
+      x-cix-expose: [cli, web]
       parameters:
         - name: name
           in: path
@@ -2941,6 +3025,7 @@ paths:
         What is armed to boot next, if anything. null means normal
         selection applies.
       operationId: getBootNext
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: The armed entry, or null
@@ -2962,6 +3047,7 @@ paths:
         machine that fails to come back falls back to ordinary
         selection instead of staying pinned to a broken slot.
       operationId: setBootNext
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -3001,6 +3087,7 @@ paths:
         Disarm. Idempotent -- disarming an already-disarmed machine is
         the desired state, not an error, so this is safe to call blindly.
       operationId: clearBootNext
+      x-cix-expose: [cli, web]
       responses:
         "204":
           description: Nothing is armed; normal selection applies
@@ -3029,6 +3116,7 @@ paths:
         that is not an installed host (a dev daemon), which is a fact
         rather than an error.
       operationId: getBootConsole
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Configured consoles, the rendered line, and the live loader entries
@@ -3057,6 +3145,7 @@ paths:
         rather than escaped -- this string is written into the file that
         decides whether the machine comes back.
       operationId: setBootConsole
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -3114,6 +3203,7 @@ paths:
         Enabled by default. A reservation that has to be discovered and
         switched on is a reservation nobody has when they need it.
       operationId: getControlPlaneReservation
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Current reservation, host totals, and the derived workload ceiling
@@ -3134,6 +3224,7 @@ paths:
         second workload budget, and would look like a scheduler bug
         rather than a setting.
       operationId: setControlPlaneReservation
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -3167,6 +3258,7 @@ paths:
         Per-source-IP throttling config for repeated failed HTTPS handshakes
         (ADR-0134).
       operationId: getSystemTlsThrottle
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Current throttle config
@@ -3185,6 +3277,7 @@ paths:
         throttled, so this daemon's own local admin access can't be locked
         out by a hostile source sharing the box.
       operationId: putSystemTlsThrottle
+      x-cix-expose: [cli, web]
       requestBody:
         content:
           application/json:
@@ -3231,6 +3324,7 @@ paths:
         restart the same way any other in-flight tracking this daemon keeps
         is.
       operationId: getSystemTlsThrottleStatus
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Currently tracked sources
@@ -3249,6 +3343,7 @@ paths:
     get:
       summary: Upstream NTP server address list used to sync the host clock (ADR-0110)
       operationId: getSystemNtp
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Current upstream list
@@ -3266,6 +3361,7 @@ paths:
         added, at every sync attempt (the hourly automatic one, or an
         on-demand POST /system/ntp/sync).
       operationId: putSystemNtp
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -3304,6 +3400,7 @@ paths:
     get:
       summary: Outcome of the most recent sync attempt (ADR-0110)
       operationId: getSystemNtpStatus
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Current sync status
@@ -3323,6 +3420,7 @@ paths:
         /system/ping already established. Check GET /system/ntp/status
         once it lands for the outcome.
       operationId: postSystemNtpSync
+      x-cix-expose: [cli, web]
       responses:
         "202":
           description: Sync started
@@ -3349,6 +3447,7 @@ paths:
     get:
       summary: The host's current date/time (ADR-0110)
       operationId: getSystemTime
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Current host clock
@@ -3365,6 +3464,7 @@ paths:
         overwrite it again at its own next scheduled or on-demand
         attempt.
       operationId: putSystemTime
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -3394,6 +3494,7 @@ paths:
     get:
       summary: List all registered NTP server bindings (ADR-0110)
       operationId: listNtpServers
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Binding list
@@ -3416,6 +3517,7 @@ paths:
         container's own live IP is resolved fresh from the registry at every
         sync attempt, never cached here.
       operationId: createNtpServer
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -3452,6 +3554,7 @@ paths:
     delete:
       summary: Unregister an NTP server binding (does not touch the container itself)
       operationId: deleteNtpServer
+      x-cix-expose: [cli, web]
       parameters:
         - name: container
           in: path
@@ -3472,6 +3575,7 @@ paths:
     get:
       summary: List all registered syslog forward targets (ADR-0127)
       operationId: listSyslogTargets
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Target list
@@ -3499,6 +3603,7 @@ paths:
         never cached here. A send failure is silently dropped -- UDP
         syslog has never had delivery guarantees.
       operationId: createSyslogTarget
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -3535,6 +3640,7 @@ paths:
     delete:
       summary: Unregister a syslog forward target (does not touch the container itself)
       operationId: deleteSyslogTarget
+      x-cix-expose: [cli, web]
       parameters:
         - name: container
           in: path
@@ -3573,6 +3679,7 @@ paths:
         Entries are returned oldest-first. Priority is the raw syslog
         level from the kernel's own prefix (0 emerg .. 7 debug).
       operationId: getSystemKmsg
+      x-cix-expose: [cli, web]
       parameters:
         - name: tail
           in: query
@@ -3630,6 +3737,7 @@ paths:
         GET /containers/{name} tail) in one chronologically-ordered
         store.
       operationId: getSystemLogs
+      x-cix-expose: [cli, web]
       parameters:
         - name: source
           in: query
@@ -3692,6 +3800,7 @@ paths:
     get:
       summary: The log store's current total size cap and minimum severity floor (ADR-0070)
       operationId: getSystemLogsConfig
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Current config
@@ -3720,6 +3829,7 @@ paths:
         severe, addressing "settable so we do not over-log" without
         sacrificing "extensive enough to catch real issues."
       operationId: putSystemLogsConfig
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -3757,6 +3867,7 @@ paths:
         its own fire-and-forget job. state is "none" until the first
         POST this daemon has ever handled.
       operationId: getSystemIso
+      x-cix-expose: [cli]
       responses:
         "200":
           description: Current ISO build status
@@ -3785,6 +3896,7 @@ paths:
         own image/keys/ already has: a release-signing private key must
         never propagate onto every deployed box).
       operationId: postSystemIso
+      x-cix-expose: [cli]
       requestBody:
         required: false
         content:
@@ -3818,6 +3930,7 @@ paths:
     get:
       summary: List all containers known to this daemon
       operationId: listContainers
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Container list
@@ -3867,6 +3980,7 @@ paths:
         filter's meaning is refused, never escaped. Refused (400)
         without ldap_client, since there is nothing to restrict.
       operationId: createContainer
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -3914,6 +4028,7 @@ paths:
         persisted. Reference a device by its `id` in a container's own
         `devices` field (see ContainerCreateRequest) to grant it access.
       operationId: listDevices
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Device list
@@ -3950,6 +4065,7 @@ paths:
         after creation is a separate, not-yet-built follow-up
         (ADR-0142, see docs/roadmap/ROADMAP.md).
       operationId: listDisks
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Disk list
@@ -3976,6 +4092,7 @@ paths:
         job ran/is running for a *different* disk, since a status check
         should never show another disk's unrelated job.
       operationId: getDiskFormatStatus
+      x-cix-expose: [cli, web]
       parameters:
         - name: disk_name
           in: path
@@ -4011,6 +4128,7 @@ paths:
         also be selected explicitly per container via POST /containers'
         own `disk` field (ADR-0102, Phase D, already built).
       operationId: formatDisk
+      x-cix-expose: [cli, web]
       parameters:
         - name: disk_name
           in: path
@@ -4084,6 +4202,7 @@ paths:
         body's `confirm_disk_name` must match disk_name in the URL
         exactly.
       operationId: unmountDisk
+      x-cix-expose: [cli, web]
       parameters:
         - name: disk_name
           in: path
@@ -4148,6 +4267,7 @@ paths:
         A partition has no answer to give (free space is a property of a
         table) and is refused.
       operationId: getDiskFreeSpace
+      x-cix-expose: [cli, web]
       parameters:
         - name: disk_name
           in: path
@@ -4228,6 +4348,7 @@ paths:
         and near-instantaneous, unlike POST .../format's mkfs, so this
         has no async job/poll shape.
       operationId: createDiskPartitionTable
+      x-cix-expose: [cli, web]
       parameters:
         - name: disk_name
           in: path
@@ -4284,6 +4405,7 @@ paths:
         of its own and not mounted). Synchronous, same reasoning as
         partition-table creation above.
       operationId: addDiskPartition
+      x-cix-expose: [cli, web]
       parameters:
         - name: disk_name
           in: path
@@ -4348,6 +4470,7 @@ paths:
         partition can be used -- free space elsewhere on the disk cannot
         extend it (see GET /disks/{name}/free-space).
       operationId: resizeDiskPartition
+      x-cix-expose: [cli, web]
       parameters:
         - name: disk_name
           in: path
@@ -4425,6 +4548,7 @@ paths:
         still has a role assigned (remove the role first, POST
         /diskroles), or is currently mounted.
       operationId: deleteDiskPartition
+      x-cix-expose: [cli, web]
       parameters:
         - name: disk_name
           in: path
@@ -4477,6 +4601,7 @@ paths:
         *mapping itself* (name -> selector) persists, not a hardware
         snapshot.
       operationId: listDeviceMaps
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Mapping list
@@ -4498,6 +4623,7 @@ paths:
         plugging the device in, or one that's temporarily unplugged,
         are both legitimate states (`present: false`), not errors.
       operationId: createDeviceMap
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -4538,6 +4664,7 @@ paths:
         mapping's name -- device grants are resolved once, at
         container-creation time, not re-resolved live afterward.
       operationId: deleteDeviceMap
+      x-cix-expose: [cli, web]
       parameters:
         - name: name
           in: path
@@ -4572,6 +4699,7 @@ paths:
         on every call (`present`), never cached -- only the binding
         itself (disk_name -> role) persists, not a hardware snapshot.
       operationId: listDiskRoles
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Disk role list
@@ -4596,6 +4724,7 @@ paths:
         OS-disk layout (`is_os_disk` on GET /disks) -- it is never a
         role-assignment candidate.
       operationId: createDiskRole
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -4632,6 +4761,7 @@ paths:
     delete:
       summary: Removes a disk's role assignment
       operationId: deleteDiskRole
+      x-cix-expose: [cli, web]
       parameters:
         - name: disk_name
           in: path
@@ -4672,6 +4802,7 @@ paths:
     get:
       summary: List all persistent volumes (issue #88, ADR-0183)
       operationId: listVolumes
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Volume list
@@ -4694,6 +4825,7 @@ paths:
         mechanism container overlays already use, rather than being a
         second storage story.
       operationId: createVolume
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -4736,6 +4868,7 @@ paths:
     get:
       summary: Inspect one volume
       operationId: getVolume
+      x-cix-expose: [cli]
       parameters:
         - name: volume_name
           in: path
@@ -4766,6 +4899,7 @@ paths:
         removing it underneath would be a data-loss bug that only
         surfaces later. The error names the container holding it.
       operationId: deleteVolume
+      x-cix-expose: [cli, web]
       parameters:
         - name: volume_name
           in: path
@@ -4792,6 +4926,7 @@ paths:
     get:
       summary: List all networks known to this daemon
       operationId: listNetworks
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Network list
@@ -4817,6 +4952,7 @@ paths:
         LAN-bridged network's .1 is by convention the real gateway --
         the allocator must never hand it to a container.
       operationId: createNetwork
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -4853,6 +4989,7 @@ paths:
     get:
       summary: Inspect one network
       operationId: getNetwork
+      x-cix-expose: []
       parameters:
         - $ref: "#/components/parameters/NetworkName"
       responses:
@@ -4871,6 +5008,7 @@ paths:
     delete:
       summary: Remove a network (deletes its bridge)
       operationId: deleteNetwork
+      x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/NetworkName"
       responses:
@@ -4935,6 +5073,7 @@ paths:
         in state but not realised on this host (or a daemon that never
         had the privilege to create one). A fact, not a fault.
       operationId: getNetworkPorts
+      x-cix-expose: [cli, web]
       parameters:
         - name: name
           in: path
@@ -4963,6 +5102,7 @@ paths:
         leaving ifname itself free to attach (with a different vlan_id) to
         other networks.
       operationId: attachNetworkInterface
+      x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/NetworkName"
       requestBody:
@@ -5007,6 +5147,7 @@ paths:
     delete:
       summary: Detach a previously-attached interface -- releases it from the bridge, or deletes its VLAN sub-interface
       operationId: detachNetworkInterface
+      x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/NetworkName"
         - name: ifname
@@ -5059,6 +5200,7 @@ paths:
         holds its image's rootfs as its container's lowerdir, and
         collection is never urgent enough to race one.
       operationId: imagesGc
+      x-cix-expose: [cli, web]
       requestBody:
         required: false
         content:
@@ -5095,6 +5237,7 @@ paths:
     get:
       summary: List every image known to this daemon (each a directory under images_dir with its own rootfs/)
       operationId: listImages
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Image list
@@ -5115,6 +5258,7 @@ paths:
         away -- POST /pkg/install's own image field would otherwise only create one
         implicitly, on its first successful install into a name never seen before.
       operationId: createImage
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -5151,6 +5295,7 @@ paths:
     get:
       summary: Inspect one image
       operationId: getImage
+      x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/ImageName"
       responses:
@@ -5179,6 +5324,7 @@ paths:
         container still references it, or if any package (see GET /pkg) is still
         tracked against it -- remove those first.
       operationId: deleteImage
+      x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/ImageName"
       responses:
@@ -5218,6 +5364,7 @@ paths:
         not itself trigger a rebuild (a separate, automatic mechanism for
         rolling entries).
       operationId: setImageManifestEntry
+      x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/ImageName"
       requestBody:
@@ -5263,6 +5410,7 @@ paths:
         Removes package's entry from name's own manifest (ADR-0107), if
         present -- a no-op, not an error, if it's already absent.
       operationId: unsetImageManifestEntry
+      x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/ImageName"
         - name: package
@@ -5293,6 +5441,7 @@ paths:
         redesign) -- metadata only, one entry per image name (a recipe's
         own name is always its target image's name, a 1:1 relationship).
       operationId: listImageRecipes
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Recipe list
@@ -5313,6 +5462,7 @@ paths:
         required (whitespace-separated "package:mode:version" entries,
         mode one of pinned/rolling); image_artifact_sha256= is optional.
       operationId: addImageRecipe
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -5347,6 +5497,7 @@ paths:
     get:
       summary: One image recipe's own {name,content} -- the raw recipe text.
       operationId: getImageRecipe
+      x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/ImageName"
       responses:
@@ -5365,6 +5516,7 @@ paths:
     delete:
       summary: Removes name's own image recipe. Does not affect the image itself or anything already installed via it.
       operationId: deleteImageRecipe
+      x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/ImageName"
       responses:
@@ -5400,6 +5552,7 @@ paths:
         for minutes, exactly the wedge ADR-0180 exists to prevent. One
         export runs at a time.
       operationId: exportImage
+      x-cix-expose: []
       parameters:
         - $ref: "#/components/parameters/ImageName"
       responses:
@@ -5431,6 +5584,7 @@ paths:
         -- one export is tracked at a time, so this never reports
         another image's progress under this image's name.
       operationId: getImageExport
+      x-cix-expose: []
       parameters:
         - $ref: "#/components/parameters/ImageName"
       responses:
@@ -5489,6 +5643,7 @@ paths:
 
         length is clamped to 8 MiB. A short read means end of artifact.
       operationId: downloadImageExport
+      x-cix-expose: []
       parameters:
         - $ref: "#/components/parameters/ImageName"
         - name: offset
@@ -5547,6 +5702,7 @@ paths:
         container's overlay lowerdir points into this directory by path,
         so renaming it out from under one is not survivable.
       operationId: renameImage
+      x-cix-expose: []
       parameters:
         - $ref: "#/components/parameters/ImageName"
       requestBody:
@@ -5594,6 +5750,7 @@ paths:
         a pollable status endpoint); package artifacts are the only
         published binaries now.
       operationId: applyImageRecipe
+      x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/ImageName"
       responses:
@@ -5619,6 +5776,7 @@ paths:
         one entry per recipe name (a recipe's own name is always the
         container name it creates when applied).
       operationId: listContainerRecipes
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Recipe list
@@ -5640,6 +5798,7 @@ paths:
         interpreted beyond that one check; validity as a real container
         body is only checked when the recipe is actually applied.
       operationId: addContainerRecipe
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -5674,6 +5833,7 @@ paths:
     get:
       summary: One container recipe's own {name,content} -- the raw, unsubstituted recipe text.
       operationId: getContainerRecipe
+      x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/ContainerName"
       responses:
@@ -5692,6 +5852,7 @@ paths:
     delete:
       summary: Removes name's own container recipe. Does not affect any container already created from it.
       operationId: deleteContainerRecipe
+      x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/ContainerName"
       responses:
@@ -5720,6 +5881,7 @@ paths:
         unmatched {{SECRET:KEY}} token (no such key in secrets) is left
         completely untouched -- never silently swallowed or blanked.
       operationId: applyContainerRecipe
+      x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/ContainerName"
       requestBody:
@@ -5764,6 +5926,7 @@ paths:
     get:
       summary: List all DNS records known to this daemon
       operationId: listDnsRecords
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Record list
@@ -5786,6 +5949,7 @@ paths:
         given. Convenience only: an already-existing bare record is never retroactively
         touched.
       operationId: createDnsRecord
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -5822,6 +5986,7 @@ paths:
     get:
       summary: Inspect one DNS record
       operationId: getDnsRecord
+      x-cix-expose: []
       parameters:
         - $ref: "#/components/parameters/DnsRecordName"
       responses:
@@ -5845,6 +6010,7 @@ paths:
         /dns/records`'s own bare-label qualification, which only ever applies at
         creation time).
       operationId: updateDnsRecord
+      x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/DnsRecordName"
       requestBody:
@@ -5880,6 +6046,7 @@ paths:
     delete:
       summary: Remove a DNS record
       operationId: deleteDnsRecord
+      x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/DnsRecordName"
       responses:
@@ -5904,6 +6071,7 @@ paths:
         The upstream resolvers every registered DNS server forwards to
         for names it is not itself authoritative for (issue #134).
       operationId: getDnsForwarders
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: The currently configured forwarders
@@ -5931,6 +6099,7 @@ paths:
         list (it is not additive); an empty array leaves the servers
         authoritative-only, with no upstream recursion at all.
       operationId: setDnsForwarders
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -5978,6 +6147,7 @@ paths:
         as success, not a conflict, because provisioning is exactly
         what an operator retries after fixing whatever failed.
       operationId: provisionDns
+      x-cix-expose: [cli, web]
       requestBody:
         required: false
         content:
@@ -6028,6 +6198,7 @@ paths:
     get:
       summary: List all registered DNS server bindings
       operationId: listDnsServers
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Binding list
@@ -6048,6 +6219,7 @@ paths:
         own filesystem, and sends it SIGHUP to reload. Every subsequent record change
         re-writes the file and re-sends SIGHUP for as long as this binding exists.
       operationId: createDnsServer
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -6090,6 +6262,7 @@ paths:
     delete:
       summary: Unregister a DNS server binding (does not touch the file or the container itself)
       operationId: deleteDnsServer
+      x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/DnsServerContainerName"
       responses:
@@ -6106,6 +6279,7 @@ paths:
     get:
       summary: List all registered LDAP server bindings
       operationId: listLdapServers
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Binding list
@@ -6132,6 +6306,7 @@ paths:
         file, the one it was started with -c) is what's recorded for every future
         LDAP user/group CRUD call (task #726) to render into the same way.
       operationId: createLdapServer
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -6174,6 +6349,7 @@ paths:
     delete:
       summary: Unregister an LDAP server binding (does not touch the container itself)
       operationId: deleteLdapServer
+      x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/LdapServerContainerName"
       responses:
@@ -6190,6 +6366,7 @@ paths:
     get:
       summary: List every LDAP group (task #726)
       operationId: listLdapGroups
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Group list
@@ -6211,6 +6388,7 @@ paths:
         config file immediately (glauth's own fsnotify watcher picks up the
         change, no signal needed).
       operationId: createLdapGroup
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -6241,6 +6419,7 @@ paths:
     get:
       summary: Fetch one LDAP group
       operationId: getLdapGroup
+      x-cix-expose: []
       parameters:
         - $ref: "#/components/parameters/LdapGroupName"
       responses:
@@ -6277,6 +6456,7 @@ paths:
         is not automatically updated -- this daemon has no visibility into
         config it didn't itself render.
       operationId: updateLdapGroup
+      x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/LdapGroupName"
       requestBody:
@@ -6322,6 +6502,7 @@ paths:
     delete:
       summary: Delete an LDAP group (also removed from every registered server's config)
       operationId: deleteLdapGroup
+      x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/LdapGroupName"
       responses:
@@ -6338,6 +6519,7 @@ paths:
     get:
       summary: List every LDAP user (task #726)
       operationId: listLdapUsers
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: User list
@@ -6359,6 +6541,7 @@ paths:
         libcrypto) -- never stored or echoed in plaintext, and never
         returned by any GET (only a has_password boolean is).
       operationId: createLdapUser
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -6389,6 +6572,7 @@ paths:
     get:
       summary: Fetch one LDAP user
       operationId: getLdapUser
+      x-cix-expose: []
       parameters:
         - $ref: "#/components/parameters/LdapUserName"
       responses:
@@ -6419,6 +6603,7 @@ paths:
         config referencing the user's old rendered LDAP DN is not
         automatically updated, same caveat as an LDAP group rename.
       operationId: updateLdapUser
+      x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/LdapUserName"
       requestBody:
@@ -6455,6 +6640,7 @@ paths:
     delete:
       summary: Delete an LDAP user (also removed from every registered server's config)
       operationId: deleteLdapUser
+      x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/LdapUserName"
       responses:
@@ -6475,6 +6661,7 @@ paths:
         POST /ldap/groups auto-allocate from when uidnumber/gidnumber is
         omitted from the request body. Defaults to 10000/10000 until changed.
       operationId: getLdapConfig
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Current config
@@ -6488,6 +6675,7 @@ paths:
         next auto-allocated uidnumber/gidnumber; does not renumber any
         existing user or group. Both fields are required and must be > 0.
       operationId: updateLdapConfig
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -6512,6 +6700,7 @@ paths:
     get:
       summary: Inspect the root CA (never includes the private key)
       operationId: getPkiCa
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: CA detail
@@ -6540,6 +6729,7 @@ paths:
         this install's own "host" leaf (ADR-0050) if site config is already set --
         best-effort, never fails this request.
       operationId: createPkiCa
+      x-cix-expose: [cli, web]
       requestBody:
         required: false
         content:
@@ -6576,6 +6766,7 @@ paths:
     get:
       summary: Inspect the intermediate CA (never includes the private key)
       operationId: getPkiIntermediate
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Intermediate CA detail
@@ -6609,6 +6800,7 @@ paths:
         "host" leaf (ADR-0050) so it's signed by the intermediate too -- best-effort,
         never fails this request.
       operationId: createPkiIntermediate
+      x-cix-expose: [cli, web]
       requestBody:
         required: false
         content:
@@ -6645,6 +6837,7 @@ paths:
     get:
       summary: List all issued leaf certificates (metadata only -- never a key)
       operationId: listPkiCerts
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Cert list
@@ -6667,6 +6860,7 @@ paths:
         SAN too -- ADR-0052), fully overridable by including a `.`. Never applied to an
         explicitly-supplied `sans` entry.
       operationId: createPkiCert
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -6705,6 +6899,7 @@ paths:
     get:
       summary: Inspect one issued certificate (metadata + cert_pem -- never the key)
       operationId: getPkiCert
+      x-cix-expose: []
       parameters:
         - $ref: "#/components/parameters/PkiCertName"
       responses:
@@ -6729,6 +6924,7 @@ paths:
     delete:
       summary: Remove an issued certificate (deletes its key and cert files on disk)
       operationId: deletePkiCert
+      x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/PkiCertName"
       responses:
@@ -6769,6 +6965,7 @@ paths:
         creation's own pki_issue already uses), so a running service's tls.crt/tls.key don't go
         stale. See ADR-0049.
       operationId: resetPki
+      x-cix-expose: [cli, web]
       requestBody:
         required: false
         content:
@@ -6857,6 +7054,7 @@ paths:
         are idempotent -- safe to call again. Not automatic at daemon startup; an
         explicit, one-time action.
       operationId: pkgBootstrap
+      x-cix-expose: [cli, web]
       requestBody:
         required: false
         content:
@@ -6908,6 +7106,7 @@ paths:
         is "none" until the first toolchain_url POST this daemon has ever handled; the
         no-body/toolchain_path modes are synchronous and never touch this state at all.
       operationId: getPkgBootstrapStatus
+      x-cix-expose: [cli]
       responses:
         "200":
           description: Current bootstrap-fetch status
@@ -6920,6 +7119,7 @@ paths:
     get:
       summary: List recipes found on disk (metadata only, never sourced/executed)
       operationId: listPkgRecipes
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Recipe list
@@ -6943,6 +7143,7 @@ paths:
         already-published (name, version) pair is 409 Conflict, never a silent
         overwrite -- fixing a mistake means bumping pkg_version= and publishing again.
       operationId: addPkgRecipe
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -6989,6 +7190,7 @@ paths:
         highest available version for name (ADR-0107). Still never sourced/executed
         here.
       operationId: getPkgRecipe
+      x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/PkgRecipeName"
         - $ref: "#/components/parameters/PkgRecipeVersionQuery"
@@ -7018,6 +7220,7 @@ paths:
         removes every published version of name (ADR-0107). Does not affect anything
         already installed via it -- only future `pkg install`/update-all lookups.
       operationId: deletePkgRecipe
+      x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/PkgRecipeName"
         - $ref: "#/components/parameters/PkgRecipeVersionQuery"
@@ -7045,6 +7248,7 @@ paths:
         auth_token_set boolean, the same "never round-trip a secret" posture as
         every other credential this API handles.
       operationId: getPkgRepoConfig
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Current repo config (repo_url is empty when nothing is configured yet)
@@ -7061,6 +7265,7 @@ paths:
         sync_interval_seconds re-arms the periodic sync timer immediately (0
         disables it) -- no daemon restart needed.
       operationId: putPkgRepoConfig
+      x-cix-expose: [cli, web]
       requestBody:
         required: false
         content:
@@ -7112,6 +7317,7 @@ paths:
         immutable, ADR-0107) -- a sync can never discard a recipe a host already
         has. 202, poll GET /pkg/sync for the outcome.
       operationId: pkgSync
+      x-cix-expose: [cli, web]
       responses:
         "202":
           description: Sync started
@@ -7163,6 +7369,7 @@ paths:
     get:
       summary: The most recent (or currently running) sync's status.
       operationId: getPkgSyncStatus
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Sync status
@@ -7175,6 +7382,7 @@ paths:
     get:
       summary: The configured local build-artifact cache size cap (ADR-0122).
       operationId: getPkgCacheConfig
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Current cache config
@@ -7189,6 +7397,7 @@ paths:
         occupancy does not evict anything immediately; eviction only happens
         lazily, the next time a new entry needs room.
       operationId: putPkgCacheConfig
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -7218,6 +7427,7 @@ paths:
     get:
       summary: Current local build-artifact cache occupancy.
       operationId: getPkgCache
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Cache status
@@ -7233,6 +7443,7 @@ paths:
         artifact tier, if configured) exactly as if nothing had ever been
         cached.
       operationId: deletePkgCache
+      x-cix-expose: [cli, web]
       responses:
         "204":
           description: Cache cleared
@@ -7259,6 +7470,7 @@ paths:
 
         Returns 202 immediately; poll the GET below.
       operationId: exportPkgArtifact
+      x-cix-expose: [cli]
       parameters:
         - $ref: "#/components/parameters/PkgName"
       responses:
@@ -7292,6 +7504,7 @@ paths:
         reports state "none" -- and an image sharing a name with a package
         never reports the other's export.
       operationId: getPkgArtifactExport
+      x-cix-expose: []
       parameters:
         - $ref: "#/components/parameters/PkgName"
       responses:
@@ -7355,6 +7568,7 @@ paths:
         (correctly) refused to route an operation the spec did not
         declare. Exactly the drift that ADR exists to make impossible.
       operationId: publishPkgArtifact
+      x-cix-expose: []
       parameters:
         - $ref: "#/components/parameters/PkgName"
       responses:
@@ -7393,6 +7607,7 @@ paths:
         endpoint for why this is chunked rather than streamed. length is
         clamped to 8 MiB; a short read means end of artifact.
       operationId: downloadPkgArtifactExport
+      x-cix-expose: [cli]
       parameters:
         - $ref: "#/components/parameters/PkgName"
         - name: offset
@@ -7443,6 +7658,7 @@ paths:
         own description for why a compiled binary is never served from the
         same place recipes are.
       operationId: getPkgArtifactConfig
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Current artifact-server config (base_url is empty when none is configured)
@@ -7456,6 +7672,7 @@ paths:
         the body are left unchanged. An explicit "auth_token": "" clears an
         already-set token; omitting it leaves whatever's there.
       operationId: putPkgArtifactConfig
+      x-cix-expose: [cli, web]
       requestBody:
         required: false
         content:
@@ -7500,6 +7717,7 @@ paths:
         listed. "No policy" and "the default policy" are the same state
         rather than two to keep in step.
       operationId: listPkgPolicies
+      x-cix-expose: [cli]
       responses:
         "200":
           description: Policies currently set
@@ -7530,6 +7748,7 @@ paths:
         an unresolvable package, deliberately: silently resolving
         somewhere else is what the pin is for.
       operationId: setPkgPolicy
+      x-cix-expose: [cli]
       parameters:
         - name: name
           in: path
@@ -7574,6 +7793,7 @@ paths:
         package is on the default") is satisfied either way, and a 404
         would make scripts handle a distinction that does not matter.
       operationId: clearPkgPolicy
+      x-cix-expose: [cli]
       parameters:
         - name: name
           in: path
@@ -7602,6 +7822,7 @@ paths:
         A killed build keeps its log, which is the case most worth
         reading.
       operationId: listBuildLogs
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: The logs currently kept
@@ -7635,6 +7856,7 @@ paths:
         The filename is validated, not trusted -- it is a path component
         from a request and this opens a file with it.
       operationId: getBuildLog
+      x-cix-expose: [cli, web]
       parameters:
         - name: file
           in: path
@@ -7666,6 +7888,7 @@ paths:
         "base") every container using that image sees. v1 serializes installs: only
         one may be in flight at a time, across every image.
       operationId: pkgInstall
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -7713,6 +7936,7 @@ paths:
         honestly, not parallelized around. Call again once that job
         finishes to pick up the next drifted package.
       operationId: pkgUpdateAll
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Nothing to update -- every installed package already matches its recipe
@@ -7757,6 +7981,7 @@ paths:
         rootfs. Subject to the same v1 single-job-in-flight constraint as
         /pkg/install (they share one job slot).
       operationId: pkgHostbuild
+      x-cix-expose: [cli]
       requestBody:
         required: true
         content:
@@ -7846,6 +8071,7 @@ paths:
         kept_build_container (GET /pkg/{name} or /pkg/hostbuild/{name} shows this) --
         there is nothing to resume otherwise.
       operationId: pkgResume
+      x-cix-expose: [cli]
       requestBody:
         required: true
         content:
@@ -7888,6 +8114,7 @@ paths:
     get:
       summary: Inspect one hostbuild job's current state -- a thin wrapper over the same lookup GET /pkg/{name} uses, scoped to the reserved "__hostbuild" image
       operationId: getPkgHostbuild
+      x-cix-expose: [cli]
       parameters:
         - $ref: "#/components/parameters/PkgName"
       responses:
@@ -7953,6 +8180,7 @@ paths:
         builds running at once, omitting `name` gets a 400 asking for
         an explicit one rather than guessing.
       operationId: pkgBuildLog
+      x-cix-expose: [cli]
       parameters:
         - name: name
           in: query
@@ -8026,6 +8254,7 @@ paths:
     get:
       summary: List every known package (installed or in-flight) with its current state
       operationId: listPkg
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Package list
@@ -8044,6 +8273,7 @@ paths:
     get:
       summary: Inspect one package's current state (fetching/building/installed/failed)
       operationId: getPkg
+      x-cix-expose: []
       parameters:
         - $ref: "#/components/parameters/PkgName"
       responses:
@@ -8075,6 +8305,7 @@ paths:
         was ever actually merged into any image, so there is nothing to
         unlink and no new image version is produced.
       operationId: deletePkg
+      x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/PkgName"
       responses:
@@ -8103,6 +8334,7 @@ paths:
     get:
       summary: Inspect one container
       operationId: getContainer
+      x-cix-expose: [cli]
       parameters:
         - $ref: "#/components/parameters/ContainerName"
       responses:
@@ -8155,6 +8387,7 @@ paths:
         chain on full teardown should poll this container's own GET to
         404 first.
       operationId: deleteContainer
+      x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/ContainerName"
       responses:
@@ -8194,6 +8427,7 @@ paths:
         parser here would be a parallel implementation of the same
         validation. Recreate the container to change those.
       operationId: patchContainer
+      x-cix-expose: [cli]
       parameters:
         - $ref: "#/components/parameters/ContainerName"
       requestBody:
@@ -8257,6 +8491,7 @@ paths:
         unlike boot-time autostart -- an explicit, manual start always
         means start it.
       operationId: startContainer
+      x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/ContainerName"
       responses:
@@ -8304,6 +8539,7 @@ paths:
         409, not a silent 200 -- the caller should already know this
         from its last GET.
       operationId: pauseContainer
+      x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/ContainerName"
       responses:
@@ -8340,6 +8576,7 @@ paths:
         the inverse of POST .../pause. 404 if not currently a live
         container; 409 if it is live but not currently paused.
       operationId: unpauseContainer
+      x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/ContainerName"
       responses:
@@ -8392,6 +8629,7 @@ paths:
         removed while its registry entry exists) -- only a fully
         removed or never-existing name is a 404.
       operationId: getContainerStats
+      x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/ContainerName"
       responses:
@@ -8417,6 +8655,7 @@ paths:
         `{"state":"none"}` if this container has never had a migration
         started for it.
       operationId: getContainerStorageMigrateStatus
+      x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/ContainerName"
       responses:
@@ -8464,6 +8703,7 @@ paths:
         `{"state":"running",...}` status; poll GET on this same path
         for completion.
       operationId: migrateContainerStorage
+      x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/ContainerName"
       requestBody:
@@ -8543,6 +8783,7 @@ paths:
         being fully gone (e.g. before deleting a network it was
         attached to) should poll to status "stopped" first.
       operationId: stopContainer
+      x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/ContainerName"
       responses:
@@ -8622,6 +8863,7 @@ paths:
         worth naming even though it isn't a gap this endpoint itself
         introduces.
       operationId: consoleContainer
+      x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/ContainerName"
         - name: Upgrade
@@ -8735,6 +8977,7 @@ paths:
         not a directory listing -- this endpoint reads one file, it does
         not browse a tree.
       operationId: getContainerFile
+      x-cix-expose: [cli]
       parameters:
         - $ref: "#/components/parameters/ContainerName"
         - name: path
@@ -8800,6 +9043,7 @@ paths:
         operator wants on one that is down. It resolves to the same tree
         the next start will run from.
       operationId: putContainerFile
+      x-cix-expose: [cli]
       parameters:
         - $ref: "#/components/parameters/ContainerName"
         - name: path
@@ -8873,6 +9117,7 @@ paths:
         a recipe from an existing image is a real operation with real
         choices in it, and deleting one is destructive. This reports.
       operationId: listSoftware
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Every known piece of software and its two states
@@ -8940,6 +9185,7 @@ paths:
         that misunderstood the call, a name only by something that
         looked it up first.
       operationId: factoryReset
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -8985,6 +9231,7 @@ paths:
     get:
       summary: The shared schedule for volume content snapshots (issue #96)
       operationId: getVolumeBackupConfig
+      x-cix-expose: [web]
       responses:
         "200":
           description: Current schedule
@@ -9002,6 +9249,7 @@ paths:
         `backup` role -- the same role the configuration snapshots use,
         so there is one answer to "where do backups go".
       operationId: setVolumeBackupConfig
+      x-cix-expose: [web]
       requestBody:
         required: true
         content:
@@ -9047,6 +9295,7 @@ paths:
         The ids are the numeric ones the CONTAINER sees, which for every
         container without a user namespace are the host's own ids too.
       operationId: setVolumeOwner
+      x-cix-expose: [cli, web]
       parameters:
         - name: volume_name
           in: path
@@ -9112,6 +9361,7 @@ paths:
         lives on the directory, so a volume that moved to another
         filesystem would otherwise arrive untagged and unlimited.
       operationId: setVolumeQuota
+      x-cix-expose: [cli, web]
       parameters:
         - name: volume_name
           in: path
@@ -9167,6 +9417,7 @@ paths:
         together -- rendering one panel should not cost three round
         trips.
       operationId: getVolumeBackups
+      x-cix-expose: [cli, web]
       parameters:
         - name: volume_name
           in: path
@@ -9196,6 +9447,7 @@ paths:
         what the volume holds. Omitting `retain` leaves the existing
         value alone rather than resetting it.
       operationId: setVolumeBackupPolicy
+      x-cix-expose: [web]
       parameters:
         - name: volume_name
           in: path
@@ -9285,6 +9537,7 @@ paths:
         deleting the oldest to make room for one that then fails would
         lose history for nothing.
       operationId: takeVolumeBackup
+      x-cix-expose: [cli, web]
       parameters:
         - name: volume_name
           in: path
@@ -9330,6 +9583,7 @@ paths:
         refusal. Requires `confirm_volume_name` to match, and is refused
         while a container mounting the volume is running.
       operationId: restoreVolume
+      x-cix-expose: [cli, web]
       parameters:
         - name: volume_name
           in: path
@@ -9378,6 +9632,7 @@ paths:
     delete:
       summary: Delete one snapshot
       operationId: deleteVolumeSnapshot
+      x-cix-expose: [web]
       parameters:
         - name: volume_name
           in: path
@@ -9426,6 +9681,7 @@ paths:
         while that container keeps running. Nothing is running here, so
         there is nothing to keep alive during the copy.
       operationId: migrateVolume
+      x-cix-expose: [cli, web]
       parameters:
         - name: volume_name
           in: path
@@ -9508,6 +9764,7 @@ paths:
         for a tool used one command at a time, and "another exec is
         already running" is a clearer answer than silent queueing.
       operationId: execInContainer
+      x-cix-expose: [cli]
       parameters:
         - $ref: "#/components/parameters/ContainerName"
       requestBody:
@@ -9568,6 +9825,7 @@ paths:
     get:
       summary: The most recent exec's state and output
       operationId: getContainerExec
+      x-cix-expose: []
       parameters:
         - $ref: "#/components/parameters/ContainerName"
       responses:
@@ -9600,6 +9858,7 @@ paths:
         reports "on next start" in that case rather than claiming
         success.
       operationId: attachContainerVolume
+      x-cix-expose: [cli]
       parameters:
         - $ref: "#/components/parameters/ContainerName"
       requestBody:
@@ -9652,6 +9911,7 @@ paths:
         Never deletes the volume or its data -- only this container's
         reference to it.
       operationId: detachContainerVolume
+      x-cix-expose: [cli]
       parameters:
         - $ref: "#/components/parameters/ContainerName"
         - name: volume_name
@@ -9704,6 +9964,7 @@ paths:
         fields already use at creation time, just performed against an
         already-running container's netns instead of a brand-new one.
       operationId: attachContainerNetwork
+      x-cix-expose: [cli]
       parameters:
         - $ref: "#/components/parameters/ContainerName"
       requestBody:
@@ -9770,6 +10031,7 @@ paths:
         ends (a real kernel behavior), so no setns() is needed for this
         direction.
       operationId: detachContainerNetwork
+      x-cix-expose: [cli]
       parameters:
         - $ref: "#/components/parameters/ContainerName"
         - name: network
@@ -9823,6 +10085,7 @@ paths:
         pending_devices entry appears -- this endpoint is what makes
         that available to call by hand too.
       operationId: attachContainerDevice
+      x-cix-expose: [cli]
       parameters:
         - $ref: "#/components/parameters/ContainerName"
       requestBody:
@@ -9883,6 +10146,7 @@ paths:
         stale, now-superseded program in place would silently keep
         granting the device just removed).
       operationId: detachContainerDevice
+      x-cix-expose: [cli]
       parameters:
         - $ref: "#/components/parameters/ContainerName"
         - name: id

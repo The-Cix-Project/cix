@@ -477,6 +477,20 @@ int main(int argc, char **argv)
 
 				snprintf(v, sizeof(v), "%s", value_of(line));
 				strip_eol(v);
+				/* Whitespace-free, so a consumer can treat the value as
+				 * one token: "[cli, web]" and "[cli,web]" mean the same
+				 * thing and must not read differently downstream. */
+				{
+					char *w = v;
+					char *r = v;
+
+					while (*r != '\0') {
+						if (*r != ' ' && *r != '\t')
+							*w++ = *r;
+						r++;
+					}
+					*w = '\0';
+				}
 				snprintf(g_ops[cur_op].expose, sizeof(g_ops[cur_op].expose), "%s", v);
 			}
 			continue;
