@@ -2065,6 +2065,34 @@ static void write_pkg_json(const struct pkg_entry *e, struct json_writer *w)
 	} else {
 		jw_null(w);
 	}
+	/*
+	 * Issue #171: whether this package's artifact tarball exists in
+	 * this host's own cache -- i.e. whether it can be published right
+	 * now, and whether those bytes exist anywhere but this disk.
+	 *
+	 * Computed live, never stored: it is a question about a file, and
+	 * a stored flag would be one more thing that can disagree with the
+	 * filesystem (same reasoning is_hostbuild/artifact_path above give
+	 * for deriving rather than storing).
+	 *
+	 * This is the field whose absence let a real gap hide for five
+	 * releases. `cix` sat at v2.2.0-rc30 in the artifact cache while
+	 * the host that built it ran rc35, because a hostbuild enqueued a
+	 * push for a tarball nothing had built (#200) -- and nothing in
+	 * this view could distinguish "published" from "exists only here".
+	 * It was found by comparing two systems by hand.
+	 *
+	 * What it does NOT claim: that the artifact is on the configured
+	 * server. Another host may have published those bytes, and this
+	 * host may have pushed successfully and since had its cache
+	 * evicted. Answering that truthfully needs either a network probe
+	 * per read or persisted push results -- see #171, deliberately not
+	 * half-built here. This field answers only what the host can know
+	 * for free, and its name says so.
+	 */
+	jw_key(w, "artifact_cached");
+	jw_bool(w, e->state == PKG_STATE_INSTALLED &&
+	                  pkg_artifact_cache_has(e->name, e->version));
 	jw_key(w, "error");
 	if (e->error[0] != '\0')
 		jw_str(w, e->error);
@@ -8046,8 +8074,33 @@ static void push_status_path(char *out, size_t out_size)
  */
 static void pkg_artifact_push_enqueue(const char *name, const char *version)
 {
-	if (!g_artifact_push_enabled)
+	if (!g_artifact_push_enabled) {
+		/*
+		 * Issue #171: the one refusal path here that used to say
+		 * nothing at all, while every other one below logs.
+		 *
+		 * A host may legitimately not publish, so this is not an
+		 * error. But a build that produces a distributable artifact
+		 * and silently discards its only copy is the same class of
+		 * quiet loss as diagnostics that only ever reached stderr
+		 * (#132). It really cost: nine packages were built on
+		 * 192.168.15.95 with push_enabled false -- gawk, mtools,
+		 * xorriso, diffutils, bison, python, grub and others, hours of
+		 * real compute -- and none reached the cache. Nothing said so,
+		 * and a host's local cache does not survive a reinstall.
+		 *
+		 * Says what to do about it, because the answer is not obvious
+		 * from the fact alone: the artifact is still here and can be
+		 * published without rebuilding.
+		 */
+		logstore_write("cixd", "info",
+		                "artifact push: %s@%s was built here but not published -- push is "
+		                "disabled. The artifact is in this host's cache and can still be "
+		                "published with POST /v1/pkg/%s/artifact/publish; it will be lost "
+		                "if this host is reinstalled first.",
+		                name, version, name);
 		return;
+	}
 	if (!pkg_artifact_is_configured()) {
 		logstore_write("cixd", "info",
 		                "artifact push: %s@%s not published -- push is enabled but no "

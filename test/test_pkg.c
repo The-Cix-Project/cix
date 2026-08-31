@@ -279,7 +279,34 @@ static int write_recipe(const char *name, const char *version, const char *tarba
 	fprintf(f, "pkg_sha256=%s\n", sha256);
 	fprintf(f, "pkg_depends=\"%s\"\n", depends != NULL ? depends : "");
 	fprintf(f, "pkg_build_depends=\"tcc linux-headers bash coreutils\"\n\n");
-	fprintf(f, "pkg_build() {\n\ttcc -o hello hello.c\n}\n\n");
+	/*
+	 * Issue #192, second pass: ONE recipe builds slowly, on purpose.
+	 *
+	 * The build-ceiling check asserts a 409 that is only true while a
+	 * previous job still holds the single slot. #192 added a guard that
+	 * waits for the slot to be held and fails clearly if it was not --
+	 * which stopped the test blaming the ceiling for a timing problem,
+	 * but left it still failing intermittently. Detecting a lost
+	 * precondition is not the same as not losing it.
+	 *
+	 * A fixture build is `tcc -o hello hello.c`, milliseconds, so
+	 * whether the window existed at all was left to scheduling. The
+	 * slow build makes it reliably exist.
+	 *
+	 * It is a DEDICATED package, not `overflow`. Slowing `overflow`
+	 * was tried and made things worse: it is reused as a probe at
+	 * several points, so an earlier job was still holding a slot when
+	 * a later one started, turning an expected 202 into a 409. A
+	 * package that exists only to occupy a slot has no other use to
+	 * disturb.
+	 *
+	 * coreutils is in this recipe's own declared build tools, so
+	 * `sleep` is genuinely present rather than assumed.
+	 */
+	if (strcmp(name, "slowhold") == 0)
+		fprintf(f, "pkg_build() {\n\tsleep 5\n\ttcc -o hello hello.c\n}\n\n");
+	else
+		fprintf(f, "pkg_build() {\n\ttcc -o hello hello.c\n}\n\n");
 	fprintf(f, "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n\tcp hello "
 	           "\"$PKG_DESTDIR/usr/bin/%s\"\n}\n",
 	        name);
@@ -576,6 +603,14 @@ static int write_multisrc_recipe(const char *name, const char *version, const ch
  * That cascade cost a multi-hour investigation that concluded the code
  * was innocent -- the budget was the defect.
  */
+/* #171: read a boolean field, false when absent or not a bool. */
+static int json_bool_field(const struct json_value *obj, const char *key)
+{
+	const struct json_value *v = json_object_get(obj, key);
+
+	return v != NULL && v->type == JSON_BOOL && v->u.boolean;
+}
+
 static int poll_pkg_state(const struct cix_client *c, const char *name, char *out_state,
                            size_t out_state_size, int max_attempts)
 {
@@ -690,6 +725,7 @@ int main(void)
 	if (write_recipe("greeter", "1.0", tarball_path, sha256, "") != 0 ||
 	    write_recipe("concurrent", "1.0", tarball_path, sha256, "") != 0 ||
 	    write_recipe("overflow", "1.0", tarball_path, sha256, "") != 0 ||
+	    write_recipe("slowhold", "1.0", tarball_path, sha256, "") != 0 ||
 	    write_recipe("hbconcurrent", "1.0", tarball_path, sha256, "") != 0) {
 		fprintf(stderr, "FAIL: could not write recipes\n");
 		return 1;
@@ -3640,6 +3676,28 @@ skip_pin_isolation:
 				        hb_tarball);
 				ok = 0;
 			}
+
+			/*
+			 * Issue #171: and the package view must SAY so. The gap
+			 * #200 fixed hid for five releases because nothing in
+			 * GET /v1/pkg/<name> distinguished "published" from
+			 * "exists only on this disk" -- it was found by comparing
+			 * two systems by hand. artifact_cached answers the half a
+			 * host can know for free.
+			 */
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/pkg/hostbuild/hbtest", NULL, &r) != 0 ||
+			    r.status != 200) {
+				fprintf(stderr, "FAIL: #171 could not read back hbtest, status=%d\n", r.status);
+				ok = 0;
+			} else if (!json_bool_field(r.json, "artifact_cached")) {
+				fprintf(stderr,
+				        "FAIL: #171 hbtest's artifact is in the local cache but the package "
+				        "view does not report artifact_cached -- the field exists so this "
+				        "state stops being invisible\n");
+				ok = 0;
+			}
+			cix_response_free(&r);
 		}
 
 		/* hbconcurrent's own chain (started alongside hbtest's
@@ -3927,9 +3985,9 @@ skip_hostbuild:
 	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"overflow\"}", &r) != 0 ||
+	if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"slowhold\"}", &r) != 0 ||
 	    r.status != 202) {
-		fprintf(stderr, "FAIL: POST install overflow (ceiling=1) status=%d\n", r.status);
+		fprintf(stderr, "FAIL: POST install slowhold (ceiling=1) status=%d\n", r.status);
 		ok = 0;
 	}
 	cix_response_free(&r);
@@ -3953,7 +4011,7 @@ skip_hostbuild:
 		for (w = 0; w < 100; w++) {
 			ost[0] = '\0';
 			memset(&r, 0, sizeof(r));
-			if (cix_client_request(&client, "GET", "/v1/pkg/overflow", NULL, &r) == 0 &&
+			if (cix_client_request(&client, "GET", "/v1/pkg/slowhold", NULL, &r) == 0 &&
 			    r.status == 200) {
 				const char *st = json_str_field(r.json, "state");
 
@@ -3975,7 +4033,7 @@ skip_hostbuild:
 		}
 		if (!held) {
 			fprintf(stderr,
-			        "FAIL: #192 test precondition lost -- overflow reached '%s' before the "
+			        "FAIL: #192 test precondition lost -- slowhold reached '%s' before the "
 			        "build ceiling could be probed, so the 409 below would be asserting "
 			        "timing, not the ceiling\n",
 			        ost[0] != '\0' ? ost : "no state");
@@ -3994,9 +4052,9 @@ skip_hostbuild:
 	}
 	cix_response_free(&r);
 
-	if (poll_pkg_state(&client, "overflow", state, sizeof(state), 200) != 0 ||
+	if (poll_pkg_state(&client, "slowhold", state, sizeof(state), 200) != 0 ||
 	    strcmp(state, "installed") != 0) {
-		fprintf(stderr, "FAIL: overflow (ceiling=1) ended in state '%s', expected installed\n",
+		fprintf(stderr, "FAIL: slowhold (ceiling=1) ended in state '%s', expected installed\n",
 		        state);
 		ok = 0;
 	}
@@ -4016,7 +4074,7 @@ skip_hostbuild:
 	/*
 	 * Let the ceiling=1 job finish before asking for another (#192).
 	 *
-	 * The wait added above makes "overflow" genuinely still hold the
+	 * The wait added above makes "slowhold" genuinely still hold the
 	 * slot when the 409 is asserted -- which is the point -- so it is
 	 * still holding it here too. Without draining it first, this step
 	 * asserts a 202 while the pipeline is legitimately busy and gets a
@@ -4028,9 +4086,9 @@ skip_hostbuild:
 		char dst[64];
 
 		dst[0] = '\0';
-		if (poll_pkg_state(&client, "overflow", dst, sizeof(dst), 300) != 0) {
+		if (poll_pkg_state(&client, "slowhold", dst, sizeof(dst), 300) != 0) {
 			fprintf(stderr,
-			        "FAIL: #192 overflow never reached a terminal state (last='%s'), so the "
+			        "FAIL: #192 slowhold never reached a terminal state (last='%s'), so the "
 			        "ceiling-restore check below would be asserting timing\n",
 			        dst[0] != '\0' ? dst : "no state");
 			ok = 0;
