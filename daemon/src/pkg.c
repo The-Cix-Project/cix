@@ -8520,6 +8520,32 @@ static void pkg_artifact_build_request(const char *name, const char *version, ch
 		out_header[0] = '\0';
 }
 
+enum pkg_error pkg_artifact_push_request(const char *remote_name, char *out_url, size_t url_size,
+                                          char *out_auth_header, size_t hdr_size)
+{
+	size_t len;
+
+	if (remote_name == NULL || remote_name[0] == '\0')
+		return PKG_ERR_INVALID_NAME;
+	if (g_artifact_base_url[0] == '\0')
+		return PKG_ERR_NOT_FOUND;
+
+	len = strlen(g_artifact_base_url);
+	if (len > 0 && g_artifact_base_url[len - 1] == '/')
+		len--;
+	snprintf(out_url, url_size, "%.*s/%s", (int)len, g_artifact_base_url, remote_name);
+	if (g_artifact_token[0] != '\0')
+		snprintf(out_auth_header, hdr_size, "Authorization: Bearer %s", g_artifact_token);
+	else
+		out_auth_header[0] = '\0';
+	return PKG_OK;
+}
+
+int pkg_artifact_push_is_enabled(void)
+{
+	return g_artifact_push_enabled;
+}
+
 /* Where start_fetch_for()'s child stages a checksum-verified artifact
  * fetch before pkg_fetch_completed() promotes it into the real local
  * cache -- deliberately under g_sources_dir (not g_cache_dir): an
