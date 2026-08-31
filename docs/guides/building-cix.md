@@ -129,6 +129,8 @@ minisign -Vm cix-installer-<version>-1-<arch>.iso -p cix-release.pub
 
 Verify on a machine you already trust, before writing the stick. An installer that checks its own signature is the code being checked doing the checking — a substituted ISO would report success.
 
+The public key to check against is committed at [`docs/keys/cix-release.pub`](../keys/cix-release.pub) — pin a copy once and keep it, rather than re-fetching it each time (whoever could hand you a bad ISO could hand you the key that matches it). It lives in git rather than in the artifact cache on purpose: the cache serves the bytes, so a cache that also served the key would be vouching for its own payload. See [`docs/keys/README.md`](../keys/README.md).
+
 An empty `iso build` (no flags at all) works too — it just leaves every kernel argument as the `CHANGEME` placeholder, editable at the GRUB boot menu before installing, exactly like a manually-run `mkinstalleriso` always has.
 
 ### A real, TCC-specific gap worth knowing about
