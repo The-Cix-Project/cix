@@ -58,6 +58,16 @@ int releasekey_is_set(void);
 enum releasekey_error releasekey_public(char *out, size_t out_size);
 
 /*
+ * The same key id, hex, for display. This is what minisign prints when
+ * a signature does not match the public key an operator holds, so it is
+ * the one field that makes a mismatch diagnosable -- worth reporting
+ * separately from the public key blob it is already embedded in.
+ * Needs RELEASEKEY_ID_HEX_SIZE bytes.
+ */
+#define RELEASEKEY_ID_HEX_SIZE 17
+enum releasekey_error releasekey_key_id_hex(char *out, size_t out_size);
+
+/*
  * Writes a minisign signature for `path` to `sig_path`.
  *
  * Legacy "Ed" mode -- Ed25519 over the file itself, not over a hash of

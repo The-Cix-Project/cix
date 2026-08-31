@@ -179,6 +179,26 @@ enum releasekey_error releasekey_public(char *out, size_t out_size)
 	return RELEASEKEY_OK;
 }
 
+enum releasekey_error releasekey_key_id_hex(char *out, size_t out_size)
+{
+	unsigned char pub[ED25519_PUB_LEN];
+	unsigned char id[RELEASEKEY_ID_LEN];
+	size_t i;
+	enum releasekey_error rc;
+
+	if (out_size < RELEASEKEY_ID_HEX_SIZE)
+		return RELEASEKEY_ERR_IO;
+	if (!releasekey_is_set())
+		return RELEASEKEY_ERR_NOT_SET;
+	rc = public_raw(g_key_path, pub);
+	if (rc != RELEASEKEY_OK)
+		return rc;
+	key_id(pub, id);
+	for (i = 0; i < RELEASEKEY_ID_LEN; i++)
+		snprintf(out + i * 2, out_size - i * 2, "%02x", id[i]);
+	return RELEASEKEY_OK;
+}
+
 /* openssl pkeyutl -sign -rawin: Ed25519 is PureEdDSA, so this is a
  * signature over the file's own bytes with no digest step. */
 static enum releasekey_error sign_raw(const char *in_path, unsigned char out[ED25519_SIG_LEN])

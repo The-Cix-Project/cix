@@ -22,6 +22,7 @@
 #include "ping.h"
 #include "resolv.h"
 #include "signingkeys.h"
+#include "releasekey.h"
 #include "childdiag.h"
 #include "swap.h"
 #include "syslogfwd.h"
@@ -5937,6 +5938,109 @@ static void handle_signing_keys_delete(int fd)
 }
 
 /*
+ * ADR-0220: GET/PUT/DELETE /v1/system/release-key -- the Ed25519 key
+ * that signs published artifacts. Deliberately not the Secure Boot pair
+ * above: that one is RSA because UEFI mandates RSA and answers "may
+ * this firmware boot this image?"; this one answers "did Cix publish
+ * these bytes?". One key for both would mean whoever can sign a
+ * download can sign a bootloader.
+ *
+ * Same discipline as the pair above: the PUT body carries a private
+ * key, so it is never echoed, logged, or quoted in an error. The public
+ * half is different -- it exists to be published, and comes back in
+ * minisign's own format so an operator can hand it to a verifier
+ * unchanged.
+ */
+static void write_release_key_json(struct json_writer *w)
+{
+	char pub[256];
+	char id_hex[RELEASEKEY_ID_HEX_SIZE];
+
+	jw_obj_open(w);
+	jw_key(w, "key_set");
+	jw_bool(w, releasekey_is_set());
+	jw_key(w, "public_key");
+	if (releasekey_is_set() && releasekey_public(pub, sizeof(pub)) == RELEASEKEY_OK)
+		jw_str(w, pub);
+	else
+		jw_null(w);
+	jw_key(w, "key_id");
+	if (releasekey_is_set() && releasekey_key_id_hex(id_hex, sizeof(id_hex)) == RELEASEKEY_OK)
+		jw_str(w, id_hex);
+	else
+		jw_null(w);
+	jw_obj_close(w);
+}
+
+static void handle_release_key_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	write_release_key_json(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_release_key_put(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const char *key_pem;
+	enum releasekey_error rerr;
+	struct json_writer w;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	key_pem = json_as_string(json_object_get(root, "key"));
+	if (key_pem == NULL) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "key (a PEM string) is required");
+		return;
+	}
+
+	rerr = releasekey_set(key_pem, strlen(key_pem));
+	json_free(root);
+	if (rerr == RELEASEKEY_ERR_BAD_KEY) {
+		/*
+		 * Names the algorithm rather than saying "invalid key",
+		 * because the realistic mistake here is pasting the RSA
+		 * Secure Boot key sitting right beside this one -- a
+		 * perfectly valid key that this endpoint cannot use.
+		 */
+		respond_error(fd, 400, "Bad Request",
+		              "key is not a parseable Ed25519 private key -- generate one with "
+		              "'openssl genpkey -algorithm ed25519'");
+		return;
+	}
+	if (rerr != RELEASEKEY_OK) {
+		respond_error(fd, 500, "Internal Server Error", "could not persist the release key");
+		return;
+	}
+
+	jw_init(&w);
+	write_release_key_json(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_release_key_delete(int fd)
+{
+	struct json_writer w;
+
+	if (releasekey_clear() != RELEASEKEY_OK) {
+		respond_error(fd, 500, "Internal Server Error", "could not remove the release key");
+		return;
+	}
+	jw_init(&w);
+	write_release_key_json(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/*
  * ADR-0160: GET/PUT/DELETE /v1/system/sysctl/{key}, GET /v1/system/sysctl
  * -- host-level /proc/sys REST surface, live, fully open passthrough
  * (host-auth write-gating is the only access control -- no allowlist,
@@ -9411,6 +9515,12 @@ static void spawn_cix_bootroot_assembly(const char *artifact_dir)
 enum iso_build_state { ISO_BUILD_NONE, ISO_BUILD_BUILDING, ISO_BUILD_READY, ISO_BUILD_FAILED };
 static enum iso_build_state g_iso_build_state = ISO_BUILD_NONE;
 static char g_iso_build_error[256];
+/*
+ * ADR-0220. Empty unless the finished ISO was actually signed, which
+ * needs a release key installed -- an unsigned ISO is still a usable
+ * ISO, so a missing key does not fail the build.
+ */
+static char g_iso_signature_path[PATH_MAX];
 static char ISO_OUTPUT_PATH[PATH_MAX];
 
 static int url_query_param(const char *full_path, const char *key, char *out, size_t out_size);
@@ -10210,6 +10320,55 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 }
 
 /* Reaps iso_build_start()'s own mkinstalleriso child, same shape as
+/*
+ * Signs the finished ISO (ADR-0220), if this host holds a release key.
+ *
+ * Deliberately does NOT fail the build when no key is installed: an
+ * unsigned ISO still installs, and most hosts that can build one are
+ * not the designated release host and should not hold signing material
+ * at all. The signature's absence is reported honestly instead --
+ * signature_path stays null -- rather than being inferred from a
+ * successful build.
+ *
+ * A signing failure with a key present is different, and is logged as
+ * an error: that means the key is there and did not work, which an
+ * operator needs to see before shipping the ISO as signed.
+ */
+static void sign_finished_iso(void)
+{
+	char comment[256];
+	enum releasekey_error rc;
+	char sig_path[PATH_MAX];
+
+	g_iso_signature_path[0] = '\0';
+	if (!releasekey_is_set()) {
+		logstore_write("cixd", "info",
+		               "iso assembly: no release key installed -- ISO is unsigned");
+		return;
+	}
+	if ((size_t)snprintf(sig_path, sizeof(sig_path), "%s.minisig", ISO_OUTPUT_PATH) >=
+	    sizeof(sig_path)) {
+		logstore_write("cixd", "error", "iso assembly: signature path too long");
+		return;
+	}
+	/*
+	 * The trusted comment is signed too, so it is a real claim about
+	 * the artifact rather than a label anyone can rewrite: naming the
+	 * build that produced it means a verifier learns which release
+	 * these bytes are, not merely that Cix signed something.
+	 */
+	snprintf(comment, sizeof(comment), "cix installer iso, %s", CIX_BUILD_VERSION);
+	rc = releasekey_sign_file(ISO_OUTPUT_PATH, sig_path, comment);
+	if (rc != RELEASEKEY_OK) {
+		logstore_write("cixd", "error", "iso assembly: signing failed: %s",
+		               releasekey_strerror(rc));
+		return;
+	}
+	snprintf(g_iso_signature_path, sizeof(g_iso_signature_path), "%s", sig_path);
+	logstore_write("cixd", "info", "iso assembly: signed (%s)", g_iso_signature_path);
+}
+
+/*
  * handle_bootroot_assemble_event() -- updates g_iso_build_state for
  * GET /v1/system/iso to report back, since no REST response is waiting
  * on this (the original POST already returned 202 long before this
@@ -10238,6 +10397,7 @@ static void handle_iso_assemble_event(struct conn *cc)
 		g_iso_build_state = ISO_BUILD_READY;
 		fprintf(stderr, "iso assembly: succeeded (%s)\n", ISO_OUTPUT_PATH);
 		logstore_write("cixd", "info", "iso assembly: succeeded (%s)", ISO_OUTPUT_PATH);
+		sign_finished_iso();
 		/* A successful run that still printed something is worth
 		 * seeing -- ADR-0154's mksquashfs bug exited 0 and produced
 		 * wrong output, and said so on stderr the whole time. */
@@ -11356,6 +11516,11 @@ static void write_iso_status(struct json_writer *w)
 	jw_key(w, "error");
 	if (g_iso_build_state == ISO_BUILD_FAILED)
 		jw_str(w, g_iso_build_error);
+	else
+		jw_null(w);
+	jw_key(w, "signature_path");
+	if (g_iso_build_state == ISO_BUILD_READY && g_iso_signature_path[0] != '\0')
+		jw_str(w, g_iso_signature_path);
 	else
 		jw_null(w);
 	jw_obj_close(w);
@@ -23935,6 +24100,24 @@ static void op_deleteSystemSigningKeys(const struct api_ctx *ctx)
 	handle_signing_keys_delete(ctx->fd);
 }
 
+/* GET /v1/system/release-key */
+static void op_getSystemReleaseKey(const struct api_ctx *ctx)
+{
+	handle_release_key_get(ctx->fd);
+}
+
+/* PUT /v1/system/release-key */
+static void op_putSystemReleaseKey(const struct api_ctx *ctx)
+{
+	handle_release_key_put(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* DELETE /v1/system/release-key */
+static void op_deleteSystemReleaseKey(const struct api_ctx *ctx)
+{
+	handle_release_key_delete(ctx->fd);
+}
+
 /* GET /v1/system/sysctl */
 static void op_listSystemSysctl(const struct api_ctx *ctx)
 {
@@ -27845,6 +28028,7 @@ static int cixd_main(int argc, char **argv)
 		return 1;
 	if (boot_subsystem_init(init_mode, "signing_keys", signingkeys_init(SIGNING_KEYS_DIR)) != 0)
 		return 1;
+	releasekey_init(SIGNING_KEYS_DIR);
 	if (boot_subsystem_init(init_mode, "siteconfig", siteconfig_init(SITE_CONFIG_PATH)) != 0)
 		return 1;
 	reconcile_instance_dns_record();

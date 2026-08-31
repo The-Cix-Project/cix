@@ -117,6 +117,23 @@ static int run(char *const argv[])
 	return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
 }
 
+/* An Ed25519 key, what the release key must be (ADR-0220). */
+static int make_ed25519(const char *key_path)
+{
+	char out_arg[PATH_MAX + 8];
+	char *argv[7];
+
+	snprintf(out_arg, sizeof(out_arg), "-out");
+	argv[0] = (char *)"/usr/bin/openssl";
+	argv[1] = (char *)"genpkey";
+	argv[2] = (char *)"-algorithm";
+	argv[3] = (char *)"ed25519";
+	argv[4] = out_arg;
+	argv[5] = (char *)key_path;
+	argv[6] = NULL;
+	return run(argv);
+}
+
 /* A real self-signed pair, the same shape a Secure Boot signing key is. */
 static int make_pair(const char *key_path, const char *crt_path, const char *cn)
 {
@@ -186,6 +203,23 @@ static char *put_body(const char *key_pem, const char *cert_pem)
 	jw_str(&w, key_pem);
 	jw_key(&w, "cert");
 	jw_str(&w, cert_pem);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+	out = strdup(w.buf);
+	jw_free(&w);
+	return out;
+}
+
+/* {"key": "<pem>"} -- the release-key PUT body. */
+static char *key_only_body(const char *pem)
+{
+	struct json_writer w;
+	char *out;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "key");
+	jw_str(&w, pem);
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 	out = strdup(w.buf);
@@ -434,6 +468,132 @@ int main(void)
 		ok = 0;
 	}
 	cix_response_free(&r);
+
+	/*
+	 * 9-12. The release key (ADR-0220) -- a different key answering a
+	 * different question, so it gets its own state rather than a field
+	 * on the pair above. These run last, after the Secure Boot pair has
+	 * been deleted, which also proves the two are genuinely independent:
+	 * removing one must not disturb the other.
+	 */
+	{
+		char ed_path[PATH_MAX];
+		char rk_installed[PATH_MAX];
+		char *ed_pem = NULL;
+		char *rk_body = NULL;
+
+		snprintf(ed_path, sizeof(ed_path), "%s/release.key", g_data_dir);
+		snprintf(rk_installed, sizeof(rk_installed), "%s/state/keys/cix-release.key",
+		         g_data_dir);
+
+		/* 9. A fresh host holds no release key. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "GET", "/v1/system/release-key", NULL, &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: GET release-key, status=%d\n", r.status);
+			ok = 0;
+		} else if (bool_field(r.json, "key_set") ||
+		           json_as_string(json_object_get(r.json, "public_key")) != NULL) {
+			fprintf(stderr, "FAIL: a fresh host reported a release key\n");
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		/*
+		 * 10. An RSA key is refused. This is the check worth having:
+		 * the Secure Boot key sitting beside this one IS RSA, so
+		 * pasting the wrong one is the realistic operator mistake,
+		 * and a valid-but-unusable key must fail here rather than
+		 * much later at signing time on a real release.
+		 */
+		rk_body = key_only_body(pem_key_a);
+		memset(&r, 0, sizeof(r));
+		if (rk_body == NULL ||
+		    cix_client_request(&client, "PUT", "/v1/system/release-key", rk_body, &r) != 0 ||
+		    r.status != 400) {
+			fprintf(stderr, "FAIL: an RSA key was accepted as a release key, status=%d\n",
+			        r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+		free(rk_body);
+		rk_body = NULL;
+		if (access(rk_installed, F_OK) == 0) {
+			fprintf(stderr, "FAIL: a rejected release key was still written to disk\n");
+			ok = 0;
+		}
+
+		/* 11. A real Ed25519 key installs, and GET reports a minisign
+		 * public key -- the thing an operator publishes. */
+		if (make_ed25519(ed_path) != 0 || (ed_pem = slurp(ed_path, NULL)) == NULL) {
+			fprintf(stderr, "FAIL: could not generate an Ed25519 key\n");
+			ok = 0;
+		} else {
+			rk_body = key_only_body(ed_pem);
+			memset(&r, 0, sizeof(r));
+			if (rk_body == NULL ||
+			    cix_client_request(&client, "PUT", "/v1/system/release-key", rk_body, &r) !=
+			        0 ||
+			    r.status != 200 || !bool_field(r.json, "key_set")) {
+				fprintf(stderr, "FAIL: PUT a valid Ed25519 key, status=%d\n", r.status);
+				ok = 0;
+			} else {
+				const char *pub = json_as_string(json_object_get(r.json, "public_key"));
+				const char *id = json_as_string(json_object_get(r.json, "key_id"));
+
+				/*
+				 * "RW" is minisign's own leading base64 for the "Ed"
+				 * algorithm bytes -- a public key file that does not
+				 * start with it is not one stock minisign will read,
+				 * which is the only property that matters here.
+				 */
+				if (pub == NULL || strstr(pub, "untrusted comment:") != pub ||
+				    strstr(pub, "\nRW") == NULL) {
+					fprintf(stderr, "FAIL: public_key is not a minisign public key file\n");
+					ok = 0;
+				}
+				if (id == NULL || strlen(id) != 16) {
+					fprintf(stderr, "FAIL: key_id is not 8 bytes of hex\n");
+					ok = 0;
+				}
+				/* The private key never comes back, in any field. */
+				if (pub != NULL && strstr(pub, "PRIVATE KEY") != NULL) {
+					fprintf(stderr, "FAIL: a private key appeared in the response\n");
+					ok = 0;
+				}
+			}
+			cix_response_free(&r);
+			free(rk_body);
+			free(ed_pem);
+		}
+		/* The Secure Boot pair was deleted above and must have stayed
+		 * deleted -- installing one key must not resurrect the other. */
+		if (access(installed_key, F_OK) == 0) {
+			fprintf(stderr, "FAIL: installing a release key disturbed the signing pair\n");
+			ok = 0;
+		}
+
+		/* 12. DELETE removes it, and is idempotent. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "DELETE", "/v1/system/release-key", NULL, &r) != 0 ||
+		    r.status != 200 || bool_field(r.json, "key_set")) {
+			fprintf(stderr, "FAIL: DELETE release-key, status=%d\n", r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+		if (access(rk_installed, F_OK) == 0) {
+			fprintf(stderr, "FAIL: DELETE left the release key on disk\n");
+			ok = 0;
+		}
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "DELETE", "/v1/system/release-key", NULL, &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: release-key DELETE is not idempotent, status=%d\n",
+			        r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+	}
 
 	free(pem_key_a);
 	free(pem_crt_a);

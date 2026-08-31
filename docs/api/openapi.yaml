@@ -1396,6 +1396,107 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /system/release-key:
+    get:
+      summary: Whether this host holds a release-signing key, and its public half (ADR-0220)
+      description: >
+        Distinct from GET /system/signing-keys, and deliberately so.
+        That key is RSA because UEFI mandates RSA, and answers "may
+        this firmware boot this image?"; this one is Ed25519 because
+        minisign mandates Ed25519, and answers "did Cix publish these
+        bytes?". They are not two encodings of one secret -- sharing a
+        key between those questions would mean whoever can sign a
+        download can also sign a bootloader, and the two have very
+        different blast radii.
+        The private key never comes back from any endpoint, in any
+        form, the same posture the Secure Boot pair and the repo and
+        artifact-cache tokens already take. The public key does, in
+        minisign's own public-key-file format, because it is meant to
+        be published: an operator hands that exact text to whoever
+        needs to verify a download, and stock minisign reads it with
+        no conversion.
+      operationId: getSystemReleaseKey
+      x-cix-expose: [cli, web]
+      responses:
+        "200":
+          description: Current release-key state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleaseKey"
+    put:
+      summary: Install the operator's Ed25519 release-signing key (ADR-0220)
+      description: >
+        The key is pasted in as a single PEM block and validated by
+        deriving its public half before anything is written, so a key
+        of the wrong algorithm is refused here rather than discovered
+        much later, at signing time, on a real release. An RSA key --
+        the realistic mistake, given the Secure Boot pair sitting
+        beside it -- is rejected outright.
+        cixd never generates or fetches this key itself. Installing it
+        stays a deliberate operator act against one designated release
+        host, exactly as ADR-0064 established for the Secure Boot key:
+        a signing key that propagates onto every deployed box is not a
+        signing key.
+      operationId: putSystemReleaseKey
+      x-cix-expose: [cli, web]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [key]
+              properties:
+                key:
+                  type: string
+                  description: >
+                    The Ed25519 private key, PEM ("-----BEGIN PRIVATE
+                    KEY-----"). Generated with
+                    "openssl genpkey -algorithm ed25519".
+      responses:
+        "200":
+          description: Installed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleaseKey"
+        "400":
+          description: Invalid JSON body, or a key openssl cannot read as Ed25519
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Could not persist the key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      summary: Remove this host's release-signing key (ADR-0220)
+      description: >
+        A release host being decommissioned or repurposed should not
+        keep signing material it no longer needs. Without this the
+        only way to remove the key would be to reinstall the box.
+        Already-published signatures stay verifiable -- they are
+        checked against the published public key, not against
+        anything still held here.
+      operationId: deleteSystemReleaseKey
+      x-cix-expose: [cli, web]
+      responses:
+        "200":
+          description: Removed, or already absent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleaseKey"
+        "500":
+          description: Could not remove the key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /system/sysctl:
     get:
       summary: Every sysctl this daemon currently manages (ADR-0160)
@@ -11588,6 +11689,29 @@ components:
           type: string
           nullable: true
           description: SHA-256 fingerprint of the certificate -- what an operator compares against the cert they enrolled as a MOK.
+    ReleaseKey:
+      type: object
+      required: [key_set]
+      properties:
+        key_set:
+          type: boolean
+          description: Whether a release-signing key is installed. The key itself is never returned.
+        public_key:
+          type: string
+          nullable: true
+          description: >
+            The minisign public-key file, verbatim -- an untrusted
+            comment line, then base64 of "Ed" || key_id || public key.
+            Non-null only when a key is installed. Publishable as-is;
+            stock minisign reads it with no conversion.
+        key_id:
+          type: string
+          nullable: true
+          description: >
+            The key id minisign prints on a mismatch, hex. Derived from
+            SHA-256 of the public key rather than stored, so the public
+            key file and every signature agree by construction and
+            there is no separate id to drift.
     SysctlEntry:
       type: object
       required: [key, value]
@@ -13286,6 +13410,15 @@ components:
           type: string
           nullable: true
           description: Non-null only when state is "failed".
+        signature_path:
+          type: string
+          nullable: true
+          description: >
+            Host filesystem path to the ISO's minisign signature
+            (ADR-0220). Non-null only when state is "ready" AND a
+            release key was installed at build time -- an unsigned ISO
+            is still a usable ISO, so a missing key does not fail the
+            build, it just leaves this null.
 
     IsoBuildRequest:
       type: object
