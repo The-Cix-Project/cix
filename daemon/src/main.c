@@ -10066,7 +10066,7 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 	char signing_cert_der[PATH_MAX];
 	char stage_dir[PATH_MAX];
 	char kernel_args[512];
-	char *argv[14];
+	char *argv[15];
 	pid_t pid;
 	int pidfd;
 	int output_pipe[2];
@@ -10132,7 +10132,28 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 	argv[10] = ISO_OUTPUT_PATH;
 	argv[11] = kernel_args;
 	argv[12] = isotools_root;
-	argv[13] = NULL;
+	/*
+	 * The package seed directory (#189 part 2), "" for none -- the same
+	 * convention mkbootroot uses for an absent optional input.
+	 *
+	 * This argument existed on the callee and never on this caller:
+	 * mkinstalleriso grew it, checks `argc != 14`, and this call site
+	 * still passed 13 and a NULL. Every POST /v1/system/iso on a real
+	 * host therefore printed mkinstalleriso's usage text and exited 2,
+	 * surfacing as "mkinstalleriso failed (status 0x200)" followed by
+	 * a fragment of that usage prose -- an error message made of
+	 * documentation, which reads like anything except a wrong argument
+	 * count. Found while verifying something unrelated (ADR-0217's
+	 * libc-dev removal), which is the only reason it was found at all:
+	 * the ISO endpoint had no test that ran the real binary.
+	 *
+	 * "" rather than a real seed, deliberately: staging one changes
+	 * what the media DOES (it would install a host that can run a
+	 * container with no network), and that is a product decision, not
+	 * a repair. Filed separately rather than smuggled in here.
+	 */
+	argv[13] = (char *)"";
+	argv[14] = NULL;
 
 	/*
 	 * Capture the child's stdout and stderr. Not fatal if it fails --
