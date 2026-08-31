@@ -5726,6 +5726,127 @@ function openAssignRole(name) {
 }
 
 /*
+ * Issue #140: how the disk is actually carved up, as a donut.
+ *
+ * A table of partition sizes answers "how big is each" but not "how
+ * much of this disk is spoken for", which is the question an operator
+ * asks before adding one -- and the question that started this issue,
+ * since the free space existed and the platform would not use it.
+ *
+ * Unallocated space is a segment in its own right rather than an
+ * absence. That is the whole point: free space you cannot see is free
+ * space you do not know you have.
+ *
+ * Hand-drawn SVG rather than a charting library -- the dashboard ships
+ * no dependencies and this is one circle with dash offsets.
+ */
+function renderDiskAllocationChart(d, parts) {
+	const host = document.getElementById("dd-alloc-chart");
+
+	if (host === null)
+		return;
+	host.textContent = "";
+	if (!d || d.is_partition || !d.size_bytes || parts.length === 0)
+		return;
+
+	const R = 54;
+	const C = 2 * Math.PI * R;
+	const SVG_NS = "http://www.w3.org/2000/svg";
+	/* Distinct hues, with protected partitions deliberately desaturated
+	 * so "cannot be touched" reads at a glance rather than needing the
+	 * legend. */
+	const hues = [200, 160, 40, 280, 340, 100, 20, 240];
+	let allocated = 0;
+	const segments = [];
+
+	parts.forEach((p, i) => {
+		const bytes = p.size_bytes || 0;
+
+		allocated += bytes;
+		segments.push({
+			label: p.name,
+			bytes: bytes,
+			color: p.protected ? "hsl(" + hues[i % hues.length] + ",12%,55%)"
+			                   : "hsl(" + hues[i % hues.length] + ",58%,52%)",
+			note: p.protected ? "protected" : p.part_label || "",
+		});
+	});
+	const free = Math.max(0, d.size_bytes - allocated);
+
+	if (free > 0) {
+		segments.push({
+			label: "unallocated",
+			bytes: free,
+			color: "var(--muted, #888)",
+			note: "available",
+			isFree: true,
+		});
+	}
+
+	const wrap = document.createElement("div");
+
+	wrap.className = "alloc-chart";
+
+	const svg = document.createElementNS(SVG_NS, "svg");
+
+	svg.setAttribute("viewBox", "0 0 140 140");
+	svg.setAttribute("width", "140");
+	svg.setAttribute("height", "140");
+	svg.setAttribute("role", "img");
+	svg.setAttribute("aria-label", "Partition allocation for " + d.name);
+
+	let offset = 0;
+
+	for (const seg of segments) {
+		const circle = document.createElementNS(SVG_NS, "circle");
+		const len = (seg.bytes / d.size_bytes) * C;
+
+		circle.setAttribute("cx", "70");
+		circle.setAttribute("cy", "70");
+		circle.setAttribute("r", String(R));
+		circle.setAttribute("fill", "none");
+		circle.setAttribute("stroke", seg.color);
+		circle.setAttribute("stroke-width", "18");
+		circle.setAttribute("stroke-dasharray", len + " " + (C - len));
+		circle.setAttribute("stroke-dashoffset", String(-offset));
+		/* Start at twelve o'clock; the default is three, which reads
+		 * as an arbitrary rotation rather than a whole. */
+		circle.setAttribute("transform", "rotate(-90 70 70)");
+		if (seg.isFree)
+			circle.setAttribute("opacity", "0.35");
+		svg.appendChild(circle);
+		offset += len;
+	}
+
+	wrap.appendChild(svg);
+
+	const legend = document.createElement("ul");
+
+	legend.className = "alloc-legend";
+	for (const seg of segments) {
+		const li = document.createElement("li");
+		const swatch = document.createElement("span");
+		const pct = d.size_bytes > 0 ? (seg.bytes / d.size_bytes) * 100 : 0;
+
+		swatch.className = "alloc-swatch";
+		swatch.style.background = seg.color;
+		if (seg.isFree)
+			swatch.style.opacity = "0.35";
+		li.appendChild(swatch);
+		li.appendChild(
+			document.createTextNode(
+				seg.label + " \u2014 " + formatBytes(seg.bytes) + " (" +
+					(pct < 1 ? "<1" : Math.round(pct)) + "%)" +
+					(seg.note ? " \u00b7 " + seg.note : "")
+			)
+		);
+		legend.appendChild(li);
+	}
+	wrap.appendChild(legend);
+	host.appendChild(wrap);
+}
+
+/*
  * The partitions on this disk, as a read-only overview -- every action
  * on a partition lives on that partition's own page, which is the whole
  * point of a partition having one. Clicking a row goes there.
@@ -5756,6 +5877,8 @@ function renderDiskPartitions(d, parts) {
 		: d.has_mounted_partition
 		  ? "Something on this disk is mounted, so the partition table cannot be rewritten and a mounted partition cannot be deleted. Unmount it first."
 		  : "Click a partition to give it a role, format it, or delete it.";
+
+	renderDiskAllocationChart(d, parts);
 
 	body.textContent = "";
 	if (parts.length === 0) {
