@@ -27,13 +27,14 @@ An operator with no separate dev machine can rebuild `cixd`/`cixctl`/`web/` from
 cixctl image create --name=cix-builder
 cixctl pkg install --name=tcc --image=cix-builder
 cixctl pkg install --name=make --image=cix-builder
-cixctl pkg install --name=libc-dev --image=cix-builder
+cixctl pkg install --name=glibc --image=cix-builder
+cixctl pkg install --name=linux-headers --image=cix-builder
 cixctl pkg install --name=bash --image=cix-builder
 cixctl pkg install --name=coreutils --image=cix-builder
 cixctl pkg install --name=openssl --image=cix-builder
 ```
 
-An image is just an ordinary image, built up with ordinary installs — no special "builder image" concept exists beyond having the right packages present. This exact set (`tcc`, `make`, `libc-dev`, `bash`, `coreutils`, `openssl`) is the minimum a plain Makefile build of this repo needs: `tcc` to compile, `make` to drive the build, `libc-dev` for headers and the CRT startup objects (`crt1.o`/`crti.o`/`crtn.o` — see the note on TCC's own CRT search path below), `bash` because glibc's `popen()` hardcodes `/bin/sh` with no override and the kernel's own Kconfig-style patterns some build steps use need a real shell present, `coreutils` because the root `Makefile`'s own `mkdir -p build` needs a real `mkdir`, and `openssl` (a real from-source build, ADR-0078) because `cixd` itself has linked `-lssl -lcrypto` since the HTTPS listener landed (ADR-0059) — its own link-time `libssl.so`/`libcrypto.so` symlinks are among the real files this recipe's build produces. If a future change to this repo's own build needs something more, that surfaces as a real, specific build failure naming exactly what's missing — install it onto `cix-builder` the same way, one real gap at a time, never speculatively.
+An image is just an ordinary image, built up with ordinary installs — no special "builder image" concept exists beyond having the right packages present. This exact set (`tcc`, `make`, `glibc`, `linux-headers`, `bash`, `coreutils`, `openssl`) is the minimum a plain Makefile build of this repo needs: `tcc` to compile, `make` to drive the build, `glibc` for the C headers and the CRT startup objects (`crt1.o`/`crti.o`/`crtn.o` — see the note on TCC's own CRT search path below), `linux-headers` for the kernel UAPI headers glibc's own `limits.h` chain includes (these two replaced `libc-dev`, which was retired in ADR-0217: it staged another distribution's headers copied off the bootstrap machine, and was pinned to glibc 2.36 while the runtime ran 2.44), `bash` because glibc's `popen()` hardcodes `/bin/sh` with no override and the kernel's own Kconfig-style patterns some build steps use need a real shell present, `coreutils` because the root `Makefile`'s own `mkdir -p build` needs a real `mkdir`, and `openssl` (a real from-source build, ADR-0078) because `cixd` itself has linked `-lssl -lcrypto` since the HTTPS listener landed (ADR-0059) — its own link-time `libssl.so`/`libcrypto.so` symlinks are among the real files this recipe's build produces. If a future change to this repo's own build needs something more, that surfaces as a real, specific build failure naming exactly what's missing — install it onto `cix-builder` the same way, one real gap at a time, never speculatively.
 
 ### 1b. Build the host tools image (optional, ADR-0078)
 
