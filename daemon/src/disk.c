@@ -1,4 +1,5 @@
 #include "disk.h"
+#include "diskpart.h"
 
 #include "diskrole.h"
 
@@ -698,6 +699,18 @@ void disk_write_json_one(const struct discovered_disk *d, struct json_writer *w)
 	jw_bool(w, d->is_partition);
 	jw_key(w, "parent_disk");
 	jw_str(w, d->parent_disk);
+	/*
+	 * Issue #140: whether this partition is structurally untouchable.
+	 *
+	 * Reported by the daemon rather than re-derived by each client. The
+	 * dashboard was deciding what to offer from `is_os_disk` in five
+	 * separate places, which made the policy a second source of truth
+	 * living outside the code that enforces it -- and the issue asks
+	 * for protected partitions to have "no option offered at all",
+	 * which a client can only get right if it is told which they are.
+	 */
+	jw_key(w, "protected");
+	jw_bool(w, d->is_partition && diskpart_partition_protected(d->name, d->is_os_disk));
 	jw_obj_close(w);
 }
 

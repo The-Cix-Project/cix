@@ -72,6 +72,16 @@ enum diskpart_error {
 	DISKPART_ERR_NOT_A_PARTITION, /* target of delete must itself be a partition */
 	DISKPART_ERR_WRONG_PARENT,   /* delete target's real parent isn't the disk named in the URL */
 	DISKPART_ERR_IS_OS_DISK,
+	/*
+	 * Issue #140: distinct from IS_OS_DISK, because they are different
+	 * situations and an operator needs to be told which one they hit.
+	 * IS_OS_DISK means "this disk's table can never be rewritten";
+	 * PROTECTED_PARTITION means "this particular partition is one of
+	 * the four the machine boots from" -- and on the same disk, its
+	 * neighbours further along are perfectly ordinary. One message
+	 * covering both would be wrong about one of them.
+	 */
+	DISKPART_ERR_PROTECTED_PARTITION,
 	DISKPART_ERR_HAS_ROLE,
 	DISKPART_ERR_MOUNTED,
 	DISKPART_ERR_INVALID_PART_NAME,

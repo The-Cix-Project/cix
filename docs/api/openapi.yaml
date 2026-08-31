@@ -12911,6 +12911,20 @@ components:
         free_bytes:
           type: integer
           description: Real statvfs(2) free space of mount_path. Only meaningful (non-zero) when mounted is true.
+        protected:
+          type: boolean
+          description: >
+            Issue #140: whether this partition is structurally
+            untouchable -- the OS disk's first four (ESP, both A/B root
+            slots, /config). No delete or resize is offered for these
+            anywhere, rather than offered and then refused. Everything
+            after them on the OS disk is ordinary allocatable space,
+            which is the whole point: an operator who sized the
+            containers partition smaller than the disk did so in order
+            to use the remainder.
+            Reported here rather than re-derived by each client, so the
+            rule lives with the code that enforces it. Always false for
+            a whole disk.
         is_partition:
           type: boolean
           description: >

@@ -5735,9 +5735,24 @@ function renderDiskPartitions(d, parts) {
 	const note = document.getElementById("dd-part-note");
 	const actions = document.getElementById("dd-part-actions");
 
-	actions.hidden = d.is_os_disk;
+	/*
+	 * Issue #140: the OS disk can be APPENDED to, just not rewritten.
+	 *
+	 * This block used to be hidden outright on the OS disk, which is
+	 * the operator's literal complaint -- they had deliberately sized
+	 * the containers partition smaller than the disk so the remainder
+	 * stayed usable, and the dashboard offered no way to use it.
+	 * Appending a partition cannot touch the ESP or either root slot;
+	 * rewriting the table can, so only that stays hidden here.
+	 */
+	const tableActions = document.getElementById("dd-table-actions");
+
+	actions.hidden = false;
+	if (tableActions !== null)
+		tableActions.hidden = d.is_os_disk;
+
 	note.textContent = d.is_os_disk
-		? "This is the OS disk. Its layout is fixed and is never repartitioned."
+		? "This is the OS disk. Its first four partitions (ESP, both root slots, /config) are fixed and are never offered for delete or resize \u2014 destroying one makes this machine unbootable. Everything after them is ordinary space: new partitions can be added here, and rewriting the whole table is the one thing that stays refused."
 		: d.has_mounted_partition
 		  ? "Something on this disk is mounted, so the partition table cannot be rewritten and a mounted partition cannot be deleted. Unmount it first."
 		  : "Click a partition to give it a role, format it, or delete it.";
@@ -5763,7 +5778,7 @@ function renderDiskPartitions(d, parts) {
 		row.appendChild(nameCell);
 		for (const text of [
 			formatBytes(p.size_bytes),
-			role ? role.role : p.part_label ? p.part_label + " (fixed)" : "-",
+			role ? role.role : p.part_label ? p.part_label + (p.protected ? " (protected)" : "") : "-",
 			p.fs_type || "unformatted",
 			p.mounted ? p.mount_path : "-",
 			p.mounted && p.used_bytes + p.free_bytes > 0
@@ -11644,10 +11659,31 @@ function contextMenuItemsFor(category, name) {
 	if (category === "disks") {
 		const d = cache.disks.find((x) => x.name === name);
 
-		if (!d || d.is_os_disk)
+		if (!d)
+			return null;
+		/*
+		 * Issue #140: a protected partition offers nothing at all --
+		 * not a disabled entry, not one that 409s on click. The daemon
+		 * says which are protected (the OS disk's first four); the UI
+		 * does not re-derive that rule.
+		 */
+		if (d.protected)
 			return null;
 		const role = diskRoleFor(name);
 		const items = [];
+
+		/*
+		 * The OS disk itself: appending a partition is safe and is the
+		 * whole point of #140, but it can never take a role, be
+		 * formatted, or have its table rewritten.
+		 */
+		if (d.is_os_disk && !d.is_partition) {
+			return [{
+				label: "Add a partition\u2026",
+				danger: false,
+				action: () => { location.hash = "disks/" + encodeURIComponent(name); },
+			}];
+		}
 
 		if (!role) {
 			items.push({ label: "Assign a role…", danger: false, action: () => openAssignRole(name) });
