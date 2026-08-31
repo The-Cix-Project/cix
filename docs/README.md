@@ -11,6 +11,7 @@ This directory holds every durable, non-code artifact describing Cix: why it exi
 | [`architecture/`](architecture/) | A visual map of the system's components and how they connect, as of the most recently reflected phase | [`architecture/architecture.svg`](architecture/architecture.svg) |
 | [`retrospective/`](retrospective/) | *Why an entire episode was harder than the work inside it* — a root-cause analysis spanning several bugs at once, written when the pattern matters more than any individual fix | [`retrospective/0001-why-bringing-up-dns-was-painful.md`](retrospective/0001-why-bringing-up-dns-was-painful.md) |
 | [`guides/`](guides/) | Task-oriented operator/user instructions — how to build, install, update, administer, network, secure, or write a recipe for Cix | [`guides/README.md`](guides/README.md) |
+| [`brand/`](brand/) | The Cix brand system — the guidelines transcription, the owner's logo reference sheet, and brand assets. Content authority stays with the owner: files here are faithful copies, replaced only by new versions from them, never edited ad hoc | [`brand/README.md`](brand/README.md) |
 
 Two more project documents live outside `docs/` entirely, at the repository root, because they're read before anything under `docs/` is: [`CLAUDE.md`](../CLAUDE.md) (living instructions for working in this repository — rules, conventions, environment facts) and [`CHANGELOG.md`](../CHANGELOG.md) (the chronological record of every change, grouped by roadmap phase). The root [`README.md`](../README.md) is the project's own front door — what Cix is, a quickstart pointer — and links back into every directory listed above rather than repeating their content (in particular, it does not carry its own phase-status table — that's `roadmap/ROADMAP.md`'s job alone). A third file, [`../recipes/README.md`](../recipes/README.md), sits next to the recipe catalog itself rather than under `docs/`, since a recipe author is already looking at that directory — it does no more than point at [`guides/writing-recipes.md`](guides/writing-recipes.md).
 
@@ -22,6 +23,7 @@ Two more project documents live outside `docs/` entirely, at the repository root
 - **"What does the API actually accept and return?"** → [`api/openapi.yaml`](api/openapi.yaml) is the ground truth; [`api/README.md`](api/README.md) is the same information organized for reading start to finish.
 - **"What talks to what, at a glance?"** → [`architecture/architecture.svg`](architecture/architecture.svg).
 - **"How do I actually build/install/update/administer Cix, or write a recipe?"** → [`guides/`](guides/) — check the index for the specific task first.
+- **"What are the official colours, the logo, the typography?"** → [`brand/`](brand/) — the owner's own brand documents, transcribed rather than reinterpreted.
 - **"What changed recently, and why?"** → [`../CHANGELOG.md`](../CHANGELOG.md), newest entries first.
 - **"How do I work in this repository — rules, conventions, known environment quirks?"** → [`../CLAUDE.md`](../CLAUDE.md).
 
