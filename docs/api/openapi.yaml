@@ -4027,6 +4027,64 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /system/iso/publish:
+    post:
+      summary: Publishes the finished installer ISO and its signature to the artifact cache (ADR-0220)
+      description: >
+        An installer ISO is the one artifact nothing on the far side can
+        compose for itself. A package is a recipe a running host
+        resolves and builds; an ISO is what you boot to *create* a host,
+        and on the far side there is bare metal and a person with a USB
+        stick. So unlike images -- whose whole-artifact tier ADR-0209
+        deliberately retired -- an ISO genuinely has to be stored and
+        served rather than rebuilt.
+        Nothing published it before this. `POST /system/iso` wrote the
+        ISO to local disk and reported a filesystem path, and
+        `publish_hostbuild_artifact()` covers packages only, so a
+        finished ISO had no route off the box at all -- not even a
+        manual one, since no endpoint returns its bytes.
+        **The signature is uploaded first, and that ordering is
+        required rather than tidy:** the cache refuses an ISO with no
+        signature beside it (409), because an unsigned installer is
+        exactly the artifact that must not be downloadable. This
+        therefore needs a release key (`PUT /system/release-key`) --
+        an ISO built without one is refused here rather than published
+        unverifiable.
+        Published as `cix-installer-{version}-{release}-{arch}.iso`,
+        the cache's own canonical naming: `version` from the running
+        build, `release` defaulting to 1, `arch` as `uname -m` spells
+        it. The architecture is part of the name because a checksum
+        cannot distinguish an aarch64 image from an x86_64 one.
+      operationId: publishSystemIso
+      x-cix-expose: [cli]
+      responses:
+        "202":
+          description: Publish started; poll GET /system/iso for the result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IsoStatus"
+        "400":
+          description: >
+            No ISO has been built, or it was built with no release key
+            so no signature exists to publish alongside it
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: A publish or an ISO build is already in progress
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: No artifact cache is configured, or pushing to it is disabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /containers:
     get:
       summary: List all containers known to this daemon
@@ -13419,6 +13477,26 @@ components:
             release key was installed at build time -- an unsigned ISO
             is still a usable ISO, so a missing key does not fail the
             build, it just leaves this null.
+        publish_state:
+          type: string
+          enum: [none, publishing, published, failed]
+          description: >
+            Whether this ISO has reached the artifact cache. Separate
+            from `state` because building and publishing fail for
+            unrelated reasons and an operator needs to tell them apart:
+            a built-but-unpublished ISO is a usable local artifact,
+            while a publish failure means nothing downstream can get it.
+        published_name:
+          type: string
+          nullable: true
+          description: >
+            The canonical cache name the ISO was published under
+            (`cix-installer-{version}-{release}-{arch}.iso`). Non-null
+            only once publish_state is "published".
+        publish_error:
+          type: string
+          nullable: true
+          description: Non-null only when publish_state is "failed".
 
     IsoBuildRequest:
       type: object

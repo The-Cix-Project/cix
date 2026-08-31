@@ -1007,6 +1007,7 @@ enum conn_kind {
 	CONN_ISO_ASSEMBLE,      /* server-side mkinstalleriso invocation (ADR-0064) */
 	CONN_ARTIFACT_EXPORT,      /* issue #126: tar of an image's rootfs into the artifact dir */
 	CONN_ARTIFACT_PUSH,     /* issue #129: curl child publishing a fresh build to the artifact server */
+	CONN_ISO_PUBLISH,       /* ADR-0220: curl child publishing an installer ISO (or its signature) */
 	CONN_BOOTSTRAP_FETCH,   /* pkg/bootstrap's own toolchain_url curl fetch (ADR-0065) */
 	CONN_KERNEL_RELEASES_FETCH, /* kernel.org releases.json curl fetch (issue #65) */
 	CONN_PKG_SYNC_FETCH,    /* pkg sync's own repo-archive curl fetch (ADR-0121) */
@@ -10369,6 +10370,222 @@ static void sign_finished_iso(void)
 }
 
 /*
+ * ADR-0220: publishing the finished ISO to the artifact cache.
+ *
+ * Two uploads, in a required order: the signature first, then the ISO.
+ * The cache refuses an ISO with no signature beside it, and that
+ * refusal is correct -- an unsigned installer is precisely the
+ * artifact that must not become downloadable. Doing it in this order
+ * means a failure between the two leaves a signature with no ISO
+ * (harmless, and overwritten by the next attempt) rather than a
+ * bootable image nobody can verify.
+ *
+ * Deliberately not routed through pkg.c's package push queue: that
+ * queue publishes freshly built packages keyed by name@version, and an
+ * ISO has neither -- no recipe stands behind it and nothing resolves
+ * it by version. The cache counts installers separately for the same
+ * reason.
+ */
+enum iso_publish_step { ISO_PUBLISH_SIG, ISO_PUBLISH_IMAGE };
+
+static enum { ISO_PUB_NONE, ISO_PUB_RUNNING, ISO_PUB_DONE, ISO_PUB_FAILED } g_iso_publish_state =
+    ISO_PUB_NONE;
+static enum iso_publish_step g_iso_publish_step;
+static char g_iso_publish_name[256];   /* canonical .iso name in the cache */
+static char g_iso_publish_error[256];
+static char g_iso_publish_status_path[PATH_MAX];
+
+static const char *iso_publish_state_str(void)
+{
+	switch (g_iso_publish_state) {
+	case ISO_PUB_RUNNING:
+		return "publishing";
+	case ISO_PUB_DONE:
+		return "published";
+	case ISO_PUB_FAILED:
+		return "failed";
+	default:
+		return "none";
+	}
+}
+
+/*
+ * The cache's canonical installer name:
+ * cix-installer-<version>-<release>-<arch>.iso.
+ *
+ * The architecture is in the name because a checksum cannot tell an
+ * aarch64 image from an x86_64 one -- only the name can. The version
+ * is this build's own, with its leading "v" stripped: the cache splits
+ * name/version/release itself, and "v2.4.0" would make the version
+ * field disagree with every package already published from the same
+ * tag.
+ */
+static void iso_publish_canonical_name(char *out, size_t out_size, const char *suffix)
+{
+	struct utsname uts;
+	const char *arch = "unknown";
+	const char *ver = CIX_BUILD_VERSION;
+
+	if (uname(&uts) == 0 && uts.machine[0] != '\0')
+		arch = uts.machine;
+	if (ver[0] == 'v')
+		ver++;
+	snprintf(out, out_size, "cix-installer-%s-1-%s.iso%s", ver, arch, suffix);
+}
+
+static int start_iso_publish_upload(enum iso_publish_step step)
+{
+	char remote[256];
+	char local[PATH_MAX];
+	char url[PKGARTIFACT_URL_MAX + 320];
+	char auth[512];
+	pid_t pid;
+	int pidfd;
+
+	if (step == ISO_PUBLISH_SIG) {
+		iso_publish_canonical_name(remote, sizeof(remote), ".minisig");
+		snprintf(local, sizeof(local), "%s", g_iso_signature_path);
+	} else {
+		iso_publish_canonical_name(remote, sizeof(remote), "");
+		snprintf(local, sizeof(local), "%s", ISO_OUTPUT_PATH);
+	}
+	if (pkg_artifact_push_request(remote, url, sizeof(url), auth, sizeof(auth)) != PKG_OK) {
+		snprintf(g_iso_publish_error, sizeof(g_iso_publish_error),
+		         "no artifact cache is configured");
+		return -1;
+	}
+
+	snprintf(g_iso_publish_status_path, sizeof(g_iso_publish_status_path), "%s/.iso-publish-status",
+	         ISO_DIR);
+	unlink(g_iso_publish_status_path);
+
+	pid = fork();
+	if (pid < 0) {
+		snprintf(g_iso_publish_error, sizeof(g_iso_publish_error), "fork failed: %s",
+		         strerror(errno));
+		return -1;
+	}
+	if (pid == 0) {
+		char sha[65];
+		char sha_header[96];
+
+		/* Digest in the child. An ISO is hundreds of megabytes and
+		 * hashing it on the event-loop thread would stall every other
+		 * request for as long as the file is big -- the same reason
+		 * the package pusher does it here too. */
+		if (pkg_run_capture_sha256(local, sha, sizeof(sha)) != 0)
+			_exit(90);
+		snprintf(sha_header, sizeof(sha_header), "X-Cix-Sha256: %s", sha);
+		{
+			char *argv[] = { (char *)PKG_CURL_BIN,
+				         (char *)"-s",
+				         (char *)"--upload-file",
+				         local,
+				         (char *)"-H",
+				         auth,
+				         (char *)"-H",
+				         sha_header,
+				         (char *)"--output",
+				         (char *)"/dev/null",
+				         (char *)"--write-out",
+				         (char *)"%{http_code}",
+				         url,
+				         NULL };
+			int sfd = open(g_iso_publish_status_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+
+			if (sfd >= 0) {
+				dup2(sfd, STDOUT_FILENO);
+				close(sfd);
+			}
+			execve(PKG_CURL_BIN, argv, environ);
+		}
+		_exit(127);
+	}
+	pidfd = sys_pidfd_open(pid, 0);
+	if (pidfd < 0) {
+		snprintf(g_iso_publish_error, sizeof(g_iso_publish_error), "pidfd_open failed: %s",
+		         strerror(errno));
+		kill(pid, SIGKILL);
+		waitpid(pid, NULL, 0);
+		return -1;
+	}
+	g_iso_publish_step = step;
+	{
+		struct conn *cc = malloc(sizeof(*cc));
+		struct cix_epoll_event ev;
+
+		if (cc == NULL) {
+			perror("malloc (iso publish reactor conn)");
+			abort();
+		}
+		cc->kind = CONN_ISO_PUBLISH;
+		cc->fd = pidfd;
+		cc->pkg_fetch_pid = pid;
+		memset(&ev, 0, sizeof(ev));
+		ev.events = EPOLLIN;
+		ev.data.ptr = cc;
+		if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+			perror("epoll_ctl ADD iso publish pidfd");
+			abort();
+		}
+	}
+	iso_publish_canonical_name(g_iso_publish_name, sizeof(g_iso_publish_name), "");
+	logstore_write("cixd", "info", "iso publish: uploading %s", remote);
+	return 0;
+}
+
+static void handle_iso_publish_event(struct conn *cc)
+{
+	int status;
+	int http = 0;
+	FILE *f;
+
+	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	waitpid(cc->pkg_fetch_pid, &status, 0);
+	close(cc->fd);
+
+	f = fopen(g_iso_publish_status_path, "r");
+	if (f != NULL) {
+		if (fscanf(f, "%d", &http) != 1)
+			http = 0;
+		fclose(f);
+	}
+
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0 || http < 200 || http >= 300) {
+		g_iso_publish_state = ISO_PUB_FAILED;
+		/*
+		 * Name the HTTP status, not just "failed". A 409 here means
+		 * something specific and actionable -- the cache refused an
+		 * ISO whose signature it does not have -- and collapsing it
+		 * into a generic failure is exactly the diagnostic gap that
+		 * made earlier publish failures unreadable.
+		 */
+		snprintf(g_iso_publish_error, sizeof(g_iso_publish_error),
+		         "%s upload failed (exit 0x%x, HTTP %d)",
+		         g_iso_publish_step == ISO_PUBLISH_SIG ? "signature" : "iso", (unsigned)status,
+		         http);
+		logstore_write("cixd", "error", "iso publish: %s", g_iso_publish_error);
+		free(cc);
+		return;
+	}
+
+	if (g_iso_publish_step == ISO_PUBLISH_SIG) {
+		/* Signature is up; the ISO may now follow. */
+		free(cc);
+		if (start_iso_publish_upload(ISO_PUBLISH_IMAGE) != 0) {
+			g_iso_publish_state = ISO_PUB_FAILED;
+			logstore_write("cixd", "error", "iso publish: %s", g_iso_publish_error);
+		}
+		return;
+	}
+
+	g_iso_publish_state = ISO_PUB_DONE;
+	g_iso_publish_error[0] = '\0';
+	logstore_write("cixd", "info", "iso publish: published %s", g_iso_publish_name);
+	free(cc);
+}
+
+/*
  * handle_bootroot_assemble_event() -- updates g_iso_build_state for
  * GET /v1/system/iso to report back, since no REST response is waiting
  * on this (the original POST already returned 202 long before this
@@ -11521,6 +11738,18 @@ static void write_iso_status(struct json_writer *w)
 	jw_key(w, "signature_path");
 	if (g_iso_build_state == ISO_BUILD_READY && g_iso_signature_path[0] != '\0')
 		jw_str(w, g_iso_signature_path);
+	else
+		jw_null(w);
+	jw_key(w, "publish_state");
+	jw_str(w, iso_publish_state_str());
+	jw_key(w, "published_name");
+	if (g_iso_publish_state == ISO_PUB_DONE && g_iso_publish_name[0] != '\0')
+		jw_str(w, g_iso_publish_name);
+	else
+		jw_null(w);
+	jw_key(w, "publish_error");
+	if (g_iso_publish_state == ISO_PUB_FAILED)
+		jw_str(w, g_iso_publish_error);
 	else
 		jw_null(w);
 	jw_obj_close(w);
@@ -24100,6 +24329,65 @@ static void op_deleteSystemSigningKeys(const struct api_ctx *ctx)
 	handle_signing_keys_delete(ctx->fd);
 }
 
+/* POST /v1/system/iso/publish (ADR-0220) */
+static void handle_system_iso_publish(int fd)
+{
+	struct json_writer w;
+
+	if (g_iso_build_state == ISO_BUILD_BUILDING) {
+		respond_error(fd, 409, "Conflict", "an ISO build is in progress");
+		return;
+	}
+	if (g_iso_build_state != ISO_BUILD_READY) {
+		respond_error(fd, 400, "Bad Request",
+		              "no ISO has been built on this host -- POST /v1/system/iso first");
+		return;
+	}
+	/*
+	 * Refuse rather than let the cache refuse. An ISO built with no
+	 * release key has no signature to publish beside it, the cache
+	 * rejects that with a 409, and reporting the cache's answer here
+	 * would describe the symptom while hiding the cause -- which is
+	 * simply that this host holds no release key.
+	 */
+	if (g_iso_signature_path[0] == '\0') {
+		respond_error(fd, 400, "Bad Request",
+		              "this ISO is unsigned, and an unsigned installer cannot be published -- "
+		              "install a release key (PUT /v1/system/release-key) and rebuild the ISO");
+		return;
+	}
+	if (g_iso_publish_state == ISO_PUB_RUNNING) {
+		respond_error(fd, 409, "Conflict", "a publish is already in progress");
+		return;
+	}
+	if (!pkg_artifact_push_is_enabled()) {
+		respond_error(fd, 503, "Service Unavailable",
+		              "publishing to the artifact cache is disabled on this host");
+		return;
+	}
+
+	g_iso_publish_state = ISO_PUB_RUNNING;
+	g_iso_publish_error[0] = '\0';
+	g_iso_publish_name[0] = '\0';
+	/* Signature first -- see start_iso_publish_upload()'s own comment. */
+	if (start_iso_publish_upload(ISO_PUBLISH_SIG) != 0) {
+		g_iso_publish_state = ISO_PUB_FAILED;
+		respond_error(fd, 503, "Service Unavailable", g_iso_publish_error);
+		return;
+	}
+
+	jw_init(&w);
+	write_iso_status(&w);
+	respond_json(fd, 202, "Accepted", &w);
+	jw_free(&w);
+}
+
+/* POST /v1/system/iso/publish */
+static void op_publishSystemIso(const struct api_ctx *ctx)
+{
+	handle_system_iso_publish(ctx->fd);
+}
+
 /* GET /v1/system/release-key */
 static void op_getSystemReleaseKey(const struct api_ctx *ctx)
 {
@@ -28369,6 +28657,8 @@ static int cixd_main(int argc, char **argv)
 				handle_artifact_export_event(cc);
 			else if (cc->kind == CONN_ARTIFACT_PUSH)
 				handle_artifact_push_event(cc);
+			else if (cc->kind == CONN_ISO_PUBLISH)
+				handle_iso_publish_event(cc);
 			else if (cc->kind == CONN_BOOTSTRAP_FETCH)
 				handle_bootstrap_fetch_event(cc);
 			else if (cc->kind == CONN_KERNEL_RELEASES_FETCH)

@@ -54,6 +54,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/system/release-key` | Whether this host holds an Ed25519 release-signing key, and its publishable public half |
 | PUT | `/system/release-key` | Install the operator's Ed25519 release key (one PEM block) |
 | DELETE | `/system/release-key` | Remove this host's release key |
+| POST | `/system/iso/publish` | Publish the finished installer ISO and its signature to the artifact cache |
 | GET | `/system/routes` | The box's own real kernel IPv4 routing table |
 | POST | `/system/routes` | Add a real kernel route (gone on next reboot unless something else re-applies it) |
 | DELETE | `/system/routes` | Remove a real kernel route |
@@ -2338,6 +2339,22 @@ ADR-0064's security property is unchanged: `cixd` still never generates, fetches
 One caveat worth stating plainly: on a host with `https_enabled: false` and no authentication configured, the pasted key crosses the management network in clear text and anyone on that network can replace it. Enable HTTPS and host auth before treating a host that holds signing material as production.
 
 `cixctl signing-keys [show]` / `cixctl signing-keys set --key=PATH --cert=PATH` / `cixctl signing-keys clear` is the CLI surface — it takes **paths**, not the PEM text, so a private key never lands in shell history or this host's process list. The dashboard's Host → Signing Keys tab is the paste box.
+
+### Publishing the ISO
+
+```
+POST /v1/system/iso/publish
+```
+
+Signing was necessary but not sufficient. A signed ISO still had no route off the box: `POST /system/iso` writes to local disk and reports a *filesystem path*, the automatic artifact publisher covers packages only, and no endpoint returns an ISO's bytes — so the artifact existed, correctly signed, and nothing could move it.
+
+**The signature uploads first, and that ordering is required.** The cache refuses an ISO with no signature beside it (`409`), which is the right refusal — an unsigned installer is precisely the artifact that must not be downloadable. Publishing in this order means a failure between the two leaves a signature with no ISO (harmless, overwritten by the next attempt) rather than a bootable image nobody can verify. An ISO built with no release key is refused *here*, naming the missing key, instead of letting the cache's 409 describe the symptom while hiding the cause.
+
+Published as `cix-installer-{version}-{release}-{arch}.iso` — the cache's own canonical naming, with the architecture in the name because a checksum cannot tell an aarch64 image from an x86_64 one. The leading `v` is stripped from the version so the cache's own name/version/release split agrees with every package published from the same tag.
+
+This is deliberately **not** routed through the package push queue. That queue publishes freshly built packages keyed by `name@version`; an ISO has neither, since no recipe stands behind it and nothing resolves it by version — which is exactly why the cache counts installers separately from packages. `publish_state`, `published_name` and `publish_error` are reported apart from `state` for a similar reason: a built-but-unpublished ISO is a usable local artifact, and folding the two together would make a perfectly good ISO look broken.
+
+`cixctl iso publish [--wait]` is the CLI surface.
 
 ## The release-signing key (ADR-0220)
 

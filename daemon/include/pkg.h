@@ -1174,6 +1174,30 @@ int pkg_artifact_push_try_start(pid_t *out_pid, int *out_pidfd, char *out_desc, 
 void pkg_artifact_push_completed(int exit_status);
 
 /*
+ * ADR-0220: the PUT an arbitrary artifact filename needs, for a
+ * caller that is not the package push queue above.
+ *
+ * The installer ISO is the one case. It is deliberately NOT routed
+ * through that queue: the queue's whole job is publishing freshly
+ * built PACKAGES, keyed by name@version, and an ISO has neither -- no
+ * recipe stands behind it and nothing resolves it by version, which
+ * is exactly why the cache counts installers separately from packages.
+ * Bending the queue to carry one would make its "what to publish"
+ * logic mean two different things.
+ *
+ * Exposed here rather than reimplemented in main.c so the base URL's
+ * trailing-slash handling and the bearer header exist in one place.
+ * Returns PKG_ERR_NOT_FOUND when no cache is configured. Whether
+ * pushing is ENABLED is asked separately, because the two are
+ * different operator situations deserving different answers -- an
+ * unconfigured cache is a setup step not yet done, a disabled push is
+ * a deliberate choice already made.
+ */
+enum pkg_error pkg_artifact_push_request(const char *remote_name, char *out_url, size_t url_size,
+                                          char *out_auth_header, size_t hdr_size);
+int pkg_artifact_push_is_enabled(void);
+
+/*
  * ---- pkg/ redesign Part 4 (ADR-0123): image recipes ----
  *
  * An image recipe is the image-layer analog of a package recipe: a

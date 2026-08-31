@@ -3601,6 +3601,49 @@ skip_pin_isolation:
 		}
 		cix_response_free(&r);
 
+		/*
+		 * Wait for the precondition rather than hoping for it -- the
+		 * same guard #192 added to the ordinary-install ceiling check
+		 * above, which was never applied here. hbconcurrent holding
+		 * its slot is what makes the 409 below mean "the ceiling is
+		 * enforced" instead of "the box happened to be slow". When it
+		 * is lost, this says so in those words, rather than letting a
+		 * correct 202 be reported as a ceiling fault.
+		 */
+		{
+			char hst[64];
+			int hheld = 0;
+			int hw;
+
+			for (hw = 0; hw < 100; hw++) {
+				hst[0] = '\0';
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "GET", "/v1/pkg/hbconcurrent", NULL, &r) == 0 &&
+				    r.status == 200) {
+					const char *st = json_str_field(r.json, "state");
+
+					if (st != NULL)
+						snprintf(hst, sizeof(hst), "%s", st);
+				}
+				cix_response_free(&r);
+				if (strcmp(hst, "fetching") == 0 || strcmp(hst, "building") == 0) {
+					hheld = 1;
+					break;
+				}
+				if (strcmp(hst, "installed") == 0 || strcmp(hst, "failed") == 0)
+					break; /* terminal -- the window is gone */
+				usleep(50000);
+			}
+			if (!hheld) {
+				fprintf(stderr,
+				        "FAIL: hostbuild ceiling precondition lost -- hbconcurrent reached "
+				        "'%s' before the ceiling could be probed, so the 409 below would be "
+				        "asserting timing, not the ceiling\n",
+				        hst[0] != '\0' ? hst : "(unknown)");
+				ok = 0;
+			}
+		}
+
 		/* a THIRD job attempt now that both chain slots are genuinely
 		 * occupied (hbtest's hostbuild + hbconcurrent's fetch/build)
 		 * -> 409 -- "overflow" is the same never-yet-installed recipe

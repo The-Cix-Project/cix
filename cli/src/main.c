@@ -270,6 +270,7 @@ static void print_usage(FILE *out)
 	        "               \"isotools\" hostbuild artifacts; every flag is optional, an empty\n"
 	        "               call reproduces the original edit-at-the-GRUB-menu placeholder ISO\n"
 	        "  iso status  -- state/iso_path/error of the most recent ISO build\n"
+	        "  iso publish [--wait]  -- put the ISO + its signature in the artifact cache\n"
 	        "  routes  -- the box's own real kernel IPv4 routing table (ADR-0066); the\n"
 	        "               only way to see this on a real install, no SSH/general shell\n"
 	        "  routes add --dest=A.B.C.D --prefix=N [--gateway=A.B.C.D]  -- add a real\n"
@@ -13363,12 +13364,36 @@ static void fmt_iso_status(const struct json_value *v)
 	const char *iso_path = json_str_field(v, "iso_path");
 	const char *error = json_str_field(v, "error");
 
+	const char *sig = json_str_field(v, "signature_path");
+	const char *pub_state = json_str_field(v, "publish_state");
+	const char *pub_name = json_str_field(v, "published_name");
+	const char *pub_error = json_str_field(v, "publish_error");
+
 	printf("state=%s", state != NULL ? state : "?");
 	if (iso_path != NULL)
 		printf(" iso_path=%s", iso_path);
 	if (error != NULL)
 		printf(" error=%s", error);
 	printf("\n");
+	/*
+	 * Signing and publishing are reported on their own lines rather
+	 * than folded into the state above: a built-but-unsigned ISO and a
+	 * built-but-unpublished one are both usable local artifacts, and
+	 * collapsing them into one "state" would make a perfectly fine ISO
+	 * look broken -- or, worse, an unsigned one look finished.
+	 */
+	if (sig != NULL)
+		printf("signature=%s\n", sig);
+	else if (state != NULL && strcmp(state, "ready") == 0)
+		printf("signature=none (no release key installed -- this ISO cannot be published)\n");
+	if (pub_state != NULL && strcmp(pub_state, "none") != 0) {
+		printf("publish=%s", pub_state);
+		if (pub_name != NULL)
+			printf(" %s", pub_name);
+		if (pub_error != NULL)
+			printf(" error=%s", pub_error);
+		printf("\n");
+	}
 }
 
 /* Polls GET /v1/system/iso until state leaves "building" -- --wait's own
@@ -13472,6 +13497,55 @@ static int cmd_iso_build(const struct cix_client *c, int json_mode, int argc, ch
 	return emit(&r, json_mode, fmt_iso_status);
 }
 
+/*
+ * cixctl iso publish [--wait] (ADR-0220) -- puts the finished ISO and
+ * its signature in the artifact cache, which is the only way anything
+ * off this box can get either.
+ */
+static int cmd_iso_publish(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	struct cix_response r;
+	int wait_mode = 0;
+	int i;
+	int rc;
+
+	for (i = 0; i < argc; i++) {
+		if (strcmp(argv[i], "--wait") == 0)
+			wait_mode = 1;
+		else {
+			fprintf(stderr, "cixctl: unknown iso publish option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(c, CIX_API_publishSystemIso_METHOD, CIX_API_publishSystemIso, NULL,
+	                       &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	if (r.status != 202 || !wait_mode)
+		return emit(&r, json_mode, fmt_iso_status);
+	cix_response_free(&r);
+
+	for (;;) {
+		const char *ps;
+
+		if (cix_client_request(c, CIX_API_getSystemIso_METHOD, CIX_API_getSystemIso, NULL, &r) !=
+		    0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		ps = json_str_field(r.json, "publish_state");
+		if (ps == NULL || strcmp(ps, "publishing") != 0)
+			break;
+		cix_response_free(&r);
+		usleep(500000);
+	}
+	rc = emit(&r, json_mode, fmt_iso_status);
+	return rc;
+}
+
 static int cmd_iso(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
@@ -13480,7 +13554,8 @@ static int cmd_iso(const struct cix_client *c, int json_mode, int argc, char **a
 		fprintf(stderr,
 		        "usage: cixctl iso build [--disk=DEV --ip=A.B.C.D --prefix=N "
 		        "--gateway=A.B.C.D --interface=IFNAME] [--wait]\n"
-		        "       cixctl iso status\n");
+		        "       cixctl iso status\n"
+		        "       cixctl iso publish [--wait]\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -13488,6 +13563,8 @@ static int cmd_iso(const struct cix_client *c, int json_mode, int argc, char **a
 		return cmd_iso_build(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "status") == 0)
 		return cmd_iso_status(c, json_mode);
+	if (strcmp(sub, "publish") == 0)
+		return cmd_iso_publish(c, json_mode, argc - 1, argv + 1);
 
 	fprintf(stderr, "cixctl: unknown iso subcommand '%s'\n", sub);
 	return 2;
