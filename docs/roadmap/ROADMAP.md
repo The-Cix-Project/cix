@@ -2453,7 +2453,19 @@ Issue #197's real completion, [ADR-0220](../adr/0220-a-separate-release-signing-
 
 Deliberately **not** routed through pkg.c's package push queue: that queue publishes fresh builds keyed by `name@version`, and an ISO has neither — no recipe stands behind it and nothing resolves it by version, which is exactly why the cache counts installers separately from packages. `publish_state`/`published_name`/`publish_error` are reported apart from `state` for the same reason a built-but-unpublished ISO is not a broken one.
 
-**Verified:** refusal paths exercised against a live daemon (no ISO built → 400 naming the missing build; the new fields present in `GET /system/iso`). Contract-first per ADR-0218, and the machinery caught both gaps unprompted again — the generated dispatcher refused to link without a handler, and `test_api_surfaces` refused to pass until the CLI actually called it.
+**Verified end to end on real hardware, and by a verifier this project did not write.** v2.5.0 deployed to 192.168.15.95, an ISO built and signed itself there, and `cixctl iso publish --wait` reported `publish=published cix-installer-2.5.0-1-x86_64.iso`. The cache went from `installers: 0` to `installers: 1` (75,143,455 bytes). Downloading both files back out and checking them with **stock `minisign`**:
+
+```
+$ minisign -Vm cix-installer-2.5.0-1-x86_64.iso -p cix-release.pub
+Signature and comment signature verified
+Trusted comment: cix installer iso, v2.5.0
+```
+
+and flipping a single byte at offset 1000000 gives `Signature verification failed`. That is the whole property this work exists for: a downloader with no Cix software can tell a genuine installer from a substituted one.
+
+Refusal paths were exercised against a live daemon first (no ISO built → 400 naming the missing build). Contract-first per ADR-0218, and the machinery caught both gaps unprompted again — the generated dispatcher refused to link without a handler, and `test_api_surfaces` refused to pass until the CLI actually called it.
+
+One gap found by doing this rather than by reasoning about it: `g_iso_build_state` is in-memory, so the reboot into v2.5.0 left a finished, signed ISO on disk that the daemon reported as `state: none` and refused to publish. Harmless here (an ISO should carry the cixd version being released, so rebuilding was correct anyway) but real whenever anything restarts cixd between build and publish — filed as #205.
 
 ## Part 209 (done): a separate release-signing key, and ISOs that sign themselves
 
