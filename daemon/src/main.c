@@ -17877,8 +17877,25 @@ static void respond_diskpart_error(int fd, enum diskpart_error err)
 		respond_error(fd, 404, "Not Found", "this partition does not belong to the named disk");
 		break;
 	case DISKPART_ERR_IS_OS_DISK:
+		/*
+		 * Issue #140: this used to say the disk "can never be
+		 * repartitioned", which is no longer true and was the more
+		 * misleading half of the old blanket policy. Only the TABLE
+		 * REWRITE is refused here -- partitions can be added, and the
+		 * ones past the system set can be deleted and resized.
+		 */
 		respond_error(fd, 400, "Bad Request",
-		              "this disk holds the fixed OS layout -- it can never be repartitioned");
+		              "this is the OS disk: its partition table can never be rewritten, because "
+		              "that would destroy the ESP and both root slots. Adding a partition after "
+		              "the existing ones is allowed, and so is managing anything past the first "
+		              "four");
+		break;
+	case DISKPART_ERR_PROTECTED_PARTITION:
+		respond_error(fd, 400, "Bad Request",
+		              "this is one of the four partitions this machine boots from (ESP, both "
+		              "root slots, /config) -- destroying or resizing it would leave the host "
+		              "unbootable with no remote recovery. Partitions after them on the same "
+		              "disk are ordinary and can be managed freely");
 		break;
 	case DISKPART_ERR_HAS_ROLE:
 		respond_error(fd, 409, "Conflict",

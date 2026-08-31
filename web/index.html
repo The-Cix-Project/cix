@@ -754,12 +754,14 @@
 						</label>
 						<button type="submit">Add partition</button>
 					</form>
+					<div id="dd-table-actions">
 					<h3>Partition table</h3>
 					<p class="hint">Writing a fresh table wipes every partition on this disk and everything
 						on them. Refused while anything on the disk is mounted. Partitions can be created and
 						deleted; there is deliberately no resize &mdash; growing or moving one in place is a
 						data-bearing operation that needs its own design rather than a button.</p>
 					<button type="button" id="dd-write-table" class="danger">Write a fresh empty GPT table</button>
+					</div>
 				</div>
 			</div>
 		</section>

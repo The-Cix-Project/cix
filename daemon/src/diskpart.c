@@ -327,7 +327,7 @@ enum diskpart_error diskpart_delete(const char *disk_name, const char *partition
 	/* Issue #140: only the OS disk's first four are untouchable, not
 	 * the whole disk -- see partition_is_protected(). */
 	if (diskpart_partition_protected(part.name, part.is_os_disk))
-		return DISKPART_ERR_IS_OS_DISK;
+		return DISKPART_ERR_PROTECTED_PARTITION;
 	if (diskrole_lookup(partition_name) != NULL)
 		return DISKPART_ERR_HAS_ROLE;
 	if (part.mounted)
@@ -608,7 +608,7 @@ enum diskpart_error diskpart_resize(const char *disk_name, const char *partition
 		return DISKPART_ERR_WRONG_PARENT;
 	/* Issue #140: only the OS disk's first four are untouchable. */
 	if (diskpart_partition_protected(part.name, part.is_os_disk))
-		return DISKPART_ERR_IS_OS_DISK;
+		return DISKPART_ERR_PROTECTED_PARTITION;
 	/*
 	 * Unmounted only. resize2fs can grow a mounted ext4 online, but
 	 * sfdisk rewriting the table underneath a live filesystem is a
