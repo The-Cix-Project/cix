@@ -12726,6 +12726,58 @@ static int cmd_pkg_install(const struct cix_client *c, int json_mode, int argc, 
 }
 
 /*
+ * Issue #213: stop an in-flight build.
+ *
+ * The signal to act on is GET /v1/pkg's own last_output_seconds_ago --
+ * a build silent for an hour is either gcc linking or something waiting
+ * on stdin, and a person can tell those apart where a timeout cannot.
+ * That is why this is a verb and not a daemon-side watchdog.
+ */
+static int cmd_pkg_cancel(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	const char *name = NULL;
+	const char *image = NULL;
+	int i;
+	struct json_writer w;
+	struct cix_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--name=", 7) == 0)
+			name = argv[i] + 7;
+		else if (strncmp(argv[i], "--image=", 8) == 0)
+			image = argv[i] + 8;
+		else {
+			fprintf(stderr, "cixctl: unknown pkg cancel option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (name == NULL) {
+		fprintf(stderr, "usage: cixctl pkg cancel --name=NAME [--image=IMAGE]\n");
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "name");
+	jw_str(&w, name);
+	if (image != NULL) {
+		jw_key(&w, "image");
+		jw_str(&w, image);
+	}
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (cix_client_request(c, CIX_API_pkgCancel_METHOD, CIX_API_pkgCancel, w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+
+	return emit(&r, json_mode, fmt_pkg_line);
+}
+
+/*
  * ADR-0177/issue #46: resumes a build container a prior `--keep-on-
  * failure` attempt (either pkg install or pkg hostbuild) left preserved
  * instead of paying for a full fetch+extract+build restart -- the real,
@@ -13502,6 +13554,8 @@ static int cmd_pkg(const struct cix_client *c, int json_mode, int argc, char **a
 		return cmd_pkg_install(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "hostbuild") == 0)
 		return cmd_pkg_hostbuild(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "cancel") == 0)
+		return cmd_pkg_cancel(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "resume") == 0)
 		return cmd_pkg_resume(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "build-log") == 0)

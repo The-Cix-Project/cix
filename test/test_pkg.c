@@ -4943,6 +4943,188 @@ skip_resume:
 		}
 	}
 
+	/*
+	 * Issue #213: an in-flight build can be cancelled, and the outcome
+	 * says so.
+	 *
+	 * Three things are asserted, and the middle one is the point:
+	 *   - cancelling a package that does not exist is 404
+	 *   - cancelling one with no build in flight is 409, NOT a silent
+	 *     success -- a cancel racing a build that just finished must
+	 *     not be able to mark a completed install as cancelled
+	 *   - cancelling a real running build stops it and records
+	 *     failure_kind "cancelled", not "build"
+	 *
+	 * The last matters because the container is SIGKILLed: without the
+	 * cancel flag being consulted, the outcome would be reported as
+	 * "killed by signal 9" -- true, useless, and identical to every
+	 * other way a build can die.
+	 */
+	{
+		char cdir[PATH_MAX], cpath[PATH_MAX];
+		char c_scratch[] = "/tmp/cix_test_cancel_XXXXXX";
+		char c_tarball[512], c_sha[128];
+		FILE *cf;
+		int okc = 1;
+		int i;
+
+		/* Its own source, staged like every other recipe's: a cancel
+		 * test still has to get as far as a real build. */
+		if (mkdtemp(c_scratch) == NULL ||
+		    stage_fixture_tarball(c_scratch, "sleeper", "1.0", c_tarball, sizeof(c_tarball),
+		                           c_sha, sizeof(c_sha)) != 0) {
+			fprintf(stderr, "FAIL: #213 could not stage a source tarball\n");
+			ok = 0;
+			okc = 0;
+		}
+
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/pkg/cancel",
+		                        "{\"name\":\"no-such-package-at-all\"}", &r) != 0 ||
+		    r.status != 404) {
+			fprintf(stderr, "FAIL: #213 cancel unknown package, status=%d (want 404)\n",
+			        r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		/* A build that would never finish on its own. */
+		snprintf(cdir, sizeof(cdir), "%s/recipes/sleeper", g_pkg_state_dir);
+		mkdir(cdir, 0755);
+		snprintf(cdir, sizeof(cdir), "%s/recipes/sleeper/1.0", g_pkg_state_dir);
+		mkdir(cdir, 0755);
+		snprintf(cpath, sizeof(cpath), "%s/build.sh", cdir);
+		cf = okc ? fopen(cpath, "w") : NULL;
+		if (cf == NULL && okc) {
+			fprintf(stderr, "FAIL: #213 could not write sleeper recipe\n");
+			ok = 0;
+			okc = 0;
+		} else if (cf != NULL) {
+			fprintf(cf,
+			        "pkg_name=sleeper\npkg_version=1.0\npkg_source=file://%s\n"
+			        "pkg_sha256=%s\npkg_depends=\"\"\n"
+			        "pkg_build_depends=\"tcc linux-headers bash coreutils\"\n\n"
+			        "pkg_build() {\n\tsleep 600\n}\n\n"
+			        "pkg_install() {\n\ttrue\n}\n",
+			        c_tarball, c_sha);
+			fclose(cf);
+		}
+
+		if (okc) {
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/pkg/install",
+			                        "{\"name\":\"sleeper\",\"image\":\"base\"}", &r) != 0 ||
+			    r.status != 202) {
+				fprintf(stderr, "FAIL: #213 install sleeper, status=%d\n", r.status);
+				ok = 0;
+				okc = 0;
+			}
+			cix_response_free(&r);
+		}
+
+		/* Wait until it is genuinely building, not merely fetching. */
+		if (okc) {
+			int building = 0;
+
+			for (i = 0; i < 120 && !building; i++) {
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "GET", "/v1/pkg/sleeper", NULL, &r) == 0 &&
+				    r.status == 200 && r.body != NULL &&
+				    strstr(r.body, "\"state\":\"building\"") != NULL)
+					building = 1;
+				cix_response_free(&r);
+				if (!building)
+					usleep(250000);
+			}
+			if (!building) {
+				fprintf(stderr, "FAIL: #213 sleeper never reached building\n");
+				ok = 0;
+				okc = 0;
+			}
+		}
+
+		if (okc) {
+			/* What the daemon thinks is running, before and after --
+			 * the decisive datum if the cancel does not take: a
+			 * container still present means the kill did not happen,
+			 * an absent one means the kill happened and the
+			 * completion path did not notice. */
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/containers", NULL, &r) == 0)
+				fprintf(stderr, "#213 containers BEFORE cancel: %s\n",
+				        r.body != NULL ? r.body : "(none)");
+			cix_response_free(&r);
+
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/pkg/cancel",
+			                        "{\"name\":\"sleeper\",\"image\":\"base\"}", &r) != 0 ||
+			    r.status != 200) {
+				fprintf(stderr, "FAIL: #213 cancel running build, status=%d\n", r.status);
+				ok = 0;
+				okc = 0;
+			}
+			cix_response_free(&r);
+		}
+
+		if (okc) {
+			int cancelled = 0;
+
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/containers", NULL, &r) == 0)
+				fprintf(stderr, "#213 containers AFTER cancel: %s\n",
+				        r.body != NULL ? r.body : "(none)");
+			cix_response_free(&r);
+
+			for (i = 0; i < 120 && !cancelled; i++) {
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "GET", "/v1/pkg/sleeper", NULL, &r) == 0 &&
+				    r.status == 200 && r.body != NULL &&
+				    strstr(r.body, "\"state\":\"failed\"") != NULL &&
+				    strstr(r.body, "\"failure_kind\":\"cancelled\"") != NULL)
+					cancelled = 1;
+				cix_response_free(&r);
+				if (!cancelled)
+					usleep(250000);
+			}
+			if (!cancelled) {
+				/*
+				 * Say what it DID become. A check that only
+				 * reports "not what I wanted" leaves the reader
+				 * guessing, which is how the same failure gets
+				 * diagnosed twice.
+				 */
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "GET", "/v1/pkg/sleeper", NULL, &r) == 0)
+					fprintf(stderr,
+					        "FAIL: #213 cancelled build did not end failed/cancelled; "
+					        "entry is now: %s\n",
+					        r.body != NULL ? r.body : "(no body)");
+				else
+					fprintf(stderr,
+					        "FAIL: #213 cancelled build did not end failed/cancelled, "
+					        "and the entry could not be read back\n");
+				cix_response_free(&r);
+				ok = 0;
+			}
+
+			/*
+			 * Now that it is genuinely not building, a second
+			 * cancel must be REFUSED. This is the race the 409
+			 * exists for: a cancel arriving after the build has
+			 * finished must not be able to restate the outcome.
+			 */
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/pkg/cancel",
+			                        "{\"name\":\"sleeper\",\"image\":\"base\"}", &r) != 0 ||
+			    r.status != 409) {
+				fprintf(stderr,
+				        "FAIL: #213 second cancel, status=%d (want 409)\n", r.status);
+				ok = 0;
+			}
+			cix_response_free(&r);
+		}
+	}
+
 	if (stop_daemon(daemon_pid) != 0) {
 		fprintf(stderr, "FAIL: daemon did not exit cleanly on SIGTERM\n");
 		ok = 0;

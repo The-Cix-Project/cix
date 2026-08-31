@@ -160,6 +160,22 @@ struct pkg_entry {
 	 * start_fetch_for()) so a stale name never survives past the next
 	 * attempt on this same entry. */
 	char kept_build_container[PKG_NAME_MAX];
+	/*
+	 * Issue #213: an operator asked for this build to stop.
+	 *
+	 * Set by pkg_cancel() just before it kills the build container.
+	 * pkg_build_completed() then sees the container die like any other
+	 * build death and consults this to describe the outcome honestly:
+	 * without it, a cancel is indistinguishable from the build being
+	 * killed by anything else, and would be reported as
+	 * "killed by signal 9".
+	 *
+	 * A flag rather than pkg_cancel() writing the failure itself,
+	 * because the completion path is going to run regardless -- two
+	 * writers for one outcome would race over which description
+	 * survives.
+	 */
+	int cancel_requested;
 };
 
 struct pkg_recipe {
@@ -564,6 +580,8 @@ const char *pkg_failure_kind_name(enum pkg_failure_kind kind)
 		return "build";
 	case PKG_FAILURE_INSTALL:
 		return "install";
+	case PKG_FAILURE_CANCELLED:
+		return "cancelled";
 	case PKG_FAILURE_NONE:
 	default:
 		return "none";
@@ -4929,6 +4947,34 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 		}
 	}
 
+	/*
+	 * Issue #213: a cancel that arrived before this build had a
+	 * container.
+	 *
+	 * Between the fetch finishing and the container being spawned the
+	 * entry is already PKG_STATE_BUILDING -- composing a build
+	 * environment (ADR-0199) happens in that window and is not quick --
+	 * so pkg_cancel() can legitimately be called with nothing yet to
+	 * kill. It sets the flag and returns; this is where the flag has to
+	 * be honoured, because otherwise the build would go on to spawn,
+	 * succeed, and the cancel would have silently done nothing.
+	 *
+	 * Checked before the container name is claimed (issue #98's
+	 * invariant) so a cancelled build never takes ownership of a slot
+	 * name it is not going to use.
+	 */
+	if (e->cancel_requested) {
+		e->cancel_requested = 0;
+		pkg_fail(e, is_final_upgrade, PKG_FAILURE_CANCELLED,
+		         "build cancelled by operator before it started");
+		logstore_write("cixd", "info",
+		               "pkg %s@%s: cancelled before its build container was spawned",
+		               e->name, e->image);
+		g_chains[chain_idx].name[0] = '\0';
+		g_chains[chain_idx].dep_queue_count = 0;
+		return 0;
+	}
+
 	pkg_build_container_name(chain_idx, e->build_container_name, sizeof(e->build_container_name));
 	/*
 	 * Issue #98: exactly one entry may claim a given build container
@@ -6019,6 +6065,67 @@ static void buildenv_release(int chain_idx)
 		fprintf(stderr, "pkg: could not remove the build environment %s\n", image);
 }
 
+/*
+ * Issue #213: stop an in-flight build.
+ *
+ * Marks the entry and hands its build container's name back; the CALLER
+ * kills it. Deliberately does NOT touch the registry itself
+ * (registry_remove()) -- pkg.c has never linked against registry.h,
+ * main.c alone owns every registry_* call, and pkg_resume() above
+ * already establishes exactly this hand-back shape. Adding a dependency
+ * edge just for cancel would trade a real architectural boundary for a
+ * few saved lines.
+ *
+ * The outcome is not recorded here either. Killing the container makes
+ * pkg_build_completed() run like any other build death, and that is the
+ * single place a failure is written (issue #101). Two writers for one
+ * outcome would race over which description survives.
+ *
+ * The state check is a refusal rather than a no-op on purpose: a cancel
+ * arriving just after a build finished must not be able to mark a
+ * completed install as cancelled, and "there was nothing to cancel" is
+ * more useful to a caller than silence and a success code.
+ */
+enum pkg_error pkg_cancel(const char *name, const char *image,
+                          char *out_container, size_t out_container_size)
+{
+	struct pkg_entry *e;
+
+	if (out_container == NULL || out_container_size == 0)
+		return PKG_ERR_INVALID_NAME;
+	out_container[0] = '\0';
+
+	if (name == NULL || name[0] == '\0')
+		return PKG_ERR_INVALID_NAME;
+
+	e = pkg_find(name, image);
+	if (e == NULL)
+		return PKG_ERR_NOT_FOUND;
+
+	if (e->state != PKG_STATE_FETCHING && e->state != PKG_STATE_BUILDING)
+		return PKG_ERR_NOT_BUILDING;
+
+	e->cancel_requested = 1;
+
+	/*
+	 * A FETCHING entry has no build container yet -- the fetch is a
+	 * host-side subprocess, not a container. The flag still stands, so
+	 * whichever completion path runs next reports it as a cancel; there
+	 * is simply nothing for the caller to kill.
+	 */
+	if (e->build_container_name[0] != '\0') {
+		snprintf(out_container, out_container_size, "%s", e->build_container_name);
+		logstore_write("cixd", "info", "pkg %s@%s: cancelling build container %s",
+		               e->name, e->image, e->build_container_name);
+	} else {
+		logstore_write("cixd", "info",
+		               "pkg %s@%s: cancel requested before a build container existed",
+		               e->name, e->image);
+	}
+
+	return PKG_OK;
+}
+
 int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_pid,
                          int *out_pidfd, int *out_chain_idx, char *out_hostbuild_done_name,
                          int *out_kept)
@@ -6087,7 +6194,59 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 	is_final = (g_chains[chain_idx].dep_queue_pos + 1 >= g_chains[chain_idx].dep_queue_count);
 	is_upgrade = is_final && g_chains[chain_idx].dep_queue_is_upgrade;
 
-	if (exit_status != 0) {
+	/*
+	 * Deliberately NOT gated on exit_status. A cancelled build is
+	 * cancelled whatever the kill reported.
+	 *
+	 * The first version of this checked `exit_status != 0` on the
+	 * reasoning that a killed process cannot exit cleanly. It can: the
+	 * observed status after registry_remove() reaped the container came
+	 * back 0, the success path ran, and a build the operator had just
+	 * stopped was INSTALLED -- a half-built tree merged into the image
+	 * because the kill happened to look tidy.
+	 *
+	 * So intent wins over exit code. There is no reading of a status
+	 * that should turn "the operator stopped this" into "this
+	 * succeeded".
+	 */
+	if (e != NULL && e->cancel_requested) {
+		/*
+		 * Issue #213: an operator stopped this build. The container
+		 * was SIGKILLed, so without this it lands in the
+		 * killed-by-signal branch below and is reported as
+		 * "killed by signal 9" -- true, useless, and identical to
+		 * every other way a build can be killed.
+		 *
+		 * Recorded through pkg_fail() like every other outcome
+		 * (issue #101), with is_upgrade carrying the usual rule: a
+		 * cancelled UPGRADE leaves the package installed at the
+		 * version it already had, because that version is still
+		 * there and still working.
+		 */
+		e->cancel_requested = 0;
+		pkg_fail(e, is_upgrade, PKG_FAILURE_CANCELLED,
+		         "build cancelled by operator");
+		logstore_write("cixd", "info", "pkg %s@%s: build cancelled by operator",
+		               e->name, e->image);
+
+		/*
+		 * Return, exactly as the failure branch below does.
+		 *
+		 * Falling through would reach the success path further down and
+		 * merge this build's tree into the image -- which is precisely
+		 * what happened before this return existed: a cancelled build
+		 * was recorded as cancelled and then INSTALLED a moment later,
+		 * ending up "installed" with the operator's cancel silently
+		 * overwritten.
+		 *
+		 * The chain is abandoned for the same reason a failed
+		 * dependency abandons it: whatever asked for this cannot
+		 * complete now.
+		 */
+		g_chains[chain_idx].name[0] = '\0';
+		g_chains[chain_idx].dep_queue_count = 0;
+		return 0;
+	} else if (exit_status != 0) {
 		/*
 		 * Whatever the build container's own stdout/stderr actually
 		 * said -- the one piece of information no exit-status decode

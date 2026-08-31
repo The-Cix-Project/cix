@@ -202,10 +202,44 @@ enum pkg_failure_kind {
 	/* The build container failed to start, or the build itself failed. */
 	PKG_FAILURE_BUILD,
 	/* The build succeeded; merging its output into the image did not. */
-	PKG_FAILURE_INSTALL
+	PKG_FAILURE_INSTALL,
+	/*
+	 * Issue #213: stopped by an operator, not by its own merits.
+	 *
+	 * Deliberately its own kind rather than PKG_FAILURE_BUILD with a
+	 * different message. Issue #101 made the kind a required parameter
+	 * precisely so a failure says what happened; "the build was killed"
+	 * and "the build did not work" call for opposite responses, and a
+	 * reader who cannot tell them apart will go looking for a defect
+	 * that is not there.
+	 */
+	PKG_FAILURE_CANCELLED
 };
 
 const char *pkg_failure_kind_name(enum pkg_failure_kind kind);
+
+/*
+ * Issue #213: stop an in-flight build for (name, image).
+ *
+ * PKG_ERR_NOT_FOUND when no such entry exists; PKG_ERR_NOT_BUILDING when
+ * the entry has no build in flight (installed, or already failed) --
+ * refused rather than half-acted on, so a cancel racing a build that
+ * has just finished cannot mark a completed install as cancelled.
+ *
+ * Does NOT record the failure, and does NOT kill anything. It marks the
+ * entry and writes its build container's name to out_container (empty
+ * when the entry is still FETCHING and no container exists yet); the
+ * CALLER calls registry_remove() on it. pkg.c has never linked against
+ * registry.h -- main.c alone owns every registry_* call -- and
+ * pkg_resume() already hands work back the same way.
+ *
+ * The exit is then observed by pkg_build_completed() exactly as any
+ * other build death, which records the outcome through the single
+ * pkg_fail() path. Recording it here as well would mean two writers for
+ * one outcome, racing over which description survives.
+ */
+enum pkg_error pkg_cancel(const char *name, const char *image,
+                          char *out_container, size_t out_container_size);
 
 enum pkg_error {
 	PKG_OK = 0,
@@ -218,6 +252,13 @@ enum pkg_error {
 	PKG_ERR_SPAWN_FAILED,
 	PKG_ERR_PERSIST_FAILED,
 	PKG_ERR_INVALID_TOOLCHAIN, /* toolchain_path missing, unreadable, or not a regular file */
+	/*
+	 * Issue #213: pkg_cancel() found the entry, but it has no build in
+	 * flight. Its own code rather than reusing PKG_ERR_BUSY, which
+	 * means the opposite ("something IS running"), or NOT_FOUND, which
+	 * would say the package does not exist when it plainly does.
+	 */
+	PKG_ERR_NOT_BUILDING,
 	PKG_ERR_TARGET_IMAGE_NOT_FOUND /* pkg_image_recipe_apply_start(): the recipe itself parsed
 	                                 * fine, but the image it names doesn't exist yet -- distinct
 	                                 * from PKG_ERR_INVALID_RECIPE (a genuine parse failure) and
