@@ -75,6 +75,47 @@ These are genuine, confirmed environment facts about this project's own minimal 
 - **Absolute tool paths inside a container, not bare names.** `gcc`/`ld` resolve their own installation prefix differently depending on how they're invoked (see `CLAUDE.md`'s own environment notes) — prefer `/usr/bin/gcc` over a bare `gcc` if a recipe's own build step execs a compiler directly rather than through `make`'s normal `$(CC)` indirection.
 - **A recipe only ever sees what it declared, or (if it declared nothing) whatever its build image already has.** With `pkg_build_depends` set, the environment is exactly your declared packages — nothing is auto-detected or auto-installed on demand, and anything missing fails the build by name.
 
+### Metadata strings are shell, so no backticks
+
+A recipe is a **sourced shell script**, and `pkg_changelog=` and friends are ordinary double-quoted assignments. So markdown habits are dangerous there:
+
+```sh
+# WRONG -- the shell runs `ip vrf` and `ip link ... type vrf`
+pkg_changelog="removes the `ip vrf` command; `ip link ... type vrf` is unaffected"
+```
+
+```
+/build/recipe.sh: line 81: ip: command not found
+```
+
+Backticks are command substitution. `$(...)` is too. And the obvious repair is also wrong:
+
+```sh
+# ALSO WRONG -- the inner quotes end the string, leaving `ip vrf` as a command
+pkg_changelog="removes the "ip vrf" command"
+```
+
+Use single quotes inside the double-quoted value:
+
+```sh
+pkg_changelog="removes the 'ip vrf' command; 'ip link ... type vrf' is unaffected"
+```
+
+This bites hardest in a *changelog*, because that is the field most likely to quote a command name, and the failure appears as a mystery `command not found` at a line number that looks like metadata rather than code. Check before publishing:
+
+```sh
+grep -nE '^pkg_[a-z_]+=' build.sh | grep -E '`|\$\('   # must print nothing
+```
+
+and confirm the block still sources cleanly:
+
+```sh
+( sed -n '/^pkg_name=/,/^pkg_changelog=/p' build.sh > /tmp/m.sh; . /tmp/m.sh; \
+  echo "$pkg_version ${#pkg_changelog}" )
+```
+
+A changelog that silently truncates to 0 characters is the tell that a quote ended the string early.
+
 ### Working out a recipe's build tools
 
 A recipe with no `pkg_build_depends` cannot be built at all — ADR-0199 composes every build environment from a recipe's declared tools **and nothing else**, so it is refused before it starts. Working out the right set is not guesswork; it comes from three real sources:
