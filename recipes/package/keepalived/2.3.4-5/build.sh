@@ -33,9 +33,13 @@
 # -2 measured a real capability loss against 2.3.4: iptables, nftables
 # and ipset support all went to No, because those were only ever on by
 # accident of Debian's libraries sitting on the old shared build host.
-# libnftnl closes the nftables half of that. iptables and ipset support
-# stay off until libip4tc/libip6tc and libipset are packaged too -- the
-# ipset package currently ships only the binary, not its library.
+# libnftnl closed the nftables half in -3/-4. This revision closes the
+# iptables half: iptables@1.8.13-4 ships libxtables/libip4tc/libip6tc
+# together with their headers and pkg-config files, where the earlier
+# iptables package deleted all of those as "not runtime-needed".
+#
+# ipset support stays off, and is now the only one left: the ipset
+# package ships the binary but not libipset, which has no recipe.
 #
 # libmnl IS declared, and the reason is a correction worth keeping. -3
 # left it out on the strength of -2's measurement, which showed
@@ -55,7 +59,7 @@
 # another one linked.
 #
 pkg_name="keepalived"
-pkg_version="2.3.4-4"
+pkg_version="2.3.4-5"
 # Source moves from Debian's mirror of the orig tarball to keepalived's
 # own first-party release. The checksum is unchanged because the bytes
 # are unchanged -- verified by downloading both and comparing sha256,
@@ -63,15 +67,15 @@ pkg_version="2.3.4-4"
 # without that check.
 pkg_source="https://www.keepalived.org/software/keepalived-2.3.4.tar.gz"
 pkg_sha256="6afd95ddb7d3e0d3b8b8e5b3a489144131b61a01b06d29e883d0c44acc8a36bf"
-pkg_depends="openssl libnl libnftnl libmnl"
-pkg_build_depends="tcc make linux-headers bash coreutils sed grep gawk binutils findutils diffutils pkgconf openssl libnl libnftnl"
-pkg_changelog="2.3.4-4: declares libmnl after all -- with libnftnl present, keepalived links it DIRECTLY (-lmnl, confirmed in DT_NEEDED), which was not true of the -2 build that reasoning came from. 2.3.4-3: restores nftables support, which -2 measurably lost -- libnftnl@1.2.9-2 is now a real Cix package. Drops libmnl from pkg_depends: -2's own DT_NEEDED measurement showed it was never linked directly. 2.3.4-2: builds against Cix's own openssl/libnl/libmnl and declares them, instead of copying eight of the build host's Debian libraries into the package (#206, #207)"
+pkg_depends="openssl libnl libnftnl libmnl iptables"
+pkg_build_depends="tcc make linux-headers bash coreutils sed grep gawk binutils findutils diffutils pkgconf openssl libnl libnftnl iptables"
+pkg_changelog="2.3.4-5: restores iptables support -- iptables@1.8.13-4 now ships libxtables/libip4tc/libip6tc with their headers and pkg-config files, which is what was missing. 2.3.4-4: declares libmnl after all -- with libnftnl present, keepalived links it DIRECTLY (-lmnl, confirmed in DT_NEEDED), which was not true of the -2 build that reasoning came from. 2.3.4-3: restores nftables support, which -2 measurably lost -- libnftnl@1.2.9-2 is now a real Cix package. Drops libmnl from pkg_depends: -2's own DT_NEEDED measurement showed it was never linked directly. 2.3.4-2: builds against Cix's own openssl/libnl/libmnl and declares them, instead of copying eight of the build host's Debian libraries into the package (#206, #207)"
 
 pkg_build() {
 	export PKG_CONFIG_PATH="/usr/lib/pkgconfig:/lib/x86_64-linux-gnu/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig"
 
 	echo "=== libraries visible to pkg-config ==="
-	for m in libnl-3.0 libnl-genl-3.0 libmnl libnftnl openssl libipset; do
+	for m in libnl-3.0 libnl-genl-3.0 libmnl libnftnl openssl libipset xtables libip4tc libip6tc; do
 		if pkg-config --exists "$m" 2>/dev/null; then
 			echo "  present  $m $(pkg-config --modversion "$m")"
 		else
