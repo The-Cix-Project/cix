@@ -17,11 +17,11 @@
 # both matched.
 #
 pkg_name="ipset"
-pkg_version="7.24-6"
-pkg_changelog="7.24-6: strip the --version-script link flag TCC cannot honour (#206, #207)"
+pkg_version="7.24-7"
+pkg_changelog="7.24-7: declares libmnl instead of copying it into the package (#206, #207). 7.24-6: strip the --version-script link flag TCC cannot honour (#206, #207)"
 pkg_source="https://deb.debian.org/debian/pool/main/i/ipset/ipset_7.24.orig.tar.bz2"
 pkg_sha256="fbe3424dff222c1cb5e5c34d38b64524b2217ce80226c14fdcbb13b29ea36112"
-pkg_depends=""
+pkg_depends="libmnl"
 
 # pkg_build_depends (#206). Every entry past the baseline was named by a
 # real build rather than guessed:
@@ -90,10 +90,31 @@ pkg_build() {
 # deliberately not copied -- this is a container image, not a dev
 # environment, the same boundary every other recipe in this set
 # already keeps.
+#
+# -7 stops copying libmnl into the package and declares it instead.
+#
+# -6 built correctly against Cix's own libmnl and then shipped a COPY of
+# whatever sat at /lib/x86_64-linux-gnu/libmnl.so.0 in the build
+# sandbox. On this box that copy was Cix's own -- libmnl is in
+# pkg_build_depends, so it is what is installed there -- so unlike iw
+# and keepalived this was not shipping a Debian binary. It was still the
+# wrong shape, and worth fixing rather than leaving because the copy is
+# indistinguishable from the contaminated case by inspection: nothing in
+# the artifact records which libmnl those bytes came from. Declaring the
+# dependency makes the answer checkable instead of inferred, and means
+# an image resolves one shared libmnl rather than each consumer carrying
+# a private copy no upgrade can reach.
+#
 pkg_install() {
 	dir="$PKG_DESTDIR/usr/sbin"
-	mkdir -p "$dir" "$PKG_DESTDIR/lib/x86_64-linux-gnu"
+	mkdir -p "$dir"
 	cp src/ipset "$dir/"
-	cp -a /lib/x86_64-linux-gnu/libmnl.so.0 /lib/x86_64-linux-gnu/libmnl.so.0.2.0 \
-	   "$PKG_DESTDIR/lib/x86_64-linux-gnu/"
+
+	# Assert the linkage rather than trusting make's exit status (#113).
+	echo "=== ipset DT_NEEDED ==="
+	readelf -d "$dir/ipset" | grep NEEDED
+	readelf -d "$dir/ipset" | grep -q 'NEEDED.*libmnl\.so\.0' || {
+		echo "ipset is not linked against libmnl.so.0" >&2
+		exit 1
+	}
 }
