@@ -4994,14 +4994,17 @@ async function refreshDiskFormatStatuses() {
  */
 const STORAGE_KINDS = {
 	state: { showPath: CIX_API.getStateStorage, migratePath: CIX_API.migrateStateStorage,
+	         migrateStatusPath: CIX_API.getStateStorageMigrateStatus,
 	         cacheKey: "stateStorage", statusCacheKey: "stateStorageMigrate",
 	         currentId: "ss-current", statusId: "ss-migrate-status", selectId: "ss-target-disk",
 	         formId: "ss-migrate-form", label: "State storage", role: "state-storage" },
 	logs: { showPath: CIX_API.getLogStorage, migratePath: CIX_API.migrateLogStorage,
+	        migrateStatusPath: CIX_API.getLogStorageMigrateStatus,
 	        cacheKey: "logStorage", statusCacheKey: "logStorageMigrate",
 	        currentId: "ls-current", statusId: "ls-migrate-status", selectId: "ls-target-disk",
 	        formId: "ls-migrate-form", label: "Log storage", role: "log-storage" },
 	rebuildable: { showPath: CIX_API.getRebuildableStorage,
+	               migrateStatusPath: CIX_API.getRebuildableStorageMigrateStatus,
 	               migratePath: CIX_API.migrateRebuildableStorage, cacheKey: "rebuildableStorage",
 	               statusCacheKey: "rebuildableStorageMigrate", currentId: "rs-current",
 	               statusId: "rs-migrate-status", selectId: "rs-target-disk", formId: "rs-migrate-form",
@@ -5022,7 +5025,7 @@ async function refreshStoragePlacementMigrate(kind) {
 	if (parseHash().category !== "disks")
 		return;
 	try {
-		cache[k.statusCacheKey] = await apiRequest("GET", k.migratePath());
+		cache[k.statusCacheKey] = await apiRequest("GET", k.migrateStatusPath());
 	} catch (e) {
 		/* Transient -- next poll tick tries again. */
 	}

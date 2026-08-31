@@ -1914,12 +1914,13 @@ static int cmd_storage_kind_migrate(const struct cix_client *c, int json_mode, c
 	return emit(&r, json_mode, fmt_storage_migrate_status);
 }
 
-static int cmd_storage_kind_migrate_status(const struct cix_client *c, int json_mode, const char *path_fmt)
+static int cmd_storage_kind_migrate_status(const struct cix_client *c, int json_mode,
+                                            const char *status_path)
 {
 	char path[64];
 	struct cix_response r;
 
-	snprintf(path, sizeof(path), "%s", path_fmt);
+	snprintf(path, sizeof(path), "%s", status_path);
 	if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -1927,9 +1928,13 @@ static int cmd_storage_kind_migrate_status(const struct cix_client *c, int json_
 	return emit(&r, json_mode, fmt_storage_migrate_status);
 }
 
+/* Three paths, not two: the migrate POST and its status GET share a URL
+ * but are different operations, and each call site names its own -- the
+ * coverage check (ADR-0218 layer 2) can only mean something if an
+ * operation is credited to a channel that genuinely invokes it. */
 static int cmd_storage_kind(const struct cix_client *c, int json_mode, const char *name,
-                             const char *show_path, const char *migrate_path, int argc,
-                             char **argv)
+                             const char *show_path, const char *migrate_path,
+                             const char *status_path, int argc, char **argv)
 {
 	const char *sub;
 
@@ -1942,7 +1947,7 @@ static int cmd_storage_kind(const struct cix_client *c, int json_mode, const cha
 	if (strcmp(sub, "migrate") == 0)
 		return cmd_storage_kind_migrate(c, json_mode, migrate_path, argc - 1, argv + 1);
 	if (strcmp(sub, "migrate-status") == 0)
-		return cmd_storage_kind_migrate_status(c, json_mode, migrate_path);
+		return cmd_storage_kind_migrate_status(c, json_mode, status_path);
 
 	fprintf(stderr,
 	        "usage: cixctl storage %s [show]\n"
@@ -1964,13 +1969,13 @@ static int cmd_storage(const struct cix_client *c, int json_mode, int argc, char
 	sub = argv[0];
 	if (strcmp(sub, "state") == 0)
 		return cmd_storage_kind(c, json_mode, "state", CIX_API_getStateStorage,
-		                         CIX_API_migrateStateStorage, argc - 1, argv + 1);
+		                         CIX_API_migrateStateStorage, CIX_API_getStateStorageMigrateStatus, argc - 1, argv + 1);
 	if (strcmp(sub, "logs") == 0)
 		return cmd_storage_kind(c, json_mode, "logs", CIX_API_getLogStorage,
-		                         CIX_API_migrateLogStorage, argc - 1, argv + 1);
+		                         CIX_API_migrateLogStorage, CIX_API_getLogStorageMigrateStatus, argc - 1, argv + 1);
 	if (strcmp(sub, "rebuildable") == 0)
 		return cmd_storage_kind(c, json_mode, "rebuildable", CIX_API_getRebuildableStorage,
-		                         CIX_API_migrateRebuildableStorage, argc - 1, argv + 1);
+		                         CIX_API_migrateRebuildableStorage, CIX_API_getRebuildableStorageMigrateStatus, argc - 1, argv + 1);
 
 	fprintf(stderr, "usage: cixctl storage state|logs|rebuildable [show|migrate|migrate-status]\n");
 	return 2;

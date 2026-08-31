@@ -1,4 +1,8 @@
 #include "console.h"
+/* ADR-0218: both WebSocket paths come from the contract too -- an
+ * upgrade is still a declared API operation, and a path built here
+ * by hand would drift exactly like any other. */
+#include "generated/cix_api.h"
 #include "iohelpers.h"
 #include "json.h"
 
@@ -404,7 +408,7 @@ int cix_console_run(const struct cix_client *c, const char *container_name, cons
 	{
 		char path[256];
 
-		snprintf(path, sizeof(path), "/v1/containers/%s/console", container_name);
+		snprintf(path, sizeof(path), CIX_API_consoleContainer, container_name);
 		fd = do_ws_handshake(c, "console", path, cmd);
 	}
 	if (fd < 0)
@@ -436,7 +440,7 @@ int cix_pkg_build_log_run(const struct cix_client *c)
 	struct client_ws_buf inbuf;
 	unsigned char iobuf[4096];
 
-	fd = do_ws_handshake(c, "pkg build-log", "/v1/pkg/build/log", NULL);
+	fd = do_ws_handshake(c, "pkg build-log", CIX_API_pkgBuildLog, NULL);
 	if (fd < 0)
 		return -1;
 
