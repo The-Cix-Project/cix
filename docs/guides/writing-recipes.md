@@ -75,6 +75,15 @@ These are genuine, confirmed environment facts about this project's own minimal 
 - **Absolute tool paths inside a container, not bare names.** `gcc`/`ld` resolve their own installation prefix differently depending on how they're invoked (see `CLAUDE.md`'s own environment notes) — prefer `/usr/bin/gcc` over a bare `gcc` if a recipe's own build step execs a compiler directly rather than through `make`'s normal `$(CC)` indirection.
 - **A recipe only ever sees what it declared, or (if it declared nothing) whatever its build image already has.** With `pkg_build_depends` set, the environment is exactly your declared packages — nothing is auto-detected or auto-installed on demand, and anything missing fails the build by name.
 
+### pkg-config files: ship one exactly when you ship what it describes
+
+A `.pc` file is a **claim about what your package provides** — include paths, a link line, a version. So the rule is not "always keep them" or "always strip them", it is that the claim must be true:
+
+- Your package ships headers and a `.so`? **Keep the `.pc`.** Stripping it means a consumer asking pkg-config gets "not found" for something you really do provide. Three recipes did exactly this on the stale premise that nothing here used pkg-config; 20+ recipes now do (issue #174).
+- Your package deliberately ships a **runtime only** — no `usr/include`, no `.a`, no `.so` — as `procps` does? **Strip the `.pc` too.** Restoring it would make pkg-config *succeed* and hand a consumer include paths and a link line for files that are not in the package. The failure then surfaces much later as a confusing compile error instead of an honest "not found", and **a false claim is worse than a missing one.**
+
+The test to apply: *does everything this `.pc` file promises actually exist in `$PKG_DESTDIR`?* If yes, ship it. If no, either ship the missing pieces or strip the `.pc` — never ship a `.pc` that describes files you deleted.
+
 ## Dependencies: two questions, two fields
 
 A recipe answers two different questions, and they are **not** the same list:
