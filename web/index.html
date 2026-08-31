@@ -3292,6 +3292,10 @@
 	</div>
 </div>
 
+<!-- ADR-0218: the generated API map, loaded before app.js which uses it.
+     Produced by tools/apigen.c from docs/api/openapi.yaml at build time
+     and copied into the web root at install time -- never committed. -->
+<script src="/api.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

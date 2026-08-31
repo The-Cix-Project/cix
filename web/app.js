@@ -481,8 +481,8 @@ document.getElementById("menu-about").addEventListener("click", async () => {
 	instanceEl.textContent = buildEl.textContent = slotEl.textContent = kernelEl.textContent = "…";
 	try {
 		const [boot, site] = await Promise.all([
-			apiRequest("GET", "/v1/system/boot"),
-			apiRequest("GET", "/v1/system/site"),
+			apiRequest("GET", CIX_API.getSystemBoot()),
+			apiRequest("GET", CIX_API.getSystemSite()),
 		]);
 		instanceEl.textContent = instanceFqdn(site);
 		buildEl.textContent = boot.build_version + " (" + boot.build_time + ")";
@@ -552,7 +552,7 @@ function promptReauth() {
 authActionBtn.addEventListener("click", async () => {
 	if (authToken) {
 		try {
-			await apiRequest("POST", "/v1/logout");
+			await apiRequest("POST", CIX_API.postLogout());
 		} catch (e) {
 			/* best-effort -- matches cixctl's own idempotent-logout
 			 * posture; the local session clears either way */
@@ -572,7 +572,7 @@ document.getElementById("login-form").addEventListener("submit", async (event) =
 	const password = document.getElementById("lf-password").value;
 
 	try {
-		const result = await apiRequest("POST", "/v1/login", { username: username, password: password });
+		const result = await apiRequest("POST", CIX_API.postLogin(), { username: username, password: password });
 
 		setAuth(result.token, username);
 		document.getElementById("login-form").reset();
@@ -803,7 +803,7 @@ async function pollServerLogs() {
 	let entries;
 
 	try {
-		entries = await apiRequest("GET", "/v1/system/logs?since=" + logsSinceTs + "&tail=500");
+		entries = await apiRequest("GET", CIX_API.getSystemLogs(logsSinceTs) + "?since=%s&tail=500");
 	} catch (e) {
 		return; /* best-effort, matches every other poll()'s own error tolerance */
 	}
@@ -927,7 +927,7 @@ async function apiRequest(method, path, body) {
 
 		if (method !== "GET")
 			logLine(method, path, "-> " + res.status + " " + message, "error");
-		if (res.status === 401 && path !== "/v1/login")
+		if (res.status === 401 && path !== CIX_API.postLogin())
 			promptReauth();
 		throw new Error(message);
 	}
@@ -994,7 +994,7 @@ async function refreshHealth() {
 	const start = performance.now();
 
 	try {
-		await apiRequest("GET", "/v1/health");
+		await apiRequest("GET", CIX_API.getHealth());
 		const ms = Math.round(performance.now() - start);
 
 		/* Back after an absence: the daemon may have restarted into a
@@ -1079,7 +1079,7 @@ function renderStatusMeta() {
  */
 async function refreshStatusVersion() {
 	try {
-		const b = await apiRequest("GET", "/v1/system/boot");
+		const b = await apiRequest("GET", CIX_API.getSystemBoot());
 
 		statusVersion = { version: b.build_version || "unknown", slot: b.slot || null };
 		statusMeta.title = "Cix " + statusVersion.version +
@@ -1107,7 +1107,7 @@ async function refreshStatusVersion() {
  */
 async function refreshStatusMeta() {
 	try {
-		const s = await apiRequest("GET", "/v1/system/stats");
+		const s = await apiRequest("GET", CIX_API.getSystemStats());
 		const up = s.uptime || {};
 		const load = s.load || {};
 
@@ -2146,14 +2146,14 @@ function renderContainers(containers) {
 }
 
 async function refreshContainers() {
-	const data = await apiRequest("GET", "/v1/containers");
+	const data = await apiRequest("GET", CIX_API.listContainers());
 	cache.containers = data.containers;
 	renderContainers(cache.containers);
 }
 
 async function removeContainer(name) {
 	try {
-		await apiRequest("DELETE", "/v1/containers/" + encodeURIComponent(name));
+		await apiRequest("DELETE", CIX_API.deleteContainer(name));
 		clearStatus();
 		if (parseHash().category === "containers" && parseHash().name === name)
 			location.hash = "#containers";
@@ -2166,7 +2166,7 @@ async function removeContainer(name) {
 
 async function stopContainer(name) {
 	try {
-		await apiRequest("POST", "/v1/containers/" + encodeURIComponent(name) + "/stop");
+		await apiRequest("POST", CIX_API.stopContainer(name));
 		clearStatus();
 		await refreshContainers();
 		renderCurrentView();
@@ -2177,7 +2177,7 @@ async function stopContainer(name) {
 
 async function startContainer(name) {
 	try {
-		await apiRequest("POST", "/v1/containers/" + encodeURIComponent(name) + "/start");
+		await apiRequest("POST", CIX_API.startContainer(name));
 		clearStatus();
 		await refreshContainers();
 		renderTree();
@@ -2189,7 +2189,7 @@ async function startContainer(name) {
 
 async function pauseContainer(name) {
 	try {
-		await apiRequest("POST", "/v1/containers/" + encodeURIComponent(name) + "/pause");
+		await apiRequest("POST", CIX_API.pauseContainer(name));
 		clearStatus();
 		await refreshContainers();
 		renderCurrentView();
@@ -2200,7 +2200,7 @@ async function pauseContainer(name) {
 
 async function unpauseContainer(name) {
 	try {
-		await apiRequest("POST", "/v1/containers/" + encodeURIComponent(name) + "/unpause");
+		await apiRequest("POST", CIX_API.unpauseContainer(name));
 		clearStatus();
 		await refreshContainers();
 		renderCurrentView();
@@ -2442,7 +2442,7 @@ function openConsole(name) {
 	statusEl.textContent = "connecting…";
 
 	const proto = location.protocol === "https:" ? "wss:" : "ws:";
-	const ws = new WebSocket(proto + "//" + location.host + "/v1/containers/" + encodeURIComponent(name) + "/console");
+	const ws = new WebSocket(proto + "//" + location.host + CIX_API.consoleContainer(name));
 
 	ws.binaryType = "arraybuffer";
 	const decoder = new TextDecoder();
@@ -2754,7 +2754,7 @@ async function pollStatsOnce(name) {
 	let stats;
 
 	try {
-		stats = await apiRequest("GET", "/v1/containers/" + encodeURIComponent(name) + "/stats");
+		stats = await apiRequest("GET", CIX_API.getContainerStats(name));
 	} catch (e) {
 		return; /* container may have just exited/been removed -- the next
 		         * tick (or leaving the tab) resolves it; no need to
@@ -2936,7 +2936,7 @@ async function pollHostStatsOnce() {
 	let stats;
 
 	try {
-		stats = await apiRequest("GET", "/v1/system/stats");
+		stats = await apiRequest("GET", CIX_API.getSystemStats());
 	} catch (e) {
 		return; /* transient -- the next tick resolves it */
 	}
@@ -2995,7 +2995,7 @@ async function refreshProcesses() {
 
 	tbody.innerHTML = '<tr><td colspan="7" class="empty">Loading&hellip;</td></tr>';
 	try {
-		const procs = await apiRequest("GET", "/v1/system/processes");
+		const procs = await apiRequest("GET", CIX_API.listSystemProcesses());
 
 		renderProcessesTable(procs);
 	} catch (e) {
@@ -3052,7 +3052,7 @@ async function killProcess(pid, cmdline) {
 	if (!confirm("Kill pid " + pid + " (" + cmdline + ")? This is an immediate SIGKILL, no confirmation from the process itself."))
 		return;
 	try {
-		await apiRequest("DELETE", "/v1/system/processes/" + pid);
+		await apiRequest("DELETE", CIX_API.killSystemProcess(pid));
 		clearStatus();
 		showStatus("Killed pid " + pid, false);
 		await refreshProcesses();
@@ -3453,14 +3453,14 @@ function renderNetworks(networks) {
 }
 
 async function refreshNetworks() {
-	const data = await apiRequest("GET", "/v1/networks");
+	const data = await apiRequest("GET", CIX_API.listNetworks());
 	cache.networks = data.networks;
 	renderNetworks(cache.networks);
 }
 
 async function removeNetwork(name) {
 	try {
-		await apiRequest("DELETE", "/v1/networks/" + encodeURIComponent(name));
+		await apiRequest("DELETE", CIX_API.deleteNetwork(name));
 		clearStatus();
 		if (parseHash().category === "networks" && parseHash().name === name)
 			location.hash = "#networks";
@@ -3524,7 +3524,7 @@ function renderDhcpServers(servers) {
 		del.textContent = "Unregister";
 		del.addEventListener("click", async () => {
 			try {
-				await apiRequest("DELETE", "/v1/dhcp/servers/" + encodeURIComponent(srv.container));
+				await apiRequest("DELETE", CIX_API.unregisterDhcpServer(srv.container));
 				showStatus("Unregistered — any range that named it has been re-split.", false);
 				refreshDhcp();
 			} catch (e) {
@@ -3600,7 +3600,7 @@ function renderDhcpStatic(entries) {
 		del.textContent = "Remove";
 		del.addEventListener("click", async () => {
 			try {
-				await apiRequest("DELETE", "/v1/dhcp/static/" + encodeURIComponent(e.mac));
+				await apiRequest("DELETE", CIX_API.deleteDhcpReservation(e.mac));
 				showStatus("Reservation removed.", false);
 				refreshDhcp();
 			} catch (err) {
@@ -3633,9 +3633,9 @@ function renderLeaseRows(tbody, leases) {
 async function refreshDhcp() {
 	try {
 		const [all, servers, leases] = await Promise.all([
-			apiRequest("GET", "/v1/dhcp"),
-			apiRequest("GET", "/v1/dhcp/servers"),
-			apiRequest("GET", "/v1/dhcp/leases"),
+			apiRequest("GET", CIX_API.getDhcp()),
+			apiRequest("GET", CIX_API.getDhcpServers()),
+			apiRequest("GET", CIX_API.getDhcpLeases()),
 		]);
 
 		dhcpCache = {
@@ -3663,8 +3663,8 @@ async function refreshNetworkDhcp(name) {
 		return;
 	try {
 		const [all, leases] = await Promise.all([
-			apiRequest("GET", "/v1/dhcp"),
-			apiRequest("GET", "/v1/dhcp/leases"),
+			apiRequest("GET", CIX_API.getDhcp()),
+			apiRequest("GET", CIX_API.getDhcpLeases()),
 		]);
 		const cfg = (all.networks || []).find((n) => n.network === name);
 		const servers = cfg === undefined ? [] : (cfg.slices || []).map((s) => s.server);
@@ -3728,7 +3728,7 @@ document.getElementById("dhcp-range-form").addEventListener("submit", async (eve
 	if (router !== "")
 		body.router = router;
 	try {
-		await apiRequest("PUT", "/v1/dhcp/networks/" + encodeURIComponent(network), body);
+		await apiRequest("PUT", CIX_API.setDhcpNetwork(network), body);
 		closeModal();
 		/* Said every time rather than only when a range really changed:
 		 * the daemon decides that, and promising "no restart" from here
@@ -3744,7 +3744,7 @@ document.getElementById("dhcp-range-form").addEventListener("submit", async (eve
 document.getElementById("dhcp-server-form").addEventListener("submit", async (event) => {
 	event.preventDefault();
 	try {
-		await apiRequest("POST", "/v1/dhcp/servers", {
+		await apiRequest("POST", CIX_API.registerDhcpServer(), {
 			container: document.getElementById("dsv-container").value.trim(),
 		});
 		closeModal();
@@ -3767,7 +3767,7 @@ document.getElementById("dhcp-static-modal-form").addEventListener("submit", asy
 	if (hostname !== "")
 		body.hostname = hostname;
 	try {
-		await apiRequest("POST", "/v1/dhcp/static", body);
+		await apiRequest("POST", CIX_API.addDhcpReservation(), body);
 		closeModal();
 		showStatus("Reserved.", false);
 		document.getElementById("dsm-mac").value = "";
@@ -3980,7 +3980,7 @@ function renderNetPorts() {
 
 async function pollNetPortsOnce(name) {
 	try {
-		const data = await apiRequest("GET", "/v1/networks/" + encodeURIComponent(name) + "/ports");
+		const data = await apiRequest("GET", CIX_API.getNetworkPorts(name));
 		const byIf = {};
 
 		for (const p of data.ports || [])
@@ -4138,7 +4138,7 @@ async function attachInterface(networkName, ifname, vlanId) {
 
 		if (vlanId)
 			body.vlan_id = vlanId;
-		await apiRequest("POST", "/v1/networks/" + encodeURIComponent(networkName) + "/interfaces", body);
+		await apiRequest("POST", CIX_API.attachNetworkInterface(networkName), body);
 		clearStatus();
 		await refreshNetworks();
 		await refreshDevices();
@@ -4150,10 +4150,7 @@ async function attachInterface(networkName, ifname, vlanId) {
 
 async function detachInterface(networkName, ifname) {
 	try {
-		await apiRequest(
-			"DELETE",
-			"/v1/networks/" + encodeURIComponent(networkName) + "/interfaces/" + encodeURIComponent(ifname)
-		);
+		await apiRequest("DELETE", CIX_API.detachNetworkInterface(networkName, ifname));
 		clearStatus();
 		await refreshNetworks();
 		await refreshDevices();
@@ -4200,7 +4197,7 @@ function renderImages(images) {
 }
 
 async function refreshImages() {
-	const data = await apiRequest("GET", "/v1/images");
+	const data = await apiRequest("GET", CIX_API.listImages());
 	cache.images = data.images;
 	renderImages(cache.images);
 }
@@ -4225,7 +4222,7 @@ async function runImageGc(dryRun) {
 		 * version and the daemon is single-threaded; on a real box with
 		 * 80 of them that blocked the whole API for nearly two minutes.
 		 * The dashboard shows what would go, not how big it is. */
-		const res = await apiRequest("POST", "/v1/images/gc", { dry_run: dryRun, measure: false });
+		const res = await apiRequest("POST", CIX_API.imagesGc(), { dry_run: dryRun, measure: false });
 		const list = res.reclaimed || [];
 
 		box.textContent = "";
@@ -4269,7 +4266,7 @@ async function runImageGc(dryRun) {
 
 async function removeImage(name) {
 	try {
-		await apiRequest("DELETE", "/v1/images/" + encodeURIComponent(name));
+		await apiRequest("DELETE", CIX_API.deleteImage(name));
 		clearStatus();
 		if (parseHash().category === "images" && parseHash().name === name)
 			location.hash = "#images";
@@ -4326,7 +4323,7 @@ let imageRecipeContentCache = { name: null, content: null };
 async function loadImageRecipeContent(name) {
 	if (imageRecipeContentCache.name === name)
 		return imageRecipeContentCache.content;
-	const data = await apiRequest("GET", "/v1/images/recipes/" + encodeURIComponent(name));
+	const data = await apiRequest("GET", CIX_API.getImageRecipe(name));
 
 	imageRecipeContentCache = { name: name, content: data.content };
 	return imageRecipeContentCache.content;
@@ -4367,7 +4364,7 @@ function renderImageRecipeTab(name) {
 	};
 	document.getElementById("imgd-remove-recipe").onclick = async () => {
 		try {
-			await apiRequest("DELETE", "/v1/images/recipes/" + encodeURIComponent(name));
+			await apiRequest("DELETE", CIX_API.deleteImageRecipe(name));
 			clearStatus();
 			imageRecipeContentCache = { name: null, content: null };
 			renderImageRecipeTab(name);
@@ -4377,7 +4374,7 @@ function renderImageRecipeTab(name) {
 	};
 	document.getElementById("imgd-apply-recipe").onclick = async () => {
 		try {
-			const r = await apiRequest("POST", "/v1/images/" + encodeURIComponent(name) + "/apply-recipe");
+			const r = await apiRequest("POST", CIX_API.applyImageRecipe(name));
 
 			clearStatus();
 			showStatus(
@@ -4404,7 +4401,7 @@ document.getElementById("image-recipe-form").addEventListener("submit", async (e
 		return;
 
 	try {
-		await apiRequest("POST", "/v1/images/recipes", { name: name, content: content });
+		await apiRequest("POST", CIX_API.addImageRecipe(), { name: name, content: content });
 		clearStatus();
 		document.getElementById("image-recipe-form").reset();
 		closeModal();
@@ -4423,7 +4420,7 @@ document.getElementById("image-recipe-form").addEventListener("submit", async (e
  * are fetched fresh each time the detail view opens. */
 async function refreshImageDetailVersioning(name) {
 	try {
-		const data = await apiRequest("GET", "/v1/images/" + encodeURIComponent(name));
+		const data = await apiRequest("GET", CIX_API.getImage(name));
 
 		renderImageDetailManifest(name, data);
 		renderImageDetailVersions(name, data);
@@ -4473,10 +4470,7 @@ function renderImageDetailManifest(name, data) {
 			rmButton.className = "button-danger";
 			rmButton.addEventListener("click", async () => {
 				try {
-					await apiRequest(
-						"DELETE",
-						"/v1/images/" + encodeURIComponent(name) + "/manifest/" + encodeURIComponent(entry.package)
-					);
+					await apiRequest("DELETE", CIX_API.unsetImageManifestEntry(name, entry.package));
 					clearStatus();
 					refreshImageDetailVersioning(name);
 				} catch (e) {
@@ -4499,7 +4493,7 @@ function renderImageDetailManifest(name, data) {
 		const version = document.getElementById("imgd-manifest-version").value.trim();
 
 		try {
-			await apiRequest("POST", "/v1/images/" + encodeURIComponent(name) + "/manifest", {
+			await apiRequest("POST", CIX_API.setImageManifestEntry(name), {
 				package: pkg,
 				mode: mode,
 				version: version,
@@ -4683,7 +4677,7 @@ function renderImageDetailRecipes(name) {
 			installButton.textContent = "Install onto this image";
 			installButton.addEventListener("click", async () => {
 				try {
-					await apiRequest("POST", "/v1/pkg/install", { name: r.name, image: name });
+					await apiRequest("POST", CIX_API.pkgInstall(), { name: r.name, image: name });
 					clearStatus();
 					await refreshPkgList();
 					renderImageDetailPackages(name);
@@ -4703,7 +4697,7 @@ function renderImageDetailRecipes(name) {
 /* ---------- Devices ---------- */
 
 async function refreshDevices() {
-	const data = await apiRequest("GET", "/v1/devices");
+	const data = await apiRequest("GET", CIX_API.listDevices());
 	cache.devices = data.devices;
 	if (parseHash().category === "devices")
 		renderDevices();
@@ -4711,7 +4705,7 @@ async function refreshDevices() {
 }
 
 async function refreshDeviceMaps() {
-	const data = await apiRequest("GET", "/v1/devicemaps");
+	const data = await apiRequest("GET", CIX_API.listDeviceMaps());
 	cache.deviceMaps = data.devicemaps;
 	if (parseHash().category === "devices")
 		renderDevices();
@@ -4919,7 +4913,7 @@ function renderDeviceMapsTable() {
 
 async function removeDeviceMap(name) {
 	try {
-		await apiRequest("DELETE", "/v1/devicemaps/" + encodeURIComponent(name));
+		await apiRequest("DELETE", CIX_API.deleteDeviceMap(name));
 		clearStatus();
 		await refreshDeviceMaps();
 		renderTree();
@@ -4931,7 +4925,7 @@ async function removeDeviceMap(name) {
 /* ---------- Disks (multi-disk management: ADR-0071/ADR-0102/ADR-0104) ---------- */
 
 async function refreshDisks() {
-	const data = await apiRequest("GET", "/v1/disks");
+	const data = await apiRequest("GET", CIX_API.listDisks());
 
 	cache.disks = data.disks;
 	if (parseHash().category === "disks")
@@ -4945,7 +4939,7 @@ async function refreshDisks() {
 }
 
 async function refreshDiskRoles() {
-	const data = await apiRequest("GET", "/v1/diskroles");
+	const data = await apiRequest("GET", CIX_API.listDiskRoles());
 
 	cache.diskRoles = data.diskroles;
 	if (parseHash().category === "disks")
@@ -4974,7 +4968,7 @@ async function refreshDiskFormatStatuses() {
 
 	for (const d of candidates) {
 		try {
-			cache.diskFormatStatus[d.name] = await apiRequest("GET", "/v1/disks/" + encodeURIComponent(d.name) + "/format");
+			cache.diskFormatStatus[d.name] = await apiRequest("GET", CIX_API.getDiskFormatStatus(d.name));
 		} catch (e) {
 			/* Transient -- next poll tick tries again; the row just keeps
 			 * showing whatever status it last had. */
@@ -4991,14 +4985,24 @@ async function refreshDiskFormatStatuses() {
  * own cmd_storage_kind() refactor, rather than duplicating this block
  * a second time for "logs". */
 
+/*
+ * ADR-0218: each kind carries its two CONTRACT paths rather than a URL
+ * segment to interpolate. It used to hold endpoint: "state-storage" and
+ * build "/v1/system/" + k.endpoint -- a path no generated helper covers,
+ * which would 404 silently the day an endpoint is renamed. `role` stays
+ * a plain string: it is a disk-role name sent in a body, not a path.
+ */
 const STORAGE_KINDS = {
-	state: { endpoint: "state-storage", cacheKey: "stateStorage", statusCacheKey: "stateStorageMigrate",
+	state: { showPath: CIX_API.getStateStorage, migratePath: CIX_API.migrateStateStorage,
+	         cacheKey: "stateStorage", statusCacheKey: "stateStorageMigrate",
 	         currentId: "ss-current", statusId: "ss-migrate-status", selectId: "ss-target-disk",
 	         formId: "ss-migrate-form", label: "State storage", role: "state-storage" },
-	logs: { endpoint: "log-storage", cacheKey: "logStorage", statusCacheKey: "logStorageMigrate",
+	logs: { showPath: CIX_API.getLogStorage, migratePath: CIX_API.migrateLogStorage,
+	        cacheKey: "logStorage", statusCacheKey: "logStorageMigrate",
 	        currentId: "ls-current", statusId: "ls-migrate-status", selectId: "ls-target-disk",
 	        formId: "ls-migrate-form", label: "Log storage", role: "log-storage" },
-	rebuildable: { endpoint: "rebuildable-storage", cacheKey: "rebuildableStorage",
+	rebuildable: { showPath: CIX_API.getRebuildableStorage,
+	               migratePath: CIX_API.migrateRebuildableStorage, cacheKey: "rebuildableStorage",
 	               statusCacheKey: "rebuildableStorageMigrate", currentId: "rs-current",
 	               statusId: "rs-migrate-status", selectId: "rs-target-disk", formId: "rs-migrate-form",
 	               label: "Rebuildable storage", role: "rebuildable-storage" },
@@ -5007,7 +5011,7 @@ const STORAGE_KINDS = {
 async function refreshStoragePlacement(kind) {
 	const k = STORAGE_KINDS[kind];
 
-	cache[k.cacheKey] = await apiRequest("GET", "/v1/system/" + k.endpoint);
+	cache[k.cacheKey] = await apiRequest("GET", k.showPath());
 	if (parseHash().category === "disks")
 		renderStoragePlacement(kind);
 }
@@ -5018,7 +5022,7 @@ async function refreshStoragePlacementMigrate(kind) {
 	if (parseHash().category !== "disks")
 		return;
 	try {
-		cache[k.statusCacheKey] = await apiRequest("GET", "/v1/system/" + k.endpoint + "/migrate");
+		cache[k.statusCacheKey] = await apiRequest("GET", k.migratePath());
 	} catch (e) {
 		/* Transient -- next poll tick tries again. */
 	}
@@ -5086,7 +5090,7 @@ for (const kind of Object.keys(STORAGE_KINDS)) {
 		const disk = document.getElementById(k.selectId).value;
 
 		try {
-			cache[k.statusCacheKey] = await apiRequest("POST", "/v1/system/" + k.endpoint + "/migrate", {
+			cache[k.statusCacheKey] = await apiRequest("POST", k.migratePath(), {
 				disk: disk === "" ? null : disk,
 			});
 			clearStatus();
@@ -5110,10 +5114,7 @@ async function refreshContainerStorageMigrate(name) {
 	if (currentContainerDetailName !== name)
 		return;
 	try {
-		cache.containerStorageMigrate = await apiRequest(
-			"GET",
-			"/v1/containers/" + encodeURIComponent(name) + "/migrate-storage"
-		);
+		cache.containerStorageMigrate = await apiRequest("GET", CIX_API.getContainerStorageMigrateStatus(name));
 	} catch (e) {
 		cache.containerStorageMigrate = null;
 	}
@@ -5177,9 +5178,7 @@ document.getElementById("cd-storage-migrate-form").addEventListener("submit", as
 	const disk = document.getElementById("cd-storage-target-disk").value;
 
 	try {
-		cache.containerStorageMigrate = await apiRequest(
-			"POST",
-			"/v1/containers/" + encodeURIComponent(name) + "/migrate-storage",
+		cache.containerStorageMigrate = await apiRequest("POST", CIX_API.migrateContainerStorage(name),
 			{ disk: disk === "" ? null : disk }
 		);
 		clearStatus();
@@ -5751,10 +5750,7 @@ async function growPartition(p) {
 	let room = null;
 
 	try {
-		const fs = await apiRequest(
-			"GET",
-			"/v1/disks/" + encodeURIComponent(p.parent_disk) + "/free-space"
-		);
+		const fs = await apiRequest("GET", CIX_API.getDiskFreeSpace(p.parent_disk));
 		const endSector = p.start_sector + p.size_bytes / 512;
 		const after = (fs.extents || []).find((e) => e.start_sector === endSector);
 
@@ -5793,9 +5789,7 @@ async function growPartition(p) {
 		return;
 	}
 	try {
-		await apiRequest(
-			"POST",
-			"/v1/disks/" + encodeURIComponent(p.parent_disk) + "/partitions/" + encodeURIComponent(p.name) + "/resize",
+		await apiRequest("POST", CIX_API.resizeDiskPartition(p.parent_disk, p.name),
 			body
 		);
 		clearStatus();
@@ -5811,10 +5805,7 @@ async function deletePartition(diskName, partitionName) {
 	if (!confirm('Delete partition "' + partitionName + '"? Everything on it is destroyed and this cannot be undone.'))
 		return;
 	try {
-		await apiRequest(
-			"DELETE",
-			"/v1/disks/" + encodeURIComponent(diskName) + "/partitions/" + encodeURIComponent(partitionName)
-		);
+		await apiRequest("DELETE", CIX_API.deleteDiskPartition(diskName, partitionName));
 		clearStatus();
 		await refreshDisks();
 		/* The deleted partition's own page no longer exists, so go back
@@ -5828,7 +5819,7 @@ async function deletePartition(diskName, partitionName) {
 
 async function unmountDisk(name) {
 	try {
-		await apiRequest("POST", "/v1/disks/" + encodeURIComponent(name) + "/unmount", {
+		await apiRequest("POST", CIX_API.unmountDisk(name), {
 			confirm_disk_name: name,
 		});
 		clearStatus();
@@ -5858,7 +5849,7 @@ async function refreshDiskFreeSpace(d) {
 	if (d.is_os_disk)
 		return;
 	try {
-		const fs = await apiRequest("GET", "/v1/disks/" + encodeURIComponent(d.name) + "/free-space");
+		const fs = await apiRequest("GET", CIX_API.getDiskFreeSpace(d.name));
 
 		diskFreeSpace[d.name] = fs;
 		if (!fs.has_partition_table) {
@@ -5903,7 +5894,7 @@ document.getElementById("dd-write-table").addEventListener("click", async () => 
 	)
 		return;
 	try {
-		await apiRequest("POST", "/v1/disks/" + encodeURIComponent(name) + "/partition-table", {
+		await apiRequest("POST", CIX_API.createDiskPartitionTable(name), {
 			confirm_disk_name: name,
 		});
 		clearStatus();
@@ -5942,7 +5933,7 @@ document.getElementById("dd-add-partition-form").addEventListener("submit", asyn
 		}
 	}
 	try {
-		await apiRequest("POST", "/v1/disks/" + encodeURIComponent(name) + "/partitions", body);
+		await apiRequest("POST", CIX_API.addDiskPartition(name), body);
 		clearStatus();
 		document.getElementById("dd-add-partition-form").reset();
 		await refreshDisks();
@@ -5977,7 +5968,7 @@ document.getElementById("diskrole-form").addEventListener("submit", async (event
 	if (diskName === "")
 		return;
 	try {
-		await apiRequest("POST", "/v1/diskroles", { disk_name: diskName, role: role });
+		await apiRequest("POST", CIX_API.createDiskRole(), { disk_name: diskName, role: role });
 		clearStatus();
 		document.getElementById("diskrole-form").reset();
 		closeModal();
@@ -5989,7 +5980,7 @@ document.getElementById("diskrole-form").addEventListener("submit", async (event
 
 async function removeDiskRole(diskName) {
 	try {
-		await apiRequest("DELETE", "/v1/diskroles/" + encodeURIComponent(diskName));
+		await apiRequest("DELETE", CIX_API.deleteDiskRole(diskName));
 		clearStatus();
 		await refreshDiskRoles();
 	} catch (e) {
@@ -6040,7 +6031,7 @@ async function formatDisk(diskName, fsType) {
 	if (!confirm("Format " + diskName + " as " + fsType + "? This destroys every byte of existing content on the disk. This cannot be undone."))
 		return;
 	try {
-		cache.diskFormatStatus[diskName] = await apiRequest("POST", "/v1/disks/" + encodeURIComponent(diskName) + "/format", {
+		cache.diskFormatStatus[diskName] = await apiRequest("POST", CIX_API.formatDisk(diskName), {
 			confirm_disk_name: diskName,
 			fs_type: fsType,
 		});
@@ -6119,14 +6110,14 @@ function renderDnsRecords(records) {
 }
 
 async function refreshDnsRecords() {
-	const data = await apiRequest("GET", "/v1/dns/records");
+	const data = await apiRequest("GET", CIX_API.listDnsRecords());
 	cache.dnsRecords = data.records;
 	renderDnsRecords(cache.dnsRecords);
 }
 
 async function removeDnsRecord(name) {
 	try {
-		await apiRequest("DELETE", "/v1/dns/records/" + encodeURIComponent(name));
+		await apiRequest("DELETE", CIX_API.deleteDnsRecord(name));
 		clearStatus();
 		await refreshDnsRecords();
 	} catch (e) {
@@ -6177,14 +6168,14 @@ function renderDnsServers(servers) {
 }
 
 async function refreshDnsServers() {
-	const data = await apiRequest("GET", "/v1/dns/servers");
+	const data = await apiRequest("GET", CIX_API.listDnsServers());
 	cache.dnsServers = data.servers;
 	renderDnsServers(cache.dnsServers);
 }
 
 async function removeDnsServer(container) {
 	try {
-		await apiRequest("DELETE", "/v1/dns/servers/" + encodeURIComponent(container));
+		await apiRequest("DELETE", CIX_API.deleteDnsServer(container));
 		clearStatus();
 		await refreshDnsServers();
 	} catch (e) {
@@ -6235,14 +6226,14 @@ function renderLdapServers(servers) {
 }
 
 async function refreshLdapServers() {
-	const data = await apiRequest("GET", "/v1/ldap/servers");
+	const data = await apiRequest("GET", CIX_API.listLdapServers());
 	cache.ldapServers = data.servers;
 	renderLdapServers(cache.ldapServers);
 }
 
 async function removeLdapServer(container) {
 	try {
-		await apiRequest("DELETE", "/v1/ldap/servers/" + encodeURIComponent(container));
+		await apiRequest("DELETE", CIX_API.deleteLdapServer(container));
 		clearStatus();
 		await refreshLdapServers();
 	} catch (e) {
@@ -6314,14 +6305,14 @@ function renderLdapGroups(groups) {
 }
 
 async function refreshLdapGroups() {
-	const data = await apiRequest("GET", "/v1/ldap/groups");
+	const data = await apiRequest("GET", CIX_API.listLdapGroups());
 	cache.ldapGroups = data.groups;
 	renderLdapGroups(cache.ldapGroups);
 }
 
 async function removeLdapGroup(name) {
 	try {
-		await apiRequest("DELETE", "/v1/ldap/groups/" + encodeURIComponent(name));
+		await apiRequest("DELETE", CIX_API.deleteLdapGroup(name));
 		clearStatus();
 		await refreshLdapGroups();
 	} catch (e) {
@@ -6407,14 +6398,14 @@ function renderLdapUsers(users) {
 }
 
 async function refreshLdapUsers() {
-	const data = await apiRequest("GET", "/v1/ldap/users");
+	const data = await apiRequest("GET", CIX_API.listLdapUsers());
 	cache.ldapUsers = data.users;
 	renderLdapUsers(cache.ldapUsers);
 }
 
 async function removeLdapUser(name) {
 	try {
-		await apiRequest("DELETE", "/v1/ldap/users/" + encodeURIComponent(name));
+		await apiRequest("DELETE", CIX_API.deleteLdapUser(name));
 		clearStatus();
 		await refreshLdapUsers();
 	} catch (e) {
@@ -6430,7 +6421,7 @@ async function refreshBuildLogs() {
 	const body = document.getElementById("build-logs-body");
 
 	try {
-		const data = await apiRequest("GET", "/v1/pkg/build-logs");
+		const data = await apiRequest("GET", CIX_API.listBuildLogs());
 		const logs = data.logs || [];
 
 		body.textContent = "";
@@ -6480,7 +6471,7 @@ async function showBuildLog(file) {
 		 * response is plain text, not JSON, and it can be megabytes --
 		 * the log is the point, so it is not summarised or reshaped
 		 * here. */
-		const res = await fetch("/v1/pkg/build-logs/" + encodeURIComponent(file), {
+		const res = await fetch(CIX_API.getBuildLog(file), {
 			headers: authToken ? { Authorization: "Bearer " + authToken } : {},
 		});
 
@@ -6500,7 +6491,7 @@ async function refreshStalls() {
 	const body = document.getElementById("stalls-body");
 
 	try {
-		const data = await apiRequest("GET", "/v1/system/stalls");
+		const data = await apiRequest("GET", CIX_API.getStalls());
 		const stalls = data.stalls || [];
 
 		body.textContent = "";
@@ -6585,7 +6576,7 @@ function renderKernelPolicy(data) {
 
 async function refreshKernelPolicy() {
 	try {
-		renderKernelPolicy(await apiRequest("GET", "/v1/system/kernel-policy"));
+		renderKernelPolicy(await apiRequest("GET", CIX_API.getKernelPolicy()));
 	} catch (e) {
 		/* Best-effort, same as every other panel here. */
 	}
@@ -6598,7 +6589,7 @@ document.getElementById("kpf-channel").addEventListener("change", () => {
 document.getElementById("kpf-form").addEventListener("submit", async (event) => {
 	event.preventDefault();
 	try {
-		const res = await apiRequest("PUT", "/v1/system/kernel-policy", {
+		const res = await apiRequest("PUT", CIX_API.setKernelPolicy(), {
 			channel: document.getElementById("kpf-channel").value,
 		});
 
@@ -6612,7 +6603,7 @@ document.getElementById("kpf-form").addEventListener("submit", async (event) => 
 
 document.getElementById("kpf-refresh").addEventListener("click", async () => {
 	try {
-		renderKernelPolicy(await apiRequest("POST", "/v1/system/kernel-policy/refresh", {}));
+		renderKernelPolicy(await apiRequest("POST", CIX_API.refreshKernelPolicy(), {}));
 		showStatus("Asking kernel.org what each channel is at…", false);
 		/* The fetch is a forked curl, not this request -- so the answer
 		 * lands a moment after the 202 does. */
@@ -6628,7 +6619,7 @@ let bootConsoleDirty = false;
 
 async function refreshBootConsole() {
 	try {
-		const data = await apiRequest("GET", "/v1/system/boot-console");
+		const data = await apiRequest("GET", CIX_API.getBootConsole());
 		const cfg = data.config || {};
 		const grid = document.getElementById("bcf-effect");
 		const body = document.getElementById("boot-entries-body");
@@ -6683,7 +6674,7 @@ document.getElementById("bcf-form").addEventListener("submit", async (event) => 
 	const consoles = document.getElementById("bcf-consoles").value.trim();
 
 	try {
-		const res = await apiRequest("PUT", "/v1/system/boot-console", {
+		const res = await apiRequest("PUT", CIX_API.setBootConsole(), {
 			consoles: consoles === "" ? [] : consoles.split(/\s+/),
 			extra: document.getElementById("bcf-extra").value.trim(),
 		});
@@ -6703,7 +6694,7 @@ let cprDirty = false;
 
 async function refreshControlPlaneReservation() {
 	try {
-		const c = await apiRequest("GET", "/v1/system/control-plane-reservation");
+		const c = await apiRequest("GET", CIX_API.getControlPlaneReservation());
 		const grid = document.getElementById("cpr-effect");
 
 		if (!cprDirty) {
@@ -6735,7 +6726,7 @@ for (const id of ["cpr-enabled", "cpr-cpu-percent", "cpr-memory-bytes"]) {
 document.getElementById("cpr-form").addEventListener("submit", async (event) => {
 	event.preventDefault();
 	try {
-		await apiRequest("PUT", "/v1/system/control-plane-reservation", {
+		await apiRequest("PUT", CIX_API.setControlPlaneReservation(), {
 			enabled: document.getElementById("cpr-enabled").checked,
 			cpu_percent: parseInt(document.getElementById("cpr-cpu-percent").value, 10),
 			memory_bytes: parseInt(document.getElementById("cpr-memory-bytes").value, 10),
@@ -6754,7 +6745,7 @@ let ldapConfigDirty = false;
 
 async function refreshLdapConfig() {
 	try {
-		const config = await apiRequest("GET", "/v1/ldap/config");
+		const config = await apiRequest("GET", CIX_API.getLdapConfig());
 
 		cache.ldapConfig = config;
 		{
@@ -6791,7 +6782,7 @@ document.getElementById("ldap-config-form").addEventListener("submit", async (ev
 	};
 
 	try {
-		await apiRequest("PUT", "/v1/ldap/config", body);
+		await apiRequest("PUT", CIX_API.updateLdapConfig(), body);
 		clearStatus();
 		showStatus("LDAP config saved", false);
 		ldapConfigDirty = false;
@@ -6871,7 +6862,7 @@ async function refreshSigningKeys() {
 	if (box === null)
 		return;
 	try {
-		const data = await apiRequest("GET", "/v1/system/signing-keys");
+		const data = await apiRequest("GET", CIX_API.getSystemSigningKeys());
 
 		box.textContent = "";
 		if (!data.key_set && !data.cert_set) {
@@ -6922,7 +6913,7 @@ async function installSigningKeys() {
 		return;
 	}
 	try {
-		await apiRequest("PUT", "/v1/system/signing-keys", { key: key, cert: cert });
+		await apiRequest("PUT", CIX_API.putSystemSigningKeys(), { key: key, cert: cert });
 		clearStatus();
 		showStatus("Signing key pair installed.", false);
 		/*
@@ -6941,7 +6932,7 @@ async function installSigningKeys() {
 
 async function clearSigningKeys() {
 	try {
-		await apiRequest("DELETE", "/v1/system/signing-keys");
+		await apiRequest("DELETE", CIX_API.deleteSystemSigningKeys());
 		clearStatus();
 		showStatus("Signing key pair removed from this host.", false);
 		await refreshSigningKeys();
@@ -6953,7 +6944,7 @@ async function clearSigningKeys() {
 
 async function refreshEsp() {
 	try {
-		const data = await apiRequest("GET", "/v1/system/esp");
+		const data = await apiRequest("GET", CIX_API.getEsp());
 		const box = document.getElementById("esp-summary");
 
 		cache.esp = data;
@@ -6988,7 +6979,7 @@ async function refreshEsp() {
 
 async function setBootNext(slot) {
 	try {
-		const r = await apiRequest("POST", "/v1/system/boot-next", { slot: slot });
+		const r = await apiRequest("POST", CIX_API.setBootNext(), { slot: slot });
 
 		clearStatus();
 		showStatus("Next boot: " + r.entry + " (once, then normal selection)", false);
@@ -7003,7 +6994,7 @@ async function setBootNext(slot) {
 
 async function clearBootNext() {
 	try {
-		await apiRequest("DELETE", "/v1/system/boot-next");
+		await apiRequest("DELETE", CIX_API.clearBootNext());
 		clearStatus();
 		showStatus("Disarmed -- normal selection applies", false);
 		await refreshEsp();
@@ -7016,7 +7007,7 @@ async function refreshBootNext() {
 	const el = document.getElementById("esp-boot-next-state");
 
 	try {
-		const r = await apiRequest("GET", "/v1/system/boot-next");
+		const r = await apiRequest("GET", CIX_API.getBootNext());
 
 		el.textContent = r.entry ? "Armed: " + r.entry + " (next boot only)"
 		                          : "Nothing armed \u2014 normal selection applies";
@@ -7027,7 +7018,7 @@ async function refreshBootNext() {
 
 async function removeEspEntry(name) {
 	try {
-		await apiRequest("DELETE", "/v1/system/esp/entries/" + encodeURIComponent(name));
+		await apiRequest("DELETE", CIX_API.deleteEspEntry(name));
 		clearStatus();
 		showStatus("Removed loader entry " + name, false);
 		await refreshEsp();
@@ -7058,7 +7049,7 @@ document.getElementById("esp-loader-form").addEventListener("submit", async (eve
 		payload.timeout = Number(timeoutRaw);
 
 	try {
-		await apiRequest("PUT", "/v1/system/esp", payload);
+		await apiRequest("PUT", CIX_API.putEsp(), payload);
 		clearStatus();
 		showStatus("Loader configuration saved", false);
 		espDirty = false;
@@ -7080,7 +7071,7 @@ document.getElementById("dns-provision-btn").addEventListener("click", async () 
 	try {
 		/* Empty body: the daemon owns the default topology, so the
 		 * dashboard does not restate it and the two cannot disagree. */
-		const result = await apiRequest("POST", "/v1/dns/provision", {});
+		const result = await apiRequest("POST", CIX_API.provisionDns(), {});
 		const lines = (result.replicas || []).map((r) => {
 			const bits = [r.name + " " + r.created];
 
@@ -7115,7 +7106,7 @@ let dnsForwardersDirty = false;
 
 async function refreshDnsForwarders() {
 	try {
-		const config = await apiRequest("GET", "/v1/dns/forwarders");
+		const config = await apiRequest("GET", CIX_API.getDnsForwarders());
 
 		cache.dnsForwarders = config.forwarders;
 		if (!dnsForwardersDirty)
@@ -7136,7 +7127,7 @@ document.getElementById("dns-forwarders-form").addEventListener("submit", async 
 	const forwarders = raw === "" ? [] : raw.split(/[\s,]+/).filter((s) => s.length > 0);
 
 	try {
-		await apiRequest("PUT", "/v1/dns/forwarders", { forwarders: forwarders });
+		await apiRequest("PUT", CIX_API.setDnsForwarders(), { forwarders: forwarders });
 		clearStatus();
 		/* Empty is a legitimate setting, not a no-op, so say which
 		 * happened rather than a generic "saved". */
@@ -7157,7 +7148,7 @@ let ntpConfigDirty = false;
 
 async function refreshNtpConfig() {
 	try {
-		const config = await apiRequest("GET", "/v1/system/ntp");
+		const config = await apiRequest("GET", CIX_API.getSystemNtp());
 
 		cache.ntpConfig = config;
 		if (!ntpConfigDirty)
@@ -7178,7 +7169,7 @@ document.getElementById("ntp-config-form").addEventListener("submit", async (eve
 	const servers = raw === "" ? [] : raw.split(/[\s,]+/).filter((s) => s.length > 0);
 
 	try {
-		await apiRequest("PUT", "/v1/system/ntp", { upstream: servers });
+		await apiRequest("PUT", CIX_API.putSystemNtp(), { upstream: servers });
 		clearStatus();
 		showStatus("NTP config saved", false);
 		ntpConfigDirty = false;
@@ -7227,14 +7218,14 @@ function renderNtpServers(servers) {
 }
 
 async function refreshNtpServers() {
-	const data = await apiRequest("GET", "/v1/ntp/servers");
+	const data = await apiRequest("GET", CIX_API.listNtpServers());
 	cache.ntpServers = data.servers;
 	renderNtpServers(cache.ntpServers);
 }
 
 async function removeNtpServer(container) {
 	try {
-		await apiRequest("DELETE", "/v1/ntp/servers/" + encodeURIComponent(container));
+		await apiRequest("DELETE", CIX_API.deleteNtpServer(container));
 		clearStatus();
 		await refreshNtpServers();
 	} catch (e) {
@@ -7248,7 +7239,7 @@ document.getElementById("ntp-server-form").addEventListener("submit", async (eve
 	const container = document.getElementById("nsf-container").value.trim();
 
 	try {
-		await apiRequest("POST", "/v1/ntp/servers", { container: container });
+		await apiRequest("POST", CIX_API.createNtpServer(), { container: container });
 		clearStatus();
 		document.getElementById("ntp-server-form").reset();
 		closeModal();
@@ -7298,7 +7289,7 @@ function renderSyslogTargets(targets) {
 }
 
 async function refreshSyslogTargets() {
-	const data = await apiRequest("GET", "/v1/syslog/targets");
+	const data = await apiRequest("GET", CIX_API.listSyslogTargets());
 	cache.syslogTargets = data.targets;
 	renderSyslogTargets(cache.syslogTargets);
 }
@@ -7309,7 +7300,7 @@ function renderSyslogTargetsList() {
 
 async function removeSyslogTarget(container) {
 	try {
-		await apiRequest("DELETE", "/v1/syslog/targets/" + encodeURIComponent(container));
+		await apiRequest("DELETE", CIX_API.deleteSyslogTarget(container));
 		clearStatus();
 		await refreshSyslogTargets();
 	} catch (e) {
@@ -7323,7 +7314,7 @@ document.getElementById("syslog-target-form").addEventListener("submit", async (
 	const container = document.getElementById("stf-container").value.trim();
 
 	try {
-		await apiRequest("POST", "/v1/syslog/targets", { container: container });
+		await apiRequest("POST", CIX_API.createSyslogTarget(), { container: container });
 		clearStatus();
 		document.getElementById("syslog-target-form").reset();
 		closeModal();
@@ -7340,7 +7331,7 @@ let tlsThrottleConfigDirty = false;
 
 async function refreshTlsThrottleConfig() {
 	try {
-		const config = await apiRequest("GET", "/v1/system/tls-throttle");
+		const config = await apiRequest("GET", CIX_API.getSystemTlsThrottle());
 
 		cache.tlsThrottleConfig = config;
 		if (!tlsThrottleConfigDirty) {
@@ -7365,7 +7356,7 @@ document.getElementById("ttf-form").addEventListener("submit", async (event) => 
 	event.preventDefault();
 
 	try {
-		await apiRequest("PUT", "/v1/system/tls-throttle", {
+		await apiRequest("PUT", CIX_API.putSystemTlsThrottle(), {
 			enabled: document.getElementById("ttf-enabled").checked,
 			threshold: parseInt(document.getElementById("ttf-threshold").value, 10),
 			window_seconds: parseInt(document.getElementById("ttf-window").value, 10),
@@ -7423,7 +7414,7 @@ function renderTlsThrottleStatus(entries) {
 }
 
 async function refreshTlsThrottleStatus() {
-	const data = await apiRequest("GET", "/v1/system/tls-throttle/status");
+	const data = await apiRequest("GET", CIX_API.getSystemTlsThrottleStatus());
 
 	cache.tlsThrottleStatus = data.entries;
 	renderTlsThrottleStatus(cache.tlsThrottleStatus);
@@ -7435,7 +7426,7 @@ async function refreshNtpStatus() {
 	const box = document.getElementById("ntp-status-box");
 
 	try {
-		const status = await apiRequest("GET", "/v1/system/ntp/status");
+		const status = await apiRequest("GET", CIX_API.getSystemNtpStatus());
 
 		cache.ntpStatus = status;
 		box.textContent = "";
@@ -7457,7 +7448,7 @@ async function refreshNtpStatus() {
 
 document.getElementById("ntp-sync-now").addEventListener("click", async () => {
 	try {
-		await apiRequest("POST", "/v1/system/ntp/sync");
+		await apiRequest("POST", CIX_API.postSystemNtpSync());
 		clearStatus();
 		showStatus("NTP sync started", false);
 		await refreshNtpStatus();
@@ -7472,7 +7463,7 @@ async function refreshNtpTime() {
 	const box = document.getElementById("ntp-time-box");
 
 	try {
-		const t = await apiRequest("GET", "/v1/system/time");
+		const t = await apiRequest("GET", CIX_API.getSystemTime());
 
 		cache.ntpTime = t;
 		box.textContent = "";
@@ -7496,7 +7487,7 @@ document.getElementById("ntp-time-form").addEventListener("submit", async (event
 	const unixtime = raw === "" ? Math.floor(Date.now() / 1000) : parseInt(raw, 10);
 
 	try {
-		await apiRequest("PUT", "/v1/system/time", { unixtime: unixtime });
+		await apiRequest("PUT", CIX_API.putSystemTime(), { unixtime: unixtime });
 		clearStatus();
 		showStatus("Host clock set", false);
 		document.getElementById("ntp-time-form").reset();
@@ -7545,7 +7536,7 @@ async function refreshPkiCa() {
 	const pkiCaForm = document.getElementById("pki-ca-form");
 
 	try {
-		const ca = await apiRequest("GET", "/v1/pki/ca");
+		const ca = await apiRequest("GET", CIX_API.getPkiCa());
 
 		cache.pkiCa = ca;
 		pkiCaStatus.className = "pki-ca-status bootstrapped";
@@ -7566,7 +7557,7 @@ async function refreshPkiIntermediate() {
 	const form = document.getElementById("pki-intermediate-form");
 
 	try {
-		const intermediate = await apiRequest("GET", "/v1/pki/intermediate");
+		const intermediate = await apiRequest("GET", CIX_API.getPkiIntermediate());
 
 		cache.pkiIntermediate = intermediate;
 		status.className = "pki-ca-status bootstrapped";
@@ -7643,14 +7634,14 @@ function renderPkiCerts(certs) {
 }
 
 async function refreshPkiCerts() {
-	const data = await apiRequest("GET", "/v1/pki/certs");
+	const data = await apiRequest("GET", CIX_API.listPkiCerts());
 	cache.pkiCerts = data.certs;
 	renderPkiCerts(cache.pkiCerts);
 }
 
 async function removePkiCert(name) {
 	try {
-		await apiRequest("DELETE", "/v1/pki/certs/" + encodeURIComponent(name));
+		await apiRequest("DELETE", CIX_API.deletePkiCert(name));
 		clearStatus();
 		await refreshPkiCerts();
 	} catch (e) {
@@ -7838,7 +7829,7 @@ let pkgRecipeContentCache = { name: null, content: null, version: null };
 async function loadPkgRecipeContent(name) {
 	if (pkgRecipeContentCache.name === name)
 		return pkgRecipeContentCache.content;
-	const data = await apiRequest("GET", "/v1/pkg/recipes/" + encodeURIComponent(name));
+	const data = await apiRequest("GET", CIX_API.getPkgRecipe(name));
 
 	pkgRecipeContentCache = { name: name, content: data.content, version: data.version };
 	return pkgRecipeContentCache.content;
@@ -8033,10 +8024,7 @@ async function viewPkgRecipeVersion(name, version) {
 
 	try {
 		content = (
-			await apiRequest(
-				"GET",
-				"/v1/pkg/recipes/" + encodeURIComponent(name) + "?version=" + encodeURIComponent(version)
-			)
+			await apiRequest("GET", CIX_API.getPkgRecipe(name, version) + "?version=%s")
 		).content;
 	} catch (e) {
 		showStatus("Failed to load recipe content for " + name + "@" + version + ": " + e.message, true);
@@ -8119,7 +8107,7 @@ function renderPackageDetailInstalled(name) {
 }
 
 async function refreshPkgRecipes() {
-	const data = await apiRequest("GET", "/v1/pkg/recipes");
+	const data = await apiRequest("GET", CIX_API.listPkgRecipes());
 	cache.pkgRecipes = data.recipes;
 	if (parseHash().category === "packages")
 		renderPackagesView(parseHash().name);
@@ -8131,10 +8119,7 @@ async function refreshPkgRecipes() {
  * one row per version. */
 async function removePkgRecipe(name, version) {
 	try {
-		await apiRequest(
-			"DELETE",
-			"/v1/pkg/recipes/" + encodeURIComponent(name) + "?version=" + encodeURIComponent(version)
-		);
+		await apiRequest("DELETE", CIX_API.deletePkgRecipe(name, version) + "?version=%s");
 		clearStatus();
 		await refreshPkgRecipes();
 		renderTree();
@@ -8152,7 +8137,7 @@ async function removePkgRecipe(name, version) {
  * search box -- these lists are small, no server-side search needed. */
 
 async function refreshImageRecipesList() {
-	const data = await apiRequest("GET", "/v1/images/recipes");
+	const data = await apiRequest("GET", CIX_API.listImageRecipes());
 
 	cache.imageRecipes = data.recipes;
 	if (parseHash().category === "recipes")
@@ -8160,7 +8145,7 @@ async function refreshImageRecipesList() {
 }
 
 async function refreshContainerRecipesList() {
-	const data = await apiRequest("GET", "/v1/containers/recipes");
+	const data = await apiRequest("GET", CIX_API.listContainerRecipes());
 
 	cache.containerRecipes = data.recipes;
 	if (parseHash().category === "recipes")
@@ -8198,7 +8183,7 @@ function renderImageRecipesTable() {
 		applyButton.textContent = "Apply";
 		applyButton.addEventListener("click", async () => {
 			try {
-				const result = await apiRequest("POST", "/v1/images/" + encodeURIComponent(r.name) + "/apply-recipe");
+				const result = await apiRequest("POST", CIX_API.applyImageRecipe(r.name));
 
 				clearStatus();
 				showStatus(
@@ -8235,7 +8220,7 @@ function renderImageRecipesTable() {
 		rmButton.className = "button-danger";
 		rmButton.addEventListener("click", async () => {
 			try {
-				await apiRequest("DELETE", "/v1/images/recipes/" + encodeURIComponent(r.name));
+				await apiRequest("DELETE", CIX_API.deleteImageRecipe(r.name));
 				clearStatus();
 				imageRecipeContentCache = { name: null, content: null };
 				await refreshImageRecipesList();
@@ -8255,7 +8240,7 @@ let containerRecipeContentCache = { name: null, content: null };
 async function loadContainerRecipeContent(name) {
 	if (containerRecipeContentCache.name === name)
 		return containerRecipeContentCache.content;
-	const data = await apiRequest("GET", "/v1/containers/recipes/" + encodeURIComponent(name));
+	const data = await apiRequest("GET", CIX_API.getContainerRecipe(name));
 
 	containerRecipeContentCache = { name: name, content: data.content };
 	return containerRecipeContentCache.content;
@@ -8318,7 +8303,7 @@ function renderContainerRecipesTable() {
 		rmButton.className = "button-danger";
 		rmButton.addEventListener("click", async () => {
 			try {
-				await apiRequest("DELETE", "/v1/containers/recipes/" + encodeURIComponent(r.name));
+				await apiRequest("DELETE", CIX_API.deleteContainerRecipe(r.name));
 				clearStatus();
 				containerRecipeContentCache = { name: null, content: null };
 				await refreshContainerRecipesList();
@@ -8357,7 +8342,7 @@ document.getElementById("container-recipe-form").addEventListener("submit", asyn
 	try {
 		const content = fileInput.files.length > 0 ? await readFileAsText(fileInput.files[0]) : contentField.value;
 
-		await apiRequest("POST", "/v1/containers/recipes", { name: name, content: content });
+		await apiRequest("POST", CIX_API.addContainerRecipe(), { name: name, content: content });
 		clearStatus();
 		document.getElementById("container-recipe-form").reset();
 		closeModal();
@@ -8385,7 +8370,7 @@ document.getElementById("container-recipe-apply-form").addEventListener("submit"
 	}
 
 	try {
-		await apiRequest("POST", "/v1/containers/recipes/" + encodeURIComponent(name) + "/apply", { secrets: secrets });
+		await apiRequest("POST", CIX_API.applyContainerRecipe(name), { secrets: secrets });
 		clearStatus();
 		showStatus("Container " + name + " created from recipe.", false);
 		document.getElementById("container-recipe-apply-form").reset();
@@ -8398,7 +8383,7 @@ document.getElementById("container-recipe-apply-form").addEventListener("submit"
 });
 
 async function refreshPkgList() {
-	const data = await apiRequest("GET", "/v1/pkg");
+	const data = await apiRequest("GET", CIX_API.listPkg());
 	cache.pkgList = data.packages;
 	if (parseHash().category === "packages")
 		renderPackagesView(parseHash().name);
@@ -8408,7 +8393,7 @@ async function removePkg(name, image) {
 	const key = image && image !== "base" ? name + "@" + image : name;
 
 	try {
-		await apiRequest("DELETE", "/v1/pkg/" + encodeURIComponent(key));
+		await apiRequest("DELETE", CIX_API.deletePkg(key));
 		clearStatus();
 		await refreshPkgList();
 		renderTree();
@@ -8423,7 +8408,7 @@ let pkgRepoConfigDirty = false;
 
 async function refreshPkgRepoConfig() {
 	try {
-		const config = await apiRequest("GET", "/v1/pkg/repo-config");
+		const config = await apiRequest("GET", CIX_API.getPkgRepoConfig());
 
 		cache.pkgRepoConfig = config;
 		if (!pkgRepoConfigDirty) {
@@ -8470,7 +8455,7 @@ document.getElementById("prc-form").addEventListener("submit", async (event) => 
 		body.auth_token = token;
 
 	try {
-		await apiRequest("PUT", "/v1/pkg/repo-config", body);
+		await apiRequest("PUT", CIX_API.putPkgRepoConfig(), body);
 		clearStatus();
 		showStatus("Package repo config saved", false);
 		pkgRepoConfigDirty = false;
@@ -8485,7 +8470,7 @@ async function refreshPkgSyncStatus() {
 	const box = document.getElementById("pkg-sync-status-box");
 
 	try {
-		const status = await apiRequest("GET", "/v1/pkg/sync");
+		const status = await apiRequest("GET", CIX_API.getPkgSyncStatus());
 
 		cache.pkgSyncStatus = status;
 		box.textContent = "";
@@ -8509,7 +8494,7 @@ async function refreshPkgSyncStatus() {
 
 document.getElementById("pkg-sync-now").addEventListener("click", async () => {
 	try {
-		await apiRequest("POST", "/v1/pkg/sync");
+		await apiRequest("POST", CIX_API.pkgSync());
 		clearStatus();
 		showStatus("Package sync started", false);
 		await refreshPkgSyncStatus();
@@ -8524,7 +8509,7 @@ let pkgCacheConfigDirty = false;
 
 async function refreshPkgCacheConfig() {
 	try {
-		const config = await apiRequest("GET", "/v1/pkg/cache-config");
+		const config = await apiRequest("GET", CIX_API.getPkgCacheConfig());
 
 		cache.pkgCacheConfig = config;
 		if (!pkgCacheConfigDirty)
@@ -8542,7 +8527,7 @@ document.getElementById("pcc-form").addEventListener("submit", async (event) => 
 	event.preventDefault();
 
 	try {
-		await apiRequest("PUT", "/v1/pkg/cache-config", {
+		await apiRequest("PUT", CIX_API.putPkgCacheConfig(), {
 			max_bytes: parseInt(document.getElementById("pcc-max-bytes").value, 10),
 		});
 		clearStatus();
@@ -8558,7 +8543,7 @@ async function refreshPkgCacheStatus() {
 	const box = document.getElementById("pkg-cache-status-box");
 
 	try {
-		const status = await apiRequest("GET", "/v1/pkg/cache");
+		const status = await apiRequest("GET", CIX_API.getPkgCache());
 
 		cache.pkgCacheStatus = status;
 		box.textContent = "";
@@ -8582,7 +8567,7 @@ document.getElementById("pkg-cache-clear").addEventListener("click", async () =>
 	if (!confirm("Clear the entire local package artifact cache?"))
 		return;
 	try {
-		await apiRequest("DELETE", "/v1/pkg/cache");
+		await apiRequest("DELETE", CIX_API.deletePkgCache());
 		clearStatus();
 		showStatus("Cache cleared", false);
 		await refreshPkgCacheStatus();
@@ -8601,7 +8586,7 @@ let rollingConfigDirty = false;
 
 async function refreshHostauthSessions() {
 	try {
-		const data = await apiRequest("GET", "/v1/system/hostauth/sessions");
+		const data = await apiRequest("GET", CIX_API.listHostauthSessions());
 
 		renderHostauthSessions(data.sessions || []);
 	} catch (e) {
@@ -8646,7 +8631,7 @@ function renderHostauthSessions(sessions) {
 		revokeButton.className = "button-danger";
 		revokeButton.addEventListener("click", async () => {
 			try {
-				await apiRequest("DELETE", "/v1/system/hostauth/sessions/" + encodeURIComponent(s.username));
+				await apiRequest("DELETE", CIX_API.revokeHostauthSessions(s.username));
 				clearStatus();
 				await refreshHostauthSessions();
 			} catch (e) {
@@ -8662,7 +8647,7 @@ function renderHostauthSessions(sessions) {
 
 async function refreshRollingConfig() {
 	try {
-		const config = await apiRequest("GET", "/v1/system/rolling-config");
+		const config = await apiRequest("GET", CIX_API.getSystemRollingConfig());
 
 		cache.rollingConfig = config;
 		if (!rollingConfigDirty)
@@ -8680,7 +8665,7 @@ document.getElementById("rc-form").addEventListener("submit", async (event) => {
 	event.preventDefault();
 
 	try {
-		await apiRequest("PUT", "/v1/system/rolling-config", {
+		await apiRequest("PUT", CIX_API.putSystemRollingConfig(), {
 			jitter_window_seconds: parseInt(document.getElementById("rc-jitter-window").value, 10),
 		});
 		clearStatus();
@@ -8698,7 +8683,7 @@ let pkgBuildConfigDirty = false;
 
 async function refreshPkgBuildConfig() {
 	try {
-		const config = await apiRequest("GET", "/v1/system/pkg-build-config");
+		const config = await apiRequest("GET", CIX_API.getSystemPkgBuildConfig());
 
 		cache.pkgBuildConfig = config;
 		if (!pkgBuildConfigDirty) {
@@ -8723,7 +8708,7 @@ document.getElementById("pbc-form").addEventListener("submit", async (event) => 
 	try {
 		const cpuMax = document.getElementById("pbc-cpu-max").value.trim();
 
-		await apiRequest("PUT", "/v1/system/pkg-build-config", {
+		await apiRequest("PUT", CIX_API.putSystemPkgBuildConfig(), {
 			max_concurrent_jobs: parseInt(document.getElementById("pbc-max-jobs").value, 10),
 			memory_max: parseInt(document.getElementById("pbc-memory-max").value, 10),
 			cpu_max: cpuMax === "" ? null : cpuMax,
@@ -8741,7 +8726,7 @@ let pkgArtifactConfigDirty = false;
 
 async function refreshPkgArtifactConfig() {
 	try {
-		const config = await apiRequest("GET", "/v1/pkg/artifact-config");
+		const config = await apiRequest("GET", CIX_API.getPkgArtifactConfig());
 
 		cache.pkgArtifactConfig = config;
 		if (!pkgArtifactConfigDirty) {
@@ -8773,7 +8758,7 @@ document.getElementById("pac-form").addEventListener("submit", async (event) => 
 		body.auth_token = token;
 
 	try {
-		await apiRequest("PUT", "/v1/pkg/artifact-config", body);
+		await apiRequest("PUT", CIX_API.putPkgArtifactConfig(), body);
 		clearStatus();
 		showStatus("Artifact server config saved", false);
 		pkgArtifactConfigDirty = false;
@@ -9086,7 +9071,7 @@ document.getElementById("run-form").addEventListener("submit", async (event) => 
 			}
 		}
 
-		await apiRequest("POST", "/v1/containers", body);
+		await apiRequest("POST", CIX_API.createContainer(), body);
 		clearStatus();
 		document.getElementById("run-form").reset();
 		document.getElementById("f-files-rows").textContent = "";
@@ -9115,7 +9100,7 @@ document.getElementById("network-form").addEventListener("submit", async (event)
 		body.address = address;
 
 	try {
-		await apiRequest("POST", "/v1/networks", body);
+		await apiRequest("POST", CIX_API.createNetwork(), body);
 		clearStatus();
 		document.getElementById("network-form").reset();
 		closeModal();
@@ -9136,7 +9121,7 @@ document.getElementById("devicemap-form").addEventListener("submit", async (even
 	};
 
 	try {
-		await apiRequest("POST", "/v1/devicemaps", body);
+		await apiRequest("POST", CIX_API.createDeviceMap(), body);
 		clearStatus();
 		document.getElementById("devicemap-form").reset();
 		closeModal();
@@ -9170,7 +9155,7 @@ async function addRoute(isDefault, dest, prefix, gateway) {
 		}
 		if (gateway)
 			body.gateway = gateway;
-		await apiRequest("POST", "/v1/system/routes", body);
+		await apiRequest("POST", CIX_API.postSystemRoute(), body);
 		clearStatus();
 		await refreshRoutes();
 		renderCurrentView();
@@ -9211,7 +9196,7 @@ document.getElementById("image-form").addEventListener("submit", async (event) =
 	const name = document.getElementById("if-name").value.trim();
 
 	try {
-		await apiRequest("POST", "/v1/images", { name: name });
+		await apiRequest("POST", CIX_API.createImage(), { name: name });
 		clearStatus();
 		document.getElementById("image-form").reset();
 		closeModal();
@@ -9230,9 +9215,9 @@ document.getElementById("dns-record-form").addEventListener("submit", async (eve
 
 	try {
 		if (dnsRecordEditName !== null)
-			await apiRequest("PUT", "/v1/dns/records/" + encodeURIComponent(dnsRecordEditName), { ip: ip });
+			await apiRequest("PUT", CIX_API.updateDnsRecord(dnsRecordEditName), { ip: ip });
 		else
-			await apiRequest("POST", "/v1/dns/records", { name: name, ip: ip });
+			await apiRequest("POST", CIX_API.createDnsRecord(), { name: name, ip: ip });
 		clearStatus();
 		document.getElementById("dns-record-form").reset();
 		closeModal();
@@ -9249,7 +9234,7 @@ document.getElementById("dns-server-form").addEventListener("submit", async (eve
 	const hostsPath = document.getElementById("sf-hosts-path").value.trim();
 
 	try {
-		await apiRequest("POST", "/v1/dns/servers", { container: container, hosts_path: hostsPath });
+		await apiRequest("POST", CIX_API.createDnsServer(), { container: container, hosts_path: hostsPath });
 		clearStatus();
 		document.getElementById("dns-server-form").reset();
 		closeModal();
@@ -9266,7 +9251,7 @@ document.getElementById("ldap-server-form").addEventListener("submit", async (ev
 	const configPath = document.getElementById("lf-config-path").value.trim();
 
 	try {
-		await apiRequest("POST", "/v1/ldap/servers", { container: container, config_path: configPath });
+		await apiRequest("POST", CIX_API.createLdapServer(), { container: container, config_path: configPath });
 		clearStatus();
 		document.getElementById("ldap-server-form").reset();
 		closeModal();
@@ -9284,14 +9269,14 @@ document.getElementById("ldap-group-form").addEventListener("submit", async (eve
 
 	try {
 		if (ldapGroupEditName !== null) {
-			await apiRequest("PUT", "/v1/ldap/groups/" + encodeURIComponent(ldapGroupEditName), {
+			await apiRequest("PUT", CIX_API.updateLdapGroup(ldapGroupEditName), {
 				gidnumber: parseInt(gidnumberRaw, 10),
 			});
 		} else {
 			const body = { name: name };
 			if (gidnumberRaw !== "")
 				body.gidnumber = parseInt(gidnumberRaw, 10);
-			await apiRequest("POST", "/v1/ldap/groups", body);
+			await apiRequest("POST", CIX_API.createLdapGroup(), body);
 		}
 		clearStatus();
 		document.getElementById("ldap-group-form").reset();
@@ -9338,9 +9323,9 @@ document.getElementById("ldap-user-form").addEventListener("submit", async (even
 
 	try {
 		if (ldapUserEditName !== null)
-			await apiRequest("PUT", "/v1/ldap/users/" + encodeURIComponent(ldapUserEditName), body);
+			await apiRequest("PUT", CIX_API.updateLdapUser(ldapUserEditName), body);
 		else
-			await apiRequest("POST", "/v1/ldap/users", body);
+			await apiRequest("POST", CIX_API.createLdapUser(), body);
 		clearStatus();
 		document.getElementById("ldap-user-form").reset();
 		closeModal();
@@ -9363,7 +9348,7 @@ document.getElementById("pki-ca-form").addEventListener("submit", async (event) 
 		body.days = parseInt(daysText, 10);
 
 	try {
-		await apiRequest("POST", "/v1/pki/ca", body);
+		await apiRequest("POST", CIX_API.createPkiCa(), body);
 		clearStatus();
 		document.getElementById("pki-ca-form").reset();
 		await refreshPkiCa();
@@ -9385,7 +9370,7 @@ document.getElementById("pki-intermediate-form").addEventListener("submit", asyn
 		body.days = parseInt(daysText, 10);
 
 	try {
-		await apiRequest("POST", "/v1/pki/intermediate", body);
+		await apiRequest("POST", CIX_API.createPkiIntermediate(), body);
 		clearStatus();
 		document.getElementById("pki-intermediate-form").reset();
 		await refreshPkiIntermediate();
@@ -9411,7 +9396,7 @@ document.getElementById("pki-reset-form").addEventListener("submit", async (even
 		body.intermediate_common_name = intermediateCn;
 
 	try {
-		const result = await apiRequest("POST", "/v1/pki/reset", body);
+		const result = await apiRequest("POST", CIX_API.resetPki(), body);
 		clearStatus();
 		document.getElementById("pki-reset-form").reset();
 
@@ -9450,7 +9435,7 @@ document.getElementById("pki-cert-form").addEventListener("submit", async (event
 		body.days = parseInt(daysText, 10);
 
 	try {
-		const issued = await apiRequest("POST", "/v1/pki/certs", body);
+		const issued = await apiRequest("POST", CIX_API.createPkiCert(), body);
 		clearStatus();
 		document.getElementById("pki-cert-form").reset();
 		await refreshPkiCerts();
@@ -9503,7 +9488,7 @@ document.getElementById("pkg-recipe-form").addEventListener("submit", async (eve
 	try {
 		const content = fileInput.files.length > 0 ? await readFileAsText(fileInput.files[0]) : contentField.value;
 
-		await apiRequest("POST", "/v1/pkg/recipes", { name: name, content: content });
+		await apiRequest("POST", CIX_API.addPkgRecipe(), { name: name, content: content });
 		clearStatus();
 		document.getElementById("pkg-recipe-form").reset();
 		closeModal();
@@ -9523,7 +9508,7 @@ document.getElementById("pkg-bootstrap-form").addEventListener("submit", async (
 	const body = toolchainPath ? { toolchain_path: toolchainPath } : {};
 
 	try {
-		await apiRequest("POST", "/v1/pkg/bootstrap", body);
+		await apiRequest("POST", CIX_API.pkgBootstrap(), body);
 		clearStatus();
 		showStatus("Build toolchain image staged.", false);
 		closeModal();
@@ -9547,7 +9532,7 @@ document.getElementById("pkg-install-form").addEventListener("submit", async (ev
 		body.upgrade = true;
 
 	try {
-		await apiRequest("POST", "/v1/pkg/install", body);
+		await apiRequest("POST", CIX_API.pkgInstall(), body);
 		clearStatus();
 		document.getElementById("pkg-install-form").reset();
 		closeModal();
@@ -9559,7 +9544,7 @@ document.getElementById("pkg-install-form").addEventListener("submit", async (ev
 
 document.getElementById("pkg-update-all").addEventListener("click", async () => {
 	try {
-		const result = await apiRequest("POST", "/v1/pkg/update-all");
+		const result = await apiRequest("POST", CIX_API.pkgUpdateAll());
 		clearStatus();
 		showStatus(result && result.status ? result.status : "update started", false);
 		await refreshPkgList();
@@ -9589,7 +9574,7 @@ function suggestedFqdn(label) {
 
 async function refreshSiteConfig() {
 	try {
-		const site = await apiRequest("GET", "/v1/system/site");
+		const site = await apiRequest("GET", CIX_API.getSystemSite());
 
 		cache.siteConfig = site;
 		if (!siteConfigDirty) {
@@ -9653,7 +9638,7 @@ document.getElementById("sys-site-form").addEventListener("submit", async (event
 	};
 
 	try {
-		await apiRequest("PUT", "/v1/system/site", body);
+		await apiRequest("PUT", CIX_API.putSystemSite(), body);
 		clearStatus();
 		showStatus("Site config saved", false);
 		siteConfigDirty = false;
@@ -9692,7 +9677,7 @@ function populateManagementNetworkSelect(currentName) {
 
 async function refreshRoutes() {
 	try {
-		const r = await apiRequest("GET", "/v1/system/routes");
+		const r = await apiRequest("GET", CIX_API.getSystemRoutes());
 
 		cache.routes = r.routes;
 	} catch (e) {
@@ -9731,7 +9716,7 @@ async function removeRoute(route) {
 	const body = route.dest === "default" ? {} : { dest: route.dest, prefix: route.prefix };
 
 	try {
-		await apiRequest("DELETE", "/v1/system/routes", body);
+		await apiRequest("DELETE", CIX_API.deleteSystemRoute(), body);
 		clearStatus();
 		await refreshRoutes();
 		renderCurrentView();
@@ -9756,7 +9741,7 @@ function renderRoutesList() {
 
 async function refreshSysctl() {
 	try {
-		const r = await apiRequest("GET", "/v1/system/sysctl");
+		const r = await apiRequest("GET", CIX_API.listSystemSysctl());
 
 		cache.sysctls = r.sysctls;
 	} catch (e) {
@@ -9773,7 +9758,7 @@ function formatSysctlValue(value) {
 
 async function removeSysctl(key) {
 	try {
-		await apiRequest("DELETE", "/v1/system/sysctl/" + encodeURIComponent(key));
+		await apiRequest("DELETE", CIX_API.deleteSystemSysctl(key));
 		clearStatus();
 		await refreshSysctl();
 		renderCurrentView();
@@ -9845,7 +9830,7 @@ document.getElementById("sysctl-set-form").addEventListener("submit", async (eve
 
 		if (!persist)
 			body.persist = false;
-		await apiRequest("PUT", "/v1/system/sysctl/" + encodeURIComponent(key), body);
+		await apiRequest("PUT", CIX_API.putSystemSysctl(key), body);
 		clearStatus();
 		document.getElementById("sysctl-set-form").reset();
 		document.getElementById("sf-persist").checked = true;
@@ -9861,7 +9846,7 @@ document.getElementById("sysctl-set-form").addEventListener("submit", async (eve
 
 async function refreshKmod() {
 	try {
-		const r = await apiRequest("GET", "/v1/system/kmod");
+		const r = await apiRequest("GET", CIX_API.listKmod());
 
 		cache.kmodModules = r.modules;
 	} catch (e) {
@@ -9871,7 +9856,7 @@ async function refreshKmod() {
 
 async function refreshKmodConfig() {
 	try {
-		const r = await apiRequest("GET", "/v1/system/kmod-config");
+		const r = await apiRequest("GET", CIX_API.listKmodConfig());
 
 		cache.kmodConfig = r.kmod_config;
 	} catch (e) {
@@ -9881,7 +9866,7 @@ async function refreshKmodConfig() {
 
 async function unloadKmod(name) {
 	try {
-		await apiRequest("DELETE", "/v1/system/kmod/" + encodeURIComponent(name));
+		await apiRequest("DELETE", CIX_API.deleteKmod(name));
 		clearStatus();
 		await refreshKmod();
 		renderCurrentView();
@@ -9892,7 +9877,7 @@ async function unloadKmod(name) {
 
 async function removeKmodConfig(name) {
 	try {
-		await apiRequest("DELETE", "/v1/system/kmod-config/" + encodeURIComponent(name));
+		await apiRequest("DELETE", CIX_API.deleteKmodConfig(name));
 		clearStatus();
 		await refreshKmodConfig();
 		renderCurrentView();
@@ -9976,7 +9961,7 @@ document.getElementById("kmod-load-form").addEventListener("submit", async (even
 	try {
 		const options = parseKeyValueList(document.getElementById("klf-options").value);
 
-		await apiRequest("POST", "/v1/system/kmod/" + encodeURIComponent(name), { options: options });
+		await apiRequest("POST", CIX_API.postKmodLoad(name), { options: options });
 		clearStatus();
 		document.getElementById("kmod-load-form").reset();
 		closeModal();
@@ -10000,7 +9985,7 @@ document.getElementById("kmcf-set-form").addEventListener("submit", async (event
 			autoload: document.getElementById("kmcf-autoload").checked,
 		};
 
-		await apiRequest("PUT", "/v1/system/kmod-config/" + encodeURIComponent(name), body);
+		await apiRequest("PUT", CIX_API.putKmodConfig(name), body);
 		clearStatus();
 		document.getElementById("kmcf-set-form").reset();
 		closeModal();
@@ -10031,7 +10016,7 @@ document.getElementById("kmod-build-form").addEventListener("submit", async (eve
 			body.symbols = symbolsText.split(",").map((s) => s.trim()).filter((s) => s !== "");
 		if (upgrade)
 			body.upgrade = true;
-		await apiRequest("POST", "/v1/system/kmod-build", body);
+		await apiRequest("POST", CIX_API.postKmodBuild(), body);
 		clearStatus();
 		statusEl.textContent = "Build started -- see the log panel below for progress.";
 	} catch (e) {
@@ -10044,7 +10029,7 @@ document.getElementById("kmod-build-form").addEventListener("submit", async (eve
  * server-side store's own size cap. */
 async function refreshLogsConfig() {
 	try {
-		const cfg = await apiRequest("GET", "/v1/system/logs/config");
+		const cfg = await apiRequest("GET", CIX_API.getSystemLogsConfig());
 
 		document.getElementById("lcf-max-bytes").value = cfg.max_bytes;
 	} catch (e) {
@@ -10068,7 +10053,7 @@ async function refreshKmsg() {
 	const out = document.getElementById("kmsg-output");
 	const tailRaw = document.getElementById("kmsg-tail").value;
 	const tail = parseInt(tailRaw, 10);
-	const path = Number.isFinite(tail) && tail > 0 ? "/v1/system/kmsg?tail=" + tail : "/v1/system/kmsg";
+	const path = Number.isFinite(tail) && tail > 0 ? CIX_API.getSystemKmsg() + "?tail=" + tail : CIX_API.getSystemKmsg();
 
 	out.textContent = "(loading)";
 	try {
@@ -10113,7 +10098,7 @@ async function deleteVolumeByName(name) {
 	if (!confirm('Delete volume "' + name + '"? This permanently destroys its data.'))
 		return;
 	try {
-		await apiRequest("DELETE", "/v1/volumes/" + encodeURIComponent(name));
+		await apiRequest("DELETE", CIX_API.deleteVolume(name));
 		clearStatus();
 		await refreshVolumeCache();
 		renderTree();
@@ -10135,7 +10120,7 @@ async function refreshSoftwareReconcile() {
 	let list;
 
 	try {
-		const data = await apiRequest("GET", "/v1/software");
+		const data = await apiRequest("GET", CIX_API.listSoftware());
 
 		list = data.software || [];
 	} catch (e) {
@@ -10209,7 +10194,7 @@ document.getElementById("factory-reset-form").addEventListener("submit", async (
 	)
 		return;
 	try {
-		await apiRequest("POST", "/v1/system/factory-reset", { confirm: typed });
+		await apiRequest("POST", CIX_API.factoryReset(), { confirm: typed });
 		showStatus("Factory reset armed \u2014 the box is rebooting and will come back empty.", false);
 	} catch (e) {
 		showStatus("Factory reset refused: " + e.message, true);
@@ -10222,7 +10207,7 @@ async function refreshVolumeBackupConfig() {
 	const select = document.getElementById("vbc-disk");
 
 	try {
-		const cfg = await apiRequest("GET", "/v1/system/volume-backup-config");
+		const cfg = await apiRequest("GET", CIX_API.getVolumeBackupConfig());
 
 		select.textContent = "";
 		const none = document.createElement("option");
@@ -10254,7 +10239,7 @@ async function refreshVolumeBackupConfig() {
 document.getElementById("vbc-form").addEventListener("submit", async (event) => {
 	event.preventDefault();
 	try {
-		await apiRequest("PUT", "/v1/system/volume-backup-config", {
+		await apiRequest("PUT", CIX_API.setVolumeBackupConfig(), {
 			disk: document.getElementById("vbc-disk").value,
 			enabled: document.getElementById("vbc-enabled").checked,
 			interval_hours: parseInt(document.getElementById("vbc-interval").value, 10),
@@ -10303,7 +10288,7 @@ function fillVolumeBackupCell(volumeName, cell) {
 	cell.textContent = known !== undefined ? known.text : "…";
 	if (known !== undefined && Date.now() - known.fetchedAt < VOLUME_BACKUP_SUMMARY_MAX_AGE_MS)
 		return;
-	apiRequest("GET", "/v1/volumes/" + encodeURIComponent(volumeName) + "/backups")
+	apiRequest("GET", CIX_API.getVolumeBackups(volumeName))
 		.then((b) => {
 			cell.textContent = rememberVolumeBackupSummary(volumeName, b);
 		})
@@ -10333,7 +10318,7 @@ async function renderVolumeBackups(volumeName, fresh) {
 	let data;
 
 	try {
-		data = await apiRequest("GET", "/v1/volumes/" + encodeURIComponent(volumeName) + "/backups");
+		data = await apiRequest("GET", CIX_API.getVolumeBackups(volumeName));
 	} catch (e) {
 		note.textContent = "Could not read backups: " + e.message;
 		return;
@@ -10410,10 +10395,7 @@ async function renderVolumeBackups(volumeName, fresh) {
 			if (!confirm("Delete snapshot " + snap.stamp + "?"))
 				return;
 			try {
-				await apiRequest(
-					"DELETE",
-					"/v1/volumes/" + encodeURIComponent(volumeName) + "/backups/" + encodeURIComponent(snap.stamp)
-				);
+				await apiRequest("DELETE", CIX_API.deleteVolumeSnapshot(volumeName, snap.stamp));
 				clearStatus();
 				await renderVolumeBackups(volumeName, 1);
 			} catch (e) {
@@ -10448,7 +10430,7 @@ async function restoreVolumeSnapshot(volumeName, stamp) {
 		return;
 	}
 	try {
-		await apiRequest("POST", "/v1/volumes/" + encodeURIComponent(volumeName) + "/restore", {
+		await apiRequest("POST", CIX_API.restoreVolume(volumeName), {
 			snapshot: stamp,
 			confirm_volume_name: volumeName,
 		});
@@ -10466,7 +10448,7 @@ document.getElementById("vd-backup-form").addEventListener("submit", async (even
 	if (name === null)
 		return;
 	try {
-		await apiRequest("PUT", "/v1/volumes/" + encodeURIComponent(name) + "/backups", {
+		await apiRequest("PUT", CIX_API.setVolumeBackupPolicy(name), {
 			enabled: document.getElementById("vd-backup-enabled").checked,
 			retain: parseInt(document.getElementById("vd-backup-retain").value, 10),
 			while_running: document.getElementById("vd-backup-while-running").value,
@@ -10484,7 +10466,7 @@ document.getElementById("vd-backup-now").addEventListener("click", async () => {
 	if (name === null)
 		return;
 	try {
-		await apiRequest("POST", "/v1/volumes/" + encodeURIComponent(name) + "/backup", {});
+		await apiRequest("POST", CIX_API.takeVolumeBackup(name), {});
 		clearStatus();
 		await renderVolumeBackups(name, 1);
 	} catch (e) {
@@ -10630,7 +10612,7 @@ document.getElementById("vd-quota-form").addEventListener("submit", async (event
 		return;
 	}
 	try {
-		await apiRequest("PUT", "/v1/volumes/" + encodeURIComponent(name) + "/quota", {
+		await apiRequest("PUT", CIX_API.setVolumeQuota(name), {
 			quota_bytes: gib * 1024 * 1024 * 1024,
 		});
 		clearStatus();
@@ -10651,7 +10633,7 @@ document.getElementById("vd-migrate-form").addEventListener("submit", async (eve
 	if (!confirm('Move volume "' + name + '" to ' + (target || "the default OS-disk placement") + "?"))
 		return;
 	try {
-		await apiRequest("POST", "/v1/volumes/" + encodeURIComponent(name) + "/migrate", {
+		await apiRequest("POST", CIX_API.migrateVolume(name), {
 			disk: target,
 		});
 		clearStatus();
@@ -10665,7 +10647,7 @@ document.getElementById("vd-migrate-form").addEventListener("submit", async (eve
 
 async function refreshVolumeCache() {
 	try {
-		const data = await apiRequest("GET", "/v1/volumes");
+		const data = await apiRequest("GET", CIX_API.listVolumes());
 
 		cache.volumes = data.volumes || [];
 	} catch (e) {
@@ -10681,7 +10663,7 @@ async function refreshVolumes() {
 	let vols = [];
 	let containers = [];
 	try {
-		const data = await apiRequest("GET", "/v1/volumes");
+		const data = await apiRequest("GET", CIX_API.listVolumes());
 		vols = data.volumes || [];
 		cache.volumes = vols;
 		/*
@@ -10693,7 +10675,7 @@ async function refreshVolumes() {
 		 * list, the same approach the network detail page already uses
 		 * for "containers on this network" (ADR-0138).
 		 */
-		const cdata = await apiRequest("GET", "/v1/containers");
+		const cdata = await apiRequest("GET", CIX_API.listContainers());
 		containers = cdata.containers || [];
 	} catch (e) {
 		showStatus("Failed to read volumes: " + e.message, true);
@@ -10754,7 +10736,7 @@ async function refreshVolumes() {
 			if (!confirm("Delete volume \"" + v.name + "\"? This permanently destroys its data."))
 				return;
 			try {
-				await apiRequest("DELETE", "/v1/volumes/" + encodeURIComponent(v.name));
+				await apiRequest("DELETE", CIX_API.deleteVolume(v.name));
 				clearStatus();
 				await refreshVolumes();
 			} catch (e) {
@@ -10783,7 +10765,7 @@ async function applyVolumeOwner(clear) {
 		return;
 	}
 	try {
-		await apiRequest("PUT", "/v1/volumes/" + encodeURIComponent(name) + "/owner", {
+		await apiRequest("PUT", CIX_API.setVolumeOwner(name), {
 			uid: clear ? null : parseInt(uid, 10),
 			gid: clear ? null : parseInt(gid, 10),
 			recursive: document.getElementById("vd-owner-recursive").checked,
@@ -10827,7 +10809,7 @@ document.getElementById("volume-form").addEventListener("submit", async (event) 
 		}
 	}
 	try {
-		await apiRequest("POST", "/v1/volumes", body);
+		await apiRequest("POST", CIX_API.createVolume(), body);
 		clearStatus();
 		document.getElementById("volume-form").reset();
 		closeModal();
@@ -10844,7 +10826,7 @@ async function refreshServerHealth() {
 	let servers = [];
 	let warnings = [];
 	try {
-		const data = await apiRequest("GET", "/v1/system/server-health");
+		const data = await apiRequest("GET", CIX_API.getServerHealth());
 		servers = data.servers || [];
 		warnings = data.warnings || [];
 	} catch (e) {
@@ -10903,9 +10885,7 @@ async function refreshServerHealth() {
 		btn.textContent = s.drained ? "Undrain" : "Drain";
 		btn.addEventListener("click", async () => {
 			try {
-				await apiRequest(
-					"PUT",
-					"/v1/system/server-health/" + encodeURIComponent(s.kind) + "/" + encodeURIComponent(s.container),
+				await apiRequest("PUT", CIX_API.setServerHealthDrain(s.kind, s.container),
 					{ drained: !s.drained }
 				);
 				clearStatus();
@@ -10928,7 +10908,7 @@ document.getElementById("kmsg-form").addEventListener("submit", (event) => {
 document.getElementById("logs-config-form").addEventListener("submit", async (event) => {
 	event.preventDefault();
 	try {
-		await apiRequest("PUT", "/v1/system/logs/config", {
+		await apiRequest("PUT", CIX_API.putSystemLogsConfig(), {
 			max_bytes: parseInt(document.getElementById("lcf-max-bytes").value, 10),
 		});
 		clearStatus();
@@ -10940,7 +10920,7 @@ document.getElementById("logs-config-form").addEventListener("submit", async (ev
 
 async function refreshDaemonConfig() {
 	try {
-		const dc = await apiRequest("GET", "/v1/system/daemon-config");
+		const dc = await apiRequest("GET", CIX_API.getDaemonConfig());
 
 		cache.daemonConfig = dc;
 		populateManagementNetworkSelect(dc.management_network);
@@ -11005,7 +10985,7 @@ document.getElementById("sys-daemon-config-form").addEventListener("submit", asy
 		return;
 
 	try {
-		await apiRequest("PUT", "/v1/system/daemon-config", body);
+		await apiRequest("PUT", CIX_API.putDaemonConfig(), body);
 		clearStatus();
 		showStatus("Daemon config saved", false);
 		daemonConfigDirty = false;
@@ -11071,7 +11051,7 @@ function renderZswap(z) {
 
 async function refreshZswap() {
 	try {
-		renderZswap(await apiRequest("GET", "/v1/system/zswap"));
+		renderZswap(await apiRequest("GET", CIX_API.getZswap()));
 	} catch (e) {
 		/* Best-effort, same as every other panel here. */
 	}
@@ -11086,7 +11066,7 @@ for (const id of ["zswap-enabled", "zswap-max-pool", "zswap-compressor"]) {
 document.getElementById("zswap-form").addEventListener("submit", async (event) => {
 	event.preventDefault();
 	try {
-		const res = await apiRequest("PUT", "/v1/system/zswap", {
+		const res = await apiRequest("PUT", CIX_API.setZswap(), {
 			enabled: document.getElementById("zswap-enabled").checked,
 			max_pool_percent: parseInt(document.getElementById("zswap-max-pool").value, 10),
 			compressor: document.getElementById("zswap-compressor").value,
@@ -11102,7 +11082,7 @@ document.getElementById("zswap-form").addEventListener("submit", async (event) =
 
 async function refreshSwap() {
 	try {
-		const s = await apiRequest("GET", "/v1/system/swap");
+		const s = await apiRequest("GET", CIX_API.getSystemSwap());
 
 		cache.swap = s;
 		document.getElementById("swap-status").textContent = s.enabled
@@ -11119,7 +11099,7 @@ document.getElementById("swap-enable-form").addEventListener("submit", async (ev
 	const sizeMb = parseInt(document.getElementById("swap-size-mb").value, 10);
 
 	try {
-		await apiRequest("POST", "/v1/system/swap", { size_mb: sizeMb });
+		await apiRequest("POST", CIX_API.postSystemSwap(), { size_mb: sizeMb });
 		clearStatus();
 		showStatus("Swap enabled", false);
 		await refreshSwap();
@@ -11130,7 +11110,7 @@ document.getElementById("swap-enable-form").addEventListener("submit", async (ev
 
 document.getElementById("swap-disable").addEventListener("click", async () => {
 	try {
-		await apiRequest("DELETE", "/v1/system/swap");
+		await apiRequest("DELETE", CIX_API.deleteSystemSwap());
 		clearStatus();
 		showStatus("Swap disabled", false);
 		await refreshSwap();
@@ -11141,7 +11121,7 @@ document.getElementById("swap-disable").addEventListener("click", async () => {
 
 document.getElementById("sys-backup").addEventListener("click", async () => {
 	try {
-		const text = await apiRequestRaw("GET", "/v1/system/backup");
+		const text = await apiRequestRaw("GET", CIX_API.getSystemBackup());
 		const blob = new Blob([text], { type: "application/json" });
 		const url = URL.createObjectURL(blob);
 		const a = document.createElement("a");
@@ -11167,7 +11147,7 @@ document.getElementById("sys-restore-form").addEventListener("submit", async (ev
 	try {
 		const raw = await readFileAsText(fileInput.files[0]);
 
-		await apiRequestRaw("POST", "/v1/system/restore", raw);
+		await apiRequestRaw("POST", CIX_API.postSystemRestore(), raw);
 		clearStatus();
 		showStatus("Restored. Reboot for it to take effect.", false);
 		document.getElementById("sys-restore-form").reset();
@@ -11179,7 +11159,7 @@ document.getElementById("sys-restore-form").addEventListener("submit", async (ev
 /* ---------- Automatic backup snapshots (ADR-0141 Phase 5) ---------- */
 
 async function refreshBackupConfig() {
-	cache.backupConfig = await apiRequest("GET", "/v1/system/backup-config");
+	cache.backupConfig = await apiRequest("GET", CIX_API.getBackupConfig());
 	if (parseHash().category === "backup")
 		renderBackupConfig();
 }
@@ -11188,7 +11168,7 @@ async function refreshBackupStatus() {
 	if (parseHash().category !== "backup")
 		return;
 	try {
-		cache.backupStatus = await apiRequest("GET", "/v1/system/backup-config/status");
+		cache.backupStatus = await apiRequest("GET", CIX_API.getBackupConfigStatus());
 	} catch (e) {
 		/* Transient -- next poll tick tries again. */
 	}
@@ -11248,7 +11228,7 @@ document.getElementById("bc-form").addEventListener("submit", async (event) => {
 	const intervalHours = parseInt(document.getElementById("bc-interval").value, 10) || 0;
 
 	try {
-		cache.backupConfig = await apiRequest("PUT", "/v1/system/backup-config", {
+		cache.backupConfig = await apiRequest("PUT", CIX_API.putBackupConfig(), {
 			disk: disk === "" ? null : disk,
 			enabled: enabled,
 			interval_hours: intervalHours,
@@ -11262,7 +11242,7 @@ document.getElementById("bc-form").addEventListener("submit", async (event) => {
 
 document.getElementById("bc-snapshot-now").addEventListener("click", async () => {
 	try {
-		cache.backupStatus = await apiRequest("POST", "/v1/system/backup-config/snapshot-now");
+		cache.backupStatus = await apiRequest("POST", CIX_API.postBackupConfigSnapshotNow());
 		if (cache.backupStatus.state === "failed")
 			showStatus("Snapshot failed: " + cache.backupStatus.error, true);
 		else
@@ -11290,7 +11270,7 @@ document.getElementById("sys-update-form").addEventListener("submit", async (eve
 	}
 
 	try {
-		const result = await apiRequest("POST", "/v1/system/update", body);
+		const result = await apiRequest("POST", CIX_API.updateSystem(), body);
 		clearStatus();
 		showStatus("Staged to slot " + result.slot + " (" + result.updated.join(", ") + ").", false);
 		document.getElementById("sys-update-form").reset();
@@ -11303,7 +11283,7 @@ document.getElementById("menu-reboot").addEventListener("click", async () => {
 	if (!confirm("Reboot this host now?"))
 		return;
 	try {
-		await apiRequest("POST", "/v1/system/reboot");
+		await apiRequest("POST", CIX_API.rebootSystem());
 		clearStatus();
 		showStatus("Rebooting.", false);
 	} catch (e) {
@@ -11315,7 +11295,7 @@ document.getElementById("menu-shutdown").addEventListener("click", async () => {
 	if (!confirm("Shut down this host now?"))
 		return;
 	try {
-		await apiRequest("POST", "/v1/system/shutdown");
+		await apiRequest("POST", CIX_API.shutdownSystem());
 		clearStatus();
 		showStatus("Shutting down.", false);
 	} catch (e) {
