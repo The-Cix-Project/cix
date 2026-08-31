@@ -110,8 +110,8 @@ int main(void)
 	status = run_apigen("docs/api/openapi.yaml", NULL, out, sizeof(out));
 	if (status != 0)
 		fail("apigen rejected the real spec: %.300s", out);
-	else if (atoi(out) != 263)
-		fail("apigen found %d operations in the real spec, expected 263 -- if the spec "
+	else if (atoi(out) != 264)
+		fail("apigen found %d operations in the real spec, expected 264 -- if the spec "
 		     "genuinely changed, update this number deliberately; a silently different "
 		     "count is how a lost route hides",
 		     atoi(out));
