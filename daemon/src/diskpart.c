@@ -5,6 +5,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <sys/ioctl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -338,12 +339,155 @@ enum diskpart_error diskpart_create_table(const char *disk_name, const char *os_
 	return DISKPART_OK;
 }
 
+/*
+ * Issue #140: telling the kernel about ONE newly-appended partition.
+ *
+ * sfdisk refuses to touch a disk carrying any mounted filesystem --
+ * a pre-flight BLKRRPART check, confirmed on 192.168.15.95's own OS
+ * disk. That check is right for a repartition and wrong for an append,
+ * which by construction does not read, move or modify existing
+ * entries. So the append runs with --no-reread (suppress that one
+ * check) rather than --force (overrule every check): the difference
+ * matters, because every other guard sfdisk performs is still wanted.
+ *
+ * --no-tell-kernel goes with it so sfdisk never touches the kernel's
+ * view at all. That is not caution for its own sake -- it makes the
+ * behaviour identical on a busy disk and an idle one, instead of
+ * "sometimes the kernel already knows, sometimes it does not". The
+ * kernel is then told about exactly the new partition, and nothing
+ * else, via BLKPG_ADD_PARTITION.
+ *
+ * BLKPG adds a single partition to the kernel's view without the
+ * whole-disk re-read that EBUSYs while anything is mounted. It is the
+ * mechanism partx(8) itself uses, and the reason adding a partition to
+ * a running system is an ordinary operation rather than a reboot.
+ *
+ * The structures are declared here rather than taken from
+ * <linux/blkpg.h>: this project has been bitten once by trusting a
+ * system header's layout under TCC (struct epoll_event, ADR-0008), and
+ * these are three fields and two fixed buffers.
+ */
+static int run_sfdisk_capture(char *const argv[], char *out, size_t out_size, size_t *out_len);
+
+#define CIX_BLKPG _IO(0x12, 105)
+#define CIX_BLKPG_ADD_PARTITION 1
+
+struct cix_blkpg_partition {
+	long long start;  /* BYTES, not sectors -- the kernel's own unit here */
+	long long length; /* bytes */
+	int pno;
+	char devname[64];
+	char volname[64];
+};
+
+struct cix_blkpg_ioctl_arg {
+	int op;
+	int flags;
+	int datalen;
+	void *data;
+};
+
+/*
+ * Reads back the partition sfdisk just wrote.
+ *
+ * Deliberately re-reads the table rather than trusting the size that
+ * was requested: sfdisk aligns a partition to the disk's own
+ * granularity, so the start and length it actually chose are the only
+ * correct ones to hand the kernel. Passing the requested size would
+ * register a partition whose bounds disagree with the table on disk --
+ * a discrepancy that would not surface until something wrote near the
+ * end of it.
+ */
+static int read_appended_partition(const char *dev_path, int *out_pno,
+                                    unsigned long long *out_start_sector,
+                                    unsigned long long *out_sectors)
+{
+	char buf[16384];
+	char *argv[4];
+	char *line;
+	char *saveptr = NULL;
+	int best = -1;
+	int rc;
+
+	argv[0] = (char *)DISKPART_SFDISK_BIN;
+	argv[1] = "-d";
+	argv[2] = (char *)dev_path;
+	argv[3] = NULL;
+	rc = run_sfdisk_capture(argv, buf, sizeof(buf), NULL);
+	if (rc != 0)
+		return -1;
+
+	for (line = strtok_r(buf, "\n", &saveptr); line != NULL;
+	     line = strtok_r(NULL, "\n", &saveptr)) {
+		const char *colon = strchr(line, ':');
+		const char *sp, *sz;
+		unsigned long long start, sectors;
+		int pno;
+		size_t dlen = strlen(dev_path);
+
+		if (colon == NULL || strncmp(line, dev_path, dlen) != 0)
+			continue;
+		pno = atoi(line + dlen);
+		if (pno <= 0)
+			continue;
+		sp = strstr(colon, "start=");
+		sz = strstr(colon, "size=");
+		if (sp == NULL || sz == NULL)
+			continue;
+		start = strtoull(sp + 6, NULL, 10);
+		sectors = strtoull(sz + 5, NULL, 10);
+		if (sectors == 0)
+			continue;
+		/* The appended one is the highest-numbered entry: sfdisk
+		 * --append always allocates the next free slot. */
+		if (pno > best) {
+			best = pno;
+			*out_pno = pno;
+			*out_start_sector = start;
+			*out_sectors = sectors;
+		}
+	}
+	return best > 0 ? 0 : -1;
+}
+
+/* Returns 0, or -1 with errno set. EBUSY here means the kernel already
+ * knows about this partition number, which is success for our purposes
+ * rather than a failure. */
+static int blkpg_add_partition(const char *dev_path, int pno, unsigned long long start_sector,
+                                unsigned long long sectors)
+{
+	struct cix_blkpg_partition part;
+	struct cix_blkpg_ioctl_arg arg;
+	int fd;
+	int rc;
+
+	memset(&part, 0, sizeof(part));
+	memset(&arg, 0, sizeof(arg));
+	part.start = (long long)start_sector * 512;
+	part.length = (long long)sectors * 512;
+	part.pno = pno;
+
+	arg.op = CIX_BLKPG_ADD_PARTITION;
+	arg.flags = 0;
+	arg.datalen = (int)sizeof(part);
+	arg.data = &part;
+
+	fd = open(dev_path, O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return -1;
+	rc = ioctl(fd, CIX_BLKPG, &arg);
+	if (rc != 0 && errno == EBUSY)
+		rc = 0; /* already registered -- the desired end state */
+	close(fd);
+	return rc == 0 ? 0 : -1;
+}
+
 enum diskpart_error diskpart_add(const char *disk_name, const char *os_containers_dir,
                                   const char *part_name, unsigned long long size_mib)
 {
 	struct discovered_disk d;
 	char script[128];
-	char *argv[4];
+	char *argv[6];
 	int rc;
 	enum diskpart_error err;
 
@@ -362,13 +506,55 @@ enum diskpart_error diskpart_add(const char *disk_name, const char *os_container
 
 	argv[0] = (char *)DISKPART_SFDISK_BIN;
 	argv[1] = "--append";
-	argv[2] = d.dev_path;
-	argv[3] = NULL;
+	/*
+	 * Issue #140. --no-reread suppresses sfdisk's pre-flight
+	 * "is anyone using this disk" check, which refuses any disk with a
+	 * mounted filesystem. That check is correct for a repartition and
+	 * wrong for an append: appending does not read, move or modify an
+	 * existing entry, so a mounted partition elsewhere on the disk is
+	 * not endangered by it. Deliberately NOT --force, which would
+	 * overrule every other check sfdisk makes as well.
+	 *
+	 * --no-tell-kernel keeps sfdisk away from the kernel's view
+	 * entirely, so behaviour does not differ between a busy disk and
+	 * an idle one; the kernel is told about exactly the new partition
+	 * below.
+	 */
+	argv[2] = "--no-reread";
+	argv[3] = "--no-tell-kernel";
+	argv[4] = d.dev_path;
+	argv[5] = NULL;
 	rc = run_sfdisk_stdin(argv, script);
 	if (rc == -2)
 		return DISKPART_ERR_SFDISK_MISSING;
 	if (rc != 0)
 		return DISKPART_ERR_SFDISK_FAILED;
+
+	/*
+	 * The table on disk is correct at this point; the kernel does not
+	 * know yet. A partition that exists in the table with no device
+	 * node is the worst of both worlds -- it consumes the space and
+	 * nothing can use it -- so a failure here is reported rather than
+	 * swallowed, even though the write itself succeeded.
+	 */
+	{
+		int pno = 0;
+		unsigned long long start_sector = 0, sectors = 0;
+
+		if (read_appended_partition(d.dev_path, &pno, &start_sector, &sectors) != 0) {
+			snprintf(g_sfdisk_last_error, sizeof(g_sfdisk_last_error),
+			         "the partition was written to the table, but reading it back to tell the "
+			         "kernel about it failed -- it will appear after a reboot");
+			return DISKPART_ERR_SFDISK_FAILED;
+		}
+		if (blkpg_add_partition(d.dev_path, pno, start_sector, sectors) != 0) {
+			snprintf(g_sfdisk_last_error, sizeof(g_sfdisk_last_error),
+			         "partition %d was written to the table, but the kernel refused to add it "
+			         "(%s) -- it will appear after a reboot",
+			         pno, strerror(errno));
+			return DISKPART_ERR_SFDISK_FAILED;
+		}
+	}
 	return DISKPART_OK;
 }
 
