@@ -104,11 +104,28 @@ tcc: error: unsupported linker option '--version-script=./libmnl.map'
 Strip it out of the **generated** Makefile after `configure`, never out of upstream's source:
 
 ```sh
-sed -i 's/-Wl,--version-script[=,][^ ]*//g' src/Makefile
-grep -q -- '--version-script' src/Makefile && exit 1
+before=$(find . -name Makefile -exec cat {} + | grep -c '\\$')
+find . -name Makefile -exec sed -i 's/-Wl,--version-script[=,][^[:space:]]*//g' {} +
+find . -name Makefile -exec grep -l -- '--version-script' {} + | grep -q . && exit 1
+after=$(find . -name Makefile -exec cat {} + | grep -c '\\$')
+[ "$before" = "$after" ] || exit 1
 ```
 
-The `grep` guard matters: a `sed` that silently matched nothing leaves the original failure to be rediscovered at link time, and looks like the fix simply did not work.
+Three details in that snippet each cost a real build:
+
+**`[^[:space:]]`, not `[^ ]`.** A bracket negation of a literal space still matches a TAB. libnftnl's line is
+
+```
+libnftnl_la_LDFLAGS = -Wl,--version-script=$(srcdir)/libnftnl.map<TAB>\
+```
+
+so `[^ ]*` ran straight through the TAB and the line-continuation backslash and deleted both, orphaning the next line. `make` then failed with `recipe commences before first target`, several directories deep in a recursive build, naming nothing to do with version scripts.
+
+**Count the line-continuations before and after.** The damage above is silent at edit time. Comparing the count of lines ending in `\` across every Makefile catches exactly it. Count over the concatenated stream, not `grep -c` per file: `grep -c` prints `file:count` for multiple files but a bare count for one, so an `awk -F:` sum silently yields 0 for a single-Makefile project and the guard passes without checking anything.
+
+**Not `grep -r --include=`.** The build image's grep does not accept `--include` and reads it as a *filename*, so the guard fails on its own error message before `make` ever runs.
+
+The guard itself matters for the ordinary reason too: a `sed` that silently matched nothing leaves the original failure to be rediscovered at link time, and looks like the fix simply did not work.
 
 Dropping it costs symbol versioning and nothing else — same soname, same exported symbols — and nothing in this project links against a specific symbol version. `libmnl`, `ipset`, `nss-pam-ldapd` and `zlib 1.3.2-6` all make the same trade.
 
@@ -139,11 +156,13 @@ The fix in a recipe is a small compatibility header force-included via
 `CPPFLAGS`. `libnl`'s recipe is the reference. Two traps it had to avoid,
 both of which cost a build each:
 
-**Use plain `static`, never `static inline`.** TCC emits a `static inline`
-function defined in a shared header as a strong global in *every*
-translation unit that includes it, so the link fails with "defined twice"
-— the same gap m4 hit. Verify with `nm` that the symbols come out
-lowercase `t` (file-local), not `T`.
+**Use plain `static`.** TCC handles `static inline`, plain `static` and
+bare `inline` correctly — all three come out file-local — so plain
+`static` is chosen here simply as the least surprising of the three, not
+to dodge a bug. The spelling that does break is `extern inline`, which
+TCC emits as a strong global in every translation unit; that is the
+"defined twice" failure m4 hit, via gnulib's `_GL_EXTERN_INLINE`. Verify
+with `nm` that your symbols come out lowercase `t`, not `T`.
 
 **Include no system headers in the shim.** A `-include` header is processed
 before the translation unit can define `_GNU_SOURCE`, so pulling in any libc
