@@ -12,7 +12,7 @@ NETPLANE_SRCS := netplane/src/rtnetlink.c
 
 .PHONY: all clean
 
-all: $(BUILD)/test_toolchain $(BUILD)/test_harness $(BUILD)/harness_child $(BUILD)/test_overlay $(BUILD)/overlay_child $(BUILD)/test_container_pty $(BUILD)/pty_child $(BUILD)/cixd $(BUILD)/test_daemon $(BUILD)/daemon_child $(BUILD)/cixctl $(BUILD)/test_cli $(BUILD)/test_web $(BUILD)/test_rtnetlink $(BUILD)/test_container_net $(BUILD)/net_child $(BUILD)/net_connect $(BUILD)/test_daemon_net $(BUILD)/test_networks $(BUILD)/test_network_interfaces $(BUILD)/test_images $(BUILD)/test_container_restart $(BUILD)/test_container_files $(BUILD)/tcp_listen_child $(BUILD)/test_dns $(BUILD)/test_ntp $(BUILD)/test_ldap $(BUILD)/test_pki $(BUILD)/test_pkg $(BUILD)/mkbootroot $(BUILD)/test_mkbootroot_firmware $(BUILD)/test_boot $(BUILD)/test_boot_ab $(BUILD)/cix-install $(BUILD)/cix-recover $(BUILD)/test_dual_console $(BUILD)/dual_console_child $(BUILD)/mkinstalleriso $(BUILD)/test_installer $(BUILD)/test_devices $(BUILD)/dev_child $(BUILD)/test_daemon_devices $(BUILD)/test_system_update $(BUILD)/test_boot_update $(BUILD)/test_system_backup $(BUILD)/test_console_shell $(BUILD)/mktoolchainimage $(BUILD)/test_console_pki_bootstrap $(BUILD)/test_console_exec $(BUILD)/test_container_lifecycle $(BUILD)/output_child $(BUILD)/stats_child $(BUILD)/test_container_stats $(BUILD)/test_disk_quota $(BUILD)/test_diskpart $(BUILD)/test_sysctl $(BUILD)/test_kmod $(BUILD)/test_kmod_build $(BUILD)/test_routes $(BUILD)/test_daemon_bind_ip $(BUILD)/test_pkg_build_log $(BUILD)/test_pkg_concurrent_stress $(BUILD)/test_pkg_sync $(BUILD)/test_pkg_cache $(BUILD)/test_image_recipe $(BUILD)/test_container_recipe $(BUILD)/test_rolling_restart $(BUILD)/syslog_recv_child $(BUILD)/test_syslogfwd $(BUILD)/test_hostproc $(BUILD)/test_tls_throttle $(BUILD)/test_https_chain $(BUILD)/test_layout_upgrade $(BUILD)/test_treecopy $(BUILD)/test_storage_placement $(BUILD)/test_backup_config $(BUILD)/test_container_storage_migrate $(BUILD)/test_container_dns_servers $(BUILD)/test_hostauth $(BUILD)/test_device_hotplug $(BUILD)/test_subid $(BUILD)/test_volume $(BUILD)/volume_child $(BUILD)/test_factory_reset $(BUILD)/test_boot_console $(BUILD)/test_signing_keys $(BUILD)/test_pkg_recipe_approval $(BUILD)/test_stallwatch $(BUILD)/test_kernelpolicy $(BUILD)/test_dhcp $(BUILD)/test_artifact_export $(BUILD)/test_esp $(BUILD)/test_btrfs $(BUILD)/test_direct_rootfs $(BUILD)/test_targz $(BUILD)/targz_probe $(BUILD)/test_childdiag $(BUILD)/apigen $(BUILD)/test_apigen $(BUILD)/test_apiroute $(BUILD)/cix-boot.efi $(BUILD)/cix-xorriso
+all: $(BUILD)/test_toolchain $(BUILD)/test_harness $(BUILD)/harness_child $(BUILD)/test_overlay $(BUILD)/overlay_child $(BUILD)/test_container_pty $(BUILD)/pty_child $(BUILD)/cixd $(BUILD)/test_daemon $(BUILD)/daemon_child $(BUILD)/cixctl $(BUILD)/test_cli $(BUILD)/test_web $(BUILD)/test_rtnetlink $(BUILD)/test_container_net $(BUILD)/net_child $(BUILD)/net_connect $(BUILD)/test_daemon_net $(BUILD)/test_networks $(BUILD)/test_network_interfaces $(BUILD)/test_images $(BUILD)/test_container_restart $(BUILD)/test_container_files $(BUILD)/tcp_listen_child $(BUILD)/test_dns $(BUILD)/test_ntp $(BUILD)/test_ldap $(BUILD)/test_pki $(BUILD)/test_pkg $(BUILD)/mkbootroot $(BUILD)/test_mkbootroot_firmware $(BUILD)/test_boot $(BUILD)/test_boot_ab $(BUILD)/cix-install $(BUILD)/cix-recover $(BUILD)/test_dual_console $(BUILD)/dual_console_child $(BUILD)/mkinstalleriso $(BUILD)/test_installer $(BUILD)/test_devices $(BUILD)/dev_child $(BUILD)/test_daemon_devices $(BUILD)/test_system_update $(BUILD)/test_boot_update $(BUILD)/test_system_backup $(BUILD)/test_console_shell $(BUILD)/mktoolchainimage $(BUILD)/test_console_pki_bootstrap $(BUILD)/test_console_exec $(BUILD)/test_container_lifecycle $(BUILD)/output_child $(BUILD)/stats_child $(BUILD)/test_container_stats $(BUILD)/test_disk_quota $(BUILD)/test_diskpart $(BUILD)/test_sysctl $(BUILD)/test_kmod $(BUILD)/test_kmod_build $(BUILD)/test_routes $(BUILD)/test_daemon_bind_ip $(BUILD)/test_pkg_build_log $(BUILD)/test_pkg_concurrent_stress $(BUILD)/test_pkg_sync $(BUILD)/test_pkg_cache $(BUILD)/test_image_recipe $(BUILD)/test_container_recipe $(BUILD)/test_rolling_restart $(BUILD)/syslog_recv_child $(BUILD)/test_syslogfwd $(BUILD)/test_hostproc $(BUILD)/test_tls_throttle $(BUILD)/test_https_chain $(BUILD)/test_layout_upgrade $(BUILD)/test_treecopy $(BUILD)/test_storage_placement $(BUILD)/test_backup_config $(BUILD)/test_container_storage_migrate $(BUILD)/test_container_dns_servers $(BUILD)/test_hostauth $(BUILD)/test_device_hotplug $(BUILD)/test_subid $(BUILD)/test_volume $(BUILD)/volume_child $(BUILD)/test_factory_reset $(BUILD)/test_boot_console $(BUILD)/test_signing_keys $(BUILD)/test_pkg_recipe_approval $(BUILD)/test_stallwatch $(BUILD)/test_kernelpolicy $(BUILD)/test_dhcp $(BUILD)/test_artifact_export $(BUILD)/test_esp $(BUILD)/test_btrfs $(BUILD)/test_direct_rootfs $(BUILD)/test_targz $(BUILD)/targz_probe $(BUILD)/test_childdiag $(BUILD)/apigen $(BUILD)/test_apigen $(BUILD)/test_apiroute $(BUILD)/test_api_surfaces $(BUILD)/cix-boot.efi $(BUILD)/cix-xorriso
 
 $(BUILD):
 	mkdir -p $(BUILD)
@@ -73,8 +73,8 @@ $(BUILD)/test_daemon: test/test_daemon.c test/test_image_fixture.c $(CLIENT_SRCS
 $(BUILD)/daemon_child: test/daemon_child.c | $(BUILD)
 	$(CC) $(CFLAGS) $< -o $@
 
-$(BUILD)/cixctl: cli/src/main.c client/src/console.c $(CLIENT_SRCS) | $(BUILD)
-	$(CC) $(CLIENT_CFLAGS) $^ -o $@
+$(BUILD)/cixctl: cli/src/main.c client/src/console.c $(CLIENT_SRCS) $(BUILD)/generated/cix_api.h | $(BUILD)
+	$(CC) $(CLIENT_CFLAGS) -I$(BUILD) cli/src/main.c client/src/console.c $(CLIENT_SRCS) -o $@
 
 $(BUILD)/test_cli: test/test_cli.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
@@ -302,12 +302,19 @@ $(BUILD)/test_layout_upgrade: test/test_layout_upgrade.c test/test_image_fixture
 # The one generated translation unit (ADR-0218): the dispatch table,
 # rebuilt from the spec whenever the spec or the tool changes, consumed
 # only by daemon/src/main.c.
+$(BUILD)/generated/cix_api.h: docs/api/openapi.yaml $(BUILD)/apigen
+	@mkdir -p $(BUILD)/generated
+	$(BUILD)/apigen docs/api/openapi.yaml --emit-cli $@
+
 $(BUILD)/generated/api_routes.h: docs/api/openapi.yaml $(BUILD)/apigen
 	@mkdir -p $(BUILD)/generated
 	$(BUILD)/apigen docs/api/openapi.yaml --emit-routes $@
 
 $(BUILD)/apigen: tools/apigen.c | $(BUILD)
 	$(CC) $(CFLAGS) tools/apigen.c -o $@
+
+$(BUILD)/test_api_surfaces: test/test_api_surfaces.c | $(BUILD)
+	$(CC) $(CFLAGS) test/test_api_surfaces.c -o $@
 
 $(BUILD)/test_apiroute: test/test_apiroute.c daemon/src/apiroute.c | $(BUILD)
 	$(CC) $(CFLAGS) -Idaemon/include test/test_apiroute.c daemon/src/apiroute.c -o $@

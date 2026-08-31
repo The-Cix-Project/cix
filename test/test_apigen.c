@@ -166,6 +166,67 @@ int main(void)
 	expect_refusal("a spec with no operations", "paths:\ncomponents:\n  schemas: {}\n",
 	               "no operations");
 
+	/*
+	 * The CLI header (ADR-0218 layer 1). Its job is that a channel
+	 * cannot invent or misspell a path, so what matters is that every
+	 * operation is present and every path parameter really became a
+	 * %s -- a define that still contained "{name}" would compile
+	 * fine at the call site and produce a literal brace in the URL.
+	 */
+	{
+		char hdr_path[256];
+		char buf[512];
+		FILE *f;
+		int defines = 0, methods = 0, braces = 0;
+		int saw_health = 0, saw_one_param = 0, saw_two_param = 0;
+
+		snprintf(hdr_path, sizeof(hdr_path), "/tmp/apigen_cli_%d.h", (int)getpid());
+		snprintf(buf, sizeof(buf), "--emit-cli %s", hdr_path);
+		status = run_apigen("docs/api/openapi.yaml", buf, out, sizeof(out));
+		if (status != 0)
+			fail("apigen --emit-cli failed: %.200s", out);
+		f = fopen(hdr_path, "r");
+		if (f == NULL) {
+			fail("apigen --emit-cli wrote no header");
+		} else {
+			while (fgets(buf, sizeof(buf), f) != NULL) {
+				if (strncmp(buf, "#define CIX_API_", 16) != 0)
+					continue;
+				if (strstr(buf, "_METHOD ") != NULL) {
+					methods++;
+					continue;
+				}
+				defines++;
+				if (strchr(buf, '{') != NULL)
+					braces++;
+				if (strcmp(buf, "#define CIX_API_getHealth \"/v1/health\"\n") == 0)
+					saw_health = 1;
+				if (strcmp(buf, "#define CIX_API_getContainer \"/v1/containers/%s\"\n") == 0)
+					saw_one_param = 1;
+				if (strcmp(buf,
+				           "#define CIX_API_detachContainerNetwork "
+				           "\"/v1/containers/%s/networks/%s\"\n") == 0)
+					saw_two_param = 1;
+			}
+			fclose(f);
+			unlink(hdr_path);
+		}
+		if (defines != 264)
+			fail("CLI header has %d path defines, expected one per operation (264)", defines);
+		if (methods != 264)
+			fail("CLI header has %d method defines, expected 264", methods);
+		if (braces != 0)
+			fail("%d CLI path define(s) still contain '{' -- a parameter was not converted "
+			     "to %%s and would put a literal brace in the URL",
+			     braces);
+		if (!saw_health)
+			fail("a no-parameter path is not emitted verbatim");
+		if (!saw_one_param)
+			fail("a one-parameter path does not become a single %%s");
+		if (!saw_two_param)
+			fail("a two-parameter path does not become two %%s in order");
+	}
+
 	if (failures == 0)
 		printf("APIGEN RESULT: PASS\n");
 	else
