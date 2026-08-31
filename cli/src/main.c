@@ -9108,6 +9108,86 @@ static int cmd_network_set_pool(const struct cix_client *c, int json_mode, int a
 	return rc;
 }
 
+/*
+ * cixctl pkg buildenv ls | rm NAME (ADR-0221 / issue #112)
+ *
+ * Reported apart from `pkg cache-status` deliberately: pruning the
+ * cache makes a build slower, reclaiming an environment makes a build
+ * recompose one. Those look identical in a size figure and are not the
+ * same thing.
+ */
+static void fmt_buildenvs(const struct json_value *v)
+{
+	const struct json_value *arr = json_object_get(v, "buildenvs");
+	size_t i;
+
+	if (arr == NULL || arr->type != JSON_ARRAY || arr->u.array.count == 0) {
+		printf("no composed build environments\n");
+		return;
+	}
+	printf("%-28s %-12s %s\n", "NAME", "IDLE", "STATE");
+	for (i = 0; i < arr->u.array.count; i++) {
+		const struct json_value *e = arr->u.array.items[i];
+		const char *name = json_str_field(e, "name");
+		long long idle = (long long)json_as_number(json_object_get(e, "idle_seconds"));
+		long long keep = (long long)json_as_number(json_object_get(e, "retention_seconds"));
+		const struct json_value *iu = json_object_get(e, "in_use");
+		int in_use = iu != NULL && iu->type == JSON_BOOL && iu->u.boolean;
+		char idle_str[32];
+
+		if (idle >= 86400)
+			snprintf(idle_str, sizeof(idle_str), "%lldd", idle / 86400);
+		else if (idle >= 3600)
+			snprintf(idle_str, sizeof(idle_str), "%lldh", idle / 3600);
+		else
+			snprintf(idle_str, sizeof(idle_str), "%llds", idle);
+
+		printf("%-28s %-12s %s\n", name != NULL ? name : "?", idle_str,
+		       in_use ? "in use (never reclaimed while building)"
+		              : (keep > 0 && idle >= keep) ? "due for reclamation at next daemon start"
+		                                           : "idle");
+	}
+}
+
+static int cmd_pkg_buildenv(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	struct cix_response r;
+	char path[256];
+
+	if (argc >= 1 && strcmp(argv[0], "rm") == 0) {
+		if (argc < 2) {
+			fprintf(stderr, "usage: cixctl pkg buildenv rm NAME\n");
+			return 2;
+		}
+		snprintf(path, sizeof(path), CIX_API_deleteBuildEnvironment, argv[1]);
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(c, CIX_API_deleteBuildEnvironment_METHOD, path, NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		if (r.status == 204) {
+			printf("reclaimed %s -- it will be recomposed automatically if a build wants it\n",
+			       argv[1]);
+			cix_response_free(&r);
+			return 0;
+		}
+		return emit(&r, json_mode, NULL);
+	}
+	if (argc >= 1 && strcmp(argv[0], "ls") != 0) {
+		fprintf(stderr, "usage: cixctl pkg buildenv [ls]\n"
+		                "       cixctl pkg buildenv rm NAME\n");
+		return 2;
+	}
+
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(c, CIX_API_listBuildEnvironments_METHOD, CIX_API_listBuildEnvironments,
+	                       NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_buildenvs);
+}
+
 static int cmd_network(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
@@ -13444,6 +13524,8 @@ static int cmd_pkg(const struct cix_client *c, int json_mode, int argc, char **a
 		return cmd_pkg_sync_status(c, json_mode);
 	if (strcmp(sub, "cache-config") == 0)
 		return cmd_pkg_cache_config(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "buildenv") == 0)
+		return cmd_pkg_buildenv(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "cache-status") == 0)
 		return cmd_pkg_cache_status(c, json_mode);
 	if (strcmp(sub, "cache-clear") == 0)

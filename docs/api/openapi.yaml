@@ -4092,6 +4092,108 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /pkg/buildenv:
+    get:
+      summary: The composed build environments this host is holding (ADR-0221)
+      description: >
+        A build environment is the image composed from a recipe's
+        declared tools (ADR-0199), named for the hash of that tool set.
+        Nothing removed them before this, and because a recipe version
+        is immutable, *correcting* a tool list is the normal way to
+        work -- so abandoned environments are the common case rather
+        than the exception, and each is a full rootfs.
+        Reported separately from the package/source cache on purpose.
+        Pruning the cache makes a build slower; reclaiming an
+        environment makes a build *recompose* one. Those look alike in
+        a size figure and are not the same thing, and one number
+        covering both would hide which had happened.
+        `idle_seconds` is measured from the environment's own last use
+        rather than from its creation, so one that is old but in
+        constant service is not mistaken for one that is abandoned.
+      operationId: listBuildEnvironments
+      x-cix-expose: [cli]
+      responses:
+        "200":
+          description: Current build environments
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [buildenvs]
+                properties:
+                  buildenvs:
+                    type: array
+                    items:
+                      type: object
+                      required: [name, idle_seconds, in_use, retention_seconds]
+                      properties:
+                        name:
+                          type: string
+                        idle_seconds:
+                          type: integer
+                          description: >
+                            Seconds since a build last used this
+                            environment. An environment composed by a
+                            daemon older than ADR-0221 has no stamp and
+                            reports 0 -- deliberately "used now" rather
+                            than "never used", so an upgrade does not
+                            discard every pre-existing environment at
+                            once.
+                        in_use:
+                          type: boolean
+                          description: Whether a build is holding it right now. One that is is never reclaimed.
+                        retention_seconds:
+                          type: integer
+                          description: >
+                            How long an unused environment is kept.
+                            Fixed rather than configurable: the penalty
+                            for reclaiming too eagerly is one
+                            recomposition, so there is no operator
+                            decision here worth a knob.
+
+  /pkg/buildenv/{name}:
+    delete:
+      summary: Reclaim one composed build environment now (ADR-0221)
+      description: >
+        Removes it immediately rather than waiting for the retention
+        window. Safe by construction: if a later build wants this tool
+        set, it is recomposed -- deleting one costs a recomposition,
+        never a failure, which is the property the whole reclamation
+        design rests on.
+        Refused (409) while a build is holding it. That is the single
+        hard rule, and it is a question about a live process rather
+        than a prediction about future use.
+      operationId: deleteBuildEnvironment
+      x-cix-expose: [cli]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The environment's image name, e.g. "__buildenv-4bd4f62c83bf2b27".
+      responses:
+        "204":
+          description: Reclaimed
+        "400":
+          description: Not a build-environment name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No such build environment
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: A build is currently using it
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /containers:
     get:
       summary: List all containers known to this daemon

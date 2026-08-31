@@ -3175,6 +3175,59 @@ static int buildenv_mutate(const char *staging_rootfs, void *ctx_v)
 }
 
 /*
+ * ADR-0221 / issue #112: build environments are reclaimed by LAST USE.
+ *
+ * The stamp is a marker file's mtime inside the environment's own image
+ * directory -- derived from the filesystem rather than kept in a second
+ * registry that could disagree with it.
+ */
+#define PKG_BUILDENV_STAMP ".last-used"
+
+static void buildenv_stamp_path(const char *env_image, char *out, size_t out_size)
+{
+	snprintf(out, out_size, "%s/%s/%s", g_images_dir, env_image,
+	         PKG_BUILDENV_STAMP);
+}
+
+/* Called every time a build resolves an environment -- both the reuse
+ * path and the compose path, since composing one is itself a use. */
+static void buildenv_touch(const char *env_image)
+{
+	char path[PATH_MAX];
+	int fd;
+
+	buildenv_stamp_path(env_image, path, sizeof(path));
+	fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+	if (fd < 0)
+		return; /* a missing stamp is handled conservatively -- see buildenv_last_used() */
+	close(fd);
+}
+
+/*
+ * Seconds since this environment was last used, or -1 when that cannot
+ * be determined.
+ *
+ * A MISSING stamp deliberately reports "used now" rather than "never
+ * used": an environment composed by an older daemon has no marker, and
+ * treating that as ancient would make the first daemon carrying this
+ * change delete every pre-existing environment at once. Being
+ * conservative costs one retention window.
+ */
+static long long buildenv_idle_seconds(const char *env_image)
+{
+	char path[PATH_MAX];
+	struct stat st;
+	time_t now = time(NULL);
+
+	buildenv_stamp_path(env_image, path, sizeof(path));
+	if (stat(path, &st) != 0)
+		return 0;
+	if (now < st.st_mtime)
+		return 0; /* clock moved backwards -- never treat that as age */
+	return (long long)(now - st.st_mtime);
+}
+
+/*
  * Resolves a recipe's declared build tools to an image containing
  * exactly them, creating it the first time and reusing it after.
  * Returns 0 and fills out_image, or -1 with a message saying which
@@ -3244,8 +3297,10 @@ static int buildenv_image_for(const char *declared, char *out_image, size_t out_
 			return -1;
 		}
 		if (image_current_version(out_image, existing, sizeof(existing)) == IMAGE_OK &&
-		    existing[0] != '\0' && strcmp(existing, empty) != 0)
+		    existing[0] != '\0' && strcmp(existing, empty) != 0) {
+			buildenv_touch(out_image); /* ADR-0221: reuse is a use */
 			return 0;
+		}
 	}
 	{
 		struct buildenv_ctx ctx;
@@ -3267,6 +3322,7 @@ static int buildenv_image_for(const char *declared, char *out_image, size_t out_
 	}
 	logstore_write("cixd", "info", "pkg: composed build environment %s from %d declared tool(s)",
 	               out_image, count);
+	buildenv_touch(out_image); /* ADR-0221: composing it is its first use */
 	return 0;
 }
 
@@ -8657,6 +8713,99 @@ enum pkg_error pkg_artifact_push_request(const char *remote_name, char *out_url,
 	else
 		out_auth_header[0] = '\0';
 	return PKG_OK;
+}
+
+/*
+ * ADR-0221: how long an unused build environment is kept.
+ *
+ * Fixed rather than configurable, deliberately. The penalty for
+ * reclaiming too eagerly is one recomposition, so there is no operator
+ * decision here worth a knob -- and a knob would imply the number
+ * matters more than it does.
+ */
+#define PKG_BUILDENV_RETENTION_SECONDS (14LL * 24 * 60 * 60)
+
+static int buildenv_in_use(const char *name)
+{
+	int i;
+
+	/* The one hard rule (ADR-0221): never touch an environment a live
+	 * build holds. This is a question about a running process, not a
+	 * prediction about future use. */
+	for (i = 0; i < PKG_MAX_CONCURRENT_JOBS; i++) {
+		if (g_chains[i].name[0] != '\0' && strcmp(g_chains[i].buildenv_image, name) == 0)
+			return 1;
+	}
+	return 0;
+}
+
+void pkg_buildenv_write_json(struct json_writer *w)
+{
+	char names[IMAGE_LIST_MAX][PKG_IMAGE_NAME_MAX];
+	int n, i;
+
+	jw_obj_open(w);
+	jw_key(w, "buildenvs");
+	jw_arr_open(w);
+	n = image_list_names(names, IMAGE_LIST_MAX);
+	for (i = 0; i < n; i++) {
+		if (strncmp(names[i], PKG_BUILDENV_IMAGE_PREFIX, strlen(PKG_BUILDENV_IMAGE_PREFIX)) != 0)
+			continue;
+		jw_obj_open(w);
+		jw_key(w, "name");
+		jw_str(w, names[i]);
+		jw_key(w, "idle_seconds");
+		jw_int(w, buildenv_idle_seconds(names[i]));
+		jw_key(w, "in_use");
+		jw_bool(w, buildenv_in_use(names[i]));
+		jw_key(w, "retention_seconds");
+		jw_int(w, PKG_BUILDENV_RETENTION_SECONDS);
+		jw_obj_close(w);
+	}
+	jw_arr_close(w);
+	jw_obj_close(w);
+}
+
+enum pkg_error pkg_buildenv_delete(const char *name)
+{
+	if (name == NULL ||
+	    strncmp(name, PKG_BUILDENV_IMAGE_PREFIX, strlen(PKG_BUILDENV_IMAGE_PREFIX)) != 0)
+		return PKG_ERR_INVALID_NAME;
+	{
+		char cur[IMAGE_VERSION_MAX];
+
+		if (image_current_version(name, cur, sizeof(cur)) != IMAGE_OK)
+			return PKG_ERR_NOT_FOUND;
+	}
+	if (buildenv_in_use(name))
+		return PKG_ERR_BUSY;
+	if (image_delete(name) != IMAGE_OK)
+		return PKG_ERR_PERSIST_FAILED;
+	return PKG_OK;
+}
+
+int pkg_buildenv_reclaim(void)
+{
+	char names[IMAGE_LIST_MAX][PKG_IMAGE_NAME_MAX];
+	int n, i, removed = 0;
+
+	n = image_list_names(names, IMAGE_LIST_MAX);
+	for (i = 0; i < n; i++) {
+		if (strncmp(names[i], PKG_BUILDENV_IMAGE_PREFIX, strlen(PKG_BUILDENV_IMAGE_PREFIX)) != 0)
+			continue;
+		if (buildenv_in_use(names[i]))
+			continue;
+		if (buildenv_idle_seconds(names[i]) < PKG_BUILDENV_RETENTION_SECONDS)
+			continue;
+		if (image_delete(names[i]) == IMAGE_OK) {
+			removed++;
+			logstore_write("cixd", "info",
+			               "build environment %s reclaimed after %lld days idle -- it will be "
+			               "recomposed automatically if a build wants it again (ADR-0221)",
+			               names[i], buildenv_idle_seconds(names[i]) / (24 * 60 * 60));
+		}
+	}
+	return removed;
 }
 
 int pkg_artifact_push_is_enabled(void)
