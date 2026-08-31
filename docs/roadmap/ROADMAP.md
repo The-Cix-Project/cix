@@ -2445,6 +2445,18 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 211 (done): a restart stops forgetting an ISO that is on disk
+
+Issue #205, found by doing Part 210 for real rather than by reasoning about it. The reboot into v2.5.0 left a finished, signed ISO on disk while `GET /v1/system/iso` reported `state: none`, and `POST /v1/system/iso/publish` refused it with "no ISO has been built on this host" — a false statement about a file the daemon could see. Any restart between building and publishing stranded the artifact with no route out but a full rebuild.
+
+**The cause was narrower than the symptom.** `ISO_OUTPUT_PATH` was derived *only inside the build handler*, so nothing knew where an ISO would live until a build ran in that process — a restart could not look for one because it did not know where to look. Computed once at startup now, and the state is **recovered from disk rather than persisted**: a stored claim about the ISO would be a second source of truth able to disagree with the filesystem, and the thing it describes is already on the filesystem.
+
+**The fix creates a hazard it has to answer.** Making old ISOs publishable means an operator could publish a stale one believing it is current, so `built_version` is read back out of the trusted comment inside the ISO's own signature — a *signed* claim about the artifact, not a label about whatever is running, and one that cannot be edited without breaking verification.
+
+**Verified on 192.168.15.95**, by the same class of event that produced the bug — the reboot into v2.5.1 reported `state: ready`, `built_version: "v2.5.0"`, and logged `iso: found a signed ISO from a previous run, built by v2.5.0 (this daemon is v2.5.1) -- rebuild it if the installer should carry the running version`. All four paths were exercised against a live daemon first: signed recovery, unsigned recovery (publish refused naming the missing release key, rather than the cache's downstream 409), both boot log lines, and no-ISO.
+
+**Nearly shipped broken:** the first cut called `iso_recover_state()` before `logstore_init()`, so every one of its log lines went nowhere — this project's own documented lesson about stderr never reaching the log store, hit a third time, and caught only because the line was checked for rather than assumed.
+
 ## Part 210 (done): the installer ISO reaches the artifact cache
 
 Issue #197's real completion, [ADR-0220](../adr/0220-a-separate-release-signing-key.md). Part 209 made an ISO sign itself; that turned out to be necessary but not sufficient. A signed ISO on 192.168.15.95 still had **no route off the box**: `POST /system/iso` writes to local disk and reports a filesystem *path*, `publish_hostbuild_artifact()` covers packages only, and no endpoint returns an ISO's bytes — so the artifact existed, correctly signed, and nothing could move it, not even by hand.
