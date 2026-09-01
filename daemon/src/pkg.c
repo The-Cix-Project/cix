@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h> /* FICLONE, #236 */
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
 #include <sys/wait.h>
@@ -1091,6 +1092,42 @@ static long recipe_created_at(const char *recipe_path)
 	return (long)st.st_mtime;
 }
 
+/*
+ * FICLONE, spelled out rather than included (#236).
+ *
+ * <linux/fs.h> is exactly the kind of kernel uapi header CLAUDE.md
+ * warns about pulling in beside glibc's own, and this is one constant
+ * with a stable, documented value. Declaring it here costs a line and
+ * avoids a header fight for no benefit.
+ */
+#ifndef FICLONE
+#define FICLONE _IOW(0x94, 9, int)
+#endif
+
+/*
+ * Copies one file, by reference where the filesystem can (#236).
+ *
+ * This is the innermost operation of composing a build environment, and
+ * composing one copies every file of every declared tool -- for a
+ * toolchain that is gcc, glibc and binutils, thousands of files and
+ * hundreds of megabytes. It runs in the daemon's own event loop, so
+ * every byte moved here is a byte during which nothing else is served.
+ * Measured: publishing one recipe that made an image unsatisfied took
+ * 12257 ms and made the host need a manual reset twice.
+ *
+ * Every image on this platform lives under the same rebuildable-storage
+ * filesystem, which is btrfs (ADR-0207), so source and destination are
+ * on one filesystem that supports reflinks. FICLONE then shares the
+ * extents instead of duplicating them: the new file is a full,
+ * independent copy semantically -- copy-on-write handles later
+ * divergence -- at the cost of metadata rather than data.
+ *
+ * The read/write loop stays as the fallback and is unchanged. FICLONE
+ * fails cleanly (EOPNOTSUPP, EXDEV, EINVAL) on a filesystem that cannot
+ * do it or across two that differ, which is exactly the dev sandbox and
+ * any future non-btrfs deployment. Nothing depends on which path ran:
+ * the resulting file is identical either way.
+ */
 static int copy_file_simple(const char *src, const char *dst)
 {
 	int in, out;
@@ -1105,6 +1142,12 @@ static int copy_file_simple(const char *src, const char *dst)
 		close(in);
 		return -1;
 	}
+	if (ioctl(out, FICLONE, in) == 0) {
+		close(in);
+		close(out);
+		return 0;
+	}
+	/* Not clonable here -- same file, moved the long way. */
 	while ((n = read(in, buf, sizeof(buf))) > 0) {
 		if (write(out, buf, (size_t)n) != n) {
 			close(in);
