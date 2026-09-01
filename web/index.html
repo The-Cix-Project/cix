@@ -2243,6 +2243,22 @@
 		  navigating to find out which one a thing was on -- the same
 		  reasoning that collapsed Software, Host and each service.
 		-->
+		<section class="view" id="view-running-config" hidden>
+			<h2>Running configuration</h2>
+			<p class="view-intro">
+				Everything this host is configured to do, in one ordered document
+				(ADR-0206). Rendered live from the daemon on every load -- it is a
+				view, never a stored file, so it cannot drift from what the box is
+				actually doing. Secrets are never shown: tokens and passwords appear
+				as a set/not-set flag, and PKI private keys never appear at all.
+			</p>
+			<div class="toolbar">
+				<button type="button" id="running-config-refresh">Refresh</button>
+				<button type="button" id="running-config-copy">Copy</button>
+			</div>
+			<pre id="running-config-text" class="logs-pre">Loading…</pre>
+		</section>
+
 		<section class="view" id="view-monitoring" hidden>
 			<h2>Monitoring</h2>
 			<div class="tab-bar">
