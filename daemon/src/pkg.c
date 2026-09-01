@@ -4379,6 +4379,9 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 	}
 	e->state = PKG_STATE_FETCHING;
 	e->error[0] = '\0';
+	e->failure_kind = PKG_FAILURE_NONE; /* the previous attempt's kind is not this
+	                                     * attempt's story; cleared alongside error[]
+	                                     * rather than left to outlive it */
 	e->kept_build_container[0] = '\0'; /* ADR-0175: a fresh attempt starting means any
 	                                     * previously-preserved failed build container's
 	                                     * name is no longer this entry's current story --
@@ -6650,6 +6653,9 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 	 */
 	e->state = PKG_STATE_INSTALLED;
 	e->error[0] = '\0';
+	e->failure_kind = PKG_FAILURE_NONE; /* a success that leaves failure_kind set
+	                                     * reports an installed package as failed to
+	                                     * anything keying on it */
 
 	if (g_chains[chain_idx].is_hostbuild) {
 		/* A hostbuild's output is a standalone host artifact (a
