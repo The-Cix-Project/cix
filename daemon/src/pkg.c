@@ -2058,6 +2058,43 @@ static int image_produce_new_version(const char *image,
 	return 0;
 }
 
+/*
+ * Is this installed package behind the recipe on disk, and if so, what
+ * is the recipe's version?
+ *
+ * ONE definition, three callers: write_pkg_json()'s available_version
+ * field, pkg_find_update_candidate() (POST /pkg/update-all), and
+ * pkg_write_drift_json() (GET /pkg/drift). ADR-0031 said this
+ * comparison had been extracted so its call sites shared it rather
+ * than keeping two copies; that was the intent and not what the code
+ * did -- both sites carried their own find_recipe_path/parse_recipe/
+ * strcmp, and a third was about to be added. Now it really is shared.
+ *
+ * Re-read fresh from disk on every call. There is no cached drift
+ * answer anywhere, so there is none to go stale.
+ *
+ * Only meaningful once installed: a package still fetching or building
+ * was resolved from the current recipe by definition, so it cannot be
+ * behind it.
+ */
+static int pkg_entry_drift(const struct pkg_entry *e, char *out_available, size_t out_size)
+{
+	char recipe_path[PATH_MAX];
+	struct pkg_recipe recipe;
+
+	if (e == NULL || !e->in_use || e->state != PKG_STATE_INSTALLED)
+		return 0;
+	if (find_recipe_path(e->name, NULL, recipe_path, sizeof(recipe_path)) != 0)
+		return 0;
+	if (parse_recipe(recipe_path, &recipe) != 0)
+		return 0;
+	if (strcmp(recipe.version, e->version) == 0)
+		return 0;
+	if (out_available != NULL && out_size > 0)
+		snprintf(out_available, out_size, "%s", recipe.version);
+	return 1;
+}
+
 static void write_pkg_json(const struct pkg_entry *e, struct json_writer *w)
 {
 	int i;
@@ -2081,20 +2118,7 @@ static void write_pkg_json(const struct pkg_entry *e, struct json_writer *w)
 		break;
 	}
 
-	/* Re-read fresh from disk every call -- One Source of Truth, no
-	 * cached comparison to keep in sync. Only meaningful once installed
-	 * (an in-flight fetch/build is already "the latest recipe", by
-	 * definition -- it was just resolved from it). */
-	if (e->state == PKG_STATE_INSTALLED) {
-		char recipe_path[PATH_MAX];
-		struct pkg_recipe recipe;
-
-		if (find_recipe_path(e->name, NULL, recipe_path, sizeof(recipe_path)) == 0 &&
-		    parse_recipe(recipe_path, &recipe) == 0 && strcmp(recipe.version, e->version) != 0) {
-			snprintf(available_version, sizeof(available_version), "%s", recipe.version);
-			has_available = 1;
-		}
-	}
+	has_available = pkg_entry_drift(e, available_version, sizeof(available_version));
 
 	jw_obj_open(w);
 	jw_key(w, "name");
@@ -6643,6 +6667,61 @@ void pkg_write_json_list(struct json_writer *w)
 	jw_arr_close(w);
 }
 
+/*
+ * GET /pkg/drift -- issue #217.
+ *
+ * Counts every installed package and reports the ones behind their
+ * recipe. The count of installed packages is included deliberately:
+ * "12 behind" means something very different against 30 packages than
+ * against 300, and an operator reading a bare list has no denominator.
+ */
+void pkg_write_drift_json(struct json_writer *w)
+{
+	int i, installed = 0, behind = 0;
+
+	for (i = 0; i < PKG_MAX_PACKAGES; i++) {
+		if (g_packages[i].in_use && g_packages[i].state == PKG_STATE_INSTALLED)
+			installed++;
+	}
+
+	jw_obj_open(w);
+	jw_key(w, "installed");
+	jw_int(w, installed);
+
+	/* Walked twice rather than buffered: the count has to be written
+	 * before the array in a streaming writer, and PKG_MAX_PACKAGES is
+	 * a fixed, small array. Buffering the drifted set to avoid a second
+	 * pass would trade a real allocation for nothing. */
+	for (i = 0; i < PKG_MAX_PACKAGES; i++) {
+		if (pkg_entry_drift(&g_packages[i], NULL, 0))
+			behind++;
+	}
+	jw_key(w, "behind");
+	jw_int(w, behind);
+
+	jw_key(w, "packages");
+	jw_arr_open(w);
+	for (i = 0; i < PKG_MAX_PACKAGES; i++) {
+		const struct pkg_entry *e = &g_packages[i];
+		char available[PKG_VERSION_MAX];
+
+		if (!pkg_entry_drift(e, available, sizeof(available)))
+			continue;
+		jw_obj_open(w);
+		jw_key(w, "name");
+		jw_str(w, e->name);
+		jw_key(w, "image");
+		jw_str(w, e->image);
+		jw_key(w, "installed_version");
+		jw_str(w, e->version);
+		jw_key(w, "available_version");
+		jw_str(w, available);
+		jw_obj_close(w);
+	}
+	jw_arr_close(w);
+	jw_obj_close(w);
+}
+
 int pkg_find_update_candidate(char *out_name, size_t out_name_size, char *out_image,
                                size_t out_image_size)
 {
@@ -6650,17 +6729,8 @@ int pkg_find_update_candidate(char *out_name, size_t out_name_size, char *out_im
 
 	for (i = 0; i < PKG_MAX_PACKAGES; i++) {
 		struct pkg_entry *e = &g_packages[i];
-		char recipe_path[PATH_MAX];
-		struct pkg_recipe recipe;
 
-		if (!e->in_use || e->state != PKG_STATE_INSTALLED)
-			continue;
-
-		/* Same fresh-from-disk drift check write_pkg_json() performs
-		 * per-entry for available_version -- One Source of Truth, no
-		 * second comparison rule to keep in sync. */
-		if (find_recipe_path(e->name, NULL, recipe_path, sizeof(recipe_path)) == 0 &&
-		    parse_recipe(recipe_path, &recipe) == 0 && strcmp(recipe.version, e->version) != 0) {
+		if (pkg_entry_drift(e, NULL, 0)) {
 			snprintf(out_name, out_name_size, "%s", e->name);
 			snprintf(out_image, out_image_size, "%s", e->image);
 			return 1;

@@ -7770,6 +7770,42 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /pkg/drift:
+    get:
+      summary: >
+        Every installed package whose recipe on disk is newer than what is
+        installed -- one call instead of asking each package in turn.
+      description: >
+        GET /pkg/{name} has always reported this per package, in
+        available_version, described there as "the concrete answer to is this
+        out of date". Nothing aggregated it, so learning that a host was
+        behind meant asking about every installed package and comparing --
+        which nobody does, so drift accumulated unseen. On 192.168.15.95 it
+        had reached 34 of 139 installed packages, some several revisions
+        behind, and was discovered by accident (issue #217).
+
+
+        The comparison is the same one available_version and
+        POST /pkg/update-all both use, and now literally the same code: the
+        recipe is re-read fresh from disk on every call, so there is no cached
+        answer to go stale. Only installed packages are considered -- a
+        package still fetching or building was resolved from the current
+        recipe by definition.
+
+
+        Reports rather than acts. POST /pkg/update-all is the verb, and it
+        deliberately starts one upgrade at a time (ADR-0031); this is how an
+        operator sees how much is outstanding before, during and after.
+      operationId: getPkgDrift
+      x-cix-expose: [cli, web]
+      responses:
+        "200":
+          description: Drift summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PkgDrift"
+
   /pkg/cache:
     get:
       summary: Current local build-artifact cache occupancy.
@@ -14375,6 +14411,43 @@ components:
         max_bytes:
           type: integer
           description: The cache's own real, always-enforced size cap; default 2 GiB. No "unlimited" mode.
+
+    PkgDrift:
+      type: object
+      required: [installed, behind, packages]
+      properties:
+        installed:
+          type: integer
+          description: How many packages are installed, across every image.
+        behind:
+          type: integer
+          description: >
+            How many of them have a newer recipe on disk. Zero means the host
+            matches its recipes; it does not mean no recipe was ever published
+            without being built, which is a different question.
+        packages:
+          type: array
+          description: >
+            One entry per drifted package, in registry order. Empty when
+            behind is 0.
+          items:
+            type: object
+            required: [name, image, installed_version, available_version]
+            properties:
+              name:
+                type: string
+              image:
+                type: string
+                description: >
+                  Which image it is installed in. The same package is
+                  routinely installed in several, and can be behind in one and
+                  current in another, so name alone does not identify a
+                  drifted install.
+              installed_version:
+                type: string
+              available_version:
+                type: string
+                description: The pkg_version= of the recipe currently on disk.
 
     PkgCacheStatus:
       type: object

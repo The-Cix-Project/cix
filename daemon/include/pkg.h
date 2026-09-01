@@ -976,6 +976,14 @@ void pkg_write_json_list(struct json_writer *w);
  * the same v1 single-job-in-flight constraint every other install path
  * already has (PKG_ERR_BUSY if one is already running).
  */
+/*
+ * GET /pkg/drift (issue #217): how many packages are installed, how
+ * many are behind the recipe on disk, and which ones. Shares
+ * pkg_entry_drift() with available_version and update-all, so there is
+ * one comparison rule rather than three.
+ */
+void pkg_write_drift_json(struct json_writer *w);
+
 int pkg_find_update_candidate(char *out_name, size_t out_name_size, char *out_image,
                                size_t out_image_size);
 /* image NULL or "" means PKG_DEFAULT_IMAGE, matching pkg_install_start(). */

@@ -289,6 +289,7 @@ The kind is set in the single function that records a failure, and it is a **req
 | GET | `/pkg/build-logs` | Every persisted build log, newest first — the complete output of each recent build (issue #57) |
 | GET | `/pkg/build-logs/{file}` | One build log as plain text, tail-first if it is larger than the response cap |
 | GET | `/pkg/sync` | The most recent (or currently running) sync's status |
+| GET | `/pkg/drift` | Every installed package whose recipe on disk is newer than what is installed — the aggregate `available_version` has always reported one at a time |
 | GET | `/pkg/cache-config` | The configured local build-artifact cache size cap |
 | PUT | `/pkg/cache-config` | Set the cache's size cap (always a real cap — no "unlimited" mode) |
 | GET | `/pkg/cache` | Current local build-artifact cache occupancy |
@@ -309,6 +310,11 @@ The kind is set in the single function that records a failure, and it is a **req
 | GET | `/pkg` | List every known package (installed or in-flight) with its state |
 | GET | `/pkg/{name}` | Inspect one package's current state |
 | DELETE | `/pkg/{name}` | Uninstall a package, or clear a permanently-failed entry (never actually merged into any image, so no new image version is produced) |
+
+**Seeing how far behind a host is.** `GET /pkg/{name}` has always answered "is this out of date" for one package, in `available_version`. Nothing aggregated it, so the only way to learn a host had drifted was to ask about every installed package and compare — which in practice nobody did. On the reference host that reached 34 of 139 installed packages, several revisions behind in places, and was found by accident (issue #217). `GET /pkg/drift` answers it in one call.
+
+It reports; it does not act. `POST /pkg/update-all` is the verb, and it deliberately upgrades one package at a time (ADR-0031), so `drift` is how an operator sees what is still outstanding before, during and after. The comparison is the same code all three paths use — the recipe is re-read from disk on every call, so there is no cached answer that can go stale.
+
 
 Every error response is `{"error": "message"}` with an appropriate 4xx/5xx status. Every mutating endpoint that touches disk or spawns a subprocess can in principle also return `500` (a real I/O or subprocess failure, not a client mistake) — see `openapi.yaml`'s own per-path `"500"` response for exactly which internal failure each one covers; the specific set differs per endpoint and isn't repeated here.
 
