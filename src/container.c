@@ -602,6 +602,16 @@ int container_create(const struct container_spec *spec, struct container_handle 
 			_exit(114);
 		}
 
+		/* Loopback first, and independent of want_net: a container
+		 * with its own netns but no networks (every build sandbox)
+		 * still needs 127.0.0.1 to work. See
+		 * container_net_child_loopback_up() (#224). */
+		if ((spec->ns.clone_flags & CLONE_NEWNET) != 0 &&
+		    container_net_child_loopback_up() != 0) {
+			child_diag(diag_pipe[1], "child: container_net_child_loopback_up");
+			_exit(111);
+		}
+
 		if (want_net) {
 			if (container_net_child_configure(spec->nets, spec->net_count, net_pipe[0]) != 0) {
 				child_diag(diag_pipe[1], "child: container_net_child_configure");
@@ -977,7 +987,13 @@ void container_decode_exit_status(int exit_status, int term_signal, char *buf, s
 		{ 112, "mountns_pivot failed" },
 		{ 113, "container_dev_mknod failed" },
 		{ 114, "sethostname failed" },
+		{ 111, "container_net_child_loopback_up failed" },
 		{ 115, "container_net_child_configure failed" },
+		/* Was already in use at the direct-rootfs bind and simply had
+		 * no name here, so it decoded as a bare number. Noticed while
+		 * nearly reusing it for the loopback failure above, which
+		 * would have made this table state the wrong cause. */
+		{ 123, "bind direct rootfs failed" },
 		{ 116, "container_net_install_routes failed" },
 		{ 117, "container_net_enable_ip_forward failed" },
 		{ 118, "container_net_apply_sysctl failed" },
@@ -986,6 +1002,10 @@ void container_decode_exit_status(int exit_status, int term_signal, char *buf, s
 		{ 121, "userns map sync failed (parent never released the child)" },
 		{ 122, "userns per-container rootfs move_mount failed (pre-pivot_root)" },
 		{ 124, "userns setgid/setuid(0) to the mapped root failed (pre-exec)" },
+		/* Three volume-mount failures share this code; the child_diag
+		 * line says which. Named because an unnamed code decodes as a
+		 * bare number, which is the diagnostic saying nothing. */
+		{ 125, "volume mount failed (target path, mkdir, or move_mount)" },
 		{ 127, "exec failed (errno out of encodable range)" },
 		{ 130, "overlay: lowerdir stat failed" },
 		{ 131, "overlay: upperdir mkdir failed" },
