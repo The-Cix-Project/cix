@@ -649,11 +649,34 @@ header {
 		grid-template-columns: 1fr;
 		display: block;
 	}
+	/*
+	 * The tree flows with the document on a narrow screen; it does not
+	 * get its own scroll region (#233).
+	 *
+	 * max-height: 40vh made it a nested scroll container, because its
+	 * content is taller than 40% of a phone screen. Two scrollables
+	 * stacked vertically is the classic trapped-gesture bug: a drag
+	 * that starts over the tree scrolls the tree, a drag two pixels
+	 * lower scrolls the page, and neither is what the finger meant.
+	 * The desktop layout is an app shell where exactly one inner
+	 * region scrolls; carrying a piece of that into a document that
+	 * scrolls as a whole gets the worst of both.
+	 *
+	 * This leaves the tree occupying the top of every page, which is
+	 * not the right final answer -- a phone probably wants it behind a
+	 * disclosure rather than always present. That is a design change
+	 * needing a real device to judge, and #233 says so; this is the
+	 * part that is wrong regardless of how that question is settled.
+	 */
 	.tree-panel {
 		height: auto;
-		max-height: 40vh;
+		max-height: none;
+		overflow: visible;
 		border-right: none;
 		border-bottom: 1px solid var(--border);
+	}
+	.tree {
+		overflow: visible;
 	}
 	header {
 		flex-wrap: wrap;
