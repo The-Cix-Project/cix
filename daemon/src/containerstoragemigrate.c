@@ -4,6 +4,7 @@
 #include "treecopy.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <signal.h>
 #include <stdio.h>
@@ -18,10 +19,39 @@ struct container_migrate_job {
 	char target_dir[PATH_MAX];
 	char target_disk[DISKROLE_DISK_NAME_MAX];
 	char error[256];
+	/*
+	 * Read end of the child's error pipe, -1 when no job has run.
+	 *
+	 * Without it this reported the words "bulk copy failed" and
+	 * nothing else -- no file, no errno -- which is exactly the
+	 * complaint in #172 against the sibling storagemigrate.c. That one
+	 * was fixed; this copy of the same code was not, so the fix
+	 * covered one of two migration paths and the other kept its
+	 * silence.
+	 */
+	int err_fd;
 	int in_use;
 };
 
 static struct container_migrate_job g_jobs[CONTAINERDEF_MAX];
+
+/*
+ * err_fd is 0 from static zero-init, and 0 is stdin -- a real fd. Every
+ * slot is set to -1 once, before anything can read it, so a "no job has
+ * run" slot can never be mistaken for one holding a pipe. The sibling
+ * file carries the identical note for the identical reason.
+ */
+static void jobs_init_once(void)
+{
+	static int done;
+	int i;
+
+	if (done)
+		return;
+	for (i = 0; i < CONTAINERDEF_MAX; i++)
+		g_jobs[i].err_fd = -1;
+	done = 1;
+}
 
 static struct container_migrate_job *find_job(const char *container_name)
 {
@@ -62,6 +92,7 @@ enum containerstoragemigrate_error containerstoragemigrate_start(const char *con
 	struct container_migrate_job *job;
 	pid_t pid;
 	int pidfd;
+	int errpipe[2];
 
 	job = find_job(container_name);
 	if (job != NULL) {
@@ -72,14 +103,33 @@ enum containerstoragemigrate_error containerstoragemigrate_start(const char *con
 			return CONTAINERSTORAGEMIGRATE_ERR_ALREADY_ACTIVE;
 	}
 
-	pid = fork();
-	if (pid < 0)
+	jobs_init_once();
+
+	if (pipe2(errpipe, O_CLOEXEC) != 0)
 		return CONTAINERSTORAGEMIGRATE_ERR_SPAWN_FAILED;
+
+	pid = fork();
+	if (pid < 0) {
+		close(errpipe[0]);
+		close(errpipe[1]);
+		return CONTAINERSTORAGEMIGRATE_ERR_SPAWN_FAILED;
+	}
 	if (pid == 0) {
 		/* Same reasoning as storagemigrate_start()'s own child: real C
 		 * logic (treecopy_recursive()), not an external binary. */
-		_exit(treecopy_recursive(source_dir, target_dir) == 0 ? 0 : 1);
+		int rc = treecopy_recursive(source_dir, target_dir);
+
+		if (rc != 0) {
+			const char *why = treecopy_last_error();
+
+			/* Best effort: if this write fails the parent simply
+			 * reports the failure without a reason, which is what
+			 * it did unconditionally before. */
+			(void)!write(errpipe[1], why, strlen(why));
+		}
+		_exit(rc == 0 ? 0 : 1);
 	}
+	close(errpipe[1]);
 
 	pidfd = sys_pidfd_open(pid, 0);
 	if (pidfd < 0) {
@@ -118,13 +168,32 @@ void containerstoragemigrate_completed(const char *container_name, int exit_stat
 		return;
 
 	if (exit_status == 0) {
+		if (job->err_fd >= 0) {
+			close(job->err_fd);
+			job->err_fd = -1;
+		}
 		job->state = STORAGEMIGRATE_STATE_READY;
 		job->error[0] = '\0';
 		return;
 	}
 	job->state = STORAGEMIGRATE_STATE_FAILED;
-	if (exit_status == 1)
-		snprintf(job->error, sizeof(job->error), "bulk copy failed");
+	if (exit_status == 1) {
+		char why[256];
+		ssize_t n = -1;
+
+		if (job->err_fd >= 0) {
+			n = read(job->err_fd, why, sizeof(why) - 1);
+			close(job->err_fd);
+			job->err_fd = -1;
+		}
+		if (n > 0) {
+			why[n] = '\0';
+			snprintf(job->error, sizeof(job->error), "bulk copy failed -- %s", why);
+		} else {
+			snprintf(job->error, sizeof(job->error),
+			         "bulk copy failed (no reason reported by the copy child)");
+		}
+	}
 	else
 		snprintf(job->error, sizeof(job->error), "migration job process exited abnormally (status %d)",
 		         exit_status);
