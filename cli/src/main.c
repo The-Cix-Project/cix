@@ -10022,6 +10022,7 @@ static int materialize_one(const struct cix_client *c, const char *image, const 
                            int *out_compiled)
 {
 	char path[512];
+	char pkgref[256];
 	struct cix_response r;
 	struct json_writer w;
 	int settled = 0;
@@ -10064,7 +10065,16 @@ static int materialize_one(const struct cix_client *c, const char *image, const 
 	}
 	cix_response_free(&r);
 
-	snprintf(path, sizeof(path), "/v1/pkg/%s@%s", pkg, image);
+	/*
+	 * "<name>@<image>" is a single path parameter as far as the
+	 * contract is concerned, so it goes through the generated constant
+	 * rather than being typed out here. The first version of this
+	 * built "/v1/pkg/%s@%s" by hand and test_api_surfaces refused it
+	 * (ADR-0218) -- correctly: a hand-typed path compiles, works, and
+	 * breaks silently the day the contract moves.
+	 */
+	snprintf(pkgref, sizeof(pkgref), "%s@%s", pkg, image);
+	snprintf(path, sizeof(path), CIX_API_getPkg, pkgref);
 	for (;;) {
 		const char *state;
 
