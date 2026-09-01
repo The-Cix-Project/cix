@@ -12,6 +12,7 @@
 #include "json.h"
 #include "test_image_fixture.h"
 #include "test_cleanup.h"
+#include "elfcheck.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -42,36 +43,91 @@ static char g_data_dir[PATH_MAX];
 static char g_dnsmasq_image_root[PATH_MAX];
 
 /*
- * dnsmasq (a real, unmodified Debian package binary -- not hand-rolled,
- * see docs/roadmap/ROADMAP.md Phase 8) needs far more shared libraries than
- * the minimal ld.so+libc pair every other exec target in this project
- * needs. This is the full dependency closure from `ldd
- * /usr/sbin/dnsmasq` (libc.so.6 itself is already staged by
- * test_image_fixture_build()).
+ * Where dnsmasq is, and which libraries go with it.
+ *
+ * This used to be a hardcoded twenty-entry list -- the dependency
+ * closure of DEBIAN's dnsmasq, as the old comment here said outright
+ * ("a real, unmodified Debian package binary"). Cix builds its own
+ * dnsmasq now, and it needs exactly two things: libc.so.6 and the
+ * loader. So the list was not merely stale, it named libraries this
+ * platform has never had -- and the test failed on a Cix host trying to
+ * stage a libdbus that nothing here links against. It also told the
+ * operator to run `apt-get install dnsmasq`, which is advice from
+ * another operating system.
+ *
+ * A list of libraries maintained beside a binary is the same
+ * hand-maintained pair that drifts everywhere else in this project. The
+ * binary states its own answer in .dynamic, so elfcheck_needed_libs()
+ * reads it and this stages what it finds (#224).
  */
-static const char *const DNSMASQ_LIBS[] = {
-	"/lib/x86_64-linux-gnu/libcap.so.2",
-	"/lib/x86_64-linux-gnu/libdbus-1.so.3",
-	"/lib/x86_64-linux-gnu/libgcrypt.so.20",
-	"/lib/x86_64-linux-gnu/libgmp.so.10",
-	"/lib/x86_64-linux-gnu/libgpg-error.so.0",
-	"/lib/x86_64-linux-gnu/libhogweed.so.6",
-	"/lib/x86_64-linux-gnu/libidn2.so.0",
-	"/lib/x86_64-linux-gnu/libjansson.so.4",
-	"/lib/x86_64-linux-gnu/liblz4.so.1",
-	"/lib/x86_64-linux-gnu/liblzma.so.5",
-	"/lib/x86_64-linux-gnu/libmnl.so.0",
-	"/lib/x86_64-linux-gnu/libnetfilter_conntrack.so.3",
-	"/lib/x86_64-linux-gnu/libnettle.so.8",
-	"/lib/x86_64-linux-gnu/libnfnetlink.so.0",
-	"/lib/x86_64-linux-gnu/libnftables.so.1",
-	"/lib/x86_64-linux-gnu/libnftnl.so.11",
-	"/lib/x86_64-linux-gnu/libsystemd.so.0",
-	"/lib/x86_64-linux-gnu/libunistring.so.2",
-	"/lib/x86_64-linux-gnu/libxtables.so.12",
-	"/lib/x86_64-linux-gnu/libzstd.so.1",
+static const char *const DNSMASQ_CANDIDATE_PATHS[] = {
+	"/usr/sbin/dnsmasq",
+	"/usr/bin/dnsmasq",
+	"/sbin/dnsmasq",
 };
-#define DNSMASQ_LIBS_COUNT (sizeof(DNSMASQ_LIBS) / sizeof(DNSMASQ_LIBS[0]))
+#define DNSMASQ_CANDIDATE_COUNT \
+	(sizeof(DNSMASQ_CANDIDATE_PATHS) / sizeof(DNSMASQ_CANDIDATE_PATHS[0]))
+
+/* Where a soname might live. The loader itself and libc are already
+ * staged by test_image_fixture_build(), so a miss on those is not a
+ * failure. */
+static const char *const LIB_SEARCH_DIRS[] = {
+	"/lib/x86_64-linux-gnu",
+	"/usr/lib/x86_64-linux-gnu",
+	"/lib",
+	"/usr/lib",
+	"/lib64",
+};
+#define LIB_SEARCH_DIR_COUNT (sizeof(LIB_SEARCH_DIRS) / sizeof(LIB_SEARCH_DIRS[0]))
+
+static const char *find_dnsmasq(void)
+{
+	size_t i;
+
+	for (i = 0; i < DNSMASQ_CANDIDATE_COUNT; i++) {
+		if (access(DNSMASQ_CANDIDATE_PATHS[i], X_OK) == 0)
+			return DNSMASQ_CANDIDATE_PATHS[i];
+	}
+	return NULL;
+}
+
+/* Stages every library the binary declares that is actually present.
+ * Returns 0 on success, -1 if a declared library exists somewhere and
+ * could not be staged -- a soname that is nowhere on the system is left
+ * to the loader to complain about, since the fixture cannot invent it. */
+static int stage_declared_libs(const char *image_root, const char *binary)
+{
+	char needed[32][ELFCHECK_SONAME_MAX];
+	int n, i;
+	size_t d;
+
+	n = elfcheck_needed_libs(binary, needed, 32);
+	if (n < 0) {
+		fprintf(stderr, "FAIL: could not read %s's own library list\n", binary);
+		return -1;
+	}
+	for (i = 0; i < n; i++) {
+		char path[PATH_MAX];
+		int staged = 0;
+
+		for (d = 0; d < LIB_SEARCH_DIR_COUNT; d++) {
+			snprintf(path, sizeof(path), "%s/%s", LIB_SEARCH_DIRS[d], needed[i]);
+			if (access(path, R_OK) != 0)
+				continue;
+			if (test_image_fixture_add_lib(image_root, path) != 0) {
+				fprintf(stderr, "FAIL: could not stage %s\n", path);
+				return -1;
+			}
+			staged = 1;
+			break;
+		}
+		if (!staged)
+			printf("  note: %s declares %s, which is not on this system "
+			       "(already staged, or genuinely absent)\n",
+			       binary, needed[i]);
+	}
+	return 0;
+}
 
 /*
  * dnsmasq opens /dev/urandom at startup to seed its RNG (and typically
@@ -249,6 +305,7 @@ static int run_dig(const char *server_ip, const char *qname, char *out, size_t o
 
 int main(void)
 {
+	const char *dnsmasq_bin;
 	pid_t daemon_pid;
 	char *dargv[5];
 	char data_dir_arg[PATH_MAX + 11];
@@ -257,7 +314,6 @@ int main(void)
 	struct cix_response r;
 	char server_ip[64] = { 0 };
 	char dig_out[256];
-	size_t i;
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
@@ -273,18 +329,20 @@ int main(void)
 		}
 	}
 
-	if (test_image_fixture_build(g_dnsmasq_image_root, "/usr/sbin/dnsmasq", "dnsmasq") != 0) {
-		fprintf(stderr, "FAIL: could not stage dnsmasq -- is it installed? (apt-get install "
-		                "dnsmasq)\n");
+	dnsmasq_bin = find_dnsmasq();
+	if (dnsmasq_bin == NULL) {
+		fprintf(stderr, "FAIL: no dnsmasq binary found -- install the dnsmasq package\n");
 		test_data_dir_cleanup(g_data_dir);
 		return 1;
 	}
-	for (i = 0; i < DNSMASQ_LIBS_COUNT; i++) {
-		if (test_image_fixture_add_lib(g_dnsmasq_image_root, DNSMASQ_LIBS[i]) != 0) {
-			fprintf(stderr, "FAIL: could not stage %s\n", DNSMASQ_LIBS[i]);
-			test_data_dir_cleanup(g_data_dir);
-			return 1;
-		}
+	if (test_image_fixture_build(g_dnsmasq_image_root, dnsmasq_bin, "dnsmasq") != 0) {
+		fprintf(stderr, "FAIL: could not stage %s\n", dnsmasq_bin);
+		test_data_dir_cleanup(g_data_dir);
+		return 1;
+	}
+	if (stage_declared_libs(g_dnsmasq_image_root, dnsmasq_bin) != 0) {
+		test_data_dir_cleanup(g_data_dir);
+		return 1;
 	}
 	if (ensure_dev_node(g_dnsmasq_image_root, "/dev/urandom", makedev(1, 9)) != 0 ||
 	    ensure_dev_node(g_dnsmasq_image_root, "/dev/null", makedev(1, 3)) != 0) {

@@ -26,6 +26,9 @@
 #define EI_NIDENT_LOCAL 16
 #define ELFCLASS64_LOCAL 2
 #define SHT_DYNSYM_LOCAL 11
+#define SHT_DYNAMIC_LOCAL 6
+#define DT_NULL_LOCAL 0
+#define DT_NEEDED_LOCAL 1
 #define SHN_UNDEF_LOCAL 0
 
 /* A section header table larger than this is not something this
@@ -216,6 +219,118 @@ int elfcheck_built_by_gcc(const char *path, char *out_version, size_t version_si
 	}
 	close(fd);
 	return found;
+}
+
+/*
+ * The libraries a binary actually declares, read from its own
+ * .dynamic section (#224).
+ *
+ * Exists because test_dns carried a hardcoded twenty-entry list of
+ * shared libraries to stage beside dnsmasq -- the dependency closure of
+ * DEBIAN's dnsmasq, from a comment that says so ("a real, unmodified
+ * Debian package binary"). Cix builds its own dnsmasq now, and it needs
+ * exactly two: libc.so.6 and the loader. So the test could not run on a
+ * Cix host at all, failing on a libdbus that this platform's dnsmasq
+ * has never linked against.
+ *
+ * A list of libraries kept beside a binary is the same hand-maintained
+ * pair that drifts everywhere else in this project. The binary already
+ * states its own answer; this reads it.
+ *
+ * Names only (DT_NEEDED holds a soname, not a path) -- resolving them
+ * to files is the caller's job, since where a library lives is a
+ * property of the system, not of the binary.
+ */
+int elfcheck_needed_libs(const char *path, char out[][ELFCHECK_SONAME_MAX], int max)
+{
+	int fd;
+	unsigned char ehdr[64];
+	unsigned long long e_shoff;
+	unsigned int e_shentsize, e_shnum, i;
+	struct stat st;
+	int count = 0;
+
+	if (out == NULL || max <= 0)
+		return -1;
+
+	fd = open(path, O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return -1;
+	if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+		close(fd);
+		return -1;
+	}
+	if (read_at(fd, ehdr, sizeof(ehdr), 0) != 0 || memcmp(ehdr, "\177ELF", 4) != 0 ||
+	    ehdr[4] != ELFCLASS64_LOCAL) {
+		close(fd);
+		return -1;
+	}
+
+	e_shoff = rd(ehdr + 0x28, 8);
+	e_shentsize = (unsigned int)rd(ehdr + 0x3a, 2);
+	e_shnum = (unsigned int)rd(ehdr + 0x3c, 2);
+	if (e_shoff == 0 || e_shentsize < 64 || e_shnum == 0 || e_shnum > ELFCHECK_MAX_SECTIONS) {
+		close(fd);
+		return -1;
+	}
+
+	for (i = 0; i < e_shnum; i++) {
+		unsigned char sh[64], strsh[64];
+		unsigned int sh_type, sh_link;
+		unsigned long long sh_off, sh_size, str_off, str_size, off;
+		char *strtab;
+
+		if (read_at(fd, sh, sizeof(sh), (off_t)(e_shoff + (unsigned long long)i * e_shentsize)) != 0)
+			break;
+		sh_type = (unsigned int)rd(sh + 0x04, 4);
+		if (sh_type != SHT_DYNAMIC_LOCAL)
+			continue;
+
+		sh_off = rd(sh + 0x18, 8);
+		sh_size = rd(sh + 0x20, 8);
+		sh_link = (unsigned int)rd(sh + 0x28, 4);
+		if (sh_size == 0 || sh_link >= e_shnum)
+			continue;
+
+		/* .dynamic's linked section is the string table its
+		 * DT_NEEDED offsets index into. */
+		if (read_at(fd, strsh, sizeof(strsh),
+		            (off_t)(e_shoff + (unsigned long long)sh_link * e_shentsize)) != 0)
+			continue;
+		str_off = rd(strsh + 0x18, 8);
+		str_size = rd(strsh + 0x20, 8);
+		if (str_size == 0 || str_size > ELFCHECK_MAX_STRTAB)
+			continue;
+		strtab = malloc((size_t)str_size + 1);
+		if (strtab == NULL)
+			continue;
+		if (read_at(fd, strtab, (size_t)str_size, (off_t)str_off) != 0) {
+			free(strtab);
+			continue;
+		}
+		strtab[str_size] = '\0';
+
+		/* Each entry is a 16-byte (tag, value) pair; DT_NULL ends it. */
+		for (off = 0; off + 16 <= sh_size && count < max; off += 16) {
+			unsigned char ent[16];
+			unsigned long long tag, val;
+
+			if (read_at(fd, ent, sizeof(ent), (off_t)(sh_off + off)) != 0)
+				break;
+			tag = rd(ent, 8);
+			val = rd(ent + 8, 8);
+			if (tag == DT_NULL_LOCAL)
+				break;
+			if (tag != DT_NEEDED_LOCAL || val >= str_size)
+				continue;
+			snprintf(out[count], ELFCHECK_SONAME_MAX, "%s", strtab + val);
+			count++;
+		}
+		free(strtab);
+		break;
+	}
+	close(fd);
+	return count;
 }
 
 int elfcheck_undefined_builtin(const char *path, char *out_sym, size_t sym_size)
