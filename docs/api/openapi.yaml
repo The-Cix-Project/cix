@@ -35,6 +35,46 @@ paths:
                     type: string
                     enum: [ok]
 
+  /config:
+    get:
+      summary: The running configuration, as one ordered, redacted document
+      description: >
+        Every configurable subsystem rendered as a single document
+        (ADR-0206). This is a VIEW, derived fresh on every call from the
+        daemon's own live state -- it is never stored, because a stored
+        rendering would be a second source of truth for every setting
+        and would drift, which is the failure `One Source of Truth`
+        exists to prevent.
+
+
+        Section order is part of the contract, not cosmetic: a section
+        never depends on one that comes after it, so the document reads
+        in the order the state would have to be built -- host identity
+        and resolver before networks, networks before the DNS and DHCP
+        that sit on them, images before the packages installed into
+        them, everything before the containers that consume it.
+
+
+        SECRETS ARE NEVER RENDERED. PKI private keys, LDAP bind
+        passwords and repo/artifact tokens appear as a redaction marker
+        or as a boolean saying whether one is set, never as a value.
+
+
+        The document is the daemon's; the presentation is not. Cisco-
+        style section text, colour and paging are `cixctl show
+        running-config`'s job (ADR-0205), and the dashboard renders the
+        same document its own way. Text is never parsed back, so its
+        format is deliberately not a contract.
+      operationId: getConfig
+      x-cix-expose: [cli, web]
+      responses:
+        "200":
+          description: The running configuration document
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigDocument"
+
   /login:
     post:
       summary: Authenticate and obtain a session token (ADR-0144)
@@ -10722,6 +10762,83 @@ components:
         type: string
 
   schemas:
+    ConfigDocument:
+      type: object
+      description: >
+        The running configuration (ADR-0206). PROPERTY ORDER IS THE
+        CONTRACT -- this list is the single source of the section
+        vocabulary: `apigen` reads it and generates the daemon's
+        section table from it, so a subsystem listed here without a
+        renderer, or a renderer without an entry here, fails the build
+        rather than shipping a quietly partial document. Adding a
+        configurable subsystem to this platform means adding it here.
+      properties:
+        site:
+          description: Host identity -- instance, site, domain. First because everything else is named relative to it.
+        daemon:
+          description: The daemon's own settings: bind address, TLS and connection throttle.
+        resolver:
+          description: The host's own /etc/resolv.conf nameservers (ADR-0076).
+        time:
+          description: NTP configuration -- upstream sources and whether stepping is allowed.
+        ntp_servers:
+          description: Containers registered as NTP servers for this site.
+        sysctl:
+          description: Persisted kernel parameters applied at boot.
+        kernel_modules:
+          description: Modules configured to load, distinct from those merely loaded now.
+        zswap:
+          description: Compressed-swap intent (ADR-0196) -- configured intent, not only what the kernel currently has.
+        swap:
+          description: Swap placement and size.
+        disk_roles:
+          description: Persisted disk-name-to-role bindings. Before storage consumers, which resolve through them.
+        volumes:
+          description: Named volumes containers mount.
+        backup:
+          description: Backup destination and schedule (ADR-0141), not the backup contents.
+        routes:
+          description: Host routing table entries.
+        networks:
+          description: Virtual networks. Before containers, which attach to them.
+        dhcp:
+          description: DHCP ranges and static reservations.
+        dhcp_servers:
+          description: Containers registered as DHCP servers.
+        dns_forwarders:
+          description: Upstream resolvers the DNS servers forward to.
+        dns_servers:
+          description: Containers registered as DNS servers. Before records, which they serve.
+        dns_records:
+          description: Zone records.
+        pki:
+          description: CA and certificate metadata. Private key material is NEVER rendered.
+        ldap:
+          description: LDAP directory configuration. The bind password renders as a set/not-set boolean.
+        ldap_servers:
+          description: Containers registered as LDAP servers.
+        ldap_groups:
+          description: Directory groups. Before users, which reference them.
+        ldap_users:
+          description: Directory users. Passwords are never rendered.
+        syslog_targets:
+          description: Remote syslog destinations.
+        package_repo:
+          description: Recipe source repository. The auth token renders as a set/not-set boolean.
+        package_artifacts:
+          description: Prebuilt-artifact server (ADR-0122). The auth token renders as a set/not-set boolean.
+        package_policies:
+          description: Per-package install and update policy.
+        packages:
+          description: Installed packages per image.
+        images:
+          description: Images. Before the containers built from them.
+        image_recipes:
+          description: Declarative image manifests (ADR-0123).
+        container_recipes:
+          description: Declarative container definitions.
+        containers:
+          description: Provisioned containers. Last: they depend on networks, images, volumes and devices above.
     ServerHealth:
       type: object
       properties:

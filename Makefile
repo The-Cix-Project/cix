@@ -6,7 +6,7 @@ CLIENT_CFLAGS := $(CFLAGS) -Iclient/include -Idaemon/include
 NETPLANE_CFLAGS := $(CFLAGS)
 
 LIB_SRCS := src/btrfs.c src/cgroup.c src/mountns.c src/ns_create.c src/container.c src/overlay.c src/container_net.c src/container_dev.c src/container_caps.c netplane/src/rtnetlink.c
-DAEMON_SRCS := daemon/src/json.c daemon/src/http.c daemon/src/websocket.c daemon/src/exec.c daemon/src/registry.c daemon/src/staticfile.c daemon/src/network.c daemon/src/persist.c daemon/src/dns.c daemon/src/ldap.c daemon/src/pki.c daemon/src/opensslrun.c daemon/src/releasekey.c daemon/src/elfcheck.c daemon/src/pkg.c daemon/src/device.c daemon/src/devicemap.c daemon/src/image.c daemon/src/containerdef.c daemon/src/siteconfig.c daemon/src/daemon_config.c daemon/src/tlsconn.c daemon/src/quotamap.c daemon/src/swap.c daemon/src/logstore.c daemon/src/disk.c daemon/src/diskrole.c daemon/src/diskformat.c daemon/src/diskpart.c daemon/src/sysctlconfig.c daemon/src/kmod.c daemon/src/kmodconfig.c daemon/src/ping.c daemon/src/resolv.c daemon/src/ntp.c daemon/src/syslogfwd.c daemon/src/hostproc.c daemon/src/connthrottle.c daemon/src/treecopy.c daemon/src/storageplacement.c daemon/src/storagemigrate.c daemon/src/backupconfig.c daemon/src/containerstoragemigrate.c daemon/src/pwhash.c daemon/src/vendor/bcrypt.c daemon/src/vendor/blowfish.c daemon/src/hostauth.c daemon/src/ldapclient.c daemon/src/subid.c daemon/src/serverhealth.c daemon/src/volume.c daemon/src/volumebackup.c daemon/src/cpreserve.c daemon/src/pkgpolicy.c daemon/src/bootconsole.c daemon/src/esp.c daemon/src/stallwatch.c daemon/src/kernelpolicy.c daemon/src/zswap.c daemon/src/dhcp.c daemon/src/targz.c daemon/src/signingkeys.c daemon/src/childdiag.c daemon/src/apiroute.c
+DAEMON_SRCS := daemon/src/json.c daemon/src/http.c daemon/src/websocket.c daemon/src/exec.c daemon/src/registry.c daemon/src/staticfile.c daemon/src/network.c daemon/src/persist.c daemon/src/dns.c daemon/src/ldap.c daemon/src/pki.c daemon/src/opensslrun.c daemon/src/releasekey.c daemon/src/elfcheck.c daemon/src/pkg.c daemon/src/device.c daemon/src/devicemap.c daemon/src/image.c daemon/src/containerdef.c daemon/src/siteconfig.c daemon/src/daemon_config.c daemon/src/tlsconn.c daemon/src/quotamap.c daemon/src/swap.c daemon/src/logstore.c daemon/src/disk.c daemon/src/diskrole.c daemon/src/diskformat.c daemon/src/diskpart.c daemon/src/sysctlconfig.c daemon/src/kmod.c daemon/src/kmodconfig.c daemon/src/ping.c daemon/src/resolv.c daemon/src/ntp.c daemon/src/syslogfwd.c daemon/src/hostproc.c daemon/src/connthrottle.c daemon/src/treecopy.c daemon/src/storageplacement.c daemon/src/storagemigrate.c daemon/src/backupconfig.c daemon/src/containerstoragemigrate.c daemon/src/pwhash.c daemon/src/vendor/bcrypt.c daemon/src/vendor/blowfish.c daemon/src/hostauth.c daemon/src/ldapclient.c daemon/src/subid.c daemon/src/serverhealth.c daemon/src/volume.c daemon/src/volumebackup.c daemon/src/cpreserve.c daemon/src/pkgpolicy.c daemon/src/bootconsole.c daemon/src/esp.c daemon/src/stallwatch.c daemon/src/kernelpolicy.c daemon/src/zswap.c daemon/src/dhcp.c daemon/src/targz.c daemon/src/signingkeys.c daemon/src/childdiag.c daemon/src/apiroute.c daemon/src/config.c
 CLIENT_SRCS := client/src/httpclient.c daemon/src/json.c
 NETPLANE_SRCS := netplane/src/rtnetlink.c
 
@@ -136,7 +136,7 @@ $(BUILD)/test_container_pty: test/test_container_pty.c test/test_image_fixture.c
 $(BUILD)/pty_child: test/pty_child.c | $(BUILD)
 	$(CC) $(CFLAGS) $< -o $@
 
-$(BUILD)/cixd: daemon/src/main.c $(DAEMON_SRCS) $(LIB_SRCS) test/test_image_fixture.c $(BUILD)/version.h $(BUILD)/generated/api_routes.h web/api.js | $(BUILD)
+$(BUILD)/cixd: daemon/src/main.c $(DAEMON_SRCS) $(LIB_SRCS) test/test_image_fixture.c $(BUILD)/version.h $(BUILD)/generated/api_routes.h $(BUILD)/generated/config_sections.h web/api.js | $(BUILD)
 	$(CC) $(DAEMON_CFLAGS) daemon/src/main.c $(DAEMON_SRCS) $(LIB_SRCS) test/test_image_fixture.c -lssl -lcrypto -o $@
 
 $(BUILD)/test_daemon: test/test_daemon.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
@@ -390,6 +390,15 @@ web/api.js: docs/api/openapi.yaml $(BUILD)/apigen
 $(BUILD)/generated/api_routes.h: docs/api/openapi.yaml $(BUILD)/apigen
 	@mkdir -p $(BUILD)/generated
 	$(BUILD)/apigen docs/api/openapi.yaml --emit-routes $@
+
+# The config section vocabulary (ADR-0206). Generated from the
+# ConfigDocument schema so the section list has exactly one definition:
+# daemon/src/config.c expands it, so a section without a renderer, or a
+# renderer without a section, is a compile error rather than a quietly
+# partial document.
+$(BUILD)/generated/config_sections.h: docs/api/openapi.yaml $(BUILD)/apigen
+	@mkdir -p $(BUILD)/generated
+	$(BUILD)/apigen docs/api/openapi.yaml --emit-config-sections $@
 
 $(BUILD)/apigen: tools/apigen.c | $(BUILD)
 	$(CC) $(CFLAGS) tools/apigen.c -o $@
