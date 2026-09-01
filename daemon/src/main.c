@@ -23801,9 +23801,30 @@ static void handle_pkg_recipe_add(int fd, const char *body, size_t body_len)
 	 * rebuild this request just queued. This is the one place that
 	 * actually kicks it off immediately when nothing else will.
 	 */
-	try_start_queued_pkg_rebuild();
+	/*
+	 * Answer first, THEN kick the queue (#236).
+	 *
+	 * This call can start a real image rebuild -- forking a build
+	 * container and composing a build environment -- and it used to
+	 * happen before the response was written, so a client publishing a
+	 * recipe waited for it. Measured at 10981 ms for a single
+	 * metadata-only publish, with the event loop blocked throughout,
+	 * and publishing twenty-one of them made the daemon unusable for
+	 * long enough to need the host reset by hand. Twice.
+	 *
+	 * The ordering is the whole fix for the caller: publishing is a
+	 * write, and its response should not be gated on unrelated build
+	 * work that the publish merely made eligible. The cost itself is
+	 * addressed separately in pkg.c, where the queue walk stopped
+	 * doing a directory scan and a recipe parse per package per call.
+	 *
+	 * The kick stays, and stays here, for the reason the comment above
+	 * gives: this is the one trigger that fires when the daemon is
+	 * otherwise idle, which is the common case for a publish.
+	 */
 	http_set_blocking(fd);
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+	try_start_queued_pkg_rebuild();
 }
 
 /* version NULL (no ?version= given) removes every published version of

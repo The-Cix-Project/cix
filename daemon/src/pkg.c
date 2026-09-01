@@ -3938,15 +3938,31 @@ int pkg_try_start_queued_rebuild(pid_t *out_pid, int *out_pidfd, int *out_chain_
 				 * is exactly what lets this queue naturally settle once
 				 * every image has caught up (a later, even newer
 				 * version publish just re-queues the image again via
-				 * queue_rolling_rebuilds_for()). */
-				char recipe_path[PATH_MAX];
-				struct pkg_recipe recipe;
+				 * queue_rolling_rebuilds_for()).
+				 *
+				 * Through recipe_latest_version(), not a raw
+				 * find_recipe_path() + parse_recipe() pair (#236). The
+				 * answer is identical -- that function IS that pair --
+				 * but it is memoised against the package directory's
+				 * own mtime and size, so a queue walk that finds
+				 * everything already satisfied costs a stat per package
+				 * rather than a directory scan and a file parse per
+				 * package.
+				 *
+				 * That difference is the whole bug. This loop runs over
+				 * every entry of every queued image, and `toolchain`
+				 * alone declares 27 packages rolling, so publishing a
+				 * recipe walked hundreds of directory scans and parses
+				 * while the event loop waited. "Re-derived fresh every
+				 * call" is preserved exactly: the cache is invalidated
+				 * by the directory changing, which is precisely when a
+				 * new version appears. */
+				char latest[PKG_VERSION_MAX];
 
 				satisfied = (e != NULL && e->state == PKG_STATE_INSTALLED &&
-				             find_recipe_path(entries[i].package, NULL, recipe_path,
-				                               sizeof(recipe_path)) == 0 &&
-				             parse_recipe(recipe_path, &recipe) == 0 &&
-				             strcmp(recipe.version, e->version) == 0);
+				             recipe_latest_version(entries[i].package, latest,
+				                                    sizeof(latest)) == 0 &&
+				             strcmp(latest, e->version) == 0);
 			}
 
 			if (!satisfied) {
