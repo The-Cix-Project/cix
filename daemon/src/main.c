@@ -67,6 +67,7 @@
 #include <openssl/ssl.h>
 #include "staticfile.h"
 #include "apiroute.h"
+#include "config.h"
 #include "websocket.h"
 
 #include <arpa/inet.h>
@@ -24576,6 +24577,22 @@ static void handle_pkg_delete(int fd, const char *raw_name)
  * dispatch chain did for that operation.
  */
 #include "generated/api_routes.h"
+
+/*
+ * GET /v1/config -- the running configuration as one document
+ * (ADR-0206). The section list and their order come from the
+ * ConfigDocument schema via config.c; all this does is hand over the
+ * containers directory, which is main.c's to know.
+ */
+static void op_getConfig(const struct api_ctx *ctx)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	config_write_document(&w, CONTAINERS_DIR);
+	respond_json(ctx->fd, 200, "OK", &w);
+	jw_free(&w);
+}
 
 /* GET /v1/health */
 static void op_getHealth(const struct api_ctx *ctx)

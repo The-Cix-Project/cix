@@ -13965,6 +13965,147 @@ static int read_line_noecho(const char *prompt, char *out, size_t out_size)
 	return 0;
 }
 
+/*
+ * show running-config -- the Cisco-style rendering of GET /v1/config.
+ *
+ * The DOCUMENT is the daemon's; this presentation is not (ADR-0205).
+ * The text is never parsed back by anything, so its format is
+ * deliberately not a contract -- which is the whole reason it lives
+ * here. A daemon change on this platform means a rebuild, an A/B slot
+ * write and a reboot; moving a section heading should not cost that.
+ *
+ * Generic on purpose: it walks whatever the document contains rather
+ * than knowing the sections. A section added to the ConfigDocument
+ * schema shows up here with no CLI change, which is the point -- the
+ * schema is the vocabulary (ADR-0206), and a renderer that had to be
+ * taught each section would be a second copy of that list.
+ */
+static void show_indent(int depth)
+{
+	int i;
+
+	for (i = 0; i < depth; i++)
+		fputs("  ", stdout);
+}
+
+static void show_scalar(const struct json_value *v)
+{
+	if (v == NULL || v->type == JSON_NULL) {
+		fputs("-", stdout);
+		return;
+	}
+	switch (v->type) {
+	case JSON_BOOL:
+		fputs(v->u.boolean ? "true" : "false", stdout);
+		break;
+	case JSON_NUMBER:
+		printf("%lld", (long long)v->u.number);
+		break;
+	case JSON_STRING:
+		fputs(v->u.string != NULL ? v->u.string : "", stdout);
+		break;
+	default:
+		fputs("...", stdout);
+		break;
+	}
+}
+
+static int show_is_scalar(const struct json_value *v)
+{
+	return v == NULL || (v->type != JSON_ARRAY && v->type != JSON_OBJECT);
+}
+
+static void show_value(const struct json_value *v, int depth);
+
+/* An object renders as one "key value" line per member, with nested
+ * structures indented beneath their key -- the shape a network
+ * engineer already reads without being taught it. */
+static void show_object(const struct json_value *v, int depth)
+{
+	size_t i;
+
+	for (i = 0; i < v->u.object.count; i++) {
+		const struct json_value *m = v->u.object.values[i];
+
+		show_indent(depth);
+		fputs(v->u.object.keys[i], stdout);
+		if (show_is_scalar(m)) {
+			fputc(' ', stdout);
+			show_scalar(m);
+			fputc('\n', stdout);
+		} else {
+			fputc('\n', stdout);
+			show_value(m, depth + 1);
+		}
+	}
+}
+
+static void show_value(const struct json_value *v, int depth)
+{
+	size_t i;
+
+	if (v == NULL)
+		return;
+	if (v->type == JSON_OBJECT) {
+		show_object(v, depth);
+		return;
+	}
+	if (v->type == JSON_ARRAY) {
+		if (v->u.array.count == 0) {
+			show_indent(depth);
+			fputs("(none)\n", stdout);
+			return;
+		}
+		for (i = 0; i < v->u.array.count; i++) {
+			const struct json_value *item = v->u.array.items[i];
+
+			if (show_is_scalar(item)) {
+				show_indent(depth);
+				show_scalar(item);
+				fputc('\n', stdout);
+			} else {
+				if (i > 0)
+					putchar('\n');
+				show_value(item, depth);
+			}
+		}
+		return;
+	}
+	show_indent(depth);
+	show_scalar(v);
+	fputc('\n', stdout);
+}
+
+static void fmt_running_config(const struct json_value *v)
+{
+	size_t i;
+
+	if (v == NULL || v->type != JSON_OBJECT) {
+		fprintf(stderr, "cixctl: unexpected config document shape\n");
+		return;
+	}
+	for (i = 0; i < v->u.object.count; i++) {
+		printf("!\n%s\n", v->u.object.keys[i]);
+		show_value(v->u.object.values[i], 1);
+	}
+	printf("!\n");
+}
+
+static int cmd_show(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	struct cix_response r;
+
+	if (argc < 1 || strcmp(argv[0], "running-config") != 0) {
+		fprintf(stderr, "usage: cixctl show running-config [--json]\n");
+		return 2;
+	}
+	if (cix_client_request(c, CIX_API_getConfig_METHOD, CIX_API_getConfig, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_running_config);
+}
+
 static int cmd_login(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *username = NULL;
@@ -14238,6 +14379,8 @@ static int dispatch_command(const struct cix_client *client, int json_mode, cons
 		return cmd_pki(client, json_mode, argc, argv);
 	if (strcmp(cmd, "pkg") == 0)
 		return cmd_pkg(client, json_mode, argc, argv);
+	if (strcmp(cmd, "show") == 0)
+		return cmd_show(client, json_mode, argc, argv);
 
 	fprintf(stderr, "cixctl: unknown command '%s'\n", cmd);
 	print_usage(stderr);

@@ -9,6 +9,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/health` | Liveness check -- minimal, low-latency, no build/slot identity |
+| GET | `/config` | The whole running configuration as one ordered, redacted document (ADR-0206) |
 | POST | `/login` | Authenticate, get a session token (ADR-0144) -- always open, exempt from write-gating |
 | POST | `/logout` | Invalidate the current session (idempotent) |
 | GET | `/whoami` | Is the caller's own bearer token currently authenticated -- read-only, never consumes a single-use session (ADR-0164) |
@@ -317,6 +318,85 @@ It reports; it does not act. `POST /pkg/update-all` is the verb, and it delibera
 
 
 Every error response is `{"error": "message"}` with an appropriate 4xx/5xx status. Every mutating endpoint that touches disk or spawns a subprocess can in principle also return `500` (a real I/O or subprocess failure, not a client mistake) — see `openapi.yaml`'s own per-path `"500"` response for exactly which internal failure each one covers; the specific set differs per endpoint and isn't repeated here.
+
+## The running configuration as one document (ADR-0206)
+
+`GET /config` answers the question an operator actually asks -- *what is
+this box configured to do?* -- in one call instead of a dozen.
+
+```
+GET /v1/config
+```
+
+Three properties are the contract, and each exists for a reason:
+
+**It is derived, never stored.** The document is rendered fresh from the
+daemon's own live state on every call. Nothing keeps a copy, because a
+kept rendering would be a second source of truth for every setting and
+would drift -- the exact failure `One Source of Truth` exists to prevent,
+and one this project has already been bitten by in its own documentation.
+`GET /config` is a view, exactly like the dashboard.
+
+**Order is part of the contract.** A section never depends on one below
+it: identity and resolver, then storage, then networks, then the DNS and
+DHCP that sit on those networks, then images, then the packages installed
+into them, and containers last because they consume all of it. A
+rendering whose order cannot be replayed is not replayable.
+
+**Secrets are never rendered.** A configuration document is the single
+most likely artifact to be pasted into a ticket or committed to git, so
+this is a hard rule rather than a default. Where a subsystem holds a
+secret, the document carries a set/not-set boolean instead of the value:
+
+```json
+{
+  "package_repo":      { "repo_url": "...", "auth_token_set": true },
+  "package_artifacts": { "base_url": "...", "auth_token_set": true },
+  "ldap":              { "bind_dn": null,   "bind_password_set": false }
+}
+```
+
+PKI private key material never appears at all.
+
+### Where the section list comes from
+
+Not from the daemon. The `ConfigDocument` schema in
+[`openapi.yaml`](openapi.yaml) lists the sections, in order, and is the
+**only** place that list exists: `tools/apigen.c` reads it and generates
+the section table `daemon/src/config.c` builds its renderers from. A
+section in the schema with no renderer does not compile.
+
+That is deliberate. Agreement between two hand-maintained lists is
+precisely what drifts, and adding a configurable subsystem while
+forgetting the document would produce something worse than no document --
+one that looks complete and is not. So adding a subsystem to this
+platform means adding it to that schema, and forgetting fails the build.
+
+### Rendering
+
+The document is the daemon's; the presentation is not. `cixctl show
+running-config` renders it Cisco-style, and the dashboard renders the
+same document its own way. That text is never parsed back by anything,
+so its format is deliberately not a contract -- which is what lets the
+CLI iterate on it without a daemon rebuild, an A/B slot write and a
+reboot.
+
+```
+$ cixctl --host=... show running-config
+!
+site
+  instance_name cix-01
+  site_name home
+  domain_suffix home.arpa
+!
+networks
+  name lan
+  bridge cixbr0
+  subnet 10.0.0.0/24
+!
+```
+
+`--json` gives the document itself, unrendered.
 
 ## Host authentication (ADR-0144)
 

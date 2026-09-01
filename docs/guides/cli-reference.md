@@ -14,6 +14,22 @@ cixctl [--host=ADDR] [--port=N] [--json] <command> [args...]
 - **Exit codes**: `0` success, `1` the API call itself failed (a non-2xx response, or a transport-level failure reaching the daemon), `2` a usage error (bad flags, unknown subcommand) — checked before any network call is made.
 - **Authentication (ADR-0144)**: once a daemon has write-gating active (see [`docs/api/README.md`'s own "Host authentication" section](../api/README.md#host-authentication-adr-0144)), every mutating command needs a session — run `login` once and every subsequent `cixctl` invocation on this machine authenticates automatically via the persisted token, until `logout` or the session's own idle timeout expires it. `GET`-only commands (`health`, `container ls`, every `... ls`/`... show`) never need one.
 
+## Configuration
+
+```
+cixctl show running-config          # the whole configuration, Cisco-style
+cixctl show running-config --json   # the document itself
+```
+
+One ordered, redacted view of every configurable subsystem (ADR-0206) --
+identity, storage, networks, DNS, DHCP, PKI, LDAP, packages, images,
+containers. Secrets are never printed: tokens and passwords render as a
+set/not-set boolean, and PKI private keys never appear.
+
+It is a view of live state, not a stored file, so it always matches what
+the daemon is actually doing. The section list comes from the API schema,
+so a new subsystem appears here without any CLI change.
+
 ## System
 
 | Command | |
