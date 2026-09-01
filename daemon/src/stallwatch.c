@@ -9,6 +9,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/prctl.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <time.h>
@@ -157,6 +158,30 @@ static void append_record(const char *event, long long seconds, pid_t watched)
 		ssize_t ignored = write(fd, line, (size_t)len);
 
 		(void)ignored;
+		/*
+		 * Issue #229: fsync, because this file exists precisely to
+		 * survive the event it is recording.
+		 *
+		 * A wedge that has to be resolved by resetting the machine is
+		 * the case this watchdog was built for, and a plain write()
+		 * leaves the record in the page cache -- where a reset loses
+		 * it. That is not hypothetical: cixd wedged for roughly
+		 * sixteen minutes, the box was reset by hand, and this file's
+		 * newest entry was from sixteen hours earlier. The watchdog
+		 * was running and the heartbeat had certainly stopped, so the
+		 * records were written; they simply never reached the disk.
+		 *
+		 * The cost is nothing in the case that matters. Records are
+		 * appended only during a stall -- one at detection, then one
+		 * per thirty seconds -- so this is a handful of fsyncs during
+		 * an outage, not a per-request cost.
+		 *
+		 * If the I/O path is itself what is stuck, this blocks. That
+		 * is acceptable and deliberate: this is a separate process,
+		 * so blocking here cannot make the daemon's own stall worse,
+		 * and the record lands as soon as I/O recovers.
+		 */
+		fsync(fd);
 		close(fd);
 	}
 	/* Also to stderr: on a box being watched over a serial console this
@@ -178,6 +203,25 @@ static void watchdog_main(pid_t watched)
 	/* Die with the parent: a watchdog outliving what it watches is
 	 * just a stray process. */
 	prctl(PR_SET_PDEATHSIG, SIGKILL);
+
+	/*
+	 * Issue #229: a watchdog that only runs when the machine is idle
+	 * reports on the times nothing was wrong.
+	 *
+	 * The other live explanation for the sixteen-minute wedge leaving
+	 * no record is that this process was starved alongside the daemon
+	 * it watches -- two concurrent builds were running, and ADR-0165
+	 * records builds starving cixd off the run queue before. Niceness
+	 * is cheap insurance: this loop wakes twice a second, does two
+	 * small /proc reads and usually nothing else, so giving it
+	 * priority over ordinary work costs the machine nothing and buys
+	 * the one observation that matters.
+	 *
+	 * Best-effort. A failure here is not worth refusing to watch at
+	 * all, so the return value is deliberately not checked -- the
+	 * watchdog is still useful at normal priority.
+	 */
+	(void)setpriority(PRIO_PROCESS, 0, -10);
 
 	/*
 	 * Drop every inherited descriptor. The parent's listening sockets

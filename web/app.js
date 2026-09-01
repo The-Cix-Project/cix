@@ -5759,7 +5759,29 @@ function renderDiskAllocationChart(d, parts) {
 	if (host === null)
 		return;
 	host.textContent = "";
-	if (!d || d.is_partition || !d.size_bytes || parts.length === 0)
+	if (!d || d.is_partition || !d.size_bytes)
+		return;
+	/*
+	 * A disk with no partitions is not a disk with nothing to show.
+	 *
+	 * This used to bail on parts.length === 0, so a whole-disk
+	 * filesystem -- which is what carries images and artifacts here --
+	 * drew nothing at all, while the OS disk drew a full chart. The
+	 * question this answers is "how much of this disk is spoken for",
+	 * and that question is if anything MORE pressing for the disk that
+	 * fills up as packages are built. Same argument the issue that
+	 * created this chart made: free space you cannot see is free space
+	 * you do not know you have.
+	 *
+	 * A partitioned disk is carved up by its partition table, so the
+	 * segments are partitions. An unpartitioned one is carved up by its
+	 * own filesystem, so the segments are used and free -- statvfs
+	 * figures the daemon already reports (ADR-0142). Nothing to draw if
+	 * it is not mounted, since nothing has measured it.
+	 */
+	const wholeDisk = parts.length === 0;
+
+	if (wholeDisk && (!d.mounted || (!d.used_bytes && !d.free_bytes)))
 		return;
 
 	const R = 54;
@@ -5772,28 +5794,71 @@ function renderDiskAllocationChart(d, parts) {
 	let allocated = 0;
 	const segments = [];
 
-	parts.forEach((p, i) => {
-		const bytes = p.size_bytes || 0;
+	if (wholeDisk) {
+		const used = d.used_bytes || 0;
+		const avail = d.free_bytes || 0;
 
-		allocated += bytes;
-		segments.push({
-			label: p.name,
-			bytes: bytes,
-			color: p.protected ? "hsl(" + hues[i % hues.length] + ",12%,55%)"
-			                   : "hsl(" + hues[i % hues.length] + ",58%,52%)",
-			note: p.protected ? "protected" : p.part_label || "",
-		});
-	});
-	const free = Math.max(0, d.size_bytes - allocated);
+		if (used > 0) {
+			segments.push({
+				label: "used",
+				bytes: used,
+				color: "hsl(200,58%,52%)",
+				note: d.fs_type || "",
+			});
+		}
+		if (avail > 0) {
+			segments.push({
+				label: "free",
+				bytes: avail,
+				color: "var(--muted, #888)",
+				note: "available",
+				isFree: true,
+			});
+		}
+		/*
+		 * used + free is normally a little short of the disk's own
+		 * size -- filesystem metadata, and on ext4 the reserved
+		 * blocks that f_bavail deliberately excludes. Shown rather
+		 * than hidden or silently folded into one of the other two,
+		 * because a chart whose segments do not add up to the whole
+		 * is the kind of small wrongness that makes someone distrust
+		 * the rest of the page.
+		 */
+		const overhead = Math.max(0, d.size_bytes - used - avail);
 
-	if (free > 0) {
-		segments.push({
-			label: "unallocated",
-			bytes: free,
-			color: "var(--muted, #888)",
-			note: "available",
-			isFree: true,
+		if (overhead > 0 && overhead / d.size_bytes > 0.001) {
+			segments.push({
+				label: "filesystem overhead",
+				bytes: overhead,
+				color: "var(--muted, #888)",
+				note: "metadata and reserved blocks",
+				isFree: true,
+			});
+		}
+	} else {
+		parts.forEach((p, i) => {
+			const bytes = p.size_bytes || 0;
+
+			allocated += bytes;
+			segments.push({
+				label: p.name,
+				bytes: bytes,
+				color: p.protected ? "hsl(" + hues[i % hues.length] + ",12%,55%)"
+				                   : "hsl(" + hues[i % hues.length] + ",58%,52%)",
+				note: p.protected ? "protected" : p.part_label || "",
+			});
 		});
+		const free = Math.max(0, d.size_bytes - allocated);
+
+		if (free > 0) {
+			segments.push({
+				label: "unallocated",
+				bytes: free,
+				color: "var(--muted, #888)",
+				note: "available",
+				isFree: true,
+			});
+		}
 	}
 
 	const wrap = document.createElement("div");
@@ -5806,7 +5871,7 @@ function renderDiskAllocationChart(d, parts) {
 	svg.setAttribute("width", "140");
 	svg.setAttribute("height", "140");
 	svg.setAttribute("role", "img");
-	svg.setAttribute("aria-label", "Partition allocation for " + d.name);
+	svg.setAttribute("aria-label", (wholeDisk ? "Filesystem usage for " : "Partition allocation for ") + d.name);
 
 	let offset = 0;
 
