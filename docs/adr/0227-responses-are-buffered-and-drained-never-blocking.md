@@ -131,6 +131,36 @@ API consumers to work around a bug in how the daemon writes.
   cheap and deterministic to reproduce, so there is no excuse for it to
   return unnoticed.
 
+## Verified on 192.168.15.95, v2.14.4
+
+The same experiment that produced the numbers above, re-run against the
+fix:
+
+```
+baseline            health=200 in 8ms / 11ms / 14ms
+slow client open    health=200 in 130ms / 18 / 11 / 11 / 13 / 15 / 15 / 15
+slow client closed  health=200 in 12ms / 12ms / 11ms
+```
+
+The single 130 ms sample is the first one, and is the cost of buffering
+1.8 MB once. Everything after it is ordinary.
+
+The write deadline was confirmed separately, and how it had to be
+confirmed is worth recording: **a dropped stalled client cannot observe
+being dropped.** A peer that never reads advertises a zero receive
+window, and TCP cannot deliver a FIN through one -- the kernel sits in
+zero-window probing instead. So the obvious test, waiting for EOF on the
+stalled socket, fails against entirely correct behaviour. What actually
+happened was visible only in the daemon's own log:
+
+```
+dropping a client that stopped reading its response after 110048 of 1797803 bytes
+```
+
+`test_slow_client` therefore asserts on that record rather than on the
+socket, with the reason written into the test so it is not "simplified"
+back into a broken assertion later.
+
 ## The lesson worth keeping
 
 The stall records were right and were read wrong. `activity` named the
