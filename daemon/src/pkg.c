@@ -2059,6 +2059,113 @@ static int image_produce_new_version(const char *image,
 }
 
 /*
+ * The latest published version of a recipe, cached against the recipe
+ * directory's own mtime.
+ *
+ * Why this exists: GET /v1/pkg was the single largest cause of the
+ * daemon going unresponsive. stallwatch (#100) attributed 17 of 22
+ * recorded stalls to it, and the reason is arithmetic. The drift check
+ * below runs per installed package, and without this it did, for EACH
+ * of them, an opendir of that package's recipe directory, a stat per
+ * published version, and a full parse of a multi-kilobyte build.sh.
+ * With 145 installed packages over 683 published recipe versions that
+ * is roughly 145 directory scans and 145 shell-file parses -- on the
+ * single-threaded event loop, for a request the dashboard issues every
+ * two seconds.
+ *
+ * The old comment said "re-read fresh from disk every call -- One
+ * Source of Truth, no cached comparison to keep in sync". The intent
+ * was right and the cost was not paid for: freshness does not require
+ * re-READING, only re-CHECKING. One stat of the directory answers
+ * "has anything changed" for the whole package.
+ *
+ * Correctness rests on a property this platform already enforces
+ * elsewhere: recipe versions are IMMUTABLE (ADR-0107, and the daemon
+ * answers 409 to a republish). So a build.sh cannot change under a
+ * directory whose mtime is unchanged -- only publishing or deleting a
+ * version alters the set, and both change the directory's mtime. If
+ * immutability ever stopped being enforced, this cache would be wrong,
+ * which is why the dependency is written down here rather than left
+ * implicit.
+ *
+ * Bounded and self-evicting: one slot per package name, oldest use
+ * replaced when full. A miss costs exactly what every call used to.
+ */
+#define RECIPE_CACHE_SLOTS 256
+
+struct recipe_cache_entry {
+	char name[PKG_NAME_MAX];
+	time_t dir_mtime;
+	off_t dir_size;
+	char version[PKG_VERSION_MAX];
+	unsigned long used;
+	int in_use;
+};
+
+static struct recipe_cache_entry g_recipe_cache[RECIPE_CACHE_SLOTS];
+static unsigned long g_recipe_cache_clock;
+
+/*
+ * Fills out_version with the pkg_version= of the recipe that would be
+ * resolved for this name. Returns 0 on success, -1 if there is no
+ * usable recipe.
+ */
+static int recipe_latest_version(const char *name, char *out_version, size_t out_size)
+{
+	char name_dir[PATH_MAX], recipe_path[PATH_MAX];
+	struct pkg_recipe recipe;
+	struct stat dst;
+	struct recipe_cache_entry *slot = NULL, *oldest = NULL;
+	int i;
+
+	snprintf(name_dir, sizeof(name_dir), "%s/%s", g_recipes_dir, name);
+	if (stat(name_dir, &dst) != 0)
+		return -1;
+
+	for (i = 0; i < RECIPE_CACHE_SLOTS; i++) {
+		struct recipe_cache_entry *e = &g_recipe_cache[i];
+
+		if (e->in_use && strcmp(e->name, name) == 0) {
+			slot = e;
+			break;
+		}
+		if (!e->in_use) {
+			if (oldest == NULL || oldest->in_use)
+				oldest = e;
+		} else if (oldest == NULL || (oldest->in_use && e->used < oldest->used)) {
+			oldest = e;
+		}
+	}
+
+	/* Both mtime and size: a directory whose entry count changes but
+	 * whose mtime granularity hides it is exactly the case a
+	 * same-second publish would produce. */
+	if (slot != NULL && slot->dir_mtime == dst.st_mtime && slot->dir_size == dst.st_size) {
+		slot->used = ++g_recipe_cache_clock;
+		snprintf(out_version, out_size, "%s", slot->version);
+		return 0;
+	}
+
+	if (find_recipe_path(name, NULL, recipe_path, sizeof(recipe_path)) != 0)
+		return -1;
+	if (parse_recipe(recipe_path, &recipe) != 0)
+		return -1;
+	snprintf(out_version, out_size, "%s", recipe.version);
+
+	if (slot == NULL)
+		slot = oldest;
+	if (slot != NULL) {
+		snprintf(slot->name, sizeof(slot->name), "%s", name);
+		slot->dir_mtime = dst.st_mtime;
+		slot->dir_size = dst.st_size;
+		snprintf(slot->version, sizeof(slot->version), "%s", recipe.version);
+		slot->used = ++g_recipe_cache_clock;
+		slot->in_use = 1;
+	}
+	return 0;
+}
+
+/*
  * Is this installed package behind the recipe on disk, and if so, what
  * is the recipe's version?
  *
@@ -2070,8 +2177,10 @@ static int image_produce_new_version(const char *image,
  * did -- both sites carried their own find_recipe_path/parse_recipe/
  * strcmp, and a third was about to be added. Now it really is shared.
  *
- * Re-read fresh from disk on every call. There is no cached drift
- * answer anywhere, so there is none to go stale.
+ * Re-CHECKED on every call, via recipe_latest_version() above: one
+ * stat of the recipe directory, and a full re-read only when something
+ * published. The answer is never stale; it is simply not re-derived
+ * from scratch 145 times a request.
  *
  * Only meaningful once installed: a package still fetching or building
  * was resolved from the current recipe by definition, so it cannot be
@@ -2079,19 +2188,16 @@ static int image_produce_new_version(const char *image,
  */
 static int pkg_entry_drift(const struct pkg_entry *e, char *out_available, size_t out_size)
 {
-	char recipe_path[PATH_MAX];
-	struct pkg_recipe recipe;
+	char latest[PKG_VERSION_MAX];
 
 	if (e == NULL || !e->in_use || e->state != PKG_STATE_INSTALLED)
 		return 0;
-	if (find_recipe_path(e->name, NULL, recipe_path, sizeof(recipe_path)) != 0)
+	if (recipe_latest_version(e->name, latest, sizeof(latest)) != 0)
 		return 0;
-	if (parse_recipe(recipe_path, &recipe) != 0)
-		return 0;
-	if (strcmp(recipe.version, e->version) == 0)
+	if (strcmp(latest, e->version) == 0)
 		return 0;
 	if (out_available != NULL && out_size > 0)
-		snprintf(out_available, out_size, "%s", recipe.version);
+		snprintf(out_available, out_size, "%s", latest);
 	return 1;
 }
 
