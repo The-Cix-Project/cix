@@ -916,7 +916,22 @@ async function apiRequest(method, path, body) {
 		opts.headers["Content-Type"] = "application/json";
 		opts.body = JSON.stringify(body);
 	}
-	const res = await fetch(path, opts);
+
+	let res;
+
+	/*
+	 * TX blinks above, before this, and stays that way deliberately: a
+	 * transmit lamp flashes on transmit, whether or not anything
+	 * answers, which is what the panel this imitates does. What was
+	 * missing is the other half -- an exchange that failed left no
+	 * trace at all beyond a colour that had not caught up yet.
+	 */
+	try {
+		res = await fetch(path, opts);
+	} catch (e) {
+		noteTransportFailure();
+		throw e;
+	}
 
 	ledBlink(ledRx);
 	let json = null;
@@ -994,6 +1009,34 @@ function readFileAsText(file) {
  * this often.
  */
 let consecutiveHealthFailures = 0;
+
+/*
+ * A request that never reached the daemon is evidence about
+ * reachability, and used to be discarded (#231).
+ *
+ * refreshHealth() polls every POLL_INTERVAL_MS and owns the lamp
+ * colour, so a click that fails right now left the panel showing the
+ * last poll's answer -- green, while the thing the operator just did
+ * had already failed. Up to a couple of seconds of the display
+ * disagreeing with what the operator watched happen.
+ *
+ * Counted into the same consecutive-failure tally rather than a second
+ * one, so a real outage still needs two failures to go red and one
+ * blip still reads as degraded. This adds evidence to that count; it
+ * does not invent a second opinion about reachability.
+ */
+function noteTransportFailure() {
+	consecutiveHealthFailures++;
+	if (consecutiveHealthFailures >= 2) {
+		statusLeds.className = "status-leds led-state-error";
+		statusLeds.title = "Daemon unreachable (" + consecutiveHealthFailures +
+			" consecutive failures)";
+	} else {
+		statusLeds.className = "status-leds led-state-degraded";
+		statusLeds.title = "A request did not reach the daemon — retrying";
+	}
+}
+
 
 async function refreshHealth() {
 	const start = performance.now();
