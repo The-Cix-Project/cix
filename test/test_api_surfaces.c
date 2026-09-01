@@ -171,6 +171,54 @@ static char *slurp(const char *path)
 	return buf;
 }
 
+/*
+ * Blanks whole comment LINES in place, so the exposure check below sees
+ * the same file the path check does (#234).
+ *
+ * The two halves of this test disagreed: the path check skips a line
+ * whose first non-space characters open a comment, while the exposure
+ * check substring-searched the file whole. So a comment NAMING an
+ * operation's generated constant was indistinguishable from a call to
+ * it, and a comment written to explain why the CLI must not call an
+ * unexposed operation failed the build for calling it. An explanation
+ * had to be reworded around the checker, which is the wrong way round.
+ *
+ * Deliberately line-leading rather than a real comment parser, for the
+ * reason the path check gives for the same choice: a parser has to know
+ * that "/*" inside a string literal is not a comment, and that the
+ * "//" in an https:// URL -- which web/app.js contains -- is not one
+ * either. Looking only at what a line STARTS with cannot be fooled by
+ * either, at the cost of missing a trailing comment on a code line.
+ * That cost is the right one: a trailing comment sits beside real code,
+ * so treating it as code is conservative, and this check's job is to
+ * avoid FALSE alarms without inventing permission to miss true ones.
+ *
+ * In place, and blanking rather than deleting, so offsets and line
+ * numbers are unchanged for anything that reads the buffer afterwards.
+ */
+static void blank_comment_lines(char *buf)
+{
+	char *line = buf;
+
+	while (line != NULL && *line != '\0') {
+		char *eol = strchr(line, '\n');
+		char *p = line;
+
+		while (*p == ' ' || *p == '\t')
+			p++;
+		if (strncmp(p, "/*", 2) == 0 || strncmp(p, "*", 1) == 0 ||
+		    strncmp(p, "//", 2) == 0) {
+			char *q = line;
+
+			while (q != eol && *q != '\0')
+				*q++ = ' ';
+		}
+		if (eol == NULL)
+			break;
+		line = eol + 1;
+	}
+}
+
 static void check_declared_exposure(void)
 {
 	/* Both halves of the CLI, concatenated: an operation used by either
@@ -200,6 +248,9 @@ static void check_declared_exposure(void)
 		free(web);
 		return;
 	}
+	/* #234: a comment naming an operation is not a call to it. */
+	blank_comment_lines(cli);
+	blank_comment_lines(web);
 	p = popen("./build/apigen docs/api/openapi.yaml --list", "r");
 	if (p == NULL) {
 		fprintf(stderr, "FAIL: cannot run apigen\n");
