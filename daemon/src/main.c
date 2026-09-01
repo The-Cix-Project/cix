@@ -26508,7 +26508,7 @@ static void dispatch(int fd, const struct http_request *req)
 	 */
 	if (strncmp(req->path, "/v1/", 4) != 0) {
 		if (strcmp(req->method, "GET") == 0)
-			static_serve(fd, g_web_root, req->path);
+			static_serve(fd, g_web_root, req->path, req->headers, req->headers_len);
 		else
 			respond_error(fd, 404, "Not Found", "no such endpoint");
 		return;
