@@ -29,6 +29,7 @@ pkg_name="libuv"
 pkg_version="1.51.0-2"
 pkg_source="https://github.com/libuv/libuv/archive/refs/tags/v1.51.0.tar.gz"
 pkg_sha256="27e55cf7083913bfb6826ca78cde9de7647cded648d35f24163f2d31bb9f51cd"
+pkg_artifact_sha256="18b2c262393a3b71b63925282005e593eeb79dd17f201c3489fd91b55e1e3f4e"
 pkg_depends=""
 #
 # Build tools derived rather than guessed: the baseline the declaring

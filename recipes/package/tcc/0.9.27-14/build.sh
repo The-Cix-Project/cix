@@ -28,6 +28,7 @@ pkg_sha256="de23af78fca90ce32dff2dd45b3432b2334740bb9bb7b05bf60fdbfc396ceb9c"
 # built anywhere else.
 # Nothing at runtime: tcc links against libc alone, and its own
 # libtcc1.a is part of this package.
+pkg_artifact_sha256="037f62d0e668788cd3f934671eadba52ecaa6a758ce2cf1a53e4659452eb0805"
 pkg_depends=""
 #
 # Issue #109 / ADR-0199: the tools this package needs to BUILD,

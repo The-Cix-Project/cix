@@ -20,6 +20,7 @@ pkg_sha256="1387e0b67ff247d2abde998f90dfbf70c1491391a59ddfecb8ae698789f0a4f5"
 # source; without it the artifact tier is skipped entirely.
 # The checksum lives here, in git, because the artifact server is
 # never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="13ffe9833a3890521932ee3ccc163e50e7196515c5aa385fa964a74573a81ec5"
 # Nothing at runtime: findutils links against libc alone.
 pkg_depends=""
 #

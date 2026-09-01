@@ -17,6 +17,7 @@ pkg_name="automake"
 pkg_version="1.16.5-3"
 pkg_source="https://ftp.gnu.org/gnu/automake/automake-1.16.5.tar.xz"
 pkg_sha256="f01d58cd6d9d77fbdca9eb4bbd5ead1988228fdb73d6f7a201f5f8d6b118b469"
+pkg_artifact_sha256="67501e08e911faf7a7b7a94753cbbd0596054478a8387cafeaf20dd8d6deef10"
 pkg_depends="autoconf"
 
 # ADR-0199/0209: the build environment is composed from exactly

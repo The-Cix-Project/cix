@@ -24,6 +24,7 @@ pkg_name="getopt"
 pkg_version="2.42.2-3"
 pkg_source="https://www.kernel.org/pub/linux/utils/util-linux/v2.42/util-linux-2.42.2.tar.xz"
 pkg_sha256="03a05d3adf9602ef128f2da05b84b3205ce60c351e5737c0370f74000679ce8a"
+pkg_artifact_sha256="b97b518fcd713d40316c0e776f1489f2089d7d599355c744dfed1725c816490b"
 pkg_depends=""
 # ADR-0199/0209: composed from exactly these, no fallback (#168).
 # Plain ./configure && make with everything but getopt switched off.

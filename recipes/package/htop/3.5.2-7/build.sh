@@ -13,6 +13,7 @@ pkg_name="htop"
 pkg_version="3.5.2-7"
 pkg_source="https://github.com/htop-dev/htop/releases/download/3.5.2/htop-3.5.2.tar.xz"
 pkg_sha256="225128e697c4a8c8a878fd0078c965ff8bd5fb24913bfc8473b8edbd50f843f8"
+pkg_artifact_sha256="17ee0bda7a2e1d7ca3c38159de5de44399071b3ba3e14be71d512fdbfbdfebfa"
 pkg_depends="ncurses"
 # ADR-0199/0209: the build environment is composed from exactly these
 # and nothing else -- there is no fallback environment to inherit a

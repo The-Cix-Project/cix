@@ -13,6 +13,7 @@ pkg_name="mtools"
 pkg_version="4.0.49-4"
 pkg_source="https://ftp.gnu.org/gnu/mtools/mtools-4.0.49.tar.gz"
 pkg_sha256="10cd1111da87bf2400a380c1639a6cba8bfb937a24f9c51f5f88d393ae5f6f76"
+pkg_artifact_sha256="767cdf244f8b294373bcf70466467115e525e625f1263448bca1981b64e5a803"
 pkg_depends=""
 
 # ADR-0199/0209: the build environment is composed from exactly

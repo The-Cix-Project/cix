@@ -19,6 +19,7 @@ pkg_name="inetutils"
 pkg_version="2.5-3"
 pkg_source="https://ftp.gnu.org/gnu/inetutils/inetutils-2.5.tar.xz"
 pkg_sha256="87697d60a31e10b5cb86a9f0651e1ec7bee98320d048c0739431aac3d5764fb6"
+pkg_artifact_sha256="a58f7606914a7618cae2b823d21c2b7d3c7ba9886096e21aaeaa60d6a71ea4f4"
 pkg_depends="ncurses"
 #
 # Build tools derived rather than guessed: the baseline the declaring

@@ -28,6 +28,7 @@ pkg_version="2.19.1-9"
 #
 pkg_source="https://bird.nic.cz/download/bird-2.19.1.tar.gz"
 pkg_sha256="e91aedac07da4f2718f269f969f65dbcd12f4b58248a784fd32e587b7b4dd7e4"
+pkg_artifact_sha256="ed8f80d7af7aa408795b31969b7504bd5ab84b6f6ea86cdb25d97242b545ba26"
 pkg_depends="ncurses readline"
 #
 # Build tools derived rather than guessed: the baseline the declaring

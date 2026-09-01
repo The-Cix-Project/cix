@@ -37,6 +37,7 @@ pkg_name="nftables"
 pkg_version="1.1.1-3"
 pkg_source="https://www.netfilter.org/projects/nftables/files/nftables-1.1.1.tar.xz"
 pkg_sha256="6358830f3a64f31e39b0ad421d7dadcd240b72343ded48d8ef13b8faf204865a"
+pkg_artifact_sha256="b6c00b939044e026474e9ae8313453cf11bb8f25246dcf2520530ea5bf629da2"
 pkg_depends="libmnl libnftnl gmp"
 #
 # bison and flex are real requirements, not extras: nftables' rule

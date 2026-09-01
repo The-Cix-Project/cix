@@ -21,6 +21,7 @@ pkg_sha256="06c9e13bdf7eb24d4ceb6b59205a4f67c2c7e7213119644430fe82fbd14a0abb"
 # source; without it the artifact tier is skipped entirely.
 # The checksum lives here, in git, because the artifact server is
 # never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="af823589ec2e4cd70fda4d3996f03de1130524e5af4afe93f2c58786e51d8c8e"
 pkg_depends="m4"
 #
 # Build tools derived rather than guessed: the baseline the declaring

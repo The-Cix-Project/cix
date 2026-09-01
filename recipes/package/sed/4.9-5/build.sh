@@ -21,6 +21,7 @@ pkg_sha256="d1478a18f033a73ac16822901f6533d30b6be561bcbce46ffd7abce93602282e"
 # source; without it the artifact tier is skipped entirely.
 # The checksum lives here, in git, because the artifact server is
 # never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="a4a576a22e3adbe87f7cebdfa403e819f81f8a00ac33d3dff875be9793d97065"
 # Nothing at runtime: GNU sed links against libc alone.
 pkg_depends=""
 #

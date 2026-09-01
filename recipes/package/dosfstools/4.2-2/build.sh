@@ -23,6 +23,7 @@ pkg_name="dosfstools"
 pkg_version="4.2-2"
 pkg_source="https://github.com/dosfstools/dosfstools/releases/download/v4.2/dosfstools-4.2.tar.gz"
 pkg_sha256="64926eebf90092dca21b14259a5301b7b98e7b1943e8a201c7d726084809b527"
+pkg_artifact_sha256="66391628bf184b436628d8e8c92e8ab81f9f80649e5b777fe2a1047fe780febd"
 pkg_depends=""
 
 # ADR-0199/0209: composed from exactly these, no fallback (#168).

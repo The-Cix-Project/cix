@@ -24,6 +24,7 @@ pkg_name="mokutil"
 pkg_version="0.7.2-3"
 pkg_source="https://codeload.github.com/lcp/mokutil/tar.gz/refs/tags/0.7.2"
 pkg_sha256="839d677c4fc9805f1565703ca32863e4652692c53da66a88ae9b9e30676f9e17"
+pkg_artifact_sha256="2ddb5dd2a01700c333d821280edfbc45eeebe7e7b2382df1801ed386c98334bc"
 pkg_depends="efivar keyutils libxcrypt openssl"
 
 # ADR-0199/0209: composed from exactly these, no fallback (#168).

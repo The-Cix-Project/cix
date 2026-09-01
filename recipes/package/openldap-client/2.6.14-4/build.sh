@@ -34,6 +34,7 @@ pkg_sha256="806dcd21d366428187fba3278da773d5930f774852c9e92517f950d585f19107"
 # source; without it the artifact tier is skipped entirely.
 # The checksum lives here, in git, because the artifact server is
 # never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="7f7f8f389de3126ef543720180ba4440f1ea05c9cddb0dba64eb7cb8e2ef17bf"
 pkg_depends="openssl libuuid"
 
 # pkg_build_depends added (#206). This recipe declared no build tools,

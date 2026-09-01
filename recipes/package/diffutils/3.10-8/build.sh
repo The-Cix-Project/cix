@@ -20,6 +20,7 @@ pkg_sha256="90e5e93cc724e4ebe12ede80df1634063c7a855692685919bfe60b556c9bd09e"
 # source; without it the artifact tier is skipped entirely.
 # The checksum lives here, in git, because the artifact server is
 # never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="5a76069537f2fa4e7143f123fb4875b945ddcebc4e64c0f6a498e95c57198be7"
 # Nothing at runtime: diffutils links against libc alone.
 pkg_depends=""
 #

@@ -21,6 +21,7 @@ pkg_name="unifont"
 pkg_version="15.1.05-2"
 pkg_source="https://unifoundry.com/pub/unifont/unifont-15.1.05/unifont-15.1.05.tar.gz"
 pkg_sha256="d275f55f4358750e0f86305b92e87b88eb330aa46c15f553d2edf047fb1c23fa"
+pkg_artifact_sha256="c632c57b64bd8e3d05dbbb93e42c7c7b05085951debbd7c2ebc0f803bd1cb0ae"
 pkg_depends=""
 
 pkg_build_depends="bash coreutils gzip grep findutils"
