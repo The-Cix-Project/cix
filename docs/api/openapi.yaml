@@ -4426,8 +4426,13 @@ paths:
         overwrites every byte of existing content on the disk with a
         fresh filesystem (ext4 by default, or btrfs via `fs_type`,
         ADR-0104), then mounts it. The target disk must currently exist
-        (GET /disks), must not be the OS disk, and must already have a
-        role assigned (POST /diskroles) -- format is never allowed to
+        (GET /disks), must not be part of the fixed OS layout -- the OS
+        disk itself, or one of its first four partitions (the ESP, both
+        root slots and /config) -- and must already have a role assigned
+        (POST /diskroles). An operator-created partition in the OS
+        disk's reserved free space is NOT part of that layout and can be
+        formatted like any other, which is the point of being allowed to
+        create one at all (issue #9) -- format is never allowed to
         run against a disk nothing has expressed intent for yet. Async:
         returns 202 immediately with the job's initial
         `{"state":"running",...}` status; poll GET on this same path for

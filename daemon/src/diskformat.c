@@ -1,6 +1,7 @@
 #include "diskformat.h"
 #include "childdiag.h"
 #include "disk.h"
+#include "diskpart.h"
 #include "diskrole.h"
 #include "linux_compat.h"
 #include "namecheck.h"
@@ -79,7 +80,7 @@ enum diskformat_error diskformat_start(const char *disk_name, const char *os_con
 		return DISKFORMAT_ERR_BUSY;
 	if (!find_disk(disk_name, os_containers_dir, &d))
 		return DISKFORMAT_ERR_NOT_FOUND;
-	if (d.is_os_disk)
+	if (diskpart_os_layout_untouchable(d.name, d.is_os_disk, d.is_partition))
 		return DISKFORMAT_ERR_IS_OS_DISK;
 	if (diskrole_lookup(disk_name) == NULL)
 		return DISKFORMAT_ERR_NO_ROLE;
@@ -425,7 +426,7 @@ enum diskformat_error diskformat_unmount(const char *disk_name, const char *os_c
 		return DISKFORMAT_ERR_INVALID_DISK_NAME;
 	if (!find_disk(disk_name, os_containers_dir, &d))
 		return DISKFORMAT_ERR_NOT_FOUND;
-	if (d.is_os_disk)
+	if (diskpart_os_layout_untouchable(d.name, d.is_os_disk, d.is_partition))
 		return DISKFORMAT_ERR_IS_OS_DISK;
 	if (!d.mounted)
 		return DISKFORMAT_ERR_NOT_MOUNTED;

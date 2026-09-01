@@ -142,6 +142,15 @@ int diskpart_partition_number(const char *name);
 int diskpart_partition_protected(const char *name, int is_os_disk);
 
 /*
+ * True when this device must never be given a role, formatted or
+ * unmounted: the OS disk itself, and the structural partitions of the
+ * OS layout. An operator-created partition in the OS disk's reserved
+ * free space is NOT untouchable -- see the definition for why that
+ * distinction is the point (issue #9).
+ */
+int diskpart_os_layout_untouchable(const char *name, int is_os_disk, int is_partition);
+
+/*
  * What the partitioning tool itself last said, or "" if nothing.
  * Only meaningful immediately after a DISKPART_ERR_SFDISK_FAILED.
  */

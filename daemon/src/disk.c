@@ -594,6 +594,29 @@ int disk_enumerate(struct discovered_disk *out, int cap, const char *os_containe
 			if (read_sysfs_attr(attr_path, start_str, sizeof(start_str)) == 0)
 				e->start_sector = strtoull(start_str, NULL, 10);
 		}
+		/*
+		 * MUST come before the GPT-name read below, which needs it.
+		 *
+		 * It used to come after, and `parent_name` is declared inside
+		 * this loop -- so the read below was using UNINITIALISED stack,
+		 * or whatever the previous iteration happened to leave in that
+		 * slot. It picked which disk's GPT to open and where the
+		 * partition number started from that garbage.
+		 *
+		 * This survived the platform's whole life because a Cix host
+		 * had exactly one partitioned disk: the leftover value was
+		 * always the OS disk, so the answer was always accidentally
+		 * right. It surfaced the moment a second GPT disk existed --
+		 * `vda1` reported `cix-cstore` and `vdb1` reported `cix-esp`,
+		 * each disk's partition 1 wearing the other's label.
+		 *
+		 * Reads only (O_RDONLY), so nothing was ever written to the
+		 * wrong disk. But CLAUDE.md's note that a `part_label` is a
+		 * late-arriving, untrustworthy attribute, and #140's decision
+		 * to key protection on the partition NUMBER rather than the
+		 * label, are both better founded than they knew.
+		 */
+		disk_name_from_partition(ent->d_name, parent_name, sizeof(parent_name));
 		{
 			/* The partition number is this device's own name minus its
 			 * parent's, the same split disk_name_from_partition() makes
@@ -609,7 +632,6 @@ int disk_enumerate(struct discovered_disk *out, int cap, const char *os_containe
 			                        sizeof(e->part_label));
 		}
 
-		disk_name_from_partition(ent->d_name, parent_name, sizeof(parent_name));
 		snprintf(e->parent_disk, sizeof(e->parent_disk), "%s", parent_name);
 		for (i = 0; i < count; i++) {
 			if (strcmp(out[i].name, parent_name) == 0) {
