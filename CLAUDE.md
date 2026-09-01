@@ -69,6 +69,21 @@ For each micro-step:
 
 Never generate code for multiple systems/phases at once.
 
+## Priority, Cost, and Claims (no exceptions)
+
+Three rules, written after a session that took 192.168.15.95 down. They are not aspirations — each names the specific failure it exists to prevent, because prose rules do not hold on their own here: ADR-0224 exists precisely because an informal "prefer TCC" preference let gcc reach 21 recipes with nobody counting, and what fixed it was a number that changes visibly in a diff.
+
+**1. Prioritise by what ships, not by what is untidy.** Pick work by the value it delivers at a healthy engineering bar — a capability an operator gets, a failure a user would actually hit, a gap that blocks something real. Do NOT pick work because it is on a list, because a count is non-zero, or because something is inconsistent. A stale comment, a drift entry whose whole content is a dependency rename, a tidy number in a report: none of these are product. Janitorial work is allowed as a **by-product** of delivering something, or when it is genuinely cheap, never as the reason for a session. The test: name what a user or operator can do afterwards that they could not before. If the answer is "a list is shorter", it is the wrong work.
+
+**2. Price the job before starting it, and ask when it is expensive.** Before any work expected to take more than ~30 minutes of real time on 192.168.15.95, and ALWAYS before rebuilding the compiler, the kernel, or glibc, state in one line what it costs and what it buys, and get the owner's go-ahead. This exists because a chain of individually-reasonable steps — clear package drift, python fails, root-cause it, the cause is in tcc, fix tcc — arrived at an eight-hour three-stage compiler bootstrap to resolve a drift entry whose only change was `libc-dev` -> `linux-headers`. The escalation was never decided; it just happened, one plausible step at a time. **A cost check is not a stop-gap.** The maxims reward going to the root, and that pressure makes escalation feel like virtue, which is exactly why the brake has to be an explicit rule rather than judgement in the moment.
+
+**3. "Blocked" is a legitimate, finished outcome.** When a fix costs far more than what it unblocks, record the finding with its evidence in a real issue, say plainly what is blocked and why, and move on. That IS the completed work. Escalating until something yields is not thoroughness; on a live box it is how the box goes down.
+
+And two supporting rules of the same kind:
+
+- **Never state anything about this environment as fact without the command that produced it, in the same response.** A guess is fine when labelled a guess. This is not a style preference: in one session I asserted that the build system had a single build slot (it has ten, `max_concurrent_jobs`, settable via `PUT /v1/system/pkg-build-config`), that a published recipe could not be given an artifact checksum (`recipe_adds_only_artifact_sha256()` permits exactly that, and says so in its own comment — an entire issue was filed and closed on the strength of a misread error message), and that the box had recovered from a wedge on its own (the owner had reset it; health returning was read as self-recovery). Each was inference reported as measurement. The whole discipline of this project is measure-don't-assume, and it applies to claims about the platform at least as hard as to claims about a package.
+- **Never run two heavy builds concurrently on 192.168.15.95.** A python rebuild and a tcc bootstrap at once wedged cixd for ~16 minutes — no HTTP request completed, including a deliberate 120-second `/v1/health` probe — and it needed a manual reset. The host is shell-less, so a wedged cixd means no way in at all; ADR-0165's own note records this same failure mode and the shared-parent-cgroup budget that was supposed to prevent it (`cpu_max: "100000 100000"`). It was in place and was not sufficient. See #229 — stallwatch recorded nothing for that wedge, which is its own bug.
+
 ## Build Provenance Mandate (no exceptions)
 
 **Everything Cix ships is built on a Cix host, by Cix, with Cix's own toolchain. Nothing else ever enters a binary, a library, an image, a package, or the artifact cache.**
