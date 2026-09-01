@@ -1240,6 +1240,7 @@ const CATEGORY_VIEWS = {
 	"storage-placement": "view-daemon-config",
 	"backup": "view-daemon-config",
 	"update": "view-recipes",
+	"running-config": "view-running-config",
 };
 
 const DETAIL_VIEWS = {
@@ -1406,6 +1407,8 @@ function renderCurrentView() {
 			refreshServerHealth();
 		else if (route.category === "stalls")
 			refreshStalls();
+		else if (route.category === "running-config")
+			refreshRunningConfig();
 		else if (route.category === "volume-backup-config")
 			refreshVolumeBackupConfig();
 		else if (route.category === "volumes" && route.name !== null)
@@ -2002,6 +2005,16 @@ function renderTree() {
 					 */
 					label: "Host",
 					hash: "daemon-config",
+					icon: "system",
+				},
+				{
+					/* The whole configuration as one document
+					 * (ADR-0206). Deliberately its own leaf rather than a
+					 * tab on Host: it is not a facet of one subsystem, it
+					 * is every subsystem at once, which is the entire
+					 * reason it exists. */
+					label: "Running Config",
+					hash: "running-config",
 					icon: "system",
 				},
 				{ label: "Devices", hash: "devices", icon: "devices" },
@@ -6661,6 +6674,100 @@ async function showBuildLog(file) {
 }
 
 
+
+/* ---------- Running configuration (ADR-0206, #150) ---------- */
+
+/*
+ * The same document `cixctl show running-config` renders, rendered the
+ * dashboard's own way. Generic on purpose -- it walks whatever sections
+ * the document contains rather than knowing them, so a subsystem added
+ * to the ConfigDocument schema appears here with no change to this file.
+ * The schema is the vocabulary; a renderer that had to be taught each
+ * section would be a second copy of that list.
+ */
+function runningConfigLines(value, depth, out) {
+	const pad = "  ".repeat(depth);
+
+	if (value === null || value === undefined) {
+		out.push(pad + "-");
+		return;
+	}
+	if (Array.isArray(value)) {
+		if (value.length === 0) {
+			out.push(pad + "(none)");
+			return;
+		}
+		value.forEach((item, i) => {
+			if (item !== null && typeof item === "object") {
+				if (i > 0)
+					out.push("");
+				runningConfigLines(item, depth, out);
+			} else {
+				out.push(pad + String(item));
+			}
+		});
+		return;
+	}
+	if (typeof value === "object") {
+		for (const key of Object.keys(value)) {
+			const v = value[key];
+
+			if (v !== null && typeof v === "object") {
+				out.push(pad + key);
+				runningConfigLines(v, depth + 1, out);
+			} else {
+				out.push(pad + key + " " + (v === null ? "-" : String(v)));
+			}
+		}
+		return;
+	}
+	out.push(pad + String(value));
+}
+
+function formatRunningConfig(doc) {
+	const out = [];
+
+	for (const section of Object.keys(doc)) {
+		out.push("!");
+		out.push(section);
+		runningConfigLines(doc[section], 1, out);
+	}
+	out.push("!");
+	return out.join("\n");
+}
+
+async function refreshRunningConfig() {
+	const pre = document.getElementById("running-config-text");
+
+	pre.textContent = "Loading…";
+	try {
+		const doc = await apiRequest("GET", CIX_API.getConfig());
+
+		pre.textContent = formatRunningConfig(doc);
+	} catch (e) {
+		pre.textContent = "Could not load the running configuration: " + e.message;
+	}
+}
+
+document.getElementById("running-config-refresh").addEventListener("click", refreshRunningConfig);
+
+/* Copy is the point of having this on a screen at all: the document
+ * exists to be pasted into a ticket or a review, which is also exactly
+ * why it is redacted before it ever reaches here. */
+document.getElementById("running-config-copy").addEventListener("click", async () => {
+	const pre = document.getElementById("running-config-text");
+	const button = document.getElementById("running-config-copy");
+
+	try {
+		await navigator.clipboard.writeText(pre.textContent);
+		button.textContent = "Copied";
+	} catch (e) {
+		/* Clipboard access is denied outside a secure context and in
+		 * some browsers -- say so rather than appearing to succeed. */
+		button.textContent = "Copy blocked";
+	}
+	setTimeout(() => { button.textContent = "Copy"; }, 1500);
+});
 
 /* ---------- Control-plane stalls (issue #100) ---------- */
 
