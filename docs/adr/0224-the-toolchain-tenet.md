@@ -7,6 +7,8 @@ Date: 2026-09-01
 Accepted. Supersedes the informal "3-tier TCC policy" that lived only as
 a sentence in `CLAUDE.md` and an aside in ADR-0222.
 
+**Amended for third-party packages by [ADR-0226](0226-gcc-is-an-ordinary-choice-for-third-party-packages.md).** Section 3's four-part bar and its required tracking issue no longer apply to third-party packages, where choosing gcc because TCC is difficult is an ordinary engineering decision. The declared `pkg_toolchain=` / `pkg_toolchain_reason=` fields and the asserted count remain, for auditability rather than permission. **Section 1 is untouched and remains absolute**: Cix's own code is TCC, always.
+
 ## Context
 
 Two things have been treated as one thing, and the conflation has been
