@@ -103,4 +103,29 @@ int http_write_response_hdrs(int fd, int status, const char *status_text,
  */
 int http_set_blocking(int fd);
 
+/*
+ * Puts fd back into non-blocking mode -- the inverse of the above,
+ * needed because a deferred response (#237) is drained across epoll
+ * events and must never block the loop on a slow peer.
+ */
+int http_set_nonblocking(int fd);
+
+/*
+ * Response byte sink (#237).
+ *
+ * Every response this module writes goes through the installed sink
+ * rather than straight to the socket, so the daemon can buffer a
+ * response for a connection whose peer is not reading it yet and drain
+ * it later on EPOLLOUT. The sink returns 0 on success and -1 on a
+ * genuine failure, exactly like tls_write_all(), which is also the
+ * behaviour when no sink is installed.
+ *
+ * This exists as a hook rather than a direct call because the buffer
+ * lives on main.c's own `struct conn`, which this layer must not know
+ * about.
+ */
+typedef int (*http_response_sink_fn)(int fd, const void *buf, size_t n);
+
+void http_set_response_sink(http_response_sink_fn fn);
+
 #endif /* HTTP_H */

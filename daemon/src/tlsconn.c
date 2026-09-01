@@ -101,6 +101,38 @@ int tls_write_all(int fd, const void *buf, size_t n)
 	return 0;
 }
 
+/*
+ * Non-blocking single-shot write -- see tlsconn.h for the contract and
+ * the OpenSSL retry rule it depends on (#237).
+ */
+ssize_t tls_write_some(int fd, const void *buf, size_t n)
+{
+	SSL *ssl = tls_lookup(fd);
+	ssize_t r;
+	int err;
+
+	if (n == 0)
+		return 0;
+
+	if (ssl == NULL) {
+		r = write(fd, buf, n);
+		if (r >= 0)
+			return r;
+		if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
+			return 0;
+		return -1;
+	}
+
+	r = SSL_write(ssl, buf, (int)n);
+	if (r > 0)
+		return r;
+
+	err = SSL_get_error(ssl, (int)r);
+	if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE)
+		return 0;
+	return -1;
+}
+
 ssize_t tls_read(int fd, void *buf, size_t n)
 {
 	SSL *ssl = tls_lookup(fd);

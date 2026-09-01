@@ -1118,6 +1118,31 @@ struct conn {
 	char console_tty[32];                   /* CONN_CONSOLE_SHELL / CONN_CONSOLE_RESPAWN_TIMER */
 	struct console_exec_session *exec_session; /* CONN_CONSOLE_WS / CONN_CONSOLE_PTY only -- shared by both halves of one session */
 	struct ws_conn ws;                      /* CONN_CONSOLE_WS / CONN_PKG_BUILD_LOG_WS -- incremental client-frame parser */
+	/*
+	 * CONN_CLIENT only -- a response the peer has not finished reading
+	 * (#237).
+	 *
+	 * Responses used to be written straight to the socket with the fd
+	 * put back into blocking mode, inside the single event loop. That
+	 * made the whole control plane hostage to the slowest reader
+	 * attached to it: one client asking for GET /v1/pkg (1.8 MB on a
+	 * real host) and then not reading held every other request off for
+	 * as long as it liked, with no authentication needed. Measured:
+	 * health went from 7 ms to a hard timeout for exactly as long as
+	 * such a client was attached, and recovered in 14 ms the moment it
+	 * closed.
+	 *
+	 * So the response is built into out_buf and drained across EPOLLOUT
+	 * events instead. out_progress_at is the last time bytes actually
+	 * moved, which is what the write deadline is measured from -- a
+	 * peer reading slowly but genuinely is not the same as one that has
+	 * stopped, and only the latter should lose its connection.
+	 */
+	char *out_buf;
+	size_t out_len;
+	size_t out_sent;
+	time_t out_progress_at;
+	struct conn *out_next;                  /* g_out_pending list linkage */
 };
 
 /*
@@ -1901,6 +1926,13 @@ static int name_is_valid(const char *name)
 
 static void respond_json(int fd, int status, const char *status_text, struct json_writer *w)
 {
+	/*
+	 * Still set, and still correct: for the in-flight client request
+	 * the sink installed in main() takes these bytes and no write
+	 * happens here at all (client_conn_finish() puts the fd back to
+	 * non-blocking before draining it), while any other fd reaching
+	 * this path is written straight out and does need blocking mode.
+	 */
 	http_set_blocking(fd);
 	http_write_response(fd, status, status_text, "application/json", w->buf, w->len);
 }
@@ -4225,7 +4257,7 @@ static void arm_bind_ip_cleanup_timer(const char *ifname, uint32_t addr_be, int 
 		return;
 	}
 
-	cc = malloc(sizeof(*cc));
+	cc = calloc(1, sizeof(*cc));
 	if (cc == NULL) {
 		perror("malloc (bind_ip cleanup timer conn)");
 		close(tfd);
@@ -4484,7 +4516,7 @@ static void handle_container_exec_get(int fd, const char *name)
 
 static struct conn *exec_register(int fd, enum conn_kind kind)
 {
-	struct conn *cc = malloc(sizeof(*cc));
+	struct conn *cc = calloc(1, sizeof(*cc));
 	struct cix_epoll_event ev;
 
 	if (cc == NULL)
@@ -5133,7 +5165,7 @@ static void serverhealth_start_tcp_probe(const char *kind, const char *container
 		serverhealth_record_result(kind, container, desc, 0, err);
 		return;
 	}
-	cc = malloc(sizeof(*cc));
+	cc = calloc(1, sizeof(*cc));
 	if (cc == NULL) {
 		close(fd);
 		return;
@@ -8592,7 +8624,7 @@ static void register_container_pidfd(struct registry_entry *entry)
 	struct conn *cc;
 	struct cix_epoll_event ev;
 
-	cc = malloc(sizeof(*cc));
+	cc = calloc(1, sizeof(*cc));
 	if (cc == NULL) {
 		/*
 		 * The container is already running with real resources
@@ -8632,7 +8664,7 @@ static void register_pkg_fetch_pidfd(pid_t pid, int pidfd, int chain_idx)
 	struct conn *cc;
 	struct cix_epoll_event ev;
 
-	cc = malloc(sizeof(*cc));
+	cc = calloc(1, sizeof(*cc));
 	if (cc == NULL) {
 		perror("malloc (pkg fetch reactor conn)");
 		abort();
@@ -8708,7 +8740,7 @@ static void register_pkg_build_output(int output_fd, int chain_idx)
 	if (output_fd < 0)
 		return;
 
-	cc = malloc(sizeof(*cc));
+	cc = calloc(1, sizeof(*cc));
 	if (cc == NULL) {
 		perror("malloc (pkg build output reactor conn)");
 		abort();
@@ -8858,7 +8890,7 @@ static void register_container_output(struct registry_entry *entry)
 	if (entry->output_fd < 0)
 		return;
 
-	cc = malloc(sizeof(*cc));
+	cc = calloc(1, sizeof(*cc));
 	if (cc == NULL) {
 		perror("malloc (container output reactor conn)");
 		abort();
@@ -9093,7 +9125,7 @@ static void register_bootroot_output(void)
 	if (g_bootroot_output.rd < 0)
 		return;
 
-	cc = malloc(sizeof(*cc));
+	cc = calloc(1, sizeof(*cc));
 	if (cc == NULL) {
 		perror("malloc (bootroot output reactor conn)");
 		abort();
@@ -9139,7 +9171,7 @@ static void register_iso_output(void)
 	if (g_iso_output.rd < 0)
 		return;
 
-	cc = malloc(sizeof(*cc));
+	cc = calloc(1, sizeof(*cc));
 	if (cc == NULL) {
 		perror("malloc (iso output reactor conn)");
 		abort();
@@ -9181,7 +9213,7 @@ static void register_bootroot_assemble_pidfd(pid_t pid, int pidfd)
 	struct conn *cc;
 	struct cix_epoll_event ev;
 
-	cc = malloc(sizeof(*cc));
+	cc = calloc(1, sizeof(*cc));
 	if (cc == NULL) {
 		perror("malloc (bootroot assemble reactor conn)");
 		abort();
@@ -9683,7 +9715,7 @@ static void register_artifact_export_pidfd(pid_t pid, int pidfd)
 	struct conn *cc;
 	struct cix_epoll_event ev;
 
-	cc = malloc(sizeof(*cc));
+	cc = calloc(1, sizeof(*cc));
 	if (cc == NULL) {
 		perror("malloc (image export reactor conn)");
 		abort();
@@ -9719,7 +9751,7 @@ static void artifact_push_pump(void)
 	if (pkg_artifact_push_try_start(&pid, &pidfd, desc, sizeof(desc)) != 1)
 		return;
 
-	cc = malloc(sizeof(*cc));
+	cc = calloc(1, sizeof(*cc));
 	if (cc == NULL) {
 		perror("malloc (artifact push reactor conn)");
 		abort();
@@ -10167,7 +10199,7 @@ static void register_iso_assemble_pidfd(pid_t pid, int pidfd)
 	struct conn *cc;
 	struct cix_epoll_event ev;
 
-	cc = malloc(sizeof(*cc));
+	cc = calloc(1, sizeof(*cc));
 	if (cc == NULL) {
 		perror("malloc (iso assemble reactor conn)");
 		abort();
@@ -10644,7 +10676,7 @@ static int start_iso_publish_upload(enum iso_publish_step step)
 	}
 	g_iso_publish_step = step;
 	{
-		struct conn *cc = malloc(sizeof(*cc));
+		struct conn *cc = calloc(1, sizeof(*cc));
 		struct cix_epoll_event ev;
 
 		if (cc == NULL) {
@@ -10825,7 +10857,7 @@ static void register_bootstrap_fetch_pidfd(pid_t pid, int pidfd)
 	struct conn *cc;
 	struct cix_epoll_event ev;
 
-	cc = malloc(sizeof(*cc));
+	cc = calloc(1, sizeof(*cc));
 	if (cc == NULL) {
 		perror("malloc (bootstrap fetch reactor conn)");
 		abort();
@@ -10851,7 +10883,7 @@ static void register_pkg_sync_fetch_pidfd(pid_t pid, int pidfd)
 	struct conn *cc;
 	struct cix_epoll_event ev;
 
-	cc = malloc(sizeof(*cc));
+	cc = calloc(1, sizeof(*cc));
 	if (cc == NULL) {
 		perror("malloc (pkg sync fetch reactor conn)");
 		abort();
@@ -11558,7 +11590,7 @@ static void register_disk_format_pidfd(pid_t pid, int pidfd)
 	struct conn *cc;
 	struct cix_epoll_event ev;
 
-	cc = malloc(sizeof(*cc));
+	cc = calloc(1, sizeof(*cc));
 	if (cc == NULL) {
 		perror("malloc (disk format reactor conn)");
 		abort();
@@ -11608,7 +11640,7 @@ static void register_storage_migrate_pidfd(enum storage_kind kind, pid_t pid, in
 	struct conn *cc;
 	struct cix_epoll_event ev;
 
-	cc = malloc(sizeof(*cc));
+	cc = calloc(1, sizeof(*cc));
 	if (cc == NULL) {
 		perror("malloc (storage migrate reactor conn)");
 		abort();
@@ -11634,7 +11666,7 @@ static void register_container_storage_migrate_pidfd(const char *name, pid_t pid
 	struct conn *cc;
 	struct cix_epoll_event ev;
 
-	cc = malloc(sizeof(*cc));
+	cc = calloc(1, sizeof(*cc));
 	if (cc == NULL) {
 		perror("malloc (container storage migrate reactor conn)");
 		abort();
@@ -22033,7 +22065,7 @@ static void register_kernel_releases_pidfd(pid_t pid, int pidfd)
 	struct conn *cc;
 	struct cix_epoll_event ev;
 
-	cc = malloc(sizeof(*cc));
+	cc = calloc(1, sizeof(*cc));
 	if (cc == NULL) {
 		perror("malloc (kernel releases reactor conn)");
 		abort();
@@ -27103,8 +27135,108 @@ static void log_tls_error(const char *context, const char *peer_ip, int should_l
  * TLS cleanup (tls_unregister()/SSL_free()) needs to happen at every
  * one of them, not just some.
  */
+/*
+ * Deferred response output (#237). See struct conn's out_buf comment
+ * for what this exists to prevent.
+ */
+
+/*
+ * How long a connection may make no write progress at all before it is
+ * dropped. Generous on purpose: a real client on a slow link moves
+ * *some* bytes, which resets the clock, so this only ever fires on a
+ * peer that has genuinely stopped reading.
+ */
+#define CONN_OUT_DEADLINE_SECONDS 30
+
+/*
+ * Bytes offered to the socket per write attempt. Bounded so one
+ * connection cannot monopolise a loop pass, and fixed so that a TLS
+ * WANT_WRITE retry repeats byte-identical arguments, as OpenSSL
+ * requires (see tls_write_some()).
+ */
+#define CONN_OUT_CHUNK 65536
+
+/* Client conns with unsent response bytes, for the write-deadline sweep. */
+static struct conn *g_out_pending;
+
+/*
+ * The conn whose request is being served right now, or NULL. Set only
+ * around the code that can write a response, so the sink below can
+ * tell "this response belongs to the in-flight request" from any other
+ * write to any other fd (a WebSocket frame, an exec stream), which
+ * must keep going straight out as it always did.
+ *
+ * A single pointer is exact here because the daemon is single-threaded
+ * and serves one request at a time; it is cleared on every path out of
+ * the request block so it can never name a connection that has since
+ * been freed or repurposed.
+ */
+static struct conn *g_response_conn;
+
+static int client_response_sink(int fd, const void *buf, size_t n)
+{
+	struct conn *cc = g_response_conn;
+	char *grown;
+	size_t need;
+
+	if (cc == NULL || cc->fd != fd)
+		return tls_write_all(fd, buf, n);
+	if (n == 0)
+		return 0;
+
+	need = cc->out_len + n;
+	grown = realloc(cc->out_buf, need);
+	if (grown == NULL)
+		return -1;
+	cc->out_buf = grown;
+	memcpy(cc->out_buf + cc->out_len, buf, n);
+	cc->out_len = need;
+	return 0;
+}
+
+/*
+ * Pushes out whatever the socket will take right now. Returns 1 when
+ * the response is fully written, 0 when more remains (retry on the
+ * next EPOLLOUT), -1 on a dead connection.
+ */
+static int conn_out_drain(struct conn *cc)
+{
+	while (cc->out_sent < cc->out_len) {
+		size_t remaining = cc->out_len - cc->out_sent;
+		size_t chunk = remaining > CONN_OUT_CHUNK ? CONN_OUT_CHUNK : remaining;
+		ssize_t wrote = tls_write_some(cc->fd, cc->out_buf + cc->out_sent, chunk);
+
+		if (wrote < 0)
+			return -1;
+		if (wrote == 0)
+			return 0;
+		cc->out_sent += (size_t)wrote;
+		cc->out_progress_at = time(NULL);
+	}
+	return 1;
+}
+
+static void conn_out_unlink(struct conn *cc)
+{
+	struct conn **pp = &g_out_pending;
+
+	while (*pp != NULL) {
+		if (*pp == cc) {
+			*pp = cc->out_next;
+			cc->out_next = NULL;
+			return;
+		}
+		pp = &(*pp)->out_next;
+	}
+}
+
 static void client_conn_teardown(struct conn *cc)
 {
+	conn_out_unlink(cc);
+	free(cc->out_buf);
+	cc->out_buf = NULL;
+	if (g_response_conn == cc)
+		g_response_conn = NULL;
 	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	if (cc->ssl != NULL) {
 		tls_unregister(cc->fd);
@@ -27113,6 +27245,77 @@ static void client_conn_teardown(struct conn *cc)
 	close(cc->fd);
 	http_conn_free(&cc->http);
 	free(cc);
+}
+
+/*
+ * Ends a connection whose response has been written (#237).
+ *
+ * Every response carries Connection: close, so there is nothing to
+ * serve after this one -- the only question is whether the bytes are
+ * out yet. The common case by far is that they are: one attempt sends
+ * the whole thing into the socket buffer and the connection closes
+ * here exactly as it always did. Only when the peer will not take them
+ * all does the connection stay alive, registered for EPOLLOUT, to be
+ * finished by handle_client_event() later. The loop moves on either
+ * way, which is the entire point.
+ *
+ * EPOLLIN is kept alongside EPOLLOUT because a TLS write can legiti-
+ * mately need readable data first (a mid-stream renegotiation), and
+ * because a peer that goes away should wake us to notice.
+ */
+static void client_conn_finish(struct conn *cc)
+{
+	struct cix_epoll_event ev;
+
+	if (cc->out_buf == NULL || cc->out_len == 0) {
+		client_conn_teardown(cc);
+		return;
+	}
+
+	http_set_nonblocking(cc->fd);
+	cc->out_progress_at = time(NULL);
+	if (conn_out_drain(cc) != 0) {
+		client_conn_teardown(cc);
+		return;
+	}
+
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLOUT | EPOLLIN;
+	ev.data.ptr = cc;
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_MOD, cc->fd, &ev) != 0) {
+		client_conn_teardown(cc);
+		return;
+	}
+
+	cc->out_next = g_out_pending;
+	g_out_pending = cc;
+}
+
+/*
+ * Drops connections that have stopped taking their response.
+ *
+ * Called once per event-loop pass, after the batch has been handled --
+ * never before, because tearing a conn down frees it, and doing that
+ * to one still sitting in the batch about to be dispatched would be a
+ * use-after-free.
+ */
+static void conn_out_sweep(void)
+{
+	struct conn *cc = g_out_pending;
+	time_t now = time(NULL);
+
+	while (cc != NULL) {
+		struct conn *next = cc->out_next;
+
+		if (now - cc->out_progress_at >= CONN_OUT_DEADLINE_SECONDS) {
+			logstore_write("cixd", "warn",
+			               "dropping a client that stopped reading its response "
+			               "after %zu of %zu bytes",
+			               cc->out_sent, cc->out_len);
+			client_conn_teardown(cc);
+		}
+		cc = next;
+	}
 }
 
 /*
@@ -27166,6 +27369,19 @@ static void handle_client_event(struct conn *cc)
 	struct http_request req;
 	int pr;
 
+	/*
+	 * This connection is already past its request and is only waiting
+	 * to hand over the rest of its response (#237). Whichever of
+	 * EPOLLOUT/EPOLLIN woke us, the only thing to do is push more
+	 * bytes -- never to read another request, since the response
+	 * already sent says Connection: close.
+	 */
+	if (cc->out_buf != NULL && cc->out_sent < cc->out_len) {
+		if (conn_out_drain(cc) != 0)
+			client_conn_teardown(cc);
+		return;
+	}
+
 	if (cc->ssl != NULL && !SSL_is_init_finished(cc->ssl)) {
 		int hr = client_conn_advance_handshake(cc);
 
@@ -27202,15 +27418,19 @@ static void handle_client_event(struct conn *cc)
 		}
 
 		if (http_conn_feed(&cc->http, buf, (size_t)n) != 0) {
+			g_response_conn = cc;
 			respond_error(cc->fd, 400, "Bad Request", "request too large");
-			client_conn_teardown(cc);
+			g_response_conn = NULL;
+			client_conn_finish(cc);
 			return;
 		}
 
 		pr = http_conn_try_parse(&cc->http, &req);
 		if (pr < 0) {
+			g_response_conn = cc;
 			respond_error(cc->fd, 400, "Bad Request", "malformed request");
-			client_conn_teardown(cc);
+			g_response_conn = NULL;
+			client_conn_finish(cc);
 			return;
 		}
 		if (pr == 1) {
@@ -27225,14 +27445,28 @@ static void handle_client_event(struct conn *cc)
 			 * proves the client speaks HTTP correctly). */
 			connthrottle_record_success(cc->peer_ip);
 
+			/*
+			 * From here until the connection is finished, any response
+			 * written for this fd is buffered rather than pushed into
+			 * a socket that may not be draining (#237). Cleared on
+			 * every path out, including the two that hand cc over to
+			 * become a WebSocket conn -- a stale pointer there would
+			 * silently swallow frames meant for the wire.
+			 */
+			g_response_conn = cc;
+
 			cr = try_console_upgrade(cc, &req);
 
-			if (cr == CONSOLE_HANDLED)
+			if (cr == CONSOLE_HANDLED) {
+				g_response_conn = NULL;
 				return; /* cc repurposed into CONN_CONSOLE_WS (or already torn down) -- must not be touched again */
+			}
 			if (cr == CONSOLE_NOT_MATCHED)
 				cr = try_pkg_build_log_upgrade(cc, &req);
-			if (cr == CONSOLE_HANDLED)
+			if (cr == CONSOLE_HANDLED) {
+				g_response_conn = NULL;
 				return; /* cc repurposed into CONN_PKG_BUILD_LOG_WS -- must not be touched again */
+			}
 			if (cr == CONSOLE_NOT_MATCHED) {
 				dispatch(cc->fd, &req);
 				/* Cleared only on the way out: anything still set when
@@ -27243,8 +27477,9 @@ static void handle_client_event(struct conn *cc)
 			/* CONSOLE_FAILED: an error response (or nothing, if the
 			 * client was already gone) was already written by
 			 * whichever upgrade attempt failed -- cc still needs the
-			 * same teardown every other handled request gets. */
-			client_conn_teardown(cc);
+			 * same finish every other handled request gets. */
+			g_response_conn = NULL;
+			client_conn_finish(cc);
 			return;
 		}
 		/* pr == 0: request incomplete so far. A plain-fd connection
@@ -27298,7 +27533,7 @@ static void arm_restart_timer(const char *name, int delay_seconds)
 		return;
 	}
 
-	cc = malloc(sizeof(*cc));
+	cc = calloc(1, sizeof(*cc));
 	if (cc == NULL) {
 		perror("malloc (container restart timer conn)");
 		close(tfd);
@@ -27414,7 +27649,7 @@ static void arm_rolling_restart_timer(const char *name, int delay_seconds)
 		return;
 	}
 
-	cc = malloc(sizeof(*cc));
+	cc = calloc(1, sizeof(*cc));
 	if (cc == NULL) {
 		perror("malloc (rolling restart timer conn)");
 		close(tfd);
@@ -28026,7 +28261,7 @@ static void register_console_shell_pidfd(pid_t pid, int pidfd, const char *tty_p
 	struct conn *cc;
 	struct cix_epoll_event ev;
 
-	cc = malloc(sizeof(*cc));
+	cc = calloc(1, sizeof(*cc));
 	if (cc == NULL) {
 		perror("malloc (console shell reactor conn)");
 		close(pidfd);
@@ -28137,7 +28372,7 @@ static void arm_console_respawn_timer(const char *tty_path, int delay_seconds)
 		return;
 	}
 
-	cc = malloc(sizeof(*cc));
+	cc = calloc(1, sizeof(*cc));
 	if (cc == NULL) {
 		perror("malloc (console respawn timer conn)");
 		close(tfd);
@@ -28244,7 +28479,7 @@ static void accept_loop(struct conn *listener)
 			continue;
 		}
 
-		cc = malloc(sizeof(*cc));
+		cc = calloc(1, sizeof(*cc));
 		if (cc == NULL) {
 			/* Under memory pressure, drop this one connection
 			 * attempt -- unlike register_container_pidfd(), no
@@ -29225,6 +29460,13 @@ static int cixd_main(int argc, char **argv)
 	 */
 	stallwatch_start(STALLWATCH_RECORDS_PATH);
 
+	/*
+	 * Responses are buffered against their connection and drained on
+	 * EPOLLOUT from here on, so that no client can hold the event loop
+	 * by refusing to read (#237).
+	 */
+	http_set_response_sink(client_response_sink);
+
 	while (!g_stop) {
 		struct cix_epoll_event events[MAX_EVENTS];
 		/*
@@ -29380,6 +29622,13 @@ static int cixd_main(int argc, char **argv)
 			else
 				handle_client_event(cc);
 		}
+
+		/*
+		 * After the batch, never before: this frees connections, and
+		 * one still sitting unhandled in events[] would then be read
+		 * as freed memory (#237).
+		 */
+		conn_out_sweep();
 
 		drain_pending_free();
 	}

@@ -47,6 +47,25 @@ SSL *tls_lookup(int fd);
 int tls_write_all(int fd, const void *buf, size_t n);
 
 /*
+ * Writes as much of n as the socket will take right now and returns
+ * immediately -- the non-blocking counterpart of tls_write_all(),
+ * added for issue #237 so a response can be drained across several
+ * EPOLLOUT events instead of blocking the whole event loop until the
+ * peer has read it.
+ *
+ * Returns the number of bytes actually written (> 0), 0 if the write
+ * would block and should be retried when the socket is writable again,
+ * or -1 on a genuine error.
+ *
+ * The TLS case matters here: OpenSSL requires that a WANT_WRITE retry
+ * repeat the *same* call arguments, so a caller must retry with the
+ * identical (buf, n) pair it was given back a 0 for -- passing a
+ * deterministic slice of a stable buffer, as conn_out_drain() does,
+ * satisfies that.
+ */
+ssize_t tls_write_some(int fd, const void *buf, size_t n);
+
+/*
  * Reads up to n bytes from fd the same way -- SSL_read() when TLS-
  * wrapped, plain read() otherwise. Returns exactly what read()/
  * SSL_read() would (bytes read, 0 on clean EOF/close, -1 on a real
