@@ -34,7 +34,7 @@ SELFTESTS = \
 	$(BUILD)/test_apigen $(BUILD)/test_apiroute $(BUILD)/test_api_surfaces \
 	$(BUILD)/test_docindex $(BUILD)/test_toolchain_policy \
 	$(BUILD)/test_elfcheck $(BUILD)/test_elfcheck_gcc \
-	$(BUILD)/test_treecopy $(BUILD)/test_childdiag $(BUILD)/test_harness \
+	$(BUILD)/test_treecopy $(BUILD)/test_childdiag \
 	$(BUILD)/test_kernelpolicy $(BUILD)/test_releasekey $(BUILD)/test_subid \
 	$(BUILD)/test_btrfs $(BUILD)/test_toolchain
 #
@@ -52,6 +52,10 @@ SELFTESTS = \
 #       A composed build container holds exactly the recipe's declared
 #       tools (ADR-0199), so it fails there by construction. It belongs
 #       wherever a real image is assembled, not in a build gate.
+#
+#   test_harness  creates a real overlay mount and namespaces. It
+#       includes container.h and is a container-runtime test; my
+#       original classification looked only at what it links.
 #
 #   test_dual_console  drives real terminal devices and expects echo
 #       back from a console. A build container has no such consoles.

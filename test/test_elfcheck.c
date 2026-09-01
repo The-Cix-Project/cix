@@ -38,9 +38,29 @@ int main(void)
 
 	/* A non-ELF file is "clean", not an error: this runs over every
 	 * file of every install, so "not my concern" and "unreadable" must
-	 * not collapse into one answer. */
-	r = elfcheck_undefined_builtin("/etc/hostname", sym, sizeof(sym));
-	check(r == 0, "a non-ELF file is reported clean, not as an error");
+	 * not collapse into one answer.
+	 *
+	 * The fixture is WRITTEN here rather than borrowed from the host.
+	 * This used to read /etc/hostname, which exists on a developer
+	 * machine and does not in a composed build container -- so the
+	 * test reported "clean was expected, got an error" when the real
+	 * story was that the file was absent. A test that depends on an
+	 * ambient host file is the same fragility this project has been
+	 * removing from recipes, and it is what kept the suite from
+	 * running on a Cix host at all. */
+	{
+		char nonelf[] = "/tmp/elfcheck_nonelf_XXXXXX";
+		int fd = mkstemp(nonelf);
+
+		check(fd >= 0, "could create a non-ELF fixture");
+		if (fd >= 0) {
+			(void)!write(fd, "not an ELF file at all\n", 23);
+			close(fd);
+			r = elfcheck_undefined_builtin(nonelf, sym, sizeof(sym));
+			check(r == 0, "a non-ELF file is reported clean, not as an error");
+			unlink(nonelf);
+		}
+	}
 
 	r = elfcheck_undefined_builtin("/no/such/file/at/all", sym, sizeof(sym));
 	check(r == -1, "an unreadable file is an error, distinct from clean");

@@ -33,8 +33,22 @@ int main(void)
 
 	/* Non-ELF and unreadable stay distinguishable, same contract as
 	 * the undefined-builtin check. */
-	check(elfcheck_built_by_gcc("/etc/hostname", ver, sizeof(ver)) == 0,
-	      "a non-ELF file reports no GCC marker rather than an error");
+	/* Fixture written here, not borrowed from the host -- see
+	 * test_elfcheck.c for why /etc/hostname was the wrong thing to
+	 * read. */
+	{
+		char nonelf[] = "/tmp/elfcheckgcc_nonelf_XXXXXX";
+		int fd = mkstemp(nonelf);
+
+		check(fd >= 0, "could create a non-ELF fixture");
+		if (fd >= 0) {
+			(void)!write(fd, "not an ELF file at all\n", 23);
+			close(fd);
+			check(elfcheck_built_by_gcc(nonelf, ver, sizeof(ver)) == 0,
+			      "a non-ELF file reports no GCC marker rather than an error");
+			unlink(nonelf);
+		}
+	}
 	check(elfcheck_built_by_gcc("/no/such/path", ver, sizeof(ver)) == -1,
 	      "an unreadable file is an error, distinct from clean");
 

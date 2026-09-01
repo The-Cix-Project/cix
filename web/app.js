@@ -8638,11 +8638,44 @@ document.getElementById("container-recipe-apply-form").addEventListener("submit"
 	}
 });
 
+/*
+ * How far behind this host is, shown next to the verb that fixes it.
+ *
+ * GET /pkg/{name} has always carried available_version per package, and
+ * nothing aggregated it, so drift accumulated unseen -- 34 of 139
+ * installed packages on the reference host, found by accident (#217).
+ * A number nobody can see is a number nobody acts on, which is why this
+ * sits beside "Update all" rather than on a page of its own.
+ */
+async function refreshPkgDrift() {
+	const el = document.getElementById("pkg-drift-summary");
+
+	if (!el)
+		return;
+	try {
+		const d = await apiRequest("GET", CIX_API.getPkgDrift());
+
+		if (!d || typeof d.behind !== "number") {
+			el.textContent = "";
+			return;
+		}
+		el.textContent = d.behind === 0
+			? d.installed + " installed, all current"
+			: d.behind + " of " + d.installed + " behind their recipes";
+	} catch (e) {
+		/* Never let a status line break the page it decorates. */
+		el.textContent = "";
+	}
+}
+
 async function refreshPkgList() {
 	const data = await apiRequest("GET", CIX_API.listPkg());
 	cache.pkgList = data.packages;
 	if (parseHash().category === "packages")
 		renderPackagesView(parseHash().name);
+	/* Kept in step with the list it describes rather than refreshed
+	 * separately, so the two can never disagree on screen. */
+	refreshPkgDrift();
 }
 
 /*
@@ -9825,6 +9858,7 @@ document.getElementById("pkg-update-all").addEventListener("click", async () => 
 		clearStatus();
 		showStatus(result && result.status ? result.status : "update started", false);
 		await refreshPkgList();
+		await refreshPkgDrift();
 	} catch (e) {
 		showStatus("Failed to start update-all: " + e.message, true);
 	}
