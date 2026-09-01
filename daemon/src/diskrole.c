@@ -1,5 +1,6 @@
 #include "diskrole.h"
 #include "disk.h"
+#include "diskpart.h"
 #include "namecheck.h"
 #include "persist.h"
 
@@ -71,7 +72,17 @@ static int role_from_str(const char *s, enum diskrole_kind *out)
 	return 0;
 }
 
-static int disk_is_os_disk(const char *disk_name, const char *os_containers_dir)
+/*
+ * Is this device part of the fixed OS layout, and therefore never a
+ * role-assignment candidate?
+ *
+ * Asks diskpart's one rule rather than testing is_os_disk directly
+ * (issue #9). A partition inherits is_os_disk from its parent, so the
+ * bare flag also refuses an operator-created partition in the OS disk's
+ * reserved free space -- which #140 went to some trouble to allow
+ * creating, and which is useless without a role.
+ */
+static int disk_is_os_layout(const char *disk_name, const char *os_containers_dir)
 {
 	struct discovered_disk disks[DISK_ENUM_MAX];
 	int n = disk_enumerate(disks, DISK_ENUM_MAX, os_containers_dir);
@@ -79,9 +90,10 @@ static int disk_is_os_disk(const char *disk_name, const char *os_containers_dir)
 
 	for (i = 0; i < n; i++) {
 		if (strcmp(disks[i].name, disk_name) == 0)
-			return disks[i].is_os_disk;
+			return diskpart_os_layout_untouchable(disks[i].name, disks[i].is_os_disk,
+			                                       disks[i].is_partition);
 	}
-	return 0; /* not currently a real disk at all -- can't be the OS disk */
+	return 0; /* not currently a real disk at all */
 }
 
 /*
@@ -217,7 +229,7 @@ enum diskrole_error diskrole_create(const char *disk_name, const char *role_str_
 	if (role_str_in == NULL || role_from_str(role_str_in, &role) != 0)
 		return DISKROLE_ERR_INVALID_ROLE;
 
-	if (disk_is_os_disk(disk_name, os_containers_dir))
+	if (disk_is_os_layout(disk_name, os_containers_dir))
 		return DISKROLE_ERR_IS_OS_DISK;
 
 	if (role_find(disk_name) != NULL)

@@ -250,6 +250,39 @@ int diskpart_partition_protected(const char *name, int is_os_disk)
 }
 
 /*
+ * True when this device must never be given a role, formatted or
+ * unmounted (issue #9).
+ *
+ * The same question as diskpart_partition_protected() above, asked of a
+ * whole disk as well as a partition, and it exists because asking it
+ * three different ways is what left the reserved space unusable.
+ *
+ * #140 made appending a partition to the OS disk's free space legal --
+ * that was its whole purpose, so that an operator who deliberately
+ * sized cix-containers smaller than the disk could use the remainder.
+ * But role assignment, format and unmount each kept their own blanket
+ * `is_os_disk` refusal, and a partition inherits is_os_disk from its
+ * parent. So the appended partition could be created and then never
+ * given a role, never formatted, and never mounted: reserved space that
+ * could be carved and not used, which is the same bug #140 fixed,
+ * surviving one layer down.
+ *
+ * The OS disk AS A WHOLE stays refused -- formatting it is destroying
+ * the machine -- and so do the structural partitions, by exactly the
+ * rule delete and resize already use. Nothing else about those
+ * operations relaxes: a format still demands a role, an unmounted
+ * target and a matching confirm_disk_name.
+ */
+int diskpart_os_layout_untouchable(const char *name, int is_os_disk, int is_partition)
+{
+	if (!is_os_disk)
+		return 0;
+	if (!is_partition)
+		return 1; /* the OS disk itself */
+	return diskpart_partition_protected(name, is_os_disk);
+}
+
+/*
  * Preconditions for APPENDING a partition (diskpart_add).
  *
  * Issue #140: deliberately weaker than the create-table check below,
