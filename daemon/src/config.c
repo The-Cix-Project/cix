@@ -104,7 +104,29 @@ static void cfg_disk_roles(struct json_writer *w)
 }
 
 static void cfg_volumes(struct json_writer *w) { volume_write_json_list(w); }
-static void cfg_backup(struct json_writer *w) { backupconfig_write_json(w); }
+/*
+ * The one writer in this file that does not emit a value.
+ * backupconfig_write_json() writes bare members ("disk", "enabled",
+ * "interval_hours") for a caller to splice into an object it already
+ * opened, so calling it where a value belongs produced `"backup":,` and
+ * a document that would not parse at all.
+ *
+ * Wrapped here rather than changed there, because its existing caller
+ * (GET /system/backup-config) depends on exactly that shape, and this
+ * is the second caller arriving -- the cost of adding one belongs to
+ * the new caller, not to the working one.
+ *
+ * Found by parsing the real response from a real host, which is the
+ * only reason it was found at all: it compiled cleanly, every gate
+ * passed, and the daemon served 1.8 MB of JSON that was malformed 914
+ * bytes in.
+ */
+static void cfg_backup(struct json_writer *w)
+{
+	jw_obj_open(w);
+	backupconfig_write_json(w);
+	jw_obj_close(w);
+}
 
 /*
  * The one section that can fail: reading the kernel routing table needs
@@ -150,7 +172,7 @@ static void cfg_syslog_targets(struct json_writer *w) { syslogfwd_target_write_j
 static void cfg_package_repo(struct json_writer *w) { pkg_repo_write_json_config(w); }
 static void cfg_package_artifacts(struct json_writer *w) { pkg_artifact_write_json_config(w); }
 static void cfg_package_policies(struct json_writer *w) { pkgpolicy_write_json(w); }
-static void cfg_packages(struct json_writer *w) { pkg_write_json_list(w); }
+static void cfg_packages(struct json_writer *w) { pkg_write_json_config(w); }
 static void cfg_images(struct json_writer *w) { image_write_json_list(w); }
 static void cfg_image_recipes(struct json_writer *w) { image_recipe_write_json_list(w); }
 static void cfg_container_recipes(struct json_writer *w) { container_recipe_write_json_list(w); }

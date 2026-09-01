@@ -964,6 +964,12 @@ long long pkg_build_log_read(const char *file, char *buf, long long cap, long lo
  * from disk on every call, One Source of Truth). */
 void pkg_write_json_list(struct json_writer *w);
 
+/* The same packages as CONFIGURATION: name, image, version, state, and
+ * nothing transient. The full form above is 97% files[] manifests by
+ * volume, which is the right answer for GET /pkg and the wrong one for
+ * a document meant to be read and diffed (ADR-0206). */
+void pkg_write_json_config(struct json_writer *w);
+
 /*
  * Finds the first PKG_STATE_INSTALLED entry whose recipe's own current
  * pkg_version= differs from what's installed -- the exact same
