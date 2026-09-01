@@ -1,17 +1,59 @@
+/*
+ * The Cix palette, from docs/brand/brand-guidelines.md (#232).
+ *
+ * These ten are the brand's own material constants and are the ONLY
+ * place a brand hex appears. Everything below refers to them through
+ * the semantic tokens, so "what colour is a warning" is answered once
+ * and "what is Amber" is answered once, and the two cannot drift.
+ *
+ * The guidelines describe a material palette -- near-black carbon, warm
+ * paper, machined neutrals, controlled signal colours -- and are
+ * explicit that in dense product UI the neutrals dominate: "a screen
+ * covered in accent colour is off-brand". Copper is the brand accent,
+ * not a status colour; Phosphor means healthy/live and is not used
+ * merely because it looks terminal; Fault is reserved for failure and
+ * destructive intent.
+ */
+:root {
+	--carbon: #0a0d0f;
+	--ferrite: #151a1e;
+	--machined: #242c31;
+	--paper: #f3f0e7;
+	--nickel: #98a2a8;
+	--copper: #d87945;
+	--phosphor: #b9e769;
+	--bus-blue: #5fa8d3;
+	--amber: #e4b34a;
+	--fault: #e15d57;
+
+	/*
+	 * Two signal colours need a darker sibling for use as TEXT on a
+	 * light ground: Phosphor and Amber are tuned to glow on carbon and
+	 * do not carry enough contrast on paper. They stay exactly as
+	 * specified wherever they are a LAMP -- status dots, chart
+	 * segments, the LED pair -- which is what the guidelines mean by a
+	 * signal colour. Derived here rather than invented at each call
+	 * site, so there is still one answer per colour.
+	 */
+	--phosphor-ink: #4f7a12;
+	--amber-ink: #8a6410;
+}
+
 :root {
 	color-scheme: light dark;
-	--bg: #f5f5f7;
-	--panel: #ffffff;
-	--text: #1c1c1e;
-	--muted: #6e6e73;
-	--border: #d8d8dc;
-	--ok: #1e8e3e;
-	--ok-bg: #e6f4ea;
-	--paused: #c77b06;
-	--paused-bg: #fdf0dc;
-	--error: #c5221f;
-	--error-bg: #fce8e6;
-	--unknown-bg: #eeeeee;
+	--bg: #eae5d8;
+	--panel: var(--paper);
+	--text: var(--carbon);
+	--muted: #6b767d;
+	--border: #d5cec0;
+	--accent: var(--copper);
+	--ok: var(--phosphor-ink);
+	--ok-bg: #e8f0d4;
+	--paused: var(--amber-ink);
+	--paused-bg: #f7ecd2;
+	--error: #b03a35;
+	--error-bg: #f6dedd;
+	--unknown-bg: #e2ddd0;
 	--tree-active-bg: rgba(0, 0, 0, 0.06);
 	/* Banding for alternate rows in a detail table. An overlay rather
 	 * than a fixed colour, so it composites correctly over whatever
@@ -42,15 +84,19 @@
 
 @media (prefers-color-scheme: dark) {
 	:root {
-		--bg: #121214;
-		--panel: #1c1c1e;
-		--text: #f2f2f2;
-		--muted: #9a9a9e;
-		--border: #3a3a3c;
-		--ok-bg: #123321;
-		--paused-bg: #3a2a10;
-		--error-bg: #3a1615;
-		--unknown-bg: #2c2c2e;
+		--bg: var(--carbon);
+		--panel: var(--ferrite);
+		--text: var(--paper);
+		--muted: var(--nickel);
+		--border: var(--machined);
+		--accent: var(--copper);
+		--ok: var(--phosphor);
+		--paused: var(--amber);
+		--error: var(--fault);
+		--ok-bg: #1d2a12;
+		--paused-bg: #33280f;
+		--error-bg: #331715;
+		--unknown-bg: #1d2429;
 		--tree-active-bg: rgba(255, 255, 255, 0.09);
 		--row-alt: rgba(255, 255, 255, 0.05);
 		--ansi-black: #6e6e73;
@@ -83,15 +129,19 @@
  * variable/mixin trick -- this is plain CSS, no preprocessor.
  */
 :root[data-theme="light"] {
-	--bg: #f5f5f7;
-	--panel: #ffffff;
-	--text: #1c1c1e;
-	--muted: #6e6e73;
-	--border: #d8d8dc;
-	--ok-bg: #e6f4ea;
-	--paused-bg: #fdf0dc;
-	--error-bg: #fce8e6;
-	--unknown-bg: #eeeeee;
+	--bg: #eae5d8;
+	--panel: var(--paper);
+	--text: var(--carbon);
+	--muted: #6b767d;
+	--border: #d5cec0;
+	--accent: var(--copper);
+	--ok: var(--phosphor-ink);
+	--paused: var(--amber-ink);
+	--error: #b03a35;
+	--ok-bg: #e8f0d4;
+	--paused-bg: #f7ecd2;
+	--error-bg: #f6dedd;
+	--unknown-bg: #e2ddd0;
 	--tree-active-bg: rgba(0, 0, 0, 0.06);
 	--row-alt: rgba(0, 0, 0, 0.035);
 	--ansi-black: #3a3a3c;
@@ -113,15 +163,19 @@
 }
 
 :root[data-theme="dark"] {
-	--bg: #121214;
-	--panel: #1c1c1e;
-	--text: #f2f2f2;
-	--muted: #9a9a9e;
-	--border: #3a3a3c;
-	--ok-bg: #123321;
-	--paused-bg: #3a2a10;
-	--error-bg: #3a1615;
-	--unknown-bg: #2c2c2e;
+	--bg: var(--carbon);
+	--panel: var(--ferrite);
+	--text: var(--paper);
+	--muted: var(--nickel);
+	--border: var(--machined);
+	--accent: var(--copper);
+	--ok: var(--phosphor);
+	--paused: var(--amber);
+	--error: var(--fault);
+	--ok-bg: #1d2a12;
+	--paused-bg: #33280f;
+	--error-bg: #331715;
+	--unknown-bg: #1d2429;
 	--tree-active-bg: rgba(255, 255, 255, 0.09);
 	--row-alt: rgba(255, 255, 255, 0.05);
 	--ansi-black: #6e6e73;
@@ -153,7 +207,19 @@ html, body {
 }
 
 body {
-	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+	/*
+	 * Inter for UI, JetBrains Mono for code -- the pairing the brand
+	 * guidelines specify (#232), with the fallbacks they also name.
+	 *
+	 * Named, not fetched. The dashboard ships no dependencies and this
+	 * daemon is not going to load a font from someone else's CDN, so
+	 * these resolve if the viewer has them and fall through to the
+	 * guidelines' own stated fallbacks (Noto Sans, then the system
+	 * stack) if not. That is the honest version of "use Inter" for
+	 * software that must run on a disconnected machine.
+	 */
+	font-family: Inter, "Noto Sans", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+		Roboto, sans-serif;
 	background: var(--bg);
 	color: var(--text);
 	display: flex;
@@ -477,7 +543,8 @@ header {
 .about-fields dd {
 	margin: 0;
 	font-size: 0.85rem;
-	font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+	font-family: "JetBrains Mono", "DejaVu Sans Mono", ui-monospace, SFMono-Regular, Menlo,
+		Consolas, "Liberation Mono", monospace;
 }
 
 .modal-overlay {
@@ -895,7 +962,8 @@ main {
 	min-height: 0;
 	overflow-y: auto;
 	padding: 0.4rem 1rem;
-	font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+	font-family: "JetBrains Mono", "DejaVu Sans Mono", ui-monospace, SFMono-Regular, Menlo,
+		Consolas, "Liberation Mono", monospace;
 	font-size: 0.78rem;
 }
 
@@ -1204,7 +1272,8 @@ table {
 .processes-cmdline {
 	max-width: 32rem;
 	overflow-wrap: break-word;
-	font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+	font-family: "JetBrains Mono", "DejaVu Sans Mono", ui-monospace, SFMono-Regular, Menlo,
+		Consolas, "Liberation Mono", monospace;
 	font-size: 0.85rem;
 }
 
@@ -1525,7 +1594,8 @@ td.empty {
 .console-output {
 	background: #0c0c0e;
 	color: #d8d8dc;
-	font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+	font-family: "JetBrains Mono", "DejaVu Sans Mono", ui-monospace, SFMono-Regular, Menlo,
+		Consolas, "Liberation Mono", monospace;
 	font-size: 0.85rem;
 	line-height: 1.35;
 	padding: 0.75rem 1rem;
@@ -1637,7 +1707,8 @@ td.empty {
 	background: var(--bg);
 	border: 1px solid var(--border);
 	border-radius: 4px;
-	font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+	font-family: "JetBrains Mono", "DejaVu Sans Mono", ui-monospace, SFMono-Regular, Menlo,
+		Consolas, "Liberation Mono", monospace;
 	font-size: 0.8rem;
 	line-height: 1.45;
 	white-space: pre;
@@ -1700,7 +1771,8 @@ td.empty {
 	border: 1px solid var(--border);
 	border-radius: 6px;
 	padding: 0.75rem;
-	font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+	font-family: "JetBrains Mono", "DejaVu Sans Mono", ui-monospace, SFMono-Regular, Menlo,
+		Consolas, "Liberation Mono", monospace;
 	font-size: 0.75rem;
 	line-height: 1.45;
 	white-space: pre;
@@ -1882,4 +1954,22 @@ td.empty {
 	height: 0.75rem;
 	border-radius: 2px;
 	flex: 0 0 auto;
+}
+
+/*
+ * "Numbers in monitoring tables should use tabular figures where
+ * supported" -- brand guidelines, typographic behaviour (#232).
+ *
+ * Proportional digits make a column of sizes and counts ragged, so the
+ * eye cannot compare two rows without reading both. This is one
+ * declaration and it is the difference between a table you scan and a
+ * table you read.
+ */
+table td,
+table th,
+.detail-table td,
+.alloc-legend,
+.logs-pre,
+pre {
+	font-variant-numeric: tabular-nums;
 }
