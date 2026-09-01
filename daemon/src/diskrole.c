@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 /* fs_type is empty until diskrole_set_fs_type() records a real
  * successful format (ADR-0142) -- never set by diskrole_create()
@@ -82,17 +83,38 @@ static int disk_is_os_disk(const char *disk_name, const char *os_containers_dir)
 	return 0; /* not currently a real disk at all -- can't be the OS disk */
 }
 
-static int disk_currently_present(const char *disk_name, const char *os_containers_dir)
+/*
+ * Is a block device with this name present right now?
+ *
+ * Answered from sysfs, with no block I/O at all -- and that is the
+ * point.
+ *
+ * This used to call disk_enumerate(), which opens every block device it
+ * finds and READS ITS SUPERBLOCK to identify the filesystem
+ * (disk_probe_fs_type()). stallwatch (#100) caught the consequence:
+ * GET /v1/diskroles blocked in blk_execute_rq -- the kernel waiting on
+ * a block-device command -- for six seconds, on the single-threaded
+ * event loop, while the disk was busy with a build.
+ *
+ * The superblock read exists to fill in fs_type. This field is
+ * "present", which never looks at fs_type. It was paying for an answer
+ * it did not use.
+ *
+ * The check is faithful rather than approximate: disk_enumerate()
+ * decides something is a real block device by reading its "size"
+ * attribute and skipping anything without one (that is how loop-control
+ * and friends are excluded), and it lists whole disks and partitions
+ * alike. Testing for that same attribute asks exactly the question
+ * enumeration would have answered, and costs one stat.
+ */
+static int disk_currently_present(const char *disk_name)
 {
-	struct discovered_disk disks[DISK_ENUM_MAX];
-	int n = disk_enumerate(disks, DISK_ENUM_MAX, os_containers_dir);
-	int i;
+	char path[PATH_MAX];
 
-	for (i = 0; i < n; i++) {
-		if (strcmp(disks[i].name, disk_name) == 0)
-			return 1;
-	}
-	return 0;
+	if (disk_name == NULL || disk_name[0] == '\0' || strchr(disk_name, '/') != NULL)
+		return 0;
+	snprintf(path, sizeof(path), "/sys/class/block/%s/size", disk_name);
+	return access(path, F_OK) == 0;
 }
 
 static int save_state(void)
@@ -259,8 +281,7 @@ const char *diskrole_lookup_fs_type(const char *disk_name)
 	return (r != NULL && r->fs_type[0] != '\0') ? r->fs_type : NULL;
 }
 
-static void write_role_json_one(const struct diskrole_entry *r, struct json_writer *w,
-                                 const char *os_containers_dir)
+static void write_role_json_one(const struct diskrole_entry *r, struct json_writer *w)
 {
 	jw_obj_open(w);
 	jw_key(w, "disk_name");
@@ -268,7 +289,7 @@ static void write_role_json_one(const struct diskrole_entry *r, struct json_writ
 	jw_key(w, "role");
 	jw_str(w, role_str(r->role));
 	jw_key(w, "present");
-	jw_bool(w, disk_currently_present(r->disk_name, os_containers_dir));
+	jw_bool(w, disk_currently_present(r->disk_name));
 	if (r->fs_type[0] != '\0') {
 		jw_key(w, "fs_type");
 		jw_str(w, r->fs_type);
@@ -281,9 +302,10 @@ int diskrole_write_json_one(const char *disk_name, struct json_writer *w,
 {
 	struct diskrole_entry *r = role_find(disk_name);
 
+	(void)os_containers_dir; /* presence no longer needs an enumeration */
 	if (r == NULL)
 		return 0;
-	write_role_json_one(r, w, os_containers_dir);
+	write_role_json_one(r, w);
 	return 1;
 }
 
@@ -291,10 +313,11 @@ void diskrole_write_json_list(struct json_writer *w, const char *os_containers_d
 {
 	int i;
 
+	(void)os_containers_dir; /* presence no longer needs an enumeration */
 	jw_arr_open(w);
 	for (i = 0; i < DISKROLE_MAX; i++) {
 		if (g_roles[i].in_use)
-			write_role_json_one(&g_roles[i], w, os_containers_dir);
+			write_role_json_one(&g_roles[i], w);
 	}
 	jw_arr_close(w);
 }
