@@ -55,6 +55,34 @@ void resolv_repoint(const char *new_state_path);
  */
 enum resolv_error resolv_set(const char *const *nameservers, int count);
 
+/*
+ * Issue #135: break the fresh-install cycle -- a new box has no
+ * recipes, recipes are fetched by hostname, hostnames need DNS, and
+ * this platform's DNS is containers built FROM recipes.
+ *
+ * The way out was already sitting in the configuration and never
+ * connected to anything: the DNS forwarders (issue #134) are real
+ * upstream resolvers, and on a site network they resolve the site's own
+ * names -- verified against this deployment's own forwarders, which
+ * answer for the git host the recipes come from. A host that resolves
+ * through them can fetch recipes, build its DNS containers, and only
+ * then point at itself.
+ *
+ * Applies the forwarders as the host's own resolvers, but ONLY when the
+ * host has none configured. An operator who has set them deliberately
+ * is never overridden: a resolver list is exactly the kind of setting
+ * someone changes for a reason the daemon cannot see, and a config that
+ * silently reverts is worse than one that never helped.
+ *
+ * Returns 1 if it wrote something, 0 if it left an existing
+ * configuration alone or had no forwarders to apply, -1 on a write
+ * failure.
+ */
+int resolv_seed_from_forwarders(const char *const *forwarders, int count);
+
+/* How many nameservers are currently configured. */
+int resolv_configured_count(void);
+
 void resolv_write_json(struct json_writer *w);
 
 #endif /* RESOLV_H */

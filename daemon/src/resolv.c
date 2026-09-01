@@ -130,3 +130,45 @@ void resolv_write_json(struct json_writer *w)
 	jw_arr_close(w);
 	jw_obj_close(w);
 }
+
+int resolv_configured_count(void)
+{
+	return g_count;
+}
+
+int resolv_seed_from_forwarders(const char *const *forwarders, int count)
+{
+	int i, n = 0;
+	const char *use[RESOLV_MAX_NAMESERVERS];
+
+	/*
+	 * Never overwrite a configured resolver list. See resolv.h for
+	 * why: this is a setting an operator changes for reasons the
+	 * daemon cannot see, and a value that silently reverts is worse
+	 * than one that was never applied.
+	 */
+	if (g_count > 0)
+		return 0;
+	if (forwarders == NULL || count <= 0)
+		return 0;
+
+	for (i = 0; i < count && n < RESOLV_MAX_NAMESERVERS; i++) {
+		struct in_addr a;
+
+		if (forwarders[i] == NULL || forwarders[i][0] == '\0')
+			continue;
+		/* The forwarder list is validated as IPv4 where it is set,
+		 * but this re-checks rather than trusting a caller: writing
+		 * a malformed line into the file glibc actually reads would
+		 * break resolution for everything, which is the opposite of
+		 * the intent. */
+		if (inet_pton(AF_INET, forwarders[i], &a) != 1)
+			continue;
+		use[n++] = forwarders[i];
+	}
+	if (n == 0)
+		return 0;
+	if (resolv_set(use, n) != RESOLV_OK)
+		return -1;
+	return 1;
+}
