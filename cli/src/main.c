@@ -10070,10 +10070,13 @@ static int materialize_one(const struct cix_client *c, const char *image, const 
 	 * "/v1/pkg/%s@%s" by hand, which test_api_surfaces refused
 	 * (ADR-0218): a hand-typed path compiles, works, and breaks
 	 * silently the day the contract moves. Reaching for the generated
-	 * CIX_API_getPkg constant instead was then refused too, for a
-	 * better reason -- that operation declares `x-cix-expose: []`, so
-	 * the contract exposes it to no channel at all, and "the API
-	 * decides which channel offers a capability, not the channel".
+	 * constant of the single-package GET instead was then refused too,
+	 * for a better reason -- that operation declares
+	 * `x-cix-expose: []`, so the contract exposes it to no channel at
+	 * all, and "the API decides which channel offers a capability, not
+	 * the channel". (Its constant is deliberately not named here: the
+	 * exposure check searches the whole file as a blob, so writing the
+	 * token in a comment reads as a call. See #234.)
 	 *
 	 * listPkg is exposed to cli and returns every package with its
 	 * state, so the answer is here; it just has to be looked up rather
