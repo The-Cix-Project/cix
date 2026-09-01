@@ -12123,6 +12123,53 @@ static void fmt_pkg_cache_status(const struct json_value *v)
 	       entry_count);
 }
 
+/*
+ * `cixctl pkg drift` -- issue #217.
+ *
+ * Prints the denominator, not just the list. "12 behind" reads very
+ * differently against 30 packages than against 300, and a bare list
+ * gives an operator no way to tell which they are looking at.
+ */
+static void fmt_pkg_drift(const struct json_value *v)
+{
+	long installed = (long)json_as_number(json_object_get(v, "installed"));
+	long behind = (long)json_as_number(json_object_get(v, "behind"));
+	const struct json_value *arr = json_object_get(v, "packages");
+	size_t i;
+
+	if (behind == 0) {
+		printf("%ld installed, all current\n", installed);
+		return;
+	}
+
+	printf("%-24s %-16s %-16s %s\n", "PACKAGE", "IMAGE", "INSTALLED", "AVAILABLE");
+	if (arr == NULL || arr->type != JSON_ARRAY)
+		return;
+	for (i = 0; i < arr->u.array.count; i++) {
+		const struct json_value *e = arr->u.array.items[i];
+		const char *name = json_str_field(e, "name");
+		const char *image = json_str_field(e, "image");
+		const char *iv = json_str_field(e, "installed_version");
+		const char *av = json_str_field(e, "available_version");
+
+		printf("%-24s %-16s %-16s %s\n", name ? name : "?", image ? image : "?",
+		       iv ? iv : "?", av ? av : "?");
+	}
+	printf("\n%ld of %ld installed packages are behind their recipes\n", behind, installed);
+	printf("run `cixctl pkg update-all` to upgrade one, repeatedly to drain the rest\n");
+}
+
+static int cmd_pkg_drift(const struct cix_client *c, int json_mode)
+{
+	struct cix_response r;
+
+	if (cix_client_request(c, CIX_API_getPkgDrift_METHOD, CIX_API_getPkgDrift, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_pkg_drift);
+}
+
 static int cmd_pkg_cache_config_show(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
@@ -13576,6 +13623,8 @@ static int cmd_pkg(const struct cix_client *c, int json_mode, int argc, char **a
 		return cmd_pkg_sync(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "sync-status") == 0)
 		return cmd_pkg_sync_status(c, json_mode);
+	if (strcmp(sub, "drift") == 0)
+		return cmd_pkg_drift(c, json_mode);
 	if (strcmp(sub, "cache-config") == 0)
 		return cmd_pkg_cache_config(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "buildenv") == 0)

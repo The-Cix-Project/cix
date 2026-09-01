@@ -23645,6 +23645,23 @@ static void handle_pkg_cache_get(int fd)
 	jw_free(&w);
 }
 
+/*
+ * GET /v1/pkg/drift -- issue #217.
+ *
+ * available_version has always answered this per package; nothing
+ * aggregated it, so a host could drift a long way unseen. Reports
+ * only: POST /pkg/update-all is the verb.
+ */
+static void handle_pkg_drift_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	pkg_write_drift_json(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
 static void handle_pkg_cache_delete(int fd)
 {
 	pkg_cache_clear();
@@ -25508,6 +25525,12 @@ static void op_putPkgCacheConfig(const struct api_ctx *ctx)
 static void op_getPkgCache(const struct api_ctx *ctx)
 {
 	handle_pkg_cache_get(ctx->fd);
+}
+
+/* GET /v1/pkg/drift */
+static void op_getPkgDrift(const struct api_ctx *ctx)
+{
+	handle_pkg_drift_get(ctx->fd);
 }
 
 /* DELETE /v1/pkg/cache */
