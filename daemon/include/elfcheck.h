@@ -39,6 +39,22 @@
  * every file of every install, so "not my concern" and "unreadable"
  * must not be the same answer.
  */
+#define ELFCHECK_SONAME_MAX 128
+
+/*
+ * The shared libraries a binary declares in its own .dynamic section.
+ * Returns how many were written, or -1 if the file could not be read as
+ * an ELF64 object. Sonames, not paths -- where a library lives is a
+ * property of the system, not of the binary, so resolving them is the
+ * caller's job.
+ *
+ * Added for #224: test_dns carried a hardcoded twenty-library closure
+ * for DEBIAN's dnsmasq, so it could not run on a Cix host, whose own
+ * dnsmasq needs two. A list kept beside a binary is the hand-maintained
+ * pair that drifts; the binary already states its own answer.
+ */
+int elfcheck_needed_libs(const char *path, char out[][ELFCHECK_SONAME_MAX], int max);
+
 int elfcheck_undefined_builtin(const char *path, char *out_sym, size_t sym_size);
 
 /*
