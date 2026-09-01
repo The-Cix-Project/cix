@@ -15,11 +15,22 @@
  * never resumes reading is eventually dropped, rather than pinning a
  * connection and its buffered response forever.
  *
+ * That second half is asserted through the daemon's own log rather than
+ * by watching for EOF on the stalled socket, and the reason is worth
+ * stating because the obvious test is wrong. A client that never reads
+ * advertises a zero receive window, and TCP cannot deliver a FIN
+ * through one -- the kernel sits in zero-window probing instead. So the
+ * daemon can close the connection and the peer still observes nothing
+ * at all. Confirmed on a real host: the drop was recorded ("after
+ * 110048 of 1797803 bytes") while the client saw neither EOF nor error.
+ * Asserting on EOF would have failed against correct behaviour.
+ *
  * The slow client asks for /app.js because it is a real, large asset
  * (hundreds of KB) already served by this daemon -- comfortably beyond
  * what the socket buffers on both ends can absorb, which is what makes
  * the stall deterministic rather than timing-dependent.
  */
+#include "httpclient.h"
 #include "test_image_fixture.h"
 
 #include <arpa/inet.h>
@@ -168,6 +179,7 @@ int main(void)
 	char *dargv[4];
 	char data_dir[PATH_MAX];
 	char data_dir_arg[PATH_MAX + 11];
+	struct cix_client client;
 	int slow_fd;
 	int ok = 1;
 	int i;
@@ -192,6 +204,8 @@ int main(void)
 		perror("execve build/cixd");
 		_exit(127);
 	}
+
+	cix_client_init(&client, "127.0.0.1", TEST_PORT);
 
 	for (i = 0; i < 50; i++) {
 		if (probe_health() >= 0)
@@ -239,29 +253,24 @@ int main(void)
 			close(slow_fd);
 		ok = 0;
 	} else {
-		char buf[4096];
-		ssize_t n;
-		int saw_eof = 0;
+		struct cix_response r;
 
 		printf("  waiting %ds for the write deadline\n", DEADLINE_WAIT_SECONDS);
 		sleep(DEADLINE_WAIT_SECONDS);
 
-		for (;;) {
-			n = read(slow_fd, buf, sizeof(buf));
-			if (n == 0) {
-				saw_eof = 1;
-				break;
-			}
-			if (n < 0)
-				break; /* timed out: still open, deadline never fired */
-		}
-		if (!saw_eof) {
-			fprintf(stderr, "FAIL: a client that never read was not dropped after "
-			                "%ds -- the write deadline did not fire\n",
-			        DEADLINE_WAIT_SECONDS);
+		if (cix_client_request(&client, "GET", "/v1/system/logs?limit=2000", NULL, &r) != 0) {
+			fprintf(stderr, "FAIL: could not read the log store\n");
 			ok = 0;
 		} else {
-			printf("  stalled client dropped by the write deadline\n");
+			if (r.body == NULL || strstr(r.body, "stopped reading its response") == NULL) {
+				fprintf(stderr, "FAIL: a client that never read was not dropped "
+				                "after %ds -- the write deadline did not fire\n",
+				        DEADLINE_WAIT_SECONDS);
+				ok = 0;
+			} else {
+				printf("  stalled client dropped by the write deadline\n");
+			}
+			cix_response_free(&r);
 		}
 		close(slow_fd);
 	}
