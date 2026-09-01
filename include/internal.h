@@ -104,6 +104,11 @@ int container_net_host_setup(const struct network_spec *nets, int net_count, pid
  * connected route, which the kernel already installed as a side
  * effect of the address assignment.
  */
+/* Brings loopback up in the caller's own netns. Called for every
+ * container that has one, not only those with networks -- see the
+ * definition for why a build sandbox needs it (#224). */
+int container_net_child_loopback_up(void);
+
 int container_net_child_configure(const struct network_spec *nets, int net_count,
                                    int ready_pipe_read);
 

@@ -47,6 +47,44 @@ int container_net_host_setup(const struct network_spec *nets, int net_count, pid
 	return 0;
 }
 
+/*
+ * Loopback, for ANY container with its own network namespace -- whether
+ * or not it has a single network attached (#224).
+ *
+ * A fresh netns starts with lo present but DOWN, so 127.0.0.1 is not
+ * assignable. That is invisible until something binds it, and then it
+ * fails as "Cannot assign requested address", which reads like a
+ * configuration mistake rather than a missing interface.
+ *
+ * This used to live inside container_net_child_configure(), which
+ * container.c calls only when net_count > 0. So a container with no
+ * networks -- every package build sandbox, which is deliberately
+ * isolated from the network -- had no working loopback either. Measured
+ * on a real build container: uid 0, a writable data dir, fork and
+ * waitpid all fine, and a bind to 127.0.0.1 refused. That one missing
+ * interface is what stopped 67 daemon-linked tests from being runnable
+ * in the build gate, since every one of them forks a cixd and talks to
+ * it over loopback.
+ *
+ * Loopback is not network access: it reaches nothing outside the
+ * namespace, so a build sandbox stays as isolated from the network as
+ * it was. What changes is that it stops being isolated from ITSELF,
+ * which no real Linux system is and no software expects to be.
+ */
+int container_net_child_loopback_up(void)
+{
+	int fd = rtnl_open();
+
+	if (fd < 0)
+		return -1;
+	if (rtnl_link_set_up(fd, "lo") != 0) {
+		rtnl_close(fd);
+		return -1;
+	}
+	rtnl_close(fd);
+	return 0;
+}
+
 int container_net_child_configure(const struct network_spec *nets, int net_count,
                                    int ready_pipe_read)
 {
@@ -80,10 +118,6 @@ int container_net_child_configure(const struct network_spec *nets, int net_count
 		}
 	}
 
-	if (rtnl_link_set_up(fd, "lo") != 0) {
-		rtnl_close(fd);
-		return -1;
-	}
 	/* nets[0] is "primary": the only attachment that could get a
 	 * default route, and only when its network actually has a
 	 * host-owned address to route through -- a container on a pure-L2
