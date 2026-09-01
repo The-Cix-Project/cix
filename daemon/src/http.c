@@ -220,6 +220,25 @@ int http_write_response(int fd, int status, const char *status_text,
  * CRLF-terminated ("X-A: 1\r\nX-B: 2\r\n"); it is caller-built from
  * fixed formats, never from request input.
  */
+static http_response_sink_fn g_response_sink;
+
+void http_set_response_sink(http_response_sink_fn fn)
+{
+	g_response_sink = fn;
+}
+
+/*
+ * One response chunk out. Goes to the installed sink when there is one
+ * (#237 -- main.c buffers it against the connection), otherwise
+ * straight to the socket exactly as this module always did.
+ */
+static int http_emit(int fd, const void *buf, size_t n)
+{
+	if (g_response_sink != NULL)
+		return g_response_sink(fd, buf, n);
+	return tls_write_all(fd, buf, n);
+}
+
 int http_write_response_hdrs(int fd, int status, const char *status_text,
                               const char *content_type, const char *extra_headers,
                               const char *body, size_t body_len)
@@ -239,9 +258,9 @@ int http_write_response_hdrs(int fd, int status, const char *status_text,
 	if (hlen < 0 || (size_t)hlen >= sizeof(header))
 		return -1;
 
-	if (tls_write_all(fd, header, (size_t)hlen) != 0)
+	if (http_emit(fd, header, (size_t)hlen) != 0)
 		return -1;
-	if (body_len > 0 && tls_write_all(fd, body, body_len) != 0)
+	if (body_len > 0 && http_emit(fd, body, body_len) != 0)
 		return -1;
 	return 0;
 }
@@ -253,4 +272,13 @@ int http_set_blocking(int fd)
 	if (flags < 0)
 		return -1;
 	return fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
+}
+
+int http_set_nonblocking(int fd)
+{
+	int flags = fcntl(fd, F_GETFL, 0);
+
+	if (flags < 0)
+		return -1;
+	return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 }
