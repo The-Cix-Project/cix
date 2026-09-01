@@ -1,0 +1,203 @@
+/*
+ * ADR-0224, the Toolchain Tenet: TCC by right, gcc by evidence.
+ *
+ * The rule is that Cix's own code is always TCC, third-party packages
+ * are TCC by default, and a package moves to gcc only by clearing a
+ * four-part bar. The rule is not the interesting part -- an informal
+ * version of it already existed, as prose in CLAUDE.md, and did not
+ * stop gcc reaching 21 recipes without anyone counting.
+ *
+ * This is the part that makes it real: a NUMBER that changes visibly.
+ * Adding a gcc exception means editing the count below, in a diff,
+ * deliberately -- the same device test_apigen uses to keep the REST
+ * surface honest. A rule nobody can count is a rule that has already
+ * been broken, and this project has the evidence: 34 of 139 installed
+ * packages had drifted behind their recipes because nothing counted
+ * them either (#217).
+ *
+ * Deliberately checks only what is mechanically true: whether a
+ * recipe's pkg_build() invokes gcc. Whether the reason recorded beside
+ * it is a GOOD reason is review, and a gate pretending to judge that
+ * would be the kind that passes while the thing it names is wrong.
+ *
+ * Comments are excluded from the scan on purpose. Several recipes
+ * discuss gcc at length -- why they do not use it, or what it did
+ * differently -- and counting prose would make the number meaningless
+ * within a week.
+ */
+#include <dirent.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+
+/*
+ * Every recipe whose latest revision builds with gcc, as of ADR-0224.
+ *
+ * These are GRANDFATHERED, not blessed: the ADR requires each to carry
+ * pkg_toolchain= and a reason naming the compiler gap it waits on, and
+ * that backfill is tracked separately. What this list does today is
+ * stop the set GROWING unnoticed, which is the failure that mattered.
+ */
+static const char *const g_gcc_recipes[] = {
+	"binutils", "binutils-dev", "bird", "btrfs-progs", "efivar", "elfutils",
+	"gcc", "gitea", "glauth", "glibc", "gnu-efi", "grub", "kernel",
+	"keyutils", "kmod", "libblkid", "libxcrypt", "linux-headers", "perl",
+	"probe-gcc-headers", "python",
+};
+#define GCC_RECIPE_COUNT ((int)(sizeof(g_gcc_recipes) / sizeof(g_gcc_recipes[0])))
+
+static int g_failures;
+
+static void fail(const char *fmt, ...)
+{
+	va_list ap;
+
+	fputs("FAIL: ", stderr);
+	va_start(ap, fmt);
+	vfprintf(stderr, fmt, ap);
+	va_end(ap);
+	fputc('\n', stderr);
+	g_failures++;
+}
+
+static int known_gcc_recipe(const char *name)
+{
+	int i;
+
+	for (i = 0; i < GCC_RECIPE_COUNT; i++) {
+		if (strcmp(g_gcc_recipes[i], name) == 0)
+			return 1;
+	}
+	return 0;
+}
+
+/* Highest version directory, the same "latest revision" rule the
+ * daemon's own resolution uses: digit runs numerically, the rest
+ * lexically. */
+static int version_newer(const char *a, const char *b)
+{
+	while (*a != '\0' && *b != '\0') {
+		if (*a >= '0' && *a <= '9' && *b >= '0' && *b <= '9') {
+			long na = 0, nb = 0;
+
+			while (*a >= '0' && *a <= '9')
+				na = na * 10 + (*a++ - '0');
+			while (*b >= '0' && *b <= '9')
+				nb = nb * 10 + (*b++ - '0');
+			if (na != nb)
+				return na > nb;
+			continue;
+		}
+		if (*a != *b)
+			return (unsigned char)*a > (unsigned char)*b;
+		a++;
+		b++;
+	}
+	return *b == '\0' && *a != '\0';
+}
+
+/*
+ * Does this recipe's pkg_build() actually invoke gcc?
+ *
+ * Scans from pkg_build() onward, skipping comment lines. Anything
+ * before pkg_build() is metadata and prose.
+ */
+static int recipe_uses_gcc(const char *path)
+{
+	FILE *f = fopen(path, "r");
+	char line[4096];
+	int in_build = 0, uses = 0;
+
+	if (f == NULL)
+		return 0;
+	while (fgets(line, sizeof(line), f) != NULL) {
+		const char *p = line;
+
+		if (!in_build) {
+			if (strncmp(line, "pkg_build()", 11) == 0)
+				in_build = 1;
+			continue;
+		}
+		while (*p == ' ' || *p == '\t')
+			p++;
+		if (*p == '#')
+			continue;
+		if (strstr(p, "/usr/bin/gcc") != NULL || strstr(p, "CC=gcc") != NULL ||
+		    strstr(p, "--cc=gcc") != NULL || strstr(p, "-Dcc=gcc") != NULL) {
+			uses = 1;
+			break;
+		}
+	}
+	fclose(f);
+	return uses;
+}
+
+int main(void)
+{
+	DIR *d = opendir("recipes/package");
+	struct dirent *ent;
+	int found = 0;
+
+	if (d == NULL) {
+		fprintf(stderr, "FAIL: cannot open recipes/package -- run from the repository root\n");
+		return 1;
+	}
+
+	while ((ent = readdir(d)) != NULL) {
+		char pkgdir[1024], latest[256] = "", path[2048];
+		DIR *vd;
+		struct dirent *vent;
+
+		if (ent->d_name[0] == '.')
+			continue;
+		snprintf(pkgdir, sizeof(pkgdir), "recipes/package/%s", ent->d_name);
+		vd = opendir(pkgdir);
+		if (vd == NULL)
+			continue;
+		while ((vent = readdir(vd)) != NULL) {
+			struct stat st;
+
+			if (vent->d_name[0] == '.')
+				continue;
+			snprintf(path, sizeof(path), "%s/%s/build.sh", pkgdir, vent->d_name);
+			if (stat(path, &st) != 0)
+				continue;
+			if (latest[0] == '\0' || version_newer(vent->d_name, latest))
+				snprintf(latest, sizeof(latest), "%s", vent->d_name);
+		}
+		closedir(vd);
+		if (latest[0] == '\0')
+			continue;
+
+		snprintf(path, sizeof(path), "%s/%s/build.sh", pkgdir, latest);
+		if (!recipe_uses_gcc(path))
+			continue;
+		found++;
+		if (!known_gcc_recipe(ent->d_name)) {
+			fail("%s@%s builds with gcc and is not in this test's list.\n"
+			     "       ADR-0224: a package moves to gcc only by clearing the bar --\n"
+			     "       a measured failure, not fixable at recipe level, in a recognised\n"
+			     "       class, with an issue tracking the TCC gap. If it clears all four,\n"
+			     "       add it to g_gcc_recipes[] here. That edit is the point: it makes\n"
+			     "       the exception visible in a diff instead of arriving unnoticed.",
+			     ent->d_name, latest);
+		}
+	}
+	closedir(d);
+
+	if (found != GCC_RECIPE_COUNT)
+		fail("found %d recipes building with gcc, this test expects %d.\n"
+		     "       If one was RETIRED back to TCC -- which is the direction this list\n"
+		     "       is supposed to move -- remove it from g_gcc_recipes[] and lower the\n"
+		     "       count with it.",
+		     found, GCC_RECIPE_COUNT);
+
+	if (g_failures > 0) {
+		fprintf(stderr, "TOOLCHAIN POLICY: FAIL (%d)\n", g_failures);
+		return 1;
+	}
+	printf("TOOLCHAIN POLICY: PASS (%d gcc exceptions, all declared)\n", found);
+	return 0;
+}
