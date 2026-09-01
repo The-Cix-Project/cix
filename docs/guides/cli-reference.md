@@ -14,6 +14,37 @@ cixctl [--host=ADDR] [--port=N] [--json] <command> [args...]
 - **Exit codes**: `0` success, `1` the API call itself failed (a non-2xx response, or a transport-level failure reaching the daemon), `2` a usage error (bad flags, unknown subcommand) — checked before any network call is made.
 - **Authentication (ADR-0144)**: once a daemon has write-gating active (see [`docs/api/README.md`'s own "Host authentication" section](../api/README.md#host-authentication-adr-0144)), every mutating command needs a session — run `login` once and every subsequent `cixctl` invocation on this machine authenticates automatically via the persisted token, until `logout` or the session's own idle timeout expires it. `GET`-only commands (`health`, `container ls`, every `... ls`/`... show`) never need one.
 
+## Seeding a fresh box
+
+```
+cixctl --host=NEWBOX image recipe add --name=toolchain --file=recipes/image/toolchain/1.0.0/build.sh
+cixctl --host=NEWBOX image materialize toolchain
+```
+
+One command turns an image recipe into a real, populated build image.
+It creates the image if absent, declares its manifest from the recipe,
+and installs every package in it.
+
+This is what a freshly installed box needs and previously could not get.
+A real install has no shell and no SSH, so the older routes — hand the
+daemon a 1.4 GB squashfs by local path, or stand up an HTTP server to
+serve one — were not things you could ask of an operator, and the
+remaining route copied the daemon host's own `/usr`, which is how a
+developer workstation's rustup, cargo, chromium and node ended up inside
+`cix-builder` ([#168](https://git.home.arpa/itdlabs/cix/issues/168),
+[ADR-0225](../adr/0225-build-images-are-composed-from-packages.md)).
+
+None of that is needed now, because an install that finds an approved
+prebuilt artifact verifies it against the recipe's own checksum and
+stages it **without composing a build sandbox** — so a host with no
+compiler can install any approved package. Measured on a fresh image:
+the whole 27-package toolchain, gcc included, in **about thirty
+seconds**, with no compilation at all.
+
+A package that arrives as another's build dependency is reported as
+`already present`, not as an error — installing gcc brings binutils, m4,
+flex and zlib with it.
+
 ## Configuration
 
 ```

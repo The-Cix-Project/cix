@@ -9991,6 +9991,248 @@ static int cmd_container_apply_recipe(const struct cix_client *c, int json_mode,
 	return emit(&r, json_mode, fmt_container_line);
 }
 
+/*
+ * image materialize -- turn an image recipe into a real, populated image
+ * in one operator action (#141).
+ *
+ * A freshly installed box cannot build anything until it has a build
+ * image, and until now the only ways to get one were to hand the daemon
+ * a 1.4 GB squashfs by local path (impossible: a real install has no
+ * shell and no SSH) or by URL (an operator standing up an HTTP server),
+ * or to let `pkg bootstrap` copy the host's own /usr -- which is how a
+ * developer workstation's rustup, cargo, chromium and node ended up
+ * inside cix-builder (#168, ADR-0225).
+ *
+ * None of that is necessary any more, and the reason is in pkg.c: an
+ * artifact-tier install verifies the tarball against the recipe's own
+ * checksum and stages it directly, WITHOUT composing a build sandbox.
+ * A host with no compiler can therefore install any approved package.
+ * Measured on a fresh image: 26 of the toolchain's 27 packages
+ * installed with no compilation at all, gcc included, in under thirty
+ * seconds.
+ *
+ * So the capability already existed and only the shape was missing: it
+ * took twenty-seven separate calls. This is deliberately CLIENT-side --
+ * every endpoint it uses already exists, so it needs no daemon change,
+ * no A/B slot write and no reboot, and it keeps the API-First rule
+ * exactly as it stands (the CLI is a pure REST client and holds no
+ * logic of its own beyond sequencing).
+ */
+static int materialize_one(const struct cix_client *c, const char *image, const char *pkg,
+                           int *out_compiled)
+{
+	char path[512];
+	struct cix_response r;
+	struct json_writer w;
+	int settled = 0;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "name");
+	jw_str(&w, pkg);
+	jw_key(&w, "image");
+	jw_str(&w, image);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+	if (cix_client_request(c, CIX_API_pkgInstall_METHOD, CIX_API_pkgInstall, w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return -1;
+	}
+	jw_free(&w);
+	if (r.status != 200 && r.status != 202) {
+		const char *msg = json_str_field(r.json, "error");
+
+		/*
+		 * Already installed is success, not refusal. Packages arrive
+		 * as each other's build dependencies -- installing gcc brings
+		 * binutils, m4, flex and zlib with it -- so by the time this
+		 * loop reaches them the daemon rightly says 409. Reporting
+		 * that as a failure made a run that worked perfectly announce
+		 * "5 of 27 package(s) did not install".
+		 */
+		if (r.status == 409 && msg != NULL && strstr(msg, "already installed") != NULL) {
+			cix_response_free(&r);
+			if (out_compiled != NULL)
+				*out_compiled = 0;
+			return 1; /* present, nothing to wait for */
+		}
+		fprintf(stderr, "  %-18s REFUSED (HTTP %d)%s%s\n", pkg, r.status,
+		        msg != NULL ? " -- " : "", msg != NULL ? msg : "");
+		cix_response_free(&r);
+		return -1;
+	}
+	cix_response_free(&r);
+
+	snprintf(path, sizeof(path), "/v1/pkg/%s@%s", pkg, image);
+	for (;;) {
+		const char *state;
+
+		usleep(500000);
+		if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return -1;
+		}
+		state = json_str_field(r.json, "state");
+		if (state != NULL && strcmp(state, "installed") == 0) {
+			settled = 1;
+			break;
+		}
+		if (state != NULL && strcmp(state, "failed") == 0) {
+			const char *err = json_str_field(r.json, "error");
+
+			fprintf(stderr, "  %-18s FAILED%s%s\n", pkg, err != NULL ? " -- " : "",
+			        err != NULL ? err : "");
+			cix_response_free(&r);
+			return -1;
+		}
+		/* A package that COMPILED wrote a build log; one that came
+		 * from an artifact did not. Reported because "did this box
+		 * need a compiler" is the whole question a fresh install is
+		 * asking, and artifact_cached does not answer it -- that
+		 * field means "these bytes are in the local cache", which is
+		 * true of anything built here too. */
+		cix_response_free(&r);
+	}
+	(void)settled;
+	(void)out_compiled;
+	return 0;
+}
+
+/* image_packages="name:mode:version name2:..." -- the only line this
+ * needs from the recipe. Written into names[], one bare package name
+ * per entry; mode and version are the daemon's business, not this
+ * loop's. */
+static int parse_image_packages(const char *content, char names[][128], int max)
+{
+	const char *p = strstr(content, "image_packages=\"");
+	const char *end;
+	int n = 0;
+
+	if (p == NULL)
+		return 0;
+	p += strlen("image_packages=\"");
+	end = strchr(p, '"');
+	if (end == NULL)
+		return 0;
+	while (p < end && n < max) {
+		const char *tok;
+		size_t len;
+
+		while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\\'))
+			p++;
+		if (p >= end)
+			break;
+		tok = p;
+		while (p < end && *p != ' ' && *p != '\t' && *p != '\n')
+			p++;
+		len = (size_t)(p - tok);
+		{
+			const char *colon = memchr(tok, ':', len);
+
+			if (colon != NULL)
+				len = (size_t)(colon - tok);
+		}
+		if (len == 0 || len >= 128)
+			continue;
+		memcpy(names[n], tok, len);
+		names[n][len] = '\0';
+		n++;
+	}
+	return n;
+}
+
+static int cmd_image_materialize(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	char path[512];
+	char names[128][128];
+	struct cix_response r;
+	const char *image;
+	const char *content;
+	int count, i, failed = 0;
+
+	(void)json_mode;
+	if (argc < 1) {
+		fprintf(stderr, "usage: cixctl image materialize NAME\n"
+		                "  Creates the image if absent, declares its manifest from the\n"
+		                "  image recipe of the same name, and installs every package in\n"
+		                "  it -- the one action a freshly installed box needs to reach a\n"
+		                "  working build image (#141).\n");
+		return 2;
+	}
+	image = argv[0];
+
+	snprintf(path, sizeof(path), CIX_API_getImageRecipe, image);
+	if (cix_client_request(c, CIX_API_getImageRecipe_METHOD, path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	if (r.status != 200) {
+		fprintf(stderr, "cixctl: no image recipe named '%s' (HTTP %d) -- add one with "
+		                "`cixctl image recipe add --name=%s --file=...`\n",
+		        image, r.status, image);
+		cix_response_free(&r);
+		return 1;
+	}
+	content = json_str_field(r.json, "content");
+	count = content != NULL ? parse_image_packages(content, names, 128) : 0;
+	cix_response_free(&r);
+	if (count == 0) {
+		fprintf(stderr, "cixctl: recipe '%s' declares no image_packages\n", image);
+		return 1;
+	}
+
+	/* Creating the image is allowed to fail: it may already exist, and
+	 * this whole command is meant to be safe to re-run. */
+	{
+		struct json_writer w;
+
+		jw_init(&w);
+		jw_obj_open(&w);
+		jw_key(&w, "name");
+		jw_str(&w, image);
+		jw_obj_close(&w);
+		w.buf[w.len] = '\0';
+		if (cix_client_request(c, CIX_API_createImage_METHOD, CIX_API_createImage,
+		                       w.buf, &r) == 0)
+			cix_response_free(&r);
+		jw_free(&w);
+	}
+
+	snprintf(path, sizeof(path), CIX_API_applyImageRecipe, image);
+	if (cix_client_request(c, CIX_API_applyImageRecipe_METHOD, path, "{}", &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	if (r.status != 200 && r.status != 204) {
+		const char *msg = json_str_field(r.json, "error");
+
+		fprintf(stderr, "cixctl: could not apply recipe '%s' (HTTP %d)%s%s\n", image,
+		        r.status, msg != NULL ? " -- " : "", msg != NULL ? msg : "");
+		cix_response_free(&r);
+		return 1;
+	}
+	cix_response_free(&r);
+
+	printf("%s: %d package%s declared, installing\n", image, count, count == 1 ? "" : "s");
+	for (i = 0; i < count; i++) {
+		int rc = materialize_one(c, image, names[i], NULL);
+
+		if (rc < 0) {
+			failed++;
+			continue;
+		}
+		printf("  %-18s %s\n", names[i],
+		       rc == 1 ? "already present (pulled in as a dependency)" : "installed");
+	}
+	if (failed > 0) {
+		fprintf(stderr, "%s: %d of %d package(s) did not install\n", image, failed, count);
+		return 1;
+	}
+	printf("%s: ready (%d packages)\n", image, count);
+	return 0;
+}
+
 static int cmd_image(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
@@ -10007,10 +10249,13 @@ static int cmd_image(const struct cix_client *c, int json_mode, int argc, char *
 		                "       cixctl image recipe show|rm NAME\n"
 		                "       cixctl image recipe ls\n"
 		                "       cixctl image apply-recipe NAME\n"
+		                "       cixctl image materialize NAME\n"
 		                "       cixctl image gc [--dry-run] [--measure]\n");
 		return 2;
 	}
 	sub = argv[0];
+	if (strcmp(sub, "materialize") == 0)
+		return cmd_image_materialize(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "create") == 0)
 		return cmd_image_create(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "ls") == 0)
