@@ -37,6 +37,18 @@ struct stall_shared {
 	volatile long long heartbeat_monotonic;
 	volatile unsigned long long heartbeat_seq;
 	char activity[STALL_ACTIVITY_MAX];
+	/*
+	 * When the in-flight request started, or 0 for none (#229).
+	 *
+	 * The heartbeat answers "is the loop going round". This answers
+	 * "is it getting anywhere", and they are not the same question. A
+	 * daemon serving one slow request per iteration updates the
+	 * heartbeat every pass and is, by that measure alone, perfectly
+	 * healthy -- while being unusable from outside. Two wedges needing
+	 * a manual reset produced no record for exactly that reason: there
+	 * was correctly no stall, because the wrong thing was measured.
+	 */
+	volatile long long activity_started_monotonic;
 };
 
 static struct stall_shared *g_shared;
@@ -315,6 +327,14 @@ void stallwatch_activity(const char *what)
 {
 	if (g_shared == NULL || what == NULL)
 		return;
+	/*
+	 * Time first, then the string. The watchdog treats a non-empty
+	 * activity as "a request is in flight" and reads the start time to
+	 * age it, so writing them the other way round leaves a window
+	 * where it would age a request against a zero timestamp and report
+	 * a stall of about fifty-six years.
+	 */
+	g_shared->activity_started_monotonic = monotonic_seconds();
 	snprintf(g_shared->activity, STALL_ACTIVITY_MAX, "%s", what);
 }
 
