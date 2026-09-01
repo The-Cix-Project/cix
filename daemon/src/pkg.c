@@ -3460,8 +3460,31 @@ static long long buildenv_idle_seconds(const char *env_image)
  * Returns 0 and fills out_image, or -1 with a message saying which
  * declared tool could not be provided.
  */
+/*
+ * Resolves the build environment for a declared tool set, composing it
+ * if it does not exist yet.
+ *
+ * Returns 0 when the environment is ready to use, 1 when composition
+ * has been FORKED and out_pid/out_pidfd name the child, or -1 on a
+ * failure described in err.
+ *
+ * The fork is #238. Composition walks and copies every file of every
+ * declared tool -- for a toolchain that is gcc, glibc and binutils --
+ * and it used to run inline on the event loop. Measured on a real host,
+ * a burst of publishes that each triggered a rebuild left one client's
+ * request unanswered for 247 seconds, with no stall recorded, because
+ * the loop kept going round doing seconds of this per pass: alive by
+ * the heartbeat and unusable by every other measure.
+ *
+ * A child is safe here because image state lives on disk, not in
+ * memory -- image_current_version() re-reads manifest.json on every
+ * call -- so everything the child produces is visible to the parent
+ * simply by asking again. That is also why the resume path needs no
+ * handover: it calls this function a second time and takes the
+ * already-composed fast path above.
+ */
 static int buildenv_image_for(const char *declared, char *out_image, size_t out_image_size,
-                               char *err, size_t err_size)
+                               char *err, size_t err_size, pid_t *out_pid, int *out_pidfd)
 {
 	struct buildenv_tool tools[PKG_BUILDENV_MAX_TOOLS];
 	char canonical[PKG_BUILDENV_MAX_TOOLS * (PKG_NAME_MAX + PKG_VERSION_MAX + 2)];
@@ -3531,26 +3554,69 @@ static int buildenv_image_for(const char *declared, char *out_image, size_t out_
 	}
 	{
 		struct buildenv_ctx ctx;
+		pid_t pid;
+		int pidfd;
 
 		ctx.tools = tools;
 		ctx.tool_count = count;
-		if (image_produce_new_version(out_image, buildenv_mutate, &ctx, canonical) != 0) {
-			/*
-			 * Leave nothing half-built behind. image_produce_new_version()
-			 * creates the image before it can fail, and a created-but-
-			 * empty one is indistinguishable from a real environment by
-			 * name alone -- see the guard above for what that cost.
-			 */
-			image_delete(out_image);
-			snprintf(err, err_size, "could not compose a build environment from the declared "
-			                        "tools");
+
+		logstore_write("cixd", "info",
+		               "pkg: composing build environment %s from %d declared tool(s)", out_image,
+		               count);
+
+		pid = fork();
+		if (pid < 0) {
+			snprintf(err, err_size, "could not fork to compose a build environment: %s",
+			         strerror(errno));
 			return -1;
 		}
+		if (pid == 0) {
+			int fd;
+
+			/*
+			 * Every descriptor this daemon holds was inherited by the
+			 * fork, and unlike the fetch child this one never execve()s,
+			 * so SOCK_CLOEXEC does nothing for it. Leaving them open
+			 * would keep live client sockets from reaching EOF for as
+			 * long as composition runs -- reintroducing #237's symptom
+			 * from the other direction, through the very change meant to
+			 * stop blocking clients. Closed bluntly from stderr up: this
+			 * child needs the filesystem and nothing else.
+			 */
+			for (fd = 3; fd < 4096; fd++)
+				close(fd);
+			_exit(image_produce_new_version(out_image, buildenv_mutate, &ctx, canonical) == 0 ? 0
+			                                                                                  : 1);
+		}
+
+		pidfd = sys_pidfd_open(pid, 0);
+		if (pidfd < 0) {
+			snprintf(err, err_size, "could not track the build-environment composer: %s",
+			         strerror(errno));
+			kill(pid, SIGKILL);
+			waitpid(pid, NULL, 0);
+			return -1;
+		}
+		*out_pid = pid;
+		*out_pidfd = pidfd;
+		return 1;
 	}
-	logstore_write("cixd", "info", "pkg: composed build environment %s from %d declared tool(s)",
-	               out_image, count);
-	buildenv_touch(out_image); /* ADR-0221: composing it is its first use */
-	return 0;
+}
+
+/*
+ * Called once a composer child forked above has exited. Success needs
+ * no work -- the caller simply asks buildenv_image_for() again and gets
+ * the fast path. Failure does: image_produce_new_version() creates the
+ * image before it can fail, and a created-but-empty one is
+ * indistinguishable from a real environment by name alone, so it is
+ * removed here. Removing it is also what stops a failed composition
+ * from being retried forever: the "already composed" check deliberately
+ * skips an empty image, so a leftover would be re-forked on every
+ * attempt.
+ */
+static void buildenv_compose_failed_cleanup(const char *env_image)
+{
+	image_delete(env_image);
 }
 
 static int pkg_build_sandbox_rootfs(char *out, size_t out_size)
@@ -5028,216 +5094,49 @@ static int start_build_container_spec(int chain_idx, struct pkg_entry *e,
 	return 1;
 }
 
-int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *spec_out,
-                         int *out_stdio_write_fd)
+/*
+ * Prepares and starts the build container for an install whose source
+ * is already in place.
+ *
+ * Split out of pkg_fetch_completed() for #238, and the split is the
+ * whole point: composing a build environment (ADR-0199) walks and
+ * copies every file of every declared build tool, which used to happen
+ * inline here, on the event loop. Measured on a real host, a burst of
+ * publishes that each triggered a rebuild left one client's request
+ * unanswered for 247 seconds -- with no stall recorded, because the
+ * loop kept going round doing seconds of this work per pass. Alive by
+ * the heartbeat, unusable by any other measure.
+ *
+ * So composition now runs in a forked child, and this function is
+ * re-entered when that child exits. The re-entry is why it takes only
+ * re-derivable inputs: the second call recomputes the same recipe and
+ * paths and reaches buildenv_image_for()'s "already composed" fast
+ * path, which costs nothing. Nothing here is stateful across the two
+ * calls, so a resume is indistinguishable from a first call that
+ * happened to find the environment ready.
+ *
+ * Returns 1 to start the build in spec_out, 0 if the install is over
+ * (failed, or completed without a container), or 2 if a composition
+ * child was forked -- out_compose_pid/out_compose_pidfd then name it,
+ * and pkg_buildenv_completed() continues from there.
+ */
+static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
+                                        const struct pkg_recipe *recipe_in,
+                                        int is_final_upgrade, const char *recipe_path,
+                                        struct container_spec *spec_out,
+                                        int *out_stdio_write_fd, pid_t *out_compose_pid,
+                                        int *out_compose_pidfd)
 {
-	/*
-	 * Issue #98: the fetch path has the same chain-slot-reuse exposure
-	 * the build path had, minus a container name to key on. The
-	 * discriminator here is the entry's own state: an entry that is not
-	 * FETCHING cannot be the one whose fetch just exited, so a late
-	 * event that resolved onto a reused slot's new job is dropped
-	 * instead of driving that job's package into a build it never
-	 * asked for.
-	 */
-	struct pkg_entry *e = pkg_find(g_chains[chain_idx].name, g_chains[chain_idx].image);
-	char recipe_path[PATH_MAX];
-	struct pkg_recipe recipe;
-	char sha_out[128];
+	/* Copied rather than referenced so the extracted body below reads
+	 * exactly as it did when it was inline. */
+	struct pkg_recipe recipe = *recipe_in;
 	char container_base[PATH_MAX];
 	char src_dir[PATH_MAX], dest_dir[PATH_MAX], recipe_dst[PATH_MAX], extra_dir[PATH_MAX];
-	int is_final_upgrade;
 	int i;
 
-	if (e != NULL && e->state != PKG_STATE_FETCHING)
-		return 0; /* stale: this slot has moved on (issue #98) */
-	if (e == NULL) {
-		g_chains[chain_idx].name[0] = '\0';
-		g_chains[chain_idx].dep_queue_count = 0;
-		return 0;
-	}
-	is_final_upgrade = g_chains[chain_idx].dep_queue_is_upgrade && (g_chains[chain_idx].dep_queue_pos + 1 >= g_chains[chain_idx].dep_queue_count);
+	*out_compose_pid = -1;
+	*out_compose_pidfd = -1;
 
-	/*
-	 * Issue #149: report an artifact checksum mismatch regardless of
-	 * how the fetch went on to end. Read before the exit_status branch
-	 * below precisely because it matters on SUCCESS too -- the source
-	 * fallback may well have worked, and the operator still needs to
-	 * know the cache is serving bytes the recipe does not approve.
-	 * Left unreported, this surfaces later as whatever the fallback
-	 * fails with, which on a resolver-less host is a DNS error that
-	 * mentions nothing about checksums.
-	 */
-	{
-		char note_path[PATH_MAX];
-		char note[512];
-		int nfd;
-
-		fetch_note_sidecar_path(e->name, note_path, sizeof(note_path));
-		nfd = open(note_path, O_RDONLY);
-		if (nfd >= 0) {
-			ssize_t n = read(nfd, note, sizeof(note) - 1);
-
-			close(nfd);
-			unlink(note_path);
-			if (n > 0) {
-				note[n] = '\0';
-				logstore_write("cixd", "warn", "pkg %s@%s: %s", e->name, e->image, note);
-			}
-		}
-	}
-
-	if (exit_status != 0) {
-		char fetch_err_path[PATH_MAX];
-		char detail[512];
-		int detail_len = 0;
-		int fd;
-
-		detail[0] = '\0';
-		fetch_error_sidecar_path(e->name, fetch_err_path, sizeof(fetch_err_path));
-		fd = open(fetch_err_path, O_RDONLY);
-		if (fd >= 0) {
-			ssize_t n = read(fd, detail, sizeof(detail) - 1);
-
-			close(fd);
-			unlink(fetch_err_path);
-			if (n > 0) {
-				detail_len = (int)n;
-				/* curl's own error text always ends in its own
-				 * newline; strip trailing whitespace so it reads
-				 * naturally packed into e->error/the log line
-				 * below rather than leaving a dangling blank line. */
-				while (detail_len > 0 && (detail[detail_len - 1] == '\n' ||
-				                           detail[detail_len - 1] == '\r'))
-					detail_len--;
-				detail[detail_len] = '\0';
-			}
-		}
-
-		if (exit_status == PKG_FETCH_EXIT_PRECONDITION && detail_len > 0)
-			/* Never reached curl -- a precondition failed, and the
-			 * sidecar says which. */
-			pkg_fail(e, is_final_upgrade, PKG_FAILURE_FETCH, "%s", detail);
-		else if (detail_len > 0)
-			pkg_fail(e, is_final_upgrade, PKG_FAILURE_FETCH,
-			         "fetch failed (curl exit status %d): %s", exit_status, detail);
-		else
-			pkg_fail(e, is_final_upgrade, PKG_FAILURE_FETCH, "fetch failed (curl exit status %d)",
-			         exit_status);
-		logstore_write("cixd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
-		g_chains[chain_idx].name[0] = '\0';
-		g_chains[chain_idx].dep_queue_count = 0;
-		return 0;
-	}
-
-	if (find_recipe_path(e->name, current_fetch_effective_version(chain_idx), recipe_path,
-	                      sizeof(recipe_path)) != 0 ||
-	    parse_recipe(recipe_path, &recipe) != 0) {
-		pkg_fail(e, is_final_upgrade, PKG_FAILURE_RECIPE, "recipe became unreadable mid-install");
-		g_chains[chain_idx].name[0] = '\0';
-		g_chains[chain_idx].dep_queue_count = 0;
-		return 0;
-	}
-
-	/*
-	 * ADR-0122: start_fetch_for()'s child may have left a checksum-
-	 * verified artifact tarball sitting at the sentinel path instead
-	 * of ever fetching recipe.source[] at all -- promote it into the
-	 * real local cache right here and fold this job into the exact
-	 * same cache-hit path a local cache hit already takes (set fresh
-	 * by start_fetch_for() itself; this is the only other way it ever
-	 * becomes true).
-	 */
-	if (!e->cache_hit) {
-		char artifact_sentinel[PATH_MAX];
-		struct stat st;
-
-		artifact_sentinel_path(e->name, recipe.version, artifact_sentinel,
-		                        sizeof(artifact_sentinel));
-		if (stat(artifact_sentinel, &st) == 0 && S_ISREG(st.st_mode)) {
-			pkg_cache_save_from_file(e->name, recipe.version, artifact_sentinel);
-			e->cache_hit = 1;
-		}
-	}
-
-	/*
-	 * recipe.version, not e->version -- during an in-place upgrade
-	 * e->version is deliberately still the OLD version until this job
-	 * actually succeeds; each source on disk was fetched under the
-	 * NEW version's name by start_fetch_for(). Every fetched source
-	 * (the main one at index 0, and any extras) is verified against
-	 * its own sha256 before any of them are touched further -- one
-	 * bad entry fails the whole job, matching the single-source
-	 * case's own existing all-or-nothing guarantee (ADR-0036). Skipped
-	 * entirely for a cache/artifact hit -- nothing was fetched from
-	 * recipe.source[] at all in that case.
-	 */
-	if (!e->cache_hit) {
-		for (i = 0; i < recipe.source_count; i++) {
-			char src_path[PATH_MAX];
-
-			snprintf(src_path, sizeof(src_path), "%s/%s-%s-%d.src", g_sources_dir, e->name,
-			         recipe.version, i);
-			if (pkg_run_capture_sha256(src_path, sha_out, sizeof(sha_out)) != 0 ||
-			    strcasecmp(sha_out, recipe.sha256[i]) != 0) {
-				pkg_fail(e, is_final_upgrade, PKG_FAILURE_FETCH, "checksum mismatch (source %d)",
-				         i);
-				g_chains[chain_idx].name[0] = '\0';
-				g_chains[chain_idx].dep_queue_count = 0;
-				return 0;
-			}
-		}
-	}
-
-	/*
-	 * Issue #213: a cancel that arrived before this build had a
-	 * container.
-	 *
-	 * Between the fetch finishing and the container being spawned the
-	 * entry is already PKG_STATE_BUILDING -- composing a build
-	 * environment (ADR-0199) happens in that window and is not quick --
-	 * so pkg_cancel() can legitimately be called with nothing yet to
-	 * kill. It sets the flag and returns; this is where the flag has to
-	 * be honoured, because otherwise the build would go on to spawn,
-	 * succeed, and the cancel would have silently done nothing.
-	 *
-	 * Checked before the container name is claimed (issue #98's
-	 * invariant) so a cancelled build never takes ownership of a slot
-	 * name it is not going to use.
-	 */
-	if (e->cancel_requested) {
-		e->cancel_requested = 0;
-		pkg_fail(e, is_final_upgrade, PKG_FAILURE_CANCELLED,
-		         "build cancelled by operator before it started");
-		logstore_write("cixd", "info",
-		               "pkg %s@%s: cancelled before its build container was spawned",
-		               e->name, e->image);
-		g_chains[chain_idx].name[0] = '\0';
-		g_chains[chain_idx].dep_queue_count = 0;
-		return 0;
-	}
-
-	pkg_build_container_name(chain_idx, e->build_container_name, sizeof(e->build_container_name));
-	/*
-	 * Issue #98: exactly one entry may claim a given build container
-	 * name at a time. Build container names are per chain SLOT
-	 * ("__pkgbuild-0"), and slots are reused constantly, so without
-	 * this every package that ever built in slot 0 keeps claiming
-	 * "__pkgbuild-0" forever -- and anything resolving an exited
-	 * container back to its owner finds the oldest claimant instead of
-	 * the real one. Establishing the invariant here, at the moment the
-	 * claim is made, is what makes that resolution exact.
-	 */
-	{
-		int oi;
-
-		for (oi = 0; oi < PKG_MAX_PACKAGES; oi++) {
-			if (&g_packages[oi] == e || !g_packages[oi].in_use)
-				continue;
-			if (strcmp(g_packages[oi].build_container_name, e->build_container_name) == 0)
-				g_packages[oi].build_container_name[0] = '\0';
-		}
-	}
 	snprintf(container_base, sizeof(container_base), "%s/%s", g_containers_dir,
 	         e->build_container_name);
 	/* A hostbuild job's own build container is rooted on build_image's
@@ -5309,14 +5208,27 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 		 */
 		char env_image[PKG_IMAGE_NAME_MAX];
 		char env_err[256];
+		int envr;
 
-		if (buildenv_image_for(recipe.build_depends, env_image, sizeof(env_image), env_err,
-		                        sizeof(env_err)) != 0) {
+		envr = buildenv_image_for(recipe.build_depends, env_image, sizeof(env_image), env_err,
+		                          sizeof(env_err), out_compose_pid, out_compose_pidfd);
+		if (envr < 0) {
 			pkg_fail(e, is_final_upgrade, PKG_FAILURE_BUILD, "%s", env_err);
 			logstore_write("cixd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
 			g_chains[chain_idx].name[0] = '\0';
 			g_chains[chain_idx].dep_queue_count = 0;
 			return 0;
+		}
+		if (envr == 1) {
+			/*
+			 * Composition is running in a child (#238). The chain keeps
+			 * its slot and the entry keeps its state; this function is
+			 * re-entered by pkg_buildenv_completed() when the child
+			 * exits, and takes the fast path on that second call.
+			 */
+			snprintf(g_chains[chain_idx].buildenv_image,
+			         sizeof(g_chains[chain_idx].buildenv_image), "%s", env_image);
+			return 2;
 		}
 		{
 			char env_version[IMAGE_VERSION_MAX];
@@ -5571,6 +5483,292 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 	}
 
 	return start_build_container_spec(chain_idx, e, spec_out, out_stdio_write_fd);
+}
+
+int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *spec_out,
+                         int *out_stdio_write_fd, pid_t *out_compose_pid, int *out_compose_pidfd)
+{
+	/*
+	 * Issue #98: the fetch path has the same chain-slot-reuse exposure
+	 * the build path had, minus a container name to key on. The
+	 * discriminator here is the entry's own state: an entry that is not
+	 * FETCHING cannot be the one whose fetch just exited, so a late
+	 * event that resolved onto a reused slot's new job is dropped
+	 * instead of driving that job's package into a build it never
+	 * asked for.
+	 */
+	struct pkg_entry *e = pkg_find(g_chains[chain_idx].name, g_chains[chain_idx].image);
+	char recipe_path[PATH_MAX];
+	struct pkg_recipe recipe;
+	char sha_out[128];
+	int is_final_upgrade;
+	int i;
+
+	*out_compose_pid = -1;
+	*out_compose_pidfd = -1;
+
+	if (e != NULL && e->state != PKG_STATE_FETCHING)
+		return 0; /* stale: this slot has moved on (issue #98) */
+	if (e == NULL) {
+		g_chains[chain_idx].name[0] = '\0';
+		g_chains[chain_idx].dep_queue_count = 0;
+		return 0;
+	}
+	is_final_upgrade = g_chains[chain_idx].dep_queue_is_upgrade && (g_chains[chain_idx].dep_queue_pos + 1 >= g_chains[chain_idx].dep_queue_count);
+
+	/*
+	 * Issue #149: report an artifact checksum mismatch regardless of
+	 * how the fetch went on to end. Read before the exit_status branch
+	 * below precisely because it matters on SUCCESS too -- the source
+	 * fallback may well have worked, and the operator still needs to
+	 * know the cache is serving bytes the recipe does not approve.
+	 * Left unreported, this surfaces later as whatever the fallback
+	 * fails with, which on a resolver-less host is a DNS error that
+	 * mentions nothing about checksums.
+	 */
+	{
+		char note_path[PATH_MAX];
+		char note[512];
+		int nfd;
+
+		fetch_note_sidecar_path(e->name, note_path, sizeof(note_path));
+		nfd = open(note_path, O_RDONLY);
+		if (nfd >= 0) {
+			ssize_t n = read(nfd, note, sizeof(note) - 1);
+
+			close(nfd);
+			unlink(note_path);
+			if (n > 0) {
+				note[n] = '\0';
+				logstore_write("cixd", "warn", "pkg %s@%s: %s", e->name, e->image, note);
+			}
+		}
+	}
+
+	if (exit_status != 0) {
+		char fetch_err_path[PATH_MAX];
+		char detail[512];
+		int detail_len = 0;
+		int fd;
+
+		detail[0] = '\0';
+		fetch_error_sidecar_path(e->name, fetch_err_path, sizeof(fetch_err_path));
+		fd = open(fetch_err_path, O_RDONLY);
+		if (fd >= 0) {
+			ssize_t n = read(fd, detail, sizeof(detail) - 1);
+
+			close(fd);
+			unlink(fetch_err_path);
+			if (n > 0) {
+				detail_len = (int)n;
+				/* curl's own error text always ends in its own
+				 * newline; strip trailing whitespace so it reads
+				 * naturally packed into e->error/the log line
+				 * below rather than leaving a dangling blank line. */
+				while (detail_len > 0 && (detail[detail_len - 1] == '\n' ||
+				                           detail[detail_len - 1] == '\r'))
+					detail_len--;
+				detail[detail_len] = '\0';
+			}
+		}
+
+		if (exit_status == PKG_FETCH_EXIT_PRECONDITION && detail_len > 0)
+			/* Never reached curl -- a precondition failed, and the
+			 * sidecar says which. */
+			pkg_fail(e, is_final_upgrade, PKG_FAILURE_FETCH, "%s", detail);
+		else if (detail_len > 0)
+			pkg_fail(e, is_final_upgrade, PKG_FAILURE_FETCH,
+			         "fetch failed (curl exit status %d): %s", exit_status, detail);
+		else
+			pkg_fail(e, is_final_upgrade, PKG_FAILURE_FETCH, "fetch failed (curl exit status %d)",
+			         exit_status);
+		logstore_write("cixd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
+		g_chains[chain_idx].name[0] = '\0';
+		g_chains[chain_idx].dep_queue_count = 0;
+		return 0;
+	}
+
+	if (find_recipe_path(e->name, current_fetch_effective_version(chain_idx), recipe_path,
+	                      sizeof(recipe_path)) != 0 ||
+	    parse_recipe(recipe_path, &recipe) != 0) {
+		pkg_fail(e, is_final_upgrade, PKG_FAILURE_RECIPE, "recipe became unreadable mid-install");
+		g_chains[chain_idx].name[0] = '\0';
+		g_chains[chain_idx].dep_queue_count = 0;
+		return 0;
+	}
+
+	/*
+	 * ADR-0122: start_fetch_for()'s child may have left a checksum-
+	 * verified artifact tarball sitting at the sentinel path instead
+	 * of ever fetching recipe.source[] at all -- promote it into the
+	 * real local cache right here and fold this job into the exact
+	 * same cache-hit path a local cache hit already takes (set fresh
+	 * by start_fetch_for() itself; this is the only other way it ever
+	 * becomes true).
+	 */
+	if (!e->cache_hit) {
+		char artifact_sentinel[PATH_MAX];
+		struct stat st;
+
+		artifact_sentinel_path(e->name, recipe.version, artifact_sentinel,
+		                        sizeof(artifact_sentinel));
+		if (stat(artifact_sentinel, &st) == 0 && S_ISREG(st.st_mode)) {
+			pkg_cache_save_from_file(e->name, recipe.version, artifact_sentinel);
+			e->cache_hit = 1;
+		}
+	}
+
+	/*
+	 * recipe.version, not e->version -- during an in-place upgrade
+	 * e->version is deliberately still the OLD version until this job
+	 * actually succeeds; each source on disk was fetched under the
+	 * NEW version's name by start_fetch_for(). Every fetched source
+	 * (the main one at index 0, and any extras) is verified against
+	 * its own sha256 before any of them are touched further -- one
+	 * bad entry fails the whole job, matching the single-source
+	 * case's own existing all-or-nothing guarantee (ADR-0036). Skipped
+	 * entirely for a cache/artifact hit -- nothing was fetched from
+	 * recipe.source[] at all in that case.
+	 */
+	if (!e->cache_hit) {
+		for (i = 0; i < recipe.source_count; i++) {
+			char src_path[PATH_MAX];
+
+			snprintf(src_path, sizeof(src_path), "%s/%s-%s-%d.src", g_sources_dir, e->name,
+			         recipe.version, i);
+			if (pkg_run_capture_sha256(src_path, sha_out, sizeof(sha_out)) != 0 ||
+			    strcasecmp(sha_out, recipe.sha256[i]) != 0) {
+				pkg_fail(e, is_final_upgrade, PKG_FAILURE_FETCH, "checksum mismatch (source %d)",
+				         i);
+				g_chains[chain_idx].name[0] = '\0';
+				g_chains[chain_idx].dep_queue_count = 0;
+				return 0;
+			}
+		}
+	}
+
+	/*
+	 * Issue #213: a cancel that arrived before this build had a
+	 * container.
+	 *
+	 * Between the fetch finishing and the container being spawned the
+	 * entry is already PKG_STATE_BUILDING -- composing a build
+	 * environment (ADR-0199) happens in that window and is not quick --
+	 * so pkg_cancel() can legitimately be called with nothing yet to
+	 * kill. It sets the flag and returns; this is where the flag has to
+	 * be honoured, because otherwise the build would go on to spawn,
+	 * succeed, and the cancel would have silently done nothing.
+	 *
+	 * Checked before the container name is claimed (issue #98's
+	 * invariant) so a cancelled build never takes ownership of a slot
+	 * name it is not going to use.
+	 */
+	if (e->cancel_requested) {
+		e->cancel_requested = 0;
+		pkg_fail(e, is_final_upgrade, PKG_FAILURE_CANCELLED,
+		         "build cancelled by operator before it started");
+		logstore_write("cixd", "info",
+		               "pkg %s@%s: cancelled before its build container was spawned",
+		               e->name, e->image);
+		g_chains[chain_idx].name[0] = '\0';
+		g_chains[chain_idx].dep_queue_count = 0;
+		return 0;
+	}
+
+	pkg_build_container_name(chain_idx, e->build_container_name, sizeof(e->build_container_name));
+	/*
+	 * Issue #98: exactly one entry may claim a given build container
+	 * name at a time. Build container names are per chain SLOT
+	 * ("__pkgbuild-0"), and slots are reused constantly, so without
+	 * this every package that ever built in slot 0 keeps claiming
+	 * "__pkgbuild-0" forever -- and anything resolving an exited
+	 * container back to its owner finds the oldest claimant instead of
+	 * the real one. Establishing the invariant here, at the moment the
+	 * claim is made, is what makes that resolution exact.
+	 */
+	{
+		int oi;
+
+		for (oi = 0; oi < PKG_MAX_PACKAGES; oi++) {
+			if (&g_packages[oi] == e || !g_packages[oi].in_use)
+				continue;
+			if (strcmp(g_packages[oi].build_container_name, e->build_container_name) == 0)
+				g_packages[oi].build_container_name[0] = '\0';
+		}
+	}
+	return pkg_prepare_build_and_start(chain_idx, e, &recipe, is_final_upgrade, recipe_path,
+	                                    spec_out, out_stdio_write_fd, out_compose_pid,
+	                                    out_compose_pidfd);
+}
+
+/*
+ * Continues an install whose build environment was being composed in a
+ * forked child (#238), once that child has exited.
+ *
+ * Success needs no handover at all: image state lives on disk, so this
+ * simply re-enters pkg_prepare_build_and_start(), which asks
+ * buildenv_image_for() again and gets the already-composed fast path.
+ * The recipe and the upgrade flag are re-derived from the chain rather
+ * than carried across, for the same reason -- there is no second copy
+ * of them to go stale.
+ *
+ * Returns what pkg_fetch_completed() returns: 1 to start the build in
+ * spec_out, 0 if the install is over, 2 if another composition was
+ * forked (which cannot normally happen, since a successful child leaves
+ * the environment ready, but is handled rather than assumed away).
+ */
+int pkg_buildenv_completed(int chain_idx, int exit_status, struct container_spec *spec_out,
+                            int *out_stdio_write_fd, pid_t *out_compose_pid,
+                            int *out_compose_pidfd)
+{
+	struct pkg_entry *e = pkg_find(g_chains[chain_idx].name, g_chains[chain_idx].image);
+	char recipe_path[PATH_MAX];
+	struct pkg_recipe recipe;
+	int is_final_upgrade;
+
+	*out_compose_pid = -1;
+	*out_compose_pidfd = -1;
+
+	/* Same stale-slot discriminator pkg_fetch_completed() uses (issue
+	 * #98): an entry that is no longer FETCHING cannot be the one whose
+	 * composer just exited. */
+	if (e == NULL || e->state != PKG_STATE_FETCHING) {
+		g_chains[chain_idx].name[0] = '\0';
+		g_chains[chain_idx].dep_queue_count = 0;
+		return 0;
+	}
+
+	is_final_upgrade = g_chains[chain_idx].dep_queue_is_upgrade &&
+	                   (g_chains[chain_idx].dep_queue_pos + 1 >= g_chains[chain_idx].dep_queue_count);
+
+	if (exit_status != 0) {
+		/* Remove the created-but-empty image the failed composition
+		 * left, or every later attempt re-forks against it forever. */
+		if (g_chains[chain_idx].buildenv_image[0] != '\0')
+			buildenv_compose_failed_cleanup(g_chains[chain_idx].buildenv_image);
+		g_chains[chain_idx].buildenv_image[0] = '\0';
+		pkg_fail(e, is_final_upgrade, PKG_FAILURE_BUILD,
+		         "could not compose a build environment from the declared tools");
+		logstore_write("cixd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
+		g_chains[chain_idx].name[0] = '\0';
+		g_chains[chain_idx].dep_queue_count = 0;
+		return 0;
+	}
+
+	if (find_recipe_path(e->name, current_fetch_effective_version(chain_idx), recipe_path,
+	                      sizeof(recipe_path)) != 0 ||
+	    parse_recipe(recipe_path, &recipe) != 0) {
+		pkg_fail(e, is_final_upgrade, PKG_FAILURE_BUILD,
+		         "the recipe became unreadable while its build environment was composed");
+		logstore_write("cixd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
+		g_chains[chain_idx].name[0] = '\0';
+		g_chains[chain_idx].dep_queue_count = 0;
+		return 0;
+	}
+
+	return pkg_prepare_build_and_start(chain_idx, e, &recipe, is_final_upgrade, recipe_path,
+	                                    spec_out, out_stdio_write_fd, out_compose_pid,
+	                                    out_compose_pidfd);
 }
 
 /*

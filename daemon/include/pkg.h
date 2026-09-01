@@ -750,7 +750,18 @@ enum pkg_error pkg_resume_build(const char *name, const char *image, const char 
  * daemon-wide one.
  */
 int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *spec_out,
-                         int *out_stdio_write_fd);
+                         int *out_stdio_write_fd, pid_t *out_compose_pid, int *out_compose_pidfd);
+
+/*
+ * Continues an install whose build environment was being composed in a
+ * forked child (#238), once that child has exited. Same return contract
+ * as pkg_fetch_completed(): 1 to start the build described in spec_out,
+ * 0 if the install is over, 2 if another composition child was forked
+ * and out_compose_pid/out_compose_pidfd name it.
+ */
+int pkg_buildenv_completed(int chain_idx, int exit_status, struct container_spec *spec_out,
+                            int *out_stdio_write_fd, pid_t *out_compose_pid,
+                            int *out_compose_pidfd);
 
 /* Called if registry_create() itself fails for the build container
  * pkg_fetch_completed() just prepared -- transitions the in-flight

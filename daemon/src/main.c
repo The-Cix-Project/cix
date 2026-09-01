@@ -1000,6 +1000,7 @@ enum conn_kind {
 	CONN_CLIENT,
 	CONN_CONTAINER,
 	CONN_PKG_FETCH,
+	CONN_PKG_BUILDENV, /* #238: a forked build-environment composition */
 	CONN_PKG_BUILD_OUTPUT,  /* pkg.c's build-output capture pipe, drained incrementally
 	                          * as the container runs rather than once at exit (ADR-0087) */
 	CONN_CONTAINER_OUTPUT,  /* an ordinary container's own stdout/stderr capture pipe --
@@ -8679,6 +8680,38 @@ static void register_pkg_fetch_pidfd(pid_t pid, int pidfd, int chain_idx)
 	ev.data.ptr = cc;
 	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
 		perror("epoll_ctl ADD pkg fetch pidfd");
+		abort();
+	}
+}
+
+/*
+ * The same treatment for the build-environment composition child
+ * (#238). Composition is filesystem work with a clear start and end
+ * that touches no daemon state until it finishes, which is exactly the
+ * shape the fetch child already had -- so it gets the same fork, the
+ * same pidfd, and the same "tell me via epoll when it exits" handling,
+ * rather than running inline and making every other request wait.
+ */
+static void register_pkg_buildenv_pidfd(pid_t pid, int pidfd, int chain_idx)
+{
+	struct conn *cc;
+	struct cix_epoll_event ev;
+
+	cc = calloc(1, sizeof(*cc));
+	if (cc == NULL) {
+		perror("malloc (pkg buildenv reactor conn)");
+		abort();
+	}
+	cc->kind = CONN_PKG_BUILDENV;
+	cc->fd = pidfd;
+	cc->pkg_fetch_pid = pid;
+	cc->pkg_chain_idx = chain_idx;
+
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = cc;
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+		perror("epoll_ctl ADD pkg buildenv pidfd");
 		abort();
 	}
 }
@@ -28057,33 +28090,19 @@ static void handle_container_event(struct conn *cc)
 }
 
 /*
- * Mirrors handle_container_event()'s shape for the package fetch
- * step's plain fork()'d curl subprocess: reap it (non-blocking here --
- * EPOLLIN on its pidfd already means it has exited), hand the exit
- * status to pkg_fetch_completed(), and if it says a build should
- * start, spawn it through spawn_pkgbuild_container() -- the same
- * registry_create() + register_container_pidfd() path every other
- * container goes through, and (ADR-0209) the same single function the
- * resume path uses, so "what's running" has one source of truth and
- * a build container has one way of coming into being.
+ * What to do with the result of a fetch or a composition step (#238).
+ *
+ * Shared by both because it is the same decision: nonzero means a
+ * build container should start, zero means this install produced no
+ * container (it failed, or an artifact hit finished it outright) and
+ * the rebuild queue should get its turn. One function rather than two
+ * copies, because the cache-hit path inside it is subtle enough that
+ * two copies would eventually disagree.
  */
-static void handle_pkg_fetch_event(struct conn *cc)
+static void pkg_step_dispatch(int r, int chain_idx, struct container_spec *spec,
+                               int stdio_write_fd)
 {
-	int status;
-	int exit_status;
-	struct container_spec spec;
-	int stdio_write_fd;
-	int chain_idx = cc->pkg_chain_idx;
-
-	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
-	if (waitpid(cc->pkg_fetch_pid, &status, 0) == cc->pkg_fetch_pid && WIFEXITED(status))
-		exit_status = WEXITSTATUS(status);
-	else
-		exit_status = -1;
-	close(cc->fd);
-	free(cc);
-
-	if (pkg_fetch_completed(chain_idx, exit_status, &spec, &stdio_write_fd)) {
+	if (r) {
 
 		/*
 		 * Issue #144: a precompiled package needs no container at all.
@@ -28130,10 +28149,85 @@ static void handle_pkg_fetch_event(struct conn *cc)
 			return;
 		}
 
-		spawn_pkgbuild_container(chain_idx, "container spawn", &spec, stdio_write_fd);
+		spawn_pkgbuild_container(chain_idx, "container spawn", spec, stdio_write_fd);
 	} else {
 		try_start_queued_pkg_rebuild();
 	}
+}
+
+/*
+ * Mirrors handle_container_event()'s shape for the package fetch
+ * step's plain fork()'d curl subprocess: reap it (non-blocking here --
+ * EPOLLIN on its pidfd already means it has exited), hand the exit
+ * status to pkg_fetch_completed(), and if it says a build should
+ * start, spawn it through spawn_pkgbuild_container() -- the same
+ * registry_create() + register_container_pidfd() path every other
+ * container goes through, and (ADR-0209) the same single function the
+ * resume path uses, so "what's running" has one source of truth and
+ * a build container has one way of coming into being.
+ */
+static void handle_pkg_fetch_event(struct conn *cc)
+{
+	int status;
+	int exit_status;
+	struct container_spec spec;
+	int stdio_write_fd;
+	int chain_idx = cc->pkg_chain_idx;
+	pid_t compose_pid;
+	int compose_pidfd;
+	int r;
+
+	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	if (waitpid(cc->pkg_fetch_pid, &status, 0) == cc->pkg_fetch_pid && WIFEXITED(status))
+		exit_status = WEXITSTATUS(status);
+	else
+		exit_status = -1;
+	close(cc->fd);
+	free(cc);
+
+	r = pkg_fetch_completed(chain_idx, exit_status, &spec, &stdio_write_fd, &compose_pid,
+	                        &compose_pidfd);
+	if (r == 2) {
+		/* Composition was forked instead of run here (#238) -- the
+		 * install continues when that child exits. */
+		register_pkg_buildenv_pidfd(compose_pid, compose_pidfd, chain_idx);
+		return;
+	}
+	pkg_step_dispatch(r, chain_idx, &spec, stdio_write_fd);
+}
+
+/*
+ * Reaps a build-environment composition child (#238) and continues the
+ * install it was blocking. Same shape as handle_pkg_fetch_event(),
+ * because it is the same kind of thing: a forked step whose completion
+ * resumes a chain.
+ */
+static void handle_pkg_buildenv_event(struct conn *cc)
+{
+	int status;
+	int exit_status;
+	struct container_spec spec;
+	int stdio_write_fd;
+	int chain_idx = cc->pkg_chain_idx;
+	pid_t compose_pid;
+	int compose_pidfd;
+	int r;
+
+	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	if (waitpid(cc->pkg_fetch_pid, &status, 0) == cc->pkg_fetch_pid && WIFEXITED(status))
+		exit_status = WEXITSTATUS(status);
+	else
+		exit_status = -1;
+	close(cc->fd);
+	free(cc);
+
+	r = pkg_buildenv_completed(chain_idx, exit_status, &spec, &stdio_write_fd, &compose_pid,
+	                           &compose_pidfd);
+	if (r == 2) {
+		register_pkg_buildenv_pidfd(compose_pid, compose_pidfd, chain_idx);
+		return;
+	}
+	pkg_step_dispatch(r, chain_idx, &spec, stdio_write_fd);
 }
 
 /*
@@ -29525,6 +29619,8 @@ static int cixd_main(int argc, char **argv)
 				handle_container_event(cc);
 			else if (cc->kind == CONN_PKG_FETCH)
 				handle_pkg_fetch_event(cc);
+			else if (cc->kind == CONN_PKG_BUILDENV)
+				handle_pkg_buildenv_event(cc);
 			else if (cc->kind == CONN_PKG_BUILD_OUTPUT)
 				handle_pkg_build_output_event(cc);
 			else if (cc->kind == CONN_CONTAINER_OUTPUT)

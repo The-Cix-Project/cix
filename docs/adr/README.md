@@ -232,3 +232,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0225](0225-build-images-are-composed-from-packages.md) | Build images are composed from packages, not copied from a host | Accepted |
 | [0226](0226-gcc-is-an-ordinary-choice-for-third-party-packages.md) | gcc is an ordinary choice for a third-party package, not a debt | Accepted |
 | [0227](0227-responses-are-buffered-and-drained-never-blocking.md) | Responses are buffered against their connection and drained on EPOLLOUT, never written blocking | Accepted |
+| [0228](0228-build-environment-composition-runs-in-a-forked-child.md) | Build-environment composition runs in a forked child, and the install resumes | Accepted |
