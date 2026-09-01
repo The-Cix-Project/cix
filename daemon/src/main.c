@@ -9230,6 +9230,24 @@ static void register_bootroot_assemble_pidfd(pid_t pid, int pidfd)
  */
 static void artifact_push_pump(void);
 /*
+ * The kind is defined HERE, not next to the export machinery it belongs
+ * to, because the declaration below names it and C has no forward
+ * declaration for an enum the way it has for a struct: an undefined
+ * enum tag in a parameter list is an incomplete type, and a call
+ * through it is not valid C.
+ *
+ * GCC accepts it, and so did tcc 0.9.27, which is why this sat here
+ * for five releases. tcc 0.9.28rc does not, and it is right --
+ * `daemon/src/main.c:9648: error: cast to incomplete type` on the
+ * first hostbuild after the compiler upgrade (#216). The compiler got
+ * stricter and found a real latent bug in this file.
+ */
+enum artifact_export_kind {
+	ARTIFACT_EXPORT_KIND_IMAGE = 0,
+	ARTIFACT_EXPORT_KIND_HOSTBUILD
+};
+
+/*
  * Issue #200 -- both defined lower down, next to the export machinery
  * they drive; declared here because pkg_completion_followup() runs
  * before either in this file.
@@ -9591,10 +9609,6 @@ enum artifact_export_state {
  * single most expensive thing this project builds, existed only as
  * bytes on one box's disk.
  */
-enum artifact_export_kind {
-	ARTIFACT_EXPORT_KIND_IMAGE = 0,
-	ARTIFACT_EXPORT_KIND_HOSTBUILD
-};
 
 static enum artifact_export_state g_artifact_export_state;
 static enum artifact_export_kind g_artifact_export_kind;
