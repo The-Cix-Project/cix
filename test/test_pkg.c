@@ -1632,8 +1632,7 @@ int main(void)
 	 */
 	if (write_builddeps_recipe("pinnedgood", "1.0", tarball_path, sha256, "greeter@1.0") != 0 ||
 	    write_builddeps_recipe("pinnedbad", "1.0", tarball_path, sha256, "greeter@9.9") != 0) {
-		fprintf(stderr, "FAIL: could not write the version-pinned build-deps recipes
-");
+		fprintf(stderr, "FAIL: could not write the version-pinned build-deps recipes\n");
 		ok = 0;
 	}
 	/* good pin: composes (build then fails because greeter is not a
