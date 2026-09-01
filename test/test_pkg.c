@@ -1642,14 +1642,12 @@ int main(void)
 	if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"pinnedgood\"}", &r) !=
 	        0 ||
 	    r.status != 202) {
-		fprintf(stderr, "FAIL: #127 install of a correctly-pinned recipe, status=%d
-", r.status);
+		fprintf(stderr, "FAIL: #127 install of a correctly-pinned recipe, status=%d\n", r.status);
 		ok = 0;
 	}
 	cix_response_free(&r);
 	if (poll_pkg_state(&client, "pinnedgood", state, sizeof(state), 600) != 0) {
-		fprintf(stderr, "FAIL: #127 correctly-pinned install never settled (last '%s')
-", state);
+		fprintf(stderr, "FAIL: #127 correctly-pinned install never settled (last '%s')\n", state);
 		ok = 0;
 	} else {
 		memset(&r, 0, sizeof(r));
@@ -1660,8 +1658,7 @@ int main(void)
 			if (err != NULL && (strstr(err, "compose") != NULL ||
 			                    strstr(err, "not installed anywhere") != NULL)) {
 				fprintf(stderr, "FAIL: #127 greeter@1.0 (the installed version) did not "
-				                "resolve: %s
-", err);
+				                "resolve: %s\n", err);
 				ok = 0;
 			}
 		}
@@ -1673,8 +1670,7 @@ int main(void)
 	if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"pinnedbad\"}", &r) !=
 	        0 ||
 	    r.status != 202) {
-		fprintf(stderr, "FAIL: #127 install of a wrong-version-pinned recipe, status=%d
-",
+		fprintf(stderr, "FAIL: #127 install of a wrong-version-pinned recipe, status=%d\n",
 		        r.status);
 		ok = 0;
 	}
@@ -1682,8 +1678,7 @@ int main(void)
 	if (poll_pkg_state(&client, "pinnedbad", state, sizeof(state), 200) != 0 ||
 	    strcmp(state, "failed") != 0) {
 		fprintf(stderr, "FAIL: #127 a pin to an uninstalled version ended '%s', expected "
-		                "failed
-", state);
+		                "failed\n", state);
 		ok = 0;
 	} else {
 		memset(&r, 0, sizeof(r));
@@ -1693,8 +1688,7 @@ int main(void)
 
 			if (err == NULL || strstr(err, "greeter@9.9") == NULL) {
 				fprintf(stderr, "FAIL: #127 the wrong-version-pin failure does not name "
-				                "greeter@9.9: %s
-", err != NULL ? err : "(none)");
+				                "greeter@9.9: %s\n", err != NULL ? err : "(none)");
 				ok = 0;
 			}
 		}
