@@ -22755,6 +22755,30 @@ static void handle_dns_forwarders_put(int fd, const char *body, size_t body_len)
 		              "each forwarder must be a valid IPv4 address");
 		return;
 	}
+
+	/*
+	 * Apply them as this host's own resolvers too, if it has none
+	 * (#135). Doing it here as well as at boot is what makes the fresh
+	 * -install case actually work: the first thing an operator does on
+	 * a new box is set forwarders, and waiting for a reboot to be able
+	 * to resolve anything would leave the deadlock in place for the
+	 * whole of first setup.
+	 *
+	 * Same rule as at boot -- an existing resolver list is never
+	 * touched, so this cannot surprise a configured host.
+	 */
+	{
+		const char *ptrs[DNS_FORWARDERS_MAX];
+		int i;
+
+		for (i = 0; i < count; i++)
+			ptrs[i] = list[i];
+		if (resolv_seed_from_forwarders(ptrs, count) == 1)
+			logstore_write("cixd", "info",
+			               "resolv: host had no resolvers, so the forwarders just set were "
+			               "applied as its own (#135)");
+	}
+
 	handle_dns_forwarders_get(fd);
 }
 
@@ -28914,6 +28938,51 @@ static int cixd_main(int argc, char **argv)
 	pkg_buildenv_reclaim();
 	if (boot_subsystem_init(init_mode, "resolv", resolv_init(RESOLV_CONF_PATH)) != 0)
 		return 1;
+
+	/*
+	 * Issue #135: a fresh install cannot resolve anything, and that is
+	 * the whole bootstrap deadlock -- it has no recipes, recipes are
+	 * fetched by hostname, hostnames need DNS, and this platform's DNS
+	 * is dns-1/dns-2, containers built FROM recipes. Every previous way
+	 * out was a person feeding the box recipes from a laptop.
+	 *
+	 * The escape was already in the configuration and had simply never
+	 * been connected to anything. The DNS forwarders (#134) are real
+	 * upstream resolvers, and on a site network they answer for the
+	 * site's own names -- confirmed against this deployment's own
+	 * forwarders, which resolve the git host the recipes come from. So
+	 * a host with no resolvers of its own can borrow them, fetch
+	 * recipes, build its DNS containers, and only then point at itself.
+	 *
+	 * Runs after both dns_init() and resolv_init() because it needs
+	 * what each of them loaded. Only ever fills an EMPTY resolver list:
+	 * an operator who set one is never overridden, and a box that has
+	 * already stood up its own DNS keeps pointing at it across every
+	 * subsequent boot.
+	 */
+	{
+		char fwd[DNS_FORWARDERS_MAX][DNS_FORWARDER_LEN];
+		const char *ptrs[DNS_FORWARDERS_MAX];
+		int nfwd = dns_forwarders_get(fwd, DNS_FORWARDERS_MAX);
+		int i, rc;
+
+		for (i = 0; i < nfwd; i++)
+			ptrs[i] = fwd[i];
+		rc = resolv_seed_from_forwarders(ptrs, nfwd);
+		if (rc == 1)
+			logstore_write("cixd", "info",
+			               "resolv: this host had no resolvers configured, so the %d DNS "
+			               "forwarder(s) were applied as its own (#135). A fresh install can "
+			               "resolve names before it has built its DNS containers; once you "
+			               "set resolvers explicitly, or point the host at its own servers, "
+			               "this never overrides them again.",
+			               nfwd);
+		else if (rc < 0)
+			logstore_write("cixd", "error",
+			               "resolv: could not apply the DNS forwarders as this host's own "
+			               "resolvers -- name resolution may not work until "
+			               "PUT /v1/system/resolv is set");
+	}
 
 	/*
 	 * Best-effort, before any container's cgroup leaf can exist (see
