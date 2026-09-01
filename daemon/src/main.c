@@ -23824,7 +23824,6 @@ static void handle_pkg_recipe_add(int fd, const char *body, size_t body_len)
 	 */
 	http_set_blocking(fd);
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
-	try_start_queued_pkg_rebuild();
 }
 
 /* version NULL (no ?version= given) removes every published version of
@@ -29240,6 +29239,32 @@ static int cixd_main(int argc, char **argv)
 		struct conn *cc;
 
 		stallwatch_heartbeat();
+
+		/*
+		 * Start a queued rolling rebuild here rather than in the
+		 * request that queued it (#236).
+		 *
+		 * This used to run inside handle_pkg_recipe_add(). Moving it
+		 * after the response was not enough and the measurement said
+		 * so: every response carries Connection: close, so the client
+		 * waits for EOF, and the socket is not closed until the
+		 * handler returns -- so a publish still took 12257 ms for
+		 * glibc, because making an image unsatisfied starts a real
+		 * install which composes a build environment.
+		 *
+		 * Here it is off the request path entirely: publishing answers
+		 * immediately, and the rebuild starts within one loop pass.
+		 * Guarded by a depth check because the drain is expensive when
+		 * it has work -- calling it speculatively every pass would be
+		 * worse than the bug.
+		 *
+		 * The loop is still blocked while a rebuild is being started.
+		 * That is a real remaining cost and it is not this change's to
+		 * fix; what this change removes is a client waiting on it, and
+		 * a publish being the thing that triggers it.
+		 */
+		if (pkg_rebuild_queue_depth() > 0)
+			try_start_queued_pkg_rebuild();
 
 		if (n < 0) {
 			if (errno == EINTR)
