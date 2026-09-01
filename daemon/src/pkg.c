@@ -2231,28 +2231,34 @@ static int pkg_entry_drift(const struct pkg_entry *e, char *out_available, size_
 	return 1;
 }
 
+/*
+ * One mapping from state to its wire name. Extracted when a second
+ * caller arrived (pkg_write_json_config, ADR-0206) rather than copied,
+ * because two switches over the same enum are exactly the pair that
+ * drifts the next time a state is added -- one gets the new case and
+ * the other silently reports "failed".
+ */
+static const char *pkg_state_name(enum pkg_state state)
+{
+	switch (state) {
+	case PKG_STATE_FETCHING:
+		return "fetching";
+	case PKG_STATE_BUILDING:
+		return "building";
+	case PKG_STATE_INSTALLED:
+		return "installed";
+	case PKG_STATE_FAILED:
+	default:
+		return "failed";
+	}
+}
+
 static void write_pkg_json(const struct pkg_entry *e, struct json_writer *w)
 {
 	int i;
-	const char *state_str;
+	const char *state_str = pkg_state_name(e->state);
 	char available_version[PKG_VERSION_MAX];
 	int has_available = 0;
-
-	switch (e->state) {
-	case PKG_STATE_FETCHING:
-		state_str = "fetching";
-		break;
-	case PKG_STATE_BUILDING:
-		state_str = "building";
-		break;
-	case PKG_STATE_INSTALLED:
-		state_str = "installed";
-		break;
-	case PKG_STATE_FAILED:
-	default:
-		state_str = "failed";
-		break;
-	}
 
 	has_available = pkg_entry_drift(e, available_version, sizeof(available_version));
 
@@ -6795,6 +6801,48 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 	g_chains[chain_idx].name[0] = '\0';
 	g_chains[chain_idx].dep_queue_count = 0;
 	return 0;
+}
+
+/*
+ * The same packages, as CONFIGURATION rather than as state (ADR-0206).
+ *
+ * pkg_write_json_list() answers "what is the package manager doing" --
+ * every entry with its file manifest, its build error, whether its
+ * artifact was cached, how long since its last output. All of that is
+ * the right answer for GET /pkg and the wrong one for a configuration
+ * document, where the fact is simply: this package, at this version, in
+ * this image.
+ *
+ * The difference is not cosmetic. Measured on a real host with 174
+ * packages installed, the full form renders 1806 KB and 1756 KB of that
+ * -- 97% -- is files[] manifests. It made the configuration document
+ * 1.76 MB, of which 99.7% was one section, which is not a document
+ * anybody reads, diffs or pastes into a review. Those are the three
+ * things it exists for.
+ *
+ * state is kept because "installed" versus "failed" changes what the
+ * document means; everything transient is dropped.
+ */
+void pkg_write_json_config(struct json_writer *w)
+{
+	int i;
+
+	jw_arr_open(w);
+	for (i = 0; i < PKG_MAX_PACKAGES; i++) {
+		if (!g_packages[i].in_use)
+			continue;
+		jw_obj_open(w);
+		jw_key(w, "name");
+		jw_str(w, g_packages[i].name);
+		jw_key(w, "image");
+		jw_str(w, g_packages[i].image);
+		jw_key(w, "version");
+		jw_str(w, g_packages[i].version);
+		jw_key(w, "state");
+		jw_str(w, pkg_state_name(g_packages[i].state));
+		jw_obj_close(w);
+	}
+	jw_arr_close(w);
 }
 
 void pkg_write_json_list(struct json_writer *w)
