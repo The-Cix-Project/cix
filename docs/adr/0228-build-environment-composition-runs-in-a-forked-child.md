@@ -98,3 +98,34 @@ eager composition pays exactly the same cost in exactly the same loop.
 - **#229 remains open and is now better specified**: the measurement this
   needs is per-request latency (accept to response), not loop liveness.
   A heartbeat cannot see a loop that is busy rather than stuck.
+
+## Verified on 192.168.15.95, v2.14.5
+
+Every composed environment was deleted first, so composition genuinely
+had to run, and a package with no published artifact was chosen so the
+install could not take the artifact fast path (which skips composition
+entirely -- the first attempt at this measurement did exactly that and
+proved nothing).
+
+`pkg install --name=libblkid --image=iso-builder --upgrade`, with
+`GET /v1/health` sampled once a second throughout:
+
+```
+install call returned      1251 ms
+composition                __buildenv-9e78d06322bec053, 16 declared tools
+install settled            78 s later, state=installed, artifact published
+health                     78 samples, 78x 200, worst 2503 ms
+                           every other sample under 500 ms
+stall records              none added
+```
+
+The end-to-end completion is the part that matters for the refactor:
+the install went through a forked composition and resumed correctly,
+built, and published -- so the resume path is not merely non-blocking,
+it is right.
+
+**One 2,503 ms sample remains, and it is not composition.**
+`pkg_prepare_build_and_start()` still extracts the source tarball and
+copies files inline. That is the same defect class again, an order of
+magnitude smaller, and it is named here rather than left to be
+rediscovered. It is a block, not a hang; the 247 s case is gone.
