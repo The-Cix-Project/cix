@@ -10021,8 +10021,6 @@ static int cmd_container_apply_recipe(const struct cix_client *c, int json_mode,
 static int materialize_one(const struct cix_client *c, const char *image, const char *pkg,
                            int *out_compiled)
 {
-	char path[512];
-	char pkgref[256];
 	struct cix_response r;
 	struct json_writer w;
 	int settled = 0;
@@ -10066,30 +10064,54 @@ static int materialize_one(const struct cix_client *c, const char *image, const 
 	cix_response_free(&r);
 
 	/*
-	 * "<name>@<image>" is a single path parameter as far as the
-	 * contract is concerned, so it goes through the generated constant
-	 * rather than being typed out here. The first version of this
-	 * built "/v1/pkg/%s@%s" by hand and test_api_surfaces refused it
-	 * (ADR-0218) -- correctly: a hand-typed path compiles, works, and
-	 * breaks silently the day the contract moves.
+	 * Polled through the package LIST, not GET /pkg/{name}.
+	 *
+	 * Two gates shaped this, in order. The first version built
+	 * "/v1/pkg/%s@%s" by hand, which test_api_surfaces refused
+	 * (ADR-0218): a hand-typed path compiles, works, and breaks
+	 * silently the day the contract moves. Reaching for the generated
+	 * CIX_API_getPkg constant instead was then refused too, for a
+	 * better reason -- that operation declares `x-cix-expose: []`, so
+	 * the contract exposes it to no channel at all, and "the API
+	 * decides which channel offers a capability, not the channel".
+	 *
+	 * listPkg is exposed to cli and returns every package with its
+	 * state, so the answer is here; it just has to be looked up rather
+	 * than addressed. Slightly more data per poll, and the right shape.
 	 */
-	snprintf(pkgref, sizeof(pkgref), "%s@%s", pkg, image);
-	snprintf(path, sizeof(path), CIX_API_getPkg, pkgref);
 	for (;;) {
-		const char *state;
+		const struct json_value *arr;
+		const struct json_value *entry = NULL;
+		const char *state = NULL;
+		size_t k;
 
 		usleep(500000);
-		if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
+		if (cix_client_request(c, CIX_API_listPkg_METHOD, CIX_API_listPkg, NULL, &r) != 0) {
 			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return -1;
 		}
-		state = json_str_field(r.json, "state");
+		arr = json_object_get(r.json, "packages");
+		if (arr != NULL && arr->type == JSON_ARRAY) {
+			for (k = 0; k < arr->u.array.count; k++) {
+				const struct json_value *it = arr->u.array.items[k];
+				const char *n = json_str_field(it, "name");
+				const char *im = json_str_field(it, "image");
+
+				if (n != NULL && im != NULL && strcmp(n, pkg) == 0 &&
+				    strcmp(im, image) == 0) {
+					entry = it;
+					break;
+				}
+			}
+		}
+		if (entry != NULL)
+			state = json_str_field(entry, "state");
 		if (state != NULL && strcmp(state, "installed") == 0) {
 			settled = 1;
 			break;
 		}
 		if (state != NULL && strcmp(state, "failed") == 0) {
-			const char *err = json_str_field(r.json, "error");
+			const char *err = json_str_field(entry, "error");
 
 			fprintf(stderr, "  %-18s FAILED%s%s\n", pkg, err != NULL ? " -- " : "",
 			        err != NULL ? err : "");
