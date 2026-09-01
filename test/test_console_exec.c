@@ -23,6 +23,7 @@
 #include "json.h"
 #include "test_image_fixture.h"
 
+#include <stdint.h>
 #include <arpa/inet.h>
 #include <errno.h>
 #include <limits.h>

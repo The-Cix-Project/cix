@@ -31,6 +31,7 @@
 #include "json.h"
 #include "test_image_fixture.h"
 
+#include <stdint.h>
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <limits.h>
