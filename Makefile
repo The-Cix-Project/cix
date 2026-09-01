@@ -10,6 +10,52 @@ DAEMON_SRCS := daemon/src/json.c daemon/src/http.c daemon/src/websocket.c daemon
 CLIENT_SRCS := client/src/httpclient.c daemon/src/json.c
 NETPLANE_SRCS := netplane/src/rtnetlink.c
 
+#
+# The tests that need nothing but a filesystem: no daemon to fork, no
+# containers, no privileged namespaces. They can run anywhere the tree
+# can be built, which is what makes them usable as a build gate on a
+# Cix host (issue #224).
+#
+# Every hostbuild already COMPILES all ~85 test binaries -- `all`
+# depends on them -- and then throws them away. Running these costs
+# seconds and turns that waste into a gate.
+#
+# What they guard is not incidental: the generated REST surface
+# (test_apigen's deliberate route count), the documentation indexes,
+# the gcc-exception count that enforces ADR-0224, the ELF install gate,
+# and treecopy's device-node handling. Several of those caught real
+# mistakes the day this target was written.
+#
+# The daemon-linked tests are deliberately NOT here: they fork a real
+# cixd and need root and a writable data directory, which is a
+# different question and needs its own answer.
+#
+SELFTESTS = \
+	$(BUILD)/test_apigen $(BUILD)/test_apiroute $(BUILD)/test_api_surfaces \
+	$(BUILD)/test_docindex $(BUILD)/test_toolchain_policy \
+	$(BUILD)/test_elfcheck $(BUILD)/test_elfcheck_gcc \
+	$(BUILD)/test_treecopy $(BUILD)/test_childdiag $(BUILD)/test_harness \
+	$(BUILD)/test_kernelpolicy $(BUILD)/test_releasekey $(BUILD)/test_subid \
+	$(BUILD)/test_btrfs $(BUILD)/test_toolchain $(BUILD)/test_dual_console \
+	$(BUILD)/test_mkbootroot_firmware
+
+.PHONY: selftest
+selftest: $(SELFTESTS)
+	@fail=0; \
+	for t in $(SELFTESTS); do \
+		printf '  %-34s ' "$$(basename $$t)"; \
+		if $$t >/tmp/selftest.$$$$.log 2>&1; then \
+			echo PASS; \
+		else \
+			echo FAIL; \
+			sed 's/^/      /' /tmp/selftest.$$$$.log; \
+			fail=1; \
+		fi; \
+		rm -f /tmp/selftest.$$$$.log; \
+	done; \
+	if [ $$fail -ne 0 ]; then echo "SELFTEST: FAIL" >&2; exit 1; fi; \
+	echo "SELFTEST: PASS"
+
 .PHONY: all clean
 
 all: $(BUILD)/test_toolchain $(BUILD)/test_harness $(BUILD)/harness_child $(BUILD)/test_overlay $(BUILD)/overlay_child $(BUILD)/test_container_pty $(BUILD)/pty_child $(BUILD)/cixd $(BUILD)/test_daemon $(BUILD)/daemon_child $(BUILD)/cixctl $(BUILD)/test_cli $(BUILD)/test_web $(BUILD)/test_rtnetlink $(BUILD)/test_container_net $(BUILD)/net_child $(BUILD)/net_connect $(BUILD)/test_daemon_net $(BUILD)/test_networks $(BUILD)/test_network_interfaces $(BUILD)/test_images $(BUILD)/test_container_restart $(BUILD)/test_container_files $(BUILD)/tcp_listen_child $(BUILD)/test_dns $(BUILD)/test_ntp $(BUILD)/test_ldap $(BUILD)/test_pki $(BUILD)/test_pkg $(BUILD)/mkbootroot $(BUILD)/test_mkbootroot_firmware $(BUILD)/test_boot $(BUILD)/test_boot_ab $(BUILD)/cix-install $(BUILD)/cix-recover $(BUILD)/test_dual_console $(BUILD)/dual_console_child $(BUILD)/mkinstalleriso $(BUILD)/test_installer $(BUILD)/test_devices $(BUILD)/dev_child $(BUILD)/test_daemon_devices $(BUILD)/test_system_update $(BUILD)/test_boot_update $(BUILD)/test_system_backup $(BUILD)/test_console_shell $(BUILD)/mktoolchainimage $(BUILD)/test_console_pki_bootstrap $(BUILD)/test_console_exec $(BUILD)/test_container_lifecycle $(BUILD)/output_child $(BUILD)/stats_child $(BUILD)/test_container_stats $(BUILD)/test_disk_quota $(BUILD)/test_diskpart $(BUILD)/test_sysctl $(BUILD)/test_kmod $(BUILD)/test_kmod_build $(BUILD)/test_routes $(BUILD)/test_daemon_bind_ip $(BUILD)/test_pkg_build_log $(BUILD)/test_pkg_concurrent_stress $(BUILD)/test_pkg_sync $(BUILD)/test_pkg_cache $(BUILD)/test_image_recipe $(BUILD)/test_container_recipe $(BUILD)/test_rolling_restart $(BUILD)/syslog_recv_child $(BUILD)/test_syslogfwd $(BUILD)/test_hostproc $(BUILD)/test_tls_throttle $(BUILD)/test_https_chain $(BUILD)/test_layout_upgrade $(BUILD)/test_treecopy $(BUILD)/test_storage_placement $(BUILD)/test_backup_config $(BUILD)/test_container_storage_migrate $(BUILD)/test_container_dns_servers $(BUILD)/test_hostauth $(BUILD)/test_device_hotplug $(BUILD)/test_subid $(BUILD)/test_volume $(BUILD)/volume_child $(BUILD)/test_factory_reset $(BUILD)/test_boot_console $(BUILD)/test_signing_keys $(BUILD)/test_pkg_recipe_approval $(BUILD)/test_stallwatch $(BUILD)/test_kernelpolicy $(BUILD)/test_dhcp $(BUILD)/test_artifact_export $(BUILD)/test_esp $(BUILD)/test_btrfs $(BUILD)/test_direct_rootfs $(BUILD)/test_targz $(BUILD)/targz_probe $(BUILD)/test_childdiag $(BUILD)/apigen $(BUILD)/test_apigen $(BUILD)/test_apiroute $(BUILD)/test_api_surfaces $(BUILD)/test_docindex $(BUILD)/test_toolchain_policy $(BUILD)/test_elfcheck $(BUILD)/test_elfcheck_gcc $(BUILD)/test_releasekey $(BUILD)/cix-boot.efi $(BUILD)/cix-xorriso
