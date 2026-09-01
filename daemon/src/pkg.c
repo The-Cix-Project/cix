@@ -3907,6 +3907,20 @@ static void queue_rolling_rebuilds_for(const char *pkg_name, const char *pkg_ver
 	}
 }
 
+/*
+ * How many images are waiting for a rolling rebuild (#236).
+ *
+ * Exists so the event loop can ask "is there anything to do" without
+ * paying for the answer. pkg_try_start_queued_rebuild() below is
+ * expensive when it has work -- it can start a real install, which
+ * composes a build environment -- so calling it speculatively every
+ * pass would be far worse than the problem it solves.
+ */
+int pkg_rebuild_queue_depth(void)
+{
+	return g_rebuild_queue_count;
+}
+
 int pkg_try_start_queued_rebuild(pid_t *out_pid, int *out_pidfd, int *out_chain_idx)
 {
 	if (pkg_any_job_busy())

@@ -887,6 +887,10 @@ int pkg_active_chain_indices(int *out_indices);
  * start()'s own out_chain_idx -- only meaningful when this function
  * returns nonzero.
  */
+/* Images waiting for a rolling rebuild. Lets the event loop check
+ * whether there is work before calling the expensive drain (#236). */
+int pkg_rebuild_queue_depth(void);
+
 int pkg_try_start_queued_rebuild(pid_t *out_pid, int *out_pidfd, int *out_chain_idx);
 
 /*
