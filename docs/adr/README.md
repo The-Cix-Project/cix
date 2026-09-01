@@ -230,3 +230,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0223](0223-the-compiler-is-a-pinned-upstream-snapshot.md) | The compiler is a pinned upstream snapshot, not a patched release | Accepted |
 | [0224](0224-the-toolchain-tenet.md) | The Toolchain Tenet — TCC by right, gcc by evidence | Accepted |
 | [0225](0225-build-images-are-composed-from-packages.md) | Build images are composed from packages, not copied from a host | Accepted |
+| [0226](0226-gcc-is-an-ordinary-choice-for-third-party-packages.md) | gcc is an ordinary choice for a third-party package, not a debt | Accepted |
