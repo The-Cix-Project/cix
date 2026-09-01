@@ -2041,6 +2041,36 @@ static int image_produce_new_version(const char *image,
 		/* Already produced before -- discard this build, trust the
 		 * existing immutable copy (see this function's own comment).
 		 * Subvolume-aware: on btrfs `staging` is a snapshot. */
+		/*
+		 * SAY SO. Issue #218.
+		 *
+		 * This branch is correct and load-bearing -- an identical
+		 * manifest really does describe the same image, and rebuilding
+		 * it byte-for-byte would waste space for nothing. What was
+		 * wrong is that it happened in silence: the build ran, the
+		 * package reported "installed", and the tree it produced was
+		 * deleted with nothing recorded anywhere.
+		 *
+		 * ADR-0155 documents this being hit live twice -- a repaired
+		 * artifact was installed three times with no effect and no
+		 * message. Both times the operator's next move was to doubt
+		 * the fix rather than the mechanism, which is the cost of a
+		 * silent correct answer.
+		 *
+		 * An image version is a hash of the package MANIFEST, not of
+		 * content, so reinstalling the same versions always lands
+		 * here. The message says what to do about it rather than only
+		 * what happened, because "deduplicated" is not actionable and
+		 * "bump a version" is.
+		 */
+		logstore_write("cixd", "info",
+		               "image %s: the rebuilt tree was DISCARDED -- its manifest hashes to "
+		               "%s, a version that already exists, so current_version repoints at "
+		               "the existing tree (ADR-0155). If you expected the content to change, "
+		               "the manifest did not: an image version is a hash of package "
+		               "name@version pairs, so reinstalling the same versions can never "
+		               "produce a new one. Bump a package revision to make the rebuild real.",
+		               image, new_version);
 		cix_btrfs_subvol_delete_or_rmtree(staging);
 	} else {
 		snprintf(version_dir, sizeof(version_dir), "%s", new_rootfs);
