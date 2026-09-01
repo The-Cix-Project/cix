@@ -34,6 +34,7 @@ pkg_name="glibc"
 pkg_version="2.44-8"
 pkg_source="https://mirrors.kernel.org/gnu/libc/glibc-2.44.tar.xz"
 pkg_sha256="37f600f2bef3c5e8300147059568b2a2e40a7ad6ccc65ce942556d49429cc667"
+pkg_artifact_sha256="9842ec6a87b711c5e0ad17e32c382deb841de8f321f022851512cb312c6ed6a9"
 pkg_depends=""
 
 

@@ -54,6 +54,7 @@ pkg_sha256="3d3a1b973af218114f4f889bbaa2f4c037deaae0c8e815eec381c3d546b974a0"
 # source; without it the artifact tier is skipped entirely.
 # The checksum lives here, in git, because the artifact server is
 # never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="05a10241b4a125389b1b470c73d551aae66e957ee35fcd1b2d590feb47f68a4c"
 # Nothing at runtime: liblzma links against libc alone.
 pkg_depends=""
 #

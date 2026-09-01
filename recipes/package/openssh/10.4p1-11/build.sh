@@ -107,6 +107,7 @@ pkg_sha256="ef6026dd2aea8d56059638d5d3262902c892ceba9f88395835e0d06d3fb63238"
 # source; without it the artifact tier is skipped entirely.
 # The checksum lives here, in git, because the artifact server is
 # never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="00ed99fd65732958399ff49c53f2a9431412e801122d938580997e814312c243"
 pkg_depends="openssl zlib linux-pam libxcrypt"
 #
 # Build tools derived rather than guessed: the baseline the declaring

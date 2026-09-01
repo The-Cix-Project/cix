@@ -36,6 +36,7 @@ pkg_sha256="e236ea3a1ccf5f6c270b1c4bb60726f371fa49459a8eaaebc90b216b328daf2b"
 # binutils as a runtime dependency the three formed a cycle the
 # installer refused outright. There is no cycle in the real
 # relationships -- only in the mislabelled one.
+pkg_artifact_sha256="19dd67cecff12a06c5adc68a2107867be7c0af575a61a885e1183077dc8e40e6"
 pkg_depends=""
 #
 # Issue #109 / ADR-0199: the tools this package needs to BUILD.

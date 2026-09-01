@@ -113,6 +113,7 @@ pkg_sha256="c80a01dfc70ece4dc21168932c37739042d404d46ccc81a5986dd75314ecda6f"
 # that installs openssl. The installed CLI itself needs only the
 # libraries this package ships and libc: c_rehash, the one perl
 # consumer OpenSSL installs, is dropped below.
+pkg_artifact_sha256="b8ea293f84be0e37b5ce6ae463c8d198b66de6427695385683b067a8dbf59a1f"
 pkg_depends=""
 
 # ADR-0199/0209: the build environment is composed from exactly these

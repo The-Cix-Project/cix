@@ -22,6 +22,7 @@ pkg_sha256="fe5383204467828cd495ee8d1d3c037a7eba1389c22bc6a041f627976f9061cc"
 # lookup. ncurses provides it here (configure finds tgetent in
 # -ltinfo), so it is a real runtime dependency, not only a build one.
 #
+pkg_artifact_sha256="606b32763a159b61741ce5a7632c6c7ebb3e1b526b52f2e9deb6792dd83a7d66"
 pkg_depends="ncurses"
 #
 # Build tools derived rather than guessed: the baseline the declaring

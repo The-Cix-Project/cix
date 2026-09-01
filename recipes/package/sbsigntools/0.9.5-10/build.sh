@@ -34,6 +34,7 @@ pkg_name="sbsigntools"
 pkg_version="0.9.5-10"
 pkg_source="https://git.kernel.org/pub/scm/linux/kernel/git/jejb/sbsigntools.git/snapshot/sbsigntools-v0.9.5.tar.gz https://codeload.github.com/rustyrussell/ccan/tar.gz/b1f28e1"
 pkg_sha256="88ffb0eead3687bed6b0c741e5f440d8f00978493794fa1d11a32bb6a316f7cf 79f709f16f6223c6d464fe17ea0dc4432ee67abaad575ed35b000a85b998f4f7"
+pkg_artifact_sha256="9c4c66535c20d981d8984ce3a9baf2ecaa64bd2b9b82c4f8f6c701e1c0b4cdc5"
 pkg_depends="gnu-efi libuuid binutils-dev openssl"
 
 # ADR-0199/0209: the build environment is composed from exactly

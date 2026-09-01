@@ -35,6 +35,7 @@ pkg_version="1.6.3-7"
 # needs no new trust.
 pkg_source="http://deb.debian.org/debian/pool/main/k/keyutils/keyutils_1.6.3.orig.tar.gz"
 pkg_sha256="a61d5706136ae4c05bd48f86186bcfdbd88dd8bd5107e3e195c924cfc1b39bb4"
+pkg_artifact_sha256="cee2fc476c9c10651afa0b4b97526dab844d87fdbc109b82dc111bcde89abe29"
 pkg_depends=""
 
 # ADR-0199/0209: composed from exactly these, no fallback (#168).

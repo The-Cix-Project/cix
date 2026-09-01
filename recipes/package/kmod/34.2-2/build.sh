@@ -24,6 +24,7 @@ pkg_name="kmod"
 pkg_version="34.2-2"
 pkg_source="https://www.kernel.org/pub/linux/utils/kernel/kmod/kmod-34.2.tar.xz"
 pkg_sha256="5a5d5073070cc7e0c7a7a3c6ec2a0e1780850c8b47b3e3892226b93ffcb9cb54"
+pkg_artifact_sha256="8347834d56e8facc7293d9e23a57e09a5c25cbe56561296d54566d31495c2828"
 pkg_depends=""
 
 # Plain autotools, confirmed directly (a local build against this exact

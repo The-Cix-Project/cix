@@ -35,6 +35,7 @@ pkg_name="iw"
 pkg_version="6.17-4"
 pkg_source="https://www.kernel.org/pub/software/network/iw/iw-6.17.tar.xz"
 pkg_sha256="7d182e498289ab39b257da6780d562e415377107f50358ee5b55b8cfe40b1e33"
+pkg_artifact_sha256="c6a73aa78d3af407d1fc2436c06e739e681c4b766f2c1b5714e208270d9d87c7"
 pkg_depends="libnl"
 #
 # Hand-rolled Makefile, no configure step, but it shells out to

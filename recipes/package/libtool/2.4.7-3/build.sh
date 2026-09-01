@@ -14,6 +14,7 @@ pkg_name="libtool"
 pkg_version="2.4.7-3"
 pkg_source="https://ftp.gnu.org/gnu/libtool/libtool-2.4.7.tar.xz"
 pkg_sha256="4f7f217f057ce655ff22559ad221a0fd8ef84ad1fc5fcb6990cecc333aa1635d"
+pkg_artifact_sha256="588f6f40f563a53ae6d5a96d59a3ab3463583d14160d7765a6fa49b723e88d86"
 pkg_depends="bash m4"
 #
 # Build tools derived rather than guessed: the baseline the declaring

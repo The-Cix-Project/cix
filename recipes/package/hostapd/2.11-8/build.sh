@@ -184,6 +184,7 @@ pkg_version="2.11-8"
 #
 pkg_source="https://w1.fi/releases/hostapd-2.11.tar.gz https://codeload.github.com/openwrt/libnl-tiny/tar.gz/40493a655d8caa2ccf5206dde1e733abe2920432"
 pkg_sha256="2b3facb632fd4f65e32f4bf82a76b4b72c501f995a4f62e330219fe7aed1747a a3f0456006b72352f0ccc9a653eb2428a03bc3ff3c6987a858b0c060ac19b181"
+pkg_artifact_sha256="cf42a6919f67d22bcd13c401a2331da1b75a5b1e0a9efdc751ee2049ae6dcb6f"
 pkg_depends="openssl"
 #
 # Build tools derived rather than guessed: the baseline the declaring

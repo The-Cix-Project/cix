@@ -35,6 +35,7 @@ pkg_sha256="616099beae24aba11f9b63d86ca6cc8d566d968b802391334c91df54eab416b4"
 # accident rather than by declaration, and stopped being present the
 # moment that stopped happening. Both are real packages in this
 # catalog, so the honest fix is to name them.
+pkg_artifact_sha256="f640078af7f5577cb78ec98948c38d8f3880a7b9355f6bc5cc87cd3a2e91edaa"
 pkg_depends="zlib xz bzip2"
 # ADR-0199/0209: the build environment is composed from exactly these
 # and nothing else -- there is no fallback to inherit a missing tool

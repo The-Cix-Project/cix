@@ -21,6 +21,7 @@ pkg_version="7.24-9"
 pkg_changelog="7.24-9: rebuilt against tcc 0.9.28rc (ADR-0223). The 2017 0.9.27 release could give two simultaneously-live locals the same stack slot (#216), a fault that corrupts values silently wherever the aliased pair is only read and written, so every binary it produced is suspect rather than merely the ones that failed. No source change: the revision exists to make the rebuild real, because an image version is a hash of the package manifest (ADR-0155) and a same-version reinstall is deduped and discarded. 7.24-8: ships libipset -- the shared library, its headers and libipset.pc -- which the package built all along and threw away. That was the last thing keeping keepalived ipset support off. 7.24-7: declares libmnl instead of copying it into the package (#206, #207). 7.24-6: strip the --version-script link flag TCC cannot honour (#206, #207)"
 pkg_source="https://deb.debian.org/debian/pool/main/i/ipset/ipset_7.24.orig.tar.bz2"
 pkg_sha256="fbe3424dff222c1cb5e5c34d38b64524b2217ce80226c14fdcbb13b29ea36112"
+pkg_artifact_sha256="7d48a640d848c5613e3ac57055efe06534720d6a96037ba96678e367bf1f0e0f"
 pkg_depends="libmnl"
 
 # pkg_build_depends (#206). Every entry past the baseline was named by a

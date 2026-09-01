@@ -19,6 +19,7 @@ pkg_name="libxcrypt"
 pkg_version="4.4.36-5"
 pkg_source="https://github.com/besser82/libxcrypt/releases/download/v4.4.36/libxcrypt-4.4.36.tar.xz"
 pkg_sha256="e5e1f4caee0a01de2aee26e3138807d6d3ca2b8e67287966d1fefd65e1fd8943"
+pkg_artifact_sha256="06cd59a74a759a395fca864f6f955f8981738fd46443e32b87534e403db61f78"
 pkg_depends=""
 
 # ADR-0199/0209: composed from exactly these, no fallback (#168).

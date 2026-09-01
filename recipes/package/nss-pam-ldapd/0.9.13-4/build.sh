@@ -39,6 +39,7 @@ pkg_sha256="e01784e17cb533bb66bd0601e205e785263445c3c2df7a6f90232ab4131c716d"
 # source; without it the artifact tier is skipped entirely.
 # The checksum lives here, in git, because the artifact server is
 # never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="7947e03864f905dd425668c7528a71e76eb9b357581c277be5cb62aec5f117cb"
 pkg_depends="openldap-client linux-pam"
 
 # pkg_build_depends added (#206). Derived, not guessed: the baseline the

@@ -22,6 +22,7 @@ pkg_sha256="378f8864ec21cfceaa048f7e1869ac9b4597b449087caf1eb55e440d30273336"
 # source; without it the artifact tier is skipped entirely.
 # The checksum lives here, in git, because the artifact server is
 # never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="63cf03f4728ad74e15e88d5b77fcafffa1ae49010d41ece93a8438f5fc2cf1f8"
 # ncurses, not "" -- gawk's binary links libtinfo.so.6, and until
 # ADR-0209 it never had to say so: pkg_seed_image_baseline() staged
 # libtinfo into every image, so the library was simply always there.

@@ -13,6 +13,7 @@ pkg_version="6.6-7"
 pkg_source="https://invisible-island.net/archives/ncurses/ncurses-6.6.tar.gz"
 pkg_sha256="355b4cbbed880b0381a04c46617b7656e362585d52e9cf84a67e2009b749ff11"
 # Nothing at runtime: ncurses links against libc alone.
+pkg_artifact_sha256="9c4e3eb4833e3af6c5d6506a6c35838d25a681b9e625862ec4fa30499e4de687"
 pkg_depends=""
 #
 # Issue #109 / ADR-0199: the tools this package needs to BUILD.

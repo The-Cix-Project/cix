@@ -19,6 +19,7 @@ pkg_sha256="bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16"
 # source; without it the artifact tier is skipped entirely.
 # The checksum lives here, in git, because the artifact server is
 # never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="53568d7c0f5c618e8008e3e047a79c304df3277d11655d365dadce54f5e8179b"
 # Nothing at runtime: libz.so has no dependency of its own beyond libc.
 pkg_depends=""
 #

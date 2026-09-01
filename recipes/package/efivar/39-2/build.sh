@@ -40,6 +40,7 @@ pkg_name="efivar"
 pkg_version="39-2"
 pkg_source="https://codeload.github.com/rhboot/efivar/tar.gz/refs/tags/39"
 pkg_sha256="c9edd15f2eeeea63232f3e669a48e992c7be9aff57ee22672ac31f5eca1609a6"
+pkg_artifact_sha256="24a8ce1c3b08173bfdeebbbce1e3ba81bea473cea2e3b09c6d7fc73c36aa8bbb"
 pkg_depends=""
 
 # ADR-0199/0209: composed from exactly these, no fallback (#168).

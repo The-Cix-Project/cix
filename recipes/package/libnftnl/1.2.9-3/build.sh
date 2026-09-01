@@ -24,6 +24,7 @@ pkg_name="libnftnl"
 pkg_version="1.2.9-3"
 pkg_source="https://www.netfilter.org/projects/libnftnl/files/libnftnl-1.2.9.tar.xz"
 pkg_sha256="e8c216255e129f26270639fee7775265665a31b11aa920253c3e5d5d62dfc4b8"
+pkg_artifact_sha256="e3f773528879b3aa6e0538fe9ae1824a23d210ecf699ee1b7e0a767f28776aea"
 pkg_depends="libmnl"
 #
 # The autotools baseline, plus:

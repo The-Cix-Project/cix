@@ -42,6 +42,7 @@ pkg_version="2.10-4"
 pkg_changelog="2.10-4: rebuilt against tcc 0.9.28rc (ADR-0223). The 2017 0.9.27 release could give two simultaneously-live locals the same stack slot (#216), a fault that corrupts values silently wherever the aliased pair is only read and written, so every binary it produced is suspect rather than merely the ones that failed. No source change: the revision exists to make the rebuild real, because an image version is a hash of the package manifest (ADR-0155) and a same-version reinstall is deduped and discarded. 2.10-3: declare build tools so this can be rebuilt from source (#206)"
 pkg_source="https://sourceforge.net/projects/net-tools/files/net-tools-2.10.tar.xz"
 pkg_sha256="b262435a5241e89bfa51c3cabd5133753952f7a7b7b93f32e08cb9d96f580d69"
+pkg_artifact_sha256="0dc2e38837a4241aab27b52bcee51641d80b8ef2543089c015c5bc2c0fc52e91"
 pkg_depends=""
 
 # pkg_build_depends added (#206): this recipe declared none, so

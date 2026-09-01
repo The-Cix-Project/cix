@@ -44,6 +44,7 @@ pkg_name="e2fsprogs"
 pkg_version="1.47.4-6"
 pkg_source="https://www.kernel.org/pub/linux/kernel/people/tytso/e2fsprogs/v1.47.4/e2fsprogs-1.47.4.tar.gz"
 pkg_sha256="da274408bebbfd13a5a2fc3cfc66e3ffff17c48534673aa67f88d49b99123b96"
+pkg_artifact_sha256="1db9819280bd5b7e3ca181557eb61e0a72ef82150f5bd5495f3ca464f42d6981"
 pkg_depends=""
 #
 # Build tools derived rather than guessed: the baseline the declaring

@@ -54,6 +54,7 @@ pkg_sha256="e6738e29597f733270731aa90600f37ffdc045079dfc27ec7e8192cc81085c3e ac2
 # source; without it the artifact tier is skipped entirely.
 # The checksum lives here, in git, because the artifact server is
 # never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="cf553da178d23ddd13a2ab9cfc284e10a96aa65865d72ee76bb3d86524c27ca8"
 # zlib/libc-dev added to pkg_depends in -5: always real, load-bearing
 # requirements (--with-system-zlib below needs zlib genuinely present;
 # any real C/C++ compile needs libc's own headers) that -2 through -4

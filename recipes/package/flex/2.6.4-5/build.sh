@@ -25,6 +25,7 @@ pkg_sha256="e87aae032bf07c26f85ac0ed3250998c37621d95f8bd748b31f15b33c45ee995"
 # source; without it the artifact tier is skipped entirely.
 # The checksum lives here, in git, because the artifact server is
 # never a trust boundary -- it serves bytes, this line approves them.
+pkg_artifact_sha256="a50b7ca9ab69c3695648b40c2282268c8cda8f6aa135310e54c4a382ed9a3cc1"
 # flex EXECUTES m4 at runtime -- its scanner skeleton is an m4
 # template, so a flex with no m4 on PATH fails on every invocation,
 # not just unusual ones. Never declared before; true since the day
