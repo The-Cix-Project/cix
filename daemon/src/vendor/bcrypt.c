@@ -39,6 +39,7 @@
  */
 
 #include <sys/types.h>
+#include <stdint.h>
 #include "vendor/blf.h"
 #include <ctype.h>
 #include <errno.h>
