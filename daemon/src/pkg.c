@@ -9154,21 +9154,43 @@ enum pkg_error pkg_seed_default_image_libc(pid_t *out_pid, int *out_pidfd, int *
 	char rootfs[PATH_MAX];
 	char recipe_path[PATH_MAX];
 	struct pkg_recipe recipe;
-	struct stat st;
 	char started[PKG_NAME_MAX];
 
-	/* Already runnable -- the ordinary case on every boot after the
-	 * first, and the reason this is safe to call unconditionally. */
 	if (image_current_version(PKG_DEFAULT_IMAGE, version, sizeof(version)) != IMAGE_OK)
 		return PKG_ERR_NOT_FOUND;
 	image_version_rootfs_path(PKG_DEFAULT_IMAGE, version, rootfs, sizeof(rootfs));
-	{
-		char loader[PATH_MAX];
 
-		snprintf(loader, sizeof(loader), "%s/%s", rootfs, PKG_IMAGE_LOADER_REL);
-		if (stat(loader, &st) == 0)
-			return PKG_ERR_NOT_FOUND;
-	}
+	/*
+	 * Already has a real C library PACKAGE -- the ordinary case on every
+	 * boot after the first, and the reason this is safe to call
+	 * unconditionally.
+	 *
+	 * This used to ask whether the dynamic loader FILE existed, and that
+	 * is a different question with the same shape (#241).
+	 * pkg_seed_image_baseline() stages a loader and a libc into every
+	 * image, so the file is always there and this always concluded
+	 * "already runnable" -- meaning the default image never received the
+	 * glibc package at all. It then carried a baseline libc for the rest
+	 * of its life, and the first binary installed into it that needed a
+	 * newer one failed at runtime:
+	 *
+	 *   /usr/bin/bash: /lib/x86_64-linux-gnu/libc.so.6:
+	 *   version `GLIBC_2.38' not found (required by /usr/bin/bash)
+	 *
+	 * Confirmed on a real host: `base` had 46 packages and no glibc
+	 * among them, and every container made from it exited 1 instantly
+	 * while POST /v1/containers still answered 201 "running" (which only
+	 * ever proved the child execve()'d).
+	 *
+	 * "Runnable" inferred from a file being present rather than from
+	 * anything actually running is the same mistake this project has
+	 * made before, and the fix is the same: ask the question you mean.
+	 * Installing the package is idempotent -- once it is in the
+	 * manifest this returns here, and until then the guards below
+	 * refuse cleanly when there is no recipe or no cached artifact.
+	 */
+	if (pkg_find(PKG_BASE_LIBC, PKG_DEFAULT_IMAGE) != NULL)
+		return PKG_ERR_NOT_FOUND;
 
 	/*
 	 * Past this point the default image genuinely has no runtime, so
