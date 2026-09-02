@@ -492,7 +492,18 @@ static void init_base_dir_paths(void)
 	 * migrate_state_to_config() below moves an existing box's state
 	 * here on first boot after the change.
 	 */
-	snprintf(STATE_DIR, sizeof(STATE_DIR), "%s/state", CONFIG_DIR);
+	/*
+	 * Same rule as DISKS_MOUNT_DIR below: a non-default --data-dir is a
+	 * self-contained test world, and its state belongs inside it. A
+	 * fixed /config/state would send every daemon-linked test's state
+	 * to the real config partition, shared between concurrent tests and
+	 * colliding with a live daemon -- exactly the isolation --data-dir
+	 * exists to provide (ADR-0209).
+	 */
+	if (strcmp(g_base_dir, DEFAULT_BASE_DIR) != 0)
+		snprintf(STATE_DIR, sizeof(STATE_DIR), "%s/state", g_base_dir);
+	else
+		snprintf(STATE_DIR, sizeof(STATE_DIR), "%s/state", CONFIG_DIR);
 	snprintf(REBUILDABLE_DIR, sizeof(REBUILDABLE_DIR), "%s/rebuildable", g_base_dir);
 
 	snprintf(CONTAINERS_DIR, sizeof(CONTAINERS_DIR), "%s/containers", g_base_dir);
