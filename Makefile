@@ -37,7 +37,45 @@ SELFTESTS = \
 	$(BUILD)/test_elfcheck $(BUILD)/test_elfcheck_gcc \
 	$(BUILD)/test_treecopy $(BUILD)/test_childdiag \
 	$(BUILD)/test_kernelpolicy $(BUILD)/test_releasekey $(BUILD)/test_subid \
-	$(BUILD)/test_btrfs $(BUILD)/test_toolchain
+	$(BUILD)/test_btrfs $(BUILD)/test_toolchain \
+	$(DAEMON_SELFTESTS)
+
+#
+# Daemon-linked tests that a build container CAN run (#224).
+#
+# These fork a real cixd, bind a port and write a data directory, and
+# every one of them was measured passing inside a composed build
+# container (probe-selftest-env/4) before being listed here. That
+# probe is the whole reason this list exists rather than being guessed:
+# of 86 test binaries, 35 pass in that environment, and the gate was
+# running 15.
+#
+# What a build container CANNOT do, measured directly rather than
+# assumed: unshare(CLONE_NEWNET), unshare(CLONE_NEWNS), mount(), or
+# create a cgroup. So everything that makes a real container, bridge or
+# namespace is out, and stays out until #224's option 2 or 3 exists.
+#
+# SIX tests that pass there are still excluded, which is the part worth
+# reading. A build container shares the HOST's network namespace and
+# filesystem, so a test can "pass" by mutating the machine it is built
+# on -- the probe run left cix-ctnet0, cix-ctnet1, cix-test0, vt-a and
+# vt-b behind on a real host. Doubling coverage by leaking bridges onto
+# the build machine is not a trade worth making, and CLAUDE.md already
+# records leaked bridges breaking later runs.
+#
+#   test_network_interfaces  creates veth/bridges in the shared netns
+#   test_routes              writes routes in the shared netns
+#   test_daemon_bind_ip      adds addresses in the shared netns
+#   test_storage_placement   touches network state
+#   test_esp                 reads/writes real boot paths
+#   test_boot_console        the same
+#
+DAEMON_SELFTESTS = \
+	$(BUILD)/test_web $(BUILD)/test_backup_config $(BUILD)/test_dual_console \
+	$(BUILD)/test_factory_reset $(BUILD)/test_hostauth $(BUILD)/test_https_chain \
+	$(BUILD)/test_kmod $(BUILD)/test_layout_upgrade $(BUILD)/test_pkg_recipe_approval \
+	$(BUILD)/test_signing_keys $(BUILD)/test_stallwatch $(BUILD)/test_sysctl \
+	$(BUILD)/test_system_update $(BUILD)/test_tls_throttle
 #
 # Three tests were in this list and are deliberately NOT, because they
 # fail in a composed build container for reasons that are not defects.
