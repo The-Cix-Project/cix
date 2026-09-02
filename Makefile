@@ -75,6 +75,15 @@ SELFTESTS = \
 # happens not to be bind-mounted here, but the reasoning was wrong
 # either way.
 #
+# test_rtnetlink is here only because the cix recipe declares
+# pkg_build_caps="CAP_SYS_ADMIN" (#224): it needs CLONE_NEWNET, which a
+# build container is refused without it. Measured both ways -- 35 of 86
+# tests pass in a plain build container and 36 with the capability, so
+# the capability is real and, on its own, worth exactly one test. What
+# stops the other 50 is not privilege: they want a real kernel image,
+# dnsmasq, an ld-linux path, or seeded package artifacts, and one still
+# fails container_create with EINVAL rather than EPERM.
+#
 # Two are still out, on filesystem grounds rather than network ones, and
 # deliberately unverified rather than assumed safe:
 #
@@ -101,7 +110,7 @@ DAEMON_SELFTESTS = \
 	$(BUILD)/test_factory_reset $(BUILD)/test_hostauth $(BUILD)/test_https_chain \
 	$(BUILD)/test_kmod $(BUILD)/test_layout_upgrade $(BUILD)/test_pkg_recipe_approval \
 	$(BUILD)/test_signing_keys $(BUILD)/test_stallwatch $(BUILD)/test_sysctl \
-	$(BUILD)/test_system_update $(BUILD)/test_tls_throttle
+	$(BUILD)/test_system_update $(BUILD)/test_tls_throttle $(BUILD)/test_rtnetlink
 #
 # Three tests were in this list and are deliberately NOT, because they
 # fail in a composed build container for reasons that are not defects.
