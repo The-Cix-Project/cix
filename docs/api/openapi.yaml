@@ -7575,6 +7575,51 @@ paths:
               schema:
                 $ref: "#/components/schemas/PkgBootstrapStatus"
 
+  /pkg/rebuilds:
+    get:
+      summary: Image rebuilds this host has queued but not yet started (issue #236)
+      description: >
+        Publishing a recipe version is documented and implemented as a
+        metadata write. It is not only that: it queues an image rebuild
+        for **every image whose manifest tracks that package as
+        `rolling`**, and until this endpoint existed nothing anywhere
+        reported that. Publishing a handful in sequence committed the
+        host to real work an operator could neither see nor count --
+        which, before the event loop stopped blocking on it, made the
+        box unusable for minutes.
+
+
+        The queue is in memory and is deliberately not persisted: a
+        rebuild is re-derivable from the manifests at any time, so a
+        restart drops pending work rather than resuming a stale
+        intention. That is also why a restart is a legitimate way to
+        abandon a queue that is doing more than an operator wants.
+      operationId: listPkgRebuilds
+      x-cix-expose: [cli, web]
+      responses:
+        "200":
+          description: The queue, oldest first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  queued:
+                    type: array
+                    description: Image names awaiting a rebuild, in the order they will be started.
+                    items:
+                      type: string
+                  depth:
+                    type: integer
+                    description: How many images are waiting.
+                  capacity:
+                    type: integer
+                    description: >
+                      The queue's fixed bound. A publish that would
+                      exceed it drops the excess rather than growing
+                      without limit, so depth == capacity means work has
+                      been discarded.
+
   /pkg/recipes:
     get:
       summary: List recipes found on disk (metadata only, never sourced/executed)
