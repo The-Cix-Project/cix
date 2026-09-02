@@ -13398,12 +13398,36 @@ components:
 
     StoragePlacement:
       type: object
-      required: [disk]
+      required: [disk, degraded]
       properties:
         disk:
           type: string
           nullable: true
-          description: The active placement disk, or null for the default OS-disk placement.
+          description: >
+            The CONFIGURED placement disk, or null for the default
+            OS-disk placement. Note this is what is configured, which
+            since #256 is not necessarily what is in use -- see
+            `degraded`. The disk is identified internally by its
+            filesystem UUID rather than by this kernel name (#255), so
+            a placement survives the disk being renamed by a driver,
+            controller or disk-set change; this field reports whatever
+            name it currently answers to.
+        degraded:
+          type: boolean
+          description: >
+            True when the configured disk could not be used this boot
+            (absent, or present but not mounted) and the daemon is
+            running on the default OS-disk location instead. It used to
+            refuse to start in this situation, which on a shell-less
+            host removed the only means of correcting the record that
+            was wrong (#256). Content on the configured disk is not
+            deleted -- it is simply not consulted this boot. Correct the
+            placement and reboot.
+        degraded_reason:
+          type: string
+          description: >
+            Present only when `degraded` is true: what specifically was
+            wrong with the configured disk.
 
     StorageMigrateStatus:
       type: object

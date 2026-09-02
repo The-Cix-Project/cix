@@ -87,6 +87,7 @@
 #include <regex.h>
 #include <sched.h>
 #include <signal.h>
+#include <stdarg.h> /* placement_degraded()'s own varargs (#256) */
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -620,6 +621,83 @@ static int migrate_state_to_config(void)
 }
 
 /*
+ * Why a storage placement could not be honoured this boot (#256).
+ *
+ * Empty means it was honoured. These are filled during boot resolution,
+ * which runs BEFORE logstore_init(), so they cannot be logged where
+ * they happen -- stderr is not mirrored into the log store (#132), and
+ * a host with no shell has no way to read stderr after the fact. They
+ * are emitted to the log store immediately after it opens, and
+ * reported on the placement endpoints, so the condition is visible over
+ * the API rather than only on a console nobody is watching.
+ */
+static char g_placement_degraded[STORAGE_KIND_COUNT][256];
+
+/*
+ * Records that a placement could not be honoured, and says so on the
+ * console (#256).
+ *
+ * The daemon then carries on with the DEFAULT OS-disk location for that
+ * kind, which is the whole change. Refusing to start was the previous
+ * behaviour and it is the wrong response on this platform: the host has
+ * no shell, so the API is the only way in, and refusing to start
+ * removes the only means of correcting the very record that is wrong.
+ * That is not hypothetical -- a kernel change renamed a disk, the
+ * rebuildable-storage placement still named the old letter, and the box
+ * became unreachable until someone selected the other A/B slot at the
+ * loader with a console.
+ *
+ * The trade is deliberate and worth stating: running on the default
+ * location means the images and packages on the real disk are not
+ * visible this boot. Nothing is deleted -- the other disk is simply not
+ * consulted -- and an operator can see the reason over the API and fix
+ * the placement. A daemon that will not start cannot be told anything.
+ */
+static void placement_degraded(enum storage_kind kind, const char *fmt, ...)
+{
+	va_list ap;
+
+	if (kind < STORAGE_KIND_REBUILDABLE || kind > STORAGE_KIND_SWAP)
+		return;
+	va_start(ap, fmt);
+	vsnprintf(g_placement_degraded[kind], sizeof(g_placement_degraded[kind]), fmt, ap);
+	va_end(ap);
+	fprintf(stderr, "storage placement degraded: %s -- using the default location instead this "
+	                "boot (#256)\n",
+	        g_placement_degraded[kind]);
+}
+
+/*
+ * Re-reports any degraded placement into the log store, which does not
+ * exist yet when the resolution above runs. Without this the only
+ * record is stderr, and stderr is never mirrored into the log store
+ * (#132) -- so on a shell-less host the reason would be invisible to
+ * the API, which is exactly the gap #256 is about.
+ */
+static void log_degraded_placements(void)
+{
+	enum storage_kind k;
+
+	for (k = STORAGE_KIND_REBUILDABLE; k <= STORAGE_KIND_SWAP; k++) {
+		if (g_placement_degraded[k][0] == '\0')
+			continue;
+		logstore_write("cixd", "error",
+		                "storage placement degraded: %s -- running on the default location "
+		                "instead; correct the placement and reboot (#256)",
+		                g_placement_degraded[k]);
+	}
+}
+
+/* The degraded reason for a kind, or NULL when the placement was
+ * honoured -- reported on the placement endpoints. */
+static const char *placement_degraded_reason(enum storage_kind kind)
+{
+	if (kind < STORAGE_KIND_REBUILDABLE || kind > STORAGE_KIND_SWAP)
+		return NULL;
+	return g_placement_degraded[kind][0] != '\0' ? g_placement_degraded[kind] : NULL;
+}
+
+/*
  * ADR-0141 Phase 3: same shape and same "fail loud, never silently
  * fall back" reasoning as resolve_rebuildable_storage_placement(), for
  * LOG_DIR -- log-storage's own single-consumer relocation (logstore.c
@@ -640,21 +718,18 @@ static int resolve_log_storage_placement(void)
 		if (strcmp(disks[i].name, disk_name) != 0)
 			continue;
 		if (!disks[i].mounted) {
-			fprintf(stderr,
-			        "resolve_log_storage_placement: log-storage's configured disk "
-			        "'%s' is present but not currently mounted -- refusing to start\n",
-			        disk_name);
-			return -1;
+			placement_degraded(STORAGE_KIND_LOG,
+			                    "log-storage's configured disk '%s' is present but not "
+			                    "mounted", disk_name);
+			return 0;
 		}
 		snprintf(LOG_DIR, sizeof(LOG_DIR), "%s/%s/logs", DISKS_MOUNT_DIR, disk_name);
 		snprintf(LOG_STATE_PATH, sizeof(LOG_STATE_PATH), "%s/state.json", LOG_DIR);
 		return 0;
 	}
-	fprintf(stderr,
-	        "resolve_log_storage_placement: log-storage's configured disk '%s' is not "
-	        "currently present -- refusing to start\n",
-	        disk_name);
-	return -1;
+	placement_degraded(STORAGE_KIND_LOG, "log-storage's configured disk '%s' is not present",
+	                    disk_name);
+	return 0;
 }
 
 /*
@@ -732,23 +807,19 @@ static int resolve_rebuildable_storage_placement(void)
 		if (strcmp(disks[i].name, disk_name) != 0)
 			continue;
 		if (!disks[i].mounted) {
-			fprintf(stderr,
-			        "resolve_rebuildable_storage_placement: rebuildable-storage's "
-			        "configured disk '%s' is present but not currently mounted -- "
-			        "refusing to start\n",
-			        disk_name);
-			return -1;
+			placement_degraded(STORAGE_KIND_REBUILDABLE,
+			                    "rebuildable-storage's configured disk '%s' is present but "
+			                    "not mounted", disk_name);
+			return 0;
 		}
 		snprintf(REBUILDABLE_DIR, sizeof(REBUILDABLE_DIR), "%s/%s/rebuildable", DISKS_MOUNT_DIR,
 		         disk_name);
 		compute_rebuildable_dir_relative_paths();
 		return 0;
 	}
-	fprintf(stderr,
-	        "resolve_rebuildable_storage_placement: rebuildable-storage's configured disk "
-	        "'%s' is not currently present -- refusing to start\n",
-	        disk_name);
-	return -1;
+	placement_degraded(STORAGE_KIND_REBUILDABLE,
+	                    "rebuildable-storage's configured disk '%s' is not present", disk_name);
+	return 0;
 }
 
 /*
@@ -18549,6 +18620,23 @@ static void handle_log_storage_get(int fd)
 	jw_init(&w);
 	jw_obj_open(&w);
 	storageplacement_write_json(&w, STORAGE_KIND_LOG);
+	/*
+	 * #256: whether this placement is actually in effect. The
+	 * daemon no longer refuses to start when its disk is missing,
+	 * so "configured" and "in use" can now differ -- and if that
+	 * were not reported, a degraded boot would be silent to every
+	 * API client on a host with no shell.
+	 */
+	{
+		const char *why = placement_degraded_reason(STORAGE_KIND_LOG);
+
+		jw_key(&w, "degraded");
+		jw_bool(&w, why != NULL);
+		if (why != NULL) {
+			jw_key(&w, "degraded_reason");
+			jw_str(&w, why);
+		}
+	}
 	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
@@ -18665,6 +18753,23 @@ static void handle_rebuildable_storage_get(int fd)
 	jw_init(&w);
 	jw_obj_open(&w);
 	storageplacement_write_json(&w, STORAGE_KIND_REBUILDABLE);
+	/*
+	 * #256: whether this placement is actually in effect. The
+	 * daemon no longer refuses to start when its disk is missing,
+	 * so "configured" and "in use" can now differ -- and if that
+	 * were not reported, a degraded boot would be silent to every
+	 * API client on a host with no shell.
+	 */
+	{
+		const char *why = placement_degraded_reason(STORAGE_KIND_REBUILDABLE);
+
+		jw_key(&w, "degraded");
+		jw_bool(&w, why != NULL);
+		if (why != NULL) {
+			jw_key(&w, "degraded_reason");
+			jw_str(&w, why);
+		}
+	}
 	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
@@ -29526,6 +29631,7 @@ static int cixd_main(int argc, char **argv)
 	}
 	if (boot_subsystem_init(init_mode, "logstore", logstore_init(LOG_DIR, LOG_STATE_PATH)) != 0)
 		return 1;
+	log_degraded_placements(); /* #256: now that there is somewhere to say it */
 	/*
 	 * Issue #40: after image_init (it produces a real image version)
 	 * AND after logstore_init, so what it did is visible where an
