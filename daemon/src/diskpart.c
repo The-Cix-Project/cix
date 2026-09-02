@@ -1094,14 +1094,24 @@ enum diskpart_error diskpart_resize(const char *disk_name, const char *partition
 	 * The partition arrives here unmounted (required, so the table
 	 * could be rewritten safely) and leaves unmounted: it is mounted at
 	 * a private scratch point purely for the duration of the resize.
-	 * /run is used because this platform's own minimal images have no
-	 * /tmp at all -- a fact that has cost real build failures before.
+	 *
+	 * The scratch point goes under os_containers_dir, which is a real
+	 * directory this daemon owns and writes to constantly. The obvious
+	 * choice, /run, is wrong here and the failure was instructive:
+	 * CLAUDE.md records that this project's minimal container images
+	 * have /run and no /tmp, and that is a fact about IMAGES. The host's
+	 * own control-plane root is a squashfs with no /run at all, so the
+	 * mkdir failed with ENOENT and could not have been fixed by
+	 * creating it either. Found in one shot only because this path had
+	 * just been taught to report the tool's real error instead of a
+	 * generic one.
 	 */
 	if (strcmp(part.fs_type, "btrfs") == 0) {
 		char mnt[PATH_MAX];
 		int mrc;
 
-		if (snprintf(mnt, sizeof(mnt), "/run/cix-resize-%s", part.name) >= (int)sizeof(mnt))
+		if (snprintf(mnt, sizeof(mnt), "%s/.resize-%s", os_containers_dir, part.name) >=
+		    (int)sizeof(mnt))
 			return DISKPART_ERR_RESIZE_FS_FAILED;
 		if (mkdir(mnt, 0700) != 0 && errno != EEXIST) {
 			snprintf(g_sfdisk_last_error, sizeof(g_sfdisk_last_error),
