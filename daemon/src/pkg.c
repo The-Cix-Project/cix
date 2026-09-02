@@ -5167,7 +5167,8 @@ enum pkg_error pkg_hostbuild_start(const char *name, const char *build_image, co
  * never a fatal condition for the build itself.
  */
 static int start_build_container_spec(int chain_idx, struct pkg_entry *e,
-                                       struct container_spec *spec_out, int *out_stdio_write_fd)
+                                       struct container_spec *spec_out, int *out_stdio_write_fd,
+                                       const char *build_caps)
 {
 	memset(spec_out, 0, sizeof(*spec_out));
 	spec_out->ns.clone_flags =
@@ -5203,8 +5204,8 @@ static int start_build_container_spec(int chain_idx, struct pkg_entry *e,
 	 * weaker environment than it declared and then fail somewhere less
 	 * obvious.
 	 */
-	if (recipe.build_caps[0] != '\0') {
-		const char *p = recipe.build_caps;
+	if (build_caps != NULL && build_caps[0] != '\0') {
+		const char *p = build_caps;
 
 		spec_out->cap_add_count = 0;
 		while (*p != '\0' && spec_out->cap_add_count < CONTAINER_MAX_CAP_ADD) {
@@ -5224,7 +5225,7 @@ static int start_build_container_spec(int chain_idx, struct pkg_entry *e,
 			p += n;
 		}
 		logstore_write("cixd", "info", "pkg %s@%s: build container requests capabilities: %s",
-		               e->name, e->image, recipe.build_caps);
+		               e->name, e->image, build_caps);
 	}
 	spec_out->ov.lowerdir = e->build_lowerdir;
 	spec_out->ov.upperdir = e->build_upperdir;
@@ -5675,7 +5676,8 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 		e->build_envp[3] = NULL;
 	}
 
-	return start_build_container_spec(chain_idx, e, spec_out, out_stdio_write_fd);
+	return start_build_container_spec(chain_idx, e, spec_out, out_stdio_write_fd,
+	                                   recipe.build_caps);
 }
 
 int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *spec_out,
@@ -6138,7 +6140,10 @@ enum pkg_error pkg_resume_build(const char *name, const char *image, const char 
 	snprintf(g_chains[chain_idx].name, sizeof(g_chains[chain_idx].name), "%s", name);
 
 	*out_chain_idx = chain_idx;
-	start_build_container_spec(chain_idx, e, spec_out, out_stdio_write_fd);
+	/* Resume path (ADR-0177): the recipe is not re-parsed here, and a
+	 * resumed build reuses the container it already has, so it needs no
+	 * capability request of its own. */
+	start_build_container_spec(chain_idx, e, spec_out, out_stdio_write_fd, NULL);
 	return PKG_OK;
 }
 
