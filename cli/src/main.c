@@ -13661,9 +13661,53 @@ static int cmd_pkg_update_all(const struct cix_client *c, int json_mode)
  * a thin wrapper, all the real work is cix_pkg_build_log_run()'s own
  * WS relay (client/src/console.c), same "cmd_* just calls the client
  * library" shape every other pkg subcommand here already has. */
-static int cmd_pkg_build_log(const struct cix_client *c)
+/*
+ * #245: a value goes straight into the request line's query string, so
+ * anything that could terminate or extend it is refused here rather
+ * than sent. Package and image names are already constrained to this
+ * set by the API contract, so a rejection means a typo, not a
+ * limitation.
+ */
+static int query_token_ok(const char *v)
 {
-	return cix_pkg_build_log_run(c) == 0 ? 0 : 1;
+	size_t i;
+
+	for (i = 0; v[i] != '\0'; i++) {
+		if (!isalnum((unsigned char)v[i]) && strchr("._@+-", v[i]) == NULL)
+			return 0;
+	}
+	return i > 0;
+}
+
+static int cmd_pkg_build_log(const struct cix_client *c, int argc, char **argv)
+{
+	const char *name = NULL;
+	const char *image = NULL;
+	int i;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--name=", 7) == 0)
+			name = argv[i] + 7;
+		else if (strncmp(argv[i], "--image=", 8) == 0)
+			image = argv[i] + 8;
+		else {
+			fprintf(stderr, "cixctl: unknown pkg build-log option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (image != NULL && name == NULL) {
+		fprintf(stderr, "cixctl: pkg build-log --image= needs --name= too\n");
+		return 2;
+	}
+	if (name != NULL && !query_token_ok(name)) {
+		fprintf(stderr, "cixctl: '%s' is not a valid package name\n", name);
+		return 2;
+	}
+	if (image != NULL && !query_token_ok(image)) {
+		fprintf(stderr, "cixctl: '%s' is not a valid image name\n", image);
+		return 2;
+	}
+	return cix_pkg_build_log_run(c, name, image) == 0 ? 0 : 1;
 }
 
 /*
@@ -13906,7 +13950,7 @@ static int cmd_pkg(const struct cix_client *c, int json_mode, int argc, char **a
 		                "[--wait] [--deploy] [--upgrade] [--keep-on-failure]\n"
 		                "       cixctl pkg resume --name=NAME [--image=IMAGE] [--version=VERSION] "
 		                "[--keep-on-failure]\n"
-		                "       cixctl pkg build-log\n"
+		                "       cixctl pkg build-log [--name=NAME [--image=IMAGE]]\n"
 		                "       cixctl pkg build-logs [--last | --file=NAME]\n"
 		                "       cixctl pkg policy ls | set NAME --policy=... | clear NAME\n"
 		                "       cixctl pkg ls\n"
@@ -13947,7 +13991,7 @@ static int cmd_pkg(const struct cix_client *c, int json_mode, int argc, char **a
 	if (strcmp(sub, "resume") == 0)
 		return cmd_pkg_resume(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "build-log") == 0)
-		return cmd_pkg_build_log(c);
+		return cmd_pkg_build_log(c, argc - 1, argv + 1);
 	if (strcmp(sub, "policy") == 0)
 		return cmd_pkg_policy(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "build-logs") == 0)
