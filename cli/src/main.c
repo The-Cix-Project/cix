@@ -13220,12 +13220,16 @@ static int get_bootroot_assembly_generation(const struct cix_client *c, long *ou
 	const struct json_value *jrunning;
 	const char *image_path;
 
-	if (cix_client_request(c, CIX_API_getSystemBoot_METHOD, CIX_API_getSystemBoot, NULL, &r) != 0) {
+	/* Assembly state moved off /system/boot to its own endpoint
+	 * (#182, ADR-0230): that endpoint's subject is what booted, not
+	 * what is being built. */
+	if (cix_client_request(c, CIX_API_getSystemAssembly_METHOD, CIX_API_getSystemAssembly, NULL,
+	                        &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return -1;
 	}
-	*out_completed = (long)json_as_number(json_object_get(r.json, "bootroot_assembly_completed_generation"));
-	jrunning = json_object_get(r.json, "bootroot_assembly_running");
+	*out_completed = (long)json_as_number(json_object_get(r.json, "completed_generation"));
+	jrunning = json_object_get(r.json, "running");
 	*out_running = jrunning != NULL && jrunning->type == JSON_BOOL && jrunning->u.boolean;
 	/*
 	 * The daemon reports where it put the assembled image (#178). This
@@ -13236,7 +13240,7 @@ static int get_bootroot_assembly_generation(const struct cix_client *c, long *ou
 	 */
 	if (out_image_path != NULL) {
 		out_image_path[0] = '\0';
-		image_path = json_as_string(json_object_get(r.json, "bootroot_image_path"));
+		image_path = json_as_string(json_object_get(r.json, "image_path"));
 		if (image_path != NULL)
 			snprintf(out_image_path, out_image_path_size, "%s", image_path);
 	}

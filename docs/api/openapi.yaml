@@ -342,6 +342,61 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /system/assembly:
+    get:
+      summary: What control-plane assembly is doing right now (issue #182, ADR-0230)
+      description: >
+        Assembling a new control plane is one of this platform's five
+        lifecycle domains (ADR-0230) and until now it had no endpoint at
+        all. It happened implicitly when a hostbuild named `cix`
+        completed, and its progress was two generation counters bolted
+        onto `GET /system/boot` -- an endpoint whose subject is *what
+        booted*, reporting on *what is being built*. An operator
+        watching a deploy had to know that assembly is a side effect of
+        a hostbuild and is observed somewhere else.
+
+
+        The rule ADR-0230 states, and this is its first application:
+        status belongs to the thing that is happening, never to a
+        neighbour that happens to know about it. These fields have MOVED
+        here; they are no longer on `/system/boot`.
+      operationId: getSystemAssembly
+      x-cix-expose: [cli]
+      responses:
+        "200":
+          description: Current and historical control-plane assembly state
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  running:
+                    type: boolean
+                    description: Whether an assembly is in flight right now.
+                  started_generation:
+                    type: integer
+                    description: >
+                      A monotonic counter incremented once per
+                      server-side assembly attempt (ADR-0057). 0 if none
+                      has run this daemon lifetime.
+                  completed_generation:
+                    type: integer
+                    description: >
+                      The generation of the last attempt that actually
+                      SUCCEEDED -- never advanced on failure. A client
+                      that captured this before triggering a hostbuild
+                      can wait for it to pass that baseline to know the
+                      fresh artifact is on disk, rather than trusting
+                      that the file exists (which is also true of a
+                      stale leftover from an earlier round).
+                  image_path:
+                    type: string
+                    nullable: true
+                    description: >
+                      Where the assembled control-plane image is, so a
+                      client that wants to deploy it need not know this
+                      daemon's filesystem layout.
+
   /system/boot:
     get:
       summary: Build/slot/kernel identity
@@ -389,50 +444,6 @@ paths:
                       The running kernel's `uname(2)` release string
                       (e.g. `6.18.40`), or `null` if `uname(2)` itself
                       failed.
-                  bootroot_assembly_started_generation:
-                    type: integer
-                    description: >
-                      Real freshness signal for `pkg hostbuild cix
-                      --deploy` (ADR-0058-follow-on, task #737): a
-                      monotonic counter incremented once per server-side
-                      cix bootroot assembly attempt (ADR-0057). 0 if
-                      no attempt has ever run this daemon lifetime.
-                  bootroot_assembly_completed_generation:
-                    type: integer
-                    description: >
-                      The generation number of the last assembly attempt
-                      that *actually succeeded* -- never advanced on
-                      failure. A client that captured this value before
-                      triggering a new hostbuild round can wait for it
-                      to advance past that baseline to know the fresh
-                      artifact (not a stale leftover from an earlier
-                      round) is now on disk.
-                  bootroot_assembly_running:
-                    type: boolean
-                    description: >
-                      true while an assembly attempt is in flight --
-                      lets a client distinguish "still working" from
-                      "gave up, that attempt failed" instead of polling
-                      completed_generation forever after a failure.
-                  bootroot_image_path:
-                    type: string
-                    description: >
-                      Absolute path to the assembled control-plane
-                      squashfs this daemon would deploy, so a client does
-                      not have to know the daemon's own filesystem layout
-                      to use it. `cixctl pkg hostbuild cix --deploy`
-                      reads this and passes it to POST /system/update as
-                      image_path. Reported whether or not the file exists
-                      yet: its absence is a normal state (no assembly has
-                      run this daemon lifetime), and /system/update
-                      already reports a missing or unreadable image_path
-                      honestly. Issue #178 -- the image used to live
-                      inside the "cix" hostbuild's own artifact
-                      directory, so the CLI composed this path itself and
-                      every published artifact carried a ~10 MB squashfs
-                      plus a ~12 MB staging tree it had no business
-                      shipping.
-
   /system/shutdown:
     post:
       summary: >
