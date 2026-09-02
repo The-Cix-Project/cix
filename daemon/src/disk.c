@@ -732,7 +732,15 @@ void disk_write_json_one(const struct discovered_disk *d, struct json_writer *w)
 	 * which a client can only get right if it is told which they are.
 	 */
 	jw_key(w, "protected");
-	jw_bool(w, d->is_partition && diskpart_partition_protected(d->name, d->is_os_disk));
+	/*
+	 * diskpart_os_layout_untouchable(), not diskpart_partition_
+	 * protected(): the whole OS disk is refused a role, a format and an
+	 * unmount exactly like its four structural partitions are, and
+	 * reporting it as unprotected made this field disagree with the
+	 * rule the daemon enforces. A client that trusts the field then
+	 * offers an action that can only ever 400.
+	 */
+	jw_bool(w, diskpart_os_layout_untouchable(d->name, d->is_os_disk, d->is_partition));
 	jw_obj_close(w);
 }
 
