@@ -21211,6 +21211,12 @@ static void handle_pki_reset(int fd, const char *body, size_t body_len)
 static void respond_pkg_error(int fd, enum pkg_error err)
 {
 	switch (err) {
+	case PKG_ERR_WRONG_BUILD_IMAGE:
+		respond_error(fd, 400, "Bad Request",
+		              "this recipe declares the image it is built in, and it is not the one "
+		              "requested -- omit build_image to use the declared one, or check the "
+		              "recipe's pkg_build_image= (the daemon log names both)");
+		break;
 	case PKG_ERR_INVALID_NAME:
 		respond_error(fd, 400, "Bad Request", "invalid package name");
 		break;
@@ -24063,9 +24069,12 @@ static void handle_pkg_hostbuild(int fd, const char *body, size_t body_len)
 	}
 	name = json_as_string(json_object_get(root, "name"));
 	build_image = json_as_string(json_object_get(root, "build_image"));
-	if (name == NULL || build_image == NULL) {
+	/* build_image is optional here: the recipe may declare one, and
+	 * pkg_hostbuild_start() resolves it (#182). Its absence is only an
+	 * error if the recipe declares none, which it reports itself. */
+	if (name == NULL) {
 		json_free(root);
-		respond_error(fd, 400, "Bad Request", "name and build_image are both required");
+		respond_error(fd, 400, "Bad Request", "name is required");
 		return;
 	}
 	/* ADR-0107: omitted (NULL) resolves to name's highest available
