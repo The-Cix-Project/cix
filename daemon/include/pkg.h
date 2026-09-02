@@ -255,6 +255,14 @@ enum pkg_error {
 	PKG_ERR_FULL,
 	PKG_ERR_SPAWN_FAILED,
 	PKG_ERR_PERSIST_FAILED,
+	/*
+	 * The caller named a build image and the recipe declares a
+	 * different one (#182). Distinct from INVALID_RECIPE because the
+	 * recipe is fine -- reporting "no such recipe, or it failed to
+	 * parse" for a correct recipe sends the reader somewhere wrong,
+	 * which is the failure this project keeps having to unpick.
+	 */
+	PKG_ERR_WRONG_BUILD_IMAGE,
 	PKG_ERR_INVALID_TOOLCHAIN, /* toolchain_path missing, unreadable, or not a regular file */
 	/*
 	 * Issue #213: pkg_cancel() found the entry, but it has no build in

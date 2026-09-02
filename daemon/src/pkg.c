@@ -5136,7 +5136,7 @@ enum pkg_error pkg_hostbuild_start(const char *name, const char *build_image, co
 			               "pkg hostbuild %s: recipe declares build image \"%s\", caller asked "
 			               "for \"%s\"",
 			               name, recipe.build_image, build_image);
-			return PKG_ERR_INVALID_RECIPE;
+			return PKG_ERR_WRONG_BUILD_IMAGE;
 		}
 	}
 
