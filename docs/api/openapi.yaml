@@ -8602,7 +8602,7 @@ paths:
           application/json:
             schema:
               type: object
-              required: [name, build_image]
+              required: [name]
               properties:
                 name:
                   type: string
@@ -8610,8 +8610,18 @@ paths:
                 build_image:
                   type: string
                   description: >
-                    The already-existing image whose rootfs supplies the build
-                    container's lowerdir. No default -- always explicit.
+                    The image to build in. OPTIONAL when the recipe
+                    declares `pkg_build_image=`, in which case that is
+                    used and a caller naming a DIFFERENT image is
+                    refused with 400 (issue #182, ADR-0230's CI domain).
+                    Which image can build what used to be convention
+                    rather than contract -- cix-builder builds the
+                    control plane, kernel-builder builds kernels --
+                    enforced by nothing, so naming the wrong one passed
+                    every check and then failed minutes later inside a
+                    build container with a compiler error rather than
+                    "that is not what that image is for". Still required
+                    for a recipe that declares none.
                 version:
                   type: string
                   description: >

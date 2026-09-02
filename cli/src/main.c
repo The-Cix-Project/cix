@@ -13315,9 +13315,15 @@ static int cmd_pkg_hostbuild(const struct cix_client *c, int json_mode, int argc
 			return 2;
 		}
 	}
-	if (name == NULL || build_image == NULL) {
+	/*
+	 * --build-image is optional when the recipe declares one (#182):
+	 * the daemon resolves it, and refuses a caller that names a
+	 * different image rather than letting the mismatch fail minutes
+	 * later inside a build container.
+	 */
+	if (name == NULL) {
 		fprintf(stderr,
-		        "usage: cixctl pkg hostbuild NAME --build-image=IMAGE [--version=VERSION] "
+		        "usage: cixctl pkg hostbuild NAME [--build-image=IMAGE] [--version=VERSION] "
 		        "[--wait] [--deploy] [--upgrade] [--keep-on-failure]\n");
 		return 2;
 	}
@@ -13346,8 +13352,12 @@ static int cmd_pkg_hostbuild(const struct cix_client *c, int json_mode, int argc
 	jw_obj_open(&w);
 	jw_key(&w, "name");
 	jw_str(&w, name);
-	jw_key(&w, "build_image");
-	jw_str(&w, build_image);
+	/* Omitted entirely when not given, so the daemon applies the
+	 * recipe's own declaration rather than receiving an empty string. */
+	if (build_image != NULL) {
+		jw_key(&w, "build_image");
+		jw_str(&w, build_image);
+	}
 	if (version != NULL) {
 		jw_key(&w, "version");
 		jw_str(&w, version);
