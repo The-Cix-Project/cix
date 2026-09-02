@@ -55,18 +55,29 @@ SELFTESTS = \
 # create a cgroup. So everything that makes a real container, bridge or
 # namespace is out, and stays out until #224's option 2 or 3 exists.
 #
-# SIX tests that pass there are still excluded, which is the part worth
-# reading. A build container shares the HOST's network namespace and
-# filesystem, so a test can "pass" by mutating the machine it is built
-# on -- the probe run left cix-ctnet0, cix-ctnet1, cix-test0, vt-a and
-# vt-b behind on a real host. Doubling coverage by leaking bridges onto
-# the build machine is not a trade worth making, and CLAUDE.md already
-# records leaked bridges breaking later runs.
+# Four network tests were excluded here on a claim that turned out to be
+# WRONG, and the correction is worth keeping because the wrong version
+# was plausible. probe-selftest-env/4 saw cix-ctnet0, cix-test0, vt-a
+# and vt-b from inside a build container and I read that as tests
+# "passing" by mutating the build host.
 #
-#   test_network_interfaces  creates veth/bridges in the shared netns
-#   test_routes              writes routes in the shared netns
-#   test_daemon_bind_ip      adds addresses in the shared netns
-#   test_storage_placement   touches network state
+# They were not. A build container has its OWN network namespace --
+# CLONE_NEWNET is in the default clone flags, src/container.c says so in
+# as many words ("a container with its own netns but no networks (every
+# build sandbox)"), the host reports none of those devices afterwards,
+# and probe 5 settled it directly: /proc/net/dev, which IS per-netns,
+# lists only lo and sit0, and /proc/self/ns/net is net:[4026532278].
+# The devices were created by the tests INSIDE that isolation and died
+# with the container.
+#
+# So they are in. What made the original claim believable was reading
+# /sys/class/net, which is not per-netns when /sys is bind-mounted -- it
+# happens not to be bind-mounted here, but the reasoning was wrong
+# either way.
+#
+# Two are still out, on filesystem grounds rather than network ones, and
+# deliberately unverified rather than assumed safe:
+#
 #   test_esp                 reads/writes real boot paths
 #   test_boot_console        the same
 #
@@ -85,6 +96,8 @@ SELFTESTS = \
 #
 DAEMON_SELFTESTS = \
 	$(BUILD)/test_web $(BUILD)/test_backup_config \
+	$(BUILD)/test_network_interfaces $(BUILD)/test_routes \
+	$(BUILD)/test_daemon_bind_ip $(BUILD)/test_storage_placement \
 	$(BUILD)/test_factory_reset $(BUILD)/test_hostauth $(BUILD)/test_https_chain \
 	$(BUILD)/test_kmod $(BUILD)/test_layout_upgrade $(BUILD)/test_pkg_recipe_approval \
 	$(BUILD)/test_signing_keys $(BUILD)/test_stallwatch $(BUILD)/test_sysctl \
