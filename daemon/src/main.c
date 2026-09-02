@@ -17903,9 +17903,18 @@ static void handle_disk_format_post(int fd, const char *disk_name, const char *b
 		return;
 	}
 	/*
-	 * fs_type (ADR-0104, task #732): optional, defaults to "ext4" --
-	 * every pre-existing request body (no fs_type field at all) keeps
-	 * its exact prior behavior. "btrfs" requires a real mkfs.btrfs to
+	 * fs_type (ADR-0104, task #732): optional, defaults to "btrfs".
+	 *
+	 * It defaulted to ext4 for as long as ext4 was what this platform
+	 * used. ADR-0207 made btrfs the sole substrate for the platform's
+	 * own writable storage and put ext4 on a retirement path, which
+	 * left this default pointing at the losing side: an operator
+	 * formatting a data disk without saying otherwise got a filesystem
+	 * that cannot snapshot, so any container placed on it gets a full
+	 * copy of its image instead of a copy-on-write clone. Nobody chose
+	 * that; the default simply outlived the decision.
+	 *
+	 * "btrfs" requires a real mkfs.btrfs to
 	 * actually be staged on this box (btrfs-progs.recipe via a real
 	 * cix-hosttools image, ADR-0103's own scope note) -- if it
 	 * isn't, the job still starts (this daemon has no cheap way to
@@ -17917,10 +17926,10 @@ static void handle_disk_format_post(int fd, const char *disk_name, const char *b
 	 * new failure mode this field introduces.
 	 */
 	fs_type_str = json_as_string(json_object_get(root, "fs_type"));
-	if (fs_type_str == NULL || strcmp(fs_type_str, "ext4") == 0) {
-		fs_type = DISKFORMAT_FS_EXT4;
-	} else if (strcmp(fs_type_str, "btrfs") == 0) {
+	if (fs_type_str == NULL || strcmp(fs_type_str, "btrfs") == 0) {
 		fs_type = DISKFORMAT_FS_BTRFS;
+	} else if (strcmp(fs_type_str, "ext4") == 0) {
+		fs_type = DISKFORMAT_FS_EXT4;
 	} else {
 		json_free(root);
 		respond_error(fd, 400, "Bad Request", "fs_type must be \"ext4\" or \"btrfs\"");
