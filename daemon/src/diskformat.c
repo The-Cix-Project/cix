@@ -418,6 +418,42 @@ void diskformat_remount_present_role_disks(const char *os_containers_dir, const 
 	}
 }
 
+int diskformat_submounts(const char *mount_path, char *out, size_t out_size)
+{
+	FILE *f;
+	char line[4096];
+	size_t base_len;
+	int count = 0;
+
+	if (out_size > 0)
+		out[0] = '\0';
+	if (mount_path == NULL || mount_path[0] == '\0')
+		return 0;
+	base_len = strlen(mount_path);
+	f = fopen("/proc/self/mounts", "re");
+	if (f == NULL)
+		return 0;
+	while (fgets(line, sizeof(line), f) != NULL) {
+		char *dev = strtok(line, " ");
+		char *point = (dev != NULL) ? strtok(NULL, " ") : NULL;
+
+		if (point == NULL)
+			continue;
+		/* strictly beneath, never the mountpoint itself */
+		if (strncmp(point, mount_path, base_len) != 0 || point[base_len] != '/')
+			continue;
+		count++;
+		if (out_size > 0) {
+			size_t used = strlen(out);
+
+			if (used + strlen(point) + 3 < out_size)
+				snprintf(out + used, out_size - used, "%s%s", used > 0 ? ", " : "", point);
+		}
+	}
+	fclose(f);
+	return count;
+}
+
 enum diskformat_error diskformat_unmount(const char *disk_name, const char *os_containers_dir)
 {
 	struct discovered_disk d;
