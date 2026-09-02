@@ -10275,6 +10275,7 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 	char bzimage_path[PATH_MAX];
 	char squashfs_path[PATH_MAX];
 	char isotools_root[PATH_MAX];
+	char seed_dir[PATH_MAX];
 	char signing_key[PATH_MAX];
 	char signing_cert_pem[PATH_MAX];
 	char signing_cert_der[PATH_MAX];
@@ -10361,12 +10362,36 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 	 * libc-dev removal), which is the only reason it was found at all:
 	 * the ISO endpoint had no test that ran the real binary.
 	 *
-	 * "" rather than a real seed, deliberately: staging one changes
-	 * what the media DOES (it would install a host that can run a
-	 * container with no network), and that is a product decision, not
-	 * a repair. Filed separately rather than smuggled in here.
+	 * The product decision this once deferred is made (#135): the media
+	 * carries a real seed. A fresh install otherwise cannot obtain a
+	 * single recipe without a network it cannot name -- no recipes
+	 * without a forge, no forge without DNS, no DNS without a recipe --
+	 * and the only way through was hand-feeding it hundreds of recipes
+	 * from a developer machine over literal IPs.
+	 *
+	 * Staged fresh on every build rather than kept: a seed is a
+	 * snapshot of this host's recipes and artifacts at the moment the
+	 * ISO is made, and a stale one would ship recipes that no longer
+	 * match their artifacts.
+	 *
+	 * A staging failure fails the whole build. Media that claims a seed
+	 * and cannot bring up DNS is worse than media carrying none,
+	 * because nothing reveals it until the installed box is already
+	 * standing there unable to resolve anything.
 	 */
-	argv[13] = (char *)"";
+	snprintf(seed_dir, sizeof(seed_dir), "%s/.seed", ISO_DIR);
+	cix_btrfs_subvol_delete_or_rmtree(seed_dir);
+	{
+		char seed_err[256];
+
+		seed_err[0] = '\0';
+		if (pkg_seed_stage(seed_dir, seed_err, sizeof(seed_err)) != PKG_OK) {
+			snprintf(err_msg, err_msg_size, "could not stage the installer package seed: %s",
+			         seed_err[0] != '\0' ? seed_err : "unknown");
+			return -1;
+		}
+	}
+	argv[13] = seed_dir;
 	argv[14] = NULL;
 
 	/*
