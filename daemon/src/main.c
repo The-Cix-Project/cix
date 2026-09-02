@@ -17610,7 +17610,16 @@ static void respond_diskrole_error(int fd, enum diskrole_error err)
 		respond_error(fd, 400, "Bad Request", "invalid disk_name");
 		break;
 	case DISKROLE_ERR_INVALID_ROLE:
-		respond_error(fd, 400, "Bad Request", "role must be \"container-storage\" or \"backup\"");
+		/*
+		 * Names the whole vocabulary. It listed two roles for as long
+		 * as there were two, and stayed that way while four more were
+		 * added -- so an operator who typed a real, supported role and
+		 * got it slightly wrong was told the wrong thing about what
+		 * exists.
+		 */
+		respond_error(fd, 400, "Bad Request",
+		              "role must be one of \"container-storage\", \"backup\", "
+		              "\"rebuildable-storage\", \"log-storage\" or \"swap\"");
 		break;
 	case DISKROLE_ERR_IS_OS_DISK:
 		respond_error(fd, 400, "Bad Request",
