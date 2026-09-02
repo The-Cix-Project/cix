@@ -88,7 +88,7 @@ whole story when it covers only the disks you add.
 | `cix-root-a` | Root slot A: one complete operating system | No — protected; replaced by an A/B upgrade |
 | `cix-root-b` | Root slot B: the other one | No — protected; replaced by an A/B upgrade |
 | `cix-config` | Host configuration — `net.conf`, and the platform's own state (networks, DNS/DHCP/NTP/LDAP/syslog, PKI, container definitions, device maps, site identity) | No — protected, but its *contents* are what every configuration endpoint writes |
-| `cix-containers` | The data directory, `/var/lib/cix` — container data, and anything not placed on another disk | **Yes** — not protected; it can take a role, be formatted and be unmounted like any other partition |
+| `cix-containers` | The data directory, `/var/lib/cix` — container data, and anything not placed on another disk | **Partly** — not protected, but it cannot be unmounted or reclaimed; see below |
 
 The first four are refused a role, a format and an unmount, keyed on
 partition **number** rather than label — a label can be briefly empty
@@ -96,6 +96,30 @@ just after boot, and a protection a rename can lift is not a
 protection. `cix-containers` is deliberately not protected: if you
 sized it smaller than the disk, the free space after it is ordinary
 space you can carve into new partitions.
+
+**But `cix-containers` cannot be reclaimed, and its size is permanent
+(issue #249).** It carries the data directory itself, and the data
+directory is chosen once, when the control plane is assembled
+(`cixd --data-dir=`). There is no endpoint that moves it. So
+`POST /disks/cix-containers/unmount` is refused by rule, with a `409`
+saying why.
+
+This catches people out because the obvious workaround looks like it
+should work and does not. You can move everything *out* of it —
+`rebuildable-storage` and `log-storage` each move with their own
+endpoint, and each container's storage moves with
+`POST /containers/{name}/migrate-storage`. Do all of that and the
+partition is nearly empty, and still cannot be unmounted, resized away
+or deleted: emptying its **contents** changes nothing about its
+**mount**. `/var/lib/cix` is still the data directory and still lives
+there.
+
+The practical consequence is that **the size you give this partition at
+install time is a decision you keep**. If you intend to put container
+storage on a dedicated disk later, size `cix-containers` small at
+install rather than large — the space you leave after it stays usable
+for new partitions, and the space you put inside it does not come
+back.
 
 ### Roles you assign
 
