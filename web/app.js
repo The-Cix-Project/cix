@@ -6057,7 +6057,7 @@ function renderDiskPartitions(d, parts) {
 		const row = document.createElement("tr");
 		const cell = document.createElement("td");
 
-		cell.colSpan = 6;
+		cell.colSpan = 7;
 		cell.className = "empty";
 		cell.textContent = d.is_os_disk ? "No partitions reported" : "No partitions — this disk is unpartitioned";
 		row.appendChild(cell);
@@ -6073,7 +6073,14 @@ function renderDiskPartitions(d, parts) {
 		row.appendChild(nameCell);
 		for (const text of [
 			formatBytes(p.size_bytes),
-			role ? role.role : p.part_label ? p.part_label + (p.protected ? " (protected)" : "") : "-",
+			role ? role.role : p.part_label || "-",
+			/*
+			 * Its own column, not a suffix on the role. Protection
+			 * answers a different question from "what is this for",
+			 * and hanging it off the label meant a partition with a
+			 * role never showed it at all.
+			 */
+			p.protected ? "protected" : "-",
 			p.fs_type || "unformatted",
 			p.mounted ? p.mount_path : "-",
 			p.mounted && p.used_bytes + p.free_bytes > 0
@@ -12112,20 +12119,14 @@ function contextMenuItemsFor(category, name) {
 		if (!d)
 			return null;
 		/*
-		 * Issue #140: a protected partition offers nothing at all --
-		 * not a disabled entry, not one that 409s on click. The daemon
-		 * says which are protected (the OS disk's first four); the UI
-		 * does not re-derive that rule.
-		 */
-		if (d.protected)
-			return null;
-		const role = diskRoleFor(name);
-		const items = [];
-
-		/*
-		 * The OS disk itself: appending a partition is safe and is the
-		 * whole point of #140, but it can never take a role, be
-		 * formatted, or have its table rewritten.
+		 * The OS disk itself, decided FIRST and deliberately so.
+		 *
+		 * Appending a partition into its free space is safe and is the
+		 * whole point of #140, while a role, a format and a table
+		 * rewrite are all refused. The daemon reports the disk as
+		 * protected because those three are refused, so this case has
+		 * to be answered before the protected gate below or the one
+		 * legal action disappears with them.
 		 */
 		if (d.is_os_disk && !d.is_partition) {
 			return [{
@@ -12135,12 +12136,22 @@ function contextMenuItemsFor(category, name) {
 			}];
 		}
 
+		/*
+		 * Issue #140: a protected partition offers nothing at all --
+		 * not a disabled entry, not one that 409s on click. The daemon
+		 * says which are protected; the UI does not re-derive the rule.
+		 */
+		if (d.protected)
+			return null;
+		const role = diskRoleFor(name);
+		const items = [];
+
 		if (!role) {
 			items.push({ label: "Assign a role…", danger: false, action: () => openAssignRole(name) });
 		} else {
 			items.push({ label: "Remove role", danger: false, action: () => removeDiskRole(name) });
-			items.push({ label: "Format as ext4", danger: true, action: () => formatDisk(name, "ext4") });
 			items.push({ label: "Format as btrfs", danger: true, action: () => formatDisk(name, "btrfs") });
+			items.push({ label: "Format as ext4", danger: true, action: () => formatDisk(name, "ext4") });
 		}
 		if (d.mounted)
 			items.push({ label: "Unmount", danger: false, action: () => unmountDisk(name) });

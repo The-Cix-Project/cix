@@ -859,12 +859,24 @@ static void fmt_disk_line(const struct json_value *v)
 	const struct json_value *jos = json_object_get(v, "is_os_disk");
 	const struct json_value *jmounted = json_object_get(v, "mounted");
 	const struct json_value *jpart = json_object_get(v, "is_partition");
+	const struct json_value *jprot = json_object_get(v, "protected");
 	const char *parent_disk = json_str_field(v, "parent_disk");
 	const char *mount_path = json_str_field(v, "mount_path");
 	int removable = jremovable != NULL && jremovable->type == JSON_BOOL && jremovable->u.boolean;
 	int is_os_disk = jos != NULL && jos->type == JSON_BOOL && jos->u.boolean;
 	int mounted = jmounted != NULL && jmounted->type == JSON_BOOL && jmounted->u.boolean;
 	int is_partition = jpart != NULL && jpart->type == JSON_BOOL && jpart->u.boolean;
+	/*
+	 * Protection is its own column, not a suffix on another one.
+	 *
+	 * It answers a different question from "what kind of device is
+	 * this": whether the platform will let you act on it at all. The
+	 * daemon computes it (GET /disks' `protected`), and reading it here
+	 * rather than re-deriving it from is_os_disk is what keeps the CLI
+	 * from disagreeing with the daemon -- the web dashboard did exactly
+	 * that and refused to manage a perfectly assignable partition.
+	 */
+	int protected_dev = jprot != NULL && jprot->type == JSON_BOOL && jprot->u.boolean;
 	double size_gib = (double)size_bytes / (1024.0 * 1024.0 * 1024.0);
 	char mount_col[288];
 	char kind_col[32];
@@ -875,16 +887,19 @@ static void fmt_disk_line(const struct json_value *v)
 	else
 		snprintf(mount_col, sizeof(mount_col), "not-mounted");
 
-	if (is_os_disk)
+	/* "os-disk" is the whole OS disk only. Its partitions are ordinary
+	 * partitions -- several of them are assignable, and saying
+	 * "os-disk" for those is what made them look untouchable. */
+	if (is_os_disk && !is_partition)
 		snprintf(kind_col, sizeof(kind_col), "os-disk");
 	else if (is_partition)
 		snprintf(kind_col, sizeof(kind_col), "partition");
 	else
 		snprintf(kind_col, sizeof(kind_col), "assignable");
 
-	printf("%-12s %-16s %8.1f GiB  %-32s %-9s %-9s %s", dev_path, name, size_gib,
+	printf("%-12s %-16s %8.1f GiB  %-32s %-9s %-10s %-9s %s", dev_path, name, size_gib,
 	       model != NULL && model[0] != '\0' ? model : "-", removable ? "removable" : "fixed",
-	       kind_col, mount_col);
+	       kind_col, protected_dev ? "protected" : "-", mount_col);
 	if (is_partition && parent_disk != NULL && parent_disk[0] != '\0')
 		printf("  (part of %s)", parent_disk);
 	printf("\n");
