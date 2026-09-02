@@ -4783,10 +4783,17 @@ paths:
         filesystem -- because growing only the entry leaves the extra
         space invisible to everything using the filesystem, which reads
         as the resize having silently done nothing.
-        Requires the partition to be unmounted, not part of the OS
-        layout, and either ext4 or unformatted; a btrfs filesystem is
-        refused because growing it needs it mounted, which this
-        operation does not permit. Only free space IMMEDIATELY AFTER the
+        Requires the partition to be unmounted and not part of the OS
+        layout. ext4, btrfs and unformatted partitions are all grown
+        (issue #163): btrfs needs its filesystem MOUNTED to grow, the
+        opposite of resize2fs, so it is mounted at a private scratch
+        point after the table entry grows and unmounted again, leaving
+        it exactly as it was found. Any other filesystem is refused.
+        If the table grows but the kernel is still reporting the old
+        size -- which happens when something else on the disk is in use
+        -- the filesystem is deliberately NOT grown and a 409 is
+        returned, because growing it then would resize it to the old
+        bound and report success. Only free space IMMEDIATELY AFTER the
         partition can be used -- free space elsewhere on the disk cannot
         extend it (see GET /disks/{name}/free-space).
       operationId: resizeDiskPartition

@@ -306,7 +306,7 @@ The kind is set in the single function that records a failure, and it is a **req
 | POST | `/pkg/hostbuild` | Start a hostbuild job — build a standalone artifact instead of merging into an image |
 | GET | `/pkg/hostbuild/{name}` | Inspect one hostbuild job's current state |
 | POST | `/pkg/resume` | Continue a `keep_on_failure`-preserved build container in place, without a fetch/extract restart |
-| POST | `/pkg/cancel` | Stop an in-flight build; the entry becomes failed with kind `cancelled` |
+| POST | `/pkg/cancel` | Stop an in-flight build **or fetch**; the entry becomes failed with kind `cancelled` |
 | GET | `/pkg/build/log` | Upgrade to a WebSocket; live-tail a currently-running install/hostbuild job's own stdout/stderr |
 | GET | `/pkg` | List every known package (installed or in-flight) with its state |
 | GET | `/pkg/{name}` | Inspect one package's current state |
@@ -2159,7 +2159,7 @@ A package manager built from scratch: recipes are shell scripts (the same format
 
 **Installs are asynchronous.** The daemon is single-threaded and non-blocking; a network fetch or a real compile can take anywhere from seconds to minutes, so `POST /v1/pkg/install` returns immediately (`202`) and the actual work happens in the background — poll `GET /v1/pkg/{name}` for progress. **Fetching happens on the host** (a `curl` subprocess — this project's networking plane has no outbound NAT, so a build container has no network access at all, a stronger isolation boundary for untrusted build scripts, not a limitation worked around).
 
-**A build can be stopped, and only by a person asking (`POST /v1/pkg/cancel`, issue #213).** A build that will never finish — one whose own `configure` is waiting on stdin, which is exactly how `perl` hung — otherwise holds its chain slot until the daemon restarts, because nothing else can stop it. `GET /v1/pkg` has reported `last_output_seconds_ago` since issue #58; this is the verb that acts on it.
+**A build or a fetch can be stopped, and only by a person asking (`POST /v1/pkg/cancel`, issues #213 and #239).** A build that will never finish — one whose own `configure` is waiting on stdin, which is exactly how `perl` hung — otherwise holds its chain slot until the daemon restarts, because nothing else can stop it. `GET /v1/pkg` has reported `last_output_seconds_ago` since issue #58; this is the verb that acts on it. **A stuck fetch counts, and used to not.** Cancel accepted a fetching entry, set the flag and stopped there, on the reasoning that a fetch is a subprocess rather than a container so there was nothing to kill — leaving the flag to whichever completion path ran next. If the fetch never completes, none ever runs: a fetch retrying an unreachable upstream held its chain slot indefinitely, every later install was refused `409`, and cancel returned `200` having changed nothing. The fetch child is now killed, which drives the ordinary completion path that honours the flag.
 
 Deliberately **not** an automatic timeout on silence. "No output for N minutes" does not mean "hung": `gcc`'s own bootstrap goes quiet for long stretches and a large link produces nothing for minutes at a time. A threshold tight enough to catch a real hang eventually kills a legitimate build, mid-way through, on nobody's schedule — and the asymmetry decides it, because failing to kill a hung build costs a slot while killing a live one costs the whole build. A person looking at an hour of silence can tell `gcc` linking from `perl` waiting on stdin; a threshold cannot.
 
