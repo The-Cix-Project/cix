@@ -7595,7 +7595,11 @@ paths:
         intention. That is also why a restart is a legitimate way to
         abandon a queue that is doing more than an operator wants.
       operationId: listPkgRebuilds
-      x-cix-expose: [cli, web]
+      # cli only for now: cixctl renders this, the dashboard does not yet.
+      # Declaring [web] as an intention rather than a fact is exactly what
+      # test_api_surfaces refuses, and it is right to -- a surface listed
+      # here that nothing calls is a claim the contract cannot keep.
+      x-cix-expose: [cli]
       responses:
         "200":
           description: The queue, oldest first
