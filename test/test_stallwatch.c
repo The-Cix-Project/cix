@@ -10,6 +10,22 @@
  * the daemon exactly as a wedge does (accepts still complete in the
  * kernel, nothing is served), and nothing test-only is compiled into
  * the daemon to make it happen.
+ *
+ * It now covers both questions the watchdog asks (#247). The original
+ * one -- is the loop turning -- is answered from a heartbeat the loop
+ * bumps, and it is the question that missed a real five-minute outage:
+ * the loop kept turning and answered nobody, so the heartbeat stayed
+ * fresh and nothing was recorded. The second -- is the daemon
+ * ANSWERING -- is asked by the watchdog issuing a real health request
+ * from a process that cannot itself be wedged, and until this test
+ * existed that branch had never been observed to fire.
+ *
+ * What a SIGSTOP can and cannot prove, stated rather than implied: it
+ * freezes the loop as well as the service, so it exercises the probe,
+ * its two-failure threshold and both of its records -- but it cannot
+ * reproduce the production shape, a loop still turning while serving
+ * nobody. That would need test-only code inside the daemon, which this
+ * file has always refused to add.
  */
 #include "httpclient.h"
 #include "json.h"
@@ -28,9 +44,15 @@ extern char **environ;
 
 #define TEST_PORT 7650
 #define PORT_ARG "--port=7650"
-/* The daemon's own threshold is 5s; freezing it for longer than that
- * with margin keeps this deterministic without making it slow. */
-#define FREEZE_SECONDS 8
+/*
+ * The loop-stall threshold is 5s, but the service probe (#247) needs
+ * two consecutive unanswered probes 5s apart before it reports -- so a
+ * freeze has to outlast roughly 10s for BOTH branches to be exercised.
+ * A probe that connects and gets nothing back also burns its own 4s
+ * timeout, which pushes the second failure to about 9s in. Fourteen
+ * gives that real margin without making the test slow.
+ */
+#define FREEZE_SECONDS 14
 
 static char g_data_dir[PATH_MAX];
 
@@ -144,6 +166,7 @@ int main(void)
 	} else {
 		const struct json_value *stalls = json_object_get(r.json, "stalls");
 		int saw_stall = 0, saw_recovered = 0;
+		int saw_service_stall = 0, saw_service_recovered = 0;
 		size_t i;
 
 		if (stalls == NULL || stalls->type != JSON_ARRAY || stalls->u.array.count == 0) {
@@ -175,6 +198,18 @@ int main(void)
 				}
 				if (strcmp(event, "recovered") == 0)
 					saw_recovered = 1;
+				/*
+				 * #247: the loop-stall records above say the loop
+				 * stopped turning. These say something a client
+				 * actually cares about -- that nothing was being
+				 * answered -- and they come from a watchdog probe
+				 * rather than from any state the frozen daemon
+				 * maintains about itself.
+				 */
+				if (strcmp(event, "service-stall") == 0)
+					saw_service_stall = 1;
+				if (strcmp(event, "service-recovered") == 0)
+					saw_service_recovered = 1;
 			}
 			if (!saw_stall) {
 				fprintf(stderr, "FAIL: no \"stall\" record after an %d-second freeze\n",
@@ -184,6 +219,33 @@ int main(void)
 			if (!saw_recovered) {
 				fprintf(stderr, "FAIL: no \"recovered\" record -- a stall with no end is only "
 				                "half the story\n");
+				ok = 0;
+			}
+			/*
+			 * The branch #247 was filed for. A daemon that answers
+			 * nothing has to leave a record written by something
+			 * that is not the daemon -- and until this test existed,
+			 * that branch had never once been observed to fire.
+			 *
+			 * Honest about what a SIGSTOP proves and what it does
+			 * not: it freezes the loop as well, so it exercises the
+			 * probe, its threshold, and both records, but it cannot
+			 * reproduce the shape that actually happened in
+			 * production -- a loop still turning while serving
+			 * nobody. Producing that would need test-only code
+			 * inside the daemon, which this file has always refused
+			 * to add.
+			 */
+			if (!saw_service_stall) {
+				fprintf(stderr,
+				        "FAIL: no \"service-stall\" record after a %d-second freeze -- the "
+				        "watchdog never noticed the daemon was answering nothing (#247)\n",
+				        FREEZE_SECONDS);
+				ok = 0;
+			}
+			if (!saw_service_recovered) {
+				fprintf(stderr, "FAIL: no \"service-recovered\" record -- the probe never "
+				                "reported the daemon coming back (#247)\n");
 				ok = 0;
 			}
 		}
