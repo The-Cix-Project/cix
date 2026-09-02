@@ -18038,7 +18038,25 @@ static void handle_disk_unmount_post(int fd, const char *disk_name, const char *
 		return;
 	}
 
-	derr = diskformat_unmount(disk_name, CONTAINERS_DIR);
+	derr = diskformat_unmount(disk_name, CONTAINERS_DIR, g_base_dir);
+	if (derr == DISKFORMAT_ERR_IS_DATA_DIR) {
+		/*
+		 * #249: structural, and worth saying so plainly rather than
+		 * returning a bare umount2(2) failure. The data directory is
+		 * chosen at control-plane assembly (cixd --data-dir=) and
+		 * there is no runtime endpoint that moves it, so no sequence
+		 * of migrations frees this filesystem.
+		 */
+		char msg[512];
+
+		snprintf(msg, sizeof(msg),
+		         "cannot unmount: this filesystem carries the daemon's own data directory "
+		         "(%s) -- it is fixed at control-plane assembly (cixd --data-dir=) and no "
+		         "migration frees it",
+		         g_base_dir);
+		send_error(c, 409, msg);
+		return;
+	}
 	if (derr == DISKFORMAT_ERR_UMOUNT_FAILED) {
 		/*
 		 * umount2(2) returns EBUSY for a mountpoint that carries other
@@ -18047,12 +18065,14 @@ static void handle_disk_unmount_post(int fd, const char *disk_name, const char *
 		 * said only that something "may still be busy/in use", which
 		 * names nothing actionable.
 		 *
-		 * It is the ordinary case on this platform's own containers
-		 * partition: rebuildable-storage and container-storage disks
-		 * mount under <data-dir>/disks/, so unmounting the filesystem
-		 * that holds them cannot succeed until those go first. Asked
-		 * only after the real call failed, so the kernel stays the
-		 * judge of whether it was possible.
+		 * Asked only after the real call failed, so the kernel stays
+		 * the judge of whether it was possible.
+		 *
+		 * This used to add that it was "the ordinary case on this
+		 * platform's own containers partition", because role disks
+		 * mounted under <data-dir>/disks/. ADR-0231 moved them to
+		 * /mnt/cix on a tmpfs, so that is no longer where they are and
+		 * the containers partition no longer carries them.
 		 */
 		struct discovered_disk sub_disks[DISK_ENUM_MAX];
 		int sub_n = disk_enumerate(sub_disks, DISK_ENUM_MAX, CONTAINERS_DIR);

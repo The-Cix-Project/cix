@@ -73,6 +73,7 @@ enum diskformat_error {
 	DISKFORMAT_ERR_SPAWN_FAILED,
 	DISKFORMAT_ERR_NOT_MOUNTED, /* diskformat_unmount() only: disk_enumerate() already reports it unmounted */
 	DISKFORMAT_ERR_UMOUNT_FAILED, /* diskformat_unmount() only: the real umount2(2) call itself failed */
+	DISKFORMAT_ERR_IS_DATA_DIR, /* diskformat_unmount() only: the daemon's own data directory lives here (#249) */
 };
 
 enum diskformat_state {
@@ -185,7 +186,15 @@ void diskformat_remount_present_role_disks(const char *os_containers_dir, const 
  * knowledge lives in main.c, next to the other placement lookups), it
  * only enforces the two invariants named above.
  */
-enum diskformat_error diskformat_unmount(const char *disk_name, const char *os_containers_dir);
+/*
+ * Unmounts a role disk.
+ *
+ * data_dir is the daemon's own data directory (main.c's g_base_dir).
+ * A filesystem that carries it is refused outright -- see the rule in
+ * diskformat.c for why that is stated rather than left to umount2(2).
+ */
+enum diskformat_error diskformat_unmount(const char *disk_name, const char *os_containers_dir,
+                                          const char *data_dir);
 
 /*
  * Lists what is mounted BENEATH mount_path, comma-separated, into out.

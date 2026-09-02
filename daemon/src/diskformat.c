@@ -454,7 +454,29 @@ int diskformat_submounts(const char *mount_path, char *out, size_t out_size)
 	return count;
 }
 
-enum diskformat_error diskformat_unmount(const char *disk_name, const char *os_containers_dir)
+/*
+ * True when unmounting mount_path would take the daemon's own data
+ * directory with it -- either because they are the same filesystem, or
+ * because data_dir sits beneath it (#249).
+ *
+ * Same containment idiom as diskformat_submounts() above, asked the
+ * other way round, and deliberately inclusive of the mountpoint itself:
+ * the case that matters most is the exact match.
+ */
+static int mount_carries_data_dir(const char *mount_path, const char *data_dir)
+{
+	size_t len;
+
+	if (mount_path == NULL || mount_path[0] == '\0' || data_dir == NULL || data_dir[0] == '\0')
+		return 0;
+	if (strcmp(mount_path, data_dir) == 0)
+		return 1;
+	len = strlen(mount_path);
+	return strncmp(data_dir, mount_path, len) == 0 && data_dir[len] == '/';
+}
+
+enum diskformat_error diskformat_unmount(const char *disk_name, const char *os_containers_dir,
+                                          const char *data_dir)
 {
 	struct discovered_disk d;
 
@@ -466,6 +488,26 @@ enum diskformat_error diskformat_unmount(const char *disk_name, const char *os_c
 		return DISKFORMAT_ERR_IS_OS_DISK;
 	if (!d.mounted)
 		return DISKFORMAT_ERR_NOT_MOUNTED;
+	/*
+	 * #249: the partition holding the data directory is refused by
+	 * rule, not by luck.
+	 *
+	 * Until now this was left to umount2(2), which returns EBUSY only
+	 * because the daemon happens to hold files open under its own data
+	 * directory. That is a coincidence of the moment, not a guarantee:
+	 * an idle daemon with nothing open there would have the unmount
+	 * SUCCEED, and the control plane would carry on with its state,
+	 * container and image trees replaced by whatever empty directory
+	 * the mountpoint was covering -- on a host with no shell to
+	 * recover through.
+	 *
+	 * Stating the rule also replaces a generic "umount2(2) failed" with
+	 * something an operator can act on, which is the whole of the
+	 * complaint in #249: the pinning is real and structural, so it
+	 * should be said, not discovered.
+	 */
+	if (mount_carries_data_dir(d.mount_path, data_dir))
+		return DISKFORMAT_ERR_IS_DATA_DIR;
 
 	if (umount2(d.mount_path, 0) != 0)
 		return DISKFORMAT_ERR_UMOUNT_FAILED;

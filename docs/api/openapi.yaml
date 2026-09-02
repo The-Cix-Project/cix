@@ -4549,7 +4549,14 @@ paths:
             configured backup-config disk (ADR-0141), or one or more
             containers currently have their own storage on this disk
             (ADR-0102/ADR-0142) -- unmounting it would break whatever
-            currently relies on it; migrate away first.
+            currently relies on it; migrate away first. Also returned
+            when the filesystem carries the daemon's own data directory
+            (issue #249): that one is structural rather than a
+            migration away, because the data directory is fixed at
+            control-plane assembly (cixd --data-dir=) and no sequence
+            of migrations frees it. Previously that case reached
+            umount2(2) and surfaced as a 500, which was luck -- EBUSY
+            only because the daemon happened to hold files open there.
           content:
             application/json:
               schema:
