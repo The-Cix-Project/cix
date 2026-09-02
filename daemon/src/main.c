@@ -2093,31 +2093,21 @@ static void handle_system_boot(int fd)
 	 * exists" (which is also true of a stale file left by an earlier,
 	 * unrelated round).
 	 */
-	jw_key(&w, "bootroot_assembly_started_generation");
-	jw_int(&w, g_bootroot_assembly_started);
-	jw_key(&w, "bootroot_assembly_completed_generation");
-	jw_int(&w, g_bootroot_assembly_completed);
-	jw_key(&w, "bootroot_assembly_running");
-	jw_bool(&w, g_bootroot_assembly_running);
 	/*
-	 * Where the assembled control-plane image is, so a client that
-	 * wants to deploy it does not have to know this daemon's own
-	 * filesystem layout. `cixctl pkg hostbuild cix --deploy` used to
-	 * compose <artifact_path>/cixd-root.squashfs itself (ADR-0057),
-	 * which only worked while the image lived inside the artifact --
-	 * exactly the arrangement #178 removed. Reported whether or not the
-	 * file exists yet: its absence is a normal state (no assembly has
-	 * run on this boot), and /system/update already reports a missing
-	 * or unreadable image_path honestly.
+	 * Assembly state used to be reported here and has MOVED to
+	 * GET /v1/system/assembly (#182, ADR-0230).
+	 *
+	 * This endpoint's subject is what BOOTED. Assembly is what is being
+	 * BUILT, and it had no endpoint of its own at all, so its progress
+	 * arrived as two generation counters on a neighbour that happened
+	 * to know about it. An operator watching a deploy had to know that
+	 * assembly is a side effect of a hostbuild named "cix" and is
+	 * observed somewhere else entirely.
+	 *
+	 * Moved rather than duplicated, per this project's no-compatibility-
+	 * shim posture; its one consumer (cixctl's deploy wait) moved in the
+	 * same change.
 	 */
-	{
-		char bootroot_image[PATH_MAX];
-
-		snprintf(bootroot_image, sizeof(bootroot_image), "%s/cixd-root.squashfs",
-		         BOOTROOT_DIR);
-		jw_key(&w, "bootroot_image_path");
-		jw_str(&w, bootroot_image);
-	}
 	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
@@ -24769,6 +24759,34 @@ static void op_putHostauthConfig(const struct api_ctx *ctx)
 static void op_listHostauthSessions(const struct api_ctx *ctx)
 {
 	handle_hostauth_sessions_get(ctx->fd);
+}
+
+/* GET /v1/system/assembly -- issue #182, ADR-0230 */
+static void op_getSystemAssembly(const struct api_ctx *ctx)
+{
+	struct json_writer w;
+	char bootroot_image[PATH_MAX];
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "running");
+	jw_bool(&w, g_bootroot_assembly_running);
+	jw_key(&w, "started_generation");
+	jw_int(&w, g_bootroot_assembly_started);
+	jw_key(&w, "completed_generation");
+	jw_int(&w, g_bootroot_assembly_completed);
+	/*
+	 * Reported whether or not the file exists yet: its absence is a
+	 * normal state (no assembly has run this boot), and a client that
+	 * wants to deploy should not have to know this daemon's filesystem
+	 * layout to find it.
+	 */
+	snprintf(bootroot_image, sizeof(bootroot_image), "%s/cixd-root.squashfs", BOOTROOT_DIR);
+	jw_key(&w, "image_path");
+	jw_str(&w, bootroot_image);
+	jw_obj_close(&w);
+	respond_json(ctx->fd, 200, "OK", &w);
+	jw_free(&w);
 }
 
 /* GET /v1/system/boot */
