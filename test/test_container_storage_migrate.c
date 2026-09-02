@@ -287,13 +287,13 @@ int main(void)
 	} else {
 		char body[128];
 
-		/* 9. Right role assigned elsewhere (state-storage, not
+		/* 9. Right role assigned elsewhere (log-storage, not
 		 * container-storage) -> 400 "disk has no container-storage role
 		 * assigned". */
-		snprintf(body, sizeof(body), "{\"disk_name\":\"%s\",\"role\":\"state-storage\"}", non_os_disk);
+		snprintf(body, sizeof(body), "{\"disk_name\":\"%s\",\"role\":\"log-storage\"}", non_os_disk);
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/diskroles", body, &r) != 0 || r.status != 201) {
-			fprintf(stderr, "FAIL: POST /v1/diskroles (state-storage), status=%d\n", r.status);
+			fprintf(stderr, "FAIL: POST /v1/diskroles (log-storage), status=%d\n", r.status);
 			ok = 0;
 		}
 		cix_response_free(&r);

@@ -3,7 +3,7 @@
  * preservation (the exact gap found reviewing pkg.c's own merge_tree()/
  * copy_file_simple(), which hardcode 0755 regardless of the source --
  * harmless for that module's own callers, a real security regression
- * for this one's, since state-storage carries pki.c's 0600 private
+ * for this one's, since the state tree carries pki.c's 0600 private
  * keys) and correct symlink handling (recreated verbatim, never
  * followed).
  */
@@ -184,7 +184,7 @@ int main(void)
 	 *
 	 * treecopy used to skip device nodes silently, on a comment
 	 * asserting they are "never expected under any of this project's
-	 * own storage-placement trees". That is true for state-storage and
+	 * own storage-placement trees". That is true for the state tree and
 	 * log-storage and false for the image store, which is exactly what
 	 * rebuildable-storage migration moves: pkg_seed_image_baseline()
 	 * stages /dev/null, /dev/zero, /dev/full and /dev/ptmx into every

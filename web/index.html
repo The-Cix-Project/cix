@@ -958,24 +958,8 @@
 			<div class="view-list">
 				<h2>Storage Placement</h2>
 				<p class="hint">Which disk holds each platform-level concern. Each target must already carry
-					the matching role and be mounted &mdash; assign roles on a disk's own page. All three
+					the matching role and be mounted &mdash; assign roles on a disk's own page. Both
 					migrations below are live, with no downtime, and run in independent job slots.</p>
-
-				<h3>State storage placement</h3>
-				<p class="hint" id="ss-current">State storage: unknown</p>
-				<p class="hint" id="ss-migrate-status" hidden></p>
-				<form id="ss-migrate-form">
-					<label>
-						Migrate to
-						<select id="ss-target-disk">
-							<option value="">(default OS-disk placement)</option>
-						</select>
-					</label>
-					<button type="submit">Migrate</button>
-				</form>
-				<p class="hint">Cix's own state (ADR-0141) &mdash; networks, DNS/LDAP/NTP/syslog config, PKI,
-					container definitions, site identity, daemon config. Never container workload data, never
-					rebuildable content, never logs.</p>
 
 				<h3>Log storage placement</h3>
 				<p class="hint" id="ls-current">Log storage: unknown</p>
@@ -2987,7 +2971,6 @@
 						<select id="drf-role">
 							<option value="container-storage">container-storage</option>
 							<option value="backup">backup</option>
-							<option value="state-storage">state-storage</option>
 							<option value="rebuildable-storage">rebuildable-storage</option>
 							<option value="log-storage">log-storage</option>
 						</select>

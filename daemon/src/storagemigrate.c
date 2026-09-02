@@ -53,8 +53,6 @@ static void jobs_init_once(void)
 static const char *role_str_for_kind(enum storage_kind kind)
 {
 	switch (kind) {
-	case STORAGE_KIND_STATE:
-		return "state-storage";
 	case STORAGE_KIND_REBUILDABLE:
 		return "rebuildable-storage";
 	case STORAGE_KIND_LOG:
@@ -89,7 +87,7 @@ enum storagemigrate_error storagemigrate_start(enum storage_kind kind, const cha
 	int pidfd;
 
 	jobs_init_once();
-	if (kind < STORAGE_KIND_STATE || kind >= STORAGE_KIND_MIGRATABLE_COUNT)
+	if (kind < STORAGE_KIND_REBUILDABLE || kind >= STORAGE_KIND_MIGRATABLE_COUNT)
 		return STORAGEMIGRATE_ERR_NOT_FOUND;
 	job = &g_jobs[kind];
 	if (job->state == STORAGEMIGRATE_STATE_RUNNING)
@@ -172,7 +170,7 @@ void storagemigrate_completed(enum storage_kind kind, int exit_status)
 	struct migrate_job *job;
 
 	jobs_init_once();
-	if (kind < STORAGE_KIND_STATE || kind >= STORAGE_KIND_MIGRATABLE_COUNT)
+	if (kind < STORAGE_KIND_REBUILDABLE || kind >= STORAGE_KIND_MIGRATABLE_COUNT)
 		return;
 	job = &g_jobs[kind];
 
@@ -211,7 +209,7 @@ const char *storagemigrate_job_error(enum storage_kind kind)
 {
 	struct migrate_job *job;
 
-	if (kind < STORAGE_KIND_STATE || kind >= STORAGE_KIND_MIGRATABLE_COUNT)
+	if (kind < STORAGE_KIND_REBUILDABLE || kind >= STORAGE_KIND_MIGRATABLE_COUNT)
 		return "";
 	job = &g_jobs[kind];
 	return job->error;
@@ -221,7 +219,7 @@ int storagemigrate_finalize(enum storage_kind kind)
 {
 	struct migrate_job *job;
 
-	if (kind < STORAGE_KIND_STATE || kind >= STORAGE_KIND_MIGRATABLE_COUNT)
+	if (kind < STORAGE_KIND_REBUILDABLE || kind >= STORAGE_KIND_MIGRATABLE_COUNT)
 		return -1;
 	job = &g_jobs[kind];
 
@@ -236,21 +234,21 @@ int storagemigrate_finalize(enum storage_kind kind)
 
 const char *storagemigrate_job_source_dir(enum storage_kind kind)
 {
-	if (kind < STORAGE_KIND_STATE || kind >= STORAGE_KIND_MIGRATABLE_COUNT)
+	if (kind < STORAGE_KIND_REBUILDABLE || kind >= STORAGE_KIND_MIGRATABLE_COUNT)
 		return "";
 	return g_jobs[kind].source_dir;
 }
 
 const char *storagemigrate_job_target_dir(enum storage_kind kind)
 {
-	if (kind < STORAGE_KIND_STATE || kind >= STORAGE_KIND_MIGRATABLE_COUNT)
+	if (kind < STORAGE_KIND_REBUILDABLE || kind >= STORAGE_KIND_MIGRATABLE_COUNT)
 		return "";
 	return g_jobs[kind].target_dir;
 }
 
 const char *storagemigrate_job_target_disk(enum storage_kind kind)
 {
-	if (kind < STORAGE_KIND_STATE || kind >= STORAGE_KIND_MIGRATABLE_COUNT)
+	if (kind < STORAGE_KIND_REBUILDABLE || kind >= STORAGE_KIND_MIGRATABLE_COUNT)
 		return "";
 	return g_jobs[kind].target_disk;
 }
@@ -274,7 +272,7 @@ void storagemigrate_write_status_json(struct json_writer *w, enum storage_kind k
 {
 	const struct migrate_job *job;
 
-	if (kind < STORAGE_KIND_STATE || kind >= STORAGE_KIND_MIGRATABLE_COUNT || g_jobs[kind].state == STORAGEMIGRATE_STATE_NONE) {
+	if (kind < STORAGE_KIND_REBUILDABLE || kind >= STORAGE_KIND_MIGRATABLE_COUNT || g_jobs[kind].state == STORAGEMIGRATE_STATE_NONE) {
 		jw_obj_open(w);
 		jw_key(w, "state");
 		jw_str(w, "none");

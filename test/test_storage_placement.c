@@ -1,7 +1,7 @@
 /*
  * ADR-0141 Phase 2/3/4 end-to-end test: all three storage kinds --
- * state, log, and rebuildable -- placement (GET/POST
- * /v1/system/{state,log,rebuildable}-storage(/migrate),
+ * log and rebuildable -- placement (GET/POST
+ * /v1/system/{log,rebuildable}-storage(/migrate),
  * daemon/src/storageplacement.c + daemon/src/storagemigrate.c) and the
  * safety checks that keep DELETE /diskroles/{name} and
  * POST /disks/{name}/format from pulling a disk out from under an
@@ -125,8 +125,8 @@ int main(void)
 
 	/* 1. Default state, fresh daemon: no placement, no migration job. */
 	memset(&r, 0, sizeof(r));
-	if (cix_client_request(&client, "GET", "/v1/system/state-storage", NULL, &r) != 0 || r.status != 200) {
-		fprintf(stderr, "FAIL: GET /v1/system/state-storage, status=%d\n", r.status);
+	if (cix_client_request(&client, "GET", "/v1/system/log-storage", NULL, &r) != 0 || r.status != 200) {
+		fprintf(stderr, "FAIL: GET /v1/system/log-storage, status=%d\n", r.status);
 		ok = 0;
 	} else {
 		const struct json_value *jdisk = json_object_get(r.json, "disk");
@@ -139,9 +139,9 @@ int main(void)
 	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (cix_client_request(&client, "GET", "/v1/system/state-storage/migrate", NULL, &r) != 0 ||
+	if (cix_client_request(&client, "GET", "/v1/system/log-storage/migrate", NULL, &r) != 0 ||
 	    r.status != 200) {
-		fprintf(stderr, "FAIL: GET /v1/system/state-storage/migrate, status=%d\n", r.status);
+		fprintf(stderr, "FAIL: GET /v1/system/log-storage/migrate, status=%d\n", r.status);
 		ok = 0;
 	} else {
 		const char *state = json_str_field(r.json, "state");
@@ -158,7 +158,7 @@ int main(void)
 	 * same as an explicit null) is a real 400, not silently treated as
 	 * either. */
 	memset(&r, 0, sizeof(r));
-	if (cix_client_request(&client, "POST", "/v1/system/state-storage/migrate", "{}", &r) != 0 ||
+	if (cix_client_request(&client, "POST", "/v1/system/log-storage/migrate", "{}", &r) != 0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: POST migrate with no disk field expected 400, got %d\n", r.status);
 		ok = 0;
@@ -168,7 +168,7 @@ int main(void)
 	/* 3. An unknown disk name -> 404. Fully deterministic regardless of
 	 * this host's real hardware. */
 	memset(&r, 0, sizeof(r));
-	if (cix_client_request(&client, "POST", "/v1/system/state-storage/migrate",
+	if (cix_client_request(&client, "POST", "/v1/system/log-storage/migrate",
 	                       "{\"disk\":\"nonexistentdisk99\"}", &r) != 0 ||
 	    r.status != 404) {
 		fprintf(stderr, "FAIL: POST migrate unknown disk expected 404, got %d\n", r.status);
@@ -228,7 +228,7 @@ int main(void)
 
 				snprintf(body, sizeof(body), "{\"disk\":\"%s\"}", os_disk);
 				memset(&r2, 0, sizeof(r2));
-				if (cix_client_request(&client, "POST", "/v1/system/state-storage/migrate",
+				if (cix_client_request(&client, "POST", "/v1/system/log-storage/migrate",
 				                       body, &r2) != 0 ||
 				    r2.status != 400) {
 					fprintf(stderr,
@@ -243,7 +243,7 @@ int main(void)
 		cix_response_free(&r);
 
 		/* 5. A disk with the WRONG role (container-storage, not
-		 * state-storage) -> 400. */
+		 * log-storage) -> 400. */
 		snprintf(body, sizeof(body), "{\"disk_name\":\"%s\",\"role\":\"container-storage\"}",
 		         non_os_disk);
 		memset(&r, 0, sizeof(r));
@@ -256,7 +256,7 @@ int main(void)
 
 		snprintf(body, sizeof(body), "{\"disk\":\"%s\"}", non_os_disk);
 		memset(&r, 0, sizeof(r));
-		if (cix_client_request(&client, "POST", "/v1/system/state-storage/migrate", body, &r) != 0 ||
+		if (cix_client_request(&client, "POST", "/v1/system/log-storage/migrate", body, &r) != 0 ||
 		    r.status != 400) {
 			fprintf(stderr, "FAIL: POST migrate to a wrong-role disk expected 400, got %d\n",
 			        r.status);
@@ -276,22 +276,22 @@ int main(void)
 			cix_response_free(&r);
 		}
 
-		/* 6. The right role (state-storage) but not currently mounted
+		/* 6. The right role (log-storage) but not currently mounted
 		 * (never formatted in this test -- that's the destructive step
 		 * this sandbox can't safely exercise) -> 400, not silently
 		 * treated as success. */
-		snprintf(body, sizeof(body), "{\"disk_name\":\"%s\",\"role\":\"state-storage\"}",
+		snprintf(body, sizeof(body), "{\"disk_name\":\"%s\",\"role\":\"log-storage\"}",
 		         non_os_disk);
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/diskroles", body, &r) != 0 || r.status != 201) {
-			fprintf(stderr, "FAIL: POST /v1/diskroles (state-storage), status=%d\n", r.status);
+			fprintf(stderr, "FAIL: POST /v1/diskroles (log-storage), status=%d\n", r.status);
 			ok = 0;
 		}
 		cix_response_free(&r);
 
 		snprintf(body, sizeof(body), "{\"disk\":\"%s\"}", non_os_disk);
 		memset(&r, 0, sizeof(r));
-		if (cix_client_request(&client, "POST", "/v1/system/state-storage/migrate", body, &r) != 0 ||
+		if (cix_client_request(&client, "POST", "/v1/system/log-storage/migrate", body, &r) != 0 ||
 		    r.status != 400) {
 			fprintf(stderr,
 			        "FAIL: POST migrate to a role-correct but unmounted disk expected "
@@ -301,7 +301,7 @@ int main(void)
 		}
 		cix_response_free(&r);
 
-		/* 7. Cleanup of the state-storage-role assignment above -- a
+		/* 7. Cleanup of the log-storage-role assignment above -- a
 		 * role-only assignment (never an active placement, since the
 		 * migrate above never succeeded) must be freely removable, no
 		 * 409. Frees the disk for the log-storage scenarios below (a
@@ -321,97 +321,7 @@ int main(void)
 			cix_response_free(&r);
 		}
 
-		/* 8. log-storage: default state, then the same wrong-role and
-		 * present-but-unmounted validation paths as state-storage
-		 * above, proving respond_storagemigrate_error()'s own kind-
-		 * aware messages and storagemigrate_start()'s role check
-		 * (role_str_for_kind()) are both wired correctly for this
-		 * second kind, not just copy-pasted and left pointing at
-		 * "state-storage" by mistake. */
-		memset(&r, 0, sizeof(r));
-		if (cix_client_request(&client, "GET", "/v1/system/log-storage", NULL, &r) != 0 ||
-		    r.status != 200) {
-			fprintf(stderr, "FAIL: GET /v1/system/log-storage, status=%d\n", r.status);
-			ok = 0;
-		} else {
-			const struct json_value *jdisk = json_object_get(r.json, "disk");
-
-			if (jdisk == NULL || jdisk->type != JSON_NULL) {
-				fprintf(stderr, "FAIL: fresh daemon should report log-storage disk:null\n");
-				ok = 0;
-			}
-		}
-		cix_response_free(&r);
-
-		snprintf(body, sizeof(body), "{\"disk_name\":\"%s\",\"role\":\"state-storage\"}",
-		         non_os_disk);
-		memset(&r, 0, sizeof(r));
-		if (cix_client_request(&client, "POST", "/v1/diskroles", body, &r) != 0 || r.status != 201) {
-			fprintf(stderr, "FAIL: POST /v1/diskroles (wrong role for log test), status=%d\n",
-			        r.status);
-			ok = 0;
-		}
-		cix_response_free(&r);
-
-		snprintf(body, sizeof(body), "{\"disk\":\"%s\"}", non_os_disk);
-		memset(&r, 0, sizeof(r));
-		if (cix_client_request(&client, "POST", "/v1/system/log-storage/migrate", body, &r) != 0 ||
-		    r.status != 400) {
-			fprintf(stderr, "FAIL: POST log-storage migrate to a wrong-role disk expected 400, "
-			                "got %d\n",
-			        r.status);
-			ok = 0;
-		}
-		cix_response_free(&r);
-
-		{
-			char path[96];
-
-			snprintf(path, sizeof(path), "/v1/diskroles/%s", non_os_disk);
-			memset(&r, 0, sizeof(r));
-			cix_client_request(&client, "DELETE", path, NULL, &r);
-			cix_response_free(&r);
-		}
-
-		snprintf(body, sizeof(body), "{\"disk_name\":\"%s\",\"role\":\"log-storage\"}", non_os_disk);
-		memset(&r, 0, sizeof(r));
-		if (cix_client_request(&client, "POST", "/v1/diskroles", body, &r) != 0 || r.status != 201) {
-			fprintf(stderr, "FAIL: POST /v1/diskroles (log-storage), status=%d\n", r.status);
-			ok = 0;
-		}
-		cix_response_free(&r);
-
-		snprintf(body, sizeof(body), "{\"disk\":\"%s\"}", non_os_disk);
-		memset(&r, 0, sizeof(r));
-		if (cix_client_request(&client, "POST", "/v1/system/log-storage/migrate", body, &r) != 0 ||
-		    r.status != 400) {
-			fprintf(stderr,
-			        "FAIL: POST log-storage migrate to a role-correct but unmounted disk "
-			        "expected 400, got %d\n",
-			        r.status);
-			ok = 0;
-		}
-		cix_response_free(&r);
-
-		memset(&r, 0, sizeof(r));
-		if (cix_client_request(&client, "GET", "/v1/system/log-storage/migrate", NULL, &r) != 0 ||
-		    r.status != 200) {
-			fprintf(stderr, "FAIL: GET /v1/system/log-storage/migrate, status=%d\n", r.status);
-			ok = 0;
-		} else {
-			const char *state = json_str_field(r.json, "state");
-
-			if (!(state != NULL && strcmp(state, "none") == 0)) {
-				fprintf(stderr,
-				        "FAIL: log-storage migrate status should still be state:none "
-				        "(no job ever actually started), got %s\n",
-				        state != NULL ? state : "(null)");
-				ok = 0;
-			}
-		}
-		cix_response_free(&r);
-
-		/* 9. rebuildable-storage: same validation coverage as state/log
+		/* 8. rebuildable-storage: same validation coverage as log
 		 * above, proving the third and final storage_kind is wired
 		 * correctly too. Frees the disk from its log-storage role
 		 * first (one role at a time). */
@@ -516,7 +426,7 @@ int main(void)
 		}
 		cix_response_free(&r);
 
-		/* 10. Final cleanup. */
+		/* 9. Final cleanup. */
 		{
 			char path[96];
 

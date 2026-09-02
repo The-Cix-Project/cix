@@ -8,7 +8,7 @@
 
 /*
  * ADR-0141 Phase 2: moves the live content of one of the three
- * daemon-wide storage singletons (state/rebuildable/log) from its
+ * daemon-wide storage singletons (rebuildable/log) from its
  * current active location to a new disk (or back to the default
  * OS-disk location) -- the async job half of the multi-disk storage
  * placement feature, mirroring diskformat.c's own fork+pidfd+epoll
@@ -59,8 +59,9 @@ enum storagemigrate_error {
  * Validates target_disk_name (NULL means "migrate back to the default
  * OS-disk placement" -- always a valid target) against disk_enumerate()
  * (must exist, must not be is_os_disk), diskrole_lookup() (must carry
- * the role matching kind -- "state-storage" for STORAGE_KIND_STATE,
- * etc.), and disk_enumerate()'s own mounted field (must currently be
+ * the role matching kind -- "rebuildable-storage" for
+ * STORAGE_KIND_REBUILDABLE, "log-storage" for STORAGE_KIND_LOG), and
+ * disk_enumerate()'s own mounted field (must currently be
  * mounted). os_containers_dir is passed straight through to
  * disk_enumerate() for its own OS-disk resolution.
  *

@@ -2009,122 +2009,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-  /system/state-storage:
-    get:
-      summary: Which disk (if any) is the active placement for Cix's own state (ADR-0141 Phase 2)
-      description: >
-        `disk: null` means the default OS-disk placement (the original,
-        pre-ADR-0141 behavior). A non-null disk is one that currently
-        carries the `state-storage` role (POST /diskroles) and was
-        successfully migrated onto via POST .../migrate below --
-        state-storage covers this platform's own definition of itself:
-        networks, DNS/LDAP/NTP/syslog-forwarding config, PKI (CA keys
-        and every issued cert), container definitions, device mappings,
-        site identity, and daemon/rolling-restart/TLS-throttle
-        configuration -- never container workload data, never
-        rebuildable content (images/packages/artifacts, their own
-        separate `rebuildable-storage` concern), never logs (`log-
-        storage`, its own separate concern).
-      operationId: getStateStorage
-      x-cix-expose: [cli, web]
-      responses:
-        "200":
-          description: Current state-storage placement
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/StoragePlacement"
-  /system/state-storage/migrate:
-    get:
-      summary: Status of the most recent (or currently running) state-storage migration job
-      description: >
-        Only one state-storage migration may be in flight at a time.
-        Reports `{"state":"none"}` if no migration has ever run this
-        daemon lifetime.
-      operationId: getStateStorageMigrateStatus
-      x-cix-expose: [cli, web]
-      responses:
-        "200":
-          description: Migration job status
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/StorageMigrateStatus"
-    post:
-      summary: Moves Cix's own state to a new disk, or back to the default OS-disk placement
-      description: >
-        `disk` is required -- a real disk name (must already carry the
-        `state-storage` role and be currently mounted) or `null` to
-        migrate back to the default OS-disk placement; omitting the
-        field entirely is a 400, deliberately distinct from an explicit
-        null. Async, two-phase (ADR-0141's own "Migration mechanics"):
-        a forked child does the bulk permission-preserving copy while
-        the daemon keeps operating normally against the *current*
-        location the entire time (no pause, no readonly window); once
-        that finishes, this daemon's own single-threaded reactor does
-        one more synchronous pass (a second, fast copy -- cheap, since
-        little changes during the bulk phase) and then repoints every
-        affected subsystem's own live path, re-establishes the real
-        `/etc/resolv.conf` bind mount against the new location,
-        persists the new placement, and removes the old location's
-        data. Returns 202 immediately with the job's initial
-        `{"state":"running",...}` status; poll GET on this same path
-        for completion -- a `state:"failed"` migration leaves the
-        daemon still using the old location, completely untouched.
-      operationId: migrateStateStorage
-      x-cix-expose: [cli, web]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [disk]
-              properties:
-                disk:
-                  type: string
-                  nullable: true
-                  description: A Disk.name from GET /disks, or null for the default OS-disk placement.
-      responses:
-        "202":
-          description: Migration job started
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/StorageMigrateStatus"
-        "400":
-          description: >
-            disk field missing, invalid/unknown disk, disk is the OS
-            disk, disk doesn't carry the state-storage role, or disk
-            carries the role but isn't currently mounted
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "404":
-          description: No such disk
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "409":
-          description: A migration is already running, or this is already the active placement
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "500":
-          description: Could not start the migration job
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
   /system/log-storage:
     get:
       summary: Which disk (if any) is the active placement for Cix's own consolidated log store (ADR-0141 Phase 3)
       description: >
         Same shape and same singleton-placement model as
-        GET /system/state-storage above -- `disk: null` means the
+        GET /system/rebuildable-storage -- `disk: null` means the
         default OS-disk placement. A non-null disk carries the
         `log-storage` role and was successfully migrated onto via
         POST .../migrate below. Covers the consolidated log store
@@ -2144,7 +2034,7 @@ paths:
     get:
       summary: Status of the most recent (or currently running) log-storage migration job
       description: >
-        Same shape as GET /system/state-storage/migrate above -- only
+        Same shape as the other storage-migration status endpoints -- only
         one log-storage migration may be in flight at a time
         (independent of any concurrent state-storage migration, each
         kind has its own job slot).
@@ -2160,7 +2050,7 @@ paths:
     post:
       summary: Moves Cix's own consolidated log store to a new disk, or back to the default OS-disk placement
       description: >
-        Same contract as POST /system/state-storage/migrate above --
+        Same contract as the other storage migrations --
         `disk` required (a real, `log-storage`-role, currently-mounted
         disk name, or `null` for the default). Async, live, no pause:
         the finalize step is simpler than state-storage's own (a single
@@ -2239,7 +2129,7 @@ paths:
     get:
       summary: Status of the most recent (or currently running) rebuildable-storage migration job
       description: >
-        Same shape as GET /system/state-storage/migrate -- its own
+        Same shape as the other storage-migration status endpoints -- its own
         independent job slot, alongside any concurrent state-storage or
         log-storage migration.
       operationId: getRebuildableStorageMigrateStatus
@@ -2254,7 +2144,7 @@ paths:
     post:
       summary: Moves images/packages/artifacts to a new disk, or back to the default OS-disk placement
       description: >
-        Same contract as POST /system/state-storage/migrate -- `disk`
+        Same contract as the other storage migrations -- `disk`
         required (a real, `rebuildable-storage`-role, currently-mounted
         disk name, or `null` for the default). Async, live, no pause.
         Every consumer of this content (`image.c`, and `pkg.c`'s several
@@ -4546,7 +4436,7 @@ paths:
           description: >
             A format job is already running (this daemon-wide, v1
             single-job limit), or this disk is the active placement for
-            state-storage, log-storage, or rebuildable-storage, or the
+            log-storage or rebuildable-storage, or the
             currently configured backup-config disk (ADR-0141), or one
             or more containers currently have their own storage on this
             disk (ADR-0102/ADR-0142) -- formatting it would destroy
@@ -4622,7 +4512,7 @@ paths:
                 $ref: "#/components/schemas/Error"
         "409":
           description: >
-            This disk is the active placement for state-storage, log-
+            This disk is the active placement for log-
             storage, rebuildable-storage, or swap, or the currently
             configured backup-config disk (ADR-0141), or one or more
             containers currently have their own storage on this disk
@@ -5178,7 +5068,7 @@ paths:
                 $ref: "#/components/schemas/Error"
         "409":
           description: >
-            This disk is the active placement for state-storage,
+            This disk is the active placement for
             log-storage, or rebuildable-storage, or the currently
             configured backup-config disk (ADR-0141), or one or more
             containers currently have their own storage on this disk
@@ -13314,19 +13204,21 @@ components:
           description: A Disk.name from GET /disks (e.g. "sdb") -- not an operator-chosen alias, the real disk's own kernel name.
         role:
           type: string
-          enum: [container-storage, backup, state-storage, rebuildable-storage, log-storage, swap]
+          enum: [container-storage, backup, rebuildable-storage, log-storage, swap]
           description: >
             A small, fixed, closed vocabulary -- not free-form, since a
             role is only meaningful insofar as this daemon actually
             understands and acts on it. "swap" is deliberately not a
             role here: this platform already has a dedicated on-demand
             host swap FILE mechanism (POST /system/swap, ADR-0069) with
-            no disk-level equivalent defined. state-storage/rebuildable-
-            storage/log-storage (ADR-0141) are each a daemon-wide
-            singleton -- multiple disks can carry the same one of these
-            (eligible candidates), but only one is ever the *active*
-            placement, tracked separately (GET /system/state-storage
-            etc.), not by this role alone.
+            no disk-level equivalent defined. rebuildable-storage and
+            log-storage (ADR-0141) are each a daemon-wide singleton --
+            multiple disks can carry the same one of these (eligible
+            candidates), but only one is ever the *active* placement,
+            tracked separately (GET /system/rebuildable-storage etc.),
+            not by this role alone. "state-storage" was a sixth role and
+            is retired: state lives on the config partition now, and the
+            role could never survive the OS-disk failure it existed for.
         fs_type:
           type: string
           enum: [ext4, btrfs]
@@ -13349,7 +13241,7 @@ components:
           type: string
         role:
           type: string
-          enum: [container-storage, backup, state-storage, rebuildable-storage, log-storage, swap]
+          enum: [container-storage, backup, rebuildable-storage, log-storage, swap]
 
     DiskFormatRequest:
       type: object

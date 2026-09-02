@@ -138,16 +138,13 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | DELETE | `/devicemaps/{name}` | Remove a device mapping |
 | GET | `/disks` | List real host block devices, including their partitions, for multi-disk management |
 | GET | `/diskroles` | List persisted disk role assignments |
-| POST | `/diskroles` | Assign a role (container-storage/backup/state-storage/rebuildable-storage/log-storage/swap) to a disk or partition |
+| POST | `/diskroles` | Assign a role (container-storage/backup/rebuildable-storage/log-storage/swap) to a disk or partition |
 | DELETE | `/diskroles/{disk_name}` | Remove a disk's role assignment |
 | GET | `/disks/{disk_name}/format` | Status of the most recent (or running) format+mount job for this disk |
 | POST | `/disks/{disk_name}/format` | Destructive: mkfs (ext4 or btrfs) + mount an already role-assigned disk |
 | POST | `/disks/{disk_name}/partition-table` | Destructive: writes a fresh, empty GPT partition table to a whole disk |
 | POST | `/disks/{disk_name}/partitions` | Append one new partition to a disk's existing table |
 | DELETE | `/disks/{disk_name}/partitions/{partition_name}` | Remove one partition |
-| GET | `/system/state-storage` | Which disk (if any) is the active placement for Cix's own state |
-| GET | `/system/state-storage/migrate` | Status of the most recent (or running) state-storage migration |
-| POST | `/system/state-storage/migrate` | Move Cix's own state to a new disk, or back to the default |
 | GET | `/system/log-storage` | Which disk (if any) is the active placement for the consolidated log store |
 | GET | `/system/log-storage/migrate` | Status of the most recent (or running) log-storage migration |
 | POST | `/system/log-storage/migrate` | Move the consolidated log store to a new disk, or back to the default |
@@ -1542,7 +1539,7 @@ POST /v1/diskroles
 {"disk_name": "sdb", "role": "backup"}
 ```
 
-`role` is `"container-storage"`, `"backup"`, `"state-storage"`, `"rebuildable-storage"`, `"log-storage"`, or `"swap"` (ADR-0141, `swap` added by issue #28) — a small, fixed, closed vocabulary, not an arbitrary operator-chosen string the way a `devicemap` name is, since a role only means something insofar as this daemon actually understands and acts on it. `state-storage`/`rebuildable-storage`/`log-storage`/`swap` are each a daemon-wide *singleton* placement: several disks can carry the same one of these roles as eligible candidates, but only one is ever the currently-active placement, tracked separately (`GET /system/state-storage`, `GET /system/swap`, etc.), not by this role field alone. `swap` reconciles with the existing on-demand host swap *file* mechanism (`POST /system/swap`, ADR-0069) rather than duplicating it — the role names which disk is *allowed* to back an operator-chosen placement; `POST /system/swap`'s own `disk` field is what actually resolves and activates it (see [A host swap file](#a-host-swap-file) above).
+`role` is `"container-storage"`, `"backup"`, `"rebuildable-storage"`, `"log-storage"`, or `"swap"` (ADR-0141, `swap` added by issue #28) — a small, fixed, closed vocabulary, not an arbitrary operator-chosen string the way a `devicemap` name is, since a role only means something insofar as this daemon actually understands and acts on it. `rebuildable-storage`/`log-storage`/`swap` are each a daemon-wide *singleton* placement: several disks can carry the same one of these roles as eligible candidates, but only one is ever the currently-active placement, tracked separately (`GET /system/rebuildable-storage`, `GET /system/swap`, etc.), not by this role field alone. `swap` reconciles with the existing on-demand host swap *file* mechanism (`POST /system/swap`, ADR-0069) rather than duplicating it — the role names which disk is *allowed* to back an operator-chosen placement; `POST /system/swap`'s own `disk` field is what actually resolves and activates it (see [A host swap file](#a-host-swap-file) above).
 
 Real and creatable even for a `disk_name` that isn't currently present (`present: false` on `GET`, not an error — the same tolerant convention `/devicemaps` already established for hardware that might be temporarily absent). Rejected (`400`) for the **fixed OS layout** — the OS disk itself, and its first four partitions (the ESP, both root slots and `/config`), the same set `protected: true` marks on `GET /disks`. A partition an operator appended into the OS disk's reserved free space is *not* part of that layout and can be given a role like any other disk: being able to create such a partition and then never use it was the gap (issue #9). `409` if `disk_name` already has a role (`DELETE` it first to reassign, the same no-silent-overwrite convention `/devicemaps` already established).
 
@@ -1575,7 +1572,7 @@ POST /v1/disks/sdb/unmount
 {"confirm_disk_name": "sdb"}
 ```
 
-Found live: a disk with its role already removed (`DELETE /diskroles/{name}`) had no way to actually be let go of — it just stayed mounted forever, and a real, currently-mounted-but-role-less disk was found to correlate with a genuine `mountns_pivot()` `EXDEV` ("Invalid cross-device link") failure in every subsequent container creation on the box where it was found. A real, synchronous `umount2(2)` against whatever `GET /disks` currently reports as this disk's own `mount_path` — synchronous, not async like format, since a plain `umount2(2)` is fast. Unlike `POST .../format`, this never touches the filesystem's own on-disk content, only its attachment to the running system; a later `POST .../format` (destructive) or a real `mount(2)` are the only ways back. Deliberately does **not** require an assigned role the way format does — the opposite precondition direction, since unmounting a role-less disk is exactly the case this exists to cover. Same double-confirmation shape as format, and the identical two data-safety checks: `409` if this disk is the active placement for state-storage, log-storage, rebuildable-storage, or swap, or the currently configured backup-config disk, or a `container-storage`-role disk one or more containers currently have their own storage on — unmounting any of those out from under whatever relies on it would break it the instant this succeeds, migrate away first. `400` if the disk is the OS disk, doesn't exist, or isn't currently mounted at all. Response is the disk's own current state (`GET /disks` shape):
+Found live: a disk with its role already removed (`DELETE /diskroles/{name}`) had no way to actually be let go of — it just stayed mounted forever, and a real, currently-mounted-but-role-less disk was found to correlate with a genuine `mountns_pivot()` `EXDEV` ("Invalid cross-device link") failure in every subsequent container creation on the box where it was found. A real, synchronous `umount2(2)` against whatever `GET /disks` currently reports as this disk's own `mount_path` — synchronous, not async like format, since a plain `umount2(2)` is fast. Unlike `POST .../format`, this never touches the filesystem's own on-disk content, only its attachment to the running system; a later `POST .../format` (destructive) or a real `mount(2)` are the only ways back. Deliberately does **not** require an assigned role the way format does — the opposite precondition direction, since unmounting a role-less disk is exactly the case this exists to cover. Same double-confirmation shape as format, and the identical two data-safety checks: `409` if this disk is the active placement for log-storage, rebuildable-storage, or swap, or the currently configured backup-config disk, or a `container-storage`-role disk one or more containers currently have their own storage on — unmounting any of those out from under whatever relies on it would break it the instant this succeeds, migrate away first. `400` if the disk is the OS disk, doesn't exist, or isn't currently mounted at all. Response is the disk's own current state (`GET /disks` shape):
 
 ```
 {"name": "sdb", "mounted": false, "mount_path": "", ...}
@@ -1629,30 +1626,38 @@ Every disk and partition row also carries `fs_type` and `role` (issue #90). `fs_
 
 ## Multi-disk storage placement (ADR-0141)
 
-```
-GET /v1/system/state-storage
-{"disk": null}
-```
+Two platform-level concerns can each be moved onto their own disk: the
+consolidated log store and rebuildable content (images, packages,
+artifacts, staged ISOs). Each has the same three endpoints — read the
+current placement, start a migration, poll its status — and its own
+independent job slot, so the two can run concurrently.
 
-Which disk (if any) is the *active* placement for Cix's own state — networks, DNS/LDAP/NTP/syslog-forwarding config, PKI (CA keys and every issued cert), container definitions, device mappings, site identity, and daemon/rolling-restart/TLS-throttle configuration. `disk: null` is the default OS-disk placement, unchanged from before this feature existed. Deliberately excludes container workload data (never covered), rebuildable content (images/packages/artifacts — its own separate `rebuildable-storage` concern, not yet exposed via REST), and logs (`log-storage`, its own endpoint below) — see `docs/adr/0141-multi-disk-storage-placement.md` for the full role/multiplicity model.
+Each target disk must already carry the matching role (`POST
+/diskroles`) and be currently mounted. `disk` is required in a migrate
+body: a real disk name, or `null` to migrate *back* to the default
+OS-disk placement, which is a real symmetric operation rather than a
+dead end. Omitting the field entirely is a `400`, deliberately distinct
+from an explicit `null`, since the two mean different things. `404` for
+an unknown disk; `400` for the OS disk itself, a disk with the wrong
+role, or a role-correct disk that is not currently mounted; `409` if a
+migration is already running or the requested disk is already the
+active placement.
 
-```
-POST /v1/system/state-storage/migrate
-{"disk": "sdc"}
-```
+**State was a third concern here and is no longer relocatable at all.**
+`GET`/`POST /system/state-storage(/migrate)` and the `state-storage`
+disk role are retired ([#251](https://git.home.arpa/itdlabs/cix/issues/251)).
+The platform's own state — networks, DNS/DHCP/NTP/LDAP/syslog
+configuration, the CA and every issued certificate, container
+definitions, device maps, site identity — lives on the **config
+partition** now (`/config/state`), which survives an A/B upgrade and is
+reformatted only by a full reinstall. The role existed to let that
+content survive the loss of the OS disk, and it could not: the
+migration copied current state onto the target rather than adopting
+state already there, the record of which disk held state lived on the
+OS disk itself, and boot read only that record — so a reinstalled box
+did not know the state disk existed, and the natural recovery copied
+fresh empty state over the real one. Durability is `GET /system/backup`.
 
-`disk` is required — a real disk name that already carries the `state-storage` role (`POST /diskroles`) and is currently mounted, or `null` to migrate *back* to the default OS-disk placement (a real, symmetric operation, not a dead end once you've moved off the OS disk once). Omitting the field entirely is a `400` — deliberately distinct from an explicit `null`, since the two mean different things. `404` for an unknown disk; `400` for the OS disk itself, a disk with the wrong role, or a role-correct disk that isn't currently mounted; `409` if a migration is already running or the requested disk is already the active placement.
-
-Async and genuinely live — the daemon keeps operating normally against the *current* location for the entire bulk-copy phase, no pause, no readonly window:
-
-```
-GET /v1/system/state-storage/migrate
-{"state": "ready", "disk": "sdc"}
-```
-
-`state` is `"none"`, `"running"`, `"ready"`, or `"failed"` (`error` present on failure). Once the bulk copy (a forked child, `treecopy_recursive()` — the same permission-preserving primitive `POST /system/backup-config/snapshot-now`'s own future implementation and this daemon's package-install pipeline both use, never a second copy of the same logic) finishes successfully, this daemon's own single-threaded reactor does one more synchronous pass — a second, fast copy (cheap, since little changes during the bulk phase) — and only then repoints every affected subsystem's own live path, re-establishes the real `/etc/resolv.conf` bind mount against the new location (a real, previously-live lesson: a bind mount is tied to the inode it captured, not the path — see `CHANGELOG.md`'s Part 103), persists the new placement, and removes the old location's data. A `state:"failed"` migration at any point before that final repoint leaves the daemon still using the old location, completely untouched — the partially-copied new-location data is left for inspection or the next attempt to overwrite.
-
-`DELETE /v1/diskroles/{name}` and `POST /v1/disks/{name}/format` both now refuse (`409`) against a disk that's the current active state-storage, log-storage, or rebuildable-storage placement, *or* the currently configured backup-config disk, *or* a `container-storage`-role disk one or more containers currently have their own storage on (`ADR-0142`, see below) — removing the role or destroying the disk's content out from under a live placement would silently strand the daemon's own state (or a container's own workload data). Migrate away first (`disk: null` back to the default, or to a different role-eligible disk — or, for backup-config, `PUT /system/backup-config` with a different disk/`null` — or, for a container, `POST /containers/{name}/migrate-storage`).
 
 ### Log-storage placement (ADR-0141 Phase 3)
 
@@ -1662,7 +1667,7 @@ GET  /v1/system/log-storage/migrate      {"state": "none"}
 POST /v1/system/log-storage/migrate      {"disk": "sdd"}
 ```
 
-Identical contract to state-storage above, for where the consolidated log store (kernel dmesg, this daemon's own diagnostics, the per-request audit trail, every container's stdout/stderr — ADR-0070/ADR-0126) lives, with its own independent job slot (a state-storage migration and a log-storage migration can run concurrently, each acting on its own kind). The one real difference under the hood, not in the contract: `logstore.c` holds a persistently-open file handle across writes (`ensure_current_segment_open()` only reopens when it's `NULL`, not per write) — the finalize step closes it and lets the next write naturally reopen (in append mode, resuming the same logical segment) against the already-migrated new location, rather than leaving it silently still writing to the old disk.
+For where the consolidated log store (kernel dmesg, this daemon's own diagnostics, the per-request audit trail, every container's stdout/stderr — ADR-0070/ADR-0126) lives, with its own independent job slot (a log-storage migration and a rebuildable-storage migration can run concurrently, each acting on its own kind). The one real difference under the hood, not in the contract: `logstore.c` holds a persistently-open file handle across writes (`ensure_current_segment_open()` only reopens when it's `NULL`, not per write) — the finalize step closes it and lets the next write naturally reopen (in append mode, resuming the same logical segment) against the already-migrated new location, rather than leaving it silently still writing to the old disk.
 
 ### Rebuildable-storage placement (ADR-0141 Phase 4)
 
@@ -1672,7 +1677,7 @@ GET  /v1/system/rebuildable-storage/migrate      {"state": "none"}
 POST /v1/system/rebuildable-storage/migrate      {"disk": "sde"}
 ```
 
-Same contract again, for where container images, installed packages, build artifacts, and staged ISOs live — content that's regenerable from recipes/sources, never irreplaceable, the reason it's a separate concern from state-storage in the first place. Its own independent job slot, same as log-storage. Every consumer (`image.c`, and `pkg.c`'s several distinct concerns — package state, repo-sync config, cache config, artifact-fetch config, image-recipe-apply state) was confirmed to cache nothing but plain path strings with no persistently-open handle of its own, so the finalize step is a straightforward repoint across all of them, no `logstore.c`-style extra care needed.
+Same contract, for where container images, installed packages, build artifacts, and staged ISOs live — content that's regenerable from recipes/sources, never irreplaceable, the reason it is a separate concern from the platform's own state in the first place. Its own independent job slot, same as log-storage. Every consumer (`image.c`, and `pkg.c`'s several distinct concerns — package state, repo-sync config, cache config, artifact-fetch config, image-recipe-apply state) was confirmed to cache nothing but plain path strings with no persistently-open handle of its own, so the finalize step is a straightforward repoint across all of them, no `logstore.c`-style extra care needed.
 
 ### Container-storage migration (ADR-0142)
 

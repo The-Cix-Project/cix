@@ -5126,11 +5126,6 @@ async function refreshDiskFormatStatuses() {
  * a plain string: it is a disk-role name sent in a body, not a path.
  */
 const STORAGE_KINDS = {
-	state: { showPath: CIX_API.getStateStorage, migratePath: CIX_API.migrateStateStorage,
-	         migrateStatusPath: CIX_API.getStateStorageMigrateStatus,
-	         cacheKey: "stateStorage", statusCacheKey: "stateStorageMigrate",
-	         currentId: "ss-current", statusId: "ss-migrate-status", selectId: "ss-target-disk",
-	         formId: "ss-migrate-form", label: "State storage", role: "state-storage" },
 	logs: { showPath: CIX_API.getLogStorage, migratePath: CIX_API.migrateLogStorage,
 	        migrateStatusPath: CIX_API.getLogStorageMigrateStatus,
 	        cacheKey: "logStorage", statusCacheKey: "logStorageMigrate",
@@ -5212,7 +5207,6 @@ function renderStoragePlacement(kind) {
 }
 
 function renderAllStoragePlacements() {
-	renderStoragePlacement("state");
 	renderStoragePlacement("logs");
 	renderStoragePlacement("rebuildable");
 }
