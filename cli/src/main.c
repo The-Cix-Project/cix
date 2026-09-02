@@ -201,6 +201,9 @@ static void print_usage(FILE *out)
 	        "               real toolchain onto the box; async, 202, poll with bootstrap-status\n"
 	        "  pkg bootstrap-status  -- state/error of the most recent toolchain_url fetch\n"
 	        "  pkg recipes  -- lists every published (name,version) recipe (ADR-0107)\n"
+	        "  pkg rebuilds  -- image rebuilds this host has queued but not started.\n"
+	        "               Publishing a recipe queues one for every image tracking that\n"
+	        "               package `rolling`, which is real work nothing else reports.\n"
 	        "  pkg recipe add --name=NAME --file=PATH  -- publishes a new recipe version on\n"
 	        "               this running system directly, no reinstall needed (ADR-0040);\n"
 	        "               an already-published (name,version) is rejected, not overwritten\n"
@@ -13550,6 +13553,53 @@ static int cmd_pkg_ls(const struct cix_client *c, int json_mode)
 	return emit(&r, json_mode, fmt_pkg_list);
 }
 
+/*
+ * What publishing a recipe has committed this host to (#236).
+ *
+ * A publish queues a rebuild for every image tracking that package
+ * `rolling`, and nothing used to report it -- so the work existed and
+ * the operator could neither see it nor count it.
+ */
+static void fmt_pkg_rebuilds(const struct json_value *root)
+{
+	const struct json_value *arr = json_object_get(root, "queued");
+	const struct json_value *jd = json_object_get(root, "depth");
+	const struct json_value *jc = json_object_get(root, "capacity");
+	long long depth = (jd != NULL && jd->type == JSON_NUMBER) ? (long long)jd->u.number : 0;
+	long long capacity = (jc != NULL && jc->type == JSON_NUMBER) ? (long long)jc->u.number : 0;
+	size_t i;
+
+	if (depth == 0) {
+		printf("no image rebuilds queued\n");
+		return;
+	}
+	printf("%-32s %s\n", "IMAGE", "POSITION");
+	if (arr != NULL && arr->type == JSON_ARRAY) {
+		for (i = 0; i < arr->u.array.count; i++) {
+			const struct json_value *v = arr->u.array.items[i];
+
+			if (v != NULL && v->type == JSON_STRING)
+				printf("%-32s %zu\n", v->u.string, i + 1);
+		}
+	}
+	printf("\n%lld queued, capacity %lld", depth, capacity);
+	if (capacity > 0 && depth >= capacity)
+		printf("  -- FULL: further rebuilds are being discarded");
+	printf("\n");
+}
+
+static int cmd_pkg_rebuilds(const struct cix_client *c, int json_mode)
+{
+	struct cix_response r;
+
+	if (cix_client_request(c, CIX_API_listPkgRebuilds_METHOD, CIX_API_listPkgRebuilds, NULL,
+	                        &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_pkg_rebuilds);
+}
+
 static int cmd_pkg_rm(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	struct cix_response r;
@@ -13890,6 +13940,8 @@ static int cmd_pkg(const struct cix_client *c, int json_mode, int argc, char **a
 		return cmd_pkg_build_logs(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "ls") == 0)
 		return cmd_pkg_ls(c, json_mode);
+	if (strcmp(sub, "rebuilds") == 0)
+		return cmd_pkg_rebuilds(c, json_mode);
 	if (strcmp(sub, "rm") == 0)
 		return cmd_pkg_rm(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "update-all") == 0)

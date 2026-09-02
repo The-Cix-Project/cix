@@ -306,6 +306,7 @@ The kind is set in the single function that records a failure, and it is a **req
 | POST | `/pkg/hostbuild` | Start a hostbuild job — build a standalone artifact instead of merging into an image |
 | GET | `/pkg/hostbuild/{name}` | Inspect one hostbuild job's current state |
 | POST | `/pkg/resume` | Continue a `keep_on_failure`-preserved build container in place, without a fetch/extract restart |
+| GET | `/pkg/rebuilds` | Image rebuilds this host has queued but not started — what publishing a recipe committed it to (issue #236) |
 | POST | `/pkg/cancel` | Stop an in-flight build **or fetch**; the entry becomes failed with kind `cancelled` |
 | GET | `/pkg/build/log` | Upgrade to a WebSocket; live-tail a currently-running install/hostbuild job's own stdout/stderr |
 | GET | `/pkg` | List every known package (installed or in-flight) with its state |
@@ -2164,6 +2165,15 @@ A package manager built from scratch: recipes are shell scripts (the same format
 **Every install targets one image**, `/var/lib/cix/rebuildable/images/{image}/rootfs` (ADR-0141) — `"base"` by default (any container created with `"image": "base"` gets everything installed there, no separate host/container package paths to keep in sync), or an explicit other one (see [Per-image installs](#per-image-installs) below) for software that shouldn't be part of every container's baseline.
 
 **Installs are asynchronous.** The daemon is single-threaded and non-blocking; a network fetch or a real compile can take anywhere from seconds to minutes, so `POST /v1/pkg/install` returns immediately (`202`) and the actual work happens in the background — poll `GET /v1/pkg/{name}` for progress. **Fetching happens on the host** (a `curl` subprocess — this project's networking plane has no outbound NAT, so a build container has no network access at all, a stronger isolation boundary for untrusted build scripts, not a limitation worked around).
+
+**Publishing a recipe commits this host to work, and now says so (`GET /v1/pkg/rebuilds`, issue #236).** A publish is documented and implemented as a metadata write. It is not only that: it queues an image rebuild for **every image whose manifest tracks that package as `rolling`** — and nothing anywhere reported that. Not the request, not the response, not any endpoint. So a publish silently started real work, and a handful in sequence made the box unusable for reasons nothing named.
+
+```
+GET /v1/pkg/rebuilds
+{"queued": ["toolchain", "cix-builder"], "depth": 2, "capacity": 32}
+```
+
+`cixctl pkg rebuilds` renders it. The queue is **in memory and deliberately not persisted**: a rebuild is re-derivable from the manifests at any time, so a restart drops pending work rather than resuming a stale intention — which also makes a restart a legitimate way to abandon a queue doing more than you want. `depth == capacity` means further rebuilds are being discarded rather than the queue growing without limit. Publishing also logs what it queued, by name, so the consequence is visible in `GET /v1/system/logs` at the moment it happens and not only as a pending count afterwards.
 
 **A build or a fetch can be stopped, and only by a person asking (`POST /v1/pkg/cancel`, issues #213 and #239).** A build that will never finish — one whose own `configure` is waiting on stdin, which is exactly how `perl` hung — otherwise holds its chain slot until the daemon restarts, because nothing else can stop it. `GET /v1/pkg` has reported `last_output_seconds_ago` since issue #58; this is the verb that acts on it. **A stuck fetch counts, and used to not.** Cancel accepted a fetching entry, set the flag and stopped there, on the reasoning that a fetch is a subprocess rather than a container so there was nothing to kill — leaving the flag to whichever completion path ran next. If the fetch never completes, none ever runs: a fetch retrying an unreachable upstream held its chain slot indefinitely, every later install was refused `409`, and cancel returned `200` having changed nothing. The fetch child is now killed, which drives the ordinary completion path that honours the flag.
 

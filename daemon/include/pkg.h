@@ -473,6 +473,15 @@ int pkg_artifact_cache_has(const char *name, const char *version);
  * because the failure only shows on the installed box.
  */
 enum pkg_error pkg_seed_stage(const char *dest_dir, char *err, size_t err_size);
+
+/*
+ * The image rebuilds this host has queued but not started (#236).
+ *
+ * In memory and deliberately not persisted: a rebuild is re-derivable
+ * from the manifests at any time, so a restart drops pending work
+ * rather than resuming a stale intention.
+ */
+void pkg_rebuild_queue_write_json(struct json_writer *w);
 enum pkg_error pkg_artifact_publish_resolve(const char *name, char *out_version,
                                              size_t out_version_size, int *out_is_hostbuild);
 

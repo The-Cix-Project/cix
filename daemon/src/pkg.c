@@ -496,6 +496,33 @@ int pkg_build_container_chain_index(const char *container_name)
 static char g_rebuild_queue[PKG_REBUILD_QUEUE_MAX][PKG_IMAGE_NAME_MAX];
 static int g_rebuild_queue_count;
 
+/*
+ * The queue, for GET /v1/pkg/rebuilds (#236).
+ *
+ * Publishing a recipe is documented as a metadata write and also
+ * commits the host to rebuilding every image tracking that package
+ * `rolling`. Nothing reported that, so an operator could neither see
+ * what a publish had started nor count what was outstanding -- which,
+ * before the loop stopped blocking on it, was minutes of a box that
+ * looked broken for reasons nothing named.
+ */
+void pkg_rebuild_queue_write_json(struct json_writer *w)
+{
+	int i;
+
+	jw_obj_open(w);
+	jw_key(w, "queued");
+	jw_arr_open(w);
+	for (i = 0; i < g_rebuild_queue_count; i++)
+		jw_str(w, g_rebuild_queue[i]);
+	jw_arr_close(w);
+	jw_key(w, "depth");
+	jw_int(w, g_rebuild_queue_count);
+	jw_key(w, "capacity");
+	jw_int(w, PKG_REBUILD_QUEUE_MAX);
+	jw_obj_close(w);
+}
+
 static int pkg_name_is_valid(const char *name)
 {
 	return simple_name_is_valid(name, PKG_NAME_MAX);
@@ -4020,7 +4047,12 @@ static void queue_rolling_rebuilds_for(const char *pkg_name, const char *pkg_ver
 {
 	char image_names[IMAGE_LIST_MAX][PKG_IMAGE_NAME_MAX];
 	int image_count = image_list_names(image_names, IMAGE_LIST_MAX);
+	char queued[512];
+	int queued_len = 0;
+	int queued_count = 0;
 	int i;
+
+	queued[0] = '\0';
 
 	for (i = 0; i < image_count; i++) {
 		struct image_manifest_entry entries[IMAGE_MANIFEST_MAX_PACKAGES];
@@ -4034,10 +4066,36 @@ static void queue_rolling_rebuilds_for(const char *pkg_name, const char *pkg_ver
 			    strcmp(entries[j].package, pkg_name) == 0 &&
 			    pkg_version_compare(pkg_version, entries[j].version) >= 0) {
 				rebuild_queue_enqueue(image_names[i]);
+				if (queued_len < (int)sizeof(queued) - 1)
+					queued_len += snprintf(queued + queued_len,
+					                        sizeof(queued) - (size_t)queued_len, "%s%s",
+					                        queued_len > 0 ? ", " : "", image_names[i]);
+				queued_count++;
 				break;
 			}
 		}
 	}
+
+	/*
+	 * SAY SO (#236).
+	 *
+	 * Publishing a recipe is documented and implemented as a metadata
+	 * write, and it also commits this host to rebuilding every image
+	 * tracking that package `rolling`. Nothing anywhere reported that:
+	 * not the request, not the response, not any endpoint -- so a
+	 * publish silently started real work, and a handful in sequence
+	 * made the box unusable for reasons nothing named.
+	 *
+	 * The response still carries no body (it is a 204, and changing
+	 * that is a contract change worth making separately), so this line
+	 * plus GET /v1/pkg/rebuilds are where the consequence becomes
+	 * visible. Silence about work you have just started is the failure
+	 * mode; naming it costs one log line.
+	 */
+	if (queued_count > 0)
+		logstore_write("cixd", "info",
+		               "pkg: publishing %s@%s queued a rebuild of %d image(s): %s", pkg_name,
+		               pkg_version, queued_count, queued);
 }
 
 /*

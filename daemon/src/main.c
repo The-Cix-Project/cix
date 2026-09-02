@@ -25655,6 +25655,17 @@ static void op_listPkgRecipes(const struct api_ctx *ctx)
 	handle_pkg_recipes_list(ctx->fd);
 }
 
+/* GET /v1/pkg/rebuilds -- issue #236 */
+static void op_listPkgRebuilds(const struct api_ctx *ctx)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	pkg_rebuild_queue_write_json(&w);
+	respond_json(ctx->fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
 /* POST /v1/pkg/recipes */
 static void op_addPkgRecipe(const struct api_ctx *ctx)
 {
