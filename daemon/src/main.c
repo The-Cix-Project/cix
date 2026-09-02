@@ -18054,7 +18054,7 @@ static void handle_disk_unmount_post(int fd, const char *disk_name, const char *
 		         "(%s) -- it is fixed at control-plane assembly (cixd --data-dir=) and no "
 		         "migration frees it",
 		         g_base_dir);
-		send_error(c, 409, msg);
+		respond_error(fd, 409, "Conflict", msg);
 		return;
 	}
 	if (derr == DISKFORMAT_ERR_UMOUNT_FAILED) {
