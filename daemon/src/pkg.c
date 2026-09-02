@@ -5600,6 +5600,32 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 			}
 		}
 
+		/*
+		 * A cancelled fetch is not a failed one, and must not be
+		 * reported as one (#239).
+		 *
+		 * pkg_cancel() ends a stuck fetch by killing its child, so the
+		 * exit status that arrives here is a real nonzero -- which,
+		 * checked in the ordinary order, records "fetch failed (curl
+		 * exit status -1)" with failure_kind "fetch". An operator then
+		 * cannot tell the network breaking from their own cancel
+		 * taking effect, and the contract promises "cancelled".
+		 *
+		 * Checked first, before any of the curl-shaped explanations
+		 * below, because the operator's intent is the true cause here
+		 * and curl's exit status is only its consequence.
+		 */
+		if (e->cancel_requested) {
+			e->cancel_requested = 0;
+			pkg_fail(e, is_final_upgrade, PKG_FAILURE_CANCELLED,
+			         "fetch cancelled by operator");
+			logstore_write("cixd", "info", "pkg %s@%s: fetch cancelled by operator", e->name,
+			               e->image);
+			g_chains[chain_idx].name[0] = '\0';
+			g_chains[chain_idx].dep_queue_count = 0;
+			return 0;
+		}
+
 		if (exit_status == PKG_FETCH_EXIT_PRECONDITION && detail_len > 0)
 			/* Never reached curl -- a precondition failed, and the
 			 * sidecar says which. */
