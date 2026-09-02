@@ -2921,6 +2921,45 @@ paths:
                           description: The request being served when the loop went quiet.
                   threshold_seconds:
                     type: integer
+                  loop:
+                    type: object
+                    description: >
+                      What the event loop costs when it has NOT stopped
+                      (issue #229). The records above say when the loop
+                      went quiet; a daemon can be completely unusable
+                      without ever going quiet, and this is where that
+                      shows. Measured on a real host: a publish went
+                      unanswered for 247 seconds and the stall records
+                      were empty and correct -- the loop never stopped,
+                      it simply spent seconds of every pass on its own
+                      work while everything else waited to be accepted.
+                    properties:
+                      worst_pass_ms:
+                        type: integer
+                        description: >
+                          The longest single pass of the loop since
+                          boot, counting only work and excluding the
+                          epoll wait. This is the latency floor every
+                          client was subject to at that moment.
+                      last_pass_ms:
+                        type: integer
+                        description: The most recent pass, same measure.
+                      slow_passes:
+                        type: integer
+                        description: >
+                          How many passes have crossed
+                          slow_pass_threshold_ms since boot. A rising
+                          count on an otherwise quiet box means the
+                          daemon is spending itself on something.
+                      slow_pass_threshold_ms:
+                        type: integer
+                      worst_pass_activity:
+                        type: string
+                        description: >
+                          What was named as in flight during the worst
+                          pass, or empty if the loop was busy with work
+                          no request had asked for -- which is itself
+                          the useful answer.
 
   /system/kernel-policy:
     get:

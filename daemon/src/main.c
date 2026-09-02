@@ -22039,6 +22039,13 @@ static void handle_stalls_get(int fd, const struct http_request *req)
 	stallwatch_write_json(&w, limit);
 	jw_key(&w, "threshold_seconds");
 	jw_int(&w, 5);
+	/*
+	 * What the loop costs when it has NOT stopped (#229). The records
+	 * above say when it stopped; a daemon can be unusable without ever
+	 * stopping, and this is where that shows.
+	 */
+	jw_key(&w, "loop");
+	stallwatch_write_loop_json(&w);
 	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
@@ -29745,6 +29752,10 @@ static int cixd_main(int argc, char **argv)
 		conn_out_sweep();
 
 		drain_pending_free();
+
+		/* Books what this pass cost, for #229. Must be the last thing
+		 * in the pass, so it measures all of it. */
+		stallwatch_pass_end();
 	}
 
 	if (listen_fd >= 0)

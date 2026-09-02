@@ -49,11 +49,54 @@ struct stall_shared {
 	 * was correctly no stall, because the wrong thing was measured.
 	 */
 	volatile long long activity_started_monotonic;
+
+	/*
+	 * How long one pass of the event loop spent WORKING, excluding the
+	 * epoll wait (#229).
+	 *
+	 * The two fields above still miss the case that actually took the
+	 * box out. On 2026-09-01 a publish went unanswered for 247 seconds
+	 * and this store recorded nothing at all -- correctly, by its own
+	 * definitions. The loop never stopped (heartbeat fine) and no
+	 * single request was in flight for long (activity fine); the loop
+	 * simply spent seconds of every pass starting a rebuild, while
+	 * everything else waited to be accepted.
+	 *
+	 * So the question neither of them asks: how long does one turn of
+	 * the loop take? That is the latency floor for every client, and a
+	 * run of slow passes is a daemon that is alive and unusable at the
+	 * same time.
+	 *
+	 * Milliseconds, because the interesting range starts well below a
+	 * second and the existing fields are seconds.
+	 */
+	volatile long long pass_started_millis;
+	volatile long long pass_last_work_millis;
+	volatile long long pass_worst_work_millis;
+	volatile unsigned long long slow_pass_count;
+	char pass_worst_activity[STALL_ACTIVITY_MAX];
 };
+
+/*
+ * A pass doing more work than this made every waiting client wait at
+ * least this long. Deliberately well above the cost of an ordinary
+ * request (single-digit milliseconds, measured) and below anything a
+ * person would call responsive.
+ */
+#define SLOW_PASS_MILLIS 750
 
 static struct stall_shared *g_shared;
 static char g_records_path[PATH_MAX];
 static pid_t g_watchdog_pid = -1;
+
+static long long monotonic_millis(void)
+{
+	struct timespec ts;
+
+	if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+		return 0;
+	return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
 
 static long long monotonic_seconds(void)
 {
@@ -142,6 +185,8 @@ static void json_escape(const char *in, char *out, size_t out_size)
 	out[o] = '\0';
 }
 
+static void append_line(const char *line, int len);
+
 static void append_record(const char *event, long long seconds, pid_t watched)
 {
 	char line[1024];
@@ -164,6 +209,18 @@ static void append_record(const char *event, long long seconds, pid_t watched)
 	               esc_activity);
 	if (len <= 0)
 		return;
+
+	append_line(line, len);
+}
+
+/*
+ * One record to disk and to stderr. Split out of append_record() so the
+ * slow-pass record below writes through exactly the same durability and
+ * console path rather than a second copy of it (#229).
+ */
+static void append_line(const char *line, int len)
+{
+	int fd;
 
 	fd = open(g_records_path, O_CREAT | O_WRONLY | O_APPEND | O_CLOEXEC, 0644);
 	if (fd >= 0) {
@@ -206,11 +263,39 @@ static void append_record(const char *event, long long seconds, pid_t watched)
 	}
 }
 
+/*
+ * The loop is going round and getting nowhere (#229).
+ *
+ * A distinct event from "stall" on purpose: a stall is the loop having
+ * stopped, and this is the loop running flat out while every client
+ * waits behind it. Reporting them the same way would lose the
+ * difference that matters for diagnosis -- one is "what is it blocked
+ * on", the other is "what is it spending itself on".
+ */
+static void append_slow_pass_record(long long worst_millis, unsigned long long count,
+                                     const char *activity)
+{
+	char line[1024];
+	char esc_activity[STALL_ACTIVITY_MAX * 2];
+	int len;
+
+	json_escape(activity, esc_activity, sizeof(esc_activity));
+	len = snprintf(line, sizeof(line),
+	               "{\"ts\":%lld,\"event\":\"slow-pass\",\"worst_pass_ms\":%lld,"
+	               "\"slow_passes\":%llu,\"activity\":\"%s\"}\n",
+	               (long long)time(NULL), worst_millis, count, esc_activity);
+	if (len <= 0)
+		return;
+	append_line(line, len);
+}
+
 static void watchdog_main(pid_t watched)
 {
 	int in_stall = 0;
 	long long stall_started_at = 0;
 	long long last_reported = 0;
+	unsigned long long last_slow_count = 0;
+	long long last_slow_report = 0;
 
 	/* Die with the parent: a watchdog outliving what it watches is
 	 * just a stray process. */
@@ -283,6 +368,29 @@ static void watchdog_main(pid_t watched)
 				append_record("stall-continues", quiet_for, watched);
 			}
 		}
+
+		/*
+		 * Separately from any stall: is the loop turning slowly?
+		 *
+		 * Reported at most once per STALL_REPEAT_SECONDS so a sustained
+		 * bad patch produces a readable trail rather than a flood, and
+		 * only when the count has actually moved -- a quiet daemon
+		 * writes nothing at all.
+		 */
+		{
+			unsigned long long slow_now = g_shared->slow_pass_count;
+
+			if (slow_now != last_slow_count &&
+			    (last_slow_report == 0 || now - last_slow_report >= STALL_REPEAT_SECONDS)) {
+				char activity[STALL_ACTIVITY_MAX];
+
+				snprintf(activity, sizeof(activity), "%s", g_shared->pass_worst_activity);
+				append_slow_pass_record((long long)g_shared->pass_worst_work_millis, slow_now,
+				                         activity);
+				last_slow_report = now;
+				last_slow_count = slow_now;
+			}
+		}
 	}
 }
 
@@ -315,12 +423,51 @@ int stallwatch_start(const char *records_path)
 	return 0;
 }
 
+/*
+ * Ends a loop pass and books what it cost (#229).
+ *
+ * Paired with stallwatch_heartbeat(), which marks the pass start right
+ * after epoll_wait() returns -- so the interval measured here is the
+ * work, with the wait excluded. That distinction is the whole point: an
+ * idle daemon sleeps a second per pass and is perfectly healthy, while
+ * a daemon spending a second of every pass on its own housekeeping is
+ * one every client is queued behind.
+ *
+ * Cheap enough to call unconditionally: one clock read and, on the rare
+ * slow pass, a few stores.
+ */
+void stallwatch_pass_end(void)
+{
+	long long work;
+
+	if (g_shared == NULL || g_shared->pass_started_millis == 0)
+		return;
+
+	work = monotonic_millis() - g_shared->pass_started_millis;
+	if (work < 0)
+		return;
+	g_shared->pass_last_work_millis = work;
+
+	if (work >= SLOW_PASS_MILLIS) {
+		g_shared->slow_pass_count++;
+		if (work > g_shared->pass_worst_work_millis) {
+			g_shared->pass_worst_work_millis = work;
+			/* What it was doing, if anything named itself. Copied at
+			 * the moment of the worst pass rather than read later,
+			 * when it would have moved on. */
+			snprintf(g_shared->pass_worst_activity, STALL_ACTIVITY_MAX, "%s",
+			         g_shared->activity);
+		}
+	}
+}
+
 void stallwatch_heartbeat(void)
 {
 	if (g_shared == NULL)
 		return;
 	g_shared->heartbeat_monotonic = monotonic_seconds();
 	g_shared->heartbeat_seq++;
+	g_shared->pass_started_millis = monotonic_millis();
 }
 
 void stallwatch_activity(const char *what)
@@ -351,6 +498,24 @@ void stallwatch_activity_clear(void)
  * would be a second, staler copy of something whose whole value is
  * being the real one.
  */
+void stallwatch_write_loop_json(struct json_writer *w)
+{
+	jw_obj_open(w);
+	jw_key(w, "worst_pass_ms");
+	jw_int(w, g_shared != NULL ? (long long)g_shared->pass_worst_work_millis : 0);
+	jw_key(w, "last_pass_ms");
+	jw_int(w, g_shared != NULL ? (long long)g_shared->pass_last_work_millis : 0);
+	jw_key(w, "slow_passes");
+	jw_int(w, g_shared != NULL ? (long long)g_shared->slow_pass_count : 0);
+	jw_key(w, "slow_pass_threshold_ms");
+	jw_int(w, SLOW_PASS_MILLIS);
+	jw_key(w, "worst_pass_activity");
+	jw_str(w, (g_shared != NULL && g_shared->pass_worst_activity[0] != '\0')
+	                  ? g_shared->pass_worst_activity
+	                  : "");
+	jw_obj_close(w);
+}
+
 void stallwatch_write_json(struct json_writer *w, int limit)
 {
 	char *buf = NULL;

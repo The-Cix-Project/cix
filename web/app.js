@@ -907,9 +907,37 @@ function ledBlink(led) {
 	led.blinkTimer = setTimeout(() => led.classList.remove("led-blink"), 130);
 }
 
-async function apiRequest(method, path, body) {
+/*
+ * How long a health check may go unanswered before it counts as
+ * unreachable (#231).
+ *
+ * Under the poll interval on purpose, so a check can never outlive the
+ * next one and leave two in flight arguing about the same lamp.
+ */
+const HEALTH_TIMEOUT_MS = 1500;
+
+async function apiRequest(method, path, body, timeoutMs) {
 	ledBlink(ledTx);
 	const opts = { method: method, headers: {} };
+
+	/*
+	 * A request that hangs is not a request that succeeded, and without
+	 * this the difference was invisible (#231).
+	 *
+	 * fetch() has no timeout of its own: against a daemon that accepts
+	 * the connection and then never answers -- exactly what #237's
+	 * blocking writes produced -- the promise neither resolves nor
+	 * rejects. Neither branch of refreshHealth() runs, the reachability
+	 * state keeps whatever it last had, and the panel shows GREEN for
+	 * as long as the outage lasts while TX keeps blinking on every
+	 * doomed poll. That is the reported symptom precisely: "no
+	 * reachability and tx rx stay green and blink occasionally".
+	 *
+	 * An indicator that cannot go red while nothing answers is worse
+	 * than no indicator, because it is trusted.
+	 */
+	if (timeoutMs !== undefined && typeof AbortSignal !== "undefined" && AbortSignal.timeout)
+		opts.signal = AbortSignal.timeout(timeoutMs);
 	if (authToken)
 		opts.headers["Authorization"] = "Bearer " + authToken;
 	if (body !== undefined) {
@@ -1042,7 +1070,7 @@ async function refreshHealth() {
 	const start = performance.now();
 
 	try {
-		await apiRequest("GET", CIX_API.getHealth());
+		await apiRequest("GET", CIX_API.getHealth(), undefined, HEALTH_TIMEOUT_MS);
 		const ms = Math.round(performance.now() - start);
 
 		/* Back after an absence: the daemon may have restarted into a
@@ -1054,13 +1082,26 @@ async function refreshHealth() {
 		statusLeds.className = "status-leds led-state-ok";
 		statusLeds.title = "Daemon reachable — " + ms + "ms";
 	} catch (e) {
+		/*
+		 * A timeout is reported as what it is. "Unreachable" and
+		 * "accepted the connection and then said nothing" are
+		 * different faults with different causes, and the second one
+		 * is the one that used to be indistinguishable from health.
+		 */
+		const timedOut = e && (e.name === "TimeoutError" || e.name === "AbortError");
+
 		consecutiveHealthFailures++;
 		if (consecutiveHealthFailures >= 2) {
 			statusLeds.className = "status-leds led-state-error";
-			statusLeds.title = "Daemon unreachable (" + consecutiveHealthFailures + " consecutive failed checks)";
+			statusLeds.title = timedOut
+				? "Daemon not answering — " + consecutiveHealthFailures +
+				  " checks timed out after " + HEALTH_TIMEOUT_MS + "ms"
+				: "Daemon unreachable (" + consecutiveHealthFailures + " consecutive failed checks)";
 		} else {
 			statusLeds.className = "status-leds led-state-degraded";
-			statusLeds.title = "Daemon check failed once — retrying";
+			statusLeds.title = timedOut
+				? "Daemon did not answer within " + HEALTH_TIMEOUT_MS + "ms — retrying"
+				: "Daemon check failed once — retrying";
 		}
 	}
 }
