@@ -67,6 +67,16 @@ int cix_btrfs_snapshot_or_copy(const char *src, const char *dst);
  *
  * Returns 0 on success, -1 with errno set otherwise.
  */
+/*
+ * Reproduces a subvolume at dst when it cannot be a snapshot of src,
+ * i.e. when the two are on different filesystems. Copies in full --
+ * sharing does not cross filesystems -- but the result IS a subvolume,
+ * which a plain directory copy would not be. Used by cross-disk
+ * container storage migration; container creation deliberately does
+ * NOT use it (see cix_btrfs_snapshot_or_copy()).
+ */
+int cix_btrfs_subvol_copy(const char *src, const char *dst);
+
 int cix_btrfs_subvol_delete_or_rmtree(const char *path);
 
 /*

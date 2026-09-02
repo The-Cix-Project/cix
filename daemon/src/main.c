@@ -17418,26 +17418,23 @@ static void handle_container_migrate_storage_post(int fd, const char *name, cons
 	snprintf(target_base, sizeof(target_base), "%s/%s", target_root, name);
 
 	/*
-	 * ADR-0207 phase 2 limitation, refused loudly rather than silently
-	 * corrupted: the migration machinery moves upper/work between
-	 * disks, and a direct-rootfs container has neither -- its state is
-	 * a btrfs snapshot that cannot be moved across filesystems by a
-	 * rename, and whose extent sharing a naive copy would forfeit.
-	 * Cross-disk migration for snapshot containers arrives with the
-	 * phase-4 migration tooling.
+	 * Snapshot containers (ADR-0207) migrate too, as of ADR-0234.
+	 *
+	 * This used to refuse them outright, and the refusal was right at
+	 * the time: the copy child ran treecopy_recursive() over the whole
+	 * container directory, which would have reproduced the rootfs
+	 * subvolume as an ordinary directory -- every file present, and
+	 * nothing that could be snapshotted or qgroup-limited afterwards.
+	 * Refusing loudly beat corrupting quietly.
+	 *
+	 * The child now recognises the layout and reproduces the rootfs as
+	 * a real subvolume on the target (cix_btrfs_subvol_copy()), so the
+	 * reason to refuse is gone. What is NOT recovered is extent
+	 * sharing: it does not cross filesystems, so a migrated container
+	 * occupies its full size on the target disk. That is inherent, and
+	 * the API documents it rather than surprising the operator with a
+	 * disk that fills faster than expected.
 	 */
-	{
-		struct stat mst;
-		char mroot[PATH_MAX];
-
-		snprintf(mroot, sizeof(mroot), "%s/rootfs", source_base);
-		if (stat(mroot, &mst) == 0 && S_ISDIR(mst.st_mode)) {
-			respond_error(fd, 409, "Conflict",
-			               "this container uses a snapshot rootfs (ADR-0207) -- storage "
-			               "migration for snapshot containers is not available yet");
-			return;
-		}
-	}
 
 	if (persist_mkdir_p(target_base) != 0) {
 		respond_error(fd, 500, "Internal Server Error", "failed to create target container directory");

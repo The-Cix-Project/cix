@@ -253,12 +253,48 @@ int cix_btrfs_snapshot_or_copy(const char *src, const char *dst)
 
 		close(src_fd);
 		close(parent_fd);
+		/*
+		 * Deliberately NOT falling back to a copy on EXDEV (dst on a
+		 * different filesystem). The container-create path relies on
+		 * this failing: it then falls back to the overlay rootfs,
+		 * which still shares the image through its lowerdir and costs
+		 * nothing. Copying here instead would silently turn a cheap
+		 * fallback into a full image copy on every such create.
+		 *
+		 * A caller that genuinely wants the copy -- cross-disk
+		 * migration, where there is no lowerdir to share with -- asks
+		 * for it explicitly via cix_btrfs_subvol_copy().
+		 */
 		errno = saved;
 		return -1;
 	}
 	close(src_fd);
 	close(parent_fd);
 	return 0;
+}
+
+/*
+ * Reproduce a subvolume at `dst` when `dst` cannot be a snapshot of
+ * `src` -- because it is on a different filesystem.
+ *
+ * Snapshots do not cross filesystems: BTRFS_IOC_SNAP_CREATE_V2 returns
+ * EXDEV and there is no cheaper correct answer. `btrfs send -p` could
+ * preserve sharing only against a parent with common lineage, and an
+ * image seeded independently on each disk has none, so the data is
+ * copied in full and the result occupies its whole size on the target.
+ * That cost is inherent to moving between filesystems, not a shortcut.
+ *
+ * What this preserves is the invariant callers actually depend on: the
+ * result IS a subvolume. A plain directory copy would leave something
+ * that looks right and cannot be snapshotted or qgroup-limited
+ * afterwards -- the container would work until the first thing that
+ * needed either.
+ */
+int cix_btrfs_subvol_copy(const char *src, const char *dst)
+{
+	if (cix_btrfs_subvol_create_or_dir(dst) != 0)
+		return -1;
+	return copy_tree(src, dst);
 }
 
 /* Recursive unlink of a plain directory tree (non-btrfs fallback, and

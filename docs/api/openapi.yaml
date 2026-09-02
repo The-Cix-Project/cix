@@ -9168,7 +9168,7 @@ paths:
     get:
       summary: Status of the most recent (or currently running) storage migration job for one container (ADR-0142)
       description: >
-        Same shape as the daemon-wide `GET /system/{state,log,rebuildable}-storage/migrate`
+        Same shape as the daemon-wide `GET /system/{log,rebuildable}-storage/migrate`
         status endpoints, keyed by this one container instead. Reports
         `{"state":"none"}` if this container has never had a migration
         started for it.
@@ -9190,7 +9190,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
     post:
-      summary: Moves one container's own overlay storage to a new disk, or back to the default OS-disk placement (ADR-0142)
+      summary: Moves one container's own storage to a new disk, or back to the default OS-disk placement (ADR-0142)
       description: >
         `disk` is required -- a real disk name (must already carry the
         `container-storage` role and be currently mounted) or `null` to
@@ -9203,7 +9203,27 @@ paths:
         with a 400 rather than accepted and left half-done.
 
 
-        Unlike the three daemon-wide storage kinds, this is not purely
+        Both storage layouts migrate. An overlay container's `upper`
+        and `work` are copied as ordinary trees; a snapshot container
+        (ADR-0207) has neither, and its whole state is one btrfs
+        subvolume, which is reproduced as a real subvolume on the target
+        rather than as a plain directory (ADR-0234). Snapshot containers
+        were refused outright before that, because copying a subvolume
+        into an ordinary directory looks like it worked and leaves
+        something that can never be snapshotted or quota-limited again.
+
+
+        One cost is worth knowing before moving a large container:
+        **extent sharing does not cross filesystems.** On its original
+        disk a snapshot container shares almost every extent with its
+        image and costs only its own changes; migrated to another disk
+        it occupies its full size, because the target has no subvolume
+        with common lineage to share against. Nothing is lost and
+        nothing is silently degraded -- but a 4 GB container that
+        "takes 80 MB" on one disk really does take 4 GB on the next.
+
+
+        Unlike the daemon-wide storage kinds, this is not purely
         a background repoint: the bulk copy runs asynchronously while
         the container keeps running and writing normally (same "no
         pause during the bulk phase" design), but once that finishes
