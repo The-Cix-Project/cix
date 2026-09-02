@@ -96,7 +96,31 @@ extern char **environ;
  * is. That is why ADR-0214 removed the interactive path entirely. */
 #define AUTO_ESP_SIZE_MIB 64
 #define AUTO_ROOT_SIZE_MIB 160
-#define AUTO_CONFIG_SIZE_MIB 64
+/*
+ * cix-config was 64 MiB, which was sized for what it held: one file,
+ * net.conf, using 15 KB of it.
+ *
+ * That was always too small for what the partition is FOR. The layout
+ * implies three tiers -- immutable roots, host configuration, container
+ * data -- and the configuration tier ended up holding a single file
+ * while the platform's own definition of itself (networks, DNS, DHCP,
+ * NTP, LDAP, syslog targets, the CA and every issued certificate,
+ * container definitions, device maps, site identity) lived on the
+ * containers partition instead. Moving that where it belongs needs room
+ * to be there.
+ *
+ * 512 MiB rather than 256: PKI is the one part with real growth, a file
+ * per issued certificate, and this is sized once at install and can
+ * never be enlarged afterwards without repartitioning the OS disk. The
+ * extra 448 MiB is noise against any disk this platform installs on,
+ * and it takes the question off the table permanently.
+ *
+ * Side effect worth knowing: at this size the filesystem no longer
+ * needs btrfs --mixed (see mkfs_btrfs()), which existed only because
+ * 64 MiB is under the ~109 MiB minimum for separate data/metadata
+ * profiles.
+ */
+#define AUTO_CONFIG_SIZE_MIB 512
 /*
  * Issue #104: the data partition is BOUNDED, and the rest of the disk
  * is left unallocated.
@@ -408,9 +432,12 @@ static int mkfs_ext4(const char *device, const char *label, int with_quota)
  * excl() per container, not a mkfs-time feature bit like ext4's
  * prjquota was. with_mixed ("--mixed", data+metadata block groups
  * combined) is btrfs-progs' own documented answer for a filesystem
- * this small -- cix-config is 64MiB, below the ~109MiB minimum a
- * separate-profile filesystem needs; the big containers partition
- * uses the normal separate profiles.
+ * this small -- a filesystem below the ~109MiB minimum a
+ * separate-profile filesystem needs. No caller passes it any more:
+ * cix-config moved to 512 MiB, which is above that threshold, and the
+ * big containers partition always used the normal separate profiles.
+ * Kept because the parameter is the honest way to express "this
+ * filesystem may be tiny", and a future small partition would need it.
  */
 static int mkfs_btrfs(const char *device, const char *label, int with_mixed)
 {
@@ -794,7 +821,11 @@ int main(int argc, char **argv)
 
 	if (mkfs_vfat(esp_dev) != 0)
 		return 1;
-	if (mkfs_btrfs(config_dev, "cix-config", 1) != 0)
+	/* with_mixed = 0: at AUTO_CONFIG_SIZE_MIB (512) this is comfortably
+	 * above btrfs's ~109 MiB minimum for separate data/metadata
+	 * profiles, so it gets the normal layout like every other
+	 * filesystem here. --mixed was never desirable, only necessary. */
+	if (mkfs_btrfs(config_dev, "cix-config", 0) != 0)
 		return 1;
 	/* Full "cix-containers" fits now -- the old mkfs_ext4() call here
 	 * had to truncate to "cix-container" for EXT2_LABEL_LEN (16);
