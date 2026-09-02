@@ -56,6 +56,41 @@ static int write_cgroup_file(const char *dir, const char *file, const char *valu
  * real stderr back into the queryable log store, so perror() alone
  * here would silently go nowhere useful once boot has finished.
  */
+int cgroup_delegate(const struct cgroup_limits *lim, long long uid, long long gid)
+{
+	/* The set the kernel's delegation guidance names, and no more --
+	 * see container.h for why the limit files are excluded. */
+	static const char *const delegated[] = { "cgroup.procs", "cgroup.subtree_control",
+		                                     "cgroup.threads" };
+	char dir[PATH_MAX];
+	char path[PATH_MAX];
+	size_t i;
+
+	if (snprintf(dir, sizeof(dir), "%s/%s", CGROUP_ROOT, lim->name) >= (int)sizeof(dir)) {
+		errno = ENAMETOOLONG;
+		return -1;
+	}
+	if (chown(dir, (uid_t)uid, (gid_t)gid) != 0) {
+		perror("cgroup_delegate: chown dir");
+		container_set_last_error_step("cgroup_delegate: chown dir");
+		return -1;
+	}
+	for (i = 0; i < sizeof(delegated) / sizeof(delegated[0]); i++) {
+		if (snprintf(path, sizeof(path), "%s/%s", dir, delegated[i]) >= (int)sizeof(path)) {
+			errno = ENAMETOOLONG;
+			return -1;
+		}
+		/* cgroup.threads is absent on some kernels; a missing file is
+		 * not a failure to delegate what does exist. */
+		if (chown(path, (uid_t)uid, (gid_t)gid) != 0 && errno != ENOENT) {
+			perror("cgroup_delegate: chown file");
+			container_set_last_error_step("cgroup_delegate: chown file");
+			return -1;
+		}
+	}
+	return 0;
+}
+
 int cgroup_create(const struct cgroup_limits *lim, int *out_fd)
 {
 	char dir[PATH_MAX];
