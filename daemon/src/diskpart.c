@@ -6,6 +6,8 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/ioctl.h>
+#include <sys/mount.h>
+#include <sys/stat.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -929,11 +931,18 @@ static int run_tool_argv(const char *bin, char *const argv[])
  * leaves the extra space invisible to everything using the filesystem,
  * which looks like the resize silently did nothing.
  *
- * The filesystem is grown only for ext4 (or skipped entirely for an
- * unformatted partition, where there is nothing to grow). btrfs is
- * refused rather than half-supported: `btrfs filesystem resize` needs
- * the filesystem MOUNTED, and this operation requires it unmounted, so
- * it is a genuinely different flow rather than another binary to call.
+ * The filesystem is grown for ext4 and for btrfs, or skipped entirely
+ * for an unformatted partition where there is nothing to grow.
+ *
+ * btrfs really is a different flow rather than another binary name
+ * (#163): `btrfs filesystem resize` operates on a MOUNTED filesystem,
+ * the exact opposite of resize2fs, while the table rewrite above needs
+ * it unmounted. So it arrives unmounted, the table grows, and only then
+ * is it mounted at a private scratch point for the resize and unmounted
+ * again -- leaving it exactly as it was found. This used to be refused
+ * outright, which meant that on a platform whose own storage substrate
+ * is btrfs (ADR-0207), the one filesystem that matters most could not
+ * be grown at all.
  */
 enum diskpart_error diskpart_resize(const char *disk_name, const char *partition_name,
                                      const char *os_containers_dir, unsigned long long size_mib)
@@ -971,8 +980,9 @@ enum diskpart_error diskpart_resize(const char *disk_name, const char *partition
 	if (!find_disk(disk_name, os_containers_dir, &parent))
 		return DISKPART_ERR_NOT_FOUND;
 
-	/* Only filesystems this can actually finish the job for. */
-	if (part.fs_type[0] != '\0' && strcmp(part.fs_type, "ext4") != 0)
+	/* Only filesystems this can actually finish the job for (#163). */
+	if (part.fs_type[0] != '\0' && strcmp(part.fs_type, "ext4") != 0 &&
+	    strcmp(part.fs_type, "btrfs") != 0)
 		return DISKPART_ERR_FS_UNSUPPORTED;
 
 	/*
@@ -1027,6 +1037,76 @@ enum diskpart_error diskpart_resize(const char *disk_name, const char *partition
 	 * partition is finished -- there is nothing inside it to grow. */
 	if (part.fs_type[0] == '\0')
 		return DISKPART_OK;
+
+	/*
+	 * Before growing anything: has the KERNEL actually noticed?
+	 *
+	 * sfdisk rewrote the table on disk, and then asks the kernel to
+	 * re-read it -- which fails with EBUSY while anything else on the
+	 * disk is mounted. If that happened, the kernel still reports the
+	 * old size, and both resize2fs and `btrfs filesystem resize max`
+	 * would then grow the filesystem to the OLD bound and exit 0. The
+	 * operator would be told the resize succeeded, and would have
+	 * gained nothing.
+	 *
+	 * That is the exact silent-success failure this two-step path
+	 * exists to prevent, so it is checked rather than assumed (#163).
+	 * The table on disk is already correct at this point, so a reboot
+	 * or a later retry finishes the job -- which is what the error
+	 * says.
+	 */
+	{
+		struct discovered_disk after;
+
+		if (!find_disk(partition_name, os_containers_dir, &after))
+			return DISKPART_ERR_NOT_FOUND;
+		if (after.size_bytes <= current_bytes)
+			return DISKPART_ERR_KERNEL_SIZE_STALE;
+	}
+
+	/*
+	 * btrfs grows MOUNTED, which is the opposite of resize2fs and the
+	 * reason this is its own flow rather than another binary name.
+	 *
+	 * The partition arrives here unmounted (required, so the table
+	 * could be rewritten safely) and leaves unmounted: it is mounted at
+	 * a private scratch point purely for the duration of the resize.
+	 * /run is used because this platform's own minimal images have no
+	 * /tmp at all -- a fact that has cost real build failures before.
+	 */
+	if (strcmp(part.fs_type, "btrfs") == 0) {
+		char mnt[PATH_MAX];
+		int mrc;
+
+		if (snprintf(mnt, sizeof(mnt), "/run/cix-resize-%s", part.name) >= (int)sizeof(mnt))
+			return DISKPART_ERR_RESIZE_FS_FAILED;
+		if (mkdir(mnt, 0700) != 0 && errno != EEXIST)
+			return DISKPART_ERR_RESIZE_FS_FAILED;
+		if (mount(part.dev_path, mnt, "btrfs", 0, NULL) != 0) {
+			rmdir(mnt);
+			return DISKPART_ERR_RESIZE_FS_FAILED;
+		}
+
+		argv[0] = (char *)DISKPART_BTRFS_BIN;
+		argv[1] = "filesystem";
+		argv[2] = "resize";
+		argv[3] = "max";
+		argv[4] = mnt;
+		argv[5] = NULL;
+		rc = run_tool_argv(DISKPART_BTRFS_BIN, argv);
+
+		/* Unmounted on every outcome, including failure: leaving a
+		 * scratch mount behind would make the partition look busy to
+		 * every later operation, including the retry. */
+		mrc = umount(mnt);
+		rmdir(mnt);
+
+		if (rc == -2)
+			return DISKPART_ERR_SFDISK_MISSING;
+		if (rc != 0 || mrc != 0)
+			return DISKPART_ERR_RESIZE_FS_FAILED;
+		return DISKPART_OK;
+	}
 
 	/*
 	 * resize2fs requires a clean filesystem. -p ("preen") makes only

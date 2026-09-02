@@ -18005,8 +18005,14 @@ static void respond_diskpart_error(int fd, enum diskpart_error err)
 		break;
 	case DISKPART_ERR_FS_UNSUPPORTED:
 		respond_error(fd, 400, "Bad Request",
-		              "only an ext4 or unformatted partition can be grown -- growing a btrfs "
-		              "filesystem needs it mounted, and this operation needs it unmounted");
+		              "only an ext4, btrfs or unformatted partition can be grown");
+		break;
+	case DISKPART_ERR_KERNEL_SIZE_STALE:
+		respond_error(fd, 409, "Conflict",
+		              "the partition table was grown but the kernel is still reporting the old "
+		              "size, so the filesystem was NOT grown -- growing it now would silently "
+		              "resize it to the old bound. Something else on this disk is in use; "
+		              "unmount it and retry, or reboot to re-read the table");
 		break;
 	case DISKPART_ERR_FS_UNCLEAN:
 		respond_error(fd, 409, "Conflict",
@@ -18016,8 +18022,8 @@ static void respond_diskpart_error(int fd, enum diskpart_error err)
 	case DISKPART_ERR_RESIZE_FS_FAILED:
 		respond_error(fd, 500, "Internal Server Error",
 		              "the partition grew but the filesystem inside it could not be grown to "
-		              "match -- the extra space is real but not yet usable; run resize2fs "
-		              "against it by hand");
+		              "match -- the extra space is real but not yet usable; run resize2fs (ext4) "
+		              "or `btrfs filesystem resize max` against it by hand");
 		break;
 	case DISKPART_ERR_SFDISK_MISSING:
 		respond_error(fd, 500, "Internal Server Error",

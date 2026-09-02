@@ -523,6 +523,20 @@ int main(int argc, char **argv)
 			 */
 			{ "/usr/sbin/mkfs.btrfs", "usr/sbin/mkfs.btrfs" },
 			/*
+			 * btrfs -- DISKPART_BTRFS_BIN, daemon/src/diskpart.c
+			 * (issue #163). The other half of the same story as
+			 * mkfs.btrfs above: the platform could CREATE a btrfs
+			 * filesystem and then do nothing whatsoever to maintain
+			 * one. Growing a partition is two operations, and for
+			 * btrfs the second is `btrfs filesystem resize max`, so
+			 * without this a grown btrfs disk reports success and
+			 * gains no usable space. btrfs-progs 7.1-8 is the first
+			 * revision that builds and installs this binary at all --
+			 * before it the package shipped only mkfs.btrfs, so there
+			 * was nothing here to stage.
+			 */
+			{ "/usr/sbin/btrfs", "usr/sbin/btrfs" },
+			/*
 			 * sfdisk -- DISKPART_SFDISK_BIN, daemon/src/diskpart.c
 			 * (partition-level disk management, ADR-0158). This was
 			 * missing from the moment that feature shipped, which is

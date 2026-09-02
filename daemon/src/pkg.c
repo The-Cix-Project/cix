@@ -353,6 +353,29 @@ struct pkg_chain {
 	 * to pkg_fetch_completed() where the actual build container's own
 	 * environment is assembled. */
 	char hostbuild_extra_config_symbols[PKG_HOSTBUILD_EXTRA_SYMBOLS_MAX];
+
+	/*
+	 * The fetch subprocess, while one is running; 0 otherwise (#239).
+	 *
+	 * pkg_cancel() used to accept a FETCHING entry, set the cancel flag
+	 * and do nothing else, on the reasoning that "a fetch is a
+	 * host-side subprocess, not a container -- there is simply nothing
+	 * for the caller to kill". The flag was then supposed to be honoured
+	 * by "whichever completion path runs next".
+	 *
+	 * That reasoning has a hole: if the fetch never completes, no
+	 * completion path ever runs. A fetch retrying an unreachable
+	 * upstream held its chain slot indefinitely and every later install
+	 * was refused with 409, with cancel returning 200 and changing
+	 * nothing. Only a reboot cleared it -- a heavy remedy for a network
+	 * timeout on a shell-less host.
+	 *
+	 * It is a real forked child with a real pid, so it can simply be
+	 * killed. Doing so makes its pidfd readable, which drives the
+	 * ordinary completion path, which honours the cancel flag: the
+	 * existing machinery finishes the job once something ends the child.
+	 */
+	pid_t fetch_pid;
 	/* ADR-0175/issue #35: this chain's own copy of pkg_install_start()'s/
 	 * pkg_hostbuild_start()'s keep_on_failure argument -- read by
 	 * pkg_build_completed() at the moment a failure is decided, before
@@ -4836,6 +4859,7 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 	}
 
 	strncpy(g_chains[chain_idx].name, name, sizeof(g_chains[chain_idx].name) - 1);
+	g_chains[chain_idx].fetch_pid = pid; /* #239: so a cancel can reach it */
 	*out_pid = pid;
 	*out_pidfd = pidfd;
 	return PKG_OK;
@@ -5506,6 +5530,10 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 
 	*out_compose_pid = -1;
 	*out_compose_pidfd = -1;
+
+	/* The fetch child has been reaped by the caller -- nothing left to
+	 * kill, and a stale pid must never be signalled (#239). */
+	g_chains[chain_idx].fetch_pid = 0;
 
 	if (e != NULL && e->state != PKG_STATE_FETCHING)
 		return 0; /* stale: this slot has moved on (issue #98) */
@@ -6547,22 +6575,49 @@ enum pkg_error pkg_cancel(const char *name, const char *image,
 
 	e->cancel_requested = 1;
 
-	/*
-	 * A FETCHING entry has no build container yet -- the fetch is a
-	 * host-side subprocess, not a container. The flag still stands, so
-	 * whichever completion path runs next reports it as a cancel; there
-	 * is simply nothing for the caller to kill.
-	 */
 	if (e->build_container_name[0] != '\0') {
 		snprintf(out_container, out_container_size, "%s", e->build_container_name);
 		logstore_write("cixd", "info", "pkg %s@%s: cancelling build container %s",
 		               e->name, e->image, e->build_container_name);
-	} else {
-		logstore_write("cixd", "info",
-		               "pkg %s@%s: cancel requested before a build container existed",
-		               e->name, e->image);
+		return PKG_OK;
 	}
 
+	/*
+	 * No build container, so this is a fetch -- kill it (#239).
+	 *
+	 * This used to set the flag and stop, on the reasoning that a fetch
+	 * is a subprocess rather than a container and there was "nothing for
+	 * the caller to kill", leaving the flag to be honoured by whichever
+	 * completion path ran next. If the fetch never completes, no
+	 * completion path ever runs: a fetch retrying an unreachable
+	 * upstream held its chain slot indefinitely, every later install was
+	 * refused 409, and cancel returned 200 having done nothing. Only a
+	 * reboot cleared it.
+	 *
+	 * SIGKILL rather than SIGTERM because the child is curl in a retry
+	 * loop and the caller has already said stop. Killing it makes its
+	 * pidfd readable, which drives the ordinary fetch-completion path,
+	 * which sees cancel_requested and records a cancelled failure --
+	 * so the existing machinery finishes the job, and this only has to
+	 * end the child.
+	 */
+	{
+		int i;
+
+		for (i = 0; i < PKG_MAX_CONCURRENT_JOBS; i++) {
+			if (g_chains[i].fetch_pid > 0 && strcmp(g_chains[i].name, e->name) == 0 &&
+			    strcmp(g_chains[i].image, e->image) == 0) {
+				logstore_write("cixd", "info", "pkg %s@%s: cancelling fetch (pid %d)",
+				               e->name, e->image, (int)g_chains[i].fetch_pid);
+				kill(g_chains[i].fetch_pid, SIGKILL);
+				return PKG_OK;
+			}
+		}
+	}
+
+	logstore_write("cixd", "info",
+	               "pkg %s@%s: cancel requested with no fetch or build container running",
+	               e->name, e->image);
 	return PKG_OK;
 }
 

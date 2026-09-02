@@ -54,6 +54,19 @@
  */
 #define DISKPART_RESIZE2FS_BIN "/usr/sbin/resize2fs"
 #define DISKPART_E2FSCK_BIN "/usr/sbin/e2fsck"
+/*
+ * Issue #163: the btrfs multi-tool, for the other half of the same
+ * two-step growth.
+ *
+ * btrfs is this platform's own storage substrate (ADR-0207), and until
+ * this existed a btrfs partition could not be grown at all: the table
+ * entry would grow and the filesystem would not, which is precisely the
+ * "the extra space is real but not usable" outcome the resize path
+ * exists to prevent. Its constraint is the opposite of resize2fs's --
+ * `btrfs filesystem resize` operates on a MOUNTED filesystem -- which
+ * is why this is a different flow rather than another binary name.
+ */
+#define DISKPART_BTRFS_BIN "/usr/sbin/btrfs"
 
 /* Same charset/length rules as every other simple resource name in
  * this project (simple_name_is_valid(), namecheck.h) -- a GPT
@@ -103,6 +116,13 @@ enum diskpart_error {
 	DISKPART_ERR_FS_UNSUPPORTED,
 	DISKPART_ERR_FS_UNCLEAN,
 	DISKPART_ERR_RESIZE_FS_FAILED,
+	/*
+	 * The table entry grew but the kernel is still reporting the old
+	 * size, so growing the filesystem would grow it to the OLD bound
+	 * and report success -- the silent no-op this whole path exists to
+	 * avoid. Reported instead of pressed through (#163).
+	 */
+	DISKPART_ERR_KERNEL_SIZE_STALE,
 };
 
 /*
