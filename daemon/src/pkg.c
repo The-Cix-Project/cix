@@ -223,6 +223,19 @@ struct pkg_recipe {
 	 * confined root may do to ITSELF, not what it may do to the host.
 	 */
 	char build_caps[PKG_BUILD_CAPS_MAX];
+	/*
+	 * The image this recipe is meant to be hostbuilt in (#182,
+	 * ADR-0230's CI domain). Empty means the recipe does not say, and
+	 * the caller's choice stands unchecked as it always did.
+	 *
+	 * Which image can build what was convention and not contract:
+	 * cix-builder builds the control plane, kernel-builder builds
+	 * kernels, iso-builder builds ISO tooling -- enforced by nothing,
+	 * so a hostbuild naming the wrong one passed every check here and
+	 * failed deep inside a build container, with a compiler error
+	 * rather than "that is not what that image is for".
+	 */
+	char build_image[PKG_IMAGE_NAME_MAX];
 	/* ADR-0122: optional -- empty means this recipe never opts into
 	 * precompiled-artifact fetch, always builds from source. When set,
 	 * it's the ONLY thing that makes a fetched artifact trustworthy: a
@@ -991,6 +1004,7 @@ static int parse_recipe(const char *path, struct pkg_recipe *out)
 	extract_line_value(buf, "pkg_depends=", out->depends, sizeof(out->depends));
 	extract_line_value(buf, "pkg_build_depends=", out->build_depends, sizeof(out->build_depends));
 	extract_line_value(buf, "pkg_build_caps=", out->build_caps, sizeof(out->build_caps));
+	extract_line_value(buf, "pkg_build_image=", out->build_image, sizeof(out->build_image));
 	extract_line_value(buf, "pkg_artifact_sha256=", out->artifact_sha256,
 	                    sizeof(out->artifact_sha256));
 	extract_line_value(buf, "pkg_changelog=", out->changelog, sizeof(out->changelog));
@@ -5077,7 +5091,14 @@ enum pkg_error pkg_hostbuild_start(const char *name, const char *build_image, co
 
 	if (!pkg_name_is_valid(name))
 		return PKG_ERR_INVALID_NAME;
-	if (build_image == NULL || build_image[0] == '\0' || !pkg_image_is_valid(build_image))
+	/*
+	 * An empty build_image is no longer an error here: the recipe may
+	 * declare one, and that resolution happens below once the recipe
+	 * has been parsed (#182). A NAME that is present but malformed is
+	 * still rejected immediately -- that is a bad request whatever the
+	 * recipe says.
+	 */
+	if (build_image != NULL && build_image[0] != '\0' && !pkg_image_is_valid(build_image))
 		return PKG_ERR_INVALID_NAME;
 	if (extra_config_symbols != NULL &&
 	    strlen(extra_config_symbols) >= PKG_HOSTBUILD_EXTRA_SYMBOLS_MAX)
@@ -5095,6 +5116,37 @@ enum pkg_error pkg_hostbuild_start(const char *name, const char *build_image, co
 	 * `pkg install` first). */
 	if (recipe.depends[0] != '\0')
 		return PKG_ERR_INVALID_RECIPE;
+
+	/*
+	 * If the recipe says which image it is built in, that is the
+	 * contract and the caller is held to it (#182).
+	 *
+	 * An empty caller argument now RESOLVES to the declared image
+	 * rather than failing, so `pkg hostbuild cix` works without the
+	 * operator having to remember. A caller that names a different one
+	 * is refused here, at the API boundary, with a reason -- instead of
+	 * the build starting, running for minutes and dying inside a
+	 * container with an error about a missing header.
+	 */
+	if (recipe.build_image[0] != '\0') {
+		if (build_image == NULL || build_image[0] == '\0') {
+			build_image = recipe.build_image;
+		} else if (strcmp(build_image, recipe.build_image) != 0) {
+			logstore_write("cixd", "error",
+			               "pkg hostbuild %s: recipe declares build image \"%s\", caller asked "
+			               "for \"%s\"",
+			               name, recipe.build_image, build_image);
+			return PKG_ERR_INVALID_RECIPE;
+		}
+	}
+
+	if (build_image == NULL || build_image[0] == '\0') {
+		logstore_write("cixd", "error",
+		               "pkg hostbuild %s: no build image given and the recipe declares none -- "
+		               "pass one, or add pkg_build_image= to the recipe",
+		               name);
+		return PKG_ERR_INVALID_NAME;
+	}
 
 	/* build_image must already exist -- there is no sane default the
 	 * way PKG_DEFAULT_IMAGE is for an ordinary install. Resolved via
