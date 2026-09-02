@@ -2079,7 +2079,9 @@ GET /v1/system/stalls
    {"ts": 1787476574, "event": "recovered", "seconds": 10, "state": "S", "wchan": "do_epoll_wait", "activity": ""},
    {"ts": 1787476569, "event": "stall", "seconds": 5, "state": "T", "wchan": "do_signal_stop", "activity": "POST /v1/system/update"}
  ],
- "threshold_seconds": 5}
+ "threshold_seconds": 5,
+ "loop": {"worst_pass_ms": 3120, "last_pass_ms": 1, "slow_passes": 47,
+          "slow_pass_threshold_ms": 750, "worst_pass_activity": ""}}
 ```
 
 The daemon is a single-threaded event loop, and on an installed host it is the only way in — no SSH, no shell ([ADR-0034](../adr/0034-console-login-via-supervised-cixctl.md)). It has been observed accepting TCP while answering nothing for minutes, then recovering on its own, with **nothing in the log store from inside the window**. That silence is structural rather than an oversight: the loop that would record "I am stuck" is the one that is stuck, so a wedge's only trace is its own absence and nothing about it can be analysed afterwards.
@@ -2087,6 +2089,10 @@ The daemon is a single-threaded event loop, and on an installed host it is the o
 **These records are written by a separate process**, forked at startup, so they exist precisely when the daemon cannot write anything. That also buys something a signal handler could never do safely: the watchdog reads `/proc/<pid>/wchan` — the kernel function the daemon is sleeping in — which is the single most useful fact about a wedge and is unavailable from inside it. `state` is the process state (`D` is uninterruptible sleep, the kind that cannot even be killed); `activity` is the request being served when the loop went quiet, so a stall names the thing that did not come back.
 
 A stall is five seconds without the loop completing an iteration. The loop wakes at least once a second on its own, so an idle daemon is never mistaken for a stalled one — and a legitimate slow synchronous operation crossing the threshold is not a false positive, it is exactly the thing worth knowing about.
+
+**`loop` answers the other question, and it is the one that was missing (issue #229).** The records above say when the loop *stopped*. A daemon can be entirely unusable without ever stopping: on 2026-09-01 a publish went unanswered for **247 seconds** while this store recorded nothing at all — correctly, by its own definitions. The loop never went quiet, and no single request was in flight for long; it simply spent seconds of *every pass* starting a rebuild, with every other client waiting to be accepted. Alive by the only measure it had, and unusable by every other.
+
+So each pass is now timed, counting work and excluding the epoll wait, because that duration is the latency floor every waiting client is subject to. `worst_pass_ms` is the worst single pass since boot, `slow_passes` counts those over `slow_pass_threshold_ms`, and a rising count on an otherwise quiet box means the daemon is spending itself on something. `worst_pass_activity` names the request in flight at the time — **empty is informative rather than missing**: it means the loop was busy with work no client asked for, which is precisely the case that used to be invisible. A `slow-pass` record is also appended (rate-limited) so the trail survives a reset, kept as a distinct event from `stall` because "what is it blocked on" and "what is it spending itself on" are different questions.
 
 Records are appended to `<data-dir>/state/control_plane_stalls.jsonl` and survive the daemon, a restart and a reboot: a wedge is usually followed by one of those, and a diagnostic that dies with what it was diagnosing is not a diagnostic. `cixctl stalls` prints them; the dashboard has a **Stalls** tab under System > Monitoring.
 

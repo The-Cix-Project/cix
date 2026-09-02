@@ -42,6 +42,27 @@ int stallwatch_start(const char *records_path);
 void stallwatch_heartbeat(void);
 
 /*
+ * Ends a loop pass, booking how long its WORK took (the epoll wait
+ * excluded). Paired with stallwatch_heartbeat(), which marks the start.
+ *
+ * This is the measurement that catches a daemon which is alive and
+ * unusable at once -- the loop turning steadily while spending seconds
+ * of every pass on its own work, with every client queued behind it.
+ * The heartbeat cannot see that by construction, and did not: a
+ * 247-second outage produced no record at all (#229).
+ */
+void stallwatch_pass_end(void);
+
+/*
+ * Writes what the loop itself has been costing: the worst single pass
+ * seen, how many passes crossed the slow threshold, and the most recent
+ * pass -- all in milliseconds. Distinct from the stall records, which
+ * say when it stopped; this says how well it is running when it has
+ * not.
+ */
+void stallwatch_write_loop_json(struct json_writer *w);
+
+/*
  * What the loop is working on right now, so a stall record can name it.
  * Set as a request begins and cleared when it finishes; anything left
  * set while the loop goes quiet is, by construction, the thing that did
