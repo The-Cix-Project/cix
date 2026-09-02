@@ -14749,6 +14749,39 @@ static int create_container_from_body(const char *body, size_t body_len,
 		}
 	}
 
+	/*
+	 * Re-apply anything this daemon PROJECTS into a container, now that
+	 * it is running (#253).
+	 *
+	 * A registered DNS server's /etc/dnsmasq-hosts and
+	 * /etc/dnsmasq-servers are derived from state the daemon already
+	 * holds; they are not the container's own data. Nothing re-applied
+	 * them on start, and the definition's files[] ARE re-staged on every
+	 * start -- with the recipe's content, which for the servers file is
+	 * empty. So a restart actively reset it rather than merely failing
+	 * to refresh, and dnsmasq came back forwarding nowhere.
+	 *
+	 * That is not a restart quirk: the host's own resolv.conf points at
+	 * these containers, so every lookup on the box failed while the
+	 * container read "running", the binding was present, and GET
+	 * /v1/dns/forwarders returned the right values. It was reached
+	 * twice from different directions -- a storage migration's own
+	 * stop-and-replay, and a plain recreate.
+	 *
+	 * This is the one place worth doing it: every path that brings a
+	 * container up replays this same body (fresh POST, boot autostart,
+	 * crash restart, migration replay), which is exactly why it exists.
+	 * Both syncs skip containers that are not running and are no-ops
+	 * with no bindings, so this is cheap and idempotent for every
+	 * container that is not a DNS server.
+	 *
+	 * The general rule, since this class keeps recurring: a file the
+	 * daemon derives from its own state is re-derived, never assumed to
+	 * have survived.
+	 */
+	dns_server_sync_all();
+	dns_forwarders_sync_all();
+
 	*out_entry = entry;
 	return 0;
 }
