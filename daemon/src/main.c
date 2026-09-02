@@ -17909,6 +17909,44 @@ static void handle_disk_unmount_post(int fd, const char *disk_name, const char *
 	}
 
 	derr = diskformat_unmount(disk_name, CONTAINERS_DIR);
+	if (derr == DISKFORMAT_ERR_UMOUNT_FAILED) {
+		/*
+		 * umount2(2) returns EBUSY for a mountpoint that carries other
+		 * filesystems, and to an operator that is indistinguishable
+		 * from an open file or a running process -- the old message
+		 * said only that something "may still be busy/in use", which
+		 * names nothing actionable.
+		 *
+		 * It is the ordinary case on this platform's own containers
+		 * partition: rebuildable-storage and container-storage disks
+		 * mount under <data-dir>/disks/, so unmounting the filesystem
+		 * that holds them cannot succeed until those go first. Asked
+		 * only after the real call failed, so the kernel stays the
+		 * judge of whether it was possible.
+		 */
+		struct discovered_disk sub_disks[DISK_ENUM_MAX];
+		int sub_n = disk_enumerate(sub_disks, DISK_ENUM_MAX, CONTAINERS_DIR);
+		char subs[512];
+		char msg[768];
+		int si;
+		int nsub = 0;
+
+		subs[0] = '\0';
+		for (si = 0; si < sub_n; si++) {
+			if (strcmp(sub_disks[si].name, disk_name) == 0) {
+				nsub = diskformat_submounts(sub_disks[si].mount_path, subs, sizeof(subs));
+				break;
+			}
+		}
+		if (nsub > 0) {
+			snprintf(msg, sizeof(msg),
+			         "cannot unmount: other filesystems are mounted beneath it (%s) -- "
+			         "unmount those first",
+			         subs);
+			respond_error(fd, 409, "Conflict", msg);
+			return;
+		}
+	}
 	if (derr != DISKFORMAT_OK) {
 		respond_diskformat_error(fd, derr);
 		return;

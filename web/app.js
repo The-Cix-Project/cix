@@ -5097,7 +5097,7 @@ async function refreshDiskFormatStatuses() {
 	if (parseHash().category !== "disks")
 		return;
 
-	const candidates = cache.disks.filter((d) => !d.is_os_disk && diskRoleFor(d.name) !== null);
+	const candidates = cache.disks.filter((d) => !d.protected && diskRoleFor(d.name) !== null);
 
 	for (const d of candidates) {
 		try {
@@ -5186,7 +5186,7 @@ function renderStoragePlacement(kind) {
 	for (const d of cache.disks) {
 		const role = diskRoleFor(d.name);
 
-		if (d.is_os_disk || role === null || role.role !== k.role)
+		if (d.protected || role === null || role.role !== k.role)
 			continue;
 		const opt = document.createElement("option");
 
@@ -5280,7 +5280,7 @@ function renderContainerStorage(name) {
 	for (const d of cache.disks) {
 		const role = diskRoleFor(d.name);
 
-		if (d.is_os_disk || role === null || role.role !== "container-storage")
+		if (d.protected || role === null || role.role !== "container-storage")
 			continue;
 		const opt = document.createElement("option");
 
@@ -5520,7 +5520,7 @@ function diskRow(d) {
 
 	const actionCell = document.createElement("td");
 
-	if (d.is_os_disk) {
+	if (d.protected) {
 		/* Never a role/format candidate -- nothing to offer. */
 	} else if (!role) {
 		const assignBtn = document.createElement("button");
@@ -5593,7 +5593,8 @@ function renderDiskDetail(name) {
 
 	title.textContent = d.name;
 	subtitle.textContent = d.is_partition
-		? "Partition of " + d.parent_disk + (d.is_os_disk ? " — part of the fixed OS layout" : "")
+		? "Partition of " + d.parent_disk +
+		  (d.protected ? " — part of the fixed OS layout" : d.is_os_disk ? " — on the OS disk" : "")
 		: (d.model || "Block device") + (d.is_os_disk ? " — the OS disk" : "");
 
 	/* Only a whole disk has a partition table, so a partition simply
@@ -5618,7 +5619,16 @@ function renderDiskDetail(name) {
 	if (!d.is_partition)
 		fields.appendChild(fieldBlock("Partitions", parts.length === 0 ? "none" : String(parts.length)));
 	fields.appendChild(fieldBlock("Removable", d.removable ? "yes" : "no"));
-	fields.appendChild(fieldBlock("OS disk", d.is_os_disk ? "yes — never modified" : "no"));
+	fields.appendChild(
+		fieldBlock(
+			"OS disk",
+			d.protected
+				? "yes — structural, never modified"
+				: d.is_os_disk
+				  ? "yes — but this partition is ordinary space"
+				  : "no",
+		),
+	);
 	fields.appendChild(
 		fieldBlock("I/O", "reads " + d.reads_completed + " / writes " + d.writes_completed + " / busy " + d.io_time_ms + "ms")
 	);
@@ -5715,9 +5725,9 @@ function renderDiskRoleTab(d, role) {
 	current.textContent = "";
 	actions.textContent = "";
 
-	if (d.is_os_disk) {
+	if (d.protected) {
 		note.textContent =
-			"This is part of the fixed OS layout (ESP, the two root slots, config, containers). It is never given a role, formatted or unmounted from here.";
+			"This is one of the four structural partitions of the OS layout \u2014 the ESP, both root slots and /config. It is never given a role, formatted or unmounted from here.";
 		return;
 	}
 	if (!d.is_partition && partitionsOf(d.name).length > 0) {
@@ -6185,7 +6195,13 @@ async function refreshDiskFreeSpace(d) {
 	const note = document.getElementById("dd-free-space");
 	const sizeInput = document.getElementById("dd-part-size");
 
-	if (d.is_os_disk)
+	/*
+	 * The OS disk is NOT skipped. #140 made appending into its free
+	 * space legal and the partition-table tab's own note tells the
+	 * operator so; skipping the lookup here meant the figure that
+	 * would let them act on it was never fetched.
+	 */
+	if (d.is_partition)
 		return;
 	try {
 		const fs = await apiRequest("GET", CIX_API.getDiskFreeSpace(d.name));
@@ -6288,7 +6304,7 @@ function populateDiskRoleSelect() {
 
 	select.textContent = "";
 	for (const d of cache.disks) {
-		if (d.is_os_disk || diskRoleFor(d.name) !== null)
+		if (d.protected || diskRoleFor(d.name) !== null)
 			continue;
 		const opt = document.createElement("option");
 
@@ -11126,7 +11142,7 @@ async function renderVolumeDetail(name) {
 	def.textContent = "(default OS-disk placement)";
 	select.appendChild(def);
 	for (const d of cache.disks) {
-		if (!d.mounted || d.is_os_disk)
+		if (!d.mounted || d.protected)
 			continue;
 		const opt = document.createElement("option");
 
@@ -11758,7 +11774,7 @@ function renderBackupConfig() {
 	for (const d of cache.disks) {
 		const role = diskRoleFor(d.name);
 
-		if (d.is_os_disk || role === null || role.role !== "backup")
+		if (d.protected || role === null || role.role !== "backup")
 			continue;
 		const opt = document.createElement("option");
 

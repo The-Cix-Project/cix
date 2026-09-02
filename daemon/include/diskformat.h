@@ -187,4 +187,20 @@ void diskformat_remount_present_role_disks(const char *os_containers_dir, const 
  */
 enum diskformat_error diskformat_unmount(const char *disk_name, const char *os_containers_dir);
 
+/*
+ * Lists what is mounted BENEATH mount_path, comma-separated, into out.
+ *
+ * umount2(2) returns EBUSY for a mountpoint that has other filesystems
+ * mounted under it, and the operator has no way to tell that apart from
+ * an open file or a running process -- which is exactly what happened
+ * on the OS disk's cix-containers partition: /var/lib/cix carries both
+ * the rebuildable-storage and container-storage disks under
+ * /var/lib/cix/disks/, so unmounting it can never succeed until those
+ * go first, and the error said only that something "may still be busy".
+ *
+ * Returns the number of submounts found (0 if none), and writes an
+ * empty string to out in that case.
+ */
+int diskformat_submounts(const char *mount_path, char *out, size_t out_size);
+
 #endif /* DISKFORMAT_H */
