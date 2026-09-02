@@ -37,6 +37,15 @@
  */
 int stallwatch_start(const char *records_path);
 
+/*
+ * Where the watchdog should ask whether the daemon is serving (#247).
+ * Call once the bind address and port are final; until then the
+ * watchdog does not probe. A wedge that keeps accepting connections and
+ * answers none satisfies every other signal this module has, so this is
+ * the only one that can see it.
+ */
+void stallwatch_set_probe(const char *host, int port);
+
 /* Called once per event-loop iteration. A plain store to shared memory
  * -- no syscall, no lock, nothing that can itself stall. */
 void stallwatch_heartbeat(void);

@@ -29397,6 +29397,14 @@ static int cixd_main(int argc, char **argv)
 	if (!port_explicit && daemon_config_port() != 0)
 		port = daemon_config_port();
 	g_port = port;
+	/*
+	 * The watchdog can only ask "is it serving?" once it knows where to
+	 * ask (#247), and the port is only final here -- a persisted
+	 * daemon-config port can still have overridden argv above. Until
+	 * this call the watchdog does not probe, which is also the right
+	 * behaviour while the daemon is still starting up.
+	 */
+	stallwatch_set_probe(g_bind_addr, g_port);
 	if (boot_subsystem_init(init_mode, "dns", dns_init(DNS_RECORDS_STATE_PATH, DNS_SERVERS_STATE_PATH)) != 0)
 		return 1;
 	if (boot_subsystem_init(init_mode, "ntp", ntp_init(NTP_STATE_PATH, NTP_SERVERS_STATE_PATH)) != 0)
