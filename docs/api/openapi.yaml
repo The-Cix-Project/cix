@@ -8796,8 +8796,12 @@ paths:
         output (see GET /pkg/{name}'s `error` field for that).
 
 
-        ADR-0157 Phase 2: up to two package builds can genuinely be in
-        flight at once. `name` (and optionally `image`, defaulting like
+        ADR-0157 Phase 2: several package builds can genuinely be in
+        flight at once -- up to `max_concurrent_jobs` (GET/PUT
+        /v1/system/pkg-build-config, 10 by default), and a recipe
+        publish reaches that state on its own by queueing a rebuild for
+        every image tracking the package rolling. `name` (and
+        optionally `image`, defaulting like
         every other image-optional endpoint) picks which one to attach
         to. Omitting `name` falls back to "the one build in progress"
         when that's unambiguous (zero or one build running); with two

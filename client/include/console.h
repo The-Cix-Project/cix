@@ -38,6 +38,15 @@ int cix_console_run(const struct cix_client *c, const char *container_name, cons
  * connection/handshake failure (e.g. no build currently in progress
  * -- a message is already printed to stderr).
  */
-int cix_pkg_build_log_run(const struct cix_client *c);
+/*
+ * name/image select which build to attach to when several are running
+ * at once, which is the ordinary consequence of a recipe publish (it
+ * queues a rebuild for every image tracking that package rolling), not
+ * a rare condition. Both NULL means "the one build in progress", which
+ * the daemon still resolves whenever that is unambiguous. image may be
+ * NULL with a name given -- the daemon defaults it like every other
+ * image-optional entry point.
+ */
+int cix_pkg_build_log_run(const struct cix_client *c, const char *name, const char *image);
 
 #endif /* CONSOLE_H */

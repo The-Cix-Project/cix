@@ -1177,7 +1177,7 @@ On a successful upgrade, whatever of the build's output was already captured is 
 
 ADR-0157 Phase 2: up to two builds can genuinely be in flight at once (`pkg-build-config`'s configurable limit, Phase 3, will raise this default further). Optional `?name=`/`?image=` query params pick which one to attach to — omitting `name` falls back to "the one build in progress" when that's unambiguous (zero or one running); with two builds running at once, omitting `name` gets a `400` asking for an explicit one rather than guessing which the caller meant.
 
-`cixctl pkg build-log` is the CLI client — no raw terminal mode, no input relay (this stream is one-way), just prints each chunk to stdout as it arrives and exits cleanly once the daemon's own CLOSE frame lands.
+`cixctl pkg build-log [--name=NAME [--image=IMAGE]]` is the CLI client — no raw terminal mode, no input relay (this stream is one-way), just prints each chunk to stdout as it arrives and exits cleanly once the daemon's own CLOSE frame lands. `--name`/`--image` map straight onto the query parameters above and are what make the command usable while several builds are running, which a recipe publish causes by itself. Without them the bare command is refused with `400 multiple builds in progress` and no way to comply ([#245](https://git.home.arpa/itdlabs/cix/issues/245)) — the endpoint had accepted both parameters since ADR-0157 Phase 2 and the CLI simply never sent them.
 
 ## DNS: records + a real dnsmasq container
 

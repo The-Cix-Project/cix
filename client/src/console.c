@@ -434,13 +434,30 @@ int cix_console_run(const struct cix_client *c, const char *container_name, cons
  * arrives, same server-frame parser cix_console_run()'s own relay()
  * already uses.
  */
-int cix_pkg_build_log_run(const struct cix_client *c)
+int cix_pkg_build_log_run(const struct cix_client *c, const char *name, const char *image)
 {
 	int fd;
 	struct client_ws_buf inbuf;
 	unsigned char iobuf[4096];
+	char path[512];
 
-	fd = do_ws_handshake(c, "pkg build-log", CIX_API_pkgBuildLog, NULL);
+	/*
+	 * The daemon takes ?name= (required if given) and an optional
+	 * ?image=, and falls back to the single in-progress build when
+	 * neither is supplied. Sending no query at all in that case keeps
+	 * the request byte-identical to what every earlier client sent.
+	 */
+	if (name != NULL && name[0] != '\0') {
+		if (image != NULL && image[0] != '\0')
+			snprintf(path, sizeof(path), "%s?name=%s&image=%s",
+			         CIX_API_pkgBuildLog, name, image);
+		else
+			snprintf(path, sizeof(path), "%s?name=%s", CIX_API_pkgBuildLog, name);
+	} else {
+		snprintf(path, sizeof(path), "%s", CIX_API_pkgBuildLog);
+	}
+
+	fd = do_ws_handshake(c, "pkg build-log", path, NULL);
 	if (fd < 0)
 		return -1;
 
