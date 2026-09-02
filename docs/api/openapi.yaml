@@ -2941,6 +2941,10 @@ paths:
                           boot, counting only work and excluding the
                           epoll wait. This is the latency floor every
                           client was subject to at that moment.
+                          Tracked for every pass, not only slow ones, so
+                          it reads meaningfully on a healthy box and a
+                          permanent zero means the timing is not running
+                          rather than that nothing was ever slow.
                       last_pass_ms:
                         type: integer
                         description: The most recent pass, same measure.

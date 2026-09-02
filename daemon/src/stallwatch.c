@@ -448,17 +448,31 @@ void stallwatch_pass_end(void)
 		return;
 	g_shared->pass_last_work_millis = work;
 
-	if (work >= SLOW_PASS_MILLIS) {
-		g_shared->slow_pass_count++;
-		if (work > g_shared->pass_worst_work_millis) {
-			g_shared->pass_worst_work_millis = work;
-			/* What it was doing, if anything named itself. Copied at
-			 * the moment of the worst pass rather than read later,
-			 * when it would have moved on. */
-			snprintf(g_shared->pass_worst_activity, STALL_ACTIVITY_MAX, "%s",
-			         g_shared->activity);
-		}
+	/*
+	 * The high-water mark tracks EVERY pass, not only slow ones.
+	 *
+	 * Gating it on the threshold was the first version and it was
+	 * wrong: on a healthy box the figure stayed 0, which is
+	 * indistinguishable from the measurement being broken -- and that
+	 * ambiguity showed up immediately, on a real host, where zero after
+	 * a full package install could not be told apart from a bug. A
+	 * number that only ever appears once something is already wrong
+	 * cannot be trusted at the moment it finally appears.
+	 *
+	 * Tracking it always makes the reading meaningful when things are
+	 * fine ("worst pass: 40 ms") and self-verifying: a permanent zero
+	 * now means the timing is not running, which is worth knowing on
+	 * its own.
+	 */
+	if (work > g_shared->pass_worst_work_millis) {
+		g_shared->pass_worst_work_millis = work;
+		/* What it was doing, if anything named itself. Copied at the
+		 * moment of the worst pass rather than read later, when it
+		 * would have moved on. */
+		snprintf(g_shared->pass_worst_activity, STALL_ACTIVITY_MAX, "%s", g_shared->activity);
 	}
+	if (work >= SLOW_PASS_MILLIS)
+		g_shared->slow_pass_count++;
 }
 
 void stallwatch_heartbeat(void)
