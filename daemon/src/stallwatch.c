@@ -568,12 +568,33 @@ static void watchdog_main(pid_t watched)
  * and port are final -- which is later than stallwatch_start(), since
  * daemon_config_init() can still override the port.
  */
+static char g_pending_probe_host[64];
+static int g_pending_probe_port;
+
 void stallwatch_set_probe(const char *host, int port)
 {
+	/*
+	 * Order-independent on purpose. This is called when the port
+	 * becomes final, which is ~380 lines before stallwatch_start() runs
+	 * -- so the first version silently returned with g_shared still
+	 * NULL, and stallwatch_start()'s own memset would have wiped the
+	 * value even if it had not. The probe never armed, and the only
+	 * reason that was noticed at all is that the armed state is
+	 * reported (#247); a detector that cannot say whether it is running
+	 * is indistinguishable from one that is running and finding
+	 * nothing.
+	 *
+	 * Remembering it until the shared page exists costs two statics and
+	 * removes the ordering constraint entirely, rather than moving one
+	 * call and leaving the trap for the next person.
+	 */
+	snprintf(g_pending_probe_host, sizeof(g_pending_probe_host), "%s",
+	         host != NULL ? host : "127.0.0.1");
+	g_pending_probe_port = port;
 	if (g_shared == NULL)
 		return;
 	snprintf((char *)g_shared->probe_host, sizeof(g_shared->probe_host), "%s",
-	         host != NULL ? host : "127.0.0.1");
+	         g_pending_probe_host);
 	g_shared->probe_port = port;
 }
 
@@ -592,6 +613,12 @@ int stallwatch_start(const char *records_path)
 	}
 	memset((void *)g_shared, 0, sizeof(*g_shared));
 	g_shared->heartbeat_monotonic = monotonic_seconds();
+	/* Apply a probe target set before the shared page existed. */
+	if (g_pending_probe_port != 0) {
+		snprintf((char *)g_shared->probe_host, sizeof(g_shared->probe_host), "%s",
+		         g_pending_probe_host);
+		g_shared->probe_port = g_pending_probe_port;
+	}
 
 	pid = fork();
 	if (pid < 0) {
