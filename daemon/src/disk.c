@@ -337,6 +337,65 @@ void disk_probe_fs_type(const char *dev_path, char *out, size_t out_size)
 }
 
 /*
+ * The filesystem UUID of a device, as the canonical lowercase
+ * 8-4-4-4-12 string, or "" when there is nothing to read (issue #255).
+ *
+ * This exists because a kernel device NAME is not an identity. It is
+ * assigned in probe order, so it moves when a driver set changes, when
+ * a controller changes, and when a disk is added or removed. That is
+ * not theoretical: adding SCSI low-level drivers to the kernel config
+ * renamed this platform's scratch disk from sda to sdb, every record
+ * that named it went stale at once, and the box would not boot.
+ *
+ * Only ext4 and btrfs are read, and deliberately so: they are the two
+ * filesystems this platform puts on a role disk, and a UUID that
+ * cannot be trusted to identify the thing it names is worse than
+ * admitting there isn't one. vfat has a 32-bit volume id rather than a
+ * UUID and squashfs has none at all; both correctly yield "", and
+ * callers fall back to the recorded name.
+ *
+ * Offsets match disk_probe_fs_type() above, which is the point -- one
+ * pair of superblock layouts described in one place. btrfs is checked
+ * first for the identical reason given there: mkfs.btrfs does not zero
+ * the ext4 superblock, so a converted disk still carries a convincing
+ * 0xEF53 at 1024+56.
+ */
+void disk_probe_fs_uuid(const char *dev_path, char *out, size_t out_size)
+{
+	unsigned char sb[16];
+	int fd;
+	off_t off = -1;
+
+	if (out_size == 0)
+		return;
+	out[0] = '\0';
+
+	fd = open(dev_path, O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return;
+
+	/* btrfs: superblock at 0x10000, magic at +0x40, fsid at +0x20. */
+	if (pread(fd, sb, 8, 0x10000 + 0x40) == 8 && memcmp(sb, "_BHRfS_M", 8) == 0)
+		off = 0x10000 + 0x20;
+	/* ext2/3/4: superblock at 1024, magic at +56, s_uuid at +104. */
+	else if (pread(fd, sb, 2, 1024 + 56) == 2 && sb[0] == 0x53 && sb[1] == 0xEF)
+		off = 1024 + 104;
+
+	if (off < 0 || pread(fd, sb, 16, off) != 16) {
+		close(fd);
+		return;
+	}
+	close(fd);
+
+	if (out_size < 37)
+		return; /* refuse to emit a truncated identifier */
+	snprintf(out, out_size,
+	         "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+	         sb[0], sb[1], sb[2], sb[3], sb[4], sb[5], sb[6], sb[7],
+	         sb[8], sb[9], sb[10], sb[11], sb[12], sb[13], sb[14], sb[15]);
+}
+
+/*
  * The GPT name of one partition, read from the parent disk's own
  * partition table (issue: OS partitions reported no role at all).
  *

@@ -84,6 +84,23 @@ enum diskrole_error {
 int diskrole_init(const char *state_path);
 
 /*
+ * Where a recorded disk actually is now (#255).
+ *
+ * A kernel device name is a location, not an identity -- it is assigned
+ * in probe order and moves when the driver set, the controller set or
+ * the disk set changes. Callers persist a (name, filesystem UUID) pair
+ * and ask this for the name to use today.
+ *
+ * Returns 0 and echoes recorded_name when there is no UUID to go on or
+ * the UUID still resolves to the same name; 1 when the disk was found
+ * under a different name, which is written to out_name; -1 when a UUID
+ * was recorded and no disk on this machine carries it, which means
+ * genuinely absent rather than renamed.
+ */
+int diskrole_resolve_recorded(const char *recorded_name, const char *recorded_uuid,
+                               char *out_name, size_t out_size);
+
+/*
  * Assigns role_str ("container-storage", "backup", "state-storage",
  * "rebuildable-storage", or "log-storage" -- anything else is
  * DISKROLE_ERR_INVALID_ROLE) to disk_name. disk_name is validated

@@ -203,6 +203,13 @@ void disk_fill_mount_status_from(const char *mounts_path, struct discovered_disk
  */
 void disk_probe_fs_type(const char *dev_path, char *out, size_t out_size);
 
+/* The filesystem UUID of a device as the canonical 8-4-4-4-12 string,
+ * or "" when the filesystem has none to give (#255). out_size must be
+ * at least 37 or nothing is written -- a truncated identifier is worse
+ * than none. */
+#define DISK_FS_UUID_MAX 40
+void disk_probe_fs_uuid(const char *dev_path, char *out, size_t out_size);
+
 int disk_enumerate(struct discovered_disk *out, int cap, const char *os_containers_dir);
 
 void disk_write_json_one(const struct discovered_disk *d, struct json_writer *w);

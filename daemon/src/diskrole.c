@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <limits.h>
 #include <string.h>
+#include <strings.h> /* strcasecmp, for the UUID compare (#255) */
 #include <unistd.h>
 
 /* fs_type is empty until diskrole_set_fs_type() records a real
@@ -15,6 +16,14 @@
  * itself, since assigning a role has no destructive side effect. */
 struct diskrole_entry {
 	char disk_name[DISKROLE_DISK_NAME_MAX];
+	/*
+	 * The filesystem's own UUID, and the real identity of this record
+	 * (#255). disk_name above is only where the kernel happened to put
+	 * it last time. Empty for a record written before this existed, or
+	 * for a filesystem that has no UUID to give; both fall back to the
+	 * name, which is exactly the old behaviour.
+	 */
+	char fs_uuid[DISK_FS_UUID_MAX];
 	enum diskrole_kind role;
 	char fs_type[16];
 	int in_use;
@@ -22,6 +31,62 @@ struct diskrole_entry {
 
 static char g_state_path[512];
 static struct diskrole_entry g_roles[DISKROLE_MAX];
+
+/*
+ * Where a recorded disk actually is now (#255).
+ *
+ * A kernel device name is assigned in probe order, so it is a location
+ * rather than an identity: it moves when a driver set changes, when a
+ * controller changes, and when a disk is added or removed. This
+ * platform learned that by taking a host down -- adding SCSI low-level
+ * drivers to the kernel config renamed the scratch disk from sda to
+ * sdb, every record naming it went stale at once, and cixd would not
+ * start.
+ *
+ * Given what was recorded, answers with the name to use now. Writes
+ * recorded_name unchanged and returns 0 when there is no UUID to go on
+ * (a pre-#255 record, or a filesystem with no UUID) or when the UUID
+ * still resolves to the same name. Returns 1 when the disk was found
+ * under a DIFFERENT name, having written that one. Returns -1 when a
+ * UUID was recorded and nothing on this machine carries it -- the disk
+ * is genuinely absent, which is a different situation from renamed and
+ * the caller should not treat it as a rename.
+ *
+ * Shared with storageplacement.c deliberately: both persist a disk
+ * reference and both were broken by the same rename, so they resolve
+ * it through one function rather than two that can disagree.
+ */
+int diskrole_resolve_recorded(const char *recorded_name, const char *recorded_uuid,
+                               char *out_name, size_t out_size)
+{
+	struct discovered_disk disks[DISK_ENUM_MAX];
+	int n, i;
+
+	if (out_size == 0)
+		return 0;
+	snprintf(out_name, out_size, "%s", recorded_name != NULL ? recorded_name : "");
+	if (recorded_uuid == NULL || recorded_uuid[0] == '\0')
+		return 0;
+
+	/*
+	 * NULL os_containers_dir: that argument only decides which disk
+	 * gets flagged is_os_disk, and resolve_os_disk_name() handles NULL
+	 * by leaving the flag unset. Nothing here reads it.
+	 */
+	n = disk_enumerate(disks, DISK_ENUM_MAX, NULL);
+	for (i = 0; i < n; i++) {
+		char uuid[DISK_FS_UUID_MAX];
+
+		disk_probe_fs_uuid(disks[i].dev_path, uuid, sizeof(uuid));
+		if (uuid[0] == '\0' || strcasecmp(uuid, recorded_uuid) != 0)
+			continue;
+		if (recorded_name != NULL && strcmp(disks[i].name, recorded_name) == 0)
+			return 0;
+		snprintf(out_name, out_size, "%s", disks[i].name);
+		return 1;
+	}
+	return -1;
+}
 
 static struct diskrole_entry *role_find(const char *disk_name)
 {
@@ -141,6 +206,13 @@ static int save_state(void)
 		jw_str(&w, g_roles[i].disk_name);
 		jw_key(&w, "role");
 		jw_str(&w, role_str(g_roles[i].role));
+		/* #255: the record's real identity. Written whenever we have
+		 * one, so a pre-#255 file gains it on the first save after a
+		 * successful resolve. */
+		if (g_roles[i].fs_uuid[0] != '\0') {
+			jw_key(&w, "fs_uuid");
+			jw_str(&w, g_roles[i].fs_uuid);
+		}
 		if (g_roles[i].fs_type[0] != '\0') {
 			jw_key(&w, "fs_type");
 			jw_str(&w, g_roles[i].fs_type);
@@ -184,6 +256,8 @@ static int load_state(void)
 		const char *disk_name = json_as_string(json_object_get(item, "disk_name"));
 		const char *role = json_as_string(json_object_get(item, "role"));
 		const char *fs_type = json_as_string(json_object_get(item, "fs_type"));
+		const char *fs_uuid = json_as_string(json_object_get(item, "fs_uuid"));
+		char resolved[DISKROLE_DISK_NAME_MAX];
 		enum diskrole_kind role_kind;
 
 		/*
@@ -211,8 +285,28 @@ static int load_state(void)
 			return -1;
 		}
 
+		/*
+		 * #255: follow the filesystem, not the name it had last boot.
+		 *
+		 * A rename is reported and adopted rather than treated as a
+		 * missing disk -- that is the whole point, and the failure it
+		 * prevents was a real one: a kernel config change renamed sda
+		 * to sdb and the box would not boot. An absent UUID is left
+		 * alone; the record simply keeps its recorded name, which is
+		 * the pre-#255 behaviour, and the disk is then either present
+		 * under that name or it is not.
+		 */
+		if (diskrole_resolve_recorded(disk_name, fs_uuid, resolved, sizeof(resolved)) == 1) {
+			fprintf(stderr,
+			        "%s: %s now appears as %s (same filesystem %s) -- following it (#255)\n",
+			        g_state_path, disk_name, resolved, fs_uuid);
+			disk_name = resolved;
+		}
+
 		memset(&g_roles[count], 0, sizeof(g_roles[count]));
 		snprintf(g_roles[count].disk_name, sizeof(g_roles[count].disk_name), "%s", disk_name);
+		if (fs_uuid != NULL)
+			snprintf(g_roles[count].fs_uuid, sizeof(g_roles[count].fs_uuid), "%s", fs_uuid);
 		g_roles[count].role = role_kind;
 		if (fs_type != NULL)
 			snprintf(g_roles[count].fs_type, sizeof(g_roles[count].fs_type), "%s", fs_type);
@@ -220,6 +314,45 @@ static int load_state(void)
 		count++;
 	}
 	json_free(root);
+
+	/*
+	 * #255: adopt a UUID for any record written before this existed.
+	 *
+	 * Without this the fix would only protect disks whose roles were
+	 * assigned after the upgrade -- every disk already carrying a role
+	 * would stay identified by a name, which is exactly the state that
+	 * broke. Read once, here, from the disk the record currently names,
+	 * and saved so the next boot has it even if the name has moved by
+	 * then.
+	 *
+	 * A filesystem with no UUID (vfat, squashfs) yields nothing and is
+	 * left as it was: still name-identified, because there is nothing
+	 * better to use.
+	 */
+	{
+		int i, adopted = 0;
+
+		for (i = 0; i < count; i++) {
+			char dev_path[PATH_MAX];
+			char uuid[DISK_FS_UUID_MAX];
+
+			if (g_roles[i].fs_uuid[0] != '\0')
+				continue;
+			snprintf(dev_path, sizeof(dev_path), "/dev/%s", g_roles[i].disk_name);
+			disk_probe_fs_uuid(dev_path, uuid, sizeof(uuid));
+			if (uuid[0] == '\0')
+				continue;
+			snprintf(g_roles[i].fs_uuid, sizeof(g_roles[i].fs_uuid), "%s", uuid);
+			adopted++;
+		}
+		if (adopted > 0) {
+			fprintf(stderr, "%s: adopted filesystem UUIDs for %d disk role(s) (#255)\n",
+			        g_state_path, adopted);
+			if (save_state() != 0)
+				fprintf(stderr, "%s: could not persist adopted UUIDs -- they will be "
+				                "read again next boot\n", g_state_path);
+		}
+	}
 	return 0;
 }
 
@@ -296,6 +429,19 @@ enum diskrole_error diskrole_set_fs_type(const char *disk_name, const char *fs_t
 	if (r == NULL)
 		return DISKROLE_ERR_NOT_FOUND;
 	snprintf(r->fs_type, sizeof(r->fs_type), "%s", fs_type);
+	/*
+	 * #255: a format has just created a new filesystem, so this is
+	 * exactly when its UUID exists and is worth recording. Doing it
+	 * here rather than at role creation is deliberate -- at creation
+	 * there may be no filesystem yet, and a UUID read then would be
+	 * the previous filesystem's.
+	 */
+	{
+		char dev_path[PATH_MAX];
+
+		snprintf(dev_path, sizeof(dev_path), "/dev/%s", r->disk_name);
+		disk_probe_fs_uuid(dev_path, r->fs_uuid, sizeof(r->fs_uuid));
+	}
 	if (save_state() != 0)
 		return DISKROLE_ERR_PERSIST_FAILED;
 	return DISKROLE_OK;
