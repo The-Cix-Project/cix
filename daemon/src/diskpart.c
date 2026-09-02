@@ -890,25 +890,47 @@ enum diskpart_error diskpart_free_space(const char *disk_name, const char *os_co
  * a missing tool is still distinguishable from a tool that ran and
  * refused -- the distinction issue #9 had to learn the hard way.
  */
+/*
+ * Runs a filesystem tool and KEEPS what it said.
+ *
+ * This used to send the child's stdout and stderr to /dev/null, so
+ * every distinct failure -- a missing shared library, a filesystem the
+ * tool refused, a bad argument -- reached the operator as the same bare
+ * "the filesystem could not be grown". That is exactly the
+ * guess-as-diagnosis failure g_sfdisk_last_error was introduced for on
+ * the sfdisk path, and it cost a real debugging round on the btrfs path
+ * before this changed.
+ *
+ * Note this cannot go through run_sfdisk_capture(): that one hardcodes
+ * execve(DISKPART_SFDISK_BIN, ...) and ignores argv[0] entirely, so
+ * calling it for any other tool silently runs sfdisk with the other
+ * tool's arguments.
+ */
 static int run_tool_argv(const char *bin, char *const argv[])
 {
+	int pipefd[2];
 	pid_t pid;
 	int status;
 
-	pid = fork();
-	if (pid < 0)
+	if (pipe2(pipefd, O_CLOEXEC) != 0)
 		return -1;
+	pid = fork();
+	if (pid < 0) {
+		close(pipefd[0]);
+		close(pipefd[1]);
+		return -1;
+	}
 	if (pid == 0) {
-		int devnull = open("/dev/null", O_WRONLY);
-
-		if (devnull >= 0) {
-			dup2(devnull, STDOUT_FILENO);
-			dup2(devnull, STDERR_FILENO);
-			close(devnull);
-		}
+		dup2(pipefd[1], STDOUT_FILENO);
+		dup2(pipefd[1], STDERR_FILENO);
+		close(pipefd[0]);
+		close(pipefd[1]);
 		execve(bin, argv, environ);
 		_exit(127);
 	}
+	close(pipefd[1]);
+	capture_tool_stderr(pipefd[0]);
+	close(pipefd[0]);
 	if (waitpid(pid, &status, 0) != pid)
 		return -1;
 	if (!WIFEXITED(status))
@@ -1081,9 +1103,15 @@ enum diskpart_error diskpart_resize(const char *disk_name, const char *partition
 
 		if (snprintf(mnt, sizeof(mnt), "/run/cix-resize-%s", part.name) >= (int)sizeof(mnt))
 			return DISKPART_ERR_RESIZE_FS_FAILED;
-		if (mkdir(mnt, 0700) != 0 && errno != EEXIST)
+		if (mkdir(mnt, 0700) != 0 && errno != EEXIST) {
+			snprintf(g_sfdisk_last_error, sizeof(g_sfdisk_last_error),
+			         "could not create the scratch mount point %s: %s", mnt, strerror(errno));
 			return DISKPART_ERR_RESIZE_FS_FAILED;
+		}
 		if (mount(part.dev_path, mnt, "btrfs", 0, NULL) != 0) {
+			snprintf(g_sfdisk_last_error, sizeof(g_sfdisk_last_error),
+			         "could not mount %s at %s to grow it: %s", part.dev_path, mnt,
+			         strerror(errno));
 			rmdir(mnt);
 			return DISKPART_ERR_RESIZE_FS_FAILED;
 		}
@@ -1102,10 +1130,20 @@ enum diskpart_error diskpart_resize(const char *disk_name, const char *partition
 		mrc = umount(mnt);
 		rmdir(mnt);
 
-		if (rc == -2)
+		if (rc == -2) {
+			snprintf(g_sfdisk_last_error, sizeof(g_sfdisk_last_error),
+			         "%s is not present on this host", DISKPART_BTRFS_BIN);
 			return DISKPART_ERR_SFDISK_MISSING;
-		if (rc != 0 || mrc != 0)
+		}
+		if (rc != 0)
+			return DISKPART_ERR_RESIZE_FS_FAILED; /* capture already holds the reason */
+		if (mrc != 0) {
+			snprintf(g_sfdisk_last_error, sizeof(g_sfdisk_last_error),
+			         "the filesystem was grown but the scratch mount at %s could not be "
+			         "released: %s",
+			         mnt, strerror(errno));
 			return DISKPART_ERR_RESIZE_FS_FAILED;
+		}
 		return DISKPART_OK;
 	}
 

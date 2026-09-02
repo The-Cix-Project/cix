@@ -18019,12 +18019,24 @@ static void respond_diskpart_error(int fd, enum diskpart_error err)
 		              "the filesystem needs a check that cannot be made automatically; the "
 		              "partition table was NOT changed. Check it by hand before retrying");
 		break;
-	case DISKPART_ERR_RESIZE_FS_FAILED:
-		respond_error(fd, 500, "Internal Server Error",
-		              "the partition grew but the filesystem inside it could not be grown to "
-		              "match -- the extra space is real but not yet usable; run resize2fs (ext4) "
-		              "or `btrfs filesystem resize max` against it by hand");
+	case DISKPART_ERR_RESIZE_FS_FAILED: {
+		/* Say WHY, the same way DISKPART_ERR_SFDISK_FAILED below does.
+		 * Without this every distinct cause -- a mount that failed, a
+		 * missing shared library, a filesystem the tool refused --
+		 * reached the operator as one identical sentence. */
+		const char *why = diskpart_last_tool_error();
+		char msg[700];
+
+		snprintf(msg, sizeof(msg),
+		         "the partition grew but the filesystem inside it could not be grown to match "
+		         "-- the extra space is real but not yet usable%s%s",
+		         (why != NULL && why[0] != '\0') ? ": " : "; run resize2fs (ext4) or `btrfs "
+		                                                   "filesystem resize max` by hand",
+		         (why != NULL && why[0] != '\0') ? why : "");
+		logstore_write("cixd", "error", "diskpart: %s", msg);
+		respond_error(fd, 500, "Internal Server Error", msg);
 		break;
+	}
 	case DISKPART_ERR_SFDISK_MISSING:
 		respond_error(fd, 500, "Internal Server Error",
 		              "sfdisk is not installed on this host -- partitioning needs "
