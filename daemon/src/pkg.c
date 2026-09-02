@@ -28,6 +28,7 @@
 #include <sys/ioctl.h> /* FICLONE, #236 */
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
+#include <sys/utsname.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -9767,6 +9768,34 @@ void pkg_artifact_push_completed(int exit_status)
  * string otherwise -- plain bearer auth, not a forge-specific
  * convention, since this is deliberately not talking to a git forge's
  * own API. */
+/*
+ * This host's architecture, as the artifact cache names it (#183).
+ *
+ * uname(2)'s machine field, asked once. It is the same string the cache
+ * uses ("x86_64"), which is not a coincidence to rely on silently: if a
+ * future port disagrees with the cache's vocabulary, this is the single
+ * place that has to learn a mapping.
+ *
+ * Falling back to "unknown" rather than to a bare name is deliberate.
+ * An artifact published as <name>-<version>-unknown.tar.gz is visibly
+ * wrong and can be deleted; one published bare is indistinguishable
+ * from a correct single-architecture artifact and will be served to a
+ * machine that cannot run it.
+ */
+static const char *pkg_host_arch(void)
+{
+	static char arch[32];
+	struct utsname u;
+
+	if (arch[0] != '\0')
+		return arch;
+	if (uname(&u) == 0 && u.machine[0] != '\0')
+		snprintf(arch, sizeof(arch), "%s", u.machine);
+	else
+		snprintf(arch, sizeof(arch), "unknown");
+	return arch;
+}
+
 static void pkg_artifact_build_request(const char *name, const char *version, char *out_url,
                                         size_t out_url_size, char *out_header, size_t out_header_size)
 {
@@ -9774,8 +9803,29 @@ static void pkg_artifact_build_request(const char *name, const char *version, ch
 
 	if (len > 0 && g_artifact_base_url[len - 1] == '/')
 		len--;
-	snprintf(out_url, out_url_size, "%.*s/%s-%s.tar.gz", (int)len, g_artifact_base_url, name,
-	         version);
+	/*
+	 * Architecture is part of an artifact's identity (#183, #179).
+	 *
+	 * This is the single choke point for BOTH directions -- the fetch
+	 * path and the push worker both arrive here -- which is why one
+	 * edit fixes publishing and consuming together.
+	 *
+	 * Before this, every artifact this host published arrived at the
+	 * cache unlabelled and was stamped by hand afterwards; the cache
+	 * has carried architecture since its own ADR-0008 and deliberately
+	 * never infers one, because "everything here was built for this" is
+	 * something an operator knows and a parser must not guess.
+	 *
+	 * Safe to start asking for a stamped name before every artifact has
+	 * one: the cache resolves a bare name for GET/HEAD while exactly
+	 * one architecture is published, so an older bare artifact still
+	 * fetches. Once two architectures exist it returns 409 and names
+	 * the problem rather than picking one -- which is the whole point,
+	 * because silently serving the wrong architecture to a machine that
+	 * will boot it is the worst failure this system could have.
+	 */
+	snprintf(out_url, out_url_size, "%.*s/%s-%s-%s.tar.gz", (int)len, g_artifact_base_url, name,
+	         version, pkg_host_arch());
 	if (g_artifact_token[0] != '\0')
 		snprintf(out_header, out_header_size, "Authorization: Bearer %s", g_artifact_token);
 	else
