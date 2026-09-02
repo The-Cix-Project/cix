@@ -129,10 +129,10 @@ const char *container_create_last_error_step(void)
  * CLONE_NEWUSER child's uid/gid maps, then releases it. The child blocks
  * on userns_pipe before touching anything -- until these maps land it has
  * no valid mapped identity, so any privileged op (the overlay mount
- * included) would run with the wrong credentials. Ordering is the
- * documented kernel requirement: "deny" to setgroups (a task may only
- * gain, never re-drop, group membership across a map) BEFORE gid_map,
- * then uid_map. Each map is the single line "0 <base> <len>": the
+ * included) would run with the wrong credentials. gid_map is written
+ * first, then uid_map -- see write_userns_maps() below for why
+ * setgroups is no longer denied unconditionally. Each map is the
+ * single line "0 <base> <len>": the
  * container's own 0..len-1 onto host [base, base+len). Raw /proc writes,
  * no glibc wrapper needed -- same posture as this file's other raw
  * syscalls.
@@ -153,15 +153,49 @@ static int write_proc_line(pid_t pid, const char *which, const char *val)
 	return (n == (ssize_t)len) ? 0 : -1;
 }
 
+/*
+ * setgroups is left PERMITTED when the kernel allows it, and that is
+ * the difference between a user namespace a real workload can run in
+ * and one it cannot.
+ *
+ * user_namespaces(7): "deny" must be written to setgroups before
+ * gid_map *only* when the writing process lacks CAP_SETGID in the
+ * parent user namespace. cixd is real root and has it, so it can write
+ * gid_map directly and leave setgroups usable inside the container.
+ * Denying it unconditionally was simply the recipe from the
+ * unprivileged case, applied where it was never required.
+ *
+ * The cost was not theoretical. dnsmasq -- this platform's own DNS --
+ * calls setgroups() before setgid() when told to run as a user, so it
+ * died at startup with "failed to change group-id to root: Operation
+ * not permitted" and exit 5, having written nothing to stderr because
+ * it logs to syslog by default. Once userns became the default for new
+ * containers (ADR-0207), that turned into "any container that drops or
+ * sets groups cannot start", found when dns-1 and dns-2 would not come
+ * back after a storage migration recreated them.
+ *
+ * The fallback is kept and is not dead code: gid_map is attempted
+ * first, and only if the kernel refuses it do we deny setgroups and
+ * retry, which is the correct sequence for any caller that does not
+ * hold CAP_SETGID. So an unprivileged path still works, and a
+ * privileged one is no longer needlessly crippled.
+ *
+ * What denying protects against does not apply here: it exists so an
+ * unprivileged user cannot drop supplementary groups to escape a
+ * negative-permission ACL. This namespace is created by root over a
+ * dedicated, non-overlapping id range that owns nothing on the host.
+ */
 static int write_userns_maps(pid_t pid, long long base, long long len)
 {
 	char map[64];
 
-	if (write_proc_line(pid, "setgroups", "deny") != 0)
-		return -1;
 	snprintf(map, sizeof(map), "0 %lld %lld", base, len);
-	if (write_proc_line(pid, "gid_map", map) != 0)
-		return -1;
+	if (write_proc_line(pid, "gid_map", map) != 0) {
+		if (write_proc_line(pid, "setgroups", "deny") != 0)
+			return -1;
+		if (write_proc_line(pid, "gid_map", map) != 0)
+			return -1;
+	}
 	if (write_proc_line(pid, "uid_map", map) != 0)
 		return -1;
 	return 0;
