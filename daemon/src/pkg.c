@@ -657,6 +657,8 @@ const char *pkg_failure_kind_name(enum pkg_failure_kind kind)
  * and the kind are recorded either way, so "the upgrade did not happen,
  * and here is why" survives.
  */
+static void rebuild_queue_remove(const char *image);
+
 static void pkg_fail(struct pkg_entry *e, int keep_installed, enum pkg_failure_kind kind,
                      const char *fmt, ...)
 {
@@ -669,6 +671,38 @@ static void pkg_fail(struct pkg_entry *e, int keep_installed, enum pkg_failure_k
 	va_start(ap, fmt);
 	vsnprintf(e->error, sizeof(e->error), fmt, ap);
 	va_end(ap);
+
+	/*
+	 * This image cannot be brought up to date right now, so stop trying
+	 * (#243).
+	 *
+	 * pkg_try_start_queued_rebuild() pops an image only when every
+	 * manifest entry is already satisfied. A started-but-FAILED install
+	 * therefore left the image at the front of the queue, still
+	 * unsatisfied, to be started again on the very next pass -- with no
+	 * attempt count, no backoff and no memory of the failure. A package
+	 * that cannot install at all became an unbounded retry loop that
+	 * never drained and never yielded the single job slot: measured at
+	 * 219 consecutive gcc fetch failures against an unreachable
+	 * upstream, with every other package operation refused 409 for the
+	 * duration and a reboot the only escape.
+	 *
+	 * Cancelling does not help and it is worth saying why: cancel frees
+	 * the slot correctly, and the drain immediately starts the next
+	 * attempt on the same still-queued image.
+	 *
+	 * Dropped on ANY failure, not only one that leaves the package
+	 * uninstalled. An upgrade failure keeps the old version installed
+	 * -- which is exactly the gcc case -- and the image is no more
+	 * satisfiable for it.
+	 *
+	 * Nothing is lost by dropping it: the failure is durably recorded
+	 * on this entry (state, failure_kind, error), which is the useful
+	 * record, and a later publish re-queues the image naturally. The
+	 * queue is deliberately not persisted for the same reason -- the
+	 * intent is always re-derivable.
+	 */
+	rebuild_queue_remove(e->image);
 }
 
 static struct pkg_entry *pkg_find(const char *name, const char *image)
@@ -4021,6 +4055,30 @@ static void rebuild_queue_enqueue(const char *image)
 		return; /* best-effort, matches this queue's own documented bound */
 	snprintf(g_rebuild_queue[g_rebuild_queue_count], PKG_IMAGE_NAME_MAX, "%s", image);
 	g_rebuild_queue_count++;
+}
+
+/*
+ * Drops one image from the rebuild queue, wherever it sits (#243).
+ *
+ * Distinct from pop_front(): that one means "this image is caught up",
+ * this one means "this image cannot be caught up right now".
+ */
+static void rebuild_queue_remove(const char *image)
+{
+	int i, j;
+
+	for (i = 0; i < g_rebuild_queue_count; i++) {
+		if (strcmp(g_rebuild_queue[i], image) != 0)
+			continue;
+		logstore_write("cixd", "info",
+		               "pkg: dropped image %s from the rebuild queue -- a package in it failed, "
+		               "so retrying now would only repeat it; publish again to re-queue",
+		               image);
+		for (j = i + 1; j < g_rebuild_queue_count; j++)
+			snprintf(g_rebuild_queue[j - 1], PKG_IMAGE_NAME_MAX, "%s", g_rebuild_queue[j]);
+		g_rebuild_queue_count--;
+		return;
+	}
 }
 
 static void rebuild_queue_pop_front(void)
