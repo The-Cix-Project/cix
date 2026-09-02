@@ -1915,6 +1915,28 @@ static int boot_init(void)
 	{
 		int rfd;
 
+	/*
+	 * The config partition is mounted HERE, before anything reads or
+	 * writes a path under it.
+	 *
+	 * It used to be mounted after the /etc/resolv.conf setup below,
+	 * which was harmless only while STATE_DIR lived on the containers
+	 * partition. Once state moved to /config (ADR-0232), that ordering
+	 * created STATE_DIR and resolv.conf on the ROOT filesystem's bare
+	 * /config mountpoint, bind-mounted that inode onto
+	 * /etc/resolv.conf, and then mounted the real partition over the
+	 * top -- shadowing the file the mount still pointed at. The daemon
+	 * reported the right nameservers, PUT /v1/system/resolv wrote them
+	 * to the right path, and the host could not resolve a hostname,
+	 * which is issue #138 again by a different route.
+	 *
+	 * Still deliberately non-fatal -- see CONFIG_DEVICE's own comment.
+	 * Left mounted (not unmounted here): bootstrap_management_network()
+	 * reads net.conf from it later in main().
+	 */
+	if (mount(CONFIG_DEVICE, CONFIG_DIR, "btrfs", 0, NULL) != 0)
+		mount(CONFIG_DEVICE, CONFIG_DIR, "ext4", 0, NULL);
+
 		/*
 		 * Issue #138: STATE_DIR must exist before the file inside it
 		 * can be created. On an UPGRADED box it always did, because
@@ -1961,14 +1983,6 @@ static int boot_init(void)
 	 * like the root mounts, since that rename is a real write. */
 	if (mount_or_fail(ESP_DEVICE, ESP_DIR, "vfat", MS_NOSUID | MS_NODEV | MS_NOEXEC) != 0)
 		return -1;
-	/* Deliberately non-fatal, unlike every mount above -- see
-	 * CONFIG_DEVICE's own comment. Left mounted (not unmounted here) --
-	 * bootstrap_management_network() reads net.conf from it later in
-	 * main(), once network_init() has made network_create()/
-	 * network_attach_interface() usable (Part 0.5) -- boot_init() itself
-	 * stays purely about mounts and bringing lo up, as its name implies. */
-	if (mount(CONFIG_DEVICE, CONFIG_DIR, "btrfs", 0, NULL) != 0)
-		mount(CONFIG_DEVICE, CONFIG_DIR, "ext4", 0, NULL);
 
 	/*
 	 * A tmpfs for the mountpoints of attached disks, so nothing writes
