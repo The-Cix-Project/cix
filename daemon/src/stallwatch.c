@@ -75,6 +75,18 @@ struct stall_shared {
 	volatile long long pass_worst_work_millis;
 	volatile unsigned long long slow_pass_count;
 	char pass_worst_activity[STALL_ACTIVITY_MAX];
+	/*
+	 * What this pass has served so far, cleared at the start of each
+	 * one.
+	 *
+	 * Needed because `activity` above is cleared the moment a request
+	 * finishes dispatching, and a pass is booked at its END -- so
+	 * reading `activity` there always found it already wiped, and the
+	 * one field that answers "what was it doing" would have been
+	 * permanently empty. Caught on a real host: a 131 ms worst pass
+	 * driven by a known endpoint reported no activity at all.
+	 */
+	char pass_activity[STALL_ACTIVITY_MAX];
 };
 
 /*
@@ -469,7 +481,8 @@ void stallwatch_pass_end(void)
 		/* What it was doing, if anything named itself. Copied at the
 		 * moment of the worst pass rather than read later, when it
 		 * would have moved on. */
-		snprintf(g_shared->pass_worst_activity, STALL_ACTIVITY_MAX, "%s", g_shared->activity);
+		snprintf(g_shared->pass_worst_activity, STALL_ACTIVITY_MAX, "%s",
+		         g_shared->pass_activity);
 	}
 	if (work >= SLOW_PASS_MILLIS)
 		g_shared->slow_pass_count++;
@@ -482,6 +495,7 @@ void stallwatch_heartbeat(void)
 	g_shared->heartbeat_monotonic = monotonic_seconds();
 	g_shared->heartbeat_seq++;
 	g_shared->pass_started_millis = monotonic_millis();
+	g_shared->pass_activity[0] = '\0';
 }
 
 void stallwatch_activity(const char *what)
@@ -497,6 +511,9 @@ void stallwatch_activity(const char *what)
 	 */
 	g_shared->activity_started_monotonic = monotonic_seconds();
 	snprintf(g_shared->activity, STALL_ACTIVITY_MAX, "%s", what);
+	/* Survives activity_clear(), so the pass can still be attributed
+	 * when it is booked at the end (#229). */
+	snprintf(g_shared->pass_activity, STALL_ACTIVITY_MAX, "%s", what);
 }
 
 void stallwatch_activity_clear(void)

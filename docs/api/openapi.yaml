@@ -2960,10 +2960,11 @@ paths:
                       worst_pass_activity:
                         type: string
                         description: >
-                          What was named as in flight during the worst
-                          pass, or empty if the loop was busy with work
-                          no request had asked for -- which is itself
-                          the useful answer.
+                          Which request the worst pass served, or empty
+                          if that pass served none -- meaning the loop
+                          was busy with work no client asked for, which
+                          is itself the useful answer and the case that
+                          used to be invisible.
 
   /system/kernel-policy:
     get:
