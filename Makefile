@@ -130,7 +130,19 @@ DAEMON_SELFTESTS = \
 #
 
 .PHONY: selftest
-selftest: $(SELFTESTS)
+#
+# Helper binaries some gated tests exec but do not link (#224).
+#
+# Prerequisites of the gate, not members of it: they are not tests and
+# must never be run as one. test_network_interfaces failed its first
+# gated build with "build/daemon_child: No such file or directory" --
+# it passed in the probe only because the probe ran `make all` and
+# happened to have it. A test that needs a fixture the gate does not
+# build is a gate that works by accident.
+#
+SELFTEST_HELPERS = $(BUILD)/daemon_child
+
+selftest: $(SELFTESTS) $(SELFTEST_HELPERS)
 	@fail=0; \
 	for t in $(SELFTESTS); do \
 		printf '  %-34s ' "$$(basename $$t)"; \
