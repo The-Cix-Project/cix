@@ -245,6 +245,55 @@ makeResizable(document.getElementById("log-panel-resize-handle"), {
 	skipInitialApplyIf: () => logPanel.classList.contains("collapsed"),
 });
 
+/* ---------- the phone-only tree disclosure (#233) ---------- */
+
+/*
+ * On a narrow screen the tree is hidden and this button reveals it.
+ * The state is a class on <body> rather than an inline style, so the
+ * media query stays the single place that decides the tree is hidden
+ * at all -- at desktop width the class is inert and the tree is a
+ * permanent column regardless of what was last tapped on a phone.
+ *
+ * Nothing here restores state across loads. The tree is a detour on a
+ * phone, not a mode: the useful default every time the page opens is
+ * the content that was asked for, so it closes again on navigation
+ * below rather than persisting.
+ */
+const treeDisclosure = document.getElementById("tree-disclosure");
+
+function setTreeOpen(open) {
+	document.body.classList.toggle("tree-open", open);
+	if (treeDisclosure !== null)
+		treeDisclosure.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+if (treeDisclosure !== null) {
+	treeDisclosure.addEventListener("click", () => {
+		setTreeOpen(!document.body.classList.contains("tree-open"));
+	});
+	/*
+	 * Picking something in the tree is a navigation, and leaving the
+	 * tree covering the page afterwards would hide the very thing that
+	 * was just asked for. Delegated from the tree container so it keeps
+	 * working across the re-renders that replace its contents.
+	 */
+	const treeNav = document.getElementById("tree");
+
+	if (treeNav !== null) {
+		treeNav.addEventListener("click", (e) => {
+			/*
+			 * Only a real navigation closes the panel. a.tree-item is
+			 * what the tree's own click handling already treats as the
+			 * navigable element; .tree-category and the expand/collapse
+			 * chevrons open a branch instead, and closing the panel on
+			 * either would make a branch impossible to open on a phone.
+			 */
+			if (e.target.closest("a.tree-item") !== null)
+				setTreeOpen(false);
+		});
+	}
+}
+
 /* ---------- theme toggle (light / dark / auto) ---------- */
 
 const THEME_KEY = "cix-theme";

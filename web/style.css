@@ -425,6 +425,15 @@ header {
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
+	/*
+	 * The ellipsis above never actually appeared: a flex item defaults
+	 * to min-width: auto, which refuses to shrink below its own content,
+	 * so this span kept its full width and simply ran off the end of the
+	 * bar instead of truncating. Not phone-specific -- the same bug at a
+	 * desktop width, just with enough room to hide it -- so it is fixed
+	 * here rather than inside a media query.
+	 */
+	min-width: 0;
 }
 
 .status-leds {
@@ -615,6 +624,15 @@ header {
 	overflow-y: auto;
 }
 
+/*
+ * The phone-only tree disclosure (#233). Absent from the desktop
+ * layout, where the tree is a permanent column and a button that
+ * toggles it would be noise.
+ */
+.tree-disclosure {
+	display: none;
+}
+
 .layout {
 	display: grid;
 	grid-template-columns: var(--tree-width, 240px) 1fr;
@@ -639,54 +657,6 @@ header {
 	padding: 0.4rem 1rem;
 	border-top: 1px solid var(--border);
 	flex: 0 0 auto;
-}
-
-@media (max-width: 720px) {
-	html, body {
-		overflow: auto;
-	}
-	.layout {
-		grid-template-columns: 1fr;
-		display: block;
-	}
-	/*
-	 * The tree flows with the document on a narrow screen; it does not
-	 * get its own scroll region (#233).
-	 *
-	 * max-height: 40vh made it a nested scroll container, because its
-	 * content is taller than 40% of a phone screen. Two scrollables
-	 * stacked vertically is the classic trapped-gesture bug: a drag
-	 * that starts over the tree scrolls the tree, a drag two pixels
-	 * lower scrolls the page, and neither is what the finger meant.
-	 * The desktop layout is an app shell where exactly one inner
-	 * region scrolls; carrying a piece of that into a document that
-	 * scrolls as a whole gets the worst of both.
-	 *
-	 * This leaves the tree occupying the top of every page, which is
-	 * not the right final answer -- a phone probably wants it behind a
-	 * disclosure rather than always present. That is a design change
-	 * needing a real device to judge, and #233 says so; this is the
-	 * part that is wrong regardless of how that question is settled.
-	 */
-	.tree-panel {
-		height: auto;
-		max-height: none;
-		overflow: visible;
-		border-right: none;
-		border-bottom: 1px solid var(--border);
-	}
-	.tree {
-		overflow: visible;
-	}
-	header {
-		flex-wrap: wrap;
-		row-gap: 0.5rem;
-	}
-	.menu-bar {
-		flex-basis: 100%;
-		order: 2;
-	}
-
 }
 
 .tree-panel {
@@ -886,20 +856,6 @@ main {
 	height: 100%;
 	min-height: 0;
 	overflow: hidden;
-}
-
-@media (max-width: 720px) {
-	main {
-		height: auto;
-		overflow: visible;
-	}
-	#content-scroll {
-		overflow: visible;
-	}
-	#log-panel {
-		flex: 0 0 auto;
-		height: 30vh;
-	}
 }
 
 #content-scroll {
@@ -1373,11 +1329,6 @@ td.empty {
 }
 
 /* Narrow screens: the label column stops earning a third of the width. */
-@media (max-width: 720px) {
-	.detail-table th.field-label {
-		width: 42%;
-	}
-}
 
 /*
  * auto-FILL, not auto-fit: with fewer cards than the row has room for,
@@ -1995,4 +1946,157 @@ table th,
 .logs-pre,
 pre {
 	font-variant-numeric: tabular-nums;
+}
+
+
+/* ============================================================
+ * Narrow screens (#233).
+ *
+ * These blocks live at the END of this stylesheet, and that
+ * placement is the fix rather than tidiness. A media query adds no
+ * specificity -- it only gates when a rule applies -- so an override
+ * inside one still has to win on source order like any other rule.
+ * They used to sit in the middle of the file, ahead of the component
+ * rules they override, and most of them therefore did nothing at all:
+ * the .tree-panel overrides were followed by .tree-panel's own
+ * definition, and the toast override by .status's, so both lost every
+ * time. That is why the phone layout was a handled case that did not
+ * work. Anything added here from now on must stay after the component
+ * it modifies, which at the end of the file is automatic.
+ * ============================================================ */
+
+@media (max-width: 720px) {
+	/*
+	 * height: 100% measures the INITIAL viewport, which on a phone is
+	 * the one with the address bar hidden -- so the shell was sized to
+	 * a viewport that is not the one being looked at, and the mismatch
+	 * moves as the bar shows and hides. min-height in dynamic viewport
+	 * units asks for the area actually visible right now, and height
+	 * goes back to auto so a page taller than the screen simply grows
+	 * rather than fighting a fixed shell. Browsers without dvh ignore
+	 * the min-height and get the plain auto-height document, which is
+	 * the correct fallback rather than a broken one.
+	 */
+	html, body {
+		height: auto;
+		min-height: 100dvh;
+		overflow: auto;
+	}
+	.layout {
+		grid-template-columns: 1fr;
+		display: block;
+	}
+	.tree-disclosure {
+		display: inline-flex;
+	}
+	/*
+	 * Content first. The tree is the first element in source order, so
+	 * left visible it occupies the whole first screen and the page
+	 * looks empty until you scroll past all of it. Disclosed by the
+	 * header button instead, and it takes the full width when open
+	 * because at this size it is the page rather than a sidebar.
+	 */
+	.tree-panel {
+		display: none;
+	}
+	body.tree-open .tree-panel {
+		display: flex;
+	}
+	/*
+	 * A drag handle for a column that no longer exists at this width.
+	 */
+	#tree-resize-handle {
+		display: none;
+	}
+	/*
+	 * 2rem of overlay padding is a third of a phone's width spent on
+	 * empty margin, and the modal has to be able to scroll internally
+	 * once a soft keyboard has taken the bottom half of the screen.
+	 */
+	.modal-overlay {
+		padding: 0.75rem;
+		align-items: flex-start;
+	}
+	.modal {
+		max-height: calc(100dvh - 1.5rem);
+	}
+	/*
+	 * The toast is anchored to the top-right corner at a desktop width.
+	 * On a phone that leaves it a cramped column against the edge, so
+	 * it spans the width instead.
+	 */
+	.status {
+		left: 0.75rem;
+		right: 0.75rem;
+	}
+	/*
+	 * Tighter spacing so the truncating meta text above keeps as much
+	 * of the build/uptime line as the width allows, and wrapping left
+	 * on as the fallback if the traffic LEDs still do not fit beside
+	 * it.
+	 */
+	.status-bar {
+		flex-wrap: wrap;
+		justify-content: flex-start;
+		gap: 0.4rem 0.75rem;
+		padding: 0.4rem 0.75rem;
+	}
+	/*
+	 * The tree flows with the document on a narrow screen; it does not
+	 * get its own scroll region (#233).
+	 *
+	 * max-height: 40vh made it a nested scroll container, because its
+	 * content is taller than 40% of a phone screen. Two scrollables
+	 * stacked vertically is the classic trapped-gesture bug: a drag
+	 * that starts over the tree scrolls the tree, a drag two pixels
+	 * lower scrolls the page, and neither is what the finger meant.
+	 * The desktop layout is an app shell where exactly one inner
+	 * region scrolls; carrying a piece of that into a document that
+	 * scrolls as a whole gets the worst of both.
+	 *
+	 * This leaves the tree occupying the top of every page, which is
+	 * not the right final answer -- a phone probably wants it behind a
+	 * disclosure rather than always present. That is a design change
+	 * needing a real device to judge, and #233 says so; this is the
+	 * part that is wrong regardless of how that question is settled.
+	 */
+	.tree-panel {
+		height: auto;
+		max-height: none;
+		overflow: visible;
+		border-right: none;
+		border-bottom: 1px solid var(--border);
+	}
+	.tree {
+		overflow: visible;
+	}
+	header {
+		flex-wrap: wrap;
+		row-gap: 0.5rem;
+	}
+	.menu-bar {
+		flex-basis: 100%;
+		order: 2;
+	}
+
+}
+
+@media (max-width: 720px) {
+	main {
+		height: auto;
+		overflow: visible;
+	}
+	#content-scroll {
+		overflow: visible;
+	}
+	#log-panel {
+		flex: 0 0 auto;
+		height: 30vh;
+	}
+}
+
+@media (max-width: 720px) {
+	.detail-table th.field-label {
+		width: 42%;
+	}
 }
