@@ -906,6 +906,14 @@ int pkg_chain_index_for_target(const char *name, const char *image);
  * caller supplies no ?name= -- unambiguous exactly when this returns
  * 1, matching the old single-build behavior.
  */
+/*
+ * Names the chains currently holding a job slot ("name@image, ..."),
+ * comma-separated, and returns how many there are (#246). Empty string
+ * when none. Lets an operator see what is occupying the concurrency
+ * budget instead of inferring it from a refusal.
+ */
+int pkg_active_chain_names(char *out, size_t out_size);
+
 int pkg_active_chain_indices(int *out_indices);
 
 /*

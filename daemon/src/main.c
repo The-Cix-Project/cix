@@ -21316,7 +21316,28 @@ static void respond_pkg_error(int fd, enum pkg_error err)
 		respond_error(fd, 409, "Conflict", "package is already installed");
 		break;
 	case PKG_ERR_BUSY:
-		respond_error(fd, 409, "Conflict", "another package install is already in progress");
+		{
+			/*
+			 * Name what is holding the slots (#246). "Another install
+			 * is in progress" is true and useless: it is the same
+			 * message whether a real build is running or a leaked
+			 * chain slot is holding the budget with nothing behind
+			 * it, and telling those apart used to require reading an
+			 * unrelated endpoint's error text.
+			 */
+			char busy[512];
+			char msg[640];
+			int n = pkg_active_chain_names(busy, sizeof(busy));
+
+			if (n > 0)
+				snprintf(msg, sizeof(msg),
+				         "all %d package job slots are in use (%s) -- wait for one to finish, "
+				         "or cancel it with POST /v1/pkg/cancel",
+				         n, busy);
+			else
+				snprintf(msg, sizeof(msg), "another package install is already in progress");
+			respond_error(fd, 409, "Conflict", msg);
+		}
 		break;
 	case PKG_ERR_FULL:
 		respond_error(fd, 500, "Internal Server Error", "package table full");
@@ -21931,6 +21952,18 @@ static void handle_pkg_build_config_get(int fd)
 
 	jw_init(&w);
 	jw_obj_open(&w);
+	{
+		/* What is actually using the concurrency budget (#246) --
+		 * reported beside the limit, because a limit with no way to
+		 * see the current usage cannot be reasoned about. */
+		char busy[512];
+		int n = pkg_active_chain_names(busy, sizeof(busy));
+
+		jw_key(&w, "active_jobs");
+		jw_int(&w, n);
+		jw_key(&w, "active_job_names");
+		jw_str(&w, busy);
+	}
 	jw_key(&w, "max_concurrent_jobs");
 	jw_int(&w, pkg_build_get_max_jobs());
 	jw_key(&w, "memory_max");
@@ -24108,6 +24141,27 @@ static void handle_pkg_install(int fd, const char *body, size_t body_len)
 	 * first, that dependency (not name itself) is what's actually
 	 * fetching right now, and that's the honest thing to describe.
 	 */
+	/*
+	 * Registered HERE, before anything that can return early (#246).
+	 *
+	 * By this point the chain slot is named, the fetch child is forked,
+	 * and this registration is the only thing that will ever drive the
+	 * chain to completion and free the slot again. These handlers used
+	 * to register it *after* reading the record back for the response,
+	 * and the read-back's own "shouldn't happen" 500 returned without
+	 * registering -- leaving a running child nothing would reap, a
+	 * pidfd nothing would close, and a chain slot permanently marked
+	 * busy. chain_alloc() finds a free slot by that name being empty,
+	 * so each leak costs one of the concurrent-job slots for the life
+	 * of the daemon; at zero, every install and hostbuild is refused
+	 * until a restart.
+	 *
+	 * Ordering it before the response makes it structurally impossible
+	 * to skip, rather than correct only while nobody adds an early
+	 * return between the two.
+	 */
+	register_pkg_fetch_pidfd(pid, pidfd, chain_idx);
+
 	jw_init(&w);
 	if (pkg_get_one(started_name, image, &w) != PKG_OK) {
 		/* shouldn't happen -- pkg_install_start() just created it */
@@ -24118,7 +24172,6 @@ static void handle_pkg_install(int fd, const char *body, size_t body_len)
 		return;
 	}
 	json_free(root);
-	register_pkg_fetch_pidfd(pid, pidfd, chain_idx);
 	respond_json(fd, 202, "Accepted", &w);
 	jw_free(&w);
 }
@@ -24180,6 +24233,9 @@ static void handle_pkg_hostbuild(int fd, const char *body, size_t body_len)
 		return;
 	}
 
+	/* Registered before any early return -- see handle_pkg_install (#246). */
+	register_pkg_fetch_pidfd(pid, pidfd, chain_idx);
+
 	jw_init(&w);
 	if (pkg_get_one(name, PKG_HOSTBUILD_IMAGE, &w) != PKG_OK) {
 		/* shouldn't happen -- pkg_hostbuild_start() just created it */
@@ -24190,7 +24246,6 @@ static void handle_pkg_hostbuild(int fd, const char *body, size_t body_len)
 		return;
 	}
 	json_free(root);
-	register_pkg_fetch_pidfd(pid, pidfd, chain_idx);
 	respond_json(fd, 202, "Accepted", &w);
 	jw_free(&w);
 }
@@ -24634,6 +24689,9 @@ static void handle_kmod_build_post(int fd, const char *body, size_t body_len)
 		return;
 	}
 
+	/* Registered before any early return -- see handle_pkg_install (#246). */
+	register_pkg_fetch_pidfd(pid, pidfd, chain_idx);
+
 	jw_init(&w);
 	if (pkg_get_one("kernel", PKG_HOSTBUILD_IMAGE, &w) != PKG_OK) {
 		jw_free(&w);
@@ -24641,7 +24699,6 @@ static void handle_kmod_build_post(int fd, const char *body, size_t body_len)
 		              "hostbuild started but could not be read back");
 		return;
 	}
-	register_pkg_fetch_pidfd(pid, pidfd, chain_idx);
 	respond_json(fd, 202, "Accepted", &w);
 	jw_free(&w);
 }
@@ -24691,6 +24748,9 @@ static void handle_pkg_update_all(int fd)
 		return;
 	}
 
+	/* Registered before any early return -- see handle_pkg_install (#246). */
+	register_pkg_fetch_pidfd(pid, pidfd, chain_idx);
+
 	jw_init(&w);
 	if (pkg_get_one(started_name, image, &w) != PKG_OK) {
 		/* shouldn't happen -- pkg_install_start() just created it */
@@ -24699,7 +24759,6 @@ static void handle_pkg_update_all(int fd)
 		              "package started but could not be read back");
 		return;
 	}
-	register_pkg_fetch_pidfd(pid, pidfd, chain_idx);
 	respond_json(fd, 202, "Accepted", &w);
 	jw_free(&w);
 }

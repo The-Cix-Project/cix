@@ -14744,6 +14744,20 @@ components:
       type: object
       required: [max_concurrent_jobs, memory_max, cpu_max]
       properties:
+        active_jobs:
+          type: integer
+          description: >
+            How many job slots are currently held, out of
+            max_concurrent_jobs (#246). Read-only, and present on GET
+            only. A limit with no way to see its current usage cannot
+            be reasoned about: before this, the only way to tell a busy
+            host from one whose slots had leaked was an unrelated
+            endpoint's error text.
+        active_job_names:
+          type: string
+          description: >
+            What is holding those slots, as "name@image" entries
+            separated by ", " -- empty when none. Read-only, GET only.
         max_concurrent_jobs:
           type: integer
           minimum: 1

@@ -609,6 +609,41 @@ int pkg_chain_index_for_target(const char *name, const char *image)
  * out_indices must have room for at least PKG_MAX_CONCURRENT_JOBS ints.
  * Returns the number of busy chains found (0..PKG_MAX_CONCURRENT_JOBS).
  */
+/*
+ * The names of the chains currently holding a slot, comma-separated
+ * (#246).
+ *
+ * Nothing reported this, which is why a leaked slot could only ever be
+ * inferred from an unrelated endpoint's error message. A slot is a
+ * finite resource -- chain_alloc() hands out max_concurrent_jobs of
+ * them and pkg_any_job_busy() refuses every new job once none is free
+ * -- so "what is holding them" has to be answerable directly.
+ *
+ * Returns the number of busy chains, and writes an empty string when
+ * there are none.
+ */
+int pkg_active_chain_names(char *out, size_t out_size)
+{
+	int i, count = 0;
+
+	if (out_size > 0)
+		out[0] = '\0';
+	for (i = 0; i < PKG_MAX_CONCURRENT_JOBS; i++) {
+		size_t used;
+
+		if (g_chains[i].name[0] == '\0')
+			continue;
+		count++;
+		if (out_size == 0)
+			continue;
+		used = strlen(out);
+		if (used + strlen(g_chains[i].name) + strlen(g_chains[i].image) + 5 < out_size)
+			snprintf(out + used, out_size - used, "%s%s@%s", used > 0 ? ", " : "",
+			         g_chains[i].name, g_chains[i].image);
+	}
+	return count;
+}
+
 int pkg_active_chain_indices(int *out_indices)
 {
 	int i, count = 0;
