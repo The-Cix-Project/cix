@@ -13191,6 +13191,37 @@ static int cmd_pkg_resume(const struct cix_client *c, int json_mode, int argc, c
 	return emit(&r, json_mode, fmt_pkg_line);
 }
 
+/*
+ * A request that tolerates a daemon which is momentarily too busy to
+ * answer (#252).
+ *
+ * The deploy path polls for minutes while the host is doing the
+ * heaviest work it ever does -- a build container, then a bootroot
+ * assembly. A single missed request in that window used to abort the
+ * whole thing with "could not reach daemon", and the deploy step never
+ * ran: the package installed, nothing was staged, and a reboot came
+ * back on the old version. Observed on three deploys out of six.
+ *
+ * A poll loop that runs for minutes has no business giving up on one
+ * failure. Retries briefly and only then reports failure, so a real
+ * outage is still reported -- just not a hiccup.
+ */
+#define POLL_RETRY_ATTEMPTS 20
+#define POLL_RETRY_SLEEP_US 500000
+
+static int poll_request(const struct cix_client *c, const char *method, const char *path,
+                         struct cix_response *out)
+{
+	int attempt;
+
+	for (attempt = 0; attempt < POLL_RETRY_ATTEMPTS; attempt++) {
+		if (cix_client_request(c, method, path, NULL, out) == 0)
+			return 0;
+		usleep(POLL_RETRY_SLEEP_US);
+	}
+	return -1;
+}
+
 /* Polls GET /v1/pkg/hostbuild/name until state leaves "fetching"/
  * "building" (--wait's own loop, and --deploy's own prerequisite --
  * it needs the finished artifact_path, not the 202's own in-flight
@@ -13206,8 +13237,11 @@ static int poll_hostbuild(const struct cix_client *c, const char *name, struct c
 	for (;;) {
 		const char *state;
 
-		if (cix_client_request(c, "GET", path, NULL, out) != 0) {
-			fprintf(stderr, "cixctl: could not reach daemon\n");
+		if (poll_request(c, "GET", path, out) != 0) {
+			fprintf(stderr,
+			        "cixctl: daemon did not answer after %d attempts while waiting for the "
+			        "build -- nothing was deployed\n",
+			        POLL_RETRY_ATTEMPTS);
 			return -1;
 		}
 		state = json_str_field(out->json, "state");
@@ -13235,9 +13269,11 @@ static int get_bootroot_assembly_generation(const struct cix_client *c, long *ou
 	/* Assembly state moved off /system/boot to its own endpoint
 	 * (#182, ADR-0230): that endpoint's subject is what booted, not
 	 * what is being built. */
-	if (cix_client_request(c, CIX_API_getSystemAssembly_METHOD, CIX_API_getSystemAssembly, NULL,
-	                        &r) != 0) {
-		fprintf(stderr, "cixctl: could not reach daemon\n");
+	if (poll_request(c, CIX_API_getSystemAssembly_METHOD, CIX_API_getSystemAssembly, &r) != 0) {
+		fprintf(stderr,
+		        "cixctl: daemon did not answer after %d attempts while waiting for the bootroot "
+		        "assembly -- nothing was deployed\n",
+		        POLL_RETRY_ATTEMPTS);
 		return -1;
 	}
 	*out_completed = (long)json_as_number(json_object_get(r.json, "completed_generation"));
