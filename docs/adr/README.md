@@ -238,3 +238,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0231](0231-attached-disks-do-not-mount-inside-the-data-directory.md) | Attached disks mount at /mnt/cix on a tmpfs, not inside the data directory | Accepted |
 | [0232](0232-state-lives-on-the-config-partition.md) | State lives on the config partition; the state-storage role is retired | Accepted |
 | [0233](0233-setgroups-stays-permitted-in-a-root-created-userns.md) | setgroups stays permitted in a root-created user namespace | Accepted |
+| [0234](0234-snapshot-containers-migrate-across-disks.md) | Snapshot containers migrate across disks, at the cost of extent sharing | Accepted |
