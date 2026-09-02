@@ -47,7 +47,16 @@ enum diskrole_kind {
 	 * but only one is ever the *active* placement at a time, tracked
 	 * separately (see storageplacement.h). Assigning the role itself
 	 * never moves anything; that's what POST .../migrate is for. */
-	DISKROLE_STATE_STORAGE,
+	/*
+	 * DISKROLE_STATE_STORAGE was here and is retired (#251). It moved
+	 * state onto another disk, and the only reason worth doing that --
+	 * surviving loss of the OS disk -- never worked: the migration
+	 * copied current state onto the disk rather than adopting state
+	 * already there, the record of which disk held state lived on the
+	 * OS disk itself, and boot read only that record. State now lives
+	 * on the config partition, which survives an upgrade and is wiped
+	 * only by a full reinstall; durability is GET /system/backup.
+	 */
 	DISKROLE_REBUILDABLE_STORAGE,
 	DISKROLE_LOG_STORAGE,
 	/*

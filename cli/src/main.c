@@ -291,16 +291,16 @@ static void print_usage(FILE *out)
 	        "  disks rm-partition DISK_NAME PARTITION_NAME  -- removes one partition;\n"
 	        "               refused (409) if it still has a role assigned (diskrole rm first)\n"
 	        "  diskrole create --disk=NAME\n"
-	        "               --role=container-storage|backup|state-storage|rebuildable-storage|log-storage|swap\n"
+	        "               --role=container-storage|backup|rebuildable-storage|log-storage|swap\n"
 	        "               -- assign a persisted role to a disk (never the OS disk)\n"
 	        "  diskrole ls / diskrole rm NAME  -- list assigned roles (with whether each\n"
 	        "               disk is currently present) / remove one; refused (409) if the\n"
-	        "               disk is the active state-storage placement (storage state migrate\n"
+	        "               disk is the active rebuildable/log-storage placement (storage migrate\n"
 	        "               away first)\n"
 	        "  disks format NAME [--fs-type=ext4|btrfs]  -- destructive: mkfs + mount an\n"
 	        "               already role-assigned, non-OS disk (assign a role first via\n"
 	        "               diskrole create); fs_type defaults to ext4; refused (409) if the\n"
-	        "               disk is the active state-storage placement\n"
+	        "               disk is the active storage placement\n"
 	        "  disks format-status NAME  -- state/mount_path/error of the most recent\n"
 	        "               format job for this disk\n"
 	        "  disks unmount NAME  -- a real, synchronous umount2(2) of an already-mounted,\n"
@@ -311,11 +311,11 @@ static void print_usage(FILE *out)
 	        "  storage state [show]  -- which disk (if any) is the active placement for\n"
 	        "               Cix's own state (ADR-0141); default (null) is the OS disk\n"
 	        "  storage state migrate [--disk=NAME]  -- move Cix's own state to a disk\n"
-	        "               already carrying the state-storage role and currently mounted;\n"
+	        "               already carrying the matching role and currently mounted;\n"
 	        "               omit --disk= to migrate back to the default OS-disk placement;\n"
 	        "               async, no pause -- poll storage state migrate-status\n"
 	        "  storage state migrate-status  -- state/disk/error of the most recent (or\n"
-	        "               running) state-storage migration\n"
+	        "               running) storage migration\n"
 	        "  storage logs [show|migrate [--disk=NAME]|migrate-status]  -- same shape as\n"
 	        "               storage state, for where Cix's own consolidated log store\n"
 	        "               (ADR-0070/ADR-0126) lives instead\n"
@@ -1861,7 +1861,7 @@ static int cmd_disks(const struct cix_client *c, int json_mode, int argc, char *
 
 /*
  * ADR-0141 Phase 2: only "state" is wired to a real REST resource yet
- * (GET/POST /v1/system/state-storage(/migrate)) -- "rebuildable"/"logs"
+ * (GET/POST /v1/system/rebuildable-storage(/migrate)) -- "logs"
  * reuse the identical daemon-side machinery once their own phases land
  * (Phase 3/4), at which point they'll take this exact same shape.
  */
@@ -1903,7 +1903,7 @@ static void fmt_storage_migrate_status(const struct json_value *v)
  *
  * That used to be expressed by interpolating a URL segment --
  * snprintf(path, "/v1/system/%s", endpoint) with endpoint being
- * "state-storage" / "log-storage" / "rebuildable-storage". Convenient,
+ * "log-storage" / "rebuildable-storage". Convenient,
  * and exactly the drift ADR-0218 removes: a path assembled from a
  * variable is a path no generated constant covers, so a renamed
  * endpoint would compile here and 404 at runtime. The three paths now
@@ -2010,13 +2010,10 @@ static int cmd_storage(const struct cix_client *c, int json_mode, int argc, char
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: cixctl storage state|logs|rebuildable [show|migrate|migrate-status]\n");
+		fprintf(stderr, "usage: cixctl storage logs|rebuildable [show|migrate|migrate-status]\n");
 		return 2;
 	}
 	sub = argv[0];
-	if (strcmp(sub, "state") == 0)
-		return cmd_storage_kind(c, json_mode, "state", CIX_API_getStateStorage,
-		                         CIX_API_migrateStateStorage, CIX_API_getStateStorageMigrateStatus, argc - 1, argv + 1);
 	if (strcmp(sub, "logs") == 0)
 		return cmd_storage_kind(c, json_mode, "logs", CIX_API_getLogStorage,
 		                         CIX_API_migrateLogStorage, CIX_API_getLogStorageMigrateStatus, argc - 1, argv + 1);
@@ -2024,7 +2021,7 @@ static int cmd_storage(const struct cix_client *c, int json_mode, int argc, char
 		return cmd_storage_kind(c, json_mode, "rebuildable", CIX_API_getRebuildableStorage,
 		                         CIX_API_migrateRebuildableStorage, CIX_API_getRebuildableStorageMigrateStatus, argc - 1, argv + 1);
 
-	fprintf(stderr, "usage: cixctl storage state|logs|rebuildable [show|migrate|migrate-status]\n");
+	fprintf(stderr, "usage: cixctl storage logs|rebuildable [show|migrate|migrate-status]\n");
 	return 2;
 }
 
@@ -6842,7 +6839,7 @@ static int cmd_daemon_config(const struct cix_client *c, int json_mode, int argc
 
 /* ADR-0141 Phase 5: cixctl backup-config show|set|status|snapshot-now
  * -- turns the `backup` disk role from a pure inert label into a real,
- * scheduled state-storage snapshot mechanism. */
+ * scheduled snapshot mechanism. */
 static void fmt_backup_config(const struct json_value *v)
 {
 	const char *disk = json_str_field(v, "disk");

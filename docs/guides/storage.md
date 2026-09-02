@@ -73,12 +73,35 @@ you have to say what a disk is for before you are allowed to wipe it.
 
 ---
 
-## 3. The six roles
+## 3. The roles
+
+### System roles — assigned at install, not by you
+
+The five OS-disk partitions each have a fixed job. They are listed here
+because "what is this partition for" is the same question the roles
+below answer, and leaving them out made the role list look like the
+whole story when it covers only the disks you add.
+
+| Partition | Job | Yours to change |
+|---|---|---|
+| `cix-esp` | The EFI system partition — the bootloader and both slots' kernels | No — protected |
+| `cix-root-a` | Root slot A: one complete operating system | No — protected; replaced by an A/B upgrade |
+| `cix-root-b` | Root slot B: the other one | No — protected; replaced by an A/B upgrade |
+| `cix-config` | Host configuration — `net.conf`, and the platform's own state (networks, DNS/DHCP/NTP/LDAP/syslog, PKI, container definitions, device maps, site identity) | No — protected, but its *contents* are what every configuration endpoint writes |
+| `cix-containers` | The data directory, `/var/lib/cix` — container data, and anything not placed on another disk | **Yes** — not protected; it can take a role, be formatted and be unmounted like any other partition |
+
+The first four are refused a role, a format and an unmount, keyed on
+partition **number** rather than label — a label can be briefly empty
+just after boot, and a protection a rename can lift is not a
+protection. `cix-containers` is deliberately not protected: if you
+sized it smaller than the disk, the free space after it is ordinary
+space you can carve into new partitions.
+
+### Roles you assign
 
 | Role | One per host? | What lives there | What puts it there |
 |---|---|---|---|
 | `container-storage` | No — many disks can have it | A container's own rootfs and data | Per container, at creation: `cixctl run --disk=NAME` ([ADR-0102](../adr/0102-per-container-disk-selection.md)); an existing container moves with `POST /containers/{name}/migrate-storage` |
-| `state-storage` | Yes | The platform's own definition of itself: networks, DNS/LDAP/NTP/syslog config, PKI (CA keys and every issued cert), container definitions, device mappings, site identity, daemon config | `POST /system/state-storage/migrate` — **but see the warning below before using it** ([#251](https://git.home.arpa/itdlabs/cix/issues/251)) |
 | `rebuildable-storage` | Yes | Anything regenerable from recipes and sources: container images, installed packages, build artifacts, staged ISOs | `POST /system/rebuildable-storage/migrate` |
 | `log-storage` | Yes | The consolidated log store | `POST /system/log-storage/migrate` |
 | `swap` | Yes | Backs a host swap file | `POST /system/swap` with a `disk` ([ADR-0069](../adr/0069-host-swap-file.md)) |
@@ -91,25 +114,27 @@ the role marks a disk as an *eligible candidate*. A separate, explicit
 migrate call is what makes one of them the active placement. You can
 have three disks carrying `backup` and none of them in use.
 
-> **`state-storage` does not currently do what it looks like it does.**
-> The only reason worth moving state to another disk is to survive the
-> loss of the OS disk — state is tiny, so capacity and performance are
-> not reasons. That does not work: the migration *copies* the current
-> state onto the disk and never adopts state already there, the record
-> of which disk holds state lives on the OS disk itself, and boot reads
-> only that record. After an OS disk failure the new install does not
-> know the state disk exists, and assigning the role and migrating
-> copies the fresh, empty state over the real one. Use `GET
-> /system/backup` for durability instead, and see
-> [#251](https://git.home.arpa/itdlabs/cix/issues/251).
+> **There used to be a sixth role, `state-storage`, and it is retired**
+> ([#251](https://git.home.arpa/itdlabs/cix/issues/251)). It moved the
+> platform's own state onto another disk. State is tiny, so capacity
+> and performance were never reasons; the only good one was surviving
+> the loss of the OS disk, and that never worked — the migration copied
+> current state onto the disk rather than adopting state already there,
+> the record of which disk held state lived on the OS disk itself, and
+> boot read only that record. State lives on the **config partition**
+> now, and durability is `GET /system/backup`. An upgraded box with the
+> role assigned drops it on first boot, with a log line; the disk and
+> its contents are untouched.
 
-**The split between `state` and `rebuildable` is the one worth
-understanding.** State is what you cannot get back — lose it and your
-CA, your networks and your container definitions are gone. Rebuildable
-is everything the platform can reconstruct from recipes given time and
-bandwidth. They are separated so you can put state on something small
-and reliable and rebuildable on something large and cheap, and so a
-backup only has to cover the first.
+**The split between state and rebuildable content still matters, even
+though only one of them is a role now.** State is what you cannot get
+back — lose it and your CA, your networks and your container
+definitions are gone. Rebuildable content is everything the platform
+can reconstruct from recipes given time and bandwidth. They live in
+different places for that reason: state on the config partition, which
+is small and survives an upgrade, and rebuildable content wherever you
+point `rebuildable-storage`, which is usually the largest thing on the
+box. A backup only has to cover the first.
 
 ---
 
@@ -131,9 +156,6 @@ In rough order of how often it is worth doing:
   demand.
 - **Backups landing somewhere other than the machine they protect** →
   `backup`.
-- **State on more reliable hardware than the rest** → `state-storage`.
-  Least commonly needed, because state is small — but it is the content
-  whose loss actually hurts.
 
 You do **not** need a disk per role. One extra disk given
 `rebuildable-storage` is a complete and sensible setup.
@@ -245,7 +267,6 @@ way to change your mind:
 
 ```
 POST /v1/system/rebuildable-storage/migrate   {"disk": "sdb"}
-POST /v1/system/state-storage/migrate         {"disk": "sdb"}
 POST /v1/system/log-storage/migrate           {"disk": "sdb"}
 POST /v1/containers/{name}/migrate-storage    {"disk": "sdb"}
 ```
@@ -272,7 +293,7 @@ is worth stating exactly:
 | | A/B upgrade | Full reinstall | Factory reset |
 |---|---|---|---|
 | **Root slots** (`cix-root-a`/`b`) | Replaced — that *is* the upgrade | Replaced | Untouched |
-| **`/config`** (`cix-config`) | **Survives** | Reformatted | Untouched today |
+| **`/config`** (`cix-config`) | **Survives** | Reformatted | Untouched today — including the platform's own state, which lives here |
 | **`cix-containers`** (`/var/lib/cix`) | Survives | Reformatted | State, containers, rebuildable content, logs and volumes are removed |
 | **Attached disks** | Survive | Survive (not touched by the installer) | Their mountpoints are forgotten; the disks themselves are never reformatted |
 

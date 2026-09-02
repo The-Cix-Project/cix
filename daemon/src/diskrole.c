@@ -39,8 +39,6 @@ static const char *role_str(enum diskrole_kind role)
 	switch (role) {
 	case DISKROLE_CONTAINER_STORAGE:
 		return "container-storage";
-	case DISKROLE_STATE_STORAGE:
-		return "state-storage";
 	case DISKROLE_REBUILDABLE_STORAGE:
 		return "rebuildable-storage";
 	case DISKROLE_LOG_STORAGE:
@@ -59,8 +57,6 @@ static int role_from_str(const char *s, enum diskrole_kind *out)
 		*out = DISKROLE_CONTAINER_STORAGE;
 	else if (strcmp(s, "backup") == 0)
 		*out = DISKROLE_BACKUP;
-	else if (strcmp(s, "state-storage") == 0)
-		*out = DISKROLE_STATE_STORAGE;
 	else if (strcmp(s, "rebuildable-storage") == 0)
 		*out = DISKROLE_REBUILDABLE_STORAGE;
 	else if (strcmp(s, "log-storage") == 0)
@@ -190,6 +186,24 @@ static int load_state(void)
 		const char *fs_type = json_as_string(json_object_get(item, "fs_type"));
 		enum diskrole_kind role_kind;
 
+		/*
+		 * A retired role is skipped, not fatal (#251).
+		 *
+		 * "state-storage" was a real, assignable role, so an upgraded
+		 * box can have one persisted. Treating it like any other
+		 * unknown value would fail diskrole_init() and refuse the
+		 * boot -- turning the retirement of an unused feature into an
+		 * unbootable machine. The disk keeps its filesystem and its
+		 * data; it simply has no role any more, which is exactly what
+		 * retiring the role means.
+		 */
+		if (role != NULL && strcmp(role, "state-storage") == 0) {
+			fprintf(stderr,
+			        "%s: dropping retired 'state-storage' role on %s -- state lives on the "
+			        "config partition now (#251); the disk and its contents are untouched\n",
+			        g_state_path, disk_name != NULL ? disk_name : "?");
+			continue;
+		}
 		if (!simple_name_is_valid(disk_name, DISKROLE_DISK_NAME_MAX) || role == NULL ||
 		    role_from_str(role, &role_kind) != 0) {
 			json_free(root);

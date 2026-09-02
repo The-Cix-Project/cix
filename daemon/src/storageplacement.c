@@ -14,8 +14,6 @@ static char g_disk[STORAGE_KIND_COUNT][DISKROLE_DISK_NAME_MAX];
 static const char *kind_key(enum storage_kind kind)
 {
 	switch (kind) {
-	case STORAGE_KIND_STATE:
-		return "state";
 	case STORAGE_KIND_REBUILDABLE:
 		return "rebuildable";
 	case STORAGE_KIND_LOG:
@@ -23,7 +21,7 @@ static const char *kind_key(enum storage_kind kind)
 	case STORAGE_KIND_SWAP:
 		return "swap";
 	default:
-		return "state";
+		return "rebuildable";
 	}
 }
 
@@ -46,7 +44,14 @@ static int load_state(void)
 		return -1;
 	}
 
-	for (kind = STORAGE_KIND_STATE; kind <= STORAGE_KIND_SWAP; kind++) {
+	/*
+	 * An upgraded box's file may still carry a "state" key from the
+	 * retired state-storage placement (#251). Nothing reads it any
+	 * more, so it is ignored rather than rejected -- the loop simply
+	 * starts at the first live kind -- and the next save drops it.
+	 */
+
+	for (kind = STORAGE_KIND_REBUILDABLE; kind <= STORAGE_KIND_SWAP; kind++) {
 		const struct json_value *jdisk = json_object_get(root, kind_key(kind));
 		const char *disk;
 
@@ -76,7 +81,7 @@ static enum storageplacement_error save_state(void)
 
 	jw_init(&w);
 	jw_obj_open(&w);
-	for (kind = STORAGE_KIND_STATE; kind <= STORAGE_KIND_SWAP; kind++) {
+	for (kind = STORAGE_KIND_REBUILDABLE; kind <= STORAGE_KIND_SWAP; kind++) {
 		jw_key(&w, kind_key(kind));
 		if (g_disk[kind][0] != '\0')
 			jw_str(&w, g_disk[kind]);
@@ -100,7 +105,7 @@ int storageplacement_init(const char *state_path)
 
 const char *storageplacement_get(enum storage_kind kind)
 {
-	if (kind < STORAGE_KIND_STATE || kind > STORAGE_KIND_SWAP)
+	if (kind < STORAGE_KIND_REBUILDABLE || kind > STORAGE_KIND_SWAP)
 		return NULL;
 	return g_disk[kind][0] != '\0' ? g_disk[kind] : NULL;
 }
@@ -110,7 +115,7 @@ enum storageplacement_error storageplacement_set(enum storage_kind kind, const c
 	char prev[DISKROLE_DISK_NAME_MAX];
 	enum storageplacement_error err;
 
-	if (kind < STORAGE_KIND_STATE || kind > STORAGE_KIND_SWAP)
+	if (kind < STORAGE_KIND_REBUILDABLE || kind > STORAGE_KIND_SWAP)
 		return STORAGEPLACEMENT_ERR_PERSIST_FAILED;
 
 	snprintf(prev, sizeof(prev), "%s", g_disk[kind]);

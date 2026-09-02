@@ -14,19 +14,25 @@
  * determined, so it can't live inside the thing it's describing.
  *
  * A NULL placement (the default, and what every fresh install starts
- * with) means "the default OS-disk location" -- STATE_DIR/REBUILDABLE_
- * DIR/LOG_DIR's own g_base_dir-relative default, unchanged from before
+ * with) means "the default OS-disk location" -- REBUILDABLE_DIR/
+ * LOG_DIR's own g_base_dir-relative default, unchanged from before
  * this feature existed. A non-NULL placement names a real disk (by its
  * disk_enumerate() name, e.g. "sdc") that must carry the matching role
- * (diskrole.h's DISKROLE_STATE_STORAGE for STORAGE_KIND_STATE, etc.)
+ * (diskrole.h's DISKROLE_REBUILDABLE_STORAGE for
+ * STORAGE_KIND_REBUILDABLE, etc.)
  * and be currently mounted for the daemon to actually use it -- this
  * module only stores the pointer, storagemigrate.c and main.c's own
  * boot-time resolution are what act on it.
  */
 
 enum storage_kind {
-	STORAGE_KIND_STATE = 0,
-	STORAGE_KIND_REBUILDABLE,
+	/*
+	 * STORAGE_KIND_STATE was first here and is retired (#251) -- state
+	 * is no longer relocatable at all, it lives on the config
+	 * partition. A legacy "state" key in the persisted placement file
+	 * is simply not read any more; see load_state().
+	 */
+	STORAGE_KIND_REBUILDABLE = 0,
 	STORAGE_KIND_LOG,
 	/*
 	 * issue #28: unlike the three above, swap has no live directory of

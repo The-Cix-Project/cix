@@ -236,3 +236,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0229](0229-installer-media-carries-a-package-seed.md) | Installer media carries a package seed, so a fresh box can name the network | Accepted |
 | [0230](0230-the-five-lifecycle-domains.md) | The platform has five lifecycle domains, named in the CLI and the docs, not in URLs | Accepted |
 | [0231](0231-attached-disks-do-not-mount-inside-the-data-directory.md) | Attached disks mount at /mnt/cix on a tmpfs, not inside the data directory | Accepted |
+| [0232](0232-state-lives-on-the-config-partition.md) | State lives on the config partition; the state-storage role is retired | Accepted |
