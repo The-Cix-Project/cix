@@ -108,6 +108,10 @@
  * exact same host-side curl binary every recipe source fetch already
  * uses, one real path, not two copies of the literal string. */
 #define PKG_CURL_BIN "/usr/bin/curl"
+/* Space-separated capability names a recipe may request for its build
+ * container (#224) -- room for a handful, not a policy surface. */
+#define PKG_BUILD_CAPS_MAX 128
+
 #define PKG_DEPENDS_MAX 256
 /* ADR-0176: optional pkg_changelog= -- one short, single-line, free-text
  * summary of what changed in this specific published version (a commit

@@ -204,6 +204,24 @@ struct pkg_recipe {
 	 * on the way out -- see ADR-0199.
 	 */
 	char build_depends[PKG_DEPENDS_MAX];
+	/*
+	 * Capabilities this recipe's BUILD container needs, space
+	 * separated, normally empty (issue #224).
+	 *
+	 * Exists for exactly one shape of recipe: one whose build has to
+	 * create containers. This platform's own test suite is that -- 50
+	 * of its tests create real containers, bridges and namespaces, and
+	 * a build container cannot, measured directly (no CLONE_NEWNET, no
+	 * CLONE_NEWNS, no mount, no cgroup tree).
+	 *
+	 * Declared in the recipe rather than configured on the host,
+	 * because it is a property of what the build DOES, and a recipe is
+	 * immutable and reviewable. It grants nothing a recipe did not
+	 * already effectively have: a build script already runs as uid 0
+	 * inside a user-namespaced container, so this widens what that
+	 * confined root may do to ITSELF, not what it may do to the host.
+	 */
+	char build_caps[PKG_BUILD_CAPS_MAX];
 	/* ADR-0122: optional -- empty means this recipe never opts into
 	 * precompiled-artifact fetch, always builds from source. When set,
 	 * it's the ONLY thing that makes a fetched artifact trustworthy: a
@@ -971,6 +989,7 @@ static int parse_recipe(const char *path, struct pkg_recipe *out)
 	 * if absent */
 	extract_line_value(buf, "pkg_depends=", out->depends, sizeof(out->depends));
 	extract_line_value(buf, "pkg_build_depends=", out->build_depends, sizeof(out->build_depends));
+	extract_line_value(buf, "pkg_build_caps=", out->build_caps, sizeof(out->build_caps));
 	extract_line_value(buf, "pkg_artifact_sha256=", out->artifact_sha256,
 	                    sizeof(out->artifact_sha256));
 	extract_line_value(buf, "pkg_changelog=", out->changelog, sizeof(out->changelog));
@@ -5174,6 +5193,39 @@ static int start_build_container_spec(int chain_idx, struct pkg_entry *e,
 	snprintf(e->build_cgroup_path, sizeof(e->build_cgroup_path), "%s/%s",
 	         PKG_BUILD_CGROUP_PARENT, e->build_container_name);
 	spec_out->cg.name = e->build_cgroup_path;
+
+	/*
+	 * Capabilities this recipe asked its build container for (#224).
+	 *
+	 * Unknown names are refused by container_caps_parse() downstream
+	 * rather than silently dropped -- a recipe that asks for something
+	 * this platform will not grant should fail loudly, not build in a
+	 * weaker environment than it declared and then fail somewhere less
+	 * obvious.
+	 */
+	if (recipe.build_caps[0] != '\0') {
+		const char *p = recipe.build_caps;
+
+		spec_out->cap_add_count = 0;
+		while (*p != '\0' && spec_out->cap_add_count < CONTAINER_MAX_CAP_ADD) {
+			size_t n = 0;
+
+			while (*p == ' ' || *p == '\t')
+				p++;
+			while (p[n] != '\0' && p[n] != ' ' && p[n] != '\t')
+				n++;
+			if (n == 0)
+				break;
+			if (n >= CONTAINER_CAP_NAME_MAX)
+				n = CONTAINER_CAP_NAME_MAX - 1;
+			memcpy(spec_out->cap_add[spec_out->cap_add_count], p, n);
+			spec_out->cap_add[spec_out->cap_add_count][n] = '\0';
+			spec_out->cap_add_count++;
+			p += n;
+		}
+		logstore_write("cixd", "info", "pkg %s@%s: build container requests capabilities: %s",
+		               e->name, e->image, recipe.build_caps);
+	}
 	spec_out->ov.lowerdir = e->build_lowerdir;
 	spec_out->ov.upperdir = e->build_upperdir;
 	spec_out->ov.workdir = e->build_workdir;
