@@ -116,6 +116,16 @@ struct stall_shared {
 	 */
 	volatile int probe_port;
 	char probe_host[64];
+	/*
+	 * When the service probe last got an answer, and how many it has
+	 * sent. Reported by GET /system/stalls, because "no stall records"
+	 * is ambiguous on its own: a probe that never runs and a probe that
+	 * always succeeds both write nothing. A detector whose armed state
+	 * cannot be seen is one nobody can trust -- the same lesson #246
+	 * produced for the job-slot budget.
+	 */
+	volatile long long probe_last_ok_monotonic;
+	volatile unsigned long long probe_count;
 };
 
 /*
@@ -505,7 +515,9 @@ static void watchdog_main(pid_t watched)
 			last_probe = now;
 			snprintf(host, sizeof(host), "%s", g_shared->probe_host);
 			ok = probe_once(host, g_shared->probe_port, PROBE_TIMEOUT_MS) == 0;
+			g_shared->probe_count++;
 			if (ok) {
+				g_shared->probe_last_ok_monotonic = now;
 				if (in_service_stall) {
 					append_record("service-recovered", now - unserved_since, watched);
 					in_service_stall = 0;
@@ -703,6 +715,25 @@ void stallwatch_write_loop_json(struct json_writer *w)
 	jw_str(w, (g_shared != NULL && g_shared->pass_worst_activity[0] != '\0')
 	                  ? g_shared->pass_worst_activity
 	                  : "");
+	/*
+	 * Whether the service probe is actually armed, and when it last got
+	 * an answer (#247).
+	 *
+	 * Without this, "no service-stall records" means either "the daemon
+	 * has been answering" or "nothing has ever asked it" -- and those
+	 * are opposite conclusions. An operator reading this should be able
+	 * to tell a working detector from a silent one without reading the
+	 * source.
+	 */
+	jw_key(w, "service_probe_armed");
+	jw_bool(w, g_shared != NULL && g_shared->probe_port != 0);
+	jw_key(w, "service_probes_sent");
+	jw_int(w, g_shared != NULL ? (long long)g_shared->probe_count : 0);
+	jw_key(w, "service_last_ok_seconds_ago");
+	if (g_shared != NULL && g_shared->probe_last_ok_monotonic != 0)
+		jw_int(w, monotonic_seconds() - (long long)g_shared->probe_last_ok_monotonic);
+	else
+		jw_null(w);
 	jw_obj_close(w);
 }
 

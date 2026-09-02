@@ -2879,6 +2879,25 @@ paths:
                           was busy with work no client asked for, which
                           is itself the useful answer and the case that
                           used to be invisible.
+                      service_probe_armed:
+                        type: boolean
+                        description: >
+                          Whether the watchdog is asking the daemon
+                          whether it answers (#247). False during early
+                          startup, before the port is final. Reported
+                          because "no service-stall records" otherwise
+                          means either "it has been answering" or
+                          "nothing ever asked" -- opposite conclusions.
+                      service_probes_sent:
+                        type: integer
+                        description: How many probes the watchdog has sent since boot.
+                      service_last_ok_seconds_ago:
+                        type: integer
+                        nullable: true
+                        description: >
+                          How long ago the last probe was answered; null
+                          if none ever has been. On a healthy daemon this
+                          stays under the probe interval.
 
   /system/kernel-policy:
     get:

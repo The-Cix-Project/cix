@@ -2091,7 +2091,8 @@ GET /v1/system/stalls
  ],
  "threshold_seconds": 5,
  "loop": {"worst_pass_ms": 3120, "last_pass_ms": 1, "slow_passes": 47,
-          "slow_pass_threshold_ms": 750, "worst_pass_activity": ""}}
+          "slow_pass_threshold_ms": 750, "worst_pass_activity": "",
+           "service_probe_armed": true, "service_probes_sent": 412, "service_last_ok_seconds_ago": 2}}
 ```
 
 **Three different questions, because a daemon can fail all three ways separately.** `stall`/`recovered` answer *is the loop turning* — a heartbeat the loop bumps each pass, watched by a forked child. `slow-pass` answers *how long does one turn take*, which is the latency floor every waiting client is subject to. `service-stall`/`service-recovered` answer the one that actually matters to a client — *is it answering* — and it exists because a daemon satisfied the first two while serving nobody: it kept accepting connections and replying to none, so the heartbeat stayed fresh and every pass looked fast ([#247](https://git.home.arpa/itdlabs/cix/issues/247)). That state left no record anywhere and needed a physical reset.
