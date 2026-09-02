@@ -7,7 +7,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <poll.h>
 #include <sys/mman.h>
+#include <sys/socket.h>
 #include <sys/prctl.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
@@ -29,6 +33,19 @@
  * end is unknown. */
 #define STALL_REPEAT_SECONDS 30
 #define STALL_ACTIVITY_MAX 192
+/*
+ * How often the watchdog asks the daemon whether it is serving, how
+ * long it waits for an answer, and how many consecutive refusals make
+ * it a reportable stall (#247).
+ *
+ * Two failures rather than one: a single missed answer during a heavy
+ * moment is not a wedge, and a diagnostic that cries wolf is one nobody
+ * reads. Two at this spacing means roughly ten seconds with no answer,
+ * which no healthy request on this daemon has ever taken.
+ */
+#define PROBE_INTERVAL_SECONDS 5
+#define PROBE_TIMEOUT_MS 4000
+#define PROBE_FAILURES_FOR_STALL 2
 
 struct stall_shared {
 	/* Monotonic seconds at the last heartbeat. Read by the child while
@@ -87,6 +104,18 @@ struct stall_shared {
 	 * driven by a known endpoint reported no activity at all.
 	 */
 	char pass_activity[STALL_ACTIVITY_MAX];
+	/*
+	 * Where the watchdog should ask the daemon whether it is actually
+	 * SERVING (#247).
+	 *
+	 * Published by the parent once the port is final rather than passed
+	 * to stallwatch_start(), because the port is not known that early
+	 * -- daemon_config_init() may still override it. Zero means "not
+	 * yet, do not probe", which is also the right behaviour during
+	 * startup.
+	 */
+	volatile int probe_port;
+	char probe_host[64];
 };
 
 /*
@@ -301,6 +330,80 @@ static void append_slow_pass_record(long long worst_millis, unsigned long long c
 	append_line(line, len);
 }
 
+/*
+ * One end-to-end liveness question, asked the way a client would.
+ *
+ * The watchdog's other signals are all inferences from shared memory:
+ * the loop's heartbeat says it is turning, and the pass timer says how
+ * long a turn takes. A daemon can satisfy both and serve nobody, which
+ * is exactly what #247 was: the loop kept accepting connections and
+ * answering none, so `quiet_for` stayed at zero and every pass looked
+ * fast. Nothing was wrong with the measurements; they were answers to
+ * different questions.
+ *
+ * This asks the only question that matters to a client, and it is
+ * asked from a separate process that cannot itself be wedged by the
+ * one it is watching. Returns 0 if the daemon answered, -1 otherwise.
+ *
+ * Deliberately the plain-HTTP health endpoint: no auth, no TLS, no
+ * parsing beyond "did any byte come back". Anything more would be a
+ * second HTTP client living in a diagnostic.
+ */
+static int probe_once(const char *host, int port, int timeout_ms)
+{
+	int fd;
+	struct sockaddr_in sa;
+	struct pollfd pfd;
+	static const char req[] = "GET /v1/health HTTP/1.0\r\nConnection: close\r\n\r\n";
+	char buf[64];
+	int err = 0;
+	socklen_t errlen = sizeof(err);
+
+	memset(&sa, 0, sizeof(sa));
+	sa.sin_family = AF_INET;
+	sa.sin_port = htons((unsigned short)port);
+	if (inet_pton(AF_INET, host, &sa.sin_addr) != 1) {
+		/* A non-literal bind address (a name, or "*") is not something
+		 * a diagnostic should be resolving. Probe the loopback the
+		 * daemon is also listening on. */
+		if (inet_pton(AF_INET, "127.0.0.1", &sa.sin_addr) != 1)
+			return -1;
+	}
+
+	fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+	if (fd < 0)
+		return -1;
+	if (connect(fd, (struct sockaddr *)&sa, sizeof(sa)) != 0 && errno != EINPROGRESS) {
+		close(fd);
+		return -1;
+	}
+	pfd.fd = fd;
+	pfd.events = POLLOUT;
+	if (poll(&pfd, 1, timeout_ms) != 1) {
+		close(fd);
+		return -1;
+	}
+	if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &errlen) != 0 || err != 0) {
+		close(fd);
+		return -1;
+	}
+	if (write(fd, req, sizeof(req) - 1) != (ssize_t)(sizeof(req) - 1)) {
+		close(fd);
+		return -1;
+	}
+	pfd.events = POLLIN;
+	if (poll(&pfd, 1, timeout_ms) != 1) {
+		close(fd);
+		return -1;
+	}
+	if (read(fd, buf, sizeof(buf)) <= 0) {
+		close(fd);
+		return -1;
+	}
+	close(fd);
+	return 0;
+}
+
 static void watchdog_main(pid_t watched)
 {
 	int in_stall = 0;
@@ -308,6 +411,10 @@ static void watchdog_main(pid_t watched)
 	long long last_reported = 0;
 	unsigned long long last_slow_count = 0;
 	long long last_slow_report = 0;
+	long long last_probe = 0;
+	long long unserved_since = 0;
+	int probe_failures = 0;
+	int in_service_stall = 0;
 
 	/* Die with the parent: a watchdog outliving what it watches is
 	 * just a stray process. */
@@ -382,6 +489,44 @@ static void watchdog_main(pid_t watched)
 		}
 
 		/*
+		 * Separately from both: is the daemon actually SERVING? (#247)
+		 *
+		 * The two checks above ask whether the loop is turning and how
+		 * long a turn takes. A daemon can pass both and answer nobody
+		 * -- accepting connections and never replying keeps the
+		 * heartbeat fresh and every pass short. That state left no
+		 * record at all until this, and it is the state that requires
+		 * a physical reset.
+		 */
+		if (g_shared->probe_port != 0 && now - last_probe >= PROBE_INTERVAL_SECONDS) {
+			char host[sizeof(g_shared->probe_host)];
+			int ok;
+
+			last_probe = now;
+			snprintf(host, sizeof(host), "%s", g_shared->probe_host);
+			ok = probe_once(host, g_shared->probe_port, PROBE_TIMEOUT_MS) == 0;
+			if (ok) {
+				if (in_service_stall) {
+					append_record("service-recovered", now - unserved_since, watched);
+					in_service_stall = 0;
+				}
+				probe_failures = 0;
+			} else {
+				if (probe_failures == 0)
+					unserved_since = now;
+				probe_failures++;
+				if (!in_service_stall && probe_failures >= PROBE_FAILURES_FOR_STALL) {
+					in_service_stall = 1;
+					last_reported = now;
+					append_record("service-stall", now - unserved_since, watched);
+				} else if (in_service_stall && now - last_reported >= STALL_REPEAT_SECONDS) {
+					last_reported = now;
+					append_record("service-stall-continues", now - unserved_since, watched);
+				}
+			}
+		}
+
+		/*
 		 * Separately from any stall: is the loop turning slowly?
 		 *
 		 * Reported at most once per STALL_REPEAT_SECONDS so a sustained
@@ -404,6 +549,20 @@ static void watchdog_main(pid_t watched)
 			}
 		}
 	}
+}
+
+/*
+ * Tells the watchdog where to ask (#247). Called once the bind address
+ * and port are final -- which is later than stallwatch_start(), since
+ * daemon_config_init() can still override the port.
+ */
+void stallwatch_set_probe(const char *host, int port)
+{
+	if (g_shared == NULL)
+		return;
+	snprintf((char *)g_shared->probe_host, sizeof(g_shared->probe_host), "%s",
+	         host != NULL ? host : "127.0.0.1");
+	g_shared->probe_port = port;
 }
 
 int stallwatch_start(const char *records_path)

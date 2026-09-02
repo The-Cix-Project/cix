@@ -2808,7 +2808,20 @@ paths:
                           type: integer
                         event:
                           type: string
-                          enum: [stall, stall-continues, recovered]
+                          enum: [stall, stall-continues, recovered, slow-pass,
+                                 service-stall, service-stall-continues, service-recovered]
+                          description: >
+                            `stall`/`recovered` mean the event loop stopped
+                            turning. `slow-pass` means it turned, slowly.
+                            `service-stall`/`service-recovered` mean something
+                            different and worse: the loop was turning and the
+                            daemon answered nothing (#247). A watchdog process
+                            that cannot itself be wedged asks the health
+                            endpoint every few seconds and records two
+                            consecutive unanswered probes -- the only signal
+                            that sees a daemon which accepts connections and
+                            replies to none, which is the state that has
+                            required a physical reset.
                         seconds:
                           type: integer
                         state:
