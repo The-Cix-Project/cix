@@ -198,6 +198,43 @@ int container_create(const struct container_spec *spec, struct container_handle 
 		return -1;
 
 	/*
+	 * A container trusted with CAP_SYS_ADMIN gets its own cgroup
+	 * subtree too (#224).
+	 *
+	 * Implicit rather than a separate knob, because the alternative is
+	 * incoherent: CAP_SYS_ADMIN already lets this container unshare a
+	 * cgroup namespace and mount cgroup2 -- both measured working --
+	 * and withholding the chown leaves it able to mount the tree and
+	 * unable to write one directory in it. Delegation adds strictly
+	 * less than the capability it follows.
+	 *
+	 * Only for a userns container, and that is the safety argument: the
+	 * subtree is handed to a MAPPED uid that owns nothing on the host,
+	 * so "root of its own cgroups" is not root of anything else. A
+	 * non-userns container's root is real root, where a chown would
+	 * mean nothing and delegation would be a fiction.
+	 *
+	 * Non-fatal: a host whose cgroup layout refuses this still runs the
+	 * container, exactly as it did before. It simply cannot nest.
+	 */
+	if (spec->userns_enabled) {
+		int wants_admin = 0;
+
+		for (i = 0; i < spec->cap_add_count; i++) {
+			if (strcmp(spec->cap_add[i], "CAP_SYS_ADMIN") == 0) {
+				wants_admin = 1;
+				break;
+			}
+		}
+		if (wants_admin &&
+		    cgroup_delegate(&spec->cg, spec->userns_uid_base, spec->userns_gid_base) != 0)
+			fprintf(stderr,
+			        "container_create: cgroup delegation failed for %s -- it will run but "
+			        "cannot create nested containers\n",
+			        spec->cg.name);
+	}
+
+	/*
 	 * Before ns_clone3(): CLONE_INTO_CGROUP places the child into
 	 * cgroup_fd atomically as part of that syscall, so the device
 	 * policy must already be attached for there to be no race window,

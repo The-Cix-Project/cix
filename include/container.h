@@ -489,6 +489,31 @@ struct container_handle {
 int cgroup_create(const struct cgroup_limits *lim, int *out_fd);
 
 /*
+ * Hands a container's own cgroup subtree to it, so it can create
+ * cgroups inside it (issue #224).
+ *
+ * A container running this platform's own test suite has to create
+ * containers, and creating a container means creating a cgroup. With
+ * CAP_SYS_ADMIN it can already unshare a cgroup namespace and mount
+ * cgroup2 -- measured directly -- and then cannot write a single
+ * directory inside it, because the cgroup belongs to real root while
+ * the container's root is a mapped uid. Kernel-documented delegation is
+ * the answer, and it is a chown rather than a capability: the directory
+ * plus cgroup.procs, cgroup.subtree_control and cgroup.threads, the
+ * exact set the kernel's delegation guidance names. systemd does the
+ * same thing for the same reason.
+ *
+ * Deliberately NOT delegating the resource-limit files (memory.max,
+ * pids.max, cpu.max): those are the budget this platform imposed, and a
+ * delegatee that can raise its own limits has not been limited. The
+ * kernel's delegation model is built around exactly that split, which
+ * is why it names only the four.
+ *
+ * uid/gid are the container's own mapped base -- its root.
+ */
+int cgroup_delegate(const struct cgroup_limits *lim, long long uid, long long gid);
+
+/*
  * Records "prefix: strerror(errno)" as container_create_last_error_
  * step()'s own return value -- called from cgroup.c and container.c
  * alike (both are parent-side, single-threaded, pre-clone3 failure
