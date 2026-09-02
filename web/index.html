@@ -154,13 +154,27 @@
 	</nav>
 
 	<div class="header-right">
+		<!--
+		  Phone-only (#233). The tree is the first thing on the page in
+		  source order, so on a narrow screen it filled the entire first
+		  screen and pushed every bit of actual content below the fold --
+		  opening the dashboard on a phone showed twenty tree rows and no
+		  content at all. It is a disclosure here rather than deleted,
+		  because the menu bar navigates to list pages while the tree
+		  reaches a named instance directly, and that is worth keeping
+		  one tap away. Hidden from the desktop layout entirely, where
+		  the tree is a permanent column and this button would be noise.
+		-->
+		<button type="button" id="tree-disclosure" class="tree-disclosure button-small"
+		        aria-expanded="false" aria-controls="tree-panel"
+		        title="Show or hide the navigation tree">Browse</button>
 		<button type="button" id="theme-toggle" class="button-small" title="Cycle theme: auto / light / dark"></button>
 		<span id="auth-status" class="badge badge-ok" hidden></span>
 	</div>
 </header>
 
 <div class="layout">
-	<div class="tree-panel">
+	<div class="tree-panel" id="tree-panel">
 		<div id="tree-instance-label" class="tree-instance-label" hidden></div>
 		<nav id="tree" class="tree"></nav>
 		<div id="tree-resize-handle" class="resize-handle resize-handle-v" title="Drag to resize"></div>
