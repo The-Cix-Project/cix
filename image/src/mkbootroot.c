@@ -523,20 +523,6 @@ int main(int argc, char **argv)
 			 */
 			{ "/usr/sbin/mkfs.btrfs", "usr/sbin/mkfs.btrfs" },
 			/*
-			 * btrfs -- DISKPART_BTRFS_BIN, daemon/src/diskpart.c
-			 * (issue #163). The other half of the same story as
-			 * mkfs.btrfs above: the platform could CREATE a btrfs
-			 * filesystem and then do nothing whatsoever to maintain
-			 * one. Growing a partition is two operations, and for
-			 * btrfs the second is `btrfs filesystem resize max`, so
-			 * without this a grown btrfs disk reports success and
-			 * gains no usable space. btrfs-progs 7.1-8 is the first
-			 * revision that builds and installs this binary at all --
-			 * before it the package shipped only mkfs.btrfs, so there
-			 * was nothing here to stage.
-			 */
-			{ "/usr/sbin/btrfs", "usr/sbin/btrfs" },
-			/*
 			 * sfdisk -- DISKPART_SFDISK_BIN, daemon/src/diskpart.c
 			 * (partition-level disk management, ADR-0158). This was
 			 * missing from the moment that feature shipped, which is
@@ -692,6 +678,33 @@ int main(int argc, char **argv)
 				 */
 				{ "/bin/rm", "usr/bin/rm", "bin/rm" }, /* coreutils.recipe itself installs rm under usr/bin/rm */
 				{ "/usr/bin/gzip", "usr/bin/gzip", "usr/bin/gzip" },
+				/*
+				 * btrfs -- DISKPART_BTRFS_BIN, daemon/src/diskpart.c
+				 * (issue #163). The other half of mkfs.btrfs's story:
+				 * the platform could CREATE a btrfs filesystem and do
+				 * nothing whatsoever to maintain one, so a grown btrfs
+				 * partition reported success and gained no usable
+				 * space.
+				 *
+				 * HERE rather than in shelled_bins[] above, and that
+				 * distinction cost a build. shelled_bins[] sources from
+				 * the build host's own filesystem, which on a Cix host
+				 * is the running control-plane root -- and that root
+				 * only contains what a PREVIOUS mkbootroot staged into
+				 * it. A binary that has never been staged is therefore
+				 * not there to stage, and the assembly dies with
+				 * "/usr/sbin/btrfs: No such file or directory". Anything
+				 * genuinely new has to come from cix-hosttools, which
+				 * is what host_tools_dir is. mkfs.btrfs gets away with
+				 * shelled_bins[] only because it was first staged back
+				 * when mkbootroot ran on a dev host with a full /usr.
+				 *
+				 * The dev fallback is /usr/bin/btrfs, not /usr/sbin: a
+				 * merged-usr dev host puts it there, the same mismatch
+				 * between fallback path and rootfs path that rm above
+				 * documents.
+				 */
+				{ "/usr/bin/btrfs", "usr/sbin/btrfs", "usr/sbin/btrfs" },
 				/*
 				 * mksquashfs (issue #146). ADR-0078 called the
 				 * host_tools_dir == "" path a safe fallback -- "a box
