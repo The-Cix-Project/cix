@@ -78,7 +78,7 @@ you have to say what a disk is for before you are allowed to wipe it.
 | Role | One per host? | What lives there | What puts it there |
 |---|---|---|---|
 | `container-storage` | No — many disks can have it | A container's own rootfs and data | Per container, at creation: `cixctl run --disk=NAME` ([ADR-0102](../adr/0102-per-container-disk-selection.md)); an existing container moves with `POST /containers/{name}/migrate-storage` |
-| `state-storage` | Yes | The platform's own definition of itself: networks, DNS/LDAP/NTP/syslog config, PKI (CA keys and every issued cert), container definitions, device mappings, site identity, daemon config | `POST /system/state-storage/migrate` |
+| `state-storage` | Yes | The platform's own definition of itself: networks, DNS/LDAP/NTP/syslog config, PKI (CA keys and every issued cert), container definitions, device mappings, site identity, daemon config | `POST /system/state-storage/migrate` — **but see the warning below before using it** ([#251](https://git.home.arpa/itdlabs/cix/issues/251)) |
 | `rebuildable-storage` | Yes | Anything regenerable from recipes and sources: container images, installed packages, build artifacts, staged ISOs | `POST /system/rebuildable-storage/migrate` |
 | `log-storage` | Yes | The consolidated log store | `POST /system/log-storage/migrate` |
 | `swap` | Yes | Backs a host swap file | `POST /system/swap` with a `disk` ([ADR-0069](../adr/0069-host-swap-file.md)) |
@@ -90,6 +90,18 @@ Two things this table is saying that are easy to miss:
 the role marks a disk as an *eligible candidate*. A separate, explicit
 migrate call is what makes one of them the active placement. You can
 have three disks carrying `backup` and none of them in use.
+
+> **`state-storage` does not currently do what it looks like it does.**
+> The only reason worth moving state to another disk is to survive the
+> loss of the OS disk — state is tiny, so capacity and performance are
+> not reasons. That does not work: the migration *copies* the current
+> state onto the disk and never adopts state already there, the record
+> of which disk holds state lives on the OS disk itself, and boot reads
+> only that record. After an OS disk failure the new install does not
+> know the state disk exists, and assigning the role and migrating
+> copies the fresh, empty state over the real one. Use `GET
+> /system/backup` for durability instead, and see
+> [#251](https://git.home.arpa/itdlabs/cix/issues/251).
 
 **The split between `state` and `rebuildable` is the one worth
 understanding.** State is what you cannot get back — lose it and your
@@ -250,6 +262,42 @@ partition cannot be fully reclaimed. Tracked as
 [#249](https://git.home.arpa/itdlabs/cix/issues/249).
 
 ---
+
+## 10. What survives what
+
+The OS disk has three tiers, and they exist so that different things
+survive different events. This is the whole point of the layout, so it
+is worth stating exactly:
+
+| | A/B upgrade | Full reinstall | Factory reset |
+|---|---|---|---|
+| **Root slots** (`cix-root-a`/`b`) | Replaced — that *is* the upgrade | Replaced | Untouched |
+| **`/config`** (`cix-config`) | **Survives** | Reformatted | Untouched today |
+| **`cix-containers`** (`/var/lib/cix`) | Survives | Reformatted | State, containers, rebuildable content, logs and volumes are removed |
+| **Attached disks** | Survive | Survive (not touched by the installer) | Their mountpoints are forgotten; the disks themselves are never reformatted |
+
+Read that as three sentences:
+
+- **An upgrade replaces the operating system and nothing else.**
+  `POST /system/update` writes the inactive root slot and the ESP. It
+  does not touch `/config` or `cix-containers`.
+- **A reinstall is a clean slate for the OS disk**, and is meant to be.
+  `cix-install` rewrites the partition table and makes new filesystems.
+  Anything you need to keep across a reinstall must be on another disk
+  or in a backup.
+- **A factory reset forgets what the operator configured**, without
+  reformatting hardware — it removes state, container data, rebuildable
+  content, logs and volumes, and leaves the disks themselves alone.
+
+Two things that follow, and are easy to get wrong:
+
+- **A factory reset today leaves `/config` alone**, so the host keeps
+  its IP and stays reachable. That is deliberate: a reset that made a
+  shell-less box unreachable would be the worst outcome this platform
+  has.
+- **Attached disks are never reformatted by any of the three.** Losing a
+  role assignment is not losing data; re-assign the role and the
+  filesystem is still there.
 
 ## Where the decisions live
 
