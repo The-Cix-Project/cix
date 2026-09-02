@@ -10909,7 +10909,7 @@ components:
         site:
           description: Host identity -- instance, site, domain. First because everything else is named relative to it.
         daemon:
-          description: The daemon's own settings: bind address, TLS and connection throttle.
+          description: "The daemon's own settings: bind address, TLS and connection throttle."
         resolver:
           description: The host's own /etc/resolv.conf nameservers (ADR-0076).
         time:
@@ -10971,7 +10971,7 @@ components:
         container_recipes:
           description: Declarative container definitions.
         containers:
-          description: Provisioned containers. Last: they depend on networks, images, volumes and devices above.
+          description: "Provisioned containers. Last: they depend on networks, images, volumes and devices above."
     ServerHealth:
       type: object
       properties:
