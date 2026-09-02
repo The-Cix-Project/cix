@@ -4496,8 +4496,8 @@ paths:
         must match disk_name in the URL exactly, a deliberate double-
         confirmation before anything irreversible happens: this
         overwrites every byte of existing content on the disk with a
-        fresh filesystem (ext4 by default, or btrfs via `fs_type`,
-        ADR-0104), then mounts it. The target disk must currently exist
+        fresh filesystem (btrfs by default, or ext4 via `fs_type`,
+        ADR-0104/ADR-0207), then mounts it. The target disk must currently exist
         (GET /disks), must not be part of the fixed OS layout -- the OS
         disk itself, or one of its first four partitions (the ESP, both
         root slots and /config) -- and must already have a role assigned
@@ -13363,17 +13363,21 @@ components:
             requires (see /disks/{disk_name}/format's own description).
         fs_type:
           type: string
-          enum: [ext4, btrfs]
-          default: ext4
+          enum: [btrfs, ext4]
+          default: btrfs
           description: >
             Which filesystem to format the disk with (ADR-0104). Optional --
-            omitting it keeps this endpoint's original ext4-only behavior.
-            "btrfs" requires a real mkfs.btrfs to actually be staged on this
-            box (btrfs-progs.recipe, via a real cix-hosttools image) --
-            if it isn't, the job still starts but fails fast with a clear
-            "mkfs.btrfs failed" once the child process's own exec attempt
-            hits ENOENT, the same failure shape any other mkfs failure
-            already has.
+            omitting it gives btrfs, which is this platform's own storage
+            substrate (ADR-0207) and the only one of the two that can
+            snapshot, so a container placed on the disk shares extents with
+            its image instead of getting a full copy. It defaulted to ext4
+            until ADR-0207 put ext4 on a retirement path and left the
+            default pointing at the losing side. btrfs requires a real
+            mkfs.btrfs to actually be staged on this box (btrfs-progs.recipe,
+            via a real cix-hosttools image) -- if it isn't, the job still
+            starts but fails fast with a clear "mkfs.btrfs failed" once the
+            child process's own exec attempt hits ENOENT, the same failure
+            shape any other mkfs failure already has.
 
     DiskFormatStatus:
       type: object

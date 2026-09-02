@@ -25,6 +25,7 @@ Task-oriented "how do I do X" instructions for building, installing, operating, 
 
 | Guide | Job |
 |---|---|
+| [`storage.md`](storage.md) | Disks, the six roles and what each is for, btrfs vs ext4, snapshots and quotas |
 | [`writing-recipes.md`](writing-recipes.md) | The complete `pkg` recipe format, with a real worked example |
 | [`remote-development.md`](remote-development.md) | Pushing local (or server-compiled) changes onto a real box with no SSH, and proving they landed |
 | [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md) | Producing a kernel and rolling it out through the A/B slot mechanism |

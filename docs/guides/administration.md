@@ -63,34 +63,17 @@ Restoring does not take effect immediately or reboot for you — a typical disas
 
 ## Disk management
 
-`cixctl disks` lists every real host block device, live-enumerated on every call, including any partitions already on it — flagging which one is the fixed OS disk (and, transitively, every one of its own partitions) — never a candidate for a role, formatting, or repartitioning. Every other disk (or partition — a partition is addressable everywhere a whole disk name is, once it exists) goes through two explicit, separate steps before it holds anything:
+`cixctl disks` lists every real host block device, live-enumerated on every call, including any partitions already on it, and flags which ones are protected — the OS disk itself and its first four structural partitions (the ESP, both root slots and `/config`), which are never given a role, formatted or unmounted.
+
+Everything else about storage — the six disk roles and what each is for, when to add a disk at all, btrfs versus ext4 and what snapshots buy you, per-container quotas, splitting a disk into several role-assigned partitions, and moving a placement afterwards — has its own guide: **[`storage.md`](storage.md)**. It is the single place that describes them, so this section deliberately does not repeat it.
+
+The two-step shape is worth knowing here, because it is what stops an accident:
 
 ```sh
-cixctl diskrole create --disk=sdb --role=container-storage
-cixctl disks format sdb --fs-type=btrfs
-cixctl disks format-status sdb
+cixctl diskrole create --disk=sdb --role=container-storage   # metadata only, reversible
+cixctl disks format sdb                                      # destructive, needs a role first
+cixctl disks format-status sdb                               # async: none/running/ready/failed
 ```
-
-1. **Assign a role** (`container-storage` or `backup` — a small, fixed vocabulary) — has no destructive side effect of its own.
-2. **Format + mount** — destructive, requires an already-assigned role, and double-confirms the disk name before touching anything. Defaults to `ext4`; `--fs-type=btrfs` is the other supported option (ADR-0104). Async — poll `format-status` for completion (`state`: `none`/`running`/`ready`/`failed`).
-
-A `container-storage`-role, formatted disk can then be selected per container at creation time (`run --disk=NAME`, ADR-0102) instead of the default location. Independently, a container can also be given a real, kernel-enforced disk quota on its own overlay storage (`run --disk-quota=BYTES`) — ext4 project quotas or btrfs qgroups, picked automatically from the backing filesystem, not something a disk role or format choice affects.
-
-### Partitioning a data disk (task #844)
-
-A whole disk with no role or existing partitions of its own can instead be split into several independently role-assignable partitions:
-
-```sh
-cixctl disks partition-table sdc
-cixctl disks add-partition sdc --name=containers --size-mib=51200
-cixctl disks add-partition sdc --name=backups
-cixctl diskrole create --disk=sdc1 --role=container-storage
-cixctl diskrole create --disk=sdc2 --role=backup
-cixctl disks format sdc1
-cixctl disks format sdc2
-```
-
-`partition-table` writes a fresh, empty GPT table — destructive (wipes anything already on the disk), same double-confirmation posture as `format`. `add-partition` appends one partition at a time (never disturbs an existing one); omit `--size-mib` on the last one to consume all remaining space, the same convention the installer's own fixed OS-disk layout already uses internally. Each resulting partition (`sdc1`, `sdc2`, ...) is then just an ordinary disk name everywhere else in this API — `diskrole create`/`disks format` need no partition-specific syntax at all. `disks rm-partition sdc sdc2` removes one partition (`409` if it still has a role assigned — remove the role first, same as any other disk).
 
 A disk is used in exactly one of two mutually-exclusive modes: role assigned directly to the whole disk, or partitioned with roles assigned to the individual partitions instead — `partition-table`/`add-partition` both refuse to touch a whole disk that already has a role of its own.
 
