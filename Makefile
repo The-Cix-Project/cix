@@ -70,8 +70,21 @@ SELFTESTS = \
 #   test_esp                 reads/writes real boot paths
 #   test_boot_console        the same
 #
+# And one that the probe reported passing and the gate then caught
+# failing, which is the more interesting kind of exclusion:
+#
+#   test_dual_console        needs a real console. It passed when run
+#                            alone in the probe and failed in the gate
+#                            ("echo of hello-from-a never appeared on
+#                            console A"), so it is non-deterministic
+#                            here rather than simply unsupported. #224's
+#                            own classification already put four tests
+#                            in a "needs real consoles" bucket and this
+#                            is one of them; the probe gave a false
+#                            positive and the gate is what found it.
+#
 DAEMON_SELFTESTS = \
-	$(BUILD)/test_web $(BUILD)/test_backup_config $(BUILD)/test_dual_console \
+	$(BUILD)/test_web $(BUILD)/test_backup_config \
 	$(BUILD)/test_factory_reset $(BUILD)/test_hostauth $(BUILD)/test_https_chain \
 	$(BUILD)/test_kmod $(BUILD)/test_layout_upgrade $(BUILD)/test_pkg_recipe_approval \
 	$(BUILD)/test_signing_keys $(BUILD)/test_stallwatch $(BUILD)/test_sysctl \
