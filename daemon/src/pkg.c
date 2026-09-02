@@ -433,6 +433,63 @@ static struct pkg_chain g_chains[PKG_MAX_CONCURRENT_JOBS];
  * pkg_image_recipe_apply_start() itself).
  */
 
+static struct pkg_entry *pkg_find(const char *name, const char *image);
+
+/*
+ * Issue #246: reclaim any slot whose job is demonstrably over.
+ *
+ * Build capacity is derived from g_chains[i].name being non-empty, and
+ * that field is cleared by more than twenty separate assignments spread
+ * across the fetch, build-environment, build and resume paths. Every one
+ * of them is a place the slot can be lost: a path that returns without
+ * clearing holds its slot for the lifetime of the daemon, and once all
+ * ten are held the host cannot build anything at all until it is
+ * rebooted. That was measured -- repeated failed builds of one package
+ * took a box from zero to nine of ten held, with no job running.
+ *
+ * Rather than audit the clear sites and hope the next one is not missed,
+ * liveness is derived from the truth the rest of this file already
+ * trusts. A slot's owner is in exactly one of four states, and only two
+ * of them are a running job: FETCHING (set when the fetch starts, and
+ * held across a forked build-environment composition) and BUILDING (set
+ * when the build container starts). INSTALLED and FAILED are terminal --
+ * pkg_fail() sets one or the other on every failure, including an
+ * upgrade failure, which keeps the old version INSTALLED.
+ *
+ * This is the same predicate pkg_fetch_completed() and
+ * pkg_buildenv_completed() already use to discard a late event that
+ * landed on a reused slot (issue #98): an entry that is no longer
+ * FETCHING cannot be the one whose child just exited. Using it here
+ * makes capacity a function of state rather than of remembering to
+ * clear a string, so a missed clear site becomes self-correcting
+ * instead of permanent.
+ *
+ * An entry that has vanished entirely counts as stale for the same
+ * reason. Reclaiming is logged: it means a clear site was missed, and a
+ * silent self-heal would hide the defect it is compensating for.
+ */
+static void chain_reap_stale(void)
+{
+	int i;
+
+	for (i = 0; i < PKG_MAX_CONCURRENT_JOBS; i++) {
+		struct pkg_entry *e;
+
+		if (g_chains[i].name[0] == '\0')
+			continue;
+		e = pkg_find(g_chains[i].name, g_chains[i].image);
+		if (e != NULL &&
+		    (e->state == PKG_STATE_FETCHING || e->state == PKG_STATE_BUILDING))
+			continue;
+		logstore_write("cixd", "warn",
+		                "pkg: reclaimed build slot %d, held by %s@%s whose job is no longer "
+		                "running (#246) -- a chain slot was not released on some path",
+		                i, g_chains[i].name, g_chains[i].image);
+		g_chains[i].name[0] = '\0';
+		g_chains[i].dep_queue_count = 0;
+	}
+}
+
 /* Finds a free chain slot (name[0] == '\0'). Returns its index, or -1
  * if every slot is already in use. */
 static int chain_alloc(void)
@@ -440,6 +497,7 @@ static int chain_alloc(void)
 	int i;
 	int max_jobs = pkg_build_get_max_jobs();
 
+	chain_reap_stale();
 	for (i = 0; i < max_jobs; i++) {
 		if (g_chains[i].name[0] == '\0')
 			return i;
@@ -626,6 +684,10 @@ int pkg_active_chain_names(char *out, size_t out_size)
 {
 	int i, count = 0;
 
+	/* #246: report the capacity a caller would actually get, not the
+	 * slots that merely still carry a name. Without this an operator
+	 * reads "10 of 10 in use" from a box where nothing is running. */
+	chain_reap_stale();
 	if (out_size > 0)
 		out[0] = '\0';
 	for (i = 0; i < PKG_MAX_CONCURRENT_JOBS; i++) {
