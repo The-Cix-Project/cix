@@ -114,6 +114,36 @@ extern char **environ;
 #define DEFAULT_WEB_ROOT "web"
 #define DEFAULT_BASE_DIR "/var/lib/cix"
 /*
+ * Where an assigned-role disk gets mounted. Deliberately NOT under the
+ * data directory.
+ *
+ * It used to be <data-dir>/disks, which put every attached disk's
+ * mountpoint inside the filesystem that the data directory itself
+ * lives on -- on a real host, the OS disk's own cix-containers
+ * partition. Mounting one filesystem under another couples them: the
+ * kernel refuses to unmount a mountpoint that still carries other
+ * mounts, so cix-containers could never be unmounted, resized or
+ * reclaimed while any disk was attached, and the operator was told
+ * only that "something may still be busy". Reported directly by the
+ * owner, who had deliberately sized that partition small so the rest
+ * of the disk stayed usable.
+ *
+ * Nothing about a mountpoint is data, so it does not belong beside
+ * state/, containers/, logs/ and volumes/ -- that placement was
+ * convention rather than a decision, and it is the whole of the bug.
+ * The root slot is mounted read-write (cix-install writes
+ * `root=<dev> rw`), so an ordinary directory there works with no
+ * tmpfs and no image change, and it is recreated at every boot
+ * because mountpoints are runtime state that should not persist.
+ *
+ * Safe to move with no migration: every path derived from this is
+ * recomputed at startup, and nothing persists an absolute path under
+ * it -- storage placements record a disk NAME (`{"disk":"sda"}`), a
+ * container records a disk name, and the assembly squashfs path is
+ * built from BOOTROOT_DIR each boot.
+ */
+#define DEFAULT_DISKS_DIR "/mnt/cix"
+/*
  * Runtime-overridable via --data-dir=PATH (default DEFAULT_BASE_DIR,
  * unchanged from every prior release). Every subsystem already takes
  * its own path as an explicit init-time parameter (network_init(),
@@ -133,18 +163,26 @@ extern char **environ;
  */
 static char g_base_dir[PATH_MAX] = DEFAULT_BASE_DIR;
 /*
+ * Empty means "not given explicitly", which is not the same as the
+ * default -- see init_base_dir_paths() for the one rule that resolves
+ * it. --disks-dir=PATH overrides both.
+ */
+static char g_disks_dir[PATH_MAX] = "";
+/*
  * ADR-0141: two grouping directories introduced so state-storage and
  * rebuildable-storage can each be relocated to a different disk as one
  * real directory move, rather than a scattered list of a dozen
  * unrelated paths -- every path below that's conceptually "this
  * platform's own definition of itself" nests under STATE_DIR; every
  * path that's "regenerable from recipes/sources if lost" nests under
- * REBUILDABLE_DIR. CONTAINERS_DIR/SWAP_DIR/DISKS_MOUNT_DIR deliberately
- * stay direct children of g_base_dir -- CONTAINERS_DIR already has its
- * own relocation mechanism (container-storage, ADR-0102), SWAP_DIR is
- * explicitly out of scope (ADR-0069's own separate mechanism), and
- * DISKS_MOUNT_DIR holds mount points for other disks, not data of its
- * own. LOG_DIR is ALSO independently relocatable (log-storage, ADR-0141
+ * REBUILDABLE_DIR. CONTAINERS_DIR/SWAP_DIR deliberately stay direct
+ * children of g_base_dir -- CONTAINERS_DIR already has its own
+ * relocation mechanism (container-storage, ADR-0102) and SWAP_DIR is
+ * explicitly out of scope (ADR-0069's own separate mechanism).
+ * DISKS_MOUNT_DIR is NOT under g_base_dir at all: it holds mount
+ * points for other disks rather than data of its own, and nesting them
+ * inside the data directory's filesystem made that filesystem
+ * permanently unmountable (see DEFAULT_DISKS_DIR above). LOG_DIR is ALSO independently relocatable (log-storage, ADR-0141
  * Phase 3) -- it doesn't need STATE_DIR/REBUILDABLE_DIR's own grouping
  * treatment since it already was its own single, clean subdirectory
  * with exactly one consumer (logstore.c), unlike the dozen-plus
@@ -441,7 +479,25 @@ static void init_base_dir_paths(void)
 	snprintf(SWAP_STATE_PATH, sizeof(SWAP_STATE_PATH), "%s/state.json", SWAP_DIR);
 	snprintf(LOG_DIR, sizeof(LOG_DIR), "%s/logs", g_base_dir);
 	snprintf(LOG_STATE_PATH, sizeof(LOG_STATE_PATH), "%s/state.json", LOG_DIR);
-	snprintf(DISKS_MOUNT_DIR, sizeof(DISKS_MOUNT_DIR), "%s/disks", g_base_dir);
+	/*
+	 * One rule, in priority order:
+	 *
+	 *   --disks-dir=PATH      wins outright
+	 *   a non-default --data-dir  keeps disks inside it
+	 *   otherwise             DEFAULT_DISKS_DIR
+	 *
+	 * The middle case is what preserves this project's own test
+	 * isolation without editing every daemon-linked test: a test that
+	 * has moved its data directory is a self-contained world, and its
+	 * disks belong in that world rather than at a fixed path several
+	 * concurrent tests would share.
+	 */
+	if (g_disks_dir[0] != '\0')
+		snprintf(DISKS_MOUNT_DIR, sizeof(DISKS_MOUNT_DIR), "%s", g_disks_dir);
+	else if (strcmp(g_base_dir, DEFAULT_BASE_DIR) != 0)
+		snprintf(DISKS_MOUNT_DIR, sizeof(DISKS_MOUNT_DIR), "%s/disks", g_base_dir);
+	else
+		snprintf(DISKS_MOUNT_DIR, sizeof(DISKS_MOUNT_DIR), "%s", DEFAULT_DISKS_DIR);
 
 	compute_state_dir_relative_paths();
 	compute_rebuildable_dir_relative_paths();
@@ -1851,6 +1907,28 @@ static int boot_init(void)
 		mount(CONFIG_DEVICE, CONFIG_DIR, "ext4", 0, NULL);
 
 	/*
+	 * A tmpfs for the mountpoints of attached disks, so nothing writes
+	 * them to the root slot.
+	 *
+	 * A mountpoint is pure runtime state: it exists to have a
+	 * filesystem grafted onto it and is meaningless across a reboot.
+	 * Writing those directories onto the root would work today --
+	 * cix-install's loader entry mounts the slot `rw` -- and would be
+	 * wrong the day the A/B roots become genuinely read-only, which is
+	 * the design they exist to serve. A tmpfs is correct under both.
+	 *
+	 * Deliberately non-fatal, like the CONFIG_DEVICE mount above: if
+	 * this fails the daemon still starts and persist_mkdir_p() creates
+	 * an ordinary directory instead. A disk mountpoint is not worth
+	 * refusing a boot over.
+	 */
+	if (mount("tmpfs", DISKS_MOUNT_DIR, "tmpfs", MS_NOSUID | MS_NODEV, "mode=0755") != 0)
+		fprintf(stderr,
+		        "boot_init: tmpfs for %s unavailable (%s) -- disk mountpoints will be "
+		        "ordinary directories on the root slot\n",
+		        DISKS_MOUNT_DIR, strerror(errno));
+
+	/*
 	 * A fresh kernel boot brings lo up as a device but leaves it
 	 * administratively down (no IFF_UP) -- DEFAULT_BIND's bind() to
 	 * 127.0.0.1 fails with EADDRNOTAVAIL until something sets it up.
@@ -2182,7 +2260,7 @@ static void factory_reset_apply_if_pending(void)
 {
 	char sentinel[PATH_MAX];
 	struct stat st;
-	const char *trees[] = { "state", "containers", "rebuildable", "logs", "volumes", "disks" };
+	const char *trees[] = { "state", "containers", "rebuildable", "logs", "volumes" };
 	size_t i;
 
 	factory_reset_sentinel_path(sentinel, sizeof(sentinel));
@@ -2204,6 +2282,16 @@ static void factory_reset_apply_if_pending(void)
 		persist_remove_tree(path);
 		fprintf(stderr, "factory reset: removed %s\n", path);
 	}
+	/*
+	 * The mountpoint directory is removed by its real path rather than
+	 * as a child of the data directory, because it is no longer one.
+	 * Still only mountpoints, never their contents: this runs before
+	 * diskformat_remount_present_role_disks(), so every directory
+	 * under it is empty at this moment. A factory reset forgets which
+	 * disks were assigned what; it does not reformat hardware.
+	 */
+	persist_remove_tree(DISKS_MOUNT_DIR);
+	fprintf(stderr, "factory reset: removed %s\n", DISKS_MOUNT_DIR);
 	unlink(sentinel);
 	fprintf(stderr, "factory reset: complete -- this boot starts from install defaults\n");
 }
@@ -28995,6 +29083,8 @@ static int cixd_main(int argc, char **argv)
 			test_bootstrap_toolchain = argv[i] + 27;
 		else if (strncmp(argv[i], "--data-dir=", 11) == 0)
 			snprintf(g_base_dir, sizeof(g_base_dir), "%s", argv[i] + 11);
+		else if (strncmp(argv[i], "--disks-dir=", 12) == 0)
+			snprintf(g_disks_dir, sizeof(g_disks_dir), "%s", argv[i] + 12);
 	}
 	init_base_dir_paths();
 	tls_init();
@@ -29127,7 +29217,14 @@ static int cixd_main(int argc, char **argv)
 	 * that resolution instead of staying bundled in one block the way
 	 * it was before this phase.
 	 */
-	if (ensure_dir(g_base_dir) != 0 || ensure_dir(DISKS_MOUNT_DIR) != 0)
+	/*
+	 * persist_mkdir_p for the mountpoint directory, not ensure_dir:
+	 * ensure_dir is a bare mkdir(2) and DEFAULT_DISKS_DIR's parent
+	 * (/mnt) is not shipped in the root image, so a plain mkdir would
+	 * fail ENOENT and refuse the boot. The data directory keeps
+	 * ensure_dir -- its parent is always present.
+	 */
+	if (ensure_dir(g_base_dir) != 0 || persist_mkdir_p(DISKS_MOUNT_DIR) != 0)
 		return 1;
 	/*
 	 * Issue #63: before the FIRST subsystem reads anything.

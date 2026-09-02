@@ -1091,6 +1091,15 @@ int main(int argc, char **argv)
 	 * healthy (daemon/src/main.c). */
 	if (ensure_dir_under(image_root, "boot") != 0)
 		return 1;
+	/* Mountpoint parent for attached disks (DISKS_MOUNT_DIR). Shipped
+	 * in the image rather than created at runtime so the root slot
+	 * never has to be written to for it -- cixd mounts a tmpfs here at
+	 * boot and every assigned-role disk mounts beneath that, which is
+	 * what keeps them out of the data directory's own filesystem. */
+	if (ensure_dir_under(image_root, "mnt") != 0)
+		return 1;
+	if (ensure_dir_under(image_root, "mnt/cix") != 0)
+		return 1;
 	/* Phase 11 part 3: cixd --init-mode mounts the config partition
 	 * here for its static-IP net.conf (daemon/src/main.c's
 	 * apply_static_ip()) -- absent (and harmlessly so) on parts 1/2's

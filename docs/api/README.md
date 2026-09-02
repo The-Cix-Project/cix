@@ -1563,7 +1563,7 @@ Async, like every other potentially-slow host operation this daemon runs (`pkg i
 
 ```
 GET /v1/disks/sdb/format
-{"disk_name": "sdb", "state": "ready", "fs_type": "btrfs", "mount_path": "/var/lib/cix/disks/sdb"}
+{"disk_name": "sdb", "state": "ready", "fs_type": "btrfs", "mount_path": "/mnt/cix/sdb"}
 ```
 
 `state` is `"none"` (no job has ever run for this disk — including when a job ran/is running for a *different* disk, so a status check never shows another disk's unrelated job), `"running"`, `"ready"`, or `"failed"` (`error` distinguishes `mkfs.<fs_type>` failing outright from it succeeding but the subsequent `mount(2)` failing). Only one format job may run daemon-wide at a time (`409` otherwise) — the same v1 single-job constraint every other async job here already has. Mounted at a fixed path under this platform's own data directory by default; a `container-storage`-role disk can also be selected explicitly per container via `POST /containers`' own `disk` field (ADR-0102, Phase D, already built).
