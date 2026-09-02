@@ -97,10 +97,88 @@ static void expect_refusal(const char *what, const char *body, const char *must_
 		     must_mention, out);
 }
 
+/*
+ * The contract must be valid YAML, and apigen is not the judge of that.
+ *
+ * apigen has its own parser, which tolerated two descriptions carrying
+ * an unquoted colon -- `description: The daemon's own settings: bind
+ * address...` -- for as long as they existed. Every standard YAML
+ * reader rejects that file outright, so the contract was unparseable by
+ * anything but us and nobody noticed, because the only thing that read
+ * it was the tool that did not mind.
+ *
+ * A full YAML parser in C is not the answer to that. This checks the
+ * one construct that actually broke it: a plain (unquoted) scalar
+ * containing ": ", which YAML reads as a nested mapping. Cheap,
+ * targeted, and it fails on the line that would fail elsewhere.
+ */
+static void check_scalars_are_quoted(void)
+{
+	FILE *f = fopen("docs/api/openapi.yaml", "r");
+	char line[4096];
+	int lineno = 0;
+	int indent = 0;
+	int block_indent = -1; /* inside a > or | block opened at this indent */
+
+	if (f == NULL) {
+		fail("could not open the spec to check its scalars");
+		return;
+	}
+	while (fgets(line, sizeof(line), f) != NULL) {
+		const char *p = line;
+		const char *colon;
+		const char *val;
+
+		lineno++;
+		while (*p == ' ' || *p == '\t')
+			p++;
+		indent = (int)(p - line);
+		if (*p == '\0' || *p == '\n')
+			continue;
+		/*
+		 * Text inside a folded (>) or literal (|) block is prose, not
+		 * a mapping, and colons in it are ordinary punctuation. This
+		 * file is mostly such blocks, so failing to track them makes
+		 * the check useless -- it flagged an error message quoted in a
+		 * description on its first run.
+		 */
+		if (block_indent >= 0) {
+			if (indent > block_indent)
+				continue;
+			block_indent = -1;
+		}
+		/* Only "key: value" lines; a list item or a comment is not one. */
+		if (*p == '#' || *p == '-')
+			continue;
+		colon = strstr(p, ": ");
+		if (colon == NULL)
+			continue;
+		val = colon + 2;
+		while (*val == ' ')
+			val++;
+		/* Quoted, folded, literal or empty values are all fine -- the
+		 * only hazard is a PLAIN scalar with a colon-space in it. */
+		if (*val == '>' || *val == '|') {
+			block_indent = indent;
+			continue;
+		}
+		if (*val == '"' || *val == '\'' || *val == '\0' || *val == '\n' || *val == '[' ||
+		    *val == '{' || *val == '&' || *val == '*')
+			continue;
+		if (strstr(val, ": ") != NULL)
+			fail("openapi.yaml:%d has an unquoted scalar containing \": \", which no standard "
+			     "YAML reader will parse -- quote it: %.80s",
+			     lineno, p);
+	}
+	fclose(f);
+}
+
 int main(void)
 {
 	char out[65536];
 	int status;
+
+	check_scalars_are_quoted();
 
 	/*
 	 * 1. The real spec. Not a smoke test: 263 is cross-checked against
