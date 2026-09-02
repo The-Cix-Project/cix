@@ -10,6 +10,7 @@
 #include "elfcheck.h"
 #include "namecheck.h"
 #include "persist.h"
+#include "treecopy.h"
 #include "pki.h"
 #include "test_image_fixture.h"
 
@@ -9085,6 +9086,127 @@ static void pkg_artifact_push_enqueue(const char *name, const char *version)
 void pkg_artifact_cache_path(const char *name, const char *version, char *out, size_t out_size)
 {
 	cache_tarball_path(name, version, out, out_size);
+}
+
+/*
+ * Stages the package seed an installer ISO carries (#135).
+ *
+ * The bootstrap cycle this breaks: a fresh install has no recipes;
+ * recipes come from a git forge addressed by hostname; a hostname needs
+ * DNS; this platform's DNS is a container built from a recipe. Bringing
+ * a box up therefore meant hand-feeding it 300-odd recipes from a
+ * developer machine over literal IPs, which is not something an
+ * operator can be asked to do.
+ *
+ * Both halves of the delivery already existed and were never used:
+ * mkinstalleriso stages <seed>/recipes and <seed>/artifacts onto the
+ * media, and cix-install copies them into the installed box. What was
+ * missing was anything producing a seed -- the daemon passed "" with a
+ * comment saying that staging one changes what the media DOES and is a
+ * product decision. This is that decision.
+ *
+ * WHAT GOES IN, and why it is a short explicit list rather than a rule:
+ *
+ * Recipes are all of them; they are small text and having the full set
+ * is what makes the box able to build anything at all afterwards.
+ *
+ * Artifacts are only what a fresh box needs to reach NAME RESOLUTION,
+ * because everything else follows from that: once dns-1/dns-2 run, the
+ * forge resolves, `pkg sync` works, and the artifact cache is reachable.
+ * That is the acceptance test #135 states, and it costs ~57 MB (glibc
+ * is nearly all of it). Staging everything the local cache holds would
+ * instead put gcc, the kernel and every toolchain package on the media
+ * for no bootstrap benefit.
+ *
+ * A list rather than a derivation on purpose: deriving it (from the dns
+ * image's manifest, or from registered DNS servers) would silently
+ * change what the media carries whenever an unrelated image changed,
+ * and would produce an empty artifact set on a host that happens not to
+ * run DNS itself -- shipping media that claims a seed and cannot
+ * bootstrap. A list is visible in a diff, so it cannot change by
+ * accident.
+ */
+static const char *const g_seed_packages[] = { PKG_BASE_LIBC, "zlib", "dnsmasq" };
+
+enum pkg_error pkg_seed_stage(const char *dest_dir, char *err, size_t err_size)
+{
+	char recipes_dst[PATH_MAX];
+	char artifacts_dst[PATH_MAX];
+	size_t i;
+
+	if (dest_dir == NULL || dest_dir[0] == '\0')
+		return PKG_ERR_INVALID_NAME;
+
+	if (snprintf(recipes_dst, sizeof(recipes_dst), "%s/recipes", dest_dir) >=
+	        (int)sizeof(recipes_dst) ||
+	    snprintf(artifacts_dst, sizeof(artifacts_dst), "%s/artifacts", dest_dir) >=
+	        (int)sizeof(artifacts_dst)) {
+		snprintf(err, err_size, "seed staging path too long");
+		return PKG_ERR_INVALID_NAME;
+	}
+
+	if (persist_mkdir_p(artifacts_dst) != 0) {
+		snprintf(err, err_size, "could not create %s: %s", artifacts_dst, strerror(errno));
+		return PKG_ERR_PERSIST_FAILED;
+	}
+
+	if (treecopy_recursive(g_recipes_dir, recipes_dst) != 0) {
+		snprintf(err, err_size, "could not stage recipes from %s: %s", g_recipes_dir,
+		         treecopy_last_error());
+		return PKG_ERR_PERSIST_FAILED;
+	}
+
+	/*
+	 * Every named artifact must be present, and a missing one fails the
+	 * whole ISO rather than quietly shipping media that cannot do what
+	 * carrying a seed implies. cix-install already refuses a seed whose
+	 * directories are missing entirely; this is the same refusal one
+	 * level up, where the reason is still known.
+	 */
+	for (i = 0; i < sizeof(g_seed_packages) / sizeof(g_seed_packages[0]); i++) {
+		const struct pkg_entry *e = NULL;
+		char src[PATH_MAX];
+		char dst[PATH_MAX];
+		const char *base;
+		int j;
+
+		for (j = 0; j < PKG_MAX_PACKAGES; j++) {
+			if (g_packages[j].in_use && g_packages[j].state == PKG_STATE_INSTALLED &&
+			    strcmp(g_packages[j].name, g_seed_packages[i]) == 0) {
+				e = &g_packages[j];
+				break;
+			}
+		}
+		if (e == NULL) {
+			snprintf(err, err_size,
+			         "the installer seed needs %s and this host has none installed -- an ISO "
+			         "built now could not bring up DNS on a fresh box",
+			         g_seed_packages[i]);
+			return PKG_ERR_NOT_FOUND;
+		}
+		cache_tarball_path(e->name, e->version, src, sizeof(src));
+		if (!pkg_artifact_cache_has(e->name, e->version)) {
+			snprintf(err, err_size,
+			         "the installer seed needs %s@%s and its artifact is not in this host's "
+			         "cache -- publish or rebuild it first",
+			         e->name, e->version);
+			return PKG_ERR_NOT_FOUND;
+		}
+		base = strrchr(src, '/');
+		base = (base != NULL) ? base + 1 : src;
+		if (snprintf(dst, sizeof(dst), "%s/%s", artifacts_dst, base) >= (int)sizeof(dst)) {
+			snprintf(err, err_size, "seed artifact path too long for %s", e->name);
+			return PKG_ERR_INVALID_NAME;
+		}
+		if (copy_file_simple(src, dst) != 0) {
+			snprintf(err, err_size, "could not stage the %s artifact: %s", e->name,
+			         strerror(errno));
+			return PKG_ERR_PERSIST_FAILED;
+		}
+		logstore_write("cixd", "info", "iso seed: staged %s@%s", e->name, e->version);
+	}
+
+	return PKG_OK;
 }
 
 int pkg_artifact_cache_has(const char *name, const char *version)

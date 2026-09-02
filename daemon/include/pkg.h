@@ -458,6 +458,21 @@ void pkg_write_json_recipes(struct json_writer *w);
 enum pkg_error pkg_artifact_publish(const char *name);
 void pkg_artifact_cache_path(const char *name, const char *version, char *out, size_t out_size);
 int pkg_artifact_cache_has(const char *name, const char *version);
+
+/*
+ * Stages the package seed an installer ISO carries into dest_dir, as
+ * <dest>/recipes and <dest>/artifacts (#135).
+ *
+ * Breaks the fresh-install bootstrap cycle: no recipes without a forge,
+ * no forge without DNS, no DNS without a recipe. Both halves of the
+ * delivery already existed (mkinstalleriso stages the seed, cix-install
+ * consumes it) and nothing produced one.
+ *
+ * Fails rather than staging a partial seed: media that claims to carry
+ * one and cannot bring up DNS is worse than media that carries none,
+ * because the failure only shows on the installed box.
+ */
+enum pkg_error pkg_seed_stage(const char *dest_dir, char *err, size_t err_size);
 enum pkg_error pkg_artifact_publish_resolve(const char *name, char *out_version,
                                              size_t out_version_size, int *out_is_hostbuild);
 

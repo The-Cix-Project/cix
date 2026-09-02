@@ -48,7 +48,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/system/daemon-config` | cixd's own listen port, HTTP/HTTPS exposure, and which network is currently its management one |
 | PUT | `/system/daemon-config` | Live-reconfigure the listen port, HTTP/HTTPS listeners, or repoint the management network -- no restart |
 | GET | `/system/iso` | Status of the most recent server-side installer ISO build |
-| POST | `/system/iso` | Assemble a fresh installer ISO server-side, non-blocking |
+| POST | `/system/iso` | Assemble a fresh installer ISO server-side, non-blocking — the media carries a package seed so a fresh box can bootstrap without a network ([ADR-0229](../adr/0229-installer-media-carries-a-package-seed.md)) |
 | GET | `/system/signing-keys` | Whether this host holds a Secure Boot signing key pair, and which identity |
 | PUT | `/system/signing-keys` | Install an operator-supplied signing key pair (two PEM blocks) |
 | DELETE | `/system/signing-keys` | Remove this host's signing key pair |

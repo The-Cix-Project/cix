@@ -4078,6 +4078,23 @@ paths:
         /system/iso for the result). Reuses whatever the most recent
         "cix"/"kernel"/"isotools" hostbuild rounds already harvested
         (POST /pkg/hostbuild) -- it does not trigger any of them itself.
+
+
+        The media carries a **package seed** (issue #135, ADR-0229):
+        every recipe this host has, plus the artifacts a fresh box needs
+        to reach name resolution. Without it a fresh install cannot
+        obtain a single recipe -- no recipes without a git forge, no
+        forge without DNS, no DNS without a recipe -- and the only way
+        through was hand-feeding hundreds of recipes from another
+        machine over literal IPs. The seed is staged fresh on each
+        build, and a build FAILS rather than producing media that claims
+        a seed it cannot bootstrap from: an incomplete seed reveals
+        itself only on the installed box, standing there unable to
+        resolve anything. It is a delivery mechanism and not a trust
+        boundary -- every artifact is still verified against its own
+        recipe's checksum before anything is installed from it.
+
+
         Every field is optional; an empty body reproduces mkinstalleriso's
         own original default, a generic ISO with kernel_args left as the
         "CHANGEME" placeholder an operator edits at the GRUB boot menu.
