@@ -402,6 +402,21 @@ struct container_spec {
 	 * routes are installed after the primary default route, in order.
 	 */
 	int ip_forward;
+
+	/*
+	 * Opt this container's memory into kernel samepage merging (#260).
+	 *
+	 * KSM merges nothing that has not volunteered, so without this the
+	 * host-level scanner (GET/PUT /v1/system/ksm) runs and saves
+	 * nothing. Off unless asked for: merging is not free -- the scanner
+	 * has to compare pages, and a container whose memory is genuinely
+	 * unique pays that cost for no return.
+	 *
+	 * Applied with prctl(PR_SET_MEMORY_MERGE) in the child rather than
+	 * madvise() per mapping, because the payload is an arbitrary
+	 * program this daemon does not control and has no call sites in.
+	 */
+	int ksm;
 	/*
 	 * Opt-in generalized net.* sysctls, applied inside the container's
 	 * own netns right after ip_forward above (same call site, same

@@ -131,6 +131,21 @@ struct clone_args {
 #define CLONE_INTO_CGROUP 0x200000000ULL
 #endif
 
+/*
+ * prctl(PR_SET_MEMORY_MERGE) -- opt this process's anonymous memory into
+ * KSM (issue #260). Not in this platform's glibc headers, confirmed by a
+ * standalone probe that failed to compile on the name, so it is declared
+ * here rather than assumed. 67 is the kernel's own value.
+ *
+ * The whole-process form is deliberate over madvise(MADV_MERGEABLE) per
+ * mapping: a container's payload is an arbitrary program this daemon
+ * does not control, so there is no per-mapping call site to add. Marking
+ * the process before execve covers whatever it goes on to allocate.
+ */
+#ifndef PR_SET_MEMORY_MERGE
+#define PR_SET_MEMORY_MERGE 67
+#endif
+
 #ifndef CLONE_NEWCGROUP
 #define CLONE_NEWCGROUP 0x02000000
 #endif
