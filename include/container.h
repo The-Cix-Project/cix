@@ -37,6 +37,27 @@ struct cgroup_limits {
 
 struct mount_spec {
 	const char *put_old_rel;
+	/*
+	 * Mount a cgroup2 filesystem at /sys/fs/cgroup inside the
+	 * container (#257).
+	 *
+	 * Without it a cixd running INSIDE a container has no cgroup tree
+	 * to create under -- src/cgroup.c writes to a hardcoded
+	 * /sys/fs/cgroup, the container gets a fresh sysfs with nothing
+	 * mounted there, and every container it tries to create dies at
+	 * mkdir with ENOENT. That is not a corner case: it is why nesting
+	 * did not work, and running this platform's own test suite needs
+	 * nesting.
+	 *
+	 * Deliberately opt-in rather than always-on. The pivot happens
+	 * while the child still holds full capabilities (they are dropped
+	 * afterwards), so an unconditional mount would hand every
+	 * container a writable cgroup tree whether it had any business
+	 * with one or not. container_create() sets this only for a
+	 * container that has its own cgroup namespace AND was explicitly
+	 * granted CAP_SYS_ADMIN -- see its own comment for why both.
+	 */
+	int mount_cgroup2;
 };
 
 /*

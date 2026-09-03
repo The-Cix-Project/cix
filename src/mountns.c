@@ -117,6 +117,51 @@ int mountns_pivot(const char *new_root, const struct mount_spec *mnt)
 	}
 
 	/*
+	 * A cgroup tree for a container that runs containers of its own
+	 * (#257).
+	 *
+	 * The fresh sysfs above has nothing mounted at /sys/fs/cgroup, and
+	 * src/cgroup.c writes to exactly that path, so a nested cixd could
+	 * not create a single cgroup: every container it tried to make
+	 * failed at mkdir with ENOENT. Measured as 25 of 48 failures the
+	 * first time this platform's own test suite ran on a real host.
+	 *
+	 * What makes this safe to expose is the cgroup NAMESPACE, which
+	 * the caller has already established (it is half of the condition
+	 * for setting this flag). With CLONE_NEWCGROUP the mount shows the
+	 * container its OWN cgroup as the root of the tree -- it cannot
+	 * see, read or write anything above itself, so the parent's
+	 * budgets stay in force and ADR-0165's shared build-slot ceiling
+	 * still applies to everything created underneath.
+	 *
+	 * MS_NOSUID | MS_NODEV | MS_NOEXEC for the same reason the sysfs
+	 * mount above carries them: nothing here is ever meant to be
+	 * executed or to name a device.
+	 */
+	if (mnt != NULL && mnt->mount_cgroup2) {
+		/*
+		 * Opportunistic, deliberately: a failure here warns and
+		 * carries on rather than refusing to start the container.
+		 *
+		 * This code sits in the path of EVERY package build container
+		 * on every host, and those are exactly the containers that
+		 * ask for it. Making the mount fatal would mean any kernel or
+		 * host where it does not work stops the machine building
+		 * anything at all -- trading a capability some containers want
+		 * for the one function every host needs. A container that
+		 * cannot get the mount lands exactly where it was before this
+		 * existed, which is a known and survivable state, and the
+		 * perror() says so on the way past.
+		 */
+		if ((mkdir("/sys/fs", 0755) != 0 && errno != EEXIST) ||
+		    (mkdir("/sys/fs/cgroup", 0755) != 0 && errno != EEXIST))
+			perror("mountns_pivot: mkdir(/sys/fs/cgroup) -- nested cgroups unavailable");
+		else if (mount("cgroup2", "/sys/fs/cgroup", "cgroup2",
+		                MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL) != 0)
+			perror("mountns_pivot: mount(cgroup2) -- nested cgroups unavailable");
+	}
+
+	/*
 	 * /run must be a fresh tmpfs on every single container start, same
 	 * as /proc and /sys above -- without this it's just ordinary
 	 * overlay-persisted storage (upperdir survives a crash/restart by

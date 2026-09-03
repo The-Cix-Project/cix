@@ -215,6 +215,21 @@ static int write_userns_maps(pid_t pid, long long base, long long len)
  * syscalls, which is exactly what the shared header exists to prevent.
  */
 
+/* True if this container was explicitly granted a named capability
+ * (#257). cap_add is the operator's own opt-in list, so this asks a
+ * question about intent rather than about the current capability set --
+ * which at the point it is called is still the full inherited one. */
+static int spec_has_cap(const struct container_spec *spec, const char *name)
+{
+	int i;
+
+	for (i = 0; i < spec->cap_add_count && i < CONTAINER_MAX_CAP_ADD; i++) {
+		if (strcmp(spec->cap_add[i], name) == 0)
+			return 1;
+	}
+	return 0;
+}
+
 int container_create(const struct container_spec *spec, struct container_handle *out)
 {
 	int cgroup_fd;
@@ -655,7 +670,29 @@ int container_create(const struct container_spec *spec, struct container_handle 
 			}
 		}
 		{
-			int mountns_pivot_ret = mountns_pivot(spec->ov.merged, &spec->mnt);
+			/*
+			 * #257: does this container run containers of its own?
+			 *
+			 * Both halves are required, and each answers a different
+			 * question. CAP_SYS_ADMIN says the operator deliberately
+			 * gave this container elevated privilege -- the pivot
+			 * runs before capabilities are dropped, so without an
+			 * explicit signal every container would silently receive
+			 * a writable cgroup tree. CLONE_NEWCGROUP is what makes
+			 * granting it safe: the mount then shows the container
+			 * its own cgroup as the root, so it cannot reach anything
+			 * above itself and the parent's limits keep applying.
+			 *
+			 * Derived here rather than set by each caller, so the
+			 * daemon's container path and the package-build path
+			 * cannot end up with different rules.
+			 */
+			struct mount_spec mnt = spec->mnt;
+			int mountns_pivot_ret;
+
+			mnt.mount_cgroup2 = ((spec->ns.clone_flags & CLONE_NEWCGROUP) != 0 &&
+			                      spec_has_cap(spec, "CAP_SYS_ADMIN"));
+			mountns_pivot_ret = mountns_pivot(spec->ov.merged, &mnt);
 
 			if (mountns_pivot_ret != 0) {
 				child_diag_mountns_pivot(diag_pipe[1], mountns_pivot_ret);
