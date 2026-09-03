@@ -184,8 +184,50 @@ int test_image_fixture_add_lib(const char *image_root, const char *host_lib_abs_
 {
 	char dst_path[PATH_MAX];
 	char dst_dir[PATH_MAX];
+	char resolved[PATH_MAX];
 	char *slash;
 
+	/*
+	 * Find the library by NAME if it is not at the path asked for
+	 * (#224).
+	 *
+	 * Callers name an absolute path because that is where the library
+	 * sits on a Debian-derived build host: /lib/x86_64-linux-gnu/.
+	 * That is an inherited layout rather than a decision (#184), and it
+	 * is not the layout of a Cix build environment, where a package
+	 * like ncurses installs to usr/lib/. So staging libtinfo.so.6 by
+	 * its multiarch path failed with "No such file or directory" on
+	 * exactly the host that was supposed to be able to do this -- and
+	 * took six boot tests with it.
+	 *
+	 * The destination is unchanged: whatever the caller asked for is
+	 * still where it lands inside the image. Only the SOURCE is
+	 * searched, and only when the given path does not exist, so a host
+	 * that does have the library where the caller said is completely
+	 * unaffected.
+	 */
+	snprintf(resolved, sizeof(resolved), "%s", host_lib_abs_path);
+	if (access(resolved, R_OK) != 0) {
+		static const char *const dirs[] = { "/lib/x86_64-linux-gnu", "/usr/lib",
+		                                     "/lib", "/usr/lib/x86_64-linux-gnu" };
+		const char *base = strrchr(host_lib_abs_path, '/');
+		size_t i;
+
+		base = (base != NULL) ? base + 1 : host_lib_abs_path;
+		for (i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
+			snprintf(resolved, sizeof(resolved), "%s/%s", dirs[i], base);
+			if (access(resolved, R_OK) == 0)
+				break;
+			resolved[0] = '\0';
+		}
+	}
+
+	if (resolved[0] == '\0')
+		snprintf(resolved, sizeof(resolved), "%s", host_lib_abs_path); /* let the copy report it */
+
+	/* Destination is always what the caller asked for -- the loader
+	 * inside the image looks where the caller said, not where this
+	 * host happens to keep its copy. */
 	if (snprintf(dst_path, sizeof(dst_path), "%s%s", image_root, host_lib_abs_path) >=
 	    (int)sizeof(dst_path)) {
 		errno = ENAMETOOLONG;
@@ -199,7 +241,7 @@ int test_image_fixture_add_lib(const char *image_root, const char *host_lib_abs_
 
 	if (mkdir_p(dst_dir) != 0)
 		return -1;
-	return test_image_fixture_copy_file(host_lib_abs_path, dst_path);
+	return test_image_fixture_copy_file(resolved, dst_path);
 }
 
 /* fork()+execve()+waitpid() for "cp -a" -- correct symlink/permission

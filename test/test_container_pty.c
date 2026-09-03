@@ -26,8 +26,19 @@
 #include <unistd.h>
 
 #define LOWERDIR "/tmp/container_pty_test/lower"
-#define HOST_LD_SO "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2"
-#define HOST_LIBC "/usr/lib/x86_64-linux-gnu/libc.so.6"
+/*
+ * "/lib/...", never "/usr/lib/..." (#224).
+ *
+ * The /usr form only resolves on a merged-usr system, where /lib is a
+ * symlink into it. This project's own roots are deliberately not
+ * merged-usr, and the build container the suite runs in is one of them,
+ * so the /usr path is simply absent there and every test using it died
+ * on "ld-linux-x86-64.so.2: No such file or directory". The /lib form
+ * resolves in both. Exactly the root cause ADR-0085 records for
+ * test_image_fixture.c, which had the same two reads wrong.
+ */
+#define HOST_LD_SO "/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2"
+#define HOST_LIBC "/lib/x86_64-linux-gnu/libc.so.6"
 
 static int mkdir_p1(const char *path)
 {
