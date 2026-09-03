@@ -39,6 +39,7 @@
 #include "esp.h"
 #include "btrfs.h"
 #include "kernelpolicy.h"
+#include "ksm.h"
 #include "zswap.h"
 #include "dhcp.h"
 #include "stallwatch.h"
@@ -222,6 +223,7 @@ static char BOOTCONSOLE_STATE_PATH[PATH_MAX]; /* issue #24 -- boot console param
 static char KERNELPOLICY_STATE_PATH[PATH_MAX]; /* issue #65 -- which kernel line this box tracks */
 static char KERNEL_RELEASES_PATH[PATH_MAX];    /* issue #65 -- cached kernel.org releases.json */
 static char ZSWAP_STATE_PATH[PATH_MAX];        /* issue #51 -- compressed swap cache settings */
+static char KSM_STATE_PATH[PATH_MAX];          /* issue #50 -- samepage merging settings */
 static char DHCP_STATE_PATH[PATH_MAX];         /* DHCP ranges and static reservations */
 static char STALLWATCH_RECORDS_PATH[PATH_MAX]; /* issue #100 -- control-plane stall records */
 static char VOLUMES_STATE_PATH[PATH_MAX];      /* issue #88 */
@@ -401,6 +403,7 @@ static void compute_state_dir_relative_paths(void)
 	snprintf(KERNEL_RELEASES_PATH, sizeof(KERNEL_RELEASES_PATH), "%s/kernel_releases.json",
 	         STATE_DIR);
 	snprintf(ZSWAP_STATE_PATH, sizeof(ZSWAP_STATE_PATH), "%s/zswap.json", STATE_DIR);
+	snprintf(KSM_STATE_PATH, sizeof(KSM_STATE_PATH), "%s/ksm.json", STATE_DIR);
 	snprintf(DHCP_STATE_PATH, sizeof(DHCP_STATE_PATH), "%s/dhcp.json", STATE_DIR);
 	snprintf(STALLWATCH_RECORDS_PATH, sizeof(STALLWATCH_RECORDS_PATH),
 	         "%s/control_plane_stalls.jsonl", STATE_DIR);
@@ -23476,6 +23479,72 @@ static void handle_network_dhcp_delete(int fd, const char *network)
 
 /* ---------- Issue #51: zswap ---------- */
 
+static void handle_ksm_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	ksm_write_json(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_ksm_put(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root = json_parse(body, body_len);
+	const struct json_value *jen, *jpts, *jslp;
+	struct ksm_config next;
+	enum ksm_error err;
+	struct json_writer w;
+
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	/* Partial update: absent fields keep what is configured now, the
+	 * same convention every other config PUT here uses. */
+	next = *ksm_get();
+	jen = json_object_get(root, "enabled");
+	jpts = json_object_get(root, "pages_to_scan");
+	jslp = json_object_get(root, "sleep_millisecs");
+	if (jen != NULL && jen->type == JSON_BOOL)
+		next.enabled = jen->u.boolean;
+	if (jpts != NULL && jpts->type == JSON_NUMBER)
+		next.pages_to_scan = (int)json_as_number(jpts);
+	if (jslp != NULL && jslp->type == JSON_NUMBER)
+		next.sleep_millisecs = (int)json_as_number(jslp);
+	json_free(root);
+
+	err = ksm_set(&next);
+	if (err == KSM_ERR_INVALID) {
+		respond_error(fd, 400, "Bad Request",
+		               "pages_to_scan must be 1-10000 and sleep_millisecs 1-60000");
+		return;
+	}
+	if (err == KSM_ERR_UNSUPPORTED) {
+		respond_error(fd, 409, "Conflict",
+		               "this kernel has no KSM (/sys/kernel/mm/ksm is absent)");
+		return;
+	}
+	if (err == KSM_ERR_PERSIST_FAILED) {
+		respond_error(fd, 500, "Internal Server Error", "could not persist the setting");
+		return;
+	}
+	if (err != KSM_OK) {
+		respond_error(fd, 500, "Internal Server Error",
+		               "the kernel refused the settings; the previous ones were restored");
+		return;
+	}
+	jw_init(&w);
+	jw_obj_open(&w);
+	ksm_write_json(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
 static void handle_zswap_get(int fd)
 {
 	struct json_writer w;
@@ -25440,6 +25509,18 @@ static void op_getDhcpLeases(const struct api_ctx *ctx)
 static void op_addDhcpReservation(const struct api_ctx *ctx)
 {
 	handle_dhcp_static_post(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/system/ksm */
+static void op_getKsm(const struct api_ctx *ctx)
+{
+	handle_ksm_get(ctx->fd);
+}
+
+/* PUT /v1/system/ksm */
+static void op_putKsm(const struct api_ctx *ctx)
+{
+	handle_ksm_put(ctx->fd, ctx->req->body, ctx->req->body_len);
 }
 
 /* GET /v1/system/zswap */
@@ -29287,6 +29368,7 @@ static int cixd_main(int argc, char **argv)
 	 * deliberately off, so this is the setting's only chance to survive
 	 * a reboot. */
 	zswap_init(ZSWAP_STATE_PATH);
+	ksm_init(KSM_STATE_PATH);
 	dhcp_init(DHCP_STATE_PATH);
 	/* A cached answer from a previous run, if there is one. Its own
 	 * mtime is the fetch time -- the file IS the record, so there is

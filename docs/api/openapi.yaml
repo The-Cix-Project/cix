@@ -2470,6 +2470,97 @@ paths:
           description: Removed
         "404":
           description: No reservation for that MAC
+  /system/ksm:
+    get:
+      summary: Kernel samepage merging -- memory deduplication across containers (issue #50)
+      description: >
+        KSM scans anonymous memory and collapses identical pages onto
+        one physical copy. It is worth having here for a specific
+        reason: containers on this platform are overwhelmingly built
+        from the same image, so identical pages across them are the
+        ordinary case rather than a lucky one.
+
+        Two halves, and neither works alone. This endpoint is the host
+        half -- whether the scanner runs, and how hard. The container
+        half is the opt-in, and **it does not exist yet**: KSM merges
+        nothing that has not volunteered, and no container currently
+        volunteers. So enabling the scanner today costs CPU and saves
+        nothing. That is why it is off by default -- the opposite of
+        zswap, which costs nothing until the box is already swapping --
+        and why this endpoint is honest about being half a feature
+        until the per-container opt-in
+        (`prctl(PR_SET_MEMORY_MERGE)`) lands.
+
+        Reports the configured intent and what the kernel actually has,
+        separately, for the same reason zswap does: a page that only
+        echoed its own input could never show a kernel that ignored it.
+        `kernel_run` is the discriminating field, and it has three
+        values rather than two -- 0 stopped, 1 running, 2 unmerging --
+        so a host an operator left mid-unmerge by hand is visible
+        rather than reported as a plain boolean.
+
+        `pages_sharing` is the number that decides whether any of this
+        was worth its CPU: it is how many pages were actually
+        eliminated. A deployment where it stays near zero is paying to
+        scan for nothing.
+      operationId: getKsm
+      x-cix-expose: [cli]
+      responses:
+        "200":
+          description: KSM configuration and live statistics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Ksm"
+    put:
+      summary: Turn samepage merging on or off, and set how hard it scans
+      description: >
+        Partial update -- absent fields keep their current value, the
+        same convention every other configuration PUT here uses.
+
+        `pages_to_scan` must be 1-10000 and `sleep_millisecs` 1-60000.
+        Zero is refused for both deliberately: `pages_to_scan: 0` stops
+        the scanner while still reporting as running, which is a state
+        an operator can reach by accident and never diagnose.
+
+        Applied to the kernel and persisted, in that order, and
+        re-applied at every boot -- `/sys` does not survive a restart,
+        so "off" has to be asserted as much as "on".
+      operationId: putKsm
+      x-cix-expose: [cli]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled:
+                  type: boolean
+                pages_to_scan:
+                  type: integer
+                sleep_millisecs:
+                  type: integer
+      responses:
+        "200":
+          description: Applied -- the new state, same shape as GET
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Ksm"
+        "400":
+          description: pages_to_scan or sleep_millisecs out of range, or an invalid body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: This kernel has no KSM at all
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /system/zswap:
     get:
       summary: The compressed swap cache (issue #51)
@@ -13395,6 +13486,45 @@ components:
           items:
             $ref: "#/components/schemas/Disk"
           description: Every partition currently on disk_name, after the add.
+
+    Ksm:
+      type: object
+      required: [supported, enabled, pages_to_scan, sleep_millisecs]
+      properties:
+        supported:
+          type: boolean
+          description: Whether /sys/kernel/mm/ksm exists on this kernel.
+        enabled:
+          type: boolean
+          description: The configured intent -- what was asked for.
+        pages_to_scan:
+          type: integer
+        sleep_millisecs:
+          type: integer
+        kernel_run:
+          type: integer
+          description: >
+            What the kernel actually reports: 0 stopped, 1 running,
+            2 unmerging. Present only when supported.
+        pages_shared:
+          type: integer
+          description: Physical pages holding deduplicated content.
+        pages_sharing:
+          type: integer
+          description: >
+            Pages eliminated by merging -- the measure of whether this
+            is earning its CPU.
+        pages_unshared:
+          type: integer
+        pages_volatile:
+          type: integer
+        full_scans:
+          type: integer
+        general_profit_bytes:
+          type: integer
+          description: >
+            The kernel's own estimate of memory saved, where it
+            computes one; absent on kernels that do not.
 
     StoragePlacement:
       type: object
