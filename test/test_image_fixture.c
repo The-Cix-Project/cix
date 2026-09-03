@@ -454,11 +454,37 @@ int test_image_fixture_stage_toolchain(const char *image_root)
 
 int test_data_dir_create(char *out_path, size_t out_size)
 {
-	char tmpl[] = "/tmp/cix_test_data_XXXXXX";
+	/*
+	 * /run first, and it is not a preference (#224).
+	 *
+	 * A container's rootfs is an overlay mount, so when the suite runs
+	 * inside a build container -- which is how it runs on a Cix host at
+	 * all -- a data directory under /tmp sits ON that overlay. Every
+	 * container a test daemon then creates asks the kernel to stack
+	 * overlayfs on overlayfs, and the kernel refuses, in as many words:
+	 *
+	 *   overlay: filesystem on /tmp/cix_test_data_XXXXXX/containers/
+	 *            c1/upper not supported as upperdir
+	 *
+	 * /run is a fresh tmpfs in every container (src/mountns.c mounts it
+	 * precisely so it is not overlay-backed storage), and tmpfs is a
+	 * supported upperdir. On a host with no such constraint /run is an
+	 * ordinary tmpfs too, so this is not a container-only special case
+	 * -- it is simply a better place for a scratch directory that has
+	 * filesystems built on top of it.
+	 *
+	 * /tmp remains the fallback for any environment where /run is not
+	 * writable, which is where every one of these tests ran before.
+	 */
+	char tmpl[] = "/run/cix_test_data_XXXXXX";
+	char fallback[] = "/tmp/cix_test_data_XXXXXX";
 
 	if (mkdtemp(tmpl) == NULL) {
-		perror("mkdtemp");
-		return -1;
+		if (mkdtemp(fallback) == NULL) {
+			perror("mkdtemp");
+			return -1;
+		}
+		snprintf(tmpl, sizeof(tmpl), "%s", fallback);
 	}
 	if (snprintf(out_path, out_size, "%s", tmpl) >= (int)out_size) {
 		errno = ENAMETOOLONG;
