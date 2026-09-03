@@ -93,6 +93,49 @@ int cgroup_delegate(const struct cgroup_limits *lim, long long uid, long long gi
 }
 
 /*
+ * Removes every cgroup below dir, deepest first (#258).
+ *
+ * Recursive because what gets left behind is a TREE, not a flat list: a
+ * nested cixd builds its own parent hierarchy inside its namespace root
+ * (cix-workload/cix-pkgbuild/...), so removing only the immediate
+ * children fails on every one of them -- rmdir refuses a cgroup that
+ * still has cgroups in it. The first version of this fix did exactly
+ * that and left the tree, and with the tree still there the
+ * subtree_control write below could not be withdrawn either, so the
+ * EBUSY it was meant to prevent came straight back.
+ *
+ * Depth-bounded rather than trusting the tree to be shallow: this walks
+ * a filesystem the daemon does not solely own, and an unbounded
+ * recursion there is a stack overflow waiting for someone else's
+ * mistake.
+ */
+static void remove_cgroup_children(const char *dir, int depth)
+{
+	DIR *d;
+	struct dirent *e;
+
+	if (depth > 8)
+		return;
+	d = opendir(dir);
+	if (d == NULL)
+		return;
+	while ((e = readdir(d)) != NULL) {
+		char child[PATH_MAX];
+
+		if (e->d_type != DT_DIR || e->d_name[0] == '.')
+			continue;
+		if (snprintf(child, sizeof(child), "%s/%s", dir, e->d_name) >= (int)sizeof(child))
+			continue;
+		remove_cgroup_children(child, depth + 1);
+		/* Only an empty cgroup can be removed, which is the right
+		 * constraint: anything still holding processes is not ours to
+		 * tear down. */
+		rmdir(child);
+	}
+	closedir(d);
+}
+
+/*
  * Returns a cgroup to the state a freshly created one would be in:
  * no delegated controllers, and no leftover children (#258).
  *
@@ -103,27 +146,10 @@ int cgroup_delegate(const struct cgroup_limits *lim, long long uid, long long gi
 static void reset_cgroup_to_leaf(const char *dir)
 {
 	char buf[256];
-	DIR *d;
-	struct dirent *e;
 	int fd;
 	ssize_t n;
 
-	d = opendir(dir);
-	if (d != NULL) {
-		while ((e = readdir(d)) != NULL) {
-			char child[PATH_MAX];
-
-			if (e->d_type != DT_DIR || e->d_name[0] == '.')
-				continue;
-			if (snprintf(child, sizeof(child), "%s/%s", dir, e->d_name) >= (int)sizeof(child))
-				continue;
-			/* Only an empty cgroup can be removed, which is the
-			 * right constraint: anything still holding processes is
-			 * not ours to tear down. */
-			rmdir(child);
-		}
-		closedir(d);
-	}
+	remove_cgroup_children(dir, 0);
 
 	if (snprintf(buf, sizeof(buf), "%s/cgroup.subtree_control", dir) >= (int)sizeof(buf))
 		return;
