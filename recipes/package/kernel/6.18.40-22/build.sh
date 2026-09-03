@@ -175,7 +175,7 @@ EOF
 	#
 	for sym in CONFIG_TMPFS_XATTR CONFIG_KSM CONFIG_ADVISE_SYSCALLS \
 	           CONFIG_HUGETLBFS CONFIG_HUGETLB_PAGE CONFIG_CGROUP_HUGETLB \
-	           CONFIG_IPC_NS CONFIG_IKCONFIG CONFIG_IKCONFIG_PROC; do
+	           CONFIG_IKCONFIG CONFIG_IKCONFIG_PROC; do
 		if ! grep -q "^${sym}=y$" .config; then
 			echo "kernel: ${sym} did not survive olddefconfig -- requested and not set" >&2
 			echo "  what .config actually has:" >&2
