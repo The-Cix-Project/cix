@@ -62,7 +62,7 @@
 pkg_name="cix-tests"
 pkg_version="v2.38.0"
 pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/v2.38.0.tar.gz http://192.168.15.31:8080/kernel-6.18.40-20-x86_64.tar.gz"
-pkg_sha256="3df56893ea2526d3b21ecadc963b67b6412c3e580e926aa27a47c9a43d952ff9 1a929babcf2654cc45d9d47197f0a003b6660573cecf9ae0ce930edcf8b6ab4f"
+pkg_sha256="8faa6ac6a25f906c603276c63ecc299c169427767208a7a5c3b6cd063c6bc847 1a929babcf2654cc45d9d47197f0a003b6660573cecf9ae0ce930edcf8b6ab4f"
 pkg_depends=""
 #
 # The cix recipe's own tools, plus what the tests themselves reach for
