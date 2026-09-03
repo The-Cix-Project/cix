@@ -25,7 +25,7 @@
 #include <sys/sysmacros.h>
 #include <unistd.h>
 
-#define LOWERDIR "/tmp/container_pty_test/lower"
+#define LOWERDIR "/run/container_pty_test/lower"
 /*
  * "/lib/...", never "/usr/lib/..." (#224).
  *
@@ -83,8 +83,8 @@ static int build_lowerdir(void)
 		{ "random", 1, 8 }, { "urandom", 1, 9 },
 	};
 
-	rm_tree("/tmp/container_pty_test");
-	if (mkdir_p1("/tmp/container_pty_test") != 0 || mkdir_p1(LOWERDIR) != 0)
+	rm_tree("/run/container_pty_test");
+	if (mkdir_p1("/run/container_pty_test") != 0 || mkdir_p1(LOWERDIR) != 0)
 		return -1;
 
 	snprintf(path, sizeof(path), "%s/bin", LOWERDIR);
@@ -165,10 +165,10 @@ int main(void)
 	if (build_lowerdir() != 0)
 		return 1;
 
-	if (mkdir_p1("/tmp/container_pty_test/c1") != 0 ||
-	    mkdir_p1("/tmp/container_pty_test/c1/upper") != 0 ||
-	    mkdir_p1("/tmp/container_pty_test/c1/work") != 0 ||
-	    mkdir_p1("/tmp/container_pty_test/c1/merged") != 0)
+	if (mkdir_p1("/run/container_pty_test/c1") != 0 ||
+	    mkdir_p1("/run/container_pty_test/c1/upper") != 0 ||
+	    mkdir_p1("/run/container_pty_test/c1/work") != 0 ||
+	    mkdir_p1("/run/container_pty_test/c1/merged") != 0)
 		return 1;
 
 	memset(&spec, 0, sizeof(spec));
@@ -180,9 +180,9 @@ int main(void)
 	spec.cg.pids_max = 32;
 	spec.cg.cpu_max = NULL;
 	spec.ov.lowerdir = LOWERDIR;
-	spec.ov.upperdir = "/tmp/container_pty_test/c1/upper";
-	spec.ov.workdir = "/tmp/container_pty_test/c1/work";
-	spec.ov.merged = "/tmp/container_pty_test/c1/merged";
+	spec.ov.upperdir = "/run/container_pty_test/c1/upper";
+	spec.ov.workdir = "/run/container_pty_test/c1/work";
+	spec.ov.merged = "/run/container_pty_test/c1/merged";
 	spec.mnt.put_old_rel = ".old_root";
 	spec.argv = child_argv;
 	spec.envp = child_envp;
@@ -204,7 +204,7 @@ int main(void)
 		return 1;
 	}
 
-	if (read_status("/tmp/container_pty_test/c1/upper", &ok) != 0)
+	if (read_status("/run/container_pty_test/c1/upper", &ok) != 0)
 		return 1;
 
 	printf(ok ? "CONTAINER PTY RESULT: PASS\n" : "CONTAINER PTY RESULT: FAIL\n");

@@ -32,7 +32,7 @@
 #include <sys/sysmacros.h>
 #include <unistd.h>
 
-#define IMAGE_ROOT "/tmp/device_test/lower"
+#define IMAGE_ROOT "/run/device_test/lower"
 #define SHARED_DEV_PATH IMAGE_ROOT "/dev/kxtest_shared"
 /*
  * Real, universally-recognized device numbers (/dev/null, /dev/zero,
@@ -205,7 +205,7 @@ int main(void)
 		devA[0].minor = 5;
 		snprintf(devA[0].dev_path, sizeof(devA[0].dev_path), "/dev/kxtestA");
 
-		if (build_container_spec(&specA, "tcc-dev-a", "/tmp/device_test/a", devA, 1, argv,
+		if (build_container_spec(&specA, "tcc-dev-a", "/run/device_test/a", devA, 1, argv,
 		                          envp) != 0)
 			return 1;
 		run_and_check(&specA, "container a (granted device)", &ok);
@@ -227,7 +227,7 @@ int main(void)
 		devB[0].minor = 7;
 		snprintf(devB[0].dev_path, sizeof(devB[0].dev_path), "/dev/kxtestB");
 
-		if (build_container_spec(&specB, "tcc-dev-b", "/tmp/device_test/b", devB, 1, argv,
+		if (build_container_spec(&specB, "tcc-dev-b", "/run/device_test/b", devB, 1, argv,
 		                          envp) != 0)
 			return 1;
 		run_and_check(&specB, "container b (denied ungranted device)", &ok);
@@ -242,7 +242,7 @@ int main(void)
 		struct container_spec specC;
 		char *argv[] = { "/bin/dev_child", "/dev/kxtest_shared", "1", "1:3", NULL };
 
-		if (build_container_spec(&specC, "tcc-dev-c", "/tmp/device_test/c", NULL, 0, argv,
+		if (build_container_spec(&specC, "tcc-dev-c", "/run/device_test/c", NULL, 0, argv,
 		                          envp) != 0)
 			return 1;
 		run_and_check(&specC, "container c (no devices, No Regressions)", &ok);

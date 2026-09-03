@@ -48,7 +48,7 @@
 
 #define BRIDGE_NAME "cix-ctnet0"
 #define BRIDGE_NAME2 "cix-ctnet1"
-#define IMAGE_ROOT "/tmp/container_net_test/lower"
+#define IMAGE_ROOT "/run/container_net_test/lower"
 #define NET_CHILD_PORT 17700
 
 static int mkdir_p1(const char *path)
@@ -347,10 +347,10 @@ int main(void)
 		net2.address_ip_be = ipv4("172.30.1.1");
 		net2.prefix_len = 24;
 
-		if (build_container_spec(&spec1, "tcc-net-c1", "/tmp/container_net_test/c1", &net1, 1, 0,
+		if (build_container_spec(&spec1, "tcc-net-c1", "/run/container_net_test/c1", &net1, 1, 0,
 		                          NULL, 0, argv, envp) != 0)
 			return 1;
-		if (build_container_spec(&spec2, "tcc-net-c2", "/tmp/container_net_test/c2", &net2, 1, 0,
+		if (build_container_spec(&spec2, "tcc-net-c2", "/run/container_net_test/c2", &net2, 1, 0,
 		                          NULL, 0, argv, envp) != 0)
 			return 1;
 
@@ -426,7 +426,7 @@ int main(void)
 		nets3[1].address_ip_be = ipv4("172.30.2.1");
 		nets3[1].prefix_len = 24;
 
-		if (build_container_spec(&spec3, "tcc-net-c3", "/tmp/container_net_test/c3", nets3, 2, 0,
+		if (build_container_spec(&spec3, "tcc-net-c3", "/run/container_net_test/c3", nets3, 2, 0,
 		                          NULL, 0, argv_dual, envp) != 0)
 			return 1;
 
@@ -510,13 +510,13 @@ int main(void)
 		routeT.dest_prefix_len = 24;
 		routeT.gateway_be = ipv4("172.30.2.30"); /* R's bridge-2 IP */
 
-		if (build_container_spec(&specR, "tcc-net-r", "/tmp/container_net_test/r", netsR, 2, 1,
+		if (build_container_spec(&specR, "tcc-net-r", "/run/container_net_test/r", netsR, 2, 1,
 		                          NULL, 0, argv_router, envp) != 0)
 			return 1;
-		if (build_container_spec(&specT, "tcc-net-t", "/tmp/container_net_test/t", &netT, 1, 0,
+		if (build_container_spec(&specT, "tcc-net-t", "/run/container_net_test/t", &netT, 1, 0,
 		                          &routeT, 1, argv, envp) != 0)
 			return 1;
-		if (build_container_spec(&specH, "tcc-net-h", "/tmp/container_net_test/h", &netH, 1, 0,
+		if (build_container_spec(&specH, "tcc-net-h", "/run/container_net_test/h", &netH, 1, 0,
 		                          &routeH, 1, argv_host, envp) != 0)
 			return 1;
 
@@ -610,7 +610,7 @@ int main(void)
 			goto scenario4_cleanup;
 		}
 
-		if (build_container_spec(&spec4, "tcc-net-ifpt", "/tmp/container_net_test/ifpt", NULL, 0,
+		if (build_container_spec(&spec4, "tcc-net-ifpt", "/run/container_net_test/ifpt", NULL, 0,
 		                          0, NULL, 0, argv4, envp) != 0) {
 			ok = 0;
 			goto scenario4_cleanup;
@@ -738,11 +738,11 @@ int main(void)
 		defroute5c.gateway_be = ipv4("172.30.1.53"); /* not actually a live router -- only the
 		                                               * route table entry itself is checked */
 
-		if (build_container_spec(&spec5a, "tcc-net-g1", "/tmp/container_net_test/g1", &net5a, 1, 0,
+		if (build_container_spec(&spec5a, "tcc-net-g1", "/run/container_net_test/g1", &net5a, 1, 0,
 		                          NULL, 0, argv5, envp) != 0 ||
-		    build_container_spec(&spec5b, "tcc-net-g2", "/tmp/container_net_test/g2", &net5b, 1, 0,
+		    build_container_spec(&spec5b, "tcc-net-g2", "/run/container_net_test/g2", &net5b, 1, 0,
 		                          NULL, 0, argv5, envp) != 0 ||
-		    build_container_spec(&spec5c, "tcc-net-g3", "/tmp/container_net_test/g3", &net5c, 1, 0,
+		    build_container_spec(&spec5c, "tcc-net-g3", "/run/container_net_test/g3", &net5c, 1, 0,
 		                          &defroute5c, 1, argv5, envp) != 0)
 			return 1;
 
