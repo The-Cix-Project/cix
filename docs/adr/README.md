@@ -243,3 +243,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0236](0236-a-disk-is-identified-by-its-filesystem-uuid.md) | A disk is identified by its filesystem UUID, not by its kernel name | Accepted |
 | [0237](0237-a-missing-placement-disk-degrades-rather-than-refusing-to-boot.md) | A missing placement disk degrades the daemon, it does not stop it | Accepted |
 | [0238](0238-containers-have-no-outbound-internet-access.md) | Containers have no outbound internet access, deliberately | Accepted |
+| [0239](0239-a-container-facing-filesystem-is-owned-by-the-containers-root.md) | A filesystem mounted for a container is owned by the container's own root | Accepted |
