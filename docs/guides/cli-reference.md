@@ -14,6 +14,26 @@ cixctl [--host=ADDR] [--port=N] [--json] <command> [args...]
 - **Exit codes**: `0` success, `1` the API call itself failed (a non-2xx response, or a transport-level failure reaching the daemon), `2` a usage error (bad flags, unknown subcommand) — checked before any network call is made.
 - **Authentication (ADR-0144)**: once a daemon has write-gating active (see [`docs/api/README.md`'s own "Host authentication" section](../api/README.md#host-authentication-adr-0144)), every mutating command needs a session — run `login` once and every subsequent `cixctl` invocation on this machine authenticates automatically via the persisted token, until `logout` or the session's own idle timeout expires it. `GET`-only commands (`health`, `container ls`, every `... ls`/`... show`) never need one.
 
+## The pager
+
+Long output — `container ls` on a real host, `logs`, `pkg ls` — used to scroll off the top with no way back. `cixctl` now pipes its output through a pager, and the preference is remembered rather than passed every time:
+
+```
+cixctl pager status      # on | off
+cixctl pager off
+cixctl pager on
+```
+
+It is deliberately conservative about when it engages, because the usual way this feature goes wrong is breaking things that were working:
+
+- **Never when stdout is not a terminal.** Piping to `grep`, `jq` or a file behaves exactly as it did before. A pager that engages inside a pipeline breaks scripts, and it breaks them quietly.
+- **Never with `--json`.** That output exists to be consumed by something else.
+- **Never when turned off**, which is remembered in `~/.cixctl_pager`.
+
+`$PAGER` is respected. The fallback is `less -FRX`: `-F` quits immediately when the output already fits on one screen (so short commands feel unchanged), `-R` passes colour through, and `-X` leaves the output on screen after the pager exits — which is the point of having scrolled it. An explicitly empty `PAGER` is the conventional way to say "no pager" and is honoured.
+
+`cixctl pager` is one of the few commands that makes no HTTP call: it configures this client, so it has no endpoint and does not pretend to have one.
+
 ## Seeding a fresh box
 
 ```

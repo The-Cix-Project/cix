@@ -24,6 +24,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <termios.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #define DEFAULT_HOST "127.0.0.1"
@@ -14312,6 +14313,141 @@ static int token_file_path(char *out, size_t out_size)
 	return 0;
 }
 
+/*
+ * The pager (#152).
+ *
+ * Long output -- `container ls` on a real host, `logs`, `pkg ls` --
+ * scrolls off the top with no way back. This pipes stdout through a
+ * pager when, and only when, that is unambiguously wanted.
+ *
+ * Three refusals, and each is the way this feature is usually got
+ * wrong:
+ *
+ *   NOT a TTY. Piping to grep, jq or a file must behave exactly as
+ *   before. A pager that engages in a pipeline breaks scripts, and it
+ *   breaks them silently, because the pager writes nothing a caller
+ *   recognises as an error.
+ *
+ *   --json. That output exists to be consumed by something else, so it
+ *   is never for a human to scroll even when a human is watching.
+ *
+ *   Turned off. Remembered in a dotfile beside the token rather than
+ *   passed every time, because a preference you have to repeat is not
+ *   a preference.
+ *
+ * $PAGER is respected; the fallback is `less -FRX`. -F quits
+ * immediately if the output fits on one screen, which is what keeps
+ * short commands feeling unchanged; -R passes colour through; -X stops
+ * less clearing the screen on exit, so the output is still there
+ * afterwards -- the whole point of having scrolled it.
+ */
+static pid_t g_pager_pid = -1;
+
+static int pager_pref_path(char *out, size_t out_size)
+{
+	const char *home = getenv("HOME");
+
+	if (home == NULL || home[0] == '\0')
+		return -1;
+	if ((size_t)snprintf(out, out_size, "%s/.cixctl_pager", home) >= out_size)
+		return -1;
+	return 0;
+}
+
+/* Paging is on unless the preference file says "off" -- an operator who
+ * has never expressed an opinion gets the pager, since running off the
+ * top of the screen is the complaint this exists to fix. */
+static int pager_enabled_pref(void)
+{
+	char path[PATH_MAX];
+	char buf[16];
+	FILE *f;
+	size_t n;
+
+	if (pager_pref_path(path, sizeof(path)) != 0)
+		return 1;
+	f = fopen(path, "r");
+	if (f == NULL)
+		return 1;
+	n = fread(buf, 1, sizeof(buf) - 1, f);
+	fclose(f);
+	buf[n] = '\0';
+	return strncmp(buf, "off", 3) != 0;
+}
+
+static int pager_set_pref(int on)
+{
+	char path[PATH_MAX];
+	FILE *f;
+
+	if (pager_pref_path(path, sizeof(path)) != 0)
+		return -1;
+	f = fopen(path, "w");
+	if (f == NULL)
+		return -1;
+	fprintf(f, "%s\n", on ? "on" : "off");
+	fclose(f);
+	return 0;
+}
+
+/*
+ * Replaces stdout with a pipe into a pager. A no-op in every case where
+ * paging would be wrong, so callers need no conditions of their own.
+ */
+static void pager_begin(int json_mode)
+{
+	const char *pager;
+	int fds[2];
+	pid_t pid;
+
+	if (g_pager_pid != -1 || json_mode || !isatty(STDOUT_FILENO))
+		return;
+	if (!pager_enabled_pref())
+		return;
+	pager = getenv("PAGER");
+	if (pager == NULL || pager[0] == '\0')
+		pager = "less -FRX";
+	/* An explicitly empty PAGER is the conventional way to say "no
+	 * pager", and is honoured rather than overridden. */
+	if (pipe(fds) != 0)
+		return;
+
+	pid = fork();
+	if (pid < 0) {
+		close(fds[0]);
+		close(fds[1]);
+		return; /* no pager is a fine outcome; failing the command is not */
+	}
+	if (pid == 0) {
+		close(fds[1]);
+		dup2(fds[0], STDIN_FILENO);
+		close(fds[0]);
+		execl("/bin/sh", "sh", "-c", pager, (char *)NULL);
+		_exit(127);
+	}
+	close(fds[0]);
+	dup2(fds[1], STDOUT_FILENO);
+	close(fds[1]);
+	g_pager_pid = pid;
+}
+
+/*
+ * Closes stdout so the pager sees EOF, then waits for it.
+ *
+ * The wait is not optional: without it cixctl exits while the pager is
+ * still drawing, the shell prints its prompt over the top, and the
+ * terminal is left in the pager's own raw mode.
+ */
+static void pager_end(void)
+{
+	if (g_pager_pid == -1)
+		return;
+	fflush(stdout);
+	close(STDOUT_FILENO);
+	waitpid(g_pager_pid, NULL, 0);
+	g_pager_pid = -1;
+}
+
 static int load_token_file(char *out, size_t out_size)
 {
 	char path[PATH_MAX];
@@ -15334,6 +15470,7 @@ int main(int argc, char **argv)
 	int port = DEFAULT_PORT;
 	int json_mode = 0;
 	int i = 1;
+	int rc;
 	const char *cmd;
 	struct cix_client client;
 
@@ -15368,5 +15505,32 @@ int main(int argc, char **argv)
 	}
 	cmd = argv[i++];
 
-	return dispatch_command(&client, json_mode, cmd, argc - i, argv + i);
+	/*
+	 * #152: `pager` is handled here rather than in the dispatcher
+	 * because it configures this client and talks to no daemon -- it
+	 * has no endpoint and should not appear to have one.
+	 */
+	if (strcmp(cmd, "pager") == 0) {
+		if (argc - i == 1 && strcmp(argv[i], "on") == 0)
+			return pager_set_pref(1) == 0 ? 0 : 1;
+		if (argc - i == 1 && strcmp(argv[i], "off") == 0)
+			return pager_set_pref(0) == 0 ? 0 : 1;
+		if (argc - i == 0 || strcmp(argv[i], "status") == 0) {
+			printf("pager: %s\n", pager_enabled_pref() ? "on" : "off");
+			return 0;
+		}
+		fprintf(stderr, "usage: cixctl pager [on|off|status]\n");
+		return 2;
+	}
+
+	/*
+	 * Everything a command prints from here goes through the pager,
+	 * when one is warranted -- pager_begin() decides, so no command
+	 * needs to know it exists. rc is captured before pager_end()
+	 * because the exit status is the command's, never the pager's.
+	 */
+	pager_begin(json_mode);
+	rc = dispatch_command(&client, json_mode, cmd, argc - i, argv + i);
+	pager_end();
+	return rc;
 }
