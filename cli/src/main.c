@@ -86,7 +86,7 @@ static void print_usage(FILE *out)
 	        "      [--memory-swap-max=BYTES]  -- 0 means this container may not swap at all;\n"
 	        "                                    omit it to leave swap unlimited\n"
 	        "      [--cpu-max=\"Q P\"] [--cpuset=0-1,3] [--disk-quota=BYTES] [--network=NAME[:IP] ...]\n"
-	        "      [--ip-forward] [--dns-register] [--userns] [--ldap-client] [--capture-output]\n"
+	        "      [--ip-forward] [--ksm] [--dns-register] [--userns] [--ldap-client] [--capture-output]\n"
 	        "      [--ldap-allow-group=NAME ...]  -- with --ldap-client, restricts login to\n"
 	        "                                        members of these LDAP groups\n"
 	        "      [--pki-issue] [--pki-cert-dir=PATH]\n"
