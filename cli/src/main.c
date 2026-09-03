@@ -27,6 +27,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include "cmdtree.h"
+
 #define DEFAULT_HOST "127.0.0.1"
 #define DEFAULT_PORT 80
 
@@ -15067,19 +15069,14 @@ static void shell_prompt_init(const struct cix_client *client)
  * it's a second, explicit copy -- the same tradeoff CATEGORY_VIEWS
  * makes on the web dashboard side (web/app.js) for the identical
  * reason (a route table that can't be enumerated by walking code). */
-static const char *const SHELL_COMMANDS[] = {
-	"backup", "backup-config", "boot", "boot-console", "container", "control-plane-reservation",
-	"daemon-config", "device", "devicemap", "dhcp", "diskrole", "disks",
-	"dns", "exec", "exit", "factory-reset", "health", "help",
-	"host-stats", "hostauth-config", "hostauth-sessions", "image", "iso", "kernel-policy",
-	"kmod", "kmod-build", "kmod-config", "kmsg", "ldap", "login",
-	"logout", "logs", "network", "ntp", "ping", "pkg",
-	"pkg-build-config", "pki", "process", "quit", "reboot", "resolv",
-	"restore", "rolling-config", "routes", "server-health", "shutdown", "site",
-	"software", "stalls", "storage", "swap", "sysctl", "syslog",
-	"time", "tls-throttle", "update", "volume", "zswap",
-	NULL
-};
+/*
+ * The shell's own extra words, which are not API commands and so are not
+ * in the tree: they end the session rather than call anything. Every
+ * real command now comes from CLI_TREE, so the two can no longer
+ * disagree -- this list had drifted to 59 entries against the
+ * dispatcher's 62 (#151).
+ */
+static const char *const SHELL_EXTRA_COMMANDS[] = { "exit", "quit", "help", NULL };
 
 static char g_shell_history[SHELL_HISTORY_MAX][SHELL_LINE_MAX];
 static int g_shell_history_count;
@@ -15148,35 +15145,149 @@ static void shell_write_all(const char *data, size_t len)
 	}
 }
 
-/* Tab completion is scoped to the command name only (the first word) --
- * completing flags/args per-subcommand would need this shell to carry
- * a model of every subcommand's own flag shape, which is real, separate
- * scope (and each subcommand's own usage banner, printed on a parse
- * error, already documents those). A space anywhere in the line means
- * this isn't that word anymore, so completion is a no-op past that point. */
+/*
+ * Completion, to the end of a command rather than the first word (#151).
+ *
+ * Walks CLI_TREE by the words already typed and answers with whatever
+ * can come next: subcommands while there are subcommands, then flags.
+ * A word already complete (followed by a space) advances the walk; the
+ * final, partial word is what gets matched.
+ *
+ * Flags are offered with their trailing "=" where the parser expects a
+ * value, because "--name" and "--name=" are different things to the
+ * parser and offering the wrong one produces a usage error from a
+ * completion, which is the least forgivable kind.
+ *
+ * Deliberately does NOT complete flag VALUES. The knowable ones are
+ * knowable only by asking the daemon (container names, image names),
+ * and a completion that makes a blocking HTTP call on every Tab is a
+ * worse experience than no completion -- it hangs the terminal exactly
+ * when the daemon is slow or unreachable. Left for a later pass that
+ * can cache.
+ */
+static const struct cli_node *cli_tree_find(const struct cli_node *level, const char *word)
+{
+	int i;
+
+	if (level == NULL)
+		return NULL;
+	for (i = 0; level[i].name != NULL; i++) {
+		if (strcmp(level[i].name, word) == 0)
+			return &level[i];
+	}
+	return NULL;
+}
+
+/*
+ * Candidates for the next word, given the complete words already typed.
+ * Returns how many were written to out.
+ */
+static int cli_complete_candidates(char **words, int nwords, const char *partial,
+                                    const char **out, int max)
+{
+	const struct cli_node *level = CLI_TREE;
+	const struct cli_node *node = NULL;
+	size_t plen = (partial != NULL) ? strlen(partial) : 0;
+	int n = 0, i;
+
+	for (i = 0; i < nwords; i++) {
+		node = cli_tree_find(level, words[i]);
+		if (node == NULL)
+			return 0; /* off the map -- offer nothing rather than something wrong */
+		level = node->subs;
+	}
+
+	/* Subcommands at this level. */
+	for (i = 0; level != NULL && level[i].name != NULL && n < max; i++) {
+		if (plen == 0 || strncmp(level[i].name, partial, plen) == 0)
+			out[n++] = level[i].name;
+	}
+	/* Then this node's own flags -- offered alongside subcommands,
+	 * since many commands accept both. */
+	if (node != NULL && node->flags != NULL) {
+		for (i = 0; node->flags[i] != NULL && n < max; i++) {
+			if (plen == 0 || strncmp(node->flags[i], partial, plen) == 0)
+				out[n++] = node->flags[i];
+		}
+	}
+	/* At the top level the shell's own words complete too. */
+	if (nwords == 0) {
+		for (i = 0; SHELL_EXTRA_COMMANDS[i] != NULL && n < max; i++) {
+			if (plen == 0 || strncmp(SHELL_EXTRA_COMMANDS[i], partial, plen) == 0)
+				out[n++] = SHELL_EXTRA_COMMANDS[i];
+		}
+	}
+	return n;
+}
+
+/*
+ * Splits a line into complete words plus the trailing partial one. The
+ * partial is what completion matches; a line ending in a space has an
+ * empty partial, which correctly means "show me everything valid here".
+ */
+static int cli_split_line(char *line, char **words, int max_words, const char **partial)
+{
+	int n = 0;
+	char *p = line;
+
+	*partial = "";
+	while (*p != '\0') {
+		char *start;
+
+		while (*p == ' ')
+			p++;
+		if (*p == '\0')
+			break;
+		start = p;
+		while (*p != '\0' && *p != ' ')
+			p++;
+		if (*p == '\0') {
+			*partial = start; /* last word, no trailing space: partial */
+			break;
+		}
+		*p++ = '\0';
+		if (n < max_words)
+			words[n++] = start;
+	}
+	return n;
+}
+
 static void shell_complete(char *buf, size_t *len, size_t *cursor)
 {
-	const char *matches[64];
-	int match_count = 0;
-	size_t i, match_len;
+	const char *matches[128];
+	char line[SHELL_LINE_MAX];
+	char *words[16];
+	const char *partial;
+	int nwords, match_count;
+	size_t i, match_len, plen;
 
-	for (i = 0; i < *len; i++) {
-		if (buf[i] == ' ')
-			return;
-	}
+	if (*len >= sizeof(line))
+		return;
+	memcpy(line, buf, *len);
+	line[*len] = '\0';
 
-	for (i = 0; SHELL_COMMANDS[i] != NULL && match_count < 64; i++) {
-		if (strncmp(SHELL_COMMANDS[i], buf, *len) == 0)
-			matches[match_count++] = SHELL_COMMANDS[i];
-	}
+	nwords = cli_split_line(line, words, 16, &partial);
+	plen = strlen(partial);
+	match_count = cli_complete_candidates(words, nwords, partial, matches, 128);
 	if (match_count == 0)
 		return;
+
 	if (match_count == 1) {
-		match_len = strlen(matches[0]);
-		if (match_len < SHELL_LINE_MAX) {
-			memcpy(buf, matches[0], match_len);
-			*len = match_len;
-			*cursor = match_len;
+		/* Replace just the partial word, keeping everything before it. */
+		size_t keep = *len - plen;
+		const char *m = matches[0];
+
+		match_len = strlen(m);
+		if (keep + match_len < SHELL_LINE_MAX) {
+			memcpy(buf + keep, m, match_len);
+			*len = keep + match_len;
+			/* A flag taking a value ends in '='; anything else is a
+			 * finished word and gets a space, so the next Tab
+			 * completes the level below rather than re-offering this
+			 * one. */
+			if (buf[*len - 1] != '=' && *len + 1 < SHELL_LINE_MAX)
+				buf[(*len)++] = ' ';
+			*cursor = *len;
 		}
 		return;
 	}
@@ -15510,6 +15621,32 @@ int main(int argc, char **argv)
 	 * because it configures this client and talks to no daemon -- it
 	 * has no endpoint and should not appear to have one.
 	 */
+	/*
+	 * #151: the completion helper a shell calls. Hidden from usage on
+	 * purpose -- it is an integration point, not a command anyone
+	 * types. Prints one candidate per line and makes no HTTP call, so
+	 * pressing Tab never blocks on a slow or unreachable daemon.
+	 */
+	if (strcmp(cmd, "__complete") == 0) {
+		const char *matches[128];
+		const char *partial = "";
+		int n, k, w = argc - i;
+
+		/*
+		 * The shell passes every word including the partial one. A
+		 * trailing empty argument is how it says the line ends in a
+		 * space, i.e. "offer everything valid here".
+		 */
+		if (w > 0) {
+			partial = argv[argc - 1];
+			w--;
+		}
+		n = cli_complete_candidates(argv + i, w, partial, matches, 128);
+		for (k = 0; k < n; k++)
+			printf("%s\n", matches[k]);
+		return 0;
+	}
+
 	if (strcmp(cmd, "pager") == 0) {
 		if (argc - i == 1 && strcmp(argv[i], "on") == 0)
 			return pager_set_pref(1) == 0 ? 0 : 1;

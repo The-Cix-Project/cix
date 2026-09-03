@@ -33,6 +33,7 @@ NETPLANE_SRCS := netplane/src/rtnetlink.c
 SELFTESTS = \
 	$(BUILD)/test_apigen $(BUILD)/test_apiroute $(BUILD)/test_api_surfaces \
 	$(BUILD)/test_docindex $(BUILD)/test_toolchain_policy \
+	$(BUILD)/test_clitree \
 	$(BUILD)/test_recipe_hygiene \
 	$(BUILD)/test_elfcheck $(BUILD)/test_elfcheck_gcc \
 	$(BUILD)/test_treecopy $(BUILD)/test_childdiag \
@@ -496,6 +497,9 @@ $(BUILD)/test_elfcheck_gcc: test/test_elfcheck_gcc.c daemon/src/elfcheck.c | $(B
 
 $(BUILD)/test_elfcheck: test/test_elfcheck.c daemon/src/elfcheck.c | $(BUILD)
 	$(CC) $(CFLAGS) -Idaemon/include test/test_elfcheck.c daemon/src/elfcheck.c -o $@
+
+$(BUILD)/test_clitree: test/test_clitree.c cli/src/cmdtree.h | $(BUILD)
+	$(CC) $(CLIENT_CFLAGS) -Icli/src $< -o $@
 
 $(BUILD)/test_docindex: test/test_docindex.c | $(BUILD)
 	$(CC) $(CFLAGS) test/test_docindex.c -o $@

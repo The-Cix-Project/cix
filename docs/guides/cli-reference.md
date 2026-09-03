@@ -14,6 +14,27 @@ cixctl [--host=ADDR] [--port=N] [--json] <command> [args...]
 - **Exit codes**: `0` success, `1` the API call itself failed (a non-2xx response, or a transport-level failure reaching the daemon), `2` a usage error (bad flags, unknown subcommand) — checked before any network call is made.
 - **Authentication (ADR-0144)**: once a daemon has write-gating active (see [`docs/api/README.md`'s own "Host authentication" section](../api/README.md#host-authentication-adr-0144)), every mutating command needs a session — run `login` once and every subsequent `cixctl` invocation on this machine authenticates automatically via the persisted token, until `logout` or the session's own idle timeout expires it. `GET`-only commands (`health`, `container ls`, every `... ls`/`... show`) never need one.
 
+## Completion
+
+Completion reaches the end of a command, not just the first word:
+
+```
+cixctl dns forwarders <TAB>      -> set  show  --forwarder=
+cixctl container mig<TAB>        -> migrate-storage  migrate-storage-status
+cixctl update --<TAB>            -> --image=  --image-sha256=  --image-url=  --kernel=
+```
+
+It works in two places: the built-in interactive shell (run `cixctl` with no command from a terminal), and your own shell once you install one of the scripts in [`cli/completion/`](../../cli/completion) — `cixctl.bash` or `cixctl.zsh`. Source it from your shell rc, or drop the bash one in `/usr/share/bash-completion/completions/cixctl`.
+
+Both get their candidates from `cixctl __complete`, a hidden helper that reads the CLI's own command tree. Two consequences worth knowing:
+
+- **Tab never blocks.** `__complete` makes no HTTP call, so completion works identically when the daemon is slow, unreachable, or not running at all.
+- **The completion scripts describe no commands of their own**, so they cannot fall behind the CLI the way a hand-written completion script normally does.
+
+Flag *values* are deliberately not completed. The ones worth completing — container names, image names — are knowable only by asking the daemon, and a completion that makes a blocking request on every keypress is worse than none.
+
+The command surface lives in `cli/src/cmdtree.h` as data. Because that is a second description of something `dispatch_command()` also encodes, `test_clitree` re-derives the surface from `cli/src/main.c` on every build and fails it if the two disagree — a completion that offers a flag the parser rejects is worse than no completion, so the disagreement is made a build failure rather than a surprise.
+
 ## The pager
 
 Long output — `container ls` on a real host, `logs`, `pkg ls` — used to scroll off the top with no way back. `cixctl` now pipes its output through a pager, and the preference is remembered rather than passed every time:
