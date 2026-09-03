@@ -62,6 +62,8 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/system/swap` | Whether a host swap file is currently enabled, and its size |
 | POST | `/system/swap` | Enable a host swap file at a given size |
 | DELETE | `/system/swap` | Disable and remove the host swap file |
+| GET | `/system/ksm` | Samepage merging: configured intent, what the kernel reports, and how many pages it actually saved (issue #50) |
+| PUT | `/system/ksm` | Turn the scanner on or off and set how hard it scans -- partial update, applied and persisted |
 | GET | `/system/zswap` | The compressed swap cache: configured intent, what the kernel actually has, and which compressors it was built with (issue #51) |
 | PUT | `/system/zswap` | Configure it -- partial update, applied to the running kernel and persisted |
 | GET | `/system/kmsg` | Tail the kernel ring buffer directly (`tail` filter) -- dmesg for a host with no shell |
@@ -2022,6 +2024,25 @@ Create the container with `files[]` entries for the first two (empty is fine —
 > **Enabling DHCP on a network that reaches a real LAN will answer requests from machines that are not this platform's.** A home or office LAN almost certainly already has a DHCP server, and a second one is not a redundant pair — it is two servers with separate lease databases handing out overlapping addresses. Nothing here prevents it, because nothing here can tell a lab bridge from an uplinked one. Use an isolated network unless you own the LAN's addressing.
 
 `cixctl dhcp server ls|add|rm`, `cixctl dhcp enable --network=… --range=… --server=… [--server=…]`, `cixctl dhcp static add|rm`, `cixctl dhcp show|leases` is the CLI surface; the dashboard has DHCP under Services (Servers / Ranges / Reservations / Leases), with each network's own page showing the leases on it.
+
+## Samepage merging: KSM (issue #50)
+
+```
+GET /v1/system/ksm
+PUT /v1/system/ksm
+```
+
+KSM scans anonymous memory and collapses identical pages onto one physical copy. It earns its place here for a specific reason: containers on this platform are overwhelmingly built from the **same image**, so identical pages across them are the ordinary case rather than a lucky one.
+
+**It is half a feature today, and the endpoint says so.** KSM merges nothing that has not volunteered, and no container currently volunteers — the per-container opt-in (`prctl(PR_SET_MEMORY_MERGE)`) is not built yet. Enabling the scanner right now costs CPU and saves nothing. That is exactly why it defaults to **off**, the opposite of zswap, which costs nothing until the box is already swapping.
+
+Same intent-versus-reality split as zswap: what was asked for and what the kernel reports are separate fields, because a page that only echoed its own input could never show a kernel that ignored it. `kernel_run` has **three** values rather than two — `0` stopped, `1` running, `2` unmerging — so a host someone left mid-unmerge by hand is visible instead of being flattened into a boolean.
+
+`pages_sharing` is the number that decides whether this is worth its CPU: it counts pages actually eliminated. If it stays near zero, the scanner is running for nothing.
+
+`pages_to_scan` must be 1–10000 and `sleep_millisecs` 1–60000. Zero is refused for both deliberately — `pages_to_scan: 0` stops the scanner while still reporting as running, a state an operator can reach by accident and never diagnose.
+
+Requires `CONFIG_KSM`, which this platform's kernel gained in 6.18.40-23 along with `CONFIG_ADVISE_SYSCALLS` — without the latter `madvise(2)` itself returns `ENOSYS`, so KSM's per-region opt-in could never have been used.
 
 ## Compressed swap cache: zswap (issue #51)
 

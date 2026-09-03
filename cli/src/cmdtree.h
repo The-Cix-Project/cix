@@ -1247,6 +1247,20 @@ static const struct cli_node n_show_subs[] = {
 };
 
 
+static const char *const n_ksm_flags[] = {
+	"--disable",
+	"--enable",
+	"--pages-to-scan=",
+	"--sleep-millisecs=",
+	NULL
+};
+
+static const struct cli_node n_ksm_subs[] = {
+	{ "set", NULL, NULL },
+	{ "show", NULL, NULL },
+	{ NULL, NULL, NULL },
+};
+
 /* The 62 top-level commands, in dispatcher order. */
 static const struct cli_node CLI_TREE[] = {
 	{ "health", NULL, NULL },
@@ -1279,6 +1293,7 @@ static const struct cli_node CLI_TREE[] = {
 	{ "storage", NULL, n_storage_subs },
 	{ "logs", NULL, n_logs_subs },
 	{ "dhcp", n_dhcp_flags, n_dhcp_subs },
+	{ "ksm", n_ksm_flags, n_ksm_subs },
 	{ "zswap", n_zswap_flags, n_zswap_subs },
 	{ "swap", NULL, n_swap_subs },
 	{ "host-stats", NULL, NULL },

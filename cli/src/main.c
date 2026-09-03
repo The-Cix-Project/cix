@@ -3622,6 +3622,127 @@ static void fmt_zswap(const struct json_value *v)
 	}
 }
 
+/*
+ * Issue #50: cixctl ksm show|set. Same two-column shape as zswap --
+ * what was asked for, and what the kernel actually reports -- for the
+ * same reason: they can differ, and only the second one is true.
+ */
+static long long ksm_num(const struct json_value *v, const char *key, long long dflt)
+{
+	const struct json_value *n = json_object_get(v, key);
+
+	return (n != NULL && n->type == JSON_NUMBER) ? (long long)n->u.number : dflt;
+}
+
+static int ksm_flag(const struct json_value *v, const char *key)
+{
+	const struct json_value *b = json_object_get(v, key);
+
+	return b != NULL && b->type == JSON_BOOL && b->u.boolean;
+}
+
+static void fmt_ksm(const struct json_value *v)
+{
+	const struct json_value *supported = json_object_get(v, "supported");
+	long long run;
+
+	if (supported != NULL && supported->type == JSON_BOOL && !supported->u.boolean) {
+		printf("this kernel has no KSM at all -- nothing here can take effect\n");
+		return;
+	}
+	printf("configured : %s  pages_to_scan=%lld  sleep_millisecs=%lld\n",
+	       ksm_flag(v, "enabled") ? "on" : "off",
+	       ksm_num(v, "pages_to_scan", 0), ksm_num(v, "sleep_millisecs", 0));
+
+	run = ksm_num(v, "kernel_run", -1);
+	printf("kernel     : %s\n",
+	       run == 1 ? "running" : run == 0 ? "stopped" :
+	       run == 2 ? "unmerging (someone wrote 2 by hand)" : "unknown");
+
+	/*
+	 * pages_sharing answers "is this worth its CPU", so it is spelled
+	 * out rather than left as one counter among several: it counts
+	 * pages that were eliminated. Near zero means the scanner is
+	 * running for nothing.
+	 */
+	printf("saved      : %lld pages merged away (%lld physical pages hold the shared content)\n",
+	       ksm_num(v, "pages_sharing", 0), ksm_num(v, "pages_shared", 0));
+	printf("scanning   : %lld unshared, %lld volatile, %lld full scans\n",
+	       ksm_num(v, "pages_unshared", 0), ksm_num(v, "pages_volatile", 0),
+	       ksm_num(v, "full_scans", 0));
+}
+
+static int cmd_ksm(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	struct cix_response r;
+	const char *sub = argc > 0 ? argv[0] : "show";
+	long pages_to_scan = -1, sleep_millisecs = -1;
+	int enabled = -1;
+	int i;
+	struct json_writer w;
+
+	if (strcmp(sub, "show") == 0) {
+		if (cix_client_request(c, CIX_API_getKsm_METHOD, CIX_API_getKsm, NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_ksm);
+	}
+	if (strcmp(sub, "set") != 0) {
+		fprintf(stderr, "usage: cixctl ksm show\n"
+		                "       cixctl ksm set [--enable | --disable] "
+		                "[--pages-to-scan=N] [--sleep-millisecs=N]\n"
+		                "  KSM merges identical memory pages across containers. It merges\n"
+		                "  nothing until a container opts in, so enabling the scanner alone\n"
+		                "  costs CPU and saves nothing\n");
+		return 2;
+	}
+	for (i = 1; i < argc; i++) {
+		if (strcmp(argv[i], "--enable") == 0)
+			enabled = 1;
+		else if (strcmp(argv[i], "--disable") == 0)
+			enabled = 0;
+		else if (strncmp(argv[i], "--pages-to-scan=", 16) == 0)
+			pages_to_scan = atol(argv[i] + 16);
+		else if (strncmp(argv[i], "--sleep-millisecs=", 18) == 0)
+			sleep_millisecs = atol(argv[i] + 18);
+		else {
+			fprintf(stderr, "cixctl: unknown ksm set option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (enabled < 0 && pages_to_scan < 0 && sleep_millisecs < 0) {
+		fprintf(stderr, "usage: cixctl ksm set [--enable | --disable] "
+		                "[--pages-to-scan=N] [--sleep-millisecs=N]\n");
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	if (enabled >= 0) {
+		jw_key(&w, "enabled");
+		jw_bool(&w, enabled);
+	}
+	if (pages_to_scan >= 0) {
+		jw_key(&w, "pages_to_scan");
+		jw_int(&w, pages_to_scan);
+	}
+	if (sleep_millisecs >= 0) {
+		jw_key(&w, "sleep_millisecs");
+		jw_int(&w, sleep_millisecs);
+	}
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (cix_client_request(c, CIX_API_putKsm_METHOD, CIX_API_putKsm, w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+	return emit(&r, json_mode, fmt_ksm);
+}
+
 static int cmd_zswap(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	struct cix_response r;
@@ -14873,6 +14994,8 @@ static int dispatch_command(const struct cix_client *client, int json_mode, cons
 		return cmd_logs_top(client, json_mode, argc, argv);
 	if (strcmp(cmd, "dhcp") == 0)
 		return cmd_dhcp(client, json_mode, argc, argv);
+	if (strcmp(cmd, "ksm") == 0)
+		return cmd_ksm(client, json_mode, argc, argv);
 	if (strcmp(cmd, "zswap") == 0)
 		return cmd_zswap(client, json_mode, argc, argv);
 	if (strcmp(cmd, "swap") == 0)
