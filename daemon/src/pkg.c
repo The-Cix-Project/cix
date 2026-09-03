@@ -1739,6 +1739,67 @@ static void url_basename(const char *url, char *out, size_t out_size)
 }
 
 /*
+ * Not every package's source is an archive. A CA certificate bundle,
+ * a single-file script, a firmware blob: upstream publishes one plain
+ * file and there is nothing to unpack. Before this, source[0] was
+ * unconditionally handed to tar, so such a package failed at
+ * "extract source tarball" -- an error naming a tarball that never
+ * existed, which reads as a corrupt download rather than a source
+ * that was never an archive in the first place.
+ *
+ * The decision is made from the file's own leading bytes, not from
+ * the URL's extension: a URL is a claim and the bytes are the fact,
+ * and this project has already been bitten once by pinning the
+ * checksum of a 99-byte error page that a URL promised was a tarball.
+ * tar itself autodetects the compression, so this only has to answer
+ * "is it an archive at all".
+ */
+static int file_is_archive(const char *path)
+{
+	unsigned char h[262];
+	size_t n;
+	FILE *f = fopen(path, "rb");
+
+	if (f == NULL)
+		return 0;
+	n = fread(h, 1, sizeof(h), f);
+	fclose(f);
+
+	if (n >= 2 && h[0] == 0x1f && h[1] == 0x8b)
+		return 1; /* gzip */
+	if (n >= 6 && memcmp(h, "\xfd" "7zXZ\x00", 6) == 0)
+		return 1; /* xz */
+	if (n >= 3 && memcmp(h, "BZh", 3) == 0)
+		return 1; /* bzip2 */
+	if (n >= 4 && h[0] == 0x28 && h[1] == 0xb5 && h[2] == 0x2f && h[3] == 0xfd)
+		return 1; /* zstd */
+	if (n >= 262 && memcmp(h + 257, "ustar", 5) == 0)
+		return 1; /* uncompressed tar */
+	return 0;
+}
+
+/*
+ * Put source[0] where pkg_build() expects to find it: unpacked into
+ * /build/src for an archive, or laid down as /build/src/<basename>
+ * for a single plain file.
+ */
+static int stage_main_source(const char *src_path, const char *dest_dir, const char *url)
+{
+	char base[PKG_URL_MAX];
+	char dst[PATH_MAX];
+
+	if (file_is_archive(src_path))
+		return extract_tarball(src_path, dest_dir);
+
+	url_basename(url, base, sizeof(base));
+	if (base[0] == '\0')
+		return -1;
+	if ((size_t)snprintf(dst, sizeof(dst), "%s/%s", dest_dir, base) >= sizeof(dst))
+		return -1;
+	return copy_file_simple(src_path, dst);
+}
+
+/*
  * Each concurrent build owns a distinct __pkgbuild-<chain index>
  * container path (ADR-0157 -- builds run in parallel, up to
  * max_concurrent_jobs) -- without wiping it first, a build's
@@ -5700,8 +5761,8 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 			} else if (copy_file_simple(recipe_path, recipe_dst) != 0) {
 				prep_step = "copy recipe.sh";
 				prep_errno = errno;
-			} else if (extract_tarball(main_src_path, src_dir) != 0) {
-				prep_step = "extract source tarball";
+			} else if (stage_main_source(main_src_path, src_dir, recipe.source[0]) != 0) {
+				prep_step = "stage source";
 			}
 
 			if (prep_step != NULL) {
