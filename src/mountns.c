@@ -28,6 +28,72 @@ int mountns_make_private(void)
 	return 0;
 }
 
+/*
+ * Mount a tmpfs that belongs to the CONTAINER, not to the host.
+ *
+ * Every mount in mountns_pivot() is made by a process that is still real
+ * host root -- deliberately, and it cannot be otherwise: this code has to
+ * pivot_root() and later mknod() real device nodes, and a process that has
+ * already become the namespace's mapped root can do neither (the kernel
+ * refuses device creation inside a user namespace outright). container.c
+ * therefore does its setgid(0)/setuid(0) into the mapped root only after
+ * all of this has run.
+ *
+ * The consequence is easy to miss, and was missed: host uid 0 has no entry
+ * in the container's uid_map, so at mount time the mounting process is
+ * UNMAPPED, and a filesystem whose root inode takes its owner from the
+ * mounter comes out owned by the overflow uid (65534). The container's own
+ * root -- the uid the payload actually runs as -- then cannot write to it.
+ * Measured on a real container: uid_map "0 4425376 65536", "/" and "/etc"
+ * correctly owned by 0 through ADR-0207's id-mapped rootfs, and "/run"
+ * owned by 65534 with mkdir returning EACCES.
+ *
+ * uid=/gid= fixes it because tmpfs resolves those options through the
+ * MOUNTING PROCESS'S user namespace, which is already the container's --
+ * only its fsuid is unmapped, not its namespace -- so uid=0 names the
+ * container's root rather than the host's. Verified both ways with a
+ * standalone probe: without these options the tmpfs comes up owned by
+ * 65534 and is unwritable by the container's root; with them it comes up
+ * owned by 0 and is writable.
+ *
+ * chown() after mounting is NOT an alternative, and that was measured
+ * rather than assumed: it fails EPERM, because a process whose own fsuid
+ * is unmapped cannot give away a file owned by an unmapped uid, capability
+ * set notwithstanding. The ownership has to be established by the mount.
+ *
+ * The options are unconditional -- no branch on whether this container has
+ * a user namespace. Without one, the mounter is in the initial user
+ * namespace where uid=0 resolves to host root, which is exactly what the
+ * bare mount already produced; confirmed with the same probe. A branch
+ * would be a second path to keep correct for no gain.
+ *
+ * This is a function rather than a longer options string at the one call
+ * site so the rule travels with the act of mounting: any future writable
+ * filesystem created for a container goes through here and cannot quietly
+ * omit the ownership. That is precisely how /run came to be broken --
+ * nothing about a bare mount() call said the ownership was a decision at
+ * all.
+ *
+ * Deliberately NOT applied to /proc, /sys or cgroup2 below. They share the
+ * same unmapped-owner cause and their roots do read as 65534, but they are
+ * kernel-maintained views rather than storage this platform creates for
+ * the container: their root directories are r-xr-xr-x, nothing writes to
+ * them, and neither procfs nor sysfs accepts uid=/gid= at all. /dev/pts is
+ * already correct -- devpts derives ownership the same way and already
+ * resolves to the container's root. Extending this there would mean
+ * inventing a mechanism for filesystems that do not want one.
+ */
+static int mount_container_tmpfs(const char *target, const char *opts, unsigned long flags)
+{
+	char full[256];
+
+	if ((size_t)snprintf(full, sizeof(full), "%s,uid=0,gid=0", opts) >= sizeof(full)) {
+		errno = ENAMETOOLONG;
+		return -1;
+	}
+	return mount("tmpfs", target, "tmpfs", flags, full);
+}
+
 int mountns_pivot(const char *new_root, const struct mount_spec *mnt)
 {
 	char put_old_path[PATH_MAX];
@@ -180,7 +246,7 @@ int mountns_pivot(const char *new_root, const struct mount_spec *mnt)
 		perror("mountns_pivot: mkdir(/run)");
 		return MOUNTNS_PIVOT_ERR_MKDIR_RUN;
 	}
-	if (mount("tmpfs", "/run", "tmpfs", MS_NOSUID | MS_NODEV, "mode=0755") != 0) {
+	if (mount_container_tmpfs("/run", "mode=0755", MS_NOSUID | MS_NODEV) != 0) {
 		perror("mountns_pivot: mount(tmpfs /run)");
 		return MOUNTNS_PIVOT_ERR_MOUNT_RUN;
 	}
