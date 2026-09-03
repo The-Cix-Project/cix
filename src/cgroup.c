@@ -325,6 +325,83 @@ int cgroup_create_parent(const struct cgroup_limits *lim)
 	return 0;
 }
 
+/*
+ * Moves every process in the cgroup-namespace root into a leaf below it
+ * (#258), so the root can delegate controllers to its children.
+ *
+ * Only ever reached inside a container, where the namespace root is an
+ * ordinary cgroup subject to the no-internal-process rule. On a host
+ * the root cgroup is exempt and the caller's first write succeeds.
+ *
+ * The leaf is named with a dot so it can never collide with a
+ * container: container names are validated as simple names and cannot
+ * contain one, so a container called "cixd" would still be a different
+ * directory.
+ *
+ * Reads and re-reads cgroup.procs rather than trusting one pass: moving
+ * a process is a write per PID, and the set can change underneath. A
+ * bounded number of passes, because an unbounded loop here would hang
+ * daemon startup, and the honest outcome of not converging is to say so
+ * and carry on without nested controllers.
+ */
+static int relocate_self_to_leaf(void)
+{
+	char leaf[PATH_MAX];
+	int pass;
+
+	if (snprintf(leaf, sizeof(leaf), "%s/cix.daemon", CGROUP_ROOT) >= (int)sizeof(leaf)) {
+		errno = ENAMETOOLONG;
+		perror("cgroup_enable_controllers: leaf path");
+		return -1;
+	}
+	if (mkdir(leaf, 0755) != 0 && errno != EEXIST) {
+		perror("cgroup_enable_controllers: mkdir leaf");
+		return -1;
+	}
+
+	for (pass = 0; pass < 8; pass++) {
+		char path[PATH_MAX];
+		char buf[4096];
+		char *saveptr, *tok;
+		int fd, moved = 0;
+		ssize_t n;
+
+		snprintf(path, sizeof(path), "%s/cgroup.procs", CGROUP_ROOT);
+		fd = open(path, O_RDONLY);
+		if (fd < 0) {
+			perror("cgroup_enable_controllers: open cgroup.procs");
+			return -1;
+		}
+		n = read(fd, buf, sizeof(buf) - 1);
+		close(fd);
+		if (n < 0) {
+			perror("cgroup_enable_controllers: read cgroup.procs");
+			return -1;
+		}
+		buf[n] = '\0';
+		if (buf[0] == '\0')
+			return 0; /* nothing left in the root -- delegation can proceed */
+
+		for (tok = strtok_r(buf, "\n", &saveptr); tok != NULL;
+		     tok = strtok_r(NULL, "\n", &saveptr)) {
+			if (tok[0] == '\0')
+				continue;
+			/* One PID per write: cgroup.procs accepts exactly one,
+			 * and a failure to move one process is not a reason to
+			 * stop trying the rest. */
+			if (write_cgroup_file(leaf, "cgroup.procs", tok) == 0)
+				moved++;
+		}
+		if (moved == 0)
+			break; /* made no progress; another pass will not either */
+	}
+
+	fprintf(stderr, "cgroup_enable_controllers: could not empty the cgroup namespace root -- "
+	                "nested containers will have no controllers (#258)\n");
+	errno = EBUSY;
+	return -1;
+}
+
 void cgroup_enable_controllers(void)
 {
 	static const char *const wanted[] = { "io", "cpuset", "memory", "pids", "cpu" };
@@ -376,8 +453,42 @@ void cgroup_enable_controllers(void)
 	if (request[0] == '\0')
 		return;
 
-	if (write_cgroup_file(CGROUP_ROOT, "cgroup.subtree_control", request) != 0)
+	if (write_cgroup_file(CGROUP_ROOT, "cgroup.subtree_control", request) == 0)
+		return;
+
+	/*
+	 * EBUSY here is the cgroup v2 "no internal process" rule, and it is
+	 * the difference between running on a host and running inside a
+	 * container (#258).
+	 *
+	 * A cgroup that holds processes may not enable controllers for its
+	 * children. The real root cgroup is exempt, which is why this has
+	 * always worked on a host: cixd sits in the root and writes this
+	 * happily. Inside a container the root of our cgroup NAMESPACE is
+	 * an ordinary cgroup, we are in it, and the rule applies -- so the
+	 * write failed, no controller was ever delegated, and every
+	 * container a nested cixd tried to create found no cpu.max or
+	 * memory.max to write. Measured as 19 of 41 remaining failures the
+	 * second time the full suite ran (#224).
+	 *
+	 * The fix is to stop being an internal process: move ourselves into
+	 * a leaf below the root and try again. Nothing else needs to
+	 * change -- containers are still created as siblings of that leaf,
+	 * one level under the namespace root, and they inherit the
+	 * controllers this write is enabling.
+	 *
+	 * Everything above us is untouched, so the parent budgets keep
+	 * applying exactly as before (ADR-0165): we are moving DOWN inside
+	 * our own cgroup, not out of it.
+	 */
+	if (errno != EBUSY) {
 		perror("cgroup_enable_controllers: write to cgroup.subtree_control");
+		return;
+	}
+	if (relocate_self_to_leaf() != 0)
+		return; /* already reported, and the retry below cannot help */
+	if (write_cgroup_file(CGROUP_ROOT, "cgroup.subtree_control", request) != 0)
+		perror("cgroup_enable_controllers: write to cgroup.subtree_control after relocating");
 }
 
 /* Reads filename (relative to dir_fd, e.g. a container's own cgroup_fd)
