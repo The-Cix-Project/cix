@@ -706,6 +706,7 @@ static const char *const n_container_run_flags[] = {
 	"--image=",
 	"--interface=",
 	"--ip-forward",
+	"--ksm",
 	"--ldap-allow-group=",
 	"--ldap-client",
 	"--ldap-group=",

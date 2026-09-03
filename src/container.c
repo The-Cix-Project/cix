@@ -784,6 +784,26 @@ int container_create(const struct container_spec *spec, struct container_handle 
 			_exit(124);
 		}
 
+		/*
+		 * #260: volunteer this container's anonymous memory for KSM.
+		 *
+		 * Deliberately last, immediately before capabilities are
+		 * dropped and the payload is exec'd: the flag lives on the mm
+		 * and is inherited by everything the payload forks, so setting
+		 * it here covers memory that does not exist yet, which is the
+		 * whole point -- the payload is an arbitrary program with no
+		 * call sites this daemon can add a madvise() to.
+		 *
+		 * A failure is NOT fatal. Merging is an optimisation: a
+		 * container that cannot opt in still runs correctly, just
+		 * without the saving, and refusing to start it would trade a
+		 * working container for a memory optimisation. The diagnostic
+		 * says so rather than the container silently differing from
+		 * what was asked for.
+		 */
+		if (spec->ksm && prctl(PR_SET_MEMORY_MERGE, 1, 0, 0, 0) != 0)
+			child_diag(diag_pipe[1], "child: prctl(PR_SET_MEMORY_MERGE) -- running without KSM");
+
 		if (container_caps_drop(spec->cap_add, spec->cap_add_count) != 0) {
 			child_diag(diag_pipe[1], "child: container_caps_drop");
 			_exit(120);

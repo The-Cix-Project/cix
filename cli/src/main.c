@@ -8320,6 +8320,7 @@ static int cmd_run(const struct cix_client *c, int json_mode, int argc, char **a
 	long readiness_tcp_port = -1;
 	long readiness_timeout = -1;
 	int ip_forward = 0;
+	int ksm = 0;
 	int dns_register = 0;
 	int userns = 0;
 	int ldap_client = 0;
@@ -8461,6 +8462,11 @@ static int cmd_run(const struct cix_client *c, int json_mode, int argc, char **a
 			readiness_tcp_port = atol(argv[i] + 21);
 		} else if (strncmp(argv[i], "--readiness-timeout=", 20) == 0) {
 			readiness_timeout = atol(argv[i] + 20);
+		} else if (strcmp(argv[i], "--ksm") == 0) {
+			/* #260: volunteer this container's memory for samepage
+			 * merging. Does nothing unless the host scanner is on --
+			 * see cixctl ksm. */
+			ksm = 1;
 		} else if (strcmp(argv[i], "--ip-forward") == 0) {
 			ip_forward = 1;
 		} else if (strcmp(argv[i], "--dns-register") == 0) {
@@ -8683,6 +8689,10 @@ static int cmd_run(const struct cix_client *c, int json_mode, int argc, char **a
 			}
 		}
 		jw_arr_close(&w);
+	}
+	if (ksm) {
+		jw_key(&w, "ksm");
+		jw_bool(&w, 1);
 	}
 	if (ip_forward) {
 		jw_key(&w, "ip_forward");

@@ -2482,14 +2482,14 @@ paths:
 
         Two halves, and neither works alone. This endpoint is the host
         half -- whether the scanner runs, and how hard. The container
-        half is the opt-in, and **it does not exist yet**: KSM merges
-        nothing that has not volunteered, and no container currently
-        volunteers. So enabling the scanner today costs CPU and saves
-        nothing. That is why it is off by default -- the opposite of
-        zswap, which costs nothing until the box is already swapping --
-        and why this endpoint is honest about being half a feature
-        until the per-container opt-in
-        (`prctl(PR_SET_MEMORY_MERGE)`) lands.
+        half is the opt-in: a container asks with `ksm: true` on
+        `POST /containers` and the daemon applies
+        `prctl(PR_SET_MEMORY_MERGE)` before exec. Both halves are
+        needed and neither does anything alone -- running the scanner
+        with nothing opted in costs CPU and saves nothing, and opting a
+        container in while the scanner is off saves nothing either.
+        That is why this is off by default, the opposite of zswap,
+        which costs nothing until the box is already swapping.
 
         Reports the configured intent and what the kernel actually has,
         separately, for the same reason zswap does: a page that only
@@ -11209,6 +11209,24 @@ components:
             field existed). The first entry is "primary" and receives the
             default route; any further entries only get their own
             subnet's connected route (no default route of their own).
+        ksm:
+          type: boolean
+          default: false
+          description: >
+            Volunteer this container's anonymous memory for kernel
+            samepage merging (issue #260). KSM merges nothing that has
+            not opted in, so this is what makes the host-level scanner
+            (PUT /system/ksm) actually save anything -- and conversely,
+            setting this while the scanner is off does nothing.
+            Applied with prctl(PR_SET_MEMORY_MERGE) in the container's
+            own process before exec, so it covers memory the payload
+            has not allocated yet and is inherited by whatever it
+            forks. Off unless asked for: merging is not free, and a
+            container whose memory is genuinely unique pays the
+            scanner's comparison cost for no return. A failure to
+            apply is reported and does not stop the container --
+            merging is an optimisation, and refusing to start would
+            trade a working container for it.
         ip_forward:
           type: boolean
           default: false
@@ -12050,6 +12068,24 @@ components:
           items:
             $ref: "#/components/schemas/ContainerNetworkAttachment"
           description: Every network this container is attached to, in the order given at creation (first is primary). Empty if not networked.
+        ksm:
+          type: boolean
+          default: false
+          description: >
+            Volunteer this container's anonymous memory for kernel
+            samepage merging (issue #260). KSM merges nothing that has
+            not opted in, so this is what makes the host-level scanner
+            (PUT /system/ksm) actually save anything -- and conversely,
+            setting this while the scanner is off does nothing.
+            Applied with prctl(PR_SET_MEMORY_MERGE) in the container's
+            own process before exec, so it covers memory the payload
+            has not allocated yet and is inherited by whatever it
+            forks. Off unless asked for: merging is not free, and a
+            container whose memory is genuinely unique pays the
+            scanner's comparison cost for no return. A failure to
+            apply is reported and does not stop the container --
+            merging is an optimisation, and refusing to start would
+            trade a working container for it.
         ip_forward:
           type: boolean
           description: >

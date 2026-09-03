@@ -12532,7 +12532,7 @@ static void container_root_for(const char *disk_name, char *out, size_t out_size
 static const char *container_body_unknown_key(const struct json_value *root)
 {
 	static const char *const known[] = {
-		"name", "image", "image_version", "cmd", "networks", "ip_forward",
+		"name", "image", "image_version", "cmd", "networks", "ip_forward", "ksm",
 		"capture_output", "routes", "devices", "interfaces", "cap_add", "files",
 		"sysctls", "env", "dns_servers", "dns_register", "pki_issue", "pki_cert_dir",
 		"pki_days", "disk", "ldap_provision", "ldap_user", "ldap_group", "ldap_uid",
@@ -12932,7 +12932,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 {
 	struct json_value *root;
 	const struct json_value *jname, *jimage, *jimage_version, *jcmd, *jmem, *jswapmax, *jpids, *jcpu, *jcpuset,
-	    *jnetworks, *jip_forward, *jroutes;
+	    *jnetworks, *jip_forward, *jksm, *jroutes;
 	const struct json_value *jdisk_quota;
 	long long disk_quota_bytes;
 	const struct json_value *jdevices;
@@ -12967,6 +12967,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	struct registry_network_attachment net_attachments[CONTAINER_MAX_NETWORKS];
 	int net_count = 0;
 	int ip_forward = 0;
+	int ksm = 0;
 	const struct json_value *jcapture_output;
 	int capture_output = 0;
 	const struct json_value *juserns; /* ADR-0179 #29 phase 2 opt-in */
@@ -13041,6 +13042,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	jcmd = json_object_get(root, "cmd");
 	jnetworks = json_object_get(root, "networks");
 	jip_forward = json_object_get(root, "ip_forward");
+	jksm = json_object_get(root, "ksm");
 	jcapture_output = json_object_get(root, "capture_output");
 	juserns = json_object_get(root, "userns");
 	jroutes = json_object_get(root, "routes");
@@ -13066,6 +13068,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	image = json_as_string(jimage);
 	disk_name = json_as_string(jdisk);
 	ip_forward = (jip_forward != NULL && jip_forward->type == JSON_BOOL && jip_forward->u.boolean);
+	ksm = (jksm != NULL && jksm->type == JSON_BOOL && jksm->u.boolean);
 	capture_output = (jcapture_output != NULL && jcapture_output->type == JSON_BOOL &&
 	                   jcapture_output->u.boolean);
 	/*
@@ -14520,6 +14523,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 		spec.nets[i].prefix_len = net->prefix_len;
 	}
 	spec.ip_forward = ip_forward;
+	spec.ksm = ksm;
 	spec.sysctl_count = sysctl_count;
 	for (i = 0; i < (size_t)sysctl_count; i++)
 		spec.sysctls[i] = sysctl_specs[i];
