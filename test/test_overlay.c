@@ -22,7 +22,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#define LOWERDIR "/tmp/overlay_test/lower"
+#define LOWERDIR "/run/overlay_test/lower"
 
 static int mkdir_p1(const char *path)
 {
@@ -57,8 +57,19 @@ static int write_file(const char *path, const char *content)
  * merge symlinks -- reproducing a portable, general-purpose install
  * layout is package-manager scope (a later phase), not this test's.
  */
-#define HOST_LD_SO "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2"
-#define HOST_LIBC "/usr/lib/x86_64-linux-gnu/libc.so.6"
+/*
+ * "/lib/...", never "/usr/lib/..." (#224).
+ *
+ * The /usr form only resolves on a merged-usr system, where /lib is a
+ * symlink into it. This project's own roots are deliberately not
+ * merged-usr, and the build container the suite runs in is one of them,
+ * so the /usr path is simply absent there and every test using it died
+ * on "ld-linux-x86-64.so.2: No such file or directory". The /lib form
+ * resolves in both. Exactly the root cause ADR-0085 records for
+ * test_image_fixture.c, which had the same two reads wrong.
+ */
+#define HOST_LD_SO "/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2"
+#define HOST_LIBC "/lib/x86_64-linux-gnu/libc.so.6"
 
 static int rm_tree_visitor(const char *path, const struct stat *sb, int typeflag,
                             struct FTW *ftwbuf)
@@ -86,8 +97,8 @@ static int build_lowerdir(void)
 {
 	char path[256];
 
-	rm_tree("/tmp/overlay_test");
-	if (mkdir_p1("/tmp/overlay_test") != 0)
+	rm_tree("/run/overlay_test");
+	if (mkdir_p1("/run/overlay_test") != 0)
 		return -1;
 	if (mkdir_p1(LOWERDIR) != 0)
 		return -1;
@@ -210,17 +221,17 @@ int main(void)
 	if (build_lowerdir() != 0)
 		return 1;
 
-	if (mkdir_p1("/tmp/overlay_test/c1") != 0 ||
-	    mkdir_p1("/tmp/overlay_test/c1/upper") != 0 ||
-	    mkdir_p1("/tmp/overlay_test/c1/work") != 0 ||
-	    mkdir_p1("/tmp/overlay_test/c1/merged") != 0)
+	if (mkdir_p1("/run/overlay_test/c1") != 0 ||
+	    mkdir_p1("/run/overlay_test/c1/upper") != 0 ||
+	    mkdir_p1("/run/overlay_test/c1/work") != 0 ||
+	    mkdir_p1("/run/overlay_test/c1/merged") != 0)
 		return 1;
 
-	if (run_container("c1", "/tmp/overlay_test/c1/upper", "/tmp/overlay_test/c1/work",
-	                   "/tmp/overlay_test/c1/merged") != 0)
+	if (run_container("c1", "/run/overlay_test/c1/upper", "/run/overlay_test/c1/work",
+	                   "/run/overlay_test/c1/merged") != 0)
 		return 1;
 
-	if (read_status("/tmp/overlay_test/c1/upper", &prior_existed, &lower_ok) != 0)
+	if (read_status("/run/overlay_test/c1/upper", &prior_existed, &lower_ok) != 0)
 		return 1;
 	if (prior_existed != 0) {
 		fprintf(stderr, "FAIL: c1 saw a pre-existing /status.txt\n");
@@ -240,17 +251,17 @@ int main(void)
 		ok = 0;
 	}
 
-	if (mkdir_p1("/tmp/overlay_test/c2") != 0 ||
-	    mkdir_p1("/tmp/overlay_test/c2/upper") != 0 ||
-	    mkdir_p1("/tmp/overlay_test/c2/work") != 0 ||
-	    mkdir_p1("/tmp/overlay_test/c2/merged") != 0)
+	if (mkdir_p1("/run/overlay_test/c2") != 0 ||
+	    mkdir_p1("/run/overlay_test/c2/upper") != 0 ||
+	    mkdir_p1("/run/overlay_test/c2/work") != 0 ||
+	    mkdir_p1("/run/overlay_test/c2/merged") != 0)
 		return 1;
 
-	if (run_container("c2", "/tmp/overlay_test/c2/upper", "/tmp/overlay_test/c2/work",
-	                   "/tmp/overlay_test/c2/merged") != 0)
+	if (run_container("c2", "/run/overlay_test/c2/upper", "/run/overlay_test/c2/work",
+	                   "/run/overlay_test/c2/merged") != 0)
 		return 1;
 
-	if (read_status("/tmp/overlay_test/c2/upper", &prior_existed, &lower_ok) != 0)
+	if (read_status("/run/overlay_test/c2/upper", &prior_existed, &lower_ok) != 0)
 		return 1;
 	if (prior_existed != 0) {
 		fprintf(stderr, "FAIL: c2 saw c1's /status.txt -- upperdir isolation broken\n");

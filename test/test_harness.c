@@ -20,7 +20,16 @@
  * mutating the live host directly -- the result file is read back
  * from there, not from the bare host path.
  */
-#define UPPERDIR "/tmp/harness_overlay/upper"
+/*
+ * /run, not /tmp (#224): these are the overlay's own lower/upper/work
+ * directories, and inside a build container /tmp sits on the container's
+ * own overlay rootfs -- the kernel refuses to stack overlayfs on
+ * overlayfs ("not supported as upperdir"). /run is a fresh tmpfs in
+ * every container. The inner "/tmp/harness_result.txt" below is a path
+ * INSIDE the container and deliberately unchanged: it has to land in the
+ * upperdir to be readable from out here.
+ */
+#define UPPERDIR "/run/harness_overlay/upper"
 #define RESULT_PATH UPPERDIR "/tmp/harness_result.txt"
 
 static int read_cgroup_procs_count(const char *cgroup_name, pid_t expect_pid)
@@ -118,8 +127,8 @@ int main(void)
 		return 1;
 	}
 
-	if (mkdir("/tmp/harness_overlay", 0755) != 0 && errno != EEXIST) {
-		perror("mkdir /tmp/harness_overlay");
+	if (mkdir("/run/harness_overlay", 0755) != 0 && errno != EEXIST) {
+		perror("mkdir /run/harness_overlay");
 		return 1;
 	}
 
@@ -133,8 +142,8 @@ int main(void)
 	spec.cg.cpu_max = NULL;
 	spec.ov.lowerdir = "/";
 	spec.ov.upperdir = UPPERDIR;
-	spec.ov.workdir = "/tmp/harness_overlay/work";
-	spec.ov.merged = "/tmp/harness_root";
+	spec.ov.workdir = "/run/harness_overlay/work";
+	spec.ov.merged = "/run/harness_root";
 	spec.mnt.put_old_rel = ".old_root";
 	spec.argv = child_argv;
 	spec.envp = child_envp;
