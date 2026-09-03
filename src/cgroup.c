@@ -1,6 +1,7 @@
 #include "container.h"
 
 #include <errno.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <stdio.h>
@@ -91,6 +92,69 @@ int cgroup_delegate(const struct cgroup_limits *lim, long long uid, long long gi
 	return 0;
 }
 
+/*
+ * Returns a cgroup to the state a freshly created one would be in:
+ * no delegated controllers, and no leftover children (#258).
+ *
+ * Children first, then the delegation -- a controller cannot be
+ * withdrawn from a subtree that still has cgroups using it, so the
+ * other order fails on exactly the case that matters.
+ */
+static void reset_cgroup_to_leaf(const char *dir)
+{
+	char buf[256];
+	DIR *d;
+	struct dirent *e;
+	int fd;
+	ssize_t n;
+
+	d = opendir(dir);
+	if (d != NULL) {
+		while ((e = readdir(d)) != NULL) {
+			char child[PATH_MAX];
+
+			if (e->d_type != DT_DIR || e->d_name[0] == '.')
+				continue;
+			if (snprintf(child, sizeof(child), "%s/%s", dir, e->d_name) >= (int)sizeof(child))
+				continue;
+			/* Only an empty cgroup can be removed, which is the
+			 * right constraint: anything still holding processes is
+			 * not ours to tear down. */
+			rmdir(child);
+		}
+		closedir(d);
+	}
+
+	if (snprintf(buf, sizeof(buf), "%s/cgroup.subtree_control", dir) >= (int)sizeof(buf))
+		return;
+	fd = open(buf, O_RDONLY);
+	if (fd < 0)
+		return;
+	n = read(fd, buf, sizeof(buf) - 1);
+	close(fd);
+	if (n <= 0)
+		return;
+	buf[n] = '\0';
+	{
+		char *saveptr, *tok;
+		char off[256];
+		size_t len = 0;
+
+		off[0] = '\0';
+		for (tok = strtok_r(buf, " \n", &saveptr); tok != NULL;
+		     tok = strtok_r(NULL, " \n", &saveptr)) {
+			if (tok[0] == '\0')
+				continue;
+			len += (size_t)snprintf(off + len, sizeof(off) - len, "%s-%s",
+			                         len > 0 ? " " : "", tok);
+			if (len >= sizeof(off))
+				return;
+		}
+		if (off[0] != '\0')
+			write_cgroup_file(dir, "cgroup.subtree_control", off);
+	}
+}
+
 int cgroup_create(const struct cgroup_limits *lim, int *out_fd)
 {
 	char dir[PATH_MAX];
@@ -107,6 +171,31 @@ int cgroup_create(const struct cgroup_limits *lim, int *out_fd)
 		container_set_last_error_step("cgroup_create: mkdir");
 		return -1;
 	}
+	/*
+	 * A reused cgroup must be handed back as a clean LEAF (#258).
+	 *
+	 * Container cgroup names are reused constantly -- build slots are
+	 * literally named after the slot index -- and CLONE_INTO_CGROUP
+	 * refuses with EBUSY if the target has controllers delegated to its
+	 * subtree, because a cgroup that delegates may not also hold
+	 * processes. So whatever the previous occupant left behind decides
+	 * whether the next container can start at all.
+	 *
+	 * This is not hypothetical and it is self-inflicted: a nested cixd
+	 * enables subtree_control on its own namespace root, which IS this
+	 * cgroup, and that setting outlives the container. The next build
+	 * in the same slot then failed with
+	 * "container_create: ns_clone3: Device or resource busy" --
+	 * every package build on the host, broken by having once run a
+	 * container that ran containers.
+	 *
+	 * Best-effort on purpose: a fresh cgroup has nothing to reset, and
+	 * a failure to tidy is not a reason to refuse a container that may
+	 * well start anyway. The mkdir above already established the
+	 * directory; this only puts it back in the state a new one would
+	 * have been in.
+	 */
+	reset_cgroup_to_leaf(dir);
 
 	if (lim->memory_max > 0) {
 		snprintf(value, sizeof(value), "%lld", lim->memory_max);
