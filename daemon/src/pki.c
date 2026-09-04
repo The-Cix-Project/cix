@@ -1,4 +1,6 @@
 #include "pki.h"
+#include "containerpath.h"
+#include "registry.h"
 #include "dns.h"
 #include "persist.h"
 
@@ -785,8 +787,23 @@ enum pki_error pki_cert_deliver(const char *name, pid_t pid, const char *dest_di
 		memcpy(chain_pem + cert_pem_len, intermediate_pem, intermediate_pem_len);
 	chain_pem[chain_len] = '\0';
 
-	if (snprintf(parent, sizeof(parent), "/proc/%d/root%s", (int)pid, dest_dir) >=
-	        (int)sizeof(parent) ||
+	/*
+	 * The container's tree on the HOST side (#269). Delivering a
+	 * certificate through the container's own /proc/<pid>/root view
+	 * fails on a btrfs-backed userns container, whose rootfs is an
+	 * id-mapped mount the daemon has no mapped identity in -- so an
+	 * issued certificate would simply never arrive.
+	 *
+	 * The entry is consulted for its disk, which is what decides where
+	 * the tree is; pid does not say.
+	 */
+	{
+		const struct registry_entry *re = registry_find(name);
+
+		container_file_host_path(name, re != NULL ? re->disk_name : "", dest_dir, parent,
+		                          sizeof(parent));
+	}
+	if (parent[0] == '\0' ||
 	    snprintf(dst_crt, sizeof(dst_crt), "%s/tls.crt", parent) >= (int)sizeof(dst_crt) ||
 	    snprintf(dst_key, sizeof(dst_key), "%s/tls.key", parent) >= (int)sizeof(dst_key)) {
 		free(key_pem);
