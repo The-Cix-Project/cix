@@ -314,7 +314,7 @@
 					<span id="cd-console-status" class="hint">&hellip;</span>
 				</div>
 				<div class="console-output" id="cd-console-output" tabindex="0"></div>
-				<p class="hint">Minimal built-in terminal (no framework, per ADR-0010/ADR-0043) -- handles plain output, colors, and basic input. Full-screen programs (vim, top, less) won't render correctly here; use <code>cixctl console</code> for those.</p>
+				<p class="hint">A real terminal, built here (ADR-0243) -- a full VT with a cell grid, scroll regions and the alternate screen, so <code>vim</code>, <code>htop</code> and <code>top</code> render and resize with the pane. Mouse reporting and bracketed paste are supported when a program asks for them.</p>
 			</div>
 		</section>
 
@@ -3330,6 +3330,7 @@
      Produced by tools/apigen.c from docs/api/openapi.yaml at build time
      and copied into the web root at install time -- never committed. -->
 <script src="/api.js"></script>
+<script src="/vt.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

@@ -119,6 +119,12 @@ int main(void)
 	check(&client, "/app.js", 200, "application/javascript", "docs/api/openapi.yaml", NULL, &ok);
 	/* 4. style.css */
 	check(&client, "/style.css", 200, "text/css", NULL, NULL, &ok);
+	/* 5. vt.js (ADR-0243) -- the terminal is its own asset, and an asset
+	 * that is not staged 404s in the browser with nothing on the server
+	 * side to notice. index.html loads it before app.js, which uses it,
+	 * so a missing vt.js is a dashboard that throws on every console
+	 * open rather than one that degrades. */
+	check(&client, "/vt.js", 200, "application/javascript", "createVT", NULL, &ok);
 	/* 5. missing asset */
 	check(&client, "/nonexistent.txt", 404, NULL, NULL, NULL, &ok);
 	/* 6. path traversal rejected before the filesystem is ever touched */

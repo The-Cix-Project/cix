@@ -487,7 +487,7 @@ Both clients already sent keystrokes as BINARY before this, so nothing was relyi
 
 The container must actually carry the terminfo entry being named. The `ncurses` package installs the full database — 2903 entries at `usr/share/terminfo`, including `xterm` and `xterm-256color` — and anything linking `libncursesw` already depends on it, so an image with `htop` or `vim` in it has this by construction.
 
-One limit worth stating plainly: **the web dashboard's terminal still cannot render these programs**, and this change does not alter that. It is a line-buffer that interprets `\r`/`\n`/backspace/tab and SGR colour, and structurally discards every cursor-addressing escape (ADR-0043) — there is no two-dimensional screen model to draw into. `cixctl console` has no such limit and is where `htop` and `vim` work today.
+Both clients use this. `cixctl console` sends the terminal it is running in; the dashboard measures its own character cell, works out how many columns and rows fit the pane, and sends those — then a resize control message whenever the pane changes. The dashboard's renderer is a full VT written for it ([ADR-0243](../adr/0243-the-dashboard-terminal-is-a-real-vt.md)), so full-screen programs render there too.
 
 ## Host authentication (ADR-0144)
 

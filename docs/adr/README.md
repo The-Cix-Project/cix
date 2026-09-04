@@ -247,3 +247,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0240](0240-a-container-declares-its-consoles.md) | A container declares its consoles, and declaring none means it has none | Accepted |
 | [0241](0241-the-library-layout-is-one-directory.md) | The library layout is a decision, and it collapses to one directory | Accepted |
 | [0242](0242-a-console-is-a-sized-terminal-of-a-declared-type.md) | A console is a sized terminal of a declared type | Accepted |
+| [0243](0243-the-dashboard-terminal-is-a-real-vt.md) | The dashboard terminal is a real VT, written here | Accepted |

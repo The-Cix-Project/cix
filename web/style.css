@@ -1809,60 +1809,57 @@ td.empty {
 	font-family: "JetBrains Mono", "DejaVu Sans Mono", ui-monospace, SFMono-Regular, Menlo,
 		Consolas, "Liberation Mono", monospace;
 	font-size: 0.85rem;
+	/*
+	 * A unitless line-height, and no letter-spacing anywhere: the
+	 * terminal measures a real character cell off this font and divides
+	 * the pane by it to decide how many columns and rows the remote
+	 * program is told it has. Anything that makes a rendered row taller
+	 * or a glyph wider than the measurement -- a fractional line-height
+	 * that rounds, tracking, a fallback face with different metrics --
+	 * puts the grid out of step with the size the daemon was given, and
+	 * a full-screen program then draws its last row or column off the
+	 * edge.
+	 */
 	line-height: 1.35;
 	padding: 0.75rem 1rem;
 	border-radius: 6px;
 	height: 420px;
-	overflow-y: auto;
-	white-space: pre-wrap;
-	word-break: break-all;
+	overflow: auto;
+	/* The VT wraps at its own column count; letting CSS wrap as well
+	 * would put a second, disagreeing opinion on where a line ends. */
+	white-space: pre;
+	word-break: normal;
 	outline: none;
+}
+
+.vt-row {
+	/* Holds the row's height when it is completely blank, so an empty
+	 * line still occupies a cell row rather than collapsing and pulling
+	 * the whole screen up. */
+	min-height: 1.35em;
+	white-space: pre;
+}
+
+.vt-cursor {
+	/* Drawn as a reversed cell rather than an overlay: it then sits
+	 * exactly on the grid at any font size, and inherits whatever
+	 * colours the cell underneath already has. */
+	background: var(--paper);
+	color: var(--carbon);
+}
+
+.console-output:not(:focus) .vt-cursor {
+	/* Unfocused, the cursor is an outline -- the same convention every
+	 * terminal uses to show that typing will not go here. */
+	background: transparent;
+	color: inherit;
+	outline: 1px solid var(--paper);
+	outline-offset: -1px;
 }
 
 .console-output:focus {
 	box-shadow: 0 0 0 2px var(--accent);
 }
-
-.console-output div {
-	min-height: 1.35em;
-}
-
-.term-bold {
-	font-weight: 700;
-}
-
-.term-fg-30 { color: #4b4b4d; }
-.term-fg-31 { color: #e35555; }
-.term-fg-32 { color: #4fb85a; }
-.term-fg-33 { color: #d2b13a; }
-.term-fg-34 { color: #4d8fdb; }
-.term-fg-35 { color: #b56ad1; }
-.term-fg-36 { color: #46b8b0; }
-.term-fg-37 { color: #d8d8dc; }
-.term-fg-90 { color: #7a7a7e; }
-.term-fg-91 { color: #ff7b7b; }
-.term-fg-92 { color: #7bdb85; }
-.term-fg-93 { color: #eeda6f; }
-.term-fg-94 { color: #7fb1f2; }
-.term-fg-95 { color: #dd9bef; }
-.term-fg-96 { color: #72e0d8; }
-.term-fg-97 { color: #ffffff; }
-.term-bg-40 { background: #1c1c1e; }
-.term-bg-41 { background: #5c2323; }
-.term-bg-42 { background: #234a27; }
-.term-bg-43 { background: #574a1c; }
-.term-bg-44 { background: #223a5c; }
-.term-bg-45 { background: #4a2a57; }
-.term-bg-46 { background: #1f4c49; }
-.term-bg-47 { background: #4a4a4d; }
-.term-bg-100 { background: #3a3a3d; }
-.term-bg-101 { background: #7a2f2f; }
-.term-bg-102 { background: #2f6636; }
-.term-bg-103 { background: #756327; }
-.term-bg-104 { background: #2c4d7a; }
-.term-bg-105 { background: #63397a; }
-.term-bg-106 { background: #29665f; }
-.term-bg-107 { background: #6a6a6d; }
 
 .context-menu {
 	position: fixed;

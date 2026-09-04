@@ -2522,150 +2522,6 @@ function simpleTableRows(bodyEl, columns, colCount, emptyText) {
 	}
 }
 
-/* ---------- Minimal terminal (no framework -- ADR-0010/ADR-0043) ----------
- *
- * A line-buffer terminal, not a full VT100 emulator: \r/\n/backspace/Tab
- * plus SGR color codes (CSI ... m) are interpreted; every other CSI
- * escape sequence (cursor addressing, clear-screen, etc.) is recognized
- * structurally (so it never leaks into the output as literal garbage
- * text) but otherwise silently discarded -- there is no 2D cursor-
- * addressable screen model here, so full-screen redraw programs (vim,
- * top, less) render wrong. A stated, accepted boundary (see ADR-0043),
- * not an oversight -- `cixctl console` has no such limitation.
- */
-const TERM_MAX_LINES = 2000;
-
-function createTerminal(outputEl) {
-	let lines = [[]];
-	let cursorRow = 0;
-	let cursorCol = 0;
-	let escState = null; /* null | "esc" | { csi: string } */
-	let sgr = { bold: false, fg: null, bg: null };
-
-	function currentStyleClass() {
-		const parts = [];
-
-		if (sgr.bold)
-			parts.push("term-bold");
-		if (sgr.fg !== null)
-			parts.push("term-fg-" + sgr.fg);
-		if (sgr.bg !== null)
-			parts.push("term-bg-" + sgr.bg);
-		return parts.join(" ");
-	}
-
-	function applySgr(paramStr) {
-		const codes = paramStr.length > 0 ? paramStr.split(";").map((s) => parseInt(s, 10)) : [0];
-
-		for (const code of codes) {
-			if (isNaN(code) || code === 0)
-				sgr = { bold: false, fg: null, bg: null };
-			else if (code === 1)
-				sgr.bold = true;
-			else if (code === 22)
-				sgr.bold = false;
-			else if ((code >= 30 && code <= 37) || (code >= 90 && code <= 97))
-				sgr.fg = code;
-			else if (code === 39)
-				sgr.fg = null;
-			else if ((code >= 40 && code <= 47) || (code >= 100 && code <= 107))
-				sgr.bg = code;
-			else if (code === 49)
-				sgr.bg = null;
-		}
-	}
-
-	function putChar(ch) {
-		while (lines.length <= cursorRow)
-			lines.push([]);
-		const line = lines[cursorRow];
-		const cls = currentStyleClass();
-
-		while (line.length <= cursorCol)
-			line.push({ ch: " ", cls: "" });
-		line[cursorCol] = { ch: ch, cls: cls };
-		cursorCol++;
-	}
-
-	function render() {
-		outputEl.textContent = "";
-		for (const line of lines) {
-			const lineDiv = document.createElement("div");
-			let i = 0;
-
-			while (i < line.length) {
-				const cell = line[i];
-				let text = cell.ch;
-				let j = i + 1;
-
-				while (j < line.length && line[j].cls === cell.cls) {
-					text += line[j].ch;
-					j++;
-				}
-				if (cell.cls === "") {
-					lineDiv.appendChild(document.createTextNode(text));
-				} else {
-					const span = document.createElement("span");
-
-					span.className = cell.cls;
-					span.textContent = text;
-					lineDiv.appendChild(span);
-				}
-				i = j;
-			}
-			outputEl.appendChild(lineDiv);
-		}
-		outputEl.scrollTop = outputEl.scrollHeight;
-	}
-
-	function feed(text) {
-		for (let i = 0; i < text.length; i++) {
-			const ch = text[i];
-			const code = text.charCodeAt(i);
-
-			if (escState === "esc") {
-				escState = ch === "[" ? { csi: "" } : null;
-				continue;
-			}
-			if (escState !== null) {
-				if (code >= 0x40 && code <= 0x7e) {
-					if (ch === "m")
-						applySgr(escState.csi);
-					escState = null;
-				} else {
-					escState.csi += ch;
-				}
-				continue;
-			}
-
-			if (ch === "\x1b") {
-				escState = "esc";
-			} else if (ch === "\r") {
-				cursorCol = 0;
-			} else if (ch === "\n") {
-				cursorRow++;
-				cursorCol = 0; /* most output pairs \r\n; treating a bare \n the
-				                * same way avoids staircase text in the common case */
-				if (cursorRow >= TERM_MAX_LINES) {
-					lines.shift();
-					cursorRow--;
-				}
-			} else if (ch === "\b" || ch === "\x7f") {
-				if (cursorCol > 0)
-					cursorCol--;
-			} else if (ch === "\t") {
-				cursorCol = Math.min(cursorCol + (8 - (cursorCol % 8)), 512);
-			} else if (code >= 0x20) {
-				putChar(ch);
-			}
-			/* other control bytes (bell, etc.) ignored */
-		}
-		render();
-	}
-
-	return { feed: feed };
-}
-
 let consoleWs = null;
 let consoleTerminal = null;
 let consoleContainerName = null;
@@ -2675,6 +2531,12 @@ function closeConsole() {
 	if (consoleWs !== null) {
 		consoleWs.close();
 		consoleWs = null;
+	}
+	if (consoleTerminal !== null) {
+		/* The terminal owns real listeners and a ResizeObserver on the
+		 * output element, which outlives every session -- without this
+		 * they accumulate one set per console opened. */
+		consoleTerminal.dispose();
 	}
 	consoleTerminal = null;
 	consoleContainerName = null;
@@ -2777,25 +2639,70 @@ function openConsole(name) {
 	const statusEl = document.getElementById("cd-console-status");
 
 	outputEl.textContent = "";
-	consoleTerminal = createTerminal(outputEl);
 	statusEl.textContent = "connecting…";
 
-	const proto = location.protocol === "https:" ? "wss:" : "ws:";
+	const encoder = new TextEncoder();
+
+	/*
+	 * The terminal is created before the socket, because its own size is
+	 * what the URL below has to carry: ADR-0242 takes the geometry as a
+	 * query parameter precisely because a browser's WebSocket
+	 * constructor cannot set request headers, and there is no second
+	 * chance to get it right at attach time -- ncurses reads the size
+	 * once, at startup.
+	 */
+	consoleTerminal = createVT(outputEl, {
+		onInput: (data) => {
+			if (consoleWs !== null && consoleWs.readyState === WebSocket.OPEN)
+				consoleWs.send(encoder.encode(data));
+		},
+		onResize: (c, r) => {
+			/* ADR-0242's control channel: a TEXT frame is a message
+			 * about the session, a BINARY frame is input. */
+			if (consoleWs !== null && consoleWs.readyState === WebSocket.OPEN)
+				consoleWs.send(JSON.stringify({ type: "resize", cols: c, rows: r }));
+		}
+	});
+	consoleTerminal.fit();
+
+	const size = consoleTerminal.size();
+	const params = [];
+
 	/* #248: attach to the console the operator picked. Omitted entirely
 	 * when nothing is picked, so the daemon applies its own "first
 	 * declared" rule rather than this client duplicating it. */
-	const sel = consoleSelected ? "?console=" + encodeURIComponent(consoleSelected) : "";
-	const ws = new WebSocket(proto + "//" + location.host + CIX_API.consoleContainer(name) + sel);
+	if (consoleSelected)
+		params.push("console=" + encodeURIComponent(consoleSelected));
+	/* xterm-256color rather than anything more exotic: it is what this
+	 * emulator actually implements, and naming a terminfo entry the
+	 * renderer cannot honour would be a worse answer than naming a
+	 * modest one it can. */
+	params.push("term=xterm-256color");
+	params.push("cols=" + size.cols);
+	params.push("rows=" + size.rows);
+
+	const proto = location.protocol === "https:" ? "wss:" : "ws:";
+	const query = "?" + params.join("&");
+	const ws = new WebSocket(proto + "//" + location.host + CIX_API.consoleContainer(name) + query);
 
 	ws.binaryType = "arraybuffer";
 	const decoder = new TextDecoder();
 
 	ws.onopen = () => {
 		statusEl.textContent = "connected";
+		outputEl.focus();
+		/* Remeasure once the pane is definitely laid out. A fit taken
+		 * while the tab was still hidden measures a zero-sized element,
+		 * and the daemon would then hold a size the operator never
+		 * had. */
+		consoleTerminal.fit();
 	};
 	ws.onmessage = (event) => {
 		const bytes = new Uint8Array(event.data);
 
+		/* stream: true matters -- a UTF-8 character can be split across
+		 * two WebSocket frames, and decoding each frame independently
+		 * turns a box-drawing glyph into two replacement characters. */
 		consoleTerminal.feed(decoder.decode(bytes, { stream: true }));
 	};
 	ws.onclose = () => {
@@ -3423,45 +3330,6 @@ function renderProcessesList() {
 document.getElementById("proc-refresh").addEventListener("click", () => {
 	refreshProcesses();
 });
-
-function consoleKeydown(event) {
-	if (consoleWs === null || consoleWs.readyState !== WebSocket.OPEN)
-		return;
-
-	let data = null;
-
-	if (event.ctrlKey && event.key.length === 1) {
-		const code = event.key.toUpperCase().charCodeAt(0);
-
-		if (code >= 65 && code <= 90)
-			data = String.fromCharCode(code - 64);
-	} else if (event.key.length === 1 && !event.metaKey && !event.altKey) {
-		data = event.key;
-	} else if (event.key === "Enter") {
-		data = "\r";
-	} else if (event.key === "Backspace") {
-		data = "\x7f";
-	} else if (event.key === "Tab") {
-		data = "\t";
-	} else if (event.key === "Escape") {
-		data = "\x1b";
-	} else if (event.key === "ArrowUp") {
-		data = "\x1b[A";
-	} else if (event.key === "ArrowDown") {
-		data = "\x1b[B";
-	} else if (event.key === "ArrowRight") {
-		data = "\x1b[C";
-	} else if (event.key === "ArrowLeft") {
-		data = "\x1b[D";
-	}
-
-	if (data !== null) {
-		event.preventDefault();
-		consoleWs.send(new TextEncoder().encode(data));
-	}
-}
-
-document.getElementById("cd-console-output").addEventListener("keydown", consoleKeydown);
 
 for (const tabButton of document.querySelectorAll(".tab-bar .tab-button")) {
 	tabButton.addEventListener("click", () => {
