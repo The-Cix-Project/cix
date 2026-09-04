@@ -294,7 +294,17 @@ header {
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
-	height: var(--h-menubar);
+	gap: var(--s3);
+	/*
+	 * min-height, NOT height. A fixed height here is only safe while
+	 * nothing inside wraps, and .menu-bar wraps by design -- so on a
+	 * narrow screen the second row of menu items overflowed a clamped
+	 * 56px header and landed on top of the page title. The bar still
+	 * sits at a consistent 56px whenever its content fits, which is
+	 * the whole point of the token; it just stops lying when it does
+	 * not.
+	 */
+	min-height: var(--h-menubar);
 	padding: 0 var(--s5);
 	border-bottom: 1px solid var(--border);
 	flex: 0 0 auto;
@@ -315,15 +325,26 @@ header {
  * horizontally, stay visible vertically" combination), so it would
  * silently clip every dropdown panel below it (confirmed the hard
  * way: hidden=false, but nothing painted). At typical desktop widths
- * all 8 triggers fit with room to spare; narrow widths fall back to
- * the @media (max-width: 720px) wrap rule below instead of scrolling. */
+ * all 8 triggers fit with room to spare; narrow widths scroll the bar
+ * sideways rather than wrapping it, at every size. */
 .menu-bar {
+	/*
+	 * Scrolls sideways instead of wrapping. Wrapping made the chrome's
+	 * height depend on the window width, which is exactly what broke on
+	 * a phone; scrolling keeps one row at one height at every size.
+	 */
 	display: flex;
 	align-items: center;
-	gap: 0.15rem;
+	gap: var(--s1);
 	min-width: 0;
 	flex: 1 1 auto;
-	flex-wrap: wrap;
+	flex-wrap: nowrap;
+	overflow-x: auto;
+	scrollbar-width: none;
+}
+
+.menu-bar::-webkit-scrollbar {
+	display: none;
 }
 
 .menu-dropdown {
@@ -1139,7 +1160,7 @@ main {
 	/* H2 scale, not H1: this element sits INSIDE a panel, so it is that
 	 * panel's title rather than the top of the page. At H1 it fought the
 	 * content it introduces. */
-	margin: 0 0 var(--s4);
+	margin: 0 0 var(--s3);
 	font-size: var(--t-h2);
 	font-weight: 600;
 	line-height: 1.2;
@@ -1700,8 +1721,18 @@ td.empty {
 
 .tab-bar {
 	display: flex;
-	gap: 0.25rem;
+	gap: var(--s1);
 	border-bottom: 1px solid var(--border);
+	/* Same reasoning as .menu-bar: a tab strip that wraps turns
+	 * "Host Stats" into two lines and makes the strip twice as tall on
+	 * the screen with the least room to spare. */
+	flex-wrap: nowrap;
+	overflow-x: auto;
+	scrollbar-width: none;
+}
+
+.tab-bar::-webkit-scrollbar {
+	display: none;
 }
 
 .tab-button {
@@ -1710,9 +1741,11 @@ td.empty {
 	border: none;
 	border-bottom: 2px solid transparent;
 	border-radius: 0;
-	padding: 0.5rem 1rem;
-	font-size: 0.9rem;
+	padding: var(--s2) var(--s4);
+	font-size: var(--t-small);
 	cursor: pointer;
+	white-space: nowrap;
+	flex: 0 0 auto;
 }
 
 .tab-button:hover {
@@ -2244,14 +2277,14 @@ pre {
 	.tree {
 		overflow: visible;
 	}
-	header {
-		flex-wrap: wrap;
-		row-gap: 0.5rem;
-	}
-	.menu-bar {
-		flex-basis: 100%;
-		order: 2;
-	}
+	/*
+	 * The menu bar used to be pushed onto its own row here
+	 * (flex-basis: 100%; order: 2) because it wrapped, and a wrapped
+	 * nav inside a header looked worse than a nav on its own line.
+	 * It scrolls now, so it needs neither -- and keeping the override
+	 * cost a whole row of vertical space on the screen with the least
+	 * of it, putting Browse alone above the menu.
+	 */
 
 }
 
