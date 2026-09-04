@@ -59,6 +59,40 @@ static int ensure_dir_under(const char *image_root, const char *rel)
 }
 
 /*
+ * Same, for a relative path with more than one component.
+ *
+ * ensure_dir_under() creates a single level, which was enough while
+ * every directory this file wrote into already existed in the staged
+ * root. It stopped being enough when the platform's own library set
+ * grew to cover the whole layout (#184): usr/lib did not exist in the
+ * stage root at that point, so the copy into it failed with a bare
+ * ENOENT naming the FILE rather than the missing directory --
+ * "stage/usr/lib/libblkid.so: No such file or directory" on a
+ * libblkid.so that was present and readable at the source.
+ */
+static int ensure_dir_path_under(const char *image_root, const char *rel)
+{
+	char path[PATH_MAX];
+	char *p;
+
+	if (snprintf(path, sizeof(path), "%s/%s", image_root, rel) >= (int)sizeof(path)) {
+		fprintf(stderr, "path too long: %s/%s\n", image_root, rel);
+		return -1;
+	}
+	/* Start past image_root, which already exists and may itself
+	 * contain separators. */
+	for (p = path + strlen(image_root) + 1; *p != '\0'; p++) {
+		if (*p != '/')
+			continue;
+		*p = '\0';
+		if (ensure_dir(path) != 0)
+			return -1;
+		*p = '/';
+	}
+	return ensure_dir(path);
+}
+
+/*
  * The library search path for a binary run straight out of the
  * host-tools image (ADR-0154).
  *
@@ -930,6 +964,14 @@ int main(int argc, char **argv)
 				dh = opendir(src_dir);
 				if (dh == NULL)
 					continue;
+				/* Only for a directory the host-tools image actually
+				 * has -- creating the rest would leave empty
+				 * directories in the root describing a layout it does
+				 * not use. */
+				if (ensure_dir_path_under(image_root, lib_dirs[d]) != 0) {
+					closedir(dh);
+					return 1;
+				}
 				while ((de = readdir(dh)) != NULL) {
 					char src[PATH_MAX], dst[PATH_MAX];
 					struct stat fst;
