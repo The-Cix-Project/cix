@@ -296,6 +296,15 @@ header {
 	justify-content: space-between;
 	gap: var(--s3);
 	/*
+	 * The bars that frame the app take --panel, not the page's --bg,
+	 * so the chrome reads as chrome and the content area reads as
+	 * content. cix-cache does the same with the same tokens -- these
+	 * are one brand system, and two Cix surfaces disagreeing about
+	 * whether a menu bar is part of the page is exactly the kind of
+	 * drift a shared palette exists to prevent.
+	 */
+	background: var(--panel);
+	/*
 	 * min-height, NOT height. A fixed height here is only safe while
 	 * nothing inside wraps, and .menu-bar wraps by design -- so on a
 	 * narrow screen the second row of menu items overflowed a clamped
@@ -762,6 +771,7 @@ header {
 	gap: var(--s3);
 	height: var(--h-statusbar);
 	padding: 0 var(--s4);
+	background: var(--panel); /* see header -- same reason */
 	border-top: 1px solid var(--border);
 	flex: 0 0 auto;
 }
