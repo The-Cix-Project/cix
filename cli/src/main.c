@@ -93,7 +93,7 @@ static void print_usage(FILE *out)
 	        "      [--pki-days=N] [--ldap-provision] [--ldap-user=NAME] [--ldap-group=NAME]\n"
 	        "      [--ldap-uid=N] [--ldap-secret-dir=PATH]\n"
 	        "      [--route=DEST/PREFIX:VIA ...] [--device=ID ...] [--optional-device=ID ...]\n"
-	        "      [--volume=NAME:/path[:ro] ...]\n"
+	        "      [--volume=NAME:/path[:ro] ...] [--console=NAME=/path [args] ...]\n"
 	        "      [--interface=IFNAME ...] [--cap-add=CAP_NAME ...] [--restart=always|on-failure|unless-stopped]\n"
 	        "      [--restart-delay=N] [--follow-rolling] [--follow-rolling-jitter-seconds=N]\n"
 	        "      [--depends-on=NAME ...] [--dns-server=A.B.C.D ...]\n"
@@ -107,7 +107,10 @@ static void print_usage(FILE *out)
 	        "               disk carrying the container-storage role (ADR-0142); omit --disk= for\n"
 	        "               the default OS-disk placement; briefly restarts for the cutover -- poll\n"
 	        "               container migrate-storage-status NAME\n"
-	        "  container console NAME [--cmd=PATH]  -- interactive shell inside a running container,\n"
+	        "  container console NAME [--console=NAME] [--cmd=PATH]  -- attach to one of the\n"
+	        "               consoles a container DECLARES; --console picks which (default: the\n"
+	        "               first declared), --cmd overrides with an arbitrary command. A\n"
+	        "               container that declares none has no console and says so (#248),\n"
 	        "               over the daemon's own WebSocket; --cmd= overrides /usr/bin/bash\n"
 	        "  container files NAME --path=PATH  -- read a file from the container's rootfs\n"
 	        "  container rm NAME  -- delete the container and its storage\n"
@@ -4511,7 +4514,8 @@ static int cmd_container(const struct cix_client *c, int json_mode, int argc, ch
 		return cmd_migrate_storage_status(c, json_mode, argc - 1, argv + 1);
 	fprintf(stderr,
 	        "usage: cixctl container ls | run ... | start NAME | stop NAME | pause NAME |\n"
-	        "         unpause NAME | rm NAME | inspect NAME | stats NAME | console NAME [--cmd=PATH] |\n"
+	        "         unpause NAME | rm NAME | inspect NAME | stats NAME |\n"
+	        "         console NAME [--console=NAME] [--cmd=PATH] |\n"
 	        "         files NAME --path=PATH | migrate-storage NAME --disk=ID | migrate-storage-status NAME\n"
 	        "       cixctl container recipe add --name=NAME --file=PATH\n"
 	        "       cixctl container recipe show|rm NAME / container recipe ls\n"
@@ -5814,11 +5818,14 @@ static int cmd_console(const struct cix_client *c, int argc, char **argv)
 {
 	const char *name = NULL;
 	const char *cmd = NULL;
+	const char *console_name = NULL;
 	int i;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--cmd=", 6) == 0)
 			cmd = argv[i] + 6;
+		else if (strncmp(argv[i], "--console=", 10) == 0)
+			console_name = argv[i] + 10;
 		else if (name == NULL)
 			name = argv[i];
 		else {
@@ -5827,11 +5834,11 @@ static int cmd_console(const struct cix_client *c, int argc, char **argv)
 		}
 	}
 	if (name == NULL) {
-		fprintf(stderr, "usage: cixctl console NAME [--cmd=PATH]\n");
+		fprintf(stderr, "usage: cixctl console NAME [--console=NAME] [--cmd=PATH]\n");
 		return 2;
 	}
 
-	return cix_console_run(c, name, cmd) == 0 ? 0 : 1;
+	return cix_console_run(c, name, cmd, console_name) == 0 ? 0 : 1;
 }
 
 /* Matches daemon's CONTAINER_MAX_NETWORKS -- see include/container.h. */
@@ -5841,6 +5848,64 @@ static int cmd_console(const struct cix_client *c, int argc, char **argv)
 #define CLI_MAX_DEVICES 16
 /* Issue #88: matches CONTAINER_MAX_VOLUMES in include/container.h. */
 #define CLI_MAX_VOLUMES 8
+/* Issue #248: matches REGISTRY_MAX_CONSOLES / REGISTRY_CONSOLE_ARGC_MAX. */
+#define CLI_MAX_CONSOLES 4
+#define CLI_CONSOLE_ARGC_MAX 8
+
+/*
+ * One --console=NAME=/path/to/cmd arg arg flag, parsed.
+ *
+ * Name up to the first '=', then the command split on spaces. Spaces
+ * because that is how an operator types a command and how it reads back
+ * in help; an argument containing a literal space cannot be expressed
+ * this way, which is a real limit and the reason a container recipe --
+ * a real JSON array, no quoting to lose -- is the better place to
+ * declare anything non-trivial.
+ */
+struct cli_console_decl {
+	char name[32];
+	char argv[CLI_CONSOLE_ARGC_MAX][128];
+	int argc;
+};
+
+static int parse_console_flag(const char *arg, struct cli_console_decl *out)
+{
+	const char *eq = strchr(arg, '=');
+	const char *p;
+	size_t nlen;
+
+	if (eq == NULL || eq == arg)
+		return -1;
+	nlen = (size_t)(eq - arg);
+	if (nlen >= sizeof(out->name))
+		return -1;
+	memcpy(out->name, arg, nlen);
+	out->name[nlen] = '\0';
+
+	out->argc = 0;
+	p = eq + 1;
+	while (*p != '\0') {
+		size_t len = 0;
+
+		while (*p == ' ')
+			p++;
+		if (*p == '\0')
+			break;
+		if (out->argc >= CLI_CONSOLE_ARGC_MAX)
+			return -1;
+		while (p[len] != '\0' && p[len] != ' ')
+			len++;
+		if (len >= sizeof(out->argv[0]))
+			return -1;
+		memcpy(out->argv[out->argc], p, len);
+		out->argv[out->argc][len] = '\0';
+		out->argc++;
+		p += len;
+	}
+	if (out->argc == 0 || out->argv[0][0] != '/')
+		return -1;
+	return 0;
+}
 
 /*
  * One --volume=NAME:/path[:ro] flag, parsed. Two colon-separated
@@ -8304,6 +8369,8 @@ static int cmd_run(const struct cix_client *c, int json_mode, int argc, char **a
 	int optional_device_count = 0;
 	/* Issue #88: persistent volumes to bind-mount into this container. */
 	struct cli_volume_mount volumes[CLI_MAX_VOLUMES];
+	struct cli_console_decl consoles[CLI_MAX_CONSOLES];
+	int console_count = 0;
 	int volume_count = 0;
 	const char *interfaces[CLI_MAX_INTERFACES];
 	int interface_count = 0;
@@ -8415,6 +8482,20 @@ static int cmd_run(const struct cix_client *c, int json_mode, int argc, char **a
 				return 2;
 			}
 			optional_devices[optional_device_count++] = argv[i] + 18;
+		} else if (strncmp(argv[i], "--console=", 10) == 0) {
+			if (console_count >= CLI_MAX_CONSOLES) {
+				fprintf(stderr, "cixctl: too many --console= flags (max %d)\n",
+				        CLI_MAX_CONSOLES);
+				return 2;
+			}
+			if (parse_console_flag(argv[i] + 10, &consoles[console_count]) != 0) {
+				fprintf(stderr,
+				        "cixctl: invalid --console= value '%s' "
+				        "(expected NAME=/absolute/path [args...])\n",
+				        argv[i] + 10);
+				return 2;
+			}
+			console_count++;
 		} else if (strncmp(argv[i], "--volume=", 9) == 0) {
 			if (volume_count >= CLI_MAX_VOLUMES) {
 				fprintf(stderr, "cixctl: too many --volume= flags (max %d)\n",
@@ -8591,7 +8672,7 @@ static int cmd_run(const struct cix_client *c, int json_mode, int argc, char **a
 		        "[--ldap-provision] [--ldap-user=NAME] [--ldap-group=NAME] "
 		        "[--ldap-uid=N] [--ldap-secret-dir=PATH] "
 		        "[--route=DEST/PREFIX:VIA ...] [--device=ID ...] [--optional-device=ID ...] "
-	        "[--volume=NAME:/path[:ro] ...] "
+	        "[--volume=NAME:/path[:ro] ...] [--console=NAME=/path [args] ...] "
 		        "[--interface=IFNAME ...] "
 		        "[--restart=always|on-failure|unless-stopped] [--restart-delay=N] "
 		        "[--follow-rolling] [--follow-rolling-jitter-seconds=N] "
@@ -8772,6 +8853,24 @@ static int cmd_run(const struct cix_client *c, int json_mode, int argc, char **a
 			jw_str(&w, optional_devices[i]);
 			jw_key(&w, "optional");
 			jw_bool(&w, 1);
+			jw_obj_close(&w);
+		}
+		jw_arr_close(&w);
+	}
+	if (console_count > 0) {
+		jw_key(&w, "consoles");
+		jw_arr_open(&w);
+		for (i = 0; i < console_count; i++) {
+			int a;
+
+			jw_obj_open(&w);
+			jw_key(&w, "name");
+			jw_str(&w, consoles[i].name);
+			jw_key(&w, "cmd");
+			jw_arr_open(&w);
+			for (a = 0; a < consoles[i].argc; a++)
+				jw_str(&w, consoles[i].argv[a]);
+			jw_arr_close(&w);
 			jw_obj_close(&w);
 		}
 		jw_arr_close(&w);

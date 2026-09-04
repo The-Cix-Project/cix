@@ -9517,12 +9517,36 @@ paths:
         isolated in the first place, so there's none to join) --
         equivalent to `nsenter --mount --uts --net --pid --target
         <container's pid>`, not a fresh container of its own. Command
-        defaults to `/usr/bin/bash` (this project's own package system
-        stages everything under `usr/bin/`, never `/bin` -- see
-        ADR-0043); a container whose image has neither that nor
-        whatever `X-Cix-Exec-Cmd` names installed fails to exec,
-        the same real limitation `docker exec` has against a
-        scratch-based image, not a bug.
+        comes from the container's own declared `consoles` (issue
+        #248), selected by the `console` query parameter -- or the
+        FIRST declared console when that parameter is omitted.
+
+
+        A container that declares no console has none: this endpoint
+        answers 409 naming that fact, rather than attaching to a
+        command nobody chose. That is the point of the change. Every
+        container used to get the same hardcoded `/usr/bin/bash` with
+        an argv of exactly one token, so a container without bash got
+        a session that opened and instantly died, and a console
+        needing arguments could not be expressed at all.
+
+
+        `X-Cix-Exec-Cmd` is unchanged and still wins over any
+        declaration, including on a container that declares nothing.
+        It is deliberately NOT a security boundary and never was:
+        anyone authorized to reach this endpoint can already run
+        arbitrary code in the container, and this endpoint is gated as
+        a write despite being a GET (ADR-0144). `consoles` answers
+        "what does this container offer" -- the surface `cixctl` and
+        the dashboard present; the header answers "let me run this
+        specific thing". Both are legitimate and they are not
+        substitutes.
+
+
+        A declared command whose binary is missing fails to exec and
+        is reported as an error naming the command, not as a session
+        that opens and dies -- the same real limitation `docker exec`
+        has against a scratch-based image, surfaced honestly.
 
 
         No new authentication/authorization boundary: this endpoint is
@@ -9534,6 +9558,16 @@ paths:
       x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/ContainerName"
+        - name: console
+          in: query
+          required: false
+          schema:
+            type: string
+          description: >
+            Which of the container's declared consoles to attach to.
+            Omitted means the first one declared. A name that is not
+            declared is a 404 listing what is, rather than a silent
+            fallback to something else.
         - name: Upgrade
           in: header
           required: true
@@ -9578,11 +9612,20 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "404":
-          description: No such container, or it isn't currently running.
+          description: >
+            No such container, it isn't currently running, or the
+            `console` query parameter named a console this container
+            does not declare (the message lists the ones it does).
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "409":
+          description: >
+            This container declares no consoles, so there is nothing
+            to attach to. An explicit `X-Cix-Exec-Cmd` still works and
+            is the way to run something on a container that publishes
+            no console of its own.
         "500":
           description: Failed to start the console session (handshake computation, or the exec/PTY mechanism itself failed).
           content:
@@ -11264,6 +11307,72 @@ components:
             storage layout -- on some future restart. A container's
             mode is decided once, at creation, and reported back as the
             container object's own userns field.
+        consoles:
+          type: array
+          maxItems: 4
+          description: >
+            The consoles this container OFFERS, each a name and a real
+            argv (issue #248). A container that declares none has no
+            console, and the endpoint says so rather than attaching to
+            something arbitrary.
+
+
+            Before this, every container's console was the same
+            hardcoded `/usr/bin/bash` with an argv of exactly one
+            token -- so a container without bash got a session that
+            opened and instantly died, and a console that needed
+            arguments (`tail -F /var/log/messages`, `chronyc
+            tracking`) could not be expressed at all. What a useful
+            console is depends on the workload, and this daemon cannot
+            know; the container says.
+
+
+            A named set rather than a single command because a
+            container reasonably offers more than one view of itself
+            -- a shell AND a live log. Order is significant: the FIRST
+            entry is what an attach with no `console` query parameter
+            gets, which avoids a separate "default" flag that could
+            disagree with the list.
+
+
+            This is the PUBLISHED surface -- what `cixctl` and the
+            dashboard offer. It is not a security boundary:
+            `X-Cix-Exec-Cmd` still runs an arbitrary command for a
+            caller authorized to use this endpoint at all, which is
+            gated as a write despite being a GET (ADR-0144). The two
+            answer different questions -- "what does this container
+            offer" versus "let me run something specific" -- and both
+            are legitimate.
+          items:
+            type: object
+            required: [name, cmd]
+            additionalProperties: false
+            properties:
+              name:
+                type: string
+                minLength: 1
+                maxLength: 31
+                pattern: "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+                description: >
+                  How this console is selected and displayed. Unique
+                  within the container.
+              cmd:
+                type: array
+                minItems: 1
+                maxItems: 8
+                items:
+                  type: string
+                  maxLength: 127
+                description: >
+                  Real argv, exec'd directly by path inside the
+                  running container's namespaces -- no shell, so no
+                  quoting, globbing or word splitting. argv[0] is a
+                  path, not a bare name to resolve.
+          example:
+            - name: shell
+              cmd: ["/usr/bin/bash", "-l"]
+            - name: logs
+              cmd: ["/usr/bin/tail", "-F", "/var/log/messages"]
         capture_output:
           type: boolean
           default: false
@@ -12027,6 +12136,23 @@ components:
             with status == "paused" -- provided as a plain boolean too
             since some clients prefer switching on a flag over a string
             enum.
+        consoles:
+          type: array
+          description: >
+            The consoles this container declares (issue #248), in
+            declaration order -- the first is what an attach with no
+            `console` query parameter gets. An empty array means this
+            container offers no console, and a client should say so
+            rather than presenting a control that cannot work.
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              cmd:
+                type: array
+                items:
+                  type: string
         pid:
           type: integer
           description: PID in the daemon's own PID namespace. Meaningless once status is exited.

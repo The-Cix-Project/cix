@@ -244,3 +244,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0237](0237-a-missing-placement-disk-degrades-rather-than-refusing-to-boot.md) | A missing placement disk degrades the daemon, it does not stop it | Accepted |
 | [0238](0238-containers-have-no-outbound-internet-access.md) | Containers have no outbound internet access, deliberately | Accepted |
 | [0239](0239-a-container-facing-filesystem-is-owned-by-the-containers-root.md) | A filesystem mounted for a container is owned by the container's own root | Accepted |
+| [0240](0240-a-container-declares-its-consoles.md) | A container declares its consoles, and declaring none means it has none | Accepted |

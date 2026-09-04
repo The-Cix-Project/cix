@@ -399,7 +399,8 @@ static void relay(int ws_fd)
 	}
 }
 
-int cix_console_run(const struct cix_client *c, const char *container_name, const char *cmd)
+int cix_console_run(const struct cix_client *c, const char *container_name, const char *cmd,
+                    const char *console_name)
 {
 	int fd;
 	struct termios saved;
@@ -409,6 +410,14 @@ int cix_console_run(const struct cix_client *c, const char *container_name, cons
 		char path[256];
 
 		snprintf(path, sizeof(path), CIX_API_consoleContainer, container_name);
+		/* #248: select one of the container's declared consoles. Left
+		 * off entirely when unset, so the daemon applies its own
+		 * "first declared" rule rather than this client guessing. */
+		if (console_name != NULL && console_name[0] != '\0') {
+			size_t used = strlen(path);
+
+			snprintf(path + used, sizeof(path) - used, "?console=%s", console_name);
+		}
 		fd = do_ws_handshake(c, "console", path, cmd);
 	}
 	if (fd < 0)

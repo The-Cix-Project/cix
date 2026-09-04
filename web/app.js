@@ -2578,7 +2578,91 @@ function closeConsole() {
 	consoleContainerName = null;
 }
 
+/*
+ * Which of a container's declared consoles the operator is looking at
+ * (issue #248). Held across re-renders so a poll-driven refresh does not
+ * silently drop the selection back to the first one.
+ */
+let consoleSelected = null;
+
+/*
+ * Show what this container OFFERS as a console, and say plainly when it
+ * offers nothing (issue #248).
+ *
+ * A container that declares no console used to get the same terminal
+ * pane as any other, which then attached to a hardcoded /usr/bin/bash
+ * and died instantly on an image without one. Presenting a control that
+ * cannot work is worse than presenting none.
+ */
+function renderConsolePicker(c) {
+	const pick = document.getElementById("cd-console-pick");
+	const label = document.getElementById("cd-console-pick-label");
+	const status = document.getElementById("cd-console-status");
+	const output = document.getElementById("cd-console-output");
+	const consoles = Array.isArray(c.consoles) ? c.consoles : [];
+
+	if (consoles.length === 0) {
+		pick.hidden = true;
+		label.hidden = true;
+		output.hidden = true;
+		status.textContent = "This container declares no console.";
+		consoleSelected = null;
+		return;
+	}
+	output.hidden = false;
+
+	/* Keep the operator's choice across the 2s detail-view re-render;
+	 * fall back to the first only when the selection no longer exists. */
+	if (!consoles.some((x) => x.name === consoleSelected))
+		consoleSelected = consoles[0].name;
+
+	/* One console is not a choice -- a select with a single option is
+	 * noise, so only show the picker when there is something to pick. */
+	const many = consoles.length > 1;
+	pick.hidden = !many;
+	label.hidden = !many;
+	if (many) {
+		const want = consoles.map((x) => x.name).join("\u0000");
+		if (pick.dataset.names !== want) {
+			pick.textContent = "";
+			for (const entry of consoles) {
+				const opt = document.createElement("option");
+
+				opt.value = entry.name;
+				opt.textContent = entry.name;
+				pick.appendChild(opt);
+			}
+			pick.dataset.names = want;
+		}
+		pick.value = consoleSelected;
+	}
+}
+
+/*
+ * Switching console closes the current session and opens the chosen one.
+ * Wired once: openConsole()'s own "already connected to this container"
+ * guard would otherwise refuse to reconnect, so the close is what makes
+ * the change take effect.
+ */
+function wireConsolePicker() {
+	const pick = document.getElementById("cd-console-pick");
+
+	if (pick === null || pick.dataset.wired === "1")
+		return;
+	pick.dataset.wired = "1";
+	pick.addEventListener("change", () => {
+		const name = consoleContainerName;
+
+		consoleSelected = pick.value;
+		if (name !== null) {
+			closeConsole();
+			openConsole(name);
+		}
+	});
+}
+
 function openConsole(name) {
+	wireConsolePicker();
 	if (consoleContainerName === name && consoleWs !== null)
 		return; /* already connected to this exact container -- a poll-driven
 		         * re-render of the same detail view must never reopen this,
@@ -2595,7 +2679,11 @@ function openConsole(name) {
 	statusEl.textContent = "connecting…";
 
 	const proto = location.protocol === "https:" ? "wss:" : "ws:";
-	const ws = new WebSocket(proto + "//" + location.host + CIX_API.consoleContainer(name));
+	/* #248: attach to the console the operator picked. Omitted entirely
+	 * when nothing is picked, so the daemon applies its own "first
+	 * declared" rule rather than this client duplicating it. */
+	const sel = consoleSelected ? "?console=" + encodeURIComponent(consoleSelected) : "";
+	const ws = new WebSocket(proto + "//" + location.host + CIX_API.consoleContainer(name) + sel);
 
 	ws.binaryType = "arraybuffer";
 	const decoder = new TextDecoder();
@@ -3326,7 +3414,11 @@ function renderContainerDetail(name) {
 		return;
 	}
 
-	openConsole(name);
+	renderConsolePicker(c);
+	if (Array.isArray(c.consoles) && c.consoles.length > 0)
+		openConsole(name);
+	else
+		closeConsole();
 	/* Keep stats polling pointed at whatever container this view is
 	 * actually showing right now: without this, switching containers
 	 * while the Summary tab (which now carries the live stats charts

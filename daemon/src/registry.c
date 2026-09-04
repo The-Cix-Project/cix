@@ -660,6 +660,29 @@ void registry_write_json_one(const struct registry_entry *entry, struct json_wri
 	for (i = 0; i < entry->file_count; i++)
 		jw_str(w, entry->file_paths[i]);
 	jw_arr_close(w);
+	/*
+	 * Issue #248: what this container offers as a console, in
+	 * declaration order -- the first is what an attach with no
+	 * selector gets. An empty array is the honest answer for a
+	 * container that declares none, and is what lets a client say
+	 * "no console" instead of showing a control that cannot work.
+	 */
+	jw_key(w, "consoles");
+	jw_arr_open(w);
+	for (i = 0; i < entry->console_count; i++) {
+		int a;
+
+		jw_obj_open(w);
+		jw_key(w, "name");
+		jw_str(w, entry->consoles[i].name);
+		jw_key(w, "cmd");
+		jw_arr_open(w);
+		for (a = 0; a < entry->consoles[i].argc; a++)
+			jw_str(w, entry->consoles[i].argv[a]);
+		jw_arr_close(w);
+		jw_obj_close(w);
+	}
+	jw_arr_close(w);
 	jw_key(w, "sysctls");
 	jw_obj_open(w);
 	for (i = 0; i < entry->sysctl_count; i++) {
@@ -869,4 +892,22 @@ void registry_write_json_list(struct json_writer *w)
 	 */
 	containerdef_write_json_inactive_list(w, registry_name_is_live);
 	jw_arr_close(w);
+}
+
+void registry_set_consoles(const char *name, const struct registry_console *consoles, int count)
+{
+	struct registry_entry *e = registry_find(name);
+	int i;
+
+	if (e == NULL)
+		return;
+	memset(e->consoles, 0, sizeof(e->consoles));
+	e->console_count = 0;
+	if (consoles == NULL || count <= 0)
+		return;
+	if (count > REGISTRY_MAX_CONSOLES)
+		count = REGISTRY_MAX_CONSOLES;
+	for (i = 0; i < count; i++)
+		e->consoles[i] = consoles[i];
+	e->console_count = count;
 }
