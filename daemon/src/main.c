@@ -15111,6 +15111,44 @@ static int create_container_from_body(const char *body, size_t body_len,
  * is the first such caller. Returns 0 on success, otherwise an HTTP
  * status with err_msg filled in; *out_entry is set only on success.
  */
+/*
+ * Re-push the config this daemon manages for a container that has just
+ * come back (#270).
+ *
+ * A DNS server's hosts file, an LDAP server's user and group list and a
+ * DHCP server's leases are written INTO the container by the daemon,
+ * not staged by its definition. So a container that is recreated,
+ * started, or restarted comes back serving whatever its definition
+ * stages -- an empty hosts file, a config with no users -- and stays
+ * that way until the next unrelated write or the next reboot.
+ *
+ * Boot was already covered: containerdef_autostart_all() is followed by
+ * the same syncs. Nothing covered a single container coming back while
+ * the daemon keeps running, which is every `container start`, every
+ * crash restart, every rolling restart and every recreate. Migrating
+ * the fleet to btrfs surfaced it repeatedly -- each migrate-storage
+ * needed a throwaway `ldap group add` afterwards to make the service
+ * work again, and that workaround is what this removes.
+ *
+ * Every sync here iterates all bindings and is idempotent, so calling
+ * them wholesale is correct rather than merely convenient; a
+ * per-container variant would be an optimisation, not a fix. They also
+ * skip a server that is not up, so calling this when the container that
+ * came back is not one of them costs a few loop iterations and writes
+ * nothing.
+ *
+ * NTP and syslog deliberately absent: their bindings are registrations,
+ * with no daemon-written config inside the container, so they have no
+ * equivalent gap. Checked rather than assumed.
+ */
+static void resync_managed_services(void)
+{
+	dns_server_sync_all();
+	dns_forwarders_sync_all();
+	ldap_record_sync_all();
+	dhcp_sync_all(NULL, 0, NULL);
+}
+
 static int create_container_persisted(const char *body, size_t body_len,
                                        struct registry_entry **out_entry, char *err_msg,
                                        size_t err_msg_size)
@@ -15236,6 +15274,11 @@ static int create_container_persisted(const char *body, size_t body_len,
 		}
 		free(persisted_body);
 	}
+
+	/* A recreate is the case this was found in: the container comes
+	 * back with whatever its definition stages, and nothing had
+	 * re-pushed what the daemon manages for it (#270). */
+	resync_managed_services();
 
 	*out_entry = entry;
 	return 0;
@@ -15745,6 +15788,7 @@ static void handle_start(int fd, const char *name)
 	}
 
 	containerdef_set_stopped(name, 0);
+	resync_managed_services();
 
 	jw_init(&w);
 	registry_write_json_one(entry, &w);
@@ -28409,6 +28453,8 @@ static void handle_restart_timer_event(struct conn *cc)
 
 		if (status != 0)
 			fprintf(stderr, "%s: restart failed: %s\n", cc->restart_name, err_msg);
+		else
+			resync_managed_services();
 		/* else: create_container_from_body() already registered its
 		 * own pidfd -- no separate call needed here either. */
 	}
@@ -28546,6 +28592,8 @@ static void handle_rolling_restart_timer_event(struct conn *cc)
 
 			if (status != 0)
 				fprintf(stderr, "%s: rolling restart failed: %s\n", cc->restart_name, err_msg);
+			else
+				resync_managed_services();
 		}
 	}
 
