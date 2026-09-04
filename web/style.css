@@ -15,6 +15,45 @@
  * destructive intent.
  */
 :root {
+	/*
+	 * Scale, not taste. Before this the stylesheet carried 30 distinct
+	 * hardcoded paddings, 10 gaps and 8 border-radius values -- every
+	 * one a local decision, which is what "lacks cohesion" looks like
+	 * when you count it. Everything below picks from these.
+	 *
+	 * 4px base: dense enough for an operator console, and every step is
+	 * a multiple so things line up without anyone measuring.
+	 */
+	--s1: 0.25rem;   /*  4px */
+	--s2: 0.5rem;    /*  8px */
+	--s3: 0.75rem;   /* 12px */
+	--s4: 1rem;      /* 16px */
+	--s5: 1.5rem;    /* 24px */
+	--s6: 2rem;      /* 32px */
+
+	/* Three radii, each with a job: controls, panels, pills. */
+	--r-control: 4px;
+	--r-panel: 8px;
+	--r-pill: 999px;
+
+	/* Chrome heights, so the menu bar, status bar and panel headers
+	 * agree with each other instead of each being whatever its padding
+	 * happened to produce. */
+	--h-menubar: 56px;
+	--h-statusbar: 28px;
+	--h-panel-header: 40px;
+
+	/*
+	 * Type scale, from the brand guidelines' own table (H1 28-36,
+	 * H2 20-24, Body 15-17). Sizes are the low end of each band: this
+	 * is a dense console, not an editorial page.
+	 */
+	--t-h1: 1.75rem;
+	--t-h2: 1.25rem;
+	--t-body: 0.95rem;
+	--t-small: 0.85rem;
+	--t-label: 0.75rem;
+
 	--carbon: #0a0d0f;
 	--ferrite: #151a1e;
 	--machined: #242c31;
@@ -35,6 +74,25 @@
 	 * signal colour. Derived here rather than invented at each call
 	 * site, so there is still one answer per colour.
 	 */
+	/*
+	 * Data-series colours, separate from the signal colours on purpose.
+	 *
+	 * The charts used Apple system colours (#0a84ff, #30d158, #ff9f0a,
+	 * #ff375f) picked per metric -- so a network chart drew its TX line
+	 * in red, which the guidelines rule out in as many words: "Fault red
+	 * is reserved for failure and destructive intent. It should never
+	 * become a decorative brand colour." A red line that means "transmit"
+	 * teaches an operator to ignore red.
+	 *
+	 * Signal colours (phosphor / amber / fault) say what STATE something
+	 * is in. These say which SERIES it is, and nothing more. Bus Blue
+	 * leads because the guidelines already give it "informational,
+	 * network/data-path emphasis".
+	 */
+	--series-1: var(--bus-blue);
+	--series-2: var(--nickel);
+	--series-3: var(--copper);
+
 	--phosphor-ink: #4f7a12;
 	--amber-ink: #8a6410;
 }
@@ -227,10 +285,17 @@ body {
 }
 
 header {
+	/*
+	 * A declared height, not a consequence of padding. The three bars
+	 * that frame this app -- this one, the status bar and the log
+	 * panel's header -- each sized themselves from their own padding
+	 * and text, so none agreed with the others. Each now takes a token.
+	 */
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
-	padding: 1rem 1.5rem;
+	height: var(--h-menubar);
+	padding: 0 var(--s5);
 	border-bottom: 1px solid var(--border);
 	flex: 0 0 auto;
 }
@@ -653,8 +718,9 @@ header {
 	display: flex;
 	align-items: center;
 	justify-content: flex-end;
-	gap: 0.9rem;
-	padding: 0.4rem 1rem;
+	gap: var(--s3);
+	height: var(--h-statusbar);
+	padding: 0 var(--s4);
 	border-top: 1px solid var(--border);
 	flex: 0 0 auto;
 }
@@ -674,10 +740,18 @@ header {
  * invisible hit target that only reveals itself as an accent color on
  * hover/drag -- the resize affordance shouldn't compete visually with
  * the border it sits on. */
+/*
+ * The tree and the log panel ARE resizable -- makeResizable() has been
+ * wired to both for some time. The handles were fully transparent until
+ * hovered, so nothing on screen said so, and the panels read as fixed.
+ * A hairline at rest is enough to invite the drag; the accent still
+ * takes over on hover and while dragging.
+ */
 .resize-handle {
 	position: absolute;
-	background: transparent;
+	background: var(--border);
 	z-index: 10;
+	transition: background 0.12s ease-out;
 }
 
 .resize-handle:hover,
@@ -883,9 +957,10 @@ main {
 	flex: 0 0 auto;
 	display: flex;
 	align-items: center;
-	gap: 0.4rem;
-	padding: 0.4rem 1rem;
-	font-size: 0.75rem;
+	gap: var(--s2);
+	height: var(--h-panel-header);
+	padding: 0 var(--s4);
+	font-size: var(--t-label);
 	color: var(--muted);
 	text-transform: uppercase;
 	letter-spacing: 0.04em;
@@ -1052,19 +1127,37 @@ main {
 }
 
 .view h2 {
-	margin: 0 0 0.75rem;
-	font-size: 1rem;
-	color: var(--muted);
-	text-transform: uppercase;
-	letter-spacing: 0.04em;
+	/*
+	 * A page title, set as one. It used to be an uppercase muted label,
+	 * which had two problems: it read as a caption rather than the top
+	 * of the page, and this element also renders IDENTIFIERS -- a
+	 * container detail page put `dns-1` on screen as "DNS-1".
+	 * Case-transforming a name misrepresents it; uppercase is for
+	 * labels, which is where it still lives (tree categories, field
+	 * labels, legends, panel headers).
+	 */
+	/* H2 scale, not H1: this element sits INSIDE a panel, so it is that
+	 * panel's title rather than the top of the page. At H1 it fought the
+	 * content it introduces. */
+	margin: 0 0 var(--s4);
+	font-size: var(--t-h2);
+	font-weight: 600;
+	line-height: 1.2;
+	color: var(--text);
+	letter-spacing: -0.01em;
 }
 
 .view h3 {
-	margin: 1.25rem 0 0.5rem;
-	font-size: 0.85rem;
+	/* A section label within a page -- genuinely a label, so it keeps
+	 * the uppercase treatment. What it must not do is repeat the page
+	 * title or the active tab; those duplicates are removed in the
+	 * markup rather than styled to look quieter. */
+	margin: var(--s5) 0 var(--s2);
+	font-size: var(--t-label);
 	color: var(--muted);
 	text-transform: uppercase;
-	letter-spacing: 0.03em;
+	letter-spacing: 0.06em;
+	font-weight: 600;
 }
 
 .list-toolbar {
@@ -1114,11 +1207,25 @@ main {
 	margin-bottom: 0.75rem;
 }
 
+/*
+ * One form layout, for all 69 of them.
+ *
+ * This was `display: flex; flex-wrap: wrap; align-items: end`, so every
+ * field took its natural width and the row wrapped wherever it ran out
+ * -- which is why a form with thirty-odd fields read as a jumble rather
+ * than a form. A grid gives columns of equal width that line up down the
+ * page, and it costs nothing per form: every form here already uses the
+ * same `<label>Text<input></label>` markup, so they all inherit this.
+ *
+ * auto-fit rather than a fixed column count: the same rule then serves a
+ * three-field modal and the thirty-seven-field container form, and
+ * collapses to one column on a phone without a media query.
+ */
 form {
-	display: flex;
-	flex-wrap: wrap;
-	gap: 1rem;
-	align-items: end;
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+	gap: var(--s4);
+	align-items: start;
 }
 
 /* #pki-ca-form is the one form whose own .hidden is toggled directly
@@ -1129,14 +1236,16 @@ form[hidden] {
 }
 
 fieldset {
-	flex: 1 1 100%;
+	/* Spans the parent grid and becomes one itself, so a grouped form
+	 * and an ungrouped one have the same field rhythm. */
+	grid-column: 1 / -1;
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+	gap: var(--s4);
+	align-items: start;
 	border: 1px solid var(--border);
-	border-radius: 6px;
-	padding: 0.75rem 1rem 1rem;
-	display: flex;
-	flex-wrap: wrap;
-	gap: 1rem;
-	align-items: end;
+	border-radius: var(--r-panel);
+	padding: var(--s3) var(--s4) var(--s4);
 	margin: 0;
 }
 
@@ -1151,13 +1260,16 @@ fieldset legend {
 form label {
 	display: flex;
 	flex-direction: column;
-	font-size: 0.85rem;
+	font-size: var(--t-label);
 	color: var(--muted);
-	gap: 0.25rem;
+	gap: var(--s1);
+	min-width: 0; /* a grid item defaults to min-content; without this a
+	               * long value in a field pushes the column wider than
+	               * its share and the alignment collapses. */
 }
 
 form label.wide {
-	flex: 1 1 100%;
+	grid-column: 1 / -1;
 }
 
 form label.checkbox {
@@ -1168,12 +1280,32 @@ form label.checkbox {
 
 form input,
 form select {
-	padding: 0.5rem;
+	/* One control height across every form, so fields line up whatever
+	 * they contain. */
+	box-sizing: border-box;
+	width: 100%;
+	min-width: 0;
+	height: 2.25rem;
+	padding: 0 var(--s2);
 	border: 1px solid var(--border);
-	border-radius: 6px;
-	background: var(--bg);
+	border-radius: var(--r-control);
+	background: var(--panel);
 	color: var(--text);
-	font-size: 0.95rem;
+	font-size: var(--t-body);
+	font-family: inherit;
+}
+
+form input:focus,
+form select:focus {
+	/* The accent means focus -- the guidelines' own role for Copper. */
+	outline: none;
+	border-color: var(--accent);
+	box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+form label.checkbox input[type="checkbox"] {
+	width: auto;
+	height: auto;
 }
 
 .file-row {
@@ -1224,10 +1356,34 @@ button:hover {
 	filter: brightness(1.1);
 }
 
+/*
+ * A destructive action, stated rather than shouted.
+ *
+ * This was a filled fault-red button, and a list renders one per row --
+ * so an images page showed eight solid red buttons down its length. The
+ * guidelines rule that out twice over: "Fault red is reserved for
+ * failure and destructive intent. It should never become a decorative
+ * brand colour", and "In dense product UI, neutrals should dominate. A
+ * screen covered in accent colour is off-brand."
+ *
+ * Red stays -- the action really is destructive and must not be mistaken
+ * for a safe one -- but as the text and border of a quiet control that
+ * fills only on hover, at the moment the pointer is actually on it. The
+ * risk is legible where it matters and does not carpet the page.
+ */
 .button-danger {
+	background: transparent;
+	color: var(--error);
+	border: 1px solid color-mix(in srgb, var(--error) 45%, transparent);
+	padding: var(--s1) var(--s3);
+	font-size: var(--t-small);
+}
+
+.button-danger:hover,
+.button-danger:focus-visible {
 	background: var(--error);
-	padding: 0.3rem 0.7rem;
-	font-size: 0.8rem;
+	color: var(--paper);
+	border-color: var(--error);
 }
 
 .button-small {
