@@ -111,7 +111,63 @@ DAEMON_SELFTESTS = \
 	$(BUILD)/test_factory_reset $(BUILD)/test_hostauth $(BUILD)/test_https_chain \
 	$(BUILD)/test_kmod $(BUILD)/test_layout_upgrade $(BUILD)/test_pkg_recipe_approval \
 	$(BUILD)/test_signing_keys $(BUILD)/test_stallwatch $(BUILD)/test_sysctl \
-	$(BUILD)/test_system_update $(BUILD)/test_tls_throttle $(BUILD)/test_rtnetlink
+	$(BUILD)/test_system_update $(BUILD)/test_tls_throttle $(BUILD)/test_rtnetlink \
+	\
+	$(DAEMON_SELFTESTS_2)
+
+#
+# Twenty-nine more (#224), measured rather than assumed.
+#
+# The full set of tests that run nowhere was built with "make all" and
+# run twice in a build container, 73 each time. Both runs were
+# identical: 50 pass, 22 fail, 0 timeout, and not one test differed
+# between them. Two runs because the comment above records a probe
+# giving a false positive that only the gate caught, and a flaky test
+# here fails every future cix build -- one data point was not enough to
+# spend that on.
+#
+# These are the 50 minus the 18 already above, minus the three held out
+# deliberately -- test_esp and test_boot_console for touching real boot
+# paths, test_dual_console for being non-deterministic. All three PASSED
+# both runs and are still excluded, because passing is not the only
+# question those exclusions were answering.
+#
+# The 22 that fail are not mysteries: eleven want the hand-fetched
+# build-inputs trees (a real kernel image, the ADR-0209 artifact floor),
+# five want something the image has not got (dnsmasq, a GPU, loop
+# devices, Debian host libraries), and six are unexplained and worth
+# investigating rather than papering over. #224 records each.
+#
+DAEMON_SELFTESTS_2 = \
+	$(BUILD)/test_artifact_export \
+	$(BUILD)/test_cli \
+	$(BUILD)/test_console_exec \
+	$(BUILD)/test_container_dns_servers \
+	$(BUILD)/test_container_files \
+	$(BUILD)/test_container_lifecycle \
+	$(BUILD)/test_container_net \
+	$(BUILD)/test_container_pty \
+	$(BUILD)/test_container_recipe \
+	$(BUILD)/test_container_restart \
+	$(BUILD)/test_container_stats \
+	$(BUILD)/test_container_storage_migrate \
+	$(BUILD)/test_daemon \
+	$(BUILD)/test_daemon_net \
+	$(BUILD)/test_device_hotplug \
+	$(BUILD)/test_devices \
+	$(BUILD)/test_dhcp \
+	$(BUILD)/test_direct_rootfs \
+	$(BUILD)/test_disk_quota \
+	$(BUILD)/test_hostproc \
+	$(BUILD)/test_image_recipe \
+	$(BUILD)/test_images \
+	$(BUILD)/test_networks \
+	$(BUILD)/test_ntp \
+	$(BUILD)/test_overlay \
+	$(BUILD)/test_syslogfwd \
+	$(BUILD)/test_system_backup \
+	$(BUILD)/test_userns_run \
+	$(BUILD)/test_volume
 #
 # Three tests were in this list and are deliberately NOT, because they
 # fail in a composed build container for reasons that are not defects.
@@ -159,7 +215,23 @@ DAEMON_SELFTESTS = \
 # happened to have it. A test that needs a fixture the gate does not
 # build is a gate that works by accident.
 #
-SELFTEST_HELPERS = $(BUILD)/daemon_child
+# The helper children the tests above fork. A missing one does not fail
+# the build, it fails the test that needed it -- a much worse way to
+# find out, so they are dependencies of the gate rather than of any
+# single test (#224).
+SELFTEST_HELPERS = \
+	$(BUILD)/daemon_child \
+	$(BUILD)/dev_child \
+	$(BUILD)/net_child \
+	$(BUILD)/net_connect \
+	$(BUILD)/output_child \
+	$(BUILD)/overlay_child \
+	$(BUILD)/pty_child \
+	$(BUILD)/run_child \
+	$(BUILD)/stats_child \
+	$(BUILD)/syslog_recv_child \
+	$(BUILD)/tcp_listen_child \
+	$(BUILD)/volume_child
 
 selftest: $(SELFTESTS) $(SELFTEST_HELPERS)
 	@fail=0; \
