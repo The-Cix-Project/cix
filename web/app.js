@@ -770,15 +770,30 @@ function buildLogEntryDom(entry) {
 	return el;
 }
 
-/* Trims the rendered DOM (not logBuffer, which callers already trim
- * themselves) down to MAX_LOG_ENTRIES and scrolls to the bottom --
- * pulled out so both the single-entry and batch paths share it, each
- * calling it exactly once per operation regardless of how many
- * entries that operation added. */
+/*
+ * Newest first, at the top.
+ *
+ * The panel used to read like a terminal -- oldest at the top, newest
+ * appended at the bottom, scrolled down to follow. That is the right
+ * shape for a full-screen tail you are watching, and the wrong one for
+ * a short pane at the bottom of a dashboard: what just happened is the
+ * only thing anyone opens it for, and it was the one line furthest from
+ * the eye and dependent on a scroll landing correctly.
+ *
+ * The cost, stated because it is real: a causal sequence now reads
+ * upwards. glauth's own "watcher got event" -> "rewatching config" ->
+ * "Config was reloaded" appears in that order bottom-to-top. For a
+ * glanceable panel that is the better trade; for reading a sequence
+ * through, GET /v1/system/logs and the Log Store view stay chronological.
+ *
+ * Everything below therefore inserts at the top, trims from the bottom
+ * (the oldest, which is what a full panel should shed), and holds the
+ * scroll at the top rather than the bottom.
+ */
 function trimAndScrollLogOutput() {
 	while (logOutput.children.length > MAX_LOG_ENTRIES)
-		logOutput.removeChild(logOutput.firstChild);
-	logOutput.scrollTop = logOutput.scrollHeight;
+		logOutput.removeChild(logOutput.lastChild);
+	logOutput.scrollTop = 0;
 }
 
 /* Single real-time entry (a toast, or one web-ui action) -- rare
@@ -790,7 +805,7 @@ function addLogEntry(ts, source, level, text, kind) {
 	while (logBuffer.length > MAX_LOG_ENTRIES)
 		logBuffer.shift();
 	if (logSourceFilter === "" || logSourceFilter === source) {
-		logOutput.appendChild(buildLogEntryDom(entry));
+		logOutput.insertBefore(buildLogEntryDom(entry), logOutput.firstChild);
 		trimAndScrollLogOutput();
 	}
 }
@@ -802,8 +817,17 @@ function addLogEntriesBatch(entries) {
 	const fragment = document.createDocumentFragment();
 	let rendered = false;
 
-	for (const entry of entries) {
+	/*
+	 * The batch arrives oldest-first, so it is built in reverse and
+	 * inserted as one block at the top: within a batch the newest still
+	 * ends up above the oldest, and it stays one reflow for the whole
+	 * poll rather than one per entry.
+	 */
+	for (const entry of entries)
 		logBuffer.push(entry);
+	for (let i = entries.length - 1; i >= 0; i--) {
+		const entry = entries[i];
+
 		if (logSourceFilter === "" || logSourceFilter === entry.source) {
 			fragment.appendChild(buildLogEntryDom(entry));
 			rendered = true;
@@ -812,7 +836,7 @@ function addLogEntriesBatch(entries) {
 	while (logBuffer.length > MAX_LOG_ENTRIES)
 		logBuffer.shift();
 	if (rendered) {
-		logOutput.appendChild(fragment);
+		logOutput.insertBefore(fragment, logOutput.firstChild);
 		trimAndScrollLogOutput();
 	}
 }
@@ -820,13 +844,17 @@ function addLogEntriesBatch(entries) {
 function rerenderLogPanel() {
 	const fragment = document.createDocumentFragment();
 
-	for (const entry of logBuffer) {
+	/* logBuffer stays chronological -- only the rendering is reversed,
+	 * so nothing else that reads the buffer has to know about this. */
+	for (let i = logBuffer.length - 1; i >= 0; i--) {
+		const entry = logBuffer[i];
+
 		if (logSourceFilter === "" || logSourceFilter === entry.source)
 			fragment.appendChild(buildLogEntryDom(entry));
 	}
 	logOutput.textContent = "";
 	logOutput.appendChild(fragment);
-	logOutput.scrollTop = logOutput.scrollHeight;
+	logOutput.scrollTop = 0;
 }
 
 logPanelSource.addEventListener("change", () => {
