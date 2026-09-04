@@ -13008,6 +13008,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	    *jnetworks, *jip_forward, *jksm, *jroutes;
 	const struct json_value *jdisk_quota;
 	long long disk_quota_bytes;
+	int quota_enforced_early = 0; /* #266: the userns snapshot applied it itself */
 	const struct json_value *jdevices;
 	const struct json_value *jinterfaces;
 	const struct json_value *jcap_add;
@@ -14127,6 +14128,30 @@ static int create_container_from_body(const char *body, size_t body_len,
 	stage_dir = upperdir;
 
 	/*
+	 * #266: spec is zeroed HERE, before the rootfs provisioning below
+	 * touches it -- not further down where the rest of it is filled in.
+	 *
+	 * It used to be memset AFTER that block, which silently undid
+	 * everything the block set: spec.userns_idmap was assigned while
+	 * provisioning and then cleared before container_create() ever read
+	 * it, so ADR-0207 phase 3's id-mapped presentation never reached the
+	 * runtime. That is not cosmetic -- the same flag is what id-maps a
+	 * userns container's VOLUMES, and without it every volume was owned
+	 * by the overflow uid inside and rejected every write. Measured on a
+	 * real container before the fix: /vol owned 65534:65534, `touch`
+	 * denied, with jump's own /home among the casualties.
+	 *
+	 * The same block also READ spec.ov.quota_bytes, which at that point
+	 * was uninitialised stack memory -- the real value is parsed much
+	 * further down. So the btrfs qgroup call it guards fired, or did
+	 * not, on garbage. disk_quota_bytes is therefore parsed here too,
+	 * where the block can use the real number.
+	 */
+	memset(&spec, 0, sizeof(spec));
+	jdisk_quota = json_object_get(root, "disk_quota_bytes");
+	disk_quota_bytes = jdisk_quota != NULL ? (long long)json_as_number(jdisk_quota) : 0;
+
+	/*
 	 * ADR-0179 phase 2c option (a): a userns container does not use an
 	 * overlay -- it gets its own per-container rootfs (a CoW copy of the
 	 * image), which container_create() id-maps and pivots into directly.
@@ -14162,16 +14187,20 @@ static int create_container_from_body(const char *body, size_t body_len,
 			 * sharing). One storage model, two presentations.
 			 */
 			spec.userns_idmap = 1;
-			if (spec.ov.quota_bytes > 0) {
+			if (disk_quota_bytes > 0) {
 				if (cix_btrfs_qgroup_limit_excl(userns_rootfs,
-				                                 (unsigned long long)spec.ov.quota_bytes) !=
+				                                 (unsigned long long)disk_quota_bytes) !=
 				    0) {
 					json_free(root);
 					snprintf(err_msg, err_msg_size,
 					         "failed to set the btrfs qgroup quota on the userns rootfs");
 					return 500;
 				}
-				spec.ov.quota_bytes = 0;
+				/* Enforced right here, on the snapshot itself. The
+				 * general quota block below must not also assign a
+				 * project id or hand a limit to overlay_create(),
+				 * which never runs for this container. */
+				quota_enforced_early = 1;
 			}
 		} else {
 			/*
@@ -14489,7 +14518,8 @@ static int create_container_from_body(const char *body, size_t body_len,
 		}
 	}
 
-	memset(&spec, 0, sizeof(spec));
+	/* spec was zeroed before the rootfs provisioning above, which sets
+	 * fields on it -- zeroing it again here is what broke #266. */
 	{
 		/* fd sentinels: 0 is a valid fd, so "no idmapped volume tree"
 		 * must be -1, not the memset's zero (ADR-0207 phase 3). */
@@ -14621,9 +14651,8 @@ static int create_container_from_body(const char *body, size_t body_len,
 	spec.cg.cpu_max = json_as_string(jcpu);
 	jcpuset = json_object_get(root, "cpuset_cpus");
 	spec.cg.cpuset_cpus = json_as_string(jcpuset);
-	jdisk_quota = json_object_get(root, "disk_quota_bytes");
-	disk_quota_bytes = jdisk_quota != NULL ? (long long)json_as_number(jdisk_quota) : 0;
-	if (disk_quota_bytes > 0) {
+	/* Parsed above, before the rootfs provisioning that needs it (#266). */
+	if (disk_quota_bytes > 0 && !quota_enforced_early) {
 		/*
 		 * btrfs has no quotactl(2) project-quota support at all
 		 * (ADR-0103) -- overlay_create() enforces the limit itself
