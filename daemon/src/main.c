@@ -12541,6 +12541,8 @@ static const char *container_body_unknown_key(const struct json_value *root)
 		"cpu_max", "pids_max", "cpuset_cpus", "disk_quota_bytes", "ldap_client",
 		"ldap_allow_groups",
 		"userns",
+		/* Issue #248: the consoles this container declares. */
+		"consoles",
 		/* Issue #88: persistent volumes. */
 		"volumes",
 	};
@@ -13046,6 +13048,9 @@ static int create_container_from_body(const char *body, size_t body_len,
 	int ip_forward = 0;
 	int ksm = 0;
 	const struct json_value *jcapture_output;
+	const struct json_value *jconsoles;
+	struct registry_console consoles[REGISTRY_MAX_CONSOLES];
+	int console_count = 0;
 	int capture_output = 0;
 	const struct json_value *juserns; /* ADR-0179 #29 phase 2 opt-in */
 	int userns = 0;
@@ -13121,6 +13126,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	jip_forward = json_object_get(root, "ip_forward");
 	jksm = json_object_get(root, "ksm");
 	jcapture_output = json_object_get(root, "capture_output");
+	jconsoles = json_object_get(root, "consoles");
 	juserns = json_object_get(root, "userns");
 	jroutes = json_object_get(root, "routes");
 	jdevices = json_object_get(root, "devices");
@@ -13657,6 +13663,110 @@ static int create_container_from_body(const char *body, size_t body_len,
 				return 400;
 			}
 			snprintf(cap_add_names[i], sizeof(cap_add_names[i]), "%s", cap_name);
+		}
+	}
+	/*
+	 * Issue #248: the consoles this container declares.
+	 *
+	 * Validated in full here, before anything is created, so a bad
+	 * declaration is a 400 naming what is wrong rather than a
+	 * container that exists and then refuses to attach.
+	 */
+	memset(consoles, 0, sizeof(consoles));
+	if (jconsoles != NULL) {
+		if (jconsoles->type != JSON_ARRAY ||
+		    jconsoles->u.array.count > REGISTRY_MAX_CONSOLES) {
+			json_free(root);
+			snprintf(err_msg, err_msg_size,
+			         "consoles must be an array of at most %d entries",
+			         REGISTRY_MAX_CONSOLES);
+			return 400;
+		}
+		for (i = 0; i < jconsoles->u.array.count; i++) {
+			const struct json_value *item = jconsoles->u.array.items[i];
+			const char *cname;
+			const struct json_value *jcmd;
+			size_t a;
+			int dup;
+
+			cname = json_as_string(json_object_get(item, "name"));
+			jcmd = json_object_get(item, "cmd");
+			if (cname == NULL || cname[0] == '\0' ||
+			    strlen(cname) >= REGISTRY_CONSOLE_NAME_MAX) {
+				json_free(root);
+				snprintf(err_msg, err_msg_size,
+				         "each console needs a name of 1 to %d characters",
+				         REGISTRY_CONSOLE_NAME_MAX - 1);
+				return 400;
+			}
+			/*
+			 * The name is how a console is selected in a URL and
+			 * shown in a list, so keep it to characters that need
+			 * no escaping in either.
+			 */
+			for (a = 0; cname[a] != '\0'; a++) {
+				if (!isalnum((unsigned char)cname[a]) && cname[a] != '_' &&
+				    cname[a] != '-') {
+					json_free(root);
+					snprintf(err_msg, err_msg_size,
+					         "console name '%s' may use only letters, digits, - and _",
+					         cname);
+					return 400;
+				}
+			}
+			/*
+			 * Duplicate names would make selection ambiguous, and
+			 * silently picking the first is exactly the kind of
+			 * arbitrary choice this whole field exists to remove.
+			 */
+			for (dup = 0; dup < console_count; dup++) {
+				if (strcmp(consoles[dup].name, cname) == 0) {
+					json_free(root);
+					snprintf(err_msg, err_msg_size,
+					         "console name '%s' is declared more than once", cname);
+					return 400;
+				}
+			}
+			if (jcmd == NULL || jcmd->type != JSON_ARRAY || jcmd->u.array.count < 1 ||
+			    jcmd->u.array.count > REGISTRY_CONSOLE_ARGC_MAX) {
+				json_free(root);
+				snprintf(err_msg, err_msg_size,
+				         "console '%s' needs a cmd array of 1 to %d strings", cname,
+				         REGISTRY_CONSOLE_ARGC_MAX);
+				return 400;
+			}
+			snprintf(consoles[console_count].name, sizeof(consoles[console_count].name),
+			         "%s", cname);
+			for (a = 0; a < jcmd->u.array.count; a++) {
+				const char *arg = json_as_string(jcmd->u.array.items[a]);
+
+				if (arg == NULL || strlen(arg) >= REGISTRY_CONSOLE_ARG_MAX) {
+					json_free(root);
+					snprintf(err_msg, err_msg_size,
+					         "console '%s' argv[%d] must be a string under %d bytes",
+					         cname, (int)a, REGISTRY_CONSOLE_ARG_MAX);
+					return 400;
+				}
+				snprintf(consoles[console_count].argv[a],
+				         sizeof(consoles[console_count].argv[a]), "%s", arg);
+			}
+			/*
+			 * argv[0] is exec'd by path, never resolved through a
+			 * PATH lookup -- there is no shell in this path. A bare
+			 * name would fail at exec time with a confusing ENOENT
+			 * against a binary that exists, so refuse it here where
+			 * the message can say why.
+			 */
+			if (consoles[console_count].argv[0][0] != '/') {
+				json_free(root);
+				snprintf(err_msg, err_msg_size,
+				         "console '%s' argv[0] must be an absolute path -- it is exec'd "
+				         "directly, with no shell to resolve a bare name",
+				         cname);
+				return 400;
+			}
+			consoles[console_count].argc = (int)jcmd->u.array.count;
+			console_count++;
 		}
 	}
 	if (jfiles != NULL) {
@@ -14657,6 +14767,11 @@ static int create_container_from_body(const char *body, size_t body_len,
 	 * from the kernel like the cgroup limits are). */
 	if (rerr == REGISTRY_OK && entry != NULL)
 		entry->disk_quota_bytes = disk_quota_bytes;
+	/* Issue #248: what this container offers as a console. Recorded
+	 * even when empty -- zero declared consoles is a real answer that
+	 * the attach path and both clients act on, not a missing value. */
+	if (rerr == REGISTRY_OK && entry != NULL)
+		registry_set_consoles(name, consoles, console_count);
 	/*
 	 * Captured immediately, before json_free() below -- container_create()
 	 * (via registry_create()) always preserves errno across every one of
@@ -27100,7 +27215,14 @@ static void dispatch(int fd, const struct http_request *req)
  * neither this nor an override installed simply fails to exec --
  * a real, expected limitation (see this phase's own ADR), not a bug.
  */
-#define CONSOLE_DEFAULT_CMD "/usr/bin/bash"
+/*
+ * Retired by #248: there is no default console command any more. What a
+ * container's console should be depends on the workload and this daemon
+ * cannot know, so a container that declares none has none. Kept as a
+ * comment rather than deleted outright because pkg.c cites this name in
+ * its own reasoning about exec'ing by absolute path (ADR-0043: this
+ * project's packages stage under usr/bin, never /bin).
+ */
 
 /*
  * try_console_upgrade()'s own three possible outcomes -- plain 0/1
@@ -27135,8 +27257,10 @@ static enum console_route_result try_console_upgrade(struct conn *cc, const stru
 	struct registry_entry *entry;
 	char upgrade_val[32], connection_val[64], ws_key[256], ws_version[8];
 	char cmd_override[256];
-	char *cmd_argv[2];
-	const char *cmd;
+	char *cmd_argv[REGISTRY_CONSOLE_ARGC_MAX + 1];
+	char console_sel[REGISTRY_CONSOLE_NAME_MAX];
+	char path_only[HTTP_MAX_PATH];
+	const char *query;
 	char accept_val[64];
 	int master_fd;
 	pid_t exec_pid;
@@ -27151,7 +27275,30 @@ static enum console_route_result try_console_upgrade(struct conn *cc, const stru
 	if (strncmp(req->path, CONTAINERS_PREFIX, strlen(CONTAINERS_PREFIX)) != 0)
 		return CONSOLE_NOT_MATCHED;
 
-	path_name = req->path + strlen(CONTAINERS_PREFIX);
+	/*
+	 * req->path still carries any query string (this daemon's own HTTP
+	 * parser does not split it -- every other handler strips it with
+	 * strchr, and so does this one now that the console takes a
+	 * `?console=` selector, #248). Without this the suffix match below
+	 * fails on any request that names one, and the whole endpoint would
+	 * fall through to a confusing 404.
+	 */
+	query = strchr(req->path, '?');
+	if (query != NULL) {
+		size_t plen = (size_t)(query - req->path);
+
+		if (plen >= sizeof(path_only))
+			return CONSOLE_NOT_MATCHED;
+		memcpy(path_only, req->path, plen);
+		path_only[plen] = '\0';
+	} else {
+		snprintf(path_only, sizeof(path_only), "%s", req->path);
+	}
+
+	if (strncmp(path_only, CONTAINERS_PREFIX, strlen(CONTAINERS_PREFIX)) != 0)
+		return CONSOLE_NOT_MATCHED;
+
+	path_name = path_only + strlen(CONTAINERS_PREFIX);
 	path_name_len = strlen(path_name);
 	if (path_name_len <= suffix_len || strcmp(path_name + path_name_len - suffix_len, suffix) != 0)
 		return CONSOLE_NOT_MATCHED;
@@ -27206,13 +27353,93 @@ static enum console_route_result try_console_upgrade(struct conn *cc, const stru
 		return CONSOLE_FAILED;
 	}
 
-	if (http_find_header(req->headers, req->headers_len, "X-Cix-Exec-Cmd", cmd_override, sizeof(cmd_override)) >= 0 &&
-	    cmd_override[0] != '\0')
-		cmd = cmd_override;
-	else
-		cmd = CONSOLE_DEFAULT_CMD;
-	cmd_argv[0] = (char *)cmd;
-	cmd_argv[1] = NULL;
+	/*
+	 * What to run (#248). Two sources, and they answer different
+	 * questions rather than competing:
+	 *
+	 *   X-Cix-Exec-Cmd -- "run this specific thing". An explicit
+	 *   instruction from a caller who is already authorized to reach
+	 *   this endpoint, which is gated as a write despite being a GET
+	 *   (ADR-0144). It wins, and it works on a container that
+	 *   declares nothing, because anyone who can attach here can
+	 *   already run arbitrary code in the container; pretending
+	 *   otherwise would be security theatre.
+	 *
+	 *   consoles[] -- "what does this container OFFER". The published
+	 *   surface cixctl and the dashboard present. A container that
+	 *   declares none has no console, and that is a real answer.
+	 *
+	 * Before this, every container got the same hardcoded
+	 * /usr/bin/bash with an argv of exactly ONE token: a container
+	 * without bash got a session that opened and instantly died, and
+	 * a console needing arguments (tail -F, chronyc tracking) could
+	 * not be expressed at all.
+	 */
+	if (http_find_header(req->headers, req->headers_len, "X-Cix-Exec-Cmd", cmd_override,
+	                      sizeof(cmd_override)) >= 0 &&
+	    cmd_override[0] != '\0') {
+		cmd_argv[0] = cmd_override;
+		cmd_argv[1] = NULL;
+	} else {
+		const struct registry_console *chosen = NULL;
+		int ci;
+
+		console_sel[0] = '\0';
+		if (query != NULL) {
+			const char *v = strstr(query, "console=");
+
+			if (v != NULL) {
+				size_t n = 0;
+
+				v += 8;
+				while (v[n] != '\0' && v[n] != '&' &&
+				       n < sizeof(console_sel) - 1) {
+					console_sel[n] = v[n];
+					n++;
+				}
+				console_sel[n] = '\0';
+			}
+		}
+
+		if (entry->console_count == 0) {
+			respond_error(cc->fd, 409, "Conflict",
+			              "this container declares no console -- add one to its "
+			              "definition, or name a command with X-Cix-Exec-Cmd");
+			return CONSOLE_FAILED;
+		}
+		if (console_sel[0] == '\0') {
+			/* No selector: the first declared console, which is why
+			 * order is significant and there is no separate default
+			 * flag that could disagree with the list. */
+			chosen = &entry->consoles[0];
+		} else {
+			for (ci = 0; ci < entry->console_count; ci++) {
+				if (strcmp(entry->consoles[ci].name, console_sel) == 0) {
+					chosen = &entry->consoles[ci];
+					break;
+				}
+			}
+		}
+		if (chosen == NULL) {
+			/* Name what IS declared: a bare "not found" leaves the
+			 * caller guessing at a list this response already has. */
+			char known[256];
+			size_t used = 0;
+
+			known[0] = '\0';
+			for (ci = 0; ci < entry->console_count && used < sizeof(known) - 1; ci++)
+				used += (size_t)snprintf(known + used, sizeof(known) - used, "%s%s",
+				                          ci > 0 ? ", " : "", entry->consoles[ci].name);
+			snprintf(cmd_override, sizeof(cmd_override),
+			         "no console named '%s' -- this container declares: %s", console_sel,
+			         known);
+			respond_error(cc->fd, 404, "Not Found", cmd_override);
+			return CONSOLE_FAILED;
+		}
+		for (ci = 0; ci < chosen->argc; ci++)
+			cmd_argv[ci] = (char *)chosen->argv[ci];
+		cmd_argv[chosen->argc] = NULL;
+	}
 
 	/* Nothing from req is needed past this point -- safe to free
 	 * cc->http's buffer (which req->headers/body point into) once cc

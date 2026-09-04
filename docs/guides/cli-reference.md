@@ -205,7 +205,7 @@ Every container operation is a subcommand of `container` — one noun-based name
 | `container stats NAME` | Real, host-side CPU/memory/disk/network usage, including this container's own cpu/memory/io pressure-stall (PSI) figures (ADR-0074), one point-in-time snapshot |
 | `container migrate-storage NAME [--disk=NAME]` | Move a container's own overlay storage to a disk carrying the `container-storage` role (or `--disk=` omitted for the default OS-disk placement) — briefly stops and automatically restarts the container for the final cutover; requires `restart` other than `"no"` (ADR-0142) |
 | `container migrate-storage-status NAME` | State/disk/error of the most recent (or running) container-storage migration |
-| `container console NAME [--cmd=PATH]` | Interactive shell inside a running container (`docker exec -it`-style); `--cmd=` overrides the default `/usr/bin/bash` |
+| `container console NAME [--console=NAME] [--cmd=PATH]` | Attach to one of the consoles the container **declares** ([#248](https://git.home.arpa/itdlabs/cix/issues/248)). `--console=` picks which; omitted means the first declared. A container that declares none has no console and says so &mdash; that is the correct answer for an image with no shell, which is most of this platform's own. `--cmd=` still runs an arbitrary command instead, including on a container declaring none: it answers "run this specific thing" rather than "what does this container offer", and is not a security boundary (anyone who can reach this endpoint can already run code in the container) |
 | `container files get NAME --path=/some/path [--output=PATH]` | Read one file's raw bytes back out of a container's rootfs; stdout if `--output=` omitted |
 | `container files put NAME --path=/some/path --file=LOCAL_PATH [--mode=0644]` | Write/overwrite one file inside an already-existing container, live and ephemeral, without a recreate (ADR-0153) |
 | `container rm NAME` | Stop (if running), remove, and forget the persisted definition — the only way to make a container truly gone (ADR-0181) |
@@ -313,6 +313,23 @@ An attach to a **running** container takes effect immediately as well as being r
 A volume is never *owned* by a container: containers reference volumes by name, never the reverse, so several containers may mount the same volume and a volume outlives every one of them. `volume ls`'s own listing plus `container inspect NAME` (which echoes a container's `volumes` back by name) are the two ends of that mapping.
 
 Attach one at container creation with `--volume=NAME:/path[:ro]`. The volume must already exist: an unknown name fails creation rather than quietly making a fresh empty one. A volume that can't be mounted — or a `:ro` one that can't be remounted read-only — fails the container's start instead of coming up without the storage, or with a guarantee that isn't real.
+
+### Declaring a container's consoles
+
+`--console=NAME=/absolute/path [args...]`, repeatable up to four times, declares what a container offers as a console ([#248](https://git.home.arpa/itdlabs/cix/issues/248)):
+
+```
+cixctl run --name=jump --image=jumpbox \
+  --console='shell=/usr/bin/bash -l' \
+  --console='logs=/usr/bin/tail -F /var/log/messages' \
+  -- /usr/bin/bash /usr/local/bin/jumpbox-start.sh
+```
+
+The first declared is what `container console NAME` attaches to with no `--console=`. `argv[0]` must be an absolute path — it is `execve`'d directly, with no shell to resolve a bare name, and a bare name is refused at creation rather than failing confusingly at attach.
+
+Declaring nothing is a real and often correct answer: an image holding one static binary and no shell has nothing for a console to run, and both the CLI and the dashboard then say so rather than offering a control that cannot work.
+
+The value splits on spaces, so an argument containing a literal space cannot be written this way. That is a real limit of the flag, not of the feature — a container recipe (`recipes/container/<name>/*/container.json`) declares consoles as a real JSON array with nothing to lose in quoting, and is the better place for anything non-trivial.
 
 ## Images
 

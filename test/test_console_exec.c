@@ -317,6 +317,9 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"consoletest\",\"image\":\"consoletest\","
+	                       "\"consoles\":["
+	                       "{\"name\":\"first\",\"cmd\":[\"/bin/dual_console_child\"]},"
+	                       "{\"name\":\"second\",\"cmd\":[\"/bin/dual_console_child\"]}],"
 	                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}",
 	                       &r) != 0 ||
 	    r.status != 201) {
@@ -400,6 +403,128 @@ int main(void)
 			 * what made this undiagnosable in the first place. */
 			CHECK(strstr(resp, "No such file or directory") != NULL,
 			      "the 500 names the real errno, not just a generic failure");
+		}
+		close(fd);
+	}
+
+	/* --- issue #248: a container's consoles are DECLARED, and a
+	 * container that declares none has none.
+	 *
+	 * These run before scenario 3 because they are ordinary REST
+	 * responses on a container that is already up -- no upgrade, no
+	 * PTY, nothing to tear down. --- */
+
+	/* The declaration is echoed back, in order: a client cannot offer
+	 * what it cannot see, and order is what makes "first declared" a
+	 * usable default rather than an arbitrary one. */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "GET", "/v1/containers/consoletest", NULL, &r) == 0 &&
+	    r.status == 200) {
+		const struct json_value *cs = json_object_get(r.json, "consoles");
+
+		CHECK(cs != NULL && cs->type == JSON_ARRAY && cs->u.array.count == 2,
+		      "GET .../{name} echoes the two declared consoles");
+		if (cs != NULL && cs->type == JSON_ARRAY && cs->u.array.count == 2) {
+			const char *n0 = json_as_string(json_object_get(cs->u.array.items[0], "name"));
+
+			CHECK(n0 != NULL && strcmp(n0, "first") == 0,
+			      "declaration order is preserved -- 'first' is first");
+		}
+	} else {
+		CHECK(0, "GET /v1/containers/consoletest for console read-back");
+	}
+	cix_response_free(&r);
+
+	/* A console this container does not declare is a 404 that LISTS
+	 * what it does declare, rather than leaving the caller to guess at
+	 * a set this very response already knows. */
+	fd = raw_connect(TEST_PORT);
+	CHECK(fd >= 0, "raw_connect for unknown-console scenario");
+	if (fd >= 0) {
+		rlen = snprintf(req, sizeof(req),
+		                 "GET /v1/containers/consoletest/console?console=nope HTTP/1.1\r\n"
+		                 "Host: 127.0.0.1\r\n"
+		                 "Upgrade: websocket\r\n"
+		                 "Connection: Upgrade\r\n"
+		                 "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+		                 "Sec-WebSocket-Version: 13\r\n\r\n");
+		if (write(fd, req, (size_t)rlen) == rlen) {
+			ssize_t n = read(fd, resp, sizeof(resp) - 1);
+
+			if (n > 0)
+				resp[n] = '\0';
+
+			CHECK(n > 0 && strstr(resp, "404") != NULL,
+			      "an undeclared console name is a 404");
+			CHECK(n > 0 && strstr(resp, "first") != NULL &&
+			              strstr(resp, "second") != NULL,
+			      "the 404 lists the consoles this container DOES declare");
+		}
+		close(fd);
+	}
+
+	/* A container declaring nothing has no console: 409, naming the
+	 * escape hatch rather than a bare refusal. This is the whole point
+	 * of the change -- before it, every container got a hardcoded
+	 * /usr/bin/bash and a container without one got a session that
+	 * opened and instantly died. */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "POST", "/v1/containers",
+	                       "{\"name\":\"nocon\",\"image\":\"consoletest\","
+	                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}",
+	                       &r) != 0 ||
+	    r.status != 201) {
+		CHECK(0, "POST nocon (a container declaring no console)");
+	}
+	cix_response_free(&r);
+
+	fd = raw_connect(TEST_PORT);
+	CHECK(fd >= 0, "raw_connect for no-console scenario");
+	if (fd >= 0) {
+		rlen = snprintf(req, sizeof(req),
+		                 "GET /v1/containers/nocon/console HTTP/1.1\r\n"
+		                 "Host: 127.0.0.1\r\n"
+		                 "Upgrade: websocket\r\n"
+		                 "Connection: Upgrade\r\n"
+		                 "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+		                 "Sec-WebSocket-Version: 13\r\n\r\n");
+		if (write(fd, req, (size_t)rlen) == rlen) {
+			ssize_t n = read(fd, resp, sizeof(resp) - 1);
+
+			if (n > 0)
+				resp[n] = '\0';
+
+			CHECK(n > 0 && strstr(resp, "409") != NULL,
+			      "a container declaring no console refuses with 409");
+			CHECK(n > 0 && strstr(resp, "X-Cix-Exec-Cmd") != NULL,
+			      "the 409 names the override rather than just refusing");
+		}
+		close(fd);
+	}
+
+	/* X-Cix-Exec-Cmd still works on that same console-less container.
+	 * It answers a different question -- "run this specific thing" --
+	 * and is deliberately not gated by the declaration, since anyone
+	 * who can reach this endpoint can already run arbitrary code here. */
+	fd = raw_connect(TEST_PORT);
+	CHECK(fd >= 0, "raw_connect for override-on-console-less scenario");
+	if (fd >= 0) {
+		rlen = snprintf(req, sizeof(req),
+		                 "GET /v1/containers/nocon/console HTTP/1.1\r\n"
+		                 "Host: 127.0.0.1\r\n"
+		                 "Upgrade: websocket\r\n"
+		                 "Connection: Upgrade\r\n"
+		                 "X-Cix-Exec-Cmd: /bin/dual_console_child\r\n"
+		                 "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+		                 "Sec-WebSocket-Version: 13\r\n\r\n");
+		if (write(fd, req, (size_t)rlen) == rlen) {
+			ssize_t n = read(fd, resp, sizeof(resp) - 1);
+
+			if (n > 0)
+				resp[n] = '\0';
+
+			CHECK(n > 0 && strstr(resp, "101") != NULL,
+			      "X-Cix-Exec-Cmd still attaches to a container declaring no console");
 		}
 		close(fd);
 	}

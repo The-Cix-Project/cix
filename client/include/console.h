@@ -24,7 +24,14 @@
  * Returns 0 on a clean session end, -1 on a connection/handshake
  * failure (a message is already printed to stderr).
  */
-int cix_console_run(const struct cix_client *c, const char *container_name, const char *cmd);
+/*
+ * cmd, when non-NULL, is sent as X-Cix-Exec-Cmd and overrides whatever
+ * the container declares. console_name, when non-NULL, selects one of
+ * the container's DECLARED consoles by name (issue #248); NULL means
+ * the first one it declares.
+ */
+int cix_console_run(const struct cix_client *c, const char *container_name, const char *cmd,
+                    const char *console_name);
 
 /*
  * Live-tails the currently in-flight pkg build's own stdout/stderr

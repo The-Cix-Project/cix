@@ -5856,7 +5856,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 	 * project's OWN from-recipe images rather than the shared
 	 * shared build sandbox: every from-recipe image
 	 * follows this project's own no-/bin, usr/bin-only FHS convention
-	 * (the exact same reasoning CONSOLE_DEFAULT_CMD in main.c already
+	 * (the exact same reasoning main.c's own retired CONSOLE_DEFAULT_CMD already
 	 * documents), so "/bin/sh" -- which happened to work for years
 	 * only because the toolchain sandbox is a wholesale host /usr copy
 	 * with a real bin -> usr/bin symlink -- fails outright

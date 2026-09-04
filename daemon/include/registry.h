@@ -11,6 +11,23 @@
 #include <time.h>
 
 #define REGISTRY_MAX_CONTAINERS 256
+/*
+ * Console declarations (issue #248). Deliberately modest: every one of
+ * these is multiplied by REGISTRY_MAX_CONTAINERS in a static array, and
+ * a container offering more than a handful of consoles is describing
+ * something a console is the wrong shape for. The API contract states
+ * the same numbers.
+ */
+#define REGISTRY_MAX_CONSOLES 4
+#define REGISTRY_CONSOLE_NAME_MAX 32
+#define REGISTRY_CONSOLE_ARGC_MAX 8
+#define REGISTRY_CONSOLE_ARG_MAX 128
+
+struct registry_console {
+	char name[REGISTRY_CONSOLE_NAME_MAX];
+	char argv[REGISTRY_CONSOLE_ARGC_MAX][REGISTRY_CONSOLE_ARG_MAX];
+	int argc;
+};
 #define REGISTRY_NAME_MAX 64
 
 /*
@@ -275,6 +292,26 @@ struct registry_entry {
 	char file_paths[CONTAINER_MAX_FILES][CONTAINER_FILE_PATH_MAX];
 	int file_count; /* 0 = no files staged */
 	/*
+	 * The consoles this container DECLARES (issue #248) -- what it
+	 * offers, in declaration order, the first being what an attach
+	 * with no selector gets.
+	 *
+	 * A count of 0 means this container has no console, which is a
+	 * real answer and the default. Before this every container got
+	 * the same hardcoded /usr/bin/bash with an argv of exactly one
+	 * token, so a container without bash got a session that opened
+	 * and instantly died, and a console needing arguments could not
+	 * be expressed at all.
+	 *
+	 * Stored on the entry rather than read back from the persisted
+	 * definition because this is live state a GET echoes, the same
+	 * reasoning file_paths above already follows. Sized small on
+	 * purpose: this struct is one of REGISTRY_MAX_CONTAINERS static
+	 * entries, so the array is a real memory cost paid 256 times.
+	 */
+	struct registry_console consoles[REGISTRY_MAX_CONSOLES];
+	int console_count; /* 0 = this container declares no console */
+	/*
 	 * net.* sysctls applied inside this container's own netns at
 	 * creation time -- mirrors container_spec.sysctls[] directly
 	 * (read from spec inside registry_create(), same as interfaces[]
@@ -428,6 +465,18 @@ enum registry_error registry_create(const char *name, const char *image,
                                      int dns_server_count, struct registry_entry **out);
 
 struct registry_entry *registry_find(const char *name);
+
+/*
+ * Record what consoles a container declares (issue #248).
+ *
+ * A setter rather than four more parameters on registry_create(), which
+ * already takes fourteen: consoles are a declaration this daemon echoes
+ * back and resolves at attach time, and nothing in the container runtime
+ * needs them, so threading them through container_spec would widen an
+ * interface for a value it never reads. Called immediately after a
+ * successful create; a container with none simply never calls it.
+ */
+void registry_set_consoles(const char *name, const struct registry_console *consoles, int count);
 
 /*
  * Writes up to max in-use entries' own names into out_names (any

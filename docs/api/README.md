@@ -128,7 +128,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | DELETE | `/containers/{name}/networks/{network}` | Detach a live-attached network; refuses a create-time attachment (409) |
 | POST | `/containers/{name}/devices` | Attach a device to an already-running container, live, without a recreate (ADR-0161) |
 | DELETE | `/containers/{name}/devices/{id}` | Detach a live-attached device; refuses a create-time attachment (409) |
-| GET | `/containers/{name}/console` | Upgrade to a WebSocket; an interactive shell inside the running container |
+| GET | `/containers/{name}/console` | Upgrade to a WebSocket; attach to one of the consoles the container **declares** (`?console=NAME`, default the first). A container declaring none has no console (#248) |
 | GET | `/containers/recipes` | List container recipes (metadata only) (ADR-0151) |
 | POST | `/containers/recipes` | Add/replace a container recipe -- content must be a real `POST /containers` body, its own `"name"` matching the recipe's |
 | GET | `/containers/recipes/{name}` | One container recipe's full detail, including its raw, unsubstituted text |
@@ -397,6 +397,57 @@ networks
 ```
 
 `--json` gives the document itself, unrendered.
+
+## A container's consoles are declared, not assumed (issue #248)
+
+A console used to be the same thing for every container: `/usr/bin/bash`, with an argv of exactly one token. That was wrong in both directions. A container built from a minimal image without bash got a console session that opened and instantly died — a `101 Switching Protocols` followed by nothing, which looks like a broken daemon rather than a missing binary. And a console that genuinely needed arguments (`tail -F /var/log/messages`, `chronyc tracking`) could not be expressed at all, because the argv had room for one string.
+
+What a useful console is depends entirely on the workload, and the daemon cannot know. So the container says:
+
+```
+POST /v1/containers
+{
+  "name": "jump", "image": "jumpbox",
+  "consoles": [
+    { "name": "shell", "cmd": ["/usr/bin/bash", "-l"] },
+    { "name": "logs",  "cmd": ["/usr/bin/tail", "-F", "/var/log/messages"] }
+  ],
+  ...
+}
+```
+
+```
+GET /v1/containers/jump/console               -> the FIRST declared console ("shell")
+GET /v1/containers/jump/console?console=logs  -> that one
+GET /v1/containers/jump/console?console=nope  -> 404, listing what IS declared
+```
+
+**Order is significant**: the first entry is what an attach with no `console` parameter gets. That is deliberately not a separate `default` flag, which could disagree with the list it points into.
+
+**A container that declares nothing has no console**, and says so — `409`, rather than attaching to a command nobody chose:
+
+```
+GET /v1/containers/dns-1/console
+-> 409 {"error":"this container declares no console -- add one to its
+         definition, or name a command with X-Cix-Exec-Cmd"}
+```
+
+That is the intended outcome for most of this platform's own containers, not a gap: `dns`, `ldap`, `syslog` and `chrony` images each hold one static binary and no shell, so there has never been anything for a console to run. Both clients render it as "this container declares no console" instead of offering a control that cannot work.
+
+**`X-Cix-Exec-Cmd` is unchanged and still wins**, including on a container that declares nothing. The two answer different questions and neither substitutes for the other: `consoles` is *what this container offers* — the published surface `cixctl` and the dashboard present — while the header is *let me run this specific thing*. It is deliberately not a security boundary and never was: anyone authorized to reach this endpoint can already execute arbitrary code inside the container, and this endpoint is gated as a write despite being a `GET` (see Host authentication below).
+
+A declared command whose binary is missing fails at exec and is reported as an error naming it, not as a session that opens and dies.
+
+From the CLI:
+
+```
+cixctl run --name=jump --image=jumpbox --console='shell=/usr/bin/bash -l' -- /usr/bin/bash /usr/local/bin/jumpbox-start.sh
+cixctl container console jump                  # first declared
+cixctl container console jump --console=logs   # by name
+cixctl container console jump --cmd=/usr/bin/id  # the override
+```
+
+The `--console=NAME=/path args` form splits the command on spaces, so an argument containing a literal space cannot be written that way — a real limit, and the reason a container recipe (`recipes/container/<name>/*/container.json`, a real JSON array with nothing to lose in quoting) is the better place to declare anything non-trivial.
 
 ## Host authentication (ADR-0144)
 
