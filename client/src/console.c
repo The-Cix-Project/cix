@@ -9,9 +9,11 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -310,6 +312,78 @@ static int do_ws_handshake(const struct cix_client *c, const char *label, const 
 	return fd;
 }
 
+/*
+ * The size of the terminal this cixctl is itself running on, which is
+ * the size the container's pty should be given. Tries each standard
+ * stream in turn rather than assuming stdin: a console driven with
+ * piped stdin (`echo cmd | cixctl console ...`) still usually has a
+ * real terminal on stdout, and its size is still the right answer.
+ *
+ * Returns 0 when there is no terminal here at all, in which case the
+ * caller sends no size and the daemon applies its own default -- the
+ * honest outcome, since a pipe genuinely has no dimensions.
+ */
+static int local_winsize(unsigned short *cols, unsigned short *rows)
+{
+	static const int fds[3] = { STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO };
+	struct winsize wsz;
+	size_t i;
+
+	for (i = 0; i < 3; i++) {
+		if (!isatty(fds[i]))
+			continue;
+		if (ioctl(fds[i], TIOCGWINSZ, &wsz) != 0)
+			continue;
+		if (wsz.ws_col == 0 || wsz.ws_row == 0)
+			continue;
+		*cols = wsz.ws_col;
+		*rows = wsz.ws_row;
+		return 1;
+	}
+	return 0;
+}
+
+/*
+ * SIGWINCH tells us the local terminal was resized. The handler does
+ * the only thing a signal handler safely can -- set a flag -- and the
+ * relay loop below does the actual work.
+ *
+ * Deliberately installed WITHOUT SA_RESTART: the point is for the
+ * signal to interrupt the loop's blocking poll() so the resize is
+ * noticed immediately rather than whenever the next keystroke or byte
+ * of output happens to arrive. relay() already treats EINTR as an
+ * ordinary continue (it has since it was written), so the interruption
+ * needs no new handling of its own.
+ */
+static volatile sig_atomic_t g_winch_pending;
+
+static void on_sigwinch(int sig)
+{
+	(void)sig;
+	g_winch_pending = 1;
+}
+
+/* Sends the current local size as a control message. The daemon reads
+ * these from TEXT frames; keystrokes stay binary (see its own
+ * handle_console_ws_event()). Failure is not fatal -- a resize that
+ * does not arrive leaves the remote terminal at its previous size,
+ * which is a cosmetic loss, and the write error will surface on the
+ * next real I/O if the connection is genuinely gone. */
+static void send_resize(int ws_fd)
+{
+	unsigned short cols, rows;
+	char msg[64];
+	int len;
+
+	if (!local_winsize(&cols, &rows))
+		return;
+	len = snprintf(msg, sizeof(msg), "{\"type\":\"resize\",\"cols\":%u,\"rows\":%u}",
+	               (unsigned)cols, (unsigned)rows);
+	if (len < 0 || (size_t)len >= sizeof(msg))
+		return;
+	send_masked_frame(ws_fd, 0x1, msg, (size_t)len);
+}
+
 static int set_raw_mode(int fd, struct termios *saved)
 {
 	struct termios raw;
@@ -346,6 +420,15 @@ static void relay(int ws_fd)
 		 * the hard way: this exact bug hung a real session after
 		 * piped stdin closed, caught via strace before shipping. */
 		int pr = poll(fds, 2, -1);
+
+		if (g_winch_pending) {
+			/* Cleared before sending, not after: if another resize
+			 * lands while this one is in flight, the flag it sets
+			 * must survive to trigger a further send rather than
+			 * being wiped by this iteration. */
+			g_winch_pending = 0;
+			send_resize(ws_fd);
+		}
 
 		if (pr < 0) {
 			if (errno == EINTR)
@@ -405,19 +488,45 @@ int cix_console_run(const struct cix_client *c, const char *container_name, cons
 	int fd;
 	struct termios saved;
 	int have_saved;
+	struct sigaction sa, saved_winch;
+	int have_saved_winch;
 
 	{
-		char path[256];
+		char path[512];
+		size_t used;
+		const char *sep = "?";
+		unsigned short cols, rows;
+		const char *term = getenv("TERM");
 
 		snprintf(path, sizeof(path), CIX_API_consoleContainer, container_name);
+		used = strlen(path);
+
 		/* #248: select one of the container's declared consoles. Left
 		 * off entirely when unset, so the daemon applies its own
 		 * "first declared" rule rather than this client guessing. */
 		if (console_name != NULL && console_name[0] != '\0') {
-			size_t used = strlen(path);
-
-			snprintf(path + used, sizeof(path) - used, "?console=%s", console_name);
+			used += (size_t)snprintf(path + used, sizeof(path) - used, "%sconsole=%s", sep,
+			                          console_name);
+			sep = "&";
 		}
+
+		/*
+		 * What this terminal is and how big it is, so a full-screen
+		 * program in the container (htop, vim) has a real screen to
+		 * draw on. Each is sent only when actually known: no $TERM
+		 * set, or no terminal at all because stdio is piped, means
+		 * saying nothing and letting the daemon apply its documented
+		 * default, rather than inventing a value on the server's
+		 * behalf that would be indistinguishable from a measured one.
+		 */
+		if (term != NULL && term[0] != '\0') {
+			used += (size_t)snprintf(path + used, sizeof(path) - used, "%sterm=%s", sep, term);
+			sep = "&";
+		}
+		if (local_winsize(&cols, &rows))
+			snprintf(path + used, sizeof(path) - used, "%scols=%u&rows=%u", sep, (unsigned)cols,
+			         (unsigned)rows);
+
 		fd = do_ws_handshake(c, "console", path, cmd);
 	}
 	if (fd < 0)
@@ -425,8 +534,18 @@ int cix_console_run(const struct cix_client *c, const char *container_name, cons
 
 	have_saved = set_raw_mode(STDIN_FILENO, &saved) == 0;
 
+	/* No SA_RESTART -- see on_sigwinch()'s own note: interrupting
+	 * poll() is exactly what makes a resize take effect promptly. */
+	memset(&sa, 0, sizeof(sa));
+	sa.sa_handler = on_sigwinch;
+	sigemptyset(&sa.sa_mask);
+	sa.sa_flags = 0;
+	have_saved_winch = sigaction(SIGWINCH, &sa, &saved_winch) == 0;
+
 	relay(fd);
 
+	if (have_saved_winch)
+		sigaction(SIGWINCH, &saved_winch, NULL);
 	if (have_saved)
 		tcsetattr(STDIN_FILENO, TCSANOW, &saved);
 	printf("\r\nconsole session ended\n");

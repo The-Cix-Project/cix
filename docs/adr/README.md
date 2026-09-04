@@ -246,3 +246,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0239](0239-a-container-facing-filesystem-is-owned-by-the-containers-root.md) | A filesystem mounted for a container is owned by the container's own root | Accepted |
 | [0240](0240-a-container-declares-its-consoles.md) | A container declares its consoles, and declaring none means it has none | Accepted |
 | [0241](0241-the-library-layout-is-one-directory.md) | The library layout is a decision, and it collapses to one directory | Accepted |
+| [0242](0242-a-console-is-a-sized-terminal-of-a-declared-type.md) | A console is a sized terminal of a declared type | Accepted |

@@ -301,6 +301,12 @@ int main(void)
 		test_data_dir_cleanup(g_data_dir);
 		return 1;
 	}
+	if (test_image_fixture_build(g_image_root, "build/console_term_child", "console_term_child") !=
+	    0) {
+		fprintf(stderr, "FAIL: could not stage console_term_child\n");
+		test_data_dir_cleanup(g_data_dir);
+		return 1;
+	}
 
 	daemon_pid = start_daemon();
 	if (daemon_pid < 0)
@@ -525,6 +531,275 @@ int main(void)
 
 			CHECK(n > 0 && strstr(resp, "101") != NULL,
 			      "X-Cix-Exec-Cmd still attaches to a container declaring no console");
+		}
+		close(fd);
+	}
+
+	/* --- ADR-0242: a console is a sized terminal of a declared type.
+	 *
+	 * The assertions below deliberately read what the EXEC'D PROCESS
+	 * saw, via console_term_child's own TIOCGWINSZ/$TERM report coming
+	 * back through the relay -- not what the daemon believes it set.
+	 * The bug this fixes was invisible for the endpoint's whole history
+	 * precisely because every layer looked correct from the outside:
+	 * the pty existed, the upgrade succeeded, bytes flowed. Only the
+	 * program's own view of its terminal was wrong (0x0, no $TERM). --- */
+
+	/* A malformed parameter is refused before the upgrade, while an
+	 * HTTP status can still carry the reason. Silently substituting a
+	 * default here would leave the caller believing a geometry it does
+	 * not have. */
+	{
+		static const struct {
+			const char *query;
+			const char *what;
+		} bad[] = {
+			{ "?cols=0", "cols=0 (a 0-wide terminal is never legitimate)" },
+			{ "?cols=99999", "cols beyond the accepted range" },
+			{ "?cols=wide", "a non-numeric cols" },
+			{ "?rows=0", "rows=0" },
+			{ "?rows=-5", "a negative rows" },
+			{ "?term=xterm;rm%20-rf", "a term carrying characters no terminfo name uses" },
+		};
+		size_t bi;
+
+		for (bi = 0; bi < sizeof(bad) / sizeof(bad[0]); bi++) {
+			fd = raw_connect(TEST_PORT);
+			if (fd < 0) {
+				CHECK(0, "raw_connect for malformed-parameter scenario");
+				continue;
+			}
+			rlen = snprintf(req, sizeof(req),
+			                 "GET /v1/containers/consoletest/console%s HTTP/1.1\r\n"
+			                 "Host: 127.0.0.1\r\n"
+			                 "Upgrade: websocket\r\n"
+			                 "Connection: Upgrade\r\n"
+			                 "Sec-WebSocket-Key: %s\r\n"
+			                 "Sec-WebSocket-Version: 13\r\n"
+			                 "\r\n",
+			                 bad[bi].query, TEST_WS_KEY);
+			write_all_raw(fd, req, (size_t)rlen);
+			n = read(fd, resp, sizeof(resp) - 1);
+			if (n > 0) {
+				resp[n] = '\0';
+				CHECK(strncmp(resp, "HTTP/1.1 101", 12) != 0 && strstr(resp, "400") != NULL,
+				      bad[bi].what);
+			} else {
+				CHECK(0, "response for malformed-parameter console request");
+			}
+			close(fd);
+		}
+	}
+
+	/* The whole point, end to end: what the program actually sees. */
+	{
+		static const struct {
+			const char *query;
+			const char *expect;
+			const char *what;
+		} geom[] = {
+			{ "?term=xterm-256color&cols=203&rows=51",
+			  "TERMINFO TERM=xterm-256color COLS=203 ROWS=51",
+			  "the exec'd process sees the requested $TERM and window size" },
+			/* Omitting everything is an ordinary request, not an
+			 * error -- a piped client has no terminal to describe.
+			 * The documented defaults are what it must then get,
+			 * and 80x24 rather than the 0x0 a bare posix_openpt()
+			 * leaves behind is the entire fix. */
+			{ "", "TERMINFO TERM=xterm-256color COLS=80 ROWS=24",
+			  "no parameters gives the documented defaults, not a 0x0 terminal" },
+			/* One parameter given, the others defaulted -- they are
+			 * independent, not an all-or-nothing group. */
+			{ "?cols=132", "TERMINFO TERM=xterm-256color COLS=132 ROWS=24",
+			  "an omitted parameter defaults independently of a given one" },
+		};
+		size_t gi;
+
+		for (gi = 0; gi < sizeof(geom) / sizeof(geom[0]); gi++) {
+			fd = raw_connect(TEST_PORT);
+			if (fd < 0) {
+				CHECK(0, "raw_connect for terminal-geometry scenario");
+				continue;
+			}
+			rlen = snprintf(req, sizeof(req),
+			                 "GET /v1/containers/consoletest/console%s HTTP/1.1\r\n"
+			                 "Host: 127.0.0.1\r\n"
+			                 "Upgrade: websocket\r\n"
+			                 "Connection: Upgrade\r\n"
+			                 "Sec-WebSocket-Key: %s\r\n"
+			                 "Sec-WebSocket-Version: 13\r\n"
+			                 "X-Cix-Exec-Cmd: /bin/console_term_child\r\n"
+			                 "\r\n",
+			                 geom[gi].query, TEST_WS_KEY);
+			write_all_raw(fd, req, (size_t)rlen);
+
+			got = 0;
+			headers_end = NULL;
+			while (got < sizeof(resp) - 1) {
+				n = read(fd, resp + got, sizeof(resp) - 1 - got);
+				if (n <= 0)
+					break;
+				got += (size_t)n;
+				resp[got] = '\0';
+				headers_end = strstr(resp, "\r\n\r\n");
+				if (headers_end != NULL)
+					break;
+			}
+			if (headers_end == NULL || strncmp(resp, "HTTP/1.1 101", 12) != 0) {
+				CHECK(0, "terminal-geometry request upgraded to a websocket");
+				close(fd);
+				continue;
+			}
+
+			{
+				char acc[1024];
+				size_t acc_len = 0;
+				int found = 0;
+				int attempts;
+
+				acc[0] = '\0';
+				for (attempts = 0; attempts < 20 && !found; attempts++) {
+					int opcode;
+					unsigned char buf[512];
+					size_t len;
+
+					if (recv_ws_frame(fd, &opcode, buf, sizeof(buf), &len) != 0)
+						break;
+					if (len > 0 && acc_len + len < sizeof(acc)) {
+						memcpy(acc + acc_len, buf, len);
+						acc_len += len;
+						acc[acc_len] = '\0';
+					}
+					if (strstr(acc, geom[gi].expect) != NULL)
+						found = 1;
+				}
+				CHECK(found, geom[gi].what);
+			}
+			close(fd);
+		}
+	}
+
+	/* A resize on a LIVE session. The daemon sends no signal itself --
+	 * applying the size to the pty is what makes the kernel raise
+	 * SIGWINCH on the foreground process group, so a second report
+	 * arriving at all is the proof that the whole chain worked.
+	 *
+	 * Sent as a TEXT frame: keystrokes are BINARY, and the opcode is
+	 * the discriminator between the two (ADR-0242). */
+	fd = raw_connect(TEST_PORT);
+	CHECK(fd >= 0, "raw_connect for live-resize scenario");
+	if (fd >= 0) {
+		rlen = snprintf(req, sizeof(req),
+		                 "GET /v1/containers/consoletest/console?cols=80&rows=24 HTTP/1.1\r\n"
+		                 "Host: 127.0.0.1\r\n"
+		                 "Upgrade: websocket\r\n"
+		                 "Connection: Upgrade\r\n"
+		                 "Sec-WebSocket-Key: %s\r\n"
+		                 "Sec-WebSocket-Version: 13\r\n"
+		                 "X-Cix-Exec-Cmd: /bin/console_term_child\r\n"
+		                 "\r\n",
+		                 TEST_WS_KEY);
+		write_all_raw(fd, req, (size_t)rlen);
+
+		got = 0;
+		headers_end = NULL;
+		while (got < sizeof(resp) - 1) {
+			n = read(fd, resp + got, sizeof(resp) - 1 - got);
+			if (n <= 0)
+				break;
+			got += (size_t)n;
+			resp[got] = '\0';
+			headers_end = strstr(resp, "\r\n\r\n");
+			if (headers_end != NULL)
+				break;
+		}
+		CHECK(headers_end != NULL && strncmp(resp, "HTTP/1.1 101", 12) == 0,
+		      "live-resize session upgraded");
+
+		if (headers_end != NULL) {
+			char acc[1024];
+			size_t acc_len = 0;
+			int attempts;
+			int saw_first = 0, saw_second = 0;
+
+			acc[0] = '\0';
+			/* Wait for the startup report first, so the resize
+			 * cannot land before the child has installed its own
+			 * SIGWINCH handler -- otherwise a pass would depend on
+			 * scheduling rather than on the mechanism. */
+			for (attempts = 0; attempts < 20 && !saw_first; attempts++) {
+				int opcode;
+				unsigned char buf[512];
+				size_t len;
+
+				if (recv_ws_frame(fd, &opcode, buf, sizeof(buf), &len) != 0)
+					break;
+				if (len > 0 && acc_len + len < sizeof(acc)) {
+					memcpy(acc + acc_len, buf, len);
+					acc_len += len;
+					acc[acc_len] = '\0';
+				}
+				if (strstr(acc, "TERMINFO TERM=xterm-256color COLS=80 ROWS=24") != NULL)
+					saw_first = 1;
+			}
+			CHECK(saw_first, "the initial report arrived before any resize");
+
+			if (saw_first) {
+				static const char resize[] = "{\"type\":\"resize\",\"cols\":120,\"rows\":40}";
+
+				CHECK(send_ws_frame(fd, 0x1 /* text -- a control message, not input */,
+				                     resize, sizeof(resize) - 1) == 0,
+				      "send the resize control message");
+
+				for (attempts = 0; attempts < 20 && !saw_second; attempts++) {
+					int opcode;
+					unsigned char buf[512];
+					size_t len;
+
+					if (recv_ws_frame(fd, &opcode, buf, sizeof(buf), &len) != 0)
+						break;
+					if (len > 0 && acc_len + len < sizeof(acc)) {
+						memcpy(acc + acc_len, buf, len);
+						acc_len += len;
+						acc[acc_len] = '\0';
+					}
+					if (strstr(acc, "TERMINFO TERM=xterm-256color COLS=120 ROWS=40") != NULL)
+						saw_second = 1;
+				}
+				CHECK(saw_second,
+				      "a resize control message resized the live pty and raised SIGWINCH");
+
+				/* A malformed control message must NOT kill the
+				 * session: it is advisory about presentation, and a
+				 * live shell is worth far more than strictness here.
+				 * The session staying usable is the assertion. */
+				send_ws_frame(fd, 0x1, "not json at all", 15);
+				send_ws_frame(fd, 0x1, "{\"type\":\"unknown-to-this-daemon\"}", 33);
+				send_ws_frame(fd, 0x1, "{\"type\":\"resize\",\"cols\":0,\"rows\":0}", 36);
+				{
+					static const char good[] = "{\"type\":\"resize\",\"cols\":90,\"rows\":30}";
+					int saw_third = 0;
+
+					send_ws_frame(fd, 0x1, good, sizeof(good) - 1);
+					for (attempts = 0; attempts < 20 && !saw_third; attempts++) {
+						int opcode;
+						unsigned char buf[512];
+						size_t len;
+
+						if (recv_ws_frame(fd, &opcode, buf, sizeof(buf), &len) != 0)
+							break;
+						if (len > 0 && acc_len + len < sizeof(acc)) {
+							memcpy(acc + acc_len, buf, len);
+							acc_len += len;
+							acc[acc_len] = '\0';
+						}
+						if (strstr(acc, "TERMINFO TERM=xterm-256color COLS=90 ROWS=30") != NULL)
+							saw_third = 1;
+					}
+					CHECK(saw_third,
+					      "the session survived malformed control messages and still resizes");
+				}
+			}
 		}
 		close(fd);
 	}
