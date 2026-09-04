@@ -12664,21 +12664,21 @@ static void chown_staged_parents(const char *upperdir, const char *path, uid_t i
  * sequence -- and that is exactly why this bug had more than one home. A
  * single implementation is the fix as much as the ownership rule is.
  *
- * id_offset is what makes the ownership correct, and it is a property of
- * how this container's rootfs is PRESENTED, not of whether it has a user
- * namespace:
+ * id_offset is what makes the ownership correct. The caller reads it off
+ * the rootfs being staged into -- a staged file is owned by whoever owns
+ * the tree it lands in -- which covers all three presentations without
+ * this function needing to know they exist:
  *
- *   - Non-userns: 0. The container's root is host root; unchanged.
- *   - userns, id-mapped presentation (btrfs snapshot, ADR-0207 phase 3):
- *     also 0. The snapshot stays host-uid-0-owned and the mount does the
- *     translating, so on-disk 0 is ALREADY presented as the container's
- *     root, and adding an offset here would break what currently works.
- *   - userns, copy+chown presentation (ADR-0179 phase 2b, non-btrfs):
- *     the container's subordinate base. chown_tree() has already given
- *     the whole rootfs to that id, which is what makes / and /etc read
- *     as 0 inside -- a file staged afterwards as on-disk 0 falls outside
- *     the mapped range and reads as 65534, unreadable by the container's
- *     own root at mode 0600. That was the bug.
+ *   - Non-userns upperdir: host-uid-0 owned, so 0. Unchanged.
+ *   - userns, btrfs snapshot behind an id-mapped mount (ADR-0207 phase
+ *     3): also host-uid-0 owned, so 0. On-disk 0 is ALREADY presented as
+ *     the container's root there, and an offset would break it.
+ *   - userns, copy+chown (ADR-0179 phase 2b): chown_tree() has given the
+ *     whole rootfs to the container's subordinate base, which is what
+ *     makes / and /etc read as 0 inside. A file staged afterwards as
+ *     on-disk 0 falls outside the mapped range and reads as 65534,
+ *     unreadable by the container's own root at mode 0600. That was the
+ *     bug, and it is the presentation the live host runs.
  *
  * An unspecified owner means the container's root, not the host's, which
  * is why the offset applies even when the caller passes -1. An explicit
@@ -14096,26 +14096,6 @@ static int create_container_from_body(const char *body, size_t body_len,
 			return 500;
 		}
 		stage_dir = userns_rootfs;
-		if (!spec.userns_idmap) {
-			/*
-			 * The copy+chown presentation: the rootfs was chowned to
-			 * this container's subordinate base, so anything staged
-			 * into it afterwards has to be owned there too or it
-			 * lands outside the container's mapped range (#265).
-			 * subid_lookup_or_assign() is idempotent and is the
-			 * same call the branch above and the spec block below
-			 * both make -- one source for the id, not a copy of it.
-			 */
-			long long stage_base = 0;
-
-			if (subid_lookup_or_assign(name, &stage_base) != 0) {
-				json_free(root);
-				snprintf(err_msg, err_msg_size,
-				         "failed to resolve the subordinate id for staged files");
-				return 500;
-			}
-			stage_id_offset = (uid_t)stage_base;
-		}
 	} else {
 		/*
 		 * ADR-0207 phase 2: the non-userns twin of the branch above --
@@ -14168,6 +14148,35 @@ static int create_container_from_body(const char *body, size_t body_len,
 	 * have yet. Already fully validated above (path safety, content/
 	 * mode bounds) -- this pass only does I/O.
 	 */
+	/*
+	 * #265: a staged file is owned by whoever owns the rootfs it is
+	 * staged into.
+	 *
+	 * Read off the tree itself rather than reasoned about, because the
+	 * id depends on how this container's rootfs is PRESENTED and there
+	 * are three presentations that disagree: a non-userns upperdir and
+	 * a btrfs snapshot behind an id-mapped mount are both host-uid-0
+	 * owned, while the ADR-0179 phase-2b copy has been chown_tree()d to
+	 * the container's subordinate base -- which is exactly what makes /
+	 * and /etc read as 0 inside it. A file staged as on-disk 0 into that
+	 * last one falls outside the container's mapped range and reads as
+	 * 65534, unreadable by the container's own root at mode 0600.
+	 *
+	 * Deliberately NOT branched on spec.userns_idmap, which was the
+	 * first attempt and does not work: that field is assigned while the
+	 * rootfs is provisioned and then cleared by the memset(&spec) below,
+	 * so it is always 0 by the time anything reads it (#266). The rootfs
+	 * owner is the same fact without the ordering hazard -- it is the
+	 * one-source-of-truth marker the revival path above already reads
+	 * for precisely this reason.
+	 */
+	{
+		struct stat rootfs_st;
+
+		if (stat(stage_dir, &rootfs_st) == 0)
+			stage_id_offset = rootfs_st.st_uid;
+	}
+
 	if (jfiles != NULL) {
 		for (i = 0; i < jfiles->u.array.count; i++) {
 			const struct json_value *item = jfiles->u.array.items[i];
