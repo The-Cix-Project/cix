@@ -215,13 +215,22 @@ DAEMON_SELFTESTS_2 = \
 # happened to have it. A test that needs a fixture the gate does not
 # build is a gate that works by accident.
 #
-# The helper children the tests above fork. A missing one does not fail
-# the build, it fails the test that needed it -- a much worse way to
-# find out, so they are dependencies of the gate rather than of any
-# single test (#224).
+# The helper children the tests above fork -- ALL of them, not a chosen
+# subset. A missing helper does not fail the build, it fails the test
+# that needed it, and the first version of this list proved the point
+# within one build: dual_console_child was left out because it reads
+# like it belongs to test_dual_console, which is excluded, and
+# test_console_exec forks it too. The matrix never caught that because
+# "make all" builds every helper; only the gate, which builds exactly
+# what is declared, could.
+#
+# Enumerating them all costs a few seconds of tcc and removes the whole
+# class of mistake, which is worth more than a tidy list (#224).
 SELFTEST_HELPERS = \
 	$(BUILD)/daemon_child \
 	$(BUILD)/dev_child \
+	$(BUILD)/dual_console_child \
+	$(BUILD)/harness_child \
 	$(BUILD)/net_child \
 	$(BUILD)/net_connect \
 	$(BUILD)/output_child \
@@ -230,6 +239,7 @@ SELFTEST_HELPERS = \
 	$(BUILD)/run_child \
 	$(BUILD)/stats_child \
 	$(BUILD)/syslog_recv_child \
+	$(BUILD)/targz_probe \
 	$(BUILD)/tcp_listen_child \
 	$(BUILD)/volume_child
 
