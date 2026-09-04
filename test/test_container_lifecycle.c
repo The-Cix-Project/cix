@@ -611,6 +611,67 @@ int main(void)
 		cix_response_free(&r);
 	}
 
+	/* 7b. A container that FAILED to start must not claim an operator
+	 * stopped it (#268).
+	 *
+	 * "stopped" means one thing: someone called POST .../stop. It is
+	 * set there and cleared by containerdef_add(), and nothing in the
+	 * crash path touches it. But the JSON for a definition that is not
+	 * live wrote the value as a CONSTANT 1, so a container whose
+	 * execve failed reported exactly what a deliberately stopped one
+	 * reports -- and the single field that tells a fault apart from an
+	 * operator's own choice was the field being overwritten.
+	 *
+	 * That is what makes a deploy able to call itself successful while
+	 * a container that should be running is not: with a constant here,
+	 * no client can ask the question at all.
+	 *
+	 * A long restart delay keeps the window open: the point is to
+	 * observe the definition while nothing is live for it. */
+	{
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/containers",
+		                       "{\"name\":\"lc3\",\"image\":\"lifecycletest\","
+		                       "\"cmd\":[\"/bin/no-such-binary-here\"],"
+		                       "\"restart\":\"always\",\"restart_delay_seconds\":60}",
+		                       &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: POST lc3, status=%d\n", r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		if (!wait_status(&client, "/v1/containers/lc3", "stopped", 200)) {
+			fprintf(stderr, "FAIL: lc3 never settled to 200/stopped after a failed exec\n");
+			ok = 0;
+		}
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "GET", "/v1/containers/lc3", NULL, &r) != 0 ||
+		    r.status != 200 || json_bool_field(r.json, "stopped")) {
+			fprintf(stderr,
+			        "FAIL: lc3 failed its exec and nothing stopped it, so stopped must be "
+			        "false, got status=%d\n",
+			        r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		/* And it must still be visible at all: the reconciliation this
+		 * enables needs the definition listed, not silently absent
+		 * between restart backoff windows. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "GET", "/v1/containers", NULL, &r) != 0 ||
+		    r.status != 200 || r.body == NULL || strstr(r.body, "\"lc3\"") == NULL) {
+			fprintf(stderr, "FAIL: lc3 missing from the container list while not running\n");
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		cix_client_request(&client, "DELETE", "/v1/containers/lc3", NULL, &r);
+		cix_response_free(&r);
+	}
+
 	/* 8. cpu_max (Part 1 of the bare-metal-readiness plan): a real
 	 * cpu.max value round-trips into the container's own real cgroup,
 	 * not just accepted and silently dropped. cgroup_create() (src/
