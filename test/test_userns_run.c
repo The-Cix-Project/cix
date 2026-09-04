@@ -1,7 +1,8 @@
 /*
  * test_userns_run -- a user-namespaced container's own root must own the
- * things this platform creates for it: the /run tmpfs it mounts (#264) and
- * the files it stages before the container starts (#265).
+ * things this platform gives it: the /run tmpfs it mounts (#264), the
+ * files it stages before the container starts (#265), and the volumes it
+ * attaches (#266).
  *
  * Both are the same question -- ownership versus the user namespace -- with
  * different mechanisms and different fixes, so they are checked together
@@ -174,6 +175,14 @@ int main(void)
 		return 1;
 	}
 
+	/* A real volume to attach: #266 broke every one of these for a
+	 * userns container, and a volume is the only way to reach that. */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "POST", "/v1/volumes", "{\"name\":\"runvol\"}", &r) != 0 ||
+	    r.status != 201)
+		check(0, "POST /v1/volumes creates the volume this test attaches");
+	cix_response_free(&r);
+
 	/*
 	 * "userns":true explicitly, never the platform default: the fixture
 	 * deliberately seeds userns_default=false, and relying on a default
@@ -186,6 +195,7 @@ int main(void)
 	                              "\"userns\":true,\"capture_output\":true,"
 	                              "\"files\":[{\"path\":\"/etc/staged_probe.conf\","
 	                              "\"content\":\"secret\\n\",\"mode\":\"0600\"}],"
+	                              "\"volumes\":[{\"name\":\"runvol\",\"path\":\"/vol\"}],"
 	                              "\"cmd\":[\"/bin/run_child\"]}",
 	                              &r) == 0 &&
 	           r.status == 201);
@@ -203,12 +213,16 @@ int main(void)
 		printf("  container said: %s", out);
 
 	if (status == 42) {
-		printf("  PASS: the container's own root can write to /run and read a "
-		       "0600 file staged for it\n");
+		printf("  PASS: the container's own root can write to /run, read a 0600 "
+		       "file staged for it, and write to an attached volume\n");
 	} else if (status == 43) {
 		check(0, "a userns container's own root cannot write to /run -- "
 		         "the /run tmpfs is owned by an unmapped uid (#264); "
 		         "mount_container_tmpfs() in src/mountns.c is what sets this");
+	} else if (status == 46) {
+		check(0, "a userns container's own root cannot write to an attached VOLUME -- "
+		         "the volume is not id-mapped, because spec.userns_idmap was cleared "
+		         "before container_create() read it (#266)");
 	} else if (status == 45) {
 		check(0, "a userns container's own root cannot read a file STAGED for it at "
 		         "mode 0600 -- the staged file's ownership landed outside the "
