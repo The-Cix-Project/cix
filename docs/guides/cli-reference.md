@@ -196,6 +196,7 @@ Every container operation is a subcommand of `container` — one noun-based name
 | Command | |
 |---|---|
 | `container ls` | List all containers (running, stopped, and exited) |
+| `container drift` | Is this box in the state it is supposed to be in? Lists containers that should be running and are not, and **exits 1** if any have — so a deploy script can gate on it rather than an operator having to read the output. A container an operator stopped is listed separately and does **not** set the exit status; one whose policy is `unless-stopped` and was stopped is not listed at all, since that policy honours the stop permanently. Exit 2 means the question could not be asked (unreachable daemon), which must never look like a clean box. Worth running after a reboot: a deploy can succeed, the daemon can come up healthy, and a container that should be running can still be missing (#268) |
 | `container run --name=NAME --image=IMAGE [flags...] -- CMD [ARGS...]` | Create and start a container — see below for the full flag list |
 | `container inspect NAME` | Show one container |
 | `container edit NAME --json='{...}'` | Edit the stored definition in place — cmd, env, files, limits, volumes (issue #11). Applies at the container's next start; the output says so, and says when a restart is needed. `name` and the index fields (`restart`/`depends_on`/`readiness`/`follow_rolling`) are refused with a 400 naming them |
