@@ -20,6 +20,15 @@
 int persist_atomic_write(const char *path, const char *data, size_t len);
 
 /*
+ * Same, but keeps the inode rather than renaming a new file over the
+ * target -- required for any file inside a RUNNING container, where a
+ * rename into an overlay upper layer is invisible through the merged
+ * mount the container reads (#276). Not all-or-nothing; only use it
+ * for derived files that regenerate, never for authoritative state.
+ */
+int persist_write_file_inplace(const char *path, const char *data, size_t len);
+
+/*
  * Reads path fully into a malloc'd, NUL-terminated buffer (*out_len
  * excludes the added NUL; caller frees *out_buf). If path doesn't
  * exist, returns 0 with *out_buf = NULL, *out_len = 0 -- the "no
