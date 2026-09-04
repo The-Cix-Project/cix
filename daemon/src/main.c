@@ -12627,13 +12627,75 @@ static int chown_tree(const char *path, uid_t uid, gid_t gid)
 	return nftw(path, chown_tree_cb, 20, FTW_PHYS);
 }
 
+/*
+ * Give every directory leading to a staged file to the container's own
+ * root as well (#265). persist_mkdir_p() creates them as the daemon --
+ * on-disk uid 0 -- and under the copy+chown presentation that is outside
+ * the container's mapped range, so a freshly created /etc/pam.d would be
+ * traversable but not writable by the container's root. Components that
+ * already came from the image are chowned to the id they already carry,
+ * so this is idempotent rather than a second source of truth.
+ */
+static void chown_staged_parents(const char *upperdir, const char *path, uid_t id_offset)
+{
+	char walk[PATH_MAX];
+	size_t root_len = strlen(upperdir);
+	char *slash;
+
+	if (id_offset == 0)
+		return;
+	if ((size_t)snprintf(walk, sizeof(walk), "%s%s", upperdir, path) >= sizeof(walk))
+		return;
+	/* Walk from the deepest parent up to (but never past) upperdir. */
+	while ((slash = strrchr(walk, '/')) != NULL && (size_t)(slash - walk) > root_len) {
+		*slash = '\0';
+		if (chown(walk, id_offset, (gid_t)id_offset) != 0 && errno != ENOENT)
+			return;
+	}
+}
+
+/*
+ * Write one file into a container's rootfs before it starts, owned in the
+ * CONTAINER's id space rather than the host's (#265, ADR-0239's family).
+ *
+ * This is the only place container files are staged. It used to be one of
+ * three -- the files[] loop and the dns_servers resolv.conf writer each
+ * carried their own copy of the same target/mkdir_p/open/write/fchown
+ * sequence -- and that is exactly why this bug had more than one home. A
+ * single implementation is the fix as much as the ownership rule is.
+ *
+ * id_offset is what makes the ownership correct, and it is a property of
+ * how this container's rootfs is PRESENTED, not of whether it has a user
+ * namespace:
+ *
+ *   - Non-userns: 0. The container's root is host root; unchanged.
+ *   - userns, id-mapped presentation (btrfs snapshot, ADR-0207 phase 3):
+ *     also 0. The snapshot stays host-uid-0-owned and the mount does the
+ *     translating, so on-disk 0 is ALREADY presented as the container's
+ *     root, and adding an offset here would break what currently works.
+ *   - userns, copy+chown presentation (ADR-0179 phase 2b, non-btrfs):
+ *     the container's subordinate base. chown_tree() has already given
+ *     the whole rootfs to that id, which is what makes / and /etc read
+ *     as 0 inside -- a file staged afterwards as on-disk 0 falls outside
+ *     the mapped range and reads as 65534, unreadable by the container's
+ *     own root at mode 0600. That was the bug.
+ *
+ * An unspecified owner means the container's root, not the host's, which
+ * is why the offset applies even when the caller passes -1. An explicit
+ * owner is an id in the container's own space -- a recipe asking for
+ * owner 75 means the container's uid 75 -- so it is offset too. Before
+ * this, such a recipe got on-disk uid 75, unmapped inside, which is not
+ * what any author would expect it to mean.
+ */
 static int stage_container_file(const char *upperdir, const char *path, const char *content,
-                                 mode_t mode, uid_t owner, gid_t group)
+                                 mode_t mode, uid_t owner, gid_t group, uid_t id_offset)
 {
 	char target[PATH_MAX];
 	char target_dir[PATH_MAX];
 	char *slash;
 	size_t content_len = strlen(content);
+	uid_t eff_owner;
+	gid_t eff_group;
 	int fd;
 
 	if (snprintf(target, sizeof(target), "%s%s", upperdir, path) >= (int)sizeof(target)) {
@@ -12646,6 +12708,7 @@ static int stage_container_file(const char *upperdir, const char *path, const ch
 		*slash = '\0';
 	if (persist_mkdir_p(target_dir) != 0)
 		return -1;
+	chown_staged_parents(upperdir, path, id_offset);
 	fd = open(target, O_CREAT | O_TRUNC | O_WRONLY, mode);
 	if (fd < 0)
 		return -1;
@@ -12653,7 +12716,15 @@ static int stage_container_file(const char *upperdir, const char *path, const ch
 		close(fd);
 		return -1;
 	}
-	if ((owner != (uid_t)-1 || group != (gid_t)-1) && fchown(fd, owner, group) != 0) {
+	eff_owner = owner == (uid_t)-1 ? id_offset : owner + id_offset;
+	eff_group = group == (gid_t)-1 ? (gid_t)id_offset : group + (gid_t)id_offset;
+	/*
+	 * With no offset and nothing asked for, do not chown at all -- that
+	 * is the pre-existing behaviour for every non-userns container and
+	 * there is no reason to start rewriting ownership it never had.
+	 */
+	if ((id_offset != 0 || owner != (uid_t)-1 || group != (gid_t)-1) &&
+	    fchown(fd, eff_owner, eff_group) != 0) {
 		close(fd);
 		return -1;
 	}
@@ -12952,6 +13023,12 @@ static int create_container_from_body(const char *body, size_t body_len,
 	char container_cgroup_path[PATH_MAX]; /* issue #86 -- under the workload parent */
 	char userns_rootfs[PATH_MAX]; /* ADR-0179 phase 2c option (a) */
 	const char *stage_dir;        /* where container files are staged: upper, or the userns rootfs */
+	/*
+	 * The id every staged file is owned by, in the container's own space
+	 * (#265). Non-zero only for the copy+chown userns presentation -- see
+	 * stage_container_file() for why the id-mapped one must stay 0.
+	 */
+	uid_t stage_id_offset = 0;
 	char direct_rootfs_dir[PATH_MAX]; /* ADR-0207: <base>/rootfs when direct_mode */
 	int direct_mode = 0;          /* ADR-0207 phase 2: snapshot/copy rootfs, no overlay */
 	struct stat st;
@@ -14019,6 +14096,26 @@ static int create_container_from_body(const char *body, size_t body_len,
 			return 500;
 		}
 		stage_dir = userns_rootfs;
+		if (!spec.userns_idmap) {
+			/*
+			 * The copy+chown presentation: the rootfs was chowned to
+			 * this container's subordinate base, so anything staged
+			 * into it afterwards has to be owned there too or it
+			 * lands outside the container's mapped range (#265).
+			 * subid_lookup_or_assign() is idempotent and is the
+			 * same call the branch above and the spec block below
+			 * both make -- one source for the id, not a copy of it.
+			 */
+			long long stage_base = 0;
+
+			if (subid_lookup_or_assign(name, &stage_base) != 0) {
+				json_free(root);
+				snprintf(err_msg, err_msg_size,
+				         "failed to resolve the subordinate id for staged files");
+				return 500;
+			}
+			stage_id_offset = (uid_t)stage_base;
+		}
 	} else {
 		/*
 		 * ADR-0207 phase 2: the non-userns twin of the branch above --
@@ -14082,38 +14179,12 @@ static int create_container_from_body(const char *body, size_t body_len,
 			long mode = mode_str != NULL ? strtol(mode_str, NULL, 8) : 0644;
 			uid_t owner = jowner != NULL ? (uid_t)json_as_number(jowner) : (uid_t)-1;
 			gid_t group = jgroup != NULL ? (gid_t)json_as_number(jgroup) : (gid_t)-1;
-			size_t content_len = strlen(content);
-			char target[PATH_MAX];
-			char target_dir[PATH_MAX];
-			char *slash;
-			int fd;
-
-			if (snprintf(target, sizeof(target), "%s%s", stage_dir, path) >=
-			    (int)sizeof(target)) {
-				json_free(root);
-				snprintf(err_msg, err_msg_size, "files path too long");
-				return 500;
-			}
-			snprintf(target_dir, sizeof(target_dir), "%s", target);
-			slash = strrchr(target_dir, '/');
-			if (slash != NULL)
-				*slash = '\0';
-			if (persist_mkdir_p(target_dir) != 0) {
+			if (stage_container_file(stage_dir, path, content, (mode_t)mode, owner,
+			                          group, stage_id_offset) != 0) {
 				json_free(root);
 				snprintf(err_msg, err_msg_size, "failed to stage files");
 				return 500;
 			}
-			fd = open(target, O_CREAT | O_TRUNC | O_WRONLY, (mode_t)mode);
-			if (fd < 0 ||
-			    (content_len > 0 && write(fd, content, content_len) != (ssize_t)content_len) ||
-			    ((owner != (uid_t)-1 || group != (gid_t)-1) && fchown(fd, owner, group) != 0)) {
-				if (fd >= 0)
-					close(fd);
-				json_free(root);
-				snprintf(err_msg, err_msg_size, "failed to stage files");
-				return 500;
-			}
-			close(fd);
 			snprintf(file_paths[i], sizeof(file_paths[i]), "%s", path);
 		}
 		file_count = (int)jfiles->u.array.count;
@@ -14146,7 +14217,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 		                          "passwd:         files ldap\n"
 		                          "group:          files ldap\n"
 		                          "shadow:         files ldap\n",
-		                          0644, (uid_t)-1, (gid_t)-1) != 0) {
+		                          0644, (uid_t)-1, (gid_t)-1, stage_id_offset) != 0) {
 			json_free(root);
 			snprintf(err_msg, err_msg_size, "failed to stage ldap_client nsswitch.conf");
 			return 500;
@@ -14235,7 +14306,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 			         effective_uri, lc->base_dn, lc->bind_dn, lc->bind_password, authz);
 		}
 		if (stage_container_file(stage_dir, "/etc/nslcd.conf", nslcd, 0600, (uid_t)-1,
-		                          (gid_t)-1) != 0) {
+		                          (gid_t)-1, stage_id_offset) != 0) {
 			json_free(root);
 			snprintf(err_msg, err_msg_size, "failed to stage ldap_client nslcd.conf");
 			return 500;
@@ -14267,14 +14338,14 @@ static int create_container_from_body(const char *body, size_t body_len,
 		if (dhcp_render_conf(name, conf, sizeof(conf)) >= 0 &&
 		    dhcp_render_hosts(hosts, sizeof(hosts)) >= 0) {
 			if (stage_container_file(stage_dir, DHCP_CONF_PATH, conf, 0644, (uid_t)-1,
-			                          (gid_t)-1) == 0 &&
+			                          (gid_t)-1, stage_id_offset) == 0 &&
 			    file_count < CONTAINER_MAX_FILES) {
 				snprintf(file_paths[file_count], sizeof(file_paths[file_count]), "%s",
 				         DHCP_CONF_PATH);
 				file_count++;
 			}
 			if (stage_container_file(stage_dir, DHCP_HOSTS_PATH, hosts, 0644, (uid_t)-1,
-			                          (gid_t)-1) == 0 &&
+			                          (gid_t)-1, stage_id_offset) == 0 &&
 			    file_count < CONTAINER_MAX_FILES) {
 				snprintf(file_paths[file_count], sizeof(file_paths[file_count]), "%s",
 				         DHCP_HOSTS_PATH);
@@ -14285,35 +14356,18 @@ static int create_container_from_body(const char *body, size_t body_len,
 	if (dns_server_count > 0) {
 		char content[RESOLV_MAX_NAMESERVERS * (RESOLV_IP_STRLEN + 16)];
 		size_t content_len = 0;
-		char target[PATH_MAX];
-		char target_dir[PATH_MAX];
-		int fd;
 
 		content[0] = '\0';
 		for (i = 0; i < (size_t)dns_server_count; i++)
 			content_len += (size_t)snprintf(content + content_len, sizeof(content) - content_len,
 			                                 "nameserver %s\n", dns_server_ips[i]);
 
-		if (snprintf(target, sizeof(target), "%s/etc/resolv.conf", stage_dir) >= (int)sizeof(target)) {
-			json_free(root);
-			snprintf(err_msg, err_msg_size, "dns_servers path too long");
-			return 500;
-		}
-		snprintf(target_dir, sizeof(target_dir), "%s/etc", stage_dir);
-		if (persist_mkdir_p(target_dir) != 0) {
+		if (stage_container_file(stage_dir, "/etc/resolv.conf", content, 0644, (uid_t)-1,
+		                          (gid_t)-1, stage_id_offset) != 0) {
 			json_free(root);
 			snprintf(err_msg, err_msg_size, "failed to stage dns_servers");
 			return 500;
 		}
-		fd = open(target, O_CREAT | O_TRUNC | O_WRONLY, 0644);
-		if (fd < 0 || write(fd, content, content_len) != (ssize_t)content_len) {
-			if (fd >= 0)
-				close(fd);
-			json_free(root);
-			snprintf(err_msg, err_msg_size, "failed to stage dns_servers");
-			return 500;
-		}
-		close(fd);
 	}
 
 	memset(&spec, 0, sizeof(spec));

@@ -1,6 +1,11 @@
 /*
- * test_userns_run -- a user-namespaced container's own root must be able
- * to write to /run (#264).
+ * test_userns_run -- a user-namespaced container's own root must own the
+ * things this platform creates for it: the /run tmpfs it mounts (#264) and
+ * the files it stages before the container starts (#265).
+ *
+ * Both are the same question -- ownership versus the user namespace -- with
+ * different mechanisms and different fixes, so they are checked together
+ * here rather than in two tests that would share all of their setup.
  *
  * The bug this exists to catch: mountns_pivot() mounts /run's tmpfs while
  * still running as real host root, which is UNMAPPED in the container's
@@ -179,6 +184,8 @@ int main(void)
 	created = (cix_client_request(&client, "POST", "/v1/containers",
 	                              "{\"name\":\"runprobe\",\"image\":\"runtest\","
 	                              "\"userns\":true,\"capture_output\":true,"
+	                              "\"files\":[{\"path\":\"/etc/staged_probe.conf\","
+	                              "\"content\":\"secret\\n\",\"mode\":\"0600\"}],"
 	                              "\"cmd\":[\"/bin/run_child\"]}",
 	                              &r) == 0 &&
 	           r.status == 201);
@@ -196,11 +203,17 @@ int main(void)
 		printf("  container said: %s", out);
 
 	if (status == 42) {
-		printf("  PASS: the container's own root can write to /run\n");
+		printf("  PASS: the container's own root can write to /run and read a "
+		       "0600 file staged for it\n");
 	} else if (status == 43) {
 		check(0, "a userns container's own root cannot write to /run -- "
 		         "the /run tmpfs is owned by an unmapped uid (#264); "
 		         "mount_container_tmpfs() in src/mountns.c is what sets this");
+	} else if (status == 45) {
+		check(0, "a userns container's own root cannot read a file STAGED for it at "
+		         "mode 0600 -- the staged file's ownership landed outside the "
+		         "container's mapped range (#265); stage_container_file()'s "
+		         "id_offset in daemon/src/main.c is what sets this");
 	} else if (status < 0) {
 		check(0, "the /run probe container never reached 'exited'");
 	} else {
