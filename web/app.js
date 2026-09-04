@@ -856,7 +856,23 @@ function logLine(method, path, statusText, kind) {
  * that boundary second -- logsSeenAtSinceTs dedupes those specifically,
  * not the whole history, since only the current boundary second can
  * ever repeat across polls. */
-let logsSinceTs = Math.floor(Date.now() / 1000);
+/*
+ * 0, not "now" (#272).
+ *
+ * This started at Date.now() so the panel was a live tail from page-load
+ * onward. Combined with the bug below that meant it showed NOTHING after
+ * a refresh, and on an idle box it stayed empty forever -- the operator
+ * sees a log window that never has anything in it and reasonably
+ * concludes logging is broken.
+ *
+ * The first poll now asks for a bounded tail of what the store already
+ * holds, which is what someone opening a log panel expects to see. The
+ * flooding this was avoiding is handled by tail= rather than by throwing
+ * the history away: the store can hold far more than a panel should
+ * render, and LOG_BACKFILL is what bounds it.
+ */
+let logsSinceTs = 0;
+const LOG_BACKFILL = 200;
 let logsSeenAtSinceTs = new Set();
 const LOG_ERROR_LEVELS = new Set(["emerg", "alert", "crit", "err", "error", "warning", "warn"]);
 
@@ -868,7 +884,21 @@ async function pollServerLogs() {
 	let entries;
 
 	try {
-		entries = await apiRequest("GET", CIX_API.getSystemLogs(logsSinceTs) + "?since=%s&tail=500");
+		/*
+		 * Built, not templated. This was
+		 *   CIX_API.getSystemLogs(logsSinceTs) + "?since=%s&tail=500"
+		 * and getSystemLogs() takes no arguments -- so the timestamp was
+		 * discarded and the literal characters "%s" were sent as the
+		 * value. The server parses that as 0 and returns the whole
+		 * store on every single poll, which the ts < logsSinceTs guard
+		 * below then discarded in full. Two halves of one bug: a
+		 * parameter that was never really sent, and a guard written to
+		 * back it up.
+		 */
+		entries = await apiRequest(
+		        "GET",
+		        CIX_API.getSystemLogs() + "?since=" + encodeURIComponent(String(logsSinceTs)) +
+		                "&tail=" + (logsSinceTs === 0 ? LOG_BACKFILL : 500));
 	} catch (e) {
 		return; /* best-effort, matches every other poll()'s own error tolerance */
 	}

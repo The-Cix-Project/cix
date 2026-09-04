@@ -996,8 +996,16 @@ int main(void)
 			printf("INSTALLER RESULT: FAIL\n");
 			return 1;
 		}
-		/* The CD-ROM must never be offered as somewhere to install. */
-		if (strstr(captured, "/dev/sr0") != NULL) {
+		/*
+		 * The CD-ROM must never be offered as somewhere to install.
+		 *
+		 * Matched against the LIST ENTRY form -- ") /dev/sr0" -- and not
+		 * a bare "/dev/sr0", which appears in this same capture in the
+		 * kernel command line (root=/dev/sr0) and in the kernel's own
+		 * messages. The looser check failed the first real run of this
+		 * test against an installer that was behaving correctly.
+		 */
+		if (strstr(captured, ") /dev/sr0") != NULL) {
 			fprintf(stderr, "the installer offered read-only media as an install target\n");
 			printf("INSTALLER RESULT: FAIL\n");
 			return 1;
