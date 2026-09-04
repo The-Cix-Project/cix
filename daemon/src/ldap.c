@@ -1121,7 +1121,13 @@ static int ldap_write_config_file(const char *full_path)
 		}
 	}
 
-	rc = persist_atomic_write(full_path, final_buf, final_len);
+	/* In place, not a rename: this file lives inside a running
+	 * container, and a rename into an overlay upper layer is invisible
+	 * through the merged mount the container reads (#276). The records
+	 * themselves are still written atomically -- see save_users_state()
+	 * -- and this config is regenerated from them, so it is derived
+	 * state and safe to write this way. */
+	rc = persist_write_file_inplace(full_path, final_buf, final_len);
 	free(final_buf);
 	return rc;
 }

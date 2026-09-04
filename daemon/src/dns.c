@@ -536,7 +536,13 @@ int dns_write_hosts_file(const char *abs_path)
 		off += (size_t)written;
 	}
 
-	return persist_atomic_write(abs_path, buf, off);
+	/* In place, not a rename, for the same reason ldap_write_config_
+	 * file() is: this file is inside a running container, and a rename
+	 * into an overlay upper layer never becomes visible through the
+	 * merged mount (#276). DNS has the identical exposure -- a record
+	 * added after the first write silently never reached the server on
+	 * any host whose container storage is not btrfs. */
+	return persist_write_file_inplace(abs_path, buf, off);
 }
 
 static struct dns_server_binding *binding_find(const char *container_name)
