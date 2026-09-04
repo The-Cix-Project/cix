@@ -755,18 +755,44 @@ static int recipe_artifact_sha(const char *name, const char *version, char *out,
 
 static int copy_tree_via_cp(const char *src, const char *dst)
 {
-	char *argv[] = { (char *)"/bin/cp", (char *)"-a", (char *)src, (char *)dst, NULL };
+	/*
+	 * TOOLCHAIN_CP_BIN, not a second literal -- and certainly not
+	 * "/bin/cp", which is what this said and which never existed here.
+	 * This platform's images ship bin/sh and usr/bin/<tool> and nothing
+	 * else in /bin; coreutils installs cp at usr/bin/cp, confirmed
+	 * against the package's own file list. Same trap CLAUDE.md already
+	 * records for /bin/bash.
+	 *
+	 * The correct path was already defined at the top of this very
+	 * file and used by the other copy helper, which is the part worth
+	 * noticing: this was not unknown, it was just not reused.
+	 */
+	char *argv[] = { (char *)TOOLCHAIN_CP_BIN, (char *)"-a", (char *)src, (char *)dst, NULL };
 	pid_t pid = fork();
 	int status;
 
-	if (pid < 0)
+	if (pid < 0) {
+		perror("fork");
 		return -1;
+	}
 	if (pid == 0) {
-		execve("/bin/cp", argv, environ);
+		execve(TOOLCHAIN_CP_BIN, argv, environ);
 		_exit(127);
 	}
-	if (waitpid(pid, &status, 0) != pid || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
+	if (waitpid(pid, &status, 0) != pid || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+		/*
+		 * Say which copy failed and how. This returned a bare -1, and
+		 * its callers report only their own generic message, so a
+		 * missing cp surfaced as "could not seed the build floor" --
+		 * which points at the artifacts, which were fine. Exit 127 is
+		 * the specific tell that the binary itself was not found.
+		 */
+		fprintf(stderr, "cp -a %s %s failed (%s)\n", src, dst,
+		        WIFEXITED(status) && WEXITSTATUS(status) == 127
+		            ? "/usr/bin/cp not found or not executable"
+		            : "non-zero exit");
 		return -1;
+	}
 	return 0;
 }
 
