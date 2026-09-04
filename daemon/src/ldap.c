@@ -1145,8 +1145,33 @@ void ldap_record_sync_all(void)
 		if (g_bindings[i].container_name[0] == '\0')
 			continue;
 		entry = registry_find(g_bindings[i].container_name);
-		if (entry == NULL || !entry->running)
+		if (entry == NULL || !entry->running) {
+			/*
+			 * A registered LDAP server that does not get its config
+			 * re-rendered is serving whatever it last received, which
+			 * is exactly the situation ADR-0146 was written after --
+			 * so say so rather than continuing in silence.
+			 *
+			 * This used to be a bare `continue`, and that silence cost
+			 * real time: five separate hypotheses about #276 had to be
+			 * eliminated one build at a time precisely because the one
+			 * path that does nothing said nothing when it did.
+			 *
+			 * Both stderr and the log store on purpose. stderr is not
+			 * mirrored into the log store, and a test harness capturing
+			 * a forked cixd sees only stderr, so a log-store-only line
+			 * would be invisible exactly where this matters most.
+			 */
+			fprintf(stderr, "ldap: %s registered but %s -- config NOT re-rendered\n",
+			        g_bindings[i].container_name,
+			        entry == NULL ? "no such container" : "not running");
+			logstore_write("cixd", "warn",
+			                "ldap: %s is registered but %s -- its config was not re-rendered, so "
+			                "it is serving whatever it last received",
+			                g_bindings[i].container_name,
+			                entry == NULL ? "no such container" : "not running");
 			continue;
+		}
 		/*
 		 * The container's tree on the HOST side, not through its own
 		 * /proc/<pid>/root view (#269). A btrfs-backed userns
@@ -1158,6 +1183,11 @@ void ldap_record_sync_all(void)
 		 */
 		container_file_host_path(g_bindings[i].container_name, entry->disk_name,
 		                          g_bindings[i].config_path, full_path, sizeof(full_path));
+		/* #276: which file, for which container, on every render. The
+		 * bug being chased is that creates appear and updates do not,
+		 * and the first thing that distinguishes those is whether the
+		 * second write targets the same path as the first. */
+		fprintf(stderr, "ldap: rendering %s -> %s\n", g_bindings[i].container_name, full_path);
 		if (ldap_write_config_file(full_path) != 0)
 			logstore_write("cixd", "error",
 			                "ldap: could not write %s config to %s -- this server is now "
