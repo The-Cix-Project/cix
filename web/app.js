@@ -3362,8 +3362,25 @@ for (const tabButton of document.querySelectorAll(".tab-bar .tab-button")) {
 		 */
 		if (SERVICE_TAB_VIEWS[tabName] !== undefined && parseHash().category !== tabName)
 			location.hash = "#" + tabName;
-		if (tabName === "console")
+		if (tabName === "console") {
+			/*
+			 * Connect HERE rather than when the container view rendered.
+			 * The console panel is hidden until this click, and a hidden
+			 * element has no layout -- so a terminal fitted before it
+			 * measures nothing and falls back to 80x24, and the size in
+			 * the upgrade URL is then a number the pane never had.
+			 * ADR-0242 exists because a program reads its size once at
+			 * startup; correcting it a moment later with a resize
+			 * message is exactly the "size the program already missed"
+			 * this platform just finished fixing one layer down.
+			 *
+			 * Connecting on tab open also stops a pty being spawned in
+			 * every container an operator merely glances at.
+			 */
+			if (currentContainerDetailName !== null)
+				openConsole(currentContainerDetailName);
 			document.getElementById("cd-console-output").focus();
+		}
 		if (tabButton.id === "cd-tab-summary" && currentContainerDetailName !== null)
 			startStatsPolling(currentContainerDetailName);
 		else if (statsContainerName !== null)
@@ -3397,10 +3414,19 @@ function renderContainerDetail(name) {
 	}
 
 	renderConsolePicker(c);
-	if (Array.isArray(c.consoles) && c.consoles.length > 0)
-		openConsole(name);
-	else
-		closeConsole();
+	{
+		/* Only when the Console tab is actually the one on screen --
+		 * see the tab handler's own note. A re-render while the tab IS
+		 * open must still reconnect, which is why this is a visibility
+		 * test rather than a one-shot. */
+		const panel = document.getElementById("cd-panel-console");
+		const visible = panel !== null && !panel.hidden;
+
+		if (visible && Array.isArray(c.consoles) && c.consoles.length > 0)
+			openConsole(name);
+		else
+			closeConsole();
+	}
 	/* Keep stats polling pointed at whatever container this view is
 	 * actually showing right now: without this, switching containers
 	 * while the Summary tab (which now carries the live stats charts
