@@ -682,9 +682,8 @@ header {
 
 .resize-handle:hover,
 .resize-handle.dragging {
-	/* Matches the base button color (style.css's own `button { background:
-	 * #0a84ff }`) -- no separate --accent variable exists in this file. */
-	background: #0a84ff;
+	/* The accent, same as any other interactive surface. */
+	background: var(--accent);
 	opacity: 0.5;
 }
 
@@ -1202,8 +1201,21 @@ button {
 	padding: 0.5rem 1rem;
 	border: none;
 	border-radius: 6px;
-	background: #0a84ff;
-	color: white;
+	background: var(--accent);
+	/*
+	 * Carbon on copper, not white (#232). Measured, because the two
+	 * defensible answers here look identical to the eye and are not:
+	 * white on Copper #D87945 is 3.12:1, which FAILS WCAG AA for
+	 * normal text, while carbon on the same copper is 6.26:1.
+	 *
+	 * cix-cache solved the same problem by darkening its accent to
+	 * #ad5424 (5.16:1 against white). That works, but it leaves the
+	 * swatch behind -- and the guidelines name Copper #D87945 as the
+	 * primary brand accent outright, with no darker variant defined.
+	 * Changing the text instead keeps the accent exactly on-swatch and
+	 * lands better contrast than darkening it would.
+	 */
+	color: var(--carbon);
 	font-size: 0.9rem;
 	cursor: pointer;
 }
@@ -1553,7 +1565,7 @@ td.empty {
 
 .tab-button.active {
 	color: var(--text);
-	border-bottom-color: #0a84ff;
+	border-bottom-color: var(--accent);
 	font-weight: 600;
 }
 
@@ -1566,8 +1578,15 @@ td.empty {
 }
 
 .console-output {
-	background: #0c0c0e;
-	color: #d8d8dc;
+	/*
+	 * Carbon and paper -- the brand's own light-on-dark pairing (#232),
+	 * where this used to carry an arbitrary near-black and near-white.
+	 * The ANSI palette below is deliberately NOT brand-mapped: a
+	 * container that writes red must render red, and a console that
+	 * showed it as copper would be misreporting its own output.
+	 */
+	background: var(--carbon);
+	color: var(--paper);
 	font-family: "JetBrains Mono", "DejaVu Sans Mono", ui-monospace, SFMono-Regular, Menlo,
 		Consolas, "Liberation Mono", monospace;
 	font-size: 0.85rem;
@@ -1582,7 +1601,7 @@ td.empty {
 }
 
 .console-output:focus {
-	box-shadow: 0 0 0 2px #0a84ff;
+	box-shadow: 0 0 0 2px var(--accent);
 }
 
 .console-output div {
@@ -1860,11 +1879,10 @@ td.empty {
 }
 
 .switch-port-led-tx.switch-port-led-on {
-	/* The base button colour; this file has no --accent variable (see
-	 * .resize-handle's own note). */
-	background: #0a84ff;
+	/* The accent, same as any other interactive surface. */
+	background: var(--accent);
 	filter: brightness(1.4);
-	box-shadow: 0 0 6px 1px #0a84ff;
+	box-shadow: 0 0 6px 1px var(--accent);
 	animation: switch-port-flash 500ms ease-out;
 }
 

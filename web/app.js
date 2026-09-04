@@ -313,13 +313,24 @@ function currentTheme() {
 	return attr === "light" || attr === "dark" ? attr : "auto";
 }
 
-/* Same inline-SVG style as TREE_ICONS (viewBox 16x16, currentColor
- * stroke, 1.3 stroke-width) -- sun / crescent-moon / monitor, so the
- * toggle reads as an icon button instead of an emoji+text label. */
+/*
+ * The theme toggle's three states, drawn here rather than taken from the
+ * brand set (#232): that set has no sun, moon or display glyph -- it is a
+ * platform-resource vocabulary (container, disk, cgroup, certificate),
+ * and a light/dark control is not one of its concepts.
+ *
+ * Drawn to the SHIPPED geometry even so -- 24x24 viewBox, 1.75 stroke,
+ * currentColor -- so they sit at the same visual weight as the real
+ * icons beside them. The previous versions were 16x16/1.3 and matched
+ * the tree icons only while those were also hand-drawn.
+ */
 const THEME_ICONS = {
-	light: '<svg viewBox="0 0 16 16" width="14" height="14"><g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="3"/><line x1="8" y1="1" x2="8" y2="2.5"/><line x1="8" y1="13.5" x2="8" y2="15"/><line x1="1" y1="8" x2="2.5" y2="8"/><line x1="13.5" y1="8" x2="15" y2="8"/><line x1="3.05" y1="3.05" x2="4.1" y2="4.1"/><line x1="11.9" y1="11.9" x2="12.95" y2="12.95"/><line x1="3.05" y1="12.95" x2="4.1" y2="11.9"/><line x1="11.9" y1="4.1" x2="12.95" y2="3.05"/></g></svg>',
-	dark: '<svg viewBox="0 0 16 16" width="14" height="14"><path d="M13 8.5 A5.5 5.5 0 1 1 7.5 3 A4.2 4.2 0 0 0 13 8.5 Z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-	auto: '<svg viewBox="0 0 16 16" width="14" height="14"><g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="12" height="8" rx="1"/><line x1="5.5" y1="14" x2="10.5" y2="14"/><line x1="8" y1="11" x2="8" y2="14"/></g></svg>',
+	light:
+		'<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2v2.4M12 19.6V22M2 12h2.4M19.6 12H22M4.9 4.9l1.7 1.7M17.4 17.4l1.7 1.7M4.9 19.1l1.7-1.7M17.4 6.6l1.7-1.7"/></svg>',
+	dark:
+		'<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19.5 13.2A7.8 7.8 0 1 1 10.8 4.5a6.1 6.1 0 0 0 8.7 8.7Z"/></svg>',
+	auto:
+		'<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.8" y="4" width="18.4" height="12" rx="1.6"/><path d="M8.5 20h7M12 16v4"/></svg>',
 };
 
 function applyTheme(theme) {
@@ -1675,43 +1686,69 @@ let nodeHash = {};
 let nodePath = {};
 
 /*
- * Small hand-rolled inline SVG icons, Proxmox-style -- no external
- * icon font/library/CDN request (this project's own no-external-
- * dependencies rule, same posture as the console's hand-rolled
- * terminal renderer). stroke="currentColor" so each one inherits
- * whatever color its own link text already has (theme-aware for
- * free, no separate light/dark icon set needed). Visually verified by
- * rendering this exact path data via rsvg-convert before wiring it
- * in, not trusted blind.
+ * The tree's icons, taken from the brand's own shipped set (#232):
+ * docs/brand/cix-ui-svg-icons/icons/<name>.svg, inlined verbatim.
+ *
+ * Inlined rather than linked because the dashboard ships no dependencies
+ * and makes no extra requests for chrome -- the same constraint that
+ * shaped everything else here. What changes is the artwork, not the
+ * mechanism: these were hand-drawn approximations of the same concepts,
+ * which is exactly the divergence this issue was filed about.
+ *
+ * Kept in the shipped 24x24 viewBox at the shipped 1.75 stroke-width
+ * rather than redrawn to the old 16x16/1.3: the two scale to the same
+ * rendered weight at 14px, and re-tracing the paths would recreate the
+ * drift. Every icon is stroke-on-currentColor, so they inherit the
+ * palette rather than carrying colour of their own.
+ *
+ * Names map to the manifest's own categories, which is what settles the
+ * ones that could go either way: a recipe is `source` (resources,
+ * alongside compiler and package), not `file`; stats is `metrics`
+ * (observability); pki is `certificate`.
  */
 const TREE_ICONS = {
 	containers:
-		'<svg viewBox="0 0 16 16" width="14" height="14"><g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="12" height="10" rx="1"/><line x1="2" y1="8" x2="14" y2="8"/><circle cx="5" cy="5.5" r="0.6" fill="currentColor" stroke="none"/><circle cx="5" cy="10.5" r="0.6" fill="currentColor" stroke="none"/></g></svg>',
+		'<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z"/><path d="m4.5 7.8 7.5 4.1 7.5-4.1M12 12v9"/></svg>',
 	networks:
-		'<svg viewBox="0 0 16 16" width="14" height="14"><g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="3" r="1.5"/><circle cx="3" cy="12" r="1.5"/><circle cx="13" cy="12" r="1.5"/><line x1="8" y1="4.5" x2="3" y2="10.5"/><line x1="8" y1="4.5" x2="13" y2="10.5"/></g></svg>',
+		'<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="5" r="2"/><circle cx="5" cy="18" r="2"/><circle cx="19" cy="18" r="2"/><path d="m10.7 6.6-4.4 9M13.3 6.6l4.4 9M7 18h10"/></svg>',
 	images:
-		'<svg viewBox="0 0 16 16" width="14" height="14"><g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><polyline points="8,2 14,5 8,8 2,5 8,2"/><polyline points="2,8 8,11 14,8"/><polyline points="2,11 8,14 14,11"/></g></svg>',
+		'<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8" cy="9" r="1.5"/><path d="m4 17 5-5 3 3 2-2 6 5"/></svg>',
 	packages:
-		'<svg viewBox="0 0 16 16" width="14" height="14"><g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><polyline points="8,2 14,5 14,11 8,14 2,11 2,5 8,2"/><line x1="8" y1="2" x2="8" y2="8"/><line x1="2" y1="5" x2="8" y2="8"/><line x1="14" y1="5" x2="8" y2="8"/></g></svg>',
+		'<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 8 4-8 4-8-4 8-4Z"/><path d="m4 7v10l8 4 8-4V7M12 11v10"/></svg>',
 	recipes:
-		'<svg viewBox="0 0 16 16" width="14" height="14"><g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="1.5" width="10" height="13" rx="1"/><line x1="5.5" y1="5" x2="10.5" y2="5"/><line x1="5.5" y1="8" x2="10.5" y2="8"/><line x1="5.5" y1="11" x2="9" y2="11"/></g></svg>',
+		'<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 7-5 5 5 5M15 7l5 5-5 5M14 4l-4 16"/></svg>',
 	system:
-		'<svg viewBox="0 0 16 16" width="14" height="14"><g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="3"/><line x1="8" y1="1" x2="8" y2="3"/><line x1="8" y1="13" x2="8" y2="15"/><line x1="1" y1="8" x2="3" y2="8"/><line x1="13" y1="8" x2="15" y2="8"/><line x1="3.5" y1="3.5" x2="5" y2="5"/><line x1="11" y1="11" x2="12.5" y2="12.5"/><line x1="3.5" y1="12.5" x2="5" y2="11"/><line x1="11" y1="5" x2="12.5" y2="3.5"/></g></svg>',
+		'<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 8h10M7 12h5M7 16h8"/></svg>',
 	pki:
-		'<svg viewBox="0 0 16 16" width="14" height="14"><g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="7" width="9" height="7" rx="1"/><path d="M5.5 7 V4.5 a2.5 2.5 0 0 1 5 0 V7"/></g></svg>',
+		'<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 3h8l4 4v8a6 6 0 0 1-12 0V3Z"/><path d="M15 3v5h4M9 12h6M9 15h4"/></svg>',
 	dns:
-		'<svg viewBox="0 0 16 16" width="14" height="14"><g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6.5"/><line x1="1.5" y1="8" x2="14.5" y2="8"/><path d="M8 1.5 C5 4.5 5 11.5 8 14.5 C11 11.5 11 4.5 8 1.5"/></g></svg>',
+		'<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg>',
 	backup:
-		'<svg viewBox="0 0 16 16" width="14" height="14"><g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="12" height="12" rx="1"/><line x1="2" y1="5.5" x2="14" y2="5.5"/><line x1="6" y1="9" x2="10" y2="9"/></g></svg>',
+		'<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 3h13l3 3v15H4z"/><path d="M8 3v6h8V3M8 21v-7h8v7"/></svg>',
 	devices:
-		'<svg viewBox="0 0 16 16" width="14" height="14"><g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="4.5" y="4.5" width="7" height="7" rx="0.5"/><line x1="6" y1="1.5" x2="6" y2="4.5"/><line x1="10" y1="1.5" x2="10" y2="4.5"/><line x1="6" y1="11.5" x2="6" y2="14.5"/><line x1="10" y1="11.5" x2="10" y2="14.5"/><line x1="1.5" y1="6" x2="4.5" y2="6"/><line x1="1.5" y1="10" x2="4.5" y2="10"/><line x1="11.5" y1="6" x2="14.5" y2="6"/><line x1="11.5" y1="10" x2="14.5" y2="10"/></g></svg>',
+		'<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M8 7h8M8 11h8M8 15h5"/><circle cx="16" cy="16" r="1"/></svg>',
 	update:
-		'<svg viewBox="0 0 16 16" width="14" height="14"><g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M13 8 A5 5 0 1 1 11 4"/><polyline points="13,2 13,5.5 9.5,5.5"/></g></svg>',
+		'<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h11l-3-3M20 17H9l3 3"/><path d="m15 4 3 3-3 3M9 14l-3 3 3 3"/></svg>',
 	stats:
-		'<svg viewBox="0 0 16 16" width="14" height="14"><g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><line x1="1.5" y1="14.5" x2="14.5" y2="14.5"/><rect x="3" y="9" width="2.5" height="5.5"/><rect x="6.75" y="5" width="2.5" height="9.5"/><rect x="10.5" y="7.5" width="2.5" height="7"/></g></svg>',
+		'<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20V7"/></svg>',
 	disks:
-		'<svg viewBox="0 0 16 16" width="14" height="14"><g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="8" cy="4" rx="6" ry="2.2"/><path d="M2 4 V12 A6 2.2 0 0 0 14 12 V4"/><path d="M2 8 A6 2.2 0 0 0 14 8"/></g></svg>',
-};
+		'<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/><path d="M12 3v3M21 12h-3M12 21v-3M3 12h3"/></svg>',
+	services:
+		'<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="5" cy="12" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="19" cy="18" r="2"/><path d="M7 12h5a4 4 0 0 0 4-4V6M12 12a4 4 0 0 1 4 4v2"/></svg>',
+	ldap:
+		'<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3"/><circle cx="17" cy="9" r="2.5"/><path d="M3 20a6 6 0 0 1 12 0M14 15a5 5 0 0 1 7 5"/></svg>',
+	ntp:
+		'<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
+	dhcp:
+		'<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="7" width="18" height="10" rx="2"/><path d="M7 12h10M9 9v6M15 9v6"/></svg>',
+	syslog:
+		'<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 4h14v16H5z"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>',
+	host:
+		'<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 7h8M8 11h8M8 15h5"/><circle cx="16.5" cy="15" r=".75" fill="currentColor" stroke="none"/></svg>',
+	config:
+		'<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19 13.5v-3l-2-.7a7 7 0 0 0-.7-1.7l.9-1.9-2.1-2.1-1.9.9a7 7 0 0 0-1.7-.7L10.5 2h-3l-.7 2a7 7 0 0 0-1.7.7l-1.9-.9-2.1 2.1.9 1.9a7 7 0 0 0-.7 1.7L0 10.5v3l2 .7a7 7 0 0 0 .7 1.7l-.9 1.9 2.1 2.1 1.9-.9a7 7 0 0 0 1.7.7l.7 2h3l.7-2a7 7 0 0 0 1.7-.7l1.9.9 2.1-2.1-.9-1.9a7 7 0 0 0 .7-1.7l2-.7Z" transform="translate(1.5 -0.5) scale(.875)"/></svg>',
+	software:
+		'<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 8 4-8 4-8-4 8-4Z"/><path d="m4 7v10l8 4 8-4V7M12 11v10"/></svg>',};
 
 /* colorClass tints the icon itself (via CSS "color", which the icon's
  * own stroke="currentColor" inherits) instead of a separate status dot
@@ -2074,14 +2111,14 @@ function renderTree() {
 			 */
 			label: "Services",
 			hash: "pki-ca",
-			icon: "system",
+			icon: "services",
 			children: [
 				{ label: "PKI", hash: "pki-ca", icon: "pki" },
 				{ label: "DNS", hash: "dns-records", icon: "dns" },
-				{ label: "LDAP", hash: "ldap-servers", icon: "dns" },
-				{ label: "NTP", hash: "ntp-config", icon: "dns" },
-				{ label: "DHCP", hash: "dhcp-servers", icon: "dns" },
-				{ label: "Syslog", hash: "syslog-targets", icon: "system" },
+				{ label: "LDAP", hash: "ldap-servers", icon: "ldap" },
+				{ label: "NTP", hash: "ntp-config", icon: "ntp" },
+				{ label: "DHCP", hash: "dhcp-servers", icon: "dhcp" },
+				{ label: "Syslog", hash: "syslog-targets", icon: "syslog" },
 			],
 		},
 		{
@@ -2118,7 +2155,7 @@ function renderTree() {
 					 */
 					label: "Software",
 					hash: "recipes",
-					icon: "recipes",
+					icon: "software",
 				},
 				{
 					/*
@@ -2138,7 +2175,7 @@ function renderTree() {
 					 */
 					label: "Host",
 					hash: "daemon-config",
-					icon: "system",
+					icon: "host",
 				},
 				{
 					/* The whole configuration as one document
@@ -2148,7 +2185,7 @@ function renderTree() {
 					 * reason it exists. */
 					label: "Running Config",
 					hash: "running-config",
-					icon: "system",
+					icon: "config",
 				},
 				{ label: "Devices", hash: "devices", icon: "devices" },
 				{
