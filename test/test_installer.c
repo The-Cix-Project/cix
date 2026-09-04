@@ -587,8 +587,9 @@ int main(void)
 	 * by hand for every VM/scripted install proved to be pure friction --
 	 * gets exercised for real right here, this session's own install). */
 	snprintf(kernel_args, sizeof(kernel_args),
-	         "--disk=/dev/vda --ip=%s --prefix=%d --gateway=%s --interface=%s", TEST_IP,
-	         TEST_PREFIX, TEST_GATEWAY, TEST_IFACE);
+	         "--disk=/dev/vda --ip=%s --prefix=%d --gateway=%s --interface=%s "
+	         "--enroll-key=always",
+	         TEST_IP, TEST_PREFIX, TEST_GATEWAY, TEST_IFACE);
 	{
 		char isotools_root[PATH_MAX];
 		char seed_root[PATH_MAX];
@@ -906,6 +907,107 @@ int main(void)
 	if (!ok) {
 		printf("INSTALLER RESULT: FAIL\n");
 		return 1;
+	}
+
+	/*
+	 * 7b. The interactive path -- what a shipped ISO actually does.
+	 *
+	 * Everything above installs the way an UNATTENDED install does:
+	 * every answer handed over on the kernel command line. That is no
+	 * longer the default. A shipped ISO passes cix-install nothing and
+	 * it asks (#271), so the path every operator takes was the one path
+	 * with no coverage at all.
+	 *
+	 * No second .iso is needed: the install boots via direct_kernel with
+	 * arguments this test composes, so "an ISO that passes no installer
+	 * arguments" is simply an empty argument string here.
+	 *
+	 * Its own blank disk, so nothing above is disturbed and the answers
+	 * are unambiguous -- the CD-ROM is read-only and cix-install filters
+	 * read-only media out of the disk list, so exactly one disk is
+	 * offered and "1" is the whole answer.
+	 *
+	 * Deliberately no --enroll-key here, unlike session 1: this boot does
+	 * not enforce Secure Boot, so the default "auto" must SKIP the MOK
+	 * password entirely. If that regressed, the scripted answers would
+	 * run out at a password prompt and this would time out rather than
+	 * pass quietly.
+	 */
+	{
+		char interactive_disk[600], interactive_vars[600], interactive_args[600];
+		struct qemu_boot_opts opts;
+		struct qemu_scripted_input answers[] = {
+			{ "which disk?", "1\n" },
+			{ "Type ERASE to confirm", "ERASE\n" },
+			{ "Management interface", TEST_IFACE "\n" },
+			{ "Management IP address", TEST_IP "\n" },
+			{ "Prefix length", "24\n" },
+			{ "Default gateway", TEST_GATEWAY "\n" },
+		};
+
+		snprintf(interactive_disk, sizeof(interactive_disk), "%s/interactive_disk.img", workdir);
+		snprintf(interactive_vars, sizeof(interactive_vars), "%s/interactive_vars.fd", workdir);
+		if (create_blank_disk(interactive_disk) != 0) {
+			printf("INSTALLER RESULT: FAIL\n");
+			return 1;
+		}
+		if (test_image_fixture_copy_file("/usr/share/OVMF/OVMF_VARS_4M.fd", interactive_vars) !=
+		    0) {
+			printf("INSTALLER RESULT: FAIL\n");
+			return 1;
+		}
+
+		/* No "-- <args>" at all: exactly what a shipped ISO boots. */
+		snprintf(interactive_args, sizeof(interactive_args),
+		         "console=ttyS0 root=/dev/sr0 rootfstype=iso9660 ro init=/bin/cix-install");
+
+		memset(&opts, 0, sizeof(opts));
+		opts.disk_img = installer_iso;
+		opts.disk_img_is_cdrom = 1;
+		opts.disk_img2 = interactive_disk;
+		opts.direct_kernel = BZIMAGE_PATH;
+		opts.direct_kernel_args = interactive_args;
+		opts.ovmf_vars = interactive_vars;
+		opts.success_marker = INSTALL_SUCCESS_MARKER;
+		opts.timeout_seconds = INSTALL_TIMEOUT_SECONDS;
+		opts.scripted_input = answers;
+		opts.n_scripted_input = (int)(sizeof(answers) / sizeof(answers[0]));
+		outcome = qemu_boot_capture(&opts, captured, sizeof(captured));
+
+		if (outcome != QEMU_BOOT_SUCCESS) {
+			fprintf(stderr, "interactive install did not report success (outcome=%d)\n",
+			        (int)outcome);
+			printf("INSTALLER RESULT: FAIL\n");
+			return 1;
+		}
+		/*
+		 * Success alone would not prove the PROMPTS ran -- an installer
+		 * that silently defaulted everything would also print the
+		 * success marker. These assert the operator was actually asked,
+		 * and asked about the right disk.
+		 */
+		if (strstr(captured, "Disks on this machine:") == NULL) {
+			fprintf(stderr, "interactive install never listed the machine's disks\n");
+			printf("INSTALLER RESULT: FAIL\n");
+			return 1;
+		}
+		if (strstr(captured, "will be COMPLETELY ERASED") == NULL) {
+			fprintf(stderr, "interactive install never asked for erase confirmation\n");
+			printf("INSTALLER RESULT: FAIL\n");
+			return 1;
+		}
+		/* The CD-ROM must never be offered as somewhere to install. */
+		if (strstr(captured, "/dev/sr0") != NULL) {
+			fprintf(stderr, "the installer offered read-only media as an install target\n");
+			printf("INSTALLER RESULT: FAIL\n");
+			return 1;
+		}
+		/* And with Secure Boot not enforcing, no password may be asked. */
+		if (strstr(captured, "Secure Boot is not enforcing") == NULL) {
+			fprintf(stderr, "MOK enrollment was not skipped on non-enforcing firmware\n");
+			printf("INSTALLER RESULT: FAIL\n");
+			return 1;
+		}
 	}
 
 	/* 8. Session 2: MOK-confirm boot -- the target disk, for real, with
