@@ -343,7 +343,7 @@ Two things it needs, both usually already true:
 - The container must carry the terminfo entry your `$TERM` names. The `ncurses` package installs the full database (2903 entries, `xterm` and `xterm-256color` among them), and anything linking `libncursesw` already depends on it — so an image with `htop` or `vim` in it has this by construction.
 - Your own terminal has to be a terminal. With stdio piped there is nothing to measure, so the session takes the documented defaults (`xterm-256color`, 80×24) instead.
 
-**The web dashboard's console cannot run these**, and this is a stated boundary rather than a bug ([ADR-0043](../adr/0043-container-console-exec-websocket.md)): it is a line-buffer that handles colour and simple cursor movement, with no two-dimensional screen to draw a full-screen program into. Use the CLI for those.
+The web dashboard's console runs these too, since [ADR-0243](../adr/0243-the-dashboard-terminal-is-a-real-vt.md) replaced its line-buffer renderer with a real VT. The CLI is still the better tool when you want your own terminal's exact font, scrollback and copy behaviour, or when you are already in a shell.
 
 Declaring nothing is a real and often correct answer: an image holding one static binary and no shell has nothing for a console to run, and both the CLI and the dashboard then say so rather than offering a control that cannot work.
 
