@@ -22,15 +22,31 @@ answered neither:
   has a window size of 0×0 until something sets one, and nothing ever did.
   There was no `TIOCSWINSZ` call anywhere in the codebase.
 - **What can you do?** `$TERM`, naming an entry in the terminfo database.
-  The exec'd process inherited the daemon's own `environ`, and `cixd` runs
-  as pid 1 from the bootloader — so there was no `TERM` in it to inherit,
-  and nothing in the daemon set one. ncurses' `setupterm()` fails outright
-  in that state ("TERM environment variable not set").
+  The exec'd process inherited the daemon's own `environ`, and nothing in
+  the daemon ever set `TERM`.
 
-So every such program either refused to start or drew into a zero-sized
-screen. A plain interactive shell needs neither answer, which is exactly
-why this survived unremarked from ADR-0043 until someone tried to run
-`htop`.
+**The failure mode is worse than a refusal, because it is silent.** Measured
+on 192.168.15.95 against the `jump` container before the fix, rather than
+reasoned about: `stty size` inside a console session reports `0 0`, and
+`$TERM` is `linux` — `cixd` runs as pid 1 from the bootloader, so what it
+passes on is the kernel console's own terminal type. ncurses does not fail
+in that state. It falls back to the terminfo entry's own `lines#`/`cols#`,
+so `tput cols`/`tput lines` answer 80 and 24, and a real `vim` starts
+perfectly happily — the same probe captured it emitting `ESC[1;24r`, setting
+itself a 24-line scroll region.
+
+So a full-screen program ran, and drew into the top-left 80×24 corner of
+whatever the operator's terminal actually was, forever, no matter how large
+that window was or how it was resized. And every session claimed to be a
+Linux virtual console regardless of which client was actually attached,
+mis-describing the colour and key-sequence capabilities of anything that is
+not one. A plain interactive shell needs neither answer and is unaffected,
+which is exactly why this survived unremarked from ADR-0043 until someone
+asked about `htop`.
+
+An earlier draft of this ADR said such programs "refused to start". That was
+inference, and the probe above disproved it before it shipped — the defect is
+real, but its symptom is a wrong fixed size, not an error message.
 
 Two things were already in place and needed no work, confirmed rather than
 assumed. The `ncurses` package installs the complete terminfo database —
@@ -107,16 +123,18 @@ regression for every caller who is not running a full-screen program.
 
 ## Consequences
 
-`htop`, `btop` and `vim` work over `cixctl console`, which now sends its
-real size and `$TERM` on attach and a fresh size on every `SIGWINCH`.
-Resizing the local window resizes the remote program.
+`htop`, `btop` and `vim` get the operator's real terminal over
+`cixctl console`, which now sends its actual size and `$TERM` on attach and
+a fresh size on every `SIGWINCH`. Resizing the local window resizes the
+remote program, where before it drew at a fixed 80×24 that no resize reached.
 
 **The web dashboard's terminal still cannot render them, and this change
 does not alter that.** It is a line-buffer that interprets `\r`/`\n`/
 backspace/tab and SGR colour and structurally discards every
 cursor-addressing escape — a boundary ADR-0043 stated deliberately. What
-does improve there is that its PTY is now 80×24 instead of 0×0, so a
-program starts rather than failing. Making that surface render full-screen
+does improve there is that its PTY is genuinely 80×24 rather than nominally
+0×0, so a program's own idea of the screen and the daemon's now agree instead
+of coinciding by accident through a terminfo fallback. Making that surface render full-screen
 output needs a two-dimensional screen model (cursor addressing, scroll
 regions, an alternate screen buffer) or a reconsideration of ADR-0043's
 no-framework stance, and is a separate decision of a much larger size that

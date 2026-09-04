@@ -330,7 +330,9 @@ The first declared is what `container console NAME` attaches to with no `--conso
 
 ### Full-screen programs in a console
 
-`container console` gives the remote program a real terminal: it sends the size of your own terminal and your `$TERM` when it attaches, and a fresh size whenever you resize the window ([ADR-0242](../adr/0242-a-console-is-a-sized-terminal-of-a-declared-type.md)). So `htop`, `btop` and `vim` work, and resizing the window resizes them.
+`container console` gives the remote program a real terminal: it sends the size of your own terminal and your `$TERM` when it attaches, and a fresh size whenever you resize the window ([ADR-0242](../adr/0242-a-console-is-a-sized-terminal-of-a-declared-type.md)). So `htop`, `btop` and `vim` fill your actual window and resize with it.
+
+Before this they still *ran* — which is why it was easy to miss — but always at a fixed 80×24 in the corner of the screen, because the pty was never sized and ncurses fell back to the terminfo defaults.
 
 ```
 cixctl container console jump --cmd=/usr/bin/htop

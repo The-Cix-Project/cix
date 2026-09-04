@@ -40,10 +40,16 @@
  * program (htop, vim) calls ioctl(TIOCGWINSZ) to find the screen size
  * and reads $TERM to find the terminfo entry describing what the
  * terminal can do. Before this existed the pty was created at its
- * kernel default of 0x0 and $TERM was whatever cixd itself inherited
- * from the bootloader -- i.e. nothing -- so ncurses had a zero-sized
- * screen of unknown type and every such program either refused to
- * start or drew into nothing.
+ * kernel default of 0x0 and never sized, and $TERM was whatever cixd
+ * itself inherited as pid 1 from the bootloader -- measured on a real
+ * host as "linux", the kernel console's own type, regardless of which
+ * client was actually attached.
+ *
+ * That does not produce an error, which is what made it easy to miss:
+ * ncurses falls back to the terminfo entry's own lines#/cols#, so a
+ * full-screen program starts normally and then draws into a fixed
+ * 80x24 corner of whatever the operator's terminal really is, with no
+ * resize ever reaching it.
  *
  * cols/rows of 0, and a NULL or empty term, each mean "the caller does
  * not know" and take the defaults below rather than being passed
