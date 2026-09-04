@@ -808,6 +808,26 @@ static int pick_disk(char *out, size_t out_size)
 		snprintf(probe, sizeof(probe), "/sys/class/block/%s/device", e->d_name);
 		if (stat(probe, &pst) != 0)
 			continue; /* a partition, or not a real device */
+		/*
+		 * Never offer read-only media as an install target. The
+		 * installer boots from a CD-ROM, which is a whole block device
+		 * with a "device" link like any other -- so without this the
+		 * media you are running from appears in the list of disks to
+		 * erase. /sys/class/block/<name>/ro is the kernel's own answer.
+		 */
+		snprintf(probe, sizeof(probe), "/sys/class/block/%s/ro", e->d_name);
+		{
+			FILE *rf = fopen(probe, "r");
+			char rb[8] = { 0 };
+
+			if (rf != NULL) {
+				if (fgets(rb, sizeof(rb), rf) != NULL && rb[0] == '1') {
+					fclose(rf);
+					continue;
+				}
+				fclose(rf);
+			}
+		}
 		snprintf(names[count], sizeof(names[count]), "%s", e->d_name);
 		snprintf(probe, sizeof(probe), "/dev/%s", e->d_name);
 		sizes[count] = disk_size_mib(probe);
@@ -889,6 +909,19 @@ int main(int argc, char **argv)
 	const char *iface = NULL;
 	int prefix = -1;
 	int skip_partition = 0;
+	/*
+	 * Whether to stage the Secure Boot key enrolment: "auto" (default)
+	 * enrols only when the firmware is enforcing, "always" regardless,
+	 * "never" not at all.
+	 *
+	 * "always" is a real need rather than a test hook: an operator
+	 * installing on a machine they intend to switch Secure Boot ON for
+	 * afterwards wants the key enrolled now, while they are physically
+	 * at the console, instead of discovering at the next boot that the
+	 * chain is refused. It is also what lets the installer test cover
+	 * enrolment on firmware it does not enforce on.
+	 */
+	const char *enroll_mode = "auto";
 	int unknown_arg = 0;
 	int i;
 	struct stat st;
@@ -905,7 +938,9 @@ int main(int argc, char **argv)
 		return 1;
 
 	for (i = 1; i < argc; i++) {
-		if (strncmp(argv[i], "--disk=", 7) == 0)
+		if (strncmp(argv[i], "--enroll-key=", 13) == 0)
+			enroll_mode = argv[i] + 13;
+		else if (strncmp(argv[i], "--disk=", 7) == 0)
 			disk = argv[i] + 7;
 		else if (strncmp(argv[i], "--ip=", 5) == 0)
 			ip = argv[i] + 5;
@@ -988,6 +1023,7 @@ int main(int argc, char **argv)
 	    prefix <= 0 || prefix > 32) {
 		dual_printf("usage: %s [--disk=/dev/sdX] [--ip=A.B.C.D] [--prefix=N] "
 		            "[--gateway=A.B.C.D] [--interface=IFNAME] [--skip-partition]\n"
+		            "       [--enroll-key=auto|always|never]\n"
 		            "  Every flag is optional: anything omitted is asked for on the console,\n"
 		            "  with this machine's own disks and interfaces listed. Pass them all to\n"
 		            "  install unattended.\n"
@@ -1098,7 +1134,9 @@ int main(int argc, char **argv)
 	 * is enrolled by hand, which is a thing to report, not to fail an
 	 * otherwise complete install over.
 	 */
-	if (!secure_boot_enforcing()) {
+	if (strcmp(enroll_mode, "never") == 0) {
+		dual_printf("cix-install: --enroll-key=never -- skipping MOK key enrollment\n");
+	} else if (strcmp(enroll_mode, "auto") == 0 && !secure_boot_enforcing()) {
 		dual_printf("cix-install: Secure Boot is not enforcing on this machine -- skipping "
 		            "MOK key enrollment (no password needed)\n");
 	} else if (enroll_signing_key() != 0) {
