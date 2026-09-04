@@ -1,4 +1,5 @@
 #include "dns.h"
+#include "containerpath.h"
 #include "linux_compat.h"
 #include "persist.h"
 #include "registry.h"
@@ -482,9 +483,9 @@ void dns_forwarders_sync_all(void)
 		entry = registry_find(g_bindings[i].container_name);
 		if (entry == NULL || !entry->running)
 			continue;
-		if (snprintf(full_path, sizeof(full_path), "/proc/%d/root%s", (int)entry->handle.pid,
-		             DNS_SERVERS_FILE_PATH) >= (int)sizeof(full_path))
-			continue;
+		/* Host-side path, not the container's own id-mapped view (#269). */
+		container_file_host_path(g_bindings[i].container_name, entry->disk_name,
+		                          DNS_SERVERS_FILE_PATH, full_path, sizeof(full_path));
 		if (dns_write_servers_file(full_path) != 0)
 			continue;
 		sys_pidfd_send_signal(entry->handle.pidfd, SIGHUP);
@@ -576,9 +577,18 @@ enum dns_server_error dns_server_register(const char *container_name, pid_t pid,
 	if (slot < 0)
 		return DNS_SERVER_ERR_FULL;
 
-	if (snprintf(full_path, sizeof(full_path), "/proc/%d/root%s", (int)pid, hosts_path) >=
-	    (int)sizeof(full_path))
-		return DNS_SERVER_ERR_INVALID_PATH;
+	{
+		/*
+		 * Host-side path (#269). The entry is looked up for its disk
+		 * rather than deriving anything from pid: which disk a
+		 * container lives on is what decides where its tree is, and
+		 * the pid says nothing about that.
+		 */
+		const struct registry_entry *re = registry_find(container_name);
+
+		container_file_host_path(container_name, re != NULL ? re->disk_name : "", hosts_path,
+		                          full_path, sizeof(full_path));
+	}
 
 	if (dns_write_hosts_file(full_path) != 0)
 		return DNS_SERVER_ERR_WRITE_FAILED;
@@ -598,9 +608,13 @@ enum dns_server_error dns_server_register(const char *container_name, pid_t pid,
 	 * leave a half-registered server; both files are in place, or the
 	 * registration does not happen at all.
 	 */
-	if (snprintf(servers_full_path, sizeof(servers_full_path), "/proc/%d/root%s", (int)pid,
-	             DNS_SERVERS_FILE_PATH) >= (int)sizeof(servers_full_path))
-		return DNS_SERVER_ERR_INVALID_PATH;
+	{
+		const struct registry_entry *re = registry_find(container_name);
+
+		container_file_host_path(container_name, re != NULL ? re->disk_name : "",
+		                          DNS_SERVERS_FILE_PATH, servers_full_path,
+		                          sizeof(servers_full_path));
+	}
 	if (dns_write_servers_file(servers_full_path) != 0)
 		return DNS_SERVER_ERR_WRITE_FAILED;
 
@@ -683,10 +697,9 @@ void dns_server_sync_all(void)
 		if (entry == NULL || !entry->running)
 			continue;
 
-		if (snprintf(full_path, sizeof(full_path), "/proc/%d/root%s",
-		             (int)entry->handle.pid, g_bindings[i].hosts_path) >=
-		    (int)sizeof(full_path))
-			continue;
+		/* Host-side path, not the container's own id-mapped view (#269). */
+		container_file_host_path(g_bindings[i].container_name, entry->disk_name,
+		                          g_bindings[i].hosts_path, full_path, sizeof(full_path));
 		if (dns_write_hosts_file(full_path) != 0)
 			continue;
 		sys_pidfd_send_signal(entry->handle.pidfd, SIGHUP);

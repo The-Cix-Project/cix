@@ -56,6 +56,7 @@
 #include "pkg.h"
 #include "quotamap.h"
 #include "registry.h"
+#include "containerpath.h"
 #include "targz.h"
 #include "rtnetlink.h"
 #include "siteconfig.h"
@@ -4086,8 +4087,8 @@ static void handle_kmsg_event(struct conn *cc)
  * (ADR-0161 Phase D), needed here already since Phase C's hotplug
  * reconciliation (below) is just another caller of the same live-
  * attach/detach primitives those handlers use. */
-static int live_mknod_device(pid_t pid, const struct device_spec *dev);
-static int live_unlink_device(pid_t pid, const char *dev_path);
+static int live_mknod_device(const struct registry_entry *e, const struct device_spec *dev);
+static int live_unlink_device(const struct registry_entry *e, const char *dev_path);
 static int live_attach_one_device(struct registry_entry *e, const struct discovered_device *dd);
 
 /*
@@ -4261,7 +4262,7 @@ static void reconcile_live_device_revocations(void)
 				                e->name, id_copy, strerror(errno));
 				continue;
 			}
-			live_unlink_device(e->handle.pid, removed.dev_path);
+			live_unlink_device(e, removed.dev_path);
 			logstore_write("cixd", "info",
 			                "container %s: revoked grant for unplugged device %s", e->name,
 			                id_copy);
@@ -9570,7 +9571,7 @@ static int g_test_direct_rootfs;
  * state to drift, the filesystem is the one source of truth, and a
  * container keeps its mode across restarts automatically.
  */
-static void container_writable_path(const char *container_root, const char *name,
+void container_writable_path(const char *container_root, const char *name,
                                      const char *rel_path, char *out, size_t out_size)
 {
 	struct stat wst;
@@ -9583,7 +9584,7 @@ static void container_writable_path(const char *container_root, const char *name
 }
 
 /* Defined below, next to the disk-placement code it belongs with. */
-static void container_root_for(const char *disk_name, char *out, size_t out_size);
+void container_root_for(const char *disk_name, char *out, size_t out_size);
 
 /*
  * Issue #162: where a container's tree lives when it has NO registry
@@ -12497,7 +12498,7 @@ static int resolve_container_disk_root(const char *disk_name, char *out_root, si
  * after a container was placed on it), falls back to CONTAINERS_DIR,
  * which fails the lookup cleanly (ENOENT) rather than crashing.
  */
-static void container_root_for(const char *disk_name, char *out, size_t out_size)
+void container_root_for(const char *disk_name, char *out, size_t out_size)
 {
 	struct discovered_disk disks[DISK_ENUM_MAX];
 	int count, i;
@@ -15017,9 +15018,10 @@ static int create_container_from_body(const char *body, size_t body_len,
 			} else {
 				char parent[PATH_MAX + 32], dst[PATH_MAX + 32];
 
-				if (snprintf(parent, sizeof(parent), "/proc/%d/root%s",
-				             (int)entry->handle.pid, ldap_secret_dir_buf) >=
-				        (int)sizeof(parent) ||
+				/* Host-side tree (#269) -- see containerpath.h. */
+				container_file_host_path(entry->name, entry->disk_name,
+				                          ldap_secret_dir_buf, parent, sizeof(parent));
+				if (parent[0] == '\0' ||
 				    snprintf(dst, sizeof(dst), "%s/bind.secret", parent) >= (int)sizeof(dst) ||
 				    persist_mkdir_p(parent) != 0 ||
 				    persist_atomic_write(dst, secret, strlen(secret)) != 0) {
@@ -16407,18 +16409,16 @@ static void handle_container_network_detach(int fd, const char *container_name,
  * access gate is the BPF program, not these POSIX bits; mknod()'s
  * own requested mode is subject to this daemon's own umask).
  */
-static int live_mknod_device(pid_t pid, const struct device_spec *dev)
+static int live_mknod_device(const struct registry_entry *e, const struct device_spec *dev)
 {
 	char full_path[PATH_MAX];
 	char target_dir[PATH_MAX];
 	char *slash;
 	mode_t mode;
 
-	if (snprintf(full_path, sizeof(full_path), "/proc/%d/root%s", (int)pid, dev->dev_path) >=
-	    (int)sizeof(full_path)) {
-		errno = ENAMETOOLONG;
-		return -1;
-	}
+	/* Host-side tree, not the container's own id-mapped view (#269):
+	 * a node created through that view never arrives. */
+	container_file_host_path(e->name, e->disk_name, dev->dev_path, full_path, sizeof(full_path));
 	snprintf(target_dir, sizeof(target_dir), "%s", full_path);
 	slash = strrchr(target_dir, '/');
 	if (slash != NULL && slash != target_dir) {
@@ -16435,12 +16435,12 @@ static int live_mknod_device(pid_t pid, const struct device_spec *dev)
 	return 0;
 }
 
-static int live_unlink_device(pid_t pid, const char *dev_path)
+static int live_unlink_device(const struct registry_entry *e, const char *dev_path)
 {
 	char full_path[PATH_MAX];
 
-	if (snprintf(full_path, sizeof(full_path), "/proc/%d/root%s", (int)pid, dev_path) >=
-	    (int)sizeof(full_path)) {
+	container_file_host_path(e->name, e->disk_name, dev_path, full_path, sizeof(full_path));
+	if (full_path[0] == '\0') {
 		errno = ENAMETOOLONG;
 		return -1;
 	}
@@ -16486,7 +16486,7 @@ static int live_attach_one_device(struct registry_entry *e, const struct discove
 	if (registry_device_live_attach(e, &dev, &att) != 0)
 		return -1;
 
-	if (live_mknod_device(e->handle.pid, &dev) != 0) {
+	if (live_mknod_device(e, &dev) != 0) {
 		int saved_errno = errno;
 		struct registry_device_attachment removed;
 
@@ -16577,7 +16577,7 @@ static void handle_container_device_attach(int fd, const char *container_name, c
 
 		for (k = 0; k < attached; k++) {
 			registry_device_live_detach(e, matches[k]->id, &removed);
-			live_unlink_device(e->handle.pid, matches[k]->dev_path);
+			live_unlink_device(e, matches[k]->dev_path);
 		}
 		respond_error(fd, 500, "Internal Server Error", "failed to attach device");
 		return;
@@ -16630,7 +16630,7 @@ static void handle_container_device_detach(int fd, const char *container_name, c
 		respond_error(fd, 500, "Internal Server Error", "failed to update device grant");
 		return;
 	}
-	if (live_unlink_device(e->handle.pid, removed.dev_path) != 0)
+	if (live_unlink_device(e, removed.dev_path) != 0)
 		fprintf(stderr, "%s: failed to remove live device node %s (id %s)\n", container_name,
 		        removed.dev_path, id);
 

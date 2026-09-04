@@ -1,4 +1,6 @@
 #include "ldap.h"
+#include "containerpath.h"
+#include "logstore.h"
 #include "subid.h"
 #include "hostauth.h"
 #include "persist.h"
@@ -1145,10 +1147,22 @@ void ldap_record_sync_all(void)
 		entry = registry_find(g_bindings[i].container_name);
 		if (entry == NULL || !entry->running)
 			continue;
-		if (snprintf(full_path, sizeof(full_path), "/proc/%d/root%s", (int)entry->handle.pid,
-		             g_bindings[i].config_path) >= (int)sizeof(full_path))
-			continue;
-		ldap_write_config_file(full_path);
+		/*
+		 * The container's tree on the HOST side, not through its own
+		 * /proc/<pid>/root view (#269). A btrfs-backed userns
+		 * container's rootfs is an id-mapped mount, and the daemon has
+		 * no mapped identity there, so writing through it is refused.
+		 * Measured: glauth on such a container served an empty user
+		 * list and rejected every bind, while this loop reported
+		 * nothing at all.
+		 */
+		container_file_host_path(g_bindings[i].container_name, entry->disk_name,
+		                          g_bindings[i].config_path, full_path, sizeof(full_path));
+		if (ldap_write_config_file(full_path) != 0)
+			logstore_write("cixd", "error",
+			                "ldap: could not write %s config to %s -- this server is now "
+			                "serving stale or empty user data",
+			                g_bindings[i].container_name, full_path);
 	}
 }
 

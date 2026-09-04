@@ -1,4 +1,6 @@
 #include "dhcp.h"
+#include "containerpath.h"
+#include "logstore.h"
 #include "dns.h"
 #include "persist.h"
 #include "registry.h"
@@ -708,10 +710,20 @@ void dhcp_sync_all(char changed[][DHCP_SERVER_NAME_MAX], int max_changed, int *o
 		}
 		if (entry == NULL || !entry->running)
 			continue;
-		snprintf(path, sizeof(path), "/proc/%d/root%s", (int)entry->handle.pid, DHCP_CONF_PATH);
-		persist_atomic_write(path, conf, strlen(conf));
-		snprintf(path, sizeof(path), "/proc/%d/root%s", (int)entry->handle.pid, DHCP_HOSTS_PATH);
-		persist_atomic_write(path, hosts, strlen(hosts));
+		/* Host-side paths, not the container's own id-mapped view, and
+		 * the results are checked -- both writes used to be issued and
+		 * discarded, so a DHCP server could serve a stale config
+		 * indefinitely with nothing recorded (#269). */
+		container_file_host_path(names[i], entry->disk_name, DHCP_CONF_PATH,
+		                          path, sizeof(path));
+		if (persist_atomic_write(path, conf, strlen(conf)) != 0)
+			logstore_write("cixd", "error", "dhcp: could not write %s config to %s",
+			                names[i], path);
+		container_file_host_path(names[i], entry->disk_name, DHCP_HOSTS_PATH,
+		                          path, sizeof(path));
+		if (persist_atomic_write(path, hosts, strlen(hosts)) != 0)
+			logstore_write("cixd", "error", "dhcp: could not write %s hosts to %s",
+			                names[i], path);
 		/* Puts the hosts file into force immediately. The conf file is
 		 * untouched by this signal -- see the header. */
 		sys_pidfd_send_signal(entry->handle.pidfd, SIGHUP);
@@ -846,7 +858,9 @@ void dhcp_leases_write_json(struct json_writer *w)
 
 		if (entry == NULL || !entry->running)
 			continue;
-		snprintf(path, sizeof(path), "/proc/%d/root%s", (int)entry->handle.pid, DHCP_LEASE_PATH);
+		/* A READ, but it must look where the writes go (#269). */
+		container_file_host_path(names[i], entry->disk_name, DHCP_LEASE_PATH,
+		                          path, sizeof(path));
 		f = fopen(path, "r");
 		if (f == NULL)
 			continue;
