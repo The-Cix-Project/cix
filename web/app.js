@@ -432,11 +432,39 @@ document.addEventListener("keydown", (event) => {
  * actions, and the logo menu's own special-purpose buttons -- reboot/
  * shutdown/login -- with no per-item wiring needed here).
  */
+/* The one open top-level panel, as [toggle, menu], or null. Held
+ * because a fixed panel has to be re-placed whenever its toggle
+ * moves, and only this knows which panel that is. */
+let openMenu = null;
+
 function closeAllMenus() {
+	openMenu = null;
 	for (const menu of document.querySelectorAll(".menu-dropdown-menu, .menu-submenu-menu"))
 		menu.hidden = true;
 	for (const t of document.querySelectorAll(".menu-submenu-toggle"))
 		t.setAttribute("aria-expanded", "false");
+}
+
+/*
+ * A top-level panel is position: fixed (see style.css for why -- the
+ * menu bar scrolls sideways, which makes it clip anything absolute
+ * inside it), so it has no automatic relationship to its toggle at
+ * all and every coordinate has to be measured here. Measured after
+ * the panel is visible, because a hidden element has no box: left
+ * edge under the toggle's left edge, top edge just under the bar,
+ * flipped to hang off the toggle's RIGHT edge when a left-aligned
+ * panel would run past the window -- the same rule the submenus
+ * already use one level down, so both levels behave alike.
+ */
+function positionMenu(toggle, menu) {
+	const t = toggle.getBoundingClientRect();
+
+	menu.style.left = t.left + "px";
+	menu.style.top = t.bottom + 5 + "px";
+
+	const m = menu.getBoundingClientRect();
+	if (m.right > window.innerWidth - 8)
+		menu.style.left = Math.max(8, t.right - m.width) + "px";
 }
 
 for (const dropdown of document.querySelectorAll(".menu-dropdown")) {
@@ -448,6 +476,10 @@ for (const dropdown of document.querySelectorAll(".menu-dropdown")) {
 		const shouldOpen = menu.hidden;
 		closeAllMenus();
 		menu.hidden = !shouldOpen;
+		if (shouldOpen) {
+			positionMenu(toggle, menu);
+			openMenu = [toggle, menu];
+		}
 	});
 	menu.addEventListener("click", (event) => {
 		/* A submenu's own toggle is the one button in here that must
@@ -512,6 +544,21 @@ document.addEventListener("keydown", (event) => {
 	if (event.key === "Escape")
 		closeAllMenus();
 });
+
+/* A fixed panel is placed once, from coordinates that were true at
+ * the moment it opened, so anything that moves its toggle afterwards
+ * -- resizing the window, scrolling the menu bar sideways -- would
+ * leave it behind, pointing at nothing. Re-place it rather than close
+ * it: closing on scroll would also fire on the log panel's own
+ * programmatic scrollTop write, which happens on every poll and has
+ * nothing to do with the operator. Capture phase, because scrolling
+ * inside an element does not bubble. */
+function repositionOpenMenu() {
+	if (openMenu)
+		positionMenu(openMenu[0], openMenu[1]);
+}
+window.addEventListener("resize", repositionOpenMenu);
+window.addEventListener("scroll", repositionOpenMenu, true);
 
 /* Create-action items (data-modal, shared across every topical menu
  * above) all open the same modal shell the old single +Create

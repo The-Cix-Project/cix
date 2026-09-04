@@ -401,6 +401,26 @@ header {
 	z-index: 1000;
 }
 
+/*
+ * The top-level panels are positioned against the VIEWPORT, not their
+ * toggle, and their coordinates come from JS. The menu bar scrolls
+ * sideways (see .menu-bar) so that one row keeps one height at every
+ * window width -- but a non-visible overflow on one axis forces the
+ * other axis from visible to auto, which makes the bar a scroll
+ * container, and a scroll container clips its absolutely positioned
+ * descendants. An absolute panel therefore rendered as a one-pixel
+ * sliver at the bar's bottom edge: the menus were built, opened and
+ * closed correctly the whole time, they were simply cropped to
+ * nothing. Fixed positioning takes the panel out of the bar's clip
+ * entirely, which is the only way to keep both properties at once.
+ *
+ * Submenus keep absolute positioning: they open inside a panel, and a
+ * panel sets no overflow of its own, so nothing there clips them.
+ */
+.menu-dropdown-menu {
+	position: fixed;
+}
+
 .menu-dropdown-menu li,
 .menu-submenu-menu li {
 	display: block;
