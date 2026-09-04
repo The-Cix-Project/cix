@@ -422,16 +422,27 @@ int container_create(const struct container_spec *spec, struct container_handle 
 			}
 		}
 		/*
-		 * ADR-0207 phase 3: an idmap-presented container's volumes are
-		 * detached here too, so the parent can id-map them alongside
-		 * the rootfs once the child's maps are written -- a host-0-
-		 * owned volume is otherwise unmapped inside the userns and
-		 * every write returns EOVERFLOW (ADR-0179's confirmed gap).
+		 * A userns container's volumes are detached here so the parent
+		 * can id-map them once the child's maps are written -- a
+		 * host-0-owned volume is otherwise unmapped inside the userns
+		 * and every write returns EOVERFLOW (ADR-0179's confirmed gap).
 		 * The fds are inherited across clone3, and a fork-inherited fd
 		 * references the SAME mount object, so the parent's
 		 * mount_setattr is visible to the child with no fd passing.
+		 *
+		 * Gated on userns_enabled, NOT userns_idmap (#266). That flag
+		 * describes how this container's ROOTFS is presented -- a
+		 * btrfs snapshot left host-0-owned behind an id-mapped mount,
+		 * versus an ADR-0179 phase-2b copy chowned to the subordinate
+		 * base. A volume has nothing to do with either: it is a
+		 * host-root-owned directory outside the rootfs in both cases,
+		 * and needs the same id-mapping either way. Bundling the two
+		 * under one flag meant every container on a non-btrfs host --
+		 * where the copy+chown branch is always taken -- got volumes
+		 * it could not write to. Measured on a real container: /vol
+		 * owned 65534:65534, touch denied.
 		 */
-		if (prep_ret == 0 && spec->userns_idmap) {
+		if (prep_ret == 0 && spec->userns_enabled) {
 			int vi;
 
 			for (vi = 0; vi < spec->volume_count; vi++) {
@@ -646,7 +657,7 @@ int container_create(const struct container_spec *spec, struct container_handle 
 					child_diag(diag_pipe[1], "child: volume mkdir");
 					_exit(125);
 				}
-				if (spec->userns_idmap && spec->volume_idmap_fds[i] >= 0) {
+				if (spec->userns_enabled && spec->volume_idmap_fds[i] >= 0) {
 					/* The parent's id-mapped detached tree -- attaching
 					 * it is what makes a host-0-owned volume writable
 					 * by this container's mapped root (ADR-0207 ph3). */
@@ -848,7 +859,7 @@ int container_create(const struct container_spec *spec, struct container_handle 
 	 * at clone3; drop the parent's copy. The detached mount stays alive on
 	 * the child's copy until it move_mounts it into its own namespace.
 	 */
-	if (spec->userns_enabled && spec->userns_idmap) {
+	if (spec->userns_enabled) {
 		int vi;
 
 		for (vi = 0; vi < spec->volume_count; vi++)
@@ -882,7 +893,18 @@ int container_create(const struct container_spec *spec, struct container_handle 
 		 * for snapshot-provisioned containers: the disk stays host-0,
 		 * extent sharing intact, and the kernel does the presenting.
 		 */
-		if (userns_ok && spec->userns_idmap) {
+		/*
+		 * #266: the rootfs id-map and the volume id-maps used to share
+		 * this one condition, and they answer different questions. The
+		 * ROOTFS is id-mapped only under the snapshot presentation
+		 * (userns_idmap); under copy+chown it is already owned by the
+		 * subordinate base and must not be re-mapped. VOLUMES are
+		 * host-root-owned in both cases and always need it. Entering
+		 * the block for either reason and applying each part on its
+		 * own condition is what separates them.
+		 */
+		if (userns_ok && spec->userns_enabled &&
+		    (spec->userns_idmap || spec->volume_count > 0)) {
 			char uns_path[64];
 			int uns_fd;
 
@@ -923,7 +945,9 @@ int container_create(const struct container_spec *spec, struct container_handle 
 				 * redirection and almost every configure script needs.
 				 */
 				mattr.userns_fd = (uint64_t)uns_fd;
-				if (cix_mount_setattr(overlay_lower_fd, "",
+				/* Rootfs: only the snapshot presentation. */
+				if (spec->userns_idmap && overlay_lower_fd >= 0 &&
+				    cix_mount_setattr(overlay_lower_fd, "",
 				                      CIX_AT_EMPTY_PATH, &mattr) != 0)
 					userns_ok = 0;
 				for (vi = 0; userns_ok && vi < spec->volume_count; vi++) {
