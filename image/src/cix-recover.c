@@ -10,14 +10,18 @@
  * backend settings themselves -- completely untouched.
  *
  * Deliberately NOT sharing cix-install.c's own partition-discovery
- * machinery (sfdisk -d + GPT-name lookup): this tool's own real,
- * fixed target is always /dev/vda5, the exact same hardcoded
- * "cix-containers is always here once a system is actually
- * installed" convention daemon/src/main.c's own CONTAINERS_DEVICE and
- * cix-install.c's own BOOT_TIME_DISK_PREFIX already rely on (a
- * fresh install's own disk can be attached at any device path while
- * the installer runs, but the *result* is always addressed this way
- * from then on). A recovery tool's own real security property is how
+ * machinery (sfdisk -d + GPT-name lookup): this tool's targets are
+ * fixed device paths, /dev/vda4 then /dev/vda5, the exact same
+ * hardcoded "these are always here once a system is actually
+ * installed" convention daemon/src/main.c's own CONFIG_DEVICE and
+ * CONTAINERS_DEVICE and cix-install.c's own BOOT_TIME_DISK_PREFIX
+ * already rely on (a fresh install's own disk can be attached at any
+ * device path while the installer runs, but the *result* is always
+ * addressed this way from then on).
+ *
+ * Two of them because host-auth state moved from the containers
+ * partition to the config partition (#250) and this tool did not move
+ * with it -- see CONFIG_DEVICE below for what that cost. A recovery tool's own real security property is how
  * small and independently-auditable its own code is -- reusing the
  * full installer's much larger disk-partitioning surface for a task
  * that needs none of it would work against that, not for it.
@@ -44,12 +48,82 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-/* Matches daemon/src/main.c's own CONTAINERS_DEVICE exactly -- see
- * this file's own header comment for why hardcoding it here, rather
- * than discovering it, is the correct choice for this specific tool. */
+/*
+ * Matches daemon/src/main.c's own CONFIG_DEVICE and CONTAINERS_DEVICE
+ * exactly -- see this file's own header comment for why hardcoding
+ * them here, rather than discovering them, is the correct choice for
+ * this specific tool.
+ *
+ * BOTH, and in this order, because #250 moved STATE_DIR from the
+ * containers partition to the config partition and this tool was not
+ * moved with it. The consequence was worse than a plain failure: it
+ * mounted cix-containers, found no state/hostauth_config.json there,
+ * and reported "this system has never activated write-gating, so
+ * there is nothing to reset" -- which reads as a benign success. The
+ * operator reboots believing they are recovered and is still locked
+ * out, with the tool's own output saying everything was fine.
+ * Confirmed on 192.168.15.95: admin_groups was still ["cix-admins"]
+ * after a completed run.
+ *
+ * The containers partition stays as a fallback rather than being
+ * replaced, because it is where the file still lives on a system that
+ * has not yet booted a daemon new enough to migrate it -- and a
+ * break-glass tool that only works on current installs is no use to
+ * the older box that is likelier to need it. The daemon carries the
+ * same legacy path for the same reason.
+ */
+#define CONFIG_DEVICE "/dev/vda4"
+#define CONFIG_MOUNT "/mnt/config"
 #define CONTAINERS_DEVICE "/dev/vda5"
 #define CONTAINERS_MOUNT "/mnt/containers"
 #define HOSTAUTH_CONFIG_REL_PATH "state/hostauth_config.json"
+
+/*
+ * Where the host-auth config was actually found, so every later
+ * message and the unmount name the partition this run is really
+ * operating on rather than an assumed one.
+ */
+static const char *g_mount_point;
+static const char *g_device;
+
+/*
+ * Mount each candidate in turn and keep the first that actually holds
+ * the file. A partition that mounts but does not have it is unmounted
+ * again before trying the next, so a successful return leaves exactly
+ * one mount behind.
+ */
+static int mount_state_partition(char *config_path, size_t config_path_size)
+{
+	static const struct {
+		const char *device;
+		const char *mount;
+	} candidates[] = {
+		{ CONFIG_DEVICE, CONFIG_MOUNT },
+		{ CONTAINERS_DEVICE, CONTAINERS_MOUNT },
+	};
+	size_t i;
+
+	for (i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
+		if (ensure_dir(candidates[i].mount) != 0)
+			return -1;
+		if (mount(candidates[i].device, candidates[i].mount, "btrfs", 0, NULL) != 0 &&
+		    mount(candidates[i].device, candidates[i].mount, "ext4", 0, NULL) != 0)
+			continue;
+		if (snprintf(config_path, config_path_size, "%s/%s", candidates[i].mount,
+		             HOSTAUTH_CONFIG_REL_PATH) >= (int)config_path_size) {
+			umount(candidates[i].mount);
+			return -1;
+		}
+		if (access(config_path, R_OK) == 0) {
+			g_device = candidates[i].device;
+			g_mount_point = candidates[i].mount;
+			dual_printf("Found host-auth state on %s.\n", candidates[i].device);
+			return 0;
+		}
+		umount(candidates[i].mount);
+	}
+	return 1;
+}
 
 static int early_mounts(void)
 {
@@ -190,32 +264,33 @@ static int recover_main(void)
 	dual_printf("(every login attempt failing) and have no other way back in.\n");
 	dual_printf("\n");
 
-	if (ensure_dir(CONTAINERS_MOUNT) != 0)
-		return 1;
-	if (mount(CONTAINERS_DEVICE, CONTAINERS_MOUNT, "btrfs", 0, NULL) != 0 &&
-	    mount(CONTAINERS_DEVICE, CONTAINERS_MOUNT, "ext4", 0, NULL) != 0) {
-		dual_perror("mount " CONTAINERS_DEVICE);
+	switch (mount_state_partition(config_path, sizeof(config_path))) {
+	case 0:
+		break;
+	case 1:
 		dual_printf(
-		    "Could not mount %s -- this recovery tool only supports the standard layout\n"
-		    "(host-auth state on the primary OS disk's own cix-containers partition).\n"
-		    "A system whose state storage was relocated to a different disk needs manual\n"
-		    "recovery instead.\n",
-		    CONTAINERS_DEVICE);
+		    "No host-auth state found on %s or %s.\n"
+		    "\n"
+		    "Either this system has never activated write-gating -- in which case every\n"
+		    "cixd API write is already open and there is nothing to reset -- or its state\n"
+		    "storage was relocated to a different disk, which needs manual recovery.\n"
+		    "Nothing was changed.\n",
+		    CONFIG_DEVICE, CONTAINERS_DEVICE);
 		return 1;
-	}
-
-	if (snprintf(config_path, sizeof(config_path), "%s/%s", CONTAINERS_MOUNT,
-	             HOSTAUTH_CONFIG_REL_PATH) >= (int)sizeof(config_path)) {
-		umount(CONTAINERS_MOUNT);
+	default:
+		dual_printf("Could not mount a partition to search. Nothing was changed.\n");
 		return 1;
 	}
 
 	if (read_whole_file(config_path, &raw, &raw_len) != 0) {
-		dual_printf("%s does not exist -- this system has never activated write-gating,\n"
-		            "so there is nothing to reset. Nothing was changed.\n",
-		            config_path);
-		umount(CONTAINERS_MOUNT);
-		return 0;
+		/* It was readable a moment ago -- mount_state_partition()
+		 * selected this partition precisely because access() found it
+		 * there -- so this is a real read failure, not an absent
+		 * file, and must not be reported as "nothing to reset". */
+		dual_perror(config_path);
+		dual_printf("%s could not be read. Nothing was changed.\n", config_path);
+		umount(g_mount_point);
+		return 1;
 	}
 
 	root = json_parse(raw, raw_len);
@@ -223,7 +298,7 @@ static int recover_main(void)
 	if (root == NULL) {
 		dual_printf("%s exists but could not be parsed as JSON -- refusing to touch it.\n",
 		            config_path);
-		umount(CONTAINERS_MOUNT);
+		umount(g_mount_point);
 		return 1;
 	}
 
@@ -248,7 +323,7 @@ static int recover_main(void)
 	    (line[5] != '\n' && line[5] != '\0')) {
 		dual_printf("\nAborted -- nothing was changed.\n");
 		json_free(root);
-		umount(CONTAINERS_MOUNT);
+		umount(g_mount_point);
 		return 0;
 	}
 
@@ -280,17 +355,18 @@ static int recover_main(void)
 	if (write_whole_file_atomic(config_path, w.buf, w.len) != 0) {
 		dual_printf("\nFailed to write %s -- nothing was confirmed changed.\n", config_path);
 		jw_free(&w);
-		umount(CONTAINERS_MOUNT);
+		umount(g_mount_point);
 		return 1;
 	}
 	jw_free(&w);
 
 	sync();
-	if (umount(CONTAINERS_MOUNT) != 0)
-		dual_perror("umount " CONTAINERS_MOUNT);
+	if (umount(g_mount_point) != 0)
+		dual_perror("umount");
 
-	dual_printf("\nDone -- admin_groups reset to empty. Remove this recovery media and\n");
-	dual_printf("reboot into the normal installed system; every cixd API write is\n");
+	dual_printf("\nDone -- admin_groups reset to empty on %s.\n", g_device);
+	dual_printf("Remove this recovery media and reboot into the normal installed\n");
+	dual_printf("system; every cixd API write is\n");
 	dual_printf("open again until you configure a real admin group (cixctl\n");
 	dual_printf("hostauth-config set --admin-group=...).\n");
 	return 0;
