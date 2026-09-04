@@ -53,6 +53,14 @@ Stage 1 changes no behaviour at all: every value is what the code already did, a
 
 Stage 4 becomes a one-line edit on the platform side, which is the entire point of doing stage 1 first.
 
+**Stage 2 is complete.** Nineteen packages moved to `/usr/lib`, verified on 192.168.15.95: the multiarch directory went from 19 packages to 2, and both survivors are gcc (stage 3) and glibc (stage 4). Three things the migration taught, none of which were visible from the issue:
+
+- **Most of the change was deletion.** Nearly every recipe carried a block moving its own `.pc` files out of `$libdir/pkgconfig` into `/usr/lib/pkgconfig` — a workaround that existed *only* because libdir was not where pkgconf looks. #174's whole family of fixes turns out to have been this one split surfacing a package at a time.
+- **A path change can silently turn a cleanup into a deletion.** curl moved `libcurl` out of `usr/lib` and then removed that directory wholesale; leaving the library in place would have deleted the thing the package ships. The removal is selective now, with an assert that all three files survive it.
+- **Some packages copy libraries out of the build sandbox rather than building them** (coreutils, isotools, mtr, squashfs-tools). Their *source* is a path into packages that are themselves moving, so those recipes search rather than name a directory. isotools was already evidence: zlib had always been in `/usr/lib` while libc and libcrypto were not, and looking for zlib in the multiarch directory is what broke revision 2.14.
+
+One coupling was only visible from inside a binary: PAM computes `SECUREDIR` as `$(libdir)/security` and **compiles it into `libpam.so`'s `DEFAULT_MODULE_PATH`**, while nss-pam-ldapd names the same directory for `pam_ldap`. They had to move in one change, and it was checked by reading the built artifact's strings rather than by reasoning.
+
 Test fixtures that build their own rootfs are deliberately left asserting their own paths. They create a library and reference it at the same path, so they are not describing the platform's layout — they are choosing their own, and a fixture that follows the real layout would be testing less, not more.
 
 Two defects surfaced from writing the layout down, both found by review rather than by a test: a staging loop that walked to a `NULL` terminator its array no longer had, and the host-tools library search path composed separately for `LD_LIBRARY_PATH` and for the loader's own `--library-path` — the same string twice, free to drift while each looked correct in isolation. The second matters more than it reads: a silently shortened search path drops directories off the *end*, and the dynamic linker then falls back to the build host's own libraries with no error at all, which is ADR-0154's confirmed failure mode.
