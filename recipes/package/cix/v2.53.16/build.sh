@@ -434,7 +434,7 @@
 pkg_name="cix"
 pkg_version="v2.53.16"
 pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/v2.53.16.tar.gz"
-pkg_sha256="a6b59462567f69a13cfaac7168e4cb92e0b7011f918e57aee667c1b01eb8ff64"
+pkg_sha256="53bbd7b9a43a9876077e9bad86f1173be80cbbbca320efaca0dc019def3bbec4"
 # ADR-0199/0209: composed from exactly these, with no fallback
 # environment to inherit anything missing (#168). Cix is the first
 # recipe to need this declaration and it found the rule the hard way:
