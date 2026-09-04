@@ -27635,11 +27635,6 @@ static enum console_route_result try_console_upgrade(struct conn *cc, const stru
 		cmd_argv[chosen->argc] = NULL;
 	}
 
-	/* Nothing from req is needed past this point -- safe to free
-	 * cc->http's buffer (which req->headers/body point into) once cc
-	 * is repurposed below; every value taken from req has already
-	 * been copied into a local buffer above. */
-
 	/*
 	 * How big the caller's terminal is and what kind it is. Query
 	 * parameters rather than the X-Cix-Exec-Cmd-style request header
@@ -27675,6 +27670,11 @@ static enum console_route_result try_console_upgrade(struct conn *cc, const stru
 		respond_error(cc->fd, 400, "Bad Request", "rows must be a number from 1 to 20000");
 		return CONSOLE_FAILED;
 	}
+
+	/* Nothing from req is needed past this point -- safe to free
+	 * cc->http's buffer (which req->headers/body point into) once cc
+	 * is repurposed below; every value taken from req has already
+	 * been copied into a local buffer above. */
 
 	if (exec_into_container(entry->handle.pid, cmd_argv, &term, &master_fd, &exec_pid) != 0) {
 		/* task #764: exec_into_container()'s own diagnostics
