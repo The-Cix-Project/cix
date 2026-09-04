@@ -4119,9 +4119,11 @@ paths:
         recipe's checksum before anything is installed from it.
 
 
-        Every field is optional; an empty body reproduces mkinstalleriso's
-        own original default, a generic ISO with kernel_args left as the
-        "CHANGEME" placeholder an operator edits at the GRUB boot menu.
+        Every field is optional, and an empty body is the recommended way
+        to build a shippable ISO: the installer receives no arguments and
+        asks for the disk and the network on the console, listing the
+        machine's own disks and NICs. Supply fields to build media that
+        installs one specific machine unattended.
         Requires a real Secure Boot signing key pair, staged out of band
         by the operator at <data-dir>/keys/cix-signing.{key,crt,cer}
         -- deliberately never generated, fetched, or copied there by
@@ -14350,10 +14352,17 @@ components:
         Every field is optional and independent -- composed server-side
         into the exact kernel-command-line flags cix-install.c itself
         parses (--disk=/--ip=/--prefix=/--gateway=/--interface=). An
-        omitted field becomes the literal placeholder "CHANGEME",
-        mkinstalleriso's own original default -- editable at the GRUB
-        boot menu with 'e' before booting; cix-install's own stat()
-        check on --disk= fails safely if left unedited.
+        omitted field is simply not passed, and the installer asks for it
+        on the console instead, with this machine's own disks and network
+        interfaces listed.
+
+
+        Omitted fields used to become the literal placeholder "CHANGEME",
+        with the documented workflow being to edit the kernel command
+        line at the GRUB menu before booting -- typed blind, against
+        placeholders, with no feedback until the installer refused to
+        start. Mixing still works and is meaningful: a fixed disk with a
+        prompted address, for a fleet of identical machines.
       properties:
         disk:
           type: string

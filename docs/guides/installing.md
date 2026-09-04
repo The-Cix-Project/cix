@@ -42,7 +42,7 @@ sudo build/mkinstalleriso build/iso_stage build/cix-install build/cix-recover \
      /tmp/cixd-root.squashfs \
      image/keys/cix-signing.key image/keys/cix-signing.crt image/keys/cix-signing.cer \
      build/cix-install.iso \
-     "--disk=/dev/CHANGEME --ip=CHANGEME --prefix=24 --gateway=CHANGEME --interface=CHANGEME" \
+     "" \
      /path/to/isotools-artifact \
      /path/to/seed                                     # or "" for no package seed
 ```
@@ -53,7 +53,13 @@ The last two arguments are worth a word. **isotools-root** is the harvested `iso
 
 The generated media carries a second GRUB entry, "Cix Recovery" — a break-glass tool for resetting host-auth admin_groups on an already-installed system if you're ever locked out of the API; see [`security.md`'s recovery section](security.md#break-glass-recovery) and [ADR-0146](../adr/0146-ldap-startup-resync-and-break-glass-recovery.md). It never reformats or reinstalls anything, so keeping this same ISO around after a normal install is worthwhile on its own.
 
-This produces `build/cix-install.iso` — attach it as a CD-ROM/optical drive to a VM (or a real machine) and boot from it. The placeholder args are deliberate: at the GRUB boot menu (it waits 10s before auto-booting, giving you a real chance to interrupt it), press `e` to edit the boot entry, replace `/dev/CHANGEME`/`CHANGEME`/`CHANGEME`/`CHANGEME` with the real target disk, IP address, gateway, and physical interface name (e.g. `eth0` — check `ls /sys/class/net` from a rescue shell if you're not sure which one is which) for this install, then `Ctrl-X` to boot. If you forget, `cix-install`'s own disk check fails safely — it refuses to touch a disk that doesn't exist rather than silently doing the wrong thing.
+This produces `build/cix-install.iso` — attach it as a CD-ROM/optical drive to a VM (or a real machine) and boot from it. **Nothing needs editing at the GRUB menu**: the empty kernel-args argument above passes the installer nothing, and it asks. It lists the machine's own disks with their sizes, has you pick one by number, and makes you type `ERASE` against that specific disk before it touches it. Then it lists the real network interfaces and asks for the management interface, address, prefix and gateway, defaulting where there is a sensible default.
+
+Supply real values in that argument instead to build media that installs one specific machine unattended — a fleet of identical boxes, say. Mixing works too: a fixed `--disk=` with the address left to be asked.
+
+This replaced a workflow where the args were the literal placeholders `/dev/CHANGEME`/`CHANGEME`/…, and installing meant pressing `e` at the GRUB menu and editing a kernel command line by hand — typed blind, with no list of the machine's disks or NICs, and no feedback until the installer refused to start.
+
+**Secure Boot**: if the firmware is not enforcing it, the installer says so and skips key enrolment entirely — no password. When it *is* enforcing, you are asked for a one-time password and asked again at the next boot in MokManager, which is shim's proof that a human is physically present and cannot be skipped while enrolling. If enrolment fails the install still completes and says what is left to do.
 
 **Why an interface name at all**: this is a one-time bootstrap value only, used to attach a physical NIC to the `management` network `cixd` binds to at first boot — it does *not* need to be perfect. If it's wrong, or your NIC layout changes later, the management network is an ordinary, API-managed `network_def` afterward (`GET /v1/networks`) and can be repointed to a different interface without reinstalling.
 

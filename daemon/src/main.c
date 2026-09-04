@@ -10554,13 +10554,42 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 		}
 	}
 
-	snprintf(kernel_args, sizeof(kernel_args),
-	         "--disk=%s --ip=%s --prefix=%s --gateway=%s --interface=%s",
-	         (disk != NULL && disk[0] != '\0') ? disk : "CHANGEME",
-	         (ip != NULL && ip[0] != '\0') ? ip : "CHANGEME",
-	         (prefix != NULL && prefix[0] != '\0') ? prefix : "CHANGEME",
-	         (gateway != NULL && gateway[0] != '\0') ? gateway : "CHANGEME",
-	         (interface != NULL && interface[0] != '\0') ? interface : "CHANGEME");
+	/*
+	 * Only pass what the caller actually specified (#271).
+	 *
+	 * Every unset field used to become the literal "CHANGEME", and the
+	 * documented way to install was to edit the kernel command line at
+	 * the GRUB menu with 'e' before booting -- typed blind, against
+	 * placeholders, with no feedback until the installer refused to
+	 * start. cix-install asks for anything it was not given now, listing
+	 * the machine's own disks and NICs, so an ISO built with none of
+	 * these is the smoothest one rather than a broken one.
+	 *
+	 * Supplying some and not others is still meaningful: a fixed disk
+	 * with a prompted address, say, for a fleet of identical machines.
+	 */
+	kernel_args[0] = '\0';
+	{
+		size_t used = 0;
+		const struct {
+			const char *flag;
+			const char *val;
+		} opt[] = {
+			{ "--disk=", disk },       { "--ip=", ip },
+			{ "--prefix=", prefix },   { "--gateway=", gateway },
+			{ "--interface=", interface },
+		};
+		size_t k;
+
+		for (k = 0; k < sizeof(opt) / sizeof(opt[0]); k++) {
+			if (opt[k].val == NULL || opt[k].val[0] == '\0')
+				continue;
+			used += (size_t)snprintf(kernel_args + used, sizeof(kernel_args) - used, "%s%s%s",
+			                          used > 0 ? " " : "", opt[k].flag, opt[k].val);
+			if (used >= sizeof(kernel_args))
+				break;
+		}
+	}
 
 	snprintf(stage_dir, sizeof(stage_dir), "%s/.stage", ISO_DIR);
 	/* ISO_OUTPUT_PATH is set once at startup -- see its own note there. */
