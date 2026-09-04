@@ -78,6 +78,34 @@
 #define CONTAINERS_MOUNT "/mnt/containers"
 #define HOSTAUTH_CONFIG_REL_PATH "state/hostauth_config.json"
 
+static int early_mounts(void)
+{
+	if (mount("proc", "/proc", "proc", MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL) != 0) {
+		dual_perror("/proc");
+		return -1;
+	}
+	if (mount("sysfs", "/sys", "sysfs", MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL) != 0) {
+		dual_perror("/sys");
+		return -1;
+	}
+	return 0;
+}
+
+static int ensure_dir(const char *path)
+{
+	if (mkdir(path, 0755) != 0 && errno != EEXIST) {
+		dual_perror(path);
+		return -1;
+	}
+	return 0;
+}
+
+/* Reads a whole file into a malloc'd, NUL-terminated buffer. Returns
+ * 0 (buf/len set) on success, -1 (buf untouched) if the file doesn't
+ * exist or can't be read -- both real, reportable outcomes here, not
+ * silently tolerated the way a few daemon-side callers treat "doesn't
+ * exist yet" (this tool has nothing sensible to do with a system that
+ * was never actually installed). */
 /*
  * Where the host-auth config was actually found, so every later
  * message and the unmount name the partition this run is really
@@ -125,34 +153,6 @@ static int mount_state_partition(char *config_path, size_t config_path_size)
 	return 1;
 }
 
-static int early_mounts(void)
-{
-	if (mount("proc", "/proc", "proc", MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL) != 0) {
-		dual_perror("/proc");
-		return -1;
-	}
-	if (mount("sysfs", "/sys", "sysfs", MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL) != 0) {
-		dual_perror("/sys");
-		return -1;
-	}
-	return 0;
-}
-
-static int ensure_dir(const char *path)
-{
-	if (mkdir(path, 0755) != 0 && errno != EEXIST) {
-		dual_perror(path);
-		return -1;
-	}
-	return 0;
-}
-
-/* Reads a whole file into a malloc'd, NUL-terminated buffer. Returns
- * 0 (buf/len set) on success, -1 (buf untouched) if the file doesn't
- * exist or can't be read -- both real, reportable outcomes here, not
- * silently tolerated the way a few daemon-side callers treat "doesn't
- * exist yet" (this tool has nothing sensible to do with a system that
- * was never actually installed). */
 static int read_whole_file(const char *path, char **out_buf, size_t *out_len)
 {
 	FILE *f;
