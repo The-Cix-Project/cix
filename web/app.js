@@ -657,20 +657,33 @@ updateAuthUi();
  * toast below, kept entirely client-side, never sent to the server
  * since it isn't a system component) and the server's own consolidated
  * log store (kernel/cixd/audit/container, GET /v1/system/logs,
- * ADR-0070/ADR-0126) merged in via periodic polling (pollServerLogs(),
- * called from the main poll() loop). logBuffer is the one source of
- * truth both the live-append path and a full filter-change re-render
- * read from -- capped at MAX_LOG_ENTRIES total, across every source
- * combined (a dedicated Logs page still exists, under System > Server,
+ * ADR-0070/ADR-0126) re-read on every poll (pollServerLogs(), called
+ * from the main poll() loop). The two are kept apart -- serverLogs is
+ * replaced wholesale by each poll, clientLogs is only ever appended to
+ * here -- and combined at render time, capped at MAX_LOG_ENTRIES across
+ * both (a dedicated Logs page still exists, under System > Server,
  * for browsing/configuring the server's own full history/size cap;
  * this panel is a live tail, not a history browser).
  */
 const MAX_LOG_ENTRIES = 300;
-let logBuffer = [];
-/* The newest timestamp currently rendered -- what decides whether the
- * next batch can be prepended or has to be merged (see
- * addLogEntriesBatch). */
-let renderedNewestTs = -Infinity;
+/*
+ * Two lists, because they have different owners (#272).
+ *
+ * serverLogs is REPLACED wholesale by each poll rather than merged into.
+ * That is the whole point: this store's timestamps are whole seconds,
+ * and at boot hundreds of entries share one -- so a timestamp carries no
+ * ordering information there at all, and the only correct order is the
+ * one the server returns. Merging two overlapping responses destroyed
+ * it, and no amount of client-side sorting could put it back: the panel
+ * showed a kernel message on top while the newest entry was sshd
+ * starting, both stamped the same second.
+ *
+ * clientLogs is what only the browser knows -- toasts from web-ui
+ * actions -- and is the reason this cannot simply render the response
+ * directly.
+ */
+let serverLogs = [];
+let clientLogs = [];
 
 let logSourceFilter = "";
 
@@ -748,7 +761,7 @@ function ansiToDom(text) {
 /* A pure builder -- returns the element, does not touch the DOM tree
  * itself. Callers batch their own appendChild()/scrollTop so a poll
  * cycle adding many entries at once costs one reflow, not one per
- * entry (see addLogEntriesBatch() below -- a real, confirmed-live
+ * entry (see rerenderLogPanel() below -- a real, confirmed-live
  * perf bug when this was previously one reflow per entry: the
  * dashboard's own routine 2s poll cycle alone issues ~30 requests,
  * each capable of contributing a new entry once server-log polling
@@ -806,86 +819,44 @@ function trimAndScrollLogOutput() {
 function addLogEntry(ts, source, level, text, kind) {
 	const entry = { ts, source, level, text, kind };
 
-	logBuffer.push(entry);
-	while (logBuffer.length > MAX_LOG_ENTRIES)
-		logBuffer.shift();
+	clientLogs.push(entry);
+	while (clientLogs.length > MAX_LOG_ENTRIES)
+		clientLogs.shift();
 	if (logSourceFilter === "" || logSourceFilter === source) {
 		logOutput.insertBefore(buildLogEntryDom(entry), logOutput.firstChild);
 		trimAndScrollLogOutput();
-		if (ts > renderedNewestTs)
-			renderedNewestTs = ts;
 	}
 }
 
-/* The polled-server-logs path (pollServerLogs() below can hand this
- * dozens of entries in one call) -- one DocumentFragment append and
- * one trim/scroll for the whole batch, not one each per entry. */
-function addLogEntriesBatch(entries) {
-	const fragment = document.createDocumentFragment();
-	let rendered = false;
-
-	/*
-	 * A batch is only safe to prepend if everything in it is at least as
-	 * new as what is already at the top. That is the normal case and
-	 * stays one reflow for the whole poll.
-	 *
-	 * It is not always true. The first poll asks for a bounded tail, so
-	 * entries sharing the newest timestamp can be cut from it; the next
-	 * poll asks since= that same second with a larger tail and returns
-	 * the ones that were cut. Prepending those puts OLDER lines above
-	 * newer ones -- seen live on a freshly booted box, where hundreds of
-	 * entries share the boot second: the panel's top line was a kernel
-	 * message while the store's newest was sshd starting.
-	 *
-	 * When that happens, sort the buffer and re-render from it. Rare,
-	 * and correctness is worth one reflow when it is the alternative to
-	 * a panel that lies about what happened last.
-	 */
-	const topTs = logBuffer.length > 0 ? renderedNewestTs : -Infinity;
-	let interleaved = false;
-
-	for (const entry of entries) {
-		logBuffer.push(entry);
-		if (entry.ts < topTs)
-			interleaved = true;
-	}
-	while (logBuffer.length > MAX_LOG_ENTRIES)
-		logBuffer.shift();
-
-	if (interleaved) {
-		/* Stable by timestamp: entries within one second keep the order
-		 * the server sent them, which is the only ordering information
-		 * that exists at this resolution. */
-		logBuffer.sort((a, b) => a.ts - b.ts);
-		rerenderLogPanel();
-		return;
-	}
-
-	for (let i = entries.length - 1; i >= 0; i--) {
-		const entry = entries[i];
-
-		if (logSourceFilter === "" || logSourceFilter === entry.source) {
-			fragment.appendChild(buildLogEntryDom(entry));
-			rendered = true;
-		}
-	}
-	if (rendered) {
-		logOutput.insertBefore(fragment, logOutput.firstChild);
-		trimAndScrollLogOutput();
-	}
-	for (const entry of entries) {
-		if (entry.ts > renderedNewestTs)
-			renderedNewestTs = entry.ts;
-	}
+/*
+ * A poll's worth of server entries. Replaces what was there rather than
+ * merging into it -- see serverLogs' own note above for why merging
+ * cannot be made correct at this timestamp resolution.
+ */
+function setServerLogs(entries) {
+	serverLogs = entries.length > MAX_LOG_ENTRIES
+	                     ? entries.slice(entries.length - MAX_LOG_ENTRIES)
+	                     : entries;
+	rerenderLogPanel();
 }
 
 function rerenderLogPanel() {
 	const fragment = document.createDocumentFragment();
 
-	/* logBuffer stays chronological -- only the rendering is reversed,
-	 * so nothing else that reads the buffer has to know about this. */
-	for (let i = logBuffer.length - 1; i >= 0; i--) {
-		const entry = logBuffer[i];
+	/*
+	 * The server's own order, kept exactly as sent, with the browser's
+	 * own entries placed by timestamp around it. Rendered newest-first,
+	 * so this walks backwards.
+	 */
+	const merged = serverLogs.concat(clientLogs);
+
+	if (clientLogs.length > 0) {
+		/* Stable, so server entries sharing a second keep the order the
+		 * server gave them and a toast lands among them by time. */
+		merged.sort((a, b) => a.ts - b.ts);
+	}
+	for (let i = merged.length - 1; i >= 0 && fragment.childNodes.length < MAX_LOG_ENTRIES; i--) {
+		const entry = merged[i];
 
 		if (logSourceFilter === "" || logSourceFilter === entry.source)
 			fragment.appendChild(buildLogEntryDom(entry));
@@ -893,7 +864,6 @@ function rerenderLogPanel() {
 	logOutput.textContent = "";
 	logOutput.appendChild(fragment);
 	logOutput.scrollTop = 0;
-	renderedNewestTs = logBuffer.length > 0 ? logBuffer[logBuffer.length - 1].ts : -Infinity;
 }
 
 logPanelSource.addEventListener("change", () => {
@@ -910,96 +880,47 @@ function logLine(method, path, statusText, kind) {
 	            method + " " + path + " " + statusText, kind);
 }
 
-/* Merges newly-polled server-side entries into the same buffer/panel,
- * source-tagged by their own real source (kernel/cixd/audit/
- * container) rather than "web-ui". Deliberately starts from "now"
- * (logsSinceTs set at declaration time below) rather than 0 -- this
- * panel is a live tail from page-load onward, not a full-history
- * backfill (GET /system/logs with no since= would return the entire
- * store on first poll, flooding the panel). since= is an inclusive
- * floor (logstore_tail_ex()'s own "ts < since" exclusion) and this
- * store's own ts resolution is whole seconds, so a naive since=lastTs
- * poll would re-return (and re-render) every entry still exactly at
- * that boundary second -- logsSeenAtSinceTs dedupes those specifically,
- * not the whole history, since only the current boundary second can
- * ever repeat across polls. */
 /*
- * 0, not "now" (#272).
+ * Always the same request: the most recent LOG_TAIL entries the store
+ * holds, every poll.
  *
- * This started at Date.now() so the panel was a live tail from page-load
- * onward. Combined with the bug below that meant it showed NOTHING after
- * a refresh, and on an idle box it stayed empty forever -- the operator
- * sees a log window that never has anything in it and reasonably
- * concludes logging is broken.
+ * This used to track a since= cursor and merge each response into what
+ * was already rendered, with a dedupe set for the boundary second. All
+ * of that existed to avoid re-fetching, and none of it could be made
+ * correct: the store's timestamps are whole seconds, so an incremental
+ * fetch cannot tell which entries within the newest second it has
+ * already seen, and a bounded tail can cut some of them entirely -- they
+ * then arrive on a later poll and get placed after entries that are
+ * genuinely newer.
  *
- * The first poll now asks for a bounded tail of what the store already
- * holds, which is what someone opening a log panel expects to see. The
- * flooding this was avoiding is handled by tail= rather than by throwing
- * the history away: the store can hold far more than a panel should
- * render, and LOG_BACKFILL is what bounds it.
+ * Re-fetching a bounded tail is cheap, cannot drift, and needs no
+ * cursor: what the server returns IS the panel. It also fixed a real
+ * bug on the way in -- the old request was built as
+ * getSystemLogs(logsSinceTs) + "?since=%s&tail=500", and
+ * getSystemLogs() takes no arguments, so the timestamp was discarded
+ * and the literal characters "%s" were sent as the value.
  */
-let logsSinceTs = 0;
-const LOG_BACKFILL = 200;
-let logsSeenAtSinceTs = new Set();
+const LOG_TAIL = MAX_LOG_ENTRIES;
 const LOG_ERROR_LEVELS = new Set(["emerg", "alert", "crit", "err", "error", "warning", "warn"]);
-
-function serverLogEntryKey(e) {
-	return e.source + "|" + e.container + "|" + e.level + "|" + e.msg;
-}
 
 async function pollServerLogs() {
 	let entries;
 
 	try {
-		/*
-		 * Built, not templated. This was
-		 *   CIX_API.getSystemLogs(logsSinceTs) + "?since=%s&tail=500"
-		 * and getSystemLogs() takes no arguments -- so the timestamp was
-		 * discarded and the literal characters "%s" were sent as the
-		 * value. The server parses that as 0 and returns the whole
-		 * store on every single poll, which the ts < logsSinceTs guard
-		 * below then discarded in full. Two halves of one bug: a
-		 * parameter that was never really sent, and a guard written to
-		 * back it up.
-		 */
-		entries = await apiRequest(
-		        "GET",
-		        CIX_API.getSystemLogs() + "?since=" + encodeURIComponent(String(logsSinceTs)) +
-		                "&tail=" + (logsSinceTs === 0 ? LOG_BACKFILL : 500));
+		entries = await apiRequest("GET", CIX_API.getSystemLogs() + "?since=0&tail=" + LOG_TAIL);
 	} catch (e) {
 		return; /* best-effort, matches every other poll()'s own error tolerance */
 	}
 	if (!entries) return;
 
-	let maxTs = logsSinceTs;
-	let newAtMax = new Set();
-	const toAdd = [];
-
-	for (const e of entries) {
-		if (e.ts < logsSinceTs) continue; /* defensive -- since= should already exclude these */
-		if (e.ts === logsSinceTs && logsSeenAtSinceTs.has(serverLogEntryKey(e))) continue;
-
-		const text = e.container ? "(" + e.container + ") " + e.msg : e.msg;
-		const kind = LOG_ERROR_LEVELS.has(e.level) ? "error" : "ok";
-
-		toAdd.push({ ts: e.ts, source: e.source, level: e.level, text, kind });
-
-		if (e.ts > maxTs) {
-			maxTs = e.ts;
-			newAtMax = new Set([serverLogEntryKey(e)]);
-		} else if (e.ts === maxTs) {
-			newAtMax.add(serverLogEntryKey(e));
-		}
-	}
-	if (toAdd.length > 0)
-		addLogEntriesBatch(toAdd);
-	if (maxTs > logsSinceTs) {
-		logsSinceTs = maxTs;
-		logsSeenAtSinceTs = newAtMax;
-	} else {
-		for (const k of newAtMax)
-			logsSeenAtSinceTs.add(k);
-	}
+	setServerLogs(
+	        entries.map((e) => ({
+	                ts: e.ts,
+	                source: e.source,
+	                level: e.level,
+	                text: e.container ? "(" + e.container + ") " + e.msg : e.msg,
+	                kind: LOG_ERROR_LEVELS.has(e.level) ? "error" : "ok",
+	        })));
 }
 
 /* Toast (ADR-0129): a fixed-position popup with a disappear timer,
