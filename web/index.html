@@ -815,7 +815,6 @@
 				<button type="button" class="tab-button" data-tab="factory-reset">Factory Reset</button>
 			</div>
 			<div class="tab-panel" data-tab="daemon-config">
-			<h2>Daemon</h2>
 			<p class="hint">
 				cixd's own listen port, HTTP/HTTPS exposure, and which network
 				it's currently bound to (Part 0.5). Changes apply live -- no
@@ -859,7 +858,6 @@
 			<p class="hint">Bind IP (ADR-0068) is a second, dedicated address on the management network's own bridge -- cixd binds there instead of that network's own address. Leave blank to make no change; check "Clear bind IP" to revert to the network's own address.</p>
 		</div>
 			<div class="tab-panel" data-tab="site" hidden>
-			<h2>Site</h2>
 			<p class="hint">
 				A real, operator-set identity for this install, used to label it in the
 				dashboard header and backups, and to suggest a default FQDN
@@ -884,7 +882,6 @@
 		</div>
 			<div class="tab-panel" data-tab="routes" hidden>
 			<div class="view-list">
-				<h2>Routes</h2>
 				<p class="hint">The box's own real kernel IPv4 routing table (ADR-0066) -- not a persisted Cix resource; a route added or removed here is gone on the next reboot unless re-applied by whatever set it up in the first place. Add one via the "+ Create" menu above.</p>
 				<table id="routes">
 					<thead>
@@ -903,7 +900,6 @@
 		</div>
 			<div class="tab-panel" data-tab="hostauth-sessions" hidden>
 			<div class="view-list">
-				<h2>Sessions</h2>
 				<p class="hint">Every currently active host-auth session (ADR-0152) -- the raw token is
 					never shown here, before or after issuance; only the one-time login response ever
 					carries it. "Log out everywhere" revokes every active session for that user at once
@@ -960,7 +956,6 @@
 			<table class="detail-table"><tbody id="zswap-kernel"></tbody></table>
 		</div>
 			<div class="tab-panel" data-tab="rolling-restart" hidden>
-			<h2>Rolling Restart</h2>
 			<form id="rc-form">
 				<label>
 					Jitter window (seconds)
@@ -972,7 +967,6 @@
 		</div>
 			<div class="tab-panel" data-tab="storage-placement" hidden>
 			<div class="view-list">
-				<h2>Storage Placement</h2>
 				<p class="hint">Which disk holds each platform-level concern. Each target must already carry
 					the matching role and be mounted &mdash; assign roles on a disk's own page. Both
 					migrations below are live, with no downtime, and run in independent job slots.</p>
@@ -1017,7 +1011,6 @@
 		</div>
 			<div class="tab-panel" data-tab="boot-console" hidden>
 			<div class="view-list">
-				<h2>Boot Console</h2>
 				<p class="hint">
 					What this machine's own boot line says about consoles (issue #24). An installed
 					host boots through systemd-boot, and its loader entries carried a fixed
@@ -1196,7 +1189,6 @@
 		</div>
 			<div class="tab-panel" data-tab="kernel-policy" hidden>
 			<div class="view-list">
-				<h2>Kernel Line</h2>
 				<p class="hint">
 					Which kernel line this box tracks (issue #65). The platform used to make that
 					judgment call for you &mdash; one pinned version in the kernel recipe, and
@@ -1267,7 +1259,6 @@
 		</div>
 			<div class="tab-panel" data-tab="tls-throttle" hidden>
 			<div class="view-list">
-				<h2>TLS Throttle</h2>
 				<p class="hint">Per-source-IP throttling for repeated failed HTTPS handshakes (ADR-0134) -- a source that fails enough handshakes within the window is refused outright, on both listeners, until the block expires. Loopback (127.0.0.1) is never throttled, so this daemon's own local admin access can't be locked out by a hostile source sharing the box.</p>
 				<h3>Config</h3>
 				<form id="ttf-form">
@@ -1311,7 +1302,6 @@
 			</div>
 		</div>
 			<div class="tab-panel" data-tab="backup" hidden>
-			<h2>Backup</h2>
 			<p class="hint">Platform configuration state (container defs, networks, DNS records, pkg install
 				state + recipes, site config) -- not workload data, not image content, never PKI keys.</p>
 			<button type="button" id="sys-backup">Download backup</button>
@@ -1352,7 +1342,6 @@
 		</div>
 			<div class="tab-panel" data-tab="volume-backup-config" hidden>
 			<div class="view-list">
-				<h2>Volume Backups</h2>
 				<p class="hint">Scheduled snapshots of what volumes <em>hold</em> &mdash; workload data,
 					which the platform backup bundle deliberately never carries (ADR-0033 keeps it to
 					configuration, on the same reasoning that keeps image content out). Opt in per volume
@@ -1379,7 +1368,6 @@
 		</div>
 			<div class="tab-panel" data-tab="factory-reset" hidden>
 				<div class="view-list">
-					<h2>Factory Reset</h2>
 					<p class="hint">Returns this box to its <strong>just-installed</strong> state and reboots.
 						Destroys every container, image, network, DNS/PKI/LDAP/NTP registration, package state,
 						the log store, and <strong>every volume and all data in them</strong>. This cannot be
@@ -1888,7 +1876,6 @@
 			</div>
 			<div class="tab-panel" data-tab="cat-recipes">
 			<div class="view-list">
-				<h2>Recipes</h2>
 				<p class="hint">Three git-syncable recipe kinds (ADR-0040/ADR-0123/ADR-0151), one catalog:
 					<strong>Packages</strong> build one piece of software from source; <strong>Images</strong>
 					declare a whole package manifest for an image in one shot; <strong>Containers</strong>
@@ -2025,7 +2012,6 @@
 			</div>
 			<div class="tab-panel" data-tab="cat-images" hidden>
 			<div class="view-list">
-				<h2>Images</h2>
 				<p class="hint">Every package install leaves an immutable image version behind
 					(ADR-0107/0108), and a container pins the version it was created with. Reclaim
 					removes only versions that nothing references &mdash; never an image's current
@@ -2051,7 +2037,6 @@
 		</div>
 			<div class="tab-panel" data-tab="cat-packages" hidden>
 			<div class="view-list">
-				<h2>Packages</h2>
 				<p class="hint">What's actually installed, on which image, right now -- one row per real
 					installation. For the recipe catalog itself (add/edit/delete a buildable definition),
 					see Recipes.</p>
@@ -2111,7 +2096,6 @@
 			</form>
 		</div>
 			<div class="tab-panel" data-tab="pkg-build-config" hidden>
-			<h2>Package Builds</h2>
 			<form id="pbc-form">
 				<label>
 					Max concurrent jobs
@@ -2151,7 +2135,6 @@
 			<p class="hint">ADR-0165 (superseded in shape by the above): the memory/CPU ceiling applied to build containers -- the same cgroup mechanism a regular container's own <code>--memory-max=</code>/<code>--cpu-max=</code> already uses. Found missing the hard way: a burst of concurrent installs with no ceiling hung a real box's daemon entirely. CPU quota is microseconds of CPU time per 100000-microsecond period -- "100000 100000" is one full CPU's worth, "50000 100000" is half a CPU.</p>
 		</div>
 			<div class="tab-panel" data-tab="update" hidden>
-			<h2>Update</h2>
 			<form id="sys-update-form">
 				<label class="wide">
 					Control-plane image path (optional, local to this daemon's host)
@@ -2271,7 +2254,6 @@
 				<button type="button" class="tab-button" data-tab="stalls">Stalls</button>
 			</div>
 			<div class="tab-panel" data-tab="host-stats">
-			<h2>Host Stats</h2>
 			<div class="stats-grid">
 				<div class="stats-card">
 					<h3>CPU</h3>
@@ -2310,7 +2292,6 @@
 			</div>
 			<div class="tab-panel" data-tab="processes" hidden>
 			<div class="view-list">
-				<h2>Processes</h2>
 				<p class="hint">Every real process on the box (ADR-0131) -- a direct <code>/proc</code> scan, each one correlated to a container (if any) by its own real host ppid chain. A snapshot, not a live feed -- press Refresh for a fresh one. Kill is a real, immediate SIGKILL; refuses pid 1 and this daemon's own pid.</p>
 				<button type="button" id="proc-refresh">Refresh</button>
 				<table id="processes">
@@ -2334,7 +2315,6 @@
 			</div>
 			<div class="tab-panel" data-tab="logs" hidden>
 			<div class="view-list">
-				<h2>Log Store</h2>
 				<p class="hint">A consolidated log (ADR-0070/ADR-0126): real kernel dmesg, cixd's own diagnostics, a per-request audit trail, and every container's own stdout/stderr -- all in one place, size-capped with the oldest entries dropped first once the cap is reached. Browse it live in the Log panel at the bottom of every page (source filter includes this browser's own local activity too, kept client-side only) -- this page just configures the store's size cap, not what's logged.</p>
 				<h3>Size cap</h3>
 				<form id="logs-config-form">
@@ -2350,7 +2330,6 @@
 			</div>
 			<div class="tab-panel" data-tab="kmsg" hidden>
 			<div class="view-list">
-				<h2>Kernel Log</h2>
 				<p class="hint">The kernel's own ring buffer (<code>/dev/kmsg</code>) &mdash; dmesg over REST. This is where mount failures, driver probes and OOM kills surface, and on a real installed host with no shell it is the only way to read them. Distinct from the Log Store, which carries <code>cixd</code>'s own diagnostics and the audit trail.</p>
 				<form id="kmsg-form">
 					<label>
@@ -2365,7 +2344,6 @@
 			</div>
 			<div class="tab-panel" data-tab="server-health" hidden>
 			<div class="view-list">
-				<h2>Server Health</h2>
 				<p class="hint">Every registered backend server &mdash; LDAP, DNS, NTP and syslog &mdash; probed on an interval. A server that is drained or has failed its probes is dropped from the configuration handed to clients, so a registered-but-not-serving server can no longer break logins silently. <strong>Drain</strong> takes one out of service deliberately (maintenance); it persists across a daemon restart, while health itself is re-established by the next probe. The <em>Probe</em> column says how the verdict was reached: a <code>tcp:PORT</code> check is a real service check, <code>process</code> only means the container is running.</p>
 				<div id="server-health-warnings" hidden></div>
 				<table>

@@ -2824,6 +2824,18 @@ function formatRelativeTime(deltaMs) {
  * scale, and shows real headroom against a known limit. Omit to
  * autoscale to max(all values currently plotted).
  */
+/*
+ * A data-series colour, resolved from the stylesheet so the palette has
+ * one definition and follows the theme (#232). Canvas cannot take a
+ * var(), which is why the old code inlined hex -- and why those hexes
+ * drifted to Apple system colours nobody chose.
+ */
+function seriesColor(n) {
+	const v = getComputedStyle(document.body).getPropertyValue("--series-" + n).trim();
+
+	return v || "#5fa8d3";
+}
+
 function drawChart(canvas, series, opts) {
 	const ctx = canvas.getContext("2d");
 	const w = canvas.width;
@@ -2947,7 +2959,7 @@ function renderStatsCharts() {
 
 		cpuPercents.push(dMs > 0 ? Math.max(0, (dUsec / 1000 / dMs) * 100) : 0);
 	}
-	drawChart(document.getElementById("cd-stats-cpu"), [{ values: cpuPercents, color: "#0a84ff" }], {
+	drawChart(document.getElementById("cd-stats-cpu"), [{ values: cpuPercents, color: seriesColor(1) }], {
 		times: rateTimes,
 		maxY: 100,
 		formatY: (v) => v.toFixed(0) + "%",
@@ -2958,7 +2970,7 @@ function renderStatsCharts() {
 	const memValues = h.map((s) => s.memCurrent);
 	const memMax = h[h.length - 1].memMax;
 
-	drawChart(document.getElementById("cd-stats-mem"), [{ values: memValues, color: "#30d158" }], {
+	drawChart(document.getElementById("cd-stats-mem"), [{ values: memValues, color: seriesColor(1) }], {
 		times: gaugeTimes,
 		maxY: memMax || 0,
 		formatY: formatBytes,
@@ -2973,7 +2985,7 @@ function renderStatsCharts() {
 
 	const diskValues = h.map((s) => s.diskBytes);
 
-	drawChart(document.getElementById("cd-stats-disk"), [{ values: diskValues, color: "#ff9f0a" }], {
+	drawChart(document.getElementById("cd-stats-disk"), [{ values: diskValues, color: seriesColor(1) }], {
 		times: gaugeTimes,
 		formatY: formatBytes,
 	});
@@ -2994,8 +3006,8 @@ function renderStatsCharts() {
 	drawChart(
 		document.getElementById("cd-stats-net"),
 		[
-			{ values: rxRates, color: "#0a84ff" },
-			{ values: txRates, color: "#ff375f" },
+			{ values: rxRates, color: seriesColor(1) },
+			{ values: txRates, color: seriesColor(1) },
 		],
 		{ times: rateTimes, formatY: (v) => formatBytes(v) + "/s" }
 	);
@@ -3009,7 +3021,7 @@ function renderStatsCharts() {
 	 * memory usage, not a counter to diff like cpuPercents above. */
 	const cpuPressureValues = h.map((s) => s.cpuPressure);
 
-	drawChart(document.getElementById("cd-stats-cpu-pressure"), [{ values: cpuPressureValues, color: "#ff9f0a" }], {
+	drawChart(document.getElementById("cd-stats-cpu-pressure"), [{ values: cpuPressureValues, color: seriesColor(1) }], {
 		times: gaugeTimes,
 		maxY: 100,
 		formatY: (v) => v.toFixed(0) + "%",
@@ -3019,7 +3031,7 @@ function renderStatsCharts() {
 
 	const memPressureValues = h.map((s) => s.memPressure);
 
-	drawChart(document.getElementById("cd-stats-mem-pressure"), [{ values: memPressureValues, color: "#ff375f" }], {
+	drawChart(document.getElementById("cd-stats-mem-pressure"), [{ values: memPressureValues, color: seriesColor(1) }], {
 		times: gaugeTimes,
 		maxY: 100,
 		formatY: (v) => v.toFixed(0) + "%",
@@ -3118,7 +3130,7 @@ function renderHostStatsCharts() {
 
 		cpuPercents.push(dTotal > 0 ? Math.max(0, (1 - dIdle / dTotal) * 100) : 0);
 	}
-	drawChart(document.getElementById("hs-stats-cpu"), [{ values: cpuPercents, color: "#0a84ff" }], {
+	drawChart(document.getElementById("hs-stats-cpu"), [{ values: cpuPercents, color: seriesColor(1) }], {
 		times: rateTimes,
 		maxY: 100,
 		formatY: (v) => v.toFixed(0) + "%",
@@ -3129,7 +3141,7 @@ function renderHostStatsCharts() {
 	const memValues = h.map((s) => s.memUsed);
 	const memTotal = h[h.length - 1].memTotal;
 
-	drawChart(document.getElementById("hs-stats-mem"), [{ values: memValues, color: "#30d158" }], {
+	drawChart(document.getElementById("hs-stats-mem"), [{ values: memValues, color: seriesColor(1) }], {
 		times: gaugeTimes,
 		maxY: memTotal || 0,
 		formatY: formatBytes,
@@ -3144,7 +3156,7 @@ function renderHostStatsCharts() {
 	const diskValues = h.map((s) => s.diskUsed);
 	const diskTotal = h[h.length - 1].diskTotal;
 
-	drawChart(document.getElementById("hs-stats-disk"), [{ values: diskValues, color: "#ff9f0a" }], {
+	drawChart(document.getElementById("hs-stats-disk"), [{ values: diskValues, color: seriesColor(1) }], {
 		times: gaugeTimes,
 		maxY: diskTotal || 0,
 		formatY: formatBytes,
@@ -3170,8 +3182,8 @@ function renderHostStatsCharts() {
 	drawChart(
 		document.getElementById("hs-stats-net"),
 		[
-			{ values: rxRates, color: "#0a84ff" },
-			{ values: txRates, color: "#ff375f" },
+			{ values: rxRates, color: seriesColor(1) },
+			{ values: txRates, color: seriesColor(1) },
 		],
 		{ times: rateTimes, formatY: (v) => formatBytes(v) + "/s" }
 	);
@@ -3191,7 +3203,7 @@ function renderHostStatsCharts() {
 	 * a gauge, not a counter to diff. */
 	const cpuPressureValues = h.map((s) => s.cpuPressure);
 
-	drawChart(document.getElementById("hs-stats-cpu-pressure"), [{ values: cpuPressureValues, color: "#ff9f0a" }], {
+	drawChart(document.getElementById("hs-stats-cpu-pressure"), [{ values: cpuPressureValues, color: seriesColor(1) }], {
 		times: gaugeTimes,
 		maxY: 100,
 		formatY: (v) => v.toFixed(0) + "%",
@@ -3201,7 +3213,7 @@ function renderHostStatsCharts() {
 
 	const memPressureValues = h.map((s) => s.memPressure);
 
-	drawChart(document.getElementById("hs-stats-mem-pressure"), [{ values: memPressureValues, color: "#ff375f" }], {
+	drawChart(document.getElementById("hs-stats-mem-pressure"), [{ values: memPressureValues, color: seriesColor(1) }], {
 		times: gaugeTimes,
 		maxY: 100,
 		formatY: (v) => v.toFixed(0) + "%",
@@ -4276,7 +4288,7 @@ function renderNetPorts() {
 	}
 	drawChart(
 		document.getElementById("nd-traffic"),
-		[{ values: rxValues, color: "#30d158" }, { values: txValues, color: "#0a84ff" }],
+		[{ values: rxValues, color: seriesColor(1) }, { values: txValues, color: seriesColor(1) }],
 		{ times: rateTimes, formatY: (v) => formatBytes(v) + "/s" }
 	);
 	/* The caveat about double-counting lives in the panel's own hint
