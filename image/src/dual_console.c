@@ -68,6 +68,82 @@ void dual_perror(const char *s)
 	dual_printf("%s: %s\n", s, strerror(errno));
 }
 
+int dual_console_readline(char *out, size_t out_size)
+{
+	size_t len = 0;
+
+	if (out == NULL || out_size == 0)
+		return -1;
+	out[0] = '\0';
+
+	for (;;) {
+		struct pollfd pfds[2];
+		nfds_t nfds = 0;
+		int idx[2] = { -1, -1 };
+		int fds[2] = { g_fd0, g_fd1 };
+		int prc, i;
+
+		if (g_fd0 < 0 && g_fd1 < 0)
+			return len > 0 ? (int)len : -1;
+
+		for (i = 0; i < 2; i++) {
+			if (fds[i] >= 0) {
+				pfds[nfds].fd = fds[i];
+				pfds[nfds].events = POLLIN;
+				idx[i] = (int)nfds;
+				nfds++;
+			}
+		}
+
+		prc = poll(pfds, nfds, -1);
+		if (prc < 0) {
+			if (errno == EINTR)
+				continue;
+			return -1;
+		}
+
+		for (i = 0; i < 2; i++) {
+			char c;
+			ssize_t n;
+
+			if (idx[i] < 0 || !(pfds[idx[i]].revents & POLLIN))
+				continue;
+			n = read(fds[i], &c, 1);
+			if (n <= 0) {
+				if (!(n < 0 && (errno == EINTR || errno == EAGAIN))) {
+					if (i == 0)
+						g_fd0 = -1;
+					else
+						g_fd1 = -1;
+				}
+				continue;
+			}
+			if (c == '\r' || c == '\n') {
+				/* Echoed to both so the console nobody typed on
+				 * still shows the answer that was given. */
+				dual_printf("\n");
+				out[len] = '\0';
+				return (int)len;
+			}
+			if (c == 0x7f || c == '\b') {
+				if (len > 0) {
+					len--;
+					out[len] = '\0';
+					dual_printf("\b \b");
+				}
+				continue;
+			}
+			if (c < 0x20)
+				continue; /* not a control-key editor; ignore the rest */
+			if (len + 1 < out_size) {
+				out[len++] = c;
+				out[len] = '\0';
+				dual_printf("%c", c);
+			}
+		}
+	}
+}
+
 int dual_console_wait_for_key(void)
 {
 	for (;;) {

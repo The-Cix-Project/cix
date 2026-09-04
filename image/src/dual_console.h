@@ -50,4 +50,22 @@ int run_subprocess_dual_console(const char *bin, char *const argv[]);
  */
 int dual_console_wait_for_key(void);
 
+/*
+ * Reads one line from whichever console the operator is actually using,
+ * echoing it to BOTH so the other shows what was typed.
+ *
+ * The installer has to ask real questions now -- which disk, which NIC,
+ * what address -- and it cannot know in advance which of the two
+ * consoles someone is sitting at. Same "input from whichever has it"
+ * rule run_subprocess_dual_console() already relays by, and the same
+ * reason dual_console_wait_for_key() exists rather than a plain read().
+ *
+ * Returns the length stored (0 for an empty line, which callers treat as
+ * "take the default"), or -1 if neither console is open or the operator
+ * closed the line with no input available at all. out is always NUL
+ * terminated. Backspace is honoured so a typo in an IP address can be
+ * corrected; nothing else is interpreted.
+ */
+int dual_console_readline(char *out, size_t out_size);
+
 #endif /* DUAL_CONSOLE_H */

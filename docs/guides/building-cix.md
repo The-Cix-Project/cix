@@ -107,7 +107,7 @@ This is a **second, separate** key, not the pair above in another encoding. That
 Skipping this step is fine — the build still succeeds and simply produces no signature. Whoever downloads a signed ISO verifies it with stock `minisign -Vm cix-install.iso -p cix-release.pub`, no Cix software needed on their side.
 
 ```
-cixctl iso build --disk=/dev/CHANGEME --wait
+cixctl iso build --wait
 cixctl iso status
 ```
 
@@ -131,7 +131,7 @@ Verify on a machine you already trust, before writing the stick. An installer th
 
 The public key to check against is committed at [`docs/keys/cix-release.pub`](../keys/cix-release.pub) — pin a copy once and keep it, rather than re-fetching it each time (whoever could hand you a bad ISO could hand you the key that matches it). It lives in git rather than in the artifact cache on purpose: the cache serves the bytes, so a cache that also served the key would be vouching for its own payload. See [`docs/keys/README.md`](../keys/README.md).
 
-An empty `iso build` (no flags at all) works too — it just leaves every kernel argument as the `CHANGEME` placeholder, editable at the GRUB boot menu before installing, exactly like a manually-run `mkinstalleriso` always has.
+An empty `iso build` (no flags at all) is the normal case, and produces the ISO you want for general use: it passes the installer no arguments, and the installer asks for the disk and the network on the console with the machine's own disks and NICs listed. Pass flags only to build media that installs one specific machine unattended.
 
 ### A real, TCC-specific gap worth knowing about
 

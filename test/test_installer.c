@@ -640,6 +640,16 @@ int main(void)
 	{
 		char grub_smoke_disk[600], grub_smoke_vars[600];
 		struct qemu_boot_opts opts;
+		/*
+		 * Kept, but it usually does not fire any more (#271).
+		 *
+		 * cix-install now enrols the MOK only when the firmware is
+		 * actually ENFORCING Secure Boot, and this boot uses plain
+		 * OVMF_VARS, which does not. The entries stay because scripted
+		 * input is prompt-driven -- an entry whose prompt never appears
+		 * costs nothing -- and because a secure-boot OVMF variant here
+		 * would need them again immediately.
+		 */
 		struct qemu_scripted_input mok_password[] = {
 			{ "input password: ", MOK_PASSWORD "\n" },
 			{ "input password again: ", MOK_PASSWORD "\n" },

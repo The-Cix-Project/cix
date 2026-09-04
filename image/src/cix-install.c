@@ -24,6 +24,7 @@
 #include "dual_console.h"
 #include "treecopy.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -646,6 +647,38 @@ static int populate_esp(const char *esp_mount, const char *ip)
  * this installer's own boot stays unsigned/unenforced regardless, so
  * this step doesn't gate anything about the install itself completing.
  */
+/*
+ * Is the firmware actually enforcing Secure Boot?
+ *
+ * The EFI variable is SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c,
+ * whose data is a single byte: 1 when enforcing. efivarfs prefixes every
+ * variable's contents with a 4-byte attributes word, so the byte we want
+ * is at offset 4 -- reading offset 0 gets the attributes and is the easy
+ * mistake here.
+ *
+ * "Cannot tell" is deliberately reported as NOT enforcing. This gates
+ * whether the installer demands a MOK password, and being unable to read
+ * a variable is not evidence that Secure Boot is on; guessing "on" would
+ * reintroduce exactly the prompt this is meant to avoid, on machines that
+ * can never use it.
+ */
+static int secure_boot_enforcing(void)
+{
+	static const char *path =
+	        "/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c";
+	unsigned char buf[5];
+	FILE *f = fopen(path, "rb");
+	size_t n;
+
+	if (f == NULL)
+		return 0;
+	n = fread(buf, 1, sizeof(buf), f);
+	fclose(f);
+	if (n < 5)
+		return 0;
+	return buf[4] == 1;
+}
+
 static int enroll_signing_key(void)
 {
 	if (mkdir("/sys/firmware/efi/efivars", 0755) != 0 && errno != EEXIST) {
@@ -704,6 +737,150 @@ static int early_mounts(void)
 	return 0;
 }
 
+/*
+ * Ask the operator, rather than make them get it right at a GRUB prompt.
+ *
+ * Everything the installer needs used to be required on the kernel
+ * command line -- disk, address, prefix, gateway, interface -- typed
+ * blind, with no list of what the machine actually has and no feedback
+ * until the installer refused to start. The flags all still work, and
+ * are what an unattended install uses; what changes is that leaving one
+ * out is now a question instead of a usage error.
+ */
+static void prompt_default(const char *question, const char *dflt, char *out, size_t out_size)
+{
+	char buf[256];
+	int n;
+
+	for (;;) {
+		if (dflt != NULL && dflt[0] != '\0')
+			dual_printf("%s [%s]: ", question, dflt);
+		else
+			dual_printf("%s: ", question);
+		n = dual_console_readline(buf, sizeof(buf));
+		if (n < 0) {
+			/* No console left to ask on. Take the default if there is
+			 * one; the caller validates either way. */
+			snprintf(out, out_size, "%s", dflt != NULL ? dflt : "");
+			return;
+		}
+		if (n == 0) {
+			if (dflt != NULL && dflt[0] != '\0') {
+				snprintf(out, out_size, "%s", dflt);
+				return;
+			}
+			dual_printf("  (a value is needed here)\n");
+			continue;
+		}
+		snprintf(out, out_size, "%s", buf);
+		return;
+	}
+}
+
+/*
+ * The disks this machine actually has, listed for the operator to choose
+ * from.
+ *
+ * Reads /sys/class/block directly rather than shelling out: this
+ * environment carries three binaries and none of them lists disks. A
+ * whole-disk entry is one with a "device" symlink (partitions have none)
+ * -- the same distinction the daemon's own enumerator draws.
+ */
+static int pick_disk(char *out, size_t out_size)
+{
+	char names[32][64];
+	long sizes[32];
+	int count = 0;
+	DIR *d = opendir("/sys/class/block");
+	struct dirent *e;
+	char answer[64];
+
+	if (d == NULL) {
+		dual_perror("/sys/class/block");
+		return -1;
+	}
+	while ((e = readdir(d)) != NULL && count < 32) {
+		char probe[256];
+		struct stat pst;
+
+		if (e->d_name[0] == '.')
+			continue;
+		snprintf(probe, sizeof(probe), "/sys/class/block/%s/device", e->d_name);
+		if (stat(probe, &pst) != 0)
+			continue; /* a partition, or not a real device */
+		snprintf(names[count], sizeof(names[count]), "%s", e->d_name);
+		snprintf(probe, sizeof(probe), "/dev/%s", e->d_name);
+		sizes[count] = disk_size_mib(probe);
+		count++;
+	}
+	closedir(d);
+
+	if (count == 0) {
+		dual_printf("cix-install: no disks found under /sys/class/block\n");
+		return -1;
+	}
+
+	dual_printf("\nDisks on this machine:\n");
+	for (int i = 0; i < count; i++)
+		dual_printf("  %d) /dev/%-8s %6ld MiB (%.1f GiB)\n", i + 1, names[i], sizes[i],
+		            (double)sizes[i] / 1024.0);
+	dual_printf("\n");
+
+	for (;;) {
+		int choice;
+
+		prompt_default("Install to which disk? (number)", count == 1 ? "1" : "", answer,
+		               sizeof(answer));
+		choice = atoi(answer);
+		if (choice < 1 || choice > count) {
+			dual_printf("  (choose 1 to %d)\n", count);
+			continue;
+		}
+		snprintf(out, out_size, "/dev/%s", names[choice - 1]);
+
+		dual_printf("\n  %s (%ld MiB) will be COMPLETELY ERASED -- every partition and all "
+		            "data on it.\n",
+		            out, sizes[choice - 1]);
+		prompt_default("  Type ERASE to confirm", "", answer, sizeof(answer));
+		if (strcmp(answer, "ERASE") == 0)
+			return 0;
+		dual_printf("  not confirmed -- choose again\n");
+	}
+}
+
+/* The NICs this machine has, so an operator does not have to guess a
+ * name. Virtual interfaces are skipped: /sys/class/net/<if>/device only
+ * exists for a real one, which is the same test used elsewhere. */
+static void list_interfaces(char *first, size_t first_size)
+{
+	DIR *d = opendir("/sys/class/net");
+	struct dirent *e;
+    int n = 0;
+
+	first[0] = '\0';
+	if (d == NULL)
+		return;
+	dual_printf("\nNetwork interfaces:\n");
+	while ((e = readdir(d)) != NULL) {
+		char probe[256];
+		struct stat pst;
+
+		if (e->d_name[0] == '.' || strcmp(e->d_name, "lo") == 0)
+			continue;
+		snprintf(probe, sizeof(probe), "/sys/class/net/%s/device", e->d_name);
+		if (stat(probe, &pst) != 0)
+			continue;
+		dual_printf("  %s\n", e->d_name);
+		if (first[0] == '\0')
+			snprintf(first, first_size, "%s", e->d_name);
+		n++;
+	}
+	closedir(d);
+	if (n == 0)
+		dual_printf("  (none found)\n");
+	dual_printf("\n");
+}
+
 int main(int argc, char **argv)
 {
 	const char *disk = NULL;
@@ -760,10 +937,60 @@ int main(int argc, char **argv)
 		}
 	}
 
+	/*
+	 * Anything not given on the command line is asked for now (#271).
+	 *
+	 * Only a genuinely unusable invocation is still a usage error -- an
+	 * unknown flag, which is a typo worth reporting rather than a
+	 * question. Everything else has an answer the operator can give
+	 * here, with the machine's own disks and NICs listed, which is a
+	 * better place to get it right than a GRUB command line typed once,
+	 * blind, with no feedback until the installer refuses to start.
+	 */
+	if (!unknown_arg) {
+		static char disk_buf[64], ip_buf[64], gw_buf[64], iface_buf[64], prefix_buf[16];
+
+		if (disk == NULL) {
+			if (pick_disk(disk_buf, sizeof(disk_buf)) != 0)
+				return 1;
+			disk = disk_buf;
+		}
+
+		if (iface == NULL || ip == NULL || gateway == NULL || prefix <= 0) {
+			char first_iface[64];
+
+			dual_printf("\nThis address is how you reach the installed system: the REST API "
+			            "is its only control surface, so it has to be right.\n");
+			list_interfaces(first_iface, sizeof(first_iface));
+
+			if (iface == NULL) {
+				prompt_default("Management interface", first_iface, iface_buf,
+				               sizeof(iface_buf));
+				iface = iface_buf;
+			}
+			if (ip == NULL) {
+				prompt_default("Management IP address", "", ip_buf, sizeof(ip_buf));
+				ip = ip_buf;
+			}
+			if (prefix <= 0) {
+				prompt_default("Prefix length", "24", prefix_buf, sizeof(prefix_buf));
+				prefix = atoi(prefix_buf);
+			}
+			if (gateway == NULL) {
+				prompt_default("Default gateway", "", gw_buf, sizeof(gw_buf));
+				gateway = gw_buf;
+			}
+		}
+	}
+
 	if (unknown_arg || disk == NULL || ip == NULL || gateway == NULL || iface == NULL ||
+	    ip[0] == '\0' || gateway[0] == '\0' || iface[0] == '\0' ||
 	    prefix <= 0 || prefix > 32) {
-		dual_printf("usage: %s --disk=/dev/sdX --ip=A.B.C.D --prefix=N --gateway=A.B.C.D "
-		            "--interface=IFNAME [--skip-partition]\n"
+		dual_printf("usage: %s [--disk=/dev/sdX] [--ip=A.B.C.D] [--prefix=N] "
+		            "[--gateway=A.B.C.D] [--interface=IFNAME] [--skip-partition]\n"
+		            "  Every flag is optional: anything omitted is asked for on the console,\n"
+		            "  with this machine's own disks and interfaces listed. Pass them all to\n"
+		            "  install unattended.\n"
 		            "  (--interface=: the physical NIC to bind the management IP to, e.g.\n"
 		            "  eth0 -- see `ip link`/`ls /sys/class/net` from a rescue shell if\n"
 		            "  unsure. The disk is partitioned here, with the standard layout,\n"
@@ -850,8 +1077,35 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	if (enroll_signing_key() != 0)
-		return 1;
+	/*
+	 * Only ask for a MOK password when it can actually matter.
+	 *
+	 * enroll_signing_key() prompts for a one-time password and makes the
+	 * operator type it again at the next boot, in MokManager. That is
+	 * shim's physical-presence proof and cannot be skipped while
+	 * enrolling -- but it is only ever consulted by firmware that
+	 * ENFORCES Secure Boot. This ran unconditionally, and the SecureBoot
+	 * variable was never read, so every install on a machine with Secure
+	 * Boot off -- every QEMU test VM, most hardware in practice -- asked
+	 * for a password protecting an enrollment nothing would ever check.
+	 *
+	 * And a failure no longer aborts the install. This used to
+	 * `return 1` on any error, which contradicted the note directly
+	 * above enroll_signing_key() itself: "this step doesn't gate
+	 * anything about the install itself completing." The comment was
+	 * right and the code was not. A machine that cannot enroll the key
+	 * still boots -- Secure Boot simply refuses the chain until the key
+	 * is enrolled by hand, which is a thing to report, not to fail an
+	 * otherwise complete install over.
+	 */
+	if (!secure_boot_enforcing()) {
+		dual_printf("cix-install: Secure Boot is not enforcing on this machine -- skipping "
+		            "MOK key enrollment (no password needed)\n");
+	} else if (enroll_signing_key() != 0) {
+		dual_printf("cix-install: WARNING -- could not stage the Secure Boot key enrollment. "
+		            "The install continues; this machine will refuse to boot the signed chain "
+		            "until the key is enrolled manually.\n");
+	}
 
 	if (write_whole_file_to_device(ROOT_SQUASHFS_SRC, root_a_dev) != 0)
 		return 1;
