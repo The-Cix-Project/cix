@@ -83,6 +83,17 @@
 #include <linux/netlink.h>
 #include <net/if.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
+
+/*
+ * #277: present since Linux 2.6.37 and in every glibc this platform
+ * builds against, but declared defensively rather than assumed -- a
+ * header that lacks it would otherwise fail the build over a bound
+ * that is best-effort by design. Value from linux/tcp.h.
+ */
+#ifndef TCP_USER_TIMEOUT
+#define TCP_USER_TIMEOUT 18
+#endif
 /* See daemon/src/logstore.c's own include-block comment: TCC can't
  * parse glibc's real <regex.h> regexec() prototype without this. */
 #define __STDC_NO_VLA__ 1
@@ -29378,6 +29389,50 @@ static void accept_loop(struct conn *listener)
 
 		if (inet_ntop(AF_INET, &peer_addr.sin_addr, peer_ip, sizeof(peer_ip)) == NULL)
 			snprintf(peer_ip, sizeof(peer_ip), "?");
+
+		/*
+		 * Bound how long the kernel will hold a response for a peer
+		 * that has stopped acknowledging it (#277).
+		 *
+		 * conn_out_sweep()'s deadline only ever sees connections on
+		 * g_out_pending, and a connection lands there only if
+		 * conn_out_drain() could NOT finish. A response the kernel
+		 * absorbs whole never gets there: write() succeeds as soon as
+		 * the bytes reach this socket's send buffer, which Linux
+		 * autotunes into the megabytes, so the daemon reports the
+		 * response sent and closes -- while the kernel keeps
+		 * retransmitting to a peer that never reads. Measured with a
+		 * client whose receive buffer is clamped to 512 bytes and a
+		 * 429 KB asset: the daemon stayed responsive at 1-5 ms
+		 * throughout, and the socket plus its whole queued body stayed
+		 * pinned with no deadline reaching it.
+		 *
+		 * That is unauthenticated and repeatable, and it is invisible
+		 * to the mechanism built to prevent exactly this, which is why
+		 * it is worth an explicit bound rather than leaving it to
+		 * tcp_orphan_retries.
+		 *
+		 * TCP_USER_TIMEOUT is the right tool: it caps how long
+		 * transmitted data may go unacknowledged before the connection
+		 * is failed, and unlike SO_LINGER it keeps close() itself
+		 * non-blocking, which matters in a single-threaded event loop.
+		 * It also costs a legitimate slow-but-real reader nothing,
+		 * because a reader that is making progress keeps acknowledging.
+		 *
+		 * Deliberately the same budget as the drain deadline: a peer
+		 * gets the same grace whether its response is stuck in this
+		 * daemon's buffer or in the kernel's, which is a distinction
+		 * no client should be able to feel.
+		 *
+		 * Best-effort: an older kernel without it loses this bound and
+		 * keeps every other property, so a failure here is not worth
+		 * refusing the connection over.
+		 */
+		{
+			unsigned int uto = (unsigned int)CONN_OUT_DEADLINE_SECONDS * 1000u;
+
+			(void)setsockopt(client_fd, IPPROTO_TCP, TCP_USER_TIMEOUT, &uto, sizeof(uto));
+		}
 
 		/* A source already blocked for repeated failed HTTPS
 		 * handshakes (ADR-0134) is refused as cheaply as possible --
