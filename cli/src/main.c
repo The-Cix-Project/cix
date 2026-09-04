@@ -4175,6 +4175,137 @@ static int cmd_ps(const struct cix_client *c, int json_mode)
  * the operations themselves are their own real usability value, not
  * something this adds to replace, only to give a second, equally
  * discoverable entry point into for a plain "list what's running". */
+/*
+ * `container drift` -- is this box in the state it is supposed to be
+ * in? (#268)
+ *
+ * A deploy can succeed, the daemon can come up healthy, and the box
+ * can still be broken, because containers that should be running are
+ * not and nothing asks. That really happened: a deploy took dns-1 and
+ * dns-2 down, every signal said it worked, and the host had silently
+ * lost the ability to resolve the name it fetches its own source from.
+ *
+ * The rule here is not invented, it is containerdef_autostart_all()'s
+ * own, applied to what the daemon already reports:
+ *
+ *   restart "no"                  -- never started automatically
+ *   "unless-stopped" and stopped  -- an operator's own choice, not a fault
+ *   anything else not running     -- drift
+ *
+ * That second line is the whole reason this can live in a client at
+ * all. It needs to tell a crash apart from a deliberate stop, and
+ * until #268 the "stopped" field was written as a constant true for
+ * every container that was not running -- so the two were
+ * indistinguishable and no client could ask the question.
+ *
+ * Exits 1 when anything has drifted, so a deploy script can gate on
+ * it rather than an operator having to read the output. Exit 2 stays
+ * reserved for "could not ask" -- an unreachable daemon must never
+ * look like a clean box.
+ */
+static int container_should_be_running(const struct json_value *e)
+{
+	const char *restart = json_str_field(e, "restart");
+	const struct json_value *stopped = json_object_get(e, "stopped");
+	int is_stopped = stopped != NULL && stopped->type == JSON_BOOL && stopped->u.boolean;
+
+	if (restart == NULL || strcmp(restart, "no") == 0)
+		return 0;
+	if (strcmp(restart, "unless-stopped") == 0 && is_stopped)
+		return 0;
+	return 1;
+}
+
+static int cmd_container_drift(const struct cix_client *c, int json_mode)
+{
+	struct cix_response r;
+	const struct json_value *containers;
+	size_t i;
+	int drifted = 0;
+	int stopped_note = 0;
+
+	if (cix_client_request(c, CIX_API_listContainers_METHOD, CIX_API_listContainers, NULL, &r) !=
+	    0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 2;
+	}
+	if (r.status != 200 || r.json == NULL) {
+		fprintf(stderr, "cixctl: could not list containers (HTTP %d)\n", r.status);
+		cix_response_free(&r);
+		return 2;
+	}
+	if (json_mode) {
+		printf("%s\n", r.body != NULL ? r.body : "");
+		cix_response_free(&r);
+		return 0;
+	}
+
+	containers = json_object_get(r.json, "containers");
+	if (containers == NULL || containers->type != JSON_ARRAY) {
+		fprintf(stderr, "cixctl: unexpected response shape\n");
+		cix_response_free(&r);
+		return 2;
+	}
+	/*
+	 * Two passes, because "not running" has two causes and only one of
+	 * them is a fault.
+	 *
+	 * A container an operator stopped is not broken, even when its
+	 * policy would start it again at the next boot -- "always" and
+	 * "on-failure" only honour an explicit stop until then (ADR-0027/
+	 * ADR-0045), so it really would come back, but calling that a
+	 * fault would report the operator's own action to them as a
+	 * problem. It is still worth SAYING, because it means the box will
+	 * not look like this after a reboot.
+	 *
+	 * Only the first group sets the exit status. An "unless-stopped"
+	 * container that was stopped is not listed at all: its policy
+	 * honours the stop permanently, so there is nothing to say.
+	 */
+	for (i = 0; i < containers->u.array.count; i++) {
+		const struct json_value *e = containers->u.array.items[i];
+		const char *name = json_str_field(e, "name");
+		const char *status = json_str_field(e, "status");
+		const struct json_value *st;
+
+		if (name == NULL || status == NULL || !container_should_be_running(e))
+			continue;
+		if (strcmp(status, "running") == 0)
+			continue;
+		st = json_object_get(e, "stopped");
+		if (st != NULL && st->type == JSON_BOOL && st->u.boolean)
+			continue; /* second pass */
+		if (!drifted)
+			printf("containers that should be running and are not:\n");
+		drifted++;
+		printf("  %-24s %-10s restart=%s\n", name, status, json_str_field(e, "restart"));
+	}
+	for (i = 0; i < containers->u.array.count; i++) {
+		const struct json_value *e = containers->u.array.items[i];
+		const char *name = json_str_field(e, "name");
+		const char *status = json_str_field(e, "status");
+		const struct json_value *st;
+
+		if (name == NULL || status == NULL || !container_should_be_running(e))
+			continue;
+		if (strcmp(status, "running") == 0)
+			continue;
+		st = json_object_get(e, "stopped");
+		if (st == NULL || st->type != JSON_BOOL || !st->u.boolean)
+			continue;
+		if (!stopped_note)
+			printf("stopped by an operator, and their policy will start them at the next "
+			       "boot:\n");
+		stopped_note++;
+		printf("  %-24s %-10s restart=%s\n", name, status, json_str_field(e, "restart"));
+	}
+	if (!drifted && !stopped_note)
+		printf("no drift: every container that should be running is running\n");
+	else if (!drifted)
+		printf("no drift: nothing has failed\n");
+	return drifted ? 1 : 0;
+}
+
 static int cmd_container_recipe(const struct cix_client *c, int json_mode, int argc, char **argv);
 static int cmd_container_apply_recipe(const struct cix_client *c, int json_mode, int argc,
                                        char **argv);
@@ -4486,6 +4617,8 @@ static int cmd_container(const struct cix_client *c, int json_mode, int argc, ch
 	 */
 	if (argc >= 1 && strcmp(argv[0], "ls") == 0)
 		return cmd_ps(c, json_mode);
+	if (argc >= 1 && strcmp(argv[0], "drift") == 0)
+		return cmd_container_drift(c, json_mode);
 	if (argc >= 1 && strcmp(argv[0], "run") == 0)
 		return cmd_run(c, json_mode, argc - 1, argv + 1);
 	if (argc >= 1 && strcmp(argv[0], "inspect") == 0)
@@ -4513,7 +4646,8 @@ static int cmd_container(const struct cix_client *c, int json_mode, int argc, ch
 	if (argc >= 1 && strcmp(argv[0], "migrate-storage-status") == 0)
 		return cmd_migrate_storage_status(c, json_mode, argc - 1, argv + 1);
 	fprintf(stderr,
-	        "usage: cixctl container ls | run ... | start NAME | stop NAME | pause NAME |\n"
+	        "usage: cixctl container ls | drift | run ... | start NAME | stop NAME |\n"
+	        "         pause NAME |\n"
 	        "         unpause NAME | rm NAME | inspect NAME | stats NAME |\n"
 	        "         console NAME [--console=NAME] [--cmd=PATH] |\n"
 	        "         files NAME --path=PATH | migrate-storage NAME --disk=ID | migrate-storage-status NAME\n"
