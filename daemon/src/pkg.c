@@ -491,6 +491,39 @@ static void chain_reap_stale(void)
 	}
 }
 
+/*
+ * Release a chain slot unless the job holding it is still running
+ * (#254).
+ *
+ * A slot belongs to a job, and a job that is neither FETCHING nor
+ * BUILDING has finished -- so nothing will come back to release the
+ * slot later and this is the last moment anyone knows it is free. That
+ * is exactly the rule chain_reap_stale() applies; using it here is what
+ * makes the reap a safety net rather than the thing actually doing the
+ * work.
+ *
+ * The two completion paths that need this claimed in their comments to
+ * use "the same stale-slot discriminator" and did not. pkg_fetch_
+ * completed() returned on a non-FETCHING entry WITHOUT clearing, so a
+ * job whose entry had already left FETCHING -- a failure, most of all
+ * -- left its slot named forever; six such slots, all held by
+ * tcc@toolchain, is what #246's reap was reclaiming. pkg_buildenv_
+ * completed() cleared UNCONDITIONALLY, which is wrong in the other
+ * direction: a slot reused by a job that is now BUILDING would be
+ * handed back while that job still owns it, which is the #98 hazard
+ * the discriminator exists to avoid.
+ *
+ * One function, so they cannot drift apart again while their comments
+ * say they agree.
+ */
+static void chain_release_if_job_over(int chain_idx, const struct pkg_entry *e)
+{
+	if (e != NULL && (e->state == PKG_STATE_FETCHING || e->state == PKG_STATE_BUILDING))
+		return;
+	g_chains[chain_idx].name[0] = '\0';
+	g_chains[chain_idx].dep_queue_count = 0;
+}
+
 /* Finds a free chain slot (name[0] == '\0'). Returns its index, or -1
  * if every slot is already in use. */
 static int chain_alloc(void)
@@ -5918,11 +5951,11 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 	 * kill, and a stale pid must never be signalled (#239). */
 	g_chains[chain_idx].fetch_pid = 0;
 
-	if (e != NULL && e->state != PKG_STATE_FETCHING)
-		return 0; /* stale: this slot has moved on (issue #98) */
-	if (e == NULL) {
-		g_chains[chain_idx].name[0] = '\0';
-		g_chains[chain_idx].dep_queue_count = 0;
+	if (e == NULL || e->state != PKG_STATE_FETCHING) {
+		/* Stale: this slot has moved on (issue #98). Whether it is
+		 * still HELD depends on what moved onto it -- see
+		 * chain_release_if_job_over() (#254). */
+		chain_release_if_job_over(chain_idx, e);
 		return 0;
 	}
 	is_final_upgrade = g_chains[chain_idx].dep_queue_is_upgrade && (g_chains[chain_idx].dep_queue_pos + 1 >= g_chains[chain_idx].dep_queue_count);
@@ -6170,8 +6203,7 @@ int pkg_buildenv_completed(int chain_idx, int exit_status, struct container_spec
 	 * #98): an entry that is no longer FETCHING cannot be the one whose
 	 * composer just exited. */
 	if (e == NULL || e->state != PKG_STATE_FETCHING) {
-		g_chains[chain_idx].name[0] = '\0';
-		g_chains[chain_idx].dep_queue_count = 0;
+		chain_release_if_job_over(chain_idx, e);
 		return 0;
 	}
 
