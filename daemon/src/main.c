@@ -28008,6 +28008,15 @@ static void log_tls_error(const char *context, const char *peer_ip, int should_l
  * peer that has genuinely stopped reading.
  */
 #define CONN_OUT_DEADLINE_SECONDS 30
+/*
+ * #277: the kernel doubles what SO_SNDBUF asks for, so this is a 128 KB
+ * effective buffer. Chosen to be comfortably smaller than this daemon's
+ * own largest served asset (web/app.js, ~429 KB) so that a client which
+ * stops reading one leaves the response PENDING, where
+ * conn_out_sweep()'s deadline can see it -- rather than absorbed whole
+ * and invisible.
+ */
+#define CONN_OUT_SNDBUF_CAP (64 * 1024)
 
 /*
  * Bytes offered to the socket per write attempt. Bounded so one
@@ -29430,8 +29439,30 @@ static void accept_loop(struct conn *listener)
 		 */
 		{
 			unsigned int uto = (unsigned int)CONN_OUT_DEADLINE_SECONDS * 1000u;
+			int sndbuf = CONN_OUT_SNDBUF_CAP;
 
 			(void)setsockopt(client_fd, IPPROTO_TCP, TCP_USER_TIMEOUT, &uto, sizeof(uto));
+			/*
+			 * And cap the send buffer, so this daemon's own deadline
+			 * is the thing that notices rather than the kernel.
+			 *
+			 * Without a cap, autotuning grows the buffer into the
+			 * megabytes, a whole response disappears into it, drain
+			 * reports success, and conn_out_sweep() never sees the
+			 * connection -- so the one mechanism written for this case
+			 * is bypassed by the case succeeding too well. Capping it
+			 * means a response larger than the cap stays pending,
+			 * which is precisely the state the deadline exists to act
+			 * on, and the drop gets logged where an operator can see
+			 * it instead of happening silently in the kernel.
+			 *
+			 * Costs a legitimate reader nothing measurable here: this
+			 * is a control plane on a LAN, where throughput is bounded
+			 * by the reader rather than by the buffer, and a reader
+			 * making progress drains continuously. TCP_USER_TIMEOUT
+			 * above stays as the backstop for whatever does slip past.
+			 */
+			(void)setsockopt(client_fd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
 		}
 
 		/* A source already blocked for repeated failed HTTPS
