@@ -667,6 +667,11 @@ updateAuthUi();
  */
 const MAX_LOG_ENTRIES = 300;
 let logBuffer = [];
+/* The newest timestamp currently rendered -- what decides whether the
+ * next batch can be prepended or has to be merged (see
+ * addLogEntriesBatch). */
+let renderedNewestTs = -Infinity;
+
 let logSourceFilter = "";
 
 const ANSI_FG_CLASSES = {
@@ -807,6 +812,8 @@ function addLogEntry(ts, source, level, text, kind) {
 	if (logSourceFilter === "" || logSourceFilter === source) {
 		logOutput.insertBefore(buildLogEntryDom(entry), logOutput.firstChild);
 		trimAndScrollLogOutput();
+		if (ts > renderedNewestTs)
+			renderedNewestTs = ts;
 	}
 }
 
@@ -818,13 +825,42 @@ function addLogEntriesBatch(entries) {
 	let rendered = false;
 
 	/*
-	 * The batch arrives oldest-first, so it is built in reverse and
-	 * inserted as one block at the top: within a batch the newest still
-	 * ends up above the oldest, and it stays one reflow for the whole
-	 * poll rather than one per entry.
+	 * A batch is only safe to prepend if everything in it is at least as
+	 * new as what is already at the top. That is the normal case and
+	 * stays one reflow for the whole poll.
+	 *
+	 * It is not always true. The first poll asks for a bounded tail, so
+	 * entries sharing the newest timestamp can be cut from it; the next
+	 * poll asks since= that same second with a larger tail and returns
+	 * the ones that were cut. Prepending those puts OLDER lines above
+	 * newer ones -- seen live on a freshly booted box, where hundreds of
+	 * entries share the boot second: the panel's top line was a kernel
+	 * message while the store's newest was sshd starting.
+	 *
+	 * When that happens, sort the buffer and re-render from it. Rare,
+	 * and correctness is worth one reflow when it is the alternative to
+	 * a panel that lies about what happened last.
 	 */
-	for (const entry of entries)
+	const topTs = logBuffer.length > 0 ? renderedNewestTs : -Infinity;
+	let interleaved = false;
+
+	for (const entry of entries) {
 		logBuffer.push(entry);
+		if (entry.ts < topTs)
+			interleaved = true;
+	}
+	while (logBuffer.length > MAX_LOG_ENTRIES)
+		logBuffer.shift();
+
+	if (interleaved) {
+		/* Stable by timestamp: entries within one second keep the order
+		 * the server sent them, which is the only ordering information
+		 * that exists at this resolution. */
+		logBuffer.sort((a, b) => a.ts - b.ts);
+		rerenderLogPanel();
+		return;
+	}
+
 	for (let i = entries.length - 1; i >= 0; i--) {
 		const entry = entries[i];
 
@@ -833,11 +869,13 @@ function addLogEntriesBatch(entries) {
 			rendered = true;
 		}
 	}
-	while (logBuffer.length > MAX_LOG_ENTRIES)
-		logBuffer.shift();
 	if (rendered) {
 		logOutput.insertBefore(fragment, logOutput.firstChild);
 		trimAndScrollLogOutput();
+	}
+	for (const entry of entries) {
+		if (entry.ts > renderedNewestTs)
+			renderedNewestTs = entry.ts;
 	}
 }
 
@@ -855,6 +893,7 @@ function rerenderLogPanel() {
 	logOutput.textContent = "";
 	logOutput.appendChild(fragment);
 	logOutput.scrollTop = 0;
+	renderedNewestTs = logBuffer.length > 0 ? logBuffer[logBuffer.length - 1].ts : -Infinity;
 }
 
 logPanelSource.addEventListener("change", () => {
