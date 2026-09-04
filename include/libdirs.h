@@ -66,24 +66,37 @@
  * The directories the platform's OWN library set is staged into and
  * then verified in.
  *
- * Narrower than the search list on purpose. This pair -- mkbootroot's
- * staging loop and verify_platform_libs_intact() -- exists because a
- * control-plane root carrying glibc objects from two different builds
- * panics at boot with "Attempted to kill init!", which happened twice
- * on a real machine while assembly reported success both times. The
- * guarantee is that every file the platform staged is still byte-for-
- * byte the one it staged, so the two loops must cover exactly the same
- * directories: widening one without the other either misses files or
- * refuses a build over files nobody promised anything about.
+ * The same list as the search path, and that is a correction rather
+ * than a coincidence. It used to be the runtime directory plus lib64,
+ * which meant the guarantee this pair exists to provide -- that every
+ * library the platform built is still byte-for-byte the one it built,
+ * because a control-plane root carrying glibc objects from two
+ * different builds panics at boot with "Attempted to kill init!", as
+ * happened twice on a real machine while assembly reported success
+ * both times -- covered only some of the platform's libraries.
+ * Measured on 192.168.15.95: cix-hosttools carries 40 shared objects
+ * in usr/lib, glibc's own among them, which that pair had never
+ * staged or verified. They were never missing from the root (the
+ * ordinary image copy puts them there); what they lacked was the
+ * last-writer-wins protection, which is the entire point.
  *
- * lib64 is here for the loader alone. Its path is fixed by the psABI
- * -- it is PT_INTERP in every binary ever built here -- so unlike the
- * rest of the layout it is not ours to choose, and it stays after
- * #184 collapses everything else into one directory.
+ * #184 forced the issue rather than creating it. As packages move to
+ * usr/lib they would have dropped out of a set keyed on the old
+ * directory one at a time, quietly shrinking the guarantee with every
+ * migration -- so the narrower definition was not merely incomplete,
+ * it was going to decay.
+ *
+ * Kept as its own name because the two mean different things: one is
+ * "where do I look for a library called X", the other is "which
+ * directories hold the set I must protect". They coincide today and
+ * there is no reason to expect them to diverge, but a reader of
+ * either loop should be told which question it is asking.
+ *
+ * lib64 is in here for the loader. Its path is fixed by the psABI --
+ * PT_INTERP in every binary ever built here -- so unlike the rest of
+ * the layout it is not ours to choose, and it stays after #184
+ * collapses everything else into one directory.
  */
-#define CIX_LIB_DIRS_PLATFORM                                                  \
-	{                                                                          \
-		CIX_LIB_DIR_RUNTIME, "lib64"                                           \
-	}
+#define CIX_LIB_DIRS_PLATFORM CIX_LIB_DIRS_SEARCH
 
 #endif /* CIX_LIBDIRS_H */
