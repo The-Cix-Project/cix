@@ -542,8 +542,12 @@ int main(void)
 	 * back through the relay -- not what the daemon believes it set.
 	 * The bug this fixes was invisible for the endpoint's whole history
 	 * precisely because every layer looked correct from the outside:
-	 * the pty existed, the upgrade succeeded, bytes flowed. Only the
-	 * program's own view of its terminal was wrong (0x0, no $TERM). --- */
+	 * the pty existed, the upgrade succeeded, bytes flowed, and a real
+	 * vim even started -- ncurses falls back to the terminfo entry's
+	 * own lines#/cols# when TIOCGWINSZ answers 0x0, so nothing errored.
+	 * It simply drew at a fixed 80x24 that matched no real terminal and
+	 * no resize could change, under a $TERM that was always the kernel
+	 * console's. --- */
 
 	/* A malformed parameter is refused before the upgrade, while an
 	 * HTTP status can still carry the reason. Silently substituting a

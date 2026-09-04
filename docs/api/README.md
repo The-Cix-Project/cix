@@ -451,7 +451,9 @@ The `--console=NAME=/path args` form splits the command on spaces, so an argumen
 
 ## The console is a real terminal: size and type
 
-A full-screen program — `htop`, `btop`, `vim` — asks the terminal two questions before it draws anything: *how big are you* (`ioctl(TIOCGWINSZ)`) and *what can you do* (`$TERM`, naming an entry in the terminfo database). This endpoint used to answer neither. A PTY is created at the kernel's default of 0×0, and `cixd` runs as pid 1 from the bootloader so it has no `$TERM` of its own to hand on. Every such program therefore saw a zero-sized screen of unknown type and refused to start. A plain shell never noticed, which is why this went unremarked for so long.
+A full-screen program — `htop`, `btop`, `vim` — asks the terminal two questions before it draws anything: *how big are you* (`ioctl(TIOCGWINSZ)`) and *what can you do* (`$TERM`, naming an entry in the terminfo database). This endpoint used to answer neither. A PTY is created at the kernel's default of 0×0 and nothing ever sized it, and nothing ever set `$TERM`.
+
+The result was not an error, which is what made it easy to miss. Measured against a real host before the fix: `stty size` reported `0 0` and `$TERM` was `linux` — `cixd` runs as pid 1, so it hands on the kernel console's own terminal type. ncurses does not fail on that; it falls back to the terminfo entry's own `lines#`/`cols#`. So `vim` started normally and drew itself a 24-line screen. Full-screen programs *ran*, in the top-left 80×24 corner of whatever the operator's terminal really was, and no resize ever reached them. A plain shell needs neither answer and never noticed.
 
 Three optional query parameters answer both questions at attach time:
 

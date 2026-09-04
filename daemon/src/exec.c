@@ -241,13 +241,14 @@ int exec_into_container(pid_t target_pid, char *const cmd_argv[],
 			chdir("/");
 			/*
 			 * $TERM names the terminfo entry describing what this
-			 * pty can do; without one ncurses has no terminal
-			 * description at all and setupterm() fails outright
-			 * ("TERM environment variable not set"), which is what
-			 * htop and vim report rather than starting. cixd runs as
-			 * pid 1 from the bootloader and so inherits no TERM of
-			 * its own to pass on, making this the only place it can
-			 * come from.
+			 * pty can do. Without this, the exec'd process inherited
+			 * whatever cixd itself has -- measured on a real host as
+			 * "linux", the kernel console's type, since cixd runs as
+			 * pid 1 from the bootloader. That is a valid terminfo
+			 * entry, so nothing failed; every session simply claimed
+			 * to be a Linux virtual console no matter what was really
+			 * attached, mis-describing the colour and key-sequence
+			 * capabilities of anything that is not one.
 			 *
 			 * setenv() after fork() is safe here specifically
 			 * because cixd is single-threaded (no pthread_create
