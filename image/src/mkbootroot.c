@@ -22,6 +22,7 @@
  * operator-supplied directory (see README.md's own fetch recipe --
  * upstream linux-firmware's amdgpu/ subtree, via a sparse clone).
  */
+#include "libdirs.h"
 #include "test_image_fixture.h"
 
 #include <dirent.h>
@@ -58,12 +59,51 @@ static int ensure_dir_under(const char *image_root, const char *rel)
 }
 
 /*
+ * The library search path for a binary run straight out of the
+ * host-tools image (ADR-0154).
+ *
+ * Built from CIX_LIB_DIRS_SEARCH rather than spelled out, and built
+ * ONCE: the same three-directory string used to be composed
+ * separately for LD_LIBRARY_PATH and for the loader's own
+ * --library-path, so the two could drift apart while looking correct
+ * in isolation. A directory the image does not have costs nothing --
+ * the loader skips one that is not there -- so covering the whole
+ * layout is strictly safer than naming a subset of it, which is what
+ * the old three entries were.
+ *
+ * Failing loudly on truncation matters here: a silently shortened
+ * search path drops directories off the END, and the dynamic linker
+ * then falls back to the build host's own libraries with no error at
+ * all (ADR-0154's confirmed failure mode -- a clean exit 0 against a
+ * library the binary was never built for).
+ */
+static int host_tools_lib_path(const char *host_tools_dir, char *out, size_t out_size)
+{
+	static const char *const dirs[] = CIX_LIB_DIRS_SEARCH;
+	size_t i;
+	int n = 0;
+
+	for (i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
+		int w = snprintf(out + n, out_size - (size_t)n, "%s%s/%s", (i > 0) ? ":" : "",
+		                 host_tools_dir, dirs[i]);
+		if (w < 0 || (size_t)(n + w) >= out_size) {
+			fprintf(stderr, "path too long: library search path for %s\n", host_tools_dir);
+			return -1;
+		}
+		n += w;
+	}
+	return 0;
+}
+
+/*
  * host_tools_dir, when non-empty, is a real, ordinary image rootfs
  * (squashfs-tools.recipe's own install, ADR-0078) -- mksquashfs is
  * dynamically linked against liblzma.so.5 (this project's own
- * "never -static" rule), which that recipe stages at
- * <host_tools_dir>/lib/x86_64-linux-gnu/, an arbitrary filesystem
- * path the dynamic linker has no reason to search: it isn't a chroot
+ * "never -static" rule), which that recipe stages under one of the
+ * layout's library directories (CIX_LIB_DIRS_SEARCH -- which one is
+ * not this file's business, and changes as #184 collapses them) --
+ * an arbitrary filesystem path the dynamic linker has no reason to
+ * search: it isn't a chroot
  * root (unlike an ordinary pkg build container, which reaches its own
  * libs via a real pivot_root, mkbootroot execve()s this binary
  * directly off the bare host), so nothing wires that directory into
@@ -146,12 +186,14 @@ static int run_mksquashfs(const char *mksquashfs_bin, const char *image_root,
 	if (host_tools_dir != NULL && host_tools_dir[0] != '\0') {
 		int i;
 
-		if (snprintf(ld_library_path, sizeof(ld_library_path),
-		             "LD_LIBRARY_PATH=%s/lib/x86_64-linux-gnu:%s/usr/lib:%s/lib", host_tools_dir,
-		             host_tools_dir, host_tools_dir) >= (int)sizeof(ld_library_path)) {
+		if (snprintf(ld_library_path, sizeof(ld_library_path), "LD_LIBRARY_PATH=") >=
+		    (int)sizeof(ld_library_path)) {
 			fprintf(stderr, "path too long: LD_LIBRARY_PATH for %s\n", host_tools_dir);
 			return -1;
 		}
+		if (host_tools_lib_path(host_tools_dir, ld_library_path + strlen("LD_LIBRARY_PATH="),
+		                        sizeof(ld_library_path) - strlen("LD_LIBRARY_PATH=")) != 0)
+			return -1;
 		/* Copy the real inherited environment forward -- this is a real
 		 * child process replacing the whole environment would silently
 		 * drop, not add to, whatever else the daemon's own process was
@@ -180,8 +222,8 @@ static int run_mksquashfs(const char *mksquashfs_bin, const char *image_root,
 		struct stat lst;
 
 		snprintf(ld_so, sizeof(ld_so), "%s/lib64/ld-linux-x86-64.so.2", host_tools_dir);
-		snprintf(lib_path, sizeof(lib_path), "%s/lib/x86_64-linux-gnu:%s/usr/lib:%s/lib",
-		         host_tools_dir, host_tools_dir, host_tools_dir);
+		if (host_tools_lib_path(host_tools_dir, lib_path, sizeof(lib_path)) != 0)
+			return -1;
 		if (stat(ld_so, &lst) == 0) {
 			ld_argv[0] = ld_so;
 			ld_argv[1] = (char *)"--library-path";
@@ -266,7 +308,7 @@ static int files_identical(const char *a, const char *b)
 
 static int verify_platform_libs_intact(const char *image_root, const char *host_tools_dir)
 {
-	static const char *const lib_dirs[] = { "lib/x86_64-linux-gnu", "lib64" };
+	static const char *const lib_dirs[] = CIX_LIB_DIRS_PLATFORM;
 	size_t d;
 	int checked = 0;
 
@@ -421,7 +463,7 @@ int main(int argc, char **argv)
 	 * mechanism reading the real "cannot open shared object file"
 	 * error straight out of a live remote hostbuild attempt.
 	 */
-	if (test_image_fixture_add_lib(image_root, "/lib/x86_64-linux-gnu/libtinfo.so.6") != 0)
+	if (test_image_fixture_add_lib(image_root, "/" CIX_LIB_DIR_RUNTIME "/libtinfo.so.6") != 0)
 		return 1;
 
 	/*
@@ -550,50 +592,63 @@ int main(int argc, char **argv)
 			{ "/usr/sbin/resize2fs", "usr/sbin/resize2fs" },
 			{ "/usr/sbin/e2fsck", "usr/sbin/e2fsck" },
 		};
+		/*
+		 * Library NAMES, not paths (#184). Every entry used to spell
+		 * out /lib/x86_64-linux-gnu/ for itself, forty times, which
+		 * made a directory that is an inherited Debian convention into
+		 * something this file asserted forty times over -- and made
+		 * moving any package a forty-line edit here.
+		 *
+		 * Where each one is found is already flexible: add_lib()
+		 * searches CIX_LIB_DIRS_SEARCH by name (#224). Where each one
+		 * LANDS is CIX_LIB_DIR_RUNTIME, resolved once at the call site
+		 * below, so this list says what the control plane needs and
+		 * the layout says where it goes.
+		 */
 		static const char *const shelled_bin_libs[] = {
 			/* openssl */
-			"/lib/x86_64-linux-gnu/libssl.so.3",
-			"/lib/x86_64-linux-gnu/libcrypto.so.3",
+			"libssl.so.3",
+			"libcrypto.so.3",
 			/* curl */
-			"/lib/x86_64-linux-gnu/libcurl.so.4",
-			"/lib/x86_64-linux-gnu/libz.so.1",
-			"/lib/x86_64-linux-gnu/libnghttp2.so.14",
-			"/lib/x86_64-linux-gnu/libidn2.so.0",
-			"/lib/x86_64-linux-gnu/librtmp.so.1",
-			"/lib/x86_64-linux-gnu/libssh2.so.1",
-			"/lib/x86_64-linux-gnu/libpsl.so.5",
-			"/lib/x86_64-linux-gnu/libgssapi_krb5.so.2",
-			"/lib/x86_64-linux-gnu/libldap-2.5.so.0",
-			"/lib/x86_64-linux-gnu/liblber-2.5.so.0",
-			"/lib/x86_64-linux-gnu/libzstd.so.1",
-			"/lib/x86_64-linux-gnu/libbrotlidec.so.1",
-			"/lib/x86_64-linux-gnu/libunistring.so.2",
-			"/lib/x86_64-linux-gnu/libgnutls.so.30",
-			"/lib/x86_64-linux-gnu/libhogweed.so.6",
-			"/lib/x86_64-linux-gnu/libnettle.so.8",
-			"/lib/x86_64-linux-gnu/libgmp.so.10",
-			"/lib/x86_64-linux-gnu/libkrb5.so.3",
-			"/lib/x86_64-linux-gnu/libk5crypto.so.3",
-			"/lib/x86_64-linux-gnu/libcom_err.so.2",
-			"/lib/x86_64-linux-gnu/libkrb5support.so.0",
-			"/lib/x86_64-linux-gnu/libsasl2.so.2",
-			"/lib/x86_64-linux-gnu/libbrotlicommon.so.1",
-			"/lib/x86_64-linux-gnu/libp11-kit.so.0",
-			"/lib/x86_64-linux-gnu/libtasn1.so.6",
-			"/lib/x86_64-linux-gnu/libkeyutils.so.1",
-			"/lib/x86_64-linux-gnu/libresolv.so.2",
-			"/lib/x86_64-linux-gnu/libffi.so.8",
+			"libcurl.so.4",
+			"libz.so.1",
+			"libnghttp2.so.14",
+			"libidn2.so.0",
+			"librtmp.so.1",
+			"libssh2.so.1",
+			"libpsl.so.5",
+			"libgssapi_krb5.so.2",
+			"libldap-2.5.so.0",
+			"liblber-2.5.so.0",
+			"libzstd.so.1",
+			"libbrotlidec.so.1",
+			"libunistring.so.2",
+			"libgnutls.so.30",
+			"libhogweed.so.6",
+			"libnettle.so.8",
+			"libgmp.so.10",
+			"libkrb5.so.3",
+			"libk5crypto.so.3",
+			"libcom_err.so.2",
+			"libkrb5support.so.0",
+			"libsasl2.so.2",
+			"libbrotlicommon.so.1",
+			"libp11-kit.so.0",
+			"libtasn1.so.6",
+			"libkeyutils.so.1",
+			"libresolv.so.2",
+			"libffi.so.8",
 			/* tar + cp */
-			"/lib/x86_64-linux-gnu/libacl.so.1",
-			"/lib/x86_64-linux-gnu/libselinux.so.1",
-			"/lib/x86_64-linux-gnu/libpcre2-8.so.0",
-			"/lib/x86_64-linux-gnu/libattr.so.1",
+			"libacl.so.1",
+			"libselinux.so.1",
+			"libpcre2-8.so.0",
+			"libattr.so.1",
 			/* unsquashfs -- libz.so.1/libzstd.so.1 already listed above (curl) */
-			"/lib/x86_64-linux-gnu/libpthread.so.0",
-			"/lib/x86_64-linux-gnu/libm.so.6",
-			"/lib/x86_64-linux-gnu/liblzma.so.5",
-			"/lib/x86_64-linux-gnu/liblzo2.so.2",
-			"/lib/x86_64-linux-gnu/liblz4.so.1",
+			"libpthread.so.0",
+			"libm.so.6",
+			"liblzma.so.5",
+			"liblzo2.so.2",
+			"liblz4.so.1",
 			/*
 			 * libpthread's own pthread_exit()/pthread_cancel() lazily
 			 * dlopen() this for stack-unwinding support -- never a
@@ -610,24 +665,24 @@ int main(int argc, char **argv)
 			 * shelled-out binary linking libpthread that actually exits
 			 * a thread normally, not just unsquashfs/mksquashfs.
 			 */
-			"/lib/x86_64-linux-gnu/libgcc_s.so.1",
+			"libgcc_s.so.1",
 			/* bzip2 -- gzip needs only libc (already staged); xz needs
 			 * only liblzma.so.5 (already staged above, for unsquashfs) */
-			"/lib/x86_64-linux-gnu/libbz2.so.1.0",
+			"libbz2.so.1.0",
 			/* mkfs.ext4 (mke2fs) -- libcom_err.so.2 already listed above
 			 * (curl/krb5) */
-			"/lib/x86_64-linux-gnu/libext2fs.so.2",
-			"/lib/x86_64-linux-gnu/libblkid.so.1",
-			"/lib/x86_64-linux-gnu/libuuid.so.1",
-			"/lib/x86_64-linux-gnu/libe2p.so.2",
+			"libext2fs.so.2",
+			"libblkid.so.1",
+			"libuuid.so.1",
+			"libe2p.so.2",
 			/* sfdisk -- libtinfo.so.6/libuuid.so.1/libblkid.so.1 are
 			 * already staged above (curl/mke2fs), so only these three
 			 * are new. libreadline is pulled in by libfdisk's own
 			 * interactive-prompt support, which nothing here uses, but
 			 * the dynamic linker resolves it at load time regardless. */
-			"/lib/x86_64-linux-gnu/libfdisk.so.1",
-			"/lib/x86_64-linux-gnu/libsmartcols.so.1",
-			"/lib/x86_64-linux-gnu/libreadline.so.8",
+			"libfdisk.so.1",
+			"libsmartcols.so.1",
+			"libreadline.so.8",
 		};
 		size_t i;
 
@@ -799,7 +854,15 @@ int main(int argc, char **argv)
 			}
 		}
 		for (i = 0; i < sizeof(shelled_bin_libs) / sizeof(shelled_bin_libs[0]); i++) {
-			if (test_image_fixture_add_lib(image_root, shelled_bin_libs[i]) != 0)
+			char lib_path[PATH_MAX];
+
+			if (snprintf(lib_path, sizeof(lib_path), "/%s/%s", CIX_LIB_DIR_RUNTIME,
+			             shelled_bin_libs[i]) >= (int)sizeof(lib_path)) {
+				fprintf(stderr, "library path too long: /%s/%s\n", CIX_LIB_DIR_RUNTIME,
+				        shelled_bin_libs[i]);
+				return 1;
+			}
+			if (test_image_fixture_add_lib(image_root, lib_path) != 0)
 				return 1;
 		}
 
@@ -854,11 +917,11 @@ int main(int argc, char **argv)
 		 * older.
 		 */
 		if (host_tools_dir != NULL && host_tools_dir[0] != '\0') {
-			static const char *const lib_dirs[] = { "lib/x86_64-linux-gnu", "lib64", NULL };
+			static const char *const lib_dirs[] = CIX_LIB_DIRS_PLATFORM;
 			int staged_libs = 0;
-			int d;
+			size_t d;
 
-			for (d = 0; lib_dirs[d] != NULL; d++) {
+			for (d = 0; d < sizeof(lib_dirs) / sizeof(lib_dirs[0]); d++) {
 				char src_dir[PATH_MAX];
 				DIR *dh;
 				struct dirent *de;

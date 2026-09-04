@@ -1,3 +1,4 @@
+#include "libdirs.h"
 #include "pkg.h"
 #include "targz.h"
 #include "pkgpolicy.h"
@@ -3542,7 +3543,7 @@ static int buildenv_verify_libc_intact(const char *staging_rootfs, const struct 
 {
 	static const char *const critical[] = {
 		PKG_IMAGE_LOADER_REL,
-		"lib/x86_64-linux-gnu/libc.so.6",
+		CIX_LIB_DIR_RUNTIME "/libc.so.6",
 		/*
 		 * A HEADER, not just a library, and it earns its place: this
 		 * is the one another package actually did overwrite. libc-dev

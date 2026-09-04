@@ -25,6 +25,7 @@
  * itself, which deliberately never links test/, since it runs on a
  * real target disk as production code).
  */
+#include "libdirs.h"
 #include "test_image_fixture.h"
 
 #include <dirent.h>
@@ -216,7 +217,7 @@ int main(int argc, char **argv)
 		        "  machine.\n"
 		"  isotools-root: directory holding <root>/bin/{grub-mkrescue,sbsign,\n"
 		        "  xorriso,mcopy,mformat,mokutil}, <root>/shim/{shimx64,mmx64}.efi.signed,\n"
-		        "  <root>/lib/grub/x86_64-efi/ and <root>/lib/x86_64-linux-gnu/ (isotools\n"
+		        "  <root>/lib/grub/x86_64-efi/ and <root>/" CIX_LIB_DIR_RUNTIME "/ (isotools\n"
 		        "  2.14-3's hostbuild artifact layout, ADR-0064). mokutil, shim and\n"
 		        "  mokutil's library closure moved here from absolute host paths: they\n"
 		        "  exist on a Debian development box and on no Cix control-plane root,\n"
@@ -288,7 +289,7 @@ int main(int argc, char **argv)
 		}
 	}
 	snprintf(isotools_bin_dir, sizeof(isotools_bin_dir), "%s/bin", g_isotools_root);
-	snprintf(isotools_lib_dir, sizeof(isotools_lib_dir), "%s/lib/x86_64-linux-gnu",
+	snprintf(isotools_lib_dir, sizeof(isotools_lib_dir), "%s/" CIX_LIB_DIR_RUNTIME,
 	         g_isotools_root);
 	/*
 	 * grub-mkrescue itself is always invoked by full explicit path
@@ -480,10 +481,17 @@ int main(int argc, char **argv)
 	 * rather than a silent failure at install time.
 	 */
 	{
-		static const char *const host_dirs[] = {
-			"/lib/x86_64-linux-gnu", "/usr/lib/x86_64-linux-gnu",
-			"/lib", "/usr/lib", NULL,
-		};
+		/*
+		 * Absolute and NULL-terminated because that is what this
+		 * caller wants, but the DIRECTORIES are the layout's own
+		 * (#184) -- a host library is looked for wherever this
+		 * platform puts libraries, not in a list that has to be
+		 * remembered separately here.
+		 */
+		static const char *const host_dir_rel[] = CIX_LIB_DIRS_SEARCH;
+		char host_dir_buf[sizeof(host_dir_rel) / sizeof(host_dir_rel[0])][64];
+		const char *host_dirs[sizeof(host_dir_rel) / sizeof(host_dir_rel[0]) + 1];
+		size_t hd;
 		char artifact_lib[700], artifact_lib64[700];
 		const char *artifact_dirs[3];
 		size_t bi;
@@ -492,7 +500,13 @@ int main(int argc, char **argv)
 		};
 		char staged[PATH_MAX];
 
-		snprintf(artifact_lib, sizeof(artifact_lib), "%s/lib/x86_64-linux-gnu",
+		for (hd = 0; hd < sizeof(host_dir_rel) / sizeof(host_dir_rel[0]); hd++) {
+			snprintf(host_dir_buf[hd], sizeof(host_dir_buf[hd]), "/%s", host_dir_rel[hd]);
+			host_dirs[hd] = host_dir_buf[hd];
+		}
+		host_dirs[hd] = NULL;
+
+		snprintf(artifact_lib, sizeof(artifact_lib), "%s/" CIX_LIB_DIR_RUNTIME,
 		         g_isotools_root);
 		snprintf(artifact_lib64, sizeof(artifact_lib64), "%s/lib64", g_isotools_root);
 		artifact_dirs[0] = artifact_lib;

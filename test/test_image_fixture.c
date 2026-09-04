@@ -1,4 +1,5 @@
 #include <time.h>
+#include "libdirs.h"
 #include "test_image_fixture.h"
 
 #include <elf.h>
@@ -102,14 +103,14 @@ int test_image_fixture_build(const char *image_root, const char *child_binary_pa
 	if (mkdir_p(path) != 0)
 		return -1;
 	snprintf(path, sizeof(path), "%s/lib64/ld-linux-x86-64.so.2", image_root);
-	if (test_image_fixture_copy_file("/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2", path) != 0)
+	if (test_image_fixture_copy_file("/" CIX_LIB_DIR_RUNTIME "/ld-linux-x86-64.so.2", path) != 0)
 		return -1;
 
-	snprintf(path, sizeof(path), "%s/lib/x86_64-linux-gnu", image_root);
+	snprintf(path, sizeof(path), "%s/" CIX_LIB_DIR_RUNTIME, image_root);
 	if (mkdir_p(path) != 0)
 		return -1;
-	snprintf(path, sizeof(path), "%s/lib/x86_64-linux-gnu/libc.so.6", image_root);
-	if (test_image_fixture_copy_file("/lib/x86_64-linux-gnu/libc.so.6", path) != 0)
+	snprintf(path, sizeof(path), "%s/" CIX_LIB_DIR_RUNTIME "/libc.so.6", image_root);
+	if (test_image_fixture_copy_file("/" CIX_LIB_DIR_RUNTIME "/libc.so.6", path) != 0)
 		return -1;
 	/*
 	 * Second copy of ld-linux itself, same file as lib64/ above but at
@@ -140,8 +141,8 @@ int test_image_fixture_build(const char *image_root, const char *child_binary_pa
 	 * ADR-0083) got the destination right but left these three source
 	 * reads on the wrong path -- see ADR-0085.
 	 */
-	snprintf(path, sizeof(path), "%s/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2", image_root);
-	if (test_image_fixture_copy_file("/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2", path) != 0)
+	snprintf(path, sizeof(path), "%s/" CIX_LIB_DIR_RUNTIME "/ld-linux-x86-64.so.2", image_root);
+	if (test_image_fixture_copy_file("/" CIX_LIB_DIR_RUNTIME "/ld-linux-x86-64.so.2", path) != 0)
 		return -1;
 
 	return 0;
@@ -208,14 +209,13 @@ int test_image_fixture_add_lib(const char *image_root, const char *host_lib_abs_
 	 */
 	snprintf(resolved, sizeof(resolved), "%s", host_lib_abs_path);
 	if (access(resolved, R_OK) != 0) {
-		static const char *const dirs[] = { "/lib/x86_64-linux-gnu", "/usr/lib",
-		                                     "/lib", "/usr/lib/x86_64-linux-gnu" };
+		static const char *const dirs[] = CIX_LIB_DIRS_SEARCH;
 		const char *base = strrchr(host_lib_abs_path, '/');
 		size_t i;
 
 		base = (base != NULL) ? base + 1 : host_lib_abs_path;
 		for (i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
-			snprintf(resolved, sizeof(resolved), "%s/%s", dirs[i], base);
+			snprintf(resolved, sizeof(resolved), "/%s/%s", dirs[i], base);
 			if (access(resolved, R_OK) == 0)
 				break;
 			resolved[0] = '\0';
@@ -1054,11 +1054,11 @@ static int stage_closure_rec(const char *image_root, const char *binary_path,
 		{
 			char libdir[PATH_MAX];
 
-			snprintf(libdir, sizeof(libdir), "%s/lib/x86_64-linux-gnu", image_root);
+			snprintf(libdir, sizeof(libdir), "%s/" CIX_LIB_DIR_RUNTIME, image_root);
 			if (mkdir_p(libdir) != 0)
 				return -1;
 		}
-		snprintf(dst, sizeof(dst), "%s/lib/x86_64-linux-gnu/%s", image_root, needed[i]);
+		snprintf(dst, sizeof(dst), "%s/" CIX_LIB_DIR_RUNTIME "/%s", image_root, needed[i]);
 		if (test_image_fixture_copy_file(resolved, dst) != 0)
 			return -1;
 
