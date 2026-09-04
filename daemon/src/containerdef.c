@@ -371,8 +371,30 @@ static void write_stopped_def_json_one(struct container_def *d, struct json_writ
 		jw_int(w, d->follow_rolling_jitter_seconds);
 	else
 		jw_null(w);
+	/*
+	 * The definition's OWN flag, not a constant (#268).
+	 *
+	 * This wrote 1 unconditionally, on the reading that an entry
+	 * appearing here is by definition not running. But "stopped" does
+	 * not mean "not running" -- it means an operator stopped it. It is
+	 * set only by POST .../stop and cleared by containerdef_add(), and
+	 * nothing in the crash path touches it.
+	 *
+	 * So a container that FAILED to start reported the same value as
+	 * one deliberately stopped, and the one field that tells those
+	 * apart was the one field being overwritten. That is precisely the
+	 * distinction needed to answer "is this box in the state it should
+	 * be in" without calling an operator's own deliberate stop a fault
+	 * -- and with a constant here, no client could ask it at all.
+	 *
+	 * The "status" key above already says "stopped" for every entry in
+	 * this function, so the constant was not even carrying information
+	 * a caller lacked. Verified live on 192.168.15.95: a container
+	 * whose execve fails reports status "stopped" with nothing having
+	 * called stop.
+	 */
 	jw_key(w, "stopped");
-	jw_bool(w, 1);
+	jw_bool(w, d->stopped);
 	jw_key(w, "depends_on");
 	jw_arr_open(w);
 	for (j = 0; j < d->depends_on_count; j++)
