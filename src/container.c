@@ -855,21 +855,6 @@ int container_create(const struct container_spec *spec, struct container_handle 
 	/* Parent. */
 	close(diag_pipe[1]);
 	/*
-	 * Phase 2c: the child inherited its own copy of the detached rootfs fd
-	 * at clone3; drop the parent's copy. The detached mount stays alive on
-	 * the child's copy until it move_mounts it into its own namespace.
-	 */
-	if (spec->userns_enabled) {
-		int vi;
-
-		for (vi = 0; vi < spec->volume_count; vi++)
-			if (spec->volume_idmap_fds[vi] >= 0)
-				close(spec->volume_idmap_fds[vi]);
-	}
-	if (spec->userns_enabled && overlay_lower_fd >= 0)
-		close(overlay_lower_fd);
-
-	/*
 	 * ADR-0179 phase 2: write the child's uid/gid maps, then release it.
 	 * This must happen before the child can reach any privileged step, so
 	 * it comes first in the parent -- ahead of the veth handshake below,
@@ -963,6 +948,35 @@ int container_create(const struct container_spec *spec, struct container_handle 
 		userns_ok = userns_ok && (write(userns_pipe[1], "x", 1) == 1);
 		saved_errno = errno;
 		close(userns_pipe[1]);
+		/*
+		 * Phase 2c: the child inherited its own copy of the detached
+		 * rootfs and volume fds at clone3; drop the parent's copies.
+		 * The detached mounts stay alive on the child's copies until
+		 * it move_mounts them into its own namespace.
+		 *
+		 * This runs HERE, after the id-mapping above, and used to run
+		 * before it -- which meant mount_setattr() was handed fds the
+		 * parent had already closed, and returned EBADF (#266). It was
+		 * invisible because the block that uses them was gated on
+		 * spec.userns_idmap, and that flag was itself being cleared by
+		 * a memset before the runtime ever saw it: the path had never
+		 * once executed. Fixing the flag ran this code for the first
+		 * time and it failed immediately, taking dns-1 and dns-2 down
+		 * with "container_create: userns map/release: Bad file
+		 * descriptor". Two bugs stacked, the second hidden by the
+		 * first.
+		 */
+		if (spec->userns_enabled) {
+			int vi;
+
+			for (vi = 0; vi < spec->volume_count; vi++)
+				if (spec->volume_idmap_fds[vi] >= 0)
+					close(spec->volume_idmap_fds[vi]);
+			if (overlay_lower_fd >= 0) {
+				close(overlay_lower_fd);
+				overlay_lower_fd = -1;
+			}
+		}
 		if (!userns_ok) {
 			siginfo_t info;
 
