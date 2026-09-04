@@ -27360,6 +27360,99 @@ enum console_route_result {
  * it registered in epoll indefinitely instead of the usual
  * dispatch()-then-close-the-fd path every other request takes.
  */
+/*
+ * Reads one `name=value` parameter out of a query string (`query`
+ * points at the '?', as strchr leaves it). Returns 1 and NUL-terminates
+ * *out on a hit, 0 when the parameter is absent.
+ *
+ * The console endpoint grew a second and third parameter (term/cols/
+ * rows) on top of #248's `console=`, and three hand-rolled copies of
+ * the same strstr-and-copy loop is exactly the parallel implementation
+ * the maxims rule out -- so #248's own inline scan was folded into this
+ * and now shares it.
+ *
+ * Matching is anchored on a real parameter boundary ('?' or '&'), not a
+ * bare strstr: without that, `console=` would also match the tail of a
+ * parameter named `myconsole=`, and `term=` the tail of `xterm=`.
+ * No percent-decoding -- every value this endpoint takes is a container
+ * name, a console name, a terminfo name or a number, all of which are
+ * already constrained to characters that never need escaping, and a
+ * decoder nothing needs would just be one more thing to get wrong.
+ */
+static int query_get_param(const char *query, const char *name, char *out, size_t out_size)
+{
+	size_t name_len = strlen(name);
+	const char *p = query;
+
+	if (query == NULL || out_size == 0)
+		return 0;
+
+	for (;;) {
+		size_t n = 0;
+
+		/* Every parameter is preceded by '?' or '&'; p always points
+		 * at one of those separators at the top of this loop. */
+		p++;
+		if (strncmp(p, name, name_len) == 0 && p[name_len] == '=') {
+			p += name_len + 1;
+			while (p[n] != '\0' && p[n] != '&' && n < out_size - 1) {
+				out[n] = p[n];
+				n++;
+			}
+			out[n] = '\0';
+			return 1;
+		}
+		p = strchr(p, '&');
+		if (p == NULL)
+			return 0;
+	}
+}
+
+/*
+ * A terminfo entry name, as it may be passed to a container's exec'd
+ * program as $TERM. Restricted rather than free-form on purpose: this
+ * value crosses into another process's environment, and terminfo names
+ * in the real database are drawn only from this set (confirmed against
+ * the 2903 entries ncurses installs). Rejecting anything else keeps a
+ * caller from smuggling shell-significant characters or a path into an
+ * environment variable, and costs nothing, since no real terminal type
+ * is spelled any other way.
+ */
+static int term_name_is_valid(const char *name)
+{
+	size_t i;
+
+	if (name == NULL || name[0] == '\0' || strlen(name) >= 64)
+		return 0;
+	for (i = 0; name[i] != '\0'; i++) {
+		char c = name[i];
+
+		if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+		      c == '-' || c == '_' || c == '+' || c == '.'))
+			return 0;
+	}
+	return 1;
+}
+
+/*
+ * A terminal dimension from a client. Anything outside this range is
+ * refused rather than clamped: a 0 or a 100000 is a caller bug, and
+ * silently substituting a plausible number would hide it while
+ * producing a console whose size the caller believes is something else.
+ */
+static int term_dimension_parse(const char *text, unsigned short *out)
+{
+	char *end;
+	long v;
+
+	errno = 0;
+	v = strtol(text, &end, 10);
+	if (errno != 0 || end == text || *end != '\0' || v < 1 || v > 20000)
+		return 0;
+	*out = (unsigned short)v;
+	return 1;
+}
+
 static enum console_route_result try_console_upgrade(struct conn *cc, const struct http_request *req)
 {
 	static const char suffix[] = CONSOLE_SUFFIX;
@@ -27373,6 +27466,8 @@ static enum console_route_result try_console_upgrade(struct conn *cc, const stru
 	char *cmd_argv[REGISTRY_CONSOLE_ARGC_MAX + 1];
 	char console_sel[REGISTRY_CONSOLE_NAME_MAX];
 	char path_only[HTTP_MAX_PATH];
+	char term_buf[64], dim_buf[16];
+	struct exec_term term;
 	const char *query;
 	char accept_val[64];
 	int master_fd;
@@ -27498,21 +27593,7 @@ static enum console_route_result try_console_upgrade(struct conn *cc, const stru
 		int ci;
 
 		console_sel[0] = '\0';
-		if (query != NULL) {
-			const char *v = strstr(query, "console=");
-
-			if (v != NULL) {
-				size_t n = 0;
-
-				v += 8;
-				while (v[n] != '\0' && v[n] != '&' &&
-				       n < sizeof(console_sel) - 1) {
-					console_sel[n] = v[n];
-					n++;
-				}
-				console_sel[n] = '\0';
-			}
-		}
+		query_get_param(query, "console", console_sel, sizeof(console_sel));
 
 		if (entry->console_count == 0) {
 			respond_error(cc->fd, 409, "Conflict",
@@ -27559,7 +27640,43 @@ static enum console_route_result try_console_upgrade(struct conn *cc, const stru
 	 * is repurposed below; every value taken from req has already
 	 * been copied into a local buffer above. */
 
-	if (exec_into_container(entry->handle.pid, cmd_argv, &master_fd, &exec_pid) != 0) {
+	/*
+	 * How big the caller's terminal is and what kind it is. Query
+	 * parameters rather than the X-Cix-Exec-Cmd-style request header
+	 * this endpoint already uses, for one decisive reason: a browser's
+	 * own WebSocket constructor cannot set request headers at all, so a
+	 * header would have silently worked for cixctl and been unreachable
+	 * from the dashboard -- two clients with different capabilities for
+	 * the same feature. A query parameter is available to both.
+	 *
+	 * All three are optional, and an absent one takes the default in
+	 * exec.h rather than being an error: a caller that has no terminal
+	 * of its own to describe is making a perfectly ordinary request.
+	 * A malformed one IS an error, because it means the caller tried to
+	 * say something specific and got it wrong, and quietly substituting
+	 * a default there would leave it believing a size it does not have.
+	 */
+	memset(&term, 0, sizeof(term));
+	if (query_get_param(query, "term", term_buf, sizeof(term_buf))) {
+		if (!term_name_is_valid(term_buf)) {
+			respond_error(cc->fd, 400, "Bad Request",
+			              "term must be a terminfo entry name (letters, digits, - _ + .)");
+			return CONSOLE_FAILED;
+		}
+		term.term = term_buf;
+	}
+	if (query_get_param(query, "cols", dim_buf, sizeof(dim_buf)) &&
+	    !term_dimension_parse(dim_buf, &term.cols)) {
+		respond_error(cc->fd, 400, "Bad Request", "cols must be a number from 1 to 20000");
+		return CONSOLE_FAILED;
+	}
+	if (query_get_param(query, "rows", dim_buf, sizeof(dim_buf)) &&
+	    !term_dimension_parse(dim_buf, &term.rows)) {
+		respond_error(cc->fd, 400, "Bad Request", "rows must be a number from 1 to 20000");
+		return CONSOLE_FAILED;
+	}
+
+	if (exec_into_container(entry->handle.pid, cmd_argv, &term, &master_fd, &exec_pid) != 0) {
 		/* task #764: exec_into_container()'s own diagnostics
 		 * (daemon/src/exec.c's fprintf(stderr,...) calls) go to
 		 * cixd's own stderr -- invisible to a REST client on a
@@ -27865,6 +27982,64 @@ gone:
 	free(cc);
 }
 
+/*
+ * One control message from a console client, carried as a WebSocket
+ * TEXT frame (see handle_console_ws_event()'s own note on why the
+ * opcode is the discriminator).
+ *
+ *   {"type":"resize","cols":120,"rows":40}
+ *
+ * A resize is the only type today. Anything unrecognised -- a bad
+ * shape, a type this daemon does not know, an out-of-range dimension --
+ * is ignored rather than treated as fatal: a control message is
+ * advisory about presentation, and killing a working session with a
+ * live shell in it because a client sent a field wrong would be a far
+ * worse outcome than the terminal keeping the size it already has.
+ * That is a deliberate difference from the query parameters at
+ * upgrade time, which DO reject a malformed value -- there the session
+ * does not exist yet, so there is nothing to lose by refusing, and the
+ * caller gets a real error instead of a silent default.
+ */
+static void console_ws_handle_control(struct conn *cc, const unsigned char *payload, size_t payload_len)
+{
+	struct json_value *root;
+	const struct json_value *type, *jcols, *jrows;
+	double cols, rows;
+
+	if (payload_len == 0)
+		return;
+	root = json_parse((const char *)payload, payload_len);
+	if (root == NULL)
+		return;
+
+	type = json_object_get(root, "type");
+	if (type == NULL || type->type != JSON_STRING || strcmp(type->u.string, "resize") != 0) {
+		json_free(root);
+		return;
+	}
+
+	jcols = json_object_get(root, "cols");
+	jrows = json_object_get(root, "rows");
+	if (jcols == NULL || jcols->type != JSON_NUMBER || jrows == NULL || jrows->type != JSON_NUMBER) {
+		json_free(root);
+		return;
+	}
+	cols = jcols->u.number;
+	rows = jrows->u.number;
+	json_free(root);
+
+	if (cols < 1 || cols > 20000 || rows < 1 || rows > 20000)
+		return;
+
+	/*
+	 * exec_resize_pty() is the whole server side of a resize: the
+	 * kernel raises SIGWINCH on the pty's foreground process group as a
+	 * direct consequence of the ioctl, so the running program learns to
+	 * redraw without this daemon signalling anything itself.
+	 */
+	exec_resize_pty(cc->exec_session->pty_conn->fd, (unsigned short)cols, (unsigned short)rows);
+}
+
 static void handle_console_ws_event(struct conn *cc)
 {
 	unsigned char buf[4096];
@@ -27894,7 +28069,26 @@ static void handle_console_ws_event(struct conn *cc)
 				return;
 			}
 
-			if (frame.opcode == WS_OPCODE_TEXT || frame.opcode == WS_OPCODE_BINARY) {
+			if (frame.opcode == WS_OPCODE_TEXT) {
+				/*
+				 * Control channel. RFC 6455 already separates a
+				 * UTF-8 text message from an opaque binary one, so
+				 * the two kinds of thing this session carries --
+				 * keystrokes, and out-of-band instructions about
+				 * the session itself -- need no framing of their
+				 * own on top: the opcode is the discriminator.
+				 *
+				 * Both of this project's clients already send
+				 * keystrokes as BINARY (cixctl's own
+				 * send_masked_frame(..., 0x2, ...), and the
+				 * dashboard's Uint8Array send, which the browser
+				 * frames as binary), so nothing was relying on
+				 * TEXT carrying input and this is a clean cut-over
+				 * rather than a change of meaning under a live
+				 * client.
+				 */
+				console_ws_handle_control(cc, frame.payload, frame.payload_len);
+			} else if (frame.opcode == WS_OPCODE_BINARY) {
 				if (frame.payload_len > 0 &&
 				    cix_write_all(cc->exec_session->pty_conn->fd, frame.payload, frame.payload_len) !=
 				        0) {

@@ -128,7 +128,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | DELETE | `/containers/{name}/networks/{network}` | Detach a live-attached network; refuses a create-time attachment (409) |
 | POST | `/containers/{name}/devices` | Attach a device to an already-running container, live, without a recreate (ADR-0161) |
 | DELETE | `/containers/{name}/devices/{id}` | Detach a live-attached device; refuses a create-time attachment (409) |
-| GET | `/containers/{name}/console` | Upgrade to a WebSocket; attach to one of the consoles the container **declares** (`?console=NAME`, default the first). A container declaring none has no console (#248) |
+| GET | `/containers/{name}/console` | Upgrade to a WebSocket; attach to one of the consoles the container **declares** (`?console=NAME`, default the first). A container declaring none has no console (#248). `?term=`/`?cols=`/`?rows=` give the session a real terminal type and size |
 | GET | `/containers/recipes` | List container recipes (metadata only) (ADR-0151) |
 | POST | `/containers/recipes` | Add/replace a container recipe -- content must be a real `POST /containers` body, its own `"name"` matching the recipe's |
 | GET | `/containers/recipes/{name}` | One container recipe's full detail, including its raw, unsubstituted text |
@@ -448,6 +448,44 @@ cixctl container console jump --cmd=/usr/bin/id  # the override
 ```
 
 The `--console=NAME=/path args` form splits the command on spaces, so an argument containing a literal space cannot be written that way — a real limit, and the reason a container recipe (`recipes/container/<name>/*/container.json`, a real JSON array with nothing to lose in quoting) is the better place to declare anything non-trivial.
+
+## The console is a real terminal: size and type
+
+A full-screen program — `htop`, `btop`, `vim` — asks the terminal two questions before it draws anything: *how big are you* (`ioctl(TIOCGWINSZ)`) and *what can you do* (`$TERM`, naming an entry in the terminfo database). This endpoint used to answer neither. A PTY is created at the kernel's default of 0×0, and `cixd` runs as pid 1 from the bootloader so it has no `$TERM` of its own to hand on. Every such program therefore saw a zero-sized screen of unknown type and refused to start. A plain shell never noticed, which is why this went unremarked for so long.
+
+Three optional query parameters answer both questions at attach time:
+
+```
+GET /v1/containers/jump/console?term=xterm-256color&cols=203&rows=51
+```
+
+Omitting any of them takes the documented default (`xterm-256color`, 80, 24) rather than erroring — a caller with no terminal of its own, such as a piped `cixctl`, is making an ordinary request. Sending a *malformed* one is a `400`: a caller that tried to say something specific and got it wrong should hear so rather than silently receive a terminal of a different size than it believes.
+
+They are query parameters rather than headers, unlike `X-Cix-Exec-Cmd` alongside them, for one decisive reason: a browser's `WebSocket` constructor cannot set request headers at all. A header would have worked for `cixctl` and been permanently unreachable from the dashboard — the same feature with two different capabilities depending on the client.
+
+**Resizing a session already in progress** uses the WebSocket's own opcodes rather than any new framing. RFC 6455 already distinguishes a UTF-8 text message from an opaque binary one, so that distinction carries the two kinds of traffic:
+
+| Frame | Meaning |
+|---|---|
+| BINARY (client → server) | Keystrokes. Written verbatim to the process's stdin. |
+| TEXT (client → server) | A control message about the session itself. |
+| BINARY (server → client) | PTY output. |
+
+The only control message today is a resize:
+
+```json
+{"type":"resize","cols":120,"rows":40}
+```
+
+Applying it to the PTY makes the kernel raise `SIGWINCH` on the running program, which is the whole mechanism — the daemon sends no signal itself. A control message that is malformed, of an unknown type, or out of range is **ignored and the session continues**: a presentation hint is not worth killing a live shell over.
+
+Both clients already sent keystrokes as BINARY before this, so nothing was relying on TEXT carrying input.
+
+`cixctl console` sends its real terminal size and `$TERM` on attach, and installs a `SIGWINCH` handler that sends a fresh size whenever the local window changes — so resizing the terminal resizes the remote program. When stdio is piped it has no terminal to describe and sends nothing, taking the defaults.
+
+The container must actually carry the terminfo entry being named. The `ncurses` package installs the full database — 2903 entries at `usr/share/terminfo`, including `xterm` and `xterm-256color` — and anything linking `libncursesw` already depends on it, so an image with `htop` or `vim` in it has this by construction.
+
+One limit worth stating plainly: **the web dashboard's terminal still cannot render these programs**, and this change does not alter that. It is a line-buffer that interprets `\r`/`\n`/backspace/tab and SGR colour, and structurally discards every cursor-addressing escape (ADR-0043) — there is no two-dimensional screen model to draw into. `cixctl console` has no such limit and is where `htop` and `vim` work today.
 
 ## Host authentication (ADR-0144)
 

@@ -328,6 +328,21 @@ cixctl run --name=jump --image=jumpbox \
 
 The first declared is what `container console NAME` attaches to with no `--console=`. `argv[0]` must be an absolute path — it is `execve`'d directly, with no shell to resolve a bare name, and a bare name is refused at creation rather than failing confusingly at attach.
 
+### Full-screen programs in a console
+
+`container console` gives the remote program a real terminal: it sends the size of your own terminal and your `$TERM` when it attaches, and a fresh size whenever you resize the window ([ADR-0242](../adr/0242-a-console-is-a-sized-terminal-of-a-declared-type.md)). So `htop`, `btop` and `vim` work, and resizing the window resizes them.
+
+```
+cixctl container console jump --cmd=/usr/bin/htop
+```
+
+Two things it needs, both usually already true:
+
+- The container must carry the terminfo entry your `$TERM` names. The `ncurses` package installs the full database (2903 entries, `xterm` and `xterm-256color` among them), and anything linking `libncursesw` already depends on it — so an image with `htop` or `vim` in it has this by construction.
+- Your own terminal has to be a terminal. With stdio piped there is nothing to measure, so the session takes the documented defaults (`xterm-256color`, 80×24) instead.
+
+**The web dashboard's console cannot run these**, and this is a stated boundary rather than a bug ([ADR-0043](../adr/0043-container-console-exec-websocket.md)): it is a line-buffer that handles colour and simple cursor movement, with no two-dimensional screen to draw a full-screen program into. Use the CLI for those.
+
 Declaring nothing is a real and often correct answer: an image holding one static binary and no shell has nothing for a console to run, and both the CLI and the dashboard then say so rather than offering a control that cannot work.
 
 The value splits on spaces, so an argument containing a literal space cannot be written this way. That is a real limit of the flag, not of the feature — a container recipe (`recipes/container/<name>/*/container.json`) declares consoles as a real JSON array with nothing to lose in quoting, and is the better place for anything non-trivial.

@@ -70,7 +70,25 @@ static int join_namespaces(int mnt_fd, int uts_fd, int net_fd, int pid_fd)
 	return 0;
 }
 
+int exec_resize_pty(int pty_master_fd, unsigned short cols, unsigned short rows)
+{
+	struct winsize wsz;
+
+	if (cols == 0 || rows == 0) {
+		errno = EINVAL;
+		return -1;
+	}
+	memset(&wsz, 0, sizeof(wsz));
+	wsz.ws_col = cols;
+	wsz.ws_row = rows;
+	/* ws_xpixel/ws_ypixel stay 0: they describe a pixel geometry only
+	 * a real graphical terminal knows, nothing here has it, and no
+	 * terminal-handling program requires it. */
+	return ioctl(pty_master_fd, TIOCSWINSZ, &wsz) == 0 ? 0 : -1;
+}
+
 int exec_into_container(pid_t target_pid, char *const cmd_argv[],
+                         const struct exec_term *term,
                          int *out_pty_master_fd, pid_t *out_child_pid)
 {
 	int master_fd, slave_fd;
@@ -79,6 +97,18 @@ int exec_into_container(pid_t target_pid, char *const cmd_argv[],
 	int mnt_fd, uts_fd, net_fd, pid_fd;
 	int mnt_errno, uts_errno, net_errno, pid_errno;
 	pid_t intermediate;
+	unsigned short term_cols = EXEC_TERM_COLS_DEFAULT;
+	unsigned short term_rows = EXEC_TERM_ROWS_DEFAULT;
+	const char *term_name = EXEC_TERM_NAME_DEFAULT;
+
+	if (term != NULL) {
+		if (term->cols != 0)
+			term_cols = term->cols;
+		if (term->rows != 0)
+			term_rows = term->rows;
+		if (term->term != NULL && term->term[0] != '\0')
+			term_name = term->term;
+	}
 
 	/* Opened here, in the daemon's own (host) mount namespace, before
 	 * anything below ever calls setns() -- see join_namespaces()'s own
@@ -131,6 +161,25 @@ int exec_into_container(pid_t target_pid, char *const cmd_argv[],
 		close(mnt_fd); close(uts_fd); close(net_fd); close(pid_fd);
 		return -1;
 	}
+	/*
+	 * Size the pty BEFORE the fork, not after the 101 is sent: ncurses
+	 * reads the window size once during setupterm() at program start,
+	 * so a size arriving even slightly later is a size the program has
+	 * already missed. There is no race to lose here if it is set now,
+	 * because the child does not exist yet.
+	 *
+	 * A failure is reported and not fatal. It cannot realistically
+	 * happen on a pty master this function created three lines ago,
+	 * and if it somehow does, the result is the unsized terminal that
+	 * was this endpoint's behaviour for its whole history -- a plain
+	 * shell session still works perfectly well on one, so refusing the
+	 * whole console over it would turn a cosmetic failure into a
+	 * regression for every non-full-screen caller.
+	 */
+	if (exec_resize_pty(master_fd, term_cols, term_rows) != 0)
+		fprintf(stderr, "exec_into_container: TIOCSWINSZ %ux%u: %s\n",
+		        (unsigned)term_cols, (unsigned)term_rows, strerror(errno));
+
 	/* Deliberately not O_CLOEXEC -- the grandchild needs this fd to
 	 * survive across its own execve() below. */
 	slave_fd = open(slave_path, O_RDWR);
@@ -190,6 +239,29 @@ int exec_into_container(pid_t target_pid, char *const cmd_argv[],
 			if (slave_fd > STDERR_FILENO)
 				close(slave_fd);
 			chdir("/");
+			/*
+			 * $TERM names the terminfo entry describing what this
+			 * pty can do; without one ncurses has no terminal
+			 * description at all and setupterm() fails outright
+			 * ("TERM environment variable not set"), which is what
+			 * htop and vim report rather than starting. cixd runs as
+			 * pid 1 from the bootloader and so inherits no TERM of
+			 * its own to pass on, making this the only place it can
+			 * come from.
+			 *
+			 * setenv() after fork() is safe here specifically
+			 * because cixd is single-threaded (no pthread_create
+			 * anywhere in the daemon), so no other thread can have
+			 * held malloc's lock at the moment of the fork.
+			 *
+			 * Deliberately only on this pty path. The piped variant
+			 * below gives its command no terminal at all, and
+			 * claiming otherwise via $TERM would invite a program to
+			 * emit cursor escapes into what is meant to be a clean
+			 * byte stream -- the exact corruption that path exists
+			 * to avoid.
+			 */
+			setenv("TERM", term_name, 1);
 			execve(cmd_argv[0], cmd_argv, environ);
 			/*
 			 * Issue #108: report the failure back to the daemon, not

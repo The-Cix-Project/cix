@@ -8849,6 +8849,52 @@ paths:
             The target image of the build named by `name` (defaults to
             "base" like every other image-optional endpoint). Ignored
             if `name` is omitted.
+        - name: term
+          in: query
+          required: false
+          schema:
+            type: string
+          description: >
+            The terminfo entry name to set as `$TERM` for the exec'd
+            process, e.g. `xterm-256color`. Without one, a full-screen
+            program has no description of what the terminal can do and
+            ncurses fails outright ("TERM environment variable not
+            set"), which is what htop and vim report instead of
+            starting -- cixd runs as pid 1 and inherits no `$TERM` of
+            its own to pass on, so this is the only place it can come
+            from. Omitted means `xterm-256color`. Restricted to
+            letters, digits and `- _ + .`; anything else is a 400,
+            since this value crosses into another process's
+            environment and no real terminal type is spelled any other
+            way. The container must actually carry the matching
+            terminfo entry -- the `ncurses` package installs the full
+            database (2903 entries, including `xterm` and
+            `xterm-256color`) at `usr/share/terminfo`.
+        - name: cols
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 20000
+          description: >
+            Terminal width in character cells. Omitted means 80. A PTY
+            is created at the kernel default of 0x0, so before this
+            existed every full-screen program saw a zero-sized screen;
+            a client that knows its own width should always send it.
+            Out of range is a 400 rather than a clamp -- a caller that
+            asked for something specific and got it wrong should hear
+            so, not silently get a different terminal than it thinks.
+        - name: rows
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 20000
+          description: >
+            Terminal height in character cells. Omitted means 24.
+            Same handling as `cols`.
         - name: Upgrade
           in: header
           required: true
@@ -9495,10 +9541,26 @@ paths:
         treated as an ordinary GET.
 
 
-        Once upgraded, the connection carries raw PTY bytes both ways:
-        client-to-server WebSocket frames (TEXT or BINARY, always
-        masked per RFC 6455) are written verbatim to the exec'd
-        process's stdin; PTY output is relayed back as BINARY frames.
+        Once upgraded, the connection carries raw PTY bytes both ways,
+        with the frame opcode distinguishing the two kinds of traffic.
+        Client-to-server BINARY frames (always masked per RFC 6455) are
+        written verbatim to the exec'd process's stdin; PTY output is
+        relayed back as BINARY frames. Client-to-server TEXT frames are
+        NOT input -- they are control messages about the session
+        itself, currently only a terminal resize:
+
+
+        `{"type":"resize","cols":120,"rows":40}`
+
+
+        which applies the new size to the PTY, causing the kernel to
+        raise SIGWINCH on the running program so it redraws. A control
+        message that is malformed, of an unknown type, or carries a
+        dimension outside 1-20000 is ignored and the session continues:
+        a presentation hint is not worth killing a live shell over.
+        (This is deliberately stricter at upgrade time -- see the
+        `cols`/`rows`/`term` parameters below, which DO reject a bad
+        value, because no session exists yet to lose.)
         Any frame-parse failure post-upgrade -- including an unmasked
         client frame, which RFC 6455 5.1 requires a server to reject --
         SIGKILLs the exec'd process and closes the raw connection
@@ -9570,6 +9632,52 @@ paths:
             Omitted means the first one declared. A name that is not
             declared is a 404 listing what is, rather than a silent
             fallback to something else.
+        - name: term
+          in: query
+          required: false
+          schema:
+            type: string
+          description: >
+            The terminfo entry name to set as `$TERM` for the exec'd
+            process, e.g. `xterm-256color`. Without one, a full-screen
+            program has no description of what the terminal can do and
+            ncurses fails outright ("TERM environment variable not
+            set"), which is what htop and vim report instead of
+            starting -- cixd runs as pid 1 and inherits no `$TERM` of
+            its own to pass on, so this is the only place it can come
+            from. Omitted means `xterm-256color`. Restricted to
+            letters, digits and `- _ + .`; anything else is a 400,
+            since this value crosses into another process's
+            environment and no real terminal type is spelled any other
+            way. The container must actually carry the matching
+            terminfo entry -- the `ncurses` package installs the full
+            database (2903 entries, including `xterm` and
+            `xterm-256color`) at `usr/share/terminfo`.
+        - name: cols
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 20000
+          description: >
+            Terminal width in character cells. Omitted means 80. A PTY
+            is created at the kernel default of 0x0, so before this
+            existed every full-screen program saw a zero-sized screen;
+            a client that knows its own width should always send it.
+            Out of range is a 400 rather than a clamp -- a caller that
+            asked for something specific and got it wrong should hear
+            so, not silently get a different terminal than it thinks.
+        - name: rows
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 20000
+          description: >
+            Terminal height in character cells. Omitted means 24.
+            Same handling as `cols`.
         - name: Upgrade
           in: header
           required: true

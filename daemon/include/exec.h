@@ -34,8 +34,59 @@
  * a /proc/<target_pid>/ns/* fd -- ESRCH if the container has since
  * exited, PTY allocation, or fork/pipe).
  */
+/*
+ * How the exec'd program is told what kind of terminal it has, and how
+ * big it is. Both matter only for the pty path below: a full-screen
+ * program (htop, vim) calls ioctl(TIOCGWINSZ) to find the screen size
+ * and reads $TERM to find the terminfo entry describing what the
+ * terminal can do. Before this existed the pty was created at its
+ * kernel default of 0x0 and $TERM was whatever cixd itself inherited
+ * from the bootloader -- i.e. nothing -- so ncurses had a zero-sized
+ * screen of unknown type and every such program either refused to
+ * start or drew into nothing.
+ *
+ * cols/rows of 0, and a NULL or empty term, each mean "the caller does
+ * not know" and take the defaults below rather than being passed
+ * through as-is. 0x0 is never a legitimate terminal size, so there is
+ * no ambiguity to resolve here.
+ */
+struct exec_term {
+	unsigned short cols;
+	unsigned short rows;
+	const char *term;
+};
+
+/*
+ * The defaults live here, next to the struct, so the daemon's query
+ * parsing and the exec itself cannot disagree about what an unspecified
+ * size or terminal type means (One Source of Truth). 80x24 is the
+ * historical vt100 default every terminal-handling program already
+ * expects to see when nothing better is known; xterm-256color is the
+ * entry a client that bothered to ask would almost always name, and
+ * ncurses ships it (usr/share/terminfo/x/xterm-256color) in the same
+ * package that provides the library reading it.
+ */
+#define EXEC_TERM_COLS_DEFAULT 80
+#define EXEC_TERM_ROWS_DEFAULT 24
+#define EXEC_TERM_NAME_DEFAULT "xterm-256color"
+
 int exec_into_container(pid_t target_pid, char *const cmd_argv[],
+                         const struct exec_term *term,
                          int *out_pty_master_fd, pid_t *out_child_pid);
+
+/*
+ * Resizes an already-running session's pty. The kernel raises SIGWINCH
+ * on the pty's own foreground process group as a direct result, which
+ * is how a running full-screen program learns to redraw -- so this one
+ * ioctl is the entire server side of a resize, with no signal for this
+ * daemon to send itself.
+ *
+ * Returns 0 on success, -1 with errno set otherwise. Rejects a 0
+ * dimension rather than passing it to the kernel: a resize to 0x0 is
+ * always a client bug, and honouring it would silently reintroduce
+ * exactly the unsized-terminal state struct exec_term exists to end.
+ */
+int exec_resize_pty(int pty_master_fd, unsigned short cols, unsigned short rows);
 
 /*
  * Issue #62: the same namespace entry, but the command's output goes to
