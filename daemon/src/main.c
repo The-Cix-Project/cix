@@ -8881,6 +8881,25 @@ static int supervisor_reap_available(void)
 	return g_supervisor_reap_fd >= 0;
 }
 
+/*
+ * Which start this worker is: 1 for the first after a kernel boot, more
+ * on a supervisor restart, and 1 when unsupervised (nobody has restarted
+ * anything, so the once-per-boot work is genuinely still to do).
+ */
+static int supervisor_worker_start(void)
+{
+	const char *env = getenv(SUPERVISOR_WORKER_START_ENV);
+	char *end = NULL;
+	long v;
+
+	if (env == NULL || *env == '\0')
+		return 1;
+	v = strtol(env, &end, 10);
+	if (end == env || *end != '\0' || v < 1)
+		return 1;
+	return (int)(v > 1000000 ? 1000000 : v);
+}
+
 static void handle_hostproc_kill(int fd, const char *pid_str)
 {
 	char *endptr;
@@ -30473,8 +30492,30 @@ static int cixd_main(int argc, char **argv)
 		 * A from slot B once both boot successfully. */
 		printf("init-mode: slot=%s\n", slot != NULL ? slot : "(none)");
 		fflush(stdout);
-		if (boot_init() != 0)
+		/*
+		 * ADR-0246: boot_init() is once per KERNEL boot, not once per
+		 * worker.
+		 *
+		 * It mounts /proc, /sys, cgroup2 and /boot, applies the static
+		 * IP and bind-mounts resolv.conf. On a restart every one of
+		 * those is already done and mount(2) returns EBUSY, which
+		 * mount_or_fail() treats as fatal -- so a restarted worker
+		 * would exit here immediately, every time, and the
+		 * supervisor's fast-fail path would reboot the machine. The
+		 * recovery mechanism would be the outage.
+		 *
+		 * The worker cannot detect this itself; the machine looks the
+		 * same from inside either way. The supervisor knows and says
+		 * so in the environment.
+		 */
+		if (supervisor_worker_start() > 1) {
+			printf("init-mode: worker start %d -- kernel already prepared, "
+			       "skipping boot_init()\n",
+			       supervisor_worker_start());
+			fflush(stdout);
+		} else if (boot_init() != 0) {
 			return 1;
+		}
 	}
 
 	/*

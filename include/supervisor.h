@@ -42,6 +42,28 @@
 #define SUPERVISOR_REAP_FD_ENV "CIX_REAP_FD"
 
 /*
+ * Which start this is for the worker: "1" for the first one after a
+ * real kernel boot, incrementing on every restart.
+ *
+ * The worker needs this because --init-mode means two different things
+ * that used to be the same thing. It still means "this process is the
+ * control plane of a real installed host" (which is what makes
+ * reboot(2) the right way to shut down, and what selects the A/B boot
+ * confirmation), but it no longer means "the kernel has just booted and
+ * nothing has mounted anything yet". boot_init() mounts /proc, /sys,
+ * cgroup2 and /boot, applies the static IP and bind-mounts
+ * resolv.conf -- every one of which is already done on a restart, and
+ * mount(2) answers EBUSY the second time. mount_or_fail() treats any
+ * failure as fatal, so a restarted worker would exit immediately,
+ * repeatedly, and take the machine down through the fast-fail path.
+ *
+ * The worker cannot tell the difference by itself: the machine looks
+ * identical from inside either way. The supervisor is the only thing
+ * that knows, so it says.
+ */
+#define SUPERVISOR_WORKER_START_ENV "CIX_WORKER_START"
+
+/*
  * The supervisor's read-only status port (ADR-0246 item 3). Deliberately
  * not 80/443: the whole point is that this answers when the worker,
  * which owns those, cannot. Nothing here is a control surface -- it
