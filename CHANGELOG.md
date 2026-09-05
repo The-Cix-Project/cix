@@ -2,6 +2,16 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### The websocket test helpers dropped frames on a short read (#286)
+
+`recv_ws_frame()` in `test_console_exec.c` and `test_pkg_build_log.c` read the two-byte websocket frame header with a single `read()` and treated anything other than exactly two bytes as a dead connection. `read()` on a TCP socket is entitled to return one of them. The payload loop directly beneath had always looped; the header reads never did.
+
+That is the whole of a flake that has failed the build gate repeatedly, on three *different* assertions of the same file — "received 0 bytes", the SIGWINCH resize, and the initial terminal report — because losing any one frame presents as whatever that frame was carrying never arriving. It is likeliest exactly when the box is busy, which is why it appears in a build container and never in a quiet hand-run, and why it looked like a timeout: raising the read timeout from 2s to 10s did not fix it, because the connection was not slow, a frame was being thrown away.
+
+It also predates every change made this session — `test_console_exec` failed the same way at `v2.53.13` and `v2.53.24`.
+
+Both files now share one `read_full()` and use it for the header, the extended length, and the payload, rather than a correct loop for one and a broken assumption for the others.
+
 ### Four consecutive build gates failed on the same unread race (#286)
 
 Four `cix@v2.53.28`/`v2.53.29` hostbuilds on 192.168.15.95 failed the selftest, each on a *different* single test, with the same source in all four. That reads as four flakes. Two of them were one bug, and the build log named it plainly from the first occurrence.
