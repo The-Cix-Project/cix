@@ -148,20 +148,66 @@ int exec_into_container(pid_t target_pid, char *const cmd_argv[],
 		return -1;
 	}
 
-	master_fd = posix_openpt(O_RDWR | O_NOCTTY | O_CLOEXEC);
-	if (master_fd < 0) {
-		close(mnt_fd); close(uts_fd); close(net_fd); close(pid_fd);
-		return -1;
-	}
-	if (grantpt(master_fd) != 0 || unlockpt(master_fd) != 0) {
-		close(master_fd);
-		close(mnt_fd); close(uts_fd); close(net_fd); close(pid_fd);
-		return -1;
-	}
-	if (ptsname_r(master_fd, slave_path, sizeof(slave_path)) != 0) {
-		close(master_fd);
-		close(mnt_fd); close(uts_fd); close(net_fd); close(pid_fd);
-		return -1;
+	/*
+	 * The pty is allocated from the CONTAINER's devpts, not this
+	 * daemon's (#290).
+	 *
+	 * posix_openpt() opens the host's /dev/ptmx, so the slave lands in
+	 * the host's devpts instance. Handing that slave's fd to a process
+	 * inside a container gives it a terminal that reads and writes
+	 * perfectly and CANNOT BE NAMED: /proc/self/fd/0 says /dev/pts/0,
+	 * the container's own /dev/pts holds no such entry, and ttyname()
+	 * fails ENODEV. bash never notices. login(1) resolves its terminal
+	 * name in init_tty(), reports the failure to syslog rather than to
+	 * the terminal it is holding, and sleepexit()s -- measured on
+	 * 192.168.15.95 as a console that upgrades cleanly, sends zero
+	 * bytes, and closes after exactly 5.0 seconds. Every program that
+	 * names its own tty is affected: agetty, who, w, wall, script, and
+	 * anything writing utmp.
+	 *
+	 * Opening the container's own /dev/pts/ptmx fixes it at the
+	 * source. The kernel resolves which devpts instance a ptmx open
+	 * belongs to from the PATH used (path_pts(), the /dev/pts sibling
+	 * of the ptmx being opened), so a slave allocated through the
+	 * container's ptmx belongs to the container's instance and is
+	 * named there. Measured on the jump box, which mounts its own:
+	 * "devpts rw,mode=620,ptmxmode=666" -- ptmxmode is what makes this
+	 * open permitted at all.
+	 *
+	 * Reached via /proc/<pid>/root rather than by entering the mount
+	 * namespace first: the daemon must keep the master fd and must not
+	 * setns() itself, and this is the same host-side route into a
+	 * container's tree that container_file_host_path() (#269) already
+	 * established for exactly that reason.
+	 *
+	 * grantpt() is deliberately NOT called. Its job is to fix up the
+	 * slave's ownership and mode, which devpts already did at
+	 * allocation from its own mount options -- and glibc's
+	 * implementation reasons about /dev/pts in THIS process's mount
+	 * namespace, which is not the instance the slave lives in. There
+	 * is nothing correct for it to do here.
+	 */
+	{
+		char ptmx_path[64];
+		int ptn = -1;
+
+		snprintf(ptmx_path, sizeof(ptmx_path), "/proc/%ld/root/dev/pts/ptmx", (long)target_pid);
+		master_fd = open(ptmx_path, O_RDWR | O_NOCTTY | O_CLOEXEC);
+		if (master_fd < 0) {
+			fprintf(stderr, "exec_into_container: open %s: %s\n", ptmx_path, strerror(errno));
+			close(mnt_fd); close(uts_fd); close(net_fd); close(pid_fd);
+			return -1;
+		}
+		if (unlockpt(master_fd) != 0 || ioctl(master_fd, TIOCGPTN, &ptn) != 0 || ptn < 0) {
+			fprintf(stderr, "exec_into_container: unlockpt/TIOCGPTN: %s\n", strerror(errno));
+			close(master_fd);
+			close(mnt_fd); close(uts_fd); close(net_fd); close(pid_fd);
+			return -1;
+		}
+		/* A path in the CONTAINER's mount namespace, which is the only
+		 * namespace it is valid in -- opened by the intermediate below,
+		 * after it has joined. */
+		snprintf(slave_path, sizeof(slave_path), "/dev/pts/%d", ptn);
 	}
 	/*
 	 * Size the pty BEFORE the fork, not after the 101 is sent: ncurses
@@ -182,18 +228,8 @@ int exec_into_container(pid_t target_pid, char *const cmd_argv[],
 		fprintf(stderr, "exec_into_container: TIOCSWINSZ %ux%u: %s\n",
 		        (unsigned)term_cols, (unsigned)term_rows, strerror(errno));
 
-	/* Deliberately not O_CLOEXEC -- the grandchild needs this fd to
-	 * survive across its own execve() below. */
-	slave_fd = open(slave_path, O_RDWR);
-	if (slave_fd < 0) {
-		close(master_fd);
-		close(mnt_fd); close(uts_fd); close(net_fd); close(pid_fd);
-		return -1;
-	}
-
 	if (pipe2(pipefd, O_CLOEXEC) != 0) {
 		close(master_fd);
-		close(slave_fd);
 		close(mnt_fd); close(uts_fd); close(net_fd); close(pid_fd);
 		return -1;
 	}
@@ -201,7 +237,6 @@ int exec_into_container(pid_t target_pid, char *const cmd_argv[],
 	intermediate = fork();
 	if (intermediate < 0) {
 		close(master_fd);
-		close(slave_fd);
 		close(pipefd[0]);
 		close(pipefd[1]);
 		close(mnt_fd); close(uts_fd); close(net_fd); close(pid_fd);
@@ -217,6 +252,19 @@ int exec_into_container(pid_t target_pid, char *const cmd_argv[],
 		if (join_namespaces(mnt_fd, uts_fd, net_fd, pid_fd) != 0)
 			_exit(127);
 		close(mnt_fd); close(uts_fd); close(net_fd); close(pid_fd);
+
+		/*
+		 * The slave is opened HERE, after the mount namespace has been
+		 * joined, because /dev/pts/<n> exists only in the container's
+		 * own devpts (#290). Deliberately not O_CLOEXEC -- the
+		 * grandchild needs this fd to survive its own execve().
+		 */
+		slave_fd = open(slave_path, O_RDWR);
+		if (slave_fd < 0) {
+			fprintf(stderr, "exec_into_container: open %s in container: %s\n", slave_path,
+			        strerror(errno));
+			_exit(127);
+		}
 
 		grandchild = fork();
 		if (grandchild < 0) {
@@ -315,7 +363,6 @@ int exec_into_container(pid_t target_pid, char *const cmd_argv[],
 	 * child (already forked, its own copies of these fds still open)
 	 * needed them. */
 	close(pipefd[1]);
-	close(slave_fd);
 	close(mnt_fd);
 	close(uts_fd);
 	close(net_fd);

@@ -1,10 +1,10 @@
 /*
  * Exec target for test_console_exec.c's terminal-geometry scenarios
- * (ADR-0242). Reports the two things a full-screen program actually
- * asks a terminal before it draws anything -- what kind of terminal it
- * is ($TERM) and how big it is (TIOCGWINSZ) -- so the test can assert
- * on what the exec'd process really saw, rather than on what the
- * daemon believes it sent.
+ * (ADR-0242). Reports the three things a program actually asks a
+ * terminal before it does anything -- what kind of terminal it is
+ * ($TERM), how big it is (TIOCGWINSZ), and what it is CALLED
+ * (ttyname) -- so the test can assert on what the exec'd process
+ * really saw, rather than on what the daemon believes it sent.
  *
  * Reports once at startup, then again on every SIGWINCH: the kernel
  * raises that on this pty's foreground process group whenever the
@@ -58,6 +58,29 @@ static void report_oom_adj(void)
 	printf("OOMADJ=%s\n", buf);
 }
 
+/*
+ * #290: what this terminal is CALLED, which is a different question
+ * from whether it works.
+ *
+ * The console's pty used to be allocated from the daemon's own devpts
+ * and the slave fd handed to a process inside the container, where
+ * /dev/pts holds no such entry -- so the fd read and wrote perfectly
+ * and ttyname() failed ENODEV. A shell never notices. login(1) does:
+ * it resolves its terminal name, and on failure reports to syslog
+ * rather than to the terminal it is holding and then sleepexit()s,
+ * which presents as a console that connects cleanly, says nothing,
+ * and closes five seconds later.
+ *
+ * Asked from in here for the same reason OOMADJ is: only the process
+ * actually sitting on the pty can answer it.
+ */
+static void report_tty(void)
+{
+	const char *name = ttyname(STDIN_FILENO);
+
+	printf("TTY=%s\n", name != NULL ? name : "(unnamed)");
+}
+
 static void report(void)
 {
 	struct winsize wsz;
@@ -73,6 +96,7 @@ static void report(void)
 	printf("TERMINFO TERM=%s COLS=%u ROWS=%u\n", term != NULL ? term : "(unset)",
 	       (unsigned)wsz.ws_col, (unsigned)wsz.ws_row);
 	report_oom_adj();
+	report_tty();
 	fflush(stdout);
 }
 
