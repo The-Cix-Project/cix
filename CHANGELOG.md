@@ -24,6 +24,16 @@ The evidence was in the output the whole time: the four `depA: autostarted (rest
 
 `test_daemon_net`'s cleanup step deleted four containers fire-and-forget and then deleted the network they used. When that network delete came back 409, nothing in the output named which container had stayed — only the consequence, which is not a report anyone can act on. The four deletes are asserted now. A cleanup step is still a step.
 
+### A shipped header that cannot be included is now detectable (#289)
+
+`linux-pam` installed `security/pam_misc.h` for six revisions while never building the `libpamc` directory that header's very first include comes from. Nothing in this platform links `pam_misc`, so nothing noticed — until util-linux ran a compile test on it while packaging `login(1)`, concluded PAM was unusable, and refused to build. The error named PAM. Not the missing header, and not `linux-pam`.
+
+A package that installs headers is shipping an **interface**, and an interface that cannot be included is broken whether or not anything uses it yet. This recipe set builds directory-by-directory on purpose, so any recipe installing *some* of an upstream project's headers can carry the same defect silently.
+
+The check is the cheap half of what a compiler does: for each installed header, does every unconditional angle-bracket include resolve to a file in this image's include tree? Three limits, each chosen because a check with false positives is one that gets switched off — angle-bracket only, since a quoted include follows different rules; **unconditional only**, since an include inside `#if`/`#ifdef` is frequently meant not to resolve on this platform, with a file's own include guard deliberately not counted as such a conditional (otherwise nothing in a guarded header would ever be checked, which is every header worth checking); and existence rather than compilability, since whether the resolved header itself parses is the compiler's question.
+
+**Reported, never fatal to an install** — and that is a judgement, not timidity. `elfcheck` refuses a shared library with undefined symbols because that check has essentially no false positives. Reading C without a preprocessor cannot make the same claim, so this one says so loudly instead: in the daemon log at the moment of the install, and in `GET /v1/pkg/verify` afterwards, alongside #281's missing-files finding. `cixctl pkg verify` prints the two as separate lines rather than shared columns, because they are different failures with different repairs and a package can have either or both.
+
 ### Every curl the daemon forks now has a stall guard (#285)
 
 curl waits forever by default once a connection is established. Nine of this daemon's ten curl call sites passed no timeout of any kind, so a peer that accepts the TCP connection and then says nothing hung the fetch with no ceiling. `ftp.gnu.org` did exactly that to this site's egress for several days — connecting on both 443 and 80, then answering nothing — and a package job stuck in `state: building` that neither completed nor failed has been seen on 192.168.15.95.
