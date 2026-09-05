@@ -24,6 +24,18 @@ The evidence was in the output the whole time: the four `depA: autostarted (rest
 
 `test_daemon_net`'s cleanup step deleted four containers fire-and-forget and then deleted the network they used. When that network delete came back 409, nothing in the output named which container had stayed — only the consequence, which is not a report anyone can act on. The four deletes are asserted now. A cleanup step is still a step.
 
+### The console pty now comes from the container's own devpts (#290)
+
+`exec_into_container()` allocated its pty with `posix_openpt()`, which opens the **daemon's** `/dev/ptmx`, and handed the resulting slave fd to a process inside the container. That gives the process a terminal it can read and write perfectly and **cannot name**: `/proc/self/fd/0` says `/dev/pts/0`, the container's own `/dev/pts` holds no such entry, and `ttyname()` fails `ENODEV`.
+
+A shell never notices, which is why this survived from ADR-0043 until now. `login(1)` does: it resolves its terminal name in `init_tty()`, and on failure reports to **syslog** rather than to the terminal it is holding, then `sleepexit()`s. The operator sees a console that upgrades cleanly, sends nothing, and closes after exactly 5.0 seconds. The same class covers `agetty`, `who`, `w`, `wall`, `script`, and anything writing utmp.
+
+The master is now opened from `/proc/<pid>/root/dev/pts/ptmx`. The kernel resolves which devpts instance a `ptmx` open belongs to from the *path* used — `path_pts()`, the `/dev/pts` sibling of the ptmx being opened — so a slave allocated through the container's own ptmx belongs to the container's instance and is named there. `mountns_pivot()` mounts that instance for every container unconditionally with `ptmxmode=0666`, and a failure to do so already fails container creation, so there is no container this cannot reach. The slave is opened by the intermediate process **after** it has joined the mount namespace, because `/dev/pts/<n>` is a path that exists only there.
+
+Two details worth stating rather than leaving to be rediscovered. `grantpt()` is deliberately no longer called: its job is to fix up the slave's ownership and mode, which devpts already did from its own mount options, and glibc's implementation reasons about `/dev/pts` in the *daemon's* mount namespace — not the instance the slave lives in, so there is nothing correct for it to do. And this was chosen over passing a master back from inside the namespace via `SCM_RIGHTS`: the daemon must keep the master and must not `setns()` itself, and `/proc/<pid>/root` is the same host-side route into a container's tree that `container_file_host_path()` (#269) already established.
+
+`console_term_child` now reports `TTY=`, and `test_console_exec` asserts it begins `/dev/pts/` — the prefix, not a number, since which slave a fresh instance hands out is not the test's business. Only that the process could name one at all.
+
 ### The jump box declares a login console, and it exposed a devpts gap (#290)
 
 `jump` 1.3.0 declares two consoles — `shell` (default) and `login` — and stages `/etc/pam.d/login` with the same LDAP stack the working `sshd` policy already uses, including `pam_mkhomedir` so an LDAP account gets a home on the `jump-home` volume.

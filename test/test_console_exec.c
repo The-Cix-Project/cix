@@ -658,6 +658,24 @@ int main(void)
 			 */
 			{ "", "OOMADJ=0",
 			  "the exec'd process is a killable OOM candidate, not exempt (#278)" },
+			/*
+			 * #290: the pty must be one the process can NAME, not
+			 * merely one it can read and write.
+			 *
+			 * It used to be allocated from the daemon's own devpts,
+			 * so the slave fd worked perfectly while ttyname() failed
+			 * ENODEV -- /proc/self/fd/0 said /dev/pts/0 and the
+			 * container's own /dev/pts held no such entry. A shell
+			 * never notices, which is why this went unseen; login(1)
+			 * reports the failure to syslog rather than to the
+			 * terminal and exits five seconds later in silence.
+			 *
+			 * Asserting the /dev/pts/ prefix rather than an exact
+			 * number: which slave a fresh devpts instance hands out
+			 * is not this test's business, only that it named one.
+			 */
+			{ "", "TTY=/dev/pts/",
+			  "the pty comes from the container's own devpts, so ttyname() resolves (#290)" },
 			/* Omitting everything is an ordinary request, not an
 			 * error -- a piped client has no terminal to describe.
 			 * The documented defaults are what it must then get,
