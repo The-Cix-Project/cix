@@ -438,6 +438,36 @@ static void append_line(const char *line, int len)
 		if (fsync(fd) != 0)
 			kmsg_write("cix stallwatch: record file fsync failed: %s: %s",
 			            g_records_path, strerror(errno));
+		/*
+		 * Issue #229: say WHERE the record went, and how big the file
+		 * is afterwards.
+		 *
+		 * Measured on 192.168.15.95 under v2.53.62: a slow-pass record
+		 * reached /dev/kmsg and the log store while the record file --
+		 * read back through GET /v1/system/stalls -- stayed unchanged,
+		 * still ending 2026-09-01 15:08:03 with nothing from that day.
+		 * The open, the write and the fsync all reported success, so
+		 * from here the store worked. The writer and the reader are
+		 * therefore not looking at the same bytes, and no amount of
+		 * error checking on this side can show that.
+		 *
+		 * The path, the inode and the size after the write distinguish
+		 * the two remaining explanations in one reading: a different
+		 * file (path or inode not what the reader opens) against the
+		 * same file the reader cannot show (size growing while the
+		 * report does not move).
+		 */
+		{
+			struct stat st;
+
+			if (fstat(fd, &st) == 0)
+				kmsg_write("cix stallwatch: stored to %s (dev %lu ino %lu size %lld)",
+				            g_records_path, (unsigned long)st.st_dev,
+				            (unsigned long)st.st_ino, (long long)st.st_size);
+			else
+				kmsg_write("cix stallwatch: stored to %s but fstat failed: %s",
+				            g_records_path, strerror(errno));
+		}
 		close(fd);
 	}
 	/* Also to stderr: on a box being watched over a serial console this
