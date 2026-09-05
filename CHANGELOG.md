@@ -62,6 +62,14 @@ This also explains a symptom hit earlier the same session and parked as unrelate
 
 `test_console_exec` now states `userns: true` rather than inheriting the daemon's default — a test that inherits it asserts nothing on a host where that default is off — and asserts the session's own `/proc/self/uid_map` is a real mapping rather than the host identity map. Every existing assertion in that table passed with the bug present, which is the point: a command runs perfectly well with the wrong credentials.
 
+**It took three deploys, and the first two were wrong in ways only the live box could show.** `v2.53.44` shipped the namespace join without the identity inside it: `setns(CLONE_NEWUSER)` reinterprets the uid already held rather than carrying one across, and the daemon's host 0 is not in the container's map — so the session came up as `I have no name!@jump`, correctly inside the namespace and owning nothing in it. `setgid(0)`/`setgroups(0)`/`setuid(0)` after the join fixed that, which the capabilities gained by joining are what make legal (`nsenter --setuid 0`).
+
+`v2.53.45` then showed a prompt and **ignored every keystroke**. `struct console_exec_session` is `malloc()`ed and never zeroed; every field used to be assigned by hand just below, so the allocation's contents never mattered until #294 added `pty_out[]` and `pty_out_len` to it. `pty_out_len` came up as garbage, `console_pty_write()` skipped its direct write and copied input to a junk offset, and the shell received uninitialised memory instead of keystrokes. One `memset()`, which the `pty_cc` allocation two lines below always had — the asymmetry between them is what made adding a field dangerous.
+
+The selftest passed for all three. #296 records why, and it is the durable finding here: every console scenario reads what the child says **on attach**, and not one writes a byte into the session, so the entire input direction of the console is unasserted. A daemon that accepts the websocket, forwards nothing, and relays the greeting back passes the suite. An `INPUT-ECHO` assertion was written and then removed rather than left in a form that could not work — the scenario table is a read-only loop and none of the fixture binaries reads stdin, `console_term_child` deliberately so, because the aggressive harness needs a child that never drains the pty.
+
+Verified on 192.168.15.95 through the path that was reported broken: `jump login: osakka` → `pwd=/home/osakka uid=10000 user=osakka home=/home/osakka`.
+
 ### A compiler fix that shipped four days ago had never reached a single package (#228)
 
 `getent passwd osakka` returned nothing inside the jump container while `id osakka` returned the full record — same nsswitch, same module, opposite answers. The real error, from perl's DynaLoader inside the container:
