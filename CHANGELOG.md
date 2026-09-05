@@ -2,6 +2,25 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### The stall reader now says which file it read (#229)
+
+The watchdog logs its own path, dev, inode and size to `/dev/kmsg` after every append. The reader reported none of that, and only one side being instrumented is what made the next question unanswerable.
+
+Measured on 192.168.15.95 under v2.53.70. The writer, three minutes before the read:
+
+```
+cix stallwatch: {"ts":1788648226,"event":"slow-pass","worst_pass_ms":15818,"slow_passes":19,...}
+cix stallwatch: stored to /config/state/control_plane_stalls.jsonl (dev 65028 ino 22 size 196970)
+```
+
+The reader, at the same time: 256 records, newest `2026-09-01 15:08:03` — **four days and seven hours old** — and containing only `stall`, `stall-continues` and `recovered`. None of `slow-pass`, `service-stall` or `service-recovered`, all of which the writer had been emitting for days. A file holding none of those stopped being appended to before they existed.
+
+So it is not a reader truncating a live file; the two sides are on different bytes. That was the first of the two explanations `0408030`'s own comment set out to distinguish, and it rules out the second — but it took reading `/dev/kmsg` to see it, because the API could not say.
+
+`GET /v1/system/stalls` now carries a `store` object with `path`, `exists`, `dev`, `inode`, `size_bytes` — deliberately the same three facts in the same order as the writer's line, so the two can be compared by eye. `openapi.yaml` and `docs/api/README.md` updated in this change.
+
+Separately worth recording from the same reading: `loop` reports `worst_pass_ms: 15818` and `slow_passes: 19` in under two hours of uptime. A single event-loop pass spent 15.8 seconds working. The detection half of #229 is doing its job; it is the persisted record that is unreachable.
+
 ### A build that cannot find a tool is now a failed build (#302, ADR-0250)
 
 gettext's build environment was missing four tools. `gzip` stopped the build at `Error 127`. `find`, `cmp` and `xargs` did not stop it at all — libtool quietly produced a static archive with the convenience-archive objects left out, and `configure` quietly answered two feature probes from a tool that was not there. Exit 0, wrong output, nothing said. Eight recipe revisions were spent blaming the compiler and then the link mode.

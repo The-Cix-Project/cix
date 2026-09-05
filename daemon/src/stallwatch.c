@@ -934,6 +934,46 @@ void stallwatch_write_loop_json(struct json_writer *w)
 	jw_obj_close(w);
 }
 
+/*
+ * What the READER opened, reported exactly as the writer already
+ * reports what it stored (#229).
+ *
+ * Measured on 192.168.15.95 under v2.53.70: the writer logged
+ * "stored to /config/state/control_plane_stalls.jsonl (dev 65028
+ * ino 22 size 196970)" three minutes before a read whose newest
+ * record was four days old -- and whose records contained none of
+ * the slow-pass, service-stall or service-recovered events the
+ * writer had been emitting since #247. A file holding none of those
+ * is a file that stopped being appended to before they existed, so
+ * the two are not the same bytes.
+ *
+ * The writer's own report was added to distinguish "a different
+ * file" from "the same file the reader cannot show". It answered
+ * half the question, because only one side was instrumented: the
+ * writer says which inode it appended to and the reader said nothing
+ * at all. This is the other half, and it is deliberately the same
+ * three facts in the same order, so the two lines can be compared by
+ * eye.
+ */
+void stallwatch_write_store_json(struct json_writer *w)
+{
+	struct stat st;
+	int have = (g_records_path[0] != '\0' && stat(g_records_path, &st) == 0);
+
+	jw_obj_open(w);
+	jw_key(w, "path");
+	jw_str(w, g_records_path);
+	jw_key(w, "exists");
+	jw_bool(w, have);
+	jw_key(w, "dev");
+	jw_int(w, have ? (long long)st.st_dev : -1);
+	jw_key(w, "inode");
+	jw_int(w, have ? (long long)st.st_ino : -1);
+	jw_key(w, "size_bytes");
+	jw_int(w, have ? (long long)st.st_size : -1);
+	jw_obj_close(w);
+}
+
 void stallwatch_write_json(struct json_writer *w, int limit)
 {
 	char *buf = NULL;

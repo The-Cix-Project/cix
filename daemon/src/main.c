@@ -16249,6 +16249,15 @@ static void handle_stalls_get(int fd, const struct http_request *req)
 	 */
 	jw_key(&w, "loop");
 	stallwatch_write_loop_json(&w);
+	/*
+	 * Which file these records came out of (#229). The writer logs its
+	 * own path, dev, inode and size after every append; until now the
+	 * reader reported none of that, so a reader four days behind a
+	 * writer appending to a growing inode could not be told from a
+	 * writer that was not appending at all.
+	 */
+	jw_key(&w, "store");
+	stallwatch_write_store_json(&w);
 	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
