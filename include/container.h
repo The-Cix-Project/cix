@@ -728,6 +728,19 @@ int overlay_upperdir_size(const char *upperdir_path, long long *out_bytes);
 int container_create(const struct container_spec *spec, struct container_handle *out);
 
 /*
+ * ADR-0246: adopt a container that is already running, rebuilding its
+ * handle from kernel state instead of starting a new one. Used by the
+ * worker at startup so a control-plane restart does not take the
+ * workloads down with it. See the implementation's own comment in
+ * container.c for why the container cgroup is the anchor and why the
+ * init is identified by NSpid.
+ *
+ * 0 adopted, 1 nothing to adopt (caller should start it normally),
+ * -1 on error.
+ */
+int container_adopt(const struct container_spec *spec, struct container_handle *out);
+
+/*
  * True if name is a recognized cap_add exception name (e.g. "CAP_SYS_TIME")
  * -- the same table container_caps_drop() itself checks against, exposed
  * here so a caller building a container_spec (daemon/src/main.c's POST
