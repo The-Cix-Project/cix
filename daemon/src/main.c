@@ -27915,6 +27915,22 @@ static enum console_route_result try_console_upgrade(struct conn *cc, const stru
 		 * untouched -- CONSOLE_FAILED's normal teardown handles it). */
 		return CONSOLE_FAILED;
 	}
+	/*
+	 * Zeroed, not field-by-field (#294).
+	 *
+	 * Every field of this struct used to be assigned explicitly just
+	 * below, so the malloc's contents never mattered. Adding a buffer
+	 * and its length made that silently untrue: pty_out_len came up as
+	 * garbage, console_pty_write() therefore skipped its direct write
+	 * and copied terminal input to a junk offset, and the session
+	 * delivered uninitialised memory to the shell instead of
+	 * keystrokes. The console showed a prompt and then ignored every
+	 * key, which looks like a broken pty and is a missing memset.
+	 *
+	 * pty_cc gets one on the line below and always did; sess not having
+	 * one was the asymmetry that made a new field dangerous.
+	 */
+	memset(sess, 0, sizeof(*sess));
 	memset(pty_cc, 0, sizeof(*pty_cc));
 	pty_cc->kind = CONN_CONSOLE_PTY;
 	pty_cc->fd = master_fd;
