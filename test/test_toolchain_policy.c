@@ -41,7 +41,7 @@
  * stop the set GROWING unnoticed, which is the failure that mattered.
  */
 static const char *const g_gcc_recipes[] = {
-	"binutils", "binutils-dev", "bird", "btrfs-progs", "efivar", "elfutils",
+	"btop", "binutils", "binutils-dev", "bird", "btrfs-progs", "efivar", "elfutils",
 	"gcc", "gitea", "glauth", "glibc", "gnu-efi", "go", "go-bootstrap",
 	"grub", "kernel", "keyutils", "kmod", "libblkid", "libxcrypt",
 	"linux-headers", "perl", "probe-gcc-headers", "python",
@@ -99,10 +99,19 @@ static int version_newer(const char *a, const char *b)
 }
 
 /*
- * Does this recipe's pkg_build() actually invoke gcc?
+ * Does this recipe's pkg_build() actually invoke the gcc toolchain?
  *
  * Scans from pkg_build() onward, skipping comment lines. Anything
  * before pkg_build() is metadata and prose.
+ *
+ * g++ counts. It is the same toolchain wearing its C++ driver, and a
+ * recipe that builds with it is exactly as much a gcc recipe as one
+ * calling gcc -- which is the whole thing this count exists to keep
+ * visible. Added when btop, the first C++ package here, declared
+ * pkg_toolchain="gcc" and went undetected because it invokes CXX
+ * rather than CC: an undetected gcc recipe is worse than a miscounted
+ * one, since it means a package can move to gcc without the diff
+ * anybody reviews ever showing it.
  */
 static int recipe_uses_gcc(const char *path)
 {
@@ -125,7 +134,8 @@ static int recipe_uses_gcc(const char *path)
 		if (*p == '#')
 			continue;
 		if (strstr(p, "/usr/bin/gcc") != NULL || strstr(p, "CC=gcc") != NULL ||
-		    strstr(p, "--cc=gcc") != NULL || strstr(p, "-Dcc=gcc") != NULL) {
+		    strstr(p, "--cc=gcc") != NULL || strstr(p, "-Dcc=gcc") != NULL ||
+		    strstr(p, "/usr/bin/g++") != NULL || strstr(p, "CXX=g++") != NULL) {
 			uses = 1;
 			break;
 		}
