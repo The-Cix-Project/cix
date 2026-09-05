@@ -201,6 +201,32 @@ static int cgroup_is_frozen(const char *name)
 	return result;
 }
 
+/*
+ * Waits for cgroup.events to report the freeze state we asked for.
+ *
+ * Writing cgroup.freeze is asynchronous: the kernel reports "frozen 1"
+ * only once every task in the cgroup has actually stopped, so the 200
+ * from POST .../pause means the write happened, not that the freeze
+ * has landed. Reading immediately raced that and failed intermittently
+ * on a real host -- which is the same defect as this file's
+ * captured_output poll, in the other direction: there the loop exited
+ * before the condition it asserted, here there was no loop at all.
+ *
+ * Bounded so a freeze that genuinely never lands still fails, rather
+ * than hanging the suite.
+ */
+static int cgroup_wait_frozen(const char *name, int want)
+{
+	int attempt;
+
+	for (attempt = 0; attempt < 50; attempt++) {
+		if (cgroup_is_frozen(name) == want)
+			return want;
+		usleep(100000);
+	}
+	return cgroup_is_frozen(name);
+}
+
 int main(void)
 {
 	pid_t daemon_pid;
@@ -441,7 +467,7 @@ int main(void)
 		}
 		cix_response_free(&r);
 
-		if (cgroup_is_frozen("lc1") != 1) {
+		if (cgroup_wait_frozen("lc1", 1) != 1) {
 			fprintf(stderr, "FAIL: cgroup.events for lc1 does not report frozen 1 after pause\n");
 			ok = 0;
 		}
@@ -465,7 +491,7 @@ int main(void)
 		}
 		cix_response_free(&r);
 
-		if (cgroup_is_frozen("lc1") != 0) {
+		if (cgroup_wait_frozen("lc1", 0) != 0) {
 			fprintf(stderr, "FAIL: cgroup.events for lc1 does not report frozen 0 after unpause\n");
 			ok = 0;
 		}
