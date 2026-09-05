@@ -513,17 +513,6 @@ int container_create(const struct container_spec *spec, struct container_handle 
 			close(net_pipe[1]);
 
 		/*
-		 * #278: stop being un-killable. Every container -- a workload
-		 * or a package build alike -- inherits the control plane's own
-		 * oom_score_adj -1000 through pid 1, and a memory cgroup whose
-		 * every task is exempt livelocks at its ceiling instead of
-		 * losing one process. Done here, before any of the setup below
-		 * and long before execve, so it covers the child no matter
-		 * which of the paths after this point it takes.
-		 */
-		cix_oom_unprotect_self();
-
-		/*
 		 * ADR-0179 phase 2: with CLONE_NEWUSER in the clone flags,
 		 * block until the parent has written our uid/gid maps. Until
 		 * then this process holds no valid mapped identity, and every
@@ -542,6 +531,28 @@ int container_create(const struct container_spec *spec, struct container_handle 
 			}
 			close(userns_pipe[0]);
 		}
+
+		/*
+		 * #278: stop being un-killable. Every container -- a workload
+		 * or a package build alike -- inherits the control plane's own
+		 * oom_score_adj -1000 through pid 1, and a memory cgroup whose
+		 * every task is exempt livelocks at its ceiling instead of
+		 * losing one process.
+		 *
+		 * Deliberately placed AFTER the userns map sync above, not
+		 * before it. Until those maps are written this process has no
+		 * mapped identity -- it is the overflow uid -- and its own
+		 * /proc/self files are owned by an identity it does not hold,
+		 * so the write would fail with EACCES. Silently, since this
+		 * helper cannot report from here, leaving exactly the
+		 * exemption it exists to remove. Raising oom_score_adj is
+		 * unprivileged (only lowering it needs CAP_SYS_RESOURCE), so
+		 * once the maps exist there is nothing else to wait for.
+		 *
+		 * Still well before execve, and before pivot_root, so /proc is
+		 * the host's here and resolves normally.
+		 */
+		cix_oom_unprotect_self();
 
 		/*
 		 * Each pre-exec setup step gets its own exit code (110-119)
