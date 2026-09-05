@@ -19,6 +19,16 @@ One allowlist serves both paths — the create and the recipe's own add-time che
 
 The regression test goes in `test_container_recipe.c`, at recipe-**add** time: that is where issue #68 puts the check, so a field the catalog will not accept is refused immediately rather than sitting latent until a future apply silently drops it. It is in the selftest set, so it actually runs — unlike `test_pkg`, which is not (see #302 below).
 
+### test_console_exec now reports what the daemon was doing when it failed (#291)
+
+Every failure of this test is "output did not arrive in time", and the test could not distinguish the three causes that produce it: the child wrote nothing, the frames carried something else, or the daemon's single-threaded event loop was blocked and never got round to writing.
+
+The daemon measures the third directly, and the test was not asking. All three failure paths now print the `loop` object from `GET /v1/system/stalls` — `worst_pass_ms`, `slow_passes`, `worst_pass_activity` — so the next intermittent failure says "no output, and the loop's worst pass was N ms doing X" rather than "no output". That endpoint is only worth trusting since #229 above, where it was stopping at a NUL and under-reporting for four days while looking healthy.
+
+Two things ruled out on the way, recorded on the issue so nobody re-checks them. The PTY read path cannot lose output: the master is `O_NONBLOCK` and epoll here is level-triggered (`grep -c EPOLLET` is 0), so the single read per event is correct and anything unread re-fires. And `ws_write_frame()` cannot silently drop or tear down, because the console upgrade calls `http_set_blocking()` immediately after the `101`.
+
+That last one surfaced a real asymmetry, independent of whether it is this bug: `console_exec_session` buffers the **websocket → PTY** direction in `pty_out` and drains it on `EPOLLOUT`, while **PTY → websocket** writes go straight out on a blocking fd. A full socket buffer there blocks the whole event loop — exactly what #237 removed from the main HTTP path. The fix shape is not in doubt; what is missing is a way to tell whether it helped, since a run of passes against a moderate-probability intermittent proves nothing. Diagnosis before change.
+
 ### A single NUL byte hid four days of stall records (#229)
 
 `stallwatch_write_json()` split the record file with `strtok()`, which treats the buffer as a C string. The first NUL in it ended the scan — permanently and silently. Every record after that point was unreachable while the file went on growing, which presents as a report frozen at one timestamp forever.
