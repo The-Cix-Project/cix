@@ -1,4 +1,13 @@
 #
+# v2.53.30 -- the build gate's own cleanup races the daemon's autostart
+# (#286). Four consecutive gates failed on identical source, each on a
+# different test; two of those were one bug. The shared cleanup helper
+# enumerated containers once, deleted them, then deleted the network --
+# and a restart:always container that autostarted after the enumeration
+# was still attached, so the network delete was correctly refused 409.
+# It retries now, re-enumerating each pass.
+#
+#
 # v2.53.29 -- two flaky tests in the build gate (#286). Three consecutive
 # v2.53.28 builds failed the selftest on identical source, each on a
 # different single test; two of those were test_console_exec timing out a
@@ -450,9 +459,9 @@
 # predated #60.)
 #
 pkg_name="cix"
-pkg_version="v2.53.29"
-pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/v2.53.29.tar.gz"
-pkg_sha256="89d9a99a12dcd04a3093850c794d97b06f772fe4afc60966a85ba8361336b8af"
+pkg_version="v2.53.30"
+pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/v2.53.30.tar.gz"
+pkg_sha256="84ae9c9fafd55d91fd255cb811973b0f4806405329d366e62fa1acad4d951e86"
 # ADR-0199/0209: composed from exactly these, with no fallback
 # environment to inherit anything missing (#168). Cix is the first
 # recipe to need this declaration and it found the rule the hard way:
