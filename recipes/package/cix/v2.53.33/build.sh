@@ -1,4 +1,15 @@
 #
+# v2.53.33 -- the console pty comes from the CONTAINER's devpts (#290).
+# posix_openpt() opens the daemon's own /dev/ptmx, so the slave handed
+# to a process inside a container could be read and written but not
+# NAMED -- ttyname() ENODEV, because the container's /dev/pts is a
+# different instance. A shell never notices; login(1) resolves its
+# terminal name, reports the failure to syslog rather than to the
+# terminal it holds, and exits silently five seconds later. The master
+# now comes from /proc/<pid>/root/dev/pts/ptmx and the slave is opened
+# after the mount namespace is joined.
+#
+#
 # v2.53.32 -- the websocket test helpers dropped frames on a short read
 # (#286). recv_ws_frame() read the two-byte frame header with a single
 # read() and treated anything but exactly two bytes as a dead
@@ -482,9 +493,9 @@
 # predated #60.)
 #
 pkg_name="cix"
-pkg_version="v2.53.32"
-pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/v2.53.32.tar.gz"
-pkg_sha256="bb3258f119d22f076e2d45e58f495c2de786ddbbfb5cb5945b9df205d4580075"
+pkg_version="v2.53.33"
+pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/v2.53.33.tar.gz"
+pkg_sha256="e6ea26f53e656aca5dd394f2e62f564801837efd7ec9c2c2cb9e65dd1c8bbc67"
 # ADR-0199/0209: composed from exactly these, with no fallback
 # environment to inherit anything missing (#168). Cix is the first
 # recipe to need this declaration and it found the rule the hard way:
