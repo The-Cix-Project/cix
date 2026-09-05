@@ -7,6 +7,8 @@
 
 #include <arpa/inet.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include <limits.h>
 #include <net/if.h>
 #include <stdio.h>
@@ -1001,4 +1003,54 @@ int network_write_routes_json(struct json_writer *w)
 		route_write_json_one(&routes[i], w);
 	jw_arr_close(w);
 	return 0;
+}
+
+/*
+ * Reads /sys/class/net/<ifname>/statistics/<file> -- shared by
+ * per-container stats (the host-side veth's own counters, the same
+ * numbers a bridge/switch would see) and host-wide stats (real host
+ * interfaces). A missing file (ENOENT -- e.g. a container's veth
+ * already torn down) is not a request failure, just a 0 for that one
+ * counter: GET .../stats stays a best-effort snapshot, not an
+ * all-or-nothing report.
+ */
+long long read_net_stat(const char *ifname, const char *file)
+{
+	char path[PATH_MAX];
+	char buf[32];
+	int fd;
+	ssize_t n;
+
+	snprintf(path, sizeof(path), "/sys/class/net/%s/statistics/%s", ifname, file);
+	fd = open(path, O_RDONLY);
+	if (fd < 0)
+		return 0;
+	n = read(fd, buf, sizeof(buf) - 1);
+	close(fd);
+	if (n <= 0)
+		return 0;
+	buf[n] = '\0';
+	return strtoll(buf, NULL, 10);
+}
+
+/*
+ * The host-side veth for a container's Nth network attachment. The
+ * name is a convention (src/container_net.c coins it at creation from
+ * the child's pid), not something stored -- so it is derived in one
+ * place rather than re-spelled at each call site, which is how the
+ * stats reader and the teardown path came to carry the same format
+ * string twice.
+ *
+ * A live-attached network (ADR-0156) is the exception: it was added to
+ * an already-running container and carries its real name, since it was
+ * never coined from the pid at all.
+ */
+void container_veth_host_name(const struct registry_entry *e, int idx, char *out,
+                                      size_t out_size)
+{
+	if (e->nets[idx].veth_host[0] != '\0') {
+		snprintf(out, out_size, "%s", e->nets[idx].veth_host);
+		return;
+	}
+	snprintf(out, out_size, "vh%d-%d", (int)e->handle.pid, idx);
 }

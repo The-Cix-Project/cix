@@ -282,4 +282,20 @@ enum network_error network_set_management(const char *name);
  */
 struct network_def *network_find_management(void);
 
+/*
+ * Two network utilities that were static in main.c and needed by both
+ * the network handlers and the container ones (ADR-0249).
+ *
+ * read_net_stat() reads /sys/class/net/<ifname>/statistics/<file>;
+ * container_veth_host_name() composes the host-side veth name for a
+ * container's Nth attachment. Both are network facts about a name, and
+ * this module already owns those.
+ */
+/* Forward declaration rather than including registry.h: that header
+ * already includes this one, and only the pointer type is needed. */
+struct registry_entry;
+
+long long read_net_stat(const char *ifname, const char *file);
+void container_veth_host_name(const struct registry_entry *e, int idx, char *out, size_t out_size);
+
 #endif /* NETWORK_H */
