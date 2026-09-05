@@ -1,4 +1,11 @@
 #
+# v2.53.40 -- test_console_exec reports how its wait ended (#291).
+# Three of eight recent builds failed it on three different assertions,
+# each printing the same "got (0 bytes): (nothing)" -- one line for
+# three distinct faults. Both failing loops now report the frame count
+# and whether the read failed or simply never matched.
+#
+#
 # v2.53.39 -- the #289 header check is narrowed to same-project
 # includes. The first version flagged 48 of 202 real packages,
 # essentially all <stddef.h> and <stdarg.h> -- freestanding headers the
@@ -551,9 +558,9 @@
 # predated #60.)
 #
 pkg_name="cix"
-pkg_version="v2.53.39"
-pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/v2.53.39.tar.gz"
-pkg_sha256="6526df240a7faca88de6d9b1e29cc8de95e529a72bff23d4368ad065007ebf31"
+pkg_version="v2.53.40"
+pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/v2.53.40.tar.gz"
+pkg_sha256="a6400f0f92e160aed1913da2072d1604d90c6a6e2187923414c9f4c672863fa2"
 # ADR-0199/0209: composed from exactly these, with no fallback
 # environment to inherit anything missing (#168). Cix is the first
 # recipe to need this declaration and it found the rule the hard way:
