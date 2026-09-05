@@ -25559,8 +25559,36 @@ static void handle_console_pty_event(struct conn *cc, unsigned int evmask)
 			console_pty_update_events(sess);
 		}
 	}
-	if ((evmask & EPOLLIN) == 0)
+	/*
+	 * A hangup with nothing left to read ends the session (#291).
+	 *
+	 * A console session has no watcher on its child at all -- the
+	 * struct carries exec_pid but no pidfd -- so the ONLY thing that
+	 * ends it is this read returning 0 or failing. That works whenever
+	 * the kernel reports EPOLLIN alongside EPOLLHUP, which it does
+	 * while any output is still buffered in the pty.
+	 *
+	 * It does not work when the last output was already drained by an
+	 * earlier turn of the loop and the child then exits: epoll reports
+	 * EPOLLHUP with no EPOLLIN, because there is genuinely nothing to
+	 * read, and returning here left the session alive for ever. The
+	 * websocket stayed open, the client waited for output that could
+	 * never come, and the pty master and session struct leaked until
+	 * the client gave up.
+	 *
+	 * Which of those two happens depends purely on whether the drain
+	 * and the exit land in the same epoll cycle, which is why it
+	 * presented as an intermittent "the exec'd child's output never
+	 * reaches the test" rather than as a reproducible failure.
+	 *
+	 * The drain below still runs first on EPOLLIN, so nothing is lost:
+	 * a hangup is only acted on once the read side is genuinely empty.
+	 */
+	if ((evmask & EPOLLIN) == 0) {
+		if ((evmask & (EPOLLHUP | EPOLLERR)) != 0)
+			console_session_teardown(sess);
 		return;
+	}
 
 	n = read(cc->fd, buf, sizeof(buf));
 	if (n < 0) {
