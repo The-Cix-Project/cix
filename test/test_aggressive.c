@@ -356,6 +356,41 @@ static int open_console(const char *container, const char *cmd)
 	return fd;
 }
 
+/*
+ * write() everything, draining whatever the peer sends back while
+ * waiting for room. Used by the flood, where the socket is deliberately
+ * non-blocking and the peer is deliberately chatty.
+ */
+static int write_all_draining(int fd, const unsigned char *buf, size_t n)
+{
+	size_t done = 0;
+	int spins = 0;
+
+	while (done < n) {
+		ssize_t w = write(fd, buf + done, n - done);
+
+		if (w > 0) {
+			done += (size_t)w;
+			spins = 0;
+			continue;
+		}
+		if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
+			unsigned char drain[8192];
+			ssize_t d;
+
+			do {
+				d = read(fd, drain, sizeof(drain));
+			} while (d > 0);
+			if (++spins > 2000)
+				return -1; /* peer is not moving at all */
+			usleep(1000);
+			continue;
+		}
+		return -1;
+	}
+	return 0;
+}
+
 /* A masked binary websocket frame -- what a real client sends. */
 static int ws_send_binary(int fd, const unsigned char *payload, size_t len)
 {
@@ -384,9 +419,16 @@ static int ws_send_binary(int fd, const unsigned char *payload, size_t len)
 		return -1;
 	for (i = 0; i < len; i++)
 		masked[i] = payload[i] ^ mask[i & 3];
-	rc = cix_write_all(fd, hdr, hlen);
+	/*
+	 * The socket is non-blocking during the flood, so a short write is
+	 * ordinary rather than an error. Retried with a drain in between --
+	 * the reason it is full is that the daemon is relaying echo back,
+	 * and reading is what makes room. Bounded, so a genuinely dead peer
+	 * still ends the attack instead of spinning.
+	 */
+	rc = write_all_draining(fd, hdr, hlen);
 	if (rc == 0)
-		rc = cix_write_all(fd, masked, len);
+		rc = write_all_draining(fd, masked, len);
 	free(masked);
 	return rc;
 }
@@ -416,7 +458,26 @@ static void attack_console_input_flood(void)
 	int i;
 
 	set_attack("console input flood (slave never reads)");
+	/*
+	 * LINES, not one long run of bytes, and the difference is the whole
+	 * attack.
+	 *
+	 * A pty slave in canonical mode holds an unterminated line in a
+	 * 4 KiB buffer and DISCARDS everything past it -- so half a
+	 * megabyte of 'A' with no newline never reaches the read queue at
+	 * all, write_room never falls to zero, and a blocking master write
+	 * never blocks. That is why the first version of this attack could
+	 * not wedge a daemon with the #294 fix reverted, and it is a
+	 * property of the tty layer rather than anything about cixd.
+	 *
+	 * Completed lines are what accumulate in the read queue a process
+	 * that never calls read() will never drain. Once that fills, the
+	 * master stops accepting, and a blocking write stops the event
+	 * loop -- which is precisely the failure being hunted.
+	 */
 	memset(chunk, 'A', sizeof(chunk));
+	for (i = 63; i < (int)sizeof(chunk); i += 64)
+		chunk[i] = '\n';
 
 	fd = open_console("aggressive", "/bin/console_term_child");
 	if (fd < 0) {
@@ -428,11 +489,40 @@ static void attack_console_input_flood(void)
 		g_shared->attacks_skipped++;
 		return;
 	}
+	/*
+	 * Drain what comes back while flooding, because a real terminal
+	 * client does.
+	 *
+	 * Every byte written into a pty in echo mode produces a byte out of
+	 * it, and the daemon relays that to this socket. Accepted sockets
+	 * are non-blocking (accept4 SOCK_NONBLOCK), so a client that never
+	 * reads makes ws_write_frame() fail on a full socket buffer and the
+	 * daemon tears the session down -- ending the attack for a reason
+	 * that has nothing to do with what it is aiming at. The first
+	 * version of this attack did exactly that, which is the likeliest
+	 * reason it could not wedge a daemon whose master write blocks.
+	 *
+	 * So the socket is non-blocking here and drained every iteration.
+	 * The input queue is then the only thing that can fill, which is
+	 * the point.
+	 */
+	{
+		int fl = fcntl(fd, F_GETFL, 0);
+
+		if (fl >= 0)
+			fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+	}
 	/* Far past any pty buffer and past the daemon's own 64 KiB bound,
 	 * so both the kernel's limit and ours are crossed. */
 	for (i = 0; i < 128; i++) {
+		unsigned char drain[8192];
+		ssize_t d;
+
 		if (ws_send_binary(fd, chunk, sizeof(chunk)) != 0)
 			break; /* daemon closed on us, which is a legitimate answer */
+		do {
+			d = read(fd, drain, sizeof(drain));
+		} while (d > 0);
 	}
 	/*
 	 * How much actually went in, reported rather than assumed.
