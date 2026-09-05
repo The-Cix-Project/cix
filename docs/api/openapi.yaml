@@ -11450,6 +11450,51 @@ components:
             type: string
           minItems: 1
           description: argv for the container's entry process (cmd[0] is the executable path, relative to the container's own root).
+        dns_server:
+          type: object
+          required: [hosts_path]
+          description: >
+            Declares this container a DNS server and registers it as one
+            (#301). A DNS server is two pieces of state -- the container,
+            and a binding telling the daemon to keep it fed -- and
+            deleting a container deliberately forgets the binding, so
+            that a gone container leaves nothing dangling. Declaring the
+            role here is what lets recreating the container from its
+            recipe restore the whole server rather than half of it: the
+            documented recovery path used to produce a running dnsmasq
+            that served nothing, with no error anywhere. Equivalent to a
+            POST /v1/dns/servers after creation.
+          properties:
+            hosts_path:
+              type: string
+              description: >
+                Absolute path, as the container's own filesystem sees
+                it, that the daemon writes the record set into and
+                rewrites on every record change. The same field
+                POST /v1/dns/servers takes.
+        ntp_server:
+          type: boolean
+          description: >
+            Declares this container an NTP server and registers it as
+            one, equivalent to POST /v1/ntp/servers after creation. Same
+            reasoning as dns_server above.
+        syslog_target:
+          type: boolean
+          description: >
+            Declares this container a syslog forward target and registers
+            it as one, equivalent to POST /v1/syslog/targets after
+            creation. Same reasoning as dns_server above.
+        ldap_server:
+          type: object
+          required: [config_path]
+          description: >
+            Declares this container an LDAP server and registers it as
+            one, equivalent to POST /v1/ldap/servers after creation. Same
+            reasoning as dns_server above.
+          properties:
+            config_path:
+              type: string
+              description: Absolute path, as the container sees it, of the config the daemon maintains.
         memory_max:
           type: integer
           format: int64

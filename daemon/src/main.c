@@ -12407,6 +12407,93 @@ static int create_container_persisted(const char *body, size_t body_len,
 	return 0;
 }
 
+/*
+ * Registers the server roles a container's own definition declares
+ * (#301).
+ *
+ * A DNS, NTP, syslog or LDAP server is two pieces of state: the
+ * container, and a binding telling this daemon to keep it fed --
+ * writing the record set into its hosts file, re-sending SIGHUP, and so
+ * on. Deleting a container deliberately forgets the binding
+ * (dns_server_forget() and friends in handle_delete), because a gone
+ * container must not leave a dangling one.
+ *
+ * The consequence was that recreating a container from its recipe --
+ * the documented recovery path -- brought back a container that served
+ * nothing. Measured on 192.168.15.95: after deleting and re-applying
+ * dns-1 and dns-2, both were "running", GET /v1/dns/servers returned an
+ * empty list, dnsmasq answered for nothing, and the host could not
+ * resolve at all. Every individual thing an operator would check looked
+ * right, and no error was logged anywhere.
+ *
+ * So the role is declared in the container's own definition, which is
+ * what a recipe renders to. Forget-on-delete stays correct, and apply
+ * restores the whole server rather than half of it.
+ *
+ * Returns 0, or -1 with err filled. A declared role that cannot be
+ * registered is an error rather than a warning: a server that is
+ * running and unregistered is exactly the silent state this exists to
+ * end.
+ */
+static int register_declared_server_roles(const char *body, size_t body_len,
+                                           struct registry_entry *entry, char *err, size_t err_size)
+{
+	struct json_value *root = json_parse(body, body_len);
+	const struct json_value *v;
+	int rc = 0;
+
+	if (root == NULL)
+		return 0; /* create_container_persisted() already parsed it */
+
+	v = json_object_get(root, "dns_server");
+	if (v != NULL && v->type == JSON_OBJECT) {
+		const char *hosts_path = json_as_string(json_object_get(v, "hosts_path"));
+
+		if (hosts_path == NULL || hosts_path[0] != '/') {
+			snprintf(err, err_size, "dns_server.hosts_path must be an absolute path");
+			rc = -1;
+		} else if (dns_server_register(entry->name, entry->handle.pid, entry->handle.pidfd,
+		                                hosts_path) != DNS_SERVER_OK) {
+			snprintf(err, err_size, "container created, but registering it as a DNS server failed");
+			rc = -1;
+		}
+	}
+	if (rc == 0) {
+		v = json_object_get(root, "ntp_server");
+		if (v != NULL && v->type == JSON_BOOL && v->u.boolean &&
+		    ntp_server_register(entry->name) != NTP_OK) {
+			snprintf(err, err_size, "container created, but registering it as an NTP server failed");
+			rc = -1;
+		}
+	}
+	if (rc == 0) {
+		v = json_object_get(root, "syslog_target");
+		if (v != NULL && v->type == JSON_BOOL && v->u.boolean &&
+		    syslogfwd_target_register(entry->name) != SYSLOGFWD_OK) {
+			snprintf(err, err_size,
+			          "container created, but registering it as a syslog target failed");
+			rc = -1;
+		}
+	}
+	if (rc == 0) {
+		v = json_object_get(root, "ldap_server");
+		if (v != NULL && v->type == JSON_OBJECT) {
+			const char *config_path = json_as_string(json_object_get(v, "config_path"));
+
+			if (config_path == NULL || config_path[0] != '/') {
+				snprintf(err, err_size, "ldap_server.config_path must be an absolute path");
+				rc = -1;
+			} else if (ldap_server_register(entry->name, config_path) != LDAP_SERVER_OK) {
+				snprintf(err, err_size,
+				          "container created, but registering it as an LDAP server failed");
+				rc = -1;
+			}
+		}
+	}
+	json_free(root);
+	return rc;
+}
+
 static void handle_create(int fd, const char *body, size_t body_len)
 {
 	struct registry_entry *entry = NULL;
@@ -12417,6 +12504,12 @@ static void handle_create(int fd, const char *body, size_t body_len)
 	status = create_container_persisted(body, body_len, &entry, err_msg, sizeof(err_msg));
 	if (status != 0) {
 		respond_error(fd, status, http_status_text(status), err_msg);
+		return;
+	}
+
+	if (register_declared_server_roles(body, body_len, entry, err_msg, sizeof(err_msg)) != 0) {
+		logstore_write("cixd", "error", "container %s: %s", entry->name, err_msg);
+		respond_error(fd, 500, "Internal Server Error", err_msg);
 		return;
 	}
 
