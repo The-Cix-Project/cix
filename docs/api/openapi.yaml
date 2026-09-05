@@ -8115,6 +8115,32 @@ paths:
                             would be checked at all.
 
 
+                            And same-project only: the include must sit
+                            in the same directory under `usr/include/`
+                            as the header making it. That is the exact
+                            shape of the defect -- `pam_misc.h` reaching
+                            for `pam_client.h`, both under `security/`,
+                            one directory built and the other not -- and
+                            it is what a RECIPE is answerable for, since
+                            a project's own headers are the ones its own
+                            build either installs or does not.
+
+
+                            Measured before narrowing: against 202 real
+                            installed packages the unrestricted form
+                            flagged 48, essentially all `<stddef.h>` and
+                            `<stdarg.h>` -- FREESTANDING headers the
+                            compiler provides from its own directory
+                            rather than `/usr/include`, so they never
+                            resolve there and are never a defect. What
+                            this gives up in exchange is a header
+                            reaching into another PACKAGE that is not
+                            installed here; that is a dependency
+                            question, and an image-dependent one, rather
+                            than a recipe failing to build a directory
+                            whose headers it ships.
+
+
                             Reported, never fatal to an install -- unlike
                             the ELF undefined-symbol gate, reading C
                             without a preprocessor cannot claim to be
