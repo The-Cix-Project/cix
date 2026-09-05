@@ -2,6 +2,26 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Eight revisions blamed the compiler; the build environment had no `find` (#220, #302)
+
+gettext's convenience archives were never absorbed into `libtextstyle.a`, and revisions 1.0-8 through 1.0-14 attributed that in turn to TCC and to `--disable-shared`. Both attributions are wrong, and both were published.
+
+libtool absorbs a `noinst_LTLIBRARIES` convenience archive by extracting it under `.libs/<lib>.lax/` and then enumerating the extracted objects with `find`:
+
+```
+/usr/bin/libtool:5958:  my_oldobjs="$my_oldobjs "`find $my_xdir -name \*.$objext -print -o -name \*.lo -print | sort | $NL2SP`
+```
+
+The 1.0-14 log carries three `../libtool: line 6182: find: command not found`, one per archive, each immediately after the `ar x` that unpacked it. Empty list, final `ar cr` without those objects, success reported. That is precisely the 1.0-7 measurement — 412 renamed definitions in `libcroco_rpl.a`, zero in `libtextstyle.a` — and it had nothing to do with the compiler or the link mode.
+
+`pkg_build_depends` omitted `findutils`, which 334 other recipes declare. ADR-0199 composes the build container from exactly the declared list, so there is nothing to inherit a missing tool from.
+
+1.0-15 declares it and **deletes** both hand-rolled `ar` merges. Their assertions stay and now test libtool's own absorption rather than the recipe's, joined by a `command -v find` gate so the same omission fails by name instead of silently. The 1.0-13 `_LDADD` fix is kept rather than folded in: it was measured to change the link outcome on its own, and whether a libtool with `find` would have made it unnecessary is untested — one micro-step, not two.
+
+The correction is stated in 1.0-15's changelog because 1.0-8 and 1.0-14 are published and immutable (ADR-0107). Correcting the artefact, not just the conversation.
+
+**#302** files the general case: `elfcheck.c` gates undefined symbols in ELF objects, but a static archive missing members is not an ELF-level defect and passes. 23 recipes call `./configure` without declaring `findutils` — the candidate set, not the defect set, since only packages that actually build convenience archives are affected.
+
 ### The compiler was putting C source on every command line (#219, #220)
 
 Two tcc fixes, and both took longer than the code because the symptom pointed away from the cause.
