@@ -1,0 +1,165 @@
+# 0246 — the control plane is one process doing five jobs, and it needs to be two
+
+## Status
+
+Proposed
+
+## Context
+
+On 2026-09-05 `cixd` on 192.168.15.95 stopped answering. It had answered
+normally minutes earlier. The host stayed healthy throughout: ICMP replied in
+under half a millisecond, and the `jump` container kept serving real SSH
+logins, running commands and reading `/proc` for the entire outage. Load
+average, read from inside that container while the control plane was
+unreachable, was `0.19 0.06 0.07` — the box was **idle**.
+
+Two things about that are worth stating precisely, because both were guessed
+wrong before they were measured.
+
+It was not resource starvation. The first explanation reached for was that a
+heavy build was starving the daemon, which is the failure ADR-0165's
+shared-parent-cgroup budget was written against and the one this project has
+seen before. At load 0.19 with no build running, that explanation does not
+fit this occurrence at all.
+
+And it is **not yet known whether the daemon was hung or dead**. The listener
+went from accepting connections to refusing them while the box was idle. A
+refused connection means no listener, not a slow one — a wedged loop with an
+open socket gives a backlog and then timeouts, not `RST`. Whether the process
+was alive with its sockets closed, or gone entirely, cannot be determined
+from another machine, and this ADR deliberately does not assert it. It is
+recorded as unknown rather than filled in, because the design below is
+required under either answer and would be undermined by a motivating incident
+that turned out to be described wrongly.
+
+Either way the outcome for an operator was the same and is the actual
+subject here: **the box could only be recovered by hand, and nothing on it
+could say why.**
+
+### What the code says
+
+- `cixd` is single-threaded. There is exactly one `epoll_wait()` loop
+  (`daemon/src/main.c`), and no `pthread_create` anywhere in the daemon.
+- Of 48 `waitpid()` call sites across `main.c`, `pkg.c` and `exec.c`, 47 pass
+  a `0` flag and block. `run_cmd()` is `fork()` plus `waitpid(p, &status, 0)`
+  with no timeout, called inline from request handlers.
+- `GET /v1/health` is served by that same loop. The endpoint whose entire job
+  is to report the control plane's health is structurally incapable of
+  reporting the one failure that matters, because answering requires the
+  thing that has stopped.
+- `stallwatch` is already a separate process with a shared-memory heartbeat
+  and an HTTP probe of the daemon (#247). It **only records**. There is no
+  `kill`, no `abort`, no restart; its only signal-related call is
+  `PR_SET_PDEATHSIG`, which makes it die *with* the daemon it exists to
+  watch.
+- Its records are read back through `GET /v1/system/stalls` — the API that is
+  down whenever they matter. That is #229, and it is not a bug in stallwatch:
+  it is a consequence of the only retrieval path running through the
+  subject.
+- `cixd` runs as real pid 1 on an installed host (`g_pid1_mode`). There is no
+  supervisor above it, so nothing can restart it.
+
+### The actual root cause
+
+One process is the init, the supervisor, the event loop, the REST API, the
+container runtime, and the executor of unbounded blocking work. Those are
+five jobs with five different failure profiles sharing one fate. Any one of
+them failing takes all of them down, and the reporting of that failure is
+itself one of the five.
+
+This is not a defect in any of the five. Each is individually reasonable and
+several are carefully built. It is a boundary that was never drawn.
+
+## Decision
+
+Split the control plane into a **supervisor** and a **worker**, give the
+existing watchdog **authority to act**, and provide **one channel that does
+not route through the worker**. In that order. Converting the blocking calls
+is a fourth item and is deliberately sequenced last.
+
+### 1. A supervisor process, and a disposable worker
+
+A new, small `cix-init` becomes pid 1 on an installed host. Its entire job is
+to reap, to hold whatever it must to keep running workloads alive across a
+worker restart, and to restart the worker. It does not speak HTTP, does not
+run recipes, does not touch rtnetlink, and calls nothing that can block
+indefinitely. It should fit in one file and be readable in one sitting.
+
+`cixd` becomes the worker: it keeps the event loop, the API, and the runtime,
+and it stops being pid 1.
+
+The point of the split is that **the worker becomes disposable**. Today
+killing `cixd` is indistinguishable from destroying the host, which is why no
+automatic recovery could ever be built on top of it. The property that makes
+this safe was observed during the incident above rather than designed:
+containers kept running while the control plane was unreachable. This ADR
+makes that a guarantee instead of an accident.
+
+### 2. The watchdog acts
+
+`stallwatch` already measures the right things. The change is what it does
+with the measurement: on `PROBE_FAILURES_FOR_STALL` it signals the
+supervisor, and the supervisor kills and restarts the worker. `PDEATHSIG` is
+removed — it exists precisely so the watchdog can outlive the thing it
+watches, and today it guarantees the opposite.
+
+Recording is already built. Acting is the whole delta.
+
+### 3. One channel that does not route through the worker
+
+The supervisor answers exactly one question, on its own port, requiring
+nothing from the worker: worker alive since when, how many restarts, and the
+last stall reason. Nothing else. This is what makes the failure observable
+from a second machine, and it is what would have answered "wait or reset" at
+the moment it mattered rather than four hours later.
+
+### 4. The blocking calls, afterwards
+
+47 blocking `waitpid()`s are real debt and the infrastructure to fix them
+already exists — `register_container_pidfd()` is the pattern, and converting
+`run_cmd()` into an epoll-integrated job is mechanical. This is sequenced
+**last** on purpose: it reduces how often a restart is needed, it does not
+provide the restart, and doing it first would leave the recovery path
+untested while making the loop look healthier.
+
+## Consequences
+
+**A wedged or dead control plane recovers itself.** That is the whole point,
+and it is what today's architecture cannot do at any level of care in the
+request handlers.
+
+**A worker restart is not free and must not be silent.** In-flight requests
+die, console and exec sessions drop, and a package build in progress is
+interrupted. The supervisor's restart count and reason are therefore part of
+the out-of-band answer and belong in the log store once the worker is back —
+a restart nobody can see is a worse failure than the one it fixed.
+
+**The boundary must be proven, not assumed.** This is only trustworthy once a
+deliberate `kill -STOP` of the worker on a real host is seen to produce a
+restart, with containers still running afterwards. A restart path that has
+never been exercised is not a recovery mechanism.
+
+**The API-First Mandate is unaffected.** The supervisor's port is a
+diagnostic readout with no control surface — it starts nothing, changes
+nothing, and cannot be used to manage the host. Every capability remains a
+REST endpoint on the worker. A read-only "is the worker alive" answer is not
+a second management path, and treating it as one would mean the platform can
+never report its own unavailability.
+
+**`cixd` stops being pid 1, and issue #131 still applies to whatever is.**
+Returning from `main()` as pid 1 is a kernel panic. That constraint moves to
+`cix-init` rather than disappearing.
+
+**This does not replace ADR-0165 or ADR-0244.** Starvation and OOM protection
+remain the right defences against the failures they address. This ADR is
+about what happens when a defence does not hold, which on this platform has
+so far meant walking to the hypervisor.
+
+## Open at the time of writing
+
+Whether the 2026-09-05 incident was a hang or a process death is unresolved
+and is to be read off the box on recovery — uptime from `GET /v1/system/boot`
+distinguishes a reboot from none, and pid 1's identity says whether a dead
+`cixd` could have been survived by its containers at all. The finding belongs
+on #283 and, if it changes the picture, in a follow-up to this ADR rather
+than an edit of it.
