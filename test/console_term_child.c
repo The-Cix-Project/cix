@@ -81,6 +81,38 @@ static void report_tty(void)
 	printf("TTY=%s\n", name != NULL ? name : "(unnamed)");
 }
 
+/*
+ * #293: is this process inside the container's own user namespace, or
+ * the host's?
+ *
+ * Read from its own uid_map, which is the kernel's answer rather than
+ * an inference: a process in the host's user namespace has the
+ * identity map "0 0 4294967295", while one in a container's has that
+ * container's subordinate base as the second field. So a non-zero base
+ * means the session is genuinely subject to a mapping.
+ *
+ * Asked from in here because it is a property of the session, not of
+ * the container -- the container was always in its namespace; what was
+ * wrong was that the console never joined it.
+ */
+static void report_userns(void)
+{
+	FILE *f = fopen("/proc/self/uid_map", "r");
+	long long inside = 0, host = 0, len = 0;
+	int mapped = 0;
+
+	if (f != NULL) {
+		while (fscanf(f, "%lld %lld %lld", &inside, &host, &len) == 3) {
+			if (inside == 0) {
+				mapped = (host != 0);
+				break;
+			}
+		}
+		fclose(f);
+	}
+	printf("USERNS=%s\n", mapped ? "mapped" : "host");
+}
+
 static void report(void)
 {
 	struct winsize wsz;
@@ -97,6 +129,7 @@ static void report(void)
 	       (unsigned)wsz.ws_col, (unsigned)wsz.ws_row);
 	report_oom_adj();
 	report_tty();
+	report_userns();
 	fflush(stdout);
 }
 
