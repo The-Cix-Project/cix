@@ -96,6 +96,21 @@ extern char **environ;
  */
 #define FAIL_GAP_MS 5000
 
+/*
+ * Exit codes, kept distinct on purpose.
+ *
+ * A harness that cannot set itself up has measured NOTHING, and
+ * reporting that as a finding is worse than reporting nothing at all --
+ * it invents a wedge that did not happen and sends whoever reads it
+ * looking for a bug in the daemon. The first run of this harness did
+ * exactly that: a build container with no cgroup filesystem could not
+ * create the target container, and the recipe announced that the build
+ * had been wedged by its own harness.
+ */
+#define EXIT_FIT 0       /* attacked, and the control plane held */
+#define EXIT_FINDING 1   /* attacked, and it did not */
+#define EXIT_NO_RUN 2    /* never got as far as attacking anything */
+
 #define ATTACK_NAME_MAX 64
 
 struct probe_shared {
@@ -568,13 +583,13 @@ int main(void)
 	                -1, 0);
 	if (g_shared == MAP_FAILED) {
 		perror("mmap");
-		return 1;
+		return EXIT_NO_RUN;
 	}
 	memset(g_shared, 0, sizeof(*g_shared));
 	snprintf(g_shared->current_attack, ATTACK_NAME_MAX, "%s", "startup");
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
-		return 1;
+		return EXIT_NO_RUN;
 	snprintf(g_image_root, sizeof(g_image_root), "%s/rebuildable/images/aggressive/v1/rootfs",
 	         g_data_dir);
 	{
@@ -583,28 +598,28 @@ int main(void)
 		snprintf(image_dir, sizeof(image_dir), "%s/rebuildable/images/aggressive", g_data_dir);
 		if (test_image_fixture_write_manifest(image_dir, "v1") != 0) {
 			test_data_dir_cleanup(g_data_dir);
-			return 1;
+			return EXIT_NO_RUN;
 		}
 	}
 	if (test_image_fixture_build(g_image_root, "build/daemon_child", "daemon_child") != 0 ||
 	    test_image_fixture_build(g_image_root, "build/console_term_child", "console_term_child") !=
 	        0) {
-		fprintf(stderr, "FAIL: could not stage the attack fixture's binaries\n");
+		fprintf(stderr, "NO-RUN: could not stage the attack fixture's binaries\n");
 		test_data_dir_cleanup(g_data_dir);
-		return 1;
+		return EXIT_NO_RUN;
 	}
 
 	daemon_pid = start_daemon();
 	if (daemon_pid < 0) {
 		test_data_dir_cleanup(g_data_dir);
-		return 1;
+		return EXIT_NO_RUN;
 	}
 	cix_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
-		fprintf(stderr, "FAIL: daemon never became healthy\n");
+		fprintf(stderr, "NO-RUN: the daemon under test never became healthy\n");
 		stop_daemon(daemon_pid);
 		test_data_dir_cleanup(g_data_dir);
-		return 1;
+		return EXIT_NO_RUN;
 	}
 
 	memset(&r, 0, sizeof(r));
@@ -613,10 +628,18 @@ int main(void)
 	                       "\"cmd\":[\"/bin/daemon_child\",\"600\",\"0\"]}",
 	                       &r) != 0 ||
 	    r.status != 201) {
-		fprintf(stderr, "FAIL: could not create the target container, status=%d\n", r.status);
+		/*
+		 * Not a finding. A build container composed by `pkg install`
+		 * has no cgroup filesystem, so nothing here can create a
+		 * container -- the harness needs the hostbuild environment,
+		 * the same one the daemon-linked tests in cix-tests run in.
+		 */
+		fprintf(stderr, "NO-RUN: could not create the target container, status=%d\n", r.status);
+		fprintf(stderr, "        this harness needs an environment that can create containers;\n");
+		fprintf(stderr, "        nothing was attacked, so nothing is claimed about this build.\n");
 		stop_daemon(daemon_pid);
 		test_data_dir_cleanup(g_data_dir);
-		return 1;
+		return EXIT_NO_RUN;
 	}
 
 	/*
@@ -630,7 +653,7 @@ int main(void)
 		perror("fork (prober)");
 		stop_daemon(daemon_pid);
 		test_data_dir_cleanup(g_data_dir);
-		return 1;
+		return EXIT_NO_RUN;
 	}
 	if (prober_pid == 0)
 		prober_main();
@@ -672,9 +695,9 @@ int main(void)
 	if (g_failures > 0) {
 		printf("AGGRESSIVE TEST: FAIL (%d finding(s)) -- this build is NOT fit to ship\n",
 		       g_failures);
-		return 1;
+		return EXIT_FINDING;
 	}
 	printf("AGGRESSIVE TEST: PASS -- the control plane answered throughout, worst gap %lld ms\n",
 	       max_gap);
-	return 0;
+	return EXIT_FIT;
 }
