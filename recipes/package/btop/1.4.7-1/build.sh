@@ -87,9 +87,30 @@ pkg_build() {
 	# "posix_spawnp: No such file or directory" -- which reads as a
 	# missing source file and is not. Same rule, same reason, as gcc
 	# itself; see CLAUDE.md's environment notes.
+	# -j1, deliberately, where nearly every other recipe here uses
+	# -j"$(nproc)".
+	#
+	# Two reasons, and the second is the one that matters. First, nproc
+	# inside a build container reports the HOST's cpu count: a cgroup
+	# cpu.max does not change it, so "$(nproc)" is not this build's
+	# share of the machine, it is the whole machine's width. Second,
+	# and unlike every C package here, a C++ translation unit with
+	# heavy template instantiation can hold a gigabyte or more in the
+	# compiler at once -- so N of them in parallel is N times the peak
+	# memory, against a build cgroup capped at 2 GiB.
+	#
+	# A first attempt at this recipe with -j"$(nproc)" left
+	# 192.168.15.95 answering ping while cixd stopped responding
+	# entirely, needing a manual reset -- the ADR-0165 signature. That
+	# is a hypothesis about the cause rather than a measurement, since
+	# the box could not be reached to take one, but the cost of being
+	# wrong here is one slower build and the cost of being right is the
+	# only management path on the machine.
+	#
+	# btop is roughly fifteen translation units. Serial is cheap.
 	make CXX=/usr/bin/g++ VERBOSE=true GPU_SUPPORT=false STATIC=false \
 	     ADDFLAGS="-static-libstdc++ -static-libgcc" \
-	     -j"$(nproc)"
+	     -j1
 
 	#
 	# Run what was built. btop is interactive, so --version is the honest
