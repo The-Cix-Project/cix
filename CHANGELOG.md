@@ -2,6 +2,20 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### A console session with nothing left to read never ended (#291)
+
+`test_console_exec` had been failing intermittently since before #288, with the same shape every time and different assertions: the exec'd child's output never reaches the test. The cause was never established, and #288's real fix to `recv_ws_frame()` made it rarer without removing it.
+
+`struct console_exec_session` carries `exec_pid` but **no pidfd**. There is no watcher on the child at all, so the only thing that ends a session is the pty read returning 0 or failing. That works whenever the kernel reports `EPOLLIN` alongside `EPOLLHUP`, which it does while any output is still buffered in the pty.
+
+It does not work when the last output was already drained by an earlier turn of the loop and the child then exits. epoll reports `EPOLLHUP` with no `EPOLLIN` — correctly, there is genuinely nothing to read — and `handle_console_pty_event()` returned on exactly that condition. The session stayed alive for ever: the websocket open, the client waiting for output that could never come, the pty master and session struct leaked until the client gave up.
+
+Which of the two happens depends purely on whether the drain and the exit land in the same epoll cycle. That is why it presented as an intermittent test failure rather than a reproducible one.
+
+A hangup with an empty read side now tears the session down. The drain still runs first on `EPOLLIN`, so nothing is lost — a hangup is only acted on once the read side is genuinely empty.
+
+Worth noting for anyone looking for the same class elsewhere: `handle_console_pty_event()` is the only handler in the daemon that receives an event mask at all. Every other one reads and handles 0 or an error inherently, so none of them can have this gap.
+
 ### Eleven handler modules, and three defects the second compiler caught (ADR-0249)
 
 `hostauth` (login/logout/whoami, host auth config and live sessions) and `logs` (the kernel ring buffer and cixd's own store) join the nine already moved. **main.c is 28,410 lines, down from 31,284.**
