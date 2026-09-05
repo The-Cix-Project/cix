@@ -398,10 +398,6 @@ void handle_network_ports_get(int fd, const char *name)
 	jw_free(&w);
 }
 
-/* Defined with the rest of the DHCP handlers further down; needed here
- * so deleting a network can drop its DHCP config in the same breath. */
-void dhcp_apply_and_maybe_restart(void);
-
 void handle_network_get_one(int fd, const char *name)
 {
 	struct network_def *net = network_find(name);
@@ -493,22 +489,7 @@ void handle_network_update(int fd, const char *name, const char *body, size_t bo
 	jw_free(&w);
 }
 
-void handle_network_delete(int fd, const char *name)
-{
-	enum network_error nerr = network_delete(name);
 
-	if (nerr != NETWORK_OK) {
-		respond_network_error(fd, nerr);
-		return;
-	}
-	/* A DHCP config for a network that no longer exists is a range
-	 * nothing can serve, kept alive by nothing but our own forgetting
-	 * to drop it. */
-	dhcp_forget_network(name);
-	dhcp_apply_and_maybe_restart();
-	http_set_blocking(fd);
-	http_write_response(fd, 204, "No Content", "application/json", "", 0);
-}
 
 void handle_network_attach_interface(int fd, const char *net_name, const char *body,
                                              size_t body_len)
