@@ -144,14 +144,54 @@ last stall reason. Nothing else. This is what makes the failure observable
 from a second machine, and it is what would have answered "wait or reset" at
 the moment it mattered rather than four hours later.
 
-### 4. The blocking calls, afterwards
+### 4. The blocking calls — and this ordering was wrong
 
-47 blocking `waitpid()`s are real debt and the infrastructure to fix them
-already exists — `register_container_pidfd()` is the pattern, and converting
-`run_cmd()` into an epoll-integrated job is mechanical. This is sequenced
-**last** on purpose: it reduces how often a restart is needed, it does not
-provide the restart, and doing it first would leave the recovery path
-untested while making the loop look healthier.
+This was sequenced **last**, on the argument that it reduces how often a
+restart is needed but does not provide the restart, and that doing it first
+would leave the recovery path untested.
+
+That reasoning optimised for having a recovery path over not needing one, and
+on 2026-09-05 it delivered neither: the supervisor restarted the worker
+correctly and the worker could not come up, so the recovery mechanism caused
+a worse outage than the failure it was recovering from. Items 1-3 are
+containment. This is the actual robustness, and it comes first.
+
+**The "47 blocking `waitpid()`s" figure above was wrong, and the correction
+matters more than the number.** It counted blocking *calls* rather than calls
+that can *block*. Measured across `daemon/src` and `src`, there are 65, and
+they fall into groups with very different meanings:
+
+- **14 sit in `handle_*_event()` pidfd callbacks.** `EPOLLIN` on a pidfd
+  means the child has already exited, so the wait collects a zombie and
+  returns immediately. These cannot block, and converting them would be
+  churn that removes nothing.
+- **Roughly 14 reap the short-lived intermediate of a double fork**, which
+  `_exit()`s as soon as it has forked the grandchild. Bounded by
+  construction.
+- **Most of the rest run a bounded external tool** — `sfdisk`, `blkid`,
+  `openssl`, `tar`, `modprobe` — synchronously. Unbounded in principle,
+  bounded in practice, and worth converting in order of how long the tool
+  can really take rather than all at once.
+
+**Both incidents that actually took the host down were blocking fd I/O, not
+`waitpid`.** #294 was a `read()` on a console pty master (`wchan
+n_tty_read`), and the wedge that motivated this ADR showed the same shape.
+So the rule that matters is *every fd the reactor polls is non-blocking*, and
+that was audited: the listeners use `accept4(SOCK_NONBLOCK)`, client sockets
+and the reap channel are non-blocking, the console pty was fixed in #294, and
+the container-output pipe sets `O_NONBLOCK` and **disables capture entirely
+rather than registering a blocking fd** when that fails. The one
+`open(tty_path, O_RDWR)` without `O_NONBLOCK` is in a forked child after
+`setsid()`, so it can hang that child but never the reactor. No blocking fd
+reaches epoll today.
+
+What holds this is `test_blocking_waits`, a per-file budget of blocking waits
+with the reason each is currently acceptable. It deliberately does **not**
+claim the daemon never blocks — it asserts that the set of places that can is
+known and counted, so adding one is a deliberate act visible in a diff. That
+is the instrument this project has twice found to be the only one that
+actually holds (ADR-0224's toolchain count, #285's curl guards); a prose rule
+in its place is what let gcc reach 21 recipes with nobody counting.
 
 ## Consequences
 

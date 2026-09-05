@@ -2,6 +2,26 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### The supervisor was the wrong headline, and the box proved it (ADR-0246)
+
+`cix-init` shipped, ran as pid 1 on 192.168.15.95, spawned the worker, answered its out-of-band status port while the worker was dead, and restarted the worker on demand — `restarts: 1 → 2`, a new pid, and a correct `"worker killed by signal 9"`. Every part of the supervisor did exactly what it was designed to do.
+
+**The worker could not come up.** Ports 80 and 443 answered connection-refused for ten minutes while the supervisor reported the new worker alive, so it wedged before creating its listener — and `stallwatch` starts *after* the listener, so nothing was watching either. The box needed a reset.
+
+The cause was not the mounts already fixed. The entire `--init-mode` startup path assumes a fresh kernel: `diskrole_init()`, `diskformat_remount_present_role_disks()`, `network_init()` and a dozen `boot_subsystem_init()` calls have never run twice in one kernel lifetime, because until now nothing could restart the worker. `boot_init()` was the visible half of a much larger assumption, and skipping it wholesale was the wrong granularity.
+
+So **the recovery mechanism produced a worse outage than the failure it was recovering from**, and a restart path that cannot restart is worse than none — it invites the kill, since `DELETE` on the worker's own pid now looks like an ordinary operator action. Both boot-entry writers emit `init=/bin/cixd` again. `cix-init` stays built, staged and installed: it is correct, and it is not `init` until a restarted worker is proven to come up.
+
+One property held throughout and is worth recording, because the whole design rests on it: **`dns-1` and `dns-2` kept answering DNS on port 53 with the control plane dead** and the host at 0.4 ms ICMP. A control-plane failure is not a workload failure.
+
+**The ADR's own sequencing was wrong.** Converting the blocking calls was scheduled last, on the argument that it reduces how often a restart is needed but does not provide the restart. That optimised for having a recovery path over not needing one, and delivered neither.
+
+**And the "47 blocking `waitpid()`s" figure was wrong** — it counted blocking *calls* rather than calls that can *block*. Measured: 65 across `daemon/src` and `src`, of which **14 sit in `handle_*_event()` pidfd callbacks** where `EPOLLIN` already means the child exited, so they collect a zombie and return at once; roughly 14 more reap the immediately-exiting intermediate of a double fork; most of the remainder run a bounded external tool. The real exposure is much smaller than the headline, and converting the callbacks would have been churn that removed nothing.
+
+**Both incidents that actually took the host down were blocking fd I/O, not `waitpid`** — #294 was a `read()` on a console pty master (`wchan n_tty_read`). So the rule that matters is *every fd the reactor polls is non-blocking*, and that was audited rather than assumed: listeners use `accept4(SOCK_NONBLOCK)`, client sockets and the reap channel are non-blocking, the console pty was fixed in #294, and the container-output pipe **disables capture entirely rather than registering a blocking fd** if `O_NONBLOCK` fails. The one `open(tty_path, O_RDWR)` without it is in a forked child after `setsid()` — it can hang that child, never the reactor.
+
+`test_blocking_waits` is what holds this: a per-file budget with the reason each entry is currently acceptable. It deliberately does **not** claim the daemon never blocks — it asserts the set of places that can is known and counted, so adding one is deliberate and visible in a diff. That is the only instrument this project has found to actually hold (ADR-0224's toolchain count, #285's curl guards); a prose rule in its place is what let gcc reach 21 recipes with nobody counting.
+
 ### The control plane becomes a supervisor and a worker (ADR-0246)
 
 `cixd` is the init, the supervisor, the event loop, the REST API, the container runtime and the executor of unbounded blocking work. Those are five jobs with five failure profiles sharing one fate, and on 2026-09-05 one of them blocked in a console pty master and took the other four with it — including `GET /v1/health`, whose entire job was to report exactly this and which is served by the loop that had stopped.
