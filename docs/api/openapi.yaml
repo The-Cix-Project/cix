@@ -13333,6 +13333,44 @@ components:
             pressure:
               $ref: "#/components/schemas/Pressure"
               description: Host-wide memory.pressure, from the cgroup v2 root.
+        workload_memory:
+          type: object
+          required: [cgroup, usage_bytes, peak_bytes, limit_bytes, pressure]
+          description: >
+            The cix-workload parent cgroup's own memory -- every container
+            and package build this daemon starts lives under it (ADR-0165).
+            Reported beside the host's because both numbers are true at
+            once and only the host's was ever visible, which is how a live
+            OOM presented as a healthy, mostly-idle machine: 5.88 GB
+            available on the host while cix-workload/cix-pkgbuild sat
+            pinned at its 2 GiB ceiling, OOM-killing continuously (#279).
+            Absent entirely on a host that has never started a workload --
+            there is no ceiling to report then, and zeroes would read as a
+            workload pinned at nothing.
+          properties:
+            cgroup:
+              type: string
+              description: The parent cgroup's name, relative to the cgroup v2 root.
+            usage_bytes:
+              type: integer
+              description: memory.current -- what every workload is using between them right now.
+            peak_bytes:
+              type: integer
+              description: memory.peak -- the high-water mark since boot.
+            limit_bytes:
+              type: integer
+              description: >
+                memory.max, or -1 when the parent is unlimited ("max"),
+                which is the default. -1 rather than null because null
+                would read as "unknown" when it means "no ceiling to hit".
+                usage_bytes against this is the pair that answers whether
+                something is at its ceiling.
+            pressure:
+              $ref: "#/components/schemas/Pressure"
+              description: >
+                The parent's own memory.pressure -- what distinguishes a
+                workload that is merely near its limit from one that is
+                being hurt by it.
         disk:
           type: object
           required: [total_bytes, free_bytes, avail_bytes, pressure]

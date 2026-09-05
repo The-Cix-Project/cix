@@ -1193,6 +1193,14 @@ static int set_disk_quota(const char *base_path, uint32_t projid, long long quot
 #define KMOD_PREFIX "/v1/system/kmod/" /* ADR-0159 */
 #define KMODCONFIG_PREFIX "/v1/system/kmod-config/" /* ADR-0159 */
 #define PKI_CERTS_PREFIX "/v1/pki/certs/"
+/*
+  * The parent cgroup every workload this daemon starts lives under --
+  * containers and package builds alike (ADR-0165). Defined here rather
+  * than beside its first user because GET /v1/system/stats reports its
+  * memory too (#279), and that handler sits well above.
+  */
+#define CGROUP_WORKLOAD_PARENT "cix-workload"
+
 #define PKG_PREFIX "/v1/pkg/"
 #define PKG_RECIPES_PREFIX "/v1/pkg/recipes/"
 #define IMAGES_PREFIX "/v1/images/"
@@ -7220,6 +7228,63 @@ static void handle_system_stats(int fd)
 	jw_obj_close(&w);
 	jw_obj_close(&w);
 
+	/*
+	 * The workload parent's own memory, beside the host's (#279).
+	 *
+	 * Both numbers are true at once and only one of them was ever
+	 * reported, which is how a live OOM presented as a healthy,
+	 * mostly-idle machine: the host had 5.88 GB available while
+	 * cix-workload/cix-pkgbuild sat pinned at its 2 GiB ceiling,
+	 * OOM-killing continuously. An operator watching this endpoint saw
+	 * the first number and had no way to reach the second.
+	 *
+	 * usage_bytes against limit_bytes is the pair that answers "is
+	 * something at its ceiling", and memory.pressure is what says it is
+	 * hurting rather than merely close. limit_bytes is -1 when the
+	 * parent is unlimited ("max"), which is the default: a null would
+	 * read as "unknown" when it means "no ceiling to hit".
+	 *
+	 * Absent entirely rather than zeroed when the cgroup does not exist
+	 * -- on a host that has never started a workload there is no
+	 * ceiling to report, and zeroes there would look like a workload
+	 * pinned at nothing.
+	 */
+	{
+		char wpath[64];
+		int wfd;
+
+		snprintf(wpath, sizeof(wpath), "/sys/fs/cgroup/%s", CGROUP_WORKLOAD_PARENT);
+		wfd = open(wpath, O_PATH | O_DIRECTORY);
+		if (wfd >= 0) {
+			long long wcur = 0, wpeak = 0, wmax = 0;
+			int wcur_unlimited = 0, wpeak_unlimited = 0, wmax_unlimited = 0;
+			struct cgroup_pressure wpressure;
+
+			memset(&wpressure, 0, sizeof(wpressure));
+			cgroup_read_single_value(wfd, "memory.current", &wcur, &wcur_unlimited);
+			cgroup_read_single_value(wfd, "memory.peak", &wpeak, &wpeak_unlimited);
+			cgroup_read_single_value(wfd, "memory.max", &wmax, &wmax_unlimited);
+			cgroup_read_pressure(wfd, "memory.pressure", &wpressure);
+			close(wfd);
+
+			jw_key(&w, "workload_memory");
+			jw_obj_open(&w);
+			jw_key(&w, "cgroup");
+			jw_str(&w, CGROUP_WORKLOAD_PARENT);
+			jw_key(&w, "usage_bytes");
+			jw_int(&w, wcur);
+			jw_key(&w, "peak_bytes");
+			jw_int(&w, wpeak);
+			jw_key(&w, "limit_bytes");
+			jw_int(&w, wmax_unlimited ? -1 : wmax);
+			jw_key(&w, "pressure");
+			jw_obj_open(&w);
+			write_pressure_json(&w, &wpressure);
+			jw_obj_close(&w);
+			jw_obj_close(&w);
+		}
+	}
+
 	jw_key(&w, "disk");
 	jw_obj_open(&w);
 	jw_key(&w, "total_bytes");
@@ -12404,7 +12469,6 @@ static int ldap_effective_client_uri(char *out, size_t out_size)
  * permitted must still run containers. A safety margin that refuses to
  * start the system it protects is not one.
  */
-#define CGROUP_WORKLOAD_PARENT "cix-workload"
 
 static void workload_parent_ensure(void)
 {
