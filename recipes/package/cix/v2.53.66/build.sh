@@ -1,30 +1,29 @@
 #
-# v2.53.66 -- #279: a workload at its ceiling is visible.
+# v2.53.66 -- #279, and ADR-0249 up to eleven handler modules.
 #
-# The owner, watching a live OOM: on our system stats we have 234.9 MiB
-# total 7.7 GiB, this oom makes no sense to me. It made no sense
-# because both numbers were true and only one was reported. The host
-# had 5.88 GB available and nothing wrong with it, while
+# 279: a workload at its ceiling is visible. The owner, watching a live
+# OOM: on our system stats we have 234.9 MiB total 7.7 GiB, this oom
+# makes no sense to me. Both numbers were true and only one was
+# reported -- the host had 5.88 GB available while
 # cix-workload/cix-pkgbuild sat pinned at its 2 GiB ceiling OOM-killing
-# continuously -- and nothing in the API or the dashboard exposed the
-# second number, so an operator watching Cix during the failure saw a
-# healthy, mostly-idle machine.
+# continuously. GET /v1/system/stats now reports workload_memory beside
+# the host's, and the dashboard charts it against its own limit rather
+# than host total, because a build pinned at 2 GiB is a flat line near
+# the bottom of an 8 GiB axis.
 #
-# GET /v1/system/stats now reports workload_memory beside the host's:
-# the cix-workload parent cgroup's usage, peak, limit and its own
-# memory.pressure. Every container and package build this daemon starts
-# lives under that parent (ADR-0165), so it is the one number that
-# answers whether workloads as a whole are at a ceiling.
+# ADR-0249: main.c 31,284 -> 28,410 across eleven api_ modules. Two
+# blockers were structural rather than architectural and both are gone:
+# respond_json/respond_error were static with 931 call sites between
+# them, and all 66 filesystem paths derived from --data-dir were static
+# too, so any handler touching its own subsystem's directory could not
+# leave the file. daemonpaths.h declares the paths extern with the
+# definitions left where they are, so no call site changed.
 #
-# limit_bytes is -1 when the parent is unlimited rather than null,
-# because null reads as unknown when it means no ceiling to hit, and
-# the object is absent entirely on a host that has never started a
-# workload, since zeroes would read as a workload pinned at nothing.
-#
-# The dashboard charts it against its own limit rather than host total:
-# a build pinned at 2 GiB is a flat line near the bottom of an 8 GiB
-# axis, which is exactly what the host memory chart looked like while
-# that build was dying.
+# This build is the verification. The dev sandbox compiles every file
+# and now also scans all 90 objects for duplicate globals and for
+# symbols referenced but defined nowhere -- but only a real link and the
+# full selftest prove the handlers still answer. Pure code motion, no
+# logic changed, which is exactly the change that looks safe.
 #
 pkg_name="cix"
 pkg_version="v2.53.66"
