@@ -14,6 +14,8 @@ Measured before making it fatal: of the 41 build logs on 192.168.15.95, **exactl
 
 `test_pkg.c` drives the silent case end to end: a recipe that invokes a command which genuinely is not there and then exits 0. Deliberately a real missing command rather than an echo of the phrase — an echo would prove the scanner reads text, not that it catches what actually happens.
 
+`gettext@1.0-17` is the first build of this package to succeed, after seventeen revisions — `libtool absorbed the convenience archives: 412 renamed libcroco symbols`, `libgettextlib.a carries the bundled libxml2`, `built: msgfmt (GNU gettext-tools) 1.0`, and zero `command not found`. The 412 is the same number 1.0-7 measured as *missing*; libtool put it there once it had `find`.
+
 The rejected alternative is recorded in ADR-0250: a mandatory tool baseline in every build environment would remove this trap by weakening the property ADR-0199 exists for, and would still only cover the four tools someone enumerated today.
 
 ### `_Static_assert` could not hold a 64-bit constant (#220)
