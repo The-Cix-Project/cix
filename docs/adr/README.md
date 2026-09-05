@@ -250,4 +250,5 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0243](0243-the-dashboard-terminal-is-a-real-vt.md) | The dashboard terminal is a real VT, written here | Accepted |
 | [0244](0244-the-control-plane-is-protected-its-children-are-not.md) | The control plane is protected, the workloads it spawns are not | Accepted |
 | [0245](0245-the-exec-command-is-a-query-parameter.md) | The exec command is a query parameter, and the header is retired | Accepted |
-| [0246](0246-the-control-plane-is-one-process-doing-five-jobs.md) | The control plane is one process doing five jobs, and it needs to be two | Proposed |
+| [0246](0246-the-control-plane-is-one-process-doing-five-jobs.md) | The control plane is one process doing five jobs, and it needs to be two | Superseded by ADR-0247 |
+| [0247](0247-the-reactor-does-not-block-and-that-is-the-defence.md) | The reactor does not block, and that is the defence | Accepted |

@@ -2,7 +2,14 @@
 
 ## Status
 
-Proposed
+Superseded by [ADR-0247](0247-the-reactor-does-not-block-and-that-is-the-defence.md).
+
+Built in full and deployed to 192.168.15.95, where the measurements
+reversed most of what is argued below: the daemon was hung rather than
+dead, the blocking-call count was wrong in kind as well as number, and
+the supervisor worked while the worker proved unable to start a second
+time. Kept unedited, because the reasoning that got here is the record
+of how it was arrived at.
 
 ## Context
 
