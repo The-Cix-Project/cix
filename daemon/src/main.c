@@ -2949,7 +2949,14 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
 		         "sort-key cix\n"
 		         "version %ld\n"
 		         "linux /cix-bzImage-%s\n"
-		         "options %s%sroot=%s rw panic=10 init=/bin/cixd -- --init-mode "
+		         /*
+		          * ADR-0246: pid 1 is the supervisor, not the daemon.
+		          * cix-init passes argv[1..] through to cixd unchanged,
+		          * so the worker sees exactly the arguments it always
+		          * has -- what changes is that something is now above
+		          * it to restart it.
+		          */
+		         "options %s%sroot=%s rw panic=10 init=/bin/cix-init -- --init-mode "
 		         "--slot=%s --bind=%s\n",
 		         inactive_slot[0] == 'a' ? "A" : "B", (long)time(NULL), inactive_slot,
 		         console_opts, console_opts[0] != '\0' ? " " : "", device, inactive_slot,

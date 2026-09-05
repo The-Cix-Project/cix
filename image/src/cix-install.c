@@ -624,7 +624,9 @@ static int populate_esp(const char *esp_mount, const char *ip)
 	         "sort-key cix\n"
 	         "version 1\n"
 	         "linux /cix-bzImage-a\n"
-	         "options console=tty0 console=ttyS0 root=%s2 rw panic=10 init=/bin/cixd "
+	         /* ADR-0246: pid 1 is cix-init, which spawns and supervises
+	          * cixd; it forwards argv[1..] to the worker unchanged. */
+	         "options console=tty0 console=ttyS0 root=%s2 rw panic=10 init=/bin/cix-init "
 	         "-- --init-mode --slot=a --bind=%s\n",
 	         BOOT_TIME_DISK_PREFIX, ip);
 	if (write_text_file(path, loader_conf) != 0)

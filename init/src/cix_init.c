@@ -316,10 +316,23 @@ int main(int argc, char **argv)
 		int nfds = 0;
 		int status_idx = -1;
 
-		if (g_sigchld) {
-			g_sigchld = 0;
-			reap_all();
-		}
+		/*
+		 * Reap unconditionally, not only when the SIGCHLD flag is set.
+		 *
+		 * Standard signals do not queue: several children exiting close
+		 * together deliver one SIGCHLD, and a signal arriving in the
+		 * window between reap_all() returning and the flag being
+		 * cleared would be lost. waitpid(WNOHANG) costs nothing when
+		 * there is nothing to reap, and pid 1 accumulating zombies is
+		 * the one failure an init must not have -- every orphan on the
+		 * machine ends up here.
+		 *
+		 * The handler is still installed: its job is to interrupt
+		 * poll() so an exit is noticed immediately rather than at the
+		 * next timeout.
+		 */
+		g_sigchld = 0;
+		reap_all();
 
 		if (g_restart_requested) {
 			g_restart_requested = 0;
