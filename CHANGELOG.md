@@ -2,6 +2,18 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### A workload at its ceiling is visible now (#279)
+
+The owner watching a live OOM: "On our system stats, we have 234.9 MiB (total 7.7 GiB). This oom makes no sense to me?"
+
+It made no sense because both numbers were true and only one was reported. The host had 5.88 GB available and nothing wrong with it. `cix-workload/cix-pkgbuild` — where the build actually ran — sat pinned at its 2 GiB ceiling, OOM-killing continuously. Nothing in the API or the dashboard exposed the second number, so an operator watching Cix during the failure saw a healthy, mostly-idle machine.
+
+`GET /v1/system/stats` now reports `workload_memory` beside the host's: the `cix-workload` parent cgroup's `usage_bytes`, `peak_bytes`, `limit_bytes` and its own `memory.pressure`. Every container and package build this daemon starts lives under that parent (ADR-0165), so it is the one number that answers "is something at its ceiling" for workloads as a whole.
+
+Two details that are decisions rather than defaults. `limit_bytes` is `-1` when the parent is unlimited, not `null` — `null` reads as "unknown" when it means "no ceiling to hit". And the whole object is **absent** on a host that has never started a workload, because zeroes there would read as a workload pinned at nothing.
+
+The dashboard charts it against **its own limit**, not host total. Scaling to host total would hide exactly what it exists to show: a build pinned at 2 GiB is a flat line near the bottom of an 8 GiB axis, which is precisely what the host memory chart looked like while that build was dying. Against its own limit it is a line at the top. The card hides itself when the cgroup does not exist.
+
 ### main.c starts coming apart, and the thing that held it together was one static function (ADR-0249)
 
 `daemon/src/main.c` was 31,284 lines and 852 functions, next to 68 sibling modules averaging around 600 lines each. It is not large because this codebase writes large files; it is large because everything never deliberately extracted stayed there.

@@ -3123,6 +3123,14 @@ async function pollStatsOnce(name) {
 		netTx: netTx,
 		cpuPressure: stats.cpu.pressure.some.avg10,
 		memPressure: stats.memory.pressure.some.avg10,
+		/* #279: the workload parent's own memory, which is a different
+		 * question from the host's and was the one nobody could see.
+		 * Absent on a host that has never started a workload. */
+		workloadUsed: stats.workload_memory ? stats.workload_memory.usage_bytes : null,
+		workloadLimit: stats.workload_memory ? stats.workload_memory.limit_bytes : null,
+		workloadPressure: stats.workload_memory
+			? stats.workload_memory.pressure.some.avg10
+			: null,
 	});
 	if (statsHistory.length > STATS_HISTORY_MAX)
 		statsHistory.shift();
@@ -3203,6 +3211,45 @@ function renderHostStatsCharts() {
 		maxY: memTotal || 0,
 		formatY: formatBytes,
 	});
+	/*
+	 * Workload memory, charted against its own ceiling rather than the
+	 * host's (#279).
+	 *
+	 * Scaling this to host total would hide exactly what it exists to
+	 * show: a build pinned at a 2 GiB cgroup limit is a flat line near
+	 * the bottom of an 8 GiB axis, which is what the host memory chart
+	 * already looked like while that build was OOM-killing. Against its
+	 * own limit it is a line at the top.
+	 *
+	 * With no limit set (-1) the axis falls back to host total, since
+	 * an unlimited workload really is bounded by the machine.
+	 */
+	{
+		const wcard = document.getElementById("hs-stats-workload-card");
+		const last = h[h.length - 1];
+
+		if (last.workloadUsed === null || last.workloadUsed === undefined) {
+			wcard.hidden = true;
+		} else {
+			const wvalues = h.map((s) => (s.workloadUsed === null ? 0 : s.workloadUsed));
+			const limited = last.workloadLimit !== null && last.workloadLimit >= 0;
+
+			wcard.hidden = false;
+			drawChart(document.getElementById("hs-stats-workload"),
+			          [{ values: wvalues, color: seriesColor(2) }], {
+				times: gaugeTimes,
+				maxY: limited ? last.workloadLimit : (last.memTotal || 0),
+				formatY: formatBytes,
+			});
+			document.getElementById("hs-stats-workload-label").textContent =
+				formatBytes(last.workloadUsed) +
+				(limited
+					? " of " + formatBytes(last.workloadLimit) + " limit"
+					: " (no limit set)") +
+				(last.workloadPressure ? " — pressure " + last.workloadPressure.toFixed(1) + "%" : "");
+		}
+	}
+
 	{
 		const last = h[h.length - 1];
 
