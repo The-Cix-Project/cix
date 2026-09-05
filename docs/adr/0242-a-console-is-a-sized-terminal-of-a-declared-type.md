@@ -144,6 +144,19 @@ The daemon now trusts a client-supplied string into another process's
 environment, which is why `term` is restricted to the character set real
 terminfo names actually use rather than passed through free-form.
 
+A console session runs **inside the container's user namespace**, not
+merely inside its mount namespace. That was not true when this ADR was
+written and is recorded here because the terminal is where it becomes
+visible: `join_namespaces()` entered mnt, uts, net and pid and not user,
+so a session held host credentials against the container's filesystem,
+read every on-disk id unmapped, and could not reach the home directory
+of the account it had just logged in as. The pty follows from it — the
+slave is allocated by the daemon as host uid 0, which is unmapped in the
+container, so it is handed to the container's own root before the
+session joins (#293). Corrected in place rather than by a superseding
+ADR: the decision this document records never changed, only a fact about
+the session it describes.
+
 A container must carry the terminfo entry it is told about. Anything
 linking `libncursesw` already depends on `ncurses`, which installs the whole
 database, so an image with `htop` or `vim` in it satisfies this by

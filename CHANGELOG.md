@@ -2,6 +2,36 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### A console session was never inside the container's user namespace (#293)
+
+Logging into the `jump` container through its console and trying to use your own home directory:
+
+```
+jump login: osakka
+Password:
+ -- osakka: /home/osakka: change directory failed: Permission denied
+-bash: /home/osakka/.bash_profile: Permission denied
+$ ls -lan /home
+drwxr-xr-x  3 4359840 4359840 4096 .
+drwx------  2 4369840 4369840 4096 osakka
+$ logout
+-bash: /home/osakka/.bash_logout: Permission denied
+```
+
+That reads as a broken home directory, a broken volume, and a broken logout. It is one bug and none of those things. The identical login **over SSH**, which happens inside the container, shows the same inode as `drwx------ 2 10000 10000` and works perfectly.
+
+`join_namespaces()` in `daemon/src/exec.c` entered four namespaces — mnt, uts, net, pid — and not `CLONE_NEWUSER`. So a console or exec session ran with **host** credentials inside the container's mount namespace: it read every on-disk id unmapped (the container's map is `0 4359840 65536`, so container uid 10000 is host 4369840), and once `login(1)` dropped privileges it was *host* uid 10000, which owns nothing in the container.
+
+The home directory is the visible half. The other half is that `userns` is the default for new containers under ADR-0207, and a process entering the container's mount namespace as real host root is not confined by the user namespace at all. That was true of this path for its entire history.
+
+The user namespace is now joined, and joined **first** — the capabilities gained in it are what make the following `setns(mnt)` legitimate, the order `nsenter -U -m` uses; joining mnt first and user after cannot work, because a process that has entered a foreign mount namespace no longer holds `CAP_SYS_ADMIN` over the user namespace owning it. It is skipped when the target shares the daemon's own user namespace, since `setns()` onto the namespace you are already in is `EINVAL`; that is decided by comparing `st_dev`/`st_ino` of the two `ns/user` links rather than by any flag the daemon holds. An error opening it is kept distinct from "nothing to join" — collapsing the two would restore this bug silently, which is how it survived in the first place.
+
+One consequence had to be handled or the fix would have been worse than the bug. The #290 pty slave is allocated by the daemon, so devpts gives it to host uid 0 at mode 0620. Host 0 is not mapped inside the container, and container root **cannot** `DAC_OVERRIDE` an inode whose owner is unmapped — so the slave `open()` would have failed `EACCES` on every userns container and the console would have gone from showing wrong ids to having no terminal at all. The slave is chowned to the container's own root host-side, before the fork, with the base read from the kernel's `uid_map` rather than plumbed through from the container spec: the map is what `setns()` actually applies. A non-userns container maps 0 to 0 and nothing happens.
+
+This also explains a symptom hit earlier the same session and parked as unrelated: writing a file to `/run` from a console session failed with `EOVERFLOW` (`Value too large for defined data type`). That is what a host-credentialed write through the container's id-mapped tree does.
+
+`test_console_exec` now states `userns: true` rather than inheriting the daemon's default — a test that inherits it asserts nothing on a host where that default is off — and asserts the session's own `/proc/self/uid_map` is a real mapping rather than the host identity map. Every existing assertion in that table passed with the bug present, which is the point: a command runs perfectly well with the wrong credentials.
+
 ### A compiler fix that shipped four days ago had never reached a single package (#228)
 
 `getent passwd osakka` returned nothing inside the jump container while `id osakka` returned the full record — same nsswitch, same module, opposite answers. The real error, from perl's DynaLoader inside the container:
