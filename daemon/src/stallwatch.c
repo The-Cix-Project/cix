@@ -136,6 +136,13 @@ struct stall_shared {
  */
 #define SLOW_PASS_MILLIS 750
 
+/*
+ * How many records GET /system/stalls can hold in flight while it reads
+ * the tail of the record file. The newest this many survive; anything
+ * older in the window is dropped (see stallwatch_write_json()).
+ */
+#define STALL_REPORT_MAX 256
+
 static struct stall_shared *g_shared;
 static char g_records_path[PATH_MAX];
 static pid_t g_watchdog_pid = -1;
@@ -281,17 +288,24 @@ static void append_line(const char *line, int len)
 	 * accepts that a stuck I/O path blocks it "until I/O recovers".
 	 * That acceptance is wrong in the one case that matters most: if
 	 * the wedge IS an I/O stall, then open() and fsync() both block on
-	 * exactly the resource being reported, the record never lands, and
-	 * the reset that recovers the machine destroys it. Measured on
-	 * 192.168.15.95: three separate multi-minute wedges in one day, the
-	 * daemon's event loop provably blocked, and this file's newest
-	 * entry four days older than any of them.
+	 * exactly the resource being reported and the record lands late or
+	 * not at all.
+	 *
+	 * This was written believing the evidence for that was already in
+	 * hand -- three multi-minute wedges on 192.168.15.95 in one day,
+	 * and a record file whose newest entry looked four days older than
+	 * any of them. It was not. The records had landed; the reporting
+	 * endpoint was returning the oldest 256 of its read window and
+	 * could not reach them (see stallwatch_write_json()). The reason
+	 * to write here first is the plain one and it stands on its own:
+	 * /dev/kmsg needs no filesystem and cannot wait on a block device.
 	 *
 	 * /dev/kmsg is memory-backed. It needs no filesystem, cannot wait
 	 * on a block device, appears on the serial console as it happens,
 	 * and is read back into this daemon's own log store by the kernel
 	 * log reader -- so a record written here is visible three ways
-	 * without depending on the thing that may be stuck.
+	 * without depending on the thing that may be stuck, and it appears
+	 * while the wedge is happening rather than after it.
 	 *
 	 * Best-effort and unchecked, like every other write here: a
 	 * diagnostic that refuses to run is not a diagnostic.
@@ -807,8 +821,9 @@ void stallwatch_write_json(struct json_writer *w, int limit)
 	char *buf = NULL;
 	long size;
 	FILE *f;
-	char *lines[256];
-	int count = 0;
+	char *lines[STALL_REPORT_MAX];
+	int count = 0;                  /* records held, never above the ring */
+	int head = 0;                   /* ring slot the next record goes into */
 	char *p;
 	int i;
 
@@ -843,10 +858,32 @@ void stallwatch_write_json(struct json_writer *w, int limit)
 	fclose(f);
 	buf[size] = '\0';
 
-	for (p = strtok(buf, "\n"); p != NULL && count < (int)(sizeof(lines) / sizeof(lines[0]));
-	     p = strtok(NULL, "\n")) {
-		if (p[0] == '{')
-			lines[count++] = p;
+	/*
+	 * A RING, not a prefix.
+	 *
+	 * This loop used to stop at the array's size, which kept the OLDEST
+	 * records in the window and silently discarded every newer one --
+	 * the exact opposite of what a watchdog report is for, and it hid
+	 * itself perfectly: the endpoint answered 200 with a plausible
+	 * array of real records every time. Measured on 192.168.15.95:
+	 * GET /v1/system/stalls?limit=1000 returned exactly 256 records
+	 * whose newest was four days old, while the daemon had wedged three
+	 * times in the day before. The records were written, fsynced and on
+	 * disk; the reader never reached them.
+	 *
+	 * That mattered beyond the endpoint. The write path was rewritten
+	 * (records now go to /dev/kmsg before touching the disk) on the
+	 * strength of a diagnosis this bug fabricated -- "the record never
+	 * landed" -- when the record had landed and could not be read out.
+	 * A report that drops what it cannot fit must drop the oldest.
+	 */
+	for (p = strtok(buf, "\n"); p != NULL; p = strtok(NULL, "\n")) {
+		if (p[0] != '{')
+			continue;
+		lines[head] = p;
+		head = (head + 1) % STALL_REPORT_MAX;
+		if (count < STALL_REPORT_MAX)
+			count++;
 	}
 	/*
 	 * Newest first: the record anyone wants is the last one written.
@@ -856,16 +893,20 @@ void stallwatch_write_json(struct json_writer *w, int limit)
 	 * that has to be trustworthy.
 	 */
 	{
-		int emitted = 0;
+		int want = (limit > 0 && limit < count) ? limit : count;
 
-		for (i = count - 1; i >= 0 && (limit <= 0 || count - i <= limit); i--) {
+		for (i = 0; i < want; i++) {
+			/* Newest first: walk back from the slot before head. The
+			 * bias keeps the index non-negative for every reachable
+			 * head/i pair without a branch. */
+			char *rec = lines[(head - 1 - i + 2 * STALL_REPORT_MAX) % STALL_REPORT_MAX];
+
 			/* The separator is ours to place: nothing else writes into
 			 * this array, and jw_raw_text() deliberately splices bytes
 			 * without touching the writer's own item bookkeeping. */
-			if (emitted > 0)
+			if (i > 0)
 				jw_raw_text(w, ",", 1);
-			jw_raw_text(w, lines[i], strlen(lines[i]));
-			emitted++;
+			jw_raw_text(w, rec, strlen(rec));
 		}
 	}
 
