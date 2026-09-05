@@ -24,6 +24,14 @@ The evidence was in the output the whole time: the four `depA: autostarted (rest
 
 `test_daemon_net`'s cleanup step deleted four containers fire-and-forget and then deleted the network they used. When that network delete came back 409, nothing in the output named which container had stayed — only the consequence, which is not a report anyone can act on. The four deletes are asserted now. A cleanup step is still a step.
 
+### test_console_exec now says how its wait ended (#291)
+
+Three of eight recent builds failed this test, on three different assertions, and every one reported the same thing: `got (0 bytes): (nothing)`. That single line is the output for three distinct faults — the socket read timed out, the peer closed, or frames arrived carrying something other than the expected string — and there was no way to tell them apart. Two full investigations ran on it and neither could get past that.
+
+It now reports the frame count and how the wait ended: `read failed or peer closed` versus `20 frames without a match`. Both loops that were failing carry it.
+
+Things ruled out along the way, recorded so they are not re-run: it is not PTY or devpts accumulation after #290 (ten sequential sessions against a real container all returned their prompt), not a concurrent-session limit (six simultaneous sessions all upgraded and produced output), not a short frame-header read (#288, fixed), and not a too-short read timeout (raised 2s→10s in v2.53.30; the failure survived it). The pattern "sessions 1–3 pass, 4+ fail" was noted and is **not** claimed as a finding — it is three data points, and reading it as one would be the same over-confidence that produced two other wrong conclusions in this session.
+
 ### A shipped header that cannot be included is now detectable (#289)
 
 `linux-pam` installed `security/pam_misc.h` for six revisions while never building the `libpamc` directory that header's very first include comes from. Nothing in this platform links `pam_misc`, so nothing noticed — until util-linux ran a compile test on it while packaging `login(1)`, concluded PAM was unusable, and refused to build. The error named PAM. Not the missing header, and not `linux-pam`.

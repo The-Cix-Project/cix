@@ -798,6 +798,8 @@ int main(void)
 				size_t acc_len = 0;
 				int found = 0;
 				int attempts;
+				int frames = 0;
+				int recv_failed = 0;
 
 				acc[0] = '\0';
 				for (attempts = 0; attempts < 20 && !found; attempts++) {
@@ -805,8 +807,11 @@ int main(void)
 					unsigned char buf[512];
 					size_t len;
 
-					if (recv_ws_frame(fd, &opcode, buf, sizeof(buf), &len) != 0)
+					if (recv_ws_frame(fd, &opcode, buf, sizeof(buf), &len) != 0) {
+						recv_failed = 1;
 						break;
+					}
+					frames++;
 					if (len > 0 && acc_len + len < sizeof(acc)) {
 						memcpy(acc + acc_len, buf, len);
 						acc_len += len;
@@ -816,13 +821,25 @@ int main(void)
 						found = 1;
 				}
 				if (!found) {
-					/* Say what actually arrived. A bare "did not
-					 * match" on a check like this sends the reader
-					 * guessing at whether the value was wrong, the
-					 * session was empty, or the read timed out --
-					 * three different bugs. */
-					fprintf(stderr, "  wanted: %s\n  got (%zu bytes): %s\n",
-					        geom[gi].expect, acc_len, acc_len > 0 ? acc : "(nothing)");
+					/*
+					 * Say what actually arrived, and HOW the wait
+					 * ended (#291).
+					 *
+					 * "got (0 bytes): (nothing)" was the whole of
+					 * this report, and it is the same output for
+					 * three different faults: the socket read timed
+					 * out, the peer closed, or frames arrived
+					 * carrying something else. Three intermittent
+					 * failures of this test were investigated with
+					 * no way to tell those apart, so the next one
+					 * says which.
+					 */
+					fprintf(stderr,
+					        "  wanted: %s\n  got (%zu bytes in %d frame(s), ended: %s): %s\n",
+					        geom[gi].expect, acc_len, frames,
+					        recv_failed ? "read failed or peer closed"
+					                    : "20 frames without a match",
+					        acc_len > 0 ? acc : "(nothing)");
 				}
 				CHECK(found, geom[gi].what);
 			}
@@ -871,6 +888,7 @@ int main(void)
 			size_t acc_len = 0;
 			int attempts;
 			int saw_first = 0, saw_second = 0;
+			int first_frames = 0, first_recv_failed = 0;
 
 			acc[0] = '\0';
 			/* Wait for the startup report first, so the resize
@@ -882,8 +900,11 @@ int main(void)
 				unsigned char buf[512];
 				size_t len;
 
-				if (recv_ws_frame(fd, &opcode, buf, sizeof(buf), &len) != 0)
+				if (recv_ws_frame(fd, &opcode, buf, sizeof(buf), &len) != 0) {
+					first_recv_failed = 1;
 					break;
+				}
+				first_frames++;
 				if (len > 0 && acc_len + len < sizeof(acc)) {
 					memcpy(acc + acc_len, buf, len);
 					acc_len += len;
@@ -892,6 +913,14 @@ int main(void)
 				if (strstr(acc, "TERMINFO TERM=xterm-256color COLS=80 ROWS=24") != NULL)
 					saw_first = 1;
 			}
+			/* #291: same reason as the geometry loop above -- a bare
+			 * failure here cannot be told apart from a timeout. */
+			if (!saw_first)
+				fprintf(stderr, "  got (%zu bytes in %d frame(s), ended: %s): %s\n", acc_len,
+				        first_frames,
+				        first_recv_failed ? "read failed or peer closed"
+				                          : "20 frames without a match",
+				        acc_len > 0 ? acc : "(nothing)");
 			CHECK(saw_first, "the initial report arrived before any resize");
 
 			if (saw_first) {
