@@ -6,6 +6,7 @@
 #include "iohelpers.h"
 #include "json.h"
 
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -205,14 +206,54 @@ static void consume(struct client_ws_buf *b, size_t frame_len)
 }
 
 /*
- * Shared WS handshake for both cix_console_run() (path always
- * /v1/containers/{name}/console, optional X-Cix-Exec-Cmd header)
- * and cix_pkg_build_log_run() below (fixed path, no such header) --
- * label identifies which one for error messages, path is the exact
- * request-line target to send.
+ * Percent-encode one query-parameter VALUE.
+ *
+ * Only the unreserved set (RFC 3986) survives unescaped; everything
+ * else, '/' included, becomes %XX. Encoding more than strictly
+ * necessary is deliberate -- the daemon decodes unconditionally, and a
+ * client that has to reason about which bytes happen to be safe in a
+ * query string is a client that will eventually get it wrong.
+ *
+ * Returns -1 rather than truncating: a half-encoded command is a
+ * different command.
  */
-static int do_ws_handshake(const struct cix_client *c, const char *label, const char *path,
-                            const char *exec_cmd_header)
+static int url_encode_component(const char *in, char *out, size_t out_size)
+{
+	static const char hex[] = "0123456789ABCDEF";
+	size_t w = 0;
+	size_t i;
+
+	for (i = 0; in[i] != '\0'; i++) {
+		unsigned char ch = (unsigned char)in[i];
+
+		if (isalnum(ch) || ch == '-' || ch == '_' || ch == '.' || ch == '~') {
+			if (w + 1 >= out_size)
+				return -1;
+			out[w++] = (char)ch;
+		} else {
+			if (w + 3 >= out_size)
+				return -1;
+			out[w++] = '%';
+			out[w++] = hex[ch >> 4];
+			out[w++] = hex[ch & 0x0f];
+		}
+	}
+	out[w] = '\0';
+	return 0;
+}
+
+/*
+ * Shared WS handshake for both cix_console_run() and
+ * cix_pkg_build_log_run() -- label identifies which one for error
+ * messages, path is the exact request-line target to send.
+ *
+ * Nothing about the request varies between them any more. The console
+ * used to pass its command as an X-Cix-Exec-Cmd header, which is the
+ * one thing the dashboard could never send (a browser's WebSocket
+ * constructor sets no request headers), so the command is a query
+ * parameter now and lives in `path` like every other one.
+ */
+static int do_ws_handshake(const struct cix_client *c, const char *label, const char *path)
 {
 	int fd;
 	char key[64];
@@ -234,28 +275,15 @@ static int do_ws_handshake(const struct cix_client *c, const char *label, const 
 		return -1;
 	}
 
-	if (exec_cmd_header != NULL && exec_cmd_header[0] != '\0') {
-		rlen = snprintf(req, sizeof(req),
-		                 "GET %s HTTP/1.1\r\n"
-		                 "Host: %s:%d\r\n"
-		                 "Upgrade: websocket\r\n"
-		                 "Connection: Upgrade\r\n"
-		                 "Sec-WebSocket-Key: %s\r\n"
-		                 "Sec-WebSocket-Version: 13\r\n"
-		                 "X-Cix-Exec-Cmd: %s\r\n"
-		                 "\r\n",
-		                 path, c->host, c->port, key, exec_cmd_header);
-	} else {
-		rlen = snprintf(req, sizeof(req),
-		                 "GET %s HTTP/1.1\r\n"
-		                 "Host: %s:%d\r\n"
-		                 "Upgrade: websocket\r\n"
-		                 "Connection: Upgrade\r\n"
-		                 "Sec-WebSocket-Key: %s\r\n"
-		                 "Sec-WebSocket-Version: 13\r\n"
-		                 "\r\n",
-		                 path, c->host, c->port, key);
-	}
+	rlen = snprintf(req, sizeof(req),
+	                 "GET %s HTTP/1.1\r\n"
+	                 "Host: %s:%d\r\n"
+	                 "Upgrade: websocket\r\n"
+	                 "Connection: Upgrade\r\n"
+	                 "Sec-WebSocket-Key: %s\r\n"
+	                 "Sec-WebSocket-Version: 13\r\n"
+	                 "\r\n",
+	                 path, c->host, c->port, key);
 	if (rlen < 0 || (size_t)rlen >= sizeof(req) || cix_write_all(fd, req, (size_t)rlen) != 0) {
 		fprintf(stderr, "%s: failed to send the upgrade request\n", label);
 		close(fd);
@@ -523,11 +551,31 @@ int cix_console_run(const struct cix_client *c, const char *container_name, cons
 			used += (size_t)snprintf(path + used, sizeof(path) - used, "%sterm=%s", sep, term);
 			sep = "&";
 		}
-		if (local_winsize(&cols, &rows))
-			snprintf(path + used, sizeof(path) - used, "%scols=%u&rows=%u", sep, (unsigned)cols,
-			         (unsigned)rows);
+		if (local_winsize(&cols, &rows)) {
+			used += (size_t)snprintf(path + used, sizeof(path) - used, "%scols=%u&rows=%u", sep,
+			                          (unsigned)cols, (unsigned)rows);
+			sep = "&";
+		}
 
-		fd = do_ws_handshake(c, "console", path, cmd);
+		/*
+		 * --cmd: run this specific program instead of one of the
+		 * container's declared consoles. Percent-encoded, because a
+		 * command is an absolute path and '/' is not the only byte in
+		 * one that a query string cannot carry raw.
+		 */
+		if (cmd != NULL && cmd[0] != '\0') {
+			char enc[512];
+
+			if (url_encode_component(cmd, enc, sizeof(enc)) != 0) {
+				fprintf(stderr, "console: --cmd is too long\n");
+				return -1;
+			}
+			used += (size_t)snprintf(path + used, sizeof(path) - used, "%scmd=%s", sep, enc);
+			sep = "&";
+		}
+		(void)sep;
+
+		fd = do_ws_handshake(c, "console", path);
 	}
 	if (fd < 0)
 		return -1;
@@ -585,7 +633,7 @@ int cix_pkg_build_log_run(const struct cix_client *c, const char *name, const ch
 		snprintf(path, sizeof(path), "%s", CIX_API_pkgBuildLog);
 	}
 
-	fd = do_ws_handshake(c, "pkg build-log", path, NULL);
+	fd = do_ws_handshake(c, "pkg build-log", path);
 	if (fd < 0)
 		return -1;
 

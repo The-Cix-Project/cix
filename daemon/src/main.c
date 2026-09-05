@@ -27324,7 +27324,7 @@ static void dispatch(int fd, const struct http_request *req)
  * all (packages stage into usr/bin -- confirmed directly against a
  * real running container while building this, see docs/roadmap/ROADMAP.md);
  * "/bin/sh" would fail on every one of them. This is only a default:
- * X-Cix-Exec-Cmd overrides it, and a container whose image has
+ * The cmd query parameter overrides it, and a container whose image has
  * neither this nor an override installed simply fails to exec --
  * a real, expected limitation (see this phase's own ADR), not a bug.
  */
@@ -27406,6 +27406,70 @@ static int query_get_param(const char *query, const char *name, char *out, size_
 		if (p == NULL)
 			return 0;
 	}
+}
+
+/*
+ * Percent-decoding, in place, for ONE query parameter: the console's
+ * `cmd` (ADR-0242's own rule, applied -- see try_console_upgrade()).
+ *
+ * Deliberately not applied to every parameter. `console` is a name,
+ * `term` is validated against a restricted charset and `cols`/`rows`
+ * are numbers, so none of them can contain a byte needing encoding --
+ * and decoding them anyway would change what a literal '%' means in a
+ * value that is allowed to hold one today. `cmd` is an absolute path,
+ * which a browser's encodeURIComponent() escapes ('/' becomes %2F), so
+ * it is the one parameter that has to be decoded to be usable.
+ *
+ * A stray '%' not followed by two hex digits is left exactly as it is
+ * rather than rejected: this decodes, it does not validate, and
+ * exec_cmd_is_valid() below is what decides whether the result is
+ * acceptable.
+ */
+static void percent_decode_inplace(char *s)
+{
+	char *r = s, *w = s;
+
+	while (*r != '\0') {
+		if (r[0] == '%' && isxdigit((unsigned char)r[1]) && isxdigit((unsigned char)r[2])) {
+			char hex[3];
+
+			hex[0] = r[1];
+			hex[1] = r[2];
+			hex[2] = '\0';
+			*w++ = (char)strtol(hex, NULL, 16);
+			r += 3;
+		} else {
+			*w++ = *r++;
+		}
+	}
+	*w = '\0';
+}
+
+/*
+ * The console's `cmd`: an absolute path to a program in the container.
+ *
+ * Absolute because it is handed straight to execve() with no shell and
+ * no PATH search, so a bare name would simply fail in a way that names
+ * nothing useful. No control bytes, because this crosses into another
+ * process's argv and a caller that put one there did not mean to.
+ *
+ * That is the whole check, and the reason it is not stricter is worth
+ * stating: this parameter runs an arbitrary program in the container,
+ * and it is meant to. The endpoint is already gated as a write
+ * (ADR-0144), and anyone who can reach it can run arbitrary code there
+ * regardless -- validating harder would be theatre, not a boundary.
+ */
+static int exec_cmd_is_valid(const char *cmd)
+{
+	size_t i;
+
+	if (cmd == NULL || cmd[0] != '/' || strlen(cmd) >= 256)
+		return 0;
+	for (i = 0; cmd[i] != '\0'; i++) {
+		if ((unsigned char)cmd[i] < 0x20 || (unsigned char)cmd[i] == 0x7f)
+			return 0;
+	}
+	return 1;
 }
 
 /*
@@ -27565,13 +27629,24 @@ static enum console_route_result try_console_upgrade(struct conn *cc, const stru
 	 * What to run (#248). Two sources, and they answer different
 	 * questions rather than competing:
 	 *
-	 *   X-Cix-Exec-Cmd -- "run this specific thing". An explicit
-	 *   instruction from a caller who is already authorized to reach
-	 *   this endpoint, which is gated as a write despite being a GET
+	 *   cmd= -- "run this specific thing". An explicit instruction
+	 *   from a caller who is already authorized to reach this
+	 *   endpoint, which is gated as a write despite being a GET
 	 *   (ADR-0144). It wins, and it works on a container that
 	 *   declares nothing, because anyone who can attach here can
 	 *   already run arbitrary code in the container; pretending
 	 *   otherwise would be security theatre.
+	 *
+	 *   This was the X-Cix-Exec-Cmd request header until ADR-0245, and a
+	 *   header is the one thing the dashboard cannot send: a browser's
+	 *   WebSocket constructor sets no request headers at all. So the
+	 *   feature worked from cixctl and was unreachable from the web --
+	 *   two clients with different capabilities for the same thing,
+	 *   which is exactly what ADR-0242 refused when it chose query
+	 *   parameters for term/cols/rows and named this header as the
+	 *   example of getting it wrong. Retired rather than duplicated:
+	 *   a second way to say the same thing is not compatibility, it
+	 *   is two things to keep correct.
 	 *
 	 *   consoles[] -- "what does this container OFFER". The published
 	 *   surface cixctl and the dashboard present. A container that
@@ -27583,9 +27658,15 @@ static enum console_route_result try_console_upgrade(struct conn *cc, const stru
 	 * a console needing arguments (tail -F, chronyc tracking) could
 	 * not be expressed at all.
 	 */
-	if (http_find_header(req->headers, req->headers_len, "X-Cix-Exec-Cmd", cmd_override,
-	                      sizeof(cmd_override)) >= 0 &&
+	cmd_override[0] = '\0';
+	if (query_get_param(query, "cmd", cmd_override, sizeof(cmd_override)) &&
 	    cmd_override[0] != '\0') {
+		percent_decode_inplace(cmd_override);
+		if (!exec_cmd_is_valid(cmd_override)) {
+			respond_error(cc->fd, 400, "Bad Request",
+			              "cmd must be an absolute path to a program in the container");
+			return CONSOLE_FAILED;
+		}
 		cmd_argv[0] = cmd_override;
 		cmd_argv[1] = NULL;
 	} else {
@@ -27598,7 +27679,7 @@ static enum console_route_result try_console_upgrade(struct conn *cc, const stru
 		if (entry->console_count == 0) {
 			respond_error(cc->fd, 409, "Conflict",
 			              "this container declares no console -- add one to its "
-			              "definition, or name a command with X-Cix-Exec-Cmd");
+			              "definition, or name a command with the cmd query parameter");
 			return CONSOLE_FAILED;
 		}
 		if (console_sel[0] == '\0') {
@@ -27637,7 +27718,7 @@ static enum console_route_result try_console_upgrade(struct conn *cc, const stru
 
 	/*
 	 * How big the caller's terminal is and what kind it is. Query
-	 * parameters rather than the X-Cix-Exec-Cmd-style request header
+	 * parameters rather than a request header
 	 * this endpoint already uses, for one decisive reason: a browser's
 	 * own WebSocket constructor cannot set request headers at all, so a
 	 * header would have silently worked for cixctl and been unreachable

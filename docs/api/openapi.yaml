@@ -9595,8 +9595,8 @@ paths:
         needing arguments could not be expressed at all.
 
 
-        `X-Cix-Exec-Cmd` is unchanged and still wins over any
-        declaration, including on a container that declares nothing.
+        The `cmd` query parameter wins over any declaration,
+        including on a container that declares nothing.
         It is deliberately NOT a security boundary and never was:
         anyone authorized to reach this endpoint can already run
         arbitrary code in the container, and this endpoint is gated as
@@ -9701,22 +9701,46 @@ paths:
           schema:
             type: string
             enum: ["13"]
-        - name: X-Cix-Exec-Cmd
-          in: header
+        - name: cmd
+          in: query
           required: false
           schema:
             type: string
-            default: /usr/bin/bash
           description: >
             Absolute path of the program to exec inside the container,
-            in place of the default. No argument splitting -- this is a
-            single executable path (typically another shell), not a
-            full command line; give it interactively once inside.
+            in place of one of its declared consoles. No argument
+            splitting -- this is a single executable path (typically a
+            shell), not a full command line; give arguments
+            interactively once inside.
+
+            Percent-decoded, so a browser's own encodeURIComponent()
+            (which escapes `/` as `%2F`) and a raw path mean the same
+            thing. Must be absolute: it is handed to execve() with no
+            shell and no PATH search, so a bare name is refused with
+            400 rather than left to fail at exec, where it would be
+            indistinguishable from a broken container.
+
+            Wins over `console` when both are given, and works on a
+            container that declares no console at all -- anyone
+            authorised to reach this endpoint can already run arbitrary
+            code in the container, so gating this behind a declaration
+            would be theatre.
+
+            This was the `X-Cix-Exec-Cmd` request header until
+            v2.53.34. A header is unreachable from the dashboard --
+            a browser's WebSocket constructor sets none -- so the
+            feature worked from the CLI and not from the web. It is a
+            query parameter for the same reason `term`/`cols`/`rows`
+            are, and the header is retired rather than kept alongside.
       responses:
         "101":
           description: Switching Protocols -- the connection is now a WebSocket carrying raw PTY bytes both ways, per this endpoint's own description above.
         "400":
-          description: Missing/invalid Upgrade, Connection, Sec-WebSocket-Key, or Sec-WebSocket-Version header, or a malformed container name.
+          description: >
+            Missing/invalid Upgrade, Connection, Sec-WebSocket-Key, or
+            Sec-WebSocket-Version header, a malformed container name,
+            a malformed `term`/`cols`/`rows`, or a `cmd` that is not an
+            absolute path.
           content:
             application/json:
               schema:
@@ -9733,9 +9757,9 @@ paths:
         "409":
           description: >
             This container declares no consoles, so there is nothing
-            to attach to. An explicit `X-Cix-Exec-Cmd` still works and
-            is the way to run something on a container that publishes
-            no console of its own.
+            to attach to. An explicit `cmd` still works and is the way
+            to run something on a container that publishes no console
+            of its own.
         "500":
           description: Failed to start the console session (handshake computation, or the exec/PTY mechanism itself failed).
           content:
@@ -11446,8 +11470,8 @@ components:
 
 
             This is the PUBLISHED surface -- what `cixctl` and the
-            dashboard offer. It is not a security boundary:
-            `X-Cix-Exec-Cmd` still runs an arbitrary command for a
+            dashboard offer. It is not a security boundary: the `cmd`
+            query parameter still runs an arbitrary command for a
             caller authorized to use this endpoint at all, which is
             gated as a write despite being a GET (ADR-0144). The two
             answer different questions -- "what does this container

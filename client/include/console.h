@@ -25,7 +25,8 @@
  * failure (a message is already printed to stderr).
  */
 /*
- * cmd, when non-NULL, is sent as X-Cix-Exec-Cmd and overrides whatever
+ * cmd, when non-NULL, is percent-encoded into the request's own `cmd`
+ * query parameter (ADR-0245) and overrides whatever
  * the container declares. console_name, when non-NULL, selects one of
  * the container's DECLARED consoles by name (issue #248); NULL means
  * the first one it declares.

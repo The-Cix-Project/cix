@@ -24,6 +24,26 @@ The evidence was in the output the whole time: the four `depA: autostarted (rest
 
 `test_daemon_net`'s cleanup step deleted four containers fire-and-forget and then deleted the network they used. When that network delete came back 409, nothing in the output named which container had stayed — only the consequence, which is not a report anyone can act on. The four deletes are asserted now. A cleanup step is still a step.
 
+### The exec command is a query parameter, and the dashboard can finally use it (ADR-0245)
+
+`cixctl container console NAME --cmd=PATH` runs one specific program instead of a declared console. The dashboard had no equivalent and **could not have had one**: that parameter was the `X-Cix-Exec-Cmd` request header, and a browser's `WebSocket` constructor sets no request headers at all. One client could use a documented feature and the other was structurally incapable of it.
+
+This project had already found that rule and written it down. ADR-0242 made `term`/`cols`/`rows` query parameters, and its own comment names the reason *and the counter-example* — "a header would have silently worked for cixctl and been unreachable from the dashboard". The rule was applied to the three new parameters and not to the one it was written about.
+
+`cmd` is a query parameter now, and the header is **removed rather than kept alongside**. Two spellings of one thing is not compatibility, it is two code paths and two doc entries that can disagree. The capability is untouched, which matters because ADR-0240 recorded the owner's explicit decision to keep it over a recommendation to remove it — that decision stands; only how it is spelled changed, so that both clients can spell it.
+
+Three consequences of the transport rather than of taste:
+
+- **Percent-decoded**, because `encodeURIComponent()` escapes `/` as `%2F` and the dashboard has no choice about that. Applied to `cmd` alone: `console` is a name, `term` is charset-validated and `cols`/`rows` are numbers, so decoding those would only change what a literal `%` means in a value allowed to hold one.
+- **Must be absolute**, refused with `400` if not. It goes to `execve()` with no shell and no `PATH` search, so a bare name cannot work — and left to fail at exec it presents as a session that opens and instantly dies, which is exactly the symptom ADR-0240 exists to stop producing.
+- **Still not a security boundary**, restated because moving it into the URL makes it look like an ordinary input. It wins over any declaration, works on a container declaring none, and anyone who can reach this endpoint can already run arbitrary code there.
+
+The dashboard gets a **Run** box beside the console picker. A container that declares no console now keeps its terminal pane, with the picker hidden and the status line pointing at Run — it used to hide the pane outright, which would now be hiding a control that works. Choosing a declared console clears Run, since the command wins and the picker would otherwise appear to do nothing.
+
+`test_console_exec` asserts what the transport change actually risks: that a percent-encoded path means the same as a raw one, and that a relative one is refused with a message saying why. Also fixed while converting it: one request built a three-`%s` format with two arguments, which TCC does not check.
+
+`docs/api/README.md` also still described the pty as allocated in the daemon's namespace "so it never needs a working `devpts` inside the container" — true until #290 an hour earlier, and corrected in the same pass.
+
 ### The console pty now comes from the container's own devpts (#290)
 
 `exec_into_container()` allocated its pty with `posix_openpt()`, which opens the **daemon's** `/dev/ptmx`, and handed the resulting slave fd to a process inside the container. That gives the process a terminal it can read and write perfectly and **cannot name**: `/proc/self/fd/0` says `/dev/pts/0`, the container's own `/dev/pts` holds no such entry, and `ttyname()` fails `ENODEV`.

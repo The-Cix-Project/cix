@@ -429,12 +429,12 @@ GET /v1/containers/jump/console?console=nope  -> 404, listing what IS declared
 ```
 GET /v1/containers/dns-1/console
 -> 409 {"error":"this container declares no console -- add one to its
-         definition, or name a command with X-Cix-Exec-Cmd"}
+         definition, or name a command with the cmd query parameter"}
 ```
 
 That is the intended outcome for most of this platform's own containers, not a gap: `dns`, `ldap`, `syslog` and `chrony` images each hold one static binary and no shell, so there has never been anything for a console to run. Both clients render it as "this container declares no console" instead of offering a control that cannot work.
 
-**`X-Cix-Exec-Cmd` is unchanged and still wins**, including on a container that declares nothing. The two answer different questions and neither substitutes for the other: `consoles` is *what this container offers* — the published surface `cixctl` and the dashboard present — while the header is *let me run this specific thing*. It is deliberately not a security boundary and never was: anyone authorized to reach this endpoint can already execute arbitrary code inside the container, and this endpoint is gated as a write despite being a `GET` (see Host authentication below).
+**The `cmd` query parameter wins**, including on a container that declares nothing. The two answer different questions and neither substitutes for the other: `consoles` is *what this container offers* — the published surface `cixctl` and the dashboard present — while `cmd` is *let me run this specific thing*. It is deliberately not a security boundary and never was: anyone authorized to reach this endpoint can already execute arbitrary code inside the container, and this endpoint is gated as a write despite being a `GET` (see Host authentication below).
 
 A declared command whose binary is missing fails at exec and is reported as an error naming it, not as a session that opens and dies.
 
@@ -463,7 +463,9 @@ GET /v1/containers/jump/console?term=xterm-256color&cols=203&rows=51
 
 Omitting any of them takes the documented default (`xterm-256color`, 80, 24) rather than erroring — a caller with no terminal of its own, such as a piped `cixctl`, is making an ordinary request. Sending a *malformed* one is a `400`: a caller that tried to say something specific and got it wrong should hear so rather than silently receive a terminal of a different size than it believes.
 
-They are query parameters rather than headers, unlike `X-Cix-Exec-Cmd` alongside them, for one decisive reason: a browser's `WebSocket` constructor cannot set request headers at all. A header would have worked for `cixctl` and been permanently unreachable from the dashboard — the same feature with two different capabilities depending on the client.
+They are query parameters rather than headers for one decisive reason: a browser's `WebSocket` constructor cannot set request headers at all. A header would have worked for `cixctl` and been permanently unreachable from the dashboard — the same feature with two different capabilities depending on the client.
+
+That reasoning applied to `X-Cix-Exec-Cmd` too, which sat alongside them as a header and was exactly the split it warns about: `cixctl --cmd` worked, and the dashboard had no way to offer it at all. It is the `cmd` query parameter now, and the header is retired rather than kept beside it — a second way to say the same thing is not compatibility, it is two things to keep correct. `cmd` is percent-decoded, so a browser's `encodeURIComponent()` (which escapes `/` as `%2F`) and a raw path mean the same thing, and it must be absolute: it goes to `execve()` with no shell and no `PATH` search, so a bare name is refused with `400` rather than left to fail at exec where it would look like a broken container.
 
 **Resizing a session already in progress** uses the WebSocket's own opcodes rather than any new framing. RFC 6455 already distinguishes a UTF-8 text message from an opaque binary one, so that distinction carries the two kinds of traffic:
 
@@ -1223,7 +1225,7 @@ POST /v1/containers
 
 ## Interactive container console (`docker exec -it`-style)
 
-`GET /v1/containers/{name}/console` opens a real, fully-interactive shell inside an already-running container (ADR-0043) — not a normal request/response endpoint, an HTTP/1.1 Upgrade to a hand-rolled RFC 6455 WebSocket (no fragmentation, 64KiB payload cap; OpenAPI 3.0 has no first-class way to type this, so `openapi.yaml` documents it as a GET whose success response is `101 Switching Protocols`). The exec'd process joins the target container's own mount/UTS/network/pid namespaces (`setns()`, equivalent to `nsenter --mount --uts --net --pid --target <pid>`) against a PTY allocated in the daemon's own namespace before any `setns()` call, so it never needs a working `devpts` inside the container itself. Command defaults to `/usr/bin/bash` (this project's own images stage everything under `usr/bin/`, never `/bin`); override with the `X-Cix-Exec-Cmd` request header.
+`GET /v1/containers/{name}/console` opens a real, fully-interactive shell inside an already-running container (ADR-0043) — not a normal request/response endpoint, an HTTP/1.1 Upgrade to a hand-rolled RFC 6455 WebSocket (no fragmentation, 64KiB payload cap; OpenAPI 3.0 has no first-class way to type this, so `openapi.yaml` documents it as a GET whose success response is `101 Switching Protocols`). The exec'd process joins the target container's own mount/UTS/network/pid namespaces (`setns()`, equivalent to `nsenter --mount --uts --net --pid --target <pid>`) against a PTY allocated from the **container's own** `devpts` — `/proc/<pid>/root/dev/pts/ptmx`, so the kernel's `path_pts()` puts the slave in the container's instance and the process can name its own terminal (#290; a slave from the daemon's devpts reads and writes fine but fails `ttyname()`, which silently breaks `login(1)`, `agetty`, `who`, `w` and anything writing utmp). The command comes from the container's declared `consoles`, or from the `cmd` query parameter to run one specific program instead.
 
 Two real, ready-to-use clients — neither requires hand-rolling the handshake yourself:
 
