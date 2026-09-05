@@ -57,7 +57,7 @@
 pkg_name="cix"
 pkg_version="v2.53.60"
 pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/v2.53.60.tar.gz"
-pkg_sha256="653b463695e1e1a1413c9077e1e49987d11eeec1233ef027002b1dc62f01879b"
+pkg_sha256="2846699b1548199d33a77cc45913fceffbf86db219bfb05696c5c65efe08a7fd"
 pkg_build_depends="bash coreutils make tcc linux-headers openssl gcc binutils"
 pkg_build_caps="CAP_SYS_ADMIN"
 pkg_build_image="toolchain"
