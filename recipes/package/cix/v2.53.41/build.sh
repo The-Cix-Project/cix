@@ -1,4 +1,12 @@
 #
+# v2.53.41 -- containers get a Configuration tab. cmd, the command a
+# container actually runs, was not visible anywhere in the dashboard,
+# nor cap_add/userns/captured_output or the declared consoles as a
+# list; and the container-recipe endpoint was exposed to the web and
+# never called. The recipe is shown beside the live definition because
+# the two drift -- jump declared linux-pam 1.6.1-2 while running -6.
+#
+#
 # v2.53.40 -- test_console_exec reports how its wait ended (#291).
 # Three of eight recent builds failed it on three different assertions,
 # each printing the same "got (0 bytes): (nothing)" -- one line for
@@ -558,9 +566,9 @@
 # predated #60.)
 #
 pkg_name="cix"
-pkg_version="v2.53.40"
-pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/v2.53.40.tar.gz"
-pkg_sha256="a6400f0f92e160aed1913da2072d1604d90c6a6e2187923414c9f4c672863fa2"
+pkg_version="v2.53.41"
+pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/v2.53.41.tar.gz"
+pkg_sha256="8ad9b061ef4217ede3396a9b0574d08928d9f95ba8acef291cd2da68000e7758"
 # ADR-0199/0209: composed from exactly these, with no fallback
 # environment to inherit anything missing (#168). Cix is the first
 # recipe to need this declaration and it found the rule the hard way:
