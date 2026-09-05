@@ -691,6 +691,15 @@ int main(void)
 					if (strstr(acc, geom[gi].expect) != NULL)
 						found = 1;
 				}
+				if (!found) {
+					/* Say what actually arrived. A bare "did not
+					 * match" on a check like this sends the reader
+					 * guessing at whether the value was wrong, the
+					 * session was empty, or the read timed out --
+					 * three different bugs. */
+					fprintf(stderr, "  wanted: %s\n  got (%zu bytes): %s\n",
+					        geom[gi].expect, acc_len, acc_len > 0 ? acc : "(nothing)");
+				}
 				CHECK(found, geom[gi].what);
 			}
 			close(fd);
