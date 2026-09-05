@@ -1,4 +1,11 @@
 #
+# v2.53.36 -- test fixes only. test_apigen's operation count moves to
+# 276 for /pkg/verify (a deliberate visibility device, so it changes in
+# a diff), and test_daemon_net's n6/n7 deletes are asserted like the
+# other four -- leaving them unchecked is how a 409 came back with
+# every checked delete reporting success (#286).
+#
+#
 # v2.53.35 -- an install that did not land is no longer reported as
 # installed (#281). An image version is a hash of the installed package
 # set, so reinstalling a name@version the set already holds reproduces
@@ -512,9 +519,9 @@
 # predated #60.)
 #
 pkg_name="cix"
-pkg_version="v2.53.35"
-pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/v2.53.35.tar.gz"
-pkg_sha256="188aac3947cbafb525ed81c47fa6566381b87a5201d5134f2cf0b15b6e59a9f5"
+pkg_version="v2.53.36"
+pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/v2.53.36.tar.gz"
+pkg_sha256="a612c9ac13f8d3bc06eea0e4c39046a4282bde4ee7502c5bd3f15f5c0bb0f64b"
 # ADR-0199/0209: composed from exactly these, with no fallback
 # environment to inherit anything missing (#168). Cix is the first
 # recipe to need this declaration and it found the rule the hard way:
