@@ -1,4 +1,8 @@
 #include "quotamap.h"
+#include <mntent.h>
+#include <errno.h>
+#include <sys/stat.h>
+#include <sys/quota.h>
 #include "json.h"
 #include "persist.h"
 
@@ -154,5 +158,139 @@ int quotamap_get_or_assign(const char *name, uint32_t *out_projid)
 	}
 
 	*out_projid = g_entries[free_slot].project_id;
+	return 0;
+}
+
+/*
+ * Applying a project quota to a filesystem, moved here from main.c
+ * (ADR-0249).
+ *
+ * quotamap.c already owned which project id a name gets; the call that
+ * makes that id mean something on disk lived in main.c, where the
+ * volume handlers and container creation both reached for it as a
+ * static. Two callers in two different concerns is what a module is
+ * for, and keeping the assignment and the application apart meant
+ * neither file owned "quota".
+ */
+/*
+ * Real ext4 project-quota device resolution (Part 4, bare-metal-
+ * readiness plan, ADR-0062). quotactl(2)'s own "special" argument
+ * needs the real block device backing wherever CONTAINERS_DIR actually
+ * lives -- which is CONTAINERS_DEVICE only under a real --init-mode
+ * boot; every daemon-linked test and any --data-dir= override instead
+ * points g_base_dir at an ordinary directory on whatever filesystem the
+ * host/test environment's own root happens to be (see CONTAINERS_
+ * DEVICE's own comment above for the tmpfs-fallback case, which is a
+ * third possibility again). Hardcoding CONTAINERS_DEVICE here would be
+ * silently wrong in both of those cases -- this project's own bare-
+ * metal-readiness plan flagged this exact question explicitly ("device-
+ * path resolution... must be confirmed, not assumed"), so it's resolved
+ * for real instead: walk /proc/mounts and pick the longest-matching
+ * mount point for `path` (the same "find the owning mount" algorithm
+ * findmnt/df use internally), returning 0 and filling out_device on
+ * success. -1 (errno set) if /proc/mounts can't be read or path isn't
+ * under any mount point at all (should never happen for a legitimately
+ * mounted directory).
+ *
+ * Deliberately does not decode octal-escaped whitespace in /proc/mounts'
+ * own mountpoint field (e.g. "\040" for a literal space) -- no path this
+ * project ever mounts anything at (CONTAINERS_DIR, PKI_DIR, or any
+ * --data-dir=/mkdtemp() test path) contains a space, so handling that
+ * general case would be real, unexercised complexity for a scenario
+ * that can't occur here.
+ */
+static int resolve_backing_device(const char *path, char *out_device, size_t out_size)
+{
+	char real_path[PATH_MAX];
+	FILE *f;
+	char line[PATH_MAX * 2];
+	size_t best_len = 0;
+	int found = 0;
+
+	if (realpath(path, real_path) == NULL)
+		return -1;
+
+	f = fopen("/proc/mounts", "r");
+	if (f == NULL)
+		return -1;
+
+	while (fgets(line, sizeof(line), f) != NULL) {
+		char device[PATH_MAX];
+		char mountpoint[PATH_MAX];
+		size_t mp_len;
+
+		if (sscanf(line, "%4095s %4095s", device, mountpoint) != 2)
+			continue;
+
+		mp_len = strlen(mountpoint);
+		if (strncmp(real_path, mountpoint, mp_len) != 0)
+			continue;
+		/* Exact match, or the next real_path char must be '/' -- so a
+		 * mountpoint of "/var" never matches a real_path of
+		 * "/variant". */
+		if (real_path[mp_len] != '\0' && real_path[mp_len] != '/')
+			continue;
+		if (mp_len < best_len)
+			continue;
+
+		best_len = mp_len;
+		if (snprintf(out_device, out_size, "%s", device) >= (int)out_size) {
+			fclose(f);
+			errno = ENAMETOOLONG;
+			return -1;
+		}
+		found = 1;
+	}
+	fclose(f);
+
+	if (!found) {
+		errno = ENOENT;
+		return -1;
+	}
+	return 0;
+}
+
+/*
+ * Sets a real, kernel-enforced hard limit of quota_bytes for project id
+ * projid on whatever device backs base_path (the container's own
+ * container_base -- CONTAINERS_DIR/<name> by default, or
+ * <disk's mount_path>/containers/<name> for a disk-placed container,
+ * task #638 -- NOT always CONTAINERS_DIR itself: a container placed on
+ * an alternate disk must have its quota set against THAT disk's own
+ * backing device, or the limit would silently apply to the wrong
+ * filesystem entirely while the actual files live elsewhere), via a
+ * real quotactl(2) Q_SETQUOTA call -- independent of and order-agnostic with
+ * src/overlay.c's own FS_IOC_FSSETXATTR tagging (that call says "these
+ * files belong to project X"; this one says "project X's own limit is
+ * Y" -- setting a limit for a project id the kernel has never seen an
+ * inode tagged with yet is a completely normal, harmless no-op until
+ * one shows up). dqb_bhardlimit is in real quota *blocks* (always
+ * 1024 bytes each, regardless of the filesystem's own block size --
+ * see /usr/include/x86_64-linux-gnu/sys/quota.h's own struct dqblk
+ * comment), not raw bytes, hence the rounding-up conversion. No soft
+ * limit / grace-period policy -- dqb_bsoftlimit is set equal to the
+ * hard limit, so writes are refused (EDQUOT) the instant the real limit
+ * is hit, not merely warned about after some grace period this project
+ * has no mechanism to surface to an operator anyway. Returns 0 on
+ * success, -1 (errno set by quotactl(2) -- ENOTSUP/EOPNOTSUPP if the
+ * backing filesystem doesn't have the project-quota feature enabled at
+ * all, exactly what a filesystem cix-install.c didn't create via
+ * mkfs.ext4 -O quota -E quotatype=prjquota reports) otherwise.
+ */
+int quotamap_apply(const char *base_path, uint32_t projid, long long quota_bytes)
+{
+	char device[PATH_MAX];
+	struct dqblk dq;
+
+	if (resolve_backing_device(base_path, device, sizeof(device)) != 0)
+		return -1;
+
+	memset(&dq, 0, sizeof(dq));
+	dq.dqb_bhardlimit = (uint64_t)((quota_bytes + 1023) / 1024);
+	dq.dqb_bsoftlimit = dq.dqb_bhardlimit;
+	dq.dqb_valid = QIF_BLIMITS;
+
+	if (quotactl(QCMD(Q_SETQUOTA, PRJQUOTA), device, (int)projid, (caddr_t)&dq) != 0)
+		return -1;
 	return 0;
 }

@@ -2,6 +2,22 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### The second thing holding main.c together was 66 path globals (ADR-0249)
+
+`respond_error()` unblocked the first three subsystems. The fourth found the other blocker: `api_swap` would not compile because it needed `CONTAINERS_DIR`, then `DISKS_MOUNT_DIR`, then `SWAP_FILE_PATH`. All 66 filesystem paths this daemon derives from `--data-dir` were `static` in main.c, so any handler touching its own subsystem's directory could not leave the file.
+
+Threading them through signatures was tried and abandoned at the third — a handler taking three path strings it immediately passes on is not a better boundary, it is the same coupling written out longhand. Two existing headers had been living with this and said so: `disk.h` and `device.h` both note they have "no knowledge of main.c's own `CONTAINERS_DIR` global, so the caller passes it".
+
+`daemonpaths.h` declares all 66 `extern`. The definitions stay in main.c beside the code computing them, with the comments explaining each, so **no call site changed** — including main.c's own 61 uses of `CONTAINERS_DIR`.
+
+`set_disk_quota()` and `resolve_backing_device()` moved too, becoming `quotamap_apply()` in `quotamap.c`. They were static in main.c and called from two different concerns (volume quota, container creation), and `quotamap.c` already owned which project id a name gets — keeping assignment and application in different files meant neither owned "quota".
+
+Nine modules now: sysctl, kmod, ntp (with the host clock, which shares ntp's error mapping), syslog, resolv, keys, route, swap and volume — the last at 833 lines the largest single group in the file. **main.c is 28,977 lines, down from 31,284.**
+
+Two handlers were deliberately not moved, both rule 2: `handle_ntp_sync_post()` arms a timerfd, and the daemon-config handlers rebind the live listen socket.
+
+Verified beyond compiling: every one of the 88 objects was checked for duplicate global symbols and for symbols referenced but defined nowhere. Both clean, which is what the host link would otherwise be the first to tell us.
+
 ### A workload at its ceiling is visible now (#279)
 
 The owner watching a live OOM: "On our system stats, we have 234.9 MiB (total 7.7 GiB). This oom makes no sense to me?"
