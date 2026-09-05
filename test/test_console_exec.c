@@ -109,6 +109,54 @@ static void reset_state(void)
 	system(cmd);
 }
 
+/*
+ * What the daemon thought it was doing while this test waited (#291).
+ *
+ * Every failure of this test is "output did not arrive in time", and
+ * the test cannot distinguish the three causes that produce it: the
+ * child wrote nothing, the frames carried something else, or the
+ * daemon's single-threaded event loop was blocked and simply never
+ * got round to writing.
+ *
+ * The daemon already measures the third directly. GET /v1/system/stalls
+ * carries a "loop" object with the worst single pass since boot, the
+ * count over the slow threshold, and which request that worst pass was
+ * serving. Printing it on failure turns "no output" into "no output,
+ * and the loop's worst pass was N ms doing X", which separates a
+ * scheduling stall from a console bug in one reading.
+ *
+ * Worth trusting only since #229: that endpoint used to stop reading
+ * its own record file at the first NUL byte, so it under-reported for
+ * four days on the reference host while looking perfectly healthy.
+ */
+static void report_loop_health(struct cix_client *c)
+{
+	struct cix_response lr;
+
+	memset(&lr, 0, sizeof(lr));
+	if (cix_client_request(c, "GET", "/v1/system/stalls?limit=3", NULL, &lr) != 0 ||
+	    lr.status != 200 || lr.json == NULL) {
+		fprintf(stderr, "  loop: GET /v1/system/stalls unavailable (status=%d)\n", lr.status);
+		cix_response_free(&lr);
+		return;
+	}
+	{
+		const struct json_value *loop = json_object_get(lr.json, "loop");
+		const struct json_value *worst = loop != NULL ? json_object_get(loop, "worst_pass_ms") : NULL;
+		const struct json_value *slow = loop != NULL ? json_object_get(loop, "slow_passes") : NULL;
+		const struct json_value *act =
+		    loop != NULL ? json_object_get(loop, "worst_pass_activity") : NULL;
+
+		fprintf(stderr, "  loop: worst_pass_ms=%ld slow_passes=%ld worst_pass_activity=%s\n",
+		        worst != NULL && worst->type == JSON_NUMBER ? (long)worst->u.number : -1L,
+		        slow != NULL && slow->type == JSON_NUMBER ? (long)slow->u.number : -1L,
+		        act != NULL && act->type == JSON_STRING && act->u.string[0] != '\0'
+		            ? act->u.string
+		            : "(none)");
+	}
+	cix_response_free(&lr);
+}
+
 static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 {
 	int i;
@@ -884,6 +932,7 @@ int main(void)
 					        recv_failed ? "read failed or peer closed"
 					                    : "20 frames without a match",
 					        acc_len > 0 ? acc : "(nothing)");
+					report_loop_health(&client);
 				}
 				CHECK(found, geom[gi].what);
 			}
@@ -993,6 +1042,7 @@ int main(void)
 				        recv_failed ? "read failed or peer closed"
 				                    : "40 frames without a match",
 				        acc_len > 0 ? acc : "(nothing)");
+				report_loop_health(&client);
 			}
 			CHECK(ready, "the exec'd process reached its read() and said so");
 			CHECK(echoed,
@@ -1069,12 +1119,14 @@ int main(void)
 			}
 			/* #291: same reason as the geometry loop above -- a bare
 			 * failure here cannot be told apart from a timeout. */
-			if (!saw_first)
+			if (!saw_first) {
 				fprintf(stderr, "  got (%zu bytes in %d frame(s), ended: %s): %s\n", acc_len,
 				        first_frames,
 				        first_recv_failed ? "read failed or peer closed"
 				                          : "20 frames without a match",
 				        acc_len > 0 ? acc : "(nothing)");
+				report_loop_health(&client);
+			}
 			CHECK(saw_first, "the initial report arrived before any resize");
 
 			if (saw_first) {
