@@ -1097,12 +1097,23 @@ async function apiRequest(method, path, body, timeoutMs) {
 	}
 	if (!res.ok) {
 		const message = json && json.error ? json.error : "request failed (HTTP " + res.status + ")";
+		/*
+		 * The status travels with the error. Without it a caller can
+		 * only match on the message text, and some non-2xx answers are
+		 * ordinary facts rather than failures -- a container created
+		 * directly through the API has no recipe, and its 404 should
+		 * read as "there isn't one" rather than as something broken.
+		 * Telling those apart by string comparison would break the
+		 * moment the daemon reworded itself.
+		 */
+		const err = new Error(message);
 
+		err.status = res.status;
 		if (method !== "GET")
 			logLine(method, path, "-> " + res.status + " " + message, "error");
 		if (res.status === 401 && path !== CIX_API.postLogin())
 			promptReauth();
-		throw new Error(message);
+		throw err;
 	}
 	if (method !== "GET")
 		logLine(method, path, "-> " + res.status, "ok");
@@ -3455,6 +3466,16 @@ for (const tabButton of document.querySelectorAll(".tab-bar .tab-button")) {
 				openConsole(currentContainerDetailName);
 			document.getElementById("cd-console-output").focus();
 		}
+		/*
+		 * The recipe is fetched on tab open, not on every detail
+		 * render. The detail view re-renders on a two-second poll and a
+		 * recipe does not change under a running container, so fetching
+		 * it there would be a request every two seconds for identical
+		 * text -- on the same event loop this project has twice had to
+		 * rescue from polled endpoints.
+		 */
+		if (tabName === "config" && currentContainerDetailName !== null)
+			loadContainerRecipe(currentContainerDetailName);
 		if (tabButton.id === "cd-tab-summary" && currentContainerDetailName !== null)
 			startStatsPolling(currentContainerDetailName);
 		else if (statsContainerName !== null)
@@ -3470,6 +3491,56 @@ function formatExitStatus(c) {
 	if (c.term_signal)
 		return "killed by signal " + c.term_signal;
 	return "exit code " + c.exit_status;
+}
+
+/*
+ * The container's own recipe, for the Configuration tab.
+ *
+ * Shown because the recipe and the live definition above it are
+ * different things that drift apart: the recipe is the SOURCE, what
+ * someone wrote and applied, while the definition is what the
+ * container actually became. `jump` declared linux-pam 1.6.1-2 in its
+ * image manifest while running 1.6.1-6, because an ad-hoc install
+ * moves the package and leaves the declaration behind, and nothing
+ * anywhere showed the disagreement.
+ *
+ * A container created straight through POST /v1/containers has no
+ * recipe at all. That is a real answer about how it came to exist, not
+ * an error, and it is said in those words -- which is why apiRequest()
+ * now carries the HTTP status on the errors it throws.
+ *
+ * Fetched through loadContainerRecipeContent(), the same accessor the
+ * recipes page uses, rather than a second copy of the request: it also
+ * caches by name, so switching tabs back and forth costs nothing.
+ *
+ * The text goes into a <pre> via textContent. The daemon returns it
+ * UNSUBSTITUTED, so {{SECRET:...}} and {{LDAP:BIND_PASSWORD}} appear as
+ * their tokens and no credential reaches this page.
+ */
+async function loadContainerRecipe(name) {
+	const statusEl = document.getElementById("cd-config-recipe-status");
+	const textEl = document.getElementById("cd-config-recipe");
+
+	if (statusEl === null || textEl === null)
+		return;
+	statusEl.textContent = "Loading\u2026";
+	textEl.hidden = true;
+	try {
+		const content = await loadContainerRecipeContent(name);
+
+		if (!content) {
+			statusEl.textContent = "This container has a recipe, but it is empty.";
+			return;
+		}
+		statusEl.textContent =
+			"Applied from this recipe. Secret tokens are shown unsubstituted \u2014 no value reaches this page.";
+		textEl.textContent = content;
+		textEl.hidden = false;
+	} catch (err) {
+		statusEl.textContent = err && err.status === 404
+			? "No recipe \u2014 this container was created directly through the API, not applied from one."
+			: "Could not load the recipe: " + (err && err.message ? err.message : "unknown error");
+	}
 }
 
 function renderContainerDetail(name) {
@@ -3658,6 +3729,44 @@ function renderContainerDetail(name) {
 				volBody.appendChild(row);
 			}
 		}
+	}
+
+	/*
+	 * Configuration -- what this container IS, as opposed to what it is
+	 * doing.
+	 *
+	 * Only the fields no other tab shows. Summary, Hardware and Options
+	 * between them already render most of the definition, and repeating
+	 * any of it here would create a second place to read the same fact
+	 * and a second place for it to go stale.
+	 *
+	 * `cmd` is the one that mattered: the command the container
+	 * actually runs was not visible anywhere in this dashboard.
+	 */
+	{
+		const configFields = document.getElementById("cd-config-fields");
+
+		configFields.textContent = "";
+		configFields.appendChild(
+			fieldBlock("Command", Array.isArray(c.cmd) && c.cmd.length > 0 ? c.cmd.join(" ")
+			                                                              : "(image default)"));
+		configFields.appendChild(
+			fieldBlock("Added capabilities",
+			           Array.isArray(c.cap_add) && c.cap_add.length > 0 ? c.cap_add.join(", ")
+			                                                           : "none (the default set)"));
+		configFields.appendChild(fieldBlock("User namespace", c.userns ? "yes" : "no"));
+		configFields.appendChild(fieldBlock("Capture output", c.captured_output ? "yes" : "no"));
+		configFields.appendChild(fieldBlock("Image", c.image || "?"));
+
+		/* Its own table, like env/sysctls/files: fieldBlock renders with
+		 * textContent, so a newline-joined list would collapse to one
+		 * run-on line in HTML. */
+		simpleTableRows(
+			document.querySelector("#cd-config-consoles tbody"),
+			(c.consoles || []).map((x) => [x.name, (x.cmd || []).join(" ")]),
+			2,
+			"This container declares no console."
+		);
 	}
 
 	/* Options -- lifecycle/behavior configuration. */

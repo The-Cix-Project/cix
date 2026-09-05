@@ -2182,6 +2182,26 @@ pre {
 	font-variant-numeric: tabular-nums;
 }
 
+/*
+ * A container's own recipe, shown verbatim (#289-adjacent, the
+ * Configuration tab). Scrolls in its own box rather than widening the
+ * page: a recipe carries long single-line values -- an sshd_config, a
+ * shell script staged as a file -- and wrapping them would misrepresent
+ * text that has to be read exactly as stored.
+ */
+.recipe-text {
+	max-height: 26rem;
+	overflow: auto;
+	background: var(--bg);
+	border: 1px solid var(--border);
+	border-radius: 4px;
+	padding: 0.75rem 0.9rem;
+	font-size: 0.82rem;
+	line-height: 1.45;
+	white-space: pre;
+	tab-size: 4;
+}
+
 
 /* ============================================================
  * Narrow screens (#233).
