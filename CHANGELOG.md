@@ -2,6 +2,17 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Fourteen handler modules: dns, images, ldap (ADR-0249)
+
+`dns` (records and the server containers that answer for them), `image` (images, manifests and image recipes — 705 lines, the second-largest group) and `ldap` (servers, client config, users and groups — 541) join the eleven already moved. **main.c is 26,765 lines, down from 31,284: 4,519 lines and 14% gone, across fourteen modules totalling 4,507.**
+
+Two pieces of domain logic went to their real homes rather than into an `api_` module on the way past:
+
+- `ldap_effective_client_uri()`, with `ldap_filter_configured_client_uri()` and `ldap_uri_registered_server()`, moved to **`ldap.c`**. It is ldap policy that happens to need the registry to turn container names into addresses, and `ldap.c` already depended on the registry for exactly that. Three callers in main.c, one in the new module, one implementation.
+- `set_disk_quota()` and `resolve_backing_device()` became **`quotamap_apply()`** in `quotamap.c` earlier in the same pass, for the same reason.
+
+That is the pattern worth naming: a slice that will not compile is usually telling you a function is in the wrong file, not that the slice is wrong.
+
 ### A console session with nothing left to read never ended (#291)
 
 `test_console_exec` had been failing intermittently since before #288, with the same shape every time and different assertions: the exec'd child's output never reaches the test. The cause was never established, and #288's real fix to `recv_ws_frame()` made it rarer without removing it.

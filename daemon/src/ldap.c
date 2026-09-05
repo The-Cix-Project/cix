@@ -5,7 +5,10 @@
 #include "hostauth.h"
 #include "persist.h"
 #include "registry.h"
+#include "serverhealth.h"
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <stdio.h>
@@ -1787,3 +1790,164 @@ void ldap_ensure_service_bind_account(void)
 	ldap_config_persist();
 }
 
+/*
+ * Issue #84: the same health filtering the derived list gets, applied to
+ * an explicitly-configured client_uri. Everything #81 built was inert on
+ * any box with client_uri set -- which included the real one -- because
+ * the explicit list short-circuited before any filtering ran.
+ *
+ * Three rules, and the two conservative ones matter more than the
+ * filtering itself: a URI that maps to no registered server is kept
+ * untouched (it may be a directory Cix does not manage), and if
+ * filtering would leave nothing, the original list stands. Handing a
+ * client a server that might be down beats handing it none -- the
+ * client retries; an empty list turns a partial outage into a total one.
+ */
+/*
+ * Issue #84: which registered LDAP server, if any, a single URI from an
+ * explicitly-configured client_uri list refers to.
+ *
+ * Health is keyed by container name; client_uri is free-form URIs, so
+ * the two only meet by resolving each registered server's live IP and
+ * comparing. Returns the matching registered container name, or NULL
+ * for a URI that maps to nothing Cix manages -- which is a real,
+ * legitimate case (an operator may point at a directory this platform
+ * knows nothing about) and must be left strictly alone rather than
+ * filtered on evidence that does not exist.
+ *
+ * A port is only allowed to match when it is the port health actually
+ * probes. Same IP on a different port is a different service, and
+ * dropping it on the strength of a probe that never touched it would be
+ * a guess dressed up as a health decision.
+ */
+static const char *ldap_uri_registered_server(const char *uri, char names[][LDAP_SERVER_NAME_MAX],
+                                               int count)
+{
+	const char *authority, *p;
+	char host[128];
+	size_t hlen;
+	int port = HOSTAUTH_LDAP_DEFAULT_PORT;
+	int i;
+
+	authority = strstr(uri, "://");
+	authority = authority != NULL ? authority + 3 : uri;
+	if (*authority == '[') /* IPv6 literal -- nothing here is IPv6, so never ours */
+		return NULL;
+	for (p = authority; *p != '\0' && *p != '/'; p++)
+		;
+	hlen = (size_t)(p - authority);
+	if (hlen == 0 || hlen >= sizeof(host))
+		return NULL;
+	memcpy(host, authority, hlen);
+	host[hlen] = '\0';
+	{
+		char *colon = strrchr(host, ':');
+
+		if (colon != NULL) {
+			*colon = '\0';
+			port = atoi(colon + 1);
+		}
+	}
+	if (port != HOSTAUTH_LDAP_DEFAULT_PORT)
+		return NULL;
+
+	for (i = 0; i < count; i++) {
+		struct registry_entry *se = registry_find(names[i]);
+		struct in_addr a;
+		char ipbuf[INET_ADDRSTRLEN];
+
+		if (se == NULL || se->net_count == 0 || se->nets[0].ip_be == 0)
+			continue;
+		a.s_addr = se->nets[0].ip_be;
+		if (inet_ntop(AF_INET, &a, ipbuf, sizeof(ipbuf)) == NULL)
+			continue;
+		if (strcmp(ipbuf, host) == 0)
+			return names[i];
+	}
+	return NULL;
+}
+
+void ldap_filter_configured_client_uri(const char *configured, char *out, size_t out_size)
+{
+	char names[LDAP_SERVER_MAX][LDAP_SERVER_NAME_MAX];
+	char work[sizeof(((struct ldap_config *)0)->client_uri)];
+	char *tok, *save;
+	size_t off = 0;
+	int count;
+
+	snprintf(out, out_size, "%s", configured);
+	count = ldap_server_list_containers(names, LDAP_SERVER_MAX);
+	if (count == 0)
+		return;
+
+	snprintf(work, sizeof(work), "%s", configured);
+	for (tok = strtok_r(work, " \t", &save); tok != NULL; tok = strtok_r(NULL, " \t", &save)) {
+		const char *server = ldap_uri_registered_server(tok, names, count);
+		int written;
+
+		if (server != NULL && !serverhealth_in_service("ldap", server))
+			continue;
+		written = snprintf(out + off, out_size - off, "%s%s", off > 0 ? " " : "", tok);
+		if (written > 0 && (size_t)written < out_size - off)
+			off += (size_t)written;
+	}
+	if (off == 0)
+		snprintf(out, out_size, "%s", configured);
+}
+
+/*
+ * The LDAP URI list handed to client containers. Built from the live IPs
+ * of registered LDAP servers when no explicit client_uri is configured.
+ *
+ * Issue #81: servers that are drained or confirmed unhealthy are dropped
+ * -- the direct fix for #80's shape, where a registered-but-not-serving
+ * pair silently broke every login. Two deliberate safety rules keep that
+ * filtering from ever becoming its own outage:
+ *   - a never-yet-probed server counts as in service, so turning health
+ *     tracking on can't black-hole a working deployment during the very
+ *     first sweep;
+ *   - if filtering would leave NOTHING, the unfiltered list is used
+ *     instead. Handing a client a server that might be down is strictly
+ *     better than handing it nothing at all -- the client retries, and
+ *     an empty URI list would turn a partial outage into a total one.
+ */
+int ldap_effective_client_uri(char *out, size_t out_size)
+{
+	const struct ldap_config *lc = ldap_config_get();
+	char names[LDAP_SERVER_MAX][LDAP_SERVER_NAME_MAX];
+	int count, i, pass;
+	size_t off = 0;
+
+	if (lc->client_uri[0] != '\0') {
+		/* Issue #84: filtered, not passed through -- an explicit list
+		 * used to skip every health rule below it. */
+		ldap_filter_configured_client_uri(lc->client_uri, out, out_size);
+		return 1;
+	}
+	count = ldap_server_list_containers(names, LDAP_SERVER_MAX);
+
+	/* pass 0: in-service servers only. pass 1 (only if that produced an
+	 * empty list): every reachable server, health ignored. */
+	for (pass = 0; pass < 2 && off == 0; pass++) {
+		out[0] = '\0';
+		for (i = 0; i < count; i++) {
+			struct registry_entry *se = registry_find(names[i]);
+			struct in_addr a;
+			char ipbuf[INET_ADDRSTRLEN];
+			int written;
+
+			if (se == NULL || se->net_count == 0 || se->nets[0].ip_be == 0)
+				continue;
+			if (pass == 0 && !serverhealth_in_service("ldap", names[i]))
+				continue;
+			a.s_addr = se->nets[0].ip_be;
+			if (inet_ntop(AF_INET, &a, ipbuf, sizeof(ipbuf)) == NULL)
+				continue;
+			written = snprintf(out + off, out_size - off, "%sldap://%s:%d/",
+			                    off > 0 ? " " : "", ipbuf, HOSTAUTH_LDAP_DEFAULT_PORT);
+			if (written > 0 && (size_t)written < out_size - off)
+				off += (size_t)written;
+		}
+	}
+	return off > 0;
+}
