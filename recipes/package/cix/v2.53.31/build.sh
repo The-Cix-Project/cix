@@ -1,4 +1,14 @@
 #
+# v2.53.31 -- a bisect. The last build to pass its selftest was
+# v2.53.27; the five since have all failed, on six distinct assertions
+# across test_console_exec and test_container_restart. A control
+# rebuild of v2.53.26 passed on the same box minutes after those five,
+# so the environment is not what changed. This drops test_stallwatch's
+# new #284 regression step -- which itself passes in every failing
+# build -- to find out whether it is what leaves the run worse for the
+# tests that follow it.
+#
+#
 # v2.53.30 -- the build gate's own cleanup races the daemon's autostart
 # (#286). Four consecutive gates failed on identical source, each on a
 # different test; two of those were one bug. The shared cleanup helper
@@ -459,9 +469,9 @@
 # predated #60.)
 #
 pkg_name="cix"
-pkg_version="v2.53.30"
-pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/v2.53.30.tar.gz"
-pkg_sha256="84ae9c9fafd55d91fd255cb811973b0f4806405329d366e62fa1acad4d951e86"
+pkg_version="v2.53.31"
+pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/v2.53.31.tar.gz"
+pkg_sha256="d61281591157488be3ae9d7624fbcf91dc1062922f55966866fc20f7ffe3f85e"
 # ADR-0199/0209: composed from exactly these, with no fallback
 # environment to inherit anything missing (#168). Cix is the first
 # recipe to need this declaration and it found the rule the hard way:
