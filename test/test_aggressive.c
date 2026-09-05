@@ -96,6 +96,8 @@ extern char **environ;
  */
 #define FAIL_GAP_MS 5000
 
+#define PROBE_REQUEST "GET /v1/health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+
 /*
  * Exit codes, kept distinct on purpose.
  *
@@ -188,8 +190,12 @@ static int probe_once(void)
 
 	if (fd < 0)
 		return -1;
-	if (cix_write_all(fd, "GET /v1/health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
-	                  62) != 0) {
+	/* strlen(), never a hand-counted constant. The first version of
+	 * this said 62 for a 63-byte request, so every probe sent a header
+	 * without its terminator, the daemon correctly waited for the rest
+	 * forever, and the harness reported a twelve-second wedge that had
+	 * not happened. */
+	if (cix_write_all(fd, PROBE_REQUEST, strlen(PROBE_REQUEST)) != 0) {
 		close(fd);
 		return -1;
 	}
@@ -466,16 +472,18 @@ static void attack_abandoned_sessions(void)
  */
 static void attack_slowloris(void)
 {
+	static const char SLOWLORIS_PARTIAL[] = "GET /v1/health HTTP/1.1\r\nHost: 127.0.0.1\r\n";
 	int fds[64];
 	int n = 0;
 	int i;
 
 	set_attack("slowloris (64 half-sent requests)");
+
 	for (i = 0; i < (int)(sizeof(fds) / sizeof(fds[0])); i++) {
 		fds[n] = raw_connect_timeout(TEST_PORT, 2000);
 		if (fds[n] < 0)
 			continue;
-		cix_write_all(fds[n], "GET /v1/health HTTP/1.1\r\nHost: 127.0.0.1\r\n", 42);
+		cix_write_all(fds[n], SLOWLORIS_PARTIAL, strlen(SLOWLORIS_PARTIAL));
 		n++;
 	}
 	sleep(3);
@@ -515,6 +523,9 @@ static void attack_connect_storm(void)
  */
 static void attack_truncated_body(void)
 {
+	static const char TRUNCATED_POST[] =
+	    "POST /v1/containers HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+	    "Content-Type: application/json\r\nContent-Length: 100000\r\n\r\n{\"name\":\"x\"";
 	int fds[16];
 	int n = 0;
 	int i;
@@ -524,10 +535,7 @@ static void attack_truncated_body(void)
 		fds[n] = raw_connect_timeout(TEST_PORT, 2000);
 		if (fds[n] < 0)
 			continue;
-		cix_write_all(fds[n],
-		              "POST /v1/containers HTTP/1.1\r\nHost: 127.0.0.1\r\n"
-		              "Content-Type: application/json\r\nContent-Length: 100000\r\n\r\n{\"name\":\"x\"",
-		              120);
+		cix_write_all(fds[n], TRUNCATED_POST, strlen(TRUNCATED_POST));
 		n++;
 	}
 	sleep(3);
@@ -660,7 +668,34 @@ int main(void)
 
 	sleep(1); /* a baseline of an idle daemon, for contrast */
 	set_attack("idle baseline");
-	sleep(1);
+	sleep(2);
+
+	/*
+	 * The baseline is also a check on the prober itself.
+	 *
+	 * Nothing is attacking the daemon yet, so if the prober has not
+	 * had a single answer by now the fault is the prober's and every
+	 * number it goes on to produce is meaningless. Without this the
+	 * harness reports a wedge that did not happen, which is exactly
+	 * what a hand-counted request length caused the first time: 62
+	 * bytes of a 63-byte request, no header terminator, six probes,
+	 * zero answers, and a confident twelve-second finding.
+	 *
+	 * A harness must fail loudly when it cannot measure. Reporting on
+	 * a daemon it never reached is the one outcome worse than not
+	 * running at all.
+	 */
+	if (g_shared->probes_answered == 0) {
+		fprintf(stderr, "NO-RUN: the prober got no answer from an IDLE daemon (%lld sent).\n",
+		        g_shared->probes_sent);
+		fprintf(stderr, "        Nothing was attacked yet, so this is the harness failing to\n");
+		fprintf(stderr, "        measure, not the control plane failing to answer.\n");
+		g_shared->stop = 1;
+		waitpid(prober_pid, &status, 0);
+		stop_daemon(daemon_pid);
+		test_data_dir_cleanup(g_data_dir);
+		return EXIT_NO_RUN;
+	}
 
 	attack_console_input_flood();
 	attack_abandoned_sessions();
