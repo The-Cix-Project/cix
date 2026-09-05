@@ -17,6 +17,8 @@
  */
 #include <fcntl.h>
 #include <signal.h>
+#include "iohelpers.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,26 +38,22 @@ static void on_winch(int sig)
  * the whole point -- oom_score_adj survives fork() AND execve(), so the
  * only trustworthy reading is the one taken by a process that actually
  * went through both. */
-static void report_oom_adj(void)
+static const char *report_oom_adj(void)
 {
-	char buf[32];
+	static char buf[32];
 	int fd = open("/proc/self/oom_score_adj", O_RDONLY);
 	ssize_t n;
 
-	if (fd < 0) {
-		printf("OOMADJ=unreadable\n");
-		return;
-	}
+	if (fd < 0)
+		return "unreadable";
 	n = read(fd, buf, sizeof(buf) - 1);
 	close(fd);
-	if (n <= 0) {
-		printf("OOMADJ=unreadable\n");
-		return;
-	}
+	if (n <= 0)
+		return "unreadable";
 	buf[n] = '\0';
 	while (n > 0 && (buf[n - 1] == '\n' || buf[n - 1] == ' '))
 		buf[--n] = '\0';
-	printf("OOMADJ=%s\n", buf);
+	return buf;
 }
 
 /*
@@ -74,11 +72,11 @@ static void report_oom_adj(void)
  * Asked from in here for the same reason OOMADJ is: only the process
  * actually sitting on the pty can answer it.
  */
-static void report_tty(void)
+static const char *report_tty(void)
 {
 	const char *name = ttyname(STDIN_FILENO);
 
-	printf("TTY=%s\n", name != NULL ? name : "(unnamed)");
+	return name != NULL ? name : "(unnamed)";
 }
 
 /*
@@ -95,7 +93,7 @@ static void report_tty(void)
  * the container -- the container was always in its namespace; what was
  * wrong was that the console never joined it.
  */
-static void report_userns(void)
+static const char *report_userns(void)
 {
 	FILE *f = fopen("/proc/self/uid_map", "r");
 	long long inside = 0, host = 0, len = 0;
@@ -110,27 +108,43 @@ static void report_userns(void)
 		}
 		fclose(f);
 	}
-	printf("USERNS=%s\n", mapped ? "mapped" : "host");
+	return mapped ? "mapped" : "host";
 }
 
+/*
+ * Everything this child has to say, in ONE write.
+ *
+ * It used to be four printf()s, and each one is a separate write to the
+ * pty, a separate relay read, and a separate websocket frame -- four
+ * chances for the reader to see a partial answer and give up, which is
+ * exactly the intermittent shape of #291. The test matches expected
+ * substrings, so one line satisfies every scenario while removing the
+ * race rather than retiming it: there is one frame or there is none,
+ * and none is unambiguously a failure.
+ *
+ * write() rather than printf(): stdio on a tty is line-buffered, so a
+ * single printf of a single line is already one write, but saying so
+ * with write() means a future field carrying an embedded newline
+ * cannot quietly reintroduce the split.
+ */
 static void report(void)
 {
 	struct winsize wsz;
 	const char *term = getenv("TERM");
+	char line[512];
+	int len;
 
 	memset(&wsz, 0, sizeof(wsz));
 	if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &wsz) != 0) {
 		wsz.ws_col = 0;
 		wsz.ws_row = 0;
 	}
-	/* One line, fixed shape, so the test can strstr() for an exact
-	 * expected string rather than parsing. */
-	printf("TERMINFO TERM=%s COLS=%u ROWS=%u\n", term != NULL ? term : "(unset)",
-	       (unsigned)wsz.ws_col, (unsigned)wsz.ws_row);
-	report_oom_adj();
-	report_tty();
-	report_userns();
-	fflush(stdout);
+	len = snprintf(line, sizeof(line), "TERMINFO TERM=%s COLS=%u ROWS=%u OOMADJ=%s TTY=%s USERNS=%s\n",
+	               term != NULL ? term : "(unset)", (unsigned)wsz.ws_col, (unsigned)wsz.ws_row,
+	               report_oom_adj(), report_tty(), report_userns());
+	if (len > 0)
+		cix_write_all(STDOUT_FILENO, line, (size_t)len > sizeof(line) - 1 ? sizeof(line) - 1
+		                                                                   : (size_t)len);
 }
 
 int main(void)

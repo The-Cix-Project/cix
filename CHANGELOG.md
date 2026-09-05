@@ -2,6 +2,36 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### One blocking read took the whole control plane down for seventeen minutes (#294)
+
+`cixd` on 192.168.15.95 stopped answering and needed a manual reset. The host was fine the entire time: ICMP replying in under half a millisecond, the `jump` container serving real SSH logins, and load average `0.19 0.06 0.07` measured from inside that container while the API was unreachable. **The box was idle.**
+
+stallwatch had the diagnosis five seconds in and repeated it twelve times:
+
+```json
+{"ts":1788275283,"event":"stall-continues","seconds":1025,"state":"S","wchan":"n_tty_read","activity":""}
+```
+
+Three facts that together name one line:
+
+- `state S` — interruptible sleep. Alive. Not killed, not starved, not spinning.
+- `wchan n_tty_read` — blocked inside a tty read. `cixd` reads exactly one kind of tty: a console session's **pty master**. It has no reads on stdin, no `popen`, no `system`.
+- `activity ""` — **no request in flight**. Not a slow handler.
+
+`handle_console_pty_event()` reads that master with a plain `read()`. The fd is opened `O_RDWR | O_NOCTTY | O_CLOEXEC` and never made non-blocking — there is no `F_SETFL` for it anywhere in the daemon. `epoll(7)` states plainly that a readiness notification may be spurious, so a blocking read after `EPOLLIN` is an unbounded hang *by construction*; and `cixd` is single-threaded with exactly one `epoll_wait()` loop, so that hang is the whole control plane.
+
+The write direction had the identical defect, found in the same pass: `cix_write_all()` into the master blocks once the slave's input buffer fills — a shell that stopped reading, a large paste, a program in a tight loop — and would have presented the same way with `n_tty_write`.
+
+`O_NONBLOCK` at open fixes both, because the flag is per file description. That is the point rather than a side effect, and it forces the write side to be dealt with properly: the read now treats `EAGAIN`/`EINTR` as a no-op instead of a hang, and the write buffers whatever the master will not take and drains it on `EPOLLOUT`. Without a buffer, `EAGAIN` would tear a session down over transient backpressure — a different bug, not a fix. A pending buffer short-circuits the direct write so earlier keystrokes cannot arrive after later ones, and the buffer is bounded at 64 KiB; past that the slave is not consuming at all and the session ends saying so.
+
+`-Werror` earned its keep here: the first draft used the system `struct epoll_event` instead of this project's `#pragma pack` replacement, which is the ADR-0008 trap and would have been an intermittent timing-dependent crash rather than a compile error.
+
+**Two claims made during the investigation were wrong and are corrected rather than quietly dropped.** The listener going from accepting connections to refusing them was read as the process being gone — it is not, a full accept queue RSTs, which is exactly what a blocked single-threaded acceptor produces. And resource starvation was the first explanation reached for, on the strength of a build running; at load 0.19 with no build in flight that was inference presented as measurement.
+
+**stallwatch was not broken.** It measured the right thing, immediately, and wrote twelve records saying so. Every one was unreachable, because the only way to read them is `GET /v1/system/stalls` — through the daemon that is blocked. That is #229. The general shape of it — one process being the init, the supervisor, the event loop, the API and the executor of blocking work, with no authority anywhere able to restart it — is [ADR-0246](docs/adr/0246-the-control-plane-is-one-process-doing-five-jobs.md). This fix removes the instance that cost a reset; it does not shorten the outage, and the next blocking call to slip in will do the same thing.
+
+One further cost worth recording: build logs are relayed through the daemon, so a wedge writes none. The `tcc@0.9.28rc-26` gate output that was mid-flight when this happened is a 0-byte file, and that evidence was lost with the outage.
+
 ### A console session was never inside the container's user namespace (#293)
 
 Logging into the `jump` container through its console and trying to use your own home directory:
