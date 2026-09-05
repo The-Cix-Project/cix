@@ -117,6 +117,21 @@ So correctness rests on the full selftest on a real Cix host, and the
 mitigation is slice size: one subsystem per commit, each independently
 revertable, none of them changing a line of logic.
 
+**A third shared blocker turned up with the logs slice**, and it is the
+same shape as the first two: `url_query_param()` was `static` in
+`main.c` with 18 call sites. It now lives in `apiroute.c`, which already
+parses the query string — `api_route_query_unknown()` walks the same
+grammar to decide what an operation declares, and two readers of one
+grammar in two files is how they stop agreeing.
+
+**Not every group can move, and stopping is part of the rule.**
+`api_backup` was built and then reverted: the schedule PUT re-arms a
+timerfd, the snapshot path calls into `do_system_backup()`, and forcing
+it would have meant exporting main.c's internals to relocate 130 lines.
+It waits for the system-backup group. `handle_backup_config_put()` and
+the daemon-config handlers stayed for the same reason, and each says so
+where it sits.
+
 Two checks catch what per-file compilation cannot. A duplicate or missing
 definition is caught by the host link, and `test_lint` (ADR-0248) caught a
 real implicit-declaration during this very work, when `respond_ntp_error()`

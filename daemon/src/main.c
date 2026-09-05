@@ -78,6 +78,8 @@
 #include "api_route.h"
 #include "api_swap.h"
 #include "api_volume.h"
+#include "api_hostauth.h"
+#include "api_logs.h"
 #include "apiresp.h"
 #include "daemonpaths.h"
 #include "apiroute.h"
@@ -3199,70 +3201,7 @@ static void handle_system_backup(int fd)
 	jw_free(&w);
 }
 
-/*
- * ADR-0141 Phase 5: the real backup snapshot write -- validates the
- * configured disk (must carry the "backup" role, must currently be
- * mounted, the same class of check storagemigrate_start() already
- * does for the other three storage kinds), writes do_system_backup()'s
- * own bundle to "<mount_path>/backup.json" (a single, always-current
- * snapshot -- see backupconfig.h's own top comment for why this is
- * deliberately not a timestamped history), and records the outcome via
- * backupconfig_record_attempt(). Synchronous (a plain JSON write, not
- * a network fetch or external process -- nothing here justifies this
- * daemon's usual fork+pidfd async-job machinery), called both from
- * POST /v1/system/backup-config/snapshot-now and the periodic timer
- * below.
- */
-static void do_backup_snapshot_now(void)
-{
-	const char *disk_name = backupconfig_disk();
-	struct discovered_disk disks[DISK_ENUM_MAX];
-	int n, i;
-	const struct discovered_disk *found = NULL;
-	char target_path[PATH_MAX];
-	struct json_writer w;
 
-	if (disk_name == NULL) {
-		backupconfig_record_attempt(0, "no backup disk configured");
-		return;
-	}
-
-	n = disk_enumerate(disks, DISK_ENUM_MAX, CONTAINERS_DIR);
-	for (i = 0; i < n; i++) {
-		if (strcmp(disks[i].name, disk_name) == 0) {
-			found = &disks[i];
-			break;
-		}
-	}
-	if (found == NULL) {
-		backupconfig_record_attempt(0, "configured backup disk is not currently present");
-		return;
-	}
-	{
-		const char *role = diskrole_lookup(disk_name);
-
-		if (role == NULL || strcmp(role, "backup") != 0) {
-			backupconfig_record_attempt(0,
-			                             "configured backup disk no longer carries the backup role");
-			return;
-		}
-	}
-	if (!found->mounted) {
-		backupconfig_record_attempt(0, "configured backup disk is present but not currently mounted");
-		return;
-	}
-
-	snprintf(target_path, sizeof(target_path), "%s/backup.json", found->mount_path);
-
-	do_system_backup(&w);
-	if (persist_atomic_write(target_path, w.buf, w.len) != 0) {
-		jw_free(&w);
-		backupconfig_record_attempt(0, "failed to write snapshot to disk");
-		return;
-	}
-	jw_free(&w);
-	backupconfig_record_attempt(1, NULL);
-}
 
 /*
  * Writes str (a JSON-string field's own already-validated content,
@@ -7643,7 +7582,6 @@ static char g_iso_signature_path[PATH_MAX];
  */
 static char g_iso_built_version[64];
 
-static int url_query_param(const char *full_path, const char *key, char *out, size_t out_size);
 
 /*
  * Issue #126: export an image's current version as a whole-rootfs
@@ -9104,6 +9042,12 @@ static void arm_backup_periodic_timer(void)
 		perror("timerfd_settime (backup periodic re-arm)");
 }
 
+static void do_backup_snapshot_now(void);
+static void handle_backup_config_get(int fd);
+static void handle_backup_config_put(int fd, const char *body, size_t body_len);
+static void handle_backup_config_status_get(int fd);
+static void handle_backup_config_snapshot_now_post(int fd);
+
 static void handle_backup_periodic_timer_event(struct conn *cc)
 {
 	uint64_t expirations;
@@ -9140,6 +9084,82 @@ static void start_backup_periodic_timer(void)
 		return;
 	}
 	arm_backup_periodic_timer();
+}
+
+/*
+ * Returns 0 and forks the fetch (state -> FETCHING) on success; -1
+ * with err_msg filled otherwise (both url and sha256 are required --
+ * unlike a recipe's own pkg_source, there is no "trust whatever
+ * shows up" mode for something that gets unsquashfs'd wholesale into
+ * the build sandbox). err_msg_size must be at least 256. Caller is
+ * responsible for the "already fetching" check, same split as
+ * iso_build_start()'s own doc comment explains.
+ */
+static int bootstrap_fetch_start(const char *url, const char *sha256, char *err_msg,
+                                  size_t err_msg_size)
+{
+	static char out_path[PATH_MAX];
+	static char url_buf[PKG_URL_MAX];
+	char *argv[16];
+	pid_t pid;
+	int pidfd;
+
+	if (url == NULL || url[0] == '\0') {
+		snprintf(err_msg, err_msg_size, "toolchain_url is required");
+		return -1;
+	}
+	if (sha256 == NULL || strlen(sha256) != 64) {
+		snprintf(err_msg, err_msg_size, "toolchain_sha256 is required and must be a 64-char hex sha256");
+		return -1;
+	}
+
+	snprintf(out_path, sizeof(out_path), "%s", PKGBUILD_TOOLCHAIN_FETCH_PATH);
+	snprintf(url_buf, sizeof(url_buf), "%s", url);
+
+	/* #285. Asynchronous (pidfd), so an unbounded fetch would stall
+	 * this job rather than the loop -- but a bootstrap that never
+	 * finishes and never fails is still a job nothing can resolve.
+	 * --retry stays at 8: this is a 1.4 GB toolchain over whatever
+	 * link the operator has, and the speed guard is what makes the
+	 * retries safe rather than a way to wait eight times forever. */
+	argv[0] = (char *)PKG_CURL_BIN;
+	argv[1] = "-fsSL";
+	argv[2] = "--connect-timeout";
+	argv[3] = PKG_CURL_CONNECT_TIMEOUT;
+	argv[4] = "--speed-limit";
+	argv[5] = PKG_CURL_SPEED_LIMIT;
+	argv[6] = "--speed-time";
+	argv[7] = PKG_CURL_SPEED_TIME;
+	argv[8] = "--retry";
+	argv[9] = "8";
+	argv[10] = "-o";
+	argv[11] = out_path;
+	argv[12] = url_buf;
+	argv[13] = NULL;
+
+	pid = fork();
+	if (pid < 0) {
+		snprintf(err_msg, err_msg_size, "fork failed: %s", strerror(errno));
+		return -1;
+	}
+	if (pid == 0) {
+		execve(PKG_CURL_BIN, argv, environ);
+		perror("child: execve curl (bootstrap fetch)");
+		_exit(127);
+	}
+
+	pidfd = sys_pidfd_open(pid, 0);
+	if (pidfd < 0) {
+		snprintf(err_msg, err_msg_size, "pidfd_open failed: %s", strerror(errno));
+		kill(pid, SIGKILL);
+		waitpid(pid, NULL, 0);
+		return -1;
+	}
+	register_bootstrap_fetch_pidfd(pid, pidfd);
+	snprintf(g_bootstrap_fetch_sha256_expected, sizeof(g_bootstrap_fetch_sha256_expected), "%s", sha256);
+	g_bootstrap_fetch_state = BOOTSTRAP_FETCH_FETCHING;
+	g_bootstrap_fetch_error[0] = '\0';
+	return 0;
 }
 
 static void handle_backup_config_get(int fd)
@@ -9252,6 +9272,57 @@ static void handle_backup_config_put(int fd, const char *body, size_t body_len)
 	}
 }
 
+static void do_backup_snapshot_now(void)
+{
+	const char *disk_name = backupconfig_disk();
+	struct discovered_disk disks[DISK_ENUM_MAX];
+	int n, i;
+	const struct discovered_disk *found = NULL;
+	char target_path[PATH_MAX];
+	struct json_writer w;
+
+	if (disk_name == NULL) {
+		backupconfig_record_attempt(0, "no backup disk configured");
+		return;
+	}
+
+	n = disk_enumerate(disks, DISK_ENUM_MAX, CONTAINERS_DIR);
+	for (i = 0; i < n; i++) {
+		if (strcmp(disks[i].name, disk_name) == 0) {
+			found = &disks[i];
+			break;
+		}
+	}
+	if (found == NULL) {
+		backupconfig_record_attempt(0, "configured backup disk is not currently present");
+		return;
+	}
+	{
+		const char *role = diskrole_lookup(disk_name);
+
+		if (role == NULL || strcmp(role, "backup") != 0) {
+			backupconfig_record_attempt(0,
+			                             "configured backup disk no longer carries the backup role");
+			return;
+		}
+	}
+	if (!found->mounted) {
+		backupconfig_record_attempt(0, "configured backup disk is present but not currently mounted");
+		return;
+	}
+
+	snprintf(target_path, sizeof(target_path), "%s/backup.json", found->mount_path);
+
+	do_system_backup(&w);
+	if (persist_atomic_write(target_path, w.buf, w.len) != 0) {
+		jw_free(&w);
+		backupconfig_record_attempt(0, "failed to write snapshot to disk");
+		return;
+	}
+	jw_free(&w);
+	backupconfig_record_attempt(1, NULL);
+}
+
 static void handle_backup_config_status_get(int fd)
 {
 	struct json_writer w;
@@ -9276,377 +9347,6 @@ static void handle_backup_config_snapshot_now_post(int fd)
 	}
 }
 
-/*
- * ADR-0144: POST /v1/login -- the one endpoint that always works
- * regardless of write-gating (dispatch() exempts this exact path, see
- * its own comment). Real bcrypt verification via hostauth_login()
- * (which itself calls ldap_user_check_password()) -- no LDAP bind in
- * this part of the ADR yet, that's a later part's own addition to
- * this same function's internals, not a new endpoint.
- */
-static void handle_login(int fd, const char *body, size_t body_len)
-{
-	struct json_value *root;
-	const char *username, *password;
-	char token[HOSTAUTH_TOKEN_LEN + 1];
-	int expires_in_seconds;
-	enum hostauth_login_result lerr;
-
-	root = json_parse(body, body_len);
-	if (root == NULL) {
-		respond_error(fd, 400, "Bad Request", "invalid JSON body");
-		return;
-	}
-	username = json_as_string(json_object_get(root, "username"));
-	password = json_as_string(json_object_get(root, "password"));
-	if (username == NULL || password == NULL) {
-		json_free(root);
-		respond_error(fd, 400, "Bad Request", "username and password are both required");
-		return;
-	}
-
-	lerr = hostauth_login(username, password, token, &expires_in_seconds);
-	json_free(root);
-	if (lerr == HOSTAUTH_LOGIN_INVALID_CREDENTIALS) {
-		respond_error(fd, 401, "Unauthorized", "invalid username or password");
-		return;
-	}
-	if (lerr == HOSTAUTH_LOGIN_TABLE_FULL) {
-		respond_error(fd, 500, "Internal Server Error",
-		              "too many active sessions -- try again shortly");
-		return;
-	}
-
-	{
-		struct json_writer w;
-
-		jw_init(&w);
-		jw_obj_open(&w);
-		jw_key(&w, "token");
-		jw_str(&w, token);
-		jw_key(&w, "expires_in_seconds");
-		if (expires_in_seconds > 0)
-			jw_int(&w, expires_in_seconds);
-		else
-			jw_null(&w);
-		jw_obj_close(&w);
-		respond_json(fd, 200, "OK", &w);
-		jw_free(&w);
-	}
-}
-
-/*
- * POST /v1/logout -- always 204, even for an unknown/already-expired
- * token (hostauth_logout()'s own idempotent contract) -- a client
- * logging out never needs to know or care whether its session had
- * already lapsed server-side.
- */
-static void handle_logout(int fd, const char *req_headers, size_t req_headers_len)
-{
-	/* Must fit "Bearer " (7) + the real token (HOSTAUTH_TOKEN_LEN) + NUL
-	 * -- a too-small buffer here previously made http_find_header()
-	 * silently report "doesn't fit" (a real, live bug: logout always
-	 * responded 204 per its own idempotent contract, but never actually
-	 * called hostauth_logout() at all, leaving the session valid). */
-	char token[HOSTAUTH_TOKEN_LEN + 16];
-
-	if (http_find_header(req_headers, req_headers_len, "Authorization", token, sizeof(token)) >= 0) {
-		const char *bearer = strncmp(token, "Bearer ", 7) == 0 ? token + 7 : token;
-
-		hostauth_logout(bearer);
-	}
-	http_set_blocking(fd);
-	http_write_response(fd, 204, "No Content", "application/json", "", 0);
-}
-
-/*
- * GET /v1/whoami -- introspection only, never mutates a session
- * (hostauth_peek_token(), not hostauth_check_token() -- see that
- * function's own doc comment for why the distinction matters under a
- * single-use/idle_timeout_seconds==0 config). Exists specifically so a
- * client can answer "is my current bearer token actually still valid"
- * without write-gating's own GETs-are-always-open rule making that
- * otherwise undeterminable (every ordinary GET succeeds whether or not
- * a token is supplied, by design) -- cixctl's own interactive shell
- * prompt (ADR-0164) is the first real caller. No Authorization header
- * at all, or one naming an unknown/expired/absent-session token, both
- * report the same authenticated:false -- this endpoint doesn't
- * distinguish "never logged in" from "session lapsed," the same way
- * GET /v1/health doesn't distinguish flavors of "not ok."
- */
-static void handle_whoami(int fd, const char *req_headers, size_t req_headers_len)
-{
-	char token_hdr[HOSTAUTH_TOKEN_LEN + 16];
-	char username[HOSTAUTH_USERNAME_MAX];
-	struct json_writer w;
-	int authenticated = 0;
-
-	if (http_find_header(req_headers, req_headers_len, "Authorization", token_hdr,
-	                      sizeof(token_hdr)) >= 0) {
-		const char *bearer = strncmp(token_hdr, "Bearer ", 7) == 0 ? token_hdr + 7 : token_hdr;
-
-		authenticated = hostauth_peek_token(bearer, username, sizeof(username));
-	}
-
-	jw_init(&w);
-	jw_obj_open(&w);
-	jw_key(&w, "authenticated");
-	jw_bool(&w, authenticated);
-	jw_key(&w, "username");
-	if (authenticated)
-		jw_str(&w, username);
-	else
-		jw_null(&w);
-	jw_obj_close(&w);
-	respond_json(fd, 200, "OK", &w);
-	jw_free(&w);
-}
-
-static void handle_hostauth_config_get(int fd)
-{
-	struct json_writer w;
-
-	jw_init(&w);
-	hostauth_write_config_json(&w);
-	respond_json(fd, 200, "OK", &w);
-	jw_free(&w);
-}
-
-/*
- * PUT /v1/system/hostauth-config -- full replacement (admin_groups is
- * a list, not a single field with an obvious "partial update" meaning
- * the way backup-config's own disk/enabled/interval_hours are each
- * independent) -- the request always supplies both fields, mirroring
- * daemon-config's own full-object PUT shape for a config resource
- * whose fields are this tightly coupled (a lone idle_timeout_seconds
- * change makes little sense to send without knowing what admin_groups
- * currently is, unlike backup-config's own genuinely-independent
- * fields).
- */
-static void handle_hostauth_config_put(int fd, const char *body, size_t body_len)
-{
-	struct json_value *root;
-	const struct json_value *jgroups, *jidle, *jldapen, *jldapservers, *jldapport, *jldapbasedn;
-	const char *admin_groups[HOSTAUTH_ADMIN_GROUPS_MAX];
-	const char *ldap_servers[HOSTAUTH_LDAP_MAX_SERVERS];
-	int admin_group_count = 0;
-	int idle_timeout_seconds;
-	int ldap_enabled = 0;
-	int ldap_server_count = 0;
-	int ldap_port = HOSTAUTH_LDAP_DEFAULT_PORT;
-	const char *ldap_base_dn = "";
-	enum hostauth_config_error err;
-	size_t i;
-
-	root = json_parse(body, body_len);
-	if (root == NULL) {
-		respond_error(fd, 400, "Bad Request", "invalid JSON body");
-		return;
-	}
-	jgroups = json_object_get(root, "admin_groups");
-	jidle = json_object_get(root, "idle_timeout_seconds");
-	if (jgroups == NULL || jgroups->type != JSON_ARRAY || jidle == NULL ||
-	    jidle->type != JSON_NUMBER) {
-		json_free(root);
-		respond_error(fd, 400, "Bad Request", "admin_groups (array) and idle_timeout_seconds "
-		                                       "(number) are both required");
-		return;
-	}
-	if (jgroups->u.array.count > HOSTAUTH_ADMIN_GROUPS_MAX) {
-		json_free(root);
-		respond_error(fd, 400, "Bad Request", "admin_groups must have at most 8 entries");
-		return;
-	}
-	for (i = 0; i < jgroups->u.array.count; i++) {
-		admin_groups[i] = json_as_string(jgroups->u.array.items[i]);
-		if (admin_groups[i] == NULL) {
-			json_free(root);
-			respond_error(fd, 400, "Bad Request", "admin_groups entries must be strings");
-			return;
-		}
-	}
-	admin_group_count = (int)jgroups->u.array.count;
-	idle_timeout_seconds = (int)json_as_number(jidle);
-
-	/*
-	 * ADR-0144's own live-LDAP backend fields: all optional, defaulting
-	 * to disabled/empty -- an older-shaped PUT body (just admin_groups/
-	 * idle_timeout_seconds, this endpoint's original contract) still
-	 * works exactly as before rather than being rejected outright.
-	 */
-	jldapen = json_object_get(root, "ldap_enabled");
-	if (jldapen != NULL && jldapen->type == JSON_BOOL)
-		ldap_enabled = jldapen->u.boolean ? 1 : 0;
-	jldapservers = json_object_get(root, "ldap_servers");
-	if (jldapservers != NULL) {
-		if (jldapservers->type != JSON_ARRAY || jldapservers->u.array.count > HOSTAUTH_LDAP_MAX_SERVERS) {
-			json_free(root);
-			respond_error(fd, 400, "Bad Request", "ldap_servers must be an array of at most 3 entries");
-			return;
-		}
-		for (i = 0; i < jldapservers->u.array.count; i++) {
-			ldap_servers[i] = json_as_string(jldapservers->u.array.items[i]);
-			if (ldap_servers[i] == NULL) {
-				json_free(root);
-				respond_error(fd, 400, "Bad Request", "ldap_servers entries must be strings");
-				return;
-			}
-		}
-		ldap_server_count = (int)jldapservers->u.array.count;
-	}
-	jldapport = json_object_get(root, "ldap_port");
-	if (jldapport != NULL) {
-		if (jldapport->type != JSON_NUMBER) {
-			json_free(root);
-			respond_error(fd, 400, "Bad Request", "ldap_port must be a number");
-			return;
-		}
-		ldap_port = (int)json_as_number(jldapport);
-	}
-	jldapbasedn = json_object_get(root, "ldap_base_dn");
-	if (jldapbasedn != NULL) {
-		ldap_base_dn = json_as_string(jldapbasedn);
-		if (ldap_base_dn == NULL) {
-			json_free(root);
-			respond_error(fd, 400, "Bad Request", "ldap_base_dn must be a string");
-			return;
-		}
-	}
-
-	err = hostauth_set_config(admin_groups, admin_group_count, idle_timeout_seconds, ldap_enabled,
-	                           ldap_servers, ldap_server_count, ldap_port, ldap_base_dn);
-	json_free(root);
-	if (err != HOSTAUTH_CONFIG_OK) {
-		if (err == HOSTAUTH_CONFIG_ERR_INVALID_FIELD)
-			respond_error(fd, 400, "Bad Request",
-			              "idle_timeout_seconds must be >= 0, admin_groups at most 8 entries, "
-			              "ldap_servers at most 3 entries, ldap_port in 1..65535, and "
-			              "ldap_enabled requires at least one ldap_servers entry plus a "
-			              "non-empty ldap_base_dn");
-		else
-			respond_error(fd, 500, "Internal Server Error", "could not persist host-auth config");
-		return;
-	}
-
-	{
-		struct json_writer w;
-
-		jw_init(&w);
-		hostauth_write_config_json(&w);
-		respond_json(fd, 200, "OK", &w);
-		jw_free(&w);
-	}
-}
-
-static void handle_hostauth_sessions_get(int fd)
-{
-	struct json_writer w;
-
-	jw_init(&w);
-	jw_obj_open(&w);
-	jw_key(&w, "sessions");
-	hostauth_write_sessions_json(&w);
-	jw_obj_close(&w);
-	respond_json(fd, 200, "OK", &w);
-	jw_free(&w);
-}
-
-/* DELETE /v1/system/hostauth/sessions/{username} -- revokes every
- * active session for that user ("log out everywhere"). Always 204,
- * even if the user had no active session (the same idempotent-logout
- * posture handle_logout() already has), since the end state (no
- * active session for this user) is identical either way. */
-static void handle_hostauth_sessions_revoke(int fd, const char *username)
-{
-	hostauth_revoke_sessions_for_user(username);
-	http_set_blocking(fd);
-	http_write_response(fd, 204, "No Content", "application/json", "", 0);
-}
-
-/*
- * Returns 0 and forks the fetch (state -> FETCHING) on success; -1
- * with err_msg filled otherwise (both url and sha256 are required --
- * unlike a recipe's own pkg_source, there is no "trust whatever
- * shows up" mode for something that gets unsquashfs'd wholesale into
- * the build sandbox). err_msg_size must be at least 256. Caller is
- * responsible for the "already fetching" check, same split as
- * iso_build_start()'s own doc comment explains.
- */
-static int bootstrap_fetch_start(const char *url, const char *sha256, char *err_msg,
-                                  size_t err_msg_size)
-{
-	static char out_path[PATH_MAX];
-	static char url_buf[PKG_URL_MAX];
-	char *argv[16];
-	pid_t pid;
-	int pidfd;
-
-	if (url == NULL || url[0] == '\0') {
-		snprintf(err_msg, err_msg_size, "toolchain_url is required");
-		return -1;
-	}
-	if (sha256 == NULL || strlen(sha256) != 64) {
-		snprintf(err_msg, err_msg_size, "toolchain_sha256 is required and must be a 64-char hex sha256");
-		return -1;
-	}
-
-	snprintf(out_path, sizeof(out_path), "%s", PKGBUILD_TOOLCHAIN_FETCH_PATH);
-	snprintf(url_buf, sizeof(url_buf), "%s", url);
-
-	/* #285. Asynchronous (pidfd), so an unbounded fetch would stall
-	 * this job rather than the loop -- but a bootstrap that never
-	 * finishes and never fails is still a job nothing can resolve.
-	 * --retry stays at 8: this is a 1.4 GB toolchain over whatever
-	 * link the operator has, and the speed guard is what makes the
-	 * retries safe rather than a way to wait eight times forever. */
-	argv[0] = (char *)PKG_CURL_BIN;
-	argv[1] = "-fsSL";
-	argv[2] = "--connect-timeout";
-	argv[3] = PKG_CURL_CONNECT_TIMEOUT;
-	argv[4] = "--speed-limit";
-	argv[5] = PKG_CURL_SPEED_LIMIT;
-	argv[6] = "--speed-time";
-	argv[7] = PKG_CURL_SPEED_TIME;
-	argv[8] = "--retry";
-	argv[9] = "8";
-	argv[10] = "-o";
-	argv[11] = out_path;
-	argv[12] = url_buf;
-	argv[13] = NULL;
-
-	pid = fork();
-	if (pid < 0) {
-		snprintf(err_msg, err_msg_size, "fork failed: %s", strerror(errno));
-		return -1;
-	}
-	if (pid == 0) {
-		execve(PKG_CURL_BIN, argv, environ);
-		perror("child: execve curl (bootstrap fetch)");
-		_exit(127);
-	}
-
-	pidfd = sys_pidfd_open(pid, 0);
-	if (pidfd < 0) {
-		snprintf(err_msg, err_msg_size, "pidfd_open failed: %s", strerror(errno));
-		kill(pid, SIGKILL);
-		waitpid(pid, NULL, 0);
-		return -1;
-	}
-	register_bootstrap_fetch_pidfd(pid, pidfd);
-	snprintf(g_bootstrap_fetch_sha256_expected, sizeof(g_bootstrap_fetch_sha256_expected), "%s", sha256);
-	g_bootstrap_fetch_state = BOOTSTRAP_FETCH_FETCHING;
-	g_bootstrap_fetch_error[0] = '\0';
-	return 0;
-}
-
-/*
- * Reaps bootstrap_fetch_start()'s own curl child. On a real, clean
- * exit, verifies the fetched artifact's checksum (pkg_run_capture_
- * sha256(), the exact same real check every recipe source already
- * gets, ADR-0036) before ever handing it to pkg_bootstrap_from_
- * toolchain() -- a corrupt or wrong-URL fetch must never get
- * unsquashfs'd into the build sandbox silently.
- */
 static void handle_bootstrap_fetch_event(struct conn *cc)
 {
 	int status;
@@ -10126,58 +9826,7 @@ static int file_path_is_safe(const char *path)
 	return 1;
 }
 
-/*
- * This daemon's first (and, deliberately, narrowest-possible) query
- * string parser: GET .../files?path=... is the first route that ever
- * needs one. One key only, no repeated-key/array semantics, %XX
- * percent-decoding only (no "+" -> space -- this project has never had
- * a form-encoded body, no reason to invent that convention here).
- * full_path is the request's own req->path, "?"-and-all; key is looked
- * up among the "&"-separated pairs after the first "?". Returns 0 and
- * fills out[] on a match, -1 if the key is absent or the value doesn't
- * fit in out_size.
- */
-static int url_query_param(const char *full_path, const char *key, char *out, size_t out_size)
-{
-	const char *q = strchr(full_path, '?');
-	size_t key_len = strlen(key);
 
-	if (q == NULL)
-		return -1;
-	q++;
-	while (*q != '\0') {
-		const char *amp = strchr(q, '&');
-		size_t pair_len = amp != NULL ? (size_t)(amp - q) : strlen(q);
-
-		if (pair_len > key_len && q[key_len] == '=' && strncmp(q, key, key_len) == 0) {
-			const char *v = q + key_len + 1;
-			size_t vlen = pair_len - key_len - 1;
-			size_t oi = 0;
-			size_t vi = 0;
-
-			while (vi < vlen) {
-				char c = v[vi];
-
-				if (c == '%' && vi + 2 < vlen && isxdigit((unsigned char)v[vi + 1]) &&
-				    isxdigit((unsigned char)v[vi + 2])) {
-					char hex[3] = { v[vi + 1], v[vi + 2], '\0' };
-
-					c = (char)strtol(hex, NULL, 16);
-					vi += 3;
-				} else {
-					vi++;
-				}
-				if (oi + 1 >= out_size)
-					return -1;
-				out[oi++] = c;
-			}
-			out[oi] = '\0';
-			return 0;
-		}
-		q = amp != NULL ? amp + 1 : q + pair_len;
-	}
-	return -1;
-}
 
 /*
  * Deliberately restricted to the net.* sysctl tree (POST /v1/containers'
@@ -14533,222 +14182,6 @@ static void handle_container_device_detach(int fd, const char *container_name, c
  * http_write_response(), same primitive/pattern staticfile.c's own
  * static_serve() already uses for the web dashboard's static assets.
  */
-/* GET /v1/system/kmsg?tail=N -- tail of the kernel ring buffer (/dev/kmsg).
- * The only kernel-log window a shell-less installed host has: dmesg-class
- * diagnostics (mount failures, driver probes, OOM) over the REST API, the same
- * spirit as /v1/system/logs but for the KERNEL's own messages, not cixd's.
- * Single-threaded event loop, so a static ring buffer is safe. ADR-0179 phase
- * 2c needed this to read overlayfs's own "mounting read-only" pr_warn on the
- * shell-less .95 box. */
-static void handle_kmsg(int fd, const struct http_request *req)
-{
-	static struct {
-		long long ts;
-		int prio;
-		char text[256];
-	} ring[512];
-	struct json_writer w;
-	char rbuf[8192], tail_str[16];
-	int kfd, count = 0, head = 0, tail = 200, emit, start, i;
-	ssize_t n;
-
-	if (url_query_param(req->path, "tail", tail_str, sizeof(tail_str)) == 0) {
-		tail = atoi(tail_str);
-		if (tail < 1)
-			tail = 1;
-		if (tail > 512)
-			tail = 512;
-	}
-
-	kfd = open("/dev/kmsg", O_RDONLY | O_NONBLOCK);
-	if (kfd < 0) {
-		respond_error(fd, 500, "Internal Server Error", "cannot open /dev/kmsg");
-		return;
-	}
-	for (;;) {
-		char *semi, *msgtext, *nl;
-		int prio = 0;
-		long long seq = 0, ts = 0;
-
-		n = read(kfd, rbuf, sizeof(rbuf) - 1);
-		if (n < 0) {
-			if (errno == EPIPE) /* ring overwritten mid-read; skip ahead */
-				continue;
-			break; /* EAGAIN = drained, or a real error */
-		}
-		if (n == 0)
-			break;
-		rbuf[n] = '\0';
-		/* Record header is "prio,seq,ts_usec,flags;message[\n continuation]". */
-		sscanf(rbuf, "%d,%lld,%lld", &prio, &seq, &ts);
-		semi = strchr(rbuf, ';');
-		msgtext = (semi != NULL) ? semi + 1 : rbuf;
-		nl = strchr(msgtext, '\n');
-		if (nl != NULL)
-			*nl = '\0';
-		ring[head].ts = ts;
-		ring[head].prio = prio;
-		snprintf(ring[head].text, sizeof(ring[head].text), "%s", msgtext);
-		head = (head + 1) % 512;
-		if (count < 512)
-			count++;
-	}
-	close(kfd);
-
-	emit = (count < tail) ? count : tail;
-	start = (head - emit + 512) % 512;
-	jw_init(&w);
-	jw_obj_open(&w);
-	jw_key(&w, "entries");
-	jw_arr_open(&w);
-	for (i = 0; i < emit; i++) {
-		int idx = (start + i) % 512;
-
-		jw_obj_open(&w);
-		jw_key(&w, "ts_usec");
-		jw_int(&w, ring[idx].ts);
-		jw_key(&w, "priority");
-		jw_int(&w, ring[idx].prio);
-		jw_key(&w, "message");
-		jw_str(&w, ring[idx].text);
-		jw_obj_close(&w);
-	}
-	jw_arr_close(&w);
-	jw_obj_close(&w);
-	respond_json(fd, 200, "OK", &w);
-	jw_free(&w);
-}
-
-static void handle_logs_get(int fd, const struct http_request *req)
-{
-	char source[LOGSTORE_SOURCE_MAX];
-	char level[LOGSTORE_LEVEL_MAX];
-	char container[LOGSTORE_CONTAINER_MAX];
-	char msg_regex[256];
-	char tail_str[32], since_str[32];
-	const char *source_filter = NULL;
-	const char *level_filter = NULL;
-	const char *container_filter = NULL;
-	const char *regex_filter = NULL;
-	int64_t since = 0;
-	int limit = 0;
-	struct json_writer w;
-
-	if (url_query_param(req->path, "source", source, sizeof(source)) == 0)
-		source_filter = source;
-	if (url_query_param(req->path, "level", level, sizeof(level)) == 0)
-		level_filter = level;
-	if (url_query_param(req->path, "container", container, sizeof(container)) == 0)
-		container_filter = container;
-	if (url_query_param(req->path, "tail", tail_str, sizeof(tail_str)) == 0)
-		limit = atoi(tail_str);
-	if (url_query_param(req->path, "since", since_str, sizeof(since_str)) == 0)
-		since = (int64_t)atoll(since_str);
-	if (url_query_param(req->path, "regex", msg_regex, sizeof(msg_regex)) == 0) {
-		/* Compile-tested here, not just inside logstore_tail_ex() --
-		 * a malformed pattern is a real client mistake (400), not
-		 * something to silently match zero results for. */
-		regex_t re;
-
-		if (regcomp(&re, msg_regex, REG_EXTENDED | REG_NOSUB | REG_ICASE) != 0) {
-			respond_error(fd, 400, "Bad Request", "invalid regex pattern");
-			return;
-		}
-		regfree(&re);
-		regex_filter = msg_regex;
-	}
-
-	jw_init(&w);
-	logstore_tail_ex(source_filter, level_filter, container_filter, regex_filter, since, limit, &w);
-	respond_json(fd, 200, "OK", &w);
-	jw_free(&w);
-}
-
-static void handle_logs_config_get(int fd)
-{
-	struct json_writer w;
-
-	jw_init(&w);
-	jw_obj_open(&w);
-	jw_key(&w, "max_bytes");
-	jw_int(&w, logstore_max_bytes());
-	jw_key(&w, "min_level");
-	jw_str(&w, logstore_min_level());
-	jw_obj_close(&w);
-	respond_json(fd, 200, "OK", &w);
-	jw_free(&w);
-}
-
-/*
- * Both fields are optional and independent -- a caller changing only
- * max_bytes doesn't need to resupply min_level and vice versa (each
- * setter validates/persists on its own, matching every other partial-
- * update PUT in this daemon, e.g. daemon-config's "only the fields
- * given are touched" convention). At least one of the two is
- * required, or this is a no-op PUT that would silently succeed
- * without changing anything.
- */
-static void handle_logs_config_put(int fd, const char *body, size_t body_len)
-{
-	struct json_value *root;
-	const struct json_value *jmax, *jlevel;
-	struct json_writer w;
-
-	root = json_parse(body, body_len);
-	if (root == NULL) {
-		respond_error(fd, 400, "Bad Request", "invalid JSON body");
-		return;
-	}
-	jmax = json_object_get(root, "max_bytes");
-	jlevel = json_object_get(root, "min_level");
-	if (jmax == NULL && jlevel == NULL) {
-		json_free(root);
-		respond_error(fd, 400, "Bad Request", "max_bytes and/or min_level required");
-		return;
-	}
-
-	if (jmax != NULL) {
-		enum logstore_error lerr = logstore_set_max_bytes((int64_t)json_as_number(jmax));
-
-		if (lerr != LOGSTORE_OK) {
-			json_free(root);
-			respond_error(fd, lerr == LOGSTORE_ERR_INVALID_MAX_BYTES ? 400 : 500,
-			              lerr == LOGSTORE_ERR_INVALID_MAX_BYTES ? "Bad Request"
-			                                                     : "Internal Server Error",
-			              lerr == LOGSTORE_ERR_INVALID_MAX_BYTES
-			                  ? "max_bytes out of range"
-			                  : "log config could not be persisted");
-			return;
-		}
-	}
-	if (jlevel != NULL) {
-		enum logstore_error lerr = logstore_set_min_level(json_as_string(jlevel));
-
-		if (lerr != LOGSTORE_OK) {
-			json_free(root);
-			respond_error(fd, lerr == LOGSTORE_ERR_INVALID_MIN_LEVEL ? 400 : 500,
-			              lerr == LOGSTORE_ERR_INVALID_MIN_LEVEL ? "Bad Request"
-			                                                     : "Internal Server Error",
-			              lerr == LOGSTORE_ERR_INVALID_MIN_LEVEL
-			                  ? "min_level must be one of emerg/alert/crit/err(or)/warning(warn)/"
-			                    "notice/info/debug"
-			                  : "log config could not be persisted");
-			return;
-		}
-	}
-	json_free(root);
-
-	jw_init(&w);
-	jw_obj_open(&w);
-	jw_key(&w, "max_bytes");
-	jw_int(&w, logstore_max_bytes());
-	jw_key(&w, "min_level");
-	jw_str(&w, logstore_min_level());
-	jw_obj_close(&w);
-	respond_json(fd, 200, "OK", &w);
-	jw_free(&w);
-}
-
 /*
  * Issue #61: list a directory inside a container.
  *
