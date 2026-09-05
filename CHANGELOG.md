@@ -2,6 +2,38 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### A compiler fix that shipped four days ago had never reached a single package (#228)
+
+`getent passwd osakka` returned nothing inside the jump container while `id osakka` returned the full record — same nsswitch, same module, opposite answers. The real error, from perl's DynaLoader inside the container:
+
+```
+/usr/lib/libnss_ldap.so.2: cannot enable executable stack as shared object requires: Invalid argument
+```
+
+A shared object with no `PT_GNU_STACK` program header tells the loader it requires an executable stack, and glibc 2.44 refuses to grant that at dlopen time. Whether a process survives depends on **its own** marking, because glibc initialises its stack bookkeeping from the main executable and skips the check entirely when that executable is unmarked. `getent` carries `GNU_STACK RW` and was refused; `id` and `sshd` are TCC-built, carry nothing, and loaded the same module fine. That asymmetry is why an identity chain can be half-broken and look like an LDAP problem.
+
+TCC has never emitted the header. That is #228, and it was fixed — `tcc.recipe 0.9.28rc-10`, published 2026-09-01, which closed the issue. **The fix was never in effect.** `cix-builder` and `iso-builder` both still had `tcc 0.9.28rc-9` installed, the revision immediately before it. Fourteen tcc revisions were published in four days and neither build image moved. Every package built in that window still lacked the header, including `nss-pam-ldapd-0.9.13-5` built the day before this was found.
+
+The reason the build image could not move is a second bug, in the recipe's own gate for #219:
+
+```sh
+./ctorprio_check
+ctorprio_rc=$?
+if [ "$ctorprio_rc" -ne 0 ]; then   # unreachable
+```
+
+The recipe runs under `set -e`, so a failing `./ctorprio_check` kills the script on the line above and the diagnostic block never runs. Every tcc build since `rc-20` failed at `exit 121` with a log ending several gates earlier and no explanation. 121 is not arbitrary — it is that gate's own `100 + b*10 + a` encoding, and its own comment reads "121 is declaration order (the merge did not sort)". `rc-21`, `rc-23` and `rc-24` each set out to fix the reporting; none could have, because the message was never the problem.
+
+`cix-builder` and `iso-builder` are on `rc-19` now, the last revision before the broken patch, so they carry `PT_GNU_STACK` (#228), the bswap builtins (#208), C11 reporting (#235) and the FDE addend fix (#227). `nss-pam-ldapd 0.9.13-6` and `linux-pam 1.6.1-8` are rebuilds with no source change — needed because an image version is a hash of the package manifest (ADR-0155), so a same-version rebuild is deduped and thrown away.
+
+`tcc 0.9.28rc-25` sends `pkg_build`'s stderr to stdout, where the build log looks. That is the third revision to fix this same class one gate at a time, and there are 57 stderr redirections in that recipe, so it is done once at the top. It does not make head buildable: #219's patch is still there and still wrong, and #219 is reopened with the root cause.
+
+Two probe recipes record the measurement rather than an argument: `probe-tcc-conformance/23` and `/24`. 24 also establishes that `-Wl,-z,noexecstack` is **accepted with exit 0 and silently ignored** by TCC, so the obvious workaround gives a false pass.
+
+Verified in the jump container: `pam_unix.so`, `pam_ldap.so` and `libnss_ldap.so.2` all carry `GNU_STACK RW`; `getent passwd`, `getent group` and `id` all resolve LDAP accounts; and a real SSH password login succeeds.
+
+One assumption of mine was wrong and is worth recording: unmarked binaries do **not** get executable stacks here. `sshd` and `nslcd` both have no `PT_GNU_STACK` and both run with `rw-p` stacks. There is no hardening gap — glibc simply never asks.
+
 ### The websocket test helpers dropped frames on a short read (#286)
 
 `recv_ws_frame()` in `test_console_exec.c` and `test_pkg_build_log.c` read the two-byte websocket frame header with a single `read()` and treated anything other than exactly two bytes as a dead connection. `read()` on a TCP socket is entitled to return one of them. The payload loop directly beneath had always looped; the header reads never did.
