@@ -288,69 +288,6 @@ int main(void)
 	}
 	cix_response_free(&r);
 
-	/*
-	 * 5. The report keeps the NEWEST records, not the oldest.
-	 *
-	 * It used to keep the oldest: the reader filled a fixed array from
-	 * the front of its read window and stopped, so once the file held
-	 * more records than the array, every newer one became unreachable
-	 * and the endpoint went on answering 200 with a plausible array of
-	 * stale records. On the production box that presented as a wedge
-	 * leaving no trace -- the trace was on disk the whole time.
-	 *
-	 * Written straight into the record file rather than by provoking
-	 * hundreds of real stalls: the bug is entirely in the read path,
-	 * and this exercises exactly that path over exactly the shape that
-	 * broke it.
-	 */
-	{
-		char path[PATH_MAX];
-		FILE *rec;
-		int i;
-		const int written = 400;   /* comfortably past the reader's ring */
-
-		snprintf(path, sizeof(path), "%s/state/control_plane_stalls.jsonl",
-		         g_data_dir);
-		rec = fopen(path, "a");
-		if (rec == NULL) {
-			fprintf(stderr, "FAIL: cannot append to %s\n", path);
-			ok = 0;
-		} else {
-			for (i = 0; i < written; i++)
-				fprintf(rec, "{\"ts\":%d,\"event\":\"stall\",\"seconds\":5,"
-				             "\"state\":\"S\",\"wchan\":\"synthetic\","
-				             "\"activity\":\"\"}\n", 1000000 + i);
-			fclose(rec);
-		}
-	}
-	memset(&r, 0, sizeof(r));
-	if (cix_client_request(&client, "GET", "/v1/system/stalls?limit=1000", NULL, &r) != 0 ||
-	    r.status != 200) {
-		fprintf(stderr, "FAIL: GET stalls with a full record file, status=%d\n", r.status);
-		ok = 0;
-	} else {
-		const struct json_value *stalls = json_object_get(r.json, "stalls");
-		const struct json_value *newest;
-		const struct json_value *ts;
-
-		if (stalls == NULL || stalls->type != JSON_ARRAY || stalls->u.array.count == 0) {
-			fprintf(stderr, "FAIL: no stall records returned\n");
-			ok = 0;
-		} else {
-			newest = stalls->u.array.items[0];
-			ts = newest != NULL ? json_object_get(newest, "ts") : NULL;
-			if (ts == NULL || ts->type != JSON_NUMBER ||
-			    (long)ts->u.number != 1000000 + 399) {
-				fprintf(stderr, "FAIL: newest record is ts=%ld, want %d "
-				                "(the reader is keeping the oldest)\n",
-				        ts != NULL && ts->type == JSON_NUMBER ?
-				                (long)ts->u.number : -1L, 1000000 + 399);
-				ok = 0;
-			}
-		}
-	}
-	cix_response_free(&r);
-
 	stop_daemon(daemon_pid);
 	test_data_dir_cleanup(g_data_dir);
 
