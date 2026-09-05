@@ -27,6 +27,10 @@
  * These are set once during startup and read-only afterwards. Nothing
  * outside main.c writes one.
  */
+/* The root all 66 below are derived from: --data-dir, or its compiled
+ * default. */
+extern char g_base_dir[PATH_MAX];
+
 extern char STATE_DIR[PATH_MAX];
 extern char REBUILDABLE_DIR[PATH_MAX];
 extern char IMAGES_DIR[PATH_MAX];
