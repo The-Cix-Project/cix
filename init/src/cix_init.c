@@ -178,6 +178,13 @@ static pid_t spawn_worker(char *const argv[])
 		(void)fcntl(sv[1], F_SETFD, 0);
 		snprintf(numbuf, sizeof(numbuf), "%d", sv[1]);
 		setenv(SUPERVISOR_REAP_FD_ENV, numbuf, 1);
+		/*
+		 * Tell the worker which start this is, so it can skip the
+		 * once-per-kernel-boot setup on a restart. g_restarts is not
+		 * yet incremented for this spawn, so add one.
+		 */
+		snprintf(numbuf, sizeof(numbuf), "%lu", g_restarts + 1);
+		setenv(SUPERVISOR_WORKER_START_ENV, numbuf, 1);
 		execv(WORKER_PATH, argv);
 		fprintf(stderr, "cix-init: execv %s: %s\n", WORKER_PATH, strerror(errno));
 		_exit(127);
@@ -188,6 +195,12 @@ static pid_t spawn_worker(char *const argv[])
 		close(g_reap_fd);
 	g_reap_fd = sv[0];
 	set_nonblock(g_reap_fd);
+	/*
+	 * The supervisor's own end is its business. Without this the next
+	 * worker inherits the previous socketpair end, which it has no use
+	 * for and no way to name.
+	 */
+	(void)fcntl(g_reap_fd, F_SETFD, FD_CLOEXEC);
 	g_worker_since = time(NULL);
 	return pid;
 }
@@ -237,14 +250,26 @@ static void reap_all(void)
 				        "rebooting so the boot counter can roll back to the last "
 				        "confirmed slot\n",
 				        g_consecutive_fast_failures);
-				sync();
-				reboot(RB_AUTOBOOT);
 				/*
-				 * Only reached if reboot() was refused, which for
-				 * pid 1 means it is not really pid 1. Keep going --
-				 * there is nothing better to do and returning is a
-				 * panic.
+				 * Only when actually pid 1.
+				 *
+				 * reboot(2) is not refused to a non-init process --
+				 * any root process with CAP_SYS_BOOT reboots the
+				 * machine -- so without this check a hand-run
+				 * cix-init on a development box with no /bin/cixd
+				 * would reboot that box ten seconds later. The
+				 * rollback this exists to trigger only means
+				 * anything for a real installed host anyway.
 				 */
+				if (getpid() == 1) {
+					sync();
+					reboot(RB_AUTOBOOT);
+					perror("cix-init: reboot");
+				} else {
+					fprintf(stderr,
+					        "cix-init: not pid 1 -- not rebooting; the worker "
+					        "cannot start and this is as far as we go\n");
+				}
 				g_consecutive_fast_failures = 0;
 			}
 		}
@@ -275,6 +300,8 @@ static int status_listener_open(void)
 		return -1;
 	}
 	set_nonblock(fd);
+	/* The worker has no business holding the supervisor's listener. */
+	(void)fcntl(fd, F_SETFD, FD_CLOEXEC);
 	return fd;
 }
 
