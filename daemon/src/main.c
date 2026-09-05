@@ -1361,12 +1361,34 @@ struct conn {
  * console_session_teardown() and g_pending_free below for the real
  * hazard that shape introduces and how it's handled.
  */
+/*
+ * Terminal input that the pty master would not take yet (#294).
+ *
+ * The master is O_NONBLOCK, so a write can return EAGAIN the moment the
+ * slave's input buffer is full -- a shell that has stopped reading, a
+ * paste larger than the buffer, a program in a tight loop. Before that
+ * flag the write simply blocked, which on a single-threaded daemon
+ * stopped the entire control plane, so this buffer is what makes the
+ * non-blocking master safe rather than a way to lose a keystroke.
+ *
+ * 64 KiB is far beyond any real terminal input burst. A session that
+ * manages to exceed it has a slave that is not consuming at all, and is
+ * torn down with that said plainly rather than silently truncated.
+ */
+#define CONSOLE_PTY_OUT_MAX 65536
+
 struct console_exec_session {
 	struct conn *ws_conn;
 	struct conn *pty_conn;
 	pid_t exec_pid;
 	int torn_down;
+	unsigned char pty_out[CONSOLE_PTY_OUT_MAX];
+	size_t pty_out_len;
 };
+
+/* Defined with the rest of the console pty handling, below; declared
+ * here because the websocket read path above it is what feeds it. */
+static int console_pty_write(struct console_exec_session *sess, const unsigned char *buf, size_t len);
 
 /*
  * What to do once the event loop actually stops -- reachable via
@@ -28247,8 +28269,7 @@ static void handle_console_ws_event(struct conn *cc)
 				console_ws_handle_control(cc, frame.payload, frame.payload_len);
 			} else if (frame.opcode == WS_OPCODE_BINARY) {
 				if (frame.payload_len > 0 &&
-				    cix_write_all(cc->exec_session->pty_conn->fd, frame.payload, frame.payload_len) !=
-				        0) {
+				    console_pty_write(cc->exec_session, frame.payload, frame.payload_len) != 0) {
 					ws_conn_consume(&cc->ws, frame.frame_len);
 					console_session_teardown(cc->exec_session);
 					return;
@@ -28275,22 +28296,113 @@ static void handle_console_ws_event(struct conn *cc)
 	}
 }
 
-static void handle_console_pty_event(struct conn *cc)
+/*
+ * Arm or disarm EPOLLOUT on the pty master, depending on whether there
+ * is buffered terminal input still waiting for it (#294). EPOLLIN stays
+ * on throughout -- the shell's output does not stop being interesting
+ * because its input is backed up.
+ */
+static void console_pty_update_events(struct console_exec_session *sess)
 {
+	/* struct cix_epoll_event, never the system type: TCC ignores
+	 * __attribute__((packed)) and this project's own #pragma pack
+	 * replacement is what makes the ABI right (ADR-0008). */
+	struct cix_epoll_event ev;
+
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN | (sess->pty_out_len > 0 ? (uint32_t)EPOLLOUT : 0);
+	ev.data.ptr = sess->pty_conn;
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_MOD, sess->pty_conn->fd, &ev) != 0)
+		perror("epoll_ctl MOD console pty");
+}
+
+/*
+ * Terminal input from the websocket into the pty master, without ever
+ * blocking the event loop (#294).
+ *
+ * Anything the master will not take now is buffered and drained on
+ * EPOLLOUT. Ordering is why a pending buffer short-circuits the direct
+ * write: keystrokes that arrived earlier must reach the shell first,
+ * and a "write now if it fits" fast path that skipped the queue would
+ * reorder them.
+ *
+ * Returns 0, or -1 when the buffer is full, which is a dead session
+ * rather than a slow one.
+ */
+static int console_pty_write(struct console_exec_session *sess, const unsigned char *buf, size_t len)
+{
+	ssize_t w;
+
+	if (sess->pty_out_len == 0) {
+		w = write(sess->pty_conn->fd, buf, len);
+		if (w < 0) {
+			if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)
+				return -1;
+			w = 0;
+		}
+		buf += (size_t)w;
+		len -= (size_t)w;
+		if (len == 0)
+			return 0;
+	}
+	if (sess->pty_out_len + len > CONSOLE_PTY_OUT_MAX) {
+		fprintf(stderr, "console: pty input backlog exceeded %d bytes, tearing down session\n",
+		        CONSOLE_PTY_OUT_MAX);
+		return -1;
+	}
+	memcpy(sess->pty_out + sess->pty_out_len, buf, len);
+	sess->pty_out_len += len;
+	console_pty_update_events(sess);
+	return 0;
+}
+
+static void handle_console_pty_event(struct conn *cc, unsigned int evmask)
+{
+	struct console_exec_session *sess = cc->exec_session;
 	unsigned char buf[4096];
 	ssize_t n;
 
+	if ((evmask & EPOLLOUT) != 0 && sess->pty_out_len > 0) {
+		ssize_t w = write(cc->fd, sess->pty_out, sess->pty_out_len);
+
+		if (w < 0) {
+			if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+				console_session_teardown(sess);
+				return;
+			}
+		} else {
+			sess->pty_out_len -= (size_t)w;
+			memmove(sess->pty_out, sess->pty_out + w, sess->pty_out_len);
+			console_pty_update_events(sess);
+		}
+	}
+	if ((evmask & EPOLLIN) == 0)
+		return;
+
 	n = read(cc->fd, buf, sizeof(buf));
-	if (n <= 0) {
+	if (n < 0) {
+		/*
+		 * EAGAIN after EPOLLIN is not a contradiction: epoll(7) is
+		 * explicit that a readiness notification may be spurious, and
+		 * this read is why the master is O_NONBLOCK at all (#294).
+		 * Before that it blocked here, in n_tty_read, and took the
+		 * whole control plane with it.
+		 */
+		if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
+			return;
+		console_session_teardown(sess);
+		return;
+	}
+	if (n == 0) {
 		/* Shell exited (EOF) or the pty hung up (EIO, once every
 		 * slave-side reference has closed) -- either way this
 		 * session is over. */
-		console_session_teardown(cc->exec_session);
+		console_session_teardown(sess);
 		return;
 	}
 
-	if (ws_write_frame(cc->exec_session->ws_conn->fd, WS_OPCODE_BINARY, buf, (size_t)n) != 0)
-		console_session_teardown(cc->exec_session);
+	if (ws_write_frame(sess->ws_conn->fd, WS_OPCODE_BINARY, buf, (size_t)n) != 0)
+		console_session_teardown(sess);
 }
 
 /*
@@ -30985,7 +31097,7 @@ static int cixd_main(int argc, char **argv)
 			else if (cc->kind == CONN_CONSOLE_WS)
 				handle_console_ws_event(cc);
 			else if (cc->kind == CONN_CONSOLE_PTY)
-				handle_console_pty_event(cc);
+				handle_console_pty_event(cc, events[j].events);
 			else if (cc->kind == CONN_PKG_BUILD_LOG_WS)
 				handle_pkg_build_log_ws_event(cc);
 			else if (cc->kind == CONN_KMSG)
