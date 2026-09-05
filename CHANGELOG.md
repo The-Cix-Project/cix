@@ -30,9 +30,11 @@ The evidence was in the output the whole time: the four `depA: autostarted (rest
 
 Measured on 192.168.15.95: `GET /v1/system/stalls?limit=1000` returned exactly 256 records, newest `2026-08-31 22:59:09`, oldest `2026-08-27 10:28:14`. Exactly 256 is the array bound hit precisely, and the oldest is where the read window begins. `cixd` wedged three times on 2026-09-04/05 and none of those appear, because the reader never reaches them.
 
-This bug fabricated a diagnosis, which is the part worth recording. #229 was filed and closed on the reading that stallwatch *wrote nothing* during a 16-minute wedge — evidence being that the newest record was 16 hours old. That record, `ts 1788217149`, is precisely this reader's ceiling. The records had been written and fsynced and were on disk the whole time. The write path was then rewritten on the strength of it.
+**And it was then over-read, which is the part most worth recording.** From "the newest record shown is four days stale" it was concluded that the records existed and merely could not be reported — so #229 (*stallwatch recorded nothing during a 16-minute wedge*) was closed as a misdiagnosis, and the `/dev/kmsg` write's rationale was rewritten to say the write-side failure it described was not happening.
 
-The `/dev/kmsg` write is kept: it needs no filesystem, cannot wait on a block device, and appears on the serial console as the stall happens rather than after it. Those reasons stand on their own. Its comment claimed a write-side failure that was not occurring, and that has been corrected in place rather than left to be read as fact later.
+Deploying the fix disproved that. With the ring, the same call returns records ending **2026-09-01 15:08:03** — one day further than before, so a full day of real records had genuinely been unreachable — and there the file ends. The wedges of 2026-09-04/05 are absent from the file itself, not merely from the report. The watchdog is alive and armed throughout (`service_probe_armed: true`, `probes_sent: 5`, `service_last_ok_seconds_ago: 4`).
+
+So #229 was right, its closure was wrong, and it is reopened. Two independent bugs shared one symptom, and the cheaper one was assumed to account for both without being measured against it. The `/dev/kmsg` write's original justification stands unchanged after all, and both comments that were "corrected" have been corrected back.
 
 The fix is a ring: keep the newest 256, drop the oldest. A report that has to discard records must discard the old ones. `test_stallwatch` appends 400 synthetic records straight into the record file and asserts the newest comes back first — the bug is entirely in the read path, so provoking hundreds of real stalls would test the wrong half.
 

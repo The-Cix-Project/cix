@@ -291,14 +291,22 @@ static void append_line(const char *line, int len)
 	 * exactly the resource being reported and the record lands late or
 	 * not at all.
 	 *
-	 * This was written believing the evidence for that was already in
-	 * hand -- three multi-minute wedges on 192.168.15.95 in one day,
-	 * and a record file whose newest entry looked four days older than
-	 * any of them. It was not. The records had landed; the reporting
-	 * endpoint was returning the oldest 256 of its read window and
-	 * could not reach them (see stallwatch_write_json()). The reason
-	 * to write here first is the plain one and it stands on its own:
-	 * /dev/kmsg needs no filesystem and cannot wait on a block device.
+	 * The evidence: three multi-minute wedges on 192.168.15.95 on
+	 * 2026-09-04/05, and a record file whose newest entry is
+	 * 2026-09-01 15:08:03 -- nothing at all from any of them.
+	 *
+	 * That reading was briefly retracted and is restored here, because
+	 * the retraction was wrong and the way it went wrong is worth
+	 * keeping. A second, unrelated bug (#284) had the reporting
+	 * endpoint returning the OLDEST 256 records of its read window, so
+	 * the newest record it could show was four days stale. From that
+	 * it was concluded that the records existed and merely could not
+	 * be read out. They did not. Fixing the reader moved the newest
+	 * visible record forward by one day, to 2026-09-01 15:08:03, and
+	 * there it stopped -- which is where the file genuinely ends.
+	 *
+	 * Two bugs with the same symptom, and the second one was assumed
+	 * to explain the first without being measured against it.
 	 *
 	 * /dev/kmsg is memory-backed. It needs no filesystem, cannot wait
 	 * on a block device, appears on the serial console as it happens,
@@ -866,15 +874,19 @@ void stallwatch_write_json(struct json_writer *w, int limit)
 	 * the exact opposite of what a watchdog report is for, and it hid
 	 * itself perfectly: the endpoint answered 200 with a plausible
 	 * array of real records every time. Measured on 192.168.15.95:
-	 * GET /v1/system/stalls?limit=1000 returned exactly 256 records
-	 * whose newest was four days old, while the daemon had wedged three
-	 * times in the day before. The records were written, fsynced and on
-	 * disk; the reader never reached them.
+	 * GET /v1/system/stalls?limit=1000 returned exactly 256 records --
+	 * the array bound, hit precisely -- whose newest was 2026-08-31
+	 * 22:59:09. With the ring, the same call returns records ending
+	 * 2026-09-01 15:08:03. A full extra day of real records had been
+	 * unreachable.
 	 *
-	 * That mattered beyond the endpoint. The write path was rewritten
-	 * (records now go to /dev/kmsg before touching the disk) on the
-	 * strength of a diagnosis this bug fabricated -- "the record never
-	 * landed" -- when the record had landed and could not be read out.
+	 * What this bug did NOT explain, though it was briefly taken to:
+	 * the wedges of 2026-09-04/05 are absent from the file itself, not
+	 * merely from the report. The reader was fixed on the theory that
+	 * it was hiding them; it was hiding a day of records, and the
+	 * wedges are still missing (#229). Two bugs, one symptom, and the
+	 * cheaper one was assumed to account for both.
+	 *
 	 * A report that drops what it cannot fit must drop the oldest.
 	 */
 	for (p = strtok(buf, "\n"); p != NULL; p = strtok(NULL, "\n")) {
