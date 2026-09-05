@@ -29046,7 +29046,7 @@ static void handle_restart_timer_event(struct conn *cc)
 		int has_follow_rolling_jitter, follow_rolling_jitter_seconds;
 		char err_msg[256];
 		int status = create_container_from_body(
-		    def->body, def->body_len, &entry, restart_policy, &restart_delay_seconds, depends_on,
+		    def->body, def->body_len, 0, &entry, restart_policy, &restart_delay_seconds, depends_on,
 		    &depends_on_count, &has_readiness, &readiness_tcp_port, &readiness_timeout_seconds,
 		    &follow_rolling, &has_follow_rolling_jitter, &follow_rolling_jitter_seconds, err_msg,
 		    sizeof(err_msg));
@@ -29185,7 +29185,7 @@ static void handle_rolling_restart_timer_event(struct conn *cc)
 			int has_follow_rolling_jitter, follow_rolling_jitter_seconds;
 			char err_msg[256];
 			int status = create_container_from_body(
-			    def->body, def->body_len, &entry, restart_policy, &restart_delay_seconds,
+			    def->body, def->body_len, 0, &entry, restart_policy, &restart_delay_seconds,
 			    depends_on, &depends_on_count, &has_readiness, &readiness_tcp_port,
 			    &readiness_timeout_seconds, &follow_rolling, &has_follow_rolling_jitter,
 			    &follow_rolling_jitter_seconds, err_msg, sizeof(err_msg));
