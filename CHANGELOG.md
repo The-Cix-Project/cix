@@ -2,6 +2,18 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Sixteen modules: pki and storage, and the lint gate catches its third (ADR-0249)
+
+`pki` (the CA tier: root, intermediate, certificates, reset) and `storage` (devices, device mappings, disks, disk roles, formatting, unmounting and the partition table — 1,024 lines, the largest single group in the file) bring it to sixteen. **main.c is 25,361 lines, down from 31,284: 5,923 gone, 19%.**
+
+`reissue_host_pki_cert()` moved into `api_pki.c` and is exported, because three of its four callers are pki handlers — creating a CA, creating an intermediate and resetting the tier all invalidate the daemon's own certificate. The fourth is a site-configuration change, which is why it is exported rather than static.
+
+`g_base_dir` joined the 66 paths in `daemonpaths.h`. It is the root every one of them is derived from, so it belonged there from the start.
+
+**`test_lint` caught its third defect of this refactor, and it is worth stating the pattern because it recurred:** a generated header declared `respond_diskformat_error(int, enum diskformat_error)` without including `diskformat.h`. C gives an enum first named inside a prototype *function-prototype scope*, so the declaration and the definition are different types. TCC compiled both without complaint, three times running. Every `api_` header has since been audited for the same class and all are clean.
+
+Two handlers stayed behind under rule 2: `handle_disk_format_post()` spawns the format job and registers its pidfd with the event loop, and `handle_backup_config_put()` re-arms a timerfd.
+
 ### Fourteen handler modules: dns, images, ldap (ADR-0249)
 
 `dns` (records and the server containers that answer for them), `image` (images, manifests and image recipes — 705 lines, the second-largest group) and `ldap` (servers, client config, users and groups — 541) join the eleven already moved. **main.c is 26,765 lines, down from 31,284: 4,519 lines and 14% gone, across fourteen modules totalling 4,507.**
