@@ -1,4 +1,13 @@
 #
+# v2.53.28 -- GET /v1/system/stalls returns the NEWEST records (#284). The
+# reader filled a fixed 256-entry array from the front of its read window
+# and stopped, so once the record file held more than that in the window,
+# every newer record was unreachable and the endpoint answered 200 with a
+# plausible array of stale ones. Measured: limit=1000 returned exactly 256
+# records whose newest was four days old, across three wedges that appear
+# nowhere. It also fabricated the diagnosis #229 was closed on.
+#
+#
 # v2.41.0 -- a container can opt into samepage merging (#260): ksm true on
 # create, applied with prctl(PR_SET_MEMORY_MERGE) before exec. The half
 # that makes the v2.40.0 scanner actually save anything.
@@ -432,9 +441,9 @@
 # predated #60.)
 #
 pkg_name="cix"
-pkg_version="v2.53.27"
-pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/v2.53.27.tar.gz"
-pkg_sha256="789d421f2f8ca165af01b761ff91eda253e5324438a895ddadb3b3bde59ede75"
+pkg_version="v2.53.28"
+pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/v2.53.28.tar.gz"
+pkg_sha256="3c70ce0cbcf0e8449426c490b9b6845443a50454534ffa0203a2cdeb57a40ff3"
 # ADR-0199/0209: composed from exactly these, with no fallback
 # environment to inherit anything missing (#168). Cix is the first
 # recipe to need this declaration and it found the rule the hard way:
