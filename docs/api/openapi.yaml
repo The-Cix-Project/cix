@@ -2996,6 +2996,41 @@ paths:
                           How long ago the last probe was answered; null
                           if none ever has been. On a healthy daemon this
                           stays under the probe interval.
+                  store:
+                    type: object
+                    description: >
+                      Which file the records above were read out of
+                      (#229). The watchdog logs its own path, dev, inode
+                      and size to /dev/kmsg after every append; until
+                      this, the reader reported none of that, so a
+                      reader four days behind a writer appending to a
+                      growing inode could not be told apart from a
+                      writer that was not appending at all. The two are
+                      deliberately the same three facts in the same
+                      order, so they can be compared by eye.
+                    properties:
+                      path:
+                        type: string
+                        description: The record file this response read.
+                      exists:
+                        type: boolean
+                        description: >
+                          False when the path could not be stat'd at
+                          all, which is a different failure from an
+                          empty stalls array and used to look identical.
+                      dev:
+                        type: integer
+                        description: Device number, or -1 when exists is false.
+                      inode:
+                        type: integer
+                        description: Inode number, or -1 when exists is false.
+                      size_bytes:
+                        type: integer
+                        description: >
+                          Size on disk now, or -1 when exists is false.
+                          Compared against the writer's own reported
+                          size, this says whether both sides are looking
+                          at the same bytes.
 
   /system/kernel-policy:
     get:

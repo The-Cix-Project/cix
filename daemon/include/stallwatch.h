@@ -81,6 +81,15 @@ void stallwatch_activity(const char *what);
 void stallwatch_activity_clear(void);
 
 /* Writes the most recent records (newest first) as a JSON array. */
+/*
+ * What the READER of the record file sees: its path, whether it
+ * exists, and its dev/inode/size -- the same three facts the writer
+ * already reports to /dev/kmsg after every append (#229). Only one
+ * side was instrumented, which is why "different file" and "same file
+ * the reader cannot show" could not be told apart from the API alone.
+ */
+void stallwatch_write_store_json(struct json_writer *w);
+
 void stallwatch_write_json(struct json_writer *w, int limit);
 
 #endif /* STALLWATCH_H */
