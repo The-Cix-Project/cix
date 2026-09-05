@@ -1,4 +1,13 @@
 #
+# v2.53.34 -- the console's exec command is a query parameter and the
+# X-Cix-Exec-Cmd header is retired (ADR-0245). A browser's WebSocket
+# constructor sets no request headers, so that parameter worked from
+# cixctl and was structurally unreachable from the dashboard -- the
+# exact split ADR-0242 refused when it made term/cols/rows query
+# parameters and named this header as the counter-example. cmd is
+# percent-decoded and must be absolute. The dashboard gets a Run box.
+#
+#
 # v2.53.33 -- the console pty comes from the CONTAINER's devpts (#290).
 # posix_openpt() opens the daemon's own /dev/ptmx, so the slave handed
 # to a process inside a container could be read and written but not
@@ -493,9 +502,9 @@
 # predated #60.)
 #
 pkg_name="cix"
-pkg_version="v2.53.33"
-pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/v2.53.33.tar.gz"
-pkg_sha256="e6ea26f53e656aca5dd394f2e62f564801837efd7ec9c2c2cb9e65dd1c8bbc67"
+pkg_version="v2.53.34"
+pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/v2.53.34.tar.gz"
+pkg_sha256="ae888f2e187f1d2e28ba4f57b9e8612d9a196c73191fe2263552c52faa58a245"
 # ADR-0199/0209: composed from exactly these, with no fallback
 # environment to inherit anything missing (#168). Cix is the first
 # recipe to need this declaration and it found the rule the hard way:
