@@ -5094,7 +5094,6 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 {
 	struct pkg_recipe recipe;
 	char recipe_path[PATH_MAX];
-	char tarball_path[PATH_MAX];
 	struct pkg_entry *e;
 	int i, slot = -1;
 	int is_upgrade;
@@ -7134,13 +7133,6 @@ struct install_mutate_ctx {
 struct sandbox_merge_ctx {
 	const char *dest_dir;
 };
-
-static int sandbox_merge_mutate(const char *staging_rootfs, void *ctx_v)
-{
-	struct sandbox_merge_ctx *ctx = ctx_v;
-
-	return merge_tree(ctx->dest_dir, staging_rootfs, "", NULL);
-}
 
 static int install_mutate(const char *staging_rootfs, void *ctx_v)
 {
@@ -11087,33 +11079,6 @@ static int image_recipe_ref_cmp(const void *a, const void *b)
 {
 	return strcmp(((const struct image_recipe_ref *)a)->name,
 	              ((const struct image_recipe_ref *)b)->name);
-}
-
-/* The canonical, sorted "name@version,..." string for r's own declared
- * entries -- the exact shape image_hash_manifest_string() expects,
- * matching build_image_manifest_string()'s own convention but sourced
- * from a not-yet-applied recipe rather than g_packages[] (ADR-0108). */
-static void image_recipe_manifest_string(const struct image_recipe *r, char *out, size_t out_size)
-{
-	struct image_recipe_ref refs[IMAGE_MANIFEST_MAX_PACKAGES];
-	int i;
-	size_t pos = 0;
-
-	for (i = 0; i < r->entry_count; i++) {
-		refs[i].name = r->entries[i].package;
-		refs[i].version = r->entries[i].version;
-	}
-	qsort(refs, (size_t)r->entry_count, sizeof(refs[0]), image_recipe_ref_cmp);
-
-	out[0] = '\0';
-	for (i = 0; i < r->entry_count; i++) {
-		int n = snprintf(out + pos, out_size - pos, "%s%s@%s", (i > 0) ? "," : "", refs[i].name,
-		                  refs[i].version);
-
-		if (n < 0 || (size_t)n >= out_size - pos)
-			break;
-		pos += (size_t)n;
-	}
 }
 
 /*

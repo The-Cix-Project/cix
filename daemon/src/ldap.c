@@ -23,7 +23,15 @@ static char g_users_state_path[PATH_MAX];
 static struct ldap_group g_groups[LDAP_GROUP_MAX];
 static char g_groups_state_path[PATH_MAX];
 
-static struct ldap_config g_config = { LDAP_CONFIG_DEFAULT_START_UID, LDAP_CONFIG_DEFAULT_START_GID };
+/* The client-login fields (URI, base DN, bind DN, bind password) are
+ * deliberately left zeroed: until an operator PUTs them there is no LDAP
+ * server to point a container at, and an empty value is what the recipe
+ * renderer treats as unset. Designated initialisers say that on purpose
+ * rather than leaving it to the reader to count fields. */
+static struct ldap_config g_config = {
+	.start_uid = LDAP_CONFIG_DEFAULT_START_UID,
+	.start_gid = LDAP_CONFIG_DEFAULT_START_GID,
+};
 static char g_config_state_path[PATH_MAX];
 
 static int config_path_is_valid(const char *path)

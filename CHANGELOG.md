@@ -2,6 +2,27 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### A second compiler reads our C, and it found ten things the first one did not (ADR-0248)
+
+Every build has run `-Wall -Werror` for this project's whole life, so warning-free looked like a settled property. One `gcc -fsyntax-only -Wall -Wextra` pass over the same tree — green under TCC the entire time — reported ten real defects:
+
+- two `int` versus `size_t` comparisons in `containerdef.c`, in a file whose own other array loops already used `size_t`, so the codebase disagreed with itself and nothing said so
+- four variables declared and never used, one left behind by a removal made in the same session
+- a comment block indented as though the `if` above it guarded what followed, which is exactly how a reader mis-reads control flow
+- a struct initialised by position with a field silently left off the end
+
+None changed behaviour that day. That is what makes them worth finding: they are the class that becomes a bug on the *next* edit, and no runtime test can reach them because there is nothing yet to observe.
+
+The measurement that settles it, and the gate's own proof: with an unused variable injected into `stallwatch.c`, TCC compiles the file clean under `-Wall -Werror` and reports nothing at all, while `test_lint` fails and names it.
+
+`test_lint` runs in the selftest and a warning fails the build. gcc runs `-fsyntax-only` — no object file, nothing that can reach a binary, an image, a package or the cache — so **TCC still compiles every byte this project ships** and [ADR-0224](docs/adr/0224-the-toolchain-tenet.md) is untouched. The distinction is producer versus reader: ADR-0224 governs what may compile our code, ADR-0248 governs what may read it, and a second reader is worth having precisely because it disagrees.
+
+`-Wno-comment` is the single suppression, and it is style rather than substance: this codebase's comments quote code containing `/*`. Forty-six of the first pass's fifty-six warnings were that alone, and keeping them would have buried the ten that mattered.
+
+### Dead code removed
+
+`sandbox_merge_mutate()` and `image_recipe_manifest_string()` in `pkg.c` were defined and never called. They are the only two genuinely unreferenced functions in the whole codebase: an initial scan flagged 310, and all but two dissolved once the generated dispatch table and `config.c`'s `cfg_##name` token pasting were accounted for. There are no `TODO`, `FIXME`, `XXX` or `HACK` markers anywhere in the C.
+
 ### The supervisor is removed, not merely unused (#297, #298, #299)
 
 ADR-0246's `cix-init` was superseded by ADR-0247 the day the box disproved it: the supervisor did everything it was designed to do, and the worker could not come up a second time, because the whole `--init-mode` startup path assumes a fresh kernel. The boot entry went back to `init=/bin/cixd` immediately.
