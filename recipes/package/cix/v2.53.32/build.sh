@@ -1,4 +1,17 @@
 #
+# v2.53.32 -- the websocket test helpers dropped frames on a short read
+# (#286). recv_ws_frame() read the two-byte frame header with a single
+# read() and treated anything but exactly two bytes as a dead
+# connection, while the payload loop three lines below had always
+# looped. That is the whole of a flake that failed the gate on three
+# different assertions of test_console_exec, and it predates this
+# session -- the same test failed the same way at v2.53.13 and
+# v2.53.24. Raising the read timeout did not help because the
+# connection was never slow; a good frame was being discarded.
+# Restores test_stallwatch's #284 regression step, dropped in v2.53.31
+# only to bisect this.
+#
+#
 # v2.53.31 -- a bisect. The last build to pass its selftest was
 # v2.53.27; the five since have all failed, on six distinct assertions
 # across test_console_exec and test_container_restart. A control
@@ -469,9 +482,9 @@
 # predated #60.)
 #
 pkg_name="cix"
-pkg_version="v2.53.31"
-pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/v2.53.31.tar.gz"
-pkg_sha256="d61281591157488be3ae9d7624fbcf91dc1062922f55966866fc20f7ffe3f85e"
+pkg_version="v2.53.32"
+pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/v2.53.32.tar.gz"
+pkg_sha256="bb3258f119d22f076e2d45e58f495c2de786ddbbfb5cb5945b9df205d4580075"
 # ADR-0199/0209: composed from exactly these, with no fallback
 # environment to inherit anything missing (#168). Cix is the first
 # recipe to need this declaration and it found the rule the hard way:
