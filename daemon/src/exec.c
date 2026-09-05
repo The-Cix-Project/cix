@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <termios.h>
 #include <unistd.h>
@@ -40,6 +41,82 @@ static int open_ns_fd(pid_t target_pid, const char *ns_name)
 	return fd;
 }
 
+/*
+ * The container's user namespace, when it has one of its own (#293).
+ *
+ * A session that never enters it runs with HOST credentials inside the
+ * container's mount namespace: it reads every on-disk id unmapped, so a
+ * container uid 10000 whose files are host 4369840 shows up as 4369840
+ * and belongs to nobody the session can be. That is what made a console
+ * login report "change directory failed: Permission denied" on the
+ * user's own home directory while the identical login over SSH -- which
+ * happens inside the container -- worked. The more serious half is that
+ * such a session holds real host root against the container's
+ * filesystem, so the isolation userns is there to provide was simply
+ * absent on this path.
+ *
+ * Returns 1 and sets *out_fd when the namespace differs and must be
+ * joined, 0 with *out_fd == -1 when it is the one this process is
+ * already in (setns() onto your own user namespace is EINVAL, which is
+ * every non-userns container), and -1 on a real failure. The three
+ * cases are kept distinct deliberately: treating an error as "nothing
+ * to join" would restore the bug silently, which is how it survived.
+ */
+static int open_userns_fd(pid_t target_pid, int *out_fd)
+{
+	struct stat target_st, self_st;
+	char path[64];
+	int fd;
+
+	*out_fd = -1;
+	snprintf(path, sizeof(path), "/proc/%d/ns/user", (int)target_pid);
+	if (stat(path, &target_st) != 0) {
+		fprintf(stderr, "exec_into_container: stat %s: %s\n", path, strerror(errno));
+		return -1;
+	}
+	if (stat("/proc/self/ns/user", &self_st) != 0) {
+		fprintf(stderr, "exec_into_container: stat /proc/self/ns/user: %s\n", strerror(errno));
+		return -1;
+	}
+	if (target_st.st_dev == self_st.st_dev && target_st.st_ino == self_st.st_ino)
+		return 0;
+	fd = open(path, O_RDONLY | O_CLOEXEC);
+	if (fd < 0) {
+		fprintf(stderr, "exec_into_container: open %s: %s\n", path, strerror(errno));
+		return -1;
+	}
+	*out_fd = fd;
+	return 1;
+}
+
+/*
+ * The host uid that the target's own uid 0 maps to, read from the
+ * kernel's uid_map rather than plumbed through from the container spec
+ * -- the map is what setns() will actually apply, and it is the one
+ * source of truth for the answer. A container sharing this process's
+ * user namespace maps 0 to 0, so callers get 0 and do nothing.
+ */
+static long long userns_base_of(pid_t target_pid)
+{
+	char path[64];
+	FILE *f;
+	long long inside, host, len;
+	long long base = 0;
+
+	snprintf(path, sizeof(path), "/proc/%d/uid_map", (int)target_pid);
+	f = fopen(path, "r");
+	if (f == NULL)
+		return 0;
+	while (fscanf(f, "%lld %lld %lld", &inside, &host, &len) == 3) {
+		if (inside == 0) {
+			base = host;
+			break;
+		}
+	}
+	fclose(f);
+	return base;
+}
+
 /* mnt/uts/net all take effect on the calling process immediately;
  * pid only affects children created *after* the call (setns(2)/
  * pid_namespaces(7)) -- so it's entered last here, right before the
@@ -47,23 +124,36 @@ static int open_ns_fd(pid_t target_pid, const char *ns_name)
  * other one) was opened up front. No ipc namespace: containers never
  * isolate it in the first place (src/container.c), so there's none
  * to join. */
-static int join_namespaces(int mnt_fd, int uts_fd, int net_fd, int pid_fd)
+static int join_namespaces(int user_fd, int mnt_fd, int uts_fd, int net_fd, int pid_fd)
 {
 	static const struct { int flag; const char *name; } order[] = {
+		{ CLONE_NEWUSER, "user" },
 		{ CLONE_NEWNS, "mnt" },
 		{ CLONE_NEWUTS, "uts" },
 		{ CLONE_NEWNET, "net" },
 		{ CLONE_NEWPID, "pid" },
 	};
-	int fds[4];
+	int fds[5];
 	size_t i;
 
-	fds[0] = mnt_fd;
-	fds[1] = uts_fd;
-	fds[2] = net_fd;
-	fds[3] = pid_fd;
+	/* user FIRST (#293): the capabilities this process gains in the
+	 * target's user namespace are what make the setns(mnt) below
+	 * legitimate, which is the order nsenter -U -m uses. Joining mnt
+	 * first and user afterwards fails, because a process that has
+	 * already entered a foreign mount namespace no longer holds
+	 * CAP_SYS_ADMIN over the user namespace owning it. */
+	fds[0] = user_fd;
+	fds[1] = mnt_fd;
+	fds[2] = uts_fd;
+	fds[3] = net_fd;
+	fds[4] = pid_fd;
 
-	for (i = 0; i < 4; i++) {
+	for (i = 0; i < 5; i++) {
+		/* Only user_fd is ever absent, and only for a container that
+		 * shares this process's own user namespace -- there is nothing
+		 * to join there and setns() would refuse it EINVAL. */
+		if (fds[i] < 0)
+			continue;
 		if (setns(fds[i], order[i].flag) != 0) {
 			fprintf(stderr, "exec_into_container: setns(%s): %s\n", order[i].name, strerror(errno));
 			return -1;
@@ -98,6 +188,8 @@ int exec_into_container(pid_t target_pid, char *const cmd_argv[],
 	int pipefd[2];
 	int mnt_fd, uts_fd, net_fd, pid_fd;
 	int mnt_errno, uts_errno, net_errno, pid_errno;
+	int user_fd = -1;
+	int user_errno = 0;
 	pid_t intermediate;
 	unsigned short term_cols = EXEC_TERM_COLS_DEFAULT;
 	unsigned short term_rows = EXEC_TERM_ROWS_DEFAULT;
@@ -134,16 +226,23 @@ int exec_into_container(pid_t target_pid, char *const cmd_argv[],
 	net_errno = errno;
 	pid_fd = open_ns_fd(target_pid, "pid");
 	pid_errno = errno;
-	if (mnt_fd < 0 || uts_fd < 0 || net_fd < 0 || pid_fd < 0) {
+	/* Up front with the rest, for the same reason (#293): once the
+	 * mount namespace is joined, /proc no longer resolves to the
+	 * host's procfs and this path cannot be opened at all. */
+	if (open_userns_fd(target_pid, &user_fd) < 0)
+		user_errno = errno;
+	if (mnt_fd < 0 || uts_fd < 0 || net_fd < 0 || pid_fd < 0 || user_errno != 0) {
 		int saved_errno = mnt_fd < 0   ? mnt_errno
 		                   : uts_fd < 0 ? uts_errno
 		                   : net_fd < 0 ? net_errno
-		                                : pid_errno;
+		                   : pid_fd < 0 ? pid_errno
+		                                : user_errno;
 
 		if (mnt_fd >= 0) close(mnt_fd);
 		if (uts_fd >= 0) close(uts_fd);
 		if (net_fd >= 0) close(net_fd);
 		if (pid_fd >= 0) close(pid_fd);
+		if (user_fd >= 0) close(user_fd);
 		errno = saved_errno;
 		return -1;
 	}
@@ -195,19 +294,53 @@ int exec_into_container(pid_t target_pid, char *const cmd_argv[],
 		master_fd = open(ptmx_path, O_RDWR | O_NOCTTY | O_CLOEXEC);
 		if (master_fd < 0) {
 			fprintf(stderr, "exec_into_container: open %s: %s\n", ptmx_path, strerror(errno));
-			close(mnt_fd); close(uts_fd); close(net_fd); close(pid_fd);
+			close(mnt_fd); close(uts_fd); close(net_fd); close(pid_fd); if (user_fd >= 0) close(user_fd);
 			return -1;
 		}
 		if (unlockpt(master_fd) != 0 || ioctl(master_fd, TIOCGPTN, &ptn) != 0 || ptn < 0) {
 			fprintf(stderr, "exec_into_container: unlockpt/TIOCGPTN: %s\n", strerror(errno));
 			close(master_fd);
-			close(mnt_fd); close(uts_fd); close(net_fd); close(pid_fd);
+			close(mnt_fd); close(uts_fd); close(net_fd); close(pid_fd); if (user_fd >= 0) close(user_fd);
 			return -1;
 		}
 		/* A path in the CONTAINER's mount namespace, which is the only
 		 * namespace it is valid in -- opened by the intermediate below,
 		 * after it has joined. */
 		snprintf(slave_path, sizeof(slave_path), "/dev/pts/%d", ptn);
+
+		/*
+		 * Hand the slave to the container's own root before anything
+		 * joins the user namespace (#293).
+		 *
+		 * devpts created it for whoever opened ptmx -- this daemon, so
+		 * host uid 0 -- at the mode src/mountns.c mounts it with, 0620.
+		 * The intermediate below now enters the container's user
+		 * namespace, where host 0 is not mapped at all, and container
+		 * root cannot DAC_OVERRIDE an inode whose owner is unmapped.
+		 * Without this the open() a few lines down fails EACCES on
+		 * every userns container, which is every new container under
+		 * ADR-0207 -- the console would go from showing wrong ids to
+		 * having no terminal at all.
+		 *
+		 * Done host-side, because this is the last moment a process
+		 * with host credentials holds this path. login(1) re-chowns the
+		 * tty to whoever logs in, from inside the namespace, so this
+		 * ownership is a starting point rather than a final answer.
+		 */
+		{
+			long long base = userns_base_of(target_pid);
+			char slave_host_path[80];
+
+			snprintf(slave_host_path, sizeof(slave_host_path), "/proc/%ld/root/dev/pts/%d",
+			         (long)target_pid, ptn);
+			if (base != 0 && chown(slave_host_path, (uid_t)base, (gid_t)base) != 0) {
+				fprintf(stderr, "exec_into_container: chown %s to %lld: %s\n", slave_host_path,
+				        base, strerror(errno));
+				close(master_fd);
+				close(mnt_fd); close(uts_fd); close(net_fd); close(pid_fd); if (user_fd >= 0) close(user_fd);
+				return -1;
+			}
+		}
 	}
 	/*
 	 * Size the pty BEFORE the fork, not after the 101 is sent: ncurses
@@ -230,7 +363,7 @@ int exec_into_container(pid_t target_pid, char *const cmd_argv[],
 
 	if (pipe2(pipefd, O_CLOEXEC) != 0) {
 		close(master_fd);
-		close(mnt_fd); close(uts_fd); close(net_fd); close(pid_fd);
+		close(mnt_fd); close(uts_fd); close(net_fd); close(pid_fd); if (user_fd >= 0) close(user_fd);
 		return -1;
 	}
 
@@ -239,7 +372,7 @@ int exec_into_container(pid_t target_pid, char *const cmd_argv[],
 		close(master_fd);
 		close(pipefd[0]);
 		close(pipefd[1]);
-		close(mnt_fd); close(uts_fd); close(net_fd); close(pid_fd);
+		close(mnt_fd); close(uts_fd); close(net_fd); close(pid_fd); if (user_fd >= 0) close(user_fd);
 		return -1;
 	}
 
@@ -249,9 +382,9 @@ int exec_into_container(pid_t target_pid, char *const cmd_argv[],
 		close(pipefd[0]);
 		close(master_fd); /* only the daemon-side relay ever touches the master */
 
-		if (join_namespaces(mnt_fd, uts_fd, net_fd, pid_fd) != 0)
+		if (join_namespaces(user_fd, mnt_fd, uts_fd, net_fd, pid_fd) != 0)
 			_exit(127);
-		close(mnt_fd); close(uts_fd); close(net_fd); close(pid_fd);
+		close(mnt_fd); close(uts_fd); close(net_fd); close(pid_fd); if (user_fd >= 0) close(user_fd);
 
 		/*
 		 * The slave is opened HERE, after the mount namespace has been
@@ -367,6 +500,7 @@ int exec_into_container(pid_t target_pid, char *const cmd_argv[],
 	close(uts_fd);
 	close(net_fd);
 	close(pid_fd);
+	if (user_fd >= 0) close(user_fd);
 
 	{
 		pid_t grandchild_pid = -1;
@@ -441,6 +575,8 @@ int exec_into_container_piped(pid_t target_pid, char *const cmd_argv[], int *out
 	int outpipe[2];
 	int pidpipe[2];
 	int mnt_fd, uts_fd, net_fd, pid_fd;
+	int user_fd = -1;
+	int user_errno = 0;
 	int saved_errno;
 	pid_t intermediate, grandchild;
 
@@ -451,11 +587,17 @@ int exec_into_container_piped(pid_t target_pid, char *const cmd_argv[], int *out
 		saved_errno = errno;
 	net_fd = open_ns_fd(target_pid, "net");
 	pid_fd = open_ns_fd(target_pid, "pid");
-	if (mnt_fd < 0 || uts_fd < 0 || net_fd < 0 || pid_fd < 0) {
+	/* #293: same namespace, same reasons, same up-front open as above. */
+	if (open_userns_fd(target_pid, &user_fd) < 0)
+		user_errno = errno;
+	if (mnt_fd < 0 || uts_fd < 0 || net_fd < 0 || pid_fd < 0 || user_errno != 0) {
 		if (mnt_fd >= 0) close(mnt_fd);
 		if (uts_fd >= 0) close(uts_fd);
 		if (net_fd >= 0) close(net_fd);
 		if (pid_fd >= 0) close(pid_fd);
+		if (user_fd >= 0) close(user_fd);
+		if (user_errno != 0)
+			saved_errno = user_errno;
 		errno = saved_errno;
 		return -1;
 	}
@@ -464,7 +606,7 @@ int exec_into_container_piped(pid_t target_pid, char *const cmd_argv[], int *out
 	 * CLOEXEC on it -- the read end and the pid-handback pipe do get
 	 * it, since nothing exec'd should inherit either. */
 	if (pipe(outpipe) != 0 || pipe2(pidpipe, O_CLOEXEC) != 0) {
-		close(mnt_fd); close(uts_fd); close(net_fd); close(pid_fd);
+		close(mnt_fd); close(uts_fd); close(net_fd); close(pid_fd); if (user_fd >= 0) close(user_fd);
 		return -1;
 	}
 
@@ -472,15 +614,16 @@ int exec_into_container_piped(pid_t target_pid, char *const cmd_argv[], int *out
 	if (intermediate < 0) {
 		close(outpipe[0]); close(outpipe[1]);
 		close(pidpipe[0]); close(pidpipe[1]);
-		close(mnt_fd); close(uts_fd); close(net_fd); close(pid_fd);
+		close(mnt_fd); close(uts_fd); close(net_fd); close(pid_fd); if (user_fd >= 0) close(user_fd);
 		return -1;
 	}
 	if (intermediate == 0) {
 		close(outpipe[0]);
 		close(pidpipe[0]);
-		if (join_namespaces(mnt_fd, uts_fd, net_fd, pid_fd) != 0)
+		if (join_namespaces(user_fd, mnt_fd, uts_fd, net_fd, pid_fd) != 0)
 			_exit(127);
 		close(mnt_fd); close(uts_fd); close(net_fd); close(pid_fd);
+		if (user_fd >= 0) close(user_fd);
 
 		grandchild = fork();
 		if (grandchild < 0)
@@ -551,6 +694,7 @@ int exec_into_container_piped(pid_t target_pid, char *const cmd_argv[], int *out
 	close(pidpipe[0]);
 	close(pidpipe[1]);
 	close(mnt_fd); close(uts_fd); close(net_fd); close(pid_fd);
+	if (user_fd >= 0) close(user_fd);
 
 	*out_read_fd = outpipe[0];
 	/* The INTERMEDIATE's pid: a real child of this daemon, so its

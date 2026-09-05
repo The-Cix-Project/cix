@@ -361,7 +361,12 @@ int main(void)
 	/* --- fixture: a real, long-lived running container --- */
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
+	                       /* userns stated rather than defaulted (#293): the
+	                        * console must enter the container's user namespace,
+	                        * and a test that inherits userns_default asserts
+	                        * nothing on a host where that default is off. */
 	                       "{\"name\":\"consoletest\",\"image\":\"consoletest\","
+	                       "\"userns\":true,"
 	                       "\"consoles\":["
 	                       "{\"name\":\"first\",\"cmd\":[\"/bin/dual_console_child\"]},"
 	                       "{\"name\":\"second\",\"cmd\":[\"/bin/dual_console_child\"]}],"
@@ -743,6 +748,26 @@ int main(void)
 			 */
 			{ "", "TTY=/dev/pts/",
 			  "the pty comes from the container's own devpts, so ttyname() resolves (#290)" },
+			/*
+			 * #293: the session must be INSIDE the container's user
+			 * namespace, not merely inside its mount namespace.
+			 *
+			 * join_namespaces() entered mnt, uts, net and pid and not
+			 * user, so a console ran with host credentials against the
+			 * container's filesystem: every on-disk id read unmapped,
+			 * a login could not reach its own home directory, and the
+			 * isolation userns exists to provide was absent on this
+			 * path entirely. Every assertion in this table passed
+			 * throughout, which is why it went unseen -- a command
+			 * runs perfectly well with the wrong credentials.
+			 *
+			 * Asserting the mapping is non-identity rather than its
+			 * exact base: which subordinate range this container was
+			 * assigned is not this test's business, only that the
+			 * session is subject to one.
+			 */
+			{ "", "USERNS=mapped",
+			  "the console session joins the container's user namespace (#293)" },
 			/* Omitting everything is an ordinary request, not an
 			 * error -- a piped client has no terminal to describe.
 			 * The documented defaults are what it must then get,
