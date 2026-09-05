@@ -2,9 +2,13 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
-### Two flaky tests in the build gate (#286)
+### Four consecutive build gates failed on the same unread race (#286)
 
-Three consecutive `cix@v2.53.28` hostbuilds on 192.168.15.95 failed the selftest, each on a *different* single test, with the same source in all three. That is the gate being unreliable rather than the code being wrong, and an unreliable gate costs a fifteen-minute round trip every time it fires.
+Four `cix@v2.53.28`/`v2.53.29` hostbuilds on 192.168.15.95 failed the selftest, each on a *different* single test, with the same source in all four. That reads as four flakes. Two of them were one bug, and the build log named it plainly from the first occurrence.
+
+`test_cleanup_containers_and_network()` enumerated containers, deleted each, then deleted the network — one pass. The tests that call it create containers with `restart: always` and then restart the daemon, and the daemon brings those back on its own schedule, pausing on real readiness checks along the way. A container that autostarts *after* the enumeration is not in the list being deleted, so it is still attached when the network delete goes out, and the daemon refuses it 409 — correctly. The daemon was never wrong; the single-pass cleanup was.
+
+The evidence was in the output the whole time: the four `depA: autostarted (restart:always)` lines are printed *after* the failing delete, not before it. Cleanup races the daemon's own autostart, so it retries now — up to ten passes at 200 ms, re-enumerating each time, which is what picks up whatever appeared since the last one.
 
 `test_console_exec` gave its raw socket a two-second read timeout. What one of those reads waits for is the whole chain — HTTP upgrade, fork, entering the container's namespaces, `execve`, the child's first write, the relay back — and the suite runs inside a build container on a two-CPU host alongside the rest of itself. The failure was zero bytes received on the defaults scenario while the scenario immediately before it, the same request on its own connection, passed. Ten seconds now. It changes no assertion and costs nothing when the test passes; a genuine failure is simply reported eight seconds later.
 

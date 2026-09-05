@@ -2,20 +2,35 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include "json.h"
 
 #define TEST_CLEANUP_MAX_CONTAINERS 128
 #define TEST_CLEANUP_NAME_MAX 64
 
-int test_cleanup_containers_and_network(const struct cix_client *client, const char *network_name)
+/*
+ * How many enumerate-and-delete passes before giving up, and how long
+ * to pause between them. Ten passes at 200ms is two seconds, which is
+ * far longer than any autostart sequence these tests set up and short
+ * enough that a genuine leak still fails promptly.
+ */
+#define TEST_CLEANUP_PASSES 10
+#define TEST_CLEANUP_PAUSE_NANOS (200L * 1000L * 1000L)
+
+/* Enumerates containers and deletes every one of them. Returns how many
+ * it found, so the caller can tell "nothing left" from "deleted some".
+ *
+ * Delete status is deliberately ignored: a container that is already
+ * gone is success as far as cleanup is concerned, and a test that has
+ * already failed should still leave the host clean. */
+static int delete_every_container(const struct cix_client *client)
 {
 	struct cix_response r;
 	char names[TEST_CLEANUP_MAX_CONTAINERS][TEST_CLEANUP_NAME_MAX];
 	int count = 0;
 	int i;
 	char path[128];
-	int status;
 
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(client, "GET", "/v1/containers", NULL, &r) == 0 && r.json != NULL) {
@@ -35,26 +50,61 @@ int test_cleanup_containers_and_network(const struct cix_client *client, const c
 	}
 	cix_response_free(&r);
 
-	/*
-	 * Status deliberately ignored: a container that is already gone is
-	 * success as far as cleanup is concerned, and a test that has
-	 * already failed should still leave the host clean.
-	 */
 	for (i = 0; i < count; i++) {
 		snprintf(path, sizeof(path), "/v1/containers/%s", names[i]);
 		memset(&r, 0, sizeof(r));
 		cix_client_request(client, "DELETE", path, NULL, &r);
 		cix_response_free(&r);
 	}
+	return count;
+}
+
+/*
+ * Cleanup RACES the daemon's own autostart, so it retries.
+ *
+ * One enumerate-then-delete pass is not enough, and this cost four
+ * consecutive fifteen-minute build cycles on 192.168.15.95 before it
+ * was read correctly. The tests that call this create containers with
+ * restart:always and then restart the daemon; the daemon brings those
+ * back on its own schedule, pausing on real readiness checks along the
+ * way. A container that autostarts AFTER the enumeration is not in the
+ * list this deletes, so it is still attached to the network when the
+ * network delete goes out, and that delete is refused 409 -- correctly.
+ * The daemon is not wrong; a single-pass cleanup is.
+ *
+ * The build log said so plainly once looked at: the four
+ * "depA: autostarted (restart:always)" lines are printed AFTER the
+ * failing delete, not before it.
+ *
+ * So: delete, try the network, and on a refusal go round again. Each
+ * pass re-enumerates, which is what picks up whatever appeared since
+ * the last one.
+ */
+int test_cleanup_containers_and_network(const struct cix_client *client, const char *network_name)
+{
+	struct cix_response r;
+	char path[128];
+	int status = 0;
+	int pass;
 
 	snprintf(path, sizeof(path), "/v1/networks/%s", network_name);
-	memset(&r, 0, sizeof(r));
-	if (cix_client_request(client, "DELETE", path, NULL, &r) != 0 || r.status != 204) {
+
+	for (pass = 0; pass < TEST_CLEANUP_PASSES; pass++) {
+		struct timespec pause = { 0, TEST_CLEANUP_PAUSE_NANOS };
+
+		delete_every_container(client);
+
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(client, "DELETE", path, NULL, &r) == 0 && r.status == 204) {
+			cix_response_free(&r);
+			return 0;
+		}
 		status = r.status;
 		cix_response_free(&r);
-		fprintf(stderr, "FAIL: DELETE /v1/networks/%s, status=%d\n", network_name, status);
-		return -1;
+		nanosleep(&pause, NULL);
 	}
-	cix_response_free(&r);
-	return 0;
+
+	fprintf(stderr, "FAIL: DELETE /v1/networks/%s, status=%d after %d passes\n", network_name,
+	        status, TEST_CLEANUP_PASSES);
+	return -1;
 }
