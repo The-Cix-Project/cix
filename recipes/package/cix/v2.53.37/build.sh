@@ -1,4 +1,15 @@
 #
+# v2.53.37 -- every curl the daemon forks carries a stall guard (#285).
+# curl waits forever once connected, and nine of ten call sites passed
+# no timeout at all. One of them, fetch_update_image(), runs on the
+# EVENT LOOP behind POST /v1/system/update, so a silent peer blocked
+# the whole control plane rather than one job. Guards are
+# --connect-timeout plus --speed-limit/--speed-time rather than a
+# blanket --max-time, so a slow-but-progressing 1.4 GB fetch is never
+# killed while a stopped one is cut off promptly. test_curl_guards
+# fails the build if a new call site is added without one.
+#
+#
 # v2.53.36 -- test fixes only. test_apigen's operation count moves to
 # 276 for /pkg/verify (a deliberate visibility device, so it changes in
 # a diff), and test_daemon_net's n6/n7 deletes are asserted like the
@@ -519,9 +530,9 @@
 # predated #60.)
 #
 pkg_name="cix"
-pkg_version="v2.53.36"
-pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/v2.53.36.tar.gz"
-pkg_sha256="a612c9ac13f8d3bc06eea0e4c39046a4282bde4ee7502c5bd3f15f5c0bb0f64b"
+pkg_version="v2.53.37"
+pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/v2.53.37.tar.gz"
+pkg_sha256="b45a5516788fefc539f8ec0db15559f011053a4e15a9cf7fa1485d2899d83422"
 # ADR-0199/0209: composed from exactly these, with no fallback
 # environment to inherit anything missing (#168). Cix is the first
 # recipe to need this declaration and it found the rule the hard way:
