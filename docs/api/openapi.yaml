@@ -3031,6 +3031,20 @@ paths:
                           Compared against the writer's own reported
                           size, this says whether both sides are looking
                           at the same bytes.
+                      first_nul_offset:
+                        type: integer
+                        description: >
+                          Byte offset of the first NUL in the record
+                          file, or -1 if there is none. A zero run means
+                          records really were lost to whatever reset the
+                          machine, and that should be visible rather
+                          than inferred from a gap in timestamps -- this
+                          file is appended to by a watchdog whose whole
+                          purpose is to be running when the machine is
+                          about to be reset by hand, so a reset
+                          mid-append leaving the size updated with the
+                          block still zeroes is the expected damage. The
+                          reader scans past it; this says it happened.
 
   /system/kernel-policy:
     get:
