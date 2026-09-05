@@ -108,6 +108,43 @@
  * exact same host-side curl binary every recipe source fetch already
  * uses, one real path, not two copies of the literal string. */
 #define PKG_CURL_BIN "/usr/bin/curl"
+/*
+ * Stall guards every curl this daemon forks carries (#285).
+ *
+ * curl waits forever by default once a connection is established, so a
+ * peer that accepts the TCP connection and then says nothing hangs the
+ * fetch indefinitely. That is not hypothetical here: ftp.gnu.org did
+ * exactly it to this site's egress for several days -- connected on
+ * both 443 and 80, then answered nothing -- and a package job stuck in
+ * `state: building` that neither completed nor failed has been seen on
+ * 192.168.15.95.
+ *
+ * SPEED rather than a blanket --max-time, which is the important
+ * choice. A hard total-time ceiling is wrong for the transfers that
+ * matter most here: a 1.4 GB toolchain over a slow link is legitimate
+ * and would be killed by any ceiling short enough to be useful against
+ * a silent peer. --speed-limit/--speed-time abort only when throughput
+ * STAYS below the floor, so a transfer that is genuinely progressing is
+ * never interrupted no matter how long it takes, while one that has
+ * stopped is cut off promptly. It is the precise shape of the failure.
+ *
+ * 512 bytes/sec sustained for 60s is far under any real link and far
+ * over "nothing", so it cannot fire on a slow-but-alive transfer. The
+ * connect timeout bounds the handshake separately, since a peer that
+ * never completes TLS never reaches the speed check at all.
+ *
+ * Callers that also pass --retry multiply these: the guards bound one
+ * attempt, not the retry loop.
+ */
+#define PKG_CURL_CONNECT_TIMEOUT "20"
+#define PKG_CURL_SPEED_LIMIT "512"
+#define PKG_CURL_SPEED_TIME "60"
+/* The six argv entries above, in the order every call site passes them.
+ * A macro rather than six literals at ten sites: a guard that is easy
+ * to forget on a new call site is a guard that will be forgotten. */
+#define PKG_CURL_STALL_GUARD_ARGS                                                                  \
+	"--connect-timeout", PKG_CURL_CONNECT_TIMEOUT, "--speed-limit", PKG_CURL_SPEED_LIMIT,      \
+	    "--speed-time", PKG_CURL_SPEED_TIME
 /* Space-separated capability names a recipe may request for its build
  * container (#224) -- room for a handful, not a policy surface. */
 #define PKG_BUILD_CAPS_MAX 128
