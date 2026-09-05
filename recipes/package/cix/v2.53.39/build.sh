@@ -1,4 +1,13 @@
 #
+# v2.53.39 -- the #289 header check is narrowed to same-project
+# includes. The first version flagged 48 of 202 real packages,
+# essentially all <stddef.h> and <stdarg.h> -- freestanding headers the
+# compiler provides from its own directory, never a defect. An include
+# is now checked only when it sits in the same directory under
+# usr/include/ as the header making it, which is the exact shape of the
+# real failure and what a recipe is answerable for.
+#
+#
 # v2.53.38 -- a shipped header that cannot be included is detectable
 # (#289). linux-pam installed security/pam_misc.h for six revisions
 # while never building the libpamc directory its first include comes
@@ -542,9 +551,9 @@
 # predated #60.)
 #
 pkg_name="cix"
-pkg_version="v2.53.38"
-pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/v2.53.38.tar.gz"
-pkg_sha256="63a409b07edf46c92d922b9a71c7550768be7535eabceaecc24b01ebbed8ddae"
+pkg_version="v2.53.39"
+pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/v2.53.39.tar.gz"
+pkg_sha256="6526df240a7faca88de6d9b1e29cc8de95e529a72bff23d4368ad065007ebf31"
 # ADR-0199/0209: composed from exactly these, with no fallback
 # environment to inherit anything missing (#168). Cix is the first
 # recipe to need this declaration and it found the rule the hard way:
