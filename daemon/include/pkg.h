@@ -1049,6 +1049,18 @@ void pkg_write_json_config(struct json_writer *w);
  */
 void pkg_write_drift_json(struct json_writer *w);
 
+/*
+ * Issue #281: {"packages":[...], "checked":N, "incomplete":N} -- every
+ * INSTALLED package whose own recorded files are not present in its
+ * image's current rootfs. Empty `packages` is the healthy answer.
+ *
+ * On demand only. It stats every file of every installed package, which
+ * is why it is its own endpoint rather than a field on GET /v1/pkg --
+ * that one is polled every two seconds and is already this daemon's
+ * largest source of event-loop stalls.
+ */
+void pkg_write_verify_json(struct json_writer *w);
+
 int pkg_find_update_candidate(char *out_name, size_t out_name_size, char *out_image,
                                size_t out_image_size);
 /* image NULL or "" means PKG_DEFAULT_IMAGE, matching pkg_install_start(). */

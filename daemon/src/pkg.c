@@ -2311,6 +2311,75 @@ static int produce_fail(const char *image, const char *staging, const char *step
 	return -1;
 }
 
+/*
+ * Did this package's own files actually reach the image's current
+ * rootfs? (#281)
+ *
+ * image_produce_new_version() can return success and leave the freshly
+ * built tree on the floor. An image version is a hash of the installed
+ * package set (ADR-0108), so a set that hashes to a version already on
+ * disk is DEDUPED: current_version repoints at the existing tree and
+ * the new one is deleted (ADR-0155). When the existing tree really does
+ * hold that content, that is correct and cheap. When it does not -- an
+ * earlier merge interrupted, a repaired artifact reinstalled at the
+ * same version, a baseline that has since changed -- the install
+ * reports success and the files are simply absent.
+ *
+ * That is not a hypothetical. #281 was filed on exactly it: GET
+ * /v1/pkg said htop was installed into jumpbox while the container
+ * answered "bash: htop: command not found", and nothing anywhere
+ * connected the two. The operator's first evidence was a missing
+ * binary, which names neither the image nor the dedup.
+ *
+ * So the claim is checked rather than assumed. The package already
+ * records every path it installed, and the image's current rootfs is a
+ * real directory -- stat()ing one against the other is the whole test.
+ * It costs one stat per installed file, against a merge that has just
+ * copied an entire tree, and it is the difference between a loud
+ * failure here and a "command not found" days later.
+ *
+ * Returns the number of recorded files missing, and writes the first
+ * one into `first_missing` so the report names something specific.
+ */
+static int installed_files_missing(const char *image, const struct pkg_entry *e,
+                                    char *first_missing, size_t first_missing_size)
+{
+	char version[IMAGE_VERSION_MAX];
+	char rootfs[PATH_MAX];
+	char path[PATH_MAX];
+	struct stat st;
+	int missing = 0;
+	int i;
+
+	if (first_missing != NULL && first_missing_size > 0)
+		first_missing[0] = '\0';
+	if (e == NULL || e->file_count == 0)
+		return 0;
+	if (image_current_version(image, version, sizeof(version)) != IMAGE_OK)
+		return 0; /* Not this check's failure to report -- the caller
+		           * already treats a missing current version as its own
+		           * error, and guessing here would report the wrong one. */
+	image_version_rootfs_path(image, version, rootfs, sizeof(rootfs));
+
+	for (i = 0; i < e->file_count; i++) {
+		const char *rel = e->files[i];
+
+		while (*rel == '/')
+			rel++;
+		if (snprintf(path, sizeof(path), "%s/%s", rootfs, rel) >= (int)sizeof(path))
+			continue; /* Cannot be checked, so not counted against it. */
+		/* lstat, not stat: a dangling symlink is a file the package
+		 * installed and is present, and resolving it would call it
+		 * missing for pointing at something not built yet. */
+		if (lstat(path, &st) != 0) {
+			if (missing == 0 && first_missing != NULL && first_missing_size > 0)
+				snprintf(first_missing, first_missing_size, "%s", rel);
+			missing++;
+		}
+	}
+	return missing;
+}
+
 static int image_produce_new_version(const char *image,
                                       int (*mutate)(const char *staging_rootfs, void *ctx),
                                       void *ctx, const char *extra_identity)
@@ -7512,6 +7581,40 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 			return 0;
 		}
 
+		/*
+		 * #281: the merge said yes -- check that it meant it.
+		 *
+		 * Deliberately after the merge and before anything that
+		 * treats this install as done: save_state() below is what
+		 * makes "installed" survive a restart, and an entry that
+		 * survives while its files do not is precisely the split this
+		 * issue is about.
+		 */
+		{
+			char first_missing[PKG_NAME_MAX + 128];
+			int missing = installed_files_missing(g_chains[chain_idx].image, e, first_missing,
+			                                       sizeof(first_missing));
+
+			if (missing > 0) {
+				char msg[448];
+
+				snprintf(msg, sizeof(msg),
+				         "installed into image \"%s\" but %d of %d file(s) are not in its "
+				         "current version, starting with \"%s\" -- an image version is a "
+				         "hash of the installed package set (ADR-0108), so re-installing an "
+				         "already-present name@version reproduces the same hash and the "
+				         "rebuilt tree is discarded (ADR-0155). Bump the package revision, "
+				         "or delete and recreate the image",
+				         g_chains[chain_idx].image, missing, e->file_count, first_missing);
+				logstore_write("cixd", "error", "pkg %s@%s: %s", e->name,
+				                g_chains[chain_idx].image, msg);
+				pkg_fail(e, 0, PKG_FAILURE_INSTALL, "%s", msg);
+				g_chains[chain_idx].name[0] = '\0';
+				g_chains[chain_idx].dep_queue_count = 0;
+				return 0;
+			}
+		}
+
 		/* ADR-0122: a fresh, real build's own output is saved into the
 		 * local cache for next time (best-effort, LRU-evicting older
 		 * entries as needed); a cache/artifact hit's own dest_dir was
@@ -7635,6 +7738,69 @@ void pkg_write_json_list(struct json_writer *w)
  * "12 behind" means something very different against 30 packages than
  * against 300, and an operator reading a bare list has no denominator.
  */
+/*
+ * GET /v1/pkg/verify (#281) -- which installed packages are not
+ * actually in their image.
+ *
+ * The install path refuses this state now, but only for installs made
+ * since. An image whose version was deduped before that gate existed,
+ * or whose tree was removed by something outside pkg.c, still holds
+ * the split -- "installed" in one view, absent from the other, with
+ * the operator's first evidence being a missing binary.
+ *
+ * On demand, deliberately, and never from GET /v1/pkg. That endpoint
+ * is polled every two seconds by the dashboard and was already the
+ * single largest source of event-loop stalls; adding a stat of every
+ * file of every package to it would be a self-inflicted outage. This
+ * one is a verb an operator runs.
+ */
+void pkg_write_verify_json(struct json_writer *w)
+{
+	int i;
+	int checked = 0, bad = 0;
+
+	jw_obj_open(w);
+	jw_key(w, "packages");
+	jw_arr_open(w);
+	for (i = 0; i < PKG_MAX_PACKAGES; i++) {
+		struct pkg_entry *e = &g_packages[i];
+		char first_missing[PKG_NAME_MAX + 128];
+		int missing;
+
+		if (!e->in_use || e->state != PKG_STATE_INSTALLED)
+			continue;
+		if (strcmp(e->image, PKG_HOSTBUILD_IMAGE) == 0)
+			continue; /* A hostbuild's output is a host artifact, never
+			           * merged into an image rootfs (ADR-0056), so there
+			           * is no image tree for it to be missing from. */
+		checked++;
+		missing = installed_files_missing(e->image, e, first_missing, sizeof(first_missing));
+		if (missing == 0)
+			continue;
+		bad++;
+		jw_obj_open(w);
+		jw_key(w, "name");
+		jw_str(w, e->name);
+		jw_key(w, "image");
+		jw_str(w, e->image);
+		jw_key(w, "version");
+		jw_str(w, e->version);
+		jw_key(w, "missing_count");
+		jw_int(w, missing);
+		jw_key(w, "file_count");
+		jw_int(w, e->file_count);
+		jw_key(w, "first_missing");
+		jw_str(w, first_missing);
+		jw_obj_close(w);
+	}
+	jw_arr_close(w);
+	jw_key(w, "checked");
+	jw_int(w, checked);
+	jw_key(w, "incomplete");
+	jw_int(w, bad);
+	jw_obj_close(w);
+}
+
 void pkg_write_drift_json(struct json_writer *w)
 {
 	int i, installed = 0, behind = 0;

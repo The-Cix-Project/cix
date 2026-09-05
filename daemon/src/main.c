@@ -24406,6 +24406,23 @@ static void handle_pkg_drift_get(int fd)
 	jw_free(&w);
 }
 
+/*
+ * GET /v1/pkg/verify -- issue #281.
+ *
+ * "Is any package this host reports as installed actually missing from
+ * its image?" The install path refuses to create that state now; this
+ * answers it for everything installed before it did.
+ */
+static void handle_pkg_verify_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	pkg_write_verify_json(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
 static void handle_pkg_cache_delete(int fd)
 {
 	pkg_cache_clear();
@@ -26373,6 +26390,12 @@ static void op_getPkgCache(const struct api_ctx *ctx)
 static void op_getPkgDrift(const struct api_ctx *ctx)
 {
 	handle_pkg_drift_get(ctx->fd);
+}
+
+/* GET /v1/pkg/verify */
+static void op_verifyPkgFiles(const struct api_ctx *ctx)
+{
+	handle_pkg_verify_get(ctx->fd);
 }
 
 /* DELETE /v1/pkg/cache */

@@ -24,6 +24,22 @@ The evidence was in the output the whole time: the four `depA: autostarted (rest
 
 `test_daemon_net`'s cleanup step deleted four containers fire-and-forget and then deleted the network they used. When that network delete came back 409, nothing in the output named which container had stayed — only the consequence, which is not a report anyone can act on. The four deletes are asserted now. A cleanup step is still a step.
 
+### An install that did not land is no longer reported as installed (#281)
+
+`GET /v1/pkg` said `htop` was installed into `jumpbox` while the container answered `bash: htop: command not found`, and nothing anywhere connected the two.
+
+**The mechanism is not what the issue's title says, and the title was mine.** It reads "a container keeps its old rootfs across a restart", and that is not what happened. An image version is a hash of the installed package *set* (ADR-0108), so installing a `name@version` the set already holds reproduces the same hash — and `image_produce_new_version()` then **deduplicates**: it repoints `current_version` at the existing directory and deletes the tree it just built (ADR-0155). It returns success. The registry records `installed`. The files are not there.
+
+The issue's other suspicion — that `installed` is written before the merge that makes it true — was checked and is **not** a defect. `e->state = PKG_STATE_INSTALLED` is set before the merge deliberately, because the new version's manifest hash is computed over packages in that state, and `save_state()` (the only thing that makes it survive a restart) is reached only *after* a successful merge; a failed merge calls `pkg_fail()` and returns first. The daemon is single-threaded, so the in-memory window cannot be observed by any client either. Recorded here so nobody re-investigates it.
+
+**The install now checks its own claim.** After the merge, the package's own recorded files are stat'd against the image's new current rootfs; if any are absent the install fails, naming how many and the first one, and pointing at the dedup as the cause. It costs one `lstat` per installed file against a merge that has just copied an entire tree, and it is the difference between a loud failure at the install and a `command not found` days later. `lstat`, not `stat`: a dangling symlink is a file the package installed and is present.
+
+**`GET /v1/pkg/verify`** (`cixctl pkg verify`) answers the same question for everything installed *before* that gate existed, and for a tree removed by anything outside the package system. Empty is healthy. Hostbuild packages are skipped — their output is a host artifact, never merged into an image rootfs (ADR-0056), so there is no tree for them to be missing from.
+
+It is its own endpoint rather than a field on `GET /v1/pkg`, and that is not fastidiousness: it stats every file of every installed package, and `GET /v1/pkg` is polled every two seconds by the dashboard and is already this daemon's single largest source of event-loop stalls — stallwatch attributed 17 of 22 recorded stalls to it. Adding this to that path would have been a self-inflicted outage.
+
+Reports rather than acts. The repair is to bump the package revision so the manifest hash genuinely changes, or to delete and recreate the image.
+
 ### The exec command is a query parameter, and the dashboard can finally use it (ADR-0245)
 
 `cixctl container console NAME --cmd=PATH` runs one specific program instead of a declared console. The dashboard had no equivalent and **could not have had one**: that parameter was the `X-Cix-Exec-Cmd` request header, and a browser's `WebSocket` constructor sets no request headers at all. One client could use a documented feature and the other was structurally incapable of it.

@@ -1226,6 +1226,7 @@ static const struct cli_node n_pkg_subs[] = {
 	{ "cache-status", NULL, NULL },
 	{ "cancel", n_pkg_cancel_flags, NULL },
 	{ "drift", NULL, NULL },
+	{ "verify", NULL, NULL },
 	{ "hostbuild", n_pkg_hostbuild_flags, NULL },
 	{ "install", n_pkg_install_flags, NULL },
 	{ "ls", NULL, NULL },
