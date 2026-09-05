@@ -2,6 +2,20 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### An OOM anywhere on a Cix host no longer livelocks (#278, ADR-0244)
+
+`cixd` sets `oom_score_adj -1000` on itself so the only management path on the box is never the OOM killer's choice. That is right. What was missed is that the value is inherited across `fork()` **and** preserved across `execve()`, and `cixd` runs as pid 1 — so every process on the host was exempt: containers, package builds, exec sessions, a bare `sh`.
+
+A cgroup with no eligible victim does not fail at its ceiling, it **livelocks**. The kernel scans, finds everything exempt, gives up without freeing anything, the allocation retries, and it OOMs again. Measured on 192.168.15.95: `failcnt` 1,180,732 climbing to 1,194,664 in the following minute, ~1000 kernel log lines a second, every other entry evicted from the log store, and a build stuck in `state: building` that neither completed nor failed. The host had 5.88 GB of 8.27 GB free the whole time, so nothing looked wrong — the ceiling that was full belonged to a cgroup nothing reports (#279). It needed a manual reset, more than once.
+
+The general form is worse than the incident: **every memory limit this platform offered was unenforceable.** `POST /v1/containers` with `memory_max` did not give an operator a bound, it gave them a livelock trigger.
+
+`cix_oom_unprotect_self()` (`include/iohelpers.h`, already on both build lines — one definition, not one per call site) restores the kernel default in the forked child, called from `src/container.c` after `ns_clone3()` (so every container, and therefore every build) and from both grandchildren in `daemon/src/exec.c`. It sits **after** the ADR-0179 uid/gid map sync: before it, a userns container is the overflow uid and the write fails `EACCES` silently, which would have left exactly the exemption being removed while the code read as though it did not.
+
+The control plane and the short-lived helpers it runs as part of its own work stay protected, deliberately — under real global pressure the kernel should reclaim from a workload rather than from the only way into the machine. That is only a safe choice now that workloads are killable.
+
+Verified end to end on v2.53.26: a container with a 64 MB `memory_max` running an unbounded allocator was killed in under five seconds — `term_signal: 9`, `oom-kill:constraint=CONSTRAINT_MEMCG`, `Killed process 205 (perl) anon-rss:65068kB` — with the host healthy throughout. An exec'd console process and a container's own pid 1 both read `oom_score_adj` of `0`, taken from inside the container. `test_console_exec` now asserts `OOMADJ=0` through a real session, because inheritance is the point and only a process that has been through both `fork()` and `execve()` gives a trustworthy reading.
+
 ### The dashboard terminal is a real VT (ADR-0243)
 
 ADR-0242 gave the console a real terminal size and type, and `cixctl console` immediately got `vim` and `htop` filling the window. The dashboard did not improve, because its limit was never the size — there was no screen to draw on. What ADR-0043 shipped was a line buffer: it appended characters to a list of lines, understood `\r`/`\n`/backspace/tab and SGR colour, and recognised every cursor-addressing escape only well enough to throw it away.
