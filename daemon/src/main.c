@@ -24981,8 +24981,13 @@ static enum registry_error spawn_pkgbuild_container(int chain_idx, const char *w
 	 * change to how these specs are built.
 	 */
 	spec->userns_enabled = 0;
+	/*
+	 * adopt_if_running is 0: a build container is created fresh every
+	 * time, under a name this daemon has just claimed, so there is
+	 * never a previous incarnation of it to adopt.
+	 */
 	rerr = registry_create(build_container_name, "pkgbuild", "", spec, NULL, 0, 0, NULL, 0, NULL,
-	                        0, NULL, NULL, 0, &entry);
+	                        0, NULL, NULL, 0, 0, &entry);
 
 	/*
 	 * The child (if registry_create() actually forked one) already
