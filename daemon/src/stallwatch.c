@@ -273,6 +273,44 @@ static void append_line(const char *line, int len)
 {
 	int fd;
 
+	/*
+	 * The kernel ring buffer FIRST, before anything that can touch a
+	 * disk.
+	 *
+	 * The file write below fsyncs on purpose, and its own comment
+	 * accepts that a stuck I/O path blocks it "until I/O recovers".
+	 * That acceptance is wrong in the one case that matters most: if
+	 * the wedge IS an I/O stall, then open() and fsync() both block on
+	 * exactly the resource being reported, the record never lands, and
+	 * the reset that recovers the machine destroys it. Measured on
+	 * 192.168.15.95: three separate multi-minute wedges in one day, the
+	 * daemon's event loop provably blocked, and this file's newest
+	 * entry four days older than any of them.
+	 *
+	 * /dev/kmsg is memory-backed. It needs no filesystem, cannot wait
+	 * on a block device, appears on the serial console as it happens,
+	 * and is read back into this daemon's own log store by the kernel
+	 * log reader -- so a record written here is visible three ways
+	 * without depending on the thing that may be stuck.
+	 *
+	 * Best-effort and unchecked, like every other write here: a
+	 * diagnostic that refuses to run is not a diagnostic.
+	 */
+	fd = open("/dev/kmsg", O_WRONLY | O_CLOEXEC);
+	if (fd >= 0) {
+		char kline[512];
+		int klen = snprintf(kline, sizeof(kline), "cix stallwatch: %.*s",
+		                     len > 0 && line[len - 1] == '\n' ? len - 1 : len, line);
+
+		if (klen > 0) {
+			ssize_t ignored = write(fd, kline, (size_t)(klen < (int)sizeof(kline)
+			                                             ? klen : (int)sizeof(kline) - 1));
+
+			(void)ignored;
+		}
+		close(fd);
+	}
+
 	fd = open(g_records_path, O_CREAT | O_WRONLY | O_APPEND | O_CLOEXEC, 0644);
 	if (fd >= 0) {
 		ssize_t ignored = write(fd, line, (size_t)len);
