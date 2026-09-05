@@ -139,9 +139,10 @@ static void report(void)
 		wsz.ws_col = 0;
 		wsz.ws_row = 0;
 	}
-	len = snprintf(line, sizeof(line), "TERMINFO TERM=%s COLS=%u ROWS=%u OOMADJ=%s TTY=%s USERNS=%s\n",
+	len = snprintf(line, sizeof(line),
+	               "TERMINFO TERM=%s COLS=%u ROWS=%u OOMADJ=%s TTY=%s USERNS=%s EUID=%d\n",
 	               term != NULL ? term : "(unset)", (unsigned)wsz.ws_col, (unsigned)wsz.ws_row,
-	               report_oom_adj(), report_tty(), report_userns());
+	               report_oom_adj(), report_tty(), report_userns(), (int)geteuid());
 	if (len > 0)
 		cix_write_all(STDOUT_FILENO, line, (size_t)len > sizeof(line) - 1 ? sizeof(line) - 1
 		                                                                   : (size_t)len);
