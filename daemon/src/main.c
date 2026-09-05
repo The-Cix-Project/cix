@@ -27533,7 +27533,27 @@ static void dispatch(int fd, const struct http_request *req)
 
 		if (idx >= 0) {
 			struct api_ctx ctx;
+			char bad_param[64];
 
+			/*
+			 * The route is known, so its declared parameters are
+			 * known (#282). A query parameter outside that set is a
+			 * caller asking for something this operation does not
+			 * offer, and the only safe answer is to say so: running
+			 * the operation anyway means running it on a different
+			 * object than the caller named, and reporting success.
+			 */
+			if (api_route_query_unknown(&g_api_routes[idx], req->path, bad_param,
+			                             sizeof(bad_param)) != 0) {
+				char msg[192];
+
+				snprintf(msg, sizeof(msg),
+				         "unknown query parameter \"%s\" for %s -- it is not part of "
+				         "this operation's contract and was not applied",
+				         bad_param, g_api_routes[idx].op_id);
+				respond_error(fd, 400, "Bad Request", msg);
+				return;
+			}
 			ctx.fd = fd;
 			ctx.req = req;
 			ctx.p[0] = params[0];

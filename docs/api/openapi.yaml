@@ -9988,9 +9988,11 @@ paths:
         traversal-free path (no "." or ".." component, no empty "//"
         component) -- the exact same validation POST .../containers'
         own "files[].path" already applies, reused verbatim rather than
-        a second set of rules. A path resolving to a directory is a 400,
-        not a directory listing -- this endpoint reads one file, it does
-        not browse a tree.
+        a second set of rules. In the default mode a path resolving to a
+        directory is a 400, not an implicit directory listing: a client
+        that meant to read a file and hit a directory is told so rather
+        than handed something else. Listing is a separate, explicit mode
+        requested with "list" below.
       operationId: getContainerFile
       x-cix-expose: [cli]
       parameters:
@@ -10001,6 +10003,19 @@ paths:
           schema:
             type: string
           description: Absolute, container-relative file path, e.g. "/etc/hosts".
+        - name: list
+          in: query
+          required: false
+          schema:
+            type: string
+          description: >
+            When present and neither empty nor "0", returns a directory
+            listing of "path" instead of file content. A separate mode
+            rather than an implicit fallback, so reading a file and
+            hitting a directory stays an error. Declared here because
+            the daemon has always honoured it while this contract did
+            not name it, and an undeclared query parameter is now
+            refused rather than silently ignored (#282).
       responses:
         "200":
           description: The file's raw content.

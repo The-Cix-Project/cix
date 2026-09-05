@@ -121,6 +121,53 @@ int main(void)
 	CHECK(match("GET", "/v1/containers/a/b", p) == -1,
 	      "routes WITHOUT the rest flag stay strictly single-segment");
 
+	/*
+	 * Declared query parameters (#282).
+	 *
+	 * The case that matters is the LAST one: an operation that
+	 * declares no query parameters must refuse one rather than ignore
+	 * it. DELETE /v1/pkg/{name} takes its image in the path, so the
+	 * caller who wrote ?image=jumpbox had it silently dropped and
+	 * destroyed the package in the default image instead, with a 204
+	 * reporting success.
+	 */
+	{
+		static const char *const q[] = { "path", "list" };
+		const struct api_route with_q = { "GET", 3, { "v1", "files", NULL }, NULL,
+		                                  "getFile", 0, q, 2 };
+		const struct api_route no_q = { "DELETE", 3, { "v1", "pkg", NULL }, NULL,
+		                                "deletePkg", 0, NULL, 0 };
+		char bad[64];
+
+		CHECK(api_route_query_unknown(&with_q, "/v1/files/x", bad, sizeof(bad)) == 0,
+		      "no query string at all is always fine");
+		CHECK(api_route_query_unknown(&with_q, "/v1/files/x?path=/etc", bad, sizeof(bad)) == 0,
+		      "a declared parameter is accepted");
+		CHECK(api_route_query_unknown(&with_q, "/v1/files/x?path=/etc&list=1", bad,
+		                               sizeof(bad)) == 0,
+		      "several declared parameters are accepted");
+		CHECK(api_route_query_unknown(&with_q, "/v1/files/x?path=/etc&depth=2", bad,
+		                               sizeof(bad)) == -1 &&
+		              strcmp(bad, "depth") == 0,
+		      "an undeclared parameter is refused and NAMED (got \"%s\")", bad);
+		CHECK(api_route_query_unknown(&with_q, "/v1/files/x?list", bad, sizeof(bad)) == 0,
+		      "a bare key with no '=' is still recognised as its parameter");
+		CHECK(api_route_query_unknown(&with_q, "/v1/files/x?", bad, sizeof(bad)) == 0,
+		      "an empty query string carries no instruction and is tolerated");
+		CHECK(api_route_query_unknown(&with_q, "/v1/files/x?path=/etc&&list=1", bad,
+		                               sizeof(bad)) == 0,
+		      "empty parameters between separators are skipped, not misread as a name");
+		CHECK(api_route_query_unknown(&with_q, "/v1/files/x?pathx=1", bad, sizeof(bad)) == -1 &&
+		              strcmp(bad, "pathx") == 0,
+		      "a name that merely starts with a declared one is not a match");
+		CHECK(api_route_query_unknown(&no_q, "/v1/pkg/htop", bad, sizeof(bad)) == 0,
+		      "an operation declaring nothing still accepts a bare path");
+		CHECK(api_route_query_unknown(&no_q, "/v1/pkg/htop?image=jumpbox", bad,
+		                               sizeof(bad)) == -1 &&
+		              strcmp(bad, "image") == 0,
+		      "#282 itself: ?image= on deletePkg is refused, not silently dropped");
+	}
+
 	if (failures == 0)
 		printf("APIROUTE RESULT: PASS\n");
 	else

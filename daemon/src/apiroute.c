@@ -129,3 +129,67 @@ int api_route_match(const struct api_route *routes, int n_routes, const char *me
 	}
 	return best;
 }
+
+/*
+ * Refuses a query parameter the spec never gave this operation (#282).
+ *
+ * The matcher above deliberately ignores everything from '?' onward,
+ * because a query string has nothing to do with which route a request
+ * belongs to. What was missing is the second half: once the route IS
+ * known, its declared parameters are known too, and anything else in
+ * the query string is a caller asking for something this operation
+ * cannot do. Accepting it and carrying on is the dangerous answer --
+ * DELETE /v1/pkg/{name} takes its image as part of the path, so a
+ * caller who wrote ?image=jumpbox had it dropped and destroyed the
+ * package in the default image instead, with a 204 saying it worked.
+ *
+ * Empty parameters are tolerated ("?", "?&", "?x=1&&y=2"): they carry
+ * no instruction, so there is nothing to misread. A bare key with no
+ * '=' is still a parameter and is still checked, since "?list" means
+ * the same thing to a reader as "?list=1".
+ */
+int api_route_query_unknown(const struct api_route *r, const char *path, char *out,
+                            size_t out_size)
+{
+	const char *q = strchr(path, '?');
+
+	if (out != NULL && out_size > 0)
+		out[0] = '\0';
+	if (q == NULL)
+		return 0;
+	q++;
+	while (*q != '\0') {
+		const char *end = q;
+		size_t klen;
+		int i, known = 0;
+
+		while (*end != '\0' && *end != '&')
+			end++;
+		klen = strcspn(q, "=&");
+		if (klen > (size_t)(end - q))
+			klen = (size_t)(end - q);
+		if (klen == 0) {
+			q = (*end == '&') ? end + 1 : end;
+			continue;
+		}
+		for (i = 0; i < r->n_query_params; i++) {
+			const char *d = r->query_params[i];
+
+			if (strlen(d) == klen && memcmp(d, q, klen) == 0) {
+				known = 1;
+				break;
+			}
+		}
+		if (!known) {
+			if (out != NULL && out_size > 0) {
+				size_t n = klen < out_size - 1 ? klen : out_size - 1;
+
+				memcpy(out, q, n);
+				out[n] = '\0';
+			}
+			return -1;
+		}
+		q = (*end == '&') ? end + 1 : end;
+	}
+	return 0;
+}

@@ -39,6 +39,9 @@
 #define APIGEN_PATH_MAX 256
 #define APIGEN_ID_MAX 128
 #define APIGEN_EXPOSE_MAX 64
+#define APIGEN_MAX_QUERY 12
+#define APIGEN_QNAME_MAX 48
+#define APIGEN_MAX_COMP_PARAMS 128
 
 struct api_op {
 	char method[12];   /* uppercased: GET, POST, ... */
@@ -47,7 +50,41 @@ struct api_op {
 	char expose[APIGEN_EXPOSE_MAX]; /* raw list contents, "" when absent */
 	int rest_param;
 	int line;
+	/*
+	 * The query parameters this operation DECLARES (#282).
+	 *
+	 * Emitted into the route table so the dispatcher can refuse one it
+	 * was never given, rather than accepting it and running as though
+	 * it had not been sent. That silence destroyed a package in an
+	 * image the caller never named: DELETE /v1/pkg/htop?image=jumpbox
+	 * deleted htop from the DEFAULT image and answered 204, because
+	 * the router strips the query string to match segments and nothing
+	 * afterwards ever looked at it again.
+	 *
+	 * The spec is already the authority on which routes exist
+	 * (ADR-0218); this extends the identical authority to the
+	 * parameters those routes accept, so an undeclared selector cannot
+	 * be silently dropped anywhere in the API rather than only here.
+	 */
+	char query[APIGEN_MAX_QUERY][APIGEN_QNAME_MAX];
+	int n_query;
 };
+
+/*
+ * components/parameters entries, so a "- $ref:" in an operation's
+ * parameter list can be resolved to the real parameter's name and
+ * location. Read in their own pass because components: sits AFTER
+ * paths: in the spec and the paths reader deliberately stops at the
+ * first column-0 key that follows.
+ */
+struct comp_param {
+	char comp[APIGEN_ID_MAX];      /* the components/parameters key */
+	char name[APIGEN_QNAME_MAX];   /* its own "name:" */
+	int is_query;                  /* its "in:" is query */
+};
+
+static struct comp_param g_comp_params[APIGEN_MAX_COMP_PARAMS];
+static int g_comp_param_count;
 
 static struct api_op g_ops[APIGEN_MAX_OPS];
 static int g_op_count;
@@ -152,6 +189,138 @@ static void strip_eol(char *s)
  * A {param} segment becomes NULL in segs[]; op functions receive the
  * extracted values via ctx->p[0]/p[1] in spec order.
  */
+/*
+ * Reads components/parameters into g_comp_params (#282).
+ *
+ * Deliberately its own scan of the file rather than a branch inside the
+ * paths reader: that reader breaks out at the first column-0 key after
+ * paths:, which is exactly where components: begins, and widening it to
+ * stay resident would make it responsible for a second grammar. Two
+ * small passes over a file this tool already reads once are cheaper
+ * than one reader that has to know where it is.
+ */
+static void load_component_params(const char *spec)
+{
+	FILE *f = fopen(spec, "r");
+	char line[4096];
+	int in_components = 0, in_params = 0, cur = -1;
+
+	if (f == NULL)
+		return;
+	while (fgets(line, sizeof(line), f) != NULL) {
+		char key[APIGEN_PATH_MAX];
+		int ind;
+
+		if (is_ignorable(line))
+			continue;
+		ind = indent_of(line);
+		if (ind == 0) {
+			in_components = key_at(line, 0, key, sizeof(key)) &&
+			                strcmp(key, "components") == 0;
+			in_params = 0;
+			cur = -1;
+			continue;
+		}
+		if (!in_components)
+			continue;
+		if (ind == 2) {
+			in_params = key_at(line, 2, key, sizeof(key)) &&
+			            strcmp(key, "parameters") == 0;
+			cur = -1;
+			continue;
+		}
+		if (!in_params)
+			continue;
+		if (ind == 4) {
+			if (!key_at(line, 4, key, sizeof(key)))
+				continue;
+			if (g_comp_param_count >= APIGEN_MAX_COMP_PARAMS) {
+				cur = -1;
+				continue;
+			}
+			cur = g_comp_param_count++;
+			memset(&g_comp_params[cur], 0, sizeof(g_comp_params[cur]));
+			snprintf(g_comp_params[cur].comp, sizeof(g_comp_params[cur].comp), "%s", key);
+			continue;
+		}
+		if (ind == 6 && cur >= 0 && key_at(line, 6, key, sizeof(key))) {
+			char v[APIGEN_QNAME_MAX];
+
+			snprintf(v, sizeof(v), "%s", value_of(line));
+			strip_eol(v);
+			if (strcmp(key, "name") == 0)
+				snprintf(g_comp_params[cur].name, sizeof(g_comp_params[cur].name), "%s", v);
+			else if (strcmp(key, "in") == 0 && strcmp(v, "query") == 0)
+				g_comp_params[cur].is_query = 1;
+		}
+	}
+	fclose(f);
+}
+
+/* Adds one declared query parameter to an operation, ignoring repeats. */
+static void op_add_query(int op, const char *name, const char *spec, int lineno)
+{
+	int i;
+
+	if (op < 0 || name == NULL || name[0] == '\0')
+		return;
+	for (i = 0; i < g_ops[op].n_query; i++)
+		if (strcmp(g_ops[op].query[i], name) == 0)
+			return;
+	if (g_ops[op].n_query >= APIGEN_MAX_QUERY)
+		die_at(spec, lineno, "more than %d query parameters on one operation",
+		       APIGEN_MAX_QUERY);
+	snprintf(g_ops[op].query[g_ops[op].n_query], APIGEN_QNAME_MAX, "%s", name);
+	g_ops[op].n_query++;
+}
+
+/*
+ * One entry of an operation's "parameters:" list, accumulated across
+ * the lines that describe it and committed when the next entry starts
+ * or the list ends -- "name:" and "in:" may appear in either order, so
+ * neither can be acted on alone.
+ */
+static char g_item_name[APIGEN_QNAME_MAX];
+static int g_item_is_query;
+static int g_in_params;
+
+static void param_item_flush(int op, const char *spec, int lineno)
+{
+	if (g_item_is_query)
+		op_add_query(op, g_item_name, spec, lineno);
+	g_item_name[0] = '\0';
+	g_item_is_query = 0;
+}
+
+/*
+ * "- $ref: \"#/components/parameters/Foo\"" -- takes the component key
+ * and, if that component is a query parameter, declares its real name.
+ */
+static void param_ref_resolve(int op, const char *text, const char *spec, int lineno)
+{
+	const char *q = strchr(text, '#');
+	char comp[APIGEN_ID_MAX];
+	size_t n = 0;
+	int i;
+
+	if (q == NULL)
+		return;
+	q = strrchr(q, '/');
+	if (q == NULL)
+		return;
+	q++;
+	while (*q != '\0' && *q != '"' && *q != '\'' && *q != ' ' && *q != '\r' && *q != '\n' &&
+	       n + 1 < sizeof(comp))
+		comp[n++] = *q++;
+	comp[n] = '\0';
+	for (i = 0; i < g_comp_param_count; i++)
+		if (strcmp(g_comp_params[i].comp, comp) == 0) {
+			if (g_comp_params[i].is_query)
+				op_add_query(op, g_comp_params[i].name, spec, lineno);
+			return;
+		}
+}
+
 static void emit_routes(const char *out_path, const char *spec)
 {
 	FILE *o = fopen(out_path, "w");
@@ -171,6 +340,23 @@ static void emit_routes(const char *out_path, const char *spec)
 	        spec);
 	for (i = 0; i < g_op_count; i++)
 		fprintf(o, "static void op_%s(const struct api_ctx *ctx);\n", g_ops[i].op_id);
+	/*
+	 * One array per operation that declares query parameters (#282).
+	 * The dispatcher refuses any query parameter absent from its
+	 * operation's array, so the spec decides what the API accepts
+	 * rather than each handler deciding what it happens to read.
+	 */
+	fprintf(o, "\n");
+	for (i = 0; i < g_op_count; i++) {
+		int q;
+
+		if (g_ops[i].n_query == 0)
+			continue;
+		fprintf(o, "static const char *const q_%s[] = { ", g_ops[i].op_id);
+		for (q = 0; q < g_ops[i].n_query; q++)
+			fprintf(o, "\"%s\", ", g_ops[i].query[q]);
+		fprintf(o, "};\n");
+	}
 	fprintf(o, "\nstatic const struct api_route g_api_routes[] = {\n");
 	for (i = 0; i < g_op_count; i++) {
 		char full[APIGEN_PATH_MAX + 8];
@@ -203,8 +389,13 @@ static void emit_routes(const char *out_path, const char *spec)
 			else
 				fprintf(o, "\"%s\", ", seg);
 		}
-		fprintf(o, "}, op_%s, \"%s\", %d },\n", g_ops[i].op_id, g_ops[i].op_id,
-		        g_ops[i].rest_param);
+		if (g_ops[i].n_query > 0)
+			fprintf(o, "}, op_%s, \"%s\", %d, q_%s, %d },\n", g_ops[i].op_id,
+			        g_ops[i].op_id, g_ops[i].rest_param, g_ops[i].op_id,
+			        g_ops[i].n_query);
+		else
+			fprintf(o, "}, op_%s, \"%s\", %d, NULL, 0 },\n", g_ops[i].op_id,
+			        g_ops[i].op_id, g_ops[i].rest_param);
 	}
 	fprintf(o, "};\n");
 	fclose(o);
@@ -484,6 +675,10 @@ int main(int argc, char **argv)
 		}
 	}
 
+	/* Parameters referenced by $ref must be known before the paths are
+	 * read, and components: comes after paths: in the file (#282). */
+	load_component_params(spec);
+
 	f = fopen(spec, "r");
 	if (f == NULL) {
 		fprintf(stderr, "apigen: cannot open %s\n", spec);
@@ -525,6 +720,8 @@ int main(int argc, char **argv)
 				die_at(spec, lineno,
 				       "\"%s\" is not a path -- every key directly under paths: must "
 				       "start with '/'", key);
+			param_item_flush(cur_op, spec, lineno);
+			g_in_params = 0;
 			snprintf(cur_path, sizeof(cur_path), "%s", key);
 			cur_op = -1;
 			continue;
@@ -543,6 +740,8 @@ int main(int argc, char **argv)
 				die_at(spec, lineno, "method \"%s\" appears before any path", key);
 			if (g_op_count >= APIGEN_MAX_OPS)
 				die_at(spec, lineno, "more than %d operations", APIGEN_MAX_OPS);
+			param_item_flush(cur_op, spec, lineno);
+			g_in_params = 0;
 			cur_op = g_op_count++;
 			memset(&g_ops[cur_op], 0, sizeof(g_ops[cur_op]));
 			for (j = 0; key[j] != '\0'; j++)
@@ -561,6 +760,10 @@ int main(int argc, char **argv)
 		if (ind == 6 && cur_op >= 0) {
 			if (!key_at(line, 6, key, sizeof(key)))
 				continue;
+			/* Any operation-level key ends the parameter list that
+			 * may have preceded it (#282). */
+			param_item_flush(cur_op, spec, lineno);
+			g_in_params = strcmp(key, "parameters") == 0;
 			if (strcmp(key, "operationId") == 0) {
 				char v[APIGEN_ID_MAX];
 
@@ -602,7 +805,55 @@ int main(int argc, char **argv)
 			}
 			continue;
 		}
+
+		/*
+		 * The parameter list itself (#282): entries at 8, their own
+		 * keys at 10. Only the declared NAMES are wanted here --
+		 * schema, description and required are the contract's
+		 * business and not this tool's.
+		 */
+		if (g_in_params && cur_op >= 0 && (ind == 8 || ind == 10)) {
+			const char *text = line + ind;
+
+			if (ind == 8) {
+				param_item_flush(cur_op, spec, lineno);
+				if (text[0] != '-')
+					continue;
+				text++;
+				while (*text == ' ')
+					text++;
+				if (strncmp(text, "$ref:", 5) == 0) {
+					param_ref_resolve(cur_op, text, spec, lineno);
+					continue;
+				}
+			}
+			{
+				char k[APIGEN_QNAME_MAX];
+				const char *colon = strchr(text, ':');
+				size_t kl;
+
+				if (colon == NULL)
+					continue;
+				kl = (size_t)(colon - text);
+				if (kl == 0 || kl + 1 >= sizeof(k))
+					continue;
+				memcpy(k, text, kl);
+				k[kl] = '\0';
+				{
+					char v[APIGEN_QNAME_MAX];
+
+					snprintf(v, sizeof(v), "%s", value_of(colon));
+					strip_eol(v);
+					if (strcmp(k, "name") == 0)
+						snprintf(g_item_name, sizeof(g_item_name), "%s", v);
+					else if (strcmp(k, "in") == 0 && strcmp(v, "query") == 0)
+						g_item_is_query = 1;
+				}
+			}
+			continue;
+		}
 	}
+	param_item_flush(cur_op, spec, lineno);
 	fclose(f);
 
 	if (g_op_count == 0) {

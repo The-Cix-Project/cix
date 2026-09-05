@@ -2,6 +2,28 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### A query parameter this API does not declare is refused, not ignored (#282)
+
+`DELETE /v1/pkg/htop?image=jumpbox` returned `204` and deleted `htop` from the **default** image. `htop@jumpbox` was untouched. `GET`/`DELETE /v1/pkg/{name}` take their target image as part of the path (`{name}@{image}`), and the `?image=` the caller wrote was accepted, dropped, and never mentioned again — so the operation ran against an image the caller never named and reported success.
+
+The mechanism is not in that handler. `api_route_match()` strips everything from `?` onward to split path segments, correctly — a query string has nothing to do with which route a request belongs to — and nothing afterwards was obliged to look at it again. Any endpoint could grow the same defect, and the next one would be found the same way this one was: by noticing afterwards that the wrong thing had been destroyed.
+
+So the fix is not a check in `handle_pkg_delete()`. The spec already decides which routes exist (ADR-0218 generates the dispatch table from `openapi.yaml`); it now decides which query parameters those routes accept. `apigen` reads each operation's `parameters:` — inline entries and `$ref`s into `components/parameters` alike, which needs its own pass because `components:` sits after `paths:` and the paths reader deliberately stops there — and emits the declared query names into the route table. The dispatcher refuses anything else with a `400` naming both the parameter and the operation, before the handler runs.
+
+An operation that declares no query parameters accepts none, which is what makes `deletePkg` safe: there is no list to forget to check against.
+
+**Two contract gaps surfaced immediately, which is the point of making the spec authoritative.** `getContainerFile` has always honoured `?list=1` to return a directory listing, and `openapi.yaml` did not mention it — while the prose in both the spec and `docs/api/README.md` positively asserted the opposite, that "a path resolving to a directory is a 400, not a directory listing". The daemon and its own contract disagreed, and nothing could detect that while undeclared parameters were silently ignored. Both are corrected and `list` is declared, so the behaviour and the contract now say the same thing.
+
+`test_apiroute` covers the refusal directly, including the `?image=` case verbatim, plus a bare key with no `=`, an empty query string, empty parameters between separators, and a name that merely starts with a declared one.
+
+### The log store says so when the kernel ring outruns it (#300)
+
+`logstore_kmsg_readable()` drained `/dev/kmsg` with `if (n <= 0) return;`. That collapses three different answers into one, and the one it lost is the only one that mattered: `read()` returns `EPIPE` when the record this reader was positioned at has already been overwritten in the kernel's ring, and the kernel then advances the position past the gap. Handled as "nothing new right now", kernel entries went missing from `GET /v1/system/logs` with nothing anywhere saying any had been skipped.
+
+This reader is drained by the daemon's own event loop, so it falls behind precisely when the daemon is busy — which is exactly when the messages worth keeping are being written. The failure mode is therefore not a rare one, and it is self-concealing: it turns log-store silence into false evidence that nothing was ever written, which is how it was found (an investigation into #229 read an absent diagnostic as proof the code had not run).
+
+`EAGAIN` returns, `EINTR` retries rather than abandoning the rest of the queue until the next readiness notification, and `EPIPE` records one entry naming the gap and keeps draining, since the records after it are still there to be read. One entry per drain however many were skipped: a reader this far behind would otherwise flood the store it is trying to preserve. Any other errno is reported rather than returning silently.
+
 ### The console input direction is tested, and the test is proven to test it (#296)
 
 Every scenario in `test_console_exec` read what the exec'd process *says*. Nothing ever wrote a byte *into* a console — and that gap is exactly how #294 shipped: a console that drew its prompt and then ignored every keystroke, with the whole console test file green. `struct console_exec_session` was `malloc()`ed and never zeroed, so the pty output buffer's length came up as garbage, the direct write was skipped, and terminal input was copied to a junk offset. Nothing that only reads could have caught it.
