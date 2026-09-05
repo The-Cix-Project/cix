@@ -50,11 +50,21 @@
  */
 #define SUPERVISOR_STATUS_PORT 7847
 
+/*
+ * The field names deliberately avoid the si_* spellings.
+ *
+ * glibc's <signal.h> defines si_status and si_pid as MACROS expanding
+ * into siginfo_t's internal union (si_status becomes
+ * _sifields._sigchld.si_status), so a struct member of that name is
+ * rewritten at every use and the compiler reports "field not found:
+ * _sifields" against a struct that plainly has the field. Naming them
+ * exit_kind/exit_value sidesteps the preprocessor entirely.
+ */
 struct supervisor_reap_record {
 	int32_t pid;
-	int32_t si_code;   /* CLD_EXITED, CLD_KILLED, CLD_DUMPED */
-	int32_t si_status; /* exit code when CLD_EXITED, else the signal */
-	int32_t reserved;  /* keeps the record 16 bytes and explicitly named */
+	int32_t exit_kind;  /* CLD_EXITED, CLD_KILLED, CLD_DUMPED */
+	int32_t exit_value; /* exit code when CLD_EXITED, else the signal */
+	int32_t reserved;   /* keeps the record 16 bytes and explicitly named */
 };
 
 #endif /* SUPERVISOR_H */

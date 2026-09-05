@@ -29580,12 +29580,12 @@ static void handle_supervisor_reap_event(struct conn *cc)
 		if (entry == NULL || !entry->adopted || !entry->running)
 			continue;
 
-		if (rec.si_code == CLD_EXITED) {
-			status = (int)rec.si_status;
+		if (rec.exit_kind == CLD_EXITED) {
+			status = (int)rec.exit_value;
 			sig = 0;
 		} else {
-			status = (int)rec.si_status;
-			sig = (int)rec.si_status;
+			status = (int)rec.exit_value;
+			sig = (int)rec.exit_value;
 		}
 		registry_mark_exited_with(entry, status, sig);
 		container_exit_finalize(entry);

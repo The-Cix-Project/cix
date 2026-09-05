@@ -111,8 +111,9 @@ Re-adoption forces one interface between the two processes. A surviving
 container is reparented to `cix-init`, so it is no longer the worker's child:
 the worker can poll a `pidfd` for its exit, but `waitid()` on a non-child
 fails, and the exit status and term signal are reaped by the supervisor and
-otherwise lost. `cix-init` therefore forwards every child it reaps —
-`(pid, si_code, si_status)` — to the worker over a `socketpair` handed to it
+otherwise lost. `cix-init` therefore forwards every child it reaps — its pid, whether it
+exited or was killed, and the code or signal — to the worker over a
+`socketpair` handed to it
 at spawn, replaying anything reaped while no worker was running. It forwards
 all of them and lets the worker filter; the supervisor is not the right place
 to know which pids matter. Without this channel a re-adopted container that
