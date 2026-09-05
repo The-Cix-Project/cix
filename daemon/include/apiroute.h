@@ -118,4 +118,15 @@ int api_route_match(const struct api_route *routes, int n_routes, const char *me
 int api_route_query_unknown(const struct api_route *r, const char *path, char *out,
                             size_t out_size);
 
+/*
+ * Reads one query parameter's value out of a full request path.
+ *
+ * Here rather than in main.c because this file already parses the query
+ * string -- api_route_query_unknown() above walks the same syntax to
+ * decide what the operation declares. Two readers of one grammar in two
+ * files is how they stop agreeing. Returns 0 and fills out on success,
+ * -1 when the key is absent or does not fit.
+ */
+int url_query_param(const char *full_path, const char *key, char *out, size_t out_size);
+
 #endif /* APIROUTE_H */

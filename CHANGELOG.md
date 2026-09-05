@@ -2,6 +2,22 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Eleven handler modules, and three defects the second compiler caught (ADR-0249)
+
+`hostauth` (login/logout/whoami, host auth config and live sessions) and `logs` (the kernel ring buffer and cixd's own store) join the nine already moved. **main.c is 28,410 lines, down from 31,284.**
+
+A third shared blocker turned up with logs, the same shape as the first two: `url_query_param()` was `static` in main.c with 18 call sites. It moved to `apiroute.c`, which already parses the query string — `api_route_query_unknown()` walks the same grammar, and two readers of one grammar in two files is how they stop agreeing.
+
+**Not every group can move, and stopping is part of the rule.** `api_backup` was built and then reverted: the schedule PUT re-arms a timerfd and the snapshot path calls into `do_system_backup()`, so forcing it would have meant exporting main.c's internals to relocate 130 lines. It waits for the system-backup group.
+
+**Three real defects were caught, none of them by TCC under `-Wall -Werror`:**
+
+- An implicit declaration when `respond_ntp_error()` moved out from under a caller that stayed.
+- A header declaring `handle_kmsg(int, const struct http_request *)` without including `http.h`. C gives a struct first named inside a prototype *function-prototype scope*, so the declaration and the definition had genuinely different types. gcc said so; TCC said nothing.
+- `handle_backup_config_get()` declared and called with its definition lost during the revert — found by scanning every object for symbols referenced but defined nowhere, before the host link could find it.
+
+That last check is new and now part of how a slice is verified: all 90 objects are scanned for duplicate globals and for unresolved project symbols, because per-file compilation cannot see either.
+
 ### The second thing holding main.c together was 66 path globals (ADR-0249)
 
 `respond_error()` unblocked the first three subsystems. The fourth found the other blocker: `api_swap` would not compile because it needed `CONTAINERS_DIR`, then `DISKS_MOUNT_DIR`, then `SWAP_FILE_PATH`. All 66 filesystem paths this daemon derives from `--data-dir` were `static` in main.c, so any handler touching its own subsystem's directory could not leave the file.

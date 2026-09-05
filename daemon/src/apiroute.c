@@ -1,5 +1,7 @@
 #include "apiroute.h"
 
+#include <ctype.h>
+#include <stdlib.h>
 #include <string.h>
 
 /*
@@ -192,4 +194,57 @@ int api_route_query_unknown(const struct api_route *r, const char *path, char *o
 		q = (*end == '&') ? end + 1 : end;
 	}
 	return 0;
+}
+
+/*
+ * This daemon's first (and, deliberately, narrowest-possible) query
+ * string parser: GET .../files?path=... is the first route that ever
+ * needs one. One key only, no repeated-key/array semantics, %XX
+ * percent-decoding only (no "+" -> space -- this project has never had
+ * a form-encoded body, no reason to invent that convention here).
+ * full_path is the request's own req->path, "?"-and-all; key is looked
+ * up among the "&"-separated pairs after the first "?". Returns 0 and
+ * fills out[] on a match, -1 if the key is absent or the value doesn't
+ * fit in out_size.
+ */
+int url_query_param(const char *full_path, const char *key, char *out, size_t out_size)
+{
+	const char *q = strchr(full_path, '?');
+	size_t key_len = strlen(key);
+
+	if (q == NULL)
+		return -1;
+	q++;
+	while (*q != '\0') {
+		const char *amp = strchr(q, '&');
+		size_t pair_len = amp != NULL ? (size_t)(amp - q) : strlen(q);
+
+		if (pair_len > key_len && q[key_len] == '=' && strncmp(q, key, key_len) == 0) {
+			const char *v = q + key_len + 1;
+			size_t vlen = pair_len - key_len - 1;
+			size_t oi = 0;
+			size_t vi = 0;
+
+			while (vi < vlen) {
+				char c = v[vi];
+
+				if (c == '%' && vi + 2 < vlen && isxdigit((unsigned char)v[vi + 1]) &&
+				    isxdigit((unsigned char)v[vi + 2])) {
+					char hex[3] = { v[vi + 1], v[vi + 2], '\0' };
+
+					c = (char)strtol(hex, NULL, 16);
+					vi += 3;
+				} else {
+					vi++;
+				}
+				if (oi + 1 >= out_size)
+					return -1;
+				out[oi++] = c;
+			}
+			out[oi] = '\0';
+			return 0;
+		}
+		q = amp != NULL ? amp + 1 : q + pair_len;
+	}
+	return -1;
 }
