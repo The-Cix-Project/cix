@@ -1240,3 +1240,227 @@ void container_decode_exit_status(int exit_status, int term_signal, char *buf, s
 	}
 	snprintf(buf, bufsize, "exited with status %d", exit_status);
 }
+
+/*
+ * ADR-0246: rebuild a handle for a container that is ALREADY RUNNING.
+ *
+ * The control-plane split makes the worker disposable, and a disposable
+ * worker that killed every workload on restart would be strictly worse
+ * than the wedge it replaces -- during the 2026-09-05 incident the
+ * containers kept serving while the control plane was unreachable, and
+ * this is what turns that accident into a guarantee.
+ *
+ * The registry of running containers is memory only (registry.c does no
+ * file I/O at all), so a restarted worker knows nothing about what is
+ * live. It cannot be told by a file either: a pid written at create time
+ * is a claim that goes stale the moment the process exits, and nothing
+ * would be there to update it. The anchor used instead is the container
+ * cgroup, /sys/fs/cgroup/<name> -- kernel state, keyed on the name the
+ * definition already carries, which cannot disagree with reality because
+ * it IS reality.
+ *
+ * Identifying the container's init inside that cgroup is done via NSpid
+ * rather than a ppid comparison. Every daemon-created container gets
+ * CLONE_NEWPID (main.c), so its init is pid 1 in its own pid namespace,
+ * and /proc/<pid>/status reports "NSpid: <hostpid> 1" for exactly that
+ * one process. This is definitional and survives reparenting -- which
+ * matters, because after a worker restart these processes are children
+ * of the supervisor, so any rule phrased as "parent is the daemon" would
+ * be wrong precisely when it is needed. It also avoids a second
+ * /proc/<pid>/stat parser: comm sits inside parentheses and may contain
+ * both spaces and ')', so that file needs careful hand-parsing, and
+ * hostproc.c's own reader is static to the daemon and cannot be reached
+ * from the runtime library anyway.
+ *
+ * Returns 0 when a container was adopted, 1 when there is nothing to
+ * adopt (no cgroup, or no live process in it -- the caller then starts
+ * it normally), -1 on a real error.
+ */
+#define CONTAINER_ADOPT_MAX_PIDS 4096
+
+/* Reads the pids listed in <dir>/cgroup.procs. Returns the count, or -1. */
+static int adopt_read_cgroup_procs(const char *dir, pid_t *pids, int max)
+{
+	char path[PATH_MAX];
+	char buf[16384];
+	ssize_t n;
+	int fd, count = 0;
+	char *p;
+
+	if (snprintf(path, sizeof(path), "%s/cgroup.procs", dir) >= (int)sizeof(path)) {
+		errno = ENAMETOOLONG;
+		return -1;
+	}
+	fd = open(path, O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return -1;
+	n = read(fd, buf, sizeof(buf) - 1);
+	close(fd);
+	if (n < 0)
+		return -1;
+	buf[n] = '\0';
+
+	for (p = buf; *p != '\0' && count < max; ) {
+		char *end = NULL;
+		long v = strtol(p, &end, 10);
+
+		if (end == p)
+			break;
+		if (v > 0)
+			pids[count++] = (pid_t)v;
+		p = end;
+		while (*p == '\n' || *p == ' ' || *p == '\t')
+			p++;
+	}
+	return count;
+}
+
+/*
+ * 1 if pid is pid 1 inside its own pid namespace, else 0.
+ *
+ * NSpid lists the pid as seen from each namespace level outward-in, so
+ * the LAST field is its innermost identity. A process in the host's own
+ * pid namespace has a single field and can never match.
+ */
+static int adopt_pid_is_nsinit(pid_t pid)
+{
+	char path[PATH_MAX];
+	char buf[4096];
+	ssize_t n;
+	int fd;
+	char *line, *save = NULL;
+
+	snprintf(path, sizeof(path), "/proc/%ld/status", (long)pid);
+	fd = open(path, O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return 0;
+	n = read(fd, buf, sizeof(buf) - 1);
+	close(fd);
+	if (n <= 0)
+		return 0;
+	buf[n] = '\0';
+
+	for (line = strtok_r(buf, "\n", &save); line != NULL; line = strtok_r(NULL, "\n", &save)) {
+		char *p;
+		long last = -1;
+
+		if (strncmp(line, "NSpid:", 6) != 0)
+			continue;
+		for (p = line + 6; *p != '\0'; ) {
+			char *end = NULL;
+			long v;
+
+			while (*p == ' ' || *p == '\t')
+				p++;
+			if (*p == '\0')
+				break;
+			v = strtol(p, &end, 10);
+			if (end == p)
+				break;
+			last = v;
+			p = end;
+		}
+		return last == 1;
+	}
+	return 0;
+}
+
+int container_adopt(const struct container_spec *spec, struct container_handle *out)
+{
+	char dir[PATH_MAX];
+	char path[PATH_MAX];
+	pid_t pids[CONTAINER_ADOPT_MAX_PIDS];
+	pid_t init_pid = -1;
+	int cgroup_fd = -1, pidfd = -1, netns_fd = -1;
+	int count, i;
+
+	if (spec == NULL || spec->cg.name == NULL || out == NULL) {
+		errno = EINVAL;
+		return -1;
+	}
+	if (snprintf(dir, sizeof(dir), "/sys/fs/cgroup/%s", spec->cg.name) >= (int)sizeof(dir)) {
+		errno = ENAMETOOLONG;
+		return -1;
+	}
+
+	count = adopt_read_cgroup_procs(dir, pids, CONTAINER_ADOPT_MAX_PIDS);
+	if (count <= 0)
+		return 1; /* no cgroup, or nobody home -- start it normally */
+
+	for (i = 0; i < count; i++) {
+		if (adopt_pid_is_nsinit(pids[i])) {
+			init_pid = pids[i];
+			break;
+		}
+	}
+	if (init_pid < 0)
+		return 1;
+
+	/*
+	 * Take the pidfd BEFORE re-checking membership. A pidfd pins one
+	 * specific process, so once it is open the pid cannot be recycled
+	 * underneath us; re-reading cgroup.procs afterwards then confirms
+	 * that the process the fd refers to is still the one in this
+	 * cgroup. Doing it the other way round leaves a window where the
+	 * init exits, the pid is reused by something unrelated, and we
+	 * adopt a stranger.
+	 */
+	pidfd = sys_pidfd_open(init_pid, 0);
+	if (pidfd < 0)
+		return 1; /* it exited between the two reads -- nothing to adopt */
+
+	count = adopt_read_cgroup_procs(dir, pids, CONTAINER_ADOPT_MAX_PIDS);
+	if (count <= 0) {
+		close(pidfd);
+		return 1;
+	}
+	for (i = 0; i < count; i++) {
+		if (pids[i] == init_pid)
+			break;
+	}
+	if (i == count) {
+		close(pidfd);
+		return 1;
+	}
+
+	cgroup_fd = open(dir, O_PATH | O_DIRECTORY | O_CLOEXEC);
+	if (cgroup_fd < 0) {
+		close(pidfd);
+		return -1;
+	}
+
+	if (spec->interface_count > 0) {
+		snprintf(path, sizeof(path), "/proc/%ld/ns/net", (long)init_pid);
+		netns_fd = open(path, O_RDONLY | O_CLOEXEC);
+		if (netns_fd < 0) {
+			close(pidfd);
+			close(cgroup_fd);
+			return -1;
+		}
+	}
+
+	out->pid = init_pid;
+	out->cgroup_fd = cgroup_fd;
+	out->pidfd = pidfd;
+	/*
+	 * Deliberately -1, not a recovered fd.
+	 *
+	 * A BPF_CGROUP_DEVICE program attached to a cgroup is held by the
+	 * ATTACHMENT, not by the fd the loader happened to keep, so the
+	 * policy is still enforced after the worker that loaded it died --
+	 * the fd exists to keep the program alive while it is attached,
+	 * which the attachment itself already guarantees here. There is no
+	 * way to recover a program fd from an attachment, and inventing one
+	 * would mean detaching and reloading a device policy underneath a
+	 * running container purely to hold a descriptor.
+	 */
+	out->bpf_prog_fd = -1;
+	out->interfaces_netns_fd = netns_fd;
+	/*
+	 * The diagnostic pipe reports pre-exec setup failures and a failed
+	 * execve. Both are long past for a container that is demonstrably
+	 * running, and it is one-shot, so there is nothing to reopen.
+	 */
+	out->diag_fd = -1;
+	return 0;
+}

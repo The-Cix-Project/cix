@@ -58,6 +58,12 @@ could say why.**
   subject.
 - `cixd` runs as real pid 1 on an installed host (`g_pid1_mode`). There is no
   supervisor above it, so nothing can restart it.
+- The registry of **running** containers is memory only. `registry.c` holds
+  `static struct registry_entry g_entries[REGISTRY_MAX_CONTAINERS]` and does
+  no file I/O at all — its only serialisation is the JSON writers that answer
+  HTTP. What persists is `container_defs.json`, the *definitions*, from which
+  `containerdef_autostart_all()` reconstructs at boot on the assumption that
+  nothing is running yet.
 
 ### The actual root cause
 
@@ -87,6 +93,30 @@ indefinitely. It should fit in one file and be readable in one sitting.
 
 `cixd` becomes the worker: it keeps the event loop, the API, and the runtime,
 and it stops being pid 1.
+
+"Hold whatever it must" has a specific mechanism, and it is the largest part
+of this item. Because the running registry is memory only, a restarted worker
+would autostart duplicates on top of survivors — colliding names, colliding
+bridges — so the split is not an improvement until the worker can **re-adopt**
+what is already running. The anchor is the container cgroup, `/sys/fs/cgroup/
+<name>`: kernel state, keyed on the name, outliving any daemon. For each
+definition the worker reads that cgroup and, when it is populated, rebuilds a
+`struct container_handle` from kernel state rather than calling `clone3` —
+the pid from `cgroup.procs` (the one whose parent is outside the cgroup),
+`cgroup_fd` by reopening the directory, `pidfd` from `pidfd_open()`,
+`interfaces_netns_fd` from `/proc/<pid>/ns/net`. An empty cgroup means the
+container really is gone and autostart proceeds as it does today.
+
+Re-adoption forces one interface between the two processes. A surviving
+container is reparented to `cix-init`, so it is no longer the worker's child:
+the worker can poll a `pidfd` for its exit, but `waitid()` on a non-child
+fails, and the exit status and term signal are reaped by the supervisor and
+otherwise lost. `cix-init` therefore forwards every child it reaps —
+`(pid, si_code, si_status)` — to the worker over a `socketpair` handed to it
+at spawn, replaying anything reaped while no worker was running. It forwards
+all of them and lets the worker filter; the supervisor is not the right place
+to know which pids matter. Without this channel a re-adopted container that
+exits reports a null exit status with no reason, which is a placeholder.
 
 The point of the split is that **the worker becomes disposable**. Today
 killing `cixd` is indistinguishable from destroying the host, which is why no
@@ -155,11 +185,44 @@ remain the right defences against the failures they address. This ADR is
 about what happens when a defence does not hold, which on this platform has
 so far meant walking to the hypervisor.
 
-## Open at the time of writing
+## Resolved after the fact: it was hung, not dead
 
-Whether the 2026-09-05 incident was a hang or a process death is unresolved
-and is to be read off the box on recovery — uptime from `GET /v1/system/boot`
-distinguishes a reboot from none, and pid 1's identity says whether a dead
-`cixd` could have been survived by its containers at all. The finding belongs
-on #283 and, if it changes the picture, in a follow-up to this ADR rather
-than an edit of it.
+The question left open above — hang or process death — is answered, by the
+measurement this section asked for. `GET /v1/system/processes` on the
+recovered box reports pid 1 as `cixd`, command line
+`/bin/cixd --init-mode --slot=a --bind=192.168.15.95`, which is what the
+kernel cmdline `init=/bin/cixd -- --init-mode` produces and what every deploy
+this project has made sets.
+
+A dead pid 1 is `Attempted to kill init!`, a kernel panic (#131). The box did
+not panic: it replied to ICMP throughout, and the `jump` container served real
+SSH logins for the whole outage. So `cixd` cannot have exited. It was alive
+and not answering — which the console then showed directly, reporting the
+daemon in `state S` with `wchan n_tty_read`, blocked reading a pty master.
+The refused connections that suggested "no listener" are consistent with
+this: a full accept queue sends `RST`, which is indistinguishable from a
+closed port to the machine being refused.
+
+This does not change the decision. The ADR was written to be required under
+either answer, and it is: a hung worker is precisely the case where an
+in-process health endpoint cannot report and an in-process watchdog cannot
+act. It does sharpen item 2 — the watchdog is watching for exactly this, and
+today it can only write it down.
+
+Recorded on #283.
+
+## Consequences of the amendment
+
+The re-adoption mechanism and the reap-forward channel described in item 1
+were not costed when this split was first scoped as items 1-3. They are not
+new items — they are what item 1 turned out to require once the registry was
+read — but they are the bulk of the work, and item 1 is no longer a small
+file that reads in one sitting on the worker side.
+
+Item order within the change follows from the same finding: the reap-forward
+channel is designed first because both other pieces depend on its shape,
+re-adoption is written and proven next (in the suite, where a forked `cixd`
+is not pid 1 and can actually be killed), and only then does `cix-init`
+exist to restart anything. Re-adoption cannot be deployed alone and proven on
+a real host, because today `cixd` *is* pid 1 and nothing can restart it —
+that is the circularity the split exists to break.
