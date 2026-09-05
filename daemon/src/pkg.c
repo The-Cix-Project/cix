@@ -5045,12 +5045,14 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 			sub = fork();
 			if (sub == 0) {
 				if (artifact_header[0] != '\0') {
-					char *argv[] = { (char *)PKG_CURL_BIN, "-fsSL", "-H", artifact_header,
-						          "-o",                  artifact_path, artifact_url, NULL };
+					char *argv[] = { (char *)PKG_CURL_BIN, "-fsSL",
+						          PKG_CURL_STALL_GUARD_ARGS, "-H", artifact_header,
+						          "-o", artifact_path, artifact_url, NULL };
 
 					execve(PKG_CURL_BIN, argv, environ);
 				} else {
-					char *argv[] = { (char *)PKG_CURL_BIN, "-fsSL", "-o", artifact_path,
+					char *argv[] = { (char *)PKG_CURL_BIN, "-fsSL",
+						          PKG_CURL_STALL_GUARD_ARGS, "-o", artifact_path,
 						          artifact_url, NULL };
 
 					execve(PKG_CURL_BIN, argv, environ);
@@ -5181,9 +5183,9 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 			 * any corrupt resume, so this only ever helps, never
 			 * masks a bad download.
 			 */
-			char *argv[] = { (char *)PKG_CURL_BIN, "-fsSL", "--retry", "8",
-				          "--retry-all-errors", "--retry-delay", "3", "-C", "-",
-				          "-o", src_tarball_path, recipe.source[j], NULL };
+			char *argv[] = { (char *)PKG_CURL_BIN, "-fsSL", PKG_CURL_STALL_GUARD_ARGS,
+				          "--retry", "8", "--retry-all-errors", "--retry-delay", "3",
+				          "-C", "-", "-o", src_tarball_path, recipe.source[j], NULL };
 
 			snprintf(src_tarball_path, sizeof(src_tarball_path), "%s/%s-%s-%d.src",
 			         g_sources_dir, recipe.name, recipe.version, j);
@@ -8467,11 +8469,12 @@ enum pkg_error pkg_sync_start(pid_t *out_pid, int *out_pidfd)
 		return PKG_ERR_SPAWN_FAILED;
 	if (pid == 0) {
 		if (header[0] != '\0') {
-			char *argv[] = { (char *)PKG_CURL_BIN, "-fsSL", "-H",  header,
-				          "-o",                  tarball_path, url, NULL };
+			char *argv[] = { (char *)PKG_CURL_BIN, "-fsSL", PKG_CURL_STALL_GUARD_ARGS,
+				          "-H", header, "-o", tarball_path, url, NULL };
 			execve(PKG_CURL_BIN, argv, environ);
 		} else {
-			char *argv[] = { (char *)PKG_CURL_BIN, "-fsSL", "-o", tarball_path, url, NULL };
+			char *argv[] = { (char *)PKG_CURL_BIN, "-fsSL", PKG_CURL_STALL_GUARD_ARGS,
+				          "-o", tarball_path, url, NULL };
 			execve(PKG_CURL_BIN, argv, environ);
 		}
 		_exit(127);
@@ -10079,6 +10082,7 @@ int pkg_artifact_push_try_start(pid_t *out_pid, int *out_pidfd, char *out_desc, 
 			 * rather than a bare exit code. */
 			char *argv[] = { (char *)PKG_CURL_BIN,
 				         (char *)"-s",
+				         PKG_CURL_STALL_GUARD_ARGS,
 				         (char *)"--upload-file",
 				         tarball,
 				         (char *)"-H",

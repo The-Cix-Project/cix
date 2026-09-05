@@ -2975,7 +2975,7 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
 static int fetch_update_image(const char *url, const char *sha256, char *out_path,
                               size_t out_path_size, char *err, size_t err_size)
 {
-	char *argv[8];
+	char *argv[16];
 	char url_buf[PKG_URL_MAX];
 	pid_t pid;
 	int status;
@@ -2991,14 +2991,47 @@ static int fetch_update_image(const char *url, const char *sha256, char *out_pat
 	snprintf(out_path, out_path_size, "%s", SYSTEM_UPDATE_FETCH_PATH);
 	unlink(out_path);
 
+	/*
+	 * #285: this one runs on the EVENT LOOP, which makes its guards a
+	 * different question from every other curl here.
+	 *
+	 * The rest are forked job children -- an unbounded fetch stalls
+	 * that job and nothing else. This is called straight from the
+	 * POST /v1/system/update handler and waited on with waitpid(), so
+	 * a peer that accepts the connection and then says nothing does
+	 * not stall a job, it stalls the whole control plane, for as long
+	 * as it likes, from one unauthenticated-shaped API call. Nothing
+	 * about the "synchronous on purpose" reasoning above is wrong; it
+	 * reasoned about SIZE (~10 MB on a LAN) and not about a peer that
+	 * never answers.
+	 *
+	 * So the retry count comes down as well. The shared guards bound
+	 * one attempt at roughly 20s of connect plus 60s of silence, and
+	 * --retry multiplies that: eight attempts is ten minutes of dead
+	 * control plane, which is not a bound worth having. Two attempts
+	 * is one real retry for a transient blip and a worst case of a
+	 * few minutes.
+	 *
+	 * That is a bound, not a fix. A synchronous fetch on the event
+	 * loop is still a control-plane pause for however long a genuinely
+	 * slow transfer takes, and the async pattern this function's own
+	 * comment points at next door remains the real answer if update
+	 * images stop being small and local.
+	 */
 	argv[0] = (char *)PKG_CURL_BIN;
 	argv[1] = "-fsSL";
-	argv[2] = "--retry";
-	argv[3] = "8";
-	argv[4] = "-o";
-	argv[5] = out_path;
-	argv[6] = url_buf;
-	argv[7] = NULL;
+	argv[2] = "--connect-timeout";
+	argv[3] = PKG_CURL_CONNECT_TIMEOUT;
+	argv[4] = "--speed-limit";
+	argv[5] = PKG_CURL_SPEED_LIMIT;
+	argv[6] = "--speed-time";
+	argv[7] = PKG_CURL_SPEED_TIME;
+	argv[8] = "--retry";
+	argv[9] = "2";
+	argv[10] = "-o";
+	argv[11] = out_path;
+	argv[12] = url_buf;
+	argv[13] = NULL;
 
 	pid = fork();
 	if (pid < 0) {
@@ -10973,6 +11006,7 @@ static int start_iso_publish_upload(enum iso_publish_step step)
 		{
 			char *argv[] = { (char *)PKG_CURL_BIN,
 				         (char *)"-s",
+				         PKG_CURL_STALL_GUARD_ARGS,
 				         (char *)"--upload-file",
 				         local,
 				         (char *)"-H",
@@ -11806,7 +11840,7 @@ static int bootstrap_fetch_start(const char *url, const char *sha256, char *err_
 {
 	static char out_path[PATH_MAX];
 	static char url_buf[PKG_URL_MAX];
-	char *argv[8];
+	char *argv[16];
 	pid_t pid;
 	int pidfd;
 
@@ -11822,14 +11856,26 @@ static int bootstrap_fetch_start(const char *url, const char *sha256, char *err_
 	snprintf(out_path, sizeof(out_path), "%s", PKGBUILD_TOOLCHAIN_FETCH_PATH);
 	snprintf(url_buf, sizeof(url_buf), "%s", url);
 
+	/* #285. Asynchronous (pidfd), so an unbounded fetch would stall
+	 * this job rather than the loop -- but a bootstrap that never
+	 * finishes and never fails is still a job nothing can resolve.
+	 * --retry stays at 8: this is a 1.4 GB toolchain over whatever
+	 * link the operator has, and the speed guard is what makes the
+	 * retries safe rather than a way to wait eight times forever. */
 	argv[0] = (char *)PKG_CURL_BIN;
 	argv[1] = "-fsSL";
-	argv[2] = "--retry";
-	argv[3] = "8";
-	argv[4] = "-o";
-	argv[5] = out_path;
-	argv[6] = url_buf;
-	argv[7] = NULL;
+	argv[2] = "--connect-timeout";
+	argv[3] = PKG_CURL_CONNECT_TIMEOUT;
+	argv[4] = "--speed-limit";
+	argv[5] = PKG_CURL_SPEED_LIMIT;
+	argv[6] = "--speed-time";
+	argv[7] = PKG_CURL_SPEED_TIME;
+	argv[8] = "--retry";
+	argv[9] = "8";
+	argv[10] = "-o";
+	argv[11] = out_path;
+	argv[12] = url_buf;
+	argv[13] = NULL;
 
 	pid = fork();
 	if (pid < 0) {
@@ -22724,14 +22770,21 @@ static int kernel_releases_fetch_start(char *err_msg, size_t err_msg_size)
 	}
 	snprintf(out_path, sizeof(out_path), "%s", KERNEL_RELEASES_PATH);
 
+	/* #285: --max-time already bounded this one, and it is the right
+	 * tool here -- a release list is a few KB, so any long duration is
+	 * pathological rather than merely slow. The connect timeout is
+	 * added because a handshake that never completes is a separate
+	 * wait from a transfer that never progresses. */
 	argv[0] = (char *)PKG_CURL_BIN;
 	argv[1] = "-fsSL";
-	argv[2] = "--max-time";
-	argv[3] = "30";
-	argv[4] = "-o";
-	argv[5] = out_path;
-	argv[6] = (char *)KERNEL_RELEASES_URL;
-	argv[7] = NULL;
+	argv[2] = "--connect-timeout";
+	argv[3] = PKG_CURL_CONNECT_TIMEOUT;
+	argv[4] = "--max-time";
+	argv[5] = "30";
+	argv[6] = "-o";
+	argv[7] = out_path;
+	argv[8] = (char *)KERNEL_RELEASES_URL;
+	argv[9] = NULL;
 
 	pid = fork();
 	if (pid < 0) {
