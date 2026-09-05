@@ -24,6 +24,12 @@ The evidence was in the output the whole time: the four `depA: autostarted (rest
 
 `test_daemon_net`'s cleanup step deleted four containers fire-and-forget and then deleted the network they used. When that network delete came back 409, nothing in the output named which container had stayed — only the consequence, which is not a report anyone can act on. The four deletes are asserted now. A cleanup step is still a step.
 
+### The unchecked deletes in test_daemon_net were the ones that mattered (#286)
+
+The v2.53.30 fix asserted the four container deletes in step 11 and left `n6` and `n7` in step 9 fire-and-forget. That is exactly how the next failure presented: `DELETE dnettest (unused) expected 204, got 409` with **every checked delete reporting success** — the container still holding the network was one nobody was looking at. Both are asserted now.
+
+Worth naming the shape rather than just the fix: adding an assertion to some of a group and not the rest moves the blind spot, it does not remove it. The first version of this fix made the report *look* trustworthy while leaving the actual gap open.
+
 ### An install that did not land is no longer reported as installed (#281)
 
 `GET /v1/pkg` said `htop` was installed into `jumpbox` while the container answered `bash: htop: command not found`, and nothing anywhere connected the two.

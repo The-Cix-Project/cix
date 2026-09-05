@@ -188,8 +188,8 @@ int main(void)
 	status = run_apigen("docs/api/openapi.yaml", NULL, out, sizeof(out));
 	if (status != 0)
 		fail("apigen rejected the real spec: %.300s", out);
-	else if (atoi(out) != 275)
-		fail("apigen found %d operations in the real spec, expected 275 -- if the spec "
+	else if (atoi(out) != 276)
+		fail("apigen found %d operations in the real spec, expected 276 -- if the spec "
 		     "genuinely changed, update this number deliberately; a silently different "
 		     "count is how a lost route hides",
 		     atoi(out));
@@ -289,10 +289,10 @@ int main(void)
 			fclose(f);
 			unlink(hdr_path);
 		}
-		if (defines != 275)
-			fail("CLI header has %d path defines, expected one per operation (275)", defines);
-		if (methods != 275)
-			fail("CLI header has %d method defines, expected 273", methods);
+		if (defines != 276)
+			fail("CLI header has %d path defines, expected one per operation (276)", defines);
+		if (methods != 276)
+			fail("CLI header has %d method defines, expected one per operation (276)", methods);
 		if (braces != 0)
 			fail("%d CLI path define(s) still contain '{' -- a parameter was not converted "
 			     "to %%s and would put a literal brace in the URL",

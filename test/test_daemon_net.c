@@ -689,11 +689,28 @@ int main(void)
 		}
 		cix_response_free(&r);
 
-		cix_client_request(&client, "DELETE", "/v1/containers/n7", NULL, &r);
-		cix_response_free(&r);
+		/* Asserted, like the four in step 11 (#286). These two were
+		 * fire-and-forget, and that is how the 409 below came back
+		 * with every checked delete reporting success: the container
+		 * still holding the network was one nobody was looking at. */
+		{
+			static const char *const leaving_early[] = { "n7", "n6" };
+			size_t li;
 
-		cix_client_request(&client, "DELETE", "/v1/containers/n6", NULL, &r);
-		cix_response_free(&r);
+			for (li = 0; li < sizeof(leaving_early) / sizeof(leaving_early[0]); li++) {
+				char path[64];
+
+				snprintf(path, sizeof(path), "/v1/containers/%s", leaving_early[li]);
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "DELETE", path, NULL, &r) != 0 ||
+				    r.status != 204) {
+					fprintf(stderr, "FAIL: DELETE container %s expected 204, got %d\n",
+					        leaving_early[li], r.status);
+					ok = 0;
+				}
+				cix_response_free(&r);
+			}
+		}
 	}
 
 	/* 10. deleting a network still in use by a container -> 409 */
