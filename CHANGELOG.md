@@ -2,6 +2,17 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Seventeen modules: networks, and two utilities find their home (ADR-0249)
+
+`network` (creating virtual networks, their ports, attaching and detaching real host interfaces) brings it to seventeen. **main.c is 24,770 lines, down from 31,284 — 6,514 gone, 21%.**
+
+Three things moved to where they belonged rather than travelling with the handlers:
+
+- `read_net_stat()` and `container_veth_host_name()` went to **`network.c`**. Both are network facts about a name, both were `static` in main.c, and both were needed by the network handlers *and* the container ones — which is what a shared module is for.
+- `network_error_to_status()`, the pure enum-to-status resolver, is exported from `api_network.h`. `create_container_from_body()` validates its networks array before it has an fd to answer on, so it needs the mapping without the response — one table, not two that drift.
+
+**`test_lint` caught its fourth**, and this one could not have been fixed the same way as the third: `network.h` now declared a `struct registry_entry *` parameter, and `registry.h` already includes `network.h`, so including it back would have been circular. A forward declaration of the struct is the right answer and is what the header carries, with the reason written next to it.
+
 ### Sixteen modules: pki and storage, and the lint gate catches its third (ADR-0249)
 
 `pki` (the CA tier: root, intermediate, certificates, reset) and `storage` (devices, device mappings, disks, disk roles, formatting, unmounting and the partition table — 1,024 lines, the largest single group in the file) bring it to sixteen. **main.c is 25,361 lines, down from 31,284: 5,923 gone, 19%.**
