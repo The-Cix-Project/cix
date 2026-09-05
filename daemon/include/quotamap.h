@@ -57,4 +57,15 @@ void quotamap_repoint(const char *new_state_path);
  */
 int quotamap_get_or_assign(const char *name, uint32_t *out_projid);
 
+/*
+ * Applies a project quota to the filesystem backing base_path.
+ *
+ * The counterpart to quotamap_get_or_assign(): that decides which
+ * project id a name owns, this makes the id mean something on disk.
+ * Both callers -- volume quota changes and container creation -- want
+ * the pair, and splitting them across two files meant neither owned
+ * "quota". Returns 0, or -1 with errno set.
+ */
+int quotamap_apply(const char *base_path, uint32_t projid, long long quota_bytes);
+
 #endif /* QUOTAMAP_H */

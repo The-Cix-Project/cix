@@ -32,4 +32,13 @@ void handle_ntp_server_create(int fd, const char *body, size_t body_len);
 void handle_ntp_server_list(int fd);
 void handle_ntp_server_delete(int fd, const char *name);
 
+/*
+ * GET/PUT /v1/system/time: the host's real clock. Here rather than in a
+ * module of its own because handle_time_put() calls ntp_time_set() and
+ * reports through respond_ntp_error() -- same domain module, same error
+ * mapping. A separate api_time.c would have to import both.
+ */
+void handle_time_get(int fd);
+void handle_time_put(int fd, const char *body, size_t body_len);
+
 #endif /* API_NTP_H */

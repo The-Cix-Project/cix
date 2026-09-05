@@ -62,16 +62,53 @@ rules, each of which was found by hitting it rather than by design:
    handlers and the one that stayed. One mapping that crosses a file boundary
    is right; two that agree today is how they stop agreeing.
 
+## The second thing holding it together: 66 path globals
+
+`respond_error()` was the blocker for the first three subsystems. The
+fourth found the other one.
+
+`api_swap` would not compile because it needed `CONTAINERS_DIR`, then
+`DISKS_MOUNT_DIR`, then `SWAP_FILE_PATH`. All 66 filesystem paths this
+daemon derives from `--data-dir` were `static` in `main.c`, which meant
+any handler that touches its own subsystem's directory could not leave.
+
+Threading them through signatures was tried first and abandoned at the
+third: a handler taking three path strings it immediately passes on is
+not a better boundary, it is the same coupling written out longhand.
+
+Two existing headers had already been living with this and said so.
+`disk.h` and `device.h` both note, in as many words, that they have "no
+knowledge of main.c's own `CONTAINERS_DIR` global, so the caller passes
+it". That workaround was correct while the paths were static; it is
+unnecessary now.
+
+`daemon/include/daemonpaths.h` declares all 66 `extern`. The definitions
+stay in `main.c` beside the code that computes them from `g_base_dir`,
+with the comments explaining what each is for, so **no call site
+anywhere changed** — main.c's own 61 uses of `CONTAINERS_DIR` included.
+They are written once at startup and read-only afterwards.
+
+A related move fell out of the same slice. `set_disk_quota()` and its
+`resolve_backing_device()` helper were `static` in `main.c` and called
+from two different concerns — volume quota changes and container
+creation. They are now `quotamap_apply()` in `quotamap.c`, which already
+owned which project id a name gets. Keeping the assignment and the
+application in different files meant neither owned "quota".
+
 ## Consequences
 
 Per slice this is code motion with no behaviour change, which is the point:
 it is verifiable by compiling, and every call site is untouched.
 
-`main.c` is 30,630 lines after the first three subsystems (sysctl, kmod,
-ntp) plus the response helpers. That is a 654-line reduction and it is
-deliberately unimpressive — the value is that the mechanism now exists and
-the boundary is written down, so the remaining twenty-one subsystems are
-ordinary work rather than a decision each time.
+`main.c` is 28,977 lines, down from 31,284, across nine modules: sysctl,
+kmod, ntp (with the host clock, which shares ntp's error mapping),
+syslog, resolv, keys, route, swap and volume — the last at 833 lines the
+largest single group in the file.
+
+Two handlers were deliberately *not* moved, and both are rule 2:
+`handle_ntp_sync_post()` arms a timerfd, and the daemon-config handlers
+rebind the live listen socket. Both stayed, and each says why where it
+sits.
 
 **The risk is real and worth naming.** This is a large refactor of the
 process that is the entire control plane, and the dev sandbox can compile it

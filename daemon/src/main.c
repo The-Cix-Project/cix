@@ -72,7 +72,14 @@
 #include "api_kmod.h"
 #include "api_ntp.h"
 #include "api_sysctl.h"
+#include "api_syslog.h"
+#include "api_resolv.h"
+#include "api_keys.h"
+#include "api_route.h"
+#include "api_swap.h"
+#include "api_volume.h"
 #include "apiresp.h"
+#include "daemonpaths.h"
 #include "apiroute.h"
 #include "config.h"
 #include "websocket.h"
@@ -220,60 +227,60 @@ static char g_disks_dir[PATH_MAX] = "";
  * with exactly one consumer (logstore.c), unlike the dozen-plus
  * unrelated things STATE_DIR groups.
  */
-static char STATE_DIR[PATH_MAX];
-static char REBUILDABLE_DIR[PATH_MAX];
-static char IMAGES_DIR[PATH_MAX];
-static char CONTAINERS_DIR[PATH_MAX];
-static char NETWORKS_STATE_PATH[PATH_MAX];
-static char DNS_RECORDS_STATE_PATH[PATH_MAX];
-static char DNS_SERVERS_STATE_PATH[PATH_MAX];
-static char LDAP_SERVERS_STATE_PATH[PATH_MAX];
-static char LDAP_USERS_STATE_PATH[PATH_MAX];
-static char LDAP_GROUPS_STATE_PATH[PATH_MAX];
-static char LDAP_CONFIG_STATE_PATH[PATH_MAX];
-static char SUBID_STATE_PATH[PATH_MAX]; /* ADR-0179 */
-static char SERVERHEALTH_STATE_PATH[PATH_MAX]; /* issue #81 -- drain flags only */
-static char CPRESERVE_STATE_PATH[PATH_MAX]; /* issue #86 -- control-plane reservation */
-static char PKGPOLICY_STATE_PATH[PATH_MAX];  /* issue #64 -- per-package rolling policy */
-static char BOOTCONSOLE_STATE_PATH[PATH_MAX]; /* issue #24 -- boot console parameters */
-static char KERNELPOLICY_STATE_PATH[PATH_MAX]; /* issue #65 -- which kernel line this box tracks */
-static char KERNEL_RELEASES_PATH[PATH_MAX];    /* issue #65 -- cached kernel.org releases.json */
-static char ZSWAP_STATE_PATH[PATH_MAX];        /* issue #51 -- compressed swap cache settings */
-static char KSM_STATE_PATH[PATH_MAX];          /* issue #50 -- samepage merging settings */
-static char DHCP_STATE_PATH[PATH_MAX];         /* DHCP ranges and static reservations */
-static char STALLWATCH_RECORDS_PATH[PATH_MAX]; /* issue #100 -- control-plane stall records */
-static char VOLUMES_STATE_PATH[PATH_MAX];      /* issue #88 */
-static char VOLUMES_DIR[PATH_MAX];             /* issue #88 -- where volume data lives */
-static char VOLUME_BACKUP_CONFIG_PATH[PATH_MAX]; /* issue #96 -- the volume-snapshot schedule */
-static char PKI_DIR[PATH_MAX];
-static char PKI_CERTS_STATE_PATH[PATH_MAX];
-static char PKI_CERTS_DIR[PATH_MAX];
-static char PKG_DIR[PATH_MAX];
-static char PKG_INSTALLED_STATE_PATH[PATH_MAX];
-static char PKG_RECIPES_DIR[PATH_MAX];
-static char PKG_REPO_CONFIG_PATH[PATH_MAX]; /* ADR-0121 */
-static char PKG_CACHE_DIR[PATH_MAX];              /* ADR-0122 */
-static char PKG_CACHE_CONFIG_PATH[PATH_MAX];      /* ADR-0122 */
-static char PKG_ARTIFACT_CONFIG_PATH[PATH_MAX];   /* ADR-0122 */
-static char PKG_BUILD_CONFIG_PATH[PATH_MAX];      /* ADR-0157 Phase 3 */
+char STATE_DIR[PATH_MAX];
+char REBUILDABLE_DIR[PATH_MAX];
+char IMAGES_DIR[PATH_MAX];
+char CONTAINERS_DIR[PATH_MAX];
+char NETWORKS_STATE_PATH[PATH_MAX];
+char DNS_RECORDS_STATE_PATH[PATH_MAX];
+char DNS_SERVERS_STATE_PATH[PATH_MAX];
+char LDAP_SERVERS_STATE_PATH[PATH_MAX];
+char LDAP_USERS_STATE_PATH[PATH_MAX];
+char LDAP_GROUPS_STATE_PATH[PATH_MAX];
+char LDAP_CONFIG_STATE_PATH[PATH_MAX];
+char SUBID_STATE_PATH[PATH_MAX]; /* ADR-0179 */
+char SERVERHEALTH_STATE_PATH[PATH_MAX]; /* issue #81 -- drain flags only */
+char CPRESERVE_STATE_PATH[PATH_MAX]; /* issue #86 -- control-plane reservation */
+char PKGPOLICY_STATE_PATH[PATH_MAX];  /* issue #64 -- per-package rolling policy */
+char BOOTCONSOLE_STATE_PATH[PATH_MAX]; /* issue #24 -- boot console parameters */
+char KERNELPOLICY_STATE_PATH[PATH_MAX]; /* issue #65 -- which kernel line this box tracks */
+char KERNEL_RELEASES_PATH[PATH_MAX];    /* issue #65 -- cached kernel.org releases.json */
+char ZSWAP_STATE_PATH[PATH_MAX];        /* issue #51 -- compressed swap cache settings */
+char KSM_STATE_PATH[PATH_MAX];          /* issue #50 -- samepage merging settings */
+char DHCP_STATE_PATH[PATH_MAX];         /* DHCP ranges and static reservations */
+char STALLWATCH_RECORDS_PATH[PATH_MAX]; /* issue #100 -- control-plane stall records */
+char VOLUMES_STATE_PATH[PATH_MAX];      /* issue #88 */
+char VOLUMES_DIR[PATH_MAX];             /* issue #88 -- where volume data lives */
+char VOLUME_BACKUP_CONFIG_PATH[PATH_MAX]; /* issue #96 -- the volume-snapshot schedule */
+char PKI_DIR[PATH_MAX];
+char PKI_CERTS_STATE_PATH[PATH_MAX];
+char PKI_CERTS_DIR[PATH_MAX];
+char PKG_DIR[PATH_MAX];
+char PKG_INSTALLED_STATE_PATH[PATH_MAX];
+char PKG_RECIPES_DIR[PATH_MAX];
+char PKG_REPO_CONFIG_PATH[PATH_MAX]; /* ADR-0121 */
+char PKG_CACHE_DIR[PATH_MAX];              /* ADR-0122 */
+char PKG_CACHE_CONFIG_PATH[PATH_MAX];      /* ADR-0122 */
+char PKG_ARTIFACT_CONFIG_PATH[PATH_MAX];   /* ADR-0122 */
+char PKG_BUILD_CONFIG_PATH[PATH_MAX];      /* ADR-0157 Phase 3 */
 /* Where a hostbuild job's own harvested output lands (ADR-0056) --
  * ARTIFACTS_DIR/<name>/..., a plain host directory, never a container-
  * visible path. */
-static char ARTIFACTS_DIR[PATH_MAX];
-static char CONTAINER_DEFS_STATE_PATH[PATH_MAX];
-static char ROLLING_CONFIG_PATH[PATH_MAX]; /* ADR-0124 */
-static char SITE_CONFIG_PATH[PATH_MAX];
-static char DEVICEMAP_STATE_PATH[PATH_MAX];
-static char SYSCTLCONFIG_STATE_PATH[PATH_MAX]; /* ADR-0160 */
-static char KMODCONFIG_STATE_PATH[PATH_MAX]; /* ADR-0159 */
-static char DISKROLE_STATE_PATH[PATH_MAX];
+char ARTIFACTS_DIR[PATH_MAX];
+char CONTAINER_DEFS_STATE_PATH[PATH_MAX];
+char ROLLING_CONFIG_PATH[PATH_MAX]; /* ADR-0124 */
+char SITE_CONFIG_PATH[PATH_MAX];
+char DEVICEMAP_STATE_PATH[PATH_MAX];
+char SYSCTLCONFIG_STATE_PATH[PATH_MAX]; /* ADR-0160 */
+char KMODCONFIG_STATE_PATH[PATH_MAX]; /* ADR-0159 */
+char DISKROLE_STATE_PATH[PATH_MAX];
 /* ADR-0141 Phase 2: which disk (if any) is the active placement for
  * state-storage/rebuildable-storage/log-storage -- g_base_dir-relative,
  * never STATE_DIR-relative, same bootstrap-circularity reasoning as
  * DISKROLE_STATE_PATH's own comment. */
-static char STORAGE_PLACEMENT_PATH[PATH_MAX];
-static char DAEMON_CONFIG_PATH[PATH_MAX];
-static char QUOTAMAP_STATE_PATH[PATH_MAX];
+char STORAGE_PLACEMENT_PATH[PATH_MAX];
+char DAEMON_CONFIG_PATH[PATH_MAX];
+char QUOTAMAP_STATE_PATH[PATH_MAX];
 /*
  * Where POST /v1/system/iso (ADR-0064) looks for the Secure Boot
  * signing key pair and writes its own output -- both new with this
@@ -291,12 +298,12 @@ static char QUOTAMAP_STATE_PATH[PATH_MAX];
  * without a real git token -- a real, environment-specific
  * precondition, not a gap.
  */
-static char SIGNING_KEYS_DIR[PATH_MAX];
-static char ISO_DIR[PATH_MAX];
+char SIGNING_KEYS_DIR[PATH_MAX];
+char ISO_DIR[PATH_MAX];
 /* Set once at startup beside ISO_DIR, so a restart can find an ISO it
  * already built (#205) -- it used to be derived only inside the build
  * handler, which is why nothing knew the path until a build ran. */
-static char ISO_OUTPUT_PATH[PATH_MAX];
+char ISO_OUTPUT_PATH[PATH_MAX];
 /*
  * Where the assembled control-plane image and its staging tree live
  * (#178). Both used to sit inside the "cix" hostbuild's own artifact
@@ -306,11 +313,11 @@ static char ISO_OUTPUT_PATH[PATH_MAX];
  * Build output is not package content; it belongs beside the artifacts
  * rather than inside one.
  */
-static char BOOTROOT_DIR[PATH_MAX];
+char BOOTROOT_DIR[PATH_MAX];
 /* POST /v1/pkg/bootstrap's own toolchain_url mode (ADR-0065) -- a
  * fixed scratch path for the curl'd artifact, same "one fixed spot,
  * overwritten each time" convention ISO_OUTPUT_PATH already uses. */
-static char PKGBUILD_TOOLCHAIN_FETCH_PATH[PATH_MAX];
+char PKGBUILD_TOOLCHAIN_FETCH_PATH[PATH_MAX];
 /*
  * Issue #141: where POST /v1/system/update stages an image fetched by
  * URL. Exists because "image_path" alone made the endpoint unusable on
@@ -324,53 +331,53 @@ static char PKGBUILD_TOOLCHAIN_FETCH_PATH[PATH_MAX];
  * toolchain_url fetch pulls 1.4 GB the same way. Update simply never
  * offered it.
  */
-static char SYSTEM_UPDATE_FETCH_PATH[PATH_MAX];
+char SYSTEM_UPDATE_FETCH_PATH[PATH_MAX];
 /* ADR-0069: a single host-level swap file, off by default, enabled
  * on demand via POST /v1/system/swap. SWAP_DIR keeps the file and its
  * tiny persisted enabled/size state together, out of g_base_dir's own
  * root (the same "own subdirectory per subsystem" convention PKI_DIR/
  * PKG_DIR already use). */
-static char SWAP_DIR[PATH_MAX];
-static char SWAP_FILE_PATH[PATH_MAX];
-static char SWAP_STATE_PATH[PATH_MAX];
+char SWAP_DIR[PATH_MAX];
+char SWAP_FILE_PATH[PATH_MAX];
+char SWAP_STATE_PATH[PATH_MAX];
 /* Consolidated log store (kernel dmesg + cixd's own diagnostics +
  * a per-request audit trail, ADR-0070) -- its own subdirectory,
  * matching every other subsystem's "own directory under the base
  * data dir" convention (PKI_DIR/PKG_DIR/SWAP_DIR above). */
-static char LOG_DIR[PATH_MAX];
-static char LOG_STATE_PATH[PATH_MAX];
+char LOG_DIR[PATH_MAX];
+char LOG_STATE_PATH[PATH_MAX];
 /* Multi-disk management Phase C: where an assigned-role disk gets
  * mounted once formatted (diskformat.h) -- <name> under here, e.g.
  * DISKS_MOUNT_DIR/sdb. Deliberately NOT CONTAINERS_DIR itself; Phase D
  * (container-storage migration) is the still-unbuilt mechanism that
  * would actually move container storage onto a mounted disk like this
  * one -- formatting/mounting alone never touches CONTAINERS_DIR. */
-static char DISKS_MOUNT_DIR[PATH_MAX];
+char DISKS_MOUNT_DIR[PATH_MAX];
 /* ADR-0076: the host's own outbound DNS resolver config, persisted in
  * literal resolv.conf format (not JSON) -- this file IS what a real
  * --init-mode boot bind-mounts onto /etc/resolv.conf, so writing it
  * via resolv_set() takes effect immediately, no reboot needed. */
-static char RESOLV_CONF_PATH[PATH_MAX];
+char RESOLV_CONF_PATH[PATH_MAX];
 /* NTP (task #751-755): the host's own upstream server address list
  * (GET/PUT /v1/system/ntp) and registered NTP-serving container
  * bindings (POST/GET/DELETE /v1/ntp/servers) -- two independent
  * persisted files, same dual-path convention dns_init()'s own
  * records/servers pair already uses. */
-static char NTP_STATE_PATH[PATH_MAX];
-static char NTP_SERVERS_STATE_PATH[PATH_MAX];
-static char SYSLOGFWD_STATE_PATH[PATH_MAX];
+char NTP_STATE_PATH[PATH_MAX];
+char NTP_SERVERS_STATE_PATH[PATH_MAX];
+char SYSLOGFWD_STATE_PATH[PATH_MAX];
 /* Per-source-IP HTTPS-handshake-failure throttling config (GET/PUT
  * /v1/system/tls-throttle) -- the tracked-peer table itself is
  * in-memory only, never persisted, same posture as every other
  * transient in-flight daemon state. */
-static char CONNTHROTTLE_CONFIG_PATH[PATH_MAX];
+char CONNTHROTTLE_CONFIG_PATH[PATH_MAX];
 /* ADR-0141 Phase 5: persisted disk/enabled/interval_hours config for
  * automatic state-storage backup snapshots (GET/PUT /v1/system/
  * backup-config). */
-static char BACKUP_CONFIG_PATH[PATH_MAX];
+char BACKUP_CONFIG_PATH[PATH_MAX];
 /* ADR-0144: persisted admin-group/idle-timeout config for host
  * authentication (GET/PUT /v1/system/hostauth-config). */
-static char HOSTAUTH_CONFIG_PATH[PATH_MAX];
+char HOSTAUTH_CONFIG_PATH[PATH_MAX];
 
 /* Computes every path derived from g_base_dir -- called once, right
  * after argv parsing (so --data-dir= has already been applied) and
@@ -1054,128 +1061,9 @@ static char g_esp_entries_dir[PATH_MAX] = ESP_LOADER_ENTRIES_DIR;
  */
 #define CONTAINERS_DEVICE "/dev/vda5"
 
-/*
- * Real ext4 project-quota device resolution (Part 4, bare-metal-
- * readiness plan, ADR-0062). quotactl(2)'s own "special" argument
- * needs the real block device backing wherever CONTAINERS_DIR actually
- * lives -- which is CONTAINERS_DEVICE only under a real --init-mode
- * boot; every daemon-linked test and any --data-dir= override instead
- * points g_base_dir at an ordinary directory on whatever filesystem the
- * host/test environment's own root happens to be (see CONTAINERS_
- * DEVICE's own comment above for the tmpfs-fallback case, which is a
- * third possibility again). Hardcoding CONTAINERS_DEVICE here would be
- * silently wrong in both of those cases -- this project's own bare-
- * metal-readiness plan flagged this exact question explicitly ("device-
- * path resolution... must be confirmed, not assumed"), so it's resolved
- * for real instead: walk /proc/mounts and pick the longest-matching
- * mount point for `path` (the same "find the owning mount" algorithm
- * findmnt/df use internally), returning 0 and filling out_device on
- * success. -1 (errno set) if /proc/mounts can't be read or path isn't
- * under any mount point at all (should never happen for a legitimately
- * mounted directory).
- *
- * Deliberately does not decode octal-escaped whitespace in /proc/mounts'
- * own mountpoint field (e.g. "\040" for a literal space) -- no path this
- * project ever mounts anything at (CONTAINERS_DIR, PKI_DIR, or any
- * --data-dir=/mkdtemp() test path) contains a space, so handling that
- * general case would be real, unexercised complexity for a scenario
- * that can't occur here.
- */
-static int resolve_backing_device(const char *path, char *out_device, size_t out_size)
-{
-	char real_path[PATH_MAX];
-	FILE *f;
-	char line[PATH_MAX * 2];
-	size_t best_len = 0;
-	int found = 0;
 
-	if (realpath(path, real_path) == NULL)
-		return -1;
 
-	f = fopen("/proc/mounts", "r");
-	if (f == NULL)
-		return -1;
 
-	while (fgets(line, sizeof(line), f) != NULL) {
-		char device[PATH_MAX];
-		char mountpoint[PATH_MAX];
-		size_t mp_len;
-
-		if (sscanf(line, "%4095s %4095s", device, mountpoint) != 2)
-			continue;
-
-		mp_len = strlen(mountpoint);
-		if (strncmp(real_path, mountpoint, mp_len) != 0)
-			continue;
-		/* Exact match, or the next real_path char must be '/' -- so a
-		 * mountpoint of "/var" never matches a real_path of
-		 * "/variant". */
-		if (real_path[mp_len] != '\0' && real_path[mp_len] != '/')
-			continue;
-		if (mp_len < best_len)
-			continue;
-
-		best_len = mp_len;
-		if (snprintf(out_device, out_size, "%s", device) >= (int)out_size) {
-			fclose(f);
-			errno = ENAMETOOLONG;
-			return -1;
-		}
-		found = 1;
-	}
-	fclose(f);
-
-	if (!found) {
-		errno = ENOENT;
-		return -1;
-	}
-	return 0;
-}
-
-/*
- * Sets a real, kernel-enforced hard limit of quota_bytes for project id
- * projid on whatever device backs base_path (the container's own
- * container_base -- CONTAINERS_DIR/<name> by default, or
- * <disk's mount_path>/containers/<name> for a disk-placed container,
- * task #638 -- NOT always CONTAINERS_DIR itself: a container placed on
- * an alternate disk must have its quota set against THAT disk's own
- * backing device, or the limit would silently apply to the wrong
- * filesystem entirely while the actual files live elsewhere), via a
- * real quotactl(2) Q_SETQUOTA call -- independent of and order-agnostic with
- * src/overlay.c's own FS_IOC_FSSETXATTR tagging (that call says "these
- * files belong to project X"; this one says "project X's own limit is
- * Y" -- setting a limit for a project id the kernel has never seen an
- * inode tagged with yet is a completely normal, harmless no-op until
- * one shows up). dqb_bhardlimit is in real quota *blocks* (always
- * 1024 bytes each, regardless of the filesystem's own block size --
- * see /usr/include/x86_64-linux-gnu/sys/quota.h's own struct dqblk
- * comment), not raw bytes, hence the rounding-up conversion. No soft
- * limit / grace-period policy -- dqb_bsoftlimit is set equal to the
- * hard limit, so writes are refused (EDQUOT) the instant the real limit
- * is hit, not merely warned about after some grace period this project
- * has no mechanism to surface to an operator anyway. Returns 0 on
- * success, -1 (errno set by quotactl(2) -- ENOTSUP/EOPNOTSUPP if the
- * backing filesystem doesn't have the project-quota feature enabled at
- * all, exactly what a filesystem cix-install.c didn't create via
- * mkfs.ext4 -O quota -E quotatype=prjquota reports) otherwise.
- */
-static int set_disk_quota(const char *base_path, uint32_t projid, long long quota_bytes)
-{
-	char device[PATH_MAX];
-	struct dqblk dq;
-
-	if (resolve_backing_device(base_path, device, sizeof(device)) != 0)
-		return -1;
-
-	memset(&dq, 0, sizeof(dq));
-	dq.dqb_bhardlimit = (uint64_t)((quota_bytes + 1023) / 1024);
-	dq.dqb_bsoftlimit = dq.dqb_bhardlimit;
-	dq.dqb_valid = QIF_BLIMITS;
-
-	if (quotactl(QCMD(Q_SETQUOTA, PRJQUOTA), device, (int)projid, (caddr_t)&dq) != 0)
-		return -1;
-	return 0;
-}
 
 #define MAX_EVENTS 64
 #define CONTAINERS_PREFIX "/v1/containers/"
@@ -5753,442 +5641,172 @@ static void handle_ntp_sync_post(int fd)
 	http_write_response(fd, 202, "Accepted", "application/json", "", 0);
 }
 
-static void respond_syslogfwd_error(int fd, enum syslogfwd_error err)
-{
-	switch (err) {
-	case SYSLOGFWD_ERR_PERSIST_FAILED:
-		respond_error(fd, 500, "Internal Server Error", "could not persist syslog_targets.json");
-		break;
-	case SYSLOGFWD_ERR_DUPLICATE:
-		respond_error(fd, 409, "Conflict", "this container is already registered");
-		break;
-	case SYSLOGFWD_ERR_FULL:
-		respond_error(fd, 400, "Bad Request", "too many registered syslog forward targets");
-		break;
-	case SYSLOGFWD_ERR_NOT_FOUND:
-		respond_error(fd, 404, "Not Found", "no such registration");
-		break;
-	case SYSLOGFWD_ERR_CONTAINER_NOT_FOUND:
-		respond_error(fd, 404, "Not Found", "no such container");
-		break;
-	case SYSLOGFWD_ERR_CONTAINER_NOT_RUNNING:
-		respond_error(fd, 404, "Not Found", "no such running container");
-		break;
-	case SYSLOGFWD_OK:
-		break;
-	}
-}
-
-/* POST/GET/DELETE /v1/syslog/targets (logging epic Part 2, ADR-0127):
- * registering a running container (typically syslog-1/syslog-2, a real
- * syslogd such as sysklogd.recipe) as an external forward target for
- * every container-sourced log line -- mirrors handle_ntp_server_
- * create/list/delete's own REST shape exactly. */
-static void handle_syslog_target_create(int fd, const char *body, size_t body_len)
-{
-	struct json_value *root;
-	const char *container_name;
-	enum syslogfwd_error serr;
-	struct json_writer w;
-
-	root = json_parse(body, body_len);
-	if (root == NULL) {
-		respond_error(fd, 400, "Bad Request", "invalid JSON body");
-		return;
-	}
-	container_name = json_as_string(json_object_get(root, "container"));
-	if (container_name == NULL) {
-		json_free(root);
-		respond_error(fd, 400, "Bad Request", "container missing");
-		return;
-	}
-
-	serr = syslogfwd_target_register(container_name);
-	if (serr != SYSLOGFWD_OK) {
-		json_free(root);
-		respond_syslogfwd_error(fd, serr);
-		return;
-	}
-
-	/* container_name still points into root -- build the response
-	 * before freeing it, matching handle_ntp_server_create()'s own
-	 * use-after-free-avoidance ordering. */
-	jw_init(&w);
-	jw_obj_open(&w);
-	jw_key(&w, "container");
-	jw_str(&w, container_name);
-	jw_obj_close(&w);
-	json_free(root);
-	respond_json(fd, 201, "Created", &w);
-	jw_free(&w);
-}
-
-static void handle_syslog_target_list(int fd)
-{
-	struct json_writer w;
-
-	jw_init(&w);
-	jw_obj_open(&w);
-	jw_key(&w, "targets");
-	syslogfwd_target_write_json_list(&w);
-	jw_obj_close(&w);
-	respond_json(fd, 200, "OK", &w);
-	jw_free(&w);
-}
-
-static void handle_syslog_target_delete(int fd, const char *name)
-{
-	enum syslogfwd_error serr = syslogfwd_target_unregister(name);
-
-	if (serr != SYSLOGFWD_OK) {
-		respond_syslogfwd_error(fd, serr);
-		return;
-	}
-	http_set_blocking(fd);
-	http_write_response(fd, 204, "No Content", "application/json", "", 0);
-}
-
 /*
- * GET/PUT /v1/system/time (task #752): the host's real current clock,
- * and a manual override -- an operator-facing escape hatch alongside
- * the automatic SNTP sync above, the same "live-apply, immediate
- * effect" relationship GET/PUT /v1/system/resolv already has to real
- * DNS resolution. PUT {"unixtime": N} calls clock_settime() directly.
+ * Reads /sys/class/net/<ifname>/statistics/<file> -- shared by
+ * per-container stats (the host-side veth's own counters, the same
+ * numbers a bridge/switch would see) and host-wide stats (real host
+ * interfaces). A missing file (ENOENT -- e.g. a container's veth
+ * already torn down) is not a request failure, just a 0 for that one
+ * counter: GET .../stats stays a best-effort snapshot, not an
+ * all-or-nothing report.
  */
-static void handle_time_get(int fd)
+static long long read_net_stat(const char *ifname, const char *file)
 {
-	struct json_writer w;
+	char path[PATH_MAX];
+	char buf[32];
+	int fd;
+	ssize_t n;
 
-	jw_init(&w);
-	ntp_write_json_time(&w);
-	respond_json(fd, 200, "OK", &w);
-	jw_free(&w);
-}
-
-static void handle_time_put(int fd, const char *body, size_t body_len)
-{
-	struct json_value *root;
-	const struct json_value *junixtime;
-	int64_t unixtime;
-	enum ntp_error nerr;
-	struct json_writer w;
-
-	root = json_parse(body, body_len);
-	if (root == NULL) {
-		respond_error(fd, 400, "Bad Request", "invalid JSON body");
-		return;
-	}
-	junixtime = json_object_get(root, "unixtime");
-	if (junixtime == NULL || junixtime->type != JSON_NUMBER) {
-		json_free(root);
-		respond_error(fd, 400, "Bad Request", "unixtime (number) is required");
-		return;
-	}
-	unixtime = (int64_t)junixtime->u.number;
-	json_free(root);
-
-	nerr = ntp_time_set(unixtime);
-	if (nerr != NTP_OK) {
-		respond_ntp_error(fd, nerr);
-		return;
-	}
-
-	jw_init(&w);
-	ntp_write_json_time(&w);
-	respond_json(fd, 200, "OK", &w);
-	jw_free(&w);
+	snprintf(path, sizeof(path), "/sys/class/net/%s/statistics/%s", ifname, file);
+	fd = open(path, O_RDONLY);
+	if (fd < 0)
+		return 0;
+	n = read(fd, buf, sizeof(buf) - 1);
+	close(fd);
+	if (n <= 0)
+		return 0;
+	buf[n] = '\0';
+	return strtoll(buf, NULL, 10);
 }
 
 /*
- * GET/PUT /v1/system/resolv (ADR-0076): the host's own outbound DNS
- * resolver config. PUT {"nameservers": [...]} replaces the full list
- * and takes effect immediately (resolv_set() rewrites the real,
- * bind-mounted file directly -- no reboot needed); an empty array
- * clears it.
- */
-static void handle_resolv_get(int fd)
-{
-	struct json_writer w;
-
-	jw_init(&w);
-	resolv_write_json(&w);
-	respond_json(fd, 200, "OK", &w);
-	jw_free(&w);
-}
-
-static void respond_resolv_error(int fd, enum resolv_error err)
-{
-	switch (err) {
-	case RESOLV_ERR_INVALID_IP:
-		respond_error(fd, 400, "Bad Request", "nameservers must be valid IPv4 addresses");
-		break;
-	case RESOLV_ERR_TOO_MANY: {
-		char msg[64];
-
-		snprintf(msg, sizeof(msg), "too many nameservers (max %d)", RESOLV_MAX_NAMESERVERS);
-		respond_error(fd, 400, "Bad Request", msg);
-		break;
-	}
-	case RESOLV_ERR_PERSIST_FAILED:
-		respond_error(fd, 500, "Internal Server Error", "could not persist resolv.conf");
-		break;
-	case RESOLV_OK:
-		break;
-	}
-}
-
-static void handle_resolv_put(int fd, const char *body, size_t body_len)
-{
-	struct json_value *root;
-	const struct json_value *arr;
-	const char *nameservers[RESOLV_MAX_NAMESERVERS];
-	int count;
-	size_t i;
-	enum resolv_error rerr;
-	struct json_writer w;
-
-	root = json_parse(body, body_len);
-	if (root == NULL) {
-		respond_error(fd, 400, "Bad Request", "invalid JSON body");
-		return;
-	}
-	arr = json_object_get(root, "nameservers");
-	if (arr == NULL || arr->type != JSON_ARRAY) {
-		json_free(root);
-		respond_error(fd, 400, "Bad Request", "nameservers (array) is required");
-		return;
-	}
-	if (arr->u.array.count > RESOLV_MAX_NAMESERVERS) {
-		json_free(root);
-		respond_resolv_error(fd, RESOLV_ERR_TOO_MANY);
-		return;
-	}
-	count = (int)arr->u.array.count;
-	for (i = 0; i < arr->u.array.count; i++) {
-		nameservers[i] = json_as_string(arr->u.array.items[i]);
-		if (nameservers[i] == NULL) {
-			json_free(root);
-			respond_resolv_error(fd, RESOLV_ERR_INVALID_IP);
-			return;
-		}
-	}
-
-	rerr = resolv_set(nameservers, count);
-	json_free(root);
-	if (rerr != RESOLV_OK) {
-		respond_resolv_error(fd, rerr);
-		return;
-	}
-
-	jw_init(&w);
-	resolv_write_json(&w);
-	respond_json(fd, 200, "OK", &w);
-	jw_free(&w);
-}
-
-/*
- * ADR-0212: GET/PUT/DELETE /v1/system/signing-keys -- the Secure Boot
- * signing key pair POST /v1/system/iso requires. See signingkeys.h for
- * why this is a REST surface at all rather than the out-of-band-only
- * precondition ADR-0064 originally specified.
+ * The host-side veth for a container's Nth network attachment. The
+ * name is a convention (src/container_net.c coins it at creation from
+ * the child's pid), not something stored -- so it is derived in one
+ * place rather than re-spelled at each call site, which is how the
+ * stats reader and the teardown path came to carry the same format
+ * string twice.
  *
- * The PUT body carries a private key. It is therefore never echoed
- * back, never logged, and never quoted in an error -- the responses
- * below are the same key_set/cert_set summary GET returns, exactly as
- * pkg_repo_write_json_config() reports auth_token_set and not the git
- * token it was given.
+ * A live-attached network (ADR-0156) is the exception: it was added to
+ * an already-running container and carries its real name, since it was
+ * never coined from the pid at all.
  */
-static void handle_signing_keys_get(int fd)
+static void container_veth_host_name(const struct registry_entry *e, int idx, char *out,
+                                      size_t out_size)
 {
-	struct json_writer w;
-
-	jw_init(&w);
-	signingkeys_write_json(&w);
-	respond_json(fd, 200, "OK", &w);
-	jw_free(&w);
+	if (e->nets[idx].veth_host[0] != '\0') {
+		snprintf(out, out_size, "%s", e->nets[idx].veth_host);
+		return;
+	}
+	snprintf(out, out_size, "vh%d-%d", (int)e->handle.pid, idx);
 }
 
-static void respond_signingkeys_error(int fd, enum signingkeys_error err)
+/* Best-effort: a missing/malformed /proc/loadavg leaves all three at 0,
+ * same "snapshot, not all-or-nothing" convention as read_net_stat(). */
+static void read_loadavg(double *l1, double *l5, double *l15)
 {
-	switch (err) {
-	case SIGNINGKEYS_ERR_BAD_KEY:
-		respond_error(fd, 400, "Bad Request",
-		              "key is not a parseable PEM private key");
-		return;
-	case SIGNINGKEYS_ERR_BAD_CERT:
-		respond_error(fd, 400, "Bad Request", "cert is not a parseable PEM certificate");
-		return;
-	case SIGNINGKEYS_ERR_MISMATCH:
-		/*
-		 * Worth its own message rather than a generic 400: both blobs
-		 * are individually valid here, so "invalid PEM" would send an
-		 * operator looking at the wrong thing. Pasting two halves that
-		 * do not belong together is the realistic mistake this
-		 * interface enables.
-		 */
-		respond_error(fd, 400, "Bad Request",
-		              "the certificate's public key does not match the private key -- they are "
-		              "not a pair");
-		return;
-	case SIGNINGKEYS_ERR_PERSIST_FAILED:
-	default:
-		respond_error(fd, 500, "Internal Server Error", "could not persist the signing key pair");
-		return;
-	}
-}
+	FILE *f;
 
-static void handle_signing_keys_put(int fd, const char *body, size_t body_len)
-{
-	struct json_value *root;
-	const char *key_pem;
-	const char *cert_pem;
-	enum signingkeys_error serr;
-	struct json_writer w;
-
-	root = json_parse(body, body_len);
-	if (root == NULL) {
-		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+	*l1 = *l5 = *l15 = 0.0;
+	f = fopen("/proc/loadavg", "r");
+	if (f == NULL)
 		return;
-	}
-	key_pem = json_as_string(json_object_get(root, "key"));
-	cert_pem = json_as_string(json_object_get(root, "cert"));
-	if (key_pem == NULL || cert_pem == NULL) {
-		json_free(root);
-		respond_error(fd, 400, "Bad Request", "key and cert (both PEM strings) are required");
-		return;
-	}
-
-	serr = signingkeys_set(key_pem, cert_pem);
-	json_free(root);
-	if (serr != SIGNINGKEYS_OK) {
-		respond_signingkeys_error(fd, serr);
-		return;
-	}
-
-	jw_init(&w);
-	signingkeys_write_json(&w);
-	respond_json(fd, 200, "OK", &w);
-	jw_free(&w);
-}
-
-static void handle_signing_keys_delete(int fd)
-{
-	enum signingkeys_error serr = signingkeys_clear();
-	struct json_writer w;
-
-	if (serr != SIGNINGKEYS_OK) {
-		respond_signingkeys_error(fd, serr);
-		return;
-	}
-	jw_init(&w);
-	signingkeys_write_json(&w);
-	respond_json(fd, 200, "OK", &w);
-	jw_free(&w);
+	fscanf(f, "%lf %lf %lf", l1, l5, l15);
+	fclose(f);
 }
 
 /*
- * ADR-0220: GET/PUT/DELETE /v1/system/release-key -- the Ed25519 key
- * that signs published artifacts. Deliberately not the Secure Boot pair
- * above: that one is RSA because UEFI mandates RSA and answers "may
- * this firmware boot this image?"; this one answers "did Cix publish
- * these bytes?". One key for both would mean whoever can sign a
- * download can sign a bootloader.
- *
- * Same discipline as the pair above: the PUT body carries a private
- * key, so it is never echoed, logged, or quoted in an error. The public
- * half is different -- it exists to be published, and comes back in
- * minisign's own format so an operator can hand it to a verifier
- * unchanged.
+ * Host uptime, straight from /proc/uptime's own first field (seconds
+ * since boot, as a float). Best-effort like read_loadavg(): an
+ * unreadable /proc/uptime reports 0 rather than failing the whole
+ * stats response, and 0 is distinguishable from any real answer
+ * because a booted box has always been up for something.
  */
-static void write_release_key_json(struct json_writer *w)
+static long long read_host_uptime_seconds(void)
 {
-	char pub[256];
-	char id_hex[RELEASEKEY_ID_HEX_SIZE];
+	FILE *f;
+	double up = 0.0;
 
-	jw_obj_open(w);
-	jw_key(w, "key_set");
-	jw_bool(w, releasekey_is_set());
-	jw_key(w, "public_key");
-	if (releasekey_is_set() && releasekey_public(pub, sizeof(pub)) == RELEASEKEY_OK)
-		jw_str(w, pub);
-	else
-		jw_null(w);
-	jw_key(w, "key_id");
-	if (releasekey_is_set() && releasekey_key_id_hex(id_hex, sizeof(id_hex)) == RELEASEKEY_OK)
-		jw_str(w, id_hex);
-	else
-		jw_null(w);
-	jw_obj_close(w);
+	f = fopen("/proc/uptime", "r");
+	if (f == NULL)
+		return 0;
+	if (fscanf(f, "%lf", &up) != 1)
+		up = 0.0;
+	fclose(f);
+	return (long long)up;
 }
 
-static void handle_release_key_get(int fd)
-{
-	struct json_writer w;
+/*
+ * When this daemon process itself started, stamped once at startup.
+ * Deliberately separate from host uptime: they differ after a daemon
+ * restart that was not a reboot (a `system/update` confirm, a crash
+ * and respawn), and "the box has been up for days but the control
+ * plane restarted four minutes ago" is exactly the thing an operator
+ * needs to be able to see.
+ */
+static time_t g_daemon_started_at;
 
-	jw_init(&w);
-	write_release_key_json(&w);
-	respond_json(fd, 200, "OK", &w);
-	jw_free(&w);
+/* /proc/stat's own first "cpu" line: user/nice/system/idle/iowait/irq/
+ * softirq/steal jiffies, in that fixed kernel-documented order. Raw
+ * cumulative counters since boot -- callers compute their own deltas,
+ * same convention as every other stats endpoint in this daemon. */
+static void read_cpu_jiffies(long long *user, long long *nice, long long *system_j,
+                              long long *idle, long long *iowait, long long *irq,
+                              long long *softirq, long long *steal)
+{
+	FILE *f;
+	char label[16];
+
+	*user = *nice = *system_j = *idle = *iowait = *irq = *softirq = *steal = 0;
+	f = fopen("/proc/stat", "r");
+	if (f == NULL)
+		return;
+	if (fscanf(f, "%15s %lld %lld %lld %lld %lld %lld %lld %lld",
+	           label, user, nice, system_j, idle, iowait, irq, softirq, steal) < 9) {
+		*user = *nice = *system_j = *idle = *iowait = *irq = *softirq = *steal = 0;
+	}
+	fclose(f);
 }
 
-static void handle_release_key_put(int fd, const char *body, size_t body_len)
+/* /proc/meminfo: "Key:   value kB" lines, in no guaranteed order and
+ * with keys this daemon doesn't care about interspersed -- parsed as a
+ * single pass matching each line's key against the wanted set, rather
+ * than assuming a fixed line count/order. All values kB -> bytes. */
+static void read_meminfo(long long *total, long long *free_b, long long *avail,
+                          long long *buffers, long long *cached,
+                          long long *swap_total, long long *swap_free)
 {
-	struct json_value *root;
-	const char *key_pem;
-	enum releasekey_error rerr;
-	struct json_writer w;
+	FILE *f;
+	char line[256];
+	char key[64];
+	long long val;
 
-	root = json_parse(body, body_len);
-	if (root == NULL) {
-		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+	*total = *free_b = *avail = *buffers = *cached = *swap_total = *swap_free = 0;
+	f = fopen("/proc/meminfo", "r");
+	if (f == NULL)
 		return;
+	while (fgets(line, sizeof(line), f) != NULL) {
+		if (sscanf(line, "%63s %lld", key, &val) != 2)
+			continue;
+		if (strcmp(key, "MemTotal:") == 0)
+			*total = val * 1024;
+		else if (strcmp(key, "MemFree:") == 0)
+			*free_b = val * 1024;
+		else if (strcmp(key, "MemAvailable:") == 0)
+			*avail = val * 1024;
+		else if (strcmp(key, "Buffers:") == 0)
+			*buffers = val * 1024;
+		else if (strcmp(key, "Cached:") == 0)
+			*cached = val * 1024;
+		else if (strcmp(key, "SwapTotal:") == 0)
+			*swap_total = val * 1024;
+		else if (strcmp(key, "SwapFree:") == 0)
+			*swap_free = val * 1024;
 	}
-	key_pem = json_as_string(json_object_get(root, "key"));
-	if (key_pem == NULL) {
-		json_free(root);
-		respond_error(fd, 400, "Bad Request", "key (a PEM string) is required");
-		return;
-	}
-
-	rerr = releasekey_set(key_pem, strlen(key_pem));
-	json_free(root);
-	if (rerr == RELEASEKEY_ERR_BAD_KEY) {
-		/*
-		 * Names the algorithm rather than saying "invalid key",
-		 * because the realistic mistake here is pasting the RSA
-		 * Secure Boot key sitting right beside this one -- a
-		 * perfectly valid key that this endpoint cannot use.
-		 */
-		respond_error(fd, 400, "Bad Request",
-		              "key is not a parseable Ed25519 private key -- generate one with "
-		              "'openssl genpkey -algorithm ed25519'");
-		return;
-	}
-	if (rerr != RELEASEKEY_OK) {
-		respond_error(fd, 500, "Internal Server Error", "could not persist the release key");
-		return;
-	}
-
-	jw_init(&w);
-	write_release_key_json(&w);
-	respond_json(fd, 200, "OK", &w);
-	jw_free(&w);
+	fclose(f);
 }
 
-static void handle_release_key_delete(int fd)
-{
-	struct json_writer w;
-
-	if (releasekey_clear() != RELEASEKEY_OK) {
-		respond_error(fd, 500, "Internal Server Error", "could not remove the release key");
-		return;
-	}
-	jw_init(&w);
-	write_release_key_json(&w);
-	respond_json(fd, 200, "OK", &w);
-	jw_free(&w);
-}
-
+/*
+ * GET /v1/system/stats: host-wide CPU/memory/disk/network load, mirroring
+ * handle_container_stats()'s own conventions one level up -- nested
+ * per-category objects, raw cumulative/monotonic counters only (never a
+ * pre-computed rate; the client already does its own delta math for
+ * container stats and does the same here). Real /proc and statvfs()
+ * sources throughout, no shelling out, matching this project's own
+ * syscall-first convention. Every field here is a best-effort read: a
+ * missing source leaves that section zeroed rather than failing the
+ * whole request, same as container stats' own network section.
+ */
 /*
  * GET/PUT /v1/system/daemon-config (Part 0.5): cixd's own listen
  * port and which network is currently its management one -- a
@@ -6586,508 +6204,6 @@ static void handle_daemon_config_put(int fd, const char *body, size_t body_len)
 	}
 }
 
-/* GET /v1/system/routes (ADR-0066): the box's own real kernel IPv4
- * routing table -- see network_write_routes_json()'s own comment for
- * why this exists (no SSH/general shell, the daemon is the only way
- * to ever see this). */
-static void handle_route_list(int fd)
-{
-	struct json_writer w;
-
-	jw_init(&w);
-	jw_obj_open(&w);
-	jw_key(&w, "routes");
-	if (network_write_routes_json(&w) != 0) {
-		jw_free(&w);
-		respond_error(fd, 500, "Internal Server Error", "failed to read kernel routing table");
-		return;
-	}
-	jw_obj_close(&w);
-	respond_json(fd, 200, "OK", &w);
-	jw_free(&w);
-}
-
-/* POST /v1/system/routes (ADR-0067 Part 3): adds a real IPv4 route to
- * the host's own kernel routing table via rtnl_route_add_ipv4() --
- * the write-side counterpart to handle_route_list() above. dest/
- * prefix are optional together (omitted or prefix 0 means the
- * default route, matching rtnl_route_add_ipv4()'s own convention);
- * gateway is optional (omitted means a direct/on-link route). Scoped
- * to exactly what that primitive supports -- no RTA_OIF/interface
- * binding, no route replace semantics beyond what NLM_F_CREATE
- * already gives it. Not a persisted Cix resource (see
- * network_write_routes_json()'s own comment) -- nothing here is
- * remembered across a reboot, same as this whole endpoint family. */
-static void handle_route_add(int fd, const char *body, size_t body_len)
-{
-	struct json_value *root = NULL;
-	const char *dest_str = NULL;
-	const char *gateway_str = NULL;
-	const struct json_value *jprefix;
-	int prefix_len = 0;
-	struct in_addr dest_addr;
-	struct in_addr gateway_addr;
-	uint32_t dest_be = 0;
-	uint32_t gateway_be = 0;
-	int rtfd;
-
-	if (body != NULL && body_len > 0) {
-		root = json_parse(body, body_len);
-		if (root == NULL) {
-			respond_error(fd, 400, "Bad Request", "invalid JSON body");
-			return;
-		}
-		dest_str = json_as_string(json_object_get(root, "dest"));
-		gateway_str = json_as_string(json_object_get(root, "gateway"));
-		jprefix = json_object_get(root, "prefix");
-		if (jprefix != NULL)
-			prefix_len = (int)json_as_number(jprefix);
-	}
-
-	if (prefix_len < 0 || prefix_len > 32) {
-		if (root != NULL)
-			json_free(root);
-		respond_error(fd, 400, "Bad Request", "prefix must be in [0, 32]");
-		return;
-	}
-	if (prefix_len > 0) {
-		if (dest_str == NULL || inet_pton(AF_INET, dest_str, &dest_addr) != 1) {
-			if (root != NULL)
-				json_free(root);
-			respond_error(fd, 400, "Bad Request", "dest missing or not a valid IPv4 address");
-			return;
-		}
-		dest_be = dest_addr.s_addr;
-	}
-	if (gateway_str != NULL) {
-		if (inet_pton(AF_INET, gateway_str, &gateway_addr) != 1) {
-			if (root != NULL)
-				json_free(root);
-			respond_error(fd, 400, "Bad Request", "gateway not a valid IPv4 address");
-			return;
-		}
-		gateway_be = gateway_addr.s_addr;
-	}
-	if (root != NULL)
-		json_free(root);
-
-	rtfd = rtnl_open();
-	if (rtfd < 0) {
-		respond_error(fd, 500, "Internal Server Error", "could not open rtnetlink socket");
-		return;
-	}
-	if (rtnl_route_add_ipv4(rtfd, dest_be, prefix_len, gateway_be) != 0) {
-		rtnl_close(rtfd);
-		respond_error(fd, 400, "Bad Request",
-		              "kernel rejected the route (already exists, unreachable gateway, or invalid)");
-		return;
-	}
-	rtnl_close(rtfd);
-
-	http_set_blocking(fd);
-	http_write_response(fd, 204, "No Content", "application/json", "", 0);
-}
-
-/* DELETE /v1/system/routes: the mirror-image of handle_route_add()
- * above, via the new rtnl_route_del_ipv4(). Same body shape and same
- * default-route convention (prefix 0 or omitted means the default
- * route) identifies which route to remove. */
-static void handle_route_del(int fd, const char *body, size_t body_len)
-{
-	struct json_value *root = NULL;
-	const char *dest_str = NULL;
-	const char *gateway_str = NULL;
-	const struct json_value *jprefix;
-	int prefix_len = 0;
-	struct in_addr dest_addr;
-	struct in_addr gateway_addr;
-	uint32_t dest_be = 0;
-	uint32_t gateway_be = 0;
-	int rtfd;
-
-	if (body != NULL && body_len > 0) {
-		root = json_parse(body, body_len);
-		if (root == NULL) {
-			respond_error(fd, 400, "Bad Request", "invalid JSON body");
-			return;
-		}
-		dest_str = json_as_string(json_object_get(root, "dest"));
-		gateway_str = json_as_string(json_object_get(root, "gateway"));
-		jprefix = json_object_get(root, "prefix");
-		if (jprefix != NULL)
-			prefix_len = (int)json_as_number(jprefix);
-	}
-
-	if (prefix_len < 0 || prefix_len > 32) {
-		if (root != NULL)
-			json_free(root);
-		respond_error(fd, 400, "Bad Request", "prefix must be in [0, 32]");
-		return;
-	}
-	if (prefix_len > 0) {
-		if (dest_str == NULL || inet_pton(AF_INET, dest_str, &dest_addr) != 1) {
-			if (root != NULL)
-				json_free(root);
-			respond_error(fd, 400, "Bad Request", "dest missing or not a valid IPv4 address");
-			return;
-		}
-		dest_be = dest_addr.s_addr;
-	}
-	if (gateway_str != NULL) {
-		if (inet_pton(AF_INET, gateway_str, &gateway_addr) != 1) {
-			if (root != NULL)
-				json_free(root);
-			respond_error(fd, 400, "Bad Request", "gateway not a valid IPv4 address");
-			return;
-		}
-		gateway_be = gateway_addr.s_addr;
-	}
-	if (root != NULL)
-		json_free(root);
-
-	rtfd = rtnl_open();
-	if (rtfd < 0) {
-		respond_error(fd, 500, "Internal Server Error", "could not open rtnetlink socket");
-		return;
-	}
-	if (rtnl_route_del_ipv4(rtfd, dest_be, prefix_len, gateway_be) != 0) {
-		rtnl_close(rtfd);
-		respond_error(fd, 404, "Not Found", "no matching route to delete");
-		return;
-	}
-	rtnl_close(rtfd);
-
-	http_set_blocking(fd);
-	http_write_response(fd, 204, "No Content", "application/json", "", 0);
-}
-
-static void respond_swap_error(int fd, enum swap_error serr)
-{
-	switch (serr) {
-	case SWAP_ERR_ALREADY_ENABLED:
-		respond_error(fd, 409, "Conflict", "swap is already enabled -- disable it first to resize");
-		return;
-	case SWAP_ERR_NOT_ENABLED:
-		respond_error(fd, 409, "Conflict", "swap is not enabled");
-		return;
-	case SWAP_ERR_INVALID_SIZE:
-		respond_error(fd, 400, "Bad Request", "size_mb out of range");
-		return;
-	case SWAP_ERR_IO:
-		respond_error(fd, 500, "Internal Server Error", "swap file creation or activation failed");
-		return;
-	case SWAP_ERR_PERSIST_FAILED:
-		respond_error(fd, 500, "Internal Server Error", "swap state could not be persisted");
-		return;
-	case SWAP_OK:
-		return;
-	}
-}
-
-static void handle_swap_get(int fd)
-{
-	struct json_writer w;
-
-	jw_init(&w);
-	swap_write_json(&w, storageplacement_get(STORAGE_KIND_SWAP));
-	respond_json(fd, 200, "OK", &w);
-	jw_free(&w);
-}
-
-/*
- * issue #28: resolves disk_name to a real, currently-mounted disk
- * carrying the swap role, writing its swapfile path into out_path.
- * Same three checks (present, mounted, correct role) do_backup_
- * snapshot_now() already established for backup's own identically-shaped
- * "operator-named disk, validated at the point of real use" field --
- * deliberately not shared as a common helper, matching that this
- * project has never factored these three checks out for the other
- * three (state/rebuildable/log) singleton placements either. Returns
- * NULL (a real, specific reason) on failure, or out_path on success.
- */
-static const char *resolve_swap_disk_now(const char *disk_name, char *out_path, size_t out_path_size)
-{
-	struct discovered_disk disks[DISK_ENUM_MAX];
-	int n, i;
-
-	n = disk_enumerate(disks, DISK_ENUM_MAX, CONTAINERS_DIR);
-	for (i = 0; i < n; i++) {
-		const char *role;
-
-		if (strcmp(disks[i].name, disk_name) != 0)
-			continue;
-		if (!disks[i].mounted)
-			return NULL;
-		role = diskrole_lookup(disk_name);
-		if (role == NULL || strcmp(role, "swap") != 0)
-			return NULL;
-		snprintf(out_path, out_path_size, "%s/%s/swapfile", DISKS_MOUNT_DIR, disk_name);
-		return out_path;
-	}
-	return NULL;
-}
-
-static void handle_swap_enable(int fd, const char *body, size_t body_len)
-{
-	struct json_value *root;
-	const struct json_value *jsize, *jdisk;
-	int64_t size_mb;
-	const char *disk_name;
-	enum swap_error serr;
-	struct json_writer w;
-
-	root = json_parse(body, body_len);
-	if (root == NULL) {
-		respond_error(fd, 400, "Bad Request", "invalid JSON body");
-		return;
-	}
-	jsize = json_object_get(root, "size_mb");
-	if (jsize == NULL) {
-		json_free(root);
-		respond_error(fd, 400, "Bad Request", "size_mb missing");
-		return;
-	}
-	size_mb = (int64_t)json_as_number(jsize);
-	jdisk = json_object_get(root, "disk");
-	disk_name = jdisk != NULL ? json_as_string(jdisk) : NULL;
-	if (jdisk != NULL && disk_name == NULL) {
-		json_free(root);
-		respond_error(fd, 400, "Bad Request", "disk must be a string");
-		return;
-	}
-
-	/*
-	 * Checked before touching repoint/placement at all: repointing
-	 * while already enabled would desync g_file_path from the file
-	 * swapon(2) is actually holding open, corrupting swap_write_json()'s
-	 * own "path" field, for a call about to fail with
-	 * SWAP_ERR_ALREADY_ENABLED regardless (swap_enable() below re-checks
-	 * this itself -- this is not a substitute for that, just avoiding a
-	 * side effect ahead of a call already known to fail).
-	 */
-	if (swap_is_enabled()) {
-		json_free(root);
-		respond_swap_error(fd, SWAP_ERR_ALREADY_ENABLED);
-		return;
-	}
-
-	/*
-	 * Every call repoints, whether disk_name is given or not -- an
-	 * omitted disk explicitly means "the default location," not
-	 * "whatever the last call happened to leave it at." disk_name is
-	 * copied out of root before json_free() below, since resolve_swap_
-	 * disk_now()/storageplacement_set() both need it to outlive that.
-	 */
-	if (disk_name != NULL) {
-		char resolved_path[PATH_MAX];
-		char disk_name_copy[DISKROLE_DISK_NAME_MAX];
-
-		snprintf(disk_name_copy, sizeof(disk_name_copy), "%s", disk_name);
-		json_free(root);
-		if (resolve_swap_disk_now(disk_name_copy, resolved_path, sizeof(resolved_path)) == NULL) {
-			respond_error(fd, 400, "Bad Request",
-			              "disk is not currently present, not mounted, or does not carry the "
-			              "swap role (POST /diskroles first)");
-			return;
-		}
-		swap_repoint(resolved_path);
-		storageplacement_set(STORAGE_KIND_SWAP, disk_name_copy);
-	} else {
-		json_free(root);
-		swap_repoint(SWAP_FILE_PATH);
-		storageplacement_set(STORAGE_KIND_SWAP, NULL);
-	}
-
-	serr = swap_enable(size_mb);
-	if (serr != SWAP_OK) {
-		respond_swap_error(fd, serr);
-		return;
-	}
-
-	jw_init(&w);
-	swap_write_json(&w, storageplacement_get(STORAGE_KIND_SWAP));
-	respond_json(fd, 200, "OK", &w);
-	jw_free(&w);
-}
-
-static void handle_swap_disable(int fd)
-{
-	enum swap_error serr = swap_disable();
-
-	if (serr != SWAP_OK) {
-		respond_swap_error(fd, serr);
-		return;
-	}
-	http_set_blocking(fd);
-	http_write_response(fd, 204, "No Content", "application/json", "", 0);
-}
-
-/*
- * Reads /sys/class/net/<ifname>/statistics/<file> -- shared by
- * per-container stats (the host-side veth's own counters, the same
- * numbers a bridge/switch would see) and host-wide stats (real host
- * interfaces). A missing file (ENOENT -- e.g. a container's veth
- * already torn down) is not a request failure, just a 0 for that one
- * counter: GET .../stats stays a best-effort snapshot, not an
- * all-or-nothing report.
- */
-static long long read_net_stat(const char *ifname, const char *file)
-{
-	char path[PATH_MAX];
-	char buf[32];
-	int fd;
-	ssize_t n;
-
-	snprintf(path, sizeof(path), "/sys/class/net/%s/statistics/%s", ifname, file);
-	fd = open(path, O_RDONLY);
-	if (fd < 0)
-		return 0;
-	n = read(fd, buf, sizeof(buf) - 1);
-	close(fd);
-	if (n <= 0)
-		return 0;
-	buf[n] = '\0';
-	return strtoll(buf, NULL, 10);
-}
-
-/*
- * The host-side veth for a container's Nth network attachment. The
- * name is a convention (src/container_net.c coins it at creation from
- * the child's pid), not something stored -- so it is derived in one
- * place rather than re-spelled at each call site, which is how the
- * stats reader and the teardown path came to carry the same format
- * string twice.
- *
- * A live-attached network (ADR-0156) is the exception: it was added to
- * an already-running container and carries its real name, since it was
- * never coined from the pid at all.
- */
-static void container_veth_host_name(const struct registry_entry *e, int idx, char *out,
-                                      size_t out_size)
-{
-	if (e->nets[idx].veth_host[0] != '\0') {
-		snprintf(out, out_size, "%s", e->nets[idx].veth_host);
-		return;
-	}
-	snprintf(out, out_size, "vh%d-%d", (int)e->handle.pid, idx);
-}
-
-/* Best-effort: a missing/malformed /proc/loadavg leaves all three at 0,
- * same "snapshot, not all-or-nothing" convention as read_net_stat(). */
-static void read_loadavg(double *l1, double *l5, double *l15)
-{
-	FILE *f;
-
-	*l1 = *l5 = *l15 = 0.0;
-	f = fopen("/proc/loadavg", "r");
-	if (f == NULL)
-		return;
-	fscanf(f, "%lf %lf %lf", l1, l5, l15);
-	fclose(f);
-}
-
-/*
- * Host uptime, straight from /proc/uptime's own first field (seconds
- * since boot, as a float). Best-effort like read_loadavg(): an
- * unreadable /proc/uptime reports 0 rather than failing the whole
- * stats response, and 0 is distinguishable from any real answer
- * because a booted box has always been up for something.
- */
-static long long read_host_uptime_seconds(void)
-{
-	FILE *f;
-	double up = 0.0;
-
-	f = fopen("/proc/uptime", "r");
-	if (f == NULL)
-		return 0;
-	if (fscanf(f, "%lf", &up) != 1)
-		up = 0.0;
-	fclose(f);
-	return (long long)up;
-}
-
-/*
- * When this daemon process itself started, stamped once at startup.
- * Deliberately separate from host uptime: they differ after a daemon
- * restart that was not a reboot (a `system/update` confirm, a crash
- * and respawn), and "the box has been up for days but the control
- * plane restarted four minutes ago" is exactly the thing an operator
- * needs to be able to see.
- */
-static time_t g_daemon_started_at;
-
-/* /proc/stat's own first "cpu" line: user/nice/system/idle/iowait/irq/
- * softirq/steal jiffies, in that fixed kernel-documented order. Raw
- * cumulative counters since boot -- callers compute their own deltas,
- * same convention as every other stats endpoint in this daemon. */
-static void read_cpu_jiffies(long long *user, long long *nice, long long *system_j,
-                              long long *idle, long long *iowait, long long *irq,
-                              long long *softirq, long long *steal)
-{
-	FILE *f;
-	char label[16];
-
-	*user = *nice = *system_j = *idle = *iowait = *irq = *softirq = *steal = 0;
-	f = fopen("/proc/stat", "r");
-	if (f == NULL)
-		return;
-	if (fscanf(f, "%15s %lld %lld %lld %lld %lld %lld %lld %lld",
-	           label, user, nice, system_j, idle, iowait, irq, softirq, steal) < 9) {
-		*user = *nice = *system_j = *idle = *iowait = *irq = *softirq = *steal = 0;
-	}
-	fclose(f);
-}
-
-/* /proc/meminfo: "Key:   value kB" lines, in no guaranteed order and
- * with keys this daemon doesn't care about interspersed -- parsed as a
- * single pass matching each line's key against the wanted set, rather
- * than assuming a fixed line count/order. All values kB -> bytes. */
-static void read_meminfo(long long *total, long long *free_b, long long *avail,
-                          long long *buffers, long long *cached,
-                          long long *swap_total, long long *swap_free)
-{
-	FILE *f;
-	char line[256];
-	char key[64];
-	long long val;
-
-	*total = *free_b = *avail = *buffers = *cached = *swap_total = *swap_free = 0;
-	f = fopen("/proc/meminfo", "r");
-	if (f == NULL)
-		return;
-	while (fgets(line, sizeof(line), f) != NULL) {
-		if (sscanf(line, "%63s %lld", key, &val) != 2)
-			continue;
-		if (strcmp(key, "MemTotal:") == 0)
-			*total = val * 1024;
-		else if (strcmp(key, "MemFree:") == 0)
-			*free_b = val * 1024;
-		else if (strcmp(key, "MemAvailable:") == 0)
-			*avail = val * 1024;
-		else if (strcmp(key, "Buffers:") == 0)
-			*buffers = val * 1024;
-		else if (strcmp(key, "Cached:") == 0)
-			*cached = val * 1024;
-		else if (strcmp(key, "SwapTotal:") == 0)
-			*swap_total = val * 1024;
-		else if (strcmp(key, "SwapFree:") == 0)
-			*swap_free = val * 1024;
-	}
-	fclose(f);
-}
-
-/*
- * GET /v1/system/stats: host-wide CPU/memory/disk/network load, mirroring
- * handle_container_stats()'s own conventions one level up -- nested
- * per-category objects, raw cumulative/monotonic counters only (never a
- * pre-computed rate; the client already does its own delta math for
- * container stats and does the same here). Real /proc and statvfs()
- * sources throughout, no shelling out, matching this project's own
- * syscall-first convention. Every field here is a best-effort read: a
- * missing source leaves that section zeroed rather than failing the
- * whole request, same as container stats' own network section.
- */
 /*
  * Writes one cgroup_pressure as {"some":{...},"full":{...}} -- shared
  * by cpu.pressure/io.pressure/memory.pressure in both host and
@@ -7379,839 +6495,6 @@ static void serverhealth_write_warnings(struct json_writer *w)
 		jw_str(w, msg);
 	}
 	jw_arr_close(w);
-}
-
-/* ---- Issue #88: persistent volumes ---- */
-
-static void respond_volume_error(int fd, enum volume_error e)
-{
-	switch (e) {
-	case VOLUME_ERR_INVALID_NAME:
-		respond_error(fd, 400, "Bad Request",
-		              "invalid volume name -- letters, digits, '_' and '-' only, not starting "
-		              "with '.' or '-'");
-		return;
-	case VOLUME_ERR_DUPLICATE:
-		respond_error(fd, 409, "Conflict", "a volume with this name already exists");
-		return;
-	case VOLUME_ERR_FULL:
-		respond_error(fd, 507, "Insufficient Storage", "volume table is full");
-		return;
-	case VOLUME_ERR_NOT_FOUND:
-		respond_error(fd, 404, "Not Found", "no such volume");
-		return;
-	case VOLUME_ERR_IN_USE:
-		respond_error(fd, 409, "Conflict",
-		              "this volume is still referenced by a container definition -- delete or "
-		              "edit that container first");
-		return;
-	case VOLUME_ERR_IO:
-		respond_error(fd, 500, "Internal Server Error", "could not create the volume directory");
-		return;
-	case VOLUME_ERR_TARGET_NOT_FOUND:
-		respond_error(fd, 404, "Not Found", "no such disk or partition to migrate onto");
-		return;
-	case VOLUME_ERR_TARGET_NOT_READY:
-		respond_error(fd, 409, "Conflict",
-		              "that disk is not mounted -- give it a role and format it first");
-		return;
-	case VOLUME_ERR_SAME_PLACE:
-		respond_error(fd, 409, "Conflict", "this volume is already there");
-		return;
-	case VOLUME_ERR_IN_USE_RUNNING:
-		respond_error(fd, 409, "Conflict",
-		              "a container mounting this volume is running -- a bind mount resolves to a "
-		              "host path when the container starts, so moving the data underneath it "
-		              "would leave it writing to the old location. Stop the container first");
-		return;
-	case VOLUME_ERR_COPY_FAILED:
-		respond_error(fd, 500, "Internal Server Error",
-		              "could not copy the volume's data to the new location -- nothing was moved "
-		              "and the volume still points at its original data");
-		return;
-	default:
-		respond_error(fd, 500, "Internal Server Error", "could not persist the volume");
-		return;
-	}
-}
-
-static void handle_volume_list(int fd)
-{
-	struct json_writer w;
-
-	jw_init(&w);
-	jw_obj_open(&w);
-	jw_key(&w, "volumes");
-	volume_write_json_list(&w);
-	jw_obj_close(&w);
-	respond_json(fd, 200, "OK", &w);
-	jw_free(&w);
-}
-
-static void handle_volume_get(int fd, const char *name)
-{
-	struct volume *v = volume_find(name);
-	struct json_writer w;
-
-	if (v == NULL) {
-		respond_error(fd, 404, "Not Found", "no such volume");
-		return;
-	}
-	jw_init(&w);
-	volume_write_json_one(v, &w);
-	respond_json(fd, 200, "OK", &w);
-	jw_free(&w);
-}
-
-static void handle_volume_create(int fd, const char *body, size_t body_len)
-{
-	struct json_value *root = json_parse(body, body_len);
-	const char *name, *disk;
-	struct volume *v = NULL;
-	enum volume_error verr;
-	struct json_writer w;
-
-	if (root == NULL) {
-		respond_error(fd, 400, "Bad Request", "invalid JSON body");
-		return;
-	}
-	name = json_as_string(json_object_get(root, "name"));
-	disk = json_as_string(json_object_get(root, "disk"));
-	if (name == NULL) {
-		json_free(root);
-		respond_error(fd, 400, "Bad Request", "name is required");
-		return;
-	}
-	{
-		/*
-		 * Issue #102: owner at creation, because the moment a volume
-		 * exists is the only moment its contents are certainly empty
-		 * -- setting it later means deciding what to do about files
-		 * that are already there, which is a question worth not having
-		 * to ask.
-		 */
-		const struct json_value *ju = json_object_get(root, "owner_uid");
-		const struct json_value *jg = json_object_get(root, "owner_gid");
-		int uid = ju != NULL ? (int)json_as_number(ju) : -1;
-		int gid = jg != NULL ? (int)json_as_number(jg) : -1;
-
-		if ((ju != NULL) != (jg != NULL)) {
-			json_free(root);
-			respond_error(fd, 400, "Bad Request",
-			              "owner_uid and owner_gid go together -- a volume owned by one user and "
-			              "an unrelated group is almost always a typo");
-			return;
-		}
-		if (ju != NULL && (uid < 0 || gid < 0)) {
-			json_free(root);
-			respond_error(fd, 400, "Bad Request", "owner_uid/owner_gid must not be negative");
-			return;
-		}
-
-		verr = volume_create(name, disk, &v);
-		if (verr != VOLUME_OK) {
-			json_free(root);
-			respond_volume_error(fd, verr);
-			return;
-		}
-		if (ju != NULL) {
-			verr = volume_set_owner(name, uid, gid);
-			if (verr == VOLUME_OK)
-				verr = volume_apply_owner(v, 0);
-			if (verr != VOLUME_OK) {
-				json_free(root);
-				/* The directory exists and is root-owned: report the
-				 * real outcome rather than a 201 that implies an owner
-				 * that was never applied. */
-				respond_volume_error(fd, verr);
-				return;
-			}
-		}
-		/*
-		 * Freed only now. `name` points INTO this tree, and every call
-		 * above takes it -- freeing before them left volume_set_owner()
-		 * looking up a name in freed memory and answering "no such
-		 * volume" for one it had just created.
-		 */
-		json_free(root);
-	}
-	jw_init(&w);
-	volume_write_json_one(v, &w);
-	respond_json(fd, 201, "Created", &w);
-	jw_free(&w);
-}
-
-/*
- * Issue #88: a volume outlives containers by design, so deleting one is
- * refused while any container DEFINITION still names it -- not merely
- * while one is running. A stopped container whose definition references
- * the volume will come back and expect its data, and silently deleting
- * it underneath would be a data-loss bug that only surfaces later.
- */
-/*
- * Does this container's definition mount that volume. Split out of
- * volume_referenced_by_container() below, which answers "is anything
- * using it" and stops at the first match -- pausing needs every one.
- */
-static int container_mounts_volume(const char *container_name, const char *volume_name)
-{
-	struct container_def *def = containerdef_find(container_name);
-	struct json_value *root;
-	const struct json_value *jvols;
-	size_t k;
-	int found = 0;
-
-	if (def == NULL || def->body == NULL)
-		return 0;
-	root = json_parse(def->body, def->body_len);
-	if (root == NULL)
-		return 0;
-	jvols = json_object_get(root, "volumes");
-	if (jvols != NULL && jvols->type == JSON_ARRAY) {
-		for (k = 0; k < jvols->u.array.count && !found; k++) {
-			const char *n = json_as_string(json_object_get(jvols->u.array.items[k], "name"));
-
-			if (n != NULL && strcmp(n, volume_name) == 0)
-				found = 1;
-		}
-	}
-	json_free(root);
-	return found;
-}
-
-static int volume_referenced_by_container(const char *volume_name, char *out_container,
-                                           size_t out_size)
-{
-	char order[CONTAINERDEF_MAX][REGISTRY_NAME_MAX];
-	int count = containerdef_resolve_order(order);
-	int i;
-
-	for (i = 0; i < count; i++) {
-		struct container_def *def = containerdef_find(order[i]);
-		struct json_value *root;
-		const struct json_value *jvols;
-		size_t k;
-
-		if (def == NULL)
-			continue;
-		root = json_parse(def->body, def->body_len);
-		if (root == NULL)
-			continue;
-		jvols = json_object_get(root, "volumes");
-		if (jvols != NULL && jvols->type == JSON_ARRAY) {
-			for (k = 0; k < jvols->u.array.count; k++) {
-				const char *n = json_as_string(json_object_get(jvols->u.array.items[k], "name"));
-
-				if (n != NULL && strcmp(n, volume_name) == 0) {
-					snprintf(out_container, out_size, "%s", order[i]);
-					json_free(root);
-					return 1;
-				}
-			}
-		}
-		json_free(root);
-	}
-	return 0;
-}
-
-/*
- * Issue #96: does any container mounting this volume have a live
- * process right now.
- *
- * Injected into volumebackup.c rather than looked up there, so that
- * module needs no knowledge of the registry or of container
- * definitions -- the same shape containerdef.c already gets its own
- * liveness predicate through.
- *
- * registry_find() alone is NOT the test: since ADR-0181 the registry
- * also holds exited containers, so a container that ran once and
- * stopped would block every snapshot forever.
- */
-static int volume_has_running_container(const char *volume_name)
-{
-	char user[REGISTRY_NAME_MAX];
-	struct registry_entry *e;
-
-	if (!volume_referenced_by_container(volume_name, user, sizeof(user)))
-		return 0;
-	e = registry_find(user);
-	return e != NULL && e->running;
-}
-
-/*
- * Issue #93: apply a volume's size limit to its real directory.
- *
- * Two operations, the same pair a container overlay already uses: tag
- * the directory with a project id so everything inside it counts, and
- * set that project's byte limit via quotactl(2). Reusing the overlay's
- * own tagging call rather than repeating the ioctls here -- a second
- * implementation of something that must stay identical, on a path where
- * getting it subtly wrong yields a quota that reports as applied and is
- * not.
- *
- * btrfs is refused rather than silently unenforced. There the limit
- * lives on a qgroup attached to a subvolume, and a volume directory is
- * not a subvolume -- making it one is a real change to how volumes are
- * created, not another call. Accepting the request and quietly not
- * enforcing it would be exactly the "false promise" overlay.c's own
- * comment warns about.
- *
- * quota_bytes of 0 clears the limit.
- */
-static int volume_apply_quota(const char *volume_name, const char *dir, long long quota_bytes,
-                              char *err, size_t err_size)
-{
-	uint32_t projid;
-
-	if (overlay_backing_is_btrfs(dir)) {
-		snprintf(err, err_size,
-		         "this volume is on a btrfs filesystem, where a size limit needs the volume to be "
-		         "its own subvolume -- not supported yet, and refused rather than accepted and "
-		         "not enforced");
-		return -1;
-	}
-	/* A distinct project id per volume, from the same allocator
-	 * containers use -- ids are never reused, so a deleted volume's id
-	 * can never silently start limiting a new one. */
-	if (quotamap_get_or_assign(volume_name, &projid) != 0) {
-		snprintf(err, err_size, "could not assign a quota project id");
-		return -1;
-	}
-	if (set_disk_quota(dir, projid, quota_bytes) != 0) {
-		snprintf(err, err_size,
-		         "could not set the limit (%s) -- the filesystem holding this volume may not have "
-		         "project quotas enabled",
-		         strerror(errno));
-		return -1;
-	}
-	/* Tagging after the limit is set, matching the container path's own
-	 * ordering: the limit is already in force by the moment any file
-	 * can carry this project id. */
-	if (quota_bytes > 0 && overlay_tag_project_id(dir, projid, "volume") != 0) {
-		snprintf(err, err_size, "could not tag the volume directory with its quota project id");
-		return -1;
-	}
-	return 0;
-}
-
-/*
- * POST /v1/volumes/{name}/migrate -- move a volume's data to another
- * disk or partition, then repoint it.
- *
- * Refused while any container mounting this volume is RUNNING. A bind
- * mount resolves to a host path once, when the container starts
- * (ADR-0183), so moving the data underneath a live container would
- * leave it writing to the old location with nothing to indicate
- * anything had changed -- a silent split-brain rather than an error. A
- * stopped container is fine: it picks up the new location on its next
- * start, like any other definition change.
- */
-static void handle_volume_migrate(int fd, const char *name, const char *body, size_t body_len)
-{
-	struct json_value *root;
-	const char *target;
-	char user[REGISTRY_NAME_MAX];
-	enum volume_error verr;
-
-	if (volume_find(name) == NULL) {
-		respond_error(fd, 404, "Not Found", "no such volume");
-		return;
-	}
-	root = json_parse(body, body_len);
-	if (root == NULL || root->type != JSON_OBJECT) {
-		json_free(root);
-		respond_error(fd, 400, "Bad Request", "invalid JSON body");
-		return;
-	}
-	target = json_as_string(json_object_get(root, "disk"));
-	if (target == NULL)
-		target = ""; /* omitted means the default OS-disk placement */
-
-	/*
-	 * Only a genuinely RUNNING container blocks this. registry_find()
-	 * alone is not the test -- since ADR-0181 the registry also holds
-	 * exited containers, so using it would refuse a migrate because
-	 * something that ran once and stopped still has an entry. An exited
-	 * or stopped container picks up the new location on its next start,
-	 * exactly like any other definition change; only a live process has
-	 * a bind mount already resolved to the old path.
-	 */
-	{
-		struct registry_entry *e = NULL;
-
-		if (volume_referenced_by_container(name, user, sizeof(user)))
-			e = registry_find(user);
-		if (e != NULL && e->running) {
-			json_free(root);
-			respond_volume_error(fd, VOLUME_ERR_IN_USE_RUNNING);
-			return;
-		}
-	}
-
-	verr = volume_migrate(name, target);
-	json_free(root);
-	if (verr != VOLUME_OK) {
-		respond_volume_error(fd, verr);
-		return;
-	}
-	{
-		/*
-		 * Issue #93: a project-quota tag lives on the directory, so a
-		 * volume that moved to another filesystem arrives untagged and
-		 * unlimited. Re-applied here, or the migrate would silently
-		 * drop a limit the operator still believes is in force -- which
-		 * is worse than never having set one.
-		 */
-		struct volume *moved = volume_find(name);
-		char path[PATH_MAX];
-		char qerr[256];
-
-		if (moved != NULL && moved->quota_bytes > 0 &&
-		    volume_host_path(moved, path, sizeof(path)) == 0 &&
-		    volume_apply_quota(name, path, moved->quota_bytes, qerr, sizeof(qerr)) != 0) {
-			logstore_write("volume", "error",
-			               "volume %s moved, but its size limit could not be re-applied at the new "
-			               "location: %s",
-			               name, qerr);
-		}
-	}
-	handle_volume_get(fd, name);
-}
-
-/*
- * PUT /v1/volumes/{name}/owner (issue #102) -- who may write to this
- * volume.
- *
- * A volume is a directory the daemon creates as root, and nothing could
- * change that: a workload not running as root could not write to its
- * own volume. Found the plain way, by an operator logging into the jump
- * box and finding their home directory -- a volume -- owned by root.
- *
- * `recursive` is the caller's explicit choice and defaults to false. A
- * volume that has been in use holds files whose ownership someone may
- * have set deliberately, and rewriting all of it because the top-level
- * owner changed is a quiet kind of data loss.
- */
-static void handle_volume_owner_put(int fd, const char *name, const char *body, size_t body_len)
-{
-	struct json_value *root = json_parse(body, body_len);
-	const struct json_value *ju, *jg, *jr;
-	struct volume *v;
-	enum volume_error verr;
-	int uid, gid, recursive;
-	struct json_writer w;
-
-	if (root == NULL) {
-		respond_error(fd, 400, "Bad Request", "invalid JSON body");
-		return;
-	}
-	v = volume_find(name);
-	if (v == NULL) {
-		json_free(root);
-		respond_error(fd, 404, "Not Found", "no such volume");
-		return;
-	}
-	ju = json_object_get(root, "uid");
-	jg = json_object_get(root, "gid");
-	jr = json_object_get(root, "recursive");
-	recursive = (jr != NULL && jr->type == JSON_BOOL && jr->u.boolean);
-
-	if (ju == NULL || jg == NULL) {
-		json_free(root);
-		respond_error(fd, 400, "Bad Request",
-		              "uid and gid are both required -- pass the value it already has to leave "
-		              "one alone, or null for both to hand the volume back to root");
-		return;
-	}
-	if (ju->type == JSON_NULL && jg->type == JSON_NULL) {
-		uid = -1;
-		gid = -1;
-	} else {
-		uid = (int)json_as_number(ju);
-		gid = (int)json_as_number(jg);
-		if (uid < 0 || gid < 0) {
-			json_free(root);
-			respond_error(fd, 400, "Bad Request", "uid/gid must not be negative");
-			return;
-		}
-	}
-	json_free(root);
-
-	verr = volume_set_owner(name, uid, gid);
-	if (verr != VOLUME_OK) {
-		respond_volume_error(fd, verr);
-		return;
-	}
-	v = volume_find(name);
-	/* Clearing back to root is a real request too: chown it to 0:0
-	 * rather than leaving whoever owned it last still owning it. */
-	if (uid < 0) {
-		char path[PATH_MAX];
-
-		if (volume_host_path(v, path, sizeof(path)) == 0 && lchown(path, 0, 0) != 0) {
-			respond_error(fd, 500, "Internal Server Error",
-			              "could not hand the volume directory back to root");
-			return;
-		}
-	} else {
-		verr = volume_apply_owner(v, recursive);
-		if (verr != VOLUME_OK) {
-			respond_volume_error(fd, verr);
-			return;
-		}
-	}
-
-	jw_init(&w);
-	volume_write_json_one(v, &w);
-	respond_json(fd, 200, "OK", &w);
-	jw_free(&w);
-}
-
-/*
- * PUT /v1/volumes/{name}/quota -- set or clear a volume's size limit.
- */
-static void handle_volume_quota_put(int fd, const char *name, const char *body, size_t body_len)
-{
-	struct volume *v = volume_find(name);
-	struct json_value *root;
-	const struct json_value *jq;
-	long long bytes;
-	char path[PATH_MAX];
-	char err[256];
-	enum volume_error verr;
-
-	if (v == NULL) {
-		respond_error(fd, 404, "Not Found", "no such volume");
-		return;
-	}
-	root = json_parse(body, body_len);
-	if (root == NULL || root->type != JSON_OBJECT) {
-		json_free(root);
-		respond_error(fd, 400, "Bad Request", "invalid JSON body");
-		return;
-	}
-	jq = json_object_get(root, "quota_bytes");
-	if (jq == NULL || jq->type != JSON_NUMBER || json_as_number(jq) < 0) {
-		json_free(root);
-		respond_error(fd, 400, "Bad Request", "quota_bytes must be a non-negative number (0 clears it)");
-		return;
-	}
-	bytes = (long long)json_as_number(jq);
-	json_free(root);
-
-	if (volume_host_path(v, path, sizeof(path)) != 0) {
-		respond_error(fd, 500, "Internal Server Error", "could not resolve the volume's own path");
-		return;
-	}
-	if (volume_apply_quota(name, path, bytes, err, sizeof(err)) != 0) {
-		respond_error(fd, 409, "Conflict", err);
-		return;
-	}
-	verr = volume_set_quota(name, bytes);
-	if (verr != VOLUME_OK) {
-		respond_volume_error(fd, verr);
-		return;
-	}
-	handle_volume_get(fd, name);
-}
-
-/* ---- Issue #96: volume content snapshots ---- */
-/*
- * Issue #96: freeze (or thaw) every running container mounting this
- * volume. Returns how many were acted on, or -1 if any failed.
- *
- * ALL of them, not just one. Any container with the volume mounted
- * could be writing to it, so freezing a subset would leave the copy
- * exposed to the rest -- and a snapshot that is only mostly quiesced is
- * a crash-consistent one wearing a consistent one's label.
- *
- * The freeze is the cgroup freezer (ADR-0045), not SIGSTOP: a process
- * can neither ignore nor handle it, which is what makes the resulting
- * snapshot genuinely consistent rather than merely likely to be.
- *
- * On a partial failure the ones already frozen are thawed again before
- * returning, so a failure to quiesce never leaves containers stopped.
- */
-static int volume_set_containers_paused(const char *volume_name, int freeze)
-{
-	char order[CONTAINERDEF_MAX][REGISTRY_NAME_MAX];
-	int count = containerdef_resolve_order(order);
-	int i, acted = 0, failed = 0;
-
-	for (i = 0; i < count; i++) {
-		struct registry_entry *e;
-
-		if (!container_mounts_volume(order[i], volume_name))
-			continue;
-		e = registry_find(order[i]);
-		if (e == NULL || !e->running)
-			continue;
-		if (freeze && e->paused)
-			continue; /* already frozen by someone else -- leave it alone */
-		if (registry_set_paused(e, freeze) != 0) {
-			failed = 1;
-			break;
-		}
-		acted++;
-	}
-	if (failed && freeze) {
-		/* Undo what this call managed before giving up. */
-		for (i = 0; i < count; i++) {
-			struct registry_entry *e = registry_find(order[i]);
-
-			if (e != NULL && e->running && e->paused && container_mounts_volume(order[i], volume_name))
-				registry_set_paused(e, 0);
-		}
-		return -1;
-	}
-	return acted;
-}
-
-static const struct volumebackup_hooks g_volumebackup_hooks = {
-	volume_has_running_container,
-	volume_set_containers_paused,
-};
-
-
-
-static void respond_volumebackup_error(int fd, enum volumebackup_error e)
-{
-	switch (e) {
-	case VOLUMEBACKUP_ERR_NOT_FOUND:
-		respond_error(fd, 404, "Not Found", "no such volume");
-		break;
-	case VOLUMEBACKUP_ERR_NO_SUCH_SNAPSHOT:
-		respond_error(fd, 404, "Not Found", "no such snapshot");
-		break;
-	case VOLUMEBACKUP_ERR_NO_DISK:
-		respond_error(fd, 409, "Conflict",
-		              "no backup disk configured -- set one via PUT /v1/system/volume-backup-config "
-		              "(it must be a disk or partition carrying the 'backup' role)");
-		break;
-	case VOLUMEBACKUP_ERR_DISK_NOT_READY:
-		respond_error(fd, 409, "Conflict",
-		              "the configured backup disk is not mounted -- format and mount it first");
-		break;
-	case VOLUMEBACKUP_ERR_IN_USE_RUNNING:
-		respond_error(fd, 409, "Conflict",
-		              "a container mounting this volume is running -- copying its data now would "
-		              "capture a half-written state, which looks exactly like a good snapshot "
-		              "until someone restores it. Stop the container first");
-		break;
-	case VOLUMEBACKUP_ERR_COPY_FAILED:
-		respond_error(fd, 500, "Internal Server Error", "copying the volume's data failed");
-		break;
-	case VOLUMEBACKUP_ERR_INVALID:
-		respond_error(fd, 400, "Bad Request", "invalid request");
-		break;
-	default:
-		respond_error(fd, 500, "Internal Server Error", "could not persist the backup config");
-		break;
-	}
-}
-
-static void handle_volume_backup_config_get(int fd)
-{
-	struct json_writer w;
-
-	jw_init(&w);
-	volumebackup_write_config_json(&w);
-	respond_json(fd, 200, "OK", &w);
-	jw_free(&w);
-}
-
-static void handle_volume_backup_config_put(int fd, const char *body, size_t body_len)
-{
-	struct json_value *root = json_parse(body, body_len);
-	const struct json_value *jen, *jiv;
-	const char *disk;
-	enum volumebackup_error verr;
-
-	if (root == NULL || root->type != JSON_OBJECT) {
-		json_free(root);
-		respond_error(fd, 400, "Bad Request", "invalid JSON body");
-		return;
-	}
-	disk = json_as_string(json_object_get(root, "disk"));
-	jen = json_object_get(root, "enabled");
-	jiv = json_object_get(root, "interval_hours");
-	verr = volumebackup_set(disk != NULL ? disk : "",
-	                        jen != NULL && jen->type == JSON_BOOL && jen->u.boolean,
-	                        (jiv != NULL && jiv->type == JSON_NUMBER) ? (int)json_as_number(jiv)
-	                                                                  : volumebackup_interval_hours());
-	json_free(root);
-	if (verr != VOLUMEBACKUP_OK) {
-		respond_volumebackup_error(fd, verr);
-		return;
-	}
-	handle_volume_backup_config_get(fd);
-}
-
-/* The volume's own policy plus its snapshots and last attempt, in one
- * response -- they are always wanted together and splitting them across
- * three calls would be three round trips to render one panel. */
-static void handle_volume_backups_get(int fd, const char *name)
-{
-	struct volume *v = volume_find(name);
-	struct json_writer w;
-
-	if (v == NULL) {
-		respond_error(fd, 404, "Not Found", "no such volume");
-		return;
-	}
-	jw_init(&w);
-	jw_obj_open(&w);
-	jw_key(&w, "volume");
-	jw_str(&w, name);
-	jw_key(&w, "enabled");
-	jw_bool(&w, v->backup_enabled);
-	jw_key(&w, "retain");
-	jw_int(&w, v->backup_retain > 0 ? v->backup_retain : VOLUMEBACKUP_DEFAULT_RETAIN);
-	/* Whether this volume can be snapshotted while a container using it
-	 * is running -- without it, an always-on service's volume is never
-	 * backed up at all, which is the state most worth surfacing. */
-	jw_key(&w, "while_running");
-	jw_str(&w, volume_running_mode_name(v->backup_while_running));
-	jw_key(&w, "last_backup_at");
-	jw_int(&w, (long long)v->backup_last_at);
-	jw_key(&w, "snapshots");
-	volumebackup_write_list_json(&w, name);
-	jw_key(&w, "status");
-	volumebackup_write_status_json(&w, name);
-	jw_obj_close(&w);
-	respond_json(fd, 200, "OK", &w);
-	jw_free(&w);
-}
-
-static void handle_volume_backup_policy_put(int fd, const char *name, const char *body,
-                                             size_t body_len)
-{
-	struct json_value *root = json_parse(body, body_len);
-	const struct json_value *jen, *jre;
-	int retain = 0;
-	enum volume_error verr;
-
-	if (root == NULL || root->type != JSON_OBJECT) {
-		json_free(root);
-		respond_error(fd, 400, "Bad Request", "invalid JSON body");
-		return;
-	}
-	jen = json_object_get(root, "enabled");
-	jre = json_object_get(root, "retain");
-	if (jre != NULL) {
-		if (jre->type != JSON_NUMBER || json_as_number(jre) < 1 ||
-		    json_as_number(jre) > VOLUMEBACKUP_MAX_RETAIN) {
-			json_free(root);
-			respond_error(fd, 400, "Bad Request", "retain must be between 1 and 365");
-			return;
-		}
-		retain = (int)json_as_number(jre);
-	}
-	{
-		const char *jwr = json_as_string(json_object_get(root, "while_running"));
-		struct volume *cur = volume_find(name);
-
-		/* Omitted leaves the current mode alone -- a partial update
-		 * that silently rewrites a field it was not given is how
-		 * settings get lost. */
-		verr = volume_set_backup_policy(
-		    name, jen != NULL && jen->type == JSON_BOOL && jen->u.boolean, retain,
-		    jwr != NULL ? volume_running_mode_parse(jwr)
-		                : (cur != NULL ? cur->backup_while_running : VOLUME_RUNNING_REFUSE));
-	}
-	json_free(root);
-	if (verr != VOLUME_OK) {
-		respond_volume_error(fd, verr);
-		return;
-	}
-	handle_volume_backups_get(fd, name);
-}
-
-static void handle_volume_backup_now(int fd, const char *name)
-{
-	enum volumebackup_error verr = volumebackup_take(name, &g_volumebackup_hooks);
-
-	if (verr != VOLUMEBACKUP_OK) {
-		respond_volumebackup_error(fd, verr);
-		return;
-	}
-	handle_volume_backups_get(fd, name);
-}
-
-/*
- * Restoring replaces the volume's contents outright. Guarded like every
- * other destructive operation in this API: the caller has to name the
- * volume back, so it can never be something a stray click did.
- */
-static void handle_volume_restore(int fd, const char *name, const char *body, size_t body_len)
-{
-	struct json_value *root = json_parse(body, body_len);
-	const char *stamp, *confirm;
-	enum volumebackup_error verr;
-
-	if (root == NULL || root->type != JSON_OBJECT) {
-		json_free(root);
-		respond_error(fd, 400, "Bad Request", "invalid JSON body");
-		return;
-	}
-	stamp = json_as_string(json_object_get(root, "snapshot"));
-	confirm = json_as_string(json_object_get(root, "confirm_volume_name"));
-	if (confirm == NULL || strcmp(confirm, name) != 0) {
-		json_free(root);
-		respond_error(fd, 400, "Bad Request",
-		              "confirm_volume_name must be given and must match the volume in the URL -- "
-		              "restoring replaces everything currently in this volume");
-		return;
-	}
-	if (stamp == NULL) {
-		json_free(root);
-		respond_error(fd, 400, "Bad Request", "snapshot is required");
-		return;
-	}
-	verr = volumebackup_restore(name, stamp, &g_volumebackup_hooks);
-	json_free(root);
-	if (verr != VOLUMEBACKUP_OK) {
-		respond_volumebackup_error(fd, verr);
-		return;
-	}
-	handle_volume_backups_get(fd, name);
-}
-
-static void handle_volume_backup_delete(int fd, const char *name, const char *stamp)
-{
-	enum volumebackup_error verr = volumebackup_delete_snapshot(name, stamp);
-
-	if (verr != VOLUMEBACKUP_OK) {
-		respond_volumebackup_error(fd, verr);
-		return;
-	}
-	handle_volume_backups_get(fd, name);
-}
-
-static void handle_volume_delete(int fd, const char *name)
-{
-	char user[REGISTRY_NAME_MAX];
-	enum volume_error verr;
-
-	if (volume_find(name) == NULL) {
-		respond_error(fd, 404, "Not Found", "no such volume");
-		return;
-	}
-	if (volume_referenced_by_container(name, user, sizeof(user))) {
-		char msg[256];
-
-		snprintf(msg, sizeof(msg),
-		         "still referenced by container '%s' -- delete or edit that container first", user);
-		respond_error(fd, 409, "Conflict", msg);
-		return;
-	}
-	verr = volume_delete(name);
-	if (verr != VOLUME_OK) {
-		respond_volume_error(fd, verr);
-		return;
-	}
-	http_set_blocking(fd);
-	http_write_response(fd, 204, "No Content", "application/json", "", 0);
 }
 
 static void handle_serverhealth_list(int fd)
@@ -14219,7 +12502,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 			 * is already in force by the moment any file could possibly
 			 * be tagged with this project id.
 			 */
-			if (set_disk_quota(container_base, projid, disk_quota_bytes) != 0) {
+			if (quotamap_apply(container_base, projid, disk_quota_bytes) != 0) {
 				json_free(root);
 				snprintf(err_msg, err_msg_size,
 				         "failed to set disk quota (backing filesystem may not have "
@@ -30543,7 +28826,7 @@ static int cixd_main(int argc, char **argv)
 				 * checked against its own last-run time, and one timer
 				 * is one thing to reason about when backups do not run.
 				 */
-				volumebackup_sweep(time(NULL), &g_volumebackup_hooks);
+				volumebackup_sweep(time(NULL), api_volume_backup_hooks());
 				handle_backup_periodic_timer_event(cc);
 			}
 			else if (cc->kind == CONN_SERVERHEALTH_TIMER) {

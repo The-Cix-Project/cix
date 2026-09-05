@@ -197,3 +197,54 @@ void handle_ntp_server_delete(int fd, const char *name)
 	http_set_blocking(fd);
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
 }
+
+/*
+ * GET/PUT /v1/system/time (task #752): the host's real current clock,
+ * and a manual override -- an operator-facing escape hatch alongside
+ * the automatic SNTP sync above, the same "live-apply, immediate
+ * effect" relationship GET/PUT /v1/system/resolv already has to real
+ * DNS resolution. PUT {"unixtime": N} calls clock_settime() directly.
+ */
+void handle_time_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	ntp_write_json_time(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+void handle_time_put(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const struct json_value *junixtime;
+	int64_t unixtime;
+	enum ntp_error nerr;
+	struct json_writer w;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	junixtime = json_object_get(root, "unixtime");
+	if (junixtime == NULL || junixtime->type != JSON_NUMBER) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "unixtime (number) is required");
+		return;
+	}
+	unixtime = (int64_t)junixtime->u.number;
+	json_free(root);
+
+	nerr = ntp_time_set(unixtime);
+	if (nerr != NTP_OK) {
+		respond_ntp_error(fd, nerr);
+		return;
+	}
+
+	jw_init(&w);
+	ntp_write_json_time(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
