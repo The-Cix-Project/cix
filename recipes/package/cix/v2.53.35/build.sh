@@ -1,4 +1,14 @@
 #
+# v2.53.35 -- an install that did not land is no longer reported as
+# installed (#281). An image version is a hash of the installed package
+# set, so reinstalling a name@version the set already holds reproduces
+# the same hash and the freshly built tree is discarded (ADR-0155) --
+# the install returned success and the files were absent. The install
+# now lstats its own recorded files against the image's new current
+# rootfs and fails naming the first missing one. GET /v1/pkg/verify
+# (cixctl pkg verify) answers the same for earlier installs.
+#
+#
 # v2.53.34 -- the console's exec command is a query parameter and the
 # X-Cix-Exec-Cmd header is retired (ADR-0245). A browser's WebSocket
 # constructor sets no request headers, so that parameter worked from
@@ -502,9 +512,9 @@
 # predated #60.)
 #
 pkg_name="cix"
-pkg_version="v2.53.34"
-pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/v2.53.34.tar.gz"
-pkg_sha256="ae888f2e187f1d2e28ba4f57b9e8612d9a196c73191fe2263552c52faa58a245"
+pkg_version="v2.53.35"
+pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/v2.53.35.tar.gz"
+pkg_sha256="188aac3947cbafb525ed81c47fa6566381b87a5201d5134f2cf0b15b6e59a9f5"
 # ADR-0199/0209: composed from exactly these, with no fallback
 # environment to inherit anything missing (#168). Cix is the first
 # recipe to need this declaration and it found the rule the hard way:
