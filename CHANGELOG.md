@@ -24,6 +24,20 @@ The evidence was in the output the whole time: the four `depA: autostarted (rest
 
 `test_daemon_net`'s cleanup step deleted four containers fire-and-forget and then deleted the network they used. When that network delete came back 409, nothing in the output named which container had stayed — only the consequence, which is not a report anyone can act on. The four deletes are asserted now. A cleanup step is still a step.
 
+### Containers get a Configuration tab
+
+`cmd` — the command a container actually runs — was not visible anywhere in the dashboard. Neither were `cap_add`, `userns`, `captured_output`, or the declared `consoles[]` as a list rather than a picker. And a container's own **recipe** had a REST endpoint already exposed to the web (`GET /v1/containers/recipes/{name}`) that the dashboard never called.
+
+The new tab shows exactly those and nothing else. Summary, Hardware and Options already render most of the definition between them, and repeating any of it would create a second place to read the same fact and a second place for it to go stale.
+
+The recipe is worth its own section because it and the live definition are **different things that drift apart**: the recipe is the source, what someone wrote and applied; the definition is what the container became. `jump` declared `linux-pam:pinned:1.6.1-2` while running `1.6.1-6`, because an ad-hoc install moves the package and leaves the declaration behind — and nothing surfaced the disagreement. A container created straight through `POST /v1/containers` has no recipe at all, which is a real answer about how it came to exist rather than an error, and it is phrased that way.
+
+Three things fell out of building it:
+
+- **`apiRequest()` now carries the HTTP status on the errors it throws.** Without it a caller can only match on message text, and some non-2xx answers are ordinary facts — that 404 above — rather than failures. Telling those apart by string comparison would break the moment the daemon reworded itself.
+- **The existing `loadContainerRecipeContent()` is reused** rather than a second fetch being written. It caches by name, so switching tabs costs nothing. Discovered only because an accident reverted the first attempt and the file had to be re-read.
+- **`test_web_vt` asserts the recipe reaches the page through `textContent`.** It is stored operator text going into the DOM, the same untrusted-bytes question the VT answers one tab across. The first version of that assertion banned `innerHTML` in `app.js` outright and was wrong — app.js assigns it in ten places, every one a static developer-authored literal (an inline SVG icon, "Loading…", "No routes."). A check that flags correct code is a check that gets deleted, so it asserts the positive claim instead. Confirmed to fail when `textContent` is swapped for `innerHTML`.
+
 ### test_console_exec now says how its wait ended (#291)
 
 Three of eight recent builds failed this test, on three different assertions, and every one reported the same thing: `got (0 bytes): (nothing)`. That single line is the output for three distinct faults — the socket read timed out, the peer closed, or frames arrived carrying something other than the expected string — and there was no way to tell them apart. Two full investigations ran on it and neither could get past that.

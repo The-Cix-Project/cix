@@ -112,6 +112,31 @@ int main(void)
 	 * use it, and a check that its own documentation trips is a check
 	 * that gets deleted rather than fixed. */
 	want_not(vt, ".innerHTML", "vt.js assigns innerHTML -- terminal output is untrusted and must never become markup");
+
+	/*
+	 * The Configuration tab renders a container's own RECIPE into the
+	 * page. That text is stored, operator-supplied and arbitrary --
+	 * the same untrusted-bytes-into-the-DOM question the emulator
+	 * above answers, one tab across. It is set with textContent into a
+	 * <pre>, and the assertion is that app.js never assigns innerHTML
+	 * at all, which is the check that cannot be got wrong by reading
+	 * the wrong line.
+	 */
+	want(app, "loadContainerRecipe", "app.js does not load a container's recipe (#289 Configuration tab)");
+	want(app, "getContainerRecipe", "app.js builds the recipe path by hand instead of using the generated constant");
+	/*
+	 * The positive form, not a blanket ban on innerHTML in app.js. That
+	 * was written first and is wrong: app.js assigns innerHTML in ten
+	 * places, every one of them a static developer-authored literal --
+	 * an inline SVG icon, "Loading&hellip;", "No routes." -- none of
+	 * which render anything a user or a container supplied. A check
+	 * that flags correct code is a check that gets deleted, so this
+	 * asserts what actually matters instead: the recipe text reaches
+	 * the page through textContent.
+	 */
+	want(app, "textEl.textContent = content",
+	     "app.js does not set the recipe with textContent -- a container recipe is stored "
+	     "operator text and must never become markup");
 	want_not(vt, ".outerHTML", "vt.js assigns outerHTML on untrusted terminal output");
 	want_not(vt, "insertAdjacentHTML", "vt.js uses insertAdjacentHTML on untrusted terminal output");
 	want(vt, "textContent", "vt.js does not set textContent -- expected the safe render path");

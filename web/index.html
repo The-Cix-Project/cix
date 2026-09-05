@@ -220,6 +220,7 @@
 				<button type="button" class="tab-button active" data-tab="summary" id="cd-tab-summary">Summary</button>
 				<button type="button" class="tab-button" data-tab="hardware" id="cd-tab-hardware">Hardware</button>
 				<button type="button" class="tab-button" data-tab="options" id="cd-tab-options">Options</button>
+				<button type="button" class="tab-button" data-tab="config" id="cd-tab-config">Configuration</button>
 				<button type="button" class="tab-button" data-tab="console" id="cd-tab-console">Console</button>
 			</div>
 			<div class="tab-panel" id="cd-panel-summary" data-tab="summary">
@@ -306,6 +307,17 @@
 				<table id="cd-env"><tbody></tbody></table>
 				<h3>Files</h3>
 				<table id="cd-files"><tbody></tbody></table>
+			</div>
+			<div class="tab-panel" id="cd-panel-config" data-tab="config" hidden>
+				<h3>Effective definition</h3>
+				<p class="hint">What this container actually is &mdash; the definition the daemon replays whenever it starts this container, including after a reboot. Summary, Hardware and Options show most of it; these are the parts they do not.</p>
+				<table class="detail-table"><tbody id="cd-config-fields"></tbody></table>
+				<h3>Declared consoles</h3>
+				<p class="hint">What <code>cixctl container console NAME --console=</code> and the Console tab offer. A container that declares none has no console, which is the right answer for an image with no shell.</p>
+				<table id="cd-config-consoles"><tbody></tbody></table>
+				<h3>Recipe</h3>
+				<p class="hint" id="cd-config-recipe-status">&hellip;</p>
+				<pre class="recipe-text" id="cd-config-recipe" hidden></pre>
 			</div>
 			<div class="tab-panel" id="cd-panel-console" data-tab="console" hidden>
 				<div class="console-toolbar">
