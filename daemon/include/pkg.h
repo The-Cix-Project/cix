@@ -1058,6 +1058,12 @@ void pkg_write_drift_json(struct json_writer *w);
  * is why it is its own endpoint rather than a field on GET /v1/pkg --
  * that one is polled every two seconds and is already this daemon's
  * largest source of event-loop stalls.
+ *
+ * Measured on 192.168.15.95 with 202 installed packages: 2.66 s, and
+ * stallwatch attributes the boot's worst loop pass to this endpoint by
+ * name. Below the 5 s stall threshold, above the 750 ms slow-pass one.
+ * Stated rather than estimated, because "on demand" without a number
+ * is how a polled path acquires one by accident later.
  */
 void pkg_write_verify_json(struct json_writer *w);
 

@@ -46,6 +46,8 @@ It is its own endpoint rather than a field on `GET /v1/pkg`, and that is not fas
 
 Reports rather than acts. The repair is to bump the package revision so the manifest hash genuinely changes, or to delete and recreate the image.
 
+**Verified on 192.168.15.95 (v2.53.36): 202 installed packages checked, 0 incomplete.** The box carries none of these splits today. And the cost is a measurement, not an estimate — 2.66 s, which `GET /system/stalls` attributes as that boot's worst loop pass, by name. Below the 5 s stall threshold and above the 750 ms slow-pass one: about one dashboard poll's worth of blocked control plane. Fine for a verb an operator runs, and precisely why it is not on a polled path. Recorded in the contract, because "on demand" without a number is how a path acquires a polling caller by accident later.
+
 ### The exec command is a query parameter, and the dashboard can finally use it (ADR-0245)
 
 `cixctl container console NAME --cmd=PATH` runs one specific program instead of a declared console. The dashboard had no equivalent and **could not have had one**: that parameter was the `X-Cix-Exec-Cmd` request header, and a browser's `WebSocket` constructor sets no request headers at all. One client could use a documented feature and the other was structurally incapable of it.

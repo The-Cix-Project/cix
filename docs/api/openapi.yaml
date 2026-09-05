@@ -8037,10 +8037,22 @@ paths:
         On demand, and deliberately not a field on `GET /pkg`: this
         stats every file of every installed package, and `GET /pkg` is
         polled every two seconds by the dashboard and is already this
-        daemon's single largest source of event-loop stalls. Reports
-        rather than acts -- the repair is to bump the package revision
-        so the manifest hash genuinely changes, or to delete and
-        recreate the image.
+        daemon's single largest source of event-loop stalls.
+
+
+        The cost is real and is stated rather than waved at. Measured
+        on 192.168.15.95 with 202 installed packages: **2.66 s**, and
+        `GET /v1/system/stalls` attributes its worst loop pass of the
+        boot to this endpoint by name. That is below the 5 s stall
+        threshold and above the 750 ms slow-pass one, so a call blocks
+        the control plane for roughly the length of one dashboard poll.
+        Acceptable for a verb an operator runs; not acceptable on a
+        polled path, which is the whole reason it is not on one.
+
+
+        Reports rather than acts -- the repair is to bump the package
+        revision so the manifest hash genuinely changes, or to delete
+        and recreate the image.
       operationId: verifyPkgFiles
       x-cix-expose: [cli]
       responses:
