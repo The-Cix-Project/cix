@@ -254,3 +254,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0247](0247-the-reactor-does-not-block-and-that-is-the-defence.md) | The reactor does not block, and that is the defence | Accepted |
 | [0248](0248-gcc-is-a-linter-never-a-producer.md) | gcc is a linter, never a producer | Accepted |
 | [0249](0249-main-c-is-divided-by-what-a-handler-touches.md) | main.c is divided by what a handler touches, not by what it is named | Accepted |
+| [0250](0250-a-build-that-cannot-find-a-tool-is-a-failed-build.md) | A build that cannot find a tool is a failed build, whatever it exits with | Accepted |

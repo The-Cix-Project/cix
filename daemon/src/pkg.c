@@ -72,6 +72,14 @@ extern char **environ;
  * either original value did) reliably captured everything EXCEPT the
  * one line that mattered. */
 #define PKG_BUILD_OUTPUT_CAPTURE_MAX 3800
+/*
+ * Issue #302: the longest tool name and the longest line the
+ * missing-tool scanner keeps. A line longer than this is kept by its
+ * TAIL, because the shell puts the tool name immediately before
+ * ": command not found" -- "/bin/sh: line 1: gzip: command not found".
+ */
+#define PKG_MISSING_TOOL_MAX 64
+#define PKG_TOOLSCAN_LINE_MAX 512
 
 struct pkg_entry {
 	char name[PKG_NAME_MAX];
@@ -145,6 +153,26 @@ struct pkg_entry {
 	 */
 	int build_log_fd;
 	char build_log_path[PATH_MAX];
+	/*
+	 * Issue #302: a build that cannot find a tool it shells out to
+	 * does not necessarily fail. gettext's build environment was
+	 * missing find, gzip, cmp and xargs; gzip stopped the build at
+	 * Error 127 eighteen thousand lines in, and the other three did
+	 * not stop it at all -- libtool silently produced a static
+	 * archive with the convenience-archive objects left out, and
+	 * configure silently answered two feature probes from a tool
+	 * that was not there. Exit 0, wrong output, nothing said.
+	 *
+	 * So the daemon reads its own build output for the shell's own
+	 * report and refuses the result. Scanned here rather than by a
+	 * gate inside each recipe: this is a property of the build
+	 * ENVIRONMENT, and a per-recipe check can only ever cover the
+	 * tools someone already thought of.
+	 */
+	char toolscan_line[PKG_TOOLSCAN_LINE_MAX];
+	int toolscan_len;
+	char missing_tool[PKG_MISSING_TOOL_MAX];
+	int missing_tool_count;
 	/* Issue #58: wall-clock time of the last byte drained from this
 	 * entry's build-output pipe -- the daemon already owns that pipe,
 	 * so "is the build actually producing output?" is answerable
@@ -5737,6 +5765,9 @@ static int start_build_container_spec(int chain_idx, struct pkg_entry *e,
 
 	e->build_output_captured_len = 0;
 	e->last_output_at = 0;
+	e->toolscan_len = 0;            /* issue #302 */
+	e->missing_tool[0] = '\0';
+	e->missing_tool_count = 0;
 	pkg_build_log_open(e, current_fetch_effective_version(chain_idx)); /* issue #57 */
 	/* ADR-0157 Phase 1: this entry is now the one owning the open
 	 * build-output pipe, regardless of whether pipe2()/fcntl() below
@@ -6881,10 +6912,84 @@ static void pkg_build_log_close(struct pkg_entry *e)
 	}
 }
 
+/*
+ * Issue #302: examine one complete line of build output for the
+ * shell's own missing-command report, and record the tool it names.
+ *
+ * bash puts the name immediately before the phrase, behind whatever
+ * prefix it happens to carry:
+ *
+ *   ../libtool: line 6182: find: command not found
+ *   /bin/sh: line 1: gzip: command not found
+ *   ./configure: line 13423: cmp: command not found
+ *
+ * so the tool is the token between the last separator before the
+ * phrase and the phrase itself. Only this exact wording is matched,
+ * because it is the wording actually measured -- dash says "not
+ * found" instead, and no image here ships dash. Matching a phrase
+ * that has never been observed would be guessing at a second format.
+ */
+static void pkg_toolscan_line(struct pkg_entry *e, const char *line)
+{
+	static const char phrase[] = ": command not found";
+	const char *hit = strstr(line, phrase);
+	const char *start;
+	size_t n;
+
+	if (hit == NULL)
+		return;
+
+	e->missing_tool_count++;
+	if (e->missing_tool[0] != '\0')
+		return; /* the first name is what the message needs; the count carries the rest */
+
+	start = hit;
+	while (start > line && start[-1] != ' ' && start[-1] != ':' && start[-1] != '\t')
+		start--;
+	n = (size_t)(hit - start);
+	if (n > 0 && n < sizeof(e->missing_tool)) {
+		memcpy(e->missing_tool, start, n);
+		e->missing_tool[n] = '\0';
+	}
+}
+
 static void pkg_build_output_append(struct pkg_entry *e, const char *data, int len)
 {
 	int take = (len > PKG_BUILD_OUTPUT_CAPTURE_MAX) ? PKG_BUILD_OUTPUT_CAPTURE_MAX : len;
 	int new_total = e->build_output_captured_len + take;
+	int i;
+
+	/*
+	 * Issue #302: scanned over every byte, not over the ~4KB tail
+	 * below -- the missing-command line that matters is usually
+	 * thousands of lines before the end, which is exactly why the
+	 * tail never showed it. Lines are assembled across chunk
+	 * boundaries here because a read() splits wherever it likes.
+	 */
+	for (i = 0; i < len; i++) {
+		char ch = data[i];
+
+		if (ch == '\n' || ch == '\r') {
+			e->toolscan_line[e->toolscan_len] = '\0';
+			pkg_toolscan_line(e, e->toolscan_line);
+			e->toolscan_len = 0;
+			continue;
+		}
+		if (e->toolscan_len >= PKG_TOOLSCAN_LINE_MAX - 1) {
+			/*
+			 * Keep the TAIL of an over-long line: the tool name
+			 * sits immediately before the phrase, at the end.
+			 * Halved rather than shifted by one, so a single
+			 * 200KB link command line stays linear.
+			 */
+			int keep = PKG_TOOLSCAN_LINE_MAX / 2;
+
+			memmove(e->toolscan_line, e->toolscan_line + (e->toolscan_len - keep),
+			        (size_t)keep);
+			e->toolscan_len = keep;
+		}
+		e->toolscan_line[e->toolscan_len++] = ch;
+	}
 
 	/* Teed here, before the tail truncation below, because the whole
 	 * point is to keep what the tail throws away. A short write is
@@ -7643,6 +7748,40 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 	 * handle_pkg_build_output_event() fires -- closing it directly
 	 * from here would race that still-live epoll registration.
 	 */
+	/*
+	 * Issue #302: exiting 0 is not sufficient. If the shell reported
+	 * a missing command anywhere in this build's output, something
+	 * the build reached for was not in the environment -- and the
+	 * cases that matter most are precisely the ones that did NOT
+	 * change the exit status.
+	 *
+	 * Measured before this was made fatal: of the 41 build logs on
+	 * the host at the time, exactly one package's logs contained the
+	 * phrase, and that package is the bug this came from. So nothing
+	 * that builds correctly today is refused by it.
+	 *
+	 * gettext is the worked example. find missing meant libtool
+	 * absorbed no convenience archives and reported success; cmp
+	 * missing meant configure answered two feature probes from a
+	 * tool that was not there. Both exited 0 with wrong output.
+	 */
+	if (e->missing_tool_count > 0) {
+		logstore_write("cixd", "error",
+		                "pkg %s@%s: build environment is missing '%s'%s -- the shell reported "
+		                "%d missing command(s) during a build that exited 0; declare it in "
+		                "pkg_build_depends (#302)",
+		                e->name, g_chains[chain_idx].image, e->missing_tool,
+		                e->missing_tool_count > 1 ? " and others" : "",
+		                e->missing_tool_count);
+		pkg_fail(e, is_upgrade, PKG_FAILURE_BUILD,
+		         "build environment is missing '%s' (%d missing command(s) reported) -- "
+		         "declare it in pkg_build_depends",
+		         e->missing_tool, e->missing_tool_count);
+		g_chains[chain_idx].name[0] = '\0';
+		g_chains[chain_idx].dep_queue_count = 0;
+		return 0;
+	}
+
 	e->build_output_captured_len = 0;
 	e->last_output_at = 0;
 
