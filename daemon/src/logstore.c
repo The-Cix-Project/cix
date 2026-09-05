@@ -285,14 +285,69 @@ void logstore_kmsg_readable(void)
 {
 	char buf[2048];
 	ssize_t n;
+	int overran = 0;
 
 	if (g_kmsg_fd < 0)
 		return;
 
 	for (;;) {
 		n = read(g_kmsg_fd, buf, sizeof(buf) - 1);
-		if (n <= 0)
-			return; /* EAGAIN (nothing new right now) or a real error */
+		if (n < 0) {
+			/*
+			 * The three errno cases here mean genuinely different
+			 * things, and collapsing them into one `return` lost the
+			 * only one that matters (#300).
+			 *
+			 * EAGAIN is the ordinary end of a drain: nothing new
+			 * right now, come back on the next EPOLLIN.
+			 *
+			 * EINTR is a signal landing mid-read. Nothing was
+			 * consumed and nothing was lost, so retry rather than
+			 * abandoning the rest of the queue until the next
+			 * readiness notification.
+			 *
+			 * EPIPE is DATA LOSS, and it is the reason this branch
+			 * exists. /dev/kmsg hands it back when the record this
+			 * reader was positioned at has already been overwritten
+			 * in the kernel's ring, and the kernel then advances the
+			 * position to the oldest record still present (kernel
+			 * Documentation/ABI/testing/dev-kmsg). Reading it as
+			 * "nothing new" meant kernel messages vanished from
+			 * GET /v1/system/logs with nothing anywhere saying so --
+			 * and this reader is drained by the daemon's own event
+			 * loop, so it falls behind precisely when the daemon is
+			 * busy, which is exactly when the messages worth keeping
+			 * are being written. A gap that is recorded is a
+			 * diagnosis; a gap that is silent turns log-store
+			 * silence into false evidence that nothing was written.
+			 *
+			 * The position has already moved, so draining continues
+			 * rather than returning: the records after the gap are
+			 * still there to be read. One entry per drain, however
+			 * many records were skipped, because a reader this far
+			 * behind would otherwise write a flood of its own into
+			 * the store it is trying to preserve.
+			 */
+			if (errno == EAGAIN || errno == EWOULDBLOCK)
+				return;
+			if (errno == EINTR)
+				continue;
+			if (errno == EPIPE) {
+				if (!overran) {
+					overran = 1;
+					logstore_write("kernel", "warning",
+					               "log store fell behind /dev/kmsg: kernel records were "
+					               "overwritten before they could be read, so some entries "
+					               "are missing here");
+				}
+				continue;
+			}
+			logstore_write("kernel", "err",
+			               "log store cannot read /dev/kmsg: %s", strerror(errno));
+			return;
+		}
+		if (n == 0)
+			return;
 		buf[n] = '\0';
 
 		{

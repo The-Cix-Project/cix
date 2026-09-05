@@ -1173,7 +1173,20 @@ A cleanly **stopped** container is a valid target (issue #162). It used to be a 
 
 One limit worth stating plainly: for a stopped container this reaches its **writable** tree. A direct-rootfs container (the ADR-0207 default) has its whole filesystem there, so reads are complete; a legacy overlay container has only what it wrote, so a path existing solely in the image's lower layer is still a `404` while it is down — the lowerdir is recorded on the registry entry, and a stopped container has no entry to record it.
 
-`path` must be an absolute, `/`-leading, traversal-free path (no `.`/`..` component, no empty `//` component) — the exact same validation `POST /containers`' own `files[].path` already applies, reused verbatim. A path resolving to a directory is `400`, not a directory listing — this endpoint reads one file, it does not browse a tree. `cixctl files get NAME --path=/some/path [--output=PATH]` is the CLI surface (stdout if `--output=` is omitted).
+`path` must be an absolute, `/`-leading, traversal-free path (no `.`/`..` component, no empty `//` component) — the exact same validation `POST /containers`' own `files[].path` already applies, reused verbatim. In the default mode a path resolving to a directory is `400`, not an implicit directory listing — a client that meant to read a file and hit a directory is told so rather than handed something else. Listing is a **separate, explicit mode**: `?list=1` (any value that is neither empty nor `0`) returns a directory listing of `path` instead of file content. That parameter had been honoured by the daemon since the endpoint was written and was simply absent from `openapi.yaml`; it is declared there now, because an undeclared query parameter is no longer ignored (see below). `cixctl files get NAME --path=/some/path [--output=PATH]` is the CLI surface (stdout if `--output=` is omitted).
+
+## A query parameter this API does not declare is refused
+
+Every operation's query parameters come from `openapi.yaml`, and the dispatcher rejects anything else with `400`, naming the parameter and the operation:
+
+```
+DELETE /v1/pkg/htop?image=jumpbox
+400 {"error": "unknown query parameter \"image\" for deletePkg -- it is not part of this operation's contract and was not applied"}
+```
+
+That example is the reason the check exists ([#282](https://git.home.arpa/itdlabs/cix/issues/282)). `GET`/`DELETE /v1/pkg/{name}` take their target image as part of the path (`{name}@{image}`), never as a query parameter. The router strips everything from `?` onward to match path segments, and nothing afterwards was obliged to look at it again — so `?image=jumpbox` was accepted, dropped, and the operation ran against the **default** image, deleting a package the caller never named and answering `204`. A selector that is silently ignored is worse than one that is rejected: the caller is told the operation succeeded, and it did, on the wrong object.
+
+The spec was already the authority on which routes exist (ADR-0218 generates the dispatch table from it); this extends the identical authority to the parameters those routes accept, so the failure cannot recur on some other endpoint that forgets to read one. Adding a query parameter to an operation therefore means declaring it in `openapi.yaml` first — the same order every other contract change already follows.
 
 ## Writing a file into an existing container, live, without a recreate
 

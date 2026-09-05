@@ -83,6 +83,22 @@ struct api_route {
 	 * never inferred.
 	 */
 	int rest_param;
+	/*
+	 * The query parameters this operation declares, generated from the
+	 * spec (#282). NULL/0 means the operation declares none, and any
+	 * query parameter at all is then refused.
+	 *
+	 * This exists because the matcher above strips the query string to
+	 * split segments and nothing downstream was obliged to look at it
+	 * again, so a parameter the handler did not happen to read was
+	 * accepted and ignored. DELETE /v1/pkg/htop?image=jumpbox deleted
+	 * htop from the DEFAULT image and answered 204. A selector that is
+	 * silently dropped is worse than one that is rejected, because the
+	 * caller is told the operation succeeded and it did -- on the
+	 * wrong object.
+	 */
+	const char *const *query_params;
+	int n_query_params;
 };
 
 /*
@@ -92,5 +108,14 @@ struct api_route {
  */
 int api_route_match(const struct api_route *routes, int n_routes, const char *method,
                     const char *path, char params[][APIROUTE_PARAM_MAX]);
+
+/*
+ * Finds the first query parameter in `path` that the matched route does
+ * not declare (#282). Returns 0 when every parameter is declared, or -1
+ * with the offending name copied into `out`, so the caller can name it
+ * in the 400 rather than issuing a bare refusal.
+ */
+int api_route_query_unknown(const struct api_route *r, const char *path, char *out,
+                            size_t out_size);
 
 #endif /* APIROUTE_H */
