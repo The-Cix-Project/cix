@@ -24,6 +24,24 @@ The evidence was in the output the whole time: the four `depA: autostarted (rest
 
 `test_daemon_net`'s cleanup step deleted four containers fire-and-forget and then deleted the network they used. When that network delete came back 409, nothing in the output named which container had stayed — only the consequence, which is not a report anyone can act on. The four deletes are asserted now. A cleanup step is still a step.
 
+### The jump box gets login(1), and linux-pam shipped a header that could not compile
+
+`login` was the last of the four tools asked for alongside `htop`, `btop` and `screen`. It would not build, and the reason was two layers down.
+
+util-linux's configure reported `security/pam_appl.h... yes`, `security/pam_modules.h... yes`, `security/pam_misc.h... no`, then `error: login selected, but required PAM conversation functions not available` — which reads as PAM being absent entirely. It was not. Building with `keep_on_failure` (ADR-0175) and reading the preserved container directly gave: `pam_misc.h` **200**, `_pam_macros.h` **200**, `libpam_misc.so` **200**, `pam_client.h` **404**, `libpamc.so` **404**.
+
+`security/pam_misc.h`'s very first include is `<security/pam_client.h>`, which lives in `libpamc` — a directory `linux-pam.recipe` never built. So the package had been shipping a header that cannot compile since its first revision, and it stayed invisible for six of them because nothing in this platform links `pam_misc` directly. Only a *compile test* on the header exposes it. `linux-pam 1.6.1-7` builds and installs `libpamc`.
+
+Then `login` failed a second time, with `built without a real libpam dependency -- PAM did not link`. That was the recipe's own gate reporting a false diagnosis with complete confidence: util-linux's automake is non-recursive, so the binary is `./login`, not `login-utils/login`. `readelf` failed on a path that does not exist, `grep` found no `NEEDED` line, and an absent *file* was reported as an absent *dependency*. The real binary, pulled out of the preserved container, carried `libpam.so.0`, `libpam_misc.so.0`, `libc.so.6`. `login 2.42.2-2` fixes the path and reports a missing binary as a missing binary.
+
+`2.42.2-1` also claimed `--with-pam` was "the load-bearing flag". util-linux 2.42.2 does not recognise it and says so on the first line of every build: `configure: WARNING: unrecognized options: --with-pam`. PAM is auto-detected — which is exactly the accident-of-the-environment the same recipe warns about for selinux/audit/systemd. The flag is dropped rather than kept as decoration.
+
+`jumpbox 2.4.0` declares `btop` and `login`, and moves `linux-pam` from the `1.6.1-2` it declared to the `1.6.1-7` it now needs. That also closes a gap the manifest already had: the image was running `1.6.1-6` while declaring `1.6.1-2`, because an ad-hoc install moves the package and leaves the declaration behind, and the manifest is what a re-apply writes.
+
+### Image versions are reclaimable, and 93 of 106 were garbage
+
+`POST /v1/images/gc` (ADR-0209) existed and had never been run. On 192.168.15.95 it collected **93 versions, kept 13, failed 0**: jumpbox 31 → 1, base 21 → 1, toolchain 15 → 1. It completed in under five seconds with no health interruption and a worst loop pass of 632 ms, below the 750 ms slow-pass threshold — btrfs queues subvolume deletion in the kernel rather than doing it inline, so the sweep is not the heavy synchronous I/O it looks like. All five running containers were unaffected.
+
 ### The stall report was showing the oldest records, not the newest (#284)
 
 `GET /v1/system/stalls` reads the tail 256 KB of the record file and tokenises it into a fixed 256-entry array. The loop stopped at the array's bound, which stops at the **front** of the window — so once the file held more than 256 records in that tail, every newer one was never parsed, and the endpoint went on answering 200 with a plausible array of stale records.
