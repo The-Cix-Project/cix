@@ -186,6 +186,46 @@ remain the right defences against the failures they address. This ADR is
 about what happens when a defence does not hold, which on this platform has
 so far meant walking to the hypervisor.
 
+### What `--init-mode` turned out to mean
+
+Building this exposed a conflation that had never mattered before,
+because until now the two halves were always true together.
+
+`--init-mode` means, and still means, "this process is the control plane
+of a real installed host": it is what makes `reboot(2)` the correct way
+to shut down rather than returning from `main()`, and what selects the
+A/B boot confirmation. It ALSO meant "the kernel has just booted and
+nothing has mounted anything yet", which is what `boot_init()` acts on —
+mounting `/proc`, `/sys`, cgroup2 and `/boot`, applying the static IP,
+bind-mounting `resolv.conf`.
+
+A restarted worker is the first thing that is ever the first without
+being the second. Every one of those mounts is already present, `mount(2)`
+answers `EBUSY`, and `mount_or_fail()` treats any failure as fatal — so
+the worker would have exited immediately, five times, and the
+supervisor's own fast-fail path would then have rebooted the machine.
+The recovery mechanism would have been the outage.
+
+The worker cannot tell the two apart: the machine looks identical from
+inside either way. The supervisor is the only thing that knows, so it
+says — `CIX_WORKER_START`, beside `CIX_REAP_FD`. This is the second
+thing the split forces into the interface between the two processes, and
+like the reap channel it is not incidental: a disposable worker needs to
+know it is a replacement.
+
+### The API follows the architecture
+
+`DELETE /v1/system/processes/{pid}` refused this daemon's own pid. That
+was right while `cixd` was pid 1 — killing it was indistinguishable from
+destroying the host, and there was no recovery to return to. The check
+encoded a fact this ADR changes, so the check changes with it: a
+supervised worker may be killed through its own API, and an unsupervised
+one may not, because a `cixd` that is pid 1 killing itself is a panic.
+
+This is also what makes the proof below runnable. The host is
+shell-less; with the old guard there was no way to kill the worker and
+watch it come back.
+
 ## Resolved after the fact: it was hung, not dead
 
 The question left open above — hang or process death — is answered, by the
