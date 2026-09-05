@@ -72,7 +72,7 @@
 pkg_name="cix-aggressive-test"
 pkg_version="1.0.0"
 pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/v2.53.43.tar.gz"
-pkg_sha256="PLACEHOLDER"
+pkg_sha256="4561c0aa6ab1f792e6495f0a69ed8124ffa401b62690abd45b99e8cf6f190f6e"
 pkg_depends=""
 pkg_build_depends="bash coreutils make tcc linux-headers openssl gcc binutils util-linux e2fsprogs btrfs-progs iproute2 ncurses squashfs-tools findutils sed grep gawk"
 pkg_build_image="toolchain"
