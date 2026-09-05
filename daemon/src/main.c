@@ -2045,20 +2045,20 @@ static int boot_init(void)
 	if (mount(CONFIG_DEVICE, CONFIG_DIR, "btrfs", 0, NULL) != 0)
 		mount(CONFIG_DEVICE, CONFIG_DIR, "ext4", 0, NULL);
 
-		/*
-		 * Issue #138: STATE_DIR must exist before the file inside it
-		 * can be created. On an UPGRADED box it always did, because
-		 * migrate_flat_layout_to_grouped() above made it while moving
-		 * real state in -- but that function returns early precisely
-		 * when there is nothing to migrate, which is every FRESH
-		 * install. So the create failed ENOENT, the bind mount failed
-		 * ENOENT, and PUT /v1/system/resolv wrote to a path nothing
-		 * reads: a freshly installed host could never resolve a
-		 * hostname, no matter what an operator configured, while an
-		 * older migrated one worked fine. That asymmetry is what made
-		 * this look like anything other than what it was.
-		 */
-		if (persist_mkdir_p(STATE_DIR) != 0)
+	/*
+	 * Issue #138: STATE_DIR must exist before the file inside it
+	 * can be created. On an UPGRADED box it always did, because
+	 * migrate_flat_layout_to_grouped() above made it while moving
+	 * real state in -- but that function returns early precisely
+	 * when there is nothing to migrate, which is every FRESH
+	 * install. So the create failed ENOENT, the bind mount failed
+	 * ENOENT, and PUT /v1/system/resolv wrote to a path nothing
+	 * reads: a freshly installed host could never resolve a
+	 * hostname, no matter what an operator configured, while an
+	 * older migrated one worked fine. That asymmetry is what made
+	 * this look like anything other than what it was.
+	 */
+	if (persist_mkdir_p(STATE_DIR) != 0)
 			fprintf(stderr, "%s: cannot create state dir for resolv.conf: %s\n", STATE_DIR,
 			        strerror(errno));
 
@@ -4797,8 +4797,9 @@ static void handle_exec_timer_event(struct conn *cc)
 {
 	uint64_t ticks;
 
-	if (read(cc->fd, &ticks, sizeof(ticks)) != (ssize_t)sizeof(ticks))
-		; /* a short read just means no tick to act on */
+	if (read(cc->fd, &ticks, sizeof(ticks)) != (ssize_t)sizeof(ticks)) {
+		/* a short read just means no tick to act on */
+	}
 	exec_job_finish(-1, 1);
 }
 
@@ -30276,7 +30277,6 @@ static int cixd_main(int argc, char **argv)
 	const char *test_bootstrap_toolchain = NULL;
 	int i;
 	int listen_fd;
-	struct cix_epoll_event ev;
 	struct sigaction sa;
 
 	/* Stamped before anything else so a slow startup (image scan, state
@@ -31143,8 +31143,9 @@ static int cixd_main(int argc, char **argv)
 				/* Drain the timerfd, sweep, re-arm -- the same
 				 * self-re-arming shape every other periodic timer
 				 * here uses (issue #81). */
-				if (read(cc->fd, &ticks, sizeof(ticks)) != (ssize_t)sizeof(ticks))
-					; /* a short read just means no tick to act on */
+				if (read(cc->fd, &ticks, sizeof(ticks)) != (ssize_t)sizeof(ticks)) {
+					/* a short read just means no tick to act on */
+				}
 				serverhealth_sweep();
 				arm_serverhealth_timer();
 			} else if (cc->kind == CONN_SERVERHEALTH_PROBE)

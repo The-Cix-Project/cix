@@ -184,7 +184,6 @@ int main(int argc, char **argv)
 	char xorriso_bin[600];
 	char isotools_bin_dir[600];
 	char isotools_lib_dir[600];
-	int i;
 
 	if (argc != 14) {
 		fprintf(stderr,

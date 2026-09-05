@@ -254,7 +254,6 @@ static void append_record(const char *event, long long seconds, pid_t watched)
 	char activity[STALL_ACTIVITY_MAX];
 	char esc_activity[STALL_ACTIVITY_MAX * 2];
 	char esc_wchan[256];
-	int fd;
 	int len;
 
 	read_wchan(watched, wchan, sizeof(wchan));

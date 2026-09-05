@@ -274,7 +274,7 @@ int containerdef_resolve_order(char out_order[][REGISTRY_NAME_MAX])
 void containerdef_write_json_volumes(const struct json_value *root, struct json_writer *w)
 {
 	const struct json_value *jvols;
-	int i;
+	size_t i;
 
 	jw_key(w, "volumes");
 	jw_arr_open(w);
@@ -348,7 +348,7 @@ static void write_stopped_def_json_one(struct container_def *d, struct json_writ
 		const struct json_value *jcmd = json_object_get(root, "cmd");
 
 		if (jcmd != NULL && jcmd->type == JSON_ARRAY) {
-			int k;
+			size_t k;
 
 			for (k = 0; k < jcmd->u.array.count; k++) {
 				const char *s = json_as_string(jcmd->u.array.items[k]);
