@@ -20,6 +20,12 @@ The 1.0-14 log carries three `../libtool: line 6182: find: command not found`, o
 
 The correction is stated in 1.0-15's changelog because 1.0-8 and 1.0-14 are published and immutable (ADR-0107). Correcting the artefact, not just the conversation.
 
+1.0-15 proved the diagnosis exactly: libtool absorbed the archives itself — `libtool absorbed the convenience archives: 412 renamed libcroco symbols in libtextstyle.a`, with no `ar` merge anywhere in the recipe, and zero `find: command not found` in the log. `.libs/libgnuintl.lax/libgnu.a/*.o` now appear on libtool's own `ar cr` line, which is the absorption visible in the command that does it.
+
+Then the same under-declaration surfaced twice more. `gzip` is absent, so `gettext-tools/autotools` died at `Error 127` on `archive.dir.tar.gz` eighteen thousand lines in. `cmp` is absent — from `diffutils` — and that one never failed the build at all: it appeared six times inside `configure`, where `checking for a working dd` and `checking whether perror matches strerror` both answered silently from a tool that is not there. Wrong config answers, no error, no exit code.
+
+So 1.0-16 declares both and gates the class rather than the next instance: `find`, `gzip` and `cmp` are required and checked before anything runs, since their absence produces a wrong build rather than a failed one; a wider list is reported rather than required, so a future gap is named in the log of the build that hits it instead of costing a cycle to find.
+
 **#302** files the general case: `elfcheck.c` gates undefined symbols in ELF objects, but a static archive missing members is not an ELF-level defect and passes. 23 recipes call `./configure` without declaring `findutils` — the candidate set, not the defect set, since only packages that actually build convenience archives are affected.
 
 ### The compiler was putting C source on every command line (#219, #220)
