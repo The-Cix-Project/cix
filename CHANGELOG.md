@@ -2,6 +2,27 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### The compiler was putting C source on every command line (#219, #220)
+
+Two tcc fixes, and both took longer than the code because the symptom pointed away from the cause.
+
+**#219: constructor priority.** rc-20 through rc-26 all failed the recipe's gate at exit 121 -- declaration order -- with the parser and the section-merge already correct. The whole of what was missing is one assignment. `merge_funcattr()` copies `FuncAttr` field by field and carried lines for `func_ctor` and `func_dtor` and none for the new priority, so the constructor *ran* -- which is exactly what made it look like the attribute had been honoured -- while the number was dropped before the emitter could read it. `psec` was therefore always the plain `.init_array` and the merge had nothing suffixed to sort.
+
+Verified before spending a three-stage bootstrap: the pinned tarball was fetched, its sha256 checked against the recipe, the existing patches applied and tcc built locally purely to observe. Without the line the object carries only `.init_array`; with it, `.init_array.00100` and `.init_array.00900` appear and the recipe's own gate exits 0. Then on the box with the real installed compiler: `CTORPRIO_EXIT=0`.
+
+**#220: gettext, which is not about libtextstyle.** gettext had never been built at all, and it fails long before the `libtextstyle_cr_*` link the issue is titled for:
+
+```
+/bin/sh: syntax error near unexpected token `('
+... tcc ... -DDEPENDS_ON_LIBICONV=1   unsigned short __builtin_bswap16(unsigned short); ... -c -o ...
+```
+
+Three C declarations were sitting inside a compiler flag variable. `tccdefs.h` is injected as a command-line prelude, so appending our `__builtin_bswap*` declarations to the end of it put them outside the `#ifndef __TCC_PP__` region, and **every `-E` output carried three lines of C**. gettext's configure captures preprocessed output into `CPPFLAGS`. Measured on the box: `leaked declarations in -E: 3` before, `0` after.
+
+**I was wrong twice on the way, and both are corrected on the issue rather than quietly dropped.** First I asserted this was upstream behaviour and not ours, citing upstream's own declarations in the same file -- reasoning from source rather than measuring. Building the pinned tcc locally disproved it: upstream emits 0, ours emitted 3. Then I assumed the fix was to move them inside the `__TCC_PP__` guard, and two placements that looked inside it still emitted 3. Bisection found the region that works: beside upstream's own builtin declarations, before its `#undef __BUILTIN_EXTERN`.
+
+**A watcher script also lied.** It matched `installed*` against a package record that still held the *previous* version, and reported a successful build for one that had actually failed with `checksum mismatch (source 0)`. It now requires the version to match what was requested. The failed entry prompted a check rather than an assumption, and the `toolchain` image was confirmed undamaged -- tcc still in its manifest, `tcc -v` exit 0 from a real container.
+
 ### A slice reached a real build broken, and the fix is a check that would have said so
 
 v2.53.69 failed to link: `unresolved reference to dhcp_apply_and_maybe_restart`. `api_network.c` carried a **local** forward declaration of it — not from a shared header — while the definition stayed `static` in `main.c`. Neither file had anything to disagree with, both compiled clean under `-Wall -Werror`, and only the host link found it, one full build cycle later.
