@@ -2,6 +2,18 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### `_Static_assert` could not hold a 64-bit constant (#220)
+
+`do_Static_assert()` evaluated its condition with `expr_const()` — the 32-bit wrapper, which computes the value as `int64_t` and then raises `constant exceeds 32 bit` if it doesn't fit an `int` or `unsigned`. That diagnostic is right for an array size or a bit-field width and wrong here: C requires only an *integer constant expression*, with no width limit.
+
+gnulib writes assertions that exceed it routinely. gettext's `gnulib-tests/nanosleep.c:60` is `static_assert (TYPE_MAXIMUM (time_t) / 24 / 24 / 60 / 60)` — 4447999631970 on a 64-bit `time_t` — and it stopped the build *after* all four gettext tools had already linked.
+
+Measured, not reasoned about: the message exists in exactly one place (`tccgen.c:6805`, inside `expr_const()`), and `do_Static_assert()` is its only caller on that line. A one-argument `_Static_assert` with that value fails on an unpatched build of the pinned snapshot and passes once the call becomes `expr_const64()`, and upstream's own test suite passes unchanged with the patch applied.
+
+The reason this never surfaced in Cix's own code is that glibc's `<sys/cdefs.h>` macro-defines `_Static_assert` whenever `__STDC_VERSION__` is below C11 — so TCC's keyword path wasn't reached at all until rc-17 made the compiler report 201112. The fix that exposed it.
+
+Gated both ways at the first build and at stage 3: a 64-bit true assertion must compile — including one whose low 32 bits are all zero, which a naive `int` truncation would read as false — and a false assertion must still be rejected.
+
 ### Eight revisions blamed the compiler; the build environment had no `find` (#220, #302)
 
 gettext's convenience archives were never absorbed into `libtextstyle.a`, and revisions 1.0-8 through 1.0-14 attributed that in turn to TCC and to `--disable-shared`. Both attributions are wrong, and both were published.
