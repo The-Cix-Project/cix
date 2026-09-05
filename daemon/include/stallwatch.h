@@ -35,13 +35,7 @@
  * not be started (the daemon carries on regardless: a diagnostic that
  * refuses to let the system run is not a diagnostic).
  */
-/*
- * ADR-0246: `supervised` says whether a supervisor (cix-init) is running
- * as pid 1 and can be asked to restart a wedged worker. When it is, a
- * sustained service stall sends SIGUSR1 to pid 1 in addition to being
- * recorded; when it is not, the watchdog only records, as before.
- */
-int stallwatch_start(const char *records_path, int supervised);
+int stallwatch_start(const char *records_path);
 
 /*
  * Where the watchdog should ask whether the daemon is serving (#247).

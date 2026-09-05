@@ -166,16 +166,6 @@ struct registry_entry {
 	 */
 	char lowerdir[PATH_MAX];
 	struct container_handle handle;
-	/*
-	 * ADR-0246: 1 when this entry was re-adopted at worker startup
-	 * rather than started by this worker. An adopted container is not
-	 * this process's child -- it was reparented to the supervisor when
-	 * the previous worker died -- so its exit cannot be collected with
-	 * waitid() here and arrives over the supervisor's reap channel
-	 * instead. Every other field means exactly what it does for a
-	 * container this worker started.
-	 */
-	int adopted;
 	int running;       /* 1 while the container's process is alive */
 	int exit_status;   /* valid once running == 0; raw waitid() si_status */
 	/*
@@ -472,14 +462,10 @@ enum registry_error registry_create(const char *name, const char *image,
                                      const char file_paths[][CONTAINER_FILE_PATH_MAX],
                                      int file_count, const char *disk_name,
                                      const char dns_server_ips[][RESOLV_IP_STRLEN],
-                                     int dns_server_count, int adopt_if_running,
+                                     int dns_server_count,
                                      struct registry_entry **out);
 
 struct registry_entry *registry_find(const char *name);
-
-/* ADR-0246: lookup by the host pid of the container's init -- the only
- * identifier the supervisor's reap records carry. */
-struct registry_entry *registry_find_by_pid(pid_t pid);
 
 /*
  * Record what consoles a container declares (issue #248).
@@ -583,14 +569,6 @@ int registry_ip_holder(uint32_t candidate_be, char *out_name, size_t out_name_si
  * exit_status) and would otherwise keep firing EPOLLIN forever.
  */
 void registry_mark_exited(struct registry_entry *entry);
-
-/*
- * ADR-0246: record an exit whose status was collected by someone else --
- * the supervisor, for a container this worker re-adopted rather than
- * started. Same bookkeeping registry_mark_exited() does once it has
- * reaped one of its own children; the two share this implementation.
- */
-void registry_mark_exited_with(struct registry_entry *entry, int status, int sig);
 
 /*
  * Removes name from the table. If still running, sends SIGKILL via

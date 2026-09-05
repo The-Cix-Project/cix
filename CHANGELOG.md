@@ -2,6 +2,22 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### The supervisor is removed, not merely unused (#297, #298, #299)
+
+ADR-0246's `cix-init` was superseded by ADR-0247 the day the box disproved it: the supervisor did everything it was designed to do, and the worker could not come up a second time, because the whole `--init-mode` startup path assumes a fresh kernel. The boot entry went back to `init=/bin/cixd` immediately.
+
+The implementation stayed. `cix-init` was still built by `make`, still staged into every bootroot by `mkbootroot`, still copied into `PKG_DESTDIR` by the recipe — shipped to every host and executed on none, with three known defects filed against it: a worker restart orphaning build containers (#297), a slowly crash-looping worker never tripping the fast-fail rollback (#298), and a status port binding `INADDR_ANY` unauthenticated (#299).
+
+That is a parallel implementation and a stop-gap in one. It could not be reasoned about as live or relied on as dead, and its three issues could be neither honestly fixed nor honestly closed while it sat there — fixing bugs in code that never runs is work that buys nothing, and closing them while the code ships is a false record.
+
+Removed: `init/src/cix_init.c`, `include/supervisor.h`, the reap channel with its `CONN_SUPERVISOR_REAP` connection kind and `handle_supervisor_reap_event()`, `container_adopt()` and its cgroup/`NSpid` helpers, the registry's `adopted` field along with `registry_find_by_pid()` and the `registry_mark_exited_with()` split it existed for, `stallwatch`'s `SIGUSR1`-to-pid-1 restart request, `hostproc_kill()`'s supervised self-kill allowance, the `mkbootroot` staging, and the `Makefile` target.
+
+`container_adopt()` went with it rather than being kept for later. Its only caller passed `supervisor_reap_available()`, so with no supervisor it could never run — and the property that made adoption legitimate at all was that *something else* was reaping those containers and would report their exits. Without that, an adopted container's exit is unobservable: `waitid()` on a process that is not your child yields `ECHILD`, and the container would sit at `running=1` for ever.
+
+`hostproc_kill()` now refuses this daemon's own pid unconditionally again. `openapi.yaml`, `docs/api/README.md` and `docs/architecture/architecture.svg` are corrected in the same change — the diagram had `cix-init` as PID 1 in three places and the API docs described a self-kill that is no longer permitted.
+
+**The prerequisite for trying again is unchanged and now unencumbered:** `--init-mode` startup has to become idempotent first. Rebuilding a supervisor against an idempotent startup is a smaller job than keeping a non-working one alive against a non-idempotent one.
+
 ### A query parameter this API does not declare is refused, not ignored (#282)
 
 `DELETE /v1/pkg/htop?image=jumpbox` returned `204` and deleted `htop` from the **default** image. `htop@jumpbox` was untouched. `GET`/`DELETE /v1/pkg/{name}` take their target image as part of the path (`{name}@{image}`), and the `?image=` the caller wrote was accepted, dropped, and never mentioned again — so the operation ran against an image the caller never named and reported success.

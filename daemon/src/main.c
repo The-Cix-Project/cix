@@ -56,7 +56,6 @@
 #include "pkg.h"
 #include "quotamap.h"
 #include "registry.h"
-#include "supervisor.h"
 #include "containerpath.h"
 #include "targz.h"
 #include "rtnetlink.h"
@@ -1281,15 +1280,7 @@ enum conn_kind {
 	 * immediately rather than dispatching on any of their other,
 	 * already-invalid fields.
 	 */
-	CONN_DEAD,
-	/*
-	 * ADR-0246: the supervisor's reap channel. Read-only, one record
-	 * per child cix-init reaped, including children of a previous
-	 * worker that this one has re-adopted -- whose exits cannot be
-	 * collected here with waitid(), because they are the supervisor's
-	 * children now and not ours.
-	 */
-	CONN_SUPERVISOR_REAP
+	CONN_DEAD
 };
 
 struct conn {
@@ -2950,28 +2941,25 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
 		         "version %ld\n"
 		         "linux /cix-bzImage-%s\n"
 		         /*
-		          * ADR-0246: back to cixd as init, deliberately.
+		          * cixd is init (ADR-0247).
 		          *
-		          * cix-init is built and staged, and it works: it came
-		          * up as pid 1 on 192.168.15.95, spawned the worker,
-		          * answered its out-of-band status port, and restarted
-		          * the worker on demand. What does NOT work is the
-		          * worker coming up a second time. The whole
-		          * --init-mode startup path assumes a fresh kernel --
-		          * not just boot_init()'s mounts, but diskrole_init(),
-		          * diskformat_remount_present_role_disks(),
-		          * network_init() and a dozen boot_subsystem_init()
-		          * calls besides. A restarted worker wedged before
-		          * creating its listener, so the recovery mechanism
-		          * produced a worse outage than the failure it was
-		          * recovering from.
+		          * ADR-0246 tried a supervisor above it, and the box
+		          * disproved it: cix-init came up as pid 1, spawned
+		          * the worker, answered its out-of-band status port
+		          * and restarted the worker on demand -- and the
+		          * worker could not come up a SECOND time, because the
+		          * whole --init-mode startup path assumes a fresh
+		          * kernel (not merely boot_init()'s mounts, but
+		          * diskrole_init(), network_init() and a dozen
+		          * boot_subsystem_init() calls besides). The restarted
+		          * worker wedged before creating its listener, so the
+		          * recovery mechanism produced a worse outage than the
+		          * failure it existed to recover from.
 		          *
 		          * A restart path that cannot restart is worse than
-		          * none, because it invites the kill. So the machine
-		          * boots the worker directly until the worker is
-		          * genuinely restartable, and the real work moves to
-		          * ADR-0246 item 4: a reactor that cannot block in the
-		          * first place.
+		          * none, because it invites the kill. The defence is
+		          * that the reactor does not block in the first place,
+		          * which test_blocking_waits enforces per file.
 		          */
 		         "options %s%sroot=%s rw panic=10 init=/bin/cixd -- --init-mode "
 		         "--slot=%s --bind=%s\n",
@@ -8880,43 +8868,6 @@ static void handle_hostproc_list(int fd)
 	jw_free(&w);
 }
 
-/*
- * ADR-0246: this worker's end of the supervisor's reap channel, or -1
- * when there is no supervisor (a worker started directly -- the test
- * suite does this, and so does anyone running cixd by hand).
- *
- * Its presence is what makes re-adoption legitimate. A worker may only
- * adopt a container it cannot reap if something else is reaping it and
- * will say so; without this channel an adopted container's exit would
- * be unobservable, so adoption is not attempted at all and every
- * container is started fresh, exactly as before this ADR.
- */
-static int g_supervisor_reap_fd = -1;
-
-static int supervisor_reap_available(void)
-{
-	return g_supervisor_reap_fd >= 0;
-}
-
-/*
- * Which start this worker is: 1 for the first after a kernel boot, more
- * on a supervisor restart, and 1 when unsupervised (nobody has restarted
- * anything, so the once-per-boot work is genuinely still to do).
- */
-static int supervisor_worker_start(void)
-{
-	const char *env = getenv(SUPERVISOR_WORKER_START_ENV);
-	char *end = NULL;
-	long v;
-
-	if (env == NULL || *env == '\0')
-		return 1;
-	v = strtol(env, &end, 10);
-	if (end == env || *end != '\0' || v < 1)
-		return 1;
-	return (int)(v > 1000000 ? 1000000 : v);
-}
-
 static void handle_hostproc_kill(int fd, const char *pid_str)
 {
 	char *endptr;
@@ -8929,7 +8880,7 @@ static void handle_hostproc_kill(int fd, const char *pid_str)
 		return;
 	}
 
-	herr = hostproc_kill((pid_t)pid, supervisor_reap_available());
+	herr = hostproc_kill((pid_t)pid);
 	switch (herr) {
 	case HOSTPROC_OK:
 		http_set_blocking(fd);
@@ -8987,78 +8938,10 @@ static void handle_get_one(int fd, const char *name)
 	jw_free(&w);
 }
 
-static void supervisor_reap_channel_init(void)
-{
-	const char *env = getenv(SUPERVISOR_REAP_FD_ENV);
-	struct cix_epoll_event ev;
-	struct conn *cc;
-	char *end = NULL;
-	long fd;
-	int fl;
-
-	if (env == NULL || *env == '\0')
-		return;
-
-	fd = strtol(env, &end, 10);
-	if (end == env || *end != '\0' || fd < 0 || fd > 65535) {
-		logstore_write("cixd", "error",
-		                "supervisor reap channel: %s is not a usable fd number (%s)",
-		                SUPERVISOR_REAP_FD_ENV, env);
-		return;
-	}
-	/*
-	 * Confirm the descriptor is really open before trusting it -- the
-	 * environment is inherited and an incorrect value here would
-	 * otherwise put a stray fd into the event loop.
-	 */
-	fl = fcntl((int)fd, F_GETFL, 0);
-	if (fl < 0) {
-		logstore_write("cixd", "error",
-		                "supervisor reap channel: fd %ld is not open (%s)", fd,
-		                strerror(errno));
-		return;
-	}
-	(void)fcntl((int)fd, F_SETFL, fl | O_NONBLOCK);
-	(void)fcntl((int)fd, F_SETFD, FD_CLOEXEC);
-
-	cc = calloc(1, sizeof(*cc));
-	if (cc == NULL) {
-		perror("malloc (supervisor reap conn)");
-		abort();
-	}
-	cc->kind = CONN_SUPERVISOR_REAP;
-	cc->fd = (int)fd;
-
-	memset(&ev, 0, sizeof(ev));
-	ev.events = EPOLLIN;
-	ev.data.ptr = cc;
-	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
-		perror("epoll_ctl ADD supervisor reap fd");
-		free(cc);
-		return;
-	}
-	g_supervisor_reap_fd = (int)fd;
-	logstore_write("cixd", "info",
-	                "supervisor reap channel attached on fd %d -- running containers "
-	                "can survive a control-plane restart", (int)fd);
-}
-
 static void register_container_pidfd(struct registry_entry *entry)
 {
 	struct conn *cc;
 	struct cix_epoll_event ev;
-
-	/*
-	 * ADR-0246: an adopted container's exit is reported by the
-	 * supervisor over the reap channel, and must be learned there and
-	 * only there. Registering its pidfd as well would fire this
-	 * handler too, running the exit policy a second time -- once with
-	 * no status at all, because waitid() on a process that is not our
-	 * child yields nothing. The pidfd itself stays open: it is still
-	 * how the container is signalled.
-	 */
-	if (entry->adopted)
-		return;
 
 	cc = calloc(1, sizeof(*cc));
 	if (cc == NULL) {
@@ -13240,7 +13123,6 @@ static void workload_cgroup_path(const char *name, char *out, size_t out_size)
 }
 
 static int create_container_from_body(const char *body, size_t body_len,
-                                       int adopt_if_running,
                                        struct registry_entry **out_entry,
                                        char out_restart_policy[16], int *out_restart_delay_seconds,
                                        char out_depends_on[][REGISTRY_NAME_MAX],
@@ -15033,7 +14915,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	rerr = registry_create(name, image, resolved_image_version, &spec, net_attachments, net_count,
 	                        ip_forward,
 	                        device_attachments, device_count, file_paths, file_count, disk_name,
-	                        dns_server_ips, dns_server_count, adopt_if_running, &entry);
+	                        dns_server_ips, dns_server_count, &entry);
 	/* Observability for the ADR-0207 default flip: which isolation mode
 	 * this container actually got is a fact operators and tests need
 	 * readable back, not inferred. */
@@ -15403,7 +15285,7 @@ static int create_container_persisted(const char *body, size_t body_len,
 		json_free(root);
 	}
 
-	status = create_container_from_body(body, body_len, 0, &entry, restart_policy,
+	status = create_container_from_body(body, body_len, &entry, restart_policy,
 	                                     &restart_delay_seconds, depends_on, &depends_on_count,
 	                                     &has_readiness, &readiness_tcp_port,
 	                                     &readiness_timeout_seconds, &follow_rolling,
@@ -15836,7 +15718,7 @@ static void finalize_container_storage_migration(const char *name)
 			char depends_on[CONTAINERDEF_MAX_DEPENDS][REGISTRY_NAME_MAX];
 			char err_msg[256];
 
-			if (create_container_from_body(def->body, def->body_len, 0, &entry, restart_policy,
+			if (create_container_from_body(def->body, def->body_len, &entry, restart_policy,
 			                                &restart_delay_seconds, depends_on, &depends_on_count,
 			                                &has_readiness, &readiness_tcp_port,
 			                                &readiness_timeout_seconds, &follow_rolling,
@@ -15865,7 +15747,7 @@ static void finalize_container_storage_migration(const char *name)
 		char depends_on[CONTAINERDEF_MAX_DEPENDS][REGISTRY_NAME_MAX];
 		char err_msg[256];
 
-		if (create_container_from_body(def->body, def->body_len, 0, &entry, restart_policy,
+		if (create_container_from_body(def->body, def->body_len, &entry, restart_policy,
 		                                &restart_delay_seconds, depends_on, &depends_on_count,
 		                                &has_readiness, &readiness_tcp_port,
 		                                &readiness_timeout_seconds, &follow_rolling,
@@ -15994,7 +15876,7 @@ static void handle_start(int fd, const char *name)
 		return;
 	}
 
-	status = create_container_from_body(def->body, def->body_len, 0, &entry, restart_policy,
+	status = create_container_from_body(def->body, def->body_len, &entry, restart_policy,
 	                                     &restart_delay_seconds, depends_on, &depends_on_count,
 	                                     &has_readiness, &readiness_tcp_port,
 	                                     &readiness_timeout_seconds, &follow_rolling,
@@ -25024,13 +24906,8 @@ static enum registry_error spawn_pkgbuild_container(int chain_idx, const char *w
 	 * change to how these specs are built.
 	 */
 	spec->userns_enabled = 0;
-	/*
-	 * adopt_if_running is 0: a build container is created fresh every
-	 * time, under a name this daemon has just claimed, so there is
-	 * never a previous incarnation of it to adopt.
-	 */
 	rerr = registry_create(build_container_name, "pkgbuild", "", spec, NULL, 0, 0, NULL, 0, NULL,
-	                        0, NULL, NULL, 0, 0, &entry);
+	                        0, NULL, NULL, 0, &entry);
 
 	/*
 	 * The child (if registry_create() actually forked one) already
@@ -29109,7 +28986,7 @@ static void handle_restart_timer_event(struct conn *cc)
 		int has_follow_rolling_jitter, follow_rolling_jitter_seconds;
 		char err_msg[256];
 		int status = create_container_from_body(
-		    def->body, def->body_len, 0, &entry, restart_policy, &restart_delay_seconds, depends_on,
+		    def->body, def->body_len, &entry, restart_policy, &restart_delay_seconds, depends_on,
 		    &depends_on_count, &has_readiness, &readiness_tcp_port, &readiness_timeout_seconds,
 		    &follow_rolling, &has_follow_rolling_jitter, &follow_rolling_jitter_seconds, err_msg,
 		    sizeof(err_msg));
@@ -29248,7 +29125,7 @@ static void handle_rolling_restart_timer_event(struct conn *cc)
 			int has_follow_rolling_jitter, follow_rolling_jitter_seconds;
 			char err_msg[256];
 			int status = create_container_from_body(
-			    def->body, def->body_len, 0, &entry, restart_policy, &restart_delay_seconds,
+			    def->body, def->body_len, &entry, restart_policy, &restart_delay_seconds,
 			    depends_on, &depends_on_count, &has_readiness, &readiness_tcp_port,
 			    &readiness_timeout_seconds, &follow_rolling, &has_follow_rolling_jitter,
 			    &follow_rolling_jitter_seconds, err_msg, sizeof(err_msg));
@@ -29378,15 +29255,10 @@ static void apply_rolling_container_restarts(void)
 }
 
 /*
- * ADR-0246: everything that must happen once a container is known to
- * have exited -- restart policy, chaining, teardown bookkeeping --
- * independent of HOW the exit was learned.
- *
- * There are two ways now. A container this worker started is its own
- * child and its exit arrives as a pidfd event. A container this worker
- * ADOPTED at startup belongs to the supervisor, which reaps it and
- * forwards the status over the reap channel. Both converge here rather
- * than growing a second copy of 190 lines of policy that would drift.
+ * Everything that must happen once a container is known to have exited
+ * -- restart policy, chaining, teardown bookkeeping -- kept separate
+ * from the pidfd event that learns the exit, so the policy reads as one
+ * thing rather than as a tail of the event handler.
  */
 static void container_exit_finalize(struct registry_entry *entry)
 {
@@ -29594,67 +29466,6 @@ static void handle_container_event(struct conn *cc)
 
 	container_exit_finalize(entry);
 }
-
-/*
- * ADR-0246: the supervisor told us one of its children exited.
- *
- * Every child cix-init reaps is forwarded here unfiltered -- orphaned
- * run_cmd() children, stallwatch, a previous worker -- because deciding
- * which pids matter needs the registry, which the supervisor
- * deliberately does not have. Almost all of these records are for
- * processes this worker knows nothing about, and dropping them is the
- * expected case, not an error.
- *
- * The ones that matter are re-adopted containers. Their exits cannot be
- * learned any other way: waitid() here fails with ECHILD because they
- * are the supervisor's children, so without this record the container
- * would sit at running=1 forever, never restart under its own policy,
- * and report a null exit status with no reason.
- */
-static void handle_supervisor_reap_event(struct conn *cc)
-{
-	for (;;) {
-		struct supervisor_reap_record rec;
-		struct registry_entry *entry;
-		ssize_t n = recv(cc->fd, &rec, sizeof(rec), MSG_DONTWAIT);
-		int status, sig;
-
-		if (n < 0) {
-			if (errno == EINTR)
-				continue;
-			return; /* EAGAIN: drained */
-		}
-		if (n == 0) {
-			/*
-			 * The supervisor closed the channel, which it only does
-			 * by dying -- and if pid 1 died the kernel has already
-			 * panicked. Nothing useful to do but stop reading.
-			 */
-			cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
-			logstore_write("cixd", "error",
-			                "supervisor reap channel closed -- adopted container exits "
-			                "can no longer be observed");
-			return;
-		}
-		if (n != (ssize_t)sizeof(rec))
-			continue; /* a short record cannot be interpreted; skip it */
-
-		entry = registry_find_by_pid((pid_t)rec.pid);
-		if (entry == NULL || !entry->adopted || !entry->running)
-			continue;
-
-		if (rec.exit_kind == CLD_EXITED) {
-			status = (int)rec.exit_value;
-			sig = 0;
-		} else {
-			status = (int)rec.exit_value;
-			sig = (int)rec.exit_value;
-		}
-		registry_mark_exited_with(entry, status, sig);
-		container_exit_finalize(entry);
-	}
-}
-
 
 /*
  * What to do with the result of a fetch or a composition step (#238).
@@ -30356,8 +30167,7 @@ static void containerdef_autostart_all(void)
 			continue;
 		}
 
-		status = create_container_from_body(def->body, def->body_len,
-		                                     supervisor_reap_available(), &entry, restart_policy,
+		status = create_container_from_body(def->body, def->body_len, &entry, restart_policy,
 		                                     &restart_delay_seconds, depends_on, &depends_on_count,
 		                                     &has_readiness, &readiness_tcp_port,
 		                                     &readiness_timeout_seconds, &follow_rolling,
@@ -30367,12 +30177,6 @@ static void containerdef_autostart_all(void)
 			fprintf(stderr, "%s: autostart failed: %s\n", order[i], err_msg);
 			continue;
 		}
-		if (entry != NULL && entry->adopted) {
-			logstore_write("cixd", "info",
-			                "container %s was already running (pid %ld) and was adopted "
-			                "rather than restarted", order[i], (long)entry->handle.pid);
-		}
-
 		/* create_container_from_body() already registered entry's own
 		 * pidfd with epoll -- exactly the same shape POST /v1/containers'
 		 * own success path relies on, no separate call needed here. */
@@ -30534,23 +30338,10 @@ static int cixd_main(int argc, char **argv)
 		 * worker.
 		 *
 		 * It mounts /proc, /sys, cgroup2 and /boot, applies the static
-		 * IP and bind-mounts resolv.conf. On a restart every one of
-		 * those is already done and mount(2) returns EBUSY, which
-		 * mount_or_fail() treats as fatal -- so a restarted worker
-		 * would exit here immediately, every time, and the
-		 * supervisor's fast-fail path would reboot the machine. The
-		 * recovery mechanism would be the outage.
-		 *
-		 * The worker cannot detect this itself; the machine looks the
-		 * same from inside either way. The supervisor knows and says
-		 * so in the environment.
+		 * IP and bind-mounts resolv.conf -- the once-per-boot
+		 * preparation of a kernel that has just started.
 		 */
-		if (supervisor_worker_start() > 1) {
-			printf("init-mode: worker start %d -- kernel already prepared, "
-			       "skipping boot_init()\n",
-			       supervisor_worker_start());
-			fflush(stdout);
-		} else if (boot_init() != 0) {
+		if (boot_init() != 0) {
 			return 1;
 		}
 	}
@@ -31179,15 +30970,6 @@ static int cixd_main(int argc, char **argv)
 			fprintf(stderr, "confirm_boot failed for slot %s (continuing anyway)\n", slot);
 	}
 
-	/*
-	 * ADR-0246: attach the supervisor's reap channel BEFORE autostart.
-	 * Autostart is what re-adopts containers that outlived the previous
-	 * worker, and it may only do that when something is reaping them on
-	 * our behalf -- so the channel has to exist before the decision is
-	 * made, not after.
-	 */
-	supervisor_reap_channel_init();
-
 	containerdef_autostart_all();
 
 	/*
@@ -31242,7 +31024,7 @@ static int cixd_main(int argc, char **argv)
 	 * own silence, which is exactly why a real multi-minute outage on
 	 * the production box left no trace anywhere.
 	 */
-	stallwatch_start(STALLWATCH_RECORDS_PATH, supervisor_reap_available());
+	stallwatch_start(STALLWATCH_RECORDS_PATH);
 
 	/*
 	 * Responses are buffered against their connection and drained on
@@ -31307,8 +31089,6 @@ static int cixd_main(int argc, char **argv)
 				accept_loop(cc);
 			else if (cc->kind == CONN_CONTAINER)
 				handle_container_event(cc);
-			else if (cc->kind == CONN_SUPERVISOR_REAP)
-				handle_supervisor_reap_event(cc);
 			else if (cc->kind == CONN_PKG_FETCH)
 				handle_pkg_fetch_event(cc);
 			else if (cc->kind == CONN_PKG_BUILDENV)
