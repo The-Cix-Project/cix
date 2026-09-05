@@ -478,4 +478,17 @@ void ldap_ensure_service_bind_account(void);
 int ldap_user_count(void);
 int ldap_group_count(void);
 
+/*
+ * The client URI every container should authenticate against: the
+ * explicitly configured list when there is one (filtered, not passed
+ * through -- issue #84), otherwise the registered server containers'
+ * own addresses, in-service ones first.
+ *
+ * Here rather than in main.c because it is ldap policy that happens to
+ * need the registry to turn container names into addresses, and this
+ * module already depends on the registry for exactly that. Returns 1
+ * when out holds a usable URI, 0 when there is nothing to point at.
+ */
+int ldap_effective_client_uri(char *out, size_t out_size);
+
 #endif /* LDAP_SERVER_H */
