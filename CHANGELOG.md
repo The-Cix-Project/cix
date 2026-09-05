@@ -54,7 +54,19 @@ The PTY is allocated from the **host's** devpts and the slave fd is handed to th
 
 Ruled out by measurement rather than left as suspects: the binary runs (`login from util-linux 2.42.2`, rc 0), the session is root, `/etc/pam.d/login` is staged and correct, and `/dev/ptmx` is present. The same class of failure covers `agetty`, `who`, `w`, `wall`, `script`, and anything writing utmp.
 
-`shell` is first so the default console works. `login` stays declared, which makes it the regression test: when it prints a prompt instead of closing after five seconds, #290 is fixed.
+`shell` was first while #290 stood, so the default console kept working. With the fix deployed, `jump` 1.4.0 puts `login` back where it was asked for — first, and therefore the default — with `shell` still selectable at `?console=shell`.
+
+Verified end to end on the live box:
+
+```
+jump login:                    <- the default console, no selector
+nosuchuser-probe
+Password:                      <- echo off; the PAM conversation is running
+Login incorrect                <- pam_ldap -> nslcd -> LDAP answered
+jump login:
+```
+
+A concern raised while writing the fix turned out to be unfounded and is recorded as such rather than left hanging: the slave is owned by host root while `jump` runs under a user namespace, so `login`'s own `fchown` of the tty looked like the next obstacle. It is not — measured, not predicted.
 
 ### An unset {{LDAP:URI}} left the jump box unable to resolve SSH keys
 
