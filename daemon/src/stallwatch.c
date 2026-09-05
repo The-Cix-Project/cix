@@ -955,6 +955,36 @@ void stallwatch_write_loop_json(struct json_writer *w)
  * three facts in the same order, so the two lines can be compared by
  * eye.
  */
+/*
+ * Byte offset of the first NUL in the record file, or -1 if there is
+ * none (#229). Read in bounded chunks rather than slurped: this is
+ * called from a GET handler on the event loop, and the file is
+ * append-only and unbounded.
+ */
+static long long records_first_nul_offset(void)
+{
+	char chunk[8192];
+	long long off = 0;
+	size_t n;
+	FILE *f = fopen(g_records_path, "rb");
+
+	if (f == NULL)
+		return -1;
+	while ((n = fread(chunk, 1, sizeof(chunk), f)) > 0) {
+		size_t i;
+
+		for (i = 0; i < n; i++) {
+			if (chunk[i] == '\0') {
+				fclose(f);
+				return off + (long long)i;
+			}
+		}
+		off += (long long)n;
+	}
+	fclose(f);
+	return -1;
+}
+
 void stallwatch_write_store_json(struct json_writer *w)
 {
 	struct stat st;
@@ -971,6 +1001,15 @@ void stallwatch_write_store_json(struct json_writer *w)
 	jw_int(w, have ? (long long)st.st_ino : -1);
 	jw_key(w, "size_bytes");
 	jw_int(w, have ? (long long)st.st_size : -1);
+	/*
+	 * Where the first NUL is, if there is one (#229). Surviving the
+	 * damage is not the same as reporting it: a zero run means some
+	 * records really were lost to whatever reset the machine, and an
+	 * operator should be able to see that rather than infer it from a
+	 * gap in timestamps.
+	 */
+	jw_key(w, "first_nul_offset");
+	jw_int(w, have ? records_first_nul_offset() : -1);
 	jw_obj_close(w);
 }
 
@@ -1039,13 +1078,50 @@ void stallwatch_write_json(struct json_writer *w, int limit)
 	 *
 	 * A report that drops what it cannot fit must drop the oldest.
 	 */
-	for (p = strtok(buf, "\n"); p != NULL; p = strtok(NULL, "\n")) {
-		if (p[0] != '{')
-			continue;
-		lines[head] = p;
-		head = (head + 1) % STALL_REPORT_MAX;
-		if (count < STALL_REPORT_MAX)
-			count++;
+	/*
+	 * Split by LENGTH, never with strtok (#229).
+	 *
+	 * strtok() treats this buffer as a C string, so the first NUL byte
+	 * in it ends the scan -- permanently, and silently. Every record
+	 * after that point becomes unreachable while the file goes on
+	 * growing, which presents as a report frozen at one timestamp
+	 * forever: exactly what was measured on 192.168.15.95, where the
+	 * newest record stayed 2026-09-01 15:08:03 across four days while
+	 * the writer logged its own appends to the same dev/inode with a
+	 * rising size, and none of the slow-pass or service-stall events
+	 * it had been emitting since appeared at all.
+	 *
+	 * A NUL run is not exotic here. This file is appended to by a
+	 * watchdog whose whole purpose is to be running when the machine
+	 * is about to be reset by hand, and a reset mid-append leaves the
+	 * size updated with the block still zeroes. The one file that must
+	 * survive a hard reset is the one most likely to carry a zero
+	 * tail from it.
+	 *
+	 * So the scan is bounded by size, a NUL ends a line the same way a
+	 * newline does, and the "starts with {" check already present
+	 * discards whatever the damaged region leaves behind. Nothing
+	 * after it is lost.
+	 */
+	{
+		long start = 0;
+		long pos;
+
+		for (pos = 0; pos <= size; pos++) {
+			if (pos < size && buf[pos] != '\n' && buf[pos] != '\0')
+				continue;
+			if (pos > start) {
+				buf[pos] = '\0';
+				p = buf + start;
+				if (p[0] == '{') {
+					lines[head] = p;
+					head = (head + 1) % STALL_REPORT_MAX;
+					if (count < STALL_REPORT_MAX)
+						count++;
+				}
+			}
+			start = pos + 1;
+		}
 	}
 	/*
 	 * Newest first: the record anyone wants is the last one written.

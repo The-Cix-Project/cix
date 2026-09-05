@@ -19,6 +19,25 @@ One allowlist serves both paths — the create and the recipe's own add-time che
 
 The regression test goes in `test_container_recipe.c`, at recipe-**add** time: that is where issue #68 puts the check, so a field the catalog will not accept is refused immediately rather than sitting latent until a future apply silently drops it. It is in the selftest set, so it actually runs — unlike `test_pkg`, which is not (see #302 below).
 
+### A single NUL byte hid four days of stall records (#229)
+
+`stallwatch_write_json()` split the record file with `strtok()`, which treats the buffer as a C string. The first NUL in it ended the scan — permanently and silently. Every record after that point was unreachable while the file went on growing, which presents as a report frozen at one timestamp forever.
+
+**And I got this wrong first.** Having seen the writer logging appends while the reader returned records four days old, and the returned records containing none of the event types the writer had been emitting for days, I concluded the two were on different files and said so on the issue. Then the `store` object shipped and answered it directly:
+
+```json
+"store": {"path": "/config/state/control_plane_stalls.jsonl", "exists": true,
+          "dev": 65028, "inode": 22, "size_bytes": 197904}
+```
+
+`dev 65028 ino 22` — byte for byte the same file the writer names in its own `/dev/kmsg` line, with a size that had grown since. Same file, read through a C-string function. The inference joining two correct measurements was itself a new claim, and it was false; the issue comment is corrected rather than left standing.
+
+A zero run is the expected damage here rather than an exotic one. This file is appended to by a watchdog whose entire purpose is to be running when the machine is about to be reset by hand, and a reset mid-append leaves the size updated with the block still zeroes — the one file that must survive a hard reset is the one most likely to carry a zero tail from it. The box was hard-reset on 2026-09-01, which is exactly where the report froze.
+
+The scan is bounded by `size` now, a NUL ends a line the same way a newline does, and the existing "starts with `{`" check discards whatever the damaged region leaves behind. Surviving the damage is not the same as reporting it, so `store.first_nul_offset` says where it happened (`-1` when clean) — records really were lost, and an operator should see that rather than infer it from a gap in timestamps.
+
+`test_stallwatch` gains the case: write a zero run into the file, append records after it, and assert both that the newest one comes back and that `first_nul_offset` reports the damage. It sits beside the #284 ring case, in a test that is in the selftest set.
+
 ### The stall reader now says which file it read (#229)
 
 The watchdog logs its own path, dev, inode and size to `/dev/kmsg` after every append. The reader reported none of that, and only one side being instrumented is what made the next question unanswerable.

@@ -351,6 +351,87 @@ int main(void)
 	}
 	cix_response_free(&r);
 
+	/*
+	 * Issue #229: a NUL byte in the record file must not hide every
+	 * record after it.
+	 *
+	 * The reader split the buffer with strtok(), which treats it as a
+	 * C string, so the first NUL ended the scan -- permanently and
+	 * silently. The report froze at one timestamp while the file went
+	 * on growing. Measured on 192.168.15.95: newest record stuck at
+	 * 2026-09-01 15:08:03 for four days, with the writer logging its
+	 * own appends to the same dev/inode at a rising size the whole
+	 * time, and none of the event types it had started emitting since
+	 * ever appearing.
+	 *
+	 * A zero run is the expected damage rather than an exotic one:
+	 * this file is appended to by a watchdog whose entire purpose is
+	 * to be running when the machine is about to be reset by hand,
+	 * and a reset mid-append leaves the size updated with the block
+	 * still zeroes.
+	 *
+	 * Written straight into the file for the same reason the #284
+	 * case above is: the bug is entirely in the read path.
+	 */
+	{
+		char path[PATH_MAX];
+		FILE *rec;
+		int i;
+		static const char zeros[64] = { 0 };
+
+		snprintf(path, sizeof(path), "%s/state/control_plane_stalls.jsonl", g_data_dir);
+		rec = fopen(path, "a");
+		if (rec == NULL) {
+			fprintf(stderr, "FAIL: cannot append to %s (#229)\n", path);
+			ok = 0;
+		} else {
+			fwrite(zeros, 1, sizeof(zeros), rec);
+			fputc('\n', rec);
+			for (i = 0; i < 5; i++)
+				fprintf(rec, "{\"ts\":%d,\"event\":\"slow-pass\","
+				             "\"worst_pass_ms\":15818,\"slow_passes\":%d,"
+				             "\"activity\":\"after the zero run\"}\n",
+				        2000000 + i, i + 1);
+			fclose(rec);
+		}
+	}
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "GET", "/v1/system/stalls?limit=1000", NULL, &r) != 0 ||
+	    r.status != 200) {
+		fprintf(stderr, "FAIL: GET stalls across a NUL run, status=%d (#229)\n", r.status);
+		ok = 0;
+	} else {
+		const struct json_value *stalls = json_object_get(r.json, "stalls");
+		const struct json_value *store = json_object_get(r.json, "store");
+		const struct json_value *newest;
+		const struct json_value *ts;
+		const struct json_value *nul;
+
+		if (stalls == NULL || stalls->type != JSON_ARRAY || stalls->u.array.count == 0) {
+			fprintf(stderr, "FAIL: no records returned across a NUL run (#229)\n");
+			ok = 0;
+		} else {
+			newest = stalls->u.array.items[0];
+			ts = newest != NULL ? json_object_get(newest, "ts") : NULL;
+			if (ts == NULL || ts->type != JSON_NUMBER || (long)ts->u.number != 2000004) {
+				fprintf(stderr,
+				        "FAIL: newest record across a NUL run is ts=%ld, want 2000004 -- "
+				        "the reader stopped at the zero byte (#229)\n",
+				        ts != NULL && ts->type == JSON_NUMBER ? (long)ts->u.number : -1L);
+				ok = 0;
+			}
+		}
+		/* Surviving the damage is not the same as reporting it: the
+		 * zero run means records really were lost, and that must be
+		 * visible rather than inferred from a gap in timestamps. */
+		nul = store != NULL ? json_object_get(store, "first_nul_offset") : NULL;
+		if (nul == NULL || nul->type != JSON_NUMBER || (long)nul->u.number < 0) {
+			fprintf(stderr, "FAIL: store.first_nul_offset does not report the zero run (#229)\n");
+			ok = 0;
+		}
+	}
+	cix_response_free(&r);
+
 	stop_daemon(daemon_pid);
 	test_data_dir_cleanup(g_data_dir);
 
