@@ -2,6 +2,26 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### The console input direction is tested, and the test is proven to test it (#296)
+
+Every scenario in `test_console_exec` read what the exec'd process *says*. Nothing ever wrote a byte *into* a console — and that gap is exactly how #294 shipped: a console that drew its prompt and then ignored every keystroke, with the whole console test file green. `struct console_exec_session` was `malloc()`ed and never zeroed, so the pty output buffer's length came up as garbage, the direct write was skipped, and terminal input was copied to a junk offset. Nothing that only reads could have caught it.
+
+`console_input_child` is the fourth console fixture and the first that listens. It announces `INPUT-READY` when it reaches its `read()`, then echoes each line back with a marker. The scenario waits for that announcement before typing — so a missing echo can never be blamed on having typed at a process that had not started reading — then sends a keystroke as a **binary** frame (the opcode is what separates a keystroke from a control message, ADR-0242) and requires the marker to return. One marker arriving exercises the entire direction that was unasserted: out as a masked websocket frame, through the daemon's relay, into the pty master via the non-blocking `EPOLLOUT` path #294 rebuilt, to the slave, read by a real process, and back.
+
+**The test is not trusted on its own**, because this is precisely the file where a green suite was already wrong once. The recipe injects the bug and requires the test to fail.
+
+**The first attempt at that proof failed, and its failure is the more useful result.** v2.53.60 injected #294 by *deleting* the `memset` — and the test still passed, so the build refused to ship it. The reason: not zeroing a `malloc()` only reproduces the bug when the memory happens to be non-zero, and fresh kernel pages are zeroed, so `pty_out_len` came up 0 and the code worked. That is also why #294 was environment-dependent on the real host rather than constant — something nobody had articulated until the proof forced the question.
+
+So the struct is **poisoned** with `0xff` instead, which is what uninitialised memory actually looked like where this bit: every field the code assigns is still assigned, every field it forgot is garbage. Against that build the test fails, and the diagnostic names the mechanism exactly:
+
+```
+wanted: INPUT-ECHO:console-input-probe
+got (64 bytes in 2 frame(s), ready=1 sent=1, ended: read failed or peer closed): INPUT-READY
+INPUT-ECHO:onsole-input-probe
+```
+
+The leading `c` is gone — the first byte written to a junk offset, which is #294 itself. The restore is then verified with a `grep` before the final rebuild, so a failed `sed` cannot ship a poisoned daemon.
+
 ### The supervisor was the wrong headline, and the box proved it (ADR-0246)
 
 `cix-init` shipped, ran as pid 1 on 192.168.15.95, spawned the worker, answered its out-of-band status port while the worker was dead, and restarted the worker on demand — `restarts: 1 → 2`, a new pid, and a correct `"worker killed by signal 9"`. Every part of the supervisor did exactly what it was designed to do.
