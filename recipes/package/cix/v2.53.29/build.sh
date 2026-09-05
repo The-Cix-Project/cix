@@ -1,4 +1,13 @@
 #
+# v2.53.29 -- two flaky tests in the build gate (#286). Three consecutive
+# v2.53.28 builds failed the selftest on identical source, each on a
+# different single test; two of those were test_console_exec timing out a
+# two-second socket read that waits for a fork, a namespace entry, an
+# execve and a relay, inside a build container on a two-CPU host. Ten
+# seconds now. test_daemon_net's cleanup deletes are asserted rather than
+# discarded, so a later 409 names the container that stayed.
+#
+#
 # v2.53.28 -- GET /v1/system/stalls returns the NEWEST records (#284). The
 # reader filled a fixed 256-entry array from the front of its read window
 # and stopped, so once the record file held more than that in the window,
@@ -441,9 +450,9 @@
 # predated #60.)
 #
 pkg_name="cix"
-pkg_version="v2.53.28"
-pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/v2.53.28.tar.gz"
-pkg_sha256="3c70ce0cbcf0e8449426c490b9b6845443a50454534ffa0203a2cdeb57a40ff3"
+pkg_version="v2.53.29"
+pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/v2.53.29.tar.gz"
+pkg_sha256="89d9a99a12dcd04a3093850c794d97b06f772fe4afc60966a85ba8361336b8af"
 # ADR-0199/0209: composed from exactly these, with no fallback
 # environment to inherit anything missing (#168). Cix is the first
 # recipe to need this declaration and it found the rule the hard way:
