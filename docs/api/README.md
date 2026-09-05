@@ -768,6 +768,30 @@ An installed host deliberately has no shell, so this is the only way to read dme
 
 Entries come back oldest-first. `tail` defaults to 200 and is clamped to 1..512 (the daemon drains the buffer through a fixed 512-entry window, so asking for more cannot return more). `priority` is the raw syslog level from the kernel's own prefix — 0 `emerg` through 7 `debug`. A kernel whose `/dev/kmsg` cannot be opened answers `500`.
 
+## A container can declare what service it provides
+
+A DNS, NTP, syslog or LDAP server is **two** pieces of state on this platform: the container itself, and a *binding* telling the daemon to keep it fed — writing the record set into its hosts file, re-sending `SIGHUP`, and so on. Deleting a container deliberately forgets the binding (`dns_server_forget()` and its siblings), because a container that no longer exists must not leave a dangling one behind.
+
+That combination had a sharp edge. Recreating a container from its recipe — the documented recovery path — brought back the container and *not* the binding, so the server ran and served nothing. Measured on 192.168.15.95: after deleting and re-applying `dns-1` and `dns-2`, both reported `running`, `GET /v1/dns/servers` returned an empty list, dnsmasq answered for nothing, and the host could not resolve at all. Every individual thing an operator would check looked right, and nothing was logged ([#301](https://git.home.arpa/itdlabs/cix/issues/301)).
+
+So the role belongs in the container's own definition, which is what a recipe renders to:
+
+```
+POST /v1/containers
+{
+  "name": "dns-1",
+  "image": "dns",
+  "cmd": ["/usr/sbin/dnsmasq", "-k", "-H", "/etc/dnsmasq-hosts", ...],
+  "dns_server": {"hosts_path": "/etc/dnsmasq-hosts"}
+}
+```
+
+`dns_server` registers it exactly as a `POST /v1/dns/servers` would. `ntp_server: true`, `syslog_target: true` and `ldap_server: {"config_path": "..."}` do the same for the other three, which are registered the same way and were losing their bindings identically.
+
+Forget-on-delete stays correct — nothing dangles — and `POST /v1/containers/recipes/{name}/apply` now restores a working server rather than half of one.
+
+**A declared role that cannot be registered is a `500`, not a warning.** The container is created and the response says so, naming the role that failed. A server that is running and unregistered is the exact silent state this exists to end, so it is never the quiet outcome.
+
 ## Creating a container
 
 ```
