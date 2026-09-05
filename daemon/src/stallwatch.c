@@ -145,6 +145,17 @@ struct stall_shared {
 
 static struct stall_shared *g_shared;
 static char g_records_path[PATH_MAX];
+
+/*
+ * ADR-0246 item 2: whether a supervisor is present to act on what this
+ * watchdog measures. Set from stallwatch_start(); read in the forked
+ * child, which inherits it across the fork.
+ *
+ * Without a supervisor the watchdog behaves exactly as it always has --
+ * it records and nothing else. Signalling pid 1 when pid 1 is the
+ * daemon itself would be pointless at best.
+ */
+static int g_supervised;
 static pid_t g_watchdog_pid = -1;
 
 static long long monotonic_millis(void)
@@ -682,17 +693,6 @@ void stallwatch_set_probe(const char *host, int port)
 	         g_pending_probe_host);
 	g_shared->probe_port = port;
 }
-
-/*
- * ADR-0246 item 2: whether a supervisor is present to act on what this
- * watchdog measures. Set from stallwatch_start(); read in the forked
- * child, which inherits it across the fork.
- *
- * Without a supervisor the watchdog behaves exactly as it always has --
- * it records and nothing else. Signalling pid 1 when pid 1 is the
- * daemon itself would be pointless at best.
- */
-static int g_supervised;
 
 int stallwatch_start(const char *records_path, int supervised)
 {
