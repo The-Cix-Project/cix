@@ -2400,8 +2400,12 @@ static int installed_files_missing(const char *image, const struct pkg_entry *e,
  * bracket include it makes unconditionally resolve to a file that
  * exists in this image's own include tree?
  *
- * Three deliberate limits, because a check with false positives is one
- * that gets switched off:
+ * Four deliberate limits, because a check with false positives is one
+ * that gets switched off -- and the first version of this had them.
+ * Run against 202 real installed packages it flagged 48, essentially
+ * all noise: <stddef.h> and <stdarg.h> are FREESTANDING headers, which
+ * the compiler provides from its own directory rather than
+ * /usr/include, so they never resolve there and are never a defect.
  *
  *   - Angle-bracket includes only. A quoted include is relative to the
  *     including file and follows different rules.
@@ -2411,6 +2415,21 @@ static int installed_files_missing(const char *image, const struct pkg_entry *e,
  *     own include guard is not such a conditional and is skipped, or
  *     nothing in a guarded header would ever be checked -- which is
  *     every header worth checking.
+ *   - SAME-PROJECT includes only: the include must sit in the same
+ *     directory under usr/include/ as the header making it. That is
+ *     the exact shape of the defect -- pam_misc.h reaching for
+ *     pam_client.h, both under security/, one directory built and the
+ *     other not -- and it is the shape a RECIPE is responsible for,
+ *     since a project's own headers are the ones its own build either
+ *     installs or does not. It also drops every false positive above
+ *     in one move, without a list of compiler headers to keep current.
+ *
+ *     What it gives up, stated rather than discovered later: a header
+ *     reaching into another PACKAGE that is not installed in this
+ *     image goes unreported. That is a dependency question -- and an
+ *     image-dependent one, since the same header is fine in an image
+ *     that has the dependency -- not "this recipe did not build a
+ *     directory it ships headers from".
  *   - Existence, not compilability. Whether the resolved header itself
  *     parses is the compiler's question. This one answers "is it even
  *     there", which is the failure that actually happened.
@@ -2509,7 +2528,8 @@ static int header_includes_unresolved(const char *image, const struct pkg_entry 
 			if (*p == '<') {
 				char inc[256];
 				const char *close = strchr(p + 1, '>');
-				size_t n;
+				const char *inc_slash, *hdr_dir;
+				size_t n, dirlen;
 
 				if (close == NULL)
 					continue;
@@ -2518,6 +2538,18 @@ static int header_includes_unresolved(const char *image, const struct pkg_entry 
 					continue;
 				memcpy(inc, p + 1, n);
 				inc[n] = '\0';
+
+				/* Same directory under usr/include/ as the header
+				 * making the include, or it is not this recipe's
+				 * business (see this function's own comment). */
+				hdr_dir = rel + 12; /* past "usr/include/" */
+				inc_slash = strchr(inc, '/');
+				if (inc_slash == NULL || strchr(hdr_dir, '/') == NULL)
+					continue;
+				dirlen = (size_t)(inc_slash - inc);
+				if (strncmp(hdr_dir, inc, dirlen) != 0 || hdr_dir[dirlen] != '/')
+					continue;
+
 				if (snprintf(path, sizeof(path), "%s/usr/include/%s", rootfs, inc) >=
 				    (int)sizeof(path))
 					continue;
