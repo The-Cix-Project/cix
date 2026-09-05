@@ -9855,6 +9855,27 @@ static const char *container_body_unknown_key(const struct json_value *root)
 		"consoles",
 		/* Issue #88: persistent volumes. */
 		"volumes",
+		/*
+		 * Issue #301: the server roles this container declares.
+		 *
+		 * These four were added to handle_create() without being
+		 * added here, which made that code unreachable -- this
+		 * allowlist runs first, so every create carrying one was
+		 * refused with "unknown field" before the registration could
+		 * run. Measured on 192.168.15.95 against v2.53.71:
+		 * POST /v1/containers with a dns_server block returned
+		 * {"error":"unknown field: dns_server"}, and container recipe
+		 * add refused the same field, so the recipe could not carry
+		 * it either. Nothing failed loudly; the feature simply never
+		 * fired.
+		 *
+		 * One list serves both paths -- create_container_persisted()
+		 * and the recipe's own add-time check both call this -- so a
+		 * field is accepted in a recipe exactly when it is accepted
+		 * in a create, which is the property that makes a recipe a
+		 * faithful record of a container.
+		 */
+		"dns_server", "ntp_server", "syslog_target", "ldap_server",
 	};
 	size_t i, k;
 
