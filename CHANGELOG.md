@@ -2,6 +2,26 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### main.c starts coming apart, and the thing that held it together was one static function (ADR-0249)
+
+`daemon/src/main.c` was 31,284 lines and 852 functions, next to 68 sibling modules averaging around 600 lines each. It is not large because this codebase writes large files; it is large because everything never deliberately extracted stayed there.
+
+**What kept it that way was mechanical rather than architectural.** Every handler ends by answering the client, and the two functions that do that -- `respond_json()` and `respond_error()` -- were `static` in `main.c`. `respond_error()` alone has 722 call sites. No handler could move to another translation unit while its most common call was file-local, so none ever did.
+
+`daemon/src/apiresp.c` now holds those three helpers, above `http.c` rather than inside it: `http.c` is deliberately JSON-agnostic, and giving the transport a `json_writer` dependency to save a file would be a worse trade than the one being fixed. No call site changed.
+
+With that unblocked, `sysctl`, `kmod` and `ntp` move into `api_sysctl.c`, `api_kmod.c` and `api_ntp.c`. The existing layering is preserved rather than disturbed: no subsystem module responds to HTTP, they return enums and know nothing about status codes or file descriptors, and moving handlers *into* them would have destroyed that. The `api_` layer is where the two meet and the only place they do.
+
+Three boundary rules, each found by hitting it:
+
+- **`op_*` wrappers stay in `main.c`** -- the generated route table forward-declares them `static` and is `#include`d there (ADR-0218). Not a deferral: 269 of 276 are one line, so what stays is a dispatch table and what leaves is the work.
+- **A handler that drives the event loop stays with it.** `handle_ntp_sync_post()` arms a timerfd through `start_ntp_sync_job()`; moving it would mean exporting the loop's internals to get one function out of one file.
+- **A subsystem's enum-to-status mapping is exported, never duplicated.** `respond_ntp_error()` is needed by both the moved handlers and the one that stayed, and two mappings that agree today is how they stop agreeing.
+
+31,284 to 30,630 lines. Deliberately unimpressive: the value is that the mechanism exists and the boundary is written down, so the remaining twenty-one subsystems are ordinary work rather than a decision each time.
+
+`test_lint` earned itself here, catching a real implicit declaration when `respond_ntp_error()` moved out from under a caller that stayed.
+
 ### A second compiler reads our C, and it found ten things the first one did not (ADR-0248)
 
 Every build has run `-Wall -Werror` for this project's whole life, so warning-free looked like a settled property. One `gcc -fsyntax-only -Wall -Wextra` pass over the same tree — green under TCC the entire time — reported ten real defects:

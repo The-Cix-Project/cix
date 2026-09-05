@@ -253,3 +253,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0246](0246-the-control-plane-is-one-process-doing-five-jobs.md) | The control plane is one process doing five jobs, and it needs to be two | Superseded by ADR-0247 |
 | [0247](0247-the-reactor-does-not-block-and-that-is-the-defence.md) | The reactor does not block, and that is the defence | Accepted |
 | [0248](0248-gcc-is-a-linter-never-a-producer.md) | gcc is a linter, never a producer | Accepted |
+| [0249](0249-main-c-is-divided-by-what-a-handler-touches.md) | main.c is divided by what a handler touches, not by what it is named | Accepted |
