@@ -707,15 +707,32 @@ int main(void)
 
 	/* 11. cleanup: remove containers (kills n3, still blocked in
 	 * accept() since nothing can reach it -- no networking, isolated
-	 * netns), then both networks via the real API */
-	cix_client_request(&client, "DELETE", "/v1/containers/n1", NULL, &r);
-	cix_response_free(&r);
-	cix_client_request(&client, "DELETE", "/v1/containers/n2", NULL, &r);
-	cix_response_free(&r);
-	cix_client_request(&client, "DELETE", "/v1/containers/n3", NULL, &r);
-	cix_response_free(&r);
-	cix_client_request(&client, "DELETE", "/v1/containers/n5", NULL, &r);
-	cix_response_free(&r);
+	 * netns), then both networks via the real API.
+	 *
+	 * Each delete's status is asserted rather than discarded (#286).
+	 * These four used to be fire-and-forget, so when the network
+	 * delete below then came back 409 there was nothing in the output
+	 * naming which container had stayed -- only the consequence. That
+	 * happened for real on 192.168.15.95, and the report it produced
+	 * could not be acted on. A cleanup step is still a step. */
+	{
+		static const char *const leaving[] = { "n1", "n2", "n3", "n5" };
+		size_t li;
+
+		for (li = 0; li < sizeof(leaving) / sizeof(leaving[0]); li++) {
+			char path[64];
+
+			snprintf(path, sizeof(path), "/v1/containers/%s", leaving[li]);
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "DELETE", path, NULL, &r) != 0 ||
+			    r.status != 204) {
+				fprintf(stderr, "FAIL: DELETE container %s expected 204, got %d\n",
+				        leaving[li], r.status);
+				ok = 0;
+			}
+			cix_response_free(&r);
+		}
+	}
 
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "DELETE", "/v1/networks/" TEST_NETWORK_NAME, NULL, &r) != 0 ||

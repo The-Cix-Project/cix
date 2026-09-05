@@ -2,6 +2,14 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Two flaky tests in the build gate (#286)
+
+Three consecutive `cix@v2.53.28` hostbuilds on 192.168.15.95 failed the selftest, each on a *different* single test, with the same source in all three. That is the gate being unreliable rather than the code being wrong, and an unreliable gate costs a fifteen-minute round trip every time it fires.
+
+`test_console_exec` gave its raw socket a two-second read timeout. What one of those reads waits for is the whole chain — HTTP upgrade, fork, entering the container's namespaces, `execve`, the child's first write, the relay back — and the suite runs inside a build container on a two-CPU host alongside the rest of itself. The failure was zero bytes received on the defaults scenario while the scenario immediately before it, the same request on its own connection, passed. Ten seconds now. It changes no assertion and costs nothing when the test passes; a genuine failure is simply reported eight seconds later.
+
+`test_daemon_net`'s cleanup step deleted four containers fire-and-forget and then deleted the network they used. When that network delete came back 409, nothing in the output named which container had stayed — only the consequence, which is not a report anyone can act on. The four deletes are asserted now. A cleanup step is still a step.
+
 ### The stall report was showing the oldest records, not the newest (#284)
 
 `GET /v1/system/stalls` reads the tail 256 KB of the record file and tokenises it into a fixed 256-entry array. The loop stopped at the array's bound, which stops at the **front** of the window — so once the file held more than 256 records in that tail, every newer one was never parsed, and the endpoint went on answering 200 with a plausible array of stale records.
