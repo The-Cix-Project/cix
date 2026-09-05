@@ -71,8 +71,8 @@
 #
 pkg_name="cix-aggressive-test"
 pkg_version="1.0.3"
-pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/v2.53.43.tar.gz"
-pkg_sha256="4561c0aa6ab1f792e6495f0a69ed8124ffa401b62690abd45b99e8cf6f190f6e"
+pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/v2.53.44.tar.gz"
+pkg_sha256="9f27c5420dc4e9c06b7acaa6c7adc5ae297b22bd82343ec4f7ecb9d0bbe703a2"
 pkg_depends=""
 #
 # Exactly what building four binaries needs, which is what cix.recipe
