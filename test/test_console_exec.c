@@ -147,12 +147,29 @@ static int raw_connect(int port)
 		return -1;
 	}
 
-	/* A 2s read timeout -- a real protocol/relay bug should show up as
-	 * a clean failed assertion, not this test hanging forever. */
+	/*
+	 * A read timeout, so a real protocol/relay bug shows up as a clean
+	 * failed assertion rather than this test hanging forever.
+	 *
+	 * Ten seconds, not the two it was. What one of these reads waits
+	 * for is the whole chain: the HTTP upgrade, a fork, entering the
+	 * container's namespaces, an execve, the child's first write, and
+	 * the relay back. Two seconds is generous when the box is idle and
+	 * is not a limit anything is measured against -- but this suite
+	 * runs inside a build container on a two-CPU host, alongside the
+	 * rest of itself, and there it is simply a race. Measured: the
+	 * v2.53.28 build failed on the defaults scenario with zero bytes
+	 * received, while the immediately preceding scenario -- the same
+	 * request, on its own connection -- passed.
+	 *
+	 * A longer ceiling costs nothing when the test passes and changes
+	 * no assertion. It only means a genuine failure is reported eight
+	 * seconds later.
+	 */
 	{
 		struct timeval tv;
 
-		tv.tv_sec = 2;
+		tv.tv_sec = 10;
 		tv.tv_usec = 0;
 		setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 	}
