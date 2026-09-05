@@ -1,5 +1,7 @@
 #include "exec.h"
 
+#include "iohelpers.h"
+
 #include <errno.h>
 #include <fcntl.h>
 #include <sched.h>
@@ -231,6 +233,10 @@ int exec_into_container(pid_t target_pid, char *const cmd_argv[],
 			 * new session's controlling terminal regardless of whether
 			 * it was already open before or after the session was
 			 * formed -- more robust than relying on open-order alone. */
+			/* #278: an exec session runs workload code and must be
+			 * an ordinary OOM candidate, not inherit the control
+			 * plane's exemption. */
+			cix_oom_unprotect_self();
 			setsid();
 			ioctl(slave_fd, TIOCSCTTY, 0);
 			dup2(slave_fd, STDIN_FILENO);
@@ -439,7 +445,12 @@ int exec_into_container_piped(pid_t target_pid, char *const cmd_argv[], int *out
 			 * anything that tries to read gets EOF immediately rather
 			 * than blocking forever on a terminal that does not exist.
 			 */
-			int devnull = open("/dev/null", O_RDONLY);
+			int devnull;
+
+			/* #278: workload code, so an ordinary OOM candidate --
+			 * same reasoning as the pty path above. */
+			cix_oom_unprotect_self();
+			devnull = open("/dev/null", O_RDONLY);
 
 			if (devnull >= 0) {
 				dup2(devnull, STDIN_FILENO);

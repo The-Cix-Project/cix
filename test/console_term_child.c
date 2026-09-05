@@ -15,6 +15,7 @@
  * Never returns. The daemon SIGKILLs the exec'd process when the
  * console session ends, which is this program's only exit.
  */
+#include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,6 +29,33 @@ static void on_winch(int sig)
 {
 	(void)sig;
 	g_winch = 1;
+}
+
+/* #278: what the kernel's OOM killer thinks of this process. Reported
+ * from in here rather than asserted from outside because inheritance is
+ * the whole point -- oom_score_adj survives fork() AND execve(), so the
+ * only trustworthy reading is the one taken by a process that actually
+ * went through both. */
+static void report_oom_adj(void)
+{
+	char buf[32];
+	int fd = open("/proc/self/oom_score_adj", O_RDONLY);
+	ssize_t n;
+
+	if (fd < 0) {
+		printf("OOMADJ=unreadable\n");
+		return;
+	}
+	n = read(fd, buf, sizeof(buf) - 1);
+	close(fd);
+	if (n <= 0) {
+		printf("OOMADJ=unreadable\n");
+		return;
+	}
+	buf[n] = '\0';
+	while (n > 0 && (buf[n - 1] == '\n' || buf[n - 1] == ' '))
+		buf[--n] = '\0';
+	printf("OOMADJ=%s\n", buf);
 }
 
 static void report(void)
@@ -44,6 +72,7 @@ static void report(void)
 	 * expected string rather than parsing. */
 	printf("TERMINFO TERM=%s COLS=%u ROWS=%u\n", term != NULL ? term : "(unset)",
 	       (unsigned)wsz.ws_col, (unsigned)wsz.ws_row);
+	report_oom_adj();
 	fflush(stdout);
 }
 

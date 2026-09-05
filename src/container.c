@@ -1,5 +1,6 @@
 #include "container.h"
 #include "internal.h"
+#include "iohelpers.h"
 #include "linux_compat.h"
 
 #include <errno.h>
@@ -510,6 +511,17 @@ int container_create(const struct container_spec *spec, struct container_handle 
 		close(diag_pipe[0]);
 		if (want_net)
 			close(net_pipe[1]);
+
+		/*
+		 * #278: stop being un-killable. Every container -- a workload
+		 * or a package build alike -- inherits the control plane's own
+		 * oom_score_adj -1000 through pid 1, and a memory cgroup whose
+		 * every task is exempt livelocks at its ceiling instead of
+		 * losing one process. Done here, before any of the setup below
+		 * and long before execve, so it covers the child no matter
+		 * which of the paths after this point it takes.
+		 */
+		cix_oom_unprotect_self();
 
 		/*
 		 * ADR-0179 phase 2: with CLONE_NEWUSER in the clone flags,
