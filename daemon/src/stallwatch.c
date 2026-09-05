@@ -1,6 +1,7 @@
 #include "stallwatch.h"
 
 #include <errno.h>
+#include <stdarg.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <signal.h>
@@ -287,6 +288,42 @@ static void append_record(const char *event, long long seconds, pid_t watched)
  * slow-pass record below writes through exactly the same durability and
  * console path rather than a second copy of it (#229).
  */
+/*
+ * One line into the kernel ring buffer, best effort.
+ *
+ * /dev/kmsg is memory-backed: it needs no filesystem, cannot wait on a
+ * block device, appears on the serial console as it happens, and is
+ * read back into this daemon's own log store by the kernel log reader.
+ * That makes it the only channel here that still works when the thing
+ * being reported is the storage path -- which is why both the records
+ * and, since #229, the failure to store them go through it.
+ */
+static void kmsg_write(const char *fmt, ...)
+{
+	char kline[512];
+	va_list ap;
+	int klen;
+	int fd;
+
+	va_start(ap, fmt);
+	klen = vsnprintf(kline, sizeof(kline), fmt, ap);
+	va_end(ap);
+	if (klen <= 0)
+		return;
+	if (klen >= (int)sizeof(kline))
+		klen = (int)sizeof(kline) - 1;
+
+	fd = open("/dev/kmsg", O_WRONLY | O_CLOEXEC);
+	if (fd < 0)
+		return;
+	{
+		ssize_t ignored = write(fd, kline, (size_t)klen);
+
+		(void)ignored;
+	}
+	close(fd);
+}
+
 static void append_line(const char *line, int len)
 {
 	int fd;
@@ -326,29 +363,55 @@ static void append_line(const char *line, int len)
 	 * without depending on the thing that may be stuck, and it appears
 	 * while the wedge is happening rather than after it.
 	 *
-	 * Best-effort and unchecked, like every other write here: a
-	 * diagnostic that refuses to run is not a diagnostic.
+	 * Best-effort: a diagnostic that refuses to run is not a
+	 * diagnostic, so nothing here fails the watchdog. Since #229 the
+	 * writes are still best-effort but no longer SILENT -- the file
+	 * half reports its own failure through this channel, because four
+	 * days of a quietly non-growing record file cost two
+	 * investigations that reached opposite conclusions.
 	 */
-	fd = open("/dev/kmsg", O_WRONLY | O_CLOEXEC);
-	if (fd >= 0) {
-		char kline[512];
-		int klen = snprintf(kline, sizeof(kline), "cix stallwatch: %.*s",
-		                     len > 0 && line[len - 1] == '\n' ? len - 1 : len, line);
-
-		if (klen > 0) {
-			ssize_t ignored = write(fd, kline, (size_t)(klen < (int)sizeof(kline)
-			                                             ? klen : (int)sizeof(kline) - 1));
-
-			(void)ignored;
-		}
-		close(fd);
-	}
+	kmsg_write("cix stallwatch: %.*s",
+	            len > 0 && line[len - 1] == '\n' ? len - 1 : len, line);
 
 	fd = open(g_records_path, O_CREAT | O_WRONLY | O_APPEND | O_CLOEXEC, 0644);
+	if (fd < 0) {
+		/*
+		 * Issue #229: say so, through the channel that works.
+		 *
+		 * Every write in this function was deliberately unchecked, on
+		 * the reasoning that a diagnostic which refuses to run is not
+		 * a diagnostic. That is right about not FAILING; it was wrong
+		 * about not REPORTING, and the cost was four days of silence
+		 * and two investigations that reached opposite conclusions.
+		 *
+		 * Measured on 192.168.15.95 on 2026-09-05: two slow-pass
+		 * records reached /dev/kmsg and the log store at 17:42:10 and
+		 * 17:42:40, from this same call -- while the record file's
+		 * newest entry was still 2026-09-01 09:24:35. The kmsg half
+		 * worked and the file half did not, silently, and nothing
+		 * anywhere could say why.
+		 *
+		 * So the failure is reported where the record already goes,
+		 * which needs no filesystem and cannot wait on the resource
+		 * that may be stuck. Deliberately not via append_line(),
+		 * which would recurse straight back into this branch.
+		 */
+		kmsg_write("cix stallwatch: record file write failed: %s: %s", g_records_path,
+		            strerror(errno));
+	}
 	if (fd >= 0) {
-		ssize_t ignored = write(fd, line, (size_t)len);
+		ssize_t wrote = write(fd, line, (size_t)len);
 
-		(void)ignored;
+		if (wrote != (ssize_t)len) {
+			/*
+			 * A short or failed write is as invisible as a failed
+			 * open was, and produces the same symptom -- a record
+			 * file that quietly stops growing. Reported for the same
+			 * reason and by the same route.
+			 */
+			kmsg_write("cix stallwatch: record file write short: %s: wrote %ld of %d: %s",
+			            g_records_path, (long)wrote, len, strerror(errno));
+		}
 		/*
 		 * Issue #229: fsync, because this file exists precisely to
 		 * survive the event it is recording.
@@ -372,7 +435,9 @@ static void append_line(const char *line, int len)
 		 * so blocking here cannot make the daemon's own stall worse,
 		 * and the record lands as soon as I/O recovers.
 		 */
-		fsync(fd);
+		if (fsync(fd) != 0)
+			kmsg_write("cix stallwatch: record file fsync failed: %s: %s",
+			            g_records_path, strerror(errno));
 		close(fd);
 	}
 	/* Also to stderr: on a box being watched over a serial console this
