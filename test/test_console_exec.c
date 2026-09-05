@@ -233,15 +233,44 @@ static int send_ws_frame(int fd, int opcode, const void *payload, size_t len)
 /* Reads exactly one complete (unmasked, server-to-client) WS frame,
  * blocking as needed. Very small/trusting -- this is a test client
  * against a daemon we control, not a hardened general-purpose one. */
+/*
+ * A websocket frame header is two bytes, and read() is entitled to
+ * hand back one of them.
+ *
+ * That is not pedantry here: it is the whole of a flake that has
+ * failed the build gate repeatedly on three different assertions of
+ * this file -- "received 0 bytes", the SIGWINCH resize, and the
+ * initial report -- because losing any single frame presents as
+ * whatever that frame was carrying never arriving. A short read is
+ * likeliest exactly when the box is busy, which is why it shows up in
+ * a build container and never in a quiet hand-run.
+ *
+ * The payload loop below has always looped. The two header reads did
+ * not, and treated a one-byte read as a dead connection, discarding a
+ * frame that was perfectly good and only late.
+ */
+static int read_full(int fd, void *buf, size_t want)
+{
+	unsigned char *p = buf;
+	size_t got = 0;
+
+	while (got < want) {
+		ssize_t n = read(fd, p + got, want - got);
+
+		if (n <= 0)
+			return -1;
+		got += (size_t)n;
+	}
+	return 0;
+}
+
 static int recv_ws_frame(int fd, int *out_opcode, unsigned char *out_buf, size_t out_cap, size_t *out_len)
 {
 	unsigned char hdr[4];
-	ssize_t n;
 	int opcode;
 	size_t len7, payload_len, extra = 0;
 
-	n = read(fd, hdr, 2);
-	if (n != 2)
+	if (read_full(fd, hdr, 2) != 0)
 		return -1;
 	opcode = hdr[0] & 0x0f;
 	len7 = hdr[1] & 0x7f;
@@ -249,8 +278,7 @@ static int recv_ws_frame(int fd, int *out_opcode, unsigned char *out_buf, size_t
 	if (len7 == 126) {
 		unsigned char ext[2];
 
-		n = read(fd, ext, 2);
-		if (n != 2)
+		if (read_full(fd, ext, 2) != 0)
 			return -1;
 		payload_len = ((size_t)ext[0] << 8) | (size_t)ext[1];
 	} else {
@@ -261,16 +289,10 @@ static int recv_ws_frame(int fd, int *out_opcode, unsigned char *out_buf, size_t
 	if (payload_len > out_cap)
 		return -1;
 
-	{
-		size_t total = 0;
-
-		while (total < payload_len) {
-			n = read(fd, out_buf + total, payload_len - total);
-			if (n <= 0)
-				return -1;
-			total += (size_t)n;
-		}
-	}
+	/* The same loop the header now uses -- one implementation, not a
+	 * second copy of it three lines further down. */
+	if (payload_len > 0 && read_full(fd, out_buf, payload_len) != 0)
+		return -1;
 
 	*out_opcode = opcode;
 	*out_len = payload_len;
