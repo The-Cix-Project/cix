@@ -605,6 +605,20 @@ int main(void)
 			{ "?term=xterm-256color&cols=203&rows=51",
 			  "TERMINFO TERM=xterm-256color COLS=203 ROWS=51",
 			  "the exec'd process sees the requested $TERM and window size" },
+			/*
+			 * #278: an exec'd process must be an ordinary OOM
+			 * candidate. cixd sets oom_score_adj -1000 on itself so
+			 * the only management path on the box is never the OOM
+			 * killer's choice, and that value is inherited across
+			 * fork() AND execve() -- so with cixd as pid 1, every
+			 * process on the host used to be exempt. A memory cgroup
+			 * whose every task is exempt does not fail at its ceiling,
+			 * it livelocks: on 192.168.15.95 that was 1.18 million
+			 * failed allocations still climbing, ~1000 kernel log
+			 * lines a second, and a box that needed a manual reset.
+			 */
+			{ "", "OOMADJ=0",
+			  "the exec'd process is a killable OOM candidate, not exempt (#278)" },
 			/* Omitting everything is an ordinary request, not an
 			 * error -- a piped client has no terminal to describe.
 			 * The documented defaults are what it must then get,
