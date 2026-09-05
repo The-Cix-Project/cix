@@ -41,6 +41,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/reboot.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -50,6 +51,25 @@
 #define WORKER_PATH "/bin/cixd"
 #define PENDING_MAX 256
 #define RESTART_BACKOFF_SECONDS 2
+/*
+ * A worker that dies this fast did not run; it failed to start.
+ *
+ * These two exist to close the one hole the A/B boot counter cannot
+ * cover on its own. A new root that PANICS reboots (panic=10), burns a
+ * try, and after ROOT_UPDATE_TRIES systemd-boot falls back to the last
+ * confirmed slot -- automatic rollback, no hands. But a supervisor that
+ * starts correctly and merely cannot exec its worker never panics and
+ * never reboots: the machine sits up, healthy from the outside, with no
+ * control plane and no shell to fix it from, and the boot counter never
+ * runs down because nothing ever reboots.
+ *
+ * So a worker failing to start repeatedly is treated as a failed boot
+ * and the supervisor reboots deliberately, handing the decision back to
+ * the mechanism designed to make it. Only confirm_boot() -- reached by a
+ * worker that actually came up -- stops that countdown.
+ */
+#define WORKER_FAST_FAIL_SECONDS 5
+#define WORKER_FAST_FAILURES_BEFORE_REBOOT 5
 #define LOOP_TIMEOUT_MS 250
 #define REASON_MAX 256
 
@@ -61,6 +81,7 @@ static int g_reap_fd = -1;
 static unsigned long g_restarts;
 static time_t g_worker_since;
 static char g_last_reason[REASON_MAX] = "none";
+static int g_consecutive_fast_failures;
 
 /*
  * Records reaped while no worker was running, or while the worker's
@@ -194,14 +215,38 @@ static void reap_all(void)
 		}
 
 		if (pid == g_worker) {
+			time_t lived = time(NULL) - g_worker_since;
+
 			g_worker = -1;
+			if (lived < WORKER_FAST_FAIL_SECONDS)
+				g_consecutive_fast_failures++;
+			else
+				g_consecutive_fast_failures = 0;
 			if (rec.exit_kind == CLD_EXITED)
 				snprintf(g_last_reason, sizeof(g_last_reason),
 				         "worker exited with status %d", (int)rec.exit_value);
 			else
 				snprintf(g_last_reason, sizeof(g_last_reason),
 				         "worker killed by signal %d", (int)rec.exit_value);
-			fprintf(stderr, "cix-init: %s\n", g_last_reason);
+			fprintf(stderr, "cix-init: %s (alive %lds, %d consecutive fast failures)\n",
+			        g_last_reason, (long)lived, g_consecutive_fast_failures);
+
+			if (g_consecutive_fast_failures >= WORKER_FAST_FAILURES_BEFORE_REBOOT) {
+				fprintf(stderr,
+				        "cix-init: the worker has failed to start %d times in a row -- "
+				        "rebooting so the boot counter can roll back to the last "
+				        "confirmed slot\n",
+				        g_consecutive_fast_failures);
+				sync();
+				reboot(RB_AUTOBOOT);
+				/*
+				 * Only reached if reboot() was refused, which for
+				 * pid 1 means it is not really pid 1. Keep going --
+				 * there is nothing better to do and returning is a
+				 * panic.
+				 */
+				g_consecutive_fast_failures = 0;
+			}
 		}
 		/*
 		 * Queued unfiltered, the dead worker's own record included.

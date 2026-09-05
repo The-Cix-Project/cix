@@ -473,7 +473,7 @@
 
   <!-- ============ HOST OS / BOOT LAYER ============ -->
   <circle cx="36" cy="908" r="4" fill="#c53030"/>
-  <text x="50" y="912" class="layer-label">HOST OS — cixd itself as real PID 1, no initramfs (Phase 11)</text>
+  <text x="50" y="912" class="layer-label">HOST OS — cix-init as PID 1, supervising a disposable cixd (ADR-0246); no initramfs</text>
 
   <rect x="30" y="922" width="1340" height="330" class="card-primary" fill="#fffbfb" stroke="#f4d9d9"/>
   <rect x="33" y="928" width="7" height="318" rx="3.5" fill="#c53030"/>
@@ -512,8 +512,8 @@
   <text x="467" y="1042" text-anchor="middle" class="small-text">/dev/vda2</text>
   <text x="467" y="1060" text-anchor="middle" class="small-text">read-only</text>
   <text x="467" y="1074" text-anchor="middle" class="small-text">squashfs</text>
-  <text x="467" y="1092" text-anchor="middle" class="small-text">control-plane</text>
-  <text x="467" y="1106" text-anchor="middle" class="small-text">image (cixd</text>
+  <text x="467" y="1092" text-anchor="middle" class="small-text">control-plane image</text>
+  <text x="467" y="1106" text-anchor="middle" class="small-text">(cix-init + cixd</text>
   <text x="467" y="1120" text-anchor="middle" class="small-text">+ web/ + libs)</text>
 
   <rect x="545" y="1006" width="135" height="140" class="box-slot"/>
@@ -556,8 +556,9 @@
   <rect x="1063" y="976" width="5" height="248" rx="2.5" fill="#c53030"/>
   <use href="#i-cpu" x="1074" y="978" width="16" height="16" style="color:#c53030"/>
   <text x="1215" y="992" text-anchor="middle" class="module-title">Mainline Linux kernel</text>
-  <text x="1215" y="1014" text-anchor="middle" class="module-text">EFI stub boot, no initramfs</text>
-  <text x="1215" y="1032" text-anchor="middle" class="module-text">/bin/cixd runs as init= directly</text>
+  <text x="1215" y="1010" text-anchor="middle" class="module-text">EFI stub boot, no initramfs</text>
+  <text x="1215" y="1024" text-anchor="middle" class="module-text">/bin/cix-init runs as init= directly</text>
+  <text x="1215" y="1038" text-anchor="middle" class="module-text">and restarts cixd (ADR-0246)</text>
   <text x="1215" y="1054" text-anchor="middle" class="module-text">clone3, CLONE_INTO_CGROUP,</text>
   <text x="1215" y="1068" text-anchor="middle" class="module-text">CLONE_PIDFD, cgroup v2,</text>
   <text x="1215" y="1082" text-anchor="middle" class="module-text">OverlayFS, rtnetlink, squashfs,</text>
@@ -574,8 +575,9 @@
        used for the primary client/container pipeline. Routed down the left
        margin (mirroring the exec arrow's own right-margin routing) instead
        of cutting diagonally through the container cards. No label needed:
-       the HOST OS layer heading below already states "cixd itself as
-       real PID 1" in words. -->
+       the HOST OS layer heading below states the relationship in words.
+       Since ADR-0246 that is cix-init as PID 1 with cixd as its worker,
+       so this arrow means "cixd runs on the host OS", not "cixd IS PID 1". -->
   <polyline points="350,702 20,725 20,940 205,970" fill="none" stroke="#94a3b8" stroke-width="1.8" stroke-dasharray="3 3" marker-end="url(#arrowLight)"/>
 
   <text x="30" y="1270" class="small-text">Reflects Phase 39: interactive container console over a hand-rolled WebSocket (ADR-0043); PID1-spawned physical console (ADR-0034).</text>
