@@ -127,10 +127,35 @@ supervisor being present, which it is not, so the daemon's watchdog is back to
 writing findings into a file readable through the API that is down whenever
 they matter (#229). Known, and not fixed here.
 
-**Three findings from building the supervisor stay open against it** — #297
+**The supervisor is removed, and its three findings close with it** — #297
 (a worker restart orphans build containers and other undefined children),
 #298 (a slowly crash-looping worker never trips the fast-fail rollback), #299
 (the status port binds `INADDR_ANY` unauthenticated).
+
+That is the half of this decision that was left undone when it was first
+written. The boot entry went back to `init=/bin/cixd` immediately, but
+`cix-init` stayed built, staged into every bootroot and installed by the
+recipe — a superseded implementation shipping on every host, executing
+never, carrying three known defects. Dormant code with open bugs against it
+is a parallel implementation and a stop-gap at once: it cannot be reasoned
+about as live, it cannot be relied on as dead, and the three issues could not
+be honestly closed or honestly fixed while it sat there.
+
+So it is gone: `init/src/cix_init.c`, `include/supervisor.h`, the reap
+channel and its `CONN_SUPERVISOR_REAP` connection kind, `container_adopt()`
+and the registry's `adopted` bookkeeping, `stallwatch`'s `SIGUSR1`-to-pid-1
+path, `hostproc_kill()`'s supervised self-kill allowance, and the
+`mkbootroot` staging that put the binary in the image. `container_adopt()`
+went with it rather than being kept for later: its only caller passed
+`supervisor_reap_available()`, so with no supervisor it could never run, and
+a container this daemon did not start cannot have its exit observed at all
+once nothing above it is reaping.
+
+**If a restartable control plane is wanted again, the prerequisite is
+unchanged and now unencumbered**: `--init-mode` startup has to become
+idempotent first. Rebuilding a supervisor against an idempotent startup path
+is a smaller job than keeping a non-working one alive against a
+non-idempotent one, and this ADR's own history is the record of why.
 
 **ADR-0246 is superseded rather than edited**, per
 [ADR-0000](0000-adr-process.md): the history of changing our mind is itself

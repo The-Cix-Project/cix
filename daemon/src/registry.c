@@ -31,25 +31,6 @@ struct registry_entry *registry_find(const char *name)
 	return NULL;
 }
 
-/*
- * ADR-0246: find a container by the host pid of its init.
- *
- * Needed by the supervisor reap channel, which reports exits by pid and
- * nothing else -- the supervisor has no registry and cannot name the
- * container it just reaped.
- */
-struct registry_entry *registry_find_by_pid(pid_t pid)
-{
-	int i;
-
-	if (pid <= 0)
-		return NULL;
-	for (i = 0; i < REGISTRY_MAX_CONTAINERS; i++) {
-		if (g_entries[i].in_use && g_entries[i].handle.pid == pid)
-			return &g_entries[i];
-	}
-	return NULL;
-}
 
 int registry_list_names(char out_names[][REGISTRY_NAME_MAX], int max)
 {
@@ -71,11 +52,10 @@ enum registry_error registry_create(const char *name, const char *image,
                                      const char file_paths[][CONTAINER_FILE_PATH_MAX],
                                      int file_count, const char *disk_name,
                                      const char dns_server_ips[][RESOLV_IP_STRLEN],
-                                     int dns_server_count, int adopt_if_running,
+                                     int dns_server_count,
                                      struct registry_entry **out)
 {
 	int i, slot = -1;
-	int adopted = 0;
 	struct registry_entry *e;
 
 	if (registry_find(name) != NULL)
@@ -91,22 +71,8 @@ enum registry_error registry_create(const char *name, const char *image,
 		return REGISTRY_ERR_FULL;
 
 	e = &g_entries[slot];
-	/*
-	 * ADR-0246: at worker startup, a container named by a definition may
-	 * already be running -- it survived the previous worker's death.
-	 * Adopt it rather than starting a second one on top of it, which
-	 * would collide on the name, the cgroup and the bridge.
-	 */
-	if (adopt_if_running) {
-		int rc = container_adopt(spec, &e->handle);
-
-		if (rc < 0)
-			return REGISTRY_ERR_CREATE_FAILED;
-		adopted = (rc == 0);
-	}
-	if (!adopted && container_create(spec, &e->handle) != 0)
+	if (container_create(spec, &e->handle) != 0)
 		return REGISTRY_ERR_CREATE_FAILED;
-	e->adopted = adopted;
 
 	memset(e->name, 0, sizeof(e->name));
 	strncpy(e->name, name, sizeof(e->name) - 1);
@@ -278,32 +244,20 @@ int registry_ip_holder(uint32_t candidate_be, char *out_name, size_t out_name_si
 	return 0;
 }
 
+static void registry_mark_exited_with(struct registry_entry *entry, int status, int sig);
+
 void registry_mark_exited(struct registry_entry *entry)
 {
 	int status, sig;
-
-	/*
-	 * ADR-0246: an ADOPTED container is not this process's child -- it
-	 * was reparented to the supervisor when the previous worker died --
-	 * so waitid() here fails with ECHILD and there is nothing to
-	 * collect. Its exit arrives instead over the supervisor's reap
-	 * channel, which calls registry_mark_exited_with() directly with
-	 * the status the supervisor already reaped. Nothing to do here.
-	 */
-	if (entry->adopted)
-		return;
 
 	if (container_wait(&entry->handle, &status, &sig) == 0)
 		registry_mark_exited_with(entry, status, sig);
 }
 
-/*
- * The bookkeeping half of registry_mark_exited(), split out so that the
- * two ways an exit can be learned -- reaping our own child, or being
- * told by the supervisor about one of its -- share a single
- * implementation rather than growing a second, drifting copy.
- */
-void registry_mark_exited_with(struct registry_entry *entry, int status, int sig)
+/* The bookkeeping half of registry_mark_exited(), kept separate from
+ * the waitid() that produces the status so the two concerns stay
+ * readable. */
+static void registry_mark_exited_with(struct registry_entry *entry, int status, int sig)
 {
 	{
 		char diag[256];

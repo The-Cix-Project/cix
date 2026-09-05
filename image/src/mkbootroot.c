@@ -454,53 +454,6 @@ int main(int argc, char **argv)
 	if (test_image_fixture_build(image_root, cixd_bin, "cixd") != 0)
 		return 1;
 	/*
-	 * ADR-0246: cix-init, the supervisor that becomes pid 1 and keeps
-	 * a wedged worker recoverable.
-	 *
-	 * Its path is derived from cixd's own directory rather than taken
-	 * as an eleventh positional argument. The two binaries are always
-	 * produced and shipped together -- the cix recipe's pkg_install()
-	 * copies both into PKG_DESTDIR, and a local build leaves both in
-	 * build/ -- so a separate argument would be a second way of saying
-	 * the same thing, and eight argv-building call sites (this
-	 * daemon's assembly path plus seven tests) would all have to agree
-	 * about it. Two of this change's own build failures were exactly
-	 * that: one call site of a changed signature missed among several.
-	 *
-	 * The invariant is enforced, not assumed. A root that silently
-	 * lacked its own init would fail at boot, as a panic, on a machine
-	 * with no shell -- so a missing cix-init fails the assembly here
-	 * instead, in the same spirit as verify_platform_libs_intact()
-	 * below refusing to seal a root whose libraries no longer match.
-	 */
-	{
-		char cixinit_bin[PATH_MAX];
-		struct stat init_st;
-		const char *slash = strrchr(cixd_bin, '/');
-
-		if (slash != NULL) {
-			int dirlen = (int)(slash - cixd_bin);
-
-			if (snprintf(cixinit_bin, sizeof(cixinit_bin), "%.*s/cix-init", dirlen,
-			              cixd_bin) >= (int)sizeof(cixinit_bin)) {
-				fprintf(stderr, "mkbootroot: cix-init path too long\n");
-				return 1;
-			}
-		} else {
-			snprintf(cixinit_bin, sizeof(cixinit_bin), "cix-init");
-		}
-		if (stat(cixinit_bin, &init_st) != 0 || !S_ISREG(init_st.st_mode)) {
-			fprintf(stderr,
-			        "mkbootroot: %s is missing -- cix-init must be built and installed "
-			        "alongside cixd (ADR-0246); refusing to write a root with no "
-			        "supervisor\n",
-			        cixinit_bin);
-			return 1;
-		}
-		if (test_image_fixture_build(image_root, cixinit_bin, "cix-init") != 0)
-			return 1;
-	}
-	/*
 	 * cixctl itself: staged so cixd --init-mode (Phase 19) has
 	 * something to execve() when it spawns a managed shell on each
 	 * console -- previously absent from this image entirely, meaning

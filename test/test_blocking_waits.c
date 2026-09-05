@@ -1,6 +1,5 @@
 /*
- * test_blocking_waits -- the reactor's blocking-wait budget (ADR-0246
- * item 4).
+ * test_blocking_waits -- the reactor's blocking-wait budget (ADR-0247).
  *
  * cixd is single-threaded. One epoll_wait() loop serves every request,
  * every container exit, every console byte, so a blocking call anywhere

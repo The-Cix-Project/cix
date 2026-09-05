@@ -147,16 +147,6 @@ struct stall_shared {
 static struct stall_shared *g_shared;
 static char g_records_path[PATH_MAX];
 
-/*
- * ADR-0246 item 2: whether a supervisor is present to act on what this
- * watchdog measures. Set from stallwatch_start(); read in the forked
- * child, which inherits it across the fork.
- *
- * Without a supervisor the watchdog behaves exactly as it always has --
- * it records and nothing else. Signalling pid 1 when pid 1 is the
- * daemon itself would be pointless at best.
- */
-static int g_supervised;
 static pid_t g_watchdog_pid = -1;
 
 static long long monotonic_millis(void)
@@ -698,9 +688,6 @@ static void watchdog_main(pid_t watched)
 					last_reported = now;
 					append_record("service-stall", now - unserved_since, watched);
 					/*
-					 * ADR-0246 item 2: recording was already built;
-					 * acting is the whole delta.
-					 *
 					 * The daemon has failed PROBE_FAILURES_FOR_STALL
 					 * consecutive HTTP probes, which is the precise
 					 * condition an operator cannot observe from
@@ -709,19 +696,12 @@ static void watchdog_main(pid_t watched)
 					 * whose job is to report this is structurally
 					 * incapable of it.
 					 *
-					 * SIGUSR1 to pid 1 asks the supervisor to kill
-					 * and restart the worker. Running containers
-					 * survive that: they are reparented to the
-					 * supervisor, and the next worker re-adopts them
-					 * rather than starting duplicates.
+					 * Recorded and nothing else. cixd is pid 1 on a
+					 * real host, so there is no authority above it to
+					 * ask for a restart -- ADR-0247 makes not blocking
+					 * the defence rather than being restartable after
+					 * the fact.
 					 */
-					if (g_supervised) {
-						append_record("restart-requested", now - unserved_since,
-						               watched);
-						if (kill(1, SIGUSR1) != 0)
-							append_record("restart-request-failed",
-							               now - unserved_since, watched);
-					}
 				} else if (in_service_stall && now - last_reported >= STALL_REPEAT_SECONDS) {
 					last_reported = now;
 					append_record("service-stall-continues", now - unserved_since, watched);
@@ -789,11 +769,9 @@ void stallwatch_set_probe(const char *host, int port)
 	g_shared->probe_port = port;
 }
 
-int stallwatch_start(const char *records_path, int supervised)
+int stallwatch_start(const char *records_path)
 {
 	pid_t pid;
-
-	g_supervised = supervised;
 
 	snprintf(g_records_path, sizeof(g_records_path), "%s", records_path);
 

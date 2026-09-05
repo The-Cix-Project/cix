@@ -1209,24 +1209,18 @@ paths:
       description: >
         A real, immediate SIGKILL -- no grace period, unlike DELETE
         /containers/{name} (which has real container-lifecycle
-        semantics). Refuses pid 1 outright (400) -- before ADR-0246
-        that was this daemon, and it is now the supervisor, which is
-        init either way. Every other pid is allowed, including one
-        that happens to belong to a running container (equivalent to
-        that container crashing on its own; the existing exit handling
-        already covers it).
+        semantics). Refuses pid 1 outright (400): on an installed host
+        that is this daemon, and killing init crashes the machine.
+        Every other pid is allowed, including one that happens to
+        belong to a running container (equivalent to that container
+        crashing on its own; the existing exit handling already covers
+        it).
 
-        ADR-0246: this daemon's OWN pid is allowed when a supervisor is
-        running above it, and refused (400) when one is not. Killing
-        the control plane is a supported recovery action once something
-        can bring it back -- the worker restarts within seconds and the
-        containers it manages keep running throughout, being re-adopted
-        rather than recreated. Unsupervised it stays refused, because a
-        cixd running as pid 1 that kills itself is a kernel panic.
-
-        The response to a successful self-kill is not observable: the
-        process is gone before it can reply, so the connection simply
-        drops. Poll GET /v1/health to see the new worker answering.
+        This daemon's own pid is also refused (400), whatever number it
+        carries. Usually that is pid 1 and the rule above already
+        covers it; a cixd started by hand is refused for the same
+        reason, since nothing would bring it back and the caller would
+        be left with no control plane and no way to say so.
       operationId: killSystemProcess
       x-cix-expose: [cli, web]
       parameters:
