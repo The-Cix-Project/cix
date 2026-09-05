@@ -2,6 +2,20 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### A slice reached a real build broken, and the fix is a check that would have said so
+
+v2.53.69 failed to link: `unresolved reference to dhcp_apply_and_maybe_restart`. `api_network.c` carried a **local** forward declaration of it — not from a shared header — while the definition stayed `static` in `main.c`. Neither file had anything to disagree with, both compiled clean under `-Wall -Werror`, and only the host link found it, one full build cycle later.
+
+`handle_network_delete()` is back in main.c where rule 2 puts it, for a reason the slice tool could not see: deleting a network drops its DHCP configuration, and that arms a rolling-restart timerfd.
+
+**The check that would have caught it already existed.** It had been run after the first batch and then quietly dropped from later rounds in favour of the duplicate-symbol check alone. That is the actual failure here — not the missing declaration, which is an ordinary mistake, but a verification step that could be skipped and eventually was.
+
+So it is `tools/verify-symbols.sh` now rather than a habit. It compiles every source and asks the symbol tables the three questions the linker would: duplicate globals, symbols referenced externally but defined only as a static, and statics main.c declares without defining.
+
+It asks the **symbol table** rather than matching names, which is the detail that makes it work: a symbol undefined in one object and defined *locally* (nm's lowercase `t`/`d`/`b`) in another is exactly that mistake, whatever it is called. The first attempt used a libc name heuristic and was useless — it listed `swapon` and `stdout` and missed the real one.
+
+Proven rather than assumed: injecting that exact shape makes the check fail and name the symbol, while both compilers stay silent.
+
 ### Seventeen modules: networks, and two utilities find their home (ADR-0249)
 
 `network` (creating virtual networks, their ports, attaching and detaching real host interfaces) brings it to seventeen. **main.c is 24,770 lines, down from 31,284 — 6,514 gone, 21%.**
