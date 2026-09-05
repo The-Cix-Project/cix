@@ -298,11 +298,35 @@ void hostproc_write_json_list(struct json_writer *w)
 	jw_arr_close(w);
 }
 
-enum hostproc_error hostproc_kill(pid_t pid)
+enum hostproc_error hostproc_kill(pid_t pid, int supervised)
 {
 	char path[64];
 
-	if (pid <= 1 || pid == getpid())
+	/*
+	 * pid 1 is never killable. Before ADR-0246 that was this daemon
+	 * itself; now it is the supervisor, and killing the supervisor is
+	 * killing init either way.
+	 */
+	if (pid <= 1)
+		return HOSTPROC_ERR_FORBIDDEN;
+
+	/*
+	 * ADR-0246: killing THIS daemon is allowed once something is above
+	 * it to bring it back.
+	 *
+	 * The blanket refusal was correct when it was written, because
+	 * cixd was pid 1 and killing it was indistinguishable from
+	 * destroying the host -- there was no recovery to return to. Under
+	 * a supervisor the worker is deliberately disposable: it is
+	 * restarted within seconds and the containers it was managing keep
+	 * running throughout, because they are re-adopted rather than
+	 * recreated. "Restart the control plane" is then an ordinary
+	 * operator action rather than an outage.
+	 *
+	 * Unsupervised it stays refused, and that is not a leftover: a
+	 * cixd running as pid 1 that kills itself is a kernel panic.
+	 */
+	if (pid == getpid() && !supervised)
 		return HOSTPROC_ERR_FORBIDDEN;
 
 	snprintf(path, sizeof(path), "/proc/%d", (int)pid);

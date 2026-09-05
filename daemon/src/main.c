@@ -8863,6 +8863,24 @@ static void handle_hostproc_list(int fd)
 	jw_free(&w);
 }
 
+/*
+ * ADR-0246: this worker's end of the supervisor's reap channel, or -1
+ * when there is no supervisor (a worker started directly -- the test
+ * suite does this, and so does anyone running cixd by hand).
+ *
+ * Its presence is what makes re-adoption legitimate. A worker may only
+ * adopt a container it cannot reap if something else is reaping it and
+ * will say so; without this channel an adopted container's exit would
+ * be unobservable, so adoption is not attempted at all and every
+ * container is started fresh, exactly as before this ADR.
+ */
+static int g_supervisor_reap_fd = -1;
+
+static int supervisor_reap_available(void)
+{
+	return g_supervisor_reap_fd >= 0;
+}
+
 static void handle_hostproc_kill(int fd, const char *pid_str)
 {
 	char *endptr;
@@ -8875,7 +8893,7 @@ static void handle_hostproc_kill(int fd, const char *pid_str)
 		return;
 	}
 
-	herr = hostproc_kill((pid_t)pid);
+	herr = hostproc_kill((pid_t)pid, supervisor_reap_available());
 	switch (herr) {
 	case HOSTPROC_OK:
 		http_set_blocking(fd);
@@ -8931,24 +8949,6 @@ static void handle_get_one(int fd, const char *name)
 	registry_write_json_one(e, &w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
-}
-
-/*
- * ADR-0246: this worker's end of the supervisor's reap channel, or -1
- * when there is no supervisor (a worker started directly -- the test
- * suite does this, and so does anyone running cixd by hand).
- *
- * Its presence is what makes re-adoption legitimate. A worker may only
- * adopt a container it cannot reap if something else is reaping it and
- * will say so; without this channel an adopted container's exit would
- * be unobservable, so adoption is not attempted at all and every
- * container is started fresh, exactly as before this ADR.
- */
-static int g_supervisor_reap_fd = -1;
-
-static int supervisor_reap_available(void)
-{
-	return g_supervisor_reap_fd >= 0;
 }
 
 static void supervisor_reap_channel_init(void)
