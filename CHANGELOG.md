@@ -2,6 +2,20 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### A build that cannot find a tool is now a failed build (#302, ADR-0250)
+
+gettext's build environment was missing four tools. `gzip` stopped the build at `Error 127`. `find`, `cmp` and `xargs` did not stop it at all — libtool quietly produced a static archive with the convenience-archive objects left out, and `configure` quietly answered two feature probes from a tool that was not there. Exit 0, wrong output, nothing said. Eight recipe revisions were spent blaming the compiler and then the link mode.
+
+Three things that already exist could not catch it. `elfcheck.c` inspects ELF objects, and a static archive missing members is not an ELF-level defect. A recipe's own gates cover only the tools someone already thought of. And the ~4KB captured output tail is the wrong window — the missing-command line is usually thousands of lines before the end, which is exactly why nobody saw it.
+
+So `cixd` now reads its own build output. `pkg_build_output_append()` is the one chokepoint every byte passes through; it assembles lines across `read()` boundaries, matches the wording actually measured (`": command not found"`), takes the token immediately before it as the tool name, and **fails the build — including one that exited 0** — with a message that names the tool. Over-long lines are kept by their tail, since the name sits immediately before the phrase, and the buffer halves rather than shifting per character so a 200KB link line stays linear.
+
+Measured before making it fatal: of the 41 build logs on 192.168.15.95, **exactly one package's** contained the phrase — gettext, the bug it came from. Nothing that builds correctly today is refused.
+
+`test_pkg.c` drives the silent case end to end: a recipe that invokes a command which genuinely is not there and then exits 0. Deliberately a real missing command rather than an echo of the phrase — an echo would prove the scanner reads text, not that it catches what actually happens.
+
+The rejected alternative is recorded in ADR-0250: a mandatory tool baseline in every build environment would remove this trap by weakening the property ADR-0199 exists for, and would still only cover the four tools someone enumerated today.
+
 ### `_Static_assert` could not hold a 64-bit constant (#220)
 
 `do_Static_assert()` evaluated its condition with `expr_const()` — the 32-bit wrapper, which computes the value as `int64_t` and then raises `constant exceeds 32 bit` if it doesn't fit an `int` or `unsigned`. That diagnostic is right for an array size or a bit-field width and wrong here: C requires only an *integer constant expression*, with no width limit.
