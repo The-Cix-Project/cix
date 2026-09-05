@@ -2550,6 +2550,20 @@ function closeConsole() {
 let consoleSelected = null;
 
 /*
+ * An explicit command to attach to, instead of one of the container's
+ * declared consoles -- the dashboard's half of `cixctl container
+ * console NAME --cmd=PATH`.
+ *
+ * This was an X-Cix-Exec-Cmd request header until ADR-0245, which is the one
+ * thing this client can never send: a browser's WebSocket constructor
+ * sets no request headers at all. It is a `cmd` query parameter now, so
+ * both surfaces can reach it -- the same reasoning ADR-0242 used for
+ * term/cols/rows, applied to the parameter it had named as the example
+ * of getting it wrong.
+ */
+let consoleCmd = "";
+
+/*
  * Show what this container OFFERS as a console, and say plainly when it
  * offers nothing (issue #248).
  *
@@ -2568,9 +2582,17 @@ function renderConsolePicker(c) {
 	if (consoles.length === 0) {
 		pick.hidden = true;
 		label.hidden = true;
-		output.hidden = true;
-		status.textContent = "This container declares no console.";
 		consoleSelected = null;
+		/*
+		 * No DECLARED console is not the same as no console. An
+		 * explicit command still works on such a container -- the
+		 * daemon says so -- so the terminal stays available and only
+		 * the picker goes away. Hiding the pane outright, as this did
+		 * before the Run box existed, would now be hiding a control
+		 * that works.
+		 */
+		output.hidden = false;
+		status.textContent = "This container declares no console -- use Run with an absolute path.";
 		return;
 	}
 	output.hidden = false;
@@ -2617,10 +2639,57 @@ function wireConsolePicker() {
 	pick.addEventListener("change", () => {
 		const name = consoleContainerName;
 
+		/* Choosing a declared console clears any explicit command --
+		 * otherwise the picker would appear to do nothing, because the
+		 * command wins. */
+		consoleCmd = "";
+		const cmdInput = document.getElementById("cd-console-cmd");
+
+		if (cmdInput !== null)
+			cmdInput.value = "";
 		consoleSelected = pick.value;
 		if (name !== null) {
 			closeConsole();
 			openConsole(name);
+		}
+	});
+
+	const cmdInput = document.getElementById("cd-console-cmd");
+	const cmdRun = document.getElementById("cd-console-cmd-run");
+
+	if (cmdInput === null || cmdRun === null)
+		return;
+
+	/*
+	 * Reattaching is an explicit act, not something that happens as you
+	 * type: every keystroke would otherwise tear down a live session.
+	 * Enter and the button are the same path.
+	 */
+	const attach = () => {
+		const name = consoleContainerName;
+		const status = document.getElementById("cd-console-status");
+		const wanted = cmdInput.value.trim();
+
+		if (wanted !== "" && wanted.charAt(0) !== "/") {
+			/* Said here rather than sent, because the daemon's 400
+			 * arrives as a failed WebSocket upgrade, which surfaces to
+			 * the operator as a bare "disconnected" with no reason. */
+			if (status !== null)
+				status.textContent = "Run needs an absolute path, e.g. /usr/bin/bash";
+			return;
+		}
+		consoleCmd = wanted;
+		if (name !== null) {
+			closeConsole();
+			openConsole(name);
+		}
+	};
+
+	cmdRun.addEventListener("click", attach);
+	cmdInput.addEventListener("keydown", (e) => {
+		if (e.key === "Enter") {
+			e.preventDefault();
+			attach();
 		}
 	});
 }
@@ -2671,7 +2740,12 @@ function openConsole(name) {
 	/* #248: attach to the console the operator picked. Omitted entirely
 	 * when nothing is picked, so the daemon applies its own "first
 	 * declared" rule rather than this client duplicating it. */
-	if (consoleSelected)
+	/* An explicit command wins over the declared console, and the
+	 * daemon enforces that -- this client sends one or the other, not
+	 * both, so the two can never disagree about what is running. */
+	if (consoleCmd)
+		params.push("cmd=" + encodeURIComponent(consoleCmd));
+	else if (consoleSelected)
 		params.push("console=" + encodeURIComponent(consoleSelected));
 	/* xterm-256color rather than anything more exotic: it is what this
 	 * emulator actually implements, and naming a terminfo entry the
