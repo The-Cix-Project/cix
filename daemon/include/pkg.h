@@ -1087,9 +1087,11 @@ void pkg_write_json_config(struct json_writer *w);
 void pkg_write_drift_json(struct json_writer *w);
 
 /*
- * Issue #281: {"packages":[...], "checked":N, "incomplete":N} -- every
- * INSTALLED package whose own recorded files are not present in its
- * image's current rootfs. Empty `packages` is the healthy answer.
+ * Issues #281 and #289: {"packages":[...], "checked":N, "incomplete":N}
+ * -- every INSTALLED package whose own recorded files are not present
+ * in its image's current rootfs, or whose installed headers make
+ * unconditional includes that do not resolve in that image. Empty
+ * `packages` is the healthy answer.
  *
  * On demand only. It stats every file of every installed package, which
  * is why it is its own endpoint rather than a field on GET /v1/pkg --

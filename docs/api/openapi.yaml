@@ -8005,7 +8005,8 @@ paths:
     get:
       summary: >
         Every installed package whose own recorded files are not
-        actually present in its image's current rootfs (issue #281).
+        actually present in its image's current rootfs (#281), or whose
+        installed headers make includes that do not resolve (#289).
       description: >
         `GET /pkg` and the image can disagree, and until this endpoint
         existed nothing surfaced the disagreement. An image version is a
@@ -8069,7 +8070,8 @@ paths:
                     description: Only the incomplete ones. Empty is healthy.
                     items:
                       type: object
-                      required: [name, image, version, missing_count, file_count, first_missing]
+                      required: [name, image, version, missing_count, file_count, first_missing,
+                                 unresolved_includes, first_unresolved_include]
                       properties:
                         name:
                           type: string
@@ -8088,6 +8090,41 @@ paths:
                           description: >
                             One concrete absent path, so the report names
                             something checkable rather than only a count.
+                        unresolved_includes:
+                          type: integer
+                          description: >
+                            How many angle-bracket `#include`s in this
+                            package's own installed headers do not resolve
+                            to a file in this image's include tree (#289).
+                            A package that installs headers is shipping an
+                            interface, and an interface that cannot be
+                            included is broken whether or not anything
+                            uses it yet -- linux-pam shipped exactly that
+                            for six revisions, installing
+                            `security/pam_misc.h` while never building the
+                            `libpamc` directory its first include comes
+                            from.
+
+
+                            Unconditional includes only: one inside
+                            `#if`/`#ifdef` is frequently meant not to
+                            resolve on this platform, and flagging those
+                            would make the check noise. A file's own
+                            include guard is not treated as such a
+                            conditional, or nothing in a guarded header
+                            would be checked at all.
+
+
+                            Reported, never fatal to an install -- unlike
+                            the ELF undefined-symbol gate, reading C
+                            without a preprocessor cannot claim to be
+                            false-positive-free, so it says so loudly
+                            rather than refusing.
+                        first_unresolved_include:
+                          type: string
+                          description: >
+                            The first as `header: <include>`, so the
+                            report names something checkable.
                   checked:
                     type: integer
                     description: Installed packages examined (hostbuilds excluded).

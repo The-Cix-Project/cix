@@ -2380,6 +2380,159 @@ static int installed_files_missing(const char *image, const struct pkg_entry *e,
 	return missing;
 }
 
+/*
+ * Does every header this package installed actually resolve? (#289)
+ *
+ * A package that installs headers is shipping an INTERFACE, and an
+ * interface that cannot be included is broken whether or not anything
+ * currently uses it. linux-pam shipped exactly that for six revisions:
+ * it installed security/pam_misc.h, whose very first include is
+ * security/pam_client.h, and never built the libpamc directory that
+ * header comes from. Nothing linked pam_misc, so nothing noticed --
+ * until util-linux ran a compile test on it while packaging login(1),
+ * concluded PAM was unusable, and refused to build. The message named
+ * PAM, not the missing header, and not linux-pam.
+ *
+ * This recipe set builds directory-by-directory on purpose, so any
+ * recipe that installs SOME of an upstream project's headers can carry
+ * the same defect silently. The check is the cheap half of what a
+ * compiler would do: for each installed header, does every angle-
+ * bracket include it makes unconditionally resolve to a file that
+ * exists in this image's own include tree?
+ *
+ * Three deliberate limits, because a check with false positives is one
+ * that gets switched off:
+ *
+ *   - Angle-bracket includes only. A quoted include is relative to the
+ *     including file and follows different rules.
+ *   - UNCONDITIONAL includes only. An include inside #if/#ifdef is
+ *     frequently meant not to resolve on this platform, and treating
+ *     those as defects would flag correct headers constantly. A file's
+ *     own include guard is not such a conditional and is skipped, or
+ *     nothing in a guarded header would ever be checked -- which is
+ *     every header worth checking.
+ *   - Existence, not compilability. Whether the resolved header itself
+ *     parses is the compiler's question. This one answers "is it even
+ *     there", which is the failure that actually happened.
+ *
+ * Reported, never fatal to an install, and that is a judgement rather
+ * than timidity: elfcheck refuses a shared library with undefined
+ * symbols because that check has essentially no false positives, and
+ * this one -- reading C without a preprocessor -- cannot make the same
+ * claim. It says so loudly instead, in the log at install time and in
+ * GET /v1/pkg/verify afterwards.
+ *
+ * Returns the number of unresolved includes, and writes the first as
+ * "header: <include>" so the report names something checkable.
+ */
+static int header_includes_unresolved(const char *image, const struct pkg_entry *e, char *first_bad,
+                                       size_t first_bad_size)
+{
+	char version[IMAGE_VERSION_MAX];
+	char rootfs[PATH_MAX];
+	char path[PATH_MAX];
+	struct stat st;
+	int unresolved = 0;
+	int i;
+
+	if (first_bad != NULL && first_bad_size > 0)
+		first_bad[0] = '\0';
+	if (e == NULL || e->file_count == 0)
+		return 0;
+	if (image_current_version(image, version, sizeof(version)) != IMAGE_OK)
+		return 0;
+	image_version_rootfs_path(image, version, rootfs, sizeof(rootfs));
+
+	for (i = 0; i < e->file_count; i++) {
+		const char *rel = e->files[i];
+		char *buf = NULL;
+		size_t len = 0;
+		char *line, *save;
+		int depth = 0;
+		int guard_pending = 0;   /* saw #ifndef, waiting to see if a #define follows */
+		int guard_depth = -1;    /* the depth the include guard occupies, once known */
+		size_t rel_len;
+
+		while (*rel == '/')
+			rel++;
+		rel_len = strlen(rel);
+		if (rel_len < 3 || strcmp(rel + rel_len - 2, ".h") != 0)
+			continue;
+		if (strncmp(rel, "usr/include/", 12) != 0)
+			continue;
+		if (snprintf(path, sizeof(path), "%s/%s", rootfs, rel) >= (int)sizeof(path))
+			continue;
+		if (persist_read_file(path, &buf, &len) != 0 || buf == NULL)
+			continue; /* Absent is installed_files_missing()'s question, not this one. */
+
+		for (line = strtok_r(buf, "\n", &save); line != NULL;
+		     line = strtok_r(NULL, "\n", &save)) {
+			const char *p = line;
+
+			while (*p == ' ' || *p == '\t')
+				p++;
+			if (*p != '#')
+				continue;
+			p++;
+			while (*p == ' ' || *p == '\t')
+				p++;
+
+			if (guard_pending) {
+				/* The guard is only a guard if its #ifndef is
+				 * immediately followed by the matching #define. */
+				guard_pending = 0;
+				if (strncmp(p, "define", 6) == 0)
+					guard_depth = 1;
+			}
+
+			if (strncmp(p, "ifndef", 6) == 0 || strncmp(p, "ifdef", 5) == 0 ||
+			    strncmp(p, "if", 2) == 0) {
+				depth++;
+				if (depth == 1 && guard_depth < 0 && strncmp(p, "ifndef", 6) == 0)
+					guard_pending = 1;
+				continue;
+			}
+			if (strncmp(p, "endif", 5) == 0) {
+				if (depth > 0)
+					depth--;
+				continue;
+			}
+			if (strncmp(p, "include", 7) != 0)
+				continue;
+			/* Unconditional means depth 0, or depth 1 when that one
+			 * level is the file's own include guard. */
+			if (depth > (guard_depth > 0 ? guard_depth : 0))
+				continue;
+			p += 7;
+			while (*p == ' ' || *p == '\t')
+				p++;
+			if (*p == '<') {
+				char inc[256];
+				const char *close = strchr(p + 1, '>');
+				size_t n;
+
+				if (close == NULL)
+					continue;
+				n = (size_t)(close - (p + 1));
+				if (n == 0 || n >= sizeof(inc))
+					continue;
+				memcpy(inc, p + 1, n);
+				inc[n] = '\0';
+				if (snprintf(path, sizeof(path), "%s/usr/include/%s", rootfs, inc) >=
+				    (int)sizeof(path))
+					continue;
+				if (lstat(path, &st) != 0) {
+					if (unresolved == 0 && first_bad != NULL && first_bad_size > 0)
+						snprintf(first_bad, first_bad_size, "%s: <%s>", rel, inc);
+					unresolved++;
+				}
+			}
+		}
+		free(buf);
+	}
+	return unresolved;
+}
+
 static int image_produce_new_version(const char *image,
                                       int (*mutate)(const char *staging_rootfs, void *ctx),
                                       void *ctx, const char *extra_identity)
@@ -7617,6 +7770,33 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 			}
 		}
 
+		/*
+		 * #289: the package installed headers -- do they resolve?
+		 *
+		 * Logged and not fatal, unlike the check above it. That one
+		 * asks whether the files arrived, which has one answer; this
+		 * one reads C without a preprocessor and cannot claim the
+		 * same certainty, so it reports rather than refuses. It is
+		 * still said at the moment of the install, because the whole
+		 * failure this exists for is a broken interface shipping
+		 * quietly and surfacing later as someone else's build error.
+		 */
+		{
+			char first_bad[PKG_NAME_MAX + 320];
+			int bad = header_includes_unresolved(g_chains[chain_idx].image, e, first_bad,
+			                                      sizeof(first_bad));
+
+			if (bad > 0)
+				logstore_write("cixd", "error",
+				                "pkg %s@%s: installs %d header include(s) that do not "
+				                "resolve in this image, starting with \"%s\" -- the header "
+				                "is shipped and cannot be included, so anything compiling "
+				                "against it fails with an error naming neither this package "
+				                "nor the missing file (#289). Check whether the recipe "
+				                "builds every directory whose headers it installs",
+				                e->name, g_chains[chain_idx].image, bad, first_bad);
+		}
+
 		/* ADR-0122: a fresh, real build's own output is saved into the
 		 * local cache for next time (best-effort, LRU-evicting older
 		 * entries as needed); a cache/artifact hit's own dest_dir was
@@ -7767,7 +7947,8 @@ void pkg_write_verify_json(struct json_writer *w)
 	for (i = 0; i < PKG_MAX_PACKAGES; i++) {
 		struct pkg_entry *e = &g_packages[i];
 		char first_missing[PKG_NAME_MAX + 128];
-		int missing;
+		char first_bad_include[PKG_NAME_MAX + 320];
+		int missing, unresolved;
 
 		if (!e->in_use || e->state != PKG_STATE_INSTALLED)
 			continue;
@@ -7777,7 +7958,9 @@ void pkg_write_verify_json(struct json_writer *w)
 			           * is no image tree for it to be missing from. */
 		checked++;
 		missing = installed_files_missing(e->image, e, first_missing, sizeof(first_missing));
-		if (missing == 0)
+		unresolved = header_includes_unresolved(e->image, e, first_bad_include,
+		                                         sizeof(first_bad_include));
+		if (missing == 0 && unresolved == 0)
 			continue;
 		bad++;
 		jw_obj_open(w);
@@ -7793,6 +7976,10 @@ void pkg_write_verify_json(struct json_writer *w)
 		jw_int(w, e->file_count);
 		jw_key(w, "first_missing");
 		jw_str(w, first_missing);
+		jw_key(w, "unresolved_includes");
+		jw_int(w, unresolved);
+		jw_key(w, "first_unresolved_include");
+		jw_str(w, first_bad_include);
 		jw_obj_close(w);
 	}
 	jw_arr_close(w);

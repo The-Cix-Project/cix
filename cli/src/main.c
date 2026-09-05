@@ -12832,12 +12832,11 @@ static void fmt_pkg_verify(const struct json_value *v)
 	size_t i;
 
 	if (incomplete == 0) {
-		printf("%ld installed packages checked, all present in their images\n", checked);
+		printf("%ld installed packages checked, all present in their images with resolvable "
+		       "headers\n", checked);
 		return;
 	}
 
-	printf("%-24s %-16s %-16s %-9s %s\n", "PACKAGE", "IMAGE", "VERSION", "MISSING",
-	       "FIRST MISSING FILE");
 	if (arr == NULL || arr->type != JSON_ARRAY)
 		return;
 	for (i = 0; i < arr->u.array.count; i++) {
@@ -12845,20 +12844,30 @@ static void fmt_pkg_verify(const struct json_value *v)
 		const char *name = json_str_field(e, "name");
 		const char *image = json_str_field(e, "image");
 		const char *ver = json_str_field(e, "version");
-		const char *first = json_str_field(e, "first_missing");
 		long miss = (long)json_as_number(json_object_get(e, "missing_count"));
 		long total = (long)json_as_number(json_object_get(e, "file_count"));
-		char frac[24];
+		long inc = (long)json_as_number(json_object_get(e, "unresolved_includes"));
 
-		snprintf(frac, sizeof(frac), "%ld/%ld", miss, total);
-		printf("%-24s %-16s %-16s %-9s %s\n", name ? name : "?", image ? image : "?",
-		       ver ? ver : "?", frac, first ? first : "?");
+		printf("%s@%s (%s)\n", name ? name : "?", image ? image : "?", ver ? ver : "?");
+		/*
+		 * The two findings are printed as separate lines rather than
+		 * squeezed into shared columns: they are different failures
+		 * with different repairs, and a package can have either, both
+		 * or -- for the header one -- files that are all present.
+		 */
+		if (miss > 0)
+			printf("    %ld of %ld installed file(s) are not in the image: %s\n", miss, total,
+			       json_str_field(e, "first_missing"));
+		if (inc > 0)
+			printf("    %ld unresolved header include(s): %s\n", inc,
+			       json_str_field(e, "first_unresolved_include"));
 	}
-	printf("\n%ld of %ld installed packages are recorded as installed but are not in their "
-	       "image\n", incomplete, checked);
-	printf("an image version is a hash of the installed package set, so reinstalling the same\n");
-	printf("name@version cannot produce a new one -- bump the package revision, or delete and\n");
-	printf("recreate the image\n");
+	printf("\n%ld of %ld installed packages have a problem\n", incomplete, checked);
+	printf("missing files: an image version is a hash of the installed package set, so\n");
+	printf("  reinstalling the same name@version cannot produce a new one -- bump the package\n");
+	printf("  revision, or delete and recreate the image\n");
+	printf("unresolved includes: the package ships a header that cannot be included -- check\n");
+	printf("  whether its recipe builds every directory whose headers it installs\n");
 }
 
 static int cmd_pkg_drift(const struct cix_client *c, int json_mode)
