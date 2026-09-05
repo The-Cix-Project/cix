@@ -120,6 +120,7 @@ struct probe_shared {
 	volatile long long max_gap_ms;
 	volatile long long probes_sent;
 	volatile long long probes_answered;
+	volatile int attacks_skipped;
 	/* Which attack was running when the worst gap ended -- the whole
 	 * point of a hostile test is naming what did it, not that it
 	 * happened. */
@@ -419,7 +420,12 @@ static void attack_console_input_flood(void)
 
 	fd = open_console("aggressive", "/bin/console_term_child");
 	if (fd < 0) {
-		fprintf(stderr, "  (could not open console -- attack skipped)\n");
+		/* Reported, never silent: an attack that did not reach its
+		 * target is not the same as one the daemon survived, and a
+		 * harness that cannot tell them apart certifies nothing. */
+		fprintf(stderr, "    NOT DELIVERED: could not open the console -- this attack ran against"
+		                " nothing\n");
+		g_shared->attacks_skipped++;
 		return;
 	}
 	/* Far past any pty buffer and past the daemon's own 64 KiB bound,
@@ -428,6 +434,18 @@ static void attack_console_input_flood(void)
 		if (ws_send_binary(fd, chunk, sizeof(chunk)) != 0)
 			break; /* daemon closed on us, which is a legitimate answer */
 	}
+	/*
+	 * How much actually went in, reported rather than assumed.
+	 *
+	 * A run of this attack against a daemon with the #294 fix reverted
+	 * neither wedged nor complained, and there was no way to tell from
+	 * the log whether the bytes reached the pty at all -- so the one
+	 * thing the harness most needed to know, it had not recorded. Both
+	 * readings matter: a low count means the daemon stopped accepting,
+	 * which is itself an answer, and a full count with no effect means
+	 * the attack is not landing where it was aimed.
+	 */
+	fprintf(stderr, "    delivered %d of 128 chunks (%d bytes)\n", i, i * (int)sizeof(chunk));
 	usleep(500000);
 	close(fd);
 }
@@ -713,6 +731,11 @@ int main(void)
 	printf("\n");
 	printf("  probes sent/answered : %lld/%lld\n", g_shared->probes_sent,
 	       g_shared->probes_answered);
+	if (g_shared->attacks_skipped > 0) {
+		printf("  attacks NOT DELIVERED: %d -- this run attacked less than it claims to\n",
+		       g_shared->attacks_skipped);
+		g_failures++;
+	}
 	printf("  worst gap            : %lld ms\n", max_gap);
 	printf("  during               : %s\n",
 	       g_shared->worst_attack[0] != '\0' ? g_shared->worst_attack : "(none)");
