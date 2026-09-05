@@ -16472,6 +16472,32 @@ static int rolling_jitter_seconds(int window);
  */
 #define DHCP_RESTART_JITTER_SECONDS 20
 
+static void dhcp_apply_and_maybe_restart(void);
+
+/*
+ * Stays in main.c rather than moving to api_network.c with its
+ * siblings (ADR-0249 rule 2): deleting a network drops its DHCP
+ * configuration in the same breath, and that arms a rolling-restart
+ * timerfd for every affected server. A handler that reaches the event
+ * loop stays with the event loop.
+ */
+static void handle_network_delete(int fd, const char *name)
+{
+	enum network_error nerr = network_delete(name);
+
+	if (nerr != NETWORK_OK) {
+		respond_network_error(fd, nerr);
+		return;
+	}
+	/* A DHCP config for a network that no longer exists is a range
+	 * nothing can serve, kept alive by nothing but our own forgetting
+	 * to drop it. */
+	dhcp_forget_network(name);
+	dhcp_apply_and_maybe_restart();
+	http_set_blocking(fd);
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}
+
 static void dhcp_apply_and_maybe_restart(void)
 {
 	char names[DNS_SERVER_MAX][DNS_SERVER_NAME_MAX];

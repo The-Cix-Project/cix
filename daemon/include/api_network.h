@@ -30,7 +30,6 @@ int network_error_to_status(enum network_error err, const char **out_msg);
 void respond_network_error(int fd, enum network_error err);
 
 void handle_network_create(int fd, const char *body, size_t body_len);
-void handle_network_delete(int fd, const char *name);
 void handle_network_detach_interface(int fd, const char *net_name, const char *ifname);
 void handle_network_get_one(int fd, const char *name);
 void handle_network_list(int fd);
