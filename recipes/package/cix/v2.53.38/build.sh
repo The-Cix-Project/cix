@@ -1,4 +1,16 @@
 #
+# v2.53.38 -- a shipped header that cannot be included is detectable
+# (#289). linux-pam installed security/pam_misc.h for six revisions
+# while never building the libpamc directory its first include comes
+# from; nothing linked pam_misc, so nothing noticed until util-linux
+# ran a compile test on it and refused to build login(1), with an error
+# naming PAM rather than the missing header. Each installed header's
+# unconditional angle-bracket includes are now checked against the
+# image's include tree, reported in the log at install time and in
+# GET /v1/pkg/verify. Reported, never fatal: unlike elfcheck, reading C
+# without a preprocessor cannot claim to be free of false positives.
+#
+#
 # v2.53.37 -- every curl the daemon forks carries a stall guard (#285).
 # curl waits forever once connected, and nine of ten call sites passed
 # no timeout at all. One of them, fetch_update_image(), runs on the
@@ -530,9 +542,9 @@
 # predated #60.)
 #
 pkg_name="cix"
-pkg_version="v2.53.37"
-pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/v2.53.37.tar.gz"
-pkg_sha256="b45a5516788fefc539f8ec0db15559f011053a4e15a9cf7fa1485d2899d83422"
+pkg_version="v2.53.38"
+pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/v2.53.38.tar.gz"
+pkg_sha256="63a409b07edf46c92d922b9a71c7550768be7535eabceaecc24b01ebbed8ddae"
 # ADR-0199/0209: composed from exactly these, with no fallback
 # environment to inherit anything missing (#168). Cix is the first
 # recipe to need this declaration and it found the rule the hard way:
