@@ -184,23 +184,23 @@ static void reap_all(void)
 		memset(&rec, 0, sizeof(rec));
 		rec.pid = (int32_t)pid;
 		if (WIFEXITED(status)) {
-			rec.si_code = CLD_EXITED;
-			rec.si_status = (int32_t)WEXITSTATUS(status);
+			rec.exit_kind = CLD_EXITED;
+			rec.exit_value = (int32_t)WEXITSTATUS(status);
 		} else if (WIFSIGNALED(status)) {
-			rec.si_code = WCOREDUMP(status) ? CLD_DUMPED : CLD_KILLED;
-			rec.si_status = (int32_t)WTERMSIG(status);
+			rec.exit_kind = WCOREDUMP(status) ? CLD_DUMPED : CLD_KILLED;
+			rec.exit_value = (int32_t)WTERMSIG(status);
 		} else {
 			continue; /* stopped/continued -- not an exit */
 		}
 
 		if (pid == g_worker) {
 			g_worker = -1;
-			if (rec.si_code == CLD_EXITED)
+			if (rec.exit_kind == CLD_EXITED)
 				snprintf(g_last_reason, sizeof(g_last_reason),
-				         "worker exited with status %d", (int)rec.si_status);
+				         "worker exited with status %d", (int)rec.exit_value);
 			else
 				snprintf(g_last_reason, sizeof(g_last_reason),
-				         "worker killed by signal %d", (int)rec.si_status);
+				         "worker killed by signal %d", (int)rec.exit_value);
 			fprintf(stderr, "cix-init: %s\n", g_last_reason);
 		}
 		/*
