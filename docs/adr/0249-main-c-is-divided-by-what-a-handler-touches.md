@@ -132,6 +132,31 @@ It waits for the system-backup group. `handle_backup_config_put()` and
 the daemon-config handlers stayed for the same reason, and each says so
 where it sits.
 
+**One slice reached a real build broken, and the lesson is about the
+process rather than the code.** v2.53.69 failed to link with
+`unresolved reference to dhcp_apply_and_maybe_restart`. `api_network.c`
+carried a *local* forward declaration of it — not from a shared header —
+while the definition stayed `static` in `main.c`. Neither file had
+anything to disagree with, both compiled clean under `-Wall -Werror`,
+and only the host link found it.
+
+The check that would have caught it existed and had been run after the
+first batch, then quietly dropped from later rounds in favour of the
+duplicate-symbol check alone. That is why it is now
+`tools/verify-symbols.sh` rather than a habit: a step that can be
+skipped eventually is.
+
+It asks the symbol table rather than matching names, which is the
+detail that makes it work — a symbol undefined in one object and
+defined LOCALLY (nm's lowercase `t`/`d`/`b`) in another is exactly that
+mistake, whatever it happens to be called. The first attempt used a
+libc name heuristic instead and was useless: it listed `swapon` and
+`stdout` and missed the real one.
+
+`handle_network_delete()` is back in `main.c` where rule 2 puts it, for
+a reason the slice tool could not see: deleting a network drops its
+DHCP configuration, and that arms a rolling-restart timerfd.
+
 Two checks catch what per-file compilation cannot. A duplicate or missing
 definition is caught by the host link, and `test_lint` (ADR-0248) caught a
 real implicit-declaration during this very work, when `respond_ntp_error()`
