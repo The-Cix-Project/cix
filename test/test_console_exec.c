@@ -346,6 +346,12 @@ int main(void)
 		test_data_dir_cleanup(g_data_dir);
 		return 1;
 	}
+	if (test_image_fixture_build(g_image_root, "build/console_input_child", "console_input_child") !=
+	    0) {
+		fprintf(stderr, "FAIL: could not stage console_input_child\n");
+		test_data_dir_cleanup(g_data_dir);
+		return 1;
+	}
 
 	daemon_pid = start_daemon();
 	if (daemon_pid < 0)
@@ -883,6 +889,116 @@ int main(void)
 			}
 			close(fd);
 		}
+	}
+
+	/*
+	 * #296: the INPUT direction, end to end -- which nothing in this
+	 * file tested until now, and that gap is exactly how #294 shipped.
+	 *
+	 * Every scenario above reads what the exec'd process SAYS. A
+	 * console that draws its prompt and then ignores every keystroke
+	 * passes all of them, and that is precisely what reached a real
+	 * host: struct console_exec_session was malloc()ed and never
+	 * zeroed, so the pty output buffer's length came up as garbage,
+	 * the direct write was skipped, and terminal input was copied to a
+	 * junk offset. The suite was green throughout.
+	 *
+	 * A single marker coming back proves the whole chain in the
+	 * direction that was unasserted: bytes leave here as a masked
+	 * BINARY frame, cross the daemon's websocket relay, are written to
+	 * the pty master (the write path #294 rebuilt as non-blocking with
+	 * an EPOLLOUT drain), reach the slave, are read by a real exec'd
+	 * process, and return the other way.
+	 *
+	 * BINARY, not text: the opcode is the discriminator between a
+	 * keystroke and a control message (ADR-0242), so sending this as
+	 * text would test the resize path instead.
+	 */
+	fd = raw_connect(TEST_PORT);
+	CHECK(fd >= 0, "raw_connect for console-input scenario");
+	if (fd >= 0) {
+		static const char probe[] = "console-input-probe\n";
+
+		rlen = snprintf(req, sizeof(req),
+		                 "GET /v1/containers/consoletest/console?cmd=/bin/console_input_child HTTP/1.1\r\n"
+		                 "Host: 127.0.0.1\r\n"
+		                 "Upgrade: websocket\r\n"
+		                 "Connection: Upgrade\r\n"
+		                 "Sec-WebSocket-Key: %s\r\n"
+		                 "Sec-WebSocket-Version: 13\r\n"
+		                 "\r\n",
+		                 TEST_WS_KEY);
+		write_all_raw(fd, req, (size_t)rlen);
+
+		got = 0;
+		headers_end = NULL;
+		while (got < sizeof(resp) - 1) {
+			n = read(fd, resp + got, sizeof(resp) - 1 - got);
+			if (n <= 0)
+				break;
+			got += (size_t)n;
+			resp[got] = '\0';
+			headers_end = strstr(resp, "\r\n\r\n");
+			if (headers_end != NULL)
+				break;
+		}
+		if (headers_end == NULL || strncmp(resp, "HTTP/1.1 101", 12) != 0) {
+			CHECK(0, "console-input request upgraded to a websocket");
+		} else {
+			char acc[2048];
+			size_t acc_len = 0;
+			int ready = 0, echoed = 0, sent = 0;
+			int attempts, frames = 0, recv_failed = 0;
+
+			acc[0] = '\0';
+			/*
+			 * Wait for INPUT-READY before writing, so a missing
+			 * echo cannot be blamed on having typed at a process
+			 * that had not reached its read() yet. Then send once
+			 * and keep reading: the pty echoes the input back as
+			 * well, so the marker is looked for in everything
+			 * received rather than in one particular frame.
+			 */
+			for (attempts = 0; attempts < 40 && !echoed; attempts++) {
+				int opcode;
+				unsigned char buf[512];
+				size_t len;
+
+				if (ready && !sent) {
+					CHECK(send_ws_frame(fd, 0x2 /* binary -- a keystroke */,
+					                     probe, sizeof(probe) - 1) == 0,
+					      "sending console input as a binary frame");
+					sent = 1;
+				}
+				if (recv_ws_frame(fd, &opcode, buf, sizeof(buf), &len) != 0) {
+					recv_failed = 1;
+					break;
+				}
+				frames++;
+				if (len > 0 && acc_len + len < sizeof(acc)) {
+					memcpy(acc + acc_len, buf, len);
+					acc_len += len;
+					acc[acc_len] = '\0';
+				}
+				if (strstr(acc, "INPUT-READY") != NULL)
+					ready = 1;
+				if (strstr(acc, "INPUT-ECHO:console-input-probe") != NULL)
+					echoed = 1;
+			}
+			if (!echoed) {
+				fprintf(stderr,
+				        "  wanted: INPUT-ECHO:console-input-probe\n"
+				        "  got (%zu bytes in %d frame(s), ready=%d sent=%d, ended: %s): %s\n",
+				        acc_len, frames, ready, sent,
+				        recv_failed ? "read failed or peer closed"
+				                    : "40 frames without a match",
+				        acc_len > 0 ? acc : "(nothing)");
+			}
+			CHECK(ready, "the exec'd process reached its read() and said so");
+			CHECK(echoed,
+			      "a keystroke written to the console reaches the exec'd process (#296)");
+		}
+		close(fd);
 	}
 
 	/* A resize on a LIVE session. The daemon sends no signal itself --
