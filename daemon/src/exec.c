@@ -291,7 +291,24 @@ int exec_into_container(pid_t target_pid, char *const cmd_argv[],
 		int ptn = -1;
 
 		snprintf(ptmx_path, sizeof(ptmx_path), "/proc/%ld/root/dev/pts/ptmx", (long)target_pid);
-		master_fd = open(ptmx_path, O_RDWR | O_NOCTTY | O_CLOEXEC);
+		/*
+		 * O_NONBLOCK, and it is load-bearing rather than tidy (#294).
+		 *
+		 * The daemon reads this master from its single epoll loop, and
+		 * epoll(7) is explicit that a readiness notification may be
+		 * spurious -- a blocking read after EPOLLIN is therefore an
+		 * unbounded hang, and on a single-threaded daemon that hang is
+		 * the whole control plane. It is not theoretical: cixd on
+		 * 192.168.15.95 sat in state S, wchan n_tty_read, for over
+		 * seventeen minutes with no request in flight, serving nothing,
+		 * until the box was reset by hand.
+		 *
+		 * The flag is per file description, so it governs the writes in
+		 * main.c as well -- which is the point. Writing into a master
+		 * whose slave has stopped reading blocks in exactly the same
+		 * way once the input buffer fills.
+		 */
+		master_fd = open(ptmx_path, O_RDWR | O_NOCTTY | O_CLOEXEC | O_NONBLOCK);
 		if (master_fd < 0) {
 			fprintf(stderr, "exec_into_container: open %s: %s\n", ptmx_path, strerror(errno));
 			close(mnt_fd); close(uts_fd); close(net_fd); close(pid_fd); if (user_fd >= 0) close(user_fd);
