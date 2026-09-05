@@ -80,6 +80,13 @@ enum hostproc_error hostproc_snapshot(struct hostproc_entry **out, size_t *count
  * existing SIGCHLD-driven exit handling already covers it, no special
  * case needed here).
  */
-enum hostproc_error hostproc_kill(pid_t pid);
+/*
+ * ADR-0246: `supervised` says whether a supervisor is running above this
+ * daemon and will restart it. It gates one case only -- killing this
+ * daemon's own pid, which is a supported recovery action when something
+ * can bring it back and a kernel panic when nothing can. pid 1 is
+ * refused either way.
+ */
+enum hostproc_error hostproc_kill(pid_t pid, int supervised);
 
 #endif /* HOSTPROC_H */

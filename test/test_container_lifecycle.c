@@ -881,8 +881,23 @@ int main(void)
 			    r.status == 200) {
 				const struct json_value *captured = json_object_get(r.json, "captured_output");
 
+				/*
+				 * Wait for BOTH lines, not just the first.
+				 *
+				 * This loop used to break as soon as the stdout line
+				 * appeared while the assertion below required the
+				 * stderr line too, so a poll landing in the window
+				 * where one had been drained and the other had not
+				 * broke out immediately and then failed the check it
+				 * had not waited for. Intermittent by construction,
+				 * and it reports as "after 0 attempts" -- the loop
+				 * having exited on its very first pass is the tell.
+				 * The two writes are separate pipe reads, so that
+				 * window is real and ordinary.
+				 */
 				if (captured != NULL && captured->type == JSON_STRING &&
-				    strstr(captured->u.string, "capture-test-stdout-line") != NULL) {
+				    strstr(captured->u.string, "capture-test-stdout-line") != NULL &&
+				    strstr(captured->u.string, "capture-test-stderr-line") != NULL) {
 					snprintf(captured_buf, sizeof(captured_buf), "%s", captured->u.string);
 					captured_found = 1;
 					cix_response_free(&r);
