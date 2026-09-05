@@ -24,6 +24,32 @@ The evidence was in the output the whole time: the four `depA: autostarted (rest
 
 `test_daemon_net`'s cleanup step deleted four containers fire-and-forget and then deleted the network they used. When that network delete came back 409, nothing in the output named which container had stayed — only the consequence, which is not a report anyone can act on. The four deletes are asserted now. A cleanup step is still a step.
 
+### The jump box declares a login console, and it exposed a devpts gap (#290)
+
+`jump` 1.3.0 declares two consoles — `shell` (default) and `login` — and stages `/etc/pam.d/login` with the same LDAP stack the working `sshd` policy already uses, including `pam_mkhomedir` so an LDAP account gets a home on the `jump-home` volume.
+
+No getty is involved and none is needed: the console endpoint already allocates a real PTY, does `setsid()` + `TIOCSCTTY` (ADR-0043) and sets `TERM` and the window size (ADR-0242), which is everything a getty would have done before exec'ing `login`.
+
+**It does not work yet, and finding out why is the useful part.** Attaching to `?console=login` returns a clean `101 Switching Protocols` and then closes after exactly 5.0 seconds having sent zero bytes. Inside the container:
+
+```
+tty                   ->  ttyname error: No such device   (rc 4)
+ls -l /proc/self/fd/0 ->  /dev/pts/0
+ls -la /dev/pts       ->  ptmx only, no slave entries
+```
+
+The PTY is allocated from the **host's** devpts and the slave fd is handed to the child, but the container has its own devpts mounted at `/dev/pts` which has never allocated a slave. The fd reads and writes perfectly — `bash` never notices — but its *name* cannot be resolved. `login`'s `init_tty()` resolves the terminal name, and on failure writes `FATAL: bad tty` to **syslog** rather than to the terminal it is holding, then `sleepexit()`s. Five seconds and silence is precisely that default `FAIL_DELAY`.
+
+Ruled out by measurement rather than left as suspects: the binary runs (`login from util-linux 2.42.2`, rc 0), the session is root, `/etc/pam.d/login` is staged and correct, and `/dev/ptmx` is present. The same class of failure covers `agetty`, `who`, `w`, `wall`, `script`, and anything writing utmp.
+
+`shell` is first so the default console works. `login` stays declared, which makes it the regression test: when it prints a prompt instead of closing after five seconds, #290 is fixed.
+
+### An unset {{LDAP:URI}} left the jump box unable to resolve SSH keys
+
+`ldap/config.client_uri` was never set, and an unresolved recipe token is deliberately left untouched rather than blanked — so `/etc/ldap-authkeys.conf` in the running container literally read `LDAP_URI="{{LDAP:URI}}"`, and `sshd`'s `AuthorizedKeysCommand` had been running `ldapsearch -H '{{LDAP:URI}}'`. Public-key authentication against LDAP could not have worked. Password authentication did, which is why nothing looked wrong: `/etc/nslcd.conf` is written by the daemon from a different source and carried the real addresses all along.
+
+One fact, two sources. Set via `PUT /v1/ldap/config` to the same value `nslcd.conf` had, and the token now renders. The general gap — a token that silently stays literal, and a URI the daemon already knows but does not feed to it — is worth its own fix rather than a one-off `PUT`.
+
 ### The jump box gets login(1), and linux-pam shipped a header that could not compile
 
 `login` was the last of the four tools asked for alongside `htop`, `btop` and `screen`. It would not build, and the reason was two layers down.
