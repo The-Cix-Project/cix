@@ -768,6 +768,19 @@ int main(void)
 			 */
 			{ "", "USERNS=mapped",
 			  "the console session joins the container's user namespace (#293)" },
+			/*
+			 * #293, second half: joining the namespace is not
+			 * enough. setns(CLONE_NEWUSER) reinterprets the uid
+			 * already held rather than carrying one across, and the
+			 * daemon's host 0 is not in the container's map -- so
+			 * the first version of this fix produced a session that
+			 * was correctly inside the namespace and had no identity
+			 * in it, which bash greets with "I have no name!" and
+			 * which owns nothing. Asserting the namespace without
+			 * asserting the uid inside it would have passed that.
+			 */
+			{ "", "EUID=0",
+			  "the console session is the container's own root, not the overflow uid (#293)" },
 			/* Omitting everything is an ordinary request, not an
 			 * error -- a piped client has no terminal to describe.
 			 * The documented defaults are what it must then get,

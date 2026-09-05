@@ -4,6 +4,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <grp.h>
 #include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -124,6 +125,43 @@ static long long userns_base_of(pid_t target_pid)
  * other one) was opened up front. No ipc namespace: containers never
  * isolate it in the first place (src/container.c), so there's none
  * to join. */
+/*
+ * Become the container's own root after joining its user namespace
+ * (#293).
+ *
+ * setns(CLONE_NEWUSER) does not carry a uid across -- it reinterprets
+ * the one already held. The daemon is host uid 0, and host 0 is not in
+ * the container's map (0 <base> 65536), so the process lands on the
+ * overflow uid: a session that has correctly entered the namespace and
+ * then has no identity in it, which a shell greets with
+ * "I have no name!" and which owns nothing. The capabilities gained by
+ * joining are what make this setuid legal, and nsenter spells the same
+ * step --setuid 0.
+ *
+ * Groups are dropped before the uid changes, in that order, because
+ * setgroups() needs the privilege that setuid(0)-from-overflow does not
+ * take away but a later drop would.
+ */
+static int become_container_root(void)
+{
+	if (setgid(0) != 0) {
+		fprintf(stderr, "exec_into_container: setgid(0) in the container userns: %s\n",
+		        strerror(errno));
+		return -1;
+	}
+	if (setgroups(0, NULL) != 0) {
+		fprintf(stderr, "exec_into_container: setgroups(0) in the container userns: %s\n",
+		        strerror(errno));
+		return -1;
+	}
+	if (setuid(0) != 0) {
+		fprintf(stderr, "exec_into_container: setuid(0) in the container userns: %s\n",
+		        strerror(errno));
+		return -1;
+	}
+	return 0;
+}
+
 static int join_namespaces(int user_fd, int mnt_fd, int uts_fd, int net_fd, int pid_fd)
 {
 	static const struct { int flag; const char *name; } order[] = {
@@ -401,6 +439,8 @@ int exec_into_container(pid_t target_pid, char *const cmd_argv[],
 
 		if (join_namespaces(user_fd, mnt_fd, uts_fd, net_fd, pid_fd) != 0)
 			_exit(127);
+		if (user_fd >= 0 && become_container_root() != 0)
+			_exit(127);
 		close(mnt_fd); close(uts_fd); close(net_fd); close(pid_fd); if (user_fd >= 0) close(user_fd);
 
 		/*
@@ -638,6 +678,8 @@ int exec_into_container_piped(pid_t target_pid, char *const cmd_argv[], int *out
 		close(outpipe[0]);
 		close(pidpipe[0]);
 		if (join_namespaces(user_fd, mnt_fd, uts_fd, net_fd, pid_fd) != 0)
+			_exit(127);
+		if (user_fd >= 0 && become_container_root() != 0)
 			_exit(127);
 		close(mnt_fd); close(uts_fd); close(net_fd); close(pid_fd);
 		if (user_fd >= 0) close(user_fd);
