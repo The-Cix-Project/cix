@@ -2,6 +2,23 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### A declared server role was refused by the field allowlist, so the code for it never ran (#301)
+
+`handle_create()` was taught to register a container's declared `dns_server`, `ntp_server`, `syslog_target` or `ldap_server`. `openapi.yaml` documents all four. `docs/api/README.md` describes them. The daemon refused every one of them.
+
+`container_body_unknown_key()` is a strict allowlist (issue #68) and the four fields were never added to it. It runs *first*, inside `create_container_persisted()`, so a create carrying one was rejected before the registration code could be reached. Measured against v2.53.71 on 192.168.15.95:
+
+```
+POST /v1/containers   {"error":"unknown field: dns_server"}
+container recipe add  cixctl: unknown field in recipe content: dns_server (HTTP 400)
+```
+
+Found by actually deleting `dns-2` and trying to put it back from its own recipe — which is precisely what #301 is about. The registration code was committed, reviewed, shipped and unreachable, and nothing anywhere said so: the contract promised the field, the daemon refused it, and no test exercised a create that used one.
+
+One allowlist serves both paths — the create and the recipe's own add-time check — so the fix is one line and a field is accepted in a recipe exactly when it is accepted in a create. That shared list is what makes a recipe a faithful record of a container rather than an approximation of one.
+
+The regression test goes in `test_container_recipe.c`, at recipe-**add** time: that is where issue #68 puts the check, so a field the catalog will not accept is refused immediately rather than sitting latent until a future apply silently drops it. It is in the selftest set, so it actually runs — unlike `test_pkg`, which is not (see #302 below).
+
 ### The stall reader now says which file it read (#229)
 
 The watchdog logs its own path, dev, inode and size to `/dev/kmsg` after every append. The reader reported none of that, and only one side being instrumented is what made the next question unanswerable.

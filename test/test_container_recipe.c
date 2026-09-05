@@ -187,6 +187,43 @@ int main(void)
 	      "non-JSON content is rejected");
 	cix_response_free(&r);
 
+	/*
+	 * --- issue #301: a recipe may declare the server role its
+	 * container provides ---
+	 *
+	 * A recipe is only a faithful record of a container if it can
+	 * carry everything a create can. handle_create() was taught to
+	 * register a declared dns_server/ntp_server/syslog_target/
+	 * ldap_server, and the four fields were not added to the shared
+	 * allowlist -- so that code was unreachable. Measured against a
+	 * real daemon (v2.53.71 on 192.168.15.95): POST /v1/containers
+	 * with a dns_server block returned {"error":"unknown field:
+	 * dns_server"}, and container recipe add refused the same field
+	 * with "unknown field in recipe content: dns_server". The feature
+	 * never fired and nothing said so.
+	 *
+	 * Asserted at recipe-ADD time deliberately: this is where issue
+	 * #68 puts the check, so a field the catalog will not accept is
+	 * refused now rather than sitting latent until some future apply
+	 * silently drops it. One allowlist serves both the recipe check
+	 * and create_container_persisted(), so accepting it here is the
+	 * same statement as accepting it on a create.
+	 */
+	memset(&r, 0, sizeof(r));
+	CHECK(cix_client_request(&client, "POST", "/v1/containers/recipes",
+	                         "{\"name\":\"crroles\",\"content\":\"{\\\"name\\\":\\\"crroles\\\","
+	                         "\\\"image\\\":\\\"base\\\",\\\"cmd\\\":[\\\"/bin/true\\\"],"
+	                         "\\\"dns_server\\\":{\\\"hosts_path\\\":\\\"/etc/hosts\\\"},"
+	                         "\\\"ntp_server\\\":true,\\\"syslog_target\\\":true,"
+	                         "\\\"ldap_server\\\":{\\\"config_path\\\":\\\"/etc/glauth.cfg\\\"}}\"}",
+	                         &r) == 0 &&
+	          r.status == 204,
+	      "#301 a recipe may declare dns_server/ntp_server/syslog_target/ldap_server");
+	cix_response_free(&r);
+	memset(&r, 0, sizeof(r));
+	cix_client_request(&client, "DELETE", "/v1/containers/recipes/crroles", NULL, &r);
+	cix_response_free(&r);
+
 	/* --- scenario 4: real add, with a {{SECRET:PW}} token embedded in
 	 * staged file content --- */
 	{
