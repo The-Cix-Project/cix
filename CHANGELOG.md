@@ -2,6 +2,38 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### A hostile test that can prove it still detects the bug it was written for
+
+`cix-tests` asserts the platform works. `cix-aggressive-test` asserts one different thing: that the control plane **cannot be stopped**. No scenarios, one verdict — either the daemon kept answering or it did not.
+
+It exists because reading blocking calls one at a time will not converge. `cixd` is single-threaded, so any blocking call anywhere in the loop is a total outage, and two have been found the hard way, each after the fact from a `wchan`, each costing a manual reset of a real host: #283 during a C++ package build and #294 in a console pty master. Forty-seven blocking `waitpid` sites and a blocking `run_cmd()` remain. Attack is a better instrument than inspection.
+
+It attacks **its own** `cixd` — private port, private `--data-dir`, the shape sixteen daemon-linked tests already have. Beyond keeping production out of the blast radius there is a sharper reason: a build log is relayed *through* `cixd`, so a harness that wedged the daemon it reported through would report nothing. The tcc build in flight during the #294 outage left a zero-byte log.
+
+A prober forked before the first attack asks for health every 100 ms on its own connection and records the longest gap between consecutive **answers** — not a failure count, because ten refusals then a success is one unavailable span. Five seconds is the failure line, deliberately equal to stallwatch's own `STALL_THRESHOLD_SECONDS` so the harness and the daemon's watchdog cannot disagree about what a stall is. The inner daemon's stall records are then read **off disk** and cross-checked, never through the API — that being exactly the retrieval path that fails when it matters.
+
+**The recipe does not merely run it.** It runs the harness, then reverts the #294 fix with a `sed`, rebuilds `cixd`, and requires the harness to FAIL. If the crippled build survives, the earlier pass is declared untrustworthy and the build fails. A hostile test that quietly stops reaching its target still passes, and that is the failure mode worth engineering against.
+
+Measured, both halves, on 192.168.15.95:
+
+| | fixed build | `#294` reverted |
+|---|---|---|
+| flood delivered | 524288 bytes | 524288 bytes |
+| daemon | `pty input backlog exceeded 65536 bytes, tearing down session` | `state S`, `wchan wait_woken` |
+| probes answered | 119 / 119 | 30 / 281 |
+| worst gap | 105 ms | 506207 ms, never recovered |
+| stallwatch records on disk | 0 | 18, agreeing with the prober |
+
+`wait_woken` is the tty write wait — the write-side twin of the `n_tty_read` that took the host down, reproduced on demand rather than found afterwards.
+
+**Getting there took four wrong runs, and three of the four defects were in the harness rather than the daemon.** It copied `cix-tests`' dependency list and was refused before starting, then announced that the build had been *wedged by its own harness* when it had measured nothing — a verdict that invents a failure is worse than no verdict. It lacked `pkg_build_caps="CAP_SYS_ADMIN"`, without which a nested `cixd` has no cgroup tree and can create no containers. It hardcoded `62` for a 63-byte request, so every probe sent a header with no terminator and it reported a twelve-second wedge from its own silence — now `strlen()`, and the idle baseline is a check on the prober itself, because zero answers before any attack means the harness is broken and that is a `NO-RUN`, not a finding.
+
+And it could not wedge the reverted build, for two reasons both inside the attack. It flooded input while never reading output: every byte into a pty in echo mode produces one out, the daemon relays it, accepted sockets are non-blocking, so a client that never reads makes the relay fail and the daemon tears the session down — ending the attack for a reason unrelated to its target. And it sent one unbroken run of `'A'`: canonical-mode N_TTY holds an *unterminated* line in a 4 KiB buffer and discards everything past it, so half a megabyte never reached the read queue and `write_room` never fell to zero. Completed **lines** are what accumulate in a queue nothing drains.
+
+The last defect was a repeat. `build/test_aggressive` was invoked bare under `set -e`, so a non-zero return killed the script before `rc=$?` — the identical defect root-caused in `tcc.recipe`'s #219 gate that same morning. An unguarded check is not a gate, it is a silent exit.
+
+**A pass does not mean `cixd` cannot be wedged.** It means these attacks did not wedge it. The general answer is [ADR-0246](docs/adr/0246-the-control-plane-is-one-process-doing-five-jobs.md), and this harness is its acceptance test: today a pass means *never wedged*; once the supervisor split lands, a pass means *wedged and self-recovered with containers still running*, and needing a manual reset becomes the only failing outcome.
+
 ### One blocking read took the whole control plane down for seventeen minutes (#294)
 
 `cixd` on 192.168.15.95 stopped answering and needed a manual reset. The host was fine the entire time: ICMP replying in under half a millisecond, the `jump` container serving real SSH logins, and load average `0.19 0.06 0.07` measured from inside that container while the API was unreachable. **The box was idle.**
