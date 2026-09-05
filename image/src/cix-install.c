@@ -624,9 +624,10 @@ static int populate_esp(const char *esp_mount, const char *ip)
 	         "sort-key cix\n"
 	         "version 1\n"
 	         "linux /cix-bzImage-a\n"
-	         /* ADR-0246: pid 1 is cix-init, which spawns and supervises
-	          * cixd; it forwards argv[1..] to the worker unchanged. */
-	         "options console=tty0 console=ttyS0 root=%s2 rw panic=10 init=/bin/cix-init "
+	         /* ADR-0246: cixd is init again until a restarted worker is
+	          * proven to come up -- see the daemon's own entry writer
+	          * for the measurement that reverted this. */
+	         "options console=tty0 console=ttyS0 root=%s2 rw panic=10 init=/bin/cixd "
 	         "-- --init-mode --slot=a --bind=%s\n",
 	         BOOT_TIME_DISK_PREFIX, ip);
 	if (write_text_file(path, loader_conf) != 0)

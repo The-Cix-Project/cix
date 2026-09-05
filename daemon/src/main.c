@@ -2950,13 +2950,30 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
 		         "version %ld\n"
 		         "linux /cix-bzImage-%s\n"
 		         /*
-		          * ADR-0246: pid 1 is the supervisor, not the daemon.
-		          * cix-init passes argv[1..] through to cixd unchanged,
-		          * so the worker sees exactly the arguments it always
-		          * has -- what changes is that something is now above
-		          * it to restart it.
+		          * ADR-0246: back to cixd as init, deliberately.
+		          *
+		          * cix-init is built and staged, and it works: it came
+		          * up as pid 1 on 192.168.15.95, spawned the worker,
+		          * answered its out-of-band status port, and restarted
+		          * the worker on demand. What does NOT work is the
+		          * worker coming up a second time. The whole
+		          * --init-mode startup path assumes a fresh kernel --
+		          * not just boot_init()'s mounts, but diskrole_init(),
+		          * diskformat_remount_present_role_disks(),
+		          * network_init() and a dozen boot_subsystem_init()
+		          * calls besides. A restarted worker wedged before
+		          * creating its listener, so the recovery mechanism
+		          * produced a worse outage than the failure it was
+		          * recovering from.
+		          *
+		          * A restart path that cannot restart is worse than
+		          * none, because it invites the kill. So the machine
+		          * boots the worker directly until the worker is
+		          * genuinely restartable, and the real work moves to
+		          * ADR-0246 item 4: a reactor that cannot block in the
+		          * first place.
 		          */
-		         "options %s%sroot=%s rw panic=10 init=/bin/cix-init -- --init-mode "
+		         "options %s%sroot=%s rw panic=10 init=/bin/cixd -- --init-mode "
 		         "--slot=%s --bind=%s\n",
 		         inactive_slot[0] == 'a' ? "A" : "B", (long)time(NULL), inactive_slot,
 		         console_opts, console_opts[0] != '\0' ? " " : "", device, inactive_slot,
