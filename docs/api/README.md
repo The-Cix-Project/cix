@@ -290,6 +290,7 @@ The kind is set in the single function that records a failure, and it is a **req
 | GET | `/pkg/build-logs/{file}` | One build log as plain text, tail-first if it is larger than the response cap |
 | GET | `/pkg/sync` | The most recent (or currently running) sync's status |
 | GET | `/pkg/drift` | Every installed package whose recipe on disk is newer than what is installed — the aggregate `available_version` has always reported one at a time |
+| GET | `/pkg/verify` | Every installed package whose own recorded files are **not present** in its image's current rootfs (#281) |
 | GET | `/pkg/cache-config` | The configured local build-artifact cache size cap |
 | PUT | `/pkg/cache-config` | Set the cache's size cap (always a real cap — no "unlimited" mode) |
 | GET | `/pkg/cache` | Current local build-artifact cache occupancy |
@@ -311,6 +312,12 @@ The kind is set in the single function that records a failure, and it is a **req
 | GET | `/pkg` | List every known package (installed or in-flight) with its state |
 | GET | `/pkg/{name}` | Inspect one package's current state |
 | DELETE | `/pkg/{name}` | Uninstall a package, or clear a permanently-failed entry (never actually merged into any image, so no new image version is produced) |
+
+**Seeing whether an install actually landed.** `GET /pkg` and the image can disagree, and nothing surfaced it. An image version is a hash of the installed package set (ADR-0108), so installing a `name@version` the set already holds reproduces the same hash — and the freshly built tree is discarded in favour of the existing directory (ADR-0155). When that directory really holds the content, discarding is correct. When it does not, the install reports success and the files are absent: observed on the reference host as `GET /v1/pkg` reporting `htop` installed into `jumpbox` while the container answered `bash: htop: command not found` (#281). The operator's first evidence was a missing binary, which names neither the image nor the dedup.
+
+The install path refuses to reach that state now — it stats the package's own recorded files against the image's new current rootfs and fails the install, naming the first absent one, rather than recording success. `GET /pkg/verify` answers the same question for everything installed before that gate existed, and for a tree removed by anything outside the package system. An empty `packages` array is the healthy answer. It reports rather than acts: the repair is to bump the package revision so the hash genuinely changes, or to delete and recreate the image.
+
+It is deliberately its own endpoint rather than a field on `GET /pkg`: it stats every file of every installed package, and `GET /pkg` is polled every two seconds by the dashboard and is already this daemon's single largest source of event-loop stalls.
 
 **Seeing how far behind a host is.** `GET /pkg/{name}` has always answered "is this out of date" for one package, in `available_version`. Nothing aggregated it, so the only way to learn a host had drifted was to ask about every installed package and compare — which in practice nobody did. On the reference host that reached 34 of 139 installed packages, several revisions behind in places, and was found by accident (issue #217). `GET /pkg/drift` answers it in one call.
 

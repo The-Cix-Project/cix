@@ -8001,6 +8001,88 @@ paths:
               schema:
                 $ref: "#/components/schemas/PkgDrift"
 
+  /pkg/verify:
+    get:
+      summary: >
+        Every installed package whose own recorded files are not
+        actually present in its image's current rootfs (issue #281).
+      description: >
+        `GET /pkg` and the image can disagree, and until this endpoint
+        existed nothing surfaced the disagreement. An image version is a
+        hash of the installed package set (ADR-0108), so installing a
+        name@version the set already holds reproduces the same hash --
+        and the freshly built tree is discarded in favour of the
+        existing directory (ADR-0155). When that directory really does
+        hold the content, discarding is correct and cheap. When it does
+        not, the install reports success and the files are simply
+        absent.
+
+
+        Observed on 192.168.15.95: `GET /v1/pkg` reported htop installed
+        into jumpbox while the container answered `bash: htop: command
+        not found`, and the operator's first evidence was a missing
+        binary -- which names neither the image nor the dedup. The
+        install path refuses to reach that state now; this endpoint
+        answers the same question for everything installed before it
+        did, and for a tree removed by anything outside the package
+        system.
+
+
+        An empty `packages` array is the healthy answer. Hostbuild
+        packages are skipped: their output is a host artifact and is
+        never merged into an image rootfs (ADR-0056), so there is no
+        image tree for them to be missing from.
+
+
+        On demand, and deliberately not a field on `GET /pkg`: this
+        stats every file of every installed package, and `GET /pkg` is
+        polled every two seconds by the dashboard and is already this
+        daemon's single largest source of event-loop stalls. Reports
+        rather than acts -- the repair is to bump the package revision
+        so the manifest hash genuinely changes, or to delete and
+        recreate the image.
+      operationId: verifyPkgFiles
+      x-cix-expose: [cli]
+      responses:
+        "200":
+          description: Verification summary
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [packages, checked, incomplete]
+                properties:
+                  packages:
+                    type: array
+                    description: Only the incomplete ones. Empty is healthy.
+                    items:
+                      type: object
+                      required: [name, image, version, missing_count, file_count, first_missing]
+                      properties:
+                        name:
+                          type: string
+                        image:
+                          type: string
+                        version:
+                          type: string
+                        missing_count:
+                          type: integer
+                          description: How many of this package's recorded files are absent.
+                        file_count:
+                          type: integer
+                          description: How many it recorded installing.
+                        first_missing:
+                          type: string
+                          description: >
+                            One concrete absent path, so the report names
+                            something checkable rather than only a count.
+                  checked:
+                    type: integer
+                    description: Installed packages examined (hostbuilds excluded).
+                  incomplete:
+                    type: integer
+                    description: How many of them were incomplete; the length of `packages`.
+
   /pkg/cache:
     get:
       summary: Current local build-artifact cache occupancy.

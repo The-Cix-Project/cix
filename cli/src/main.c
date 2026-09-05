@@ -12818,6 +12818,49 @@ static void fmt_pkg_drift(const struct json_value *v)
 	printf("run `cixctl pkg update-all` to upgrade one, repeatedly to drain the rest\n");
 }
 
+/*
+ * Issue #281: packages this host reports as installed whose files are
+ * not in their image. The healthy answer is the boring one, and it is
+ * printed rather than left as an empty table -- "nothing to report" and
+ * "the check did not run" must not look the same.
+ */
+static void fmt_pkg_verify(const struct json_value *v)
+{
+	long checked = (long)json_as_number(json_object_get(v, "checked"));
+	long incomplete = (long)json_as_number(json_object_get(v, "incomplete"));
+	const struct json_value *arr = json_object_get(v, "packages");
+	size_t i;
+
+	if (incomplete == 0) {
+		printf("%ld installed packages checked, all present in their images\n", checked);
+		return;
+	}
+
+	printf("%-24s %-16s %-16s %-9s %s\n", "PACKAGE", "IMAGE", "VERSION", "MISSING",
+	       "FIRST MISSING FILE");
+	if (arr == NULL || arr->type != JSON_ARRAY)
+		return;
+	for (i = 0; i < arr->u.array.count; i++) {
+		const struct json_value *e = arr->u.array.items[i];
+		const char *name = json_str_field(e, "name");
+		const char *image = json_str_field(e, "image");
+		const char *ver = json_str_field(e, "version");
+		const char *first = json_str_field(e, "first_missing");
+		long miss = (long)json_as_number(json_object_get(e, "missing_count"));
+		long total = (long)json_as_number(json_object_get(e, "file_count"));
+		char frac[24];
+
+		snprintf(frac, sizeof(frac), "%ld/%ld", miss, total);
+		printf("%-24s %-16s %-16s %-9s %s\n", name ? name : "?", image ? image : "?",
+		       ver ? ver : "?", frac, first ? first : "?");
+	}
+	printf("\n%ld of %ld installed packages are recorded as installed but are not in their "
+	       "image\n", incomplete, checked);
+	printf("an image version is a hash of the installed package set, so reinstalling the same\n");
+	printf("name@version cannot produce a new one -- bump the package revision, or delete and\n");
+	printf("recreate the image\n");
+}
+
 static int cmd_pkg_drift(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
@@ -12827,6 +12870,18 @@ static int cmd_pkg_drift(const struct cix_client *c, int json_mode)
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_pkg_drift);
+}
+
+static int cmd_pkg_verify(const struct cix_client *c, int json_mode)
+{
+	struct cix_response r;
+
+	if (cix_client_request(c, CIX_API_verifyPkgFiles_METHOD, CIX_API_verifyPkgFiles, NULL, &r) !=
+	    0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_pkg_verify);
 }
 
 static int cmd_pkg_cache_config_show(const struct cix_client *c, int json_mode)
@@ -14371,6 +14426,8 @@ static int cmd_pkg(const struct cix_client *c, int json_mode, int argc, char **a
 		                "       cixctl pkg ls\n"
 		                "       cixctl pkg rm NAME[@IMAGE]\n"
 		                "       cixctl pkg update-all\n"
+		                "       cixctl pkg verify  -- which installed packages are not "
+		                "actually in their image (#281)\n"
 		                "       cixctl pkg repo-config show\n"
 		                "       cixctl pkg repo-config set [--url=URL] [--kind=gitea|github|gitlab] "
 		                "[--ref=REF] [--token=TOKEN | --clear-token] [--sync-interval=SECONDS]\n"
@@ -14427,6 +14484,8 @@ static int cmd_pkg(const struct cix_client *c, int json_mode, int argc, char **a
 		return cmd_pkg_sync_status(c, json_mode);
 	if (strcmp(sub, "drift") == 0)
 		return cmd_pkg_drift(c, json_mode);
+	if (strcmp(sub, "verify") == 0)
+		return cmd_pkg_verify(c, json_mode);
 	if (strcmp(sub, "cache-config") == 0)
 		return cmd_pkg_cache_config(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "buildenv") == 0)
