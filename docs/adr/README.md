@@ -256,3 +256,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0249](0249-main-c-is-divided-by-what-a-handler-touches.md) | main.c is divided by what a handler touches, not by what it is named | Accepted |
 | [0250](0250-a-build-that-cannot-find-a-tool-is-a-failed-build.md) | A build that cannot find a tool is a failed build, whatever it exits with | Accepted |
 | [0251](0251-a-package-artifact-carries-what-the-platform-runs.md) | A package artifact carries what the platform runs, and nothing else | Accepted |
+| [0252](0252-an-image-recipe-is-authoritative.md) | An image recipe is authoritative; the image is derived from it | Accepted |

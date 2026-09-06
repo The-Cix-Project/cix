@@ -23,6 +23,7 @@ pkg_name="util-linux"
 pkg_version="2.42.2-2"
 pkg_source="https://www.kernel.org/pub/linux/utils/util-linux/v2.42/util-linux-2.42.2.tar.xz"
 pkg_sha256="03a05d3adf9602ef128f2da05b84b3205ce60c351e5737c0370f74000679ce8a"
+pkg_artifact_sha256="b7773b42d65aecc1f5e51b041d9e2fab718c2a68b7278eec64b65684201e62eb"
 #
 # libtinfo, which libsmartcols reaches for. Everything else sfdisk
 # needs is built here and linked in statically, see pkg_build().
