@@ -224,6 +224,9 @@ static void case_classification(const char *root)
 	wr_ar(path);
 	snprintf(path, sizeof(path), "%s/usr/lib/libfreetype.a", dest);
 	wr_ar(path);
+	/* go-bootstrap's shape: an ar archive of Go objects, not ELF. */
+	snprintf(path, sizeof(path), "%s/usr/lib/go-bootstrap/pkg/linux_amd64/runtime.a", dest);
+	wr_ar(path);
 
 	/* glibc ships libc.so as an ASCII linker script, not ELF */
 	snprintf(path, sizeof(path), "%s/usr/lib/libc.so", dest);
@@ -271,6 +274,9 @@ static void case_classification(const char *root)
 	want(dest, "usr/lib/libtcc1.a", 1);
 	want(dest, "usr/lib/libc_nonshared.a", 1);
 	want(dest, "usr/lib/libfreetype.a", 1);
+	want(dest, "usr/lib/go-bootstrap/pkg/linux_amd64/runtime.a", 1);
+	if (log_has(log, "runtime.a"))
+		fail("a Go archive was passed to strip");
 
 	want(dest, "usr/lib/libc.so", 1);
 	want(dest, "usr/lib/libc.so.6", 1);
@@ -289,8 +295,9 @@ static void case_classification(const char *root)
 		fail("crt1.o was not stripped");
 	if (!log_has(log, "usr/lib/mod.ko"))
 		fail("the kernel module was not stripped");
-	if (!log_has(log, "usr/lib/libtcc1.a"))
-		fail("the kept archive was not stripped");
+	if (log_has(log, "usr/lib/libtcc1.a"))
+		fail("a kept archive was passed to strip -- go-bootstrap ships Go .a "
+		     "files that strip rejects, so kept archives are left alone");
 	if (log_has(log, "libc.so.6.link"))
 		fail("a symlink was passed to strip");
 	if (log_has(log, "usr/lib/libc.so\n"))

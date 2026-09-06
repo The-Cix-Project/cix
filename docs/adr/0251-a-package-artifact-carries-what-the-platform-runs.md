@@ -41,7 +41,7 @@ general-purpose distribution would want, and then each recipe
 individually tries to clean up after it. Measured across the recipe tree:
 
 - **37 of 115** latest revisions prune anything at all. **78 do not.**
-- The prune is written in at least **twelve different spellings**, no two
+- The prune is written in at least **twenty-one different spellings**, no two
   agreeing on scope. Counted across all revisions: `man` appears 280
   times, `info` 135, `doc` 123, `locale` 77, `i18n` **13**.
 
@@ -79,7 +79,8 @@ linking or module loading silently:
 | kind | flag | why |
 |---|---|---|
 | `.so*`, executables | `--strip-unneeded` | preserves `.dynsym`, which is all the linker and `elfcheck` read |
-| `.o`, `.a`, `.ko` | `--strip-debug` | `.symtab` is load-bearing for linking and module loading |
+| `.o`, `.ko` | `--strip-debug` | `.symtab` is load-bearing for linking and module loading |
+| archives | *not stripped* | `!<arch>` does not imply an archive of ELF — `go-bootstrap` ships Go 1.4's `pkg/linux_amd64/*.a`, which `strip` rejects outright |
 
 ### 2. Static archives are dropped where a shared library supersedes them
 
@@ -104,9 +105,17 @@ Equally it drops, without an entry anywhere: `libc.a`, `libm.a`,
 This clause was checked against the fleet before adoption rather than
 reasoned about, because a wrong drop breaks a downstream build:
 
-- **`libc.a` has no consumer.** Across every recipe revision in the tree
-  the only reference to it is glibc's own copy loop — the loop that
-  triplicates it. Nothing links it.
+- **No recipe references `libc.a` by path.** Across every recipe revision
+  in the tree the only mention of it is glibc's own copy loop — the loop
+  that triplicates it.
+- **The one `-static` link in the tree is disabled on purpose.**
+  `gcc/16.2.0-16/build.sh` describes libtool's "can a statically linked
+  program dlopen itself" probe, which executes a `-static` conftest; that
+  recipe exports `lt_cv_dlopen_self_static=no` precisely so it never runs
+  (it deadlocked in `__futex_wait` for 94 minutes in the 16.2.0-6 build).
+  **That is not the same as proving gcc's three-stage bootstrap never
+  needs `libc.a` anywhere else, and that is not proven.** glibc 2.44-14 is
+  therefore staged and unpublished until a gcc rebuild confirms it.
 - **Every absolute-path reference to an archive is a package referencing
   its own** (`liblzma.a` in xz, `libproc2.a` in procps, `libpkgconf.a` in
   pkgconf, `libfl.a` in flex, `libltdl.a` in libtool, `libfreetype.a` in
@@ -120,17 +129,17 @@ reasoned about, because a wrong drop breaks a downstream build:
   present, `-lfoo` continues to resolve. Only an absolute-path reference
   could break, and there are none.
 
-The clause is not even new behaviour. **Nineteen recipes already delete
-archives and libtool metadata by hand** — `xz` removes `liblzma.a` and
-`liblzma.la`, `flex` removes `libfl.a` and `libfl.la`, and so on. As with
-the prune, the intent was already unanimous; only its scope was
-inconsistent.
+The clause is not even new behaviour, though the numbers are smaller than
+the prune's: counting latest revisions, **16 already delete `.la` files by
+hand and 6 already delete an archive** — `xz` removes `liblzma.a` and
+`liblzma.la`, `flex` removes `libfl.a` and `libfl.la`. As with the prune,
+the intent was already there; only its scope was inconsistent.
 
 ### 3. Libtool metadata is not shipped
 
 `*.la` files describe how to link something that is no longer being
-linked. Nineteen recipes already delete them; the other ninety-six ship
-them.
+linked. 16 of the 115 latest revisions already delete them; the other 99
+ship them.
 
 ### 4. Documentation and locale trees are not shipped
 
