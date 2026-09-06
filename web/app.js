@@ -1464,6 +1464,24 @@ const CATEGORY_VIEWS = {
 	"update": "view-pipeline",
 	"running-config": "view-host",
 };
+/*
+ * Is the page currently on screen the one that owns `category`?
+ *
+ * Renderers used to ask for their own route by name directly,
+ * which was right when one route meant one page. Now a page carries a
+ * dozen tabs and the route is the TAB, so a renderer guarding on its
+ * own old category never fired while any other tab of the same page was
+ * addressed -- the data was fetched and then thrown away, and the panel
+ * read "Loading" forever. Comparing PAGES rather than routes is the
+ * only comparison that stays true as tabs move between pages.
+ */
+function onPageOf(category) {
+	const here = CATEGORY_VIEWS[parseHash().category];
+
+	return here !== undefined && here === CATEGORY_VIEWS[category];
+}
+
+
 
 const DETAIL_VIEWS = {
 	containers: "view-container-detail",
@@ -2400,7 +2418,7 @@ async function removeContainer(name) {
 	try {
 		await apiRequest("DELETE", CIX_API.deleteContainer(name));
 		clearStatus();
-		if (parseHash().category === "containers" && parseHash().name === name)
+		if (onPageOf("containers") && parseHash().name === name)
 			location.hash = "#containers";
 		await refreshContainers();
 		renderTree();
@@ -3933,7 +3951,7 @@ async function removeNetwork(name) {
 	try {
 		await apiRequest("DELETE", CIX_API.deleteNetwork(name));
 		clearStatus();
-		if (parseHash().category === "networks" && parseHash().name === name)
+		if (onPageOf("networks") && parseHash().name === name)
 			location.hash = "#networks";
 		await refreshNetworks();
 		renderTree();
@@ -4768,7 +4786,7 @@ async function removeImage(name) {
 	try {
 		await apiRequest("DELETE", CIX_API.deleteImage(name));
 		clearStatus();
-		if (parseHash().category === "images" && parseHash().name === name)
+		if (onPageOf("images") && parseHash().name === name)
 			location.hash = "#images";
 		await refreshImages();
 		renderTree();
@@ -4836,14 +4854,14 @@ function renderImageRecipeTab(name) {
 
 	loadImageRecipeContent(name)
 		.then((content) => {
-			if (parseHash().category === "images" && parseHash().name === name) {
+			if (onPageOf("images") && parseHash().name === name) {
 				missingEl.hidden = true;
 				presentEl.hidden = false;
 				contentEl.textContent = content;
 			}
 		})
 		.catch(() => {
-			if (parseHash().category === "images" && parseHash().name === name) {
+			if (onPageOf("images") && parseHash().name === name) {
 				missingEl.hidden = false;
 				presentEl.hidden = true;
 			}
@@ -4906,7 +4924,7 @@ document.getElementById("image-recipe-form").addEventListener("submit", async (e
 		document.getElementById("image-recipe-form").reset();
 		closeModal();
 		imageRecipeContentCache = { name: null, content: null };
-		if (parseHash().category === "images" && parseHash().name === name)
+		if (onPageOf("images") && parseHash().name === name)
 			renderImageRecipeTab(name);
 		await refreshImageRecipesList();
 	} catch (e) {
@@ -5199,7 +5217,7 @@ function renderImageDetailRecipes(name) {
 async function refreshDevices() {
 	const data = await apiRequest("GET", CIX_API.listDevices());
 	cache.devices = data.devices;
-	if (parseHash().category === "devices")
+	if (onPageOf("devices"))
 		renderDevices();
 	populateContainerFormDeviceLists();
 }
@@ -5207,7 +5225,7 @@ async function refreshDevices() {
 async function refreshDeviceMaps() {
 	const data = await apiRequest("GET", CIX_API.listDeviceMaps());
 	cache.deviceMaps = data.devicemaps;
-	if (parseHash().category === "devices")
+	if (onPageOf("devices"))
 		renderDevices();
 }
 
@@ -5428,7 +5446,7 @@ async function refreshDisks() {
 	const data = await apiRequest("GET", CIX_API.listStorage());
 
 	cache.storage = data.storage;
-	if (parseHash().category === "storage")
+	if (onPageOf("storage"))
 		renderDisks();
 	/* Keeps the "Disks > Assign Disk Role" modal's own disk select current
 	 * even when opened from the header dropdown rather than a specific
@@ -5442,7 +5460,7 @@ async function refreshDiskRoles() {
 	const data = await apiRequest("GET", CIX_API.listStorageRoles());
 
 	cache.storageRoles = data.storage_roles;
-	if (parseHash().category === "storage")
+	if (onPageOf("storage"))
 		renderDisks();
 	populateDiskRoleSelect();
 }
@@ -5461,7 +5479,7 @@ function storageRoleFor(diskName) {
  * keep this bounded regardless of how many disks exist.
  */
 async function refreshDiskFormatStatuses() {
-	if (parseHash().category !== "storage")
+	if (!onPageOf("storage"))
 		return;
 
 	const candidates = cache.storage.filter((d) => !d.protected && storageRoleFor(d.name) !== null);
@@ -5474,7 +5492,7 @@ async function refreshDiskFormatStatuses() {
 			 * showing whatever status it last had. */
 		}
 	}
-	if (parseHash().category === "storage")
+	if (onPageOf("storage"))
 		renderDisks();
 }
 
@@ -5510,21 +5528,21 @@ async function refreshStoragePlacement(kind) {
 	const k = STORAGE_KINDS[kind];
 
 	cache[k.cacheKey] = await apiRequest("GET", k.showPath());
-	if (parseHash().category === "storage")
+	if (onPageOf("storage"))
 		renderStoragePlacement(kind);
 }
 
 async function refreshStoragePlacementMigrate(kind) {
 	const k = STORAGE_KINDS[kind];
 
-	if (parseHash().category !== "storage")
+	if (!onPageOf("storage"))
 		return;
 	try {
 		cache[k.statusCacheKey] = await apiRequest("GET", k.migrateStatusPath());
 	} catch (e) {
 		/* Transient -- next poll tick tries again. */
 	}
-	if (parseHash().category === "storage")
+	if (onPageOf("storage"))
 		renderStoragePlacement(kind);
 }
 
@@ -8797,7 +8815,7 @@ function renderPackageDetail(name) {
 					 * candidate badge, and which row "latest" means. No
 					 * loop -- the cache now matches, so the re-render's own
 					 * load call short-circuits. */
-					if (parseHash().category === "packages" && parseHash().name === name)
+					if (onPageOf("packages") && parseHash().name === name)
 						renderPackageDetail(name);
 				})
 				.catch((e) => showStatus("Failed to load recipe content for " + name + ": " + e.message, true));
@@ -9005,7 +9023,7 @@ function renderPackageDetailInstalled(name) {
 async function refreshPkgRecipes() {
 	const data = await apiRequest("GET", CIX_API.listPkgRecipes());
 	cache.pkgRecipes = data.recipes;
-	if (parseHash().category === "packages")
+	if (onPageOf("packages"))
 		renderPackagesView(parseHash().name);
 }
 
@@ -9036,7 +9054,7 @@ async function refreshImageRecipesList() {
 	const data = await apiRequest("GET", CIX_API.listImageRecipes());
 
 	cache.imageRecipes = data.recipes;
-	if (parseHash().category === "recipes")
+	if (onPageOf("recipes"))
 		renderImageRecipesTable();
 }
 
@@ -9044,7 +9062,7 @@ async function refreshContainerRecipesList() {
 	const data = await apiRequest("GET", CIX_API.listContainerRecipes());
 
 	cache.containerRecipes = data.recipes;
-	if (parseHash().category === "recipes")
+	if (onPageOf("recipes"))
 		renderContainerRecipesTable();
 }
 
@@ -9311,7 +9329,7 @@ async function refreshPkgDrift() {
 async function refreshPkgList() {
 	const data = await apiRequest("GET", CIX_API.listPkg());
 	cache.pkgList = data.packages;
-	if (parseHash().category === "packages")
+	if (onPageOf("packages"))
 		renderPackagesView(parseHash().name);
 	/* Kept in step with the list it describes rather than refreshed
 	 * separately, so the two can never disagree on screen. */
@@ -11051,7 +11069,7 @@ async function deleteVolumeByName(name) {
 		clearStatus();
 		await refreshVolumeCache();
 		renderTree();
-		if (parseHash().category === "volumes")
+		if (onPageOf("volumes"))
 			await refreshVolumes();
 	} catch (e) {
 		showStatus("Failed to delete volume: " + e.message, true);
@@ -12107,19 +12125,19 @@ document.getElementById("sys-restore-form").addEventListener("submit", async (ev
 
 async function refreshBackupConfig() {
 	cache.backupConfig = await apiRequest("GET", CIX_API.getBackupConfig());
-	if (parseHash().category === "backup")
+	if (onPageOf("backup"))
 		renderBackupConfig();
 }
 
 async function refreshBackupStatus() {
-	if (parseHash().category !== "backup")
+	if (!onPageOf("backup"))
 		return;
 	try {
 		cache.backupStatus = await apiRequest("GET", CIX_API.getBackupConfigStatus());
 	} catch (e) {
 		/* Transient -- next poll tick tries again. */
 	}
-	if (parseHash().category === "backup")
+	if (onPageOf("backup"))
 		renderBackupConfig();
 }
 
