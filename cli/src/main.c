@@ -14787,7 +14787,10 @@ static void schedule_usage(void)
 static int cmd_schedule(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	struct cix_response r;
-	const char *sub = argc > 1 ? argv[1] : "ls";
+	/* argv[0] is the subcommand: dispatch_command() passes the command
+	 * name separately, so this does not skip an element. */
+	const char *sub = argc > 0 ? argv[0] : "ls";
+	const char *name = argc > 1 ? argv[1] : NULL;
 	char path[256];
 
 	if (strcmp(sub, "ls") == 0) {
@@ -14806,12 +14809,12 @@ static int cmd_schedule(const struct cix_client *c, int json_mode, int argc, cha
 		}
 		return emit(&r, json_mode, fmt_schedule_actions);
 	}
-	if (argc < 3) {
+	if (name == NULL) {
 		schedule_usage();
 		return 2;
 	}
 	if (strcmp(sub, "show") == 0) {
-		snprintf(path, sizeof(path), CIX_API_getSchedule, argv[2]);
+		snprintf(path, sizeof(path), CIX_API_getSchedule, name);
 		if (cix_client_request(c, CIX_API_getSchedule_METHOD, path, NULL, &r) != 0) {
 			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
@@ -14819,7 +14822,7 @@ static int cmd_schedule(const struct cix_client *c, int json_mode, int argc, cha
 		return emit(&r, json_mode, fmt_schedule_one);
 	}
 	if (strcmp(sub, "rm") == 0) {
-		snprintf(path, sizeof(path), CIX_API_deleteSchedule, argv[2]);
+		snprintf(path, sizeof(path), CIX_API_deleteSchedule, name);
 		if (cix_client_request(c, CIX_API_deleteSchedule_METHOD, path, NULL, &r) != 0) {
 			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
@@ -14827,7 +14830,7 @@ static int cmd_schedule(const struct cix_client *c, int json_mode, int argc, cha
 		return emit(&r, json_mode, NULL);
 	}
 	if (strcmp(sub, "run") == 0) {
-		snprintf(path, sizeof(path), CIX_API_runSchedule, argv[2]);
+		snprintf(path, sizeof(path), CIX_API_runSchedule, name);
 		if (cix_client_request(c, CIX_API_runSchedule_METHOD, path, NULL, &r) != 0) {
 			fprintf(stderr, "cixctl: could not reach daemon\n");
 			return 1;
@@ -14841,7 +14844,7 @@ static int cmd_schedule(const struct cix_client *c, int json_mode, int argc, cha
 		int have_every = 0, window = 0, catch_up = 0, enabled = 1;
 		int i, rc;
 
-		for (i = 3; i < argc; i++) {
+		for (i = 2; i < argc; i++) {
 			if (strncmp(argv[i], "--action=", 9) == 0)
 				action = argv[i] + 9;
 			else if (strncmp(argv[i], "--every-seconds=", 16) == 0)
@@ -14933,7 +14936,7 @@ static int cmd_schedule(const struct cix_client *c, int json_mode, int argc, cha
 		jw_bool(&w, enabled);
 		jw_obj_close(&w);
 
-		snprintf(path, sizeof(path), CIX_API_setSchedule, argv[2]);
+		snprintf(path, sizeof(path), CIX_API_setSchedule, name);
 		rc = cix_client_request(c, CIX_API_setSchedule_METHOD, path, w.buf, &r);
 		jw_free(&w);
 		if (rc != 0) {
@@ -14951,8 +14954,10 @@ static int cmd_pipeline(const struct cix_client *c, int json_mode, int argc, cha
 	struct cix_response r;
 	int i;
 
+	/* argv[0] is the first argument AFTER the command name -- see
+	 * dispatch_command(), which passes the command separately. */
 	g_pipeline_show_all = 0;
-	for (i = 1; i < argc; i++) {
+	for (i = 0; i < argc; i++) {
 		if (strcmp(argv[i], "--all") == 0) {
 			g_pipeline_show_all = 1;
 		} else {
