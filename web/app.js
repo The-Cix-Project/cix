@@ -1616,37 +1616,48 @@ function renderCurrentView() {
 			stopNetPortsPolling();
 		else if (route.category === "storage" && route.name !== null)
 			renderDiskDetail(route.name);
-		else if (route.category === "routes")
+		/*
+		 * Independent per-PAGE checks, not an else-if chain on the
+		 * route.
+		 *
+		 * As a chain, only the renderer for the ADDRESSED route ran --
+		 * so on a page with a dozen tabs, eleven of them never
+		 * rendered and sat on "Loading" while their data was fetched
+		 * and cached. Kernel Modules was the last one still doing it
+		 * after two earlier fixes to the same underlying mistake:
+		 * comparing routes where the thing that matters is the page.
+		 */
+		if (onPageOf("routes"))
 			renderRoutesList();
-		else if (route.category === "sysctl")
+		if (onPageOf("sysctl"))
 			renderSysctlList();
-		else if (route.category === "kmod")
+		if (onPageOf("kmod"))
 			renderKmodList();
-		else if (route.category === "host-stats")
+		if (onPageOf("host-stats"))
 			startHostStatsPolling();
-		else if (route.category === "processes")
+		if (onPageOf("processes"))
 			renderProcessesList();
-		else if (route.category === "syslog-targets")
+		if (onPageOf("syslog-targets"))
 			renderSyslogTargetsList();
-		else if (route.category === "tls-throttle")
+		if (onPageOf("tls-throttle"))
 			refreshTlsThrottleStatus();
-		else if (route.category === "control-plane-reservation")
+		if (onPageOf("control-plane-reservation"))
 			refreshControlPlaneReservation();
-		else if (route.category === "boot-console")
+		if (onPageOf("boot-console"))
 			refreshBootConsole();
-		else if (route.category === "esp")
+		if (onPageOf("esp"))
 			refreshEsp();
-		else if (route.category === "signing-keys") {
+		if (onPageOf("signing-keys")) {
 			refreshSigningKeys();
 			refreshReleaseKey();
 		}
-		else if (route.category === "kernel-policy")
+		if (onPageOf("kernel-policy"))
 			refreshKernelPolicy();
-		else if (route.category === "logs")
+		if (onPageOf("logs"))
 			renderLogsList();
-		else if (route.category === "kmsg")
+		if (onPageOf("kmsg"))
 			refreshKmsg();
-		else if (route.category === "server-health")
+		if (onPageOf("server-health"))
 			refreshServerHealth();
 		else if (route.category === "stalls")
 			refreshStalls();
