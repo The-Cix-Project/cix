@@ -2,6 +2,32 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### ADR-0255 part 2: channels belong to the discovery kind
+
+A recipe declares `pkg_upstream="<kind>"`, and the kind owns two things an operator should never restate: how to enumerate that project's releases, and which channels — if any — it publishes in parallel. `daemon/src/srcupstream.c`, with `test_srcupstream` in `SELFTESTS`.
+
+**Channels are not free text**, and that is the whole point:
+
+```
+kernel.org + lts   -> refused: upstream "kernel.org" does not publish a "lts" channel;
+                      it has mainline, stable, longterm
+```
+
+A free-text channel would let a box be configured to track `lts` on a project that has never used the word, and the failure would surface later as an empty resolution — "nothing found" rather than "you asked for a channel that does not exist". Those read completely differently to whoever has to fix it, and only one of them names the mistake.
+
+**Channel and depth are orthogonal, and both are optional in different ways.** A channel answers *which stream*, and only exists where a project publishes several at once. Depth (part 1) answers *how far back*, and applies to everything. Demonstrated against both real shapes:
+
+```
+kernel  n-1  -> 7.1.13     (previous patch line, newest of it)
+glibc   n-1  -> 2.43       (previous release)
+```
+
+Neither needed special-casing, because a "line" is derived from the versions upstream actually published rather than from a naming convention. The same grammar reads correctly against a project with three live lines and one with a single linear sequence, and gives the intuitive answer for each. The corresponding failure is equally specific — glibc's `2.44` line has one release, so `n-0.1` is refused with *"line 2.44 publishes only 1 release(s)"* instead of silently returning `2.43`, which is a **different release line** and exactly the cross-boundary move the two spellings exist to prevent.
+
+**A kind with channels has no default.** There is no defensible way to choose between `mainline` and `longterm` on an operator's behalf — they differ by years of support — so an unset channel is refused with the list rather than guessed.
+
+Two deliberate shapes in the registry. `channels == NULL` means "one linear sequence" and is distinct from an empty list, because "has no channels" and "has a list that happens to be empty" would otherwise be the same state and only one is ever true. And the registry holds exactly **one** kind: kernel.org. It is the first, not the model — generalising its `releases.json` into a universal shape would be inventing a standard upstreams have not agreed to. glibc's shape is tested through a kind declared in the test file rather than registered as a product one, because discovery for it is not implemented and a registered kind that cannot enumerate anything would be a placeholder pretending to be a capability.
+
 ### ADR-0255 part 1: the depth grammar
 
 `n-<lines>.<releases>`, read literally: go back that many release lines, then that many releases within the line. `daemon/src/srcdepth.c`, with `test_srcdepth` in `SELFTESTS`.
