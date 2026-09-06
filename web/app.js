@@ -1401,9 +1401,13 @@ function parseHash() {
 const CATEGORY_VIEWS = {
 	containers: "view-containers",
 	networks: "view-networks",
-	"routes": "view-daemon-config",
+	"routes": "view-networks",
 	devices: "view-devices",
-	kmod: "view-kmod",
+	gpu: "view-devices",
+	net: "view-devices",
+	pci: "view-devices",
+	usb: "view-devices",
+	kmod: "view-devices",
 	sysctl: "view-sysctl",
 	storage: "view-storage",
 	"dns-records": "view-dns-records",
@@ -1425,21 +1429,21 @@ const CATEGORY_VIEWS = {
 	"pki-certs": "view-pki-ca",
 	recipes: "view-recipes",
 	pipeline: "view-pipeline",
-	"site": "view-daemon-config",
-	"daemon-config": "view-daemon-config",
-	"host-swap": "view-daemon-config",
-	"rolling-restart": "view-daemon-config",
+	"site": "view-host",
+	"daemon-config": "view-host",
+	"host-swap": "view-storage",
+	"rolling-restart": "view-pipeline",
 	"pkg-build-config": "view-recipes",
-	"hostauth-sessions": "view-daemon-config",
+	"hostauth-sessions": "view-host",
 	"host-stats": "view-monitoring",
 	processes: "view-monitoring",
 	"syslog-targets": "view-syslog-targets",
-	"tls-throttle": "view-daemon-config",
-	"control-plane-reservation": "view-daemon-config",
-	"boot-console": "view-daemon-config",
-	esp: "view-daemon-config",
-	"signing-keys": "view-daemon-config",
-	"kernel-policy": "view-daemon-config",
+	"tls-throttle": "view-control-plane",
+	"control-plane-reservation": "view-control-plane",
+	"boot-console": "view-kernel",
+	esp: "view-pipeline",
+	"signing-keys": "view-pipeline",
+	"kernel-policy": "view-kernel",
 	logs: "view-monitoring",
 	kmsg: "view-monitoring",
 	"server-health": "view-monitoring",
@@ -1448,7 +1452,7 @@ const CATEGORY_VIEWS = {
 	/* Repo & Sync and Cache & Artifacts became tabs on the Catalogue
 	 * page. Their old addresses still resolve to it (with the right tab
 	 * showing) rather than 404-ing a bookmark someone already has. */
-	"volume-backup-config": "view-daemon-config",
+	"volume-backup-config": "view-storage",
 	/* Images and Packages are Catalogue tabs now, not pages. Their bare
 	 * addresses still resolve to it (with the right tab showing) --
 	 * #images/{name} is unaffected, since DETAIL_VIEWS is consulted
@@ -1457,9 +1461,9 @@ const CATEGORY_VIEWS = {
 	packages: "view-recipes",
 	"pkg-repo": "view-recipes",
 	"pkg-cache": "view-recipes",
-	"factory-reset": "view-daemon-config",
-	"storage-placement": "view-daemon-config",
-	"backup": "view-daemon-config",
+	"factory-reset": "view-host",
+	"storage-placement": "view-storage",
+	"backup": "view-storage",
 	"update": "view-recipes",
 	"running-config": "view-running-config",
 };
@@ -1510,22 +1514,22 @@ function selectServiceTab(viewId, tabName) {
 }
 
 const SERVICE_TAB_VIEWS = {
-	"daemon-config": "view-daemon-config",
-	site: "view-daemon-config",
-	"hostauth-sessions": "view-daemon-config",
-	"host-swap": "view-daemon-config",
-	"rolling-restart": "view-daemon-config",
-	"storage-placement": "view-daemon-config",
-	routes: "view-daemon-config",
-	"tls-throttle": "view-daemon-config",
-	"control-plane-reservation": "view-daemon-config",
-	"boot-console": "view-daemon-config",
-	esp: "view-daemon-config",
-	"signing-keys": "view-daemon-config",
-	"kernel-policy": "view-daemon-config",
-	backup: "view-daemon-config",
-	"volume-backup-config": "view-daemon-config",
-	"factory-reset": "view-daemon-config",
+	"daemon-config": "view-host",
+	site: "view-host",
+	"hostauth-sessions": "view-host",
+	"host-swap": "view-storage",
+	"rolling-restart": "view-pipeline",
+	"storage-placement": "view-storage",
+	routes: "view-networks",
+	"tls-throttle": "view-control-plane",
+	"control-plane-reservation": "view-control-plane",
+	"boot-console": "view-kernel",
+	esp: "view-pipeline",
+	"signing-keys": "view-pipeline",
+	"kernel-policy": "view-kernel",
+	backup: "view-storage",
+	"volume-backup-config": "view-storage",
+	"factory-reset": "view-host",
 	"pki-ca": "view-pki-ca",
 	"pki-intermediate": "view-pki-ca",
 	"pki-certs": "view-pki-ca",
@@ -1661,18 +1665,18 @@ function renderCurrentView() {
 			if (lastRenderedRoute !== route.category)
 				selectCatalogueTab(
 					route.category === "pkg-repo"
-						? "cat-repo"
+						? "pkg-repo"
 						: route.category === "pkg-cache"
-						  ? "cat-cache"
+						  ? "pkg-cache"
 						  : route.category === "images"
-						    ? "cat-images"
+						    ? "images"
 						    : route.category === "packages"
-						      ? "cat-packages"
+						      ? "packages"
 						      : route.category === "pkg-build-config"
 						        ? "pkg-build-config"
 						        : route.category === "update"
 						          ? "update"
-						          : "cat-recipes"
+						          : "recipes"
 				);
 			renderImages(cache.images);
 			renderPackagesView(null);
@@ -2138,6 +2142,20 @@ function renderTree() {
 	 * into one tabbed destination for good reason -- that reasoning
 	 * still holds, and undoing it is not what this change is for.
 	 */
+	/*
+	 * ADR-0258 follow-on: ten pages, and a page's children are its own
+	 * tabs.
+	 *
+	 * The tree used to list 56 destinations that resolved to 18 views,
+	 * so two thirds of its leaves were tabs on somebody else's page --
+	 * and one page, `view-daemon-config`, held sixteen unrelated tabs
+	 * including Routes, which is networking. A navigation tree is a
+	 * claim about what a system is; that one claimed this platform was
+	 * a container host with a settings drawer bolted to it.
+	 *
+	 * Every hash below is a real route that already deep-links to its
+	 * own tab, so nothing here invents a destination.
+	 */
 	const topLevel = [
 		{
 			label: "Containers",
@@ -2146,7 +2164,6 @@ function renderTree() {
 			children: cache.containers.map((c) => ({
 				label: c.name,
 				hash: "containers/" + encodeURIComponent(c.name),
-				status: c.status,
 				icon: "containers",
 			})),
 		},
@@ -2154,164 +2171,120 @@ function renderTree() {
 			label: "Networks",
 			hash: "networks",
 			icon: "networks",
-			children: cache.networks.map((n) => ({
-				label: n.name,
-				hash: "networks/" + encodeURIComponent(n.name),
-				icon: "networks",
-				/* No real "status" concept for a network the way a container
-				 * has one -- the closest real, available signal is whether
-				 * anything is actually attached to it right now (green) vs.
-				 * created but currently unused (grey), same "tint the icon,
-				 * not a separate dot" treatment containers get. */
-				iconColor: n.interfaces && n.interfaces.length > 0 ? "tree-icon-ok" : "tree-icon-idle",
-			})),
+			children: [
+				{ label: "Networks", hash: "networks", icon: "networks" },
+				{ label: "Routes", hash: "routes", icon: "networks" },
+				{ label: "DHCP", hash: "dhcp-servers", icon: "dhcp" },
+			],
 		},
 		{
-			/*
-			 * The services this platform runs, or registers servers
-			 * for. One leaf per service, each a tabbed page -- the
-			 * pages under a service are facets of it, not separate
-			 * destinations.
-			 */
 			label: "Services",
 			hash: "pki-ca",
-			icon: "services",
+			icon: "pki",
 			children: [
 				{ label: "PKI", hash: "pki-ca", icon: "pki" },
 				{ label: "DNS", hash: "dns-records", icon: "dns" },
 				{ label: "LDAP", hash: "ldap-servers", icon: "ldap" },
 				{ label: "NTP", hash: "ntp-config", icon: "ntp" },
-				{ label: "DHCP", hash: "dhcp-servers", icon: "dhcp" },
 				{ label: "Syslog", hash: "syslog-targets", icon: "syslog" },
 			],
 		},
 		{
-			/*
-			 * The physical machine: what it is made of, rather than
-			 * what it is running or how it changes.
-			 *
-			 * Disks keep their own shape -- every disk a node, every
-			 * partition under its disk, every volume under the device
-			 * holding it. Volumes appear here and nowhere else.
-			 *
-			 * Kernel modules sit here because a module is a driver for
-			 * something in this list. Sysctl does not: it is tuning of
-			 * the running kernel, which is the host changing itself.
-			 */
-			label: "Hardware",
+			/* ADR-0258: the resource is Storage; a disk is a device in
+			 * it, and so are volumes, placement, swap and backups. */
+			label: "Storage",
 			hash: "storage",
+			icon: "storage",
+			children: [
+				{ label: "Storage", hash: "storage", icon: "storage" },
+				{ label: "Volumes", hash: "volumes", icon: "rebuildable" },
+				{ label: "Placement", hash: "storage-placement", icon: "storage" },
+				{ label: "Swap", hash: "host-swap", icon: "storage" },
+				{ label: "System Backup", hash: "backup", icon: "update" },
+				{ label: "Volume Backups", hash: "volume-backup-config", icon: "update" },
+			],
+		},
+		{
+			label: "Devices",
+			/* A parent's hash is its own first tab, the same shape
+			 * Services and Monitoring already use. `#devices` still
+			 * resolves for anyone who bookmarked it. */
+			hash: "usb",
 			icon: "devices",
 			children: [
-				{
-					label: "Disks",
-					hash: "storage",
-					icon: "storage",
-					children: orphanVolumes().concat(wholeDisks().map((d) => ({
-						label: d.name,
-						hash: "storage/" + encodeURIComponent(d.name),
-						icon: "storage",
-						iconColor: d.is_os_disk
-							? "tree-icon-idle"
-							: d.mounted || d.has_mounted_partition
-							  ? "tree-icon-ok"
-							  : "tree-icon-idle",
-						children: diskTreeChildren(d.name),
-					}))),
-				},
-				{ label: "Devices", hash: "devices", icon: "devices" },
+				{ label: "USB", hash: "usb", icon: "devices" },
+				{ label: "PCI", hash: "pci", icon: "devices" },
+				{ label: "Network", hash: "net", icon: "networks" },
+				{ label: "GPU", hash: "gpu", icon: "devices" },
 				{ label: "Kernel Modules", hash: "kmod", icon: "system" },
 			],
 		},
 		{
-			/*
-			 * ADR-0256. Deliberately FIRST, and deliberately a leaf.
-			 * Catalogue, Build and Delivery below are not three
-			 * subjects -- they are windows onto stages 1-4, 5-9 and
-			 * 10-11 of this one, and until this row existed an
-			 * operator had to visit all three and join them by hand to
-			 * answer "what is stopping this package".
-			 */
+			/* The whole software lifecycle, in flow order, so the tab
+			 * bar reads as the pipeline it describes (ADR-0256). */
 			label: "Pipeline",
 			hash: "pipeline",
 			icon: "software",
-		},
-		{
-			/* Catalogue (ADR-0230): what software exists. */
-			label: "Catalogue",
-			hash: "recipes",
-			icon: "recipes",
 			children: [
+				{ label: "Overview", hash: "pipeline", icon: "software" },
+				{ label: "Repos", hash: "pkg-repo", icon: "update" },
+				{ label: "Catalogue", hash: "packages", icon: "packages" },
+				{ label: "Triggers", hash: "update", icon: "update" },
 				{ label: "Recipes", hash: "recipes", icon: "recipes" },
-				{ label: "Packages", hash: "packages", icon: "packages" },
+				{ label: "Build", hash: "pkg-build-config", icon: "software" },
+				{ label: "Cache", hash: "pkg-cache", icon: "rebuildable" },
 				{ label: "Images", hash: "images", icon: "images" },
+				{ label: "Deployment", hash: "esp", icon: "system" },
+				{ label: "Rolling Restart", hash: "rolling-restart", icon: "containers" },
+				{ label: "Signing Keys", hash: "signing-keys", icon: "pki" },
 			],
 		},
 		{
-			/* CI (ADR-0230): how software gets built. A leaf rather
-			 * than a folder, because build configuration is the only
-			 * destination the dashboard has for it today -- builds,
-			 * build environments and build logs are CLI-only, which is
-			 * the "remaining domains need status surfaces" half of
-			 * #182 and is not invented here. */
-			label: "Build",
-			hash: "pkg-build-config",
-			icon: "software",
-		},
-		{
-			/* CD (ADR-0230): how software gets delivered. */
-			label: "Delivery",
-			hash: "pkg-cache",
-			icon: "rebuildable",
-			children: [
-				{ label: "Cache & Artifacts", hash: "pkg-cache", icon: "rebuildable" },
-				{ label: "Repo & Sync", hash: "pkg-repo", icon: "update" },
-				{ label: "Update Policy", hash: "update", icon: "update" },
-			],
-		},
-		{
-			/* Host lifecycle (ADR-0230): how this machine changes.
-			 * Host itself stays one tabbed destination -- see the note
-			 * above about not re-exploding the configuration forms. */
-			label: "Host Lifecycle",
+			label: "Host",
 			hash: "daemon-config",
-			icon: "host",
+			icon: "system",
 			children: [
-				{ label: "Host", hash: "daemon-config", icon: "host" },
-				{ label: "Boot & Slots", hash: "esp", icon: "system" },
-				{ label: "Kernel Policy", hash: "kernel-policy", icon: "system" },
-				{ label: "Sysctl", hash: "sysctl", icon: "config" },
-				{ label: "Backup", hash: "backup", icon: "backup" },
-				{ label: "Running Config", hash: "running-config", icon: "config" },
+				{ label: "Daemon", hash: "daemon-config", icon: "system" },
+				{ label: "Site", hash: "site", icon: "system" },
+				{ label: "Sessions", hash: "hostauth-sessions", icon: "ldap" },
+				{ label: "Running Config", hash: "running-config", icon: "system" },
+				{ label: "Factory Reset", hash: "factory-reset", icon: "update" },
 			],
 		},
 		{
-			/* Media (ADR-0230): how new machines are made. A leaf, and
-			 * a thin one: GET/POST /system/iso are x-cix-expose [cli],
-			 * so installer assembly has no dashboard surface at all and
-			 * only the signing keys it uses do. Named anyway rather
-			 * than omitted -- the domain exists, and the gap is the
-			 * point (#182). */
-			label: "Media",
-			hash: "signing-keys",
-			icon: "config",
+			label: "Control Plane",
+			hash: "tls-throttle",
+			icon: "system",
+			children: [
+				{ label: "TLS Throttle", hash: "tls-throttle", icon: "system" },
+				{ label: "CPU & Memory", hash: "control-plane-reservation", icon: "system" },
+			],
 		},
 		{
-			/* Everything about observing what the box is doing. These
-			 * are tabs of one view, deep-linked the same way the
-			 * catalogue domains are. */
+			label: "Kernel",
+			hash: "kernel-policy",
+			icon: "system",
+			children: [
+				{ label: "Kernel Line", hash: "kernel-policy", icon: "system" },
+				{ label: "Sysctl", hash: "sysctl", icon: "system" },
+				{ label: "Boot Console", hash: "boot-console", icon: "system" },
+				{ label: "Kernel Log", hash: "kmsg", icon: "monitoring" },
+			],
+		},
+		{
 			label: "Monitoring",
 			hash: "host-stats",
-			icon: "stats",
+			icon: "monitoring",
 			children: [
-				{ label: "Host Stats", hash: "host-stats", icon: "stats" },
-				{ label: "Processes", hash: "processes", icon: "stats" },
+				{ label: "Host Stats", hash: "host-stats", icon: "monitoring" },
+				{ label: "Processes", hash: "processes", icon: "monitoring" },
 				{ label: "Log Store", hash: "logs", icon: "logs" },
-				{ label: "Kernel Log", hash: "kmsg", icon: "logs" },
-				{ label: "Server Health", hash: "server-health", icon: "services" },
-				{ label: "Stalls", hash: "stalls", icon: "stats" },
+				{ label: "Server Health", hash: "server-health", icon: "monitoring" },
+				{ label: "Stalls", hash: "stalls", icon: "monitoring" },
 			],
 		},
 	];
+
 
 	for (const item of topLevel)
 		buildTreeNode(item, root, undefined, 0);

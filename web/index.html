@@ -337,8 +337,14 @@
 
 		<!-- Networks -->
 		<section class="view" id="view-networks" hidden>
+			<h2>Networks</h2>
+			<div class="tab-bar">
+				<button type="button" class="tab-button active" data-tab="networks">Networks</button>
+				<button type="button" class="tab-button" data-tab="routes">Routes</button>
+			</div>
+			<div class="tab-panel" data-tab="networks">
 			<div class="view-list">
-				<h2>Networks</h2>
+				
 				<table id="networks">
 					<thead>
 						<tr>
@@ -354,6 +360,25 @@
 					</tbody>
 				</table>
 			</div>
+			</div>
+<div class="tab-panel" data-tab="routes" hidden>
+			<div class="view-list">
+				<p class="hint">The box's own real kernel IPv4 routing table (ADR-0066) -- not a persisted Cix resource; a route added or removed here is gone on the next reboot unless re-applied by whatever set it up in the first place. Add one via the "+ Create" menu above.</p>
+				<table id="routes">
+					<thead>
+						<tr>
+							<th>Destination</th>
+							<th>Gateway</th>
+							<th>Interface</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody id="routes-body">
+						<tr><td colspan="4" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+			</div>
+		</div>
 		</section>
 
 		<section class="view" id="view-network-detail" hidden>
@@ -595,6 +620,7 @@
 				<button type="button" class="tab-button" data-tab="pci" id="dev-tab-pci">PCI</button>
 				<button type="button" class="tab-button" data-tab="net" id="dev-tab-net">Network</button>
 				<button type="button" class="tab-button" data-tab="gpu" id="dev-tab-gpu">GPU</button>
+							<button type="button" class="tab-button" data-tab="kmod">Kernel Modules</button>
 			</div>
 			<div class="tab-panel" id="dev-panel-usb" data-tab="usb">
 				<table>
@@ -620,11 +646,8 @@
 					<tbody id="dev-gpu-body"><tr><td colspan="6" class="empty">Loading&hellip;</td></tr></tbody>
 				</table>
 			</div>
-		</section>
-
-		<!-- Kernel Modules (ADR-0159) -->
-		<section class="view" id="view-kmod" hidden>
-			<h2>Kernel Modules</h2>
+			<div class="tab-panel" data-tab="kmod" hidden>
+			
 			<p class="hint">Real, live <code>/proc/modules</code> state plus the persisted default-options/autoload config each one may have (ADR-0159 Phase A) -- load/unload here takes effect immediately; a kernel rebuild (below) is only needed to add support for a module that isn't already built at all.</p>
 
 			<h3>Loaded modules</h3>
@@ -681,7 +704,11 @@
 				<button type="submit">Start build</button>
 			</form>
 			<p id="kbf-status" class="hint"></p>
+			</div>
 		</section>
+
+		<!-- Kernel Modules (ADR-0159) -->
+		
 
 		<!-- Sysctl (ADR-0160) -->
 		<section class="view" id="view-sysctl" hidden>
@@ -705,8 +732,17 @@
 
 		<!-- Disks (multi-disk management: ADR-0071/ADR-0102/ADR-0104) -->
 		<section class="view" id="view-storage" hidden>
+			<h2>Disks</h2>
+			<div class="tab-bar">
+				<button type="button" class="tab-button active" data-tab="storage">Storage</button>
+				<button type="button" class="tab-button" data-tab="storage-placement">Placement</button>
+				<button type="button" class="tab-button" data-tab="host-swap">Swap</button>
+				<button type="button" class="tab-button" data-tab="backup">System Backup</button>
+				<button type="button" class="tab-button" data-tab="volume-backup-config">Volume Backups</button>
+			</div>
+			<div class="tab-panel" data-tab="storage">
 			<div class="view-list">
-				<h2>Disks</h2>
+				
 				<p class="hint">Real host block devices, discovered live from sysfs every poll. Partitions are
 					not listed here &mdash; they belong to a disk, so they live on that disk's own page: click
 					a disk to manage its partition table, or to give the whole disk a role and format it
@@ -731,6 +767,153 @@
 					</tbody>
 				</table>
 			</div>
+			</div>
+<div class="tab-panel" data-tab="storage-placement" hidden>
+			<div class="view-list">
+				<p class="hint">Which disk holds each platform-level concern. Each target must already carry
+					the matching role and be mounted &mdash; assign roles on a disk's own page. Both
+					migrations below are live, with no downtime, and run in independent job slots.</p>
+
+				<h3>Log storage placement</h3>
+				<p class="hint" id="ls-current">Log storage: unknown</p>
+				<p class="hint" id="ls-migrate-status" hidden></p>
+				<form id="ls-migrate-form">
+					<label>
+						Migrate to
+						<select id="ls-target-disk">
+							<option value="">(default OS-disk placement)</option>
+						</select>
+					</label>
+					<button type="submit">Migrate</button>
+				</form>
+				<p class="hint">The consolidated log store (ADR-0141) &mdash; kernel dmesg, this daemon's own
+					diagnostics, the per-request audit trail, every container's stdout/stderr.</p>
+
+				<h3>Rebuildable storage placement</h3>
+				<p class="hint" id="rs-current">Rebuildable storage: unknown</p>
+				<p class="hint" id="rs-migrate-status" hidden></p>
+				<form id="rs-migrate-form">
+					<label>
+						Migrate to
+						<select id="rs-target-disk">
+							<option value="">(default OS-disk placement)</option>
+						</select>
+					</label>
+					<button type="submit">Migrate</button>
+				</form>
+				<p class="hint">Images, installed packages, build artifacts and staged ISOs (ADR-0141) &mdash;
+					regenerable from recipes and sources, unlike state or logs.</p>
+
+				<h3>Backup and swap</h3>
+				<p class="hint">Two more placements live on their own pages, and are linked rather than
+					repeated here &mdash; one control in two places is one that drifts.
+					<a href="#backup">Maintenance &gt; Backup</a> chooses the disk automatic snapshots are
+					written to; <a href="#swap">Host &gt; Host Swap</a> chooses the disk the swap file lives
+					on (ADR-0169).</p>
+			</div>
+		</div>
+<div class="tab-panel" data-tab="host-swap" hidden>
+			<h2>Host Swap</h2>
+			<p class="hint" id="swap-status">Swap: unknown</p>
+			<form id="swap-enable-form">
+				<label>
+					Size (MB)
+					<input type="number" id="swap-size-mb" min="64" max="1048576" value="4096">
+				</label>
+				<button type="submit">Enable</button>
+				<button type="button" id="swap-disable">Disable</button>
+			</form>
+			<p class="hint">A single on-demand swap file (ADR-0069), off by default -- useful for memory-heavy package builds (e.g. Rust/wasm) on a box with limited RAM. File-backed swap performs identically to a partition on SSD/NVMe-backed storage.</p>
+			<h3>Compressed swap cache (zswap)</h3>
+			<p class="hint">
+				zswap compresses pages in RAM before they would otherwise be written to the real
+				swap device, so memory pressure costs CPU instead of disk I/O (issue #51). It
+				consumes nothing until the box is actually swapping, which is why it is on by
+				default here while the swap file itself is not.
+			</p>
+			<p class="hint" id="zswap-divergence" hidden></p>
+			<form id="zswap-form">
+				<label class="checkbox">
+					<input type="checkbox" id="zswap-enabled">
+					Enabled
+				</label>
+				<label>
+					Max pool (% of RAM)
+					<input type="number" id="zswap-max-pool" min="1" max="100">
+				</label>
+				<label>
+					Compressor
+					<select id="zswap-compressor"></select>
+				</label>
+				<button type="submit">Save</button>
+			</form>
+			<table class="detail-table"><tbody id="zswap-kernel"></tbody></table>
+		</div>
+<div class="tab-panel" data-tab="backup" hidden>
+			<p class="hint">Platform configuration state (container defs, networks, DNS records, pkg install
+				state + recipes, site config) -- not workload data, not image content, never PKI keys.</p>
+			<button type="button" id="sys-backup">Download backup</button>
+			<h3>Restore</h3>
+			<form id="sys-restore-form">
+				<label class="wide">
+					Backup bundle
+					<input type="file" id="sys-restore-file" required>
+				</label>
+				<button type="submit">Restore</button>
+			</form>
+			<p class="hint">Writes fields back to their real state files. Does not reboot or hot-reload --
+				reboot separately for it to take effect.</p>
+
+			<h3>Automatic snapshots</h3>
+			<p class="hint" id="bc-status">Snapshots: unknown</p>
+			<form id="bc-form">
+				<label>
+					Disk
+					<select id="bc-disk">
+						<option value="">(none -- automatic snapshots disabled)</option>
+					</select>
+				</label>
+				<label>
+					<input type="checkbox" id="bc-enabled">
+					Enabled
+				</label>
+				<p class="hint">
+					When backups run is a schedule now (ADR-0257) &mdash; see
+					<a href="#schedules">Schedules</a>, action <code>system.backup</code>.
+				</p>
+				<button type="submit">Save</button>
+				<button type="button" id="bc-snapshot-now">Snapshot now</button>
+			</form>
+			<p class="hint">Writes the same bundle above to a disk carrying the <code>backup</code> role
+				(ADR-0141) -- a single, always-current snapshot, not a timestamped history. The target
+				disk is validated when a snapshot actually runs, not when saved here.</p>
+		</div>
+<div class="tab-panel" data-tab="volume-backup-config" hidden>
+			<div class="view-list">
+				<p class="hint">Scheduled snapshots of what volumes <em>hold</em> &mdash; workload data,
+					which the platform backup bundle deliberately never carries (ADR-0033 keeps it to
+					configuration, on the same reasoning that keeps image content out). Opt in per volume
+					on that volume's own page; this is the schedule they share and the disk they go to.
+					One interval rather than one per volume: N timers is N ways for a schedule to be
+					quietly wrong.</p>
+				<form id="vbc-form">
+					<label>
+						<input type="checkbox" id="vbc-enabled"> Run scheduled volume backups
+					</label>
+					<label>
+						Disk
+						<select id="vbc-disk">
+							<option value="">(none)</option>
+						</select>
+					</label>
+					<p class="hint">
+						When the sweep runs is a schedule now (ADR-0257) &mdash; see
+						<a href="#schedules">Schedules</a>, action <code>volume.backup</code>.
+					</p>
+					<button type="submit">Save</button>
+				</form>
+			</div>
+		</div>
 		</section>
 
 		<!--
@@ -811,27 +994,15 @@
      inventory of physical hardware and the kernel routing table are
      not settings about the daemon.
 		-->
-		<section class="view" id="view-daemon-config" hidden>
+				<section class="view" id="view-host" hidden>
 			<h2>Host</h2>
 			<div class="tab-bar">
 				<button type="button" class="tab-button active" data-tab="daemon-config">Daemon</button>
 				<button type="button" class="tab-button" data-tab="site">Site</button>
-				<button type="button" class="tab-button" data-tab="routes">Routes</button>
 				<button type="button" class="tab-button" data-tab="hostauth-sessions">Sessions</button>
-				<button type="button" class="tab-button" data-tab="host-swap">Swap</button>
-				<button type="button" class="tab-button" data-tab="rolling-restart">Rolling Restart</button>
-				<button type="button" class="tab-button" data-tab="storage-placement">Storage Placement</button>
-				<button type="button" class="tab-button" data-tab="tls-throttle">TLS Throttle</button>
-				<button type="button" class="tab-button" data-tab="control-plane-reservation">Control Plane</button>
-				<button type="button" class="tab-button" data-tab="boot-console">Boot Console</button>
-				<button type="button" class="tab-button" data-tab="esp">Boot Entries</button>
-				<button type="button" class="tab-button" data-tab="signing-keys">Signing Keys</button>
-				<button type="button" class="tab-button" data-tab="kernel-policy">Kernel Line</button>
-				<button type="button" class="tab-button" data-tab="backup">Backup</button>
-				<button type="button" class="tab-button" data-tab="volume-backup-config">Volume Backups</button>
 				<button type="button" class="tab-button" data-tab="factory-reset">Factory Reset</button>
 			</div>
-			<div class="tab-panel" data-tab="daemon-config">
+<div class="tab-panel" data-tab="daemon-config">
 			<p class="hint">
 				cixd's own listen port, HTTP/HTTPS exposure, and which network
 				it's currently bound to (Part 0.5). Changes apply live -- no
@@ -874,7 +1045,7 @@
 			<p class="hint" id="dcf-bind-hint"></p>
 			<p class="hint">Bind IP (ADR-0068) is a second, dedicated address on the management network's own bridge -- cixd binds there instead of that network's own address. Leave blank to make no change; check "Clear bind IP" to revert to the network's own address.</p>
 		</div>
-			<div class="tab-panel" data-tab="site" hidden>
+<div class="tab-panel" data-tab="site" hidden>
 			<p class="hint">
 				A real, operator-set identity for this install, used to label it in the
 				dashboard header and backups, and to suggest a default FQDN
@@ -897,25 +1068,7 @@
 				<button type="submit">Save</button>
 			</form>
 		</div>
-			<div class="tab-panel" data-tab="routes" hidden>
-			<div class="view-list">
-				<p class="hint">The box's own real kernel IPv4 routing table (ADR-0066) -- not a persisted Cix resource; a route added or removed here is gone on the next reboot unless re-applied by whatever set it up in the first place. Add one via the "+ Create" menu above.</p>
-				<table id="routes">
-					<thead>
-						<tr>
-							<th>Destination</th>
-							<th>Gateway</th>
-							<th>Interface</th>
-							<th></th>
-						</tr>
-					</thead>
-					<tbody id="routes-body">
-						<tr><td colspan="4" class="empty">Loading&hellip;</td></tr>
-					</tbody>
-				</table>
-			</div>
-		</div>
-			<div class="tab-panel" data-tab="hostauth-sessions" hidden>
+<div class="tab-panel" data-tab="hostauth-sessions" hidden>
 			<div class="view-list">
 				<p class="hint">Every currently active host-auth session (ADR-0152) -- the raw token is
 					never shown here, before or after issuance; only the one-time login response ever
@@ -935,346 +1088,34 @@
 				</table>
 			</div>
 		</div>
-			<div class="tab-panel" data-tab="host-swap" hidden>
-			<h2>Host Swap</h2>
-			<p class="hint" id="swap-status">Swap: unknown</p>
-			<form id="swap-enable-form">
-				<label>
-					Size (MB)
-					<input type="number" id="swap-size-mb" min="64" max="1048576" value="4096">
-				</label>
-				<button type="submit">Enable</button>
-				<button type="button" id="swap-disable">Disable</button>
-			</form>
-			<p class="hint">A single on-demand swap file (ADR-0069), off by default -- useful for memory-heavy package builds (e.g. Rust/wasm) on a box with limited RAM. File-backed swap performs identically to a partition on SSD/NVMe-backed storage.</p>
-			<h3>Compressed swap cache (zswap)</h3>
-			<p class="hint">
-				zswap compresses pages in RAM before they would otherwise be written to the real
-				swap device, so memory pressure costs CPU instead of disk I/O (issue #51). It
-				consumes nothing until the box is actually swapping, which is why it is on by
-				default here while the swap file itself is not.
-			</p>
-			<p class="hint" id="zswap-divergence" hidden></p>
-			<form id="zswap-form">
-				<label class="checkbox">
-					<input type="checkbox" id="zswap-enabled">
-					Enabled
-				</label>
-				<label>
-					Max pool (% of RAM)
-					<input type="number" id="zswap-max-pool" min="1" max="100">
-				</label>
-				<label>
-					Compressor
-					<select id="zswap-compressor"></select>
-				</label>
-				<button type="submit">Save</button>
-			</form>
-			<table class="detail-table"><tbody id="zswap-kernel"></tbody></table>
-		</div>
-			<div class="tab-panel" data-tab="rolling-restart" hidden>
-			<form id="rc-form">
-				<label>
-					Jitter window (seconds)
-					<input type="number" id="rc-jitter-window" min="0" max="3600" value="60">
-				</label>
-				<button type="submit">Save</button>
-			</form>
-			<p class="hint">Part 5, ADR-0124: when a rolling image auto-rebuilds, every <code>follow_rolling</code> container on it gets a uniformly-random restart delay up to this window, spreading the restarts out instead of killing them all in the same instant. 0 disables jitter (restart immediately).</p>
-		</div>
-			<div class="tab-panel" data-tab="storage-placement" hidden>
-			<div class="view-list">
-				<p class="hint">Which disk holds each platform-level concern. Each target must already carry
-					the matching role and be mounted &mdash; assign roles on a disk's own page. Both
-					migrations below are live, with no downtime, and run in independent job slots.</p>
-
-				<h3>Log storage placement</h3>
-				<p class="hint" id="ls-current">Log storage: unknown</p>
-				<p class="hint" id="ls-migrate-status" hidden></p>
-				<form id="ls-migrate-form">
-					<label>
-						Migrate to
-						<select id="ls-target-disk">
-							<option value="">(default OS-disk placement)</option>
-						</select>
-					</label>
-					<button type="submit">Migrate</button>
-				</form>
-				<p class="hint">The consolidated log store (ADR-0141) &mdash; kernel dmesg, this daemon's own
-					diagnostics, the per-request audit trail, every container's stdout/stderr.</p>
-
-				<h3>Rebuildable storage placement</h3>
-				<p class="hint" id="rs-current">Rebuildable storage: unknown</p>
-				<p class="hint" id="rs-migrate-status" hidden></p>
-				<form id="rs-migrate-form">
-					<label>
-						Migrate to
-						<select id="rs-target-disk">
-							<option value="">(default OS-disk placement)</option>
-						</select>
-					</label>
-					<button type="submit">Migrate</button>
-				</form>
-				<p class="hint">Images, installed packages, build artifacts and staged ISOs (ADR-0141) &mdash;
-					regenerable from recipes and sources, unlike state or logs.</p>
-
-				<h3>Backup and swap</h3>
-				<p class="hint">Two more placements live on their own pages, and are linked rather than
-					repeated here &mdash; one control in two places is one that drifts.
-					<a href="#backup">Maintenance &gt; Backup</a> chooses the disk automatic snapshots are
-					written to; <a href="#swap">Host &gt; Host Swap</a> chooses the disk the swap file lives
-					on (ADR-0169).</p>
-			</div>
-		</div>
-			<div class="tab-panel" data-tab="boot-console" hidden>
-			<div class="view-list">
-				<p class="hint">
-					What this machine's own boot line says about consoles (issue #24). An installed
-					host boots through systemd-boot, and its loader entries carried a fixed
-					<code>console=tty0 console=ttyS0</code> &mdash; fine as a default, and impossible
-					to change without reinstalling. Real hardware sometimes needs a serial console at
-					a particular baud, a framebuffer argument to produce any output at all, or
-					exactly the opposite (<code>nomodeset</code>) when the framebuffer is the problem.
-				</p>
-				<p class="hint">
-					Saving rewrites the loader entries already on the ESP, so it takes effect at the
-					<strong>next boot</strong> rather than at the next A/B update. Everything from
-					<code>root=</code> onward is left exactly as it was: that half of the line decides
-					whether the machine boots at all, and is not editable here.
-				</p>
-				<form id="bcf-form">
-					<label class="wide">
-						Consoles (space separated, in order &mdash; e.g. <code>tty0 ttyS0,115200n8</code>)
-						<input type="text" id="bcf-consoles" placeholder="tty0 ttyS0">
-					</label>
-					<label class="wide">
-						Extra kernel parameters (e.g. <code>nomodeset video=efifb:off</code>)
-						<input type="text" id="bcf-extra" placeholder="">
-					</label>
-					<button type="submit">Save</button>
-				</form>
-				<h3>In effect</h3>
-				<table class="detail-table"><tbody id="bcf-effect"></tbody></table>
-				<table id="boot-entries">
-					<thead><tr><th>Loader entry</th><th>options</th></tr></thead>
-					<tbody id="boot-entries-body">
-						<tr><td colspan="2" class="empty">Loading&hellip;</td></tr>
-					</tbody>
-				</table>
-			</div>
-		</div>
-			<div class="tab-panel" data-tab="signing-keys" hidden>
-			<div class="view-list">
-				<h2>Secure Boot Signing Keys</h2>
-				<p class="hint">
-					The key pair this host signs installer media with. <strong>Building an ISO
-					 needs it</strong> &mdash; without it <code>POST /system/iso</code> refuses,
-					naming this as the missing input.
-				</p>
-				<p class="hint">
-					ADR-0064 originally required this to be placed here out of band, comparing it
-					to a file already <code>scp</code>'d onto the box. A real Cix host runs no
-					sshd and has no console, so there was never a way to do that &mdash; which
-					meant ISO assembly could not actually run on any installed machine. Pasting
-					the pair in is that missing transport (ADR-0212).
-				</p>
-				<p class="hint">
-					<strong>Install this on the one host that cuts media, not on every box.</strong>
-					A release-signing private key on every machine means any single machine's
-					compromise leaks the fleet's Secure Boot identity. Only the public
-					<code>.cer</code> is ever staged onto an installed target, for MOK enrolment.
-				</p>
-				<div id="signing-keys-summary" class="pki-ca-status"><p>Loading&hellip;</p></div>
-				<h3>Install a key pair</h3>
-				<p class="hint">
-					Paste both PEM blocks. The DER <code>.cer</code> that <code>mokutil</code>
-					needs is derived from the certificate here, so there is no third thing to
-					keep in step. The certificate is checked against the private key before
-					anything is written: a mismatched pair is refused outright rather than
-					discovered later as an image that signs cleanly and then will not boot.
-				</p>
-				<form id="signing-keys-form">
-					<label class="wide">
-						Private key (PEM)
-						<textarea id="signing-key-pem" rows="8" spellcheck="false"
-							placeholder="-----BEGIN PRIVATE KEY-----"></textarea>
-					</label>
-					<label class="wide">
-						Certificate (PEM)
-						<textarea id="signing-cert-pem" rows="8" spellcheck="false"
-							placeholder="-----BEGIN CERTIFICATE-----"></textarea>
-					</label>
-					<button type="submit">Install key pair</button>
-					<button type="button" id="signing-keys-clear" class="button-danger">Remove from this host</button>
-				</form>
-
-				<h2>Release Signing Key</h2>
-				<p class="hint">
-					A <strong>separate</strong> key, and deliberately so (ADR-0220). The pair
-					above is RSA because UEFI mandates RSA, and answers &ldquo;may this firmware
-					boot this image?&rdquo; This one is Ed25519 because
-					<code>minisign</code> mandates Ed25519, and answers &ldquo;did Cix publish
-					these bytes?&rdquo; One key for both would mean whoever can sign a download
-					can also sign a bootloader &mdash; and the two have very different blast
-					radii: republishing a public key, versus re-enrolling firmware on every host.
-				</p>
-				<p class="hint">
-					Installer ISOs built here are signed with it. Anyone who downloads one
-					verifies with stock <code>minisign</code> against the public key below
-					&mdash; no Cix software required on their side, which is the point: the last
-					check between a substituted ISO and a machine should not be code from the
-					project that produced the ISO.
-				</p>
-				<div id="release-key-summary" class="pki-ca-status"><p>Loading&hellip;</p></div>
-				<h3>Install a release key</h3>
-				<p class="hint">
-					Generate one with
-					<code>openssl genpkey -algorithm ed25519</code> and paste it here. The key is
-					validated by deriving its public half before anything is written, so an RSA
-					key &mdash; the realistic mistake, given the pair sitting right above &mdash;
-					is refused now rather than at signing time on a real release.
-				</p>
-				<form id="release-key-form">
-					<label class="wide">
-						Ed25519 private key (PEM)
-						<textarea id="release-key-pem" rows="5" spellcheck="false"
-							placeholder="-----BEGIN PRIVATE KEY-----"></textarea>
-					</label>
-					<button type="submit">Install release key</button>
-					<button type="button" id="release-key-clear" class="button-danger">Remove from this host</button>
-				</form>
-			</div>
-			</div>
-			<div class="tab-panel" data-tab="esp" hidden>
-			<div class="view-list">
-				<h2>Boot Entries (ESP)</h2>
-				<p class="hint">
-					What this machine will actually boot next, and why. <strong>Will boot</strong>
-					is computed the way systemd-boot itself chooses: entries whose boot counter has
-					run out sort last, then by <code>sort-key</code> and <code>version</code>
-					descending &mdash; so a freshly staged update outranks an older entry whatever
-					its slot letter (ADR-0202).
-				</p>
-				<p class="hint">
-					<strong>Default is a glob pattern, not a name.</strong> That is what made a real
-					host reboot into the image it was already running, repeatedly, with no error
-					anywhere: a stale <code>thinc-*</code> written at install time went on matching
-					six obsolete entries and outranking every correctly staged one (issue #128).
-					Leave it as <code>cix-*</code> unless you have a specific reason &mdash; pinning
-					it to one slot breaks the <em>next</em> update, which stages the other one.
-				</p>
-				<div id="esp-summary" class="pki-ca-status"><p>Loading&hellip;</p></div>
-				<p class="hint">
-					<strong>Boot a slot once.</strong> The rollback control: it applies to the
-					next boot only and then reverts to normal selection, so a machine that
-					fails to come back is not left pinned to a broken slot. Use this to steer
-					one boot; use the default pattern below to fix a persistent mistake
-					(issue #154).
-				</p>
-				<div id="esp-boot-next-row">
-					<span id="esp-boot-next-state">&nbsp;</span>
-					<button type="button" id="esp-boot-next-a">Boot slot A once</button>
-					<button type="button" id="esp-boot-next-b">Boot slot B once</button>
-					<button type="button" id="esp-boot-next-clear">Disarm</button>
+<div class="tab-panel" data-tab="factory-reset" hidden>
+				<div class="view-list">
+					<p class="hint">Returns this box to its <strong>just-installed</strong> state and reboots.
+						Destroys every container, image, network, DNS/PKI/LDAP/NTP registration, package state,
+						the log store, and <strong>every volume and all data in them</strong>. This cannot be
+						undone and there is no backup taken on your behalf.</p>
+					<p class="hint">It keeps the installed OS itself &mdash; both root slots, the kernel, the
+						ESP and the install-time config &mdash; so the box comes back exactly as the installer
+						left it rather than as nothing. Disks that carried a role are <em>forgotten</em>, not
+						reformatted: the filesystems on them are left alone.</p>
+					<form id="factory-reset-form">
+						<label>
+							Type this install's instance name to confirm
+							<input type="text" id="fr-confirm" placeholder="instance name" required>
+						</label>
+						<button type="submit" class="danger">Factory reset and reboot</button>
+					</form>
 				</div>
-				<form id="esp-loader-form">
-					<label class="wide">
-						Default pattern
-						<input type="text" id="esp-default" placeholder="cix-*">
-					</label>
-					<label class="wide">
-						Menu timeout (seconds)
-						<input type="number" id="esp-timeout" min="0" max="600">
-					</label>
-					<button type="submit">Save</button>
-				</form>
-				<table id="esp-entries">
-					<thead>
-						<tr>
-							<th>Entry</th>
-							<th>Title</th>
-							<th>Matches default</th>
-							<th>Running slot</th>
-							<th></th>
-						</tr>
-					</thead>
-					<tbody id="esp-entries-body">
-						<tr><td colspan="5" class="empty">Loading&hellip;</td></tr>
-					</tbody>
-				</table>
 			</div>
-		</div>
-			<div class="tab-panel" data-tab="kernel-policy" hidden>
-			<div class="view-list">
-				<p class="hint">
-					Which kernel line this box tracks (issue #65). The platform used to make that
-					judgment call for you &mdash; one pinned version in the kernel recipe, and
-					nothing anywhere saying which <em>line</em> it belonged to or how far behind
-					that line it had drifted. A cautious box tracks <code>longterm</code>, an
-					aggressive one <code>stable</code> or <code>mainline</code>.
-				</p>
-				<p class="hint">
-					The channels are kernel.org's own monikers, resolved from its own
-					<code>releases.json</code> &mdash; there is no copy of kernel.org's state in
-					this repo to go stale. Choosing a channel changes what is <strong>reported</strong>
-					here; it never moves the pin on its own. <code>pinned</code> is the default and
-					means no version is proposed at all.
-				</p>
-				<form id="kpf-form">
-					<label>
-						Channel
-						<select id="kpf-channel">
-							<option value="pinned">pinned &mdash; stay where the recipe says</option>
-							<option value="longterm">longterm</option>
-							<option value="stable">stable</option>
-							<option value="mainline">mainline</option>
-						</select>
-					</label>
-					<button type="submit">Save</button>
-					<button type="button" id="kpf-refresh">Refresh from kernel.org</button>
-				</form>
-				<table class="detail-table"><tbody id="kpf-status"></tbody></table>
+		</section>
+
+		<section class="view" id="view-control-plane" hidden>
+			<h2>Control Plane</h2>
+			<div class="tab-bar">
+				<button type="button" class="tab-button active" data-tab="tls-throttle">TLS Throttle</button>
+				<button type="button" class="tab-button" data-tab="control-plane-reservation">CPU &amp; Memory</button>
 			</div>
-		</div>
-			<div class="tab-panel" data-tab="control-plane-reservation" hidden>
-			<div class="view-list">
-				<h2>Control Plane Reservation</h2>
-				<p class="hint">
-					How much of this machine is held back for the daemon itself (issue #86).
-					There is no SSH and no shell here, so a starved daemon is not a degraded
-					box &mdash; it is a box nobody can reach until someone walks to the
-					hypervisor, which has happened for real. Rather than asking the scheduler
-					to favour the daemon, everything that is <em>not</em> the daemon &mdash;
-					every container and every package build &mdash; lives under one
-					<code>cix-workload</code> cgroup capped at the machine minus this
-					reservation, so what the control plane has left is enforced by the kernel
-					rather than hoped for.
-				</p>
-				<p class="hint">
-					Expressed as what the control plane keeps, not as what workloads may have:
-					that stays correct when the box is replaced by a bigger one. The ceiling
-					below is derived from live host totals every time it is applied.
-				</p>
-				<form id="cpr-form">
-					<label class="checkbox">
-						<input type="checkbox" id="cpr-enabled">
-						Enabled
-					</label>
-					<label>
-						Reserved CPU (percent of all cores, 1-50)
-						<input type="number" id="cpr-cpu-percent" min="1" max="50">
-					</label>
-					<label>
-						Reserved memory (bytes)
-						<input type="number" id="cpr-memory-bytes" min="67108864">
-					</label>
-					<button type="submit">Save</button>
-				</form>
-				<h3>In effect now</h3>
-				<table class="detail-table"><tbody id="cpr-effect"></tbody></table>
-			</div>
-		</div>
-			<div class="tab-panel" data-tab="tls-throttle" hidden>
+<div class="tab-panel" data-tab="tls-throttle" hidden>
 			<div class="view-list">
 				<p class="hint">Per-source-IP throttling for repeated failed HTTPS handshakes (ADR-0134) -- a source that fails enough handshakes within the window is refused outright, on both listeners, until the block expires. Loopback (127.0.0.1) is never throttled, so this daemon's own local admin access can't be locked out by a hostile source sharing the box.</p>
 				<h3>Config</h3>
@@ -1318,91 +1159,124 @@
 				</table>
 			</div>
 		</div>
-			<div class="tab-panel" data-tab="backup" hidden>
-			<p class="hint">Platform configuration state (container defs, networks, DNS records, pkg install
-				state + recipes, site config) -- not workload data, not image content, never PKI keys.</p>
-			<button type="button" id="sys-backup">Download backup</button>
-			<h3>Restore</h3>
-			<form id="sys-restore-form">
-				<label class="wide">
-					Backup bundle
-					<input type="file" id="sys-restore-file" required>
-				</label>
-				<button type="submit">Restore</button>
-			</form>
-			<p class="hint">Writes fields back to their real state files. Does not reboot or hot-reload --
-				reboot separately for it to take effect.</p>
-
-			<h3>Automatic snapshots</h3>
-			<p class="hint" id="bc-status">Snapshots: unknown</p>
-			<form id="bc-form">
-				<label>
-					Disk
-					<select id="bc-disk">
-						<option value="">(none -- automatic snapshots disabled)</option>
-					</select>
-				</label>
-				<label>
-					<input type="checkbox" id="bc-enabled">
-					Enabled
-				</label>
-				<p class="hint">
-					When backups run is a schedule now (ADR-0257) &mdash; see
-					<a href="#schedules">Schedules</a>, action <code>system.backup</code>.
-				</p>
-				<button type="submit">Save</button>
-				<button type="button" id="bc-snapshot-now">Snapshot now</button>
-			</form>
-			<p class="hint">Writes the same bundle above to a disk carrying the <code>backup</code> role
-				(ADR-0141) -- a single, always-current snapshot, not a timestamped history. The target
-				disk is validated when a snapshot actually runs, not when saved here.</p>
-		</div>
-			<div class="tab-panel" data-tab="volume-backup-config" hidden>
+<div class="tab-panel" data-tab="control-plane-reservation" hidden>
 			<div class="view-list">
-				<p class="hint">Scheduled snapshots of what volumes <em>hold</em> &mdash; workload data,
-					which the platform backup bundle deliberately never carries (ADR-0033 keeps it to
-					configuration, on the same reasoning that keeps image content out). Opt in per volume
-					on that volume's own page; this is the schedule they share and the disk they go to.
-					One interval rather than one per volume: N timers is N ways for a schedule to be
-					quietly wrong.</p>
-				<form id="vbc-form">
-					<label>
-						<input type="checkbox" id="vbc-enabled"> Run scheduled volume backups
+				<h2>Control Plane Reservation</h2>
+				<p class="hint">
+					How much of this machine is held back for the daemon itself (issue #86).
+					There is no SSH and no shell here, so a starved daemon is not a degraded
+					box &mdash; it is a box nobody can reach until someone walks to the
+					hypervisor, which has happened for real. Rather than asking the scheduler
+					to favour the daemon, everything that is <em>not</em> the daemon &mdash;
+					every container and every package build &mdash; lives under one
+					<code>cix-workload</code> cgroup capped at the machine minus this
+					reservation, so what the control plane has left is enforced by the kernel
+					rather than hoped for.
+				</p>
+				<p class="hint">
+					Expressed as what the control plane keeps, not as what workloads may have:
+					that stays correct when the box is replaced by a bigger one. The ceiling
+					below is derived from live host totals every time it is applied.
+				</p>
+				<form id="cpr-form">
+					<label class="checkbox">
+						<input type="checkbox" id="cpr-enabled">
+						Enabled
 					</label>
 					<label>
-						Disk
-						<select id="vbc-disk">
-							<option value="">(none)</option>
-						</select>
+						Reserved CPU (percent of all cores, 1-50)
+						<input type="number" id="cpr-cpu-percent" min="1" max="50">
 					</label>
-					<p class="hint">
-						When the sweep runs is a schedule now (ADR-0257) &mdash; see
-						<a href="#schedules">Schedules</a>, action <code>volume.backup</code>.
-					</p>
+					<label>
+						Reserved memory (bytes)
+						<input type="number" id="cpr-memory-bytes" min="67108864">
+					</label>
 					<button type="submit">Save</button>
 				</form>
+				<h3>In effect now</h3>
+				<table class="detail-table"><tbody id="cpr-effect"></tbody></table>
 			</div>
 		</div>
-			<div class="tab-panel" data-tab="factory-reset" hidden>
-				<div class="view-list">
-					<p class="hint">Returns this box to its <strong>just-installed</strong> state and reboots.
-						Destroys every container, image, network, DNS/PKI/LDAP/NTP registration, package state,
-						the log store, and <strong>every volume and all data in them</strong>. This cannot be
-						undone and there is no backup taken on your behalf.</p>
-					<p class="hint">It keeps the installed OS itself &mdash; both root slots, the kernel, the
-						ESP and the install-time config &mdash; so the box comes back exactly as the installer
-						left it rather than as nothing. Disks that carried a role are <em>forgotten</em>, not
-						reformatted: the filesystems on them are left alone.</p>
-					<form id="factory-reset-form">
-						<label>
-							Type this install's instance name to confirm
-							<input type="text" id="fr-confirm" placeholder="instance name" required>
-						</label>
-						<button type="submit" class="danger">Factory reset and reboot</button>
-					</form>
-				</div>
-			</div>
 		</section>
+
+		<section class="view" id="view-kernel" hidden>
+			<h2>Kernel</h2>
+			<div class="tab-bar">
+				<button type="button" class="tab-button active" data-tab="kernel-policy">Kernel Line</button>
+				<button type="button" class="tab-button" data-tab="boot-console">Boot Console</button>
+			</div>
+<div class="tab-panel" data-tab="kernel-policy" hidden>
+			<div class="view-list">
+				<p class="hint">
+					Which kernel line this box tracks (issue #65). The platform used to make that
+					judgment call for you &mdash; one pinned version in the kernel recipe, and
+					nothing anywhere saying which <em>line</em> it belonged to or how far behind
+					that line it had drifted. A cautious box tracks <code>longterm</code>, an
+					aggressive one <code>stable</code> or <code>mainline</code>.
+				</p>
+				<p class="hint">
+					The channels are kernel.org's own monikers, resolved from its own
+					<code>releases.json</code> &mdash; there is no copy of kernel.org's state in
+					this repo to go stale. Choosing a channel changes what is <strong>reported</strong>
+					here; it never moves the pin on its own. <code>pinned</code> is the default and
+					means no version is proposed at all.
+				</p>
+				<form id="kpf-form">
+					<label>
+						Channel
+						<select id="kpf-channel">
+							<option value="pinned">pinned &mdash; stay where the recipe says</option>
+							<option value="longterm">longterm</option>
+							<option value="stable">stable</option>
+							<option value="mainline">mainline</option>
+						</select>
+					</label>
+					<button type="submit">Save</button>
+					<button type="button" id="kpf-refresh">Refresh from kernel.org</button>
+				</form>
+				<table class="detail-table"><tbody id="kpf-status"></tbody></table>
+			</div>
+		</div>
+<div class="tab-panel" data-tab="boot-console" hidden>
+			<div class="view-list">
+				<p class="hint">
+					What this machine's own boot line says about consoles (issue #24). An installed
+					host boots through systemd-boot, and its loader entries carried a fixed
+					<code>console=tty0 console=ttyS0</code> &mdash; fine as a default, and impossible
+					to change without reinstalling. Real hardware sometimes needs a serial console at
+					a particular baud, a framebuffer argument to produce any output at all, or
+					exactly the opposite (<code>nomodeset</code>) when the framebuffer is the problem.
+				</p>
+				<p class="hint">
+					Saving rewrites the loader entries already on the ESP, so it takes effect at the
+					<strong>next boot</strong> rather than at the next A/B update. Everything from
+					<code>root=</code> onward is left exactly as it was: that half of the line decides
+					whether the machine boots at all, and is not editable here.
+				</p>
+				<form id="bcf-form">
+					<label class="wide">
+						Consoles (space separated, in order &mdash; e.g. <code>tty0 ttyS0,115200n8</code>)
+						<input type="text" id="bcf-consoles" placeholder="tty0 ttyS0">
+					</label>
+					<label class="wide">
+						Extra kernel parameters (e.g. <code>nomodeset video=efifb:off</code>)
+						<input type="text" id="bcf-extra" placeholder="">
+					</label>
+					<button type="submit">Save</button>
+				</form>
+				<h3>In effect</h3>
+				<table class="detail-table"><tbody id="bcf-effect"></tbody></table>
+				<table id="boot-entries">
+					<thead><tr><th>Loader entry</th><th>options</th></tr></thead>
+					<tbody id="boot-entries-body">
+						<tr><td colspan="2" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+			</div>
+		</div>
+		</section>
+
+
 
 
 
@@ -1881,6 +1755,14 @@
 		-->
 		<section class="view" id="view-pipeline" hidden>
 			<h2>Pipeline</h2>
+			<div class="tab-bar">
+				<button type="button" class="tab-button active" data-tab="pipeline">Overview</button>
+				<button type="button" class="tab-button" data-tab="esp">Boot Slots</button>
+				<button type="button" class="tab-button" data-tab="rolling-restart">Rolling Restart</button>
+				<button type="button" class="tab-button" data-tab="signing-keys">Signing Keys</button>
+			</div>
+			<div class="tab-panel" data-tab="pipeline">
+			
 			<p class="hint">
 				The eleven steps between "upstream released something" and "this host is
 				running it" (ADR-0256). Every package stands at exactly one of them.
@@ -1907,21 +1789,173 @@
 				<tbody id="pipeline-rows"></tbody>
 			</table>
 			<p id="pipeline-summary" class="hint"></p>
+			</div>
+<div class="tab-panel" data-tab="esp" hidden>
+			<div class="view-list">
+				<h2>Boot Entries (ESP)</h2>
+				<p class="hint">
+					What this machine will actually boot next, and why. <strong>Will boot</strong>
+					is computed the way systemd-boot itself chooses: entries whose boot counter has
+					run out sort last, then by <code>sort-key</code> and <code>version</code>
+					descending &mdash; so a freshly staged update outranks an older entry whatever
+					its slot letter (ADR-0202).
+				</p>
+				<p class="hint">
+					<strong>Default is a glob pattern, not a name.</strong> That is what made a real
+					host reboot into the image it was already running, repeatedly, with no error
+					anywhere: a stale <code>thinc-*</code> written at install time went on matching
+					six obsolete entries and outranking every correctly staged one (issue #128).
+					Leave it as <code>cix-*</code> unless you have a specific reason &mdash; pinning
+					it to one slot breaks the <em>next</em> update, which stages the other one.
+				</p>
+				<div id="esp-summary" class="pki-ca-status"><p>Loading&hellip;</p></div>
+				<p class="hint">
+					<strong>Boot a slot once.</strong> The rollback control: it applies to the
+					next boot only and then reverts to normal selection, so a machine that
+					fails to come back is not left pinned to a broken slot. Use this to steer
+					one boot; use the default pattern below to fix a persistent mistake
+					(issue #154).
+				</p>
+				<div id="esp-boot-next-row">
+					<span id="esp-boot-next-state">&nbsp;</span>
+					<button type="button" id="esp-boot-next-a">Boot slot A once</button>
+					<button type="button" id="esp-boot-next-b">Boot slot B once</button>
+					<button type="button" id="esp-boot-next-clear">Disarm</button>
+				</div>
+				<form id="esp-loader-form">
+					<label class="wide">
+						Default pattern
+						<input type="text" id="esp-default" placeholder="cix-*">
+					</label>
+					<label class="wide">
+						Menu timeout (seconds)
+						<input type="number" id="esp-timeout" min="0" max="600">
+					</label>
+					<button type="submit">Save</button>
+				</form>
+				<table id="esp-entries">
+					<thead>
+						<tr>
+							<th>Entry</th>
+							<th>Title</th>
+							<th>Matches default</th>
+							<th>Running slot</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody id="esp-entries-body">
+						<tr><td colspan="5" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+			</div>
+		</div>
+<div class="tab-panel" data-tab="rolling-restart" hidden>
+			<form id="rc-form">
+				<label>
+					Jitter window (seconds)
+					<input type="number" id="rc-jitter-window" min="0" max="3600" value="60">
+				</label>
+				<button type="submit">Save</button>
+			</form>
+			<p class="hint">Part 5, ADR-0124: when a rolling image auto-rebuilds, every <code>follow_rolling</code> container on it gets a uniformly-random restart delay up to this window, spreading the restarts out instead of killing them all in the same instant. 0 disables jitter (restart immediately).</p>
+		</div>
+<div class="tab-panel" data-tab="signing-keys" hidden>
+			<div class="view-list">
+				<h2>Secure Boot Signing Keys</h2>
+				<p class="hint">
+					The key pair this host signs installer media with. <strong>Building an ISO
+					 needs it</strong> &mdash; without it <code>POST /system/iso</code> refuses,
+					naming this as the missing input.
+				</p>
+				<p class="hint">
+					ADR-0064 originally required this to be placed here out of band, comparing it
+					to a file already <code>scp</code>'d onto the box. A real Cix host runs no
+					sshd and has no console, so there was never a way to do that &mdash; which
+					meant ISO assembly could not actually run on any installed machine. Pasting
+					the pair in is that missing transport (ADR-0212).
+				</p>
+				<p class="hint">
+					<strong>Install this on the one host that cuts media, not on every box.</strong>
+					A release-signing private key on every machine means any single machine's
+					compromise leaks the fleet's Secure Boot identity. Only the public
+					<code>.cer</code> is ever staged onto an installed target, for MOK enrolment.
+				</p>
+				<div id="signing-keys-summary" class="pki-ca-status"><p>Loading&hellip;</p></div>
+				<h3>Install a key pair</h3>
+				<p class="hint">
+					Paste both PEM blocks. The DER <code>.cer</code> that <code>mokutil</code>
+					needs is derived from the certificate here, so there is no third thing to
+					keep in step. The certificate is checked against the private key before
+					anything is written: a mismatched pair is refused outright rather than
+					discovered later as an image that signs cleanly and then will not boot.
+				</p>
+				<form id="signing-keys-form">
+					<label class="wide">
+						Private key (PEM)
+						<textarea id="signing-key-pem" rows="8" spellcheck="false"
+							placeholder="-----BEGIN PRIVATE KEY-----"></textarea>
+					</label>
+					<label class="wide">
+						Certificate (PEM)
+						<textarea id="signing-cert-pem" rows="8" spellcheck="false"
+							placeholder="-----BEGIN CERTIFICATE-----"></textarea>
+					</label>
+					<button type="submit">Install key pair</button>
+					<button type="button" id="signing-keys-clear" class="button-danger">Remove from this host</button>
+				</form>
+
+				<h2>Release Signing Key</h2>
+				<p class="hint">
+					A <strong>separate</strong> key, and deliberately so (ADR-0220). The pair
+					above is RSA because UEFI mandates RSA, and answers &ldquo;may this firmware
+					boot this image?&rdquo; This one is Ed25519 because
+					<code>minisign</code> mandates Ed25519, and answers &ldquo;did Cix publish
+					these bytes?&rdquo; One key for both would mean whoever can sign a download
+					can also sign a bootloader &mdash; and the two have very different blast
+					radii: republishing a public key, versus re-enrolling firmware on every host.
+				</p>
+				<p class="hint">
+					Installer ISOs built here are signed with it. Anyone who downloads one
+					verifies with stock <code>minisign</code> against the public key below
+					&mdash; no Cix software required on their side, which is the point: the last
+					check between a substituted ISO and a machine should not be code from the
+					project that produced the ISO.
+				</p>
+				<div id="release-key-summary" class="pki-ca-status"><p>Loading&hellip;</p></div>
+				<h3>Install a release key</h3>
+				<p class="hint">
+					Generate one with
+					<code>openssl genpkey -algorithm ed25519</code> and paste it here. The key is
+					validated by deriving its public half before anything is written, so an RSA
+					key &mdash; the realistic mistake, given the pair sitting right above &mdash;
+					is refused now rather than at signing time on a real release.
+				</p>
+				<form id="release-key-form">
+					<label class="wide">
+						Ed25519 private key (PEM)
+						<textarea id="release-key-pem" rows="5" spellcheck="false"
+							placeholder="-----BEGIN PRIVATE KEY-----"></textarea>
+					</label>
+					<button type="submit">Install release key</button>
+					<button type="button" id="release-key-clear" class="button-danger">Remove from this host</button>
+				</form>
+			</div>
+			</div>
 		</section>
 
 		<section class="view" id="view-recipes" hidden>
 			<h2>Catalogue</h2>
 			<div class="tab-bar">
-				<button type="button" class="tab-button active" data-tab="cat-recipes">Recipes</button>
-				<button type="button" class="tab-button" data-tab="cat-repo">Repo &amp; Sync</button>
-				<button type="button" class="tab-button" data-tab="cat-reconcile">Reconcile</button>
-				<button type="button" class="tab-button" data-tab="cat-images">Images</button>
-				<button type="button" class="tab-button" data-tab="cat-packages">Packages</button>
-				<button type="button" class="tab-button" data-tab="cat-cache">Cache &amp; Artifacts</button>
+				<button type="button" class="tab-button active" data-tab="recipes">Recipes</button>
+				<button type="button" class="tab-button" data-tab="pkg-repo">Repo &amp; Sync</button>
+				<button type="button" class="tab-button" data-tab="reconcile">Reconcile</button>
+				<button type="button" class="tab-button" data-tab="images">Images</button>
+				<button type="button" class="tab-button" data-tab="packages">Packages</button>
+				<button type="button" class="tab-button" data-tab="pkg-cache">Cache &amp; Artifacts</button>
 				<button type="button" class="tab-button" data-tab="pkg-build-config">Package Builds</button>
 				<button type="button" class="tab-button" data-tab="update">Update</button>
 			</div>
-			<div class="tab-panel" data-tab="cat-recipes">
+			<div class="tab-panel" data-tab="recipes">
 			<div class="view-list">
 				<p class="hint">Three git-syncable recipe kinds (ADR-0040/ADR-0123/ADR-0151), one catalog:
 					<strong>Packages</strong> build one piece of software from source; <strong>Images</strong>
@@ -1998,7 +2032,7 @@
 				</div>
 			</div>
 		</div>
-			<div class="tab-panel" data-tab="cat-repo" hidden>
+			<div class="tab-panel" data-tab="pkg-repo" hidden>
 			<h2>Package Repo &amp; Sync</h2>
 			<p class="hint">
 				The configured git-forge source recipes sync from (ADR-0121) -- gitea/github/gitlab,
@@ -2042,7 +2076,7 @@
 			<div id="pkg-sync-status-box" class="pki-ca-status"></div>
 			<button type="button" id="pkg-sync-now">Sync now</button>
 		</div>
-			<div class="tab-panel" data-tab="cat-reconcile" hidden>
+			<div class="tab-panel" data-tab="reconcile" hidden>
 				<div class="view-list">
 					<h2>Declared vs installed</h2>
 					<p class="hint">What has a recipe, against what is actually here. The row that matters is
@@ -2057,7 +2091,7 @@
 					</table>
 				</div>
 			</div>
-			<div class="tab-panel" data-tab="cat-images" hidden>
+			<div class="tab-panel" data-tab="images" hidden>
 			<div class="view-list">
 				<p class="hint">Every package install leaves an immutable image version behind
 					(ADR-0107/0108), and a container pins the version it was created with. Reclaim
@@ -2082,7 +2116,7 @@
 				</table>
 			</div>
 		</div>
-			<div class="tab-panel" data-tab="cat-packages" hidden>
+			<div class="tab-panel" data-tab="packages" hidden>
 			<div class="view-list">
 				<p class="hint">What's actually installed, on which image, right now -- one row per real
 					installation. For the recipe catalog itself (add/edit/delete a buildable definition),
@@ -2103,7 +2137,7 @@
 				</table>
 			</div>
 		</div>
-						<div class="tab-panel" data-tab="cat-cache" hidden>
+						<div class="tab-panel" data-tab="pkg-cache" hidden>
 			<h2>Package Cache &amp; Artifacts</h2>
 			<p class="hint">
 				Tier 1: a local build-artifact cache (LRU-evicted, keyed by name+version) that skips a
