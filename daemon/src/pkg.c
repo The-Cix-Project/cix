@@ -1443,7 +1443,7 @@ static int copy_file_simple(const char *src, const char *dst)
  *
  * This lives here, in the daemon, rather than in any recipe, because a
  * recipe convention is exactly what produced the mess it replaces: of
- * 115 recipes, 37 pruned anything at all and they did it in twelve
+ * 115 recipes, 37 pruned anything at all and they did it in twenty-one
  * different spellings, while glibc shipped libc.so.6 with 9.46 MiB of
  * debug sections and libc.a three times over. The scope of a universal
  * rule was being re-guessed 115 times.

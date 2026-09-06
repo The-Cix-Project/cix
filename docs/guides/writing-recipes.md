@@ -298,12 +298,12 @@ The test to apply: *does everything this `.pc` file promises actually exist in `
 
 `pkg_install()` is finished when the package's files are in `$PKG_DESTDIR`. The daemon then runs a finalize phase over that tree, in your build container, before it becomes an artifact ([ADR-0251](../adr/0251-a-package-artifact-carries-what-the-platform-runs.md)). It:
 
-- **strips ELF output** — `--strip-unneeded` for shared objects and executables, `--strip-debug` for `.o`, `.ko` and archives;
+- **strips ELF output** — `--strip-unneeded` for shared objects and executables, `--strip-debug` for `.o` and `.ko`. An archive it keeps is left alone (`go-bootstrap` ships Go `.a` files that `strip` rejects);
 - **drops `libfoo.a` when `libfoo.so*` ships beside it** — this platform links dynamically always, so that archive is dead weight. An archive with **no** shared counterpart (`libtcc1.a`, `libgcc.a`, `libc_nonshared.a`) is kept;
 - **removes `*.la`**;
 - **removes `usr/share/{man,info,doc,locale,i18n}`**.
 
-So **do not hand-write these in your recipe.** They used to be per-recipe, and the result is the reason the phase exists: of 115 recipes, 37 pruned anything at all, in twelve different spellings, while `glibc` shipped `libc.so.6` with 9.46 MiB of debug sections and `libc.a` three times over. Existing recipes still carry those lines; they are redundant now, not wrong, and come out when a recipe next revises.
+So **do not hand-write these in your recipe.** They used to be per-recipe, and the result is the reason the phase exists: of 115 recipes, 37 pruned anything at all, in twenty-one different spellings, while `glibc` shipped `libc.so.6` with 9.46 MiB of debug sections and `libc.a` three times over. Existing recipes still carry those lines; they are redundant now, not wrong, and come out when a recipe next revises.
 
 Two consequences for you:
 

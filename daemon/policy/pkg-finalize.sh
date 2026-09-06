@@ -95,15 +95,20 @@ cix_finalize() {
 	# dead weight on a platform that links dynamically always. An
 	# archive with no shared counterpart -- libtcc1.a, libgcc.a,
 	# libgcc_eh.a, libc_nonshared.a -- is kept, without being named.
+	#
+	# A kept archive is left exactly as it is, deliberately. "ar
+	# archive" does not imply "archive of ELF": go-bootstrap ships
+	# Go 1.4's pkg/linux_amd64/*.a, which carry !<arch> magic over Go
+	# object files, and strip rejects those outright. Stripping them
+	# would fail that build for no gain -- the archives this clause
+	# keeps are small, and the debug weight this policy exists to
+	# remove is in shared objects and executables.
 	for f in "${archives[@]}"; do
 		base="${f##*/}"
 		stem="${base%.a}"
 		case "$shared_stems" in
 		*"|$stem|"*)
 			rm -f "$f"
-			;;
-		*)
-			elf_rel+=("$f")
 			;;
 		esac
 	done
@@ -123,8 +128,10 @@ cix_finalize() {
 	fi
 
 	# --strip-unneeded keeps .dynsym, which is all the linker and
-	# elfcheck read. .o/.ko/.a keep .symtab, which linking and module
+	# elfcheck read. .o and .ko keep .symtab, which linking and module
 	# loading genuinely need, so those get --strip-debug instead.
+	# Kernel modules here are unsigned (no CONFIG_MODULE_SIG), so
+	# rewriting them does not invalidate a signature.
 	for f in "${elf_dyn[@]}"; do
 		if ! strip --strip-unneeded "$f"; then
 			echo "cix: strip --strip-unneeded failed on $f" >&2
