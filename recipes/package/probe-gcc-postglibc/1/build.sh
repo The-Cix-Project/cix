@@ -27,6 +27,8 @@ pkg_source="http://192.168.15.31:8080/make-4.4.1-6-x86_64.tar.gz"
 pkg_sha256="e887b110633256f955029d002323414e1f973d0e2566e0133450f8e39fc02420"
 pkg_depends=""
 pkg_build_depends="bash coreutils gcc binutils glibc linux-headers"
+pkg_toolchain="gcc"
+pkg_toolchain_reason="the probe exists to exercise gcc itself -- it asks whether gcc can still compile and link against a glibc the ADR-0251 finalize policy has stripped, so TCC would answer a different question"
 pkg_changelog="1: after ADR-0251 stripped glibc, can gcc still compile and link an ordinary dynamic binary? Exits nonzero on purpose so its output is kept in the build log."
 
 pkg_build() {

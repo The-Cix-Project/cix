@@ -44,7 +44,7 @@ static const char *const g_gcc_recipes[] = {
 	"btop", "binutils", "binutils-dev", "bird", "btrfs-progs", "efivar", "elfutils",
 	"gcc", "gitea", "glauth", "glibc", "gnu-efi", "go", "go-bootstrap",
 	"grub", "kernel", "keyutils", "kmod", "libblkid", "libxcrypt",
-	"linux-headers", "perl", "probe-gcc-headers", "python",
+	"linux-headers", "perl", "probe-gcc-headers", "probe-gcc-postglibc", "python",
 };
 #define GCC_RECIPE_COUNT ((int)(sizeof(g_gcc_recipes) / sizeof(g_gcc_recipes[0])))
 
