@@ -197,7 +197,7 @@ int main(void)
 		/* Per-item leaves ("containers/<name>") are built from live
 		 * data and route through DETAIL_VIEWS, not CATEGORY_VIEWS. */
 		if (strchr(hash, '/') != NULL || strstr(hash, "encodeURI") != NULL)
-			continue;
+			continue; /* a live item, built from live data */
 		checked++;
 
 		if (route_target(app, hash, view, sizeof(view)) != 0) {
@@ -212,10 +212,16 @@ int main(void)
 			continue;
 		}
 		if (is_child && !parent_is_group) {
-			if (strcmp(view, parent_view) != 0)
-				fail("tree child \"%s\" sits under a page that renders %s -- it navigates "
-				     "away from its own parent",
-				     hash, parent_view);
+			/*
+			 * Tabs live on the page; a PAGE's tree children are the
+			 * live things it contains, which are always "<page>/<name>"
+			 * routes. A plain hash here would be a tab listed in the
+			 * tree as well as on the page -- the duplication this whole
+			 * rework removed.
+			 */
+			fail("tree child \"%s\" under page %s is a tab, not a live item -- tabs belong on "
+			     "the page, not in the tree",
+			     hash, parent_view);
 		} else if (!is_child) {
 			const char *ls = p;
 			const char *blk;

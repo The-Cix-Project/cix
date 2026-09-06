@@ -1403,6 +1403,7 @@ const CATEGORY_VIEWS = {
 	networks: "view-networks",
 	"routes": "view-networks",
 	devices: "view-devices",
+	devicemaps: "view-devices",
 	kmod: "view-devices",
 	sysctl: "view-kernel",
 	storage: "view-storage",
@@ -2152,6 +2153,21 @@ function renderTree() {
 	 * Every hash below is a real route that already deep-links to its
 	 * own tab, so nothing here invents a destination.
 	 */
+	/*
+	 * Five pages and two groups. The rule, and it is the whole design:
+	 *
+	 *   TABS LIVE ON THE PAGE. THE TREE'S CHILDREN ARE THE LIVE THINGS.
+	 *
+	 * Clicking Storage opens the Storage page with all six of its tabs;
+	 * the tree underneath lists this box's actual disks, partitions and
+	 * volumes. The tree answers "what have I got", the tab bar answers
+	 * "what can I do with it", and neither repeats the other.
+	 *
+	 * The two groups are the exception, and are marked as such: Services
+	 * and System hold pages that are genuinely separate subjects, so
+	 * folding them into one tabbed view would rebuild the sixteen-tab
+	 * drawer this whole rework removed.
+	 */
 	const topLevel = [
 		{
 			label: "Containers",
@@ -2167,25 +2183,46 @@ function renderTree() {
 			label: "Networks",
 			hash: "networks",
 			icon: "networks",
-			children: [
-				...cache.networks.map((n) => ({
-					label: n.name,
-					hash: "networks/" + encodeURIComponent(n.name),
-					icon: "networks",
-				})),
-				{ label: "Routes", hash: "routes", icon: "networks" },
-				{ label: "DHCP", hash: "dhcp-servers", icon: "dhcp" },
-			],
+			children: cache.networks.map((n) => ({
+				label: n.name,
+				hash: "networks/" + encodeURIComponent(n.name),
+				icon: "networks",
+			})),
 		},
 		{
-			/*
-			 * A GROUP, not a page: PKI, DNS, LDAP, NTP and Syslog are
-			 * five genuinely separate subjects with their own pages.
-			 * Folding them into one tabbed view would rebuild the
-			 * sixteen-tab drawer this change exists to remove, so the
-			 * tree says "these are related" without claiming they are
-			 * one page.
-			 */
+			label: "Storage",
+			hash: "storage",
+			icon: "storage",
+			/* Disks with their partitions nested under them, then the
+			 * volumes -- the shape the storage page's own tables use. */
+			children: cache.storage
+				.filter((d) => !d.is_partition)
+				.map((d) => ({
+					label: d.name,
+					hash: "storage/" + encodeURIComponent(d.name),
+					icon: "storage",
+					children: cache.storage
+						.filter((x) => x.is_partition && x.parent_disk === d.name)
+						.map((x) => ({
+							label: x.name,
+							hash: "storage/" + encodeURIComponent(x.name),
+							icon: "storage",
+						})),
+				}))
+				.concat(
+					cache.volumes.map((v) => ({
+						label: v.name,
+						hash: "volumes/" + encodeURIComponent(v.name),
+						icon: "rebuildable",
+					})),
+				),
+		},
+		{
+			label: "Pipeline",
+			hash: "pipeline",
+			icon: "software",
+		},
+		{
 			label: "Services",
 			group: true,
 			hash: "pki-ca",
@@ -2200,85 +2237,19 @@ function renderTree() {
 			],
 		},
 		{
-			/* ADR-0258: the resource is Storage; a disk is a device in
-			 * it, and so are volumes, placement, swap and backups. */
-			label: "Storage",
-			hash: "storage",
-			icon: "storage",
-			children: [
-				...cache.storage.filter((d) => !d.is_partition).map((d) => ({
-					label: d.name,
-					hash: "storage/" + encodeURIComponent(d.name),
-					icon: "storage",
-				})),
-				{ label: "Volumes", hash: "volumes", icon: "rebuildable" },
-				{ label: "Placement", hash: "storage-placement", icon: "storage" },
-				{ label: "Swap", hash: "host-swap", icon: "storage" },
-				{ label: "System Backup", hash: "backup", icon: "update" },
-				{ label: "Volume Backups", hash: "volume-backup-config", icon: "update" },
-			],
-		},
-		{
-			label: "Devices",
-			hash: "devices",
-			icon: "devices",
-			children: [
-				{ label: "Kernel Modules", hash: "kmod", icon: "system" },
-			],
-		},
-		{
-			/* The whole software lifecycle, in flow order, so the tab
-			 * bar reads as the pipeline it describes (ADR-0256). */
-			label: "Pipeline",
-			hash: "pipeline",
-			icon: "software",
-			children: [
-				{ label: "Repos", hash: "pkg-repo", icon: "update" },
-				{ label: "Catalogue", hash: "packages", icon: "packages" },
-				{ label: "Triggers", hash: "update", icon: "update" },
-				{ label: "Recipes", hash: "recipes", icon: "recipes" },
-				{ label: "Build", hash: "pkg-build-config", icon: "software" },
-				{ label: "Cache", hash: "pkg-cache", icon: "rebuildable" },
-				{ label: "Images", hash: "images", icon: "images" },
-				{ label: "Deployment", hash: "esp", icon: "system" },
-				{ label: "Rolling Restart", hash: "rolling-restart", icon: "containers" },
-				{ label: "Signing Keys", hash: "signing-keys", icon: "pki" },
-			],
-		},
-		{
-			label: "Host",
+			label: "System",
+			group: true,
 			hash: "daemon-config",
 			icon: "system",
 			children: [
-				{ label: "Site", hash: "site", icon: "system" },
-				{ label: "Sessions", hash: "hostauth-sessions", icon: "ldap" },
-				{ label: "Running Config", hash: "running-config", icon: "system" },
-				{ label: "Host Stats", hash: "host-stats", icon: "monitoring" },
-				{ label: "Processes", hash: "processes", icon: "monitoring" },
-				{ label: "Log Store", hash: "logs", icon: "logs" },
-				{ label: "Factory Reset", hash: "factory-reset", icon: "update" },
-			],
-		},
-		{
-			label: "Control Plane",
-			hash: "tls-throttle",
-			icon: "system",
-			children: [
-				{ label: "CPU & Memory", hash: "control-plane-reservation", icon: "system" },
-				{ label: "Stalls", hash: "stalls", icon: "monitoring" },
-			],
-		},
-		{
-			label: "Kernel",
-			hash: "kernel-policy",
-			icon: "system",
-			children: [
-				{ label: "Sysctl", hash: "sysctl", icon: "system" },
-				{ label: "Boot Console", hash: "boot-console", icon: "system" },
-				{ label: "Kernel Log", hash: "kmsg", icon: "monitoring" },
+				{ label: "Devices", hash: "devicemaps", icon: "devices" },
+				{ label: "Host", hash: "daemon-config", icon: "system" },
+				{ label: "Control Plane", hash: "tls-throttle", icon: "system" },
+				{ label: "Kernel", hash: "kernel-policy", icon: "system" },
 			],
 		},
 	];
+
 
 
 
