@@ -1180,8 +1180,8 @@ int pkg_repo_init(const char *config_path);
 /* ADR-0141 Phase 4: path-only repoint -- see pkg_repoint()'s own doc comment. */
 void pkg_repo_repoint(const char *new_config_path);
 
-/* {"repo_url","repo_kind","ref","auth_token_set","sync_interval_
- * seconds"} -- the token itself is never echoed back (auth_token_set
+/* {"repo_url","repo_kind","ref","auth_token_set"} -- the token itself
+ * is never echoed back (auth_token_set
  * is a bool), the one piece of secret-shaped state this daemon
  * persists that's genuinely sensitive over REST. */
 void pkg_repo_write_json_config(struct json_writer *w);
@@ -1193,13 +1193,20 @@ void pkg_repo_write_json_config(struct json_writer *w);
  * given) must be exactly "gitea"/"github"/"gitlab" -- PKG_ERR_INVALID_
  * NAME otherwise, reusing the existing error for "not a valid
  * identifier of the expected shape" rather than adding a new one just
- * for this. sync_interval_seconds < 0 leaves it unchanged; 0 disables
- * periodic auto-sync (manual `pkg sync` remains available regardless).
+ * for this.
+ *
+ * ADR-0257: sync_interval_seconds is gone. WHEN a sync runs is a
+ * schedule (`GET /v1/schedules`, action "pkg.sync"); this resource says
+ * only WHERE recipes come from. Two places to look for "why did it not
+ * sync" is the thing that ADR removed.
  */
 enum pkg_error pkg_repo_set_config(const char *repo_url, const char *repo_kind, const char *ref,
-                                    const char *auth_token, int sync_interval_seconds);
+                                    const char *auth_token);
 
-int pkg_repo_get_sync_interval_seconds(void);
+/* Read once at init from an older config file, for the one-time
+ * migration that turns it into a schedule. 0 when there was none. */
+int pkg_repo_legacy_sync_interval_seconds(void);
+void pkg_repo_clear_legacy_sync_interval(void);
 int pkg_repo_is_configured(void);
 
 /*

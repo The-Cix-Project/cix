@@ -1346,10 +1346,10 @@
 					<input type="checkbox" id="bc-enabled">
 					Enabled
 				</label>
-				<label>
-					Interval (hours, 0 = manual only)
-					<input type="number" id="bc-interval" min="0" value="0">
-				</label>
+				<p class="hint">
+					When backups run is a schedule now (ADR-0257) &mdash; see
+					<a href="#schedules">Schedules</a>, action <code>system.backup</code>.
+				</p>
 				<button type="submit">Save</button>
 				<button type="button" id="bc-snapshot-now">Snapshot now</button>
 			</form>
@@ -1375,10 +1375,10 @@
 							<option value="">(none)</option>
 						</select>
 					</label>
-					<label>
-						Every
-						<input type="number" id="vbc-interval" min="1" max="8760" style="width:5rem"> hours
-					</label>
+					<p class="hint">
+						When the sweep runs is a schedule now (ADR-0257) &mdash; see
+						<a href="#schedules">Schedules</a>, action <code>volume.backup</code>.
+					</p>
 					<button type="submit">Save</button>
 				</form>
 			</div>
@@ -2032,10 +2032,10 @@
 					<input type="checkbox" id="prc-clear-token">
 					Clear token
 				</label>
-				<label>
-					Sync interval (seconds)
-					<input type="number" id="prc-interval" min="0">
-				</label>
+				<p class="hint">
+					When syncs run is a schedule now (ADR-0257) &mdash; see
+					<a href="#schedules">Schedules</a>, action <code>pkg.sync</code>.
+				</p>
 				<button type="submit">Save</button>
 			</form>
 			<h3>Sync status</h3>

@@ -2,6 +2,20 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### The three intervals are gone; schedules own timing now (ADR-0257 part 2)
+
+The cut-over. `backup-config`, `volume-backup-config` and `repo-config` each lose their `interval_*` field, and the two periodic timers behind them (`CONN_BACKUP_PERIODIC_TIMER`, `CONN_PKG_SYNC_PERIODIC_TIMER`) are deleted rather than left dormant. Three actions replace them: `system.backup`, `volume.backup`, `pkg.sync` — each calling the entry point that already existed, so a schedule cannot start work a manual request could not.
+
+**A removed field is refused, not ignored.** `PUT /system/backup-config {"interval_hours":6}` is a 400 that names `/v1/schedules` and the action to use. A caller that believed it had set a schedule and silently hadn't is worse off than one that was told, and this project's no-backward-compat rule means there is no field to fall back to.
+
+**One-time migration, not a shim.** On the first boot after the upgrade, a config still carrying an interval becomes the equivalent schedule (`system-backup`, `volume-backup`, `recipe-sync`) with `catch_up: true`, once, and the field is dropped — a second boot finds nothing to do. An operator's own schedule of the same name is never overwritten. A box that never set an interval gets no schedule at all, which is right: nothing was running there before either.
+
+**The volume sweep lost its second cadence.** `volumebackup_sweep()` used to check each volume's `backup_last_at` against its own `interval_hours` — so after ADR-0257 there would have been two places deciding whether a volume was due, which is exactly the arrangement being removed. Being called is now the due signal; the schedule owns cadence and nothing else does.
+
+Issue #96's comment ("one timer is one thing to reason about when backups do not run") is now literally true rather than aspirational: there is one timer, and one place to look.
+
+`test_backup_config` and `test_pkg_sync` were updated to assert the refusal and the absent field rather than the old behaviour — the daemon-linked tests run on a real Cix host and would otherwise have failed the release selftest there, which is how the last two contract changes were caught.
+
 ### One scheduler, and a schedule is structured (ADR-0257)
 
 Six periodic timers ran in this daemon. Three existed because an operator had set an interval, each owning its own copy of *is it on*, *how often*, *when did it last run*: `backupconfig.interval_hours`, `volumebackup.interval_hours`, `pkg_repo.sync_interval_seconds`. (An earlier draft of ADR-0257 said four, counting NTP. That was wrong and is corrected in the ADR: `NTP_SYNC_INTERVAL_SEC` is a compile-time `#define`, as is the serverhealth probe interval — neither is policy an operator sets.) Two of them back things up to a disk on a schedule, and `main.c` had already said so — issue #96 made the volume sweep ride the backup tick, two schedules on one timer with separate bookkeeping and no way for an operator to see either as a thing with a next run time. That is a scheduler stopped one step short, and adding a fifth copy (refreshing upstream release lists, which ADR-0255 needs and did not have) is what made it worth finishing.

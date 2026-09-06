@@ -306,7 +306,7 @@ int main(void)
 	snprintf(repo_url, sizeof(repo_url), "http://127.0.0.1:%d/testowner/testrepo", HTTP_PORT);
 	snprintf(put_body, sizeof(put_body),
 	         "{\"repo_url\":\"%s\",\"repo_kind\":\"gitea\",\"ref\":\"master\","
-	         "\"auth_token\":\"scratch-token\",\"sync_interval_seconds\":0}",
+	         "\"auth_token\":\"scratch-token\"}",
 	         repo_url);
 	memset(&r, 0, sizeof(r));
 	CHECK(cix_client_request(&client, "PUT", "/v1/pkg/repo-config", put_body, &r) == 0 &&
@@ -326,24 +326,37 @@ int main(void)
 	}
 	cix_response_free(&r);
 
-	/* Partial update: only bump sync_interval_seconds, url/kind/ref/token
-	 * must be left exactly as they were. */
+	/* Partial update: only set ref, url/kind/token must be left exactly
+	 * as they were. */
 	memset(&r, 0, sizeof(r));
-	CHECK(cix_client_request(&client, "PUT", "/v1/pkg/repo-config",
-	                         "{\"sync_interval_seconds\":3600}", &r) == 0 &&
+	CHECK(cix_client_request(&client, "PUT", "/v1/pkg/repo-config", "{\"ref\":\"main\"}", &r) == 0 &&
 	              r.status == 200,
-	      "PUT /v1/pkg/repo-config (partial: interval only)");
+	      "PUT /v1/pkg/repo-config (partial: ref only)");
 	if (r.json != NULL) {
 		const char *got_url = json_str_field(r.json, "repo_url");
-		long interval = (long)json_as_number(json_object_get(r.json, "sync_interval_seconds"));
+		const char *got_ref = json_str_field(r.json, "ref");
 		const struct json_value *token_set = json_object_get(r.json, "auth_token_set");
 
 		CHECK(got_url != NULL && strcmp(got_url, repo_url) == 0,
 		      "repo_url unchanged by a partial update omitting it");
-		CHECK(interval == 3600, "sync_interval_seconds applied");
+		CHECK(got_ref != NULL && strcmp(got_ref, "main") == 0, "ref applied");
 		CHECK(token_set != NULL && token_set->type == JSON_BOOL && token_set->u.boolean,
 		      "auth_token_set still true (token untouched by partial update)");
 	}
+	cix_response_free(&r);
+
+	/*
+	 * ADR-0257: sync_interval_seconds is gone from this resource, and
+	 * sending it is REFUSED rather than ignored -- a caller who thought
+	 * it had set a sync schedule would otherwise never learn otherwise.
+	 */
+	memset(&r, 0, sizeof(r));
+	CHECK(cix_client_request(&client, "PUT", "/v1/pkg/repo-config",
+	                         "{\"sync_interval_seconds\":3600}", &r) == 0 &&
+	              r.status == 400,
+	      "PUT /v1/pkg/repo-config with the removed sync_interval_seconds is refused");
+	CHECK(r.body != NULL && strstr(r.body, "schedules") != NULL,
+	      "the refusal names /v1/schedules as the replacement");
 	cix_response_free(&r);
 
 	/* --clear-token equivalent: an explicit empty string clears it. */
@@ -360,14 +373,11 @@ int main(void)
 	}
 	cix_response_free(&r);
 
-	/* Set the interval back to 0 (disabled) so no periodic timer races
-	 * the explicit POST /v1/pkg/sync calls below. */
-	memset(&r, 0, sizeof(r));
-	CHECK(cix_client_request(&client, "PUT", "/v1/pkg/repo-config",
-	                         "{\"sync_interval_seconds\":0}", &r) == 0 && r.status == 200,
-	      "PUT /v1/pkg/repo-config (disable periodic sync)");
-	cix_response_free(&r);
-
+	/*
+	 * No "disable the periodic timer" step here any more: there is no
+	 * periodic sync timer to race the explicit POSTs below. Nothing
+	 * syncs unless a schedule says so (ADR-0257).
+	 */
 	/* --- scenario 4: real fetch + merge against the stand-in http server --- */
 	memset(&r, 0, sizeof(r));
 	CHECK(cix_client_request(&client, "POST", "/v1/pkg/sync", NULL, &r) == 0 && r.status == 202,

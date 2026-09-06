@@ -8653,7 +8653,7 @@ static const char *pkg_repo_token(void)
 {
 	return g_repo_auth_token;
 }
-static int g_repo_sync_interval_seconds;
+static int g_repo_legacy_sync_interval; /* ADR-0257 migration only */
 
 static pid_t g_sync_pid = -1;
 enum sync_state { SYNC_NEVER = 0, SYNC_RUNNING, SYNC_SUCCESS, SYNC_FAILED };
@@ -8701,8 +8701,6 @@ static int save_repo_config(void)
 	jw_str(&w, g_repo_ref);
 	jw_key(&w, "auth_token");
 	jw_str(&w, g_repo_auth_token);
-	jw_key(&w, "sync_interval_seconds");
-	jw_int(&w, g_repo_sync_interval_seconds);
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
@@ -8734,7 +8732,7 @@ int pkg_repo_init(const char *config_path)
 	snprintf(g_repo_kind, sizeof(g_repo_kind), "gitea");
 	snprintf(g_repo_ref, sizeof(g_repo_ref), "master");
 	g_repo_auth_token[0] = '\0';
-	g_repo_sync_interval_seconds = 0;
+	g_repo_legacy_sync_interval = 0;
 
 	if (persist_read_file(config_path, &buf, &len) != 0 || buf == NULL)
 		return 0; /* no persisted config yet -- defaults stand */
@@ -8756,9 +8754,11 @@ int pkg_repo_init(const char *config_path)
 	s = json_as_string(json_object_get(root, "auth_token"));
 	if (s != NULL)
 		snprintf(g_repo_auth_token, sizeof(g_repo_auth_token), "%s", s);
+	/* An older file still carries this; it is migrated into a schedule
+	 * once and then never written again (ADR-0257). */
 	interval = json_object_get(root, "sync_interval_seconds");
 	if (interval != NULL)
-		g_repo_sync_interval_seconds = (int)json_as_number(interval);
+		g_repo_legacy_sync_interval = (int)json_as_number(interval);
 
 	json_free(root);
 	return 0;
@@ -8775,13 +8775,11 @@ void pkg_repo_write_json_config(struct json_writer *w)
 	jw_str(w, g_repo_ref);
 	jw_key(w, "auth_token_set");
 	jw_bool(w, g_repo_auth_token[0] != '\0');
-	jw_key(w, "sync_interval_seconds");
-	jw_int(w, g_repo_sync_interval_seconds);
 	jw_obj_close(w);
 }
 
 enum pkg_error pkg_repo_set_config(const char *repo_url, const char *repo_kind, const char *ref,
-                                    const char *auth_token, int sync_interval_seconds)
+                                    const char *auth_token)
 {
 	if (repo_kind != NULL && !repo_kind_is_valid(repo_kind))
 		return PKG_ERR_INVALID_NAME;
@@ -8794,17 +8792,20 @@ enum pkg_error pkg_repo_set_config(const char *repo_url, const char *repo_kind, 
 		snprintf(g_repo_ref, sizeof(g_repo_ref), "%s", ref);
 	if (auth_token != NULL)
 		snprintf(g_repo_auth_token, sizeof(g_repo_auth_token), "%s", auth_token);
-	if (sync_interval_seconds >= 0)
-		g_repo_sync_interval_seconds = sync_interval_seconds;
-
 	if (save_repo_config() != 0)
 		return PKG_ERR_PERSIST_FAILED;
 	return PKG_OK;
 }
 
-int pkg_repo_get_sync_interval_seconds(void)
+int pkg_repo_legacy_sync_interval_seconds(void)
 {
-	return g_repo_sync_interval_seconds;
+	return g_repo_legacy_sync_interval;
+}
+
+void pkg_repo_clear_legacy_sync_interval(void)
+{
+	g_repo_legacy_sync_interval = 0;
+	save_repo_config();
 }
 
 int pkg_repo_is_configured(void)
