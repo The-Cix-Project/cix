@@ -2,6 +2,24 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### glibc rebuilt under ADR-0251, and gcc still links (2.44-14)
+
+The first package rebuilt under the finalize policy, and the one the ISO seed is made of. Measured on 192.168.15.95 against the 2.44-13 artifact:
+
+| | before | after |
+|---|---|---|
+| files in the package | 2114 | **1341** |
+| `libc.so.6` on disk | 11.42 MiB of sections (9.46 MiB of it `.debug_*`/`.symtab`) | **2,011,912 bytes** |
+| `libc.a` | shipped 3x at 22.43 MiB | **absent, all three** |
+| `usr/share/i18n` | 607 files | **0** |
+| `usr/share/locale`, `share/man` | present | **0** |
+
+Everything the toolchain needs survived, and that was the open risk rather than a formality: `libc_nonshared.a` (all three multiarch copies), all eight CRT objects (`crt1.o`, `crti.o`, `crtn.o`, `Scrt1.o`, `Mcrt1.o`, `gcrt1.o`, `grcrt1.o`, `rcrt1.o`), the ASCII `libc.so` linker script, and `libc.so.6` itself.
+
+**`probe-gcc-postglibc` answers the question ADR-0251 left open, in the cheap half.** ADR-0251 could show that no recipe references `libc.a` by path and that the one `-static` link in the tree is disabled on purpose, but not that gcc's bootstrap never reaches for it elsewhere -- that costs a full gcc rebuild. The probe asks the question that matters first: it compiles and links an ordinary dynamic binary with `/usr/bin/gcc` against the stripped glibc, and runs it. Link ok, run ok, correct output. If that had failed, nothing on this platform would build and we would know in seconds instead of after a multi-hour bootstrap. **The bootstrap question stays open and is recorded as open.**
+
+One measured limitation of the archive rule, found here rather than reasoned about: `usr/lib/libm.a` survives because glibc ships it as an **ASCII linker script**, not an archive, so the magic test correctly skips it -- and the real archive beside it is named `libm-2.44.a`, whose stem matches no `.so`. The rule behaved exactly as designed; glibc's versioned archive naming simply escapes stem matching. Recorded because it is the kind of residue that looks like a bug later.
+
 ### An image recipe is authoritative (ADR-0252)
 
 `cix-builder` 5.0.0 named eleven packages; the live image held twenty, pinning `tcc` nine revisions and one compiler upgrade behind what the box was actually building with. 5.0.0's header had said the same thing about 3.0.0's drift that 6.0.0's now says about 5.0.0's. It came back both times because an image could be changed two ways — `pkg install --image=X` mutates the live image, the recipe describes what it should be — and neither was subordinate to the other.
