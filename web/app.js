@@ -5121,7 +5121,7 @@ function renderImageDetailPackages(name) {
 		 * opposite responses -- retry the first, fix the second. The
 		 * kind sits next to the state; the message is the hover, so the
 		 * table stays readable. */
-		stateCell.textContent = pkg.failure_kind ? pkg.state + " (" + pkg.failure_kind + ")"
+		stateCell.textContent = pkg.stage ? pkg.state + " (" + pkg.stage + "/" + pkg.status + ")"
 		                                          : pkg.state;
 		if (pkg.error)
 			stateCell.title = pkg.error;
@@ -8620,7 +8620,7 @@ function renderPackagesList() {
 		 * opposite responses -- retry the first, fix the second. The
 		 * kind sits next to the state; the message is the hover, so the
 		 * table stays readable. */
-		stateCell.textContent = pkg.failure_kind ? pkg.state + " (" + pkg.failure_kind + ")"
+		stateCell.textContent = pkg.stage ? pkg.state + " (" + pkg.stage + "/" + pkg.status + ")"
 		                                          : pkg.state;
 		if (pkg.error)
 			stateCell.title = pkg.error;
@@ -8996,7 +8996,7 @@ function renderPackageDetailInstalled(name) {
 		 * opposite responses -- retry the first, fix the second. The
 		 * kind sits next to the state; the message is the hover, so the
 		 * table stays readable. */
-		stateCell.textContent = pkg.failure_kind ? pkg.state + " (" + pkg.failure_kind + ")"
+		stateCell.textContent = pkg.stage ? pkg.state + " (" + pkg.stage + "/" + pkg.status + ")"
 		                                          : pkg.state;
 		if (pkg.error)
 			stateCell.title = pkg.error;

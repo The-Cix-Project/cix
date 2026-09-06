@@ -196,6 +196,9 @@ static void print_usage(FILE *out)
 	        "  pki cert create --name=NAME [--sans=a,b,c] [--days=N]\n"
 	        "  pki cert ls\n"
 	        "  pki cert rm NAME\n"
+	        "  pipeline [--all]  -- where every package stands in the eleven-stage pipeline,\n"
+	        "               and what is stopping it (ADR-0256). Hides ok/not-implemented\n"
+	        "               rows unless --all\n"
 	        "  pkg bootstrap [--toolchain=PATH]  -- stages a package-build toolchain into the\n"
 	        "               pkgbuild image; no --toolchain= copies live from this daemon's own\n"
 	        "               host (dev/test convenience, empty on a real minimal install);\n"
@@ -12448,15 +12451,18 @@ static void fmt_pkg_line(const struct json_value *v)
 	const char *state = json_str_field(v, "state");
 	const char *error = json_str_field(v, "error");
 	const char *available = json_str_field(v, "available_version");
-	/* Issue #101: a package that could not be REACHED and one that
-	 * failed to BUILD both read "failed", and they call for opposite
-	 * responses -- retry the first, fix the second. The kind says which
-	 * without anyone having to read the message. */
-	const char *kind = json_str_field(v, "failure_kind");
-	char state_shown[32];
+	/* ADR-0256: a package that could not be REACHED and one that failed
+	 * to BUILD both read "failed", and they call for opposite responses
+	 * -- retry the first, fix the second. The pipeline stage says which
+	 * without anyone having to read the message, and the status
+	 * distinguishes a build that was killed from one that did not work.
+	 */
+	const char *stage = json_str_field(v, "stage");
+	const char *status = json_str_field(v, "status");
+	char state_shown[40];
 
-	if (kind != NULL && kind[0] != '\0')
-		snprintf(state_shown, sizeof(state_shown), "%s:%s", state, kind);
+	if (stage != NULL && stage[0] != '\0' && status != NULL && status[0] != '\0')
+		snprintf(state_shown, sizeof(state_shown), "%s:%s/%s", state, stage, status);
 	else
 		snprintf(state_shown, sizeof(state_shown), "%s", state != NULL ? state : "-");
 
@@ -14598,6 +14604,104 @@ static int cmd_pkg_source_policy(const struct cix_client *c, int json_mode, int 
 	return 2;
 }
 
+/*
+ * ADR-0256: the pipeline, as a flow and then as a worklist.
+ *
+ * The default hides `ok` and `not-implemented` rows. On this platform
+ * that is most of them -- a pinned package sits permanently at
+ * discover/not-implemented, which is correct and is not news -- and a
+ * screen of 115 identical rows buries the handful that need someone to
+ * do something. `--all` shows every row.
+ */
+static int g_pipeline_show_all;
+
+static void fmt_pipeline(const struct json_value *root)
+{
+	const struct json_value *stages = json_object_get(root, "stages");
+	const struct json_value *pkgs = json_object_get(root, "packages");
+	const struct json_value *deploy = json_object_get(root, "deploy");
+	size_t i;
+	int shown = 0;
+
+	if (stages != NULL && stages->type == JSON_ARRAY) {
+		printf("%-14s %s\n", "STAGE", "PACKAGES");
+		for (i = 0; i < stages->u.array.count; i++) {
+			const struct json_value *st = stages->u.array.items[i];
+			long count = (long)json_as_number(json_object_get(st, "packages"));
+			const char *name = json_str_field(st, "stage");
+			int bars = count > 40 ? 40 : (int)count;
+			char bar[41];
+
+			memset(bar, '#', (size_t)bars);
+			bar[bars] = '\0';
+			printf("%-14s %5ld %s\n", name != NULL ? name : "-", count, bar);
+		}
+	}
+
+	if (deploy != NULL) {
+		const char *entry = json_str_field(deploy, "entry");
+
+		printf("\ndeploy         %s/%s  %s\n", json_str_field(deploy, "stage"),
+		        json_str_field(deploy, "status"),
+		        entry != NULL && entry[0] != '\0' ? entry : "(no A/B slot)");
+		printf("  %s\n", json_str_field(deploy, "reason"));
+	}
+
+	if (pkgs != NULL && pkgs->type == JSON_ARRAY) {
+		for (i = 0; i < pkgs->u.array.count; i++) {
+			const struct json_value *e = pkgs->u.array.items[i];
+			const char *status = json_str_field(e, "status");
+			const char *stage = json_str_field(e, "stage");
+			const char *reason = json_str_field(e, "reason");
+
+			if (status == NULL)
+				continue;
+			if (!g_pipeline_show_all &&
+			    (strcmp(status, "ok") == 0 || strcmp(status, "not-implemented") == 0))
+				continue;
+			if (shown == 0)
+				printf("\n%-22s %-10s %-16s %s\n", "PACKAGE", "STAGE", "STATUS", "");
+			shown++;
+			printf("%-22s %-10s %-16s\n", json_str_field(e, "name"),
+			        stage != NULL ? stage : "-", status);
+			if (reason != NULL && reason[0] != '\0')
+				printf("  %s\n", reason);
+		}
+	}
+
+	printf("\n%ld package(s): %ld ok, %ld blocked, %ld failed, %ld cancelled, "
+	        "%ld not-implemented\n",
+	        (long)json_as_number(json_object_get(root, "total")),
+	        (long)json_as_number(json_object_get(root, "ok")),
+	        (long)json_as_number(json_object_get(root, "blocked")),
+	        (long)json_as_number(json_object_get(root, "failed")),
+	        (long)json_as_number(json_object_get(root, "cancelled")),
+	        (long)json_as_number(json_object_get(root, "not_implemented")));
+	if (!g_pipeline_show_all && shown == 0)
+		printf("nothing is blocked or failed -- `cixctl pipeline --all` shows every row\n");
+}
+
+static int cmd_pipeline(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	struct cix_response r;
+	int i;
+
+	g_pipeline_show_all = 0;
+	for (i = 1; i < argc; i++) {
+		if (strcmp(argv[i], "--all") == 0) {
+			g_pipeline_show_all = 1;
+		} else {
+			fprintf(stderr, "usage: cixctl pipeline [--all]\n");
+			return 2;
+		}
+	}
+	if (cix_client_request(c, CIX_API_getPipeline_METHOD, CIX_API_getPipeline, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_pipeline);
+}
+
 static int cmd_pkg_source_catalogue(const struct cix_client *c, int json_mode, int argc,
                                      char **argv)
 {
@@ -15611,6 +15715,8 @@ static int dispatch_command(const struct cix_client *client, int json_mode, cons
 		return cmd_pki(client, json_mode, argc, argv);
 	if (strcmp(cmd, "pkg") == 0)
 		return cmd_pkg(client, json_mode, argc, argv);
+	if (strcmp(cmd, "pipeline") == 0)
+		return cmd_pipeline(client, json_mode, argc, argv);
 	if (strcmp(cmd, "show") == 0)
 		return cmd_show(client, json_mode, argc, argv);
 

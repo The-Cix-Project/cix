@@ -3,6 +3,7 @@
 
 #include "container.h"
 #include "json.h"
+#include "pipeline.h"
 
 #include <sys/types.h>
 
@@ -223,41 +224,42 @@
 enum pkg_state { PKG_STATE_FETCHING, PKG_STATE_BUILDING, PKG_STATE_INSTALLED, PKG_STATE_FAILED };
 
 /*
- * Issue #101: WHY a package failed, as a field rather than as prose.
+ * Issue #101's rule, now expressed in ADR-0256's vocabulary: WHY a
+ * package failed is a field, never prose.
  *
  * "failed" alone cannot be acted on. A source that could not be reached
  * is usually transient and the right response is to try again; a build
  * that did not work is a real defect in a recipe or a toolchain and
  * retrying changes nothing; a missing or unparseable recipe is a
- * catalogue problem and neither. Until now the only thing separating
- * them was an error string, so every caller -- `pkg ls`, the dashboard,
+ * catalogue problem and neither. The only thing separating them used to
+ * be an error string, so every caller -- `pkg ls`, the dashboard,
  * update-all's own summary -- had to string-match to tell them apart,
- * and none of them did.
+ * and none of them did. `enum pkg_failure_kind` fixed that with five
+ * names of its own; ADR-0256 replaced those with the platform's one
+ * (stage, status) pair, see pipeline.h.
  */
-enum pkg_failure_kind {
-	PKG_FAILURE_NONE = 0,
-	/* The recipe itself is missing, unreadable or unparseable. */
-	PKG_FAILURE_RECIPE,
-	/* The source could not be fetched or did not match its checksum. */
-	PKG_FAILURE_FETCH,
-	/* The build container failed to start, or the build itself failed. */
-	PKG_FAILURE_BUILD,
-	/* The build succeeded; merging its output into the image did not. */
-	PKG_FAILURE_INSTALL,
-	/*
-	 * Issue #213: stopped by an operator, not by its own merits.
-	 *
-	 * Deliberately its own kind rather than PKG_FAILURE_BUILD with a
-	 * different message. Issue #101 made the kind a required parameter
-	 * precisely so a failure says what happened; "the build was killed"
-	 * and "the build did not work" call for opposite responses, and a
-	 * reader who cannot tell them apart will go looking for a defect
-	 * that is not there.
-	 */
-	PKG_FAILURE_CANCELLED
+
+/*
+ * ADR-0256: where each of a package's installs stands, one entry per
+ * image it is installed into or being built for.
+ *
+ * The pipeline view needs this per (package, image) because that is the
+ * grain builds actually have, while the source catalogue is per package
+ * because that is the grain recipes have. Joining them is the whole job
+ * of GET /v1/pipeline, and it needs the halves in a shape it can read
+ * rather than a rendered JSON list to parse back.
+ */
+struct pkg_position {
+	char image[PKG_IMAGE_NAME_MAX];
+	char version[PKG_VERSION_MAX];
+	enum pkg_state state;
+	enum pipeline_stage stage;   /* meaningful only when status != PIPELINE_OK */
+	enum pipeline_status status;
+	char error[PKG_ERROR_MAX];
 };
 
-const char *pkg_failure_kind_name(enum pkg_failure_kind kind);
+/* Returns how many were written. */
+int pkg_positions(const char *name, struct pkg_position *out, int max);
 
 /*
  * Issue #213: stop an in-flight build for (name, image).
