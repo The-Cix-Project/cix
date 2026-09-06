@@ -2,6 +2,21 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### cix-builder 6.1.0 -- the first time the recipe moved because it is authoritative
+
+ADR-0252 says the recipe is authoritative and the image is derived from it. Two pins in 6.0.0 no longer described the image, and under that decision the recipe is what moves:
+
+```
+glibc   6.0.0 pinned 2.44-12; image holds 2.44-14
+zlib    6.0.0 pinned 1.3.2-9;  image holds 1.3.2-10
+```
+
+The `glibc` move is deliberate and is the point of ADR-0251 -- 2.44-14 is the first package rebuilt under the finalize policy, and gcc was verified against it before this pin moved. The `zlib` difference is the one ADR-0252 quotes as its own live evidence, found on an image materialized from its own recipe minutes earlier; under the old arrangement it would have sat unnoticed indefinitely.
+
+Verified after applying: 24 pins, 24 installed, **drift 0**, manifest matches recipe.
+
+Worth saying plainly, because it is the honest half: the drift in `glibc` was **introduced by this session** -- installing 2.44-14 into `cix-builder` directly is exactly the second write path ADR-0252 names as the defect. The ADR records that the daemon still permits it. Until that is closed, the decision holds by discipline rather than by construction, and this entry is what that discipline looks like when it is actually applied instead of promised.
+
 ### A published artifact approves itself in its own recipe (#306)
 
 The recurrence-stopper for the defect that bit three separate times in one session.
