@@ -42,7 +42,7 @@ SELFTESTS = \
 	$(BUILD)/test_treecopy $(BUILD)/test_childdiag \
 	$(BUILD)/test_kernelpolicy $(BUILD)/test_releasekey $(BUILD)/test_subid  \
 	$(BUILD)/test_partlabel $(BUILD)/test_pkg_finalize $(BUILD)/test_fresh_output_dir \
-	$(BUILD)/test_pgpverify $(BUILD)/test_kernelrecipe $(BUILD)/test_srcdepth $(BUILD)/test_srcupstream \
+	$(BUILD)/test_pgpverify $(BUILD)/test_kernelrecipe $(BUILD)/test_srcdepth $(BUILD)/test_srcupstream $(BUILD)/test_srcpolicy \
 	$(BUILD)/test_btrfs $(BUILD)/test_toolchain \
 	$(DAEMON_SELFTESTS)
 
@@ -665,6 +665,9 @@ $(BUILD)/test_srcdepth: test/test_srcdepth.c daemon/src/srcdepth.c | $(BUILD)
 
 $(BUILD)/test_srcupstream: test/test_srcupstream.c daemon/src/srcupstream.c | $(BUILD)
 	$(CC) $(CFLAGS) -Idaemon/include test/test_srcupstream.c daemon/src/srcupstream.c -o $@
+
+$(BUILD)/test_srcpolicy: test/test_srcpolicy.c daemon/src/srcpolicy.c daemon/src/srcdepth.c daemon/src/srcupstream.c daemon/src/persist.c daemon/src/json.c | $(BUILD)
+	$(CC) $(DAEMON_CFLAGS) $^ -o $@
 
 $(BUILD)/test_elfcheck: test/test_elfcheck.c daemon/src/elfcheck.c | $(BUILD)
 	$(CC) $(CFLAGS) -Idaemon/include test/test_elfcheck.c daemon/src/elfcheck.c -o $@
