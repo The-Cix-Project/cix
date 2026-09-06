@@ -1088,10 +1088,10 @@ int main(void)
 			fprintf(stderr, "FAIL: #101 GET unreachable, status=%d\n", r.status);
 			ok = 0;
 		} else {
-			const char *kind = json_str_field(r.json, "failure_kind");
+			const char *kind = json_str_field(r.json, "stage");
 
 			if (kind == NULL || strcmp(kind, "fetch") != 0) {
-				fprintf(stderr, "FAIL: #101 a source that could not be reached reported kind "
+				fprintf(stderr, "FAIL: #101 a source that could not be reached reported stage "
 				                "'%s', expected fetch\n",
 				        kind != NULL ? kind : "(null)");
 				ok = 0;
@@ -1113,11 +1113,11 @@ int main(void)
 			fprintf(stderr, "FAIL: #101 GET badbuild, status=%d\n", r.status);
 			ok = 0;
 		} else {
-			const char *kind = json_str_field(r.json, "failure_kind");
+			const char *kind = json_str_field(r.json, "stage");
 
 			if (kind == NULL || strcmp(kind, "build") != 0) {
 				fprintf(stderr,
-				        "FAIL: #101 a recipe whose build exited 7 reported kind '%s', expected "
+				        "FAIL: #101 a recipe whose build exited 7 reported stage '%s', expected "
 				        "build\n",
 				        kind != NULL ? kind : "(null)");
 				ok = 0;
@@ -1181,11 +1181,11 @@ int main(void)
 			fprintf(stderr, "FAIL: #302 GET silenttool, status=%d\n", r.status);
 			ok = 0;
 		} else {
-			const char *kind = json_str_field(r.json, "failure_kind");
+			const char *kind = json_str_field(r.json, "stage");
 			const char *err = json_str_field(r.json, "error");
 
 			if (kind == NULL || strcmp(kind, "build") != 0) {
-				fprintf(stderr, "FAIL: #302 missing-tool failure reported kind '%s', "
+				fprintf(stderr, "FAIL: #302 missing-tool failure reported stage '%s', "
 				                "expected build\n",
 				        kind != NULL ? kind : "(null)");
 				ok = 0;
@@ -1207,10 +1207,10 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "GET", "/v1/pkg/greeter", NULL, &r) == 0 &&
 		    r.status == 200) {
-			const struct json_value *k = json_object_get(r.json, "failure_kind");
+			const struct json_value *k = json_object_get(r.json, "stage");
 
 			if (k == NULL || k->type != JSON_NULL) {
-				fprintf(stderr, "FAIL: #101 an installed package reported a failure_kind\n");
+				fprintf(stderr, "FAIL: #101 an installed package reported a pipeline stage\n");
 				ok = 0;
 			}
 		}
@@ -5083,7 +5083,7 @@ skip_resume:
 	 *     success -- a cancel racing a build that just finished must
 	 *     not be able to mark a completed install as cancelled
 	 *   - cancelling a real running build stops it and records
-	 *     failure_kind "cancelled", not "build"
+	 *     stage "build" with status "cancelled", not a plain build failure
 	 *
 	 * The last matters because the container is SIGKILLed: without the
 	 * cancel flag being consulted, the outcome would be reported as
@@ -5210,7 +5210,7 @@ skip_resume:
 				if (cix_client_request(&client, "GET", "/v1/pkg/sleeper", NULL, &r) == 0 &&
 				    r.status == 200 && r.body != NULL &&
 				    strstr(r.body, "\"state\":\"failed\"") != NULL &&
-				    strstr(r.body, "\"failure_kind\":\"cancelled\"") != NULL)
+				    strstr(r.body, "\"status\":\"cancelled\"") != NULL)
 					cancelled = 1;
 				cix_response_free(&r);
 				if (!cancelled)

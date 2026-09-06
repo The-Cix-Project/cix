@@ -260,3 +260,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0253](0253-a-build-output-tree-is-created-fresh.md) | A build output tree is created fresh, never inherited | Accepted |
 | [0254](0254-upstream-checksums-are-verified-not-computed.md) | An upstream checksum is verified, never computed here | Accepted |
 | [0255](0255-a-recipe-is-a-rule-not-a-version.md) | A recipe is a rule, not a version | Accepted |
+| [0256](0256-the-pipeline-is-the-model.md) | The pipeline is the model | Accepted |

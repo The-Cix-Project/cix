@@ -2,6 +2,7 @@
 #define SRCRESOLVE_H
 
 #include "json.h"
+#include "pipeline.h"
 #include "srcpolicy.h"
 
 #include <stddef.h>
@@ -43,28 +44,29 @@
  * the direction is never hidden behind the verdict.
  */
 
-enum srcresolve_state {
-	/*
-	 * No pkg_upstream declared. A FIRST-CLASS, PERMANENT ANSWER, not a
-	 * gap to be closed: a project that publishes neither a machine-
-	 * readable release list nor signed checksums cannot be rolled
-	 * safely, and ADR-0255 treats pinning as the correct outcome there.
-	 */
-	SRCRESOLVE_PINNED = 0,
-	/* A recipe exists for the release the policy resolved to. */
-	SRCRESOLVE_CURRENT,
-	/* The policy resolved, and no recipe builds that release yet. */
-	SRCRESOLVE_MISSING,
-	/*
-	 * Declared a kind but could not be resolved, with the reason. Never
-	 * a blank row: a package that silently vanished from the catalogue
-	 * reads as up to date, which is the one wrong answer that looks
-	 * reassuring (ADR-0193's "null is a real answer" rule).
-	 */
-	SRCRESOLVE_UNRESOLVED
-};
-
-const char *srcresolve_state_name(enum srcresolve_state s);
+/*
+ * THERE IS NO SEPARATE CATALOGUE VOCABULARY. ADR-0256 folded the four
+ * states this module used to define -- pinned/current/missing/
+ * unresolved -- into the platform's one (stage, status) pair, because
+ * two names for one fact is precisely what that ADR exists to end. The
+ * four map exactly, and the mapping is worth stating since the words
+ * still describe real situations:
+ *
+ *   pinned      discover / not-implemented
+ *               No pkg_upstream. Finding a new release of this project
+ *               is something a person does, which is what
+ *               `not-implemented` means, and it is a permanent and
+ *               correct answer rather than a gap.
+ *   current     author / ok
+ *               A recipe exists for the resolved release.
+ *   missing     author / blocked
+ *               Resolution succeeded and nobody has written the recipe.
+ *               Blocked on a person, not failed.
+ *   unresolved  discover / failed  -- the release list was never fetched
+ *               resolve  / failed  -- policy could not pick from it
+ *               Two different causes needing opposite responses, which
+ *               the old single `unresolved` could not tell apart.
+ */
 
 #define SRCRESOLVE_VERSION_MAX 64
 #define SRCRESOLVE_REASON_MAX 256
@@ -77,7 +79,8 @@ struct srcresolve_entry {
 	char resolved_version[SRCRESOLVE_VERSION_MAX];      /* "" unless resolved */
 	char newest_recipe_version[SRCRESOLVE_VERSION_MAX]; /* "" if no recipe */
 	long fetched_at;                               /* of the kind's data; 0 = never */
-	enum srcresolve_state state;
+	enum pipeline_stage stage;
+	enum pipeline_status status;
 	char reason[SRCRESOLVE_REASON_MAX];
 };
 

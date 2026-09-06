@@ -40,6 +40,7 @@
 #include "esp.h"
 #include "btrfs.h"
 #include "kernelpolicy.h"
+#include "pipelineview.h"
 #include "srcpolicy.h"
 #include "srcupstream.h"
 #include "api_srcpolicy.h"
@@ -1157,6 +1158,7 @@ enum conn_kind {
 	CONN_PING_TIMER,        /* same job's paired timeout -- see ping_job_teardown() */
 	CONN_NTP_PERIODIC_TIMER, /* permanent, re-arms itself -- fires ntp_sync_start() periodically (task #751) */
 	CONN_BUILD_STALL_TIMER,  /* permanent, re-arms itself -- reports in-flight builds that have gone quiet */
+	CONN_BOOT_CONFIRM_TIMER, /* ADR-0256: re-checks a boot that could not confirm, then falls back */
 	CONN_NTP_SYNC,           /* one in-flight SNTP sync attempt's own UDP socket */
 	CONN_NTP_SYNC_TIMER,     /* same job's per-candidate timeout -- see ntp_job_teardown() */
 	/*
@@ -1326,6 +1328,20 @@ static SSL_CTX *g_tls_ctx;                 /* NULL when HTTPS is disabled */
 static const char *g_web_root;
 static volatile sig_atomic_t g_stop;
 static volatile sig_atomic_t g_shutdown_action = SHUTDOWN_ACTION_POWEROFF;
+
+/*
+ * ADR-0256: the uplink this box was configured to use, when
+ * bootstrap_management_network() could not attach it.
+ *
+ * Issue #133 was right that a missing uplink must never kill PID 1, and
+ * that is unchanged -- cixd still comes up and still serves on the
+ * management bridge. What was wrong is what happened NEXT: the boot was
+ * confirmed anyway, on the grounds that a socket was bound. A box that
+ * nobody on the network can reach had spent its A/B fallback on the
+ * slot that cannot serve them.
+ */
+static char g_uplink_unattached[64];
+
 
 /*
  * conns torn down mid-batch are queued here instead of free()'d
@@ -1766,6 +1782,14 @@ static int bootstrap_management_network(void)
 					}
 					closedir(nd);
 				}
+				/*
+				 * ADR-0256: remembered, not merely printed. This is
+				 * the fact the deploy stage needs -- a boot that
+				 * reaches this line has not produced a reachable host,
+				 * so it must not be confirmed on the strength of
+				 * having bound a socket.
+				 */
+				snprintf(g_uplink_unattached, sizeof(g_uplink_unattached), "%s", iface);
 				fprintf(stderr,
 				        "bootstrap_management_network: cannot attach uplink \"%s\" "
 				        "(error %d) -- interfaces present: [%s]. Continuing WITHOUT an "
@@ -4907,6 +4931,20 @@ static void handle_ping_get(int fd)
 static struct conn *g_ntp_sync_conn;
 static struct conn *g_ntp_timer_conn;
 static struct conn g_ntp_periodic_conn; /* permanent -- registered once at startup */
+static struct conn g_boot_confirm_conn = { .fd = -1 };
+static char g_boot_confirm_slot[8];
+static int g_boot_confirm_attempts;
+
+/*
+ * Twelve attempts at ten seconds. A NIC driver loading late is the
+ * benign case this window exists for (the uevent watch may bring the
+ * interface up seconds after boot_init ran); two minutes is long enough
+ * for that and short enough that a genuinely dead slot falls back while
+ * someone is still watching the console.
+ */
+#define BOOT_CONFIRM_RETRY_SECONDS 10
+#define BOOT_CONFIRM_MAX_ATTEMPTS 12
+
 static struct conn g_build_stall_conn;  /* permanent -- registered once at startup */
 
 static void ntp_job_teardown(void)
@@ -5472,6 +5510,157 @@ static void handle_build_stall_timer_event(struct conn *cc)
 	pkg_check_build_stalls();
 	check_teardown_stalls();   /* issue #119 */
 	arm_build_stall_timer();
+}
+
+/*
+ * ADR-0256: is this boot still on its A/B trial?
+ *
+ * systemd-boot's Automatic Boot Assessment keeps the remaining try
+ * count in the entry's own filename, and confirm_boot() renames it away
+ * once the boot is good. So a '+' in the name is the whole question:
+ * present means unconfirmed and still falling back on failure, absent
+ * means this slot has already been accepted.
+ */
+static int boot_is_unconfirmed(const char *slot)
+{
+	char entry_name[ESP_ENTRY_NAME_MAX];
+
+	if (!esp_entry_to_confirm(g_esp_entries_dir, slot, entry_name, sizeof(entry_name)))
+		return 0;
+	return strchr(entry_name, '+') != NULL;
+}
+
+static void arm_boot_confirm_timer(void)
+{
+	struct itimerspec its;
+
+	memset(&its, 0, sizeof(its));
+	its.it_value.tv_sec = BOOT_CONFIRM_RETRY_SECONDS;
+	if (timerfd_settime(g_boot_confirm_conn.fd, 0, &its, NULL) != 0)
+		perror("timerfd_settime (boot confirm re-arm)");
+}
+
+static void stop_boot_confirm_timer(void)
+{
+	if (g_boot_confirm_conn.fd < 0)
+		return;
+	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, g_boot_confirm_conn.fd, NULL);
+	close(g_boot_confirm_conn.fd);
+	g_boot_confirm_conn.fd = -1;
+}
+
+static void handle_boot_confirm_timer_event(struct conn *cc)
+{
+	uint64_t expirations;
+
+	if (read(cc->fd, &expirations, sizeof(expirations)) < 0)
+		perror("read (boot confirm timerfd)");
+	g_boot_confirm_attempts++;
+
+	/*
+	 * The benign case this window exists for: a NIC driver that loaded
+	 * after boot_init() ran, so the interface exists now and did not
+	 * then. Retrying the attach is the whole check -- it succeeds
+	 * exactly when the host has become reachable.
+	 */
+	if (network_attach_interface(MGMT_NETWORK_NAME, g_uplink_unattached, 0) == NETWORK_OK) {
+		logstore_write("cixd", "info",
+		                "boot confirm: uplink \"%s\" attached after %d attempt(s); "
+		                "confirming slot %s",
+		                g_uplink_unattached, g_boot_confirm_attempts, g_boot_confirm_slot);
+		g_uplink_unattached[0] = '\0';
+		if (confirm_boot(g_boot_confirm_slot) != 0)
+			fprintf(stderr, "confirm_boot failed for slot %s (continuing anyway)\n",
+			        g_boot_confirm_slot);
+		stop_boot_confirm_timer();
+		return;
+	}
+
+	if (g_boot_confirm_attempts >= BOOT_CONFIRM_MAX_ATTEMPTS) {
+		/*
+		 * Deliberately reboot rather than park. The entry still
+		 * carries a try count, so this spends one and eventually hands
+		 * the machine back to the other slot -- which is the whole
+		 * point of an A/B scheme and is what a box that came up
+		 * unreachable never used to do.
+		 */
+		logstore_write("cixd", "error",
+		                "boot confirm: uplink \"%s\" still unattached after %d attempts -- "
+		                "NOT confirming slot %s, rebooting to spend a boot try so the "
+		                "loader can fall back to the other slot",
+		                g_uplink_unattached, g_boot_confirm_attempts, g_boot_confirm_slot);
+		fprintf(stderr, "boot confirm: unreachable on \"%s\" -- rebooting to fall back\n",
+		        g_uplink_unattached);
+		stop_boot_confirm_timer();
+		g_shutdown_action = SHUTDOWN_ACTION_REBOOT;
+		g_stop = 1;
+		return;
+	}
+	arm_boot_confirm_timer();
+}
+
+static void start_boot_confirm_timer(const char *slot)
+{
+	struct cix_epoll_event ev;
+	int fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+
+	snprintf(g_boot_confirm_slot, sizeof(g_boot_confirm_slot), "%s", slot);
+	g_boot_confirm_attempts = 0;
+	if (fd < 0) {
+		perror("timerfd_create (boot confirm)");
+		return;
+	}
+	g_boot_confirm_conn.kind = CONN_BOOT_CONFIRM_TIMER;
+	g_boot_confirm_conn.fd = fd;
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = &g_boot_confirm_conn;
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
+		close(fd);
+		g_boot_confirm_conn.fd = -1;
+		return;
+	}
+	arm_boot_confirm_timer();
+}
+
+/*
+ * ADR-0256: confirming a boot means the host is REACHABLE, not that a
+ * socket is bound.
+ *
+ * "About to serve traffic" was the old condition, and a box whose
+ * configured uplink could not be attached satisfies it: the management
+ * bridge and its address exist, cixd binds, and the boot was confirmed
+ * -- permanently, on a slot nobody on the network can reach, with the
+ * A/B fallback already spent. Now that case does not confirm; it
+ * retries for a bounded window and then reboots so the loader falls
+ * back.
+ *
+ * The guard is what keeps this safe: it applies ONLY while the boot is
+ * unconfirmed. A slot that has already been accepted and whose NIC
+ * fails later must never reboot itself, or a pulled cable becomes a
+ * reboot loop.
+ */
+static void maybe_confirm_boot(const char *slot)
+{
+	if (g_uplink_unattached[0] == '\0') {
+		if (confirm_boot(slot) != 0)
+			fprintf(stderr, "confirm_boot failed for slot %s (continuing anyway)\n", slot);
+		return;
+	}
+	if (!boot_is_unconfirmed(slot)) {
+		logstore_write("cixd", "error",
+		                "uplink \"%s\" is not attached, so this host is only reachable on "
+		                "itself -- slot %s was already confirmed, so it is kept: a "
+		                "confirmed slot never reboots itself over a link fault",
+		                g_uplink_unattached, slot);
+		return;
+	}
+	logstore_write("cixd", "error",
+	                "uplink \"%s\" is not attached, so this boot is NOT reachable and will "
+	                "not be confirmed yet -- retrying for %d seconds, then falling back to "
+	                "the other slot",
+	                g_uplink_unattached, BOOT_CONFIRM_RETRY_SECONDS * BOOT_CONFIRM_MAX_ATTEMPTS);
+	start_boot_confirm_timer(slot);
 }
 
 static void start_build_stall_timer(void)
@@ -18654,7 +18843,7 @@ static enum registry_error spawn_pkgbuild_container(int chain_idx, const char *w
  *
  * The kill is what produces the outcome: the container's death runs
  * pkg_build_completed() exactly as any other build death, which sees
- * the cancel flag and records failure_kind "cancelled" through the one
+ * the cancel flag and records status "cancelled" through the one
  * pkg_fail() path. Nothing here writes the failure, so there is no race
  * over which description survives.
  */
@@ -20215,6 +20404,18 @@ static void op_listPkgPolicies(const struct api_ctx *ctx)
 static void op_listUpstreamKinds(const struct api_ctx *ctx)
 {
 	handle_upstream_kinds_get(ctx->fd);
+}
+
+/* GET /v1/pipeline (ADR-0256) -- the read-time join across the source
+ * catalogue, the package job records and this host's own boot entry. */
+static void op_getPipeline(const struct api_ctx *ctx)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	pipelineview_write_json(&w);
+	respond_json(ctx->fd, 200, "OK", &w);
+	jw_free(&w);
 }
 
 /* GET /v1/pkg/source-catalogue (ADR-0255) */
@@ -24720,10 +24921,8 @@ static int cixd_main(int argc, char **argv)
 	 * confirms -- everything above (mounts, network bring-up, the full
 	 * existing state-init sequence, the listening socket itself) had to
 	 * genuinely succeed to reach this line. */
-	if (init_mode && slot != NULL && !simulate_unhealthy) {
-		if (confirm_boot(slot) != 0)
-			fprintf(stderr, "confirm_boot failed for slot %s (continuing anyway)\n", slot);
-	}
+	if (init_mode && slot != NULL && !simulate_unhealthy)
+		maybe_confirm_boot(slot);
 
 	containerdef_autostart_all();
 
@@ -24923,6 +25122,8 @@ static int cixd_main(int argc, char **argv)
 				handle_ntp_periodic_timer_event(cc);
 			else if (cc->kind == CONN_BUILD_STALL_TIMER)
 				handle_build_stall_timer_event(cc);
+			else if (cc->kind == CONN_BOOT_CONFIRM_TIMER)
+				handle_boot_confirm_timer_event(cc);
 			else if (cc->kind == CONN_RESTART_TIMER)
 				handle_restart_timer_event(cc);
 			else if (cc->kind == CONN_ROLLING_RESTART_TIMER)

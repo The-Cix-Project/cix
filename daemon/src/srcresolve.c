@@ -5,6 +5,7 @@
  */
 #include "srcresolve.h"
 
+#include "pipeline.h"
 #include "pkg.h"
 #include "srcdepth.h"
 #include "srcpolicy.h"
@@ -19,20 +20,6 @@
 #define SRCRESOLVE_MAX_PACKAGES 512
 #define SRCRESOLVE_MAX_RECIPE_VERSIONS 64
 
-const char *srcresolve_state_name(enum srcresolve_state s)
-{
-	switch (s) {
-	case SRCRESOLVE_PINNED:
-		return "pinned";
-	case SRCRESOLVE_CURRENT:
-		return "current";
-	case SRCRESOLVE_MISSING:
-		return "missing";
-	case SRCRESOLVE_UNRESOLVED:
-	default:
-		return "unresolved";
-	}
-}
 
 void srcresolve_upstream_of(const char *recipe_version, char *out, size_t out_size)
 {
@@ -86,11 +73,12 @@ static void newest_recipe(const char *const *versions, size_t count, char *out, 
 		snprintf(out, out_size, "%s", best);
 }
 
-static void fail(struct srcresolve_entry *e, const char *fmt, ...)
+static void fail(struct srcresolve_entry *e, enum pipeline_stage stage, const char *fmt, ...)
 {
 	va_list ap;
 
-	e->state = SRCRESOLVE_UNRESOLVED;
+	e->stage = stage;
+	e->status = PIPELINE_FAILED;
 	va_start(ap, fmt);
 	vsnprintf(e->reason, sizeof(e->reason), fmt, ap);
 	va_end(ap);
@@ -116,7 +104,11 @@ void srcresolve_one(const char *name, const char *kind,
 	              sizeof(out->newest_recipe_version));
 
 	if (kind == NULL || kind[0] == '\0') {
-		out->state = SRCRESOLVE_PINNED;
+		/* Finding a new release of a project with no machine-readable
+		 * feed is something a person does. Saying so is more useful
+		 * than a green tick that would mean "we did not check". */
+		out->stage = PIPELINE_DISCOVER;
+		out->status = PIPELINE_NOT_IMPLEMENTED;
 		snprintf(out->reason, sizeof(out->reason),
 		         "no pkg_upstream declared -- this package is pinned and rolls only "
 		         "when someone publishes a new recipe for it");
@@ -126,8 +118,9 @@ void srcresolve_one(const char *name, const char *kind,
 
 	k = srcupstream_find(kind);
 	if (k == NULL) {
-		fail(out, "recipe declares upstream kind \"%s\", which this platform does not "
-		          "implement -- nothing can enumerate that project's releases", kind);
+		fail(out, PIPELINE_DISCOVER,
+		     "recipe declares upstream kind \"%s\", which this platform does not "
+		     "implement -- nothing can enumerate that project's releases", kind);
 		return;
 	}
 	out->fetched_at = srcupstream_fetched_at(k);
@@ -135,14 +128,14 @@ void srcresolve_one(const char *name, const char *kind,
 	if (srcpolicy_effective_for_kind(name, kind, &pol, err, sizeof(err)) != 0) {
 		snprintf(out->channel, sizeof(out->channel), "%s", pol.channel);
 		snprintf(out->depth, sizeof(out->depth), "%s", pol.depth);
-		fail(out, "%s", err);
+		fail(out, PIPELINE_RESOLVE, "%s", err);
 		return;
 	}
 	snprintf(out->channel, sizeof(out->channel), "%s", pol.channel);
 	snprintf(out->depth, sizeof(out->depth), "%s", pol.depth);
 
 	if (srcdepth_parse(pol.depth, &lines, &releases) != SRCDEPTH_OK) {
-		fail(out, "depth \"%s\" is not a depth expression", pol.depth);
+		fail(out, PIPELINE_RESOLVE, "depth \"%s\" is not a depth expression", pol.depth);
 		return;
 	}
 
@@ -154,11 +147,12 @@ void srcresolve_one(const char *name, const char *kind,
 		 * so they are never reported as the same thing.
 		 */
 		if (out->fetched_at == 0)
-			fail(out, "%s release data has never been fetched on this host -- "
-			          "refresh it, then read this catalogue again", kind);
+			fail(out, PIPELINE_DISCOVER,
+			     "%s release data has never been fetched on this host -- "
+			     "refresh it, then read this catalogue again", kind);
 		else
-			fail(out, "%s currently publishes nothing in the \"%s\" channel", kind,
-			     pol.channel);
+			fail(out, PIPELINE_RESOLVE,
+			     "%s currently publishes nothing in the \"%s\" channel", kind, pol.channel);
 		return;
 	}
 	for (i = 0; i < count; i++)
@@ -176,25 +170,29 @@ void srcresolve_one(const char *name, const char *kind,
 		 * between a fixable message and a dead end.
 		 */
 		if (de == SRCDEPTH_ERR_NO_SUCH_RELEASE)
-			fail(out, "%s -- %s publishes only the newest release of each line, so "
-			          "a depth reaching back within a line cannot resolve against it",
+			fail(out, PIPELINE_RESOLVE,
+			     "%s -- %s publishes only the newest release of each line, so "
+			     "a depth reaching back within a line cannot resolve against it",
 			     err, kind);
 		else
-			fail(out, "%s", err);
+			fail(out, PIPELINE_RESOLVE, "%s", err);
 		return;
 	}
 
 	for (i = 0; i < recipe_count; i++) {
 		srcresolve_upstream_of(recipe_versions[i], upstream, sizeof(upstream));
 		if (strcmp(upstream, out->resolved_version) == 0) {
-			out->state = SRCRESOLVE_CURRENT;
+			out->stage = PIPELINE_AUTHOR;
+			out->status = PIPELINE_OK;
 			snprintf(out->reason, sizeof(out->reason),
 			         "recipe %s already builds %s", recipe_versions[i],
 			         out->resolved_version);
 			return;
 		}
 	}
-	out->state = SRCRESOLVE_MISSING;
+	/* Blocked on a person writing the recipe, not failed. */
+	out->stage = PIPELINE_AUTHOR;
+	out->status = PIPELINE_BLOCKED;
 	if (out->newest_recipe_version[0] == '\0')
 		snprintf(out->reason, sizeof(out->reason),
 		         "%s resolves to %s and this platform has no recipe for it at all",
@@ -211,8 +209,10 @@ static void write_entry(struct json_writer *w, const struct srcresolve_entry *e)
 	jw_obj_open(w);
 	jw_key(w, "name");
 	jw_str(w, e->name);
-	jw_key(w, "state");
-	jw_str(w, srcresolve_state_name(e->state));
+	jw_key(w, "stage");
+	jw_str(w, pipeline_stage_name(e->stage));
+	jw_key(w, "status");
+	jw_str(w, pipeline_status_name(e->status));
 	jw_key(w, "upstream");
 	if (e->kind[0] == '\0')
 		jw_null(w);
@@ -258,7 +258,7 @@ void srcresolve_write_json(struct json_writer *w)
 	static char versions[SRCRESOLVE_MAX_RECIPE_VERSIONS][PKG_VERSION_MAX];
 	const char *vp[SRCRESOLVE_MAX_RECIPE_VERSIONS];
 	struct srcresolve_entry e;
-	int counts[4];
+	int counts[5];
 	int n, i, v, nv;
 
 	memset(counts, 0, sizeof(counts));
@@ -276,24 +276,26 @@ void srcresolve_write_json(struct json_writer *w)
 		for (v = 0; v < nv; v++)
 			vp[v] = versions[v];
 		srcresolve_one(names[i], kind, vp, (size_t)nv, &e);
-		counts[e.state]++;
+		counts[e.status]++;
 		write_entry(w, &e);
 	}
 	jw_arr_close(w);
 	/*
 	 * The summary a catalogue page reads before it renders a single
-	 * row. Computed here rather than by each client, so two clients
-	 * cannot disagree about how many packages need attention.
+	 * row, keyed by ADR-0256's status axis so it matches what
+	 * GET /pipeline reports for the same packages. Computed here rather
+	 * than by each client, so two clients cannot disagree about how
+	 * many packages need attention.
 	 */
 	jw_key(w, "total");
 	jw_num(w, (double)n);
-	jw_key(w, "pinned");
-	jw_num(w, (double)counts[SRCRESOLVE_PINNED]);
-	jw_key(w, "current");
-	jw_num(w, (double)counts[SRCRESOLVE_CURRENT]);
-	jw_key(w, "missing");
-	jw_num(w, (double)counts[SRCRESOLVE_MISSING]);
-	jw_key(w, "unresolved");
-	jw_num(w, (double)counts[SRCRESOLVE_UNRESOLVED]);
+	jw_key(w, "ok");
+	jw_num(w, (double)counts[PIPELINE_OK]);
+	jw_key(w, "blocked");
+	jw_num(w, (double)counts[PIPELINE_BLOCKED]);
+	jw_key(w, "failed");
+	jw_num(w, (double)counts[PIPELINE_FAILED]);
+	jw_key(w, "not_implemented");
+	jw_num(w, (double)counts[PIPELINE_NOT_IMPLEMENTED]);
 	jw_obj_close(w);
 }

@@ -92,15 +92,16 @@ static const char *const KERNEL_RECIPES[] = { "6.18.40-24", "7.2.3-2" };
 
 static void expect(const char *label, const char *name, const char *kind,
                     const char *const *recipes, size_t recipe_count,
-                    enum srcresolve_state want_state, const char *want_version,
-                    const char *must_mention)
+                    enum pipeline_stage want_stage, enum pipeline_status want_status,
+                    const char *want_version, const char *must_mention)
 {
 	struct srcresolve_entry e;
 
 	srcresolve_one(name, kind, recipes, recipe_count, &e);
-	if (e.state != want_state) {
-		fail("%s: state is \"%s\"", label, srcresolve_state_name(e.state));
-		fprintf(stderr, "         reason: %s\n", e.reason);
+	if (e.stage != want_stage || e.status != want_status) {
+		fail("%s: reported %s", label, pipeline_stage_name(e.stage));
+		fprintf(stderr, "         status: %s  reason: %s\n", pipeline_status_name(e.status),
+		        e.reason);
 		return;
 	}
 	if (want_version != NULL && strcmp(e.resolved_version, want_version) != 0) {
@@ -116,8 +117,8 @@ static void expect(const char *label, const char *name, const char *kind,
 		fprintf(stderr, "         reason: %s\n", e.reason);
 		return;
 	}
-	printf("  %-26s %-10s resolved=%-9s newest_recipe=%-11s\n", label,
-	        srcresolve_state_name(e.state),
+	printf("  %-26s %-8s/%-15s resolved=%-9s newest_recipe=%-11s\n", label,
+	        pipeline_stage_name(e.stage), pipeline_status_name(e.status),
 	        e.resolved_version[0] != '\0' ? e.resolved_version : "-",
 	        e.newest_recipe_version[0] != '\0' ? e.newest_recipe_version : "-");
 	return;
@@ -171,12 +172,12 @@ int main(void)
 	check_upstream_of("1.4.20-rc1", "1.4.20-rc1");
 
 	/* A package declaring no upstream is pinned -- an answer, not a gap. */
-	expect("pinned (no upstream)", "bash", "", KERNEL_RECIPES, 0, SRCRESOLVE_PINNED, NULL,
-	        "pinned");
+	expect("pinned (no upstream)", "bash", "", KERNEL_RECIPES, 0, PIPELINE_DISCOVER,
+	        PIPELINE_NOT_IMPLEMENTED, NULL, "pinned");
 
 	/* A kind nothing implements says so, naming the kind. */
-	expect("unknown kind", "somepkg", "sourceforge", NULL, 0, SRCRESOLVE_UNRESOLVED, NULL,
-	        "sourceforge");
+	expect("unknown kind", "somepkg", "sourceforge", NULL, 0, PIPELINE_DISCOVER, PIPELINE_FAILED,
+	        NULL, "sourceforge");
 
 	if (srcpolicy_default_set("stable", "n", err, sizeof(err)) != 0) {
 		fprintf(stderr, "  FAIL: default_set: %s\n", err);
@@ -187,8 +188,8 @@ int main(void)
 	 * BEFORE any fetch. Zero candidates because nothing has ever been
 	 * downloaded -- which must not read as "stable publishes nothing".
 	 */
-	expect("never fetched", "kernel", "kernel.org", KERNEL_RECIPES, 2, SRCRESOLVE_UNRESOLVED,
-	        NULL, "never been fetched");
+	expect("never fetched", "kernel", "kernel.org", KERNEL_RECIPES, 2, PIPELINE_DISCOVER,
+	        PIPELINE_FAILED, NULL, "never been fetched");
 
 	if (write_releases() != 0 || kernelpolicy_ingest_releases(g_rel_path, 1757000000L) != 0) {
 		fprintf(stderr, "  FAIL: could not ingest release fixture\n");
@@ -196,8 +197,8 @@ int main(void)
 	}
 
 	/* stable/n resolves 7.2.3, and recipe 7.2.3-2 builds it. */
-	expect("stable n", "kernel", "kernel.org", KERNEL_RECIPES, 2, SRCRESOLVE_CURRENT, "7.2.3",
-	        "7.2.3-2");
+	expect("stable n", "kernel", "kernel.org", KERNEL_RECIPES, 2, PIPELINE_AUTHOR, PIPELINE_OK,
+	        "7.2.3", "7.2.3-2");
 
 	/*
 	 * THE CASE A "NEWER AVAILABLE" BOOLEAN GETS WRONG. longterm/n
@@ -209,15 +210,15 @@ int main(void)
 		return 1;
 	}
 	expect("longterm n (recipe ahead)", "kernel", "kernel.org", KERNEL_RECIPES, 2,
-	        SRCRESOLVE_MISSING, "6.18.46", "6.18.46");
+	        PIPELINE_AUTHOR, PIPELINE_BLOCKED, "6.18.46", "6.18.46");
 
 	/* One release LINE back is a different question, and resolves. */
 	if (srcpolicy_set("kernel", "kernel.org", "longterm", "n-1", err, sizeof(err)) != 0) {
 		fprintf(stderr, "  FAIL: set longterm n-1: %s\n", err);
 		return 1;
 	}
-	expect("longterm n-1", "kernel", "kernel.org", KERNEL_RECIPES, 2, SRCRESOLVE_MISSING,
-	        "6.12.60", NULL);
+	expect("longterm n-1", "kernel", "kernel.org", KERNEL_RECIPES, 2, PIPELINE_AUTHOR,
+	        PIPELINE_BLOCKED, "6.12.60", NULL);
 
 	/*
 	 * One RELEASE back within a line cannot resolve against this feed,
@@ -229,7 +230,7 @@ int main(void)
 		return 1;
 	}
 	expect("stable n-0.1 (feed limit)", "kernel", "kernel.org", KERNEL_RECIPES, 2,
-	        SRCRESOLVE_UNRESOLVED, NULL, "newest release of each line");
+	        PIPELINE_RESOLVE, PIPELINE_FAILED, NULL, "newest release of each line");
 
 	unlink(g_pol_path);
 	unlink(g_kern_path);

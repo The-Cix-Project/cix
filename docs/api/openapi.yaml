@@ -8626,6 +8626,55 @@ paths:
                     items:
                       $ref: "#/components/schemas/UpstreamKind"
 
+  /pipeline:
+    get:
+      summary: Where every package stands in the eleven-stage pipeline, and what is stopping it (ADR-0256)
+      description: >
+        The one question an operator actually asks -- "where is this
+        package, and what is stopping it?" -- answered once instead of
+        by joining four unrelated vocabularies by hand.
+
+        Before this, the platform performed all eleven stages and had a
+        name for none of them: the source catalogue had four states, the
+        package job records had five failure kinds, the image rebuild
+        queue had a build-log line, and the boot slots had a filename.
+        ADR-0256 replaced all four with one (stage, status) pair, which
+        this endpoint, `GET /pkg/{name}`, the CLI and the dashboard now
+        all speak verbatim.
+
+        Computed on every read, never stored -- the same rule the source
+        catalogue follows, for the same reason: derived state with no
+        invalidation event goes stale silently, and a stale copy of
+        "what is broken" is worse than no copy.
+
+        One row per package, because that is the grain recipes have.
+        Builds are per (package, image), so a row reports the EARLIEST
+        stage that is not ok across that package's images, with the
+        per-image detail under `images`. Earliest rather than most
+        severe: a pipeline stops at its first problem and everything
+        after it is consequence, so a package that could not be
+        downloaded reads "could not download" and not "could not
+        compile".
+
+        `deploy` is reported ONCE, beside the package list, not on every
+        row -- it is a single fact about this host (did the root that
+        booted come up and serve?) and repeating it onto 116 rows would
+        make the summary counts meaningless.
+
+        `stages` carries the per-stage tally the dashboard renders as a
+        flow. Every stage is listed even at zero: a pipeline drawn only
+        from the occupied stages is a filtered list, and the empty
+        stages are exactly the ones worth seeing are empty.
+      operationId: getPipeline
+      x-cix-expose: [cli]
+      responses:
+        "200":
+          description: The pipeline
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Pipeline"
+
   /pkg/source-catalogue:
     get:
       summary: What upstream has published, against what this platform has recipes for (ADR-0255)
@@ -8955,7 +9004,7 @@ paths:
         last_output_seconds_ago so a person can tell the two apart; this is the verb that
         acts on that judgement.
 
-        The cancelled build is recorded with failure_kind "cancelled", which is not
+        The cancelled build is recorded at stage "build" with status "cancelled", which is not
         "build": a build stopped by an operator did not fail on its own merits, and a
         reader who cannot tell the difference is being misled. An upgrade that is
         cancelled leaves the package installed at the version it already had, exactly as
@@ -13614,6 +13663,107 @@ components:
         summary:
           type: string
 
+    PipelinePosition:
+      type: object
+      required: [stage, status, reason]
+      properties:
+        stage:
+          type: string
+          enum: [discover, resolve, authenticate, author, fetch, unpack, build, install, publish, roll, deploy]
+          description: WHERE in the pipeline. ADR-0256 fixes these eleven names.
+        status:
+          type: string
+          enum: [ok, blocked, failed, cancelled, not-implemented]
+          description: >
+            WHAT happened there. A second axis rather than more stages:
+            a cancelled build is not a different place, it is the build
+            stage with a different outcome. `blocked` means waiting on
+            something outside this stage -- an earlier stage, or a
+            person. `not-implemented` means this platform performs this
+            stage by hand today, which is an honest answer and keeps a
+            manual step visible as a position rather than an absence.
+        reason:
+          type: string
+          description: >
+            A past-tense sentence naming what was attempted. Always
+            populated, including for `ok`, so a reader never has to
+            infer why something is fine.
+
+    PipelinePackage:
+      allOf:
+        - $ref: "#/components/schemas/PipelinePosition"
+        - type: object
+          required: [name, images]
+          properties:
+            name:
+              type: string
+            upstream:
+              type: [string, "null"]
+            resolved_version:
+              type: [string, "null"]
+            newest_recipe_version:
+              type: [string, "null"]
+            images:
+              type: array
+              description: >
+                One entry per image this package is installed into or
+                being built for -- the grain a build actually has.
+              items:
+                allOf:
+                  - $ref: "#/components/schemas/PipelinePosition"
+                  - type: object
+                    properties:
+                      image:
+                        type: string
+                      version:
+                        type: string
+
+    Pipeline:
+      type: object
+      required: [packages, stages, deploy, total]
+      properties:
+        packages:
+          type: array
+          items:
+            $ref: "#/components/schemas/PipelinePackage"
+        stages:
+          type: array
+          description: Per-stage tally, all eleven, including the empty ones.
+          items:
+            type: object
+            properties:
+              stage:
+                type: string
+              verb:
+                type: string
+                description: What a failure at this stage reads as.
+              packages:
+                type: integer
+        deploy:
+          allOf:
+            - $ref: "#/components/schemas/PipelinePosition"
+            - type: object
+              properties:
+                entry:
+                  type: [string, "null"]
+                  description: >
+                    The boot entry this host is running from, or null
+                    when it did not boot from an A/B slot. An entry
+                    still carrying a "+" try count is an unconfirmed
+                    boot, which is `blocked` rather than `ok`.
+        total:
+          type: integer
+        ok:
+          type: integer
+        blocked:
+          type: integer
+        failed:
+          type: integer
+        cancelled:
+          type: integer
+        not_implemented:
+          type: integer
+
     SourceCatalogueEntry:
       type: object
       required: [name, state, reason]
@@ -16096,21 +16246,38 @@ components:
           type: string
           nullable: true
           description: Populated only when state is "failed".
-        failure_kind:
+        stage:
           type: string
           nullable: true
-          enum: [recipe, fetch, build, install]
+          enum: [discover, resolve, authenticate, author, fetch, unpack, build, install, publish, roll, deploy]
           description: >
-            Issue #101: what kind of failure `error` describes. A source
-            that could not be reached is usually transient and worth
-            retrying; a build that did not work is a real defect and
-            retrying changes nothing; a missing or unparseable recipe is
-            a catalogue problem; an install failure means the build
-            worked and merging its output did not. "failed" on its own
-            could not be acted on, and an error string every caller had
-            to pattern-match was the same problem in disguise. Null when
-            nothing is wrong -- absence of a failure is not a kind of
-            failure.
+            ADR-0256: WHERE in the pipeline this package stands. Replaces
+            the old `failure_kind`, which named four of these eleven and
+            conflated two of them: unpacking a source archive and
+            compiling it were both "build", so an archive that
+            downloaded intact and could not be opened sent a reader to a
+            compile log for something that happened before any compiler
+            ran. `unpack` is now its own stage.
+
+            Null when nothing is wrong -- absence of a failure is not a
+            position in the pipeline, and naming a stage here would
+            invite a reader to believe the package is sitting at it.
+        status:
+          type: string
+          nullable: true
+          enum: [ok, blocked, failed, cancelled, not-implemented]
+          description: >
+            ADR-0256: WHAT happened at that stage. A second axis rather
+            than more stages, because a cancelled build (issue #213) is
+            not a different PLACE -- it is the build stage with a
+            different outcome, and the two need opposite responses from
+            the same position. Null alongside a null stage.
+
+            Issue #101's original point is preserved and sharpened: a
+            source that could not be reached is usually transient and
+            worth retrying, a build that did not work is a real defect
+            and retrying changes nothing. `stage` says which without
+            anyone having to pattern-match an error string.
         last_output_seconds_ago:
           type: integer
           nullable: true

@@ -6,7 +6,7 @@ CLIENT_CFLAGS := $(CFLAGS) -Iclient/include -Idaemon/include
 NETPLANE_CFLAGS := $(CFLAGS)
 
 LIB_SRCS := src/btrfs.c src/cgroup.c src/mountns.c src/ns_create.c src/container.c src/overlay.c src/container_net.c src/container_dev.c src/container_caps.c netplane/src/rtnetlink.c
-DAEMON_SRCS := daemon/src/json.c daemon/src/http.c daemon/src/websocket.c daemon/src/exec.c daemon/src/registry.c daemon/src/staticfile.c daemon/src/network.c daemon/src/persist.c daemon/src/dns.c daemon/src/ldap.c daemon/src/pki.c daemon/src/opensslrun.c daemon/src/releasekey.c daemon/src/elfcheck.c daemon/src/pkg.c daemon/src/device.c daemon/src/devicemap.c daemon/src/image.c daemon/src/containerdef.c daemon/src/siteconfig.c daemon/src/daemon_config.c daemon/src/tlsconn.c daemon/src/quotamap.c daemon/src/swap.c daemon/src/logstore.c daemon/src/disk.c daemon/src/diskrole.c daemon/src/diskformat.c daemon/src/diskpart.c daemon/src/sysctlconfig.c daemon/src/kmod.c daemon/src/kmodconfig.c daemon/src/ping.c daemon/src/resolv.c daemon/src/ntp.c daemon/src/syslogfwd.c daemon/src/hostproc.c daemon/src/connthrottle.c daemon/src/treecopy.c daemon/src/storageplacement.c daemon/src/storagemigrate.c daemon/src/backupconfig.c daemon/src/containerstoragemigrate.c daemon/src/pwhash.c daemon/src/vendor/bcrypt.c daemon/src/vendor/blowfish.c daemon/src/hostauth.c daemon/src/ldapclient.c daemon/src/subid.c daemon/src/serverhealth.c daemon/src/volume.c daemon/src/volumebackup.c daemon/src/cpreserve.c daemon/src/pkgpolicy.c daemon/src/bootconsole.c daemon/src/esp.c daemon/src/stallwatch.c daemon/src/kernelpolicy.c daemon/src/srcpolicy.c daemon/src/srcdepth.c daemon/src/srcupstream.c daemon/src/srcresolve.c daemon/src/api_srcpolicy.c daemon/src/ksm.c daemon/src/zswap.c daemon/src/dhcp.c daemon/src/targz.c daemon/src/signingkeys.c daemon/src/childdiag.c daemon/src/partlabel.c daemon/src/apiroute.c daemon/src/apiresp.c daemon/src/api_network.c daemon/src/api_storage.c daemon/src/api_pki.c daemon/src/api_ldap.c daemon/src/api_image.c daemon/src/api_dns.c daemon/src/api_logs.c daemon/src/api_hostauth.c daemon/src/api_volume.c daemon/src/api_swap.c daemon/src/api_route.c daemon/src/api_keys.c daemon/src/api_resolv.c daemon/src/api_syslog.c daemon/src/api_sysctl.c daemon/src/api_kmod.c daemon/src/api_ntp.c daemon/src/config.c daemon/src/containerpath.c
+DAEMON_SRCS := daemon/src/json.c daemon/src/http.c daemon/src/websocket.c daemon/src/exec.c daemon/src/registry.c daemon/src/staticfile.c daemon/src/network.c daemon/src/persist.c daemon/src/dns.c daemon/src/ldap.c daemon/src/pki.c daemon/src/opensslrun.c daemon/src/releasekey.c daemon/src/elfcheck.c daemon/src/pkg.c daemon/src/device.c daemon/src/devicemap.c daemon/src/image.c daemon/src/containerdef.c daemon/src/siteconfig.c daemon/src/daemon_config.c daemon/src/tlsconn.c daemon/src/quotamap.c daemon/src/swap.c daemon/src/logstore.c daemon/src/disk.c daemon/src/diskrole.c daemon/src/diskformat.c daemon/src/diskpart.c daemon/src/sysctlconfig.c daemon/src/kmod.c daemon/src/kmodconfig.c daemon/src/ping.c daemon/src/resolv.c daemon/src/ntp.c daemon/src/syslogfwd.c daemon/src/hostproc.c daemon/src/connthrottle.c daemon/src/treecopy.c daemon/src/storageplacement.c daemon/src/storagemigrate.c daemon/src/backupconfig.c daemon/src/containerstoragemigrate.c daemon/src/pwhash.c daemon/src/vendor/bcrypt.c daemon/src/vendor/blowfish.c daemon/src/hostauth.c daemon/src/ldapclient.c daemon/src/subid.c daemon/src/serverhealth.c daemon/src/volume.c daemon/src/volumebackup.c daemon/src/cpreserve.c daemon/src/pkgpolicy.c daemon/src/bootconsole.c daemon/src/esp.c daemon/src/stallwatch.c daemon/src/kernelpolicy.c daemon/src/srcpolicy.c daemon/src/srcdepth.c daemon/src/srcupstream.c daemon/src/srcresolve.c daemon/src/pipeline.c daemon/src/pipelineview.c daemon/src/api_srcpolicy.c daemon/src/ksm.c daemon/src/zswap.c daemon/src/dhcp.c daemon/src/targz.c daemon/src/signingkeys.c daemon/src/childdiag.c daemon/src/partlabel.c daemon/src/apiroute.c daemon/src/apiresp.c daemon/src/api_network.c daemon/src/api_storage.c daemon/src/api_pki.c daemon/src/api_ldap.c daemon/src/api_image.c daemon/src/api_dns.c daemon/src/api_logs.c daemon/src/api_hostauth.c daemon/src/api_volume.c daemon/src/api_swap.c daemon/src/api_route.c daemon/src/api_keys.c daemon/src/api_resolv.c daemon/src/api_syslog.c daemon/src/api_sysctl.c daemon/src/api_kmod.c daemon/src/api_ntp.c daemon/src/config.c daemon/src/containerpath.c
 CLIENT_SRCS := client/src/httpclient.c daemon/src/json.c
 NETPLANE_SRCS := netplane/src/rtnetlink.c
 
@@ -42,7 +42,7 @@ SELFTESTS = \
 	$(BUILD)/test_treecopy $(BUILD)/test_childdiag \
 	$(BUILD)/test_kernelpolicy $(BUILD)/test_releasekey $(BUILD)/test_subid  \
 	$(BUILD)/test_partlabel $(BUILD)/test_pkg_finalize $(BUILD)/test_fresh_output_dir \
-	$(BUILD)/test_pgpverify $(BUILD)/test_kernelrecipe $(BUILD)/test_srcdepth $(BUILD)/test_srcupstream $(BUILD)/test_srcpolicy $(BUILD)/test_srcresolve \
+	$(BUILD)/test_pgpverify $(BUILD)/test_kernelrecipe $(BUILD)/test_srcdepth $(BUILD)/test_srcupstream $(BUILD)/test_srcpolicy $(BUILD)/test_srcresolve $(BUILD)/test_pipeline \
 	$(BUILD)/test_btrfs $(BUILD)/test_toolchain \
 	$(DAEMON_SELFTESTS)
 
@@ -660,6 +660,9 @@ $(BUILD)/test_pgpverify: test/test_pgpverify.c daemon/src/pgpverify.c | $(BUILD)
 $(BUILD)/test_kernelrecipe: test/test_kernelrecipe.c daemon/src/kernelrecipe.c | $(BUILD)
 	$(CC) $(CFLAGS) -Idaemon/include test/test_kernelrecipe.c daemon/src/kernelrecipe.c -o $@
 
+$(BUILD)/test_pipeline: test/test_pipeline.c daemon/src/pipeline.c | $(BUILD)
+	$(CC) $(CFLAGS) -Idaemon/include test/test_pipeline.c daemon/src/pipeline.c -o $@
+
 $(BUILD)/test_srcdepth: test/test_srcdepth.c daemon/src/srcdepth.c | $(BUILD)
 	$(CC) $(CFLAGS) -Idaemon/include test/test_srcdepth.c daemon/src/srcdepth.c -o $@
 
@@ -669,7 +672,7 @@ $(BUILD)/test_srcupstream: test/test_srcupstream.c daemon/src/srcupstream.c daem
 $(BUILD)/test_srcpolicy: test/test_srcpolicy.c daemon/src/srcpolicy.c daemon/src/srcdepth.c daemon/src/srcupstream.c daemon/src/kernelpolicy.c daemon/src/persist.c daemon/src/json.c | $(BUILD)
 	$(CC) $(DAEMON_CFLAGS) $^ -o $@
 
-$(BUILD)/test_srcresolve: test/test_srcresolve.c daemon/src/srcresolve.c daemon/src/srcpolicy.c daemon/src/srcdepth.c daemon/src/srcupstream.c daemon/src/kernelpolicy.c daemon/src/persist.c daemon/src/json.c | $(BUILD)
+$(BUILD)/test_srcresolve: test/test_srcresolve.c daemon/src/srcresolve.c daemon/src/pipeline.c daemon/src/srcpolicy.c daemon/src/srcdepth.c daemon/src/srcupstream.c daemon/src/kernelpolicy.c daemon/src/persist.c daemon/src/json.c | $(BUILD)
 	$(CC) $(DAEMON_CFLAGS) $^ -o $@
 
 $(BUILD)/test_elfcheck: test/test_elfcheck.c daemon/src/elfcheck.c | $(BUILD)

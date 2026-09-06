@@ -88,9 +88,18 @@ struct pkg_entry {
 	char depends[PKG_DEPENDS_MAX];
 	enum pkg_state state;
 	char error[PKG_ERROR_MAX];
-	/* Issue #101: what kind of failure `error` describes. Set by
-	 * pkg_fail(), which is the only way a package becomes FAILED. */
-	enum pkg_failure_kind failure_kind;
+	/*
+	 * ADR-0256: WHERE in the pipeline this entry stands, and WHAT
+	 * happened there. Set by pkg_fail()/pkg_fail_cancelled(), which
+	 * remain the only ways a package becomes FAILED (issue #101's rule,
+	 * kept -- only the vocabulary changed).
+	 *
+	 * `status` is PIPELINE_OK whenever nothing is wrong, and `stage` is
+	 * then meaningless rather than false: absence of a failure is not a
+	 * position in the pipeline.
+	 */
+	enum pipeline_stage stage;
+	enum pipeline_status status;
 	char **files;
 	int file_count;
 	int files_cap;
@@ -831,24 +840,6 @@ static void fetch_note_sidecar_path(const char *name, char *out, size_t out_size
 }
 
 
-const char *pkg_failure_kind_name(enum pkg_failure_kind kind)
-{
-	switch (kind) {
-	case PKG_FAILURE_RECIPE:
-		return "recipe";
-	case PKG_FAILURE_FETCH:
-		return "fetch";
-	case PKG_FAILURE_BUILD:
-		return "build";
-	case PKG_FAILURE_INSTALL:
-		return "install";
-	case PKG_FAILURE_CANCELLED:
-		return "cancelled";
-	case PKG_FAILURE_NONE:
-	default:
-		return "none";
-	}
-}
 
 /*
  * Issue #101: the one place a package records a failure.
@@ -869,17 +860,43 @@ const char *pkg_failure_kind_name(enum pkg_failure_kind kind)
  */
 static void rebuild_queue_remove(const char *image);
 
-static void pkg_fail(struct pkg_entry *e, int keep_installed, enum pkg_failure_kind kind,
+static void pkg_record_outcome(struct pkg_entry *e, int keep_installed,
+                                enum pipeline_stage stage, enum pipeline_status status,
+                                const char *fmt, va_list ap)
+{
+	e->state = keep_installed ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
+	e->stage = stage;
+	e->status = status;
+	vsnprintf(e->error, sizeof(e->error), fmt, ap);
+}
+
+/*
+ * ADR-0256: stopped by an operator, not by its own merits. The same
+ * stage, a different outcome -- which is exactly why status is a
+ * second axis rather than another entry in the stage list.
+ */
+static void pkg_fail_cancelled(struct pkg_entry *e, int keep_installed,
+                                enum pipeline_stage stage, const char *fmt, ...)
+{
+	va_list ap;
+
+	if (e == NULL)
+		return;
+	va_start(ap, fmt);
+	pkg_record_outcome(e, keep_installed, stage, PIPELINE_CANCELLED, fmt, ap);
+	va_end(ap);
+	rebuild_queue_remove(e->image);
+}
+
+static void pkg_fail(struct pkg_entry *e, int keep_installed, enum pipeline_stage stage,
                      const char *fmt, ...)
 {
 	va_list ap;
 
 	if (e == NULL)
 		return;
-	e->state = keep_installed ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
-	e->failure_kind = kind;
 	va_start(ap, fmt);
-	vsnprintf(e->error, sizeof(e->error), fmt, ap);
+	pkg_record_outcome(e, keep_installed, stage, PIPELINE_FAILED, fmt, ap);
 	va_end(ap);
 
 	/*
@@ -907,7 +924,7 @@ static void pkg_fail(struct pkg_entry *e, int keep_installed, enum pkg_failure_k
 	 * satisfiable for it.
 	 *
 	 * Nothing is lost by dropping it: the failure is durably recorded
-	 * on this entry (state, failure_kind, error), which is the useful
+	 * on this entry (state, stage, status, error), which is the useful
 	 * record, and a later publish re-queues the image naturally. The
 	 * queue is deliberately not persisted for the same reason -- the
 	 * intent is always re-derivable.
@@ -3081,13 +3098,22 @@ static void write_pkg_json(const struct pkg_entry *e, struct json_writer *w)
 		jw_str(w, e->error);
 	else
 		jw_null(w);
-	/* Issue #101: what kind of failure `error` describes, so a caller
-	 * deciding whether to retry does not have to read prose. Null when
-	 * there is nothing wrong, rather than the string "none" -- absence
-	 * of a failure is not a kind of failure. */
-	jw_key(w, "failure_kind");
-	if (e->failure_kind != PKG_FAILURE_NONE)
-		jw_str(w, pkg_failure_kind_name(e->failure_kind));
+	/*
+	 * ADR-0256: WHERE this package stands in the pipeline and WHAT
+	 * happened there, so a caller deciding whether to retry does not
+	 * have to read prose. Both null when there is nothing wrong, rather
+	 * than "none"/"ok" -- absence of a failure is not a position in the
+	 * pipeline, and a stage name here would invite a reader to believe
+	 * the package is sitting at it.
+	 */
+	jw_key(w, "stage");
+	if (e->status != PIPELINE_OK)
+		jw_str(w, pipeline_stage_name(e->stage));
+	else
+		jw_null(w);
+	jw_key(w, "status");
+	if (e->status != PIPELINE_OK)
+		jw_str(w, pipeline_status_name(e->status));
 	else
 		jw_null(w);
 	/* Issue #58: the first-class hang-vs-slow signal -- null unless a
@@ -3252,12 +3278,12 @@ static int load_state(void)
 			const char *phase =
 			    g_packages[count].state == PKG_STATE_FETCHING ? "fetch" : "build";
 
-			/* Issue #101: the phase it died in IS the kind -- a job
-			 * killed mid-fetch is a fetch failure to anyone deciding
+			/* Issue #101: the phase it died in IS the stage -- a job
+			 * killed mid-fetch stands at `fetch` to anyone deciding
 			 * what to do about it, and the same for a build. */
 			pkg_fail(&g_packages[count], 0,
-			         g_packages[count].state == PKG_STATE_FETCHING ? PKG_FAILURE_FETCH
-			                                                        : PKG_FAILURE_BUILD,
+			         g_packages[count].state == PKG_STATE_FETCHING ? PIPELINE_FETCH
+			                                                        : PIPELINE_BUILD,
 			         "interrupted by a daemon restart mid-%s", phase);
 		}
 		count++;
@@ -5297,9 +5323,9 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 	}
 	e->state = PKG_STATE_FETCHING;
 	e->error[0] = '\0';
-	e->failure_kind = PKG_FAILURE_NONE; /* the previous attempt's kind is not this
-	                                     * attempt's story; cleared alongside error[]
-	                                     * rather than left to outlive it */
+	e->status = PIPELINE_OK; /* the previous attempt's outcome is not this
+	                          * attempt's story; cleared alongside error[]
+	                          * rather than left to outlive it */
 	e->kept_build_container[0] = '\0'; /* ADR-0175: a fresh attempt starting means any
 	                                     * previously-preserved failed build container's
 	                                     * name is no longer this entry's current story --
@@ -5309,14 +5335,14 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 	e->cache_hit = cache_hit;
 
 	if (persist_mkdir_p(g_sources_dir) != 0) {
-		pkg_fail(e, is_upgrade, PKG_FAILURE_FETCH, "could not create sources directory");
+		pkg_fail(e, is_upgrade, PIPELINE_FETCH, "could not create sources directory");
 		return PKG_ERR_PERSIST_FAILED;
 	}
 
 	pid = fork();
 	if (pid < 0) {
 		perror("fork");
-		pkg_fail(e, is_upgrade, PKG_FAILURE_FETCH, "fork failed");
+		pkg_fail(e, is_upgrade, PIPELINE_FETCH, "fork failed");
 		return PKG_ERR_SPAWN_FAILED;
 	}
 	if (pid == 0) {
@@ -5606,7 +5632,7 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 		perror("pidfd_open");
 		kill(pid, SIGKILL);
 		waitpid(pid, NULL, 0);
-		pkg_fail(e, is_upgrade, PKG_FAILURE_FETCH, "could not track fetch subprocess");
+		pkg_fail(e, is_upgrade, PIPELINE_FETCH, "could not track fetch subprocess");
 		return PKG_ERR_SPAWN_FAILED;
 	}
 
@@ -6064,7 +6090,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 		envr = buildenv_image_for(recipe.build_depends, env_image, sizeof(env_image), env_err,
 		                          sizeof(env_err), out_compose_pid, out_compose_pidfd);
 		if (envr < 0) {
-			pkg_fail(e, is_final_upgrade, PKG_FAILURE_BUILD, "%s", env_err);
+			pkg_fail(e, is_final_upgrade, PIPELINE_BUILD, "%s", env_err);
 			logstore_write("cixd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
 			g_chains[chain_idx].name[0] = '\0';
 			g_chains[chain_idx].dep_queue_count = 0;
@@ -6116,7 +6142,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 		 * something fuller than it asked for -- which is precisely how
 		 * a declaration becomes decorative.
 		 */
-		pkg_fail(e, is_final_upgrade, PKG_FAILURE_BUILD,
+		pkg_fail(e, is_final_upgrade, PIPELINE_BUILD,
 		         "recipe declares no pkg_build_depends -- every build environment is composed "
 		         "from a recipe's declared tools and nothing else (issue #168); add them to "
 		         "%s's recipe",
@@ -6174,6 +6200,15 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 		{
 			const char *prep_step = NULL;
 			int prep_errno = 0;
+			/*
+			 * ADR-0256: unpacking the source is its OWN stage, not
+			 * part of the build. An archive that downloaded intact
+			 * and cannot be opened used to report as a build failure,
+			 * which sends a reader to a compile log for something
+			 * that happened before any compiler ran. Every other step
+			 * here really is build-container setup.
+			 */
+			enum pipeline_stage prep_stage = PIPELINE_BUILD;
 
 			if (reset_build_container_dir(container_base) != 0) {
 				prep_step = "reset build container dir";
@@ -6194,6 +6229,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 				 * for this case too. */
 				if (pkg_cache_extract(e->name, recipe.version, dest_dir) != 0) {
 					prep_step = "extract cached artifact";
+					prep_stage = PIPELINE_UNPACK;
 				} else {
 					/* Issue #139: a checksum proves an artifact is
 					 * intact, never that it is usable. */
@@ -6214,6 +6250,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 				prep_errno = errno;
 			} else if (stage_main_source(main_src_path, src_dir, recipe.source[0]) != 0) {
 				prep_step = "stage source";
+				prep_stage = PIPELINE_UNPACK;
 			}
 
 			if (prep_step != NULL) {
@@ -6226,8 +6263,12 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 					logstore_write("cixd", "error",
 					                "pkg %s@%s: could not prepare build container (%s) -- see run_subprocess detail above",
 					                e->name, g_chains[chain_idx].image, prep_step);
-				pkg_fail(e, is_final_upgrade, PKG_FAILURE_BUILD,
-				         "could not prepare the build container (%s failed)", prep_step);
+				if (prep_stage == PIPELINE_UNPACK)
+					pkg_fail(e, is_final_upgrade, prep_stage, "%s (%s failed)",
+					         pipeline_stage_verb(prep_stage), prep_step);
+				else
+					pkg_fail(e, is_final_upgrade, prep_stage,
+					         "could not prepare the build container (%s failed)", prep_step);
 				g_chains[chain_idx].name[0] = '\0';
 				g_chains[chain_idx].dep_queue_count = 0;
 				return 0;
@@ -6246,7 +6287,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 			logstore_write("cixd", "error",
 			                "pkg %s@%s: could not prepare build container (create extra dir): %s",
 			                e->name, g_chains[chain_idx].image, strerror(errno));
-			pkg_fail(e, is_final_upgrade, PKG_FAILURE_BUILD,
+			pkg_fail(e, is_final_upgrade, PIPELINE_BUILD,
 			         "could not prepare the build container (create extra dir failed)");
 			g_chains[chain_idx].name[0] = '\0';
 			g_chains[chain_idx].dep_queue_count = 0;
@@ -6263,7 +6304,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 				logstore_write("cixd", "error",
 				                "pkg %s@%s: could not prepare build container (copy extra source %d): %s",
 				                e->name, g_chains[chain_idx].image, i, strerror(errno));
-				pkg_fail(e, is_final_upgrade, PKG_FAILURE_BUILD,
+				pkg_fail(e, is_final_upgrade, PIPELINE_BUILD,
 				         "could not prepare the build container (copy extra source %d failed)", i);
 				g_chains[chain_idx].name[0] = '\0';
 				g_chains[chain_idx].dep_queue_count = 0;
@@ -6430,7 +6471,7 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 		 */
 		if (e->cancel_requested) {
 			e->cancel_requested = 0;
-			pkg_fail(e, is_final_upgrade, PKG_FAILURE_CANCELLED,
+			pkg_fail_cancelled(e, is_final_upgrade, PIPELINE_BUILD,
 			         "fetch cancelled by operator");
 			logstore_write("cixd", "info", "pkg %s@%s: fetch cancelled by operator", e->name,
 			               e->image);
@@ -6442,12 +6483,12 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 		if (exit_status == PKG_FETCH_EXIT_PRECONDITION && detail_len > 0)
 			/* Never reached curl -- a precondition failed, and the
 			 * sidecar says which. */
-			pkg_fail(e, is_final_upgrade, PKG_FAILURE_FETCH, "%s", detail);
+			pkg_fail(e, is_final_upgrade, PIPELINE_FETCH, "%s", detail);
 		else if (detail_len > 0)
-			pkg_fail(e, is_final_upgrade, PKG_FAILURE_FETCH,
+			pkg_fail(e, is_final_upgrade, PIPELINE_FETCH,
 			         "fetch failed (curl exit status %d): %s", exit_status, detail);
 		else
-			pkg_fail(e, is_final_upgrade, PKG_FAILURE_FETCH, "fetch failed (curl exit status %d)",
+			pkg_fail(e, is_final_upgrade, PIPELINE_FETCH, "fetch failed (curl exit status %d)",
 			         exit_status);
 		logstore_write("cixd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
 		g_chains[chain_idx].name[0] = '\0';
@@ -6458,7 +6499,7 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 	if (find_recipe_path(e->name, current_fetch_effective_version(chain_idx), recipe_path,
 	                      sizeof(recipe_path)) != 0 ||
 	    parse_recipe(recipe_path, &recipe) != 0) {
-		pkg_fail(e, is_final_upgrade, PKG_FAILURE_RECIPE, "recipe became unreadable mid-install");
+		pkg_fail(e, is_final_upgrade, PIPELINE_AUTHOR, "recipe became unreadable mid-install");
 		g_chains[chain_idx].name[0] = '\0';
 		g_chains[chain_idx].dep_queue_count = 0;
 		return 0;
@@ -6505,7 +6546,7 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 			         recipe.version, i);
 			if (pkg_run_capture_sha256(src_path, sha_out, sizeof(sha_out)) != 0 ||
 			    strcasecmp(sha_out, recipe.sha256[i]) != 0) {
-				pkg_fail(e, is_final_upgrade, PKG_FAILURE_FETCH, "checksum mismatch (source %d)",
+				pkg_fail(e, is_final_upgrade, PIPELINE_FETCH, "checksum mismatch (source %d)",
 				         i);
 				g_chains[chain_idx].name[0] = '\0';
 				g_chains[chain_idx].dep_queue_count = 0;
@@ -6532,7 +6573,7 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 	 */
 	if (e->cancel_requested) {
 		e->cancel_requested = 0;
-		pkg_fail(e, is_final_upgrade, PKG_FAILURE_CANCELLED,
+		pkg_fail_cancelled(e, is_final_upgrade, PIPELINE_BUILD,
 		         "build cancelled by operator before it started");
 		logstore_write("cixd", "info",
 		               "pkg %s@%s: cancelled before its build container was spawned",
@@ -6613,7 +6654,7 @@ int pkg_buildenv_completed(int chain_idx, int exit_status, struct container_spec
 		if (g_chains[chain_idx].buildenv_image[0] != '\0')
 			buildenv_compose_failed_cleanup(g_chains[chain_idx].buildenv_image);
 		g_chains[chain_idx].buildenv_image[0] = '\0';
-		pkg_fail(e, is_final_upgrade, PKG_FAILURE_BUILD,
+		pkg_fail(e, is_final_upgrade, PIPELINE_BUILD,
 		         "could not compose a build environment from the declared tools");
 		logstore_write("cixd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
 		g_chains[chain_idx].name[0] = '\0';
@@ -6624,7 +6665,7 @@ int pkg_buildenv_completed(int chain_idx, int exit_status, struct container_spec
 	if (find_recipe_path(e->name, current_fetch_effective_version(chain_idx), recipe_path,
 	                      sizeof(recipe_path)) != 0 ||
 	    parse_recipe(recipe_path, &recipe) != 0) {
-		pkg_fail(e, is_final_upgrade, PKG_FAILURE_BUILD,
+		pkg_fail(e, is_final_upgrade, PIPELINE_BUILD,
 		         "the recipe became unreadable while its build environment was composed");
 		logstore_write("cixd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
 		g_chains[chain_idx].name[0] = '\0';
@@ -6798,7 +6839,7 @@ void pkg_build_spawn_failed(int chain_idx)
 	if (e != NULL) {
 		int is_final_upgrade = g_chains[chain_idx].dep_queue_is_upgrade && (g_chains[chain_idx].dep_queue_pos + 1 >= g_chains[chain_idx].dep_queue_count);
 
-		pkg_fail(e, is_final_upgrade, PKG_FAILURE_BUILD, "could not start the build container");
+		pkg_fail(e, is_final_upgrade, PIPELINE_BUILD, "could not start the build container");
 	}
 	g_chains[chain_idx].name[0] = '\0';
 	g_chains[chain_idx].dep_queue_count = 0;
@@ -7630,7 +7671,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		 * there and still working.
 		 */
 		e->cancel_requested = 0;
-		pkg_fail(e, is_upgrade, PKG_FAILURE_CANCELLED,
+		pkg_fail_cancelled(e, is_upgrade, PIPELINE_BUILD,
 		         "build cancelled by operator");
 		logstore_write("cixd", "info", "pkg %s@%s: build cancelled by operator",
 		               e->name, e->image);
@@ -7721,13 +7762,13 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 
 			logstore_write("cixd", "error", "pkg %s@%s: build container setup failed (%s)",
 			                e->name, g_chains[chain_idx].image, step);
-			pkg_fail(e, is_upgrade, PKG_FAILURE_BUILD, "build container setup failed (%s)", step);
+			pkg_fail(e, is_upgrade, PIPELINE_BUILD, "build container setup failed (%s)", step);
 		} else if (exit_status >= 130 && exit_status <= 136) {
 			const char *step = overlay_step_names[exit_status - 130];
 
 			logstore_write("cixd", "error", "pkg %s@%s: build container setup failed (%s)",
 			                e->name, g_chains[chain_idx].image, step);
-			pkg_fail(e, is_upgrade, PKG_FAILURE_BUILD, "build container setup failed (%s)", step);
+			pkg_fail(e, is_upgrade, PIPELINE_BUILD, "build container setup failed (%s)", step);
 		} else if (exit_status >= 141 && exit_status <= 255 &&
 		           e->build_output_captured_len == 0) {
 			/*
@@ -7753,7 +7794,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 			logstore_write("cixd", "error",
 			                "pkg %s@%s: build container setup/exec failed: %s", e->name,
 			                g_chains[chain_idx].image, strerror(real_errno));
-			pkg_fail(e, is_upgrade, PKG_FAILURE_BUILD, "build container setup/exec failed: %s",
+			pkg_fail(e, is_upgrade, PIPELINE_BUILD, "build container setup/exec failed: %s",
 			         strerror(real_errno));
 		} else if (exit_status >= 128 && exit_status <= 128 + 64) {
 			/*
@@ -7780,10 +7821,10 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 			const char *name = container_signal_name(sig);
 
 			if (name != NULL)
-				pkg_fail(e, is_upgrade, PKG_FAILURE_BUILD,
+				pkg_fail(e, is_upgrade, PIPELINE_BUILD,
 				         "build killed by signal %d (%s)", sig, name);
 			else
-				pkg_fail(e, is_upgrade, PKG_FAILURE_BUILD, "build killed by signal %d", sig);
+				pkg_fail(e, is_upgrade, PIPELINE_BUILD, "build killed by signal %d", sig);
 			logstore_write("cixd", "error", "pkg %s@%s: build killed by signal %d%s%s%s",
 			                e->name, g_chains[chain_idx].image, sig, name != NULL ? " (" : "",
 			                name != NULL ? name : "", name != NULL ? ")" : "");
@@ -7809,10 +7850,10 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 			                "found\" from inside the recipe's own build script -- check the "
 			                "build output logged separately)",
 			                e->name, g_chains[chain_idx].image);
-			pkg_fail(e, is_upgrade, PKG_FAILURE_BUILD,
+			pkg_fail(e, is_upgrade, PIPELINE_BUILD,
 			         "build failed (exit 127 -- see build output in logs)");
 		} else {
-			pkg_fail(e, is_upgrade, PKG_FAILURE_BUILD, "build failed (exit status %d)",
+			pkg_fail(e, is_upgrade, PIPELINE_BUILD, "build failed (exit status %d)",
 			         exit_status);
 		}
 		if (captured_len > 0)
@@ -7887,7 +7928,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		                e->name, g_chains[chain_idx].image, e->missing_tool,
 		                e->missing_tool_count > 1 ? " and others" : "",
 		                e->missing_tool_count);
-		pkg_fail(e, is_upgrade, PKG_FAILURE_BUILD,
+		pkg_fail(e, is_upgrade, PIPELINE_BUILD,
 		         "build environment is missing '%s' (%d missing command(s) reported) -- "
 		         "declare it in pkg_build_depends",
 		         e->missing_tool, e->missing_tool_count);
@@ -7930,9 +7971,9 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 	 */
 	e->state = PKG_STATE_INSTALLED;
 	e->error[0] = '\0';
-	e->failure_kind = PKG_FAILURE_NONE; /* a success that leaves failure_kind set
-	                                     * reports an installed package as failed to
-	                                     * anything keying on it */
+	e->status = PIPELINE_OK; /* a success that leaves a failed status set
+	                          * reports an installed package as failed to
+	                          * anything keying on it */
 
 	if (g_chains[chain_idx].is_hostbuild) {
 		/* A hostbuild's output is a standalone host artifact (a
@@ -7978,7 +8019,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		 */
 		if (persist_fresh_output_dir(artifact_dir) != 0 ||
 		    merge_tree(dest_dir, artifact_dir, "", e) != 0) {
-			pkg_fail(e, 0, PKG_FAILURE_INSTALL, "failed to harvest the built artifact");
+			pkg_fail(e, 0, PIPELINE_INSTALL, "failed to harvest the built artifact");
 			g_chains[chain_idx].name[0] = '\0';
 			g_chains[chain_idx].dep_queue_count = 0;
 			g_chains[chain_idx].is_hostbuild = 0;
@@ -8020,7 +8061,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 			         "image \"%s\" could not produce a new version%s%s",
 			         g_chains[chain_idx].image, why != NULL ? ": " : "",
 			         why != NULL ? why : "");
-			pkg_fail(e, 0, PKG_FAILURE_INSTALL, msg);
+			pkg_fail(e, 0, PIPELINE_INSTALL, msg);
 			g_chains[chain_idx].name[0] = '\0';
 			g_chains[chain_idx].dep_queue_count = 0;
 			return 0;
@@ -8053,7 +8094,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 				         g_chains[chain_idx].image, missing, e->file_count, first_missing);
 				logstore_write("cixd", "error", "pkg %s@%s: %s", e->name,
 				                g_chains[chain_idx].image, msg);
-				pkg_fail(e, 0, PKG_FAILURE_INSTALL, "%s", msg);
+				pkg_fail(e, 0, PIPELINE_INSTALL, "%s", msg);
 				g_chains[chain_idx].name[0] = '\0';
 				g_chains[chain_idx].dep_queue_count = 0;
 				return 0;
@@ -11592,6 +11633,46 @@ int pkg_recipe_list_names(char names[][PKG_IMAGE_NAME_MAX], int max)
 	}
 	closedir(d);
 	return count;
+}
+
+int pkg_positions(const char *name, struct pkg_position *out, int max)
+{
+	int i, n = 0;
+
+	if (name == NULL || out == NULL)
+		return 0;
+	for (i = 0; i < PKG_MAX_PACKAGES && n < max; i++) {
+		const struct pkg_entry *e = &g_packages[i];
+
+		if (!e->in_use || strcmp(e->name, name) != 0)
+			continue;
+		memset(&out[n], 0, sizeof(out[n]));
+		snprintf(out[n].image, sizeof(out[n].image), "%s", e->image);
+		snprintf(out[n].version, sizeof(out[n].version), "%s", e->version);
+		snprintf(out[n].error, sizeof(out[n].error), "%s", e->error);
+		out[n].state = e->state;
+		out[n].stage = e->stage;
+		out[n].status = e->status;
+		/*
+		 * An in-flight job has no recorded outcome yet, and reporting
+		 * it as PIPELINE_OK would say the opposite of what is true. It
+		 * stands AT the stage it is currently doing, blocked in the
+		 * sense that nothing downstream can proceed until it finishes.
+		 */
+		if (e->status == PIPELINE_OK) {
+			if (e->state == PKG_STATE_FETCHING) {
+				out[n].stage = PIPELINE_FETCH;
+				out[n].status = PIPELINE_BLOCKED;
+			} else if (e->state == PKG_STATE_BUILDING) {
+				out[n].stage = PIPELINE_BUILD;
+				out[n].status = PIPELINE_BLOCKED;
+			} else {
+				out[n].stage = PIPELINE_INSTALL;
+			}
+		}
+		n++;
+	}
+	return n;
 }
 
 int pkg_recipe_list_versions(const char *name, char versions[][PKG_VERSION_MAX], int max)
