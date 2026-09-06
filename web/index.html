@@ -126,7 +126,7 @@
 			<button type="button" class="menu-dropdown-toggle" data-menu="system">System</button>
 			<ul class="menu-dropdown-menu" data-menu="system" hidden>
 				<li class="menu-submenu">
-					<button type="button" class="menu-submenu-toggle" aria-haspopup="true" aria-expanded="false">Software</button>
+					<button type="button" class="menu-submenu-toggle" aria-haspopup="true" aria-expanded="false">Pipeline</button>
 					<ul class="menu-submenu-menu" hidden>
 						<li><button type="button" data-modal="image-form" data-title="Create image">New Image</button></li>
 						<li><button type="button" data-modal="pkg-install-form" data-title="Install a package">Install Package</button></li>
@@ -339,7 +339,7 @@
 		<section class="view" id="view-networks" hidden>
 			<h2>Networks</h2>
 			<div class="tab-bar">
-				<button type="button" class="tab-button active" data-tab="networks">Networks</button>
+				<button type="button" class="tab-button active" data-tab="networks">Overview</button>
 				<button type="button" class="tab-button" data-tab="routes">Routes</button>
 				<button type="button" class="tab-button" data-tab="dhcp-servers">Servers</button>
 				<button type="button" class="tab-button" data-tab="dhcp-ranges">Ranges</button>
@@ -645,10 +645,11 @@
 		<section class="view" id="view-devices" hidden>
 			<h2>Devices</h2>
 			<div class="tab-bar">
-				<button type="button" class="tab-button active" data-tab="devices">Discovery</button>
+				<button type="button" class="tab-button active" data-tab="devicemaps">Named Mappings</button>
+				<button type="button" class="tab-button" data-tab="devices">Discovery</button>
 				<button type="button" class="tab-button" data-tab="kmod">Kernel Modules</button>
 			</div>
-			<div class="tab-panel" data-tab="devices">
+<div class="tab-panel" data-tab="devicemaps">
 			
 			<p class="hint">Discovered live from host sysfs every poll -- nothing about a raw device is
 				persisted. A device is only ever granted to a container at creation time (see the
@@ -673,8 +674,8 @@
 					<tr><td colspan="6" class="empty">Loading&hellip;</td></tr>
 				</tbody>
 			</table>
-
-			<h3>Discovered hardware</h3>
+			</div>
+<div class="tab-panel" data-tab="devices" hidden><h3>Discovered hardware</h3>
 			<div class="tab-bar">
 				<button type="button" class="tab-button active" data-tab="usb" id="dev-tab-usb">USB</button>
 				<button type="button" class="tab-button" data-tab="pci" id="dev-tab-pci">PCI</button>
@@ -778,11 +779,11 @@
 			<h2>Storage</h2>
 			<div class="tab-bar">
 				<button type="button" class="tab-button active" data-tab="storage">Storage</button>
-				<button type="button" class="tab-button" data-tab="volumes">Volumes</button>
 				<button type="button" class="tab-button" data-tab="storage-placement">Placement</button>
 				<button type="button" class="tab-button" data-tab="host-swap">Swap</button>
 				<button type="button" class="tab-button" data-tab="backup">System Backup</button>
 				<button type="button" class="tab-button" data-tab="volume-backup-config">Volume Backups</button>
+				<button type="button" class="tab-button" data-tab="volumes">Volumes</button>
 			</div>
 <div class="tab-panel" data-tab="storage">
 			<div class="view-list">
@@ -809,18 +810,6 @@
 					<tbody id="disks-body">
 						<tr><td colspan="9" class="empty">Loading&hellip;</td></tr>
 					</tbody>
-				</table>
-			</div>
-			</div>
-<div class="tab-panel" data-tab="volumes" hidden>
-			<div class="view-list">
-				
-				<p class="hint">Persistent storage whose lifetime is <strong>independent of any container</strong>. Everything else a container writes lives in its overlay upper layer, which is destroyed when the container is deleted &mdash; and a container gets recreated by any recipe change, package install or rolling image update. Mount a volume into a container (<code>volumes: [{"name": "home", "path": "/home"}]</code>) and that path survives. Deleting a container never touches its volumes; deleting a <em>volume</em> destroys its data and is refused while any container definition still references it.</p>
-				<table>
-					<thead>
-						<tr><th>Name</th><th>Mounted by</th><th>Disk</th><th>Host path</th><th>Created</th><th></th></tr>
-					</thead>
-					<tbody id="volumes-body"></tbody>
 				</table>
 			</div>
 			</div>
@@ -970,6 +959,18 @@
 				</form>
 			</div>
 		</div>
+<div class="tab-panel" data-tab="volumes" hidden>
+			<div class="view-list">
+				
+				<p class="hint">Persistent storage whose lifetime is <strong>independent of any container</strong>. Everything else a container writes lives in its overlay upper layer, which is destroyed when the container is deleted &mdash; and a container gets recreated by any recipe change, package install or rolling image update. Mount a volume into a container (<code>volumes: [{"name": "home", "path": "/home"}]</code>) and that path survives. Deleting a container never touches its volumes; deleting a <em>volume</em> destroys its data and is refused while any container definition still references it.</p>
+				<table>
+					<thead>
+						<tr><th>Name</th><th>Mounted by</th><th>Disk</th><th>Host path</th><th>Created</th><th></th></tr>
+					</thead>
+					<tbody id="volumes-body"></tbody>
+				</table>
+			</div>
+			</div>
 		</section>
 
 		<!--
@@ -1056,11 +1057,11 @@
 				<button type="button" class="tab-button active" data-tab="daemon-config">Daemon</button>
 				<button type="button" class="tab-button" data-tab="site">Site</button>
 				<button type="button" class="tab-button" data-tab="hostauth-sessions">Sessions</button>
-				<button type="button" class="tab-button" data-tab="running-config">Running Config</button>
 				<button type="button" class="tab-button" data-tab="factory-reset">Factory Reset</button>
-							<button type="button" class="tab-button" data-tab="host-stats">Host Stats</button>
-							<button type="button" class="tab-button" data-tab="processes">Processes</button>
-							<button type="button" class="tab-button" data-tab="logs">Log Store</button>
+				<button type="button" class="tab-button" data-tab="running-config">Running Config</button>
+				<button type="button" class="tab-button" data-tab="host-stats">Host Stats</button>
+				<button type="button" class="tab-button" data-tab="processes">Processes</button>
+				<button type="button" class="tab-button" data-tab="logs">Log Store</button>
 			</div>
 <div class="tab-panel" data-tab="daemon-config">
 			<p class="hint">
@@ -1148,21 +1149,6 @@
 				</table>
 			</div>
 		</div>
-<div class="tab-panel" data-tab="running-config" hidden>
-			
-			<p class="view-intro">
-				Everything this host is configured to do, in one ordered document
-				(ADR-0206). Rendered live from the daemon on every load -- it is a
-				view, never a stored file, so it cannot drift from what the box is
-				actually doing. Secrets are never shown: tokens and passwords appear
-				as a set/not-set flag, and PKI private keys never appear at all.
-			</p>
-			<div class="toolbar">
-				<button type="button" id="running-config-refresh">Refresh</button>
-				<button type="button" id="running-config-copy">Copy</button>
-			</div>
-			<pre id="running-config-text" class="logs-pre">Loading…</pre>
-			</div>
 <div class="tab-panel" data-tab="factory-reset" hidden>
 				<div class="view-list">
 					<p class="hint">Returns this box to its <strong>just-installed</strong> state and reboots.
@@ -1181,6 +1167,21 @@
 						<button type="submit" class="danger">Factory reset and reboot</button>
 					</form>
 				</div>
+			</div>
+<div class="tab-panel" data-tab="running-config" hidden>
+			
+			<p class="view-intro">
+				Everything this host is configured to do, in one ordered document
+				(ADR-0206). Rendered live from the daemon on every load -- it is a
+				view, never a stored file, so it cannot drift from what the box is
+				actually doing. Secrets are never shown: tokens and passwords appear
+				as a set/not-set flag, and PKI private keys never appear at all.
+			</p>
+			<div class="toolbar">
+				<button type="button" id="running-config-refresh">Refresh</button>
+				<button type="button" id="running-config-copy">Copy</button>
+			</div>
+			<pre id="running-config-text" class="logs-pre">Loading…</pre>
 			</div>
 <div class="tab-panel" data-tab="host-stats" hidden>
 			<div class="stats-grid">
@@ -1269,9 +1270,9 @@
 			<div class="tab-bar">
 				<button type="button" class="tab-button active" data-tab="tls-throttle">TLS Throttle</button>
 				<button type="button" class="tab-button" data-tab="control-plane-reservation">CPU &amp; Memory</button>
-							<button type="button" class="tab-button" data-tab="stalls">Stalls</button>
+				<button type="button" class="tab-button" data-tab="stalls">Stalls</button>
 			</div>
-<div class="tab-panel" data-tab="tls-throttle" hidden>
+<div class="tab-panel" data-tab="tls-throttle">
 			<div class="view-list">
 				<p class="hint">Per-source-IP throttling for repeated failed HTTPS handshakes (ADR-0134) -- a source that fails enough handshakes within the window is refused outright, on both listeners, until the block expires. Loopback (127.0.0.1) is never throttled, so this daemon's own local admin access can't be locked out by a hostile source sharing the box.</p>
 				<h3>Config</h3>
