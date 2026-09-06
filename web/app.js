@@ -1427,7 +1427,7 @@ const CATEGORY_VIEWS = {
 	recipes: "view-pipeline",
 	pipeline: "view-pipeline",
 	"site": "view-host",
-	"daemon-config": "view-host",
+	"daemon-config": "view-control-plane",
 	"host-swap": "view-storage",
 	"rolling-restart": "view-pipeline",
 	"pkg-build-config": "view-pipeline",
@@ -1514,7 +1514,7 @@ function selectServiceTab(viewId, tabName) {
 }
 
 const SERVICE_TAB_VIEWS = {
-	"daemon-config": "view-host",
+	"daemon-config": "view-control-plane",
 	site: "view-host",
 	"hostauth-sessions": "view-host",
 	"host-swap": "view-storage",
@@ -2247,7 +2247,7 @@ function renderTree() {
 			 */
 			label: "Host",
 			group: true,
-			hash: "daemon-config",
+			hash: "site",
 			icon: "system",
 			children: [
 				{ label: "Control Plane", hash: "tls-throttle", icon: "system" },
@@ -3500,6 +3500,15 @@ for (const tabButton of document.querySelectorAll(".tab-bar .tab-button")) {
 		 * text -- on the same event loop this project has twice had to
 		 * rescue from polled endpoints.
 		 */
+		/* Fetch for the page this tab belongs to right away -- waiting
+		 * for the next poll is what makes a freshly-clicked tab read
+		 * as "Loading" for a couple of seconds. */
+		{
+			const owner = tabBar.closest(".view");
+
+			if (owner !== null)
+				runRefreshers(refreshersForView(owner.id));
+		}
 		if (tabName === "config" && currentContainerDetailName !== null)
 			loadContainerRecipe(currentContainerDetailName);
 		if (tabButton.id === "cd-tab-summary" && currentContainerDetailName !== null)
@@ -12469,6 +12478,43 @@ async function runRefreshers(list) {
 	}
 }
 
+/*
+ * Every refresher belonging to a PAGE, not just to the route that was
+ * clicked.
+ *
+ * VIEW_REFRESHERS is keyed by route hash, which was right when one hash
+ * meant one page. Now a page carries up to a dozen tabs, and clicking a
+ * TAB does not change the route -- so its own refresher never ran and
+ * the panel sat on "Loading" forever. Sysctl, Named Mappings, Discovery
+ * and Kernel Modules all did exactly this.
+ *
+ * Derived from CATEGORY_VIEWS rather than declared separately, so a tab
+ * added to a page is covered the moment its route is, and the two
+ * cannot fall out of step the way the tree and the tab bars did.
+ */
+const VIEW_REFRESHERS_BY_VIEW = (() => {
+	const byView = {};
+
+	for (const hash of Object.keys(CATEGORY_VIEWS)) {
+		const view = CATEGORY_VIEWS[hash];
+		const fns = VIEW_REFRESHERS[hash];
+
+		if (fns === undefined)
+			continue;
+		if (byView[view] === undefined)
+			byView[view] = [];
+		for (const fn of fns) {
+			if (!byView[view].includes(fn))
+				byView[view].push(fn);
+		}
+	}
+	return byView;
+})();
+
+function refreshersForView(view) {
+	return (view !== undefined && VIEW_REFRESHERS_BY_VIEW[view]) || [];
+}
+
 async function poll() {
 	await refreshHealth();
 	/* Health only while hidden: the LEDs and the reachability colour
@@ -12497,7 +12543,7 @@ async function poll() {
 		await runRefreshers(ALL_REFRESHERS);
 	} else {
 		await runRefreshers(CORE_REFRESHERS);
-		await runRefreshers(VIEW_REFRESHERS[route.category] || []);
+		await runRefreshers(refreshersForView(CATEGORY_VIEWS[route.category]));
 	}
 	try {
 		await pollServerLogs();

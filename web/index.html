@@ -1004,8 +1004,7 @@
 				<section class="view" id="view-host" hidden>
 			<h2>Host</h2>
 			<div class="tab-bar">
-				<button type="button" class="tab-button active" data-tab="daemon-config">Daemon</button>
-				<button type="button" class="tab-button" data-tab="site">Site</button>
+				<button type="button" class="tab-button active" data-tab="site">Name</button>
 				<button type="button" class="tab-button" data-tab="hostauth-sessions">Sessions</button>
 				<button type="button" class="tab-button" data-tab="factory-reset">Factory Reset</button>
 				<button type="button" class="tab-button" data-tab="running-config">Running Config</button>
@@ -1013,49 +1012,7 @@
 				<button type="button" class="tab-button" data-tab="processes">Processes</button>
 				<button type="button" class="tab-button" data-tab="logs">Log Store</button>
 			</div>
-<div class="tab-panel" data-tab="daemon-config">
-			<p class="hint">
-				cixd's own listen port, HTTP/HTTPS exposure, and which network
-				it's currently bound to (Part 0.5). Changes apply live -- no
-				restart -- and persist across a reboot. Repointing the
-				management network only works to a network that already has its
-				own address; double-check you can actually reach the new
-				address before saving, since a mistake here has no remote undo.
-			</p>
-			<form id="sys-daemon-config-form">
-				<label>
-					Port
-					<input type="number" id="dcf-port" min="1" max="65535" required>
-				</label>
-				<label>
-					HTTPS port
-					<input type="number" id="dcf-https-port" min="1" max="65535" required>
-				</label>
-				<label class="checkbox">
-					<input type="checkbox" id="dcf-http-enabled">
-					HTTP enabled
-				</label>
-				<label class="checkbox">
-					<input type="checkbox" id="dcf-https-enabled">
-					HTTPS enabled (needs a bootstrapped PKI root CA)
-				</label>
-				<label>
-					Management network
-					<select id="dcf-management-network"></select>
-				</label>
-				<label>
-					Bind IP (optional)
-					<input type="text" id="dcf-bind-ip" placeholder="(none -- use the management network's own address)">
-				</label>
-				<label class="checkbox">
-					<input type="checkbox" id="dcf-clear-bind-ip">
-					Clear bind IP (revert to the management network's own address)
-				</label>
-				<button type="submit">Save</button>
-			</form>
-			<p class="hint" id="dcf-bind-hint"></p>
-			<p class="hint">Bind IP (ADR-0068) is a second, dedicated address on the management network's own bridge -- cixd binds there instead of that network's own address. Leave blank to make no change; check "Clear bind IP" to revert to the network's own address.</p>
-		</div>
+
 <div class="tab-panel" data-tab="site" hidden>
 			<p class="hint">
 				A real, operator-set identity for this install, used to label it in the
@@ -1218,11 +1175,55 @@
 		<section class="view" id="view-control-plane" hidden>
 			<h2>Control Plane</h2>
 			<div class="tab-bar">
-				<button type="button" class="tab-button active" data-tab="tls-throttle">TLS Throttle</button>
+				<button type="button" class="tab-button active" data-tab="daemon-config">Daemon</button>
+				<button type="button" class="tab-button" data-tab="tls-throttle">TLS Throttle</button>
 				<button type="button" class="tab-button" data-tab="control-plane-reservation">CPU &amp; Memory</button>
 				<button type="button" class="tab-button" data-tab="stalls">Stalls</button>
 			</div>
-<div class="tab-panel" data-tab="tls-throttle">
+<div class="tab-panel" data-tab="daemon-config">
+			<p class="hint">
+				cixd's own listen port, HTTP/HTTPS exposure, and which network
+				it's currently bound to (Part 0.5). Changes apply live -- no
+				restart -- and persist across a reboot. Repointing the
+				management network only works to a network that already has its
+				own address; double-check you can actually reach the new
+				address before saving, since a mistake here has no remote undo.
+			</p>
+			<form id="sys-daemon-config-form">
+				<label>
+					Port
+					<input type="number" id="dcf-port" min="1" max="65535" required>
+				</label>
+				<label>
+					HTTPS port
+					<input type="number" id="dcf-https-port" min="1" max="65535" required>
+				</label>
+				<label class="checkbox">
+					<input type="checkbox" id="dcf-http-enabled">
+					HTTP enabled
+				</label>
+				<label class="checkbox">
+					<input type="checkbox" id="dcf-https-enabled">
+					HTTPS enabled (needs a bootstrapped PKI root CA)
+				</label>
+				<label>
+					Management network
+					<select id="dcf-management-network"></select>
+				</label>
+				<label>
+					Bind IP (optional)
+					<input type="text" id="dcf-bind-ip" placeholder="(none -- use the management network's own address)">
+				</label>
+				<label class="checkbox">
+					<input type="checkbox" id="dcf-clear-bind-ip">
+					Clear bind IP (revert to the management network's own address)
+				</label>
+				<button type="submit">Save</button>
+			</form>
+			<p class="hint" id="dcf-bind-hint"></p>
+			<p class="hint">Bind IP (ADR-0068) is a second, dedicated address on the management network's own bridge -- cixd binds there instead of that network's own address. Leave blank to make no change; check "Clear bind IP" to revert to the network's own address.</p>
+		</div>
+<div class="tab-panel" data-tab="tls-throttle" hidden>
 			<div class="view-list">
 				<p class="hint">Per-source-IP throttling for repeated failed HTTPS handshakes (ADR-0134) -- a source that fails enough handshakes within the window is refused outright, on both listeners, until the block expires. Loopback (127.0.0.1) is never throttled, so this daemon's own local admin access can't be locked out by a hostile source sharing the box.</p>
 				<h3>Config</h3>
