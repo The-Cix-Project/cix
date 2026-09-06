@@ -2,6 +2,32 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### ADR-0255 part 4: the REST surface, and the recipe field behind it
+
+Five endpoints, contract-first as ADR-0218 requires — `docs/api/openapi.yaml` edited before any handler, routes generated from it, and `docs/api/README.md` updated in the **same change** rather than after, which is the rule written when it drifted ten phases stale.
+
+```
+GET    /v1/pkg/upstreams              the kinds a recipe may declare, and their channels
+GET    /v1/pkg/source-policy          the default plus every per-package override
+PUT    /v1/pkg/source-policy          set the platform default
+PUT    /v1/pkg/{name}/source-policy   override it for one package
+DELETE /v1/pkg/{name}/source-policy   back to the default
+```
+
+`pkg_upstream=` is now parsed into `struct pkg_recipe`, and `pkg_recipe_upstream()` exposes it. **The kind always comes from the recipe, never from the request** — letting a caller name it would put the same fact in two places and let them disagree.
+
+`GET /pkg/upstreams` exists so a caller can show real choices instead of inviting free text. A kind with one linear release sequence reports `channels: null`, deliberately not `[]`: "there is nothing to choose here" and "nothing has been chosen yet" are different facts, and a picker needs to tell them apart.
+
+**Two gates failed on the first attempt and both were right**, which is the useful part of this entry:
+
+`test_apigen` refused a route count of 281 against its expected 276 — *"if the spec genuinely changed, update this number deliberately; a silently different count is how a lost route hides"*. Updated deliberately.
+
+`test_api_surfaces` refused `x-cix-expose: [cli, web]` on operations with no CLI and no dashboard behind them: *"declared x-cix-expose [web] but the dashboard never calls it"*. That is the API-First mandate's corollary enforced in code — a declared surface has to exist. Rather than weaken the claim quietly, the spec now declares `[cli]` and the CLI was written: `cixctl pkg upstreams` and `cixctl pkg source-policy ls | set-default | set NAME | clear NAME`, with completion. A web surface can be declared when there is a dashboard to back it.
+
+One reuse worth noting: the handler reached for `pkg_name_is_valid()`, which is static to `pkg.c`. The right answer was not to export it or copy it but `simple_name_is_valid()` in `namecheck.h` — a validator that exists precisely because three modules once carried byte-for-byte copies differing only in the length constant they checked, which is the duplication "No Parallel Implementations" forbids.
+
+`cixd` compiles clean under TCC with `-Wall -Werror`, and all twenty selftests that can run in this sandbox pass. The daemon itself is verified on 192.168.15.95, not here.
+
 ### ADR-0255 part 3: the source-policy store, and a default that acts
 
 `daemon/src/srcpolicy.c` holds the second policy axis — which upstream *release* a package builds — with `test_srcpolicy` in `SELFTESTS`. It is modelled on `pkgpolicy.c`, deliberately, because it is the same shape of thing: per-package operator state, persisted, where "no policy" and "the default policy" are the same state rather than two that can drift apart.

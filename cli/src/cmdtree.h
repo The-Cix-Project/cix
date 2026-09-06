@@ -1152,6 +1152,20 @@ static const char *const n_pkg_policy_flags[] = {
 	NULL
 };
 
+static const char *const n_pkg_source_policy_flags[] = {
+	"--channel=",
+	"--depth=",
+	NULL
+};
+
+static const struct cli_node n_pkg_source_policy_subs[] = {
+	{ "clear", NULL, NULL },
+	{ "ls", NULL, NULL },
+	{ "set", NULL, NULL },
+	{ "set-default", NULL, NULL },
+	{ NULL, NULL, NULL },
+};
+
 static const struct cli_node n_pkg_policy_subs[] = {
 	{ "clear", NULL, NULL },
 	{ "ls", NULL, NULL },
@@ -1231,6 +1245,8 @@ static const struct cli_node n_pkg_subs[] = {
 	{ "install", n_pkg_install_flags, NULL },
 	{ "ls", NULL, NULL },
 	{ "policy", n_pkg_policy_flags, n_pkg_policy_subs },
+	{ "source-policy", n_pkg_source_policy_flags, n_pkg_source_policy_subs },
+	{ "upstreams", NULL, NULL },
 	{ "rebuilds", NULL, NULL },
 	{ "recipe", NULL, n_pkg_recipe_subs },
 	{ "recipes", NULL, NULL },

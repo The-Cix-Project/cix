@@ -14411,6 +14411,166 @@ static int cmd_pkg_policy(const struct cix_client *c, int json_mode, int argc, c
 	return 2;
 }
 
+static void fmt_upstreams(const struct json_value *root)
+{
+	const struct json_value *arr = json_object_get(root, "upstreams");
+	size_t i, j;
+
+	if (arr == NULL || arr->type != JSON_ARRAY || arr->u.array.count == 0) {
+		printf("no discovery kinds are known\n");
+		return;
+	}
+	for (i = 0; i < arr->u.array.count; i++) {
+		const struct json_value *k = arr->u.array.items[i];
+		const struct json_value *ch = json_object_get(k, "channels");
+		const char *name = json_str_field(k, "name");
+		const char *sum = json_str_field(k, "summary");
+
+		printf("%-14s ", name != NULL ? name : "-");
+		/* null channels is "one linear sequence", not "none known" --
+		 * they are different facts and the operator needs the right one. */
+		if (ch == NULL || ch->type != JSON_ARRAY) {
+			printf("%-34s", "(single release sequence)");
+		} else {
+			char buf[128];
+			size_t used = 0;
+
+			buf[0] = '\0';
+			for (j = 0; j < ch->u.array.count; j++) {
+				const char *cs = json_as_string(ch->u.array.items[j]);
+				int n = snprintf(buf + used, sizeof(buf) - used, "%s%s", used > 0 ? "," : "",
+				                  cs != NULL ? cs : "");
+
+				if (n < 0 || (size_t)n >= sizeof(buf) - used)
+					break;
+				used += (size_t)n;
+			}
+			printf("%-34s", buf);
+		}
+		printf(" %s\n", sum != NULL ? sum : "");
+	}
+}
+
+static void fmt_source_policy(const struct json_value *root)
+{
+	const struct json_value *def = json_object_get(root, "default");
+	const struct json_value *arr = json_object_get(root, "packages");
+	size_t i;
+
+	if (def != NULL) {
+		const char *ch = json_str_field(def, "channel");
+		const char *d = json_str_field(def, "depth");
+
+		printf("default: channel=%s depth=%s\n", ch != NULL ? ch : "(none)",
+		        d != NULL ? d : "n");
+	}
+	if (arr == NULL || arr->type != JSON_ARRAY || arr->u.array.count == 0) {
+		printf("every package follows the default\n");
+		return;
+	}
+	printf("\n%-24s %-12s %s\n", "PACKAGE", "CHANNEL", "DEPTH");
+	for (i = 0; i < arr->u.array.count; i++) {
+		const struct json_value *p = arr->u.array.items[i];
+		const char *ch = json_str_field(p, "channel");
+
+		printf("%-24s %-12s %s\n",
+		        json_str_field(p, "name") != NULL ? json_str_field(p, "name") : "-",
+		        ch != NULL ? ch : "-",
+		        json_str_field(p, "depth") != NULL ? json_str_field(p, "depth") : "n");
+	}
+}
+
+static int cmd_pkg_source_policy(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	struct cix_response r;
+	const char *sub = argc > 0 ? argv[0] : "ls";
+	char path[256];
+
+	if (strcmp(sub, "ls") == 0) {
+		if (cix_client_request(c, CIX_API_getSourcePolicy_METHOD, CIX_API_getSourcePolicy, NULL,
+		                        &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_source_policy);
+	}
+	if (strcmp(sub, "clear") == 0 && argc >= 2) {
+		snprintf(path, sizeof(path), CIX_API_clearPkgSourcePolicy, argv[1]);
+		if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		if (r.status != 204) {
+			int rc = emit(&r, json_mode, NULL);
+
+			return rc != 0 ? rc : 1;
+		}
+		cix_response_free(&r);
+		printf("%s: back on the default source policy\n", argv[1]);
+		return 0;
+	}
+	if (strcmp(sub, "set") == 0 || strcmp(sub, "set-default") == 0) {
+		const char *channel = NULL, *depth = NULL;
+		int is_default = (strcmp(sub, "set-default") == 0);
+		int first = is_default ? 1 : 2;
+		char body[256];
+		int i;
+
+		if (!is_default && argc < 2) {
+			fprintf(stderr, "usage: cixctl pkg source-policy set NAME [--channel=C] [--depth=D]\n");
+			return 2;
+		}
+		for (i = first; i < argc; i++) {
+			if (strncmp(argv[i], "--channel=", 10) == 0)
+				channel = argv[i] + 10;
+			else if (strncmp(argv[i], "--depth=", 8) == 0)
+				depth = argv[i] + 8;
+			else {
+				fprintf(stderr, "cixctl: unknown source-policy option '%s'\n", argv[i]);
+				return 2;
+			}
+		}
+		snprintf(body, sizeof(body), "{\"channel\":%s%s%s,\"depth\":\"%s\"}",
+		          channel != NULL ? "\"" : "", channel != NULL ? channel : "null",
+		          channel != NULL ? "\"" : "", depth != NULL ? depth : "n");
+		if (is_default) {
+			if (cix_client_request(c, "PUT", CIX_API_setDefaultSourcePolicy, body, &r) != 0) {
+				fprintf(stderr, "cixctl: could not reach daemon\n");
+				return 1;
+			}
+		} else {
+			snprintf(path, sizeof(path), CIX_API_setPkgSourcePolicy, argv[1]);
+			if (cix_client_request(c, "PUT", path, body, &r) != 0) {
+				fprintf(stderr, "cixctl: could not reach daemon\n");
+				return 1;
+			}
+		}
+		return emit(&r, json_mode, fmt_source_policy);
+	}
+
+	fprintf(stderr,
+	        "usage: cixctl pkg source-policy ls\n"
+	        "       cixctl pkg source-policy set-default [--channel=C] [--depth=n-<lines>.<releases>]\n"
+	        "       cixctl pkg source-policy set NAME [--channel=C] [--depth=D]\n"
+	        "       cixctl pkg source-policy clear NAME\n"
+	        "  channels come from the package's own upstream -- see `cixctl pkg upstreams`\n");
+	return 2;
+}
+
+static int cmd_pkg_upstreams(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	struct cix_response r;
+
+	(void)argc;
+	(void)argv;
+	if (cix_client_request(c, CIX_API_listUpstreamKinds_METHOD, CIX_API_listUpstreamKinds, NULL,
+	                        &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_upstreams);
+}
+
 static int cmd_pkg(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
@@ -14432,6 +14592,8 @@ static int cmd_pkg(const struct cix_client *c, int json_mode, int argc, char **a
 		                "       cixctl pkg build-log [--name=NAME [--image=IMAGE]]\n"
 		                "       cixctl pkg build-logs [--last | --file=NAME]\n"
 		                "       cixctl pkg policy ls | set NAME --policy=... | clear NAME\n"
+		                "       cixctl pkg upstreams  -- discovery kinds and their channels\n"
+		                "       cixctl pkg source-policy ls | set-default | set NAME | clear NAME\n"
 		                "       cixctl pkg ls\n"
 		                "       cixctl pkg rm NAME[@IMAGE]\n"
 		                "       cixctl pkg update-all\n"
@@ -14475,6 +14637,10 @@ static int cmd_pkg(const struct cix_client *c, int json_mode, int argc, char **a
 		return cmd_pkg_build_log(c, argc - 1, argv + 1);
 	if (strcmp(sub, "policy") == 0)
 		return cmd_pkg_policy(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "source-policy") == 0)
+		return cmd_pkg_source_policy(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "upstreams") == 0)
+		return cmd_pkg_upstreams(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "build-logs") == 0)
 		return cmd_pkg_build_logs(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "ls") == 0)

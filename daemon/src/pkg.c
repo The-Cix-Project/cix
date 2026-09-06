@@ -235,6 +235,25 @@ struct pkg_recipe {
 	 */
 	char build_depends[PKG_DEPENDS_MAX];
 	/*
+	 * ADR-0255: how this package discovers what upstream published.
+	 *
+	 * Names a discovery kind (srcupstream.h), e.g. "kernel.org". Empty
+	 * means the package does not roll -- it is PINNED, which is a
+	 * permanent first-class answer rather than a gap: plenty of
+	 * software publishes no machine-readable release list and no signed
+	 * checksums, and this platform deliberately holds some things
+	 * still. Absence being the safe default is what makes "cannot
+	 * resolve" loud by construction: a package that never said how it
+	 * discovers releases is never silently left behind, because it was
+	 * never trying to move.
+	 *
+	 * WHICH channel and how far back are NOT here. Those are operator
+	 * state (srcpolicy.h), because a recipe cannot know which line a
+	 * particular box is meant to sit on -- the same split ADR-0188
+	 * already established for artifact policy.
+	 */
+	char upstream[PKG_NAME_MAX];
+	/*
 	 * Capabilities this recipe's BUILD container needs, space
 	 * separated, normally empty (issue #224).
 	 *
@@ -1166,6 +1185,7 @@ static int parse_recipe(const char *path, struct pkg_recipe *out)
 	extract_line_value(buf, "pkg_build_image=", out->build_image, sizeof(out->build_image));
 	extract_line_value(buf, "pkg_artifact_sha256=", out->artifact_sha256,
 	                    sizeof(out->artifact_sha256));
+	extract_line_value(buf, "pkg_upstream=", out->upstream, sizeof(out->upstream));
 	extract_line_value(buf, "pkg_changelog=", out->changelog, sizeof(out->changelog));
 	free(buf);
 
@@ -1351,6 +1371,35 @@ static int find_recipe_path(const char *name, const char *version, char *out_pat
 		}
 	}
 }
+
+/*
+ * The discovery kind a package's recipe declares, or "" if it declares
+ * none (ADR-0255).
+ *
+ * Resolves the same way every other omitted-version lookup does, so the
+ * answer is about the recipe this box would actually build. A package
+ * with no recipe at all is not an error here -- it simply does not
+ * roll, which is the same outcome as declaring no upstream and is what
+ * the caller has to handle either way.
+ */
+int pkg_recipe_upstream(const char *name, char *out, size_t out_size)
+{
+	char recipe_path[PATH_MAX];
+	struct pkg_recipe recipe;
+
+	if (out == NULL || out_size == 0)
+		return -1;
+	out[0] = '\0';
+	if (name == NULL || !pkg_name_is_valid(name))
+		return -1;
+	if (find_recipe_path(name, NULL, recipe_path, sizeof(recipe_path)) != 0)
+		return -1;
+	if (parse_recipe(recipe_path, &recipe) != 0)
+		return -1;
+	snprintf(out, out_size, "%s", recipe.upstream);
+	return 0;
+}
+
 
 /*
  * A recipe version's own file is written exactly once

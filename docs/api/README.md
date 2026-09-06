@@ -254,6 +254,11 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/pkg/policies` | Per-package rolling policy — which version an omitted version resolves to (issue #64) |
 | PUT | `/pkg/policies/{name}` | Set it: `highest` (default), `newest`, or `pinned` with a version |
 | DELETE | `/pkg/policies/{name}` | Back to the default |
+| GET | `/pkg/upstreams` | The discovery kinds a recipe may declare, and the channels each publishes (ADR-0255) |
+| GET | `/pkg/source-policy` | Which upstream *release* packages build — the default plus per-package overrides |
+| PUT | `/pkg/source-policy` | Set the platform-wide default (channel preference + depth) |
+| PUT | `/pkg/{name}/source-policy` | Override it for one package |
+| DELETE | `/pkg/{name}/source-policy` | Back to the platform default |
 ### Why a package failed, as a field (issue #101)
 
 `GET /v1/pkg/{name}` and the package list report **`failure_kind`** alongside `error`:
@@ -842,6 +847,79 @@ Response (`201`):
 `exit_status` is the raw `waitid()` status and is ambiguous on its own — **`term_signal`** disambiguates it (issue #78): `0` means the container exited normally and `exit_status` is a real exit code; a nonzero `term_signal` is the signal that killed it, and `exit_status` is then that same signal number, *not* an exit code. Because a deliberate `stop`/`delete` `SIGKILL`s the container, `term_signal` is `9` for any container stopped or deleted while running — the reliable way to tell that apart from a genuine `exit 9`. Both are `null` while running.
 
 `exit_reason` (ADR-0080) is a human-readable why once `exit_status` is non-null — either the container's own real diagnostic text (e.g. `"child: execve(/usr/bin/foo): No such file or directory"`), a signal string (e.g. `"killed by signal 9 (SIGKILL)"`) when `term_signal` is set, or, when neither is available, a fixed category string (e.g. `"clean exit"`, `"overlay: mount(2) itself failed"`). `GET .../{name}` and `GET /v1/containers` both include it the same way; a failure that also reaches `500` at creation time (before any process exists) is instead surfaced directly in that response's own error message and in `GET /system/logs`.
+
+## Two policy axes, and why they are not one setting (ADR-0255)
+
+Both use the word "pinned" and they are **not** the same question:
+
+| | Question | Endpoint |
+|---|---|---|
+| **Source policy** | Which upstream *release* do we build? | `/pkg/source-policy` |
+| **Artifact policy** ([ADR-0188](../adr/0188-per-package-rolling-policy.md)) | Which *built artifact* does an image take? | `/pkg/policies` |
+
+Source decides what gets **built**; artifact decides what gets **consumed**. Keeping them apart is what lets a package roll its source while an image holds an older artifact — the control a staged rollout needs, and unexpressible if they were merged.
+
+### A recipe declares how it discovers releases; an operator picks among what that offers
+
+A recipe carries `pkg_upstream="<kind>"`. A recipe that carries none does not roll — it is **pinned**, which is a permanent, first-class answer rather than a gap: plenty of software publishes no machine-readable release list and no signed checksums. Absence being the safe default is what makes "cannot resolve" loud by construction, because a package that never said how it discovers releases is never silently left behind.
+
+**Channels belong to the kind, never to free text.** `GET /pkg/upstreams` is how a caller learns the real choices:
+
+```
+kernel.org     mainline,stable,longterm    kernel.org releases.json; checksums from its signed sha256sums.asc
+```
+
+A kind that publishes one linear sequence reports `channels: null` — deliberately null and not `[]`, because "there is nothing to choose here" and "nothing has been chosen yet" are different facts and a picker needs to tell them apart.
+
+An invented channel is refused **at configuration time**, with the valid list:
+
+```
+PUT /v1/pkg/kernel/source-policy {"channel":"lts"}
+-> 400 upstream "kernel.org" does not publish a "lts" channel; it has mainline, stable, longterm
+```
+
+That matters because the alternative is accepting it and failing later as an empty resolution. "You asked for a channel that does not exist" and "nothing found" read completely differently to whoever has to fix it, and only one of them names the mistake.
+
+### Depth: `n-<lines>.<releases>`
+
+How far back in the stream, read literally — go back that many release **lines**, then that many **releases** within the line. `.<releases>` is optional and defaults to 0.
+
+Against kernel.org's `stable` (7.2.3 newest, 7.1.13 newest of the previous line):
+
+| Depth | Means | Resolves to |
+|---|---|---|
+| `n` | newest in the channel | 7.2.3 |
+| `n-0.1` | same line, one release back | 7.2.2 |
+| `n-1` | previous line, newest of it | 7.1.13 |
+
+`n-0.1` and `n-1` are spelled differently rather than being two readings of one token because here they differ by an entire release line, and guessing between them would silently walk a box across a major version boundary.
+
+The grammar needs no per-project knowledge, because a "line" comes from the versions upstream actually published rather than a naming convention. The same expression reads correctly against a project with three live lines and one with a single sequence:
+
+```
+kernel  n-1  -> 7.1.13   (previous patch line)
+glibc   n-1  -> 2.43     (previous release)
+```
+
+And an unsatisfiable depth says so instead of falling back:
+
+```
+glibc n-0.1 -> depth asks for release 1 back within line 2.44, which publishes only 1 release(s)
+```
+
+### The default acts
+
+`PUT /pkg/source-policy` sets a platform-wide default, and a rollable recipe then rolls without being named package by package — a default that has to be set for every package is a feature that exists and is off. What makes that safe is that rolling stops short of the running host: it moves artifacts and images, which are cheap to rebuild and discard, never a booted machine. Deploying is still a deliberate act.
+
+The default channel is a **preference, not a mandate**. It applies wherever the package's kind actually publishes it and is dropped where it does not, so one global setting cannot silently mean different things to different upstreams. When it is dropped and the kind does need a channel, the error names the package an operator can fix rather than complaining about a global setting that is correct elsewhere.
+
+```
+cixctl pkg upstreams
+cixctl pkg source-policy ls
+cixctl pkg source-policy set-default --channel=stable --depth=n
+cixctl pkg source-policy set kernel --channel=longterm --depth=n-1
+cixctl pkg source-policy clear kernel
+```
 
 ## Persisted containers and the `restart` policy
 

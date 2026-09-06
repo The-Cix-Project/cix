@@ -472,6 +472,14 @@ enum pkg_error pkg_seed_image_baseline(const char *rootfs_path);
  */
 int pkg_version_compare(const char *a, const char *b);
 
+/*
+ * ADR-0255: the discovery kind package `name` declares (pkg_upstream=),
+ * or "" when it declares none and is therefore pinned. Returns 0 when a
+ * recipe was found and parsed, -1 otherwise -- and -1 is not an error
+ * condition for a caller, it simply means the package does not roll.
+ */
+int pkg_recipe_upstream(const char *name, char *out, size_t out_size);
+
 /* Scans pkg_dir/recipes/<name>/<version>/build.sh (ADR-0107's
  * version-keyed layout) and writes one {name,version,depends} object
  * per (name,version) pair that parses -- metadata only, never

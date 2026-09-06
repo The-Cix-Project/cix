@@ -8595,6 +8595,180 @@ paths:
         "204":
           description: On the default policy
 
+  /pkg/upstreams:
+    get:
+      summary: The discovery kinds a recipe may declare, and their channels (ADR-0255)
+      description: >
+        A recipe declares `pkg_upstream="<kind>"`. The kind knows how to
+        enumerate that project's releases and which channels -- if any --
+        it publishes in parallel.
+
+        Channels belong to the kind, not to the operator. kernel.org
+        publishes mainline, stable and longterm simultaneously, so
+        "which stream" is a real question there and its answers are
+        kernel.org's own monikers. A project publishing one linear
+        sequence has `channels: null` and a channel is simply absent.
+        This endpoint exists so a caller can show the actual choices
+        rather than inviting free text that would be accepted and then
+        fail later as an empty resolution.
+      operationId: listUpstreamKinds
+      x-cix-expose: [cli]
+      responses:
+        "200":
+          description: Known discovery kinds
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  upstreams:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/UpstreamKind"
+
+  /pkg/source-policy:
+    get:
+      summary: Which upstream release packages build (ADR-0255)
+      description: >
+        The SOURCE policy axis, and deliberately not the same one as
+        /pkg/policies even though both use the word "pinned". Source
+        policy decides what gets BUILT; artifact policy decides what an
+        image CONSUMES. Keeping them separate is what lets a package
+        roll its source while an image holds an older artifact.
+
+        Returns the platform-wide default plus every package with a
+        policy of its own.
+      operationId: getSourcePolicy
+      x-cix-expose: [cli]
+      responses:
+        "200":
+          description: The default and any per-package overrides
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  default:
+                    type: object
+                    properties:
+                      channel:
+                        type: [string, "null"]
+                      depth:
+                        type: string
+                  packages:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SourcePolicy"
+    put:
+      summary: Set the platform-wide default source policy (ADR-0255)
+      description: >
+        The default ACTS: a rollable recipe rolls without being named
+        package by package, because a default that must be set for every
+        package is a feature that exists and is off. What makes that
+        safe is that rolling stops short of the running host -- it moves
+        artifacts and images, never a booted machine.
+
+        The channel here is a PREFERENCE, not a mandate. It applies
+        wherever the package's own kind actually publishes it and is
+        ignored where it does not, so one global setting cannot silently
+        mean different things to different upstreams. It is therefore
+        not validated against any kind here; validation happens per
+        package, which is the only place that can name what failed.
+      operationId: setDefaultSourcePolicy
+      x-cix-expose: [cli]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                channel:
+                  type: [string, "null"]
+                depth:
+                  type: string
+      responses:
+        "200":
+          description: The default and any per-package overrides after the change
+          content:
+            application/json:
+              schema:
+                type: object
+        "400":
+          description: Depth is not n, n-<lines> or n-<lines>.<releases>
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /pkg/{name}/source-policy:
+    put:
+      summary: Set one package's source policy (ADR-0255)
+      description: >
+        Overrides the platform default for this package. The channel is
+        validated against the discovery kind the recipe declares, at
+        configuration time -- an invented channel is refused here with
+        the valid list, rather than accepted and surfacing later as an
+        empty resolution. Those read completely differently to whoever
+        has to fix it, and only one of them names the mistake.
+
+        A package whose recipe declares no `pkg_upstream` cannot roll
+        and cannot take a channel: it is pinned, which ADR-0255 treats
+        as a permanent first-class answer rather than a gap.
+      operationId: setPkgSourcePolicy
+      x-cix-expose: [cli]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                channel:
+                  type: [string, "null"]
+                depth:
+                  type: string
+      responses:
+        "200":
+          description: The default and any per-package overrides after the change
+          content:
+            application/json:
+              schema:
+                type: object
+        "400":
+          description: >
+            A channel the upstream does not publish, an invalid depth, a
+            channel on a package that declares no upstream, or an
+            unknown discovery kind. The reason names the valid options.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      summary: Put a package back on the default source policy (ADR-0255)
+      description: >
+        204 whether or not a policy was set, matching
+        DELETE /pkg/policies/{name}: the caller's intent is satisfied
+        either way, and a 404 would make scripts handle a distinction
+        that does not matter.
+      operationId: clearPkgSourcePolicy
+      x-cix-expose: [cli]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Back on the platform default
+
   /pkg/build-logs:
     get:
       summary: Every persisted build log, newest first (issue #57)
@@ -13343,6 +13517,51 @@ components:
         version:
           type: [string, "null"]
           description: The held version; null unless the policy is `pinned`.
+
+    SourcePolicy:
+      type: object
+      required: [name, depth, inherited]
+      properties:
+        name:
+          type: string
+        channel:
+          type: [string, "null"]
+          description: >
+            Which stream of releases, when the package's upstream
+            publishes several. Null when the upstream publishes one
+            linear sequence, or when nothing has been chosen. Valid
+            values come from the discovery kind, never free text -- see
+            GET /pkg/upstreams.
+        depth:
+          type: string
+          description: >
+            How far back in that stream, as `n-<lines>.<releases>`:
+            go back that many release lines, then that many releases
+            within the line. `n` is newest. `n-0.1` and `n-1` are
+            deliberately different -- one patch back versus one whole
+            release line back.
+        inherited:
+          type: boolean
+          description: >
+            True when this package has no policy of its own and is
+            following the platform default.
+
+    UpstreamKind:
+      type: object
+      required: [name, summary]
+      properties:
+        name:
+          type: string
+        channels:
+          type: [array, "null"]
+          items:
+            type: string
+          description: >
+            The channels this upstream publishes, or null when it
+            publishes a single linear sequence. An operator chooses
+            among these; they are not free text.
+        summary:
+          type: string
 
     SystemStats:
       type: object
