@@ -43,7 +43,9 @@ Nobody copies a recipe directory again, and nobody types a version number. 1046 
 
 **Every stage gets a named trigger, including for a hostbuild.** Saying "the rolling machinery takes over" is what the corrected entry above got wrong, so it is stated rather than assumed: a successful resolution starts the fetch regardless of build kind — this is what finally gives the kernel an automatic path — and a hostbuild's publish starts assembly directly, since there is no image in between to react to it.
 
-**One thing deliberately left open:** what a rollable recipe does before any operator policy is set. ADR-0193's `pinned` default was right for a channel that only reported; carried forward literally it means nothing rolls until 116 policies are set by hand. A platform-wide default channel with per-package override is the alternative. That is an operator preference, not an architectural call, so the ADR poses it rather than settling it.
+**A rollable recipe rolls by default** — a platform-wide default channel that any package may override, so declaring a recipe rollable is enough. ADR-0193's `pinned` default was right for a channel that could only *report*; a default that acts is a different proposition. Carried forward it would mean nothing moves until 116 policies are set by hand, which is a feature that exists and is off — the same shape as the informal "prefer TCC" preference under which gcc reached 21 recipes with nobody counting.
+
+What makes an acting default safe is that **rolling stops short of the running host**: it moves artifacts and images, which are cheap to rebuild and discard, and never a booted machine. Deploying and rebooting stays the deliberate act it already is.
 
 **#314 dissolves rather than being answered.** It asked where a daemon-generated recipe should live. The daemon no longer generates recipes — it resolves a variable and records a build. Recipes stay hand-written in git, rarely touched.
 

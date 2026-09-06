@@ -110,13 +110,15 @@ Against kernel.org's `stable` today (7.2.3 newest, 7.1.13 newest of the previous
 
 This is why `n-0.1` and `n-1` are spelled differently rather than being two readings of one token: on this channel today they differ by an entire release line, and a platform that guessed between them would silently move a box across a major version boundary. ADR-0193 hit the identical ambiguity with `longterm` — six lines listed at once, "newest" meaning nothing on its own — and resolved it the same way, within the line you are already on.
 
-### Open: what a rollable recipe does before an operator sets anything
+### A rollable recipe rolls, without being told to package by package
 
-ADR-0193 made the kernel channel `pinned` by default, which was right when the channel only ever reported. Carried forward literally it would mean nothing rolls until 116 per-package policies have been set by hand — the opposite of the intent here.
+**There is a platform-wide default channel, and any package may override it.** Declaring a recipe rollable is sufficient to make it roll; no per-package setting is required first.
 
-The alternative is a platform-wide default channel with per-package override, so declaring a recipe rollable is enough to make it roll.
+ADR-0193 made the kernel channel `pinned` by default, which was correct while a channel could only ever *report* — a default that acts is a different proposition from a default that describes. Carried forward literally it would mean nothing moves until 116 per-package policies have each been set by hand, which is a feature that exists and is off. This project has seen precisely that failure before: [ADR-0224](0224-the-toolchain-tenet.md) records an informal "prefer TCC" preference under which gcc reached 21 recipes with nobody counting, and what fixed it was a number that changes visibly in a diff rather than a preference nobody had to act on.
 
-**This is deliberately left open** as an operator-preference decision rather than settled here. It changes what the platform does on day one and belongs to whoever runs it, not to this ADR.
+**What makes this safe is that rolling stops short of the running host.** Stages 1–7 discover, resolve, authenticate, fetch, build, publish and rebuild images. Stage 9 — deploying to a host and rebooting it — is not reached automatically and never has been. So the default moves *artifacts and images*, which are cheap to rebuild and discard, and never a booted machine. The operator's deliberate act stays exactly where it already is.
+
+Two properties of this ADR are what make an acting default defensible rather than reckless, and neither is optional to it: a resolution failure **halts that package and names why** rather than falling back, and no stage begins until its predecessor is **verified** rather than merely reported. An automatic default on top of a pipeline that silently degrades would be a bad trade; on top of one that stops and says so, it is the intended behaviour.
 
 ### A resolution failure halts that package and says why.
 
