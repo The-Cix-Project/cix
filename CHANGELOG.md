@@ -2,6 +2,43 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### ADR-0255 part 3: the source-policy store, and a default that acts
+
+`daemon/src/srcpolicy.c` holds the second policy axis — which upstream *release* a package builds — with `test_srcpolicy` in `SELFTESTS`. It is modelled on `pkgpolicy.c`, deliberately, because it is the same shape of thing: per-package operator state, persisted, where "no policy" and "the default policy" are the same state rather than two that can drift apart.
+
+**It is a different axis from ADR-0188 and the two are never merged**, even though both use the word "pinned" (#315). Source policy decides what gets *built*; artifact policy decides what gets *consumed*. Keeping them separate is what lets a package roll its source while an image holds an older artifact — the control a staged rollout needs, and unexpressible if they were one setting.
+
+**The default acts**, which ADR-0255 settled:
+
+```
+default unset   -> kernel refused: publishes channels (mainline, stable, longterm); choose one
+default=stable  -> kernel: channel="stable" depth=n (inherited)
+```
+
+One global setting, and a rollable package rolls — no per-package configuration required first.
+
+**A default channel is a preference, not a mandate**, and this is the part that needed care. A global `stable` is right for the packages it fits and meaningless for the ones it does not: a project publishing one linear sequence has no channel to set, and one whose channels do not include the preferred name must be told explicitly. So when an *inherited* channel does not fit a package's kind, it is dropped and the kind is asked again with nothing chosen. A kind with no channels then succeeds — correct, there was never anything to choose — and one with channels reports what **this package** needs:
+
+```
+default=lts -> kernel refused: upstream "kernel.org" publishes channels
+               (mainline, stable, longterm); choose one
+```
+
+That message is about the package an operator can fix, not a complaint about a global setting that is fine elsewhere. An *explicit* per-package channel is never dropped this way — an operator who named a channel gets told it is wrong rather than having it silently ignored.
+
+Everything is refused at configuration time with a reason, rather than surfacing later as an empty resolution:
+
+```
+set channel "lts"     -> does not publish a "lts" channel; it has mainline, stable, longterm
+set depth "n-1.2.3"   -> not n, n-<lines> or n-<lines>.<releases>
+channel on bash       -> declares no pkg_upstream, so it has no channels to choose from; it is pinned
+unknown kind          -> package "kernel" declares unknown upstream kind "sourceforge"
+```
+
+The default channel is deliberately **not** validated when set, because there is no single kind to validate it against; validation happens where it is used, which is also the only place that can name the package it failed for.
+
+**A coverage gap is recorded rather than papered over.** The "kind with no channels" branch is exercised in `test_srcupstream` against a kind declared in that test file, but cannot yet be reached through `srcpolicy_effective_for_kind()`, which resolves kinds by name from a registry containing only kernel.org. A second real kind will close it; a fake registration would only hide it.
+
 ### ADR-0255 part 2: channels belong to the discovery kind
 
 A recipe declares `pkg_upstream="<kind>"`, and the kind owns two things an operator should never restate: how to enumerate that project's releases, and which channels — if any — it publishes in parallel. `daemon/src/srcupstream.c`, with `test_srcupstream` in `SELFTESTS`.
