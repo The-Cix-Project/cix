@@ -2445,6 +2445,31 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 216 (done): a build output tree is created fresh, and the four defects that exposed (ADR-0253, #307)
+
+Part 215 defined what a package artifact *contains*. It said nothing about where the tree that becomes one comes from, and three build output trees were being inherited between builds. **ADR-0253** makes every build output tree start empty, through one named operation -- `persist_fresh_output_dir()` -- rather than a remove-then-create at each site, because the sites that got it wrong got it wrong *by omission*, and an omission is invisible in review where a named call is not.
+
+Two of the five such trees were already correct (`$PKG_DESTDIR` and the ISO seed dir). **The three that were not are the three that had failed**: the hostbuild artifact directory (a `web/` no recipe stages, supplied by an older build), the ISO staging tree (#307 -- the seed shipped twice, 64.6 MiB wanted plus 69.9 MiB duplicated of 217.9 MiB, and `cix-install` copied the **stale outer** one), and the bootroot image root (a control-plane root carrying glibc objects from two builds, which panics pid 1 and cost two host resets).
+
+**The rule immediately exposed four real defects that leftovers had been hiding**, which is the intended cost rather than a side effect:
+
+| exposed | what it was |
+|---|---|
+| `web/` absent from the cix artifact | no recipe has *ever* staged it; `mkbootroot` reads it |
+| `btrfs-progs` absent from cix-hosttools | `mkbootroot` stages `/usr/bin/btrfs` |
+| **`glibc` absent from cix-hosttools** | sixteen packages, no C library at all -- `mksquashfs` could not load `libmvec.so.1` |
+| `test_daemon_net`'s "flake" | not a flake: ADR-0180 returns 204 before the child is reaped, so the 409 was correct, and the test hand-rolled a second copy of a cleanup helper that already retries |
+
+That last one had cost three hostbuilds in a day and had already been "hardened" once (#286 made the deletes asserted, on the theory a silent failure was hiding the culprit). The assertions all passed and the 409 kept happening, because nothing was failing -- the deletes were succeeding *early*. The fix is No Parallel Implementations, not a timing patch.
+
+**Measured, end to end.** `glibc@2.44-14`, the first package rebuilt under Part 215's policy and published to the cache: **56.78 MiB -> 9.98 MiB compressed**, 2114 files -> 1341, `libc.so.6` from 11.42 MiB of sections (9.46 MiB of it debug) to **2,011,912 bytes**, `usr/share/i18n` 607 files -> 0. Everything the toolchain needs survived, and `probe-gcc-postglibc` compiled, linked and **ran** a dynamic binary with gcc against it. Whether gcc's own three-stage bootstrap is unaffected still needs a real gcc rebuild and remains **open**.
+
+Also landed: **a published artifact now approves itself in its own recipe**, written by `pkg_artifact_push_completed()` through the same predicate that guards an operator's POST. That ends the class of failure that deadlocked this box's bootstrap -- `gcc` names `linux-headers` as a runtime dependency, dependencies always resolve to their highest revision regardless of any pin, and that revision had no approved artifact, so it had to be built with the gcc waiting on it.
+
+Deployed as v2.53.81 (slot a), verified live: health ok, dashboard served, 46 packages, three images each matching its recipe.
+
+**The installer ISO is NOT rebuilt, and that is where this part stops.** `POST /v1/system/iso` returns 400 -- it needs `bzImage` from a `kernel` hostbuild, and this freshly reinstalled box has never done one. Rebuilding the kernel always requires the owner's go-ahead, so the measurement the whole exercise was aimed at is recorded as pending rather than estimated.
+
 ## Part 215 (done): a package artifact carries what the platform runs, and an image recipe is authoritative (ADR-0251, ADR-0252)
 
 The owner asked why an installer ISO is 218 MiB when the whole thing should be "kernel + cix + some decoration". Measuring `glibc` answered it: 56.8 MiB compressed, 146.4 MiB unpacked over 2114 entries -- 54% static archives, `libc.so.6` carrying **9.46 MiB of debug in 11.42 MiB of sections**, `libc.a` shipped **three times** at 22.43 MiB each, and 607 i18n locale *source* files feeding `usr/lib/locale`, which shipped **zero** entries. Fleet-wide: 112 packages, 1004 MiB.
