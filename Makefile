@@ -41,7 +41,8 @@ SELFTESTS = \
 	$(BUILD)/test_elfcheck $(BUILD)/test_elfcheck_gcc \
 	$(BUILD)/test_treecopy $(BUILD)/test_childdiag \
 	$(BUILD)/test_kernelpolicy $(BUILD)/test_releasekey $(BUILD)/test_subid  \
-	$(BUILD)/test_partlabel $(BUILD)/test_pkg_finalize $(BUILD)/test_fresh_output_dir \
+	$(BUILD)/test_partlabel $(BUILD)/test_pkg_finalize $(BUILD)/test_fresh_output_dir $(BUILD)/test_pgpverify \
+	$(BUILD)/test_pgpverify \
 	$(BUILD)/test_btrfs $(BUILD)/test_toolchain \
 	$(DAEMON_SELFTESTS)
 
@@ -646,6 +647,12 @@ $(BUILD)/test_pkg_finalize: test/test_pkg_finalize.c daemon/policy/pkg-finalize.
 # artifact harvest all depend on.
 $(BUILD)/test_fresh_output_dir: test/test_fresh_output_dir.c daemon/src/persist.c | $(BUILD)
 	$(CC) $(CFLAGS) -Idaemon/include test/test_fresh_output_dir.c daemon/src/persist.c -o $@
+
+# ADR-0254: OpenPGP clearsign verification. Fixtures are embedded, so
+# this runs with no network and no gpg -- a test needing either is a
+# test that silently stops running in a build container.
+$(BUILD)/test_pgpverify: test/test_pgpverify.c daemon/src/pgpverify.c | $(BUILD)
+	$(CC) $(CFLAGS) -Idaemon/include test/test_pgpverify.c daemon/src/pgpverify.c -lssl -lcrypto -o $@
 
 $(BUILD)/test_elfcheck: test/test_elfcheck.c daemon/src/elfcheck.c | $(BUILD)
 	$(CC) $(CFLAGS) -Idaemon/include test/test_elfcheck.c daemon/src/elfcheck.c -o $@

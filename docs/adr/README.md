@@ -258,3 +258,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0251](0251-a-package-artifact-carries-what-the-platform-runs.md) | A package artifact carries what the platform runs, and nothing else | Accepted |
 | [0252](0252-an-image-recipe-is-authoritative.md) | An image recipe is authoritative; the image is derived from it | Accepted |
 | [0253](0253-a-build-output-tree-is-created-fresh.md) | A build output tree is created fresh, never inherited | Accepted |
+| [0254](0254-upstream-checksums-are-verified-not-computed.md) | An upstream checksum is verified, never computed here | Accepted |
