@@ -341,10 +341,6 @@
 			<div class="tab-bar">
 				<button type="button" class="tab-button active" data-tab="networks">Overview</button>
 				<button type="button" class="tab-button" data-tab="routes">Routes</button>
-				<button type="button" class="tab-button" data-tab="dhcp-servers">Servers</button>
-				<button type="button" class="tab-button" data-tab="dhcp-ranges">Ranges</button>
-				<button type="button" class="tab-button" data-tab="dhcp-static">Reservations</button>
-				<button type="button" class="tab-button" data-tab="dhcp-leases">Leases</button>
 			</div>
 <div class="tab-panel" data-tab="networks">
 			<div class="view-list">
@@ -383,56 +379,10 @@
 				</table>
 			</div>
 		</div>
-<div class="tab-panel" data-tab="dhcp-servers" hidden>
-				<p class="hint">
-					Containers running dnsmasq that serve DHCP. Register one from the Services menu.
-					<strong>Resolves leases</strong> says whether that same container is also a
-					registered DNS server: dnsmasq answers for the names of clients it has itself
-					leased addresses to, so when it is both, a lease resolves the moment it is handed
-					out. Reported rather than required &mdash; one service does not reach into
-					another's registry.
-				</p>
-				<table id="dhcp-servers-table">
-					<thead><tr><th>Container</th><th>State</th><th>Resolves leases</th><th></th></tr></thead>
-					<tbody></tbody>
-				</table>
-			</div>
-<div class="tab-panel" data-tab="dhcp-ranges" hidden>
-				<p class="hint">
-					One range per network, and the servers that serve it. dnsmasq implements no
-					failover protocol, so a range named to more than one server is split into
-					<strong>disjoint slices</strong> &mdash; all of them answer, a client takes
-					whichever offer arrives first, and no two servers hold the same address. Any one
-					of them alone keeps serving from its own slice. Changing a range restarts the
-					servers that serve it: dnsmasq reads ranges only at startup.
-				</p>
-				<table id="dhcp-ranges-table">
-					<thead><tr><th>Network</th><th>State</th><th>Range</th><th>Lease</th><th>Served by</th><th></th></tr></thead>
-					<tbody></tbody>
-				</table>
-			</div>
-<div class="tab-panel" data-tab="dhcp-static" hidden>
-				<p class="hint">
-					A MAC always gets the same address. Live &mdash; the servers re-read these on
-					SIGHUP, so nothing restarts. A hostname here becomes a name the DNS side answers
-					for too. Reserve one from the Services menu.
-				</p>
-				<table id="dhcp-static-table">
-					<thead><tr><th>MAC</th><th>IP</th><th>Hostname</th><th></th></tr></thead>
-					<tbody></tbody>
-				</table>
-			</div>
-<div class="tab-panel" data-tab="dhcp-leases" hidden>
-				<p class="hint">
-					Read from each serving container's own lease file, every time. A lease is not a
-					DNS record &mdash; records are durable operator intent, a lease is the server's
-					own short-lived state.
-				</p>
-				<table id="dhcp-leases-table">
-					<thead><tr><th>MAC</th><th>IP</th><th>Hostname</th><th>Expires</th><th>Server</th></tr></thead>
-					<tbody></tbody>
-				</table>
-			</div>
+
+
+
+
 		</section>
 
 		<section class="view" id="view-network-detail" hidden>
@@ -1390,6 +1340,7 @@
 				<button type="button" class="tab-button" data-tab="sysctl">Sysctl</button>
 				<button type="button" class="tab-button" data-tab="boot-console">Boot Console</button>
 				<button type="button" class="tab-button" data-tab="kmsg">Kernel Log</button>
+							<button type="button" class="tab-button" data-tab="esp">Boot Slots</button>
 			</div>
 <div class="tab-panel" data-tab="kernel-policy">
 			<div class="view-list">
@@ -1492,6 +1443,65 @@
 			</div>
 		
 			</div>
+<div class="tab-panel" data-tab="esp" hidden>
+			<div class="view-list">
+				<h2>Boot Entries (ESP)</h2>
+				<p class="hint">
+					What this machine will actually boot next, and why. <strong>Will boot</strong>
+					is computed the way systemd-boot itself chooses: entries whose boot counter has
+					run out sort last, then by <code>sort-key</code> and <code>version</code>
+					descending &mdash; so a freshly staged update outranks an older entry whatever
+					its slot letter (ADR-0202).
+				</p>
+				<p class="hint">
+					<strong>Default is a glob pattern, not a name.</strong> That is what made a real
+					host reboot into the image it was already running, repeatedly, with no error
+					anywhere: a stale <code>thinc-*</code> written at install time went on matching
+					six obsolete entries and outranking every correctly staged one (issue #128).
+					Leave it as <code>cix-*</code> unless you have a specific reason &mdash; pinning
+					it to one slot breaks the <em>next</em> update, which stages the other one.
+				</p>
+				<div id="esp-summary" class="pki-ca-status"><p>Loading&hellip;</p></div>
+				<p class="hint">
+					<strong>Boot a slot once.</strong> The rollback control: it applies to the
+					next boot only and then reverts to normal selection, so a machine that
+					fails to come back is not left pinned to a broken slot. Use this to steer
+					one boot; use the default pattern below to fix a persistent mistake
+					(issue #154).
+				</p>
+				<div id="esp-boot-next-row">
+					<span id="esp-boot-next-state">&nbsp;</span>
+					<button type="button" id="esp-boot-next-a">Boot slot A once</button>
+					<button type="button" id="esp-boot-next-b">Boot slot B once</button>
+					<button type="button" id="esp-boot-next-clear">Disarm</button>
+				</div>
+				<form id="esp-loader-form">
+					<label class="wide">
+						Default pattern
+						<input type="text" id="esp-default" placeholder="cix-*">
+					</label>
+					<label class="wide">
+						Menu timeout (seconds)
+						<input type="number" id="esp-timeout" min="0" max="600">
+					</label>
+					<button type="submit">Save</button>
+				</form>
+				<table id="esp-entries">
+					<thead>
+						<tr>
+							<th>Entry</th>
+							<th>Title</th>
+							<th>Matches default</th>
+							<th>Running slot</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody id="esp-entries-body">
+						<tr><td colspan="5" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+			</div>
+		</div>
 		</section>
 
 
@@ -1925,7 +1935,6 @@
 				<button type="button" class="tab-button" data-tab="recipes">Recipes</button>
 				<button type="button" class="tab-button" data-tab="pkg-build-config">Package Builds</button>
 				<button type="button" class="tab-button" data-tab="pkg-cache">Cache &amp; Artifacts</button>
-				<button type="button" class="tab-button" data-tab="esp">Boot Slots</button>
 				<button type="button" class="tab-button" data-tab="rolling-restart">Rolling Restart</button>
 				<button type="button" class="tab-button" data-tab="signing-keys">Signing Keys</button>
 			</div>
@@ -2233,65 +2242,7 @@
 				<button type="submit">Save</button>
 			</form>
 		</div>
-<div class="tab-panel" data-tab="esp" hidden>
-			<div class="view-list">
-				<h2>Boot Entries (ESP)</h2>
-				<p class="hint">
-					What this machine will actually boot next, and why. <strong>Will boot</strong>
-					is computed the way systemd-boot itself chooses: entries whose boot counter has
-					run out sort last, then by <code>sort-key</code> and <code>version</code>
-					descending &mdash; so a freshly staged update outranks an older entry whatever
-					its slot letter (ADR-0202).
-				</p>
-				<p class="hint">
-					<strong>Default is a glob pattern, not a name.</strong> That is what made a real
-					host reboot into the image it was already running, repeatedly, with no error
-					anywhere: a stale <code>thinc-*</code> written at install time went on matching
-					six obsolete entries and outranking every correctly staged one (issue #128).
-					Leave it as <code>cix-*</code> unless you have a specific reason &mdash; pinning
-					it to one slot breaks the <em>next</em> update, which stages the other one.
-				</p>
-				<div id="esp-summary" class="pki-ca-status"><p>Loading&hellip;</p></div>
-				<p class="hint">
-					<strong>Boot a slot once.</strong> The rollback control: it applies to the
-					next boot only and then reverts to normal selection, so a machine that
-					fails to come back is not left pinned to a broken slot. Use this to steer
-					one boot; use the default pattern below to fix a persistent mistake
-					(issue #154).
-				</p>
-				<div id="esp-boot-next-row">
-					<span id="esp-boot-next-state">&nbsp;</span>
-					<button type="button" id="esp-boot-next-a">Boot slot A once</button>
-					<button type="button" id="esp-boot-next-b">Boot slot B once</button>
-					<button type="button" id="esp-boot-next-clear">Disarm</button>
-				</div>
-				<form id="esp-loader-form">
-					<label class="wide">
-						Default pattern
-						<input type="text" id="esp-default" placeholder="cix-*">
-					</label>
-					<label class="wide">
-						Menu timeout (seconds)
-						<input type="number" id="esp-timeout" min="0" max="600">
-					</label>
-					<button type="submit">Save</button>
-				</form>
-				<table id="esp-entries">
-					<thead>
-						<tr>
-							<th>Entry</th>
-							<th>Title</th>
-							<th>Matches default</th>
-							<th>Running slot</th>
-							<th></th>
-						</tr>
-					</thead>
-					<tbody id="esp-entries-body">
-						<tr><td colspan="5" class="empty">Loading&hellip;</td></tr>
-					</tbody>
-				</table>
-			</div>
-		</div>
+
 <div class="tab-panel" data-tab="rolling-restart" hidden>
 			<form id="rc-form">
 				<label>
@@ -2482,6 +2433,66 @@
 					<tbody id="syslog-targets-body">
 						<tr><td colspan="2" class="empty">Loading&hellip;</td></tr>
 					</tbody>
+				</table>
+			</div>
+		</section>
+
+		<section class="view" id="view-dhcp" hidden>
+			<h2>DHCP</h2>
+			<div class="tab-bar">
+				<button type="button" class="tab-button active" data-tab="dhcp-servers">Servers</button>
+				<button type="button" class="tab-button" data-tab="dhcp-ranges">Ranges</button>
+				<button type="button" class="tab-button" data-tab="dhcp-static">Reservations</button>
+				<button type="button" class="tab-button" data-tab="dhcp-leases">Leases</button>
+			</div>
+<div class="tab-panel" data-tab="dhcp-servers">
+				<p class="hint">
+					Containers running dnsmasq that serve DHCP. Register one from the Services menu.
+					<strong>Resolves leases</strong> says whether that same container is also a
+					registered DNS server: dnsmasq answers for the names of clients it has itself
+					leased addresses to, so when it is both, a lease resolves the moment it is handed
+					out. Reported rather than required &mdash; one service does not reach into
+					another's registry.
+				</p>
+				<table id="dhcp-servers-table">
+					<thead><tr><th>Container</th><th>State</th><th>Resolves leases</th><th></th></tr></thead>
+					<tbody></tbody>
+				</table>
+			</div>
+<div class="tab-panel" data-tab="dhcp-ranges" hidden>
+				<p class="hint">
+					One range per network, and the servers that serve it. dnsmasq implements no
+					failover protocol, so a range named to more than one server is split into
+					<strong>disjoint slices</strong> &mdash; all of them answer, a client takes
+					whichever offer arrives first, and no two servers hold the same address. Any one
+					of them alone keeps serving from its own slice. Changing a range restarts the
+					servers that serve it: dnsmasq reads ranges only at startup.
+				</p>
+				<table id="dhcp-ranges-table">
+					<thead><tr><th>Network</th><th>State</th><th>Range</th><th>Lease</th><th>Served by</th><th></th></tr></thead>
+					<tbody></tbody>
+				</table>
+			</div>
+<div class="tab-panel" data-tab="dhcp-static" hidden>
+				<p class="hint">
+					A MAC always gets the same address. Live &mdash; the servers re-read these on
+					SIGHUP, so nothing restarts. A hostname here becomes a name the DNS side answers
+					for too. Reserve one from the Services menu.
+				</p>
+				<table id="dhcp-static-table">
+					<thead><tr><th>MAC</th><th>IP</th><th>Hostname</th><th></th></tr></thead>
+					<tbody></tbody>
+				</table>
+			</div>
+<div class="tab-panel" data-tab="dhcp-leases" hidden>
+				<p class="hint">
+					Read from each serving container's own lease file, every time. A lease is not a
+					DNS record &mdash; records are durable operator intent, a lease is the server's
+					own short-lived state.
+				</p>
+				<table id="dhcp-leases-table">
+					<thead><tr><th>MAC</th><th>IP</th><th>Hostname</th><th>Expires</th><th>Server</th></tr></thead>
+					<tbody></tbody>
 				</table>
 			</div>
 		</section>

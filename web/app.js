@@ -1417,10 +1417,10 @@ const CATEGORY_VIEWS = {
 	"ntp-config": "view-ntp-config",
 	"ntp-servers": "view-ntp-config",
 	"ntp-time": "view-ntp-config",
-	"dhcp-servers": "view-networks",
-	"dhcp-ranges": "view-networks",
-	"dhcp-static": "view-networks",
-	"dhcp-leases": "view-networks",
+	"dhcp-servers": "view-dhcp",
+	"dhcp-ranges": "view-dhcp",
+	"dhcp-static": "view-dhcp",
+	"dhcp-leases": "view-dhcp",
 	"pki-ca": "view-pki-ca",
 	"pki-intermediate": "view-pki-ca",
 	"pki-certs": "view-pki-ca",
@@ -1438,7 +1438,7 @@ const CATEGORY_VIEWS = {
 	"tls-throttle": "view-control-plane",
 	"control-plane-reservation": "view-control-plane",
 	"boot-console": "view-kernel",
-	esp: "view-pipeline",
+	esp: "view-kernel",
 	"signing-keys": "view-pipeline",
 	"kernel-policy": "view-kernel",
 	logs: "view-host",
@@ -1474,10 +1474,13 @@ const DETAIL_VIEWS = {
 	packages: "view-package-detail",
 };
 
-/* Shows one of the Catalogue page's tabs. Used when a route lands on
- * an address that used to be its own page (#pkg-repo, #pkg-cache). */
+/* Shows one of the Pipeline page's tabs. Every tab is now named after
+ * the route that selects it, so this is a lookup rather than the
+ * translation table it used to be -- and the table is what broke when
+ * the Catalogue page became the Pipeline page, since it still asked for
+ * a section id that no longer existed and silently returned. */
 function selectCatalogueTab(tabName) {
-	const view = document.getElementById("view-recipes");
+	const view = document.getElementById("view-pipeline");
 	const bar = view.querySelector(".tab-bar");
 
 	if (bar === null)
@@ -1521,7 +1524,7 @@ const SERVICE_TAB_VIEWS = {
 	"tls-throttle": "view-control-plane",
 	"control-plane-reservation": "view-control-plane",
 	"boot-console": "view-kernel",
-	esp: "view-pipeline",
+	esp: "view-kernel",
 	"signing-keys": "view-pipeline",
 	"kernel-policy": "view-kernel",
 	backup: "view-storage",
@@ -1540,10 +1543,10 @@ const SERVICE_TAB_VIEWS = {
 	"ntp-config": "view-ntp-config",
 	"ntp-servers": "view-ntp-config",
 	"ntp-time": "view-ntp-config",
-	"dhcp-servers": "view-networks",
-	"dhcp-ranges": "view-networks",
-	"dhcp-static": "view-networks",
-	"dhcp-leases": "view-networks",
+	"dhcp-servers": "view-dhcp",
+	"dhcp-ranges": "view-dhcp",
+	"dhcp-static": "view-dhcp",
+	"dhcp-leases": "view-dhcp",
 	"host-stats": "view-host",
 	processes: "view-host",
 	logs: "view-host",
@@ -1660,21 +1663,7 @@ function renderCurrentView() {
 			 * after that the tab bar owns it.
 			 */
 			if (lastRenderedRoute !== route.category)
-				selectCatalogueTab(
-					route.category === "pkg-repo"
-						? "pkg-repo"
-						: route.category === "pkg-cache"
-						  ? "pkg-cache"
-						  : route.category === "images"
-						    ? "images"
-						    : route.category === "packages"
-						      ? "packages"
-						      : route.category === "pkg-build-config"
-						        ? "pkg-build-config"
-						        : route.category === "update"
-						          ? "update"
-						          : "recipes"
-				);
+				selectCatalogueTab(route.category);
 			renderImages(cache.images);
 			renderPackagesView(null);
 			refreshBuildLogs();
@@ -2177,6 +2166,9 @@ function renderTree() {
 				label: c.name,
 				hash: "containers/" + encodeURIComponent(c.name),
 				icon: "containers",
+				/* green running, yellow paused, grey stopped, red
+				 * exited -- the state is the point of the list. */
+				iconColor: containerStatusColorClass(c.status),
 			})),
 		},
 		{
@@ -2187,6 +2179,7 @@ function renderTree() {
 				label: n.name,
 				hash: "networks/" + encodeURIComponent(n.name),
 				icon: "networks",
+				iconColor: n.up === false ? "tree-icon-error" : "tree-icon-ok",
 			})),
 		},
 		{
@@ -2201,12 +2194,14 @@ function renderTree() {
 					label: d.name,
 					hash: "storage/" + encodeURIComponent(d.name),
 					icon: "storage",
+					iconColor: d.mounted ? "tree-icon-ok" : "tree-icon-idle",
 					children: cache.storage
 						.filter((x) => x.is_partition && x.parent_disk === d.name)
 						.map((x) => ({
 							label: x.name,
 							hash: "storage/" + encodeURIComponent(x.name),
 							icon: "storage",
+							iconColor: x.mounted ? "tree-icon-ok" : "tree-icon-idle",
 						})),
 				}))
 				.concat(
@@ -2214,6 +2209,7 @@ function renderTree() {
 						label: v.name,
 						hash: "volumes/" + encodeURIComponent(v.name),
 						icon: "rebuildable",
+						iconColor: "tree-icon-ok",
 					})),
 				),
 		},
@@ -2238,6 +2234,7 @@ function renderTree() {
 				{ label: "DNS", hash: "dns-records", icon: "dns" },
 				{ label: "LDAP", hash: "ldap-servers", icon: "ldap" },
 				{ label: "NTP", hash: "ntp-config", icon: "ntp" },
+				{ label: "DHCP", hash: "dhcp-servers", icon: "dhcp" },
 				{ label: "Syslog", hash: "syslog-targets", icon: "syslog" },
 			],
 		},
