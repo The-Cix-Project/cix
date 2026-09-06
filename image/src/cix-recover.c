@@ -38,6 +38,7 @@
 #include "dual_console.h"
 
 #include "json.h"
+#include "partlabel.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -72,9 +73,16 @@
  * the older box that is likelier to need it. The daemon carries the
  * same legacy path for the same reason.
  */
-#define CONFIG_DEVICE "/dev/vda4"
+/*
+ * Resolved from the GPT labels cix-install wrote, not compiled in
+ * (#305). This tool exists for a box that will not boot, and "the
+ * disk is not called what the binary expects" is one of the ways a
+ * box does not boot -- a recovery tool that assumes /dev/vda is no
+ * use in precisely the situation it was built for.
+ */
+#define CONFIG_PART_LABEL "cix-config"
 #define CONFIG_MOUNT "/mnt/config"
-#define CONTAINERS_DEVICE "/dev/vda5"
+#define CONTAINERS_PART_LABEL "cix-containers"
 #define CONTAINERS_MOUNT "/mnt/containers"
 #define HOSTAUTH_CONFIG_REL_PATH "state/hostauth_config.json"
 
@@ -112,7 +120,10 @@ static int ensure_dir(const char *path)
  * operating on rather than an assumed one.
  */
 static const char *g_mount_point;
-static const char *g_device;
+/* The resolved device, not a pointer into a table: it is now found
+ * at runtime by GPT label (#305), so it has to outlive the loop
+ * that found it. */
+static char g_device[64];
 
 /*
  * Mount each candidate in turn and keep the first that actually holds
@@ -123,19 +134,26 @@ static const char *g_device;
 static int mount_state_partition(char *config_path, size_t config_path_size)
 {
 	static const struct {
-		const char *device;
+		const char *label;
 		const char *mount;
 	} candidates[] = {
-		{ CONFIG_DEVICE, CONFIG_MOUNT },
-		{ CONTAINERS_DEVICE, CONTAINERS_MOUNT },
+		{ CONFIG_PART_LABEL, CONFIG_MOUNT },
+		{ CONTAINERS_PART_LABEL, CONTAINERS_MOUNT },
 	};
 	size_t i;
 
 	for (i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
+		char device[64];
+
+		if (partlabel_find(candidates[i].label, device, sizeof(device)) != 0) {
+			dual_printf("no partition labelled %s on any disk\n", candidates[i].label);
+			continue;
+		}
+		dual_printf("%s is %s\n", candidates[i].label, device);
 		if (ensure_dir(candidates[i].mount) != 0)
 			return -1;
-		if (mount(candidates[i].device, candidates[i].mount, "btrfs", 0, NULL) != 0 &&
-		    mount(candidates[i].device, candidates[i].mount, "ext4", 0, NULL) != 0)
+		if (mount(device, candidates[i].mount, "btrfs", 0, NULL) != 0 &&
+		    mount(device, candidates[i].mount, "ext4", 0, NULL) != 0)
 			continue;
 		if (snprintf(config_path, config_path_size, "%s/%s", candidates[i].mount,
 		             HOSTAUTH_CONFIG_REL_PATH) >= (int)config_path_size) {
@@ -143,9 +161,9 @@ static int mount_state_partition(char *config_path, size_t config_path_size)
 			return -1;
 		}
 		if (access(config_path, R_OK) == 0) {
-			g_device = candidates[i].device;
+			snprintf(g_device, sizeof(g_device), "%s", device);
 			g_mount_point = candidates[i].mount;
-			dual_printf("Found host-auth state on %s.\n", candidates[i].device);
+			dual_printf("Found host-auth state on %s.\n", g_device);
 			return 0;
 		}
 		umount(candidates[i].mount);
@@ -275,7 +293,7 @@ static int recover_main(void)
 		    "cixd API write is already open and there is nothing to reset -- or its state\n"
 		    "storage was relocated to a different disk, which needs manual recovery.\n"
 		    "Nothing was changed.\n",
-		    CONFIG_DEVICE, CONTAINERS_DEVICE);
+		    CONFIG_PART_LABEL, CONTAINERS_PART_LABEL);
 		return 1;
 	default:
 		dual_printf("Could not mount a partition to search. Nothing was changed.\n");

@@ -22,6 +22,7 @@
  * cix-containers.
  */
 #include "dual_console.h"
+#include "partlabel.h"
 #include "treecopy.h"
 
 #include <dirent.h>
@@ -142,16 +143,12 @@ extern char **environ;
 #define AUTO_DATA_MAX_MIB 16384
 
 /*
- * The loader entry's root= and every future boot's own partition access
- * (daemon/src/main.c's ESP_DEVICE/CONFIG_DEVICE) are about the INSTALLED
- * system's own future boot, once this installer's disk is gone and the
- * target is the only disk present -- fixed convention, not derived from
- * whatever device path the installer itself saw the target disk at
- * (e.g. /dev/vdb during install, becoming /dev/vda once it's the only
- * disk left). Partition numbers match this file's own partitioning
- * scheme: 1=ESP, 2=root-a, 3=root-b, 4=config, 5=containers.
+ * There is deliberately no compiled-in device prefix here any more
+ * (#305). The loader entry names the root partition by PARTUUID, read
+ * from the GPT this installer just wrote, and every other partition is
+ * found by its GPT label. Nothing in the installed system assumes what
+ * the kernel will call the disk next boot.
  */
-#define BOOT_TIME_DISK_PREFIX "/dev/vda"
 
 static int run_subprocess(const char *bin, char *const argv[])
 {
@@ -565,10 +562,36 @@ static int auto_partition(const char *disk)
  * just configured, not 0.0.0.0 -- cixd already knows the one real
  * address this install is for; no reason to listen on every interface
  * when exactly one is correct. */
-static int populate_esp(const char *esp_mount, const char *ip)
+static int populate_esp(const char *esp_mount, const char *ip, const char *root_a_dev)
 {
 	char path[512];
 	char loader_conf[512];
+	char root_partuuid[64];
+
+	/*
+	 * The root= this writes is the single line that decides whether
+	 * the installed machine ever boots, and it used to be built from
+	 * a compiled-in "/dev/vda" (#305). The reasoning recorded beside
+	 * that constant was that the target becomes /dev/vda once the
+	 * installer's own media is gone -- true only while the disk is
+	 * virtio. Move the same disk to SATA and it comes back as sda:
+	 * the kernel finds sda1..sda5, the entry still says vda2, and a
+	 * complete, correct install panics in a reboot loop.
+	 *
+	 * PARTUUID is the kernel's own answer and survives any renaming.
+	 * It is what the kernel prints beside each partition when it
+	 * cannot find a root, and root=PARTUUID= is understood by its
+	 * built-in parser -- root=PARTLABEL= is not, which is why the GPT
+	 * label that identifies every other partition here cannot be used
+	 * for this one.
+	 */
+	if (partlabel_uuid_for_device(root_a_dev, root_partuuid, sizeof(root_partuuid)) != 0) {
+		dual_printf("could not read the PARTUUID of %s -- refusing to write a boot entry "
+		            "that names a device path\n",
+		            root_a_dev);
+		return -1;
+	}
+	dual_printf("root partition %s is PARTUUID=%s\n", root_a_dev, root_partuuid);
 
 	snprintf(path, sizeof(path), "%s/EFI", esp_mount);
 	if (ensure_dir(path) != 0)
@@ -627,9 +650,9 @@ static int populate_esp(const char *esp_mount, const char *ip)
 	         /* ADR-0246: cixd is init again until a restarted worker is
 	          * proven to come up -- see the daemon's own entry writer
 	          * for the measurement that reverted this. */
-	         "options console=tty0 console=ttyS0 root=%s2 rw panic=10 init=/bin/cixd "
+	         "options console=tty0 console=ttyS0 root=PARTUUID=%s rw panic=10 init=/bin/cixd "
 	         "-- --init-mode --slot=a --bind=%s\n",
-	         BOOT_TIME_DISK_PREFIX, ip);
+	         root_partuuid, ip);
 	if (write_text_file(path, loader_conf) != 0)
 		return -1;
 
@@ -1107,7 +1130,7 @@ int main(int argc, char **argv)
 		dual_perror("mount esp");
 		return 1;
 	}
-	if (populate_esp(ESP_MOUNT, ip) != 0) {
+	if (populate_esp(ESP_MOUNT, ip, root_a_dev) != 0) {
 		umount(ESP_MOUNT);
 		return 1;
 	}

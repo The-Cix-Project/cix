@@ -19,6 +19,7 @@
 #include "treecopy.h"
 #include "hostproc.h"
 #include "logstore.h"
+#include "partlabel.h"
 #include "ntp.h"
 #include "ping.h"
 #include "resolv.h"
@@ -1021,7 +1022,7 @@ static void migrate_diskroles_out_of_state_dir(void)
  * a GPT-partition-type-based ESP lookup can wait for part 4's real
  * hardware if it turns out to be needed there.
  */
-#define ESP_DEVICE "/dev/vda1"
+static char ESP_DEVICE[64];        /* cix-esp        -- resolved by label, #305 */
 #define ESP_DIR "/boot"
 #define ESP_LOADER_ENTRIES_DIR ESP_DIR "/loader/entries"
 /*
@@ -1043,8 +1044,8 @@ static char g_esp_entries_dir[PATH_MAX] = ESP_LOADER_ENTRIES_DIR;
  * for other partitions. root=%s2/%s3 in populate_esp()'s own loader
  * entries confirms this exact device-per-slot mapping.
  */
-#define ROOT_A_DEVICE "/dev/vda2"
-#define ROOT_B_DEVICE "/dev/vda3"
+static char ROOT_A_DEVICE[64];     /* cix-root-a     -- resolved by label, #305 */
+static char ROOT_B_DEVICE[64];     /* cix-root-b     -- resolved by label, #305 */
 /*
  * Partition 4 in cix-install's own layout (image/src/cix-install.c)
  * -- absent on parts 1/2's own throwaway 2/3-partition test disks, so
@@ -1052,7 +1053,7 @@ static char g_esp_entries_dir[PATH_MAX] = ESP_LOADER_ENTRIES_DIR;
  * mount): its absence just means "not a real installed system," not a
  * broken boot.
  */
-#define CONFIG_DEVICE "/dev/vda4"
+static char CONFIG_DEVICE[64];     /* cix-config     -- resolved by label, #305 */
 #define NET_CONF_PATH CONFIG_DIR "/net.conf"
 /* The reserved network name bootstrap_management_network() creates on
  * a genuinely fresh install (ADR-0066's rename note) -- never used to
@@ -1067,7 +1068,7 @@ static char g_esp_entries_dir[PATH_MAX] = ESP_LOADER_ENTRIES_DIR;
  * BASE_DIR when this device doesn't exist, exactly like every other
  * "not a real installed system" case in this function.
  */
-#define CONTAINERS_DEVICE "/dev/vda5"
+static char CONTAINERS_DEVICE[64]; /* cix-containers -- resolved by label, #305 */
 
 
 
@@ -1804,6 +1805,58 @@ static int bootstrap_management_network(void)
 	return 0;
 }
 
+/*
+ * Find the platform's own partitions by the labels cix-install wrote,
+ * instead of by a device path compiled into this binary (#305).
+ *
+ * These five were "/dev/vda1".."/dev/vda5" for the platform's whole
+ * life, and the comments above each of them said so honestly: a fixed
+ * QEMU virtio-blk layout, with a real lookup deferred until hardware
+ * needed one. Hardware needed one. Moving the same disk from virtio to
+ * SATA renames it to sda, and a fully-installed, perfectly good system
+ * then panics in a reboot loop -- the loader still says root=/dev/vda2,
+ * the kernel finds sda1..sda5, and nothing in the box can reconcile
+ * them. Measured on 192.168.15.95 when the owner changed the disk
+ * configuration deliberately to find out whether the platform coped.
+ *
+ * The names have always been on the disk: cix-install.c's own sfdisk
+ * script writes name="cix-esp" and the other four, and every one of
+ * them survives whatever the kernel decides to call the device this
+ * boot. partlabel_find() reads them straight out of the GPT.
+ *
+ * A label that resolves to nothing leaves its device empty rather than
+ * falling back to a guess. The mounts below already treat a missing
+ * partition as "not a real installed system" -- a throwaway test disk
+ * has no cix-config -- so an empty string reaches mount(2), fails, and
+ * takes exactly the path the absent-device case always took. What is
+ * new is that it says so: on a real box stderr is the serial console,
+ * which is the one place someone watching a boot can actually read.
+ */
+static void resolve_platform_devices(void)
+{
+	static const struct {
+		const char *label;
+		char *out;
+		size_t size;
+	} map[] = {
+		{ "cix-esp", ESP_DEVICE, sizeof(ESP_DEVICE) },
+		{ "cix-root-a", ROOT_A_DEVICE, sizeof(ROOT_A_DEVICE) },
+		{ "cix-root-b", ROOT_B_DEVICE, sizeof(ROOT_B_DEVICE) },
+		{ "cix-config", CONFIG_DEVICE, sizeof(CONFIG_DEVICE) },
+		{ "cix-containers", CONTAINERS_DEVICE, sizeof(CONTAINERS_DEVICE) },
+	};
+	size_t i;
+
+	for (i = 0; i < sizeof(map) / sizeof(map[0]); i++) {
+		if (partlabel_find(map[i].label, map[i].out, map[i].size) == 0) {
+			fprintf(stderr, "cix: %s is %s\n", map[i].label, map[i].out);
+			continue;
+		}
+		map[i].out[0] = '\0';
+		fprintf(stderr, "cix: no partition labelled %s on any disk\n", map[i].label);
+	}
+}
+
 static int boot_init(void)
 {
 	int rtfd;
@@ -1814,6 +1867,16 @@ static int boot_init(void)
 		return -1;
 	if (mount_or_fail("cgroup2", "/sys/fs/cgroup", "cgroup2", 0) != 0)
 		return -1;
+	/*
+	 * Resolve the platform's own partitions before anything mounts
+	 * one (#305). Needs /sys, mounted immediately above; /dev is
+	 * already populated because the kernel mounts devtmpfs itself
+	 * (CONFIG_DEVTMPFS_MOUNT=y in image/kernel/qemu-part1.config),
+	 * so this runs before any of our own /dev work and does not
+	 * depend on it.
+	 */
+	resolve_platform_devices();
+
 	/*
 	 * efivarfs (issue #154). sysfs above provides /sys/firmware/efi,
 	 * but EFI variables live in a SEPARATE filesystem mounted at
@@ -2519,6 +2582,7 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
 	const char *kernel_path;
 	const char *inactive_slot;
 	const char *device;
+	char root_partuuid[64];
 	const char *active_device;
 	char active_kernel_path[PATH_MAX];
 	int src;
@@ -2729,6 +2793,22 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
 		char console_opts[512];
 
 		bootconsole_render(console_opts, sizeof(console_opts));
+		/*
+		 * The entry names the root by PARTUUID, not by the device
+		 * path this daemon happens to see it at (#305). `device`
+		 * below is still the path -- writing the squashfs needs one
+		 * -- but a boot entry outlives this boot, and the name the
+		 * kernel gives a disk does not. A compiled-in /dev/vda2 in
+		 * exactly this line is what turned a healthy install into a
+		 * panic loop when its disk moved from virtio to SATA.
+		 */
+		if (partlabel_uuid_for_device(device, root_partuuid, sizeof(root_partuuid)) != 0) {
+			logstore_write("cixd", "error",
+			                "could not read the PARTUUID of %s -- refusing to write a boot "
+			                "entry naming a device path that may not survive a reboot",
+			                device);
+			return -1;
+		}
 		snprintf(entry_conf, sizeof(entry_conf),
 		         "title Cix (%s)\n"
 		         "sort-key cix\n"
@@ -2755,10 +2835,10 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
 		          * that the reactor does not block in the first place,
 		          * which test_blocking_waits enforces per file.
 		          */
-		         "options %s%sroot=%s rw panic=10 init=/bin/cixd -- --init-mode "
+		         "options %s%sroot=PARTUUID=%s rw panic=10 init=/bin/cixd -- --init-mode "
 		         "--slot=%s --bind=%s\n",
 		         inactive_slot[0] == 'a' ? "A" : "B", (long)time(NULL), inactive_slot,
-		         console_opts, console_opts[0] != '\0' ? " " : "", device, inactive_slot,
+		         console_opts, console_opts[0] != '\0' ? " " : "", root_partuuid, inactive_slot,
 		         g_bind_addr);
 	}
 
