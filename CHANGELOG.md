@@ -2,6 +2,16 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### The dashboard tree names the five lifecycle domains (#182)
+
+`renderTree()` hid all of ADR-0230's five lifecycle domains behind a single **Software** leaf -- recipes, packages, images, build configuration, the artifact cache, repo sync and update policy, the whole of what makes this platform self-hosting -- while **Devices** got a leaf of its own.
+
+A navigation tree is a claim about what a system is, and that one claimed Cix was a container host that also had some software on it.
+
+Costs nothing to fix: those seven pages are already tabs of one view (`CATEGORY_VIEWS` maps them all to `view-recipes`), and every hash the tree now emits is an existing route that already deep-links to its own tab. The page keeps its tabs; the tree stops pretending they are one subject.
+
+Deliberately **not** re-expanded: the host configuration forms. Those were nine leaves of single forms, collapsed into one tabbed destination for a good reason that still holds.
+
 ### A build output tree is created fresh, never inherited (ADR-0253, #307)
 
 ADR-0251 defined what a package artifact *contains*. It said nothing about where the tree that becomes one comes from, and three build output trees were being reused across builds. Each produced an incident, and each looked like a different bug:

@@ -2114,6 +2114,29 @@ function renderTree() {
 	nodePath = {};
 	const root = document.createElement("ul");
 
+	/*
+	 * The tree names the five lifecycle domains of ADR-0230 (#182).
+	 *
+	 * It used to hide all of them behind one leaf. "Software" was a
+	 * single destination covering recipes, packages, images, build
+	 * configuration, the artifact cache, repo sync and update policy
+	 * -- the whole of what makes this platform self-hosting -- while
+	 * "Devices" got a leaf of its own. A navigation tree is a claim
+	 * about what a system is, and that one claimed Cix was a container
+	 * host that also had some software on it.
+	 *
+	 * Those seven pages are tabs of one view (CATEGORY_VIEWS maps them
+	 * all to view-recipes), which is why collapsing them to one leaf
+	 * was tempting and why expanding them costs nothing: every hash
+	 * here is an existing route that already deep-links to its own tab.
+	 * The page keeps its tabs; the tree stops pretending they are one
+	 * subject.
+	 *
+	 * What is deliberately NOT re-expanded: the host configuration
+	 * forms. Those were nine leaves of single forms and were collapsed
+	 * into one tabbed destination for good reason -- that reasoning
+	 * still holds, and undoing it is not what this change is for.
+	 */
 	const topLevel = [
 		{
 			label: "Containers",
@@ -2144,46 +2167,10 @@ function renderTree() {
 		},
 		{
 			/*
-			 * Disks are top-level, and the tree mirrors the real shape
-			 * of the box: every disk is a node, every partition hangs
-			 * under the disk it belongs to, and every volume hangs
-			 * under the device actually holding it.
-			 *
-			 * Volumes appear here and nowhere else. An earlier version
-			 * also kept a flat Volumes list, which meant the same
-			 * volume in two places -- the exact duplication this
-			 * project refuses everywhere else, and no more acceptable
-			 * in a tree than in a config file.
-			 */
-			label: "Disks",
-			hash: "disks",
-			icon: "disks",
-			children: orphanVolumes().concat(wholeDisks().map((d) => ({
-				label: d.name,
-				hash: "disks/" + encodeURIComponent(d.name),
-				icon: "disks",
-				iconColor: d.is_os_disk
-					? "tree-icon-idle"
-					: d.mounted || d.has_mounted_partition
-					  ? "tree-icon-ok"
-					  : "tree-icon-idle",
-				children: diskTreeChildren(d.name),
-			}))),
-		},
-		{
-			/*
 			 * The services this platform runs, or registers servers
-			 * for. Top-level, beside Containers/Networks/Disks: those
-			 * are the things you work with, and a DNS or LDAP service
-			 * is one of them. What is left under System is then
-			 * genuinely the box and its housekeeping.
-			 *
-			 * One leaf per service, each a tabbed page -- the same
-			 * shape Software has. The pages under a service are facets
-			 * of it, not separate destinations, and three tree levels
-			 * meant navigating to find out which one a thing was on.
-			 * The header menu bar has grouped exactly these five as
-			 * "Network Services" all along.
+			 * for. One leaf per service, each a tabbed page -- the
+			 * pages under a service are facets of it, not separate
+			 * destinations.
 			 */
 			label: "Services",
 			hash: "pki-ca",
@@ -2198,85 +2185,116 @@ function renderTree() {
 			],
 		},
 		{
-			/* Aliases to its own FIRST child's hash ("pki-ca", same as
-			 * PKI's own address, same as PKI's own first child "Root CA"'s
-			 * address) -- matching the exact convention every other group
-			 * here already uses (Software->images, DNS->dns-records,
-			 * Backup->backup). Aliasing to anything other than the first
-			 * child is a real bug, not just a style choice: whatever hash
-			 * System's own address shares gets highlighted/expanded
-			 * alongside it (renderTreeActive()/ensureActiveCategoryExpanded()
-			 * both walk shared hashes as one identity, by design, since
-			 * they really do route to the identical page) -- aliasing to
-			 * "update" (an unrelated, distant sibling) instead of the
-			 * first child made an unrelated leaf light up any time System
-			 * itself was merely an ancestor of whatever page was actually
-			 * showing, which looked exactly as random as it was. */
-			label: "System",
-			hash: "recipes",
-			icon: "system",
+			/*
+			 * The physical machine: what it is made of, rather than
+			 * what it is running or how it changes.
+			 *
+			 * Disks keep their own shape -- every disk a node, every
+			 * partition under its disk, every volume under the device
+			 * holding it. Volumes appear here and nowhere else.
+			 *
+			 * Kernel modules sit here because a module is a driver for
+			 * something in this list. Sysctl does not: it is tuning of
+			 * the running kernel, which is the host changing itself.
+			 */
+			label: "Hardware",
+			hash: "disks",
+			icon: "devices",
 			children: [
 				{
-					/*
-					 * Software is part of the system, not a peer of it.
-					 * Catalogue is one destination rather than three
-					 * leaves -- Recipes, Repo & Sync and Cache &
-					 * Artifacts are one subject (what is declared, and
-					 * how it gets here), so splitting them across the
-					 * tree made you navigate to find out which of three
-					 * pages a thing was on. Part 195 split Catalog from
-					 * "Build & Deploy" at the time; that grouping did
-					 * not earn its keep -- with Catalogue collapsed it
-					 * was a folder holding exactly two leaves.
-					 */
-					label: "Software",
-					hash: "recipes",
-					icon: "software",
-				},
-				{
-					/*
-					 * The box itself: who it is, what it listens on, who
-					 * is logged in, and where its own concerns live. One
-					 * tabbed destination -- these were nine leaves, most
-					 * of them a single form.
-					 *
-					 * Devices is NOT here: a physical hardware
-					 * inventory is something you look at, not something
-					 * you configure. Routes IS here, and the earlier
-					 * reasoning that grouped the two was weaker than it
-					 * sounded -- the routing table is edited from this
-					 * page, which makes it configuration of the box like
-					 * everything else on it. Package Builds moved to
-					 * Software, where build configuration belongs.
-					 */
-					label: "Host",
-					hash: "daemon-config",
-					icon: "host",
-				},
-				{
-					/* The whole configuration as one document
-					 * (ADR-0206). Deliberately its own leaf rather than a
-					 * tab on Host: it is not a facet of one subsystem, it
-					 * is every subsystem at once, which is the entire
-					 * reason it exists. */
-					label: "Running Config",
-					hash: "running-config",
-					icon: "config",
+					label: "Disks",
+					hash: "disks",
+					icon: "disks",
+					children: orphanVolumes().concat(wholeDisks().map((d) => ({
+						label: d.name,
+						hash: "disks/" + encodeURIComponent(d.name),
+						icon: "disks",
+						iconColor: d.is_os_disk
+							? "tree-icon-idle"
+							: d.mounted || d.has_mounted_partition
+							  ? "tree-icon-ok"
+							  : "tree-icon-idle",
+						children: diskTreeChildren(d.name),
+					}))),
 				},
 				{ label: "Devices", hash: "devices", icon: "devices" },
-				{
-					/* Everything about observing what the box is doing --
-					 * live resource graphs, the process table, the log
-					 * store and the kernel ring buffer, and registered-
-					 * server health -- on one tabbed page. These were five
-					 * leaves; each is a facet of the same question, and a
-					 * folder of five single-purpose pages meant navigating
-					 * to find out which one a thing was on. Same reasoning
-					 * that collapsed Software, Host and each service. */
-					label: "Monitoring",
-					hash: "host-stats",
-					icon: "stats",
-				},
+				{ label: "Kernel Modules", hash: "kmod", icon: "system" },
+			],
+		},
+		{
+			/* Catalogue (ADR-0230): what software exists. */
+			label: "Catalogue",
+			hash: "recipes",
+			icon: "recipes",
+			children: [
+				{ label: "Recipes", hash: "recipes", icon: "recipes" },
+				{ label: "Packages", hash: "packages", icon: "packages" },
+				{ label: "Images", hash: "images", icon: "images" },
+			],
+		},
+		{
+			/* CI (ADR-0230): how software gets built. A leaf rather
+			 * than a folder, because build configuration is the only
+			 * destination the dashboard has for it today -- builds,
+			 * build environments and build logs are CLI-only, which is
+			 * the "remaining domains need status surfaces" half of
+			 * #182 and is not invented here. */
+			label: "Build",
+			hash: "pkg-build-config",
+			icon: "software",
+		},
+		{
+			/* CD (ADR-0230): how software gets delivered. */
+			label: "Delivery",
+			hash: "pkg-cache",
+			icon: "rebuildable",
+			children: [
+				{ label: "Cache & Artifacts", hash: "pkg-cache", icon: "rebuildable" },
+				{ label: "Repo & Sync", hash: "pkg-repo", icon: "update" },
+				{ label: "Update Policy", hash: "update", icon: "update" },
+			],
+		},
+		{
+			/* Host lifecycle (ADR-0230): how this machine changes.
+			 * Host itself stays one tabbed destination -- see the note
+			 * above about not re-exploding the configuration forms. */
+			label: "Host Lifecycle",
+			hash: "daemon-config",
+			icon: "host",
+			children: [
+				{ label: "Host", hash: "daemon-config", icon: "host" },
+				{ label: "Boot & Slots", hash: "esp", icon: "system" },
+				{ label: "Kernel Policy", hash: "kernel-policy", icon: "system" },
+				{ label: "Sysctl", hash: "sysctl", icon: "config" },
+				{ label: "Backup", hash: "backup", icon: "backup" },
+				{ label: "Running Config", hash: "running-config", icon: "config" },
+			],
+		},
+		{
+			/* Media (ADR-0230): how new machines are made. A leaf, and
+			 * a thin one: GET/POST /system/iso are x-cix-expose [cli],
+			 * so installer assembly has no dashboard surface at all and
+			 * only the signing keys it uses do. Named anyway rather
+			 * than omitted -- the domain exists, and the gap is the
+			 * point (#182). */
+			label: "Media",
+			hash: "signing-keys",
+			icon: "config",
+		},
+		{
+			/* Everything about observing what the box is doing. These
+			 * are tabs of one view, deep-linked the same way the
+			 * catalogue domains are. */
+			label: "Monitoring",
+			hash: "host-stats",
+			icon: "stats",
+			children: [
+				{ label: "Host Stats", hash: "host-stats", icon: "stats" },
+				{ label: "Processes", hash: "processes", icon: "stats" },
+				{ label: "Log Store", hash: "logs", icon: "logs" },
+				{ label: "Kernel Log", hash: "kmsg", icon: "logs" },
+				{ label: "Server Health", hash: "server-health", icon: "services" },
+				{ label: "Stalls", hash: "stalls", icon: "stats" },
 			],
 		},
 	];
