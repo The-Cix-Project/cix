@@ -1247,6 +1247,7 @@ static const struct cli_node n_pkg_subs[] = {
 	{ "policy", n_pkg_policy_flags, n_pkg_policy_subs },
 	{ "source-policy", n_pkg_source_policy_flags, n_pkg_source_policy_subs },
 	{ "upstreams", NULL, NULL },
+	{ "source-catalogue", NULL, NULL },
 	{ "rebuilds", NULL, NULL },
 	{ "recipe", NULL, n_pkg_recipe_subs },
 	{ "recipes", NULL, NULL },

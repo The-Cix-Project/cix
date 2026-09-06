@@ -8626,6 +8626,57 @@ paths:
                     items:
                       $ref: "#/components/schemas/UpstreamKind"
 
+  /pkg/source-catalogue:
+    get:
+      summary: What upstream has published, against what this platform has recipes for (ADR-0255)
+      description: >
+        One row per package: the release its effective source policy
+        resolves to, the newest recipe that exists for it, and whether a
+        recipe for that resolved release exists at all.
+
+        Computed on every read, never stored. A row is a pure function
+        of the kind's cached release list, the effective policy and the
+        recipes on disk -- all three of which already have an owner, and
+        a stored fourth copy would go stale the instant a recipe is
+        published with no event to invalidate it. Reading this endpoint
+        IS running the check, which is what makes manual invocation
+        free.
+
+        Reading never fetches. Refreshing a kind's release list is a
+        network operation and belongs to that kind's own refresh
+        endpoint (kernel.org: POST /v1/system/kernel-releases). Every
+        row carries `upstream_fetched_at` so stale data is visible
+        rather than implied.
+
+        `state` answers "do we have it", not "is upstream newer". The
+        policy says which release is wanted; the useful question is
+        whether a recipe builds it. Those come apart: with recipes for
+        6.18.40-24 and 7.2.3-2 both present, a longterm policy resolving
+        to 6.18.46 is `missing` even though the highest recipe on disk
+        is numerically greater. Both versions are reported so the
+        direction is never hidden behind the verdict.
+
+        `pinned` is a permanent, first-class answer, not a gap: a
+        project publishing neither a machine-readable release list nor
+        signed checksums cannot be rolled safely. A package that cannot
+        resolve appears as `unresolved` WITH its reason -- never as a
+        blank row, since a missing row reads as up to date.
+
+        Note the kernel has two resolvers with different jobs.
+        GET /system/kernel-policy (ADR-0193) steers longterm by the
+        running kernel's own series; this catalogue uses the depth
+        expression instead. ADR-0255 records that split and partly
+        supersedes ADR-0193.
+      operationId: getSourceCatalogue
+      x-cix-expose: [cli]
+      responses:
+        "200":
+          description: The source catalogue
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SourceCatalogue"
+
   /pkg/source-policy:
     get:
       summary: Which upstream release packages build (ADR-0255)
@@ -13562,6 +13613,74 @@ components:
             among these; they are not free text.
         summary:
           type: string
+
+    SourceCatalogueEntry:
+      type: object
+      required: [name, state, reason]
+      properties:
+        name:
+          type: string
+        state:
+          type: string
+          enum: [pinned, current, missing, unresolved]
+          description: >
+            pinned -- the recipe declares no pkg_upstream, a permanent
+            and correct answer for a project that cannot be rolled
+            safely. current -- a recipe exists for the resolved release.
+            missing -- the policy resolved and no recipe builds that
+            release. unresolved -- a kind is declared but resolution
+            failed; `reason` says why.
+        upstream:
+          type: [string, "null"]
+          description: The discovery kind, or null when pinned.
+        channel:
+          type: [string, "null"]
+        depth:
+          type: [string, "null"]
+        resolved_version:
+          type: [string, "null"]
+          description: >
+            The upstream release the effective policy points at, or null
+            when pinned or unresolved.
+        newest_recipe_version:
+          type: [string, "null"]
+          description: >
+            The highest recipe version on disk, or null if there is
+            none. Reported alongside resolved_version rather than
+            compared into a single boolean, because the two can move in
+            opposite directions across release lines.
+        upstream_fetched_at:
+          type: [integer, "null"]
+          description: >
+            Unix time this kind's release data was last fetched; null if
+            it never has been. A row resolved from old data is still a
+            true row -- this is what lets a reader see how old.
+        reason:
+          type: string
+          description: >
+            Always populated, for every state including current. A
+            failure that says only "unresolved" leaves an operator to go
+            and find out; this says what was asked for and what was
+            available.
+
+    SourceCatalogue:
+      type: object
+      required: [packages, total, pinned, current, missing, unresolved]
+      properties:
+        packages:
+          type: array
+          items:
+            $ref: "#/components/schemas/SourceCatalogueEntry"
+        total:
+          type: integer
+        pinned:
+          type: integer
+        current:
+          type: integer
+        missing:
+          type: integer
+        unresolved:
+          type: integer
 
     SystemStats:
       type: object

@@ -20217,6 +20217,12 @@ static void op_listUpstreamKinds(const struct api_ctx *ctx)
 	handle_upstream_kinds_get(ctx->fd);
 }
 
+/* GET /v1/pkg/source-catalogue (ADR-0255) */
+static void op_getSourceCatalogue(const struct api_ctx *ctx)
+{
+	handle_source_catalogue_get(ctx->fd);
+}
+
 /* GET /v1/pkg/source-policy (ADR-0255) */
 static void op_getSourcePolicy(const struct api_ctx *ctx)
 {
