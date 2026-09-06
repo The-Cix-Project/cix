@@ -1403,10 +1403,6 @@ const CATEGORY_VIEWS = {
 	networks: "view-networks",
 	"routes": "view-networks",
 	devices: "view-devices",
-	gpu: "view-devices",
-	net: "view-devices",
-	pci: "view-devices",
-	usb: "view-devices",
 	kmod: "view-devices",
 	sysctl: "view-kernel",
 	storage: "view-storage",
@@ -1435,8 +1431,8 @@ const CATEGORY_VIEWS = {
 	"rolling-restart": "view-pipeline",
 	"pkg-build-config": "view-pipeline",
 	"hostauth-sessions": "view-host",
-	"host-stats": "view-monitoring",
-	processes: "view-monitoring",
+	"host-stats": "view-host",
+	processes: "view-host",
 	"syslog-targets": "view-syslog-targets",
 	"tls-throttle": "view-control-plane",
 	"control-plane-reservation": "view-control-plane",
@@ -1444,10 +1440,10 @@ const CATEGORY_VIEWS = {
 	esp: "view-pipeline",
 	"signing-keys": "view-pipeline",
 	"kernel-policy": "view-kernel",
-	logs: "view-monitoring",
+	logs: "view-host",
 	kmsg: "view-kernel",
-	"server-health": "view-monitoring",
-	stalls: "view-monitoring",
+	"server-health": "view-server-health",
+	stalls: "view-control-plane",
 	volumes: "view-storage",
 	/* Repo & Sync and Cache & Artifacts became tabs on the Catalogue
 	 * page. Their old addresses still resolve to it (with the right tab
@@ -1547,12 +1543,12 @@ const SERVICE_TAB_VIEWS = {
 	"dhcp-ranges": "view-networks",
 	"dhcp-static": "view-networks",
 	"dhcp-leases": "view-networks",
-	"host-stats": "view-monitoring",
-	processes: "view-monitoring",
-	logs: "view-monitoring",
+	"host-stats": "view-host",
+	processes: "view-host",
+	logs: "view-host",
 	kmsg: "view-kernel",
-	"server-health": "view-monitoring",
-	stalls: "view-monitoring",
+	"server-health": "view-server-health",
+	stalls: "view-control-plane",
 };
 
 /* The category last rendered, so a re-render triggered by the poll loop
@@ -2172,7 +2168,11 @@ function renderTree() {
 			hash: "networks",
 			icon: "networks",
 			children: [
-				{ label: "Networks", hash: "networks", icon: "networks" },
+				...cache.networks.map((n) => ({
+					label: n.name,
+					hash: "networks/" + encodeURIComponent(n.name),
+					icon: "networks",
+				})),
 				{ label: "Routes", hash: "routes", icon: "networks" },
 				{ label: "DHCP", hash: "dhcp-servers", icon: "dhcp" },
 			],
@@ -2196,6 +2196,7 @@ function renderTree() {
 				{ label: "LDAP", hash: "ldap-servers", icon: "ldap" },
 				{ label: "NTP", hash: "ntp-config", icon: "ntp" },
 				{ label: "Syslog", hash: "syslog-targets", icon: "syslog" },
+				{ label: "Server Health", hash: "server-health", icon: "monitoring" },
 			],
 		},
 		{
@@ -2205,7 +2206,11 @@ function renderTree() {
 			hash: "storage",
 			icon: "storage",
 			children: [
-				{ label: "Storage", hash: "storage", icon: "storage" },
+				...cache.storage.filter((d) => !d.is_partition).map((d) => ({
+					label: d.name,
+					hash: "storage/" + encodeURIComponent(d.name),
+					icon: "storage",
+				})),
 				{ label: "Volumes", hash: "volumes", icon: "rebuildable" },
 				{ label: "Placement", hash: "storage-placement", icon: "storage" },
 				{ label: "Swap", hash: "host-swap", icon: "storage" },
@@ -2215,16 +2220,9 @@ function renderTree() {
 		},
 		{
 			label: "Devices",
-			/* A parent's hash is its own first tab, the same shape
-			 * Services and Monitoring already use. `#devices` still
-			 * resolves for anyone who bookmarked it. */
-			hash: "usb",
+			hash: "devices",
 			icon: "devices",
 			children: [
-				{ label: "USB", hash: "usb", icon: "devices" },
-				{ label: "PCI", hash: "pci", icon: "devices" },
-				{ label: "Network", hash: "net", icon: "networks" },
-				{ label: "GPU", hash: "gpu", icon: "devices" },
 				{ label: "Kernel Modules", hash: "kmod", icon: "system" },
 			],
 		},
@@ -2235,7 +2233,6 @@ function renderTree() {
 			hash: "pipeline",
 			icon: "software",
 			children: [
-				{ label: "Overview", hash: "pipeline", icon: "software" },
 				{ label: "Repos", hash: "pkg-repo", icon: "update" },
 				{ label: "Catalogue", hash: "packages", icon: "packages" },
 				{ label: "Triggers", hash: "update", icon: "update" },
@@ -2253,10 +2250,12 @@ function renderTree() {
 			hash: "daemon-config",
 			icon: "system",
 			children: [
-				{ label: "Daemon", hash: "daemon-config", icon: "system" },
 				{ label: "Site", hash: "site", icon: "system" },
 				{ label: "Sessions", hash: "hostauth-sessions", icon: "ldap" },
 				{ label: "Running Config", hash: "running-config", icon: "system" },
+				{ label: "Host Stats", hash: "host-stats", icon: "monitoring" },
+				{ label: "Processes", hash: "processes", icon: "monitoring" },
+				{ label: "Log Store", hash: "logs", icon: "logs" },
 				{ label: "Factory Reset", hash: "factory-reset", icon: "update" },
 			],
 		},
@@ -2265,8 +2264,8 @@ function renderTree() {
 			hash: "tls-throttle",
 			icon: "system",
 			children: [
-				{ label: "TLS Throttle", hash: "tls-throttle", icon: "system" },
 				{ label: "CPU & Memory", hash: "control-plane-reservation", icon: "system" },
+				{ label: "Stalls", hash: "stalls", icon: "monitoring" },
 			],
 		},
 		{
@@ -2274,25 +2273,13 @@ function renderTree() {
 			hash: "kernel-policy",
 			icon: "system",
 			children: [
-				{ label: "Kernel Line", hash: "kernel-policy", icon: "system" },
 				{ label: "Sysctl", hash: "sysctl", icon: "system" },
 				{ label: "Boot Console", hash: "boot-console", icon: "system" },
 				{ label: "Kernel Log", hash: "kmsg", icon: "monitoring" },
 			],
 		},
-		{
-			label: "Monitoring",
-			hash: "host-stats",
-			icon: "monitoring",
-			children: [
-				{ label: "Host Stats", hash: "host-stats", icon: "monitoring" },
-				{ label: "Processes", hash: "processes", icon: "monitoring" },
-				{ label: "Log Store", hash: "logs", icon: "logs" },
-				{ label: "Server Health", hash: "server-health", icon: "monitoring" },
-				{ label: "Stalls", hash: "stalls", icon: "monitoring" },
-			],
-		},
 	];
+
 
 
 	for (const item of topLevel)
