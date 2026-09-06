@@ -15,6 +15,7 @@ pkg_name="bash"
 pkg_version="5.2.37-5"
 pkg_source="https://ftp.gnu.org/gnu/bash/bash-5.2.37.tar.gz"
 pkg_sha256="9599b22ecd1d5787ad7d3b7bf0c59f312b3396d1e281175dd1f8a4014da621ff"
+pkg_artifact_sha256="a0b0e6e78822e844660dd4f274afbd11edde7f910d001258f0ee53993443ef6e"
 
 # Prebuilt artifact for THIS exact version (ADR-0122 package tier).
 # With it set, an install fetches <artifact base_url>/bash-5.2.37-2.tar.gz

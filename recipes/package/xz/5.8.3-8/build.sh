@@ -47,6 +47,7 @@ pkg_name="xz"
 pkg_version="5.8.3-8"
 pkg_source="https://github.com/tukaani-project/xz/releases/download/v5.8.3/xz-5.8.3.tar.gz"
 pkg_sha256="3d3a1b973af218114f4f889bbaa2f4c037deaae0c8e815eec381c3d546b974a0"
+pkg_artifact_sha256="e3828c45658a3ecf15793b2918a5d4fa2b947f47228d9d0b21b456257a76ca68"
 
 # Prebuilt artifact for THIS exact version (ADR-0122 package tier).
 # With it set, an install fetches <artifact base_url>/xz-5.8.3-3.tar.gz

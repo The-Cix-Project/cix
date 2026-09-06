@@ -19,6 +19,7 @@ pkg_name="coreutils"
 pkg_version="9.11-7"
 pkg_source="https://ftp.gnu.org/gnu/coreutils/coreutils-9.11.tar.xz"
 pkg_sha256="394024eda0a5955217ceda9cd1201e65dc8fa3aa29c2951135a49521d57c3cc3"
+pkg_artifact_sha256="05148c4be52ce16842e4ece13cb026f524428ef3aba99ef086085f7e46fef166"
 
 # Prebuilt artifact for THIS exact version (ADR-0122 package tier).
 # With it set, an install fetches <artifact base_url>/coreutils-9.11-3.tar.gz

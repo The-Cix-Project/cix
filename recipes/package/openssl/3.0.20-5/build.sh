@@ -97,6 +97,7 @@ pkg_name="openssl"
 pkg_version="3.0.20-5"
 pkg_source="https://github.com/openssl/openssl/releases/download/openssl-3.0.20/openssl-3.0.20.tar.gz"
 pkg_sha256="c80a01dfc70ece4dc21168932c37739042d404d46ccc81a5986dd75314ecda6f"
+pkg_artifact_sha256="c5181cdc7ca5f2d52a9baba8f27977c3e45532692d186a729419eac2a3758495"
 
 # No pkg_artifact_sha256. 3.0.20's approved exactly the bytes 3.0.20
 # produced, and this revision changes both the install layout and the

@@ -2,6 +2,16 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### An image recipe is authoritative (ADR-0252)
+
+`cix-builder` 5.0.0 named eleven packages; the live image held twenty, pinning `tcc` nine revisions and one compiler upgrade behind what the box was actually building with. 5.0.0's header had said the same thing about 3.0.0's drift that 6.0.0's now says about 5.0.0's. It came back both times because an image could be changed two ways — `pkg install --image=X` mutates the live image, the recipe describes what it should be — and neither was subordinate to the other.
+
+It was still drifting while the ADR was written: measured on 192.168.15.95 minutes after materializing the image from its own 6.0.0 recipe, `zlib` sits at `1.3.2-10` against a `1.3.2-9` pin.
+
+The owner's decision: **the recipe is authoritative and the image is derived from it.** A comparator that reports drift was rejected — comparing two things concedes both are authoritative, and detects what one mechanism can prevent. Same shape ADR-0251 had just removed from package contents.
+
+Recorded honestly: the ADR also names a gap it does **not** close. Dependency resolution ignores pins transitively by design (`PkgInstallRequest.version`: "pinning applies only to the single package actually being installed"), so an image recipe pinning twenty-four packages cannot yet guarantee those twenty-four versions. That is now a gap between what a recipe claims and what the installer delivers, rather than an unexamined assumption.
+
 ### A package artifact carries what the platform runs, and nothing else (ADR-0251)
 
 The owner asked why an installer ISO is 218 MiB when the whole thing should be "kernel + cix + some decoration". Measuring the `glibc` artifact answered it: 56.8 MiB compressed, 146.4 MiB unpacked over 2114 entries.

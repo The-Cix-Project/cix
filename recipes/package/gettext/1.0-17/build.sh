@@ -13,6 +13,7 @@ pkg_name="gettext"
 pkg_version="1.0-17"
 pkg_source="https://mirrors.kernel.org/gnu/gettext/gettext-1.0.tar.xz"
 pkg_sha256="71132a3fb71e68245b8f2ac4e9e97137d3e5c02f415636eb508ae607bc01add7"
+pkg_artifact_sha256="1f11bd5196cee3475f2b01ae5756fb6443d39debd64ce6884f5d9e7b7cb5709e"
 pkg_depends=""
 
 # ADR-0199/0209: the build environment is composed from exactly
