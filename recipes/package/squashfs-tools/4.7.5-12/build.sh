@@ -114,6 +114,7 @@ pkg_name="squashfs-tools"
 pkg_version="4.7.5-12"
 pkg_source="https://github.com/plougher/squashfs-tools/archive/refs/tags/4.7.5.tar.gz"
 pkg_sha256="547b7b7f4d2e44bf91b6fc554664850c69563701deab9fd9cd7e21f694c88ea6"
+pkg_artifact_sha256="1bfd5640b8a81eb118fa652c57476db0c20cc4b2b54db7642969034cb59e5a71"
 
 # Prebuilt artifact for THIS exact version (ADR-0122 package tier).
 # With it set, an install fetches <artifact base_url>/squashfs-tools-4.7.5-5.tar.gz
