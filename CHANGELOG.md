@@ -2,6 +2,42 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### ADR-0255 verified live: the kernel is the first rollable package
+
+Deployed to 192.168.15.95 as `v2.53.82` (slot a, kernel 7.2.3) and exercised against the running daemon, because compiling is not proof:
+
+```
+GET  /pkg/upstreams        {"upstreams":[{"name":"kernel.org",
+                            "channels":["mainline","stable","longterm"], ...}]}
+GET  /pkg/source-policy    {"default":{"channel":null,"depth":"n"},"packages":[]}
+PUT  /pkg/source-policy    {"channel":"stable","depth":"n"}          -> 200
+```
+
+Before `kernel/7.2.3-2`, every package answered the same way, and that answer was correct:
+
+```
+PUT /pkg/kernel/source-policy {"channel":"lts"}
+-> 400 package "kernel" declares no pkg_upstream, so it has no channels
+       to choose from; it is pinned
+```
+
+Absence being the safe default is the property, not a gap. `kernel/7.2.3-2` adds one line — `pkg_upstream="kernel.org"` — and the same call changes meaning entirely:
+
+```
+PUT /pkg/kernel/source-policy {"channel":"stable"}  -> 200  rollable
+PUT /pkg/kernel/source-policy {"channel":"lts"}
+-> 400 upstream "kernel.org" does not publish a "lts" channel;
+       it has mainline, stable, longterm
+```
+
+Both refusals are 400s about a channel, and they say completely different things: one is *"this package does not roll at all"*, the other *"it rolls, but not like that, and here is what it does"*. That distinction is what a declared-rollability model buys, and it only exists because the recipe states how it discovers releases rather than leaving it implied.
+
+The recipe declares **how** to discover, never **which** release to take. Channel and depth are operator state, because a recipe cannot know which line a particular machine is meant to sit on — the same split ADR-0188 established for artifact policy. After `DELETE`, `kernel` inherits the platform default `stable`/`n`, which is the default *acting* rather than merely being stored.
+
+`7.2.3-2` is a new revision rather than an edit, because ADR-0107 makes a published version immutable and the one permitted exception is adding `pkg_artifact_sha256` — a rule this session already ran into from the other side when a 409 correctly refused a checksum wrapped in a comment block.
+
+**What is not done yet, stated plainly:** setting a policy records intent; nothing yet turns a resolution into a build. Stages 1–3 (discover, resolve, authenticate) exist and were driven by hand to produce this very kernel; stages 4–9 still are the hand-driven path. The trigger that closes the loop is the next part, and until it lands the honest description is that the platform can now *say* what it should build, not that it builds it.
+
 ### ADR-0255 part 4: the REST surface, and the recipe field behind it
 
 Five endpoints, contract-first as ADR-0218 requires — `docs/api/openapi.yaml` edited before any handler, routes generated from it, and `docs/api/README.md` updated in the **same change** rather than after, which is the rule written when it drifted ten phases stale.
