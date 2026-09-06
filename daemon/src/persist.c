@@ -171,6 +171,20 @@ int persist_read_file(const char *path, char **out_buf, size_t *out_len)
 	return 0;
 }
 
+/*
+ * ADR-0253. Deliberately tolerant of the path not existing: "fresh"
+ * means empty afterwards, and a tree that was never there is already
+ * empty. Only a failure to actually clear or create it is an error.
+ */
+int persist_fresh_output_dir(const char *path)
+{
+	struct stat st;
+
+	if (stat(path, &st) == 0 && persist_remove_tree(path) != 0)
+		return -1;
+	return cix_mkdir_p(path);
+}
+
 int persist_mkdir_p(const char *dir_path)
 {
 	return cix_mkdir_p(dir_path);

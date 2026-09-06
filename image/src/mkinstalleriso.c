@@ -25,6 +25,7 @@
  * itself, which deliberately never links test/, since it runs on a
  * real target disk as production code).
  */
+#include "persist.h"
 #include "libdirs.h"
 #include "test_image_fixture.h"
 
@@ -366,6 +367,27 @@ int main(int argc, char **argv)
 		setenv("pkgdatadir", grub_data_dir, 1);
 	}
 
+	/*
+	 * ADR-0253: the staging tree is this build's output, so it starts
+	 * empty. It did not, and issue #307 is the result: `cp -a src dst`
+	 * treats an existing directory as "copy INTO here", so a
+	 * payload/seed left by the previous ISO build became the parent of
+	 * this one, producing payload/seed/.seed. The ISO then shipped the
+	 * seed TWICE -- 64.6 MiB wanted plus 69.9 MiB duplicated out of
+	 * 217.9 MiB total -- and cix-install copied the OUTER, STALE tree,
+	 * so a freshly installed box got recipes four days older than the
+	 * media it was installed from.
+	 *
+	 * The comment beside the seed copy already records an earlier round
+	 * of exactly this bug (payload/seed/seed). That fix removed the
+	 * pre-creation of the destination, which is only sufficient if the
+	 * destination cannot already exist -- and it always could, because
+	 * nothing ever emptied this directory.
+	 */
+	if (persist_fresh_output_dir(stage_dir) != 0) {
+		fprintf(stderr, "could not start the staging tree %s empty\n", stage_dir);
+		return 1;
+	}
 	if (ensure_dir(stage_dir) != 0)
 		return 1;
 	if (test_image_fixture_build(stage_dir, cix_install_bin, "cix-install") != 0)

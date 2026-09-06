@@ -2,6 +2,28 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### A build output tree is created fresh, never inherited (ADR-0253, #307)
+
+ADR-0251 defined what a package artifact *contains*. It said nothing about where the tree that becomes one comes from, and three build output trees were being reused across builds. Each produced an incident, and each looked like a different bug:
+
+| tree | what happened |
+|---|---|
+| `<artifacts>/<name>` | `mkbootroot` reads `<artifacts>/cix/web`. **No cix recipe has ever staged it.** Every assembly worked on a `web/` left by an older build; a reinstall swept the leftovers away and assembly failed at once. |
+| ISO `stage_dir` | `cp -a src dst` copies INTO an existing directory, so last build's `payload/seed` became this build's parent: `payload/seed/.seed`. The ISO shipped the seed **twice** -- 64.6 MiB wanted plus 69.9 MiB duplicated of 217.9 MiB -- and `cix-install` copied the **outer, stale** one (#307). |
+| bootroot `image_root` | A root carrying `libc.so.6` from one build and `libm`/`libpthread`/`libresolv` from another. `GLIBC_PRIVATE` is version-locked, so pid 1 dies and the kernel panics. Two resets of a real host. |
+
+A fourth was already fixed without the rule being stated: build output left in the artifact directory rode along into the published package, 22 MB downloaded to use 1.5 MB (#178).
+
+**The shape is not "stale files". It is that absence became invisible** -- a requirement no recipe met was silently satisfied by history, so the gap could not be observed until something swept the history away. Same defect as ADR-0251, one level up.
+
+Two of the five sites were already correct (`$PKG_DESTDIR` and the ISO seed dir are both cleared before every build), which is what shows the rule was understood and simply not applied uniformly. **The three that were not are the three that failed.**
+
+`persist_fresh_output_dir()` is now the one operation, used at all three. Deliberately one call rather than a remove-then-create at each site: these sites got it wrong **by omission**, and an omission is invisible in review where a named call is not.
+
+`test_fresh_output_dir` covers an inherited tree, a path that does not exist, a path occupied by a regular file, and idempotency. Both failure modes were reintroduced to prove it catches them -- creating without removing (the original bug in all three tools), and removing without recreating.
+
+**#307 is fixed at its cause**: the ISO carries one seed because the tree it is copied into starts empty, not because the copy was made more careful. An earlier fix for this same bug *had* made the copy more careful -- it removed the destination's pre-creation -- and was insufficient precisely because it left the inherited directory in place.
+
 ### cix-builder 6.1.0 -- the first time the recipe moved because it is authoritative
 
 ADR-0252 says the recipe is authoritative and the image is derived from it. Two pins in 6.0.0 no longer described the image, and under that decision the recipe is what moves:

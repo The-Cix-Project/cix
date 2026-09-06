@@ -67,4 +67,16 @@ int persist_mkdir_p(const char *dir_path);
  */
 int persist_remove_tree(const char *path);
 
+/*
+ * ADR-0253: a build output tree is created fresh, never inherited.
+ *
+ * Removes whatever is at path and recreates it empty, so what a build
+ * produces is exactly what that build put there. This is one call
+ * rather than a remove-then-create at each site because the sites that
+ * got it wrong got it wrong by omission, and an omission is invisible.
+ *
+ * Returns 0 on success, -1 with errno set otherwise.
+ */
+int persist_fresh_output_dir(const char *path);
+
 #endif /* PERSIST_H */
