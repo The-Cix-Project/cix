@@ -2362,20 +2362,26 @@ pre {
  * stages are a sequence, and a reader who has to scroll to see the last
  * three loses the one thing this view exists to show.
  */
+/*
+ * A grid rather than a wrapping flex row: every cell is the same width,
+ * so the longest stage name ("authenticate") sets the track size for
+ * all of them and none can overflow its own box. A flex row sized to
+ * the shortest name instead, and clipped the longest -- which is the
+ * one stage whose name a reader is least likely to guess.
+ */
 .pipeline-flow {
-	display: flex;
-	flex-wrap: wrap;
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
 	gap: 8px;
 	margin: 12px 0 18px;
 }
 
 .pipeline-stage {
-	flex: 1 1 96px;
-	min-width: 96px;
 	padding: 8px 10px;
 	border: 1px solid var(--border);
 	border-radius: 4px;
 	background: var(--panel);
+	min-width: 0;
 }
 
 /* An empty stage is still drawn, just quietly -- see refreshPipeline(). */
@@ -2385,9 +2391,10 @@ pre {
 
 .pipeline-stage-name {
 	font-size: 0.78rem;
-	letter-spacing: 0.04em;
+	letter-spacing: 0.03em;
 	text-transform: uppercase;
 	color: var(--muted);
+	overflow-wrap: anywhere;
 }
 
 .pipeline-stage-count {
