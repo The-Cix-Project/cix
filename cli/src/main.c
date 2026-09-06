@@ -196,6 +196,8 @@ static void print_usage(FILE *out)
 	        "  pki cert create --name=NAME [--sans=a,b,c] [--days=N]\n"
 	        "  pki cert ls\n"
 	        "  pki cert rm NAME\n"
+	        "  schedule ls | actions | show N | set N | rm N | run N  -- everything this host\n"
+	        "               does on a clock, in one place (ADR-0257)\n"
 	        "  pipeline [--all]  -- where every package stands in the eleven-stage pipeline,\n"
 	        "               and what is stopping it (ADR-0256). Hides ok/not-implemented\n"
 	        "               rows unless --all\n"
@@ -419,6 +421,22 @@ static void print_usage(FILE *out)
 static const char *json_str_field(const struct json_value *obj, const char *key)
 {
 	return json_as_string(json_object_get(obj, key));
+}
+
+/* A missing or null string renders as "-" rather than as "(null)" --
+ * every table in this client already means "nothing here" by a dash. */
+static const char *json_str_or(const struct json_value *obj, const char *key)
+{
+	const char *v = json_as_string(json_object_get(obj, key));
+
+	return v != NULL && v[0] != '\0' ? v : "-";
+}
+
+static int json_bool_field(const struct json_value *obj, const char *key)
+{
+	const struct json_value *v = json_object_get(obj, key);
+
+	return v != NULL && v->type == JSON_BOOL && v->u.boolean;
 }
 
 /* Writes v (recursively) into w using the same escaping/structure
@@ -14681,6 +14699,253 @@ static void fmt_pipeline(const struct json_value *root)
 		printf("nothing is blocked or failed -- `cixctl pipeline --all` shows every row\n");
 }
 
+/* ---------- schedules (ADR-0257) ---------- */
+
+/*
+ * Flags map one-to-one onto the wire fields. There is deliberately no
+ * "--every=6h" style shorthand: that would be a second grammar living
+ * only in the CLI, undocumented by the contract and able to drift from
+ * it, which is precisely what a structured wire format exists to avoid.
+ * The rendered "describes" string goes the other way and is never sent
+ * back.
+ */
+static void fmt_schedules(const struct json_value *root)
+{
+	const struct json_value *arr = json_object_get(root, "schedules");
+	size_t i;
+
+	if (arr == NULL || arr->type != JSON_ARRAY || arr->u.array.count == 0) {
+		printf("nothing is scheduled\n");
+		return;
+	}
+	printf("%-22s %-26s %-26s %-10s %s\n", "NAME", "ACTION", "WHEN", "LAST", "REASON");
+	for (i = 0; i < arr->u.array.count; i++) {
+		const struct json_value *e = arr->u.array.items[i];
+		const struct json_value *ok = json_object_get(e, "last_ok");
+		const char *last;
+
+		if (ok == NULL || ok->type == JSON_NULL)
+			last = "never";
+		else
+			last = json_bool_field(e, "last_ok") ? "ok" : "FAILED";
+		printf("%-22s %-26s %-26s %-10s %s\n", json_str_or(e, "name"),
+		        json_str_or(e, "action"), json_str_or(e, "describes"), last,
+		        json_str_or(e, "last_reason"));
+	}
+}
+
+static void fmt_schedule_one(const struct json_value *root)
+{
+	const struct json_value *ok = json_object_get(root, "last_ok");
+
+	printf("%-16s %s\n", "name", json_str_or(root, "name"));
+	printf("%-16s %s\n", "action", json_str_or(root, "action"));
+	printf("%-16s %s\n", "when", json_str_or(root, "describes"));
+	printf("%-16s %s\n", "last run",
+	        ok == NULL || ok->type == JSON_NULL
+	            ? "never"
+	            : (json_bool_field(root, "last_ok") ? "ok" : "FAILED"));
+	printf("%-16s %s\n", "reason", json_str_or(root, "last_reason"));
+}
+
+static void fmt_schedule_actions(const struct json_value *root)
+{
+	const struct json_value *arr = json_object_get(root, "actions");
+	size_t i;
+
+	if (arr == NULL || arr->type != JSON_ARRAY || arr->u.array.count == 0) {
+		printf("no actions are registered\n");
+		return;
+	}
+	for (i = 0; i < arr->u.array.count; i++) {
+		const struct json_value *a = arr->u.array.items[i];
+
+		printf("%-26s %s\n", json_str_or(a, "name"), json_str_or(a, "summary"));
+	}
+}
+
+static void schedule_usage(void)
+{
+	fprintf(stderr,
+	        "usage: cixctl schedule ls\n"
+	        "       cixctl schedule actions\n"
+	        "       cixctl schedule show NAME\n"
+	        "       cixctl schedule rm NAME\n"
+	        "       cixctl schedule run NAME   -- run it now, even if disabled\n"
+	        "       cixctl schedule set NAME --action=A <when> [options]\n"
+	        "  when (exactly one):\n"
+	        "       --every-seconds=N | --every-minutes=N | --every-hours=N | --every-days=N\n"
+	        "       --daily-at=HH:MM\n"
+	        "       --weekly-on=sun|mon|... --weekly-at=HH:MM\n"
+	        "  options:\n"
+	        "       --window-minutes=N  how long an action may keep starting work\n"
+	        "       --catch-up          run once at startup if the time passed while down\n"
+	        "       --disabled          store it, but do not run it\n"
+	        "  actions come from `cixctl schedule actions` -- never free text\n");
+}
+
+static int cmd_schedule(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	struct cix_response r;
+	const char *sub = argc > 1 ? argv[1] : "ls";
+	char path[256];
+
+	if (strcmp(sub, "ls") == 0) {
+		if (cix_client_request(c, CIX_API_listSchedules_METHOD, CIX_API_listSchedules, NULL,
+		                        &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_schedules);
+	}
+	if (strcmp(sub, "actions") == 0) {
+		if (cix_client_request(c, CIX_API_listScheduleActions_METHOD,
+		                        CIX_API_listScheduleActions, NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_schedule_actions);
+	}
+	if (argc < 3) {
+		schedule_usage();
+		return 2;
+	}
+	if (strcmp(sub, "show") == 0) {
+		snprintf(path, sizeof(path), CIX_API_getSchedule, argv[2]);
+		if (cix_client_request(c, CIX_API_getSchedule_METHOD, path, NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_schedule_one);
+	}
+	if (strcmp(sub, "rm") == 0) {
+		snprintf(path, sizeof(path), CIX_API_deleteSchedule, argv[2]);
+		if (cix_client_request(c, CIX_API_deleteSchedule_METHOD, path, NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, NULL);
+	}
+	if (strcmp(sub, "run") == 0) {
+		snprintf(path, sizeof(path), CIX_API_runSchedule, argv[2]);
+		if (cix_client_request(c, CIX_API_runSchedule_METHOD, path, NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_schedule_one);
+	}
+	if (strcmp(sub, "set") == 0) {
+		struct json_writer w;
+		const char *action = NULL, *daily_at = NULL, *weekly_on = NULL, *weekly_at = NULL;
+		long every[4] = { 0, 0, 0, 0 }; /* seconds, minutes, hours, days */
+		int have_every = 0, window = 0, catch_up = 0, enabled = 1;
+		int i, rc;
+
+		for (i = 3; i < argc; i++) {
+			if (strncmp(argv[i], "--action=", 9) == 0)
+				action = argv[i] + 9;
+			else if (strncmp(argv[i], "--every-seconds=", 16) == 0)
+				every[0] = atol(argv[i] + 16), have_every = 1;
+			else if (strncmp(argv[i], "--every-minutes=", 16) == 0)
+				every[1] = atol(argv[i] + 16), have_every = 1;
+			else if (strncmp(argv[i], "--every-hours=", 14) == 0)
+				every[2] = atol(argv[i] + 14), have_every = 1;
+			else if (strncmp(argv[i], "--every-days=", 13) == 0)
+				every[3] = atol(argv[i] + 13), have_every = 1;
+			else if (strncmp(argv[i], "--daily-at=", 11) == 0)
+				daily_at = argv[i] + 11;
+			else if (strncmp(argv[i], "--weekly-on=", 12) == 0)
+				weekly_on = argv[i] + 12;
+			else if (strncmp(argv[i], "--weekly-at=", 12) == 0)
+				weekly_at = argv[i] + 12;
+			else if (strncmp(argv[i], "--window-minutes=", 17) == 0)
+				window = atoi(argv[i] + 17);
+			else if (strcmp(argv[i], "--catch-up") == 0)
+				catch_up = 1;
+			else if (strcmp(argv[i], "--disabled") == 0)
+				enabled = 0;
+			else {
+				fprintf(stderr, "cixctl: unknown schedule option '%s'\n", argv[i]);
+				schedule_usage();
+				return 2;
+			}
+		}
+		if (action == NULL) {
+			fprintf(stderr, "cixctl: --action is required\n");
+			schedule_usage();
+			return 2;
+		}
+		/* Exactly one form, checked here so the obvious mistake gets a
+		 * local answer rather than a round trip. The daemon checks it
+		 * again regardless -- it is the one that must be right. */
+		if (have_every + (daily_at != NULL) + (weekly_on != NULL || weekly_at != NULL) != 1) {
+			fprintf(stderr, "cixctl: give exactly one of --every-*, --daily-at or "
+			                "--weekly-on/--weekly-at\n");
+			return 2;
+		}
+		jw_init(&w);
+		jw_obj_open(&w);
+		jw_key(&w, "action");
+		jw_str(&w, action);
+		jw_key(&w, "schedule");
+		jw_obj_open(&w);
+		if (have_every) {
+			jw_key(&w, "every");
+			jw_obj_open(&w);
+			if (every[0] != 0) {
+				jw_key(&w, "seconds");
+				jw_int(&w, every[0]);
+			}
+			if (every[1] != 0) {
+				jw_key(&w, "minutes");
+				jw_int(&w, every[1]);
+			}
+			if (every[2] != 0) {
+				jw_key(&w, "hours");
+				jw_int(&w, every[2]);
+			}
+			if (every[3] != 0) {
+				jw_key(&w, "days");
+				jw_int(&w, every[3]);
+			}
+			jw_obj_close(&w);
+		} else if (daily_at != NULL) {
+			jw_key(&w, "daily");
+			jw_obj_open(&w);
+			jw_key(&w, "at");
+			jw_str(&w, daily_at);
+			jw_obj_close(&w);
+		} else {
+			jw_key(&w, "weekly");
+			jw_obj_open(&w);
+			jw_key(&w, "on");
+			jw_str(&w, weekly_on != NULL ? weekly_on : "");
+			jw_key(&w, "at");
+			jw_str(&w, weekly_at != NULL ? weekly_at : "");
+			jw_obj_close(&w);
+		}
+		jw_obj_close(&w);
+		jw_key(&w, "window_minutes");
+		jw_int(&w, window);
+		jw_key(&w, "catch_up");
+		jw_bool(&w, catch_up);
+		jw_key(&w, "enabled");
+		jw_bool(&w, enabled);
+		jw_obj_close(&w);
+
+		snprintf(path, sizeof(path), CIX_API_setSchedule, argv[2]);
+		rc = cix_client_request(c, CIX_API_setSchedule_METHOD, path, w.buf, &r);
+		jw_free(&w);
+		if (rc != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_schedule_one);
+	}
+	schedule_usage();
+	return 2;
+}
+
 static int cmd_pipeline(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	struct cix_response r;
@@ -15717,6 +15982,8 @@ static int dispatch_command(const struct cix_client *client, int json_mode, cons
 		return cmd_pkg(client, json_mode, argc, argv);
 	if (strcmp(cmd, "pipeline") == 0)
 		return cmd_pipeline(client, json_mode, argc, argv);
+	if (strcmp(cmd, "schedule") == 0)
+		return cmd_schedule(client, json_mode, argc, argv);
 	if (strcmp(cmd, "show") == 0)
 		return cmd_show(client, json_mode, argc, argv);
 

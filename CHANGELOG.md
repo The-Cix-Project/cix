@@ -2,6 +2,38 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### One scheduler, and a schedule is structured (ADR-0257)
+
+Six periodic timers ran in this daemon. Four existed because an operator had set an interval, each owning its own copy of *is it on*, *how often*, *when did it last run*: `backupconfig.interval_hours`, `volumebackup.interval_hours`, `pkg_repo.sync_interval_seconds`, NTP's own. Two of them back things up to a disk on a schedule, and `main.c` had already said so — issue #96 made the volume sweep ride the backup tick, two schedules on one timer with separate bookkeeping and no way for an operator to see either as a thing with a next run time. That is a scheduler stopped one step short, and adding a fifth copy (refreshing upstream release lists, which ADR-0255 needs and did not have) is what made it worth finishing.
+
+**A schedule is structured JSON, not a cron-like string**, and the reason is the failure mode rather than expressiveness. Cron's real defect is that a mistyped expression still *parses* and means something else — `*/5` against `5`, day-of-month against day-of-week — and every positional glob syntax inherits it, systemd's `OnCalendar` included. A structured body has no syntax to mistype: a wrong field is a missing field, a wrong value is out of range, and every refusal names the field and its range.
+
+```json
+{ "action": "system.backup",
+  "schedule": { "daily": { "at": "02:00" } },
+  "window_minutes": 180, "catch_up": true }
+```
+
+Exactly one of `every`/`daily`/`weekly`, and **two present is refused rather than resolved by precedence** — a caller who sent both believes something untrue about what they just configured.
+
+**`describes` renders `daily at 02:00 for 3h` and is never parsed back.** One direction only, so there is no syntax for anyone to mistype: cron's objection answered by construction rather than by a better grammar. If a schedule ever needs to be one pasteable token, a parser can be added *over* a stable structure later; adding structure underneath a shipped string grammar is the hard direction, and this takes the reversible order.
+
+One claim made for this design during the discussion was **false and is corrected here**: `apigen` emits routes, CLI constants, web constants and config sections, and **no request-body validation at all**. The schema documents the shape; the daemon validates it. What a structured body actually saves is the tokenizer, not the range checks.
+
+**Actions are a registry, and that is a security boundary, not a style preference.** A free-text command field on a host with no shell is a shell-exec endpoint wearing a friendly name. `GET /schedule-actions` publishes what a job may run, and a refusal names what is available — the same rule that makes `srcupstream`'s channel refusals list the real channels. Actions **enqueue**, never running heavy work inline, which is what keeps a scheduler from becoming a way around "never two heavy builds at once".
+
+Three details that would each have been a bug:
+
+- **`every` is anchored on the last run**, not a fixed epoch. Epoch-anchored, a period fires the instant the daemon starts whenever the box was down longer than one period — every reboot becomes a burst.
+- **`catch_up` defaults to false.** A backup usually should catch up after downtime; a build sweep should not, since it would start heavy work at the least predictable moment there is.
+- **`last_ok` is null before the first run.** "Has not run" and "ran and failed" are different facts.
+
+**One action is registered in this part: `pkg.refresh-upstreams`** — which closes ADR-0255's open end, release lists that only ever refreshed when someone asked by hand. It has no existing timer, so nothing can double-fire while the legacy timers are still alive. The four that do have timers migrate together with the cut-over, so no window exists in which a job and a legacy timer drive the same work.
+
+**`build-stall` and `boot-confirm` are deliberately never migrating**, and the ADR says so explicitly so nobody later "finishes the job". They are internal watchdogs with no policy in them; putting a watchdog under an operator-editable scheduler means an operator can switch off the thing that reports wedged builds, or the thing that falls a bad boot back to the other slot.
+
+`test_scheduler` guards the parts a wrong answer would hide: two forms refused, an unknown action naming the real ones, ranges named in their own refusals, `every` anchored on the last run, a failing action recording *why*, a missed wall-clock job not firing at startup without `catch_up`, and settings plus run history surviving a reload.
+
 ### The pipeline is the model (ADR-0256)
 
 Getting a package from an upstream release onto a running host takes eleven steps. This platform performed all eleven and had a name for the sequence nowhere. It had four unrelated vocabularies instead — the source catalogue's four states, `enum pkg_failure_kind`'s five, a build-log line, and a boot-entry filename — so the only question an operator actually asks, *"where is this package and what is stopping it?"*, could not be asked without joining four things by hand. Nobody does that, which is how 25 of 70 installed packages drifted behind unnoticed until `/pkg/drift` was written to count them.

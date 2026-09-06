@@ -2445,6 +2445,16 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 219 (done): one scheduler, and a schedule is structured (ADR-0257)
+
+Six periodic timers, four of them existing because an operator had set an interval, each with its own on/off, its own period and its own last-run bookkeeping — and two of them already sharing a tick without sharing anything else (issue #96, whose own comment is this ADR's context section). **ADR-0257** replaces the pattern with one scheduler, one timer armed to the next due job, and a schedule as a first-class resource.
+
+The wire format is **structured JSON, deliberately not a cron-like string**: the decisive property of a schedule syntax is its failure mode, and cron's defect is that a typo still parses and means something else. A structured body has no syntax to mistype. `describes` renders a human form (`daily at 02:00 for 3h`) that nothing ever parses back — one direction, so there is nothing to get wrong. Actions come from a closed registry because a free-text command field on a shell-less host is a shell-exec endpoint by another name.
+
+Shipped additively: `/v1/schedules` CRUD, `/v1/schedule-actions`, `POST /v1/schedules/{name}/run`, `cixctl schedule`, and exactly **one** registered action — `pkg.refresh-upstreams`, which closes ADR-0255's open end. That action has no existing timer, so nothing double-fires while the legacy ones are alive. The four operator-facing intervals migrate together in the next part, at which point `backup-config`, `volume-backup-config`, `repo-config` and `ntp` lose their `interval_*` fields. `build-stall` and `boot-confirm` never migrate, and the ADR says why: a scheduler that can disable the safety net is worse than five timers.
+
+Verified: `cixd` clean under TCC `-Wall -Werror`; all 31 sandbox-runnable selftests pass, including new `test_scheduler`. Route count 283 -> 289. No `architecture.svg` change — the diagram maps subsystems, and this replaces a pattern inside one rather than adding a box.
+
 ## Part 218 (done): the pipeline is the model — one vocabulary, one join, one honest boot confirm (ADR-0256)
 
 Part 217 produced stages 1–4 of a sequence nobody had named. **ADR-0256** names all eleven and replaces the four unrelated vocabularies that described them with one `(stage, status)` pair, spoken verbatim by the API, the CLI and the dashboard.
