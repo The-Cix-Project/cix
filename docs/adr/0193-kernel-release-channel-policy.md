@@ -6,6 +6,8 @@ Accepted
 
 Builds on [ADR-0188](0188-per-package-rolling-policy.md)'s position that version-selection policy is operator state rather than recipe content. The kernel is a package; this adds the one thing a package policy cannot express — which upstream *line* the pin is supposed to belong to.
 
+**Partly superseded by [ADR-0255](0255-a-recipe-is-a-rule-not-a-version.md).** One sentence of the Decision below — *"The channel reports; it does not act."* — no longer holds. It was written because acting meant recording a `pkg_sha256` the daemon computed over its own download; the section "On the checksum question this deliberately does not answer yet" names the way out and calls the missing keyring a real follow-on. That keyring now exists ([ADR-0254](0254-upstream-checksums-are-verified-not-computed.md)), so a channel may act. **Everything else here stands**, in particular that `longterm` resolves within the line you are already on, that null is a real answer, and that the running kernel comes from `uname()` rather than the recipe.
+
 ## Context
 
 This platform pinned one kernel version in one recipe and said nothing else about it. That single number carried two facts implicitly and reported neither: which release line it belonged to (longterm, stable, mainline), and how far behind that line it had drifted.

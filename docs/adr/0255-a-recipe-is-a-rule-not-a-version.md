@@ -51,12 +51,16 @@ There is no `pkg_version` and no `pkg_sha256` in a rolling recipe. Both are *res
 Every invariant this platform relies on — an immutable cache key, a pinnable identity, a comparable version, a rebuild trigger — attaches to the **build**, not the recipe:
 
 ```
-kernel-7.2.3-a3f19c2
+kernel-7.2.3-1
 ```
 
-`7.2.3` is what upstream published. `a3f19c2` is a short hash over everything that determines the output: the recipe file's own content, the resolved source checksums, and the build image's manifest hash. Same inputs, same identity, correct dedup; any input differs and so does the identity. This is [ADR-0108](0108-image-version-content-hash.md)'s manifest-hash idea applied to packages, and it closes the gap the old scheme had — `-24` never encoded that the *compiler* had changed underneath it.
+`7.2.3` is what upstream published. `-1` is a build sequence, assigned by the platform, counting builds of that package at that upstream version.
 
-The artifact name keeps its exact present shape, `<name>-<version>-<arch>.tar.gz`. Only the way `<version>` comes into existence changes: computed, not typed.
+**The sequence is an integer, not a hash, and that is load-bearing.** `pkg_version_compare()` (`daemon/src/pkg.c`) is a dpkg-style natural sort: runs of digits compare numerically, runs of non-digits compare bytewise. It is what [ADR-0188](0188-per-package-rolling-policy.md)'s `highest` uses to order candidates. A content hash has no order — `7.2.3-a3f19c2` vs `7.2.3-9be0117` compares `'a'` against `'9'` bytewise and picks the alphabetically luckier build. Two builds of the same upstream version differing only in suffix is not a corner case here; it is the 23-kernel-directories case exactly. So the suffix stays an integer, `highest` keeps working untouched, and this ADR's claim to leave ADR-0188 alone is actually true.
+
+**What the hash determines is dedup, not the name.** Each build record carries a `build_inputs` hash over everything that determines the output: the recipe file's content, the resolved source checksums, and the build environment's resolved manifest — the last being the packages ADR-0199 composes the environment from, not a named image, so `__pkgbuild` builds are covered rather than being a gap. Same hash means the build already exists: reuse it, do not increment. A different hash means the next sequence number. This is [ADR-0108](0108-image-version-content-hash.md)'s manifest-hash idea applied to packages, and it closes a gap the old scheme had — `-24` was typed by a human and never encoded that the *compiler* had changed underneath it, whereas this hash does.
+
+**Nothing about artifact naming changes at all.** `<name>-<version>-<arch>.tar.gz` keeps its exact present shape, and `kernel-7.2.3-1` looks precisely like today's `kernel-6.18.40-24`. What changes is who assigns the number and whether a directory gets copied to hold it: the platform, and no.
 
 The recipe file itself is never copied into the build record. Its hash identifies it, and git holds the content — which is what git is for, and what makes 1046 historical directories collapsible to 116 without losing the ability to say what any past artifact was built from.
 
@@ -106,6 +110,14 @@ Against kernel.org's `stable` today (7.2.3 newest, 7.1.13 newest of the previous
 
 This is why `n-0.1` and `n-1` are spelled differently rather than being two readings of one token: on this channel today they differ by an entire release line, and a platform that guessed between them would silently move a box across a major version boundary. ADR-0193 hit the identical ambiguity with `longterm` — six lines listed at once, "newest" meaning nothing on its own — and resolved it the same way, within the line you are already on.
 
+### Open: what a rollable recipe does before an operator sets anything
+
+ADR-0193 made the kernel channel `pinned` by default, which was right when the channel only ever reported. Carried forward literally it would mean nothing rolls until 116 per-package policies have been set by hand — the opposite of the intent here.
+
+The alternative is a platform-wide default channel with per-package override, so declaring a recipe rollable is enough to make it roll.
+
+**This is deliberately left open** as an operator-preference decision rather than settled here. It changes what the platform does on day one and belongs to whoever runs it, not to this ADR.
+
 ### A resolution failure halts that package and says why.
 
 If a depth asks for a line or a release that does not exist, if a signature does not verify, if a fingerprint does not match, or if a discovery kind cannot reach its upstream: **that package stops, and the reason is reported.** It never falls back to the newest, never falls back to the last thing built, and never silently stays where it is while presenting as current.
@@ -129,6 +141,8 @@ The pipeline is nine stages across [ADR-0230](0230-the-five-lifecycle-domains.md
 | 9 | Deploy | Host lifecycle | an A/B update, and a reboot |
 
 Each stage has exactly one status surface, and reports its own failure with its own reason. #308 is the standing lesson here: a stage that has status but no trigger, or a trigger but no status, is worse than one that has neither, because it presents as working.
+
+**Every stage has a named trigger, including for a hostbuild.** Stage 7 (Roll) works through image manifests, and the kernel is in none — so for a hostbuild that stage is genuinely empty, and saying "the rolling machinery takes over" would be the #308 pattern again. Two triggers are therefore stated rather than assumed: **a successful resolution (stage 2) starts the fetch (stage 4) regardless of build kind**, which is what gives the kernel an automatic path for the first time; and **a hostbuild's publish (stage 6) starts assembly (stage 8) directly**, because there is no image in between to react to it. For an ordinary package the path is unchanged: publish triggers Roll, and Roll triggers assembly.
 
 **No stage begins until its predecessor is *verified*, not merely *reported*.** This platform has learned that twice from roots that assembled cleanly, reported success, and then panicked at boot with `Attempted to kill init!`. "The previous stage returned 0" is not evidence the previous stage produced something that works; the check belongs at the boundary, and the boundary refuses to open without it.
 
