@@ -341,6 +341,10 @@
 			<div class="tab-bar">
 				<button type="button" class="tab-button active" data-tab="networks">Networks</button>
 				<button type="button" class="tab-button" data-tab="routes">Routes</button>
+							<button type="button" class="tab-button" data-tab="dhcp-servers">Servers</button>
+							<button type="button" class="tab-button" data-tab="dhcp-ranges">Ranges</button>
+							<button type="button" class="tab-button" data-tab="dhcp-static">Reservations</button>
+							<button type="button" class="tab-button" data-tab="dhcp-leases">Leases</button>
 			</div>
 			<div class="tab-panel" data-tab="networks">
 			<div class="view-list">
@@ -379,6 +383,56 @@
 				</table>
 			</div>
 		</div>
+<div class="tab-panel" data-tab="dhcp-servers" hidden>
+				<p class="hint">
+					Containers running dnsmasq that serve DHCP. Register one from the Services menu.
+					<strong>Resolves leases</strong> says whether that same container is also a
+					registered DNS server: dnsmasq answers for the names of clients it has itself
+					leased addresses to, so when it is both, a lease resolves the moment it is handed
+					out. Reported rather than required &mdash; one service does not reach into
+					another's registry.
+				</p>
+				<table id="dhcp-servers-table">
+					<thead><tr><th>Container</th><th>State</th><th>Resolves leases</th><th></th></tr></thead>
+					<tbody></tbody>
+				</table>
+			</div>
+<div class="tab-panel" data-tab="dhcp-ranges" hidden>
+				<p class="hint">
+					One range per network, and the servers that serve it. dnsmasq implements no
+					failover protocol, so a range named to more than one server is split into
+					<strong>disjoint slices</strong> &mdash; all of them answer, a client takes
+					whichever offer arrives first, and no two servers hold the same address. Any one
+					of them alone keeps serving from its own slice. Changing a range restarts the
+					servers that serve it: dnsmasq reads ranges only at startup.
+				</p>
+				<table id="dhcp-ranges-table">
+					<thead><tr><th>Network</th><th>State</th><th>Range</th><th>Lease</th><th>Served by</th><th></th></tr></thead>
+					<tbody></tbody>
+				</table>
+			</div>
+<div class="tab-panel" data-tab="dhcp-static" hidden>
+				<p class="hint">
+					A MAC always gets the same address. Live &mdash; the servers re-read these on
+					SIGHUP, so nothing restarts. A hostname here becomes a name the DNS side answers
+					for too. Reserve one from the Services menu.
+				</p>
+				<table id="dhcp-static-table">
+					<thead><tr><th>MAC</th><th>IP</th><th>Hostname</th><th></th></tr></thead>
+					<tbody></tbody>
+				</table>
+			</div>
+<div class="tab-panel" data-tab="dhcp-leases" hidden>
+				<p class="hint">
+					Read from each serving container's own lease file, every time. A lease is not a
+					DNS record &mdash; records are durable operator intent, a lease is the server's
+					own short-lived state.
+				</p>
+				<table id="dhcp-leases-table">
+					<thead><tr><th>MAC</th><th>IP</th><th>Hostname</th><th>Expires</th><th>Server</th></tr></thead>
+					<tbody></tbody>
+				</table>
+			</div>
 		</section>
 
 		<section class="view" id="view-network-detail" hidden>
@@ -711,34 +765,18 @@
 		
 
 		<!-- Sysctl (ADR-0160) -->
-		<section class="view" id="view-sysctl" hidden>
-			<div class="view-list">
-				<h2>Sysctl</h2>
-				<p class="hint">Every persisted (daemon-managed) host-level <code>/proc/sys</code> key (ADR-0160) -- fully open, no allowlist, host-auth write-gating is the only access control. A key set here re-applies on every boot unless set with "no persist". Set one via the Host menu's "+ Set Sysctl" action.</p>
-				<table id="sysctl-table">
-					<thead>
-						<tr>
-							<th>Key</th>
-							<th>Value</th>
-							<th></th>
-						</tr>
-					</thead>
-					<tbody id="sysctl-body">
-						<tr><td colspan="3" class="empty">Loading&hellip;</td></tr>
-					</tbody>
-				</table>
-			</div>
-		</section>
+		
 
 		<!-- Disks (multi-disk management: ADR-0071/ADR-0102/ADR-0104) -->
 		<section class="view" id="view-storage" hidden>
-			<h2>Disks</h2>
+			<h2>Storage</h2>
 			<div class="tab-bar">
 				<button type="button" class="tab-button active" data-tab="storage">Storage</button>
 				<button type="button" class="tab-button" data-tab="storage-placement">Placement</button>
 				<button type="button" class="tab-button" data-tab="host-swap">Swap</button>
 				<button type="button" class="tab-button" data-tab="backup">System Backup</button>
 				<button type="button" class="tab-button" data-tab="volume-backup-config">Volume Backups</button>
+							<button type="button" class="tab-button" data-tab="volumes">Volumes</button>
 			</div>
 			<div class="tab-panel" data-tab="storage">
 			<div class="view-list">
@@ -914,6 +952,18 @@
 				</form>
 			</div>
 		</div>
+			<div class="tab-panel" data-tab="volumes" hidden>
+			<div class="view-list">
+				
+				<p class="hint">Persistent storage whose lifetime is <strong>independent of any container</strong>. Everything else a container writes lives in its overlay upper layer, which is destroyed when the container is deleted &mdash; and a container gets recreated by any recipe change, package install or rolling image update. Mount a volume into a container (<code>volumes: [{"name": "home", "path": "/home"}]</code>) and that path survives. Deleting a container never touches its volumes; deleting a <em>volume</em> destroys its data and is refused while any container definition still references it.</p>
+				<table>
+					<thead>
+						<tr><th>Name</th><th>Mounted by</th><th>Disk</th><th>Host path</th><th>Created</th><th></th></tr>
+					</thead>
+					<tbody id="volumes-body"></tbody>
+				</table>
+			</div>
+			</div>
 		</section>
 
 		<!--
@@ -1001,6 +1051,7 @@
 				<button type="button" class="tab-button" data-tab="site">Site</button>
 				<button type="button" class="tab-button" data-tab="hostauth-sessions">Sessions</button>
 				<button type="button" class="tab-button" data-tab="factory-reset">Factory Reset</button>
+							<button type="button" class="tab-button" data-tab="running-config">Running Config</button>
 			</div>
 <div class="tab-panel" data-tab="daemon-config">
 			<p class="hint">
@@ -1107,6 +1158,21 @@
 					</form>
 				</div>
 			</div>
+<div class="tab-panel" data-tab="running-config" hidden>
+			
+			<p class="view-intro">
+				Everything this host is configured to do, in one ordered document
+				(ADR-0206). Rendered live from the daemon on every load -- it is a
+				view, never a stored file, so it cannot drift from what the box is
+				actually doing. Secrets are never shown: tokens and passwords appear
+				as a set/not-set flag, and PKI private keys never appear at all.
+			</p>
+			<div class="toolbar">
+				<button type="button" id="running-config-refresh">Refresh</button>
+				<button type="button" id="running-config-copy">Copy</button>
+			</div>
+			<pre id="running-config-text" class="logs-pre">Loading…</pre>
+			</div>
 		</section>
 
 		<section class="view" id="view-control-plane" hidden>
@@ -1204,6 +1270,8 @@
 			<div class="tab-bar">
 				<button type="button" class="tab-button active" data-tab="kernel-policy">Kernel Line</button>
 				<button type="button" class="tab-button" data-tab="boot-console">Boot Console</button>
+							<button type="button" class="tab-button" data-tab="sysctl">Sysctl</button>
+							<button type="button" class="tab-button" data-tab="kmsg">Kernel Log</button>
 			</div>
 <div class="tab-panel" data-tab="kernel-policy" hidden>
 			<div class="view-list">
@@ -1274,6 +1342,38 @@
 				</table>
 			</div>
 		</div>
+<div class="tab-panel" data-tab="sysctl" hidden>
+			<div class="view-list">
+				
+				<p class="hint">Every persisted (daemon-managed) host-level <code>/proc/sys</code> key (ADR-0160) -- fully open, no allowlist, host-auth write-gating is the only access control. A key set here re-applies on every boot unless set with "no persist". Set one via the Host menu's "+ Set Sysctl" action.</p>
+				<table id="sysctl-table">
+					<thead>
+						<tr>
+							<th>Key</th>
+							<th>Value</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody id="sysctl-body">
+						<tr><td colspan="3" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+			</div>
+			</div>
+<div class="tab-panel" data-tab="kmsg" hidden hidden>
+			<div class="view-list">
+				<p class="hint">The kernel's own ring buffer (<code>/dev/kmsg</code>) &mdash; dmesg over REST. This is where mount failures, driver probes and OOM kills surface, and on a real installed host with no shell it is the only way to read them. Distinct from the Log Store, which carries <code>cixd</code>'s own diagnostics and the audit trail.</p>
+				<form id="kmsg-form">
+					<label>
+						Tail (entries)
+						<input type="number" id="kmsg-tail" min="1" max="1024" value="200">
+					</label>
+					<button type="submit">Refresh</button>
+				</form>
+				<pre id="kmsg-output" class="log-output">(not loaded)</pre>
+			</div>
+		
+			</div>
 		</section>
 
 
@@ -1499,65 +1599,7 @@
 		     dashboard follows -- the page is where you look, the menu is
 		     where you make one.
 		-->
-		<section class="view" id="view-dhcp" hidden>
-			<h2>DHCP</h2>
-			<div class="tab-bar">
-				<button type="button" class="tab-button active" data-tab="dhcp-servers">Servers</button>
-				<button type="button" class="tab-button" data-tab="dhcp-ranges">Ranges</button>
-				<button type="button" class="tab-button" data-tab="dhcp-static">Reservations</button>
-				<button type="button" class="tab-button" data-tab="dhcp-leases">Leases</button>
-			</div>
-			<div class="tab-panel" data-tab="dhcp-servers">
-				<p class="hint">
-					Containers running dnsmasq that serve DHCP. Register one from the Services menu.
-					<strong>Resolves leases</strong> says whether that same container is also a
-					registered DNS server: dnsmasq answers for the names of clients it has itself
-					leased addresses to, so when it is both, a lease resolves the moment it is handed
-					out. Reported rather than required &mdash; one service does not reach into
-					another's registry.
-				</p>
-				<table id="dhcp-servers-table">
-					<thead><tr><th>Container</th><th>State</th><th>Resolves leases</th><th></th></tr></thead>
-					<tbody></tbody>
-				</table>
-			</div>
-			<div class="tab-panel" data-tab="dhcp-ranges" hidden>
-				<p class="hint">
-					One range per network, and the servers that serve it. dnsmasq implements no
-					failover protocol, so a range named to more than one server is split into
-					<strong>disjoint slices</strong> &mdash; all of them answer, a client takes
-					whichever offer arrives first, and no two servers hold the same address. Any one
-					of them alone keeps serving from its own slice. Changing a range restarts the
-					servers that serve it: dnsmasq reads ranges only at startup.
-				</p>
-				<table id="dhcp-ranges-table">
-					<thead><tr><th>Network</th><th>State</th><th>Range</th><th>Lease</th><th>Served by</th><th></th></tr></thead>
-					<tbody></tbody>
-				</table>
-			</div>
-			<div class="tab-panel" data-tab="dhcp-static" hidden>
-				<p class="hint">
-					A MAC always gets the same address. Live &mdash; the servers re-read these on
-					SIGHUP, so nothing restarts. A hostname here becomes a name the DNS side answers
-					for too. Reserve one from the Services menu.
-				</p>
-				<table id="dhcp-static-table">
-					<thead><tr><th>MAC</th><th>IP</th><th>Hostname</th><th></th></tr></thead>
-					<tbody></tbody>
-				</table>
-			</div>
-			<div class="tab-panel" data-tab="dhcp-leases" hidden>
-				<p class="hint">
-					Read from each serving container's own lease file, every time. A lease is not a
-					DNS record &mdash; records are durable operator intent, a lease is the server's
-					own short-lived state.
-				</p>
-				<table id="dhcp-leases-table">
-					<thead><tr><th>MAC</th><th>IP</th><th>Hostname</th><th>Expires</th><th>Server</th></tr></thead>
-					<tbody></tbody>
-				</table>
-			</div>
-		</section>
+		
 
 		<section class="view" id="view-ntp-config" hidden>
 			<h2>NTP</h2>
@@ -1760,6 +1802,14 @@
 				<button type="button" class="tab-button" data-tab="esp">Boot Slots</button>
 				<button type="button" class="tab-button" data-tab="rolling-restart">Rolling Restart</button>
 				<button type="button" class="tab-button" data-tab="signing-keys">Signing Keys</button>
+							<button type="button" class="tab-button" data-tab="recipes">Recipes</button>
+							<button type="button" class="tab-button" data-tab="pkg-repo">Repo &amp; Sync</button>
+							<button type="button" class="tab-button" data-tab="reconcile">Reconcile</button>
+							<button type="button" class="tab-button" data-tab="images">Images</button>
+							<button type="button" class="tab-button" data-tab="packages">Packages</button>
+							<button type="button" class="tab-button" data-tab="pkg-cache">Cache &amp; Artifacts</button>
+							<button type="button" class="tab-button" data-tab="pkg-build-config">Package Builds</button>
+							<button type="button" class="tab-button" data-tab="update">Update</button>
 			</div>
 			<div class="tab-panel" data-tab="pipeline">
 			
@@ -1941,21 +1991,7 @@
 				</form>
 			</div>
 			</div>
-		</section>
-
-		<section class="view" id="view-recipes" hidden>
-			<h2>Catalogue</h2>
-			<div class="tab-bar">
-				<button type="button" class="tab-button active" data-tab="recipes">Recipes</button>
-				<button type="button" class="tab-button" data-tab="pkg-repo">Repo &amp; Sync</button>
-				<button type="button" class="tab-button" data-tab="reconcile">Reconcile</button>
-				<button type="button" class="tab-button" data-tab="images">Images</button>
-				<button type="button" class="tab-button" data-tab="packages">Packages</button>
-				<button type="button" class="tab-button" data-tab="pkg-cache">Cache &amp; Artifacts</button>
-				<button type="button" class="tab-button" data-tab="pkg-build-config">Package Builds</button>
-				<button type="button" class="tab-button" data-tab="update">Update</button>
-			</div>
-			<div class="tab-panel" data-tab="recipes">
+<div class="tab-panel" data-tab="recipes" hidden>
 			<div class="view-list">
 				<p class="hint">Three git-syncable recipe kinds (ADR-0040/ADR-0123/ADR-0151), one catalog:
 					<strong>Packages</strong> build one piece of software from source; <strong>Images</strong>
@@ -2032,7 +2068,7 @@
 				</div>
 			</div>
 		</div>
-			<div class="tab-panel" data-tab="pkg-repo" hidden>
+<div class="tab-panel" data-tab="pkg-repo" hidden>
 			<h2>Package Repo &amp; Sync</h2>
 			<p class="hint">
 				The configured git-forge source recipes sync from (ADR-0121) -- gitea/github/gitlab,
@@ -2076,7 +2112,7 @@
 			<div id="pkg-sync-status-box" class="pki-ca-status"></div>
 			<button type="button" id="pkg-sync-now">Sync now</button>
 		</div>
-			<div class="tab-panel" data-tab="reconcile" hidden>
+<div class="tab-panel" data-tab="reconcile" hidden>
 				<div class="view-list">
 					<h2>Declared vs installed</h2>
 					<p class="hint">What has a recipe, against what is actually here. The row that matters is
@@ -2091,7 +2127,7 @@
 					</table>
 				</div>
 			</div>
-			<div class="tab-panel" data-tab="images" hidden>
+<div class="tab-panel" data-tab="images" hidden>
 			<div class="view-list">
 				<p class="hint">Every package install leaves an immutable image version behind
 					(ADR-0107/0108), and a container pins the version it was created with. Reclaim
@@ -2116,7 +2152,7 @@
 				</table>
 			</div>
 		</div>
-			<div class="tab-panel" data-tab="packages" hidden>
+<div class="tab-panel" data-tab="packages" hidden>
 			<div class="view-list">
 				<p class="hint">What's actually installed, on which image, right now -- one row per real
 					installation. For the recipe catalog itself (add/edit/delete a buildable definition),
@@ -2137,7 +2173,7 @@
 				</table>
 			</div>
 		</div>
-						<div class="tab-panel" data-tab="pkg-cache" hidden>
+<div class="tab-panel" data-tab="pkg-cache" hidden>
 			<h2>Package Cache &amp; Artifacts</h2>
 			<p class="hint">
 				Tier 1: a local build-artifact cache (LRU-evicted, keyed by name+version) that skips a
@@ -2176,7 +2212,7 @@
 				<button type="submit">Save</button>
 			</form>
 		</div>
-			<div class="tab-panel" data-tab="pkg-build-config" hidden>
+<div class="tab-panel" data-tab="pkg-build-config" hidden>
 			<form id="pbc-form">
 				<label>
 					Max concurrent jobs
@@ -2215,7 +2251,7 @@
 			<p class="hint">Issue #85: these are an <strong>aggregate</strong> budget, carried by one parent cgroup every build container is a leaf of -- not a per-build ceiling. A per-build number is not a budget: with max concurrent jobs at 10 it silently meant ten times what it said, and on a real 2-CPU box four concurrent builds at 1.5 CPU each demanded 6 CPUs, starved the daemon off the run queue and took the machine out of reach entirely. Whatever this says is now what all builds together can use.</p>
 			<p class="hint">ADR-0165 (superseded in shape by the above): the memory/CPU ceiling applied to build containers -- the same cgroup mechanism a regular container's own <code>--memory-max=</code>/<code>--cpu-max=</code> already uses. Found missing the hard way: a burst of concurrent installs with no ceiling hung a real box's daemon entirely. CPU quota is microseconds of CPU time per 100000-microsecond period -- "100000 100000" is one full CPU's worth, "50000 100000" is half a CPU.</p>
 		</div>
-			<div class="tab-panel" data-tab="update" hidden>
+<div class="tab-panel" data-tab="update" hidden>
 			<form id="sys-update-form">
 				<label class="wide">
 					Control-plane image path (optional, local to this daemon's host)
@@ -2231,6 +2267,8 @@
 				ready to cut over.</p>
 		</div>
 		</section>
+
+		
 
 		<section class="view" id="view-package-detail" hidden>
 			<div class="detail-topbar">
@@ -2308,21 +2346,7 @@
 		  navigating to find out which one a thing was on -- the same
 		  reasoning that collapsed Software, Host and each service.
 		-->
-		<section class="view" id="view-running-config" hidden>
-			<h2>Running configuration</h2>
-			<p class="view-intro">
-				Everything this host is configured to do, in one ordered document
-				(ADR-0206). Rendered live from the daemon on every load -- it is a
-				view, never a stored file, so it cannot drift from what the box is
-				actually doing. Secrets are never shown: tokens and passwords appear
-				as a set/not-set flag, and PKI private keys never appear at all.
-			</p>
-			<div class="toolbar">
-				<button type="button" id="running-config-refresh">Refresh</button>
-				<button type="button" id="running-config-copy">Copy</button>
-			</div>
-			<pre id="running-config-text" class="logs-pre">Loading…</pre>
-		</section>
+		
 
 		<section class="view" id="view-monitoring" hidden>
 			<h2>Monitoring</h2>
@@ -2330,7 +2354,6 @@
 				<button type="button" class="tab-button active" data-tab="host-stats">Host Stats</button>
 				<button type="button" class="tab-button" data-tab="processes">Processes</button>
 				<button type="button" class="tab-button" data-tab="logs">Log Store</button>
-				<button type="button" class="tab-button" data-tab="kmsg">Kernel Log</button>
 				<button type="button" class="tab-button" data-tab="server-health">Server Health</button>
 				<button type="button" class="tab-button" data-tab="stalls">Stalls</button>
 			</div>
@@ -2414,20 +2437,7 @@
 			</div>
 		
 			</div>
-			<div class="tab-panel" data-tab="kmsg" hidden>
-			<div class="view-list">
-				<p class="hint">The kernel's own ring buffer (<code>/dev/kmsg</code>) &mdash; dmesg over REST. This is where mount failures, driver probes and OOM kills surface, and on a real installed host with no shell it is the only way to read them. Distinct from the Log Store, which carries <code>cixd</code>'s own diagnostics and the audit trail.</p>
-				<form id="kmsg-form">
-					<label>
-						Tail (entries)
-						<input type="number" id="kmsg-tail" min="1" max="1024" value="200">
-					</label>
-					<button type="submit">Refresh</button>
-				</form>
-				<pre id="kmsg-output" class="log-output">(not loaded)</pre>
-			</div>
-		
-			</div>
+			
 			<div class="tab-panel" data-tab="server-health" hidden>
 			<div class="view-list">
 				<p class="hint">Every registered backend server &mdash; LDAP, DNS, NTP and syslog &mdash; probed on an interval. A server that is drained or has failed its probes is dropped from the configuration handed to clients, so a registered-but-not-serving server can no longer break logins silently. <strong>Drain</strong> takes one out of service deliberately (maintenance); it persists across a daemon restart, while health itself is re-established by the next probe. The <em>Probe</em> column says how the verdict was reached: a <code>tcp:PORT</code> check is a real service check, <code>process</code> only means the container is running.</p>
@@ -2608,18 +2618,7 @@
 				container would leave it writing to the old location with nothing to show for it.</p>
 		</section>
 
-		<section class="view" id="view-volumes" hidden>
-			<div class="view-list">
-				<h2>Volumes</h2>
-				<p class="hint">Persistent storage whose lifetime is <strong>independent of any container</strong>. Everything else a container writes lives in its overlay upper layer, which is destroyed when the container is deleted &mdash; and a container gets recreated by any recipe change, package install or rolling image update. Mount a volume into a container (<code>volumes: [{"name": "home", "path": "/home"}]</code>) and that path survives. Deleting a container never touches its volumes; deleting a <em>volume</em> destroys its data and is refused while any container definition still references it.</p>
-				<table>
-					<thead>
-						<tr><th>Name</th><th>Mounted by</th><th>Disk</th><th>Host path</th><th>Created</th><th></th></tr>
-					</thead>
-					<tbody id="volumes-body"></tbody>
-				</table>
-			</div>
-		</section>
+		
 
 		
 

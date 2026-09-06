@@ -126,6 +126,8 @@ int main(void)
 	const char *p = app;
 	const char *tree = strstr(app, "const topLevel = [");
 	int checked = 0, tabbed_checked = 0;
+	char parent_view[64] = "";
+	int parent_is_group = 0;
 
 	printf("test_web_tree\n");
 	if (tree == NULL) {
@@ -139,7 +141,23 @@ int main(void)
 		size_t i = 0;
 		int tabbed = 0;
 		int r;
+		int is_child = 0;
 
+		/*
+		 * A child entry is indented deeper than a top-level page. Its
+		 * route must land on its OWN parent's page -- a child that
+		 * navigates somewhere else is precisely the lie this tree was
+		 * rebuilt to remove, and the first version of this test missed
+		 * one (Volumes, listed under Storage, routed to a page of its
+		 * own).
+		 */
+		{
+			const char *ls = p;
+
+			while (ls > app && ls[-1] != '\n')
+				ls--;
+			is_child = strncmp(ls, "\t\t\t\t{", 5) == 0;
+		}
 		p += strlen("hash: \"");
 		while (p[i] != '"' && i + 1 < sizeof(hash)) {
 			hash[i] = p[i];
@@ -162,6 +180,24 @@ int main(void)
 			fail("tree hash \"%s\" routes to %s, which is not a section in index.html", hash,
 			     view);
 			continue;
+		}
+		if (is_child && !parent_is_group) {
+			if (strcmp(view, parent_view) != 0)
+				fail("tree child \"%s\" sits under a page that renders %s -- it navigates "
+				     "away from its own parent",
+				     hash, parent_view);
+		} else if (!is_child) {
+			const char *ls = p;
+			const char *blk;
+
+			snprintf(parent_view, sizeof(parent_view), "%s", view);
+			/* A group node says so explicitly. Its children are pages
+			 * of their own and are not expected to share its view. */
+			while (ls > app && strncmp(ls, "\n\t\t{", 4) != 0)
+				ls--;
+			blk = strstr(ls, "hash:");
+			parent_is_group = blk != NULL && strstr(ls, "group: true") != NULL &&
+			                  strstr(ls, "group: true") < blk;
 		}
 		if (tabbed) {
 			tabbed_checked++;
