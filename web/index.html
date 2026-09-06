@@ -341,12 +341,12 @@
 			<div class="tab-bar">
 				<button type="button" class="tab-button active" data-tab="networks">Networks</button>
 				<button type="button" class="tab-button" data-tab="routes">Routes</button>
-							<button type="button" class="tab-button" data-tab="dhcp-servers">Servers</button>
-							<button type="button" class="tab-button" data-tab="dhcp-ranges">Ranges</button>
-							<button type="button" class="tab-button" data-tab="dhcp-static">Reservations</button>
-							<button type="button" class="tab-button" data-tab="dhcp-leases">Leases</button>
+				<button type="button" class="tab-button" data-tab="dhcp-servers">Servers</button>
+				<button type="button" class="tab-button" data-tab="dhcp-ranges">Ranges</button>
+				<button type="button" class="tab-button" data-tab="dhcp-static">Reservations</button>
+				<button type="button" class="tab-button" data-tab="dhcp-leases">Leases</button>
 			</div>
-			<div class="tab-panel" data-tab="networks">
+<div class="tab-panel" data-tab="networks">
 			<div class="view-list">
 				
 				<table id="networks">
@@ -644,6 +644,12 @@
 		<!-- Devices -->
 		<section class="view" id="view-devices" hidden>
 			<h2>Devices</h2>
+			<div class="tab-bar">
+				<button type="button" class="tab-button active" data-tab="devices">Discovery</button>
+				<button type="button" class="tab-button" data-tab="kmod">Kernel Modules</button>
+			</div>
+			<div class="tab-panel" data-tab="devices">
+			
 			<p class="hint">Discovered live from host sysfs every poll -- nothing about a raw device is
 				persisted. A device is only ever granted to a container at creation time (see the
 				"Container" create action's own Devices section, where a mapping's name works exactly
@@ -674,7 +680,6 @@
 				<button type="button" class="tab-button" data-tab="pci" id="dev-tab-pci">PCI</button>
 				<button type="button" class="tab-button" data-tab="net" id="dev-tab-net">Network</button>
 				<button type="button" class="tab-button" data-tab="gpu" id="dev-tab-gpu">GPU</button>
-							<button type="button" class="tab-button" data-tab="kmod">Kernel Modules</button>
 			</div>
 			<div class="tab-panel" id="dev-panel-usb" data-tab="usb">
 				<table>
@@ -700,7 +705,8 @@
 					<tbody id="dev-gpu-body"><tr><td colspan="6" class="empty">Loading&hellip;</td></tr></tbody>
 				</table>
 			</div>
-			<div class="tab-panel" data-tab="kmod" hidden>
+			</div>
+<div class="tab-panel" data-tab="kmod" hidden>
 			
 			<p class="hint">Real, live <code>/proc/modules</code> state plus the persisted default-options/autoload config each one may have (ADR-0159 Phase A) -- load/unload here takes effect immediately; a kernel rebuild (below) is only needed to add support for a module that isn't already built at all.</p>
 
@@ -772,13 +778,13 @@
 			<h2>Storage</h2>
 			<div class="tab-bar">
 				<button type="button" class="tab-button active" data-tab="storage">Storage</button>
+				<button type="button" class="tab-button" data-tab="volumes">Volumes</button>
 				<button type="button" class="tab-button" data-tab="storage-placement">Placement</button>
 				<button type="button" class="tab-button" data-tab="host-swap">Swap</button>
 				<button type="button" class="tab-button" data-tab="backup">System Backup</button>
 				<button type="button" class="tab-button" data-tab="volume-backup-config">Volume Backups</button>
-							<button type="button" class="tab-button" data-tab="volumes">Volumes</button>
 			</div>
-			<div class="tab-panel" data-tab="storage">
+<div class="tab-panel" data-tab="storage">
 			<div class="view-list">
 				
 				<p class="hint">Real host block devices, discovered live from sysfs every poll. Partitions are
@@ -803,6 +809,18 @@
 					<tbody id="disks-body">
 						<tr><td colspan="9" class="empty">Loading&hellip;</td></tr>
 					</tbody>
+				</table>
+			</div>
+			</div>
+<div class="tab-panel" data-tab="volumes" hidden>
+			<div class="view-list">
+				
+				<p class="hint">Persistent storage whose lifetime is <strong>independent of any container</strong>. Everything else a container writes lives in its overlay upper layer, which is destroyed when the container is deleted &mdash; and a container gets recreated by any recipe change, package install or rolling image update. Mount a volume into a container (<code>volumes: [{"name": "home", "path": "/home"}]</code>) and that path survives. Deleting a container never touches its volumes; deleting a <em>volume</em> destroys its data and is refused while any container definition still references it.</p>
+				<table>
+					<thead>
+						<tr><th>Name</th><th>Mounted by</th><th>Disk</th><th>Host path</th><th>Created</th><th></th></tr>
+					</thead>
+					<tbody id="volumes-body"></tbody>
 				</table>
 			</div>
 			</div>
@@ -952,18 +970,6 @@
 				</form>
 			</div>
 		</div>
-			<div class="tab-panel" data-tab="volumes" hidden>
-			<div class="view-list">
-				
-				<p class="hint">Persistent storage whose lifetime is <strong>independent of any container</strong>. Everything else a container writes lives in its overlay upper layer, which is destroyed when the container is deleted &mdash; and a container gets recreated by any recipe change, package install or rolling image update. Mount a volume into a container (<code>volumes: [{"name": "home", "path": "/home"}]</code>) and that path survives. Deleting a container never touches its volumes; deleting a <em>volume</em> destroys its data and is refused while any container definition still references it.</p>
-				<table>
-					<thead>
-						<tr><th>Name</th><th>Mounted by</th><th>Disk</th><th>Host path</th><th>Created</th><th></th></tr>
-					</thead>
-					<tbody id="volumes-body"></tbody>
-				</table>
-			</div>
-			</div>
 		</section>
 
 		<!--
@@ -1050,8 +1056,11 @@
 				<button type="button" class="tab-button active" data-tab="daemon-config">Daemon</button>
 				<button type="button" class="tab-button" data-tab="site">Site</button>
 				<button type="button" class="tab-button" data-tab="hostauth-sessions">Sessions</button>
+				<button type="button" class="tab-button" data-tab="running-config">Running Config</button>
 				<button type="button" class="tab-button" data-tab="factory-reset">Factory Reset</button>
-							<button type="button" class="tab-button" data-tab="running-config">Running Config</button>
+							<button type="button" class="tab-button" data-tab="host-stats">Host Stats</button>
+							<button type="button" class="tab-button" data-tab="processes">Processes</button>
+							<button type="button" class="tab-button" data-tab="logs">Log Store</button>
 			</div>
 <div class="tab-panel" data-tab="daemon-config">
 			<p class="hint">
@@ -1139,6 +1148,21 @@
 				</table>
 			</div>
 		</div>
+<div class="tab-panel" data-tab="running-config" hidden>
+			
+			<p class="view-intro">
+				Everything this host is configured to do, in one ordered document
+				(ADR-0206). Rendered live from the daemon on every load -- it is a
+				view, never a stored file, so it cannot drift from what the box is
+				actually doing. Secrets are never shown: tokens and passwords appear
+				as a set/not-set flag, and PKI private keys never appear at all.
+			</p>
+			<div class="toolbar">
+				<button type="button" id="running-config-refresh">Refresh</button>
+				<button type="button" id="running-config-copy">Copy</button>
+			</div>
+			<pre id="running-config-text" class="logs-pre">Loading…</pre>
+			</div>
 <div class="tab-panel" data-tab="factory-reset" hidden>
 				<div class="view-list">
 					<p class="hint">Returns this box to its <strong>just-installed</strong> state and reboots.
@@ -1158,20 +1182,85 @@
 					</form>
 				</div>
 			</div>
-<div class="tab-panel" data-tab="running-config" hidden>
-			
-			<p class="view-intro">
-				Everything this host is configured to do, in one ordered document
-				(ADR-0206). Rendered live from the daemon on every load -- it is a
-				view, never a stored file, so it cannot drift from what the box is
-				actually doing. Secrets are never shown: tokens and passwords appear
-				as a set/not-set flag, and PKI private keys never appear at all.
-			</p>
-			<div class="toolbar">
-				<button type="button" id="running-config-refresh">Refresh</button>
-				<button type="button" id="running-config-copy">Copy</button>
+<div class="tab-panel" data-tab="host-stats" hidden>
+			<div class="stats-grid">
+				<div class="stats-card">
+					<h3>CPU</h3>
+					<canvas id="hs-stats-cpu" width="420" height="130"></canvas>
+					<p class="hint" id="hs-stats-cpu-label">&hellip;</p>
+				</div>
+				<div class="stats-card">
+					<h3>Memory</h3>
+					<canvas id="hs-stats-mem" width="420" height="130"></canvas>
+					<p class="hint" id="hs-stats-mem-label">&hellip;</p>
+				</div>
+				<div class="stats-card" id="hs-stats-workload-card" hidden>
+					<h3>Workload memory (cix-workload)</h3>
+					<canvas id="hs-stats-workload" width="420" height="130"></canvas>
+					<p class="hint" id="hs-stats-workload-label">&hellip;</p>
+				</div>
+				<div class="stats-card">
+					<h3>Disk</h3>
+					<canvas id="hs-stats-disk" width="420" height="130"></canvas>
+					<p class="hint" id="hs-stats-disk-label">&hellip;</p>
+				</div>
+				<div class="stats-card">
+					<h3>Network (all interfaces combined)</h3>
+					<canvas id="hs-stats-net" width="420" height="130"></canvas>
+					<p class="hint" id="hs-stats-net-label">&hellip;</p>
+				</div>
+				<div class="stats-card">
+					<h3>CPU pressure</h3>
+					<canvas id="hs-stats-cpu-pressure" width="420" height="130"></canvas>
+					<p class="hint" id="hs-stats-cpu-pressure-label">&hellip;</p>
+				</div>
+				<div class="stats-card">
+					<h3>Memory pressure</h3>
+					<canvas id="hs-stats-mem-pressure" width="420" height="130"></canvas>
+					<p class="hint" id="hs-stats-mem-pressure-label">&hellip;</p>
+				</div>
 			</div>
-			<pre id="running-config-text" class="logs-pre">Loading…</pre>
+			<p class="hint" id="hs-stats-load">Load average: &hellip;</p>
+			<p class="hint">Real, host-side usage (ADR-0073/ADR-0130) -- /proc + statvfs() on the daemon's own data directory, no in-container agent, sampled every 2s while this page stays open. History resets whenever this page (re)opens. Disk is the filesystem cixd's own data directory lives on, not every mounted filesystem on the box.</p>
+		
+			</div>
+<div class="tab-panel" data-tab="processes" hidden>
+			<div class="view-list">
+				<p class="hint">Every real process on the box (ADR-0131) -- a direct <code>/proc</code> scan, each one correlated to a container (if any) by its own real host ppid chain. A snapshot, not a live feed -- press Refresh for a fresh one. Kill is a real, immediate SIGKILL; refuses pid 1 and this daemon's own pid.</p>
+				<button type="button" id="proc-refresh">Refresh</button>
+				<table id="processes">
+					<thead>
+						<tr>
+							<th>PID</th>
+							<th>PPID</th>
+							<th>UID</th>
+							<th>GID</th>
+							<th>Container</th>
+							<th>Command</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody id="processes-body">
+						<tr><td colspan="7" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+			</div>
+		
+			</div>
+<div class="tab-panel" data-tab="logs" hidden>
+			<div class="view-list">
+				<p class="hint">A consolidated log (ADR-0070/ADR-0126): real kernel dmesg, cixd's own diagnostics, a per-request audit trail, and every container's own stdout/stderr -- all in one place, size-capped with the oldest entries dropped first once the cap is reached. Browse it live in the Log panel at the bottom of every page (source filter includes this browser's own local activity too, kept client-side only) -- this page just configures the store's size cap, not what's logged.</p>
+				<h3>Size cap</h3>
+				<form id="logs-config-form">
+					<label>
+						Max bytes
+						<input type="number" id="lcf-max-bytes" min="1048576" max="107374182400" step="1048576">
+					</label>
+					<button type="submit">Save</button>
+				</form>
+				<p class="hint">Enforced at segment granularity (8 rotating segments, oldest dropped whole when a new one is needed), not byte-exact -- a few percent of slop against this cap is expected.</p>
+			</div>
+		
 			</div>
 		</section>
 
@@ -1180,6 +1269,7 @@
 			<div class="tab-bar">
 				<button type="button" class="tab-button active" data-tab="tls-throttle">TLS Throttle</button>
 				<button type="button" class="tab-button" data-tab="control-plane-reservation">CPU &amp; Memory</button>
+							<button type="button" class="tab-button" data-tab="stalls">Stalls</button>
 			</div>
 <div class="tab-panel" data-tab="tls-throttle" hidden>
 			<div class="view-list">
@@ -1263,17 +1353,44 @@
 				<table class="detail-table"><tbody id="cpr-effect"></tbody></table>
 			</div>
 		</div>
+<div class="tab-panel" data-tab="stalls" hidden>
+			<div class="view-list">
+				<h2>Control-plane stalls</h2>
+				<p class="hint">
+					Times this daemon's event loop stopped going round (issue #100). Recorded by a
+					separate watchdog process, because the loop cannot report its own silence &mdash;
+					a real multi-minute outage on the production host left <em>nothing</em> in the log
+					store for exactly that reason, and could not be analysed afterwards at all.
+				</p>
+				<p class="hint">
+					<strong>wchan</strong> is the kernel function the daemon was sleeping in, read
+					from <code>/proc</code> by the watchdog: the single most useful fact about a wedge,
+					and the one thing unavailable from inside it. <strong>state</strong> is the process
+					state &mdash; <code>D</code> is uninterruptible sleep, the kind that cannot even be
+					killed. <strong>activity</strong> is the request being served when the loop went
+					quiet, so a stall names the thing that did not come back.
+				</p>
+				<table id="stalls">
+					<thead>
+						<tr><th>When</th><th>Event</th><th>Quiet for</th><th>State</th><th>wchan</th><th>Activity</th></tr>
+					</thead>
+					<tbody id="stalls-body">
+						<tr><td colspan="6" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+			</div>
+		</div>
 		</section>
 
 		<section class="view" id="view-kernel" hidden>
 			<h2>Kernel</h2>
 			<div class="tab-bar">
 				<button type="button" class="tab-button active" data-tab="kernel-policy">Kernel Line</button>
+				<button type="button" class="tab-button" data-tab="sysctl">Sysctl</button>
 				<button type="button" class="tab-button" data-tab="boot-console">Boot Console</button>
-							<button type="button" class="tab-button" data-tab="sysctl">Sysctl</button>
-							<button type="button" class="tab-button" data-tab="kmsg">Kernel Log</button>
+				<button type="button" class="tab-button" data-tab="kmsg">Kernel Log</button>
 			</div>
-<div class="tab-panel" data-tab="kernel-policy" hidden>
+<div class="tab-panel" data-tab="kernel-policy">
 			<div class="view-list">
 				<p class="hint">
 					Which kernel line this box tracks (issue #65). The platform used to make that
@@ -1305,6 +1422,24 @@
 				<table class="detail-table"><tbody id="kpf-status"></tbody></table>
 			</div>
 		</div>
+<div class="tab-panel" data-tab="sysctl" hidden>
+			<div class="view-list">
+				
+				<p class="hint">Every persisted (daemon-managed) host-level <code>/proc/sys</code> key (ADR-0160) -- fully open, no allowlist, host-auth write-gating is the only access control. A key set here re-applies on every boot unless set with "no persist". Set one via the Host menu's "+ Set Sysctl" action.</p>
+				<table id="sysctl-table">
+					<thead>
+						<tr>
+							<th>Key</th>
+							<th>Value</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody id="sysctl-body">
+						<tr><td colspan="3" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+			</div>
+			</div>
 <div class="tab-panel" data-tab="boot-console" hidden>
 			<div class="view-list">
 				<p class="hint">
@@ -1342,24 +1477,6 @@
 				</table>
 			</div>
 		</div>
-<div class="tab-panel" data-tab="sysctl" hidden>
-			<div class="view-list">
-				
-				<p class="hint">Every persisted (daemon-managed) host-level <code>/proc/sys</code> key (ADR-0160) -- fully open, no allowlist, host-auth write-gating is the only access control. A key set here re-applies on every boot unless set with "no persist". Set one via the Host menu's "+ Set Sysctl" action.</p>
-				<table id="sysctl-table">
-					<thead>
-						<tr>
-							<th>Key</th>
-							<th>Value</th>
-							<th></th>
-						</tr>
-					</thead>
-					<tbody id="sysctl-body">
-						<tr><td colspan="3" class="empty">Loading&hellip;</td></tr>
-					</tbody>
-				</table>
-			</div>
-			</div>
 <div class="tab-panel" data-tab="kmsg" hidden hidden>
 			<div class="view-list">
 				<p class="hint">The kernel's own ring buffer (<code>/dev/kmsg</code>) &mdash; dmesg over REST. This is where mount failures, driver probes and OOM kills surface, and on a real installed host with no shell it is the only way to read them. Distinct from the Log Store, which carries <code>cixd</code>'s own diagnostics and the audit trail.</p>
@@ -1799,19 +1916,19 @@
 			<h2>Pipeline</h2>
 			<div class="tab-bar">
 				<button type="button" class="tab-button active" data-tab="pipeline">Overview</button>
+				<button type="button" class="tab-button" data-tab="pkg-repo">Repo &amp; Sync</button>
+				<button type="button" class="tab-button" data-tab="packages">Packages</button>
+				<button type="button" class="tab-button" data-tab="images">Images</button>
+				<button type="button" class="tab-button" data-tab="reconcile">Reconcile</button>
+				<button type="button" class="tab-button" data-tab="update">Update</button>
+				<button type="button" class="tab-button" data-tab="recipes">Recipes</button>
+				<button type="button" class="tab-button" data-tab="pkg-build-config">Package Builds</button>
+				<button type="button" class="tab-button" data-tab="pkg-cache">Cache &amp; Artifacts</button>
 				<button type="button" class="tab-button" data-tab="esp">Boot Slots</button>
 				<button type="button" class="tab-button" data-tab="rolling-restart">Rolling Restart</button>
 				<button type="button" class="tab-button" data-tab="signing-keys">Signing Keys</button>
-							<button type="button" class="tab-button" data-tab="recipes">Recipes</button>
-							<button type="button" class="tab-button" data-tab="pkg-repo">Repo &amp; Sync</button>
-							<button type="button" class="tab-button" data-tab="reconcile">Reconcile</button>
-							<button type="button" class="tab-button" data-tab="images">Images</button>
-							<button type="button" class="tab-button" data-tab="packages">Packages</button>
-							<button type="button" class="tab-button" data-tab="pkg-cache">Cache &amp; Artifacts</button>
-							<button type="button" class="tab-button" data-tab="pkg-build-config">Package Builds</button>
-							<button type="button" class="tab-button" data-tab="update">Update</button>
 			</div>
-			<div class="tab-panel" data-tab="pipeline">
+<div class="tab-panel" data-tab="pipeline">
 			
 			<p class="hint">
 				The eleven steps between "upstream released something" and "this host is
@@ -1840,6 +1957,281 @@
 			</table>
 			<p id="pipeline-summary" class="hint"></p>
 			</div>
+<div class="tab-panel" data-tab="pkg-repo" hidden>
+			<h2>Package Repo &amp; Sync</h2>
+			<p class="hint">
+				The configured git-forge source recipes sync from (ADR-0121) -- gitea/github/gitlab,
+				fetched as a plain archive download, never the git protocol itself. Distinct from the
+				artifact server (<a href="#pkg-cache">Cache &amp; Artifacts</a>), which serves
+				precompiled binaries, not recipe text -- the checksum for each is the trust anchor
+				tying the two together (ADR-0122).
+			</p>
+			<form id="prc-form">
+				<label class="wide">
+					Repo URL
+					<input type="text" id="prc-url" placeholder="https://git.example.com/org/recipes">
+				</label>
+				<label>
+					Kind
+					<select id="prc-kind">
+						<option value="gitea">gitea</option>
+						<option value="github">github</option>
+						<option value="gitlab">gitlab</option>
+					</select>
+				</label>
+				<label>
+					Ref (branch/tag)
+					<input type="text" id="prc-ref" placeholder="main">
+				</label>
+				<label>
+					Auth token (blank = unchanged)
+					<input type="password" id="prc-token" placeholder="(unchanged)">
+				</label>
+				<label class="checkbox">
+					<input type="checkbox" id="prc-clear-token">
+					Clear token
+				</label>
+				<p class="hint">
+					When syncs run is a schedule now (ADR-0257) &mdash; see
+					<a href="#schedules">Schedules</a>, action <code>pkg.sync</code>.
+				</p>
+				<button type="submit">Save</button>
+			</form>
+			<h3>Sync status</h3>
+			<div id="pkg-sync-status-box" class="pki-ca-status"></div>
+			<button type="button" id="pkg-sync-now">Sync now</button>
+		</div>
+<div class="tab-panel" data-tab="packages" hidden>
+			<div class="view-list">
+				<p class="hint">What's actually installed, on which image, right now -- one row per real
+					installation. For the recipe catalog itself (add/edit/delete a buildable definition),
+					see Recipes.</p>
+				<table id="packages">
+					<thead>
+						<tr>
+							<th>Name</th>
+							<th>Image</th>
+							<th>Version</th>
+							<th>State</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody id="packages-body">
+						<tr><td colspan="5" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+			</div>
+		</div>
+<div class="tab-panel" data-tab="images" hidden>
+			<div class="view-list">
+				<p class="hint">Every package install leaves an immutable image version behind
+					(ADR-0107/0108), and a container pins the version it was created with. Reclaim
+					removes only versions that nothing references &mdash; never an image's current
+					version, and never one a container or a stored container definition still points
+					at. Preview first: it lists what would go without touching anything.</p>
+				<div class="form-row">
+					<button type="button" id="images-gc-preview">Preview reclaimable&hellip;</button>
+					<button type="button" id="images-gc" class="button-danger">Reclaim unused versions</button>
+				</div>
+				<div id="images-gc-status" class="pki-ca-status" hidden></div>
+				<table id="images">
+					<thead>
+						<tr>
+							<th>Name</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody id="images-body">
+						<tr><td colspan="2" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+			</div>
+		</div>
+<div class="tab-panel" data-tab="reconcile" hidden>
+				<div class="view-list">
+					<h2>Declared vs installed</h2>
+					<p class="hint">What has a recipe, against what is actually here. The row that matters is
+						<strong>installed with no recipe</strong>: it cannot be rebuilt from source control,
+						which on a platform whose premise is "reproducible from source" is exactly the state
+						worth seeing. Either capture a recipe for it, or it is debris. The reverse &mdash; a
+						recipe nobody has applied &mdash; is harmless but worth knowing.</p>
+					<p class="hint" id="sw-summary"></p>
+					<table id="sw-table">
+						<thead><tr><th>Name</th><th>Kind</th><th>Recipe</th><th>Installed</th></tr></thead>
+						<tbody id="sw-body"></tbody>
+					</table>
+				</div>
+			</div>
+<div class="tab-panel" data-tab="update" hidden>
+			<form id="sys-update-form">
+				<label class="wide">
+					Control-plane image path (optional, local to this daemon's host)
+					<input type="text" id="sys-update-image" placeholder="/path/to/cixd-root.squashfs">
+				</label>
+				<label class="wide">
+					Kernel path (optional, local to this daemon's host)
+					<input type="text" id="sys-update-kernel" placeholder="/path/to/bzImage">
+				</label>
+				<button type="submit">Stage update</button>
+			</form>
+			<p class="hint">Writes to the inactive A/B slot. Does not reboot -- reboot separately once
+				ready to cut over.</p>
+		</div>
+<div class="tab-panel" data-tab="recipes" hidden>
+			<div class="view-list">
+				<p class="hint">Three git-syncable recipe kinds (ADR-0040/ADR-0123/ADR-0151), one catalog:
+					<strong>Packages</strong> build one piece of software from source; <strong>Images</strong>
+					declare a whole package manifest for an image in one shot; <strong>Containers</strong>
+					capture a full, reproducible container definition (cmd/files/network/restart) that
+					creates a real container when applied.</p>
+				<div class="tab-bar">
+					<button type="button" class="tab-button active" data-tab="pkg-recipes" id="recipes-tab-pkg">Packages</button>
+					<button type="button" class="tab-button" data-tab="image-recipes" id="recipes-tab-image">Images</button>
+					<button type="button" class="tab-button" data-tab="container-recipes" id="recipes-tab-container">Containers</button>
+				</div>
+
+				<div class="tab-panel" id="recipes-panel-pkg" data-tab="pkg-recipes">
+					<div class="list-toolbar">
+						<input type="search" id="recipes-pkg-search" placeholder="Search package recipes by name&hellip;">
+						<button type="button" id="recipes-pkg-add">Add recipe&hellip;</button>
+					</div>
+					<table id="recipes">
+						<thead>
+							<tr>
+								<th>Name</th>
+								<th>Version</th>
+								<th>Depends</th>
+								<th></th>
+							</tr>
+						</thead>
+						<tbody id="recipes-body">
+							<tr><td colspan="4" class="empty">Loading&hellip;</td></tr>
+						</tbody>
+					</table>
+				</div>
+
+				<div class="tab-panel" id="recipes-panel-image" data-tab="image-recipes" hidden>
+					<div class="list-toolbar">
+						<input type="search" id="recipes-image-search" placeholder="Search image recipes by name&hellip;">
+						<button type="button" id="recipes-image-add">Add recipe&hellip;</button>
+					</div>
+					<p class="hint">A recipe's own name is always its target image's name (1:1, ADR-0123) --
+						applying bulk-declares that image's manifest (or, for a fully-pinned recipe with a
+						matching artifact server, fetches one whole-rootfs tarball).</p>
+					<table id="image-recipes">
+						<thead>
+							<tr>
+								<th>Image</th>
+								<th></th>
+							</tr>
+						</thead>
+						<tbody id="image-recipes-body">
+							<tr><td colspan="2" class="empty">Loading&hellip;</td></tr>
+						</tbody>
+					</table>
+				</div>
+
+				<div class="tab-panel" id="recipes-panel-container" data-tab="container-recipes" hidden>
+					<div class="list-toolbar">
+						<input type="search" id="recipes-container-search" placeholder="Search container recipes by name&hellip;">
+						<button type="button" id="recipes-container-add">Add recipe&hellip;</button>
+					</div>
+					<p class="hint">A recipe's own name is always the container it creates (ADR-0151) --
+						content is a real <code>POST /containers</code> body; applying creates that
+						container. A recipe may embed <code>{{SECRET:KEY}}</code> tokens in staged file
+						content -- supply real values only at apply time, never committed to git.</p>
+					<table id="container-recipes">
+						<thead>
+							<tr>
+								<th>Name</th>
+								<th></th>
+							</tr>
+						</thead>
+						<tbody id="container-recipes-body">
+							<tr><td colspan="2" class="empty">Loading&hellip;</td></tr>
+						</tbody>
+					</table>
+				</div>
+			</div>
+		</div>
+<div class="tab-panel" data-tab="pkg-build-config" hidden>
+			<form id="pbc-form">
+				<label>
+					Max concurrent jobs
+					<input type="number" id="pbc-max-jobs" min="1" max="10" value="10">
+				</label>
+				<label>
+					Memory budget for all builds together (bytes, 0 = unlimited)
+					<input type="number" id="pbc-memory-max" min="0" value="2147483648">
+				</label>
+				<label class="wide">
+					CPU budget for all builds together (raw cgroup v2 "quota period", empty = unlimited)
+					<input type="text" id="pbc-cpu-max" placeholder="100000 100000">
+				</label>
+				<button type="submit">Save</button>
+			</form>
+			<h3>Build logs</h3>
+			<p class="hint">
+				Issue #57: the <strong>complete</strong> output of each recent build, teed to disk as it
+				streams. The log store keeps only a ~4KB tail and the live stream is gone once a build
+				ends, so a finished build's real output used to survive nowhere &mdash; which cost two
+				multi-hour round trips on one package alone: once when a verbose configure swamped the
+				tail and hid the error, and once when working around that silenced the live stream and a
+				healthy 71-minute build was misread as hung and killed by hand. A killed build keeps its
+				log too, which is the case most worth reading.
+			</p>
+			<table id="build-logs">
+				<thead>
+					<tr><th>Log</th><th>Size</th><th>Finished</th><th></th></tr>
+				</thead>
+				<tbody id="build-logs-body">
+					<tr><td colspan="4" class="empty">Loading&hellip;</td></tr>
+				</tbody>
+			</table>
+			<pre id="build-log-view" class="log-view" hidden></pre>
+			<p class="hint">ADR-0157: how many <code>pkg install</code>/<code>pkg hostbuild</code> jobs may genuinely run at once, each in its own build container. Lowering this doesn't disrupt jobs already in flight -- only future ones once the new, lower ceiling is reached.</p>
+			<p class="hint">Issue #85: these are an <strong>aggregate</strong> budget, carried by one parent cgroup every build container is a leaf of -- not a per-build ceiling. A per-build number is not a budget: with max concurrent jobs at 10 it silently meant ten times what it said, and on a real 2-CPU box four concurrent builds at 1.5 CPU each demanded 6 CPUs, starved the daemon off the run queue and took the machine out of reach entirely. Whatever this says is now what all builds together can use.</p>
+			<p class="hint">ADR-0165 (superseded in shape by the above): the memory/CPU ceiling applied to build containers -- the same cgroup mechanism a regular container's own <code>--memory-max=</code>/<code>--cpu-max=</code> already uses. Found missing the hard way: a burst of concurrent installs with no ceiling hung a real box's daemon entirely. CPU quota is microseconds of CPU time per 100000-microsecond period -- "100000 100000" is one full CPU's worth, "50000 100000" is half a CPU.</p>
+		</div>
+<div class="tab-panel" data-tab="pkg-cache" hidden>
+			<h2>Package Cache &amp; Artifacts</h2>
+			<p class="hint">
+				Tier 1: a local build-artifact cache (LRU-evicted, keyed by name+version) that skips a
+				real rebuild on a repeat install. Tier 2: an optional plain-HTTP precompiled-artifact
+				server, checked before falling back to source, verified against the recipe's own
+				<code>pkg_artifact_sha256</code> before being trusted. Both distinct from the recipe
+				repo (<a href="#pkg-repo">Repo &amp; Sync</a>) -- recipes stay in git, compiled binaries
+				never do.
+			</p>
+			<h3>Cache</h3>
+			<div id="pkg-cache-status-box" class="pki-ca-status"></div>
+			<form id="pcc-form">
+				<label>
+					Max size (bytes)
+					<input type="number" id="pcc-max-bytes" min="0">
+				</label>
+				<button type="submit">Save</button>
+			</form>
+			<button type="button" id="pkg-cache-clear" class="button-danger">Clear cache</button>
+
+			<h3>Artifact server</h3>
+			<div id="pkg-artifact-status-box" class="pki-ca-status"></div>
+			<form id="pac-form">
+				<label class="wide">
+					Base URL
+					<input type="text" id="pac-base-url" placeholder="http://artifacts.example.com/cix">
+				</label>
+				<label>
+					Auth token (blank = unchanged)
+					<input type="password" id="pac-token" placeholder="(unchanged)">
+				</label>
+				<label class="checkbox">
+					<input type="checkbox" id="pac-clear-token">
+					Clear token
+				</label>
+				<button type="submit">Save</button>
+			</form>
+		</div>
 <div class="tab-panel" data-tab="esp" hidden>
 			<div class="view-list">
 				<h2>Boot Entries (ESP)</h2>
@@ -1991,281 +2383,6 @@
 				</form>
 			</div>
 			</div>
-<div class="tab-panel" data-tab="recipes" hidden>
-			<div class="view-list">
-				<p class="hint">Three git-syncable recipe kinds (ADR-0040/ADR-0123/ADR-0151), one catalog:
-					<strong>Packages</strong> build one piece of software from source; <strong>Images</strong>
-					declare a whole package manifest for an image in one shot; <strong>Containers</strong>
-					capture a full, reproducible container definition (cmd/files/network/restart) that
-					creates a real container when applied.</p>
-				<div class="tab-bar">
-					<button type="button" class="tab-button active" data-tab="pkg-recipes" id="recipes-tab-pkg">Packages</button>
-					<button type="button" class="tab-button" data-tab="image-recipes" id="recipes-tab-image">Images</button>
-					<button type="button" class="tab-button" data-tab="container-recipes" id="recipes-tab-container">Containers</button>
-				</div>
-
-				<div class="tab-panel" id="recipes-panel-pkg" data-tab="pkg-recipes">
-					<div class="list-toolbar">
-						<input type="search" id="recipes-pkg-search" placeholder="Search package recipes by name&hellip;">
-						<button type="button" id="recipes-pkg-add">Add recipe&hellip;</button>
-					</div>
-					<table id="recipes">
-						<thead>
-							<tr>
-								<th>Name</th>
-								<th>Version</th>
-								<th>Depends</th>
-								<th></th>
-							</tr>
-						</thead>
-						<tbody id="recipes-body">
-							<tr><td colspan="4" class="empty">Loading&hellip;</td></tr>
-						</tbody>
-					</table>
-				</div>
-
-				<div class="tab-panel" id="recipes-panel-image" data-tab="image-recipes" hidden>
-					<div class="list-toolbar">
-						<input type="search" id="recipes-image-search" placeholder="Search image recipes by name&hellip;">
-						<button type="button" id="recipes-image-add">Add recipe&hellip;</button>
-					</div>
-					<p class="hint">A recipe's own name is always its target image's name (1:1, ADR-0123) --
-						applying bulk-declares that image's manifest (or, for a fully-pinned recipe with a
-						matching artifact server, fetches one whole-rootfs tarball).</p>
-					<table id="image-recipes">
-						<thead>
-							<tr>
-								<th>Image</th>
-								<th></th>
-							</tr>
-						</thead>
-						<tbody id="image-recipes-body">
-							<tr><td colspan="2" class="empty">Loading&hellip;</td></tr>
-						</tbody>
-					</table>
-				</div>
-
-				<div class="tab-panel" id="recipes-panel-container" data-tab="container-recipes" hidden>
-					<div class="list-toolbar">
-						<input type="search" id="recipes-container-search" placeholder="Search container recipes by name&hellip;">
-						<button type="button" id="recipes-container-add">Add recipe&hellip;</button>
-					</div>
-					<p class="hint">A recipe's own name is always the container it creates (ADR-0151) --
-						content is a real <code>POST /containers</code> body; applying creates that
-						container. A recipe may embed <code>{{SECRET:KEY}}</code> tokens in staged file
-						content -- supply real values only at apply time, never committed to git.</p>
-					<table id="container-recipes">
-						<thead>
-							<tr>
-								<th>Name</th>
-								<th></th>
-							</tr>
-						</thead>
-						<tbody id="container-recipes-body">
-							<tr><td colspan="2" class="empty">Loading&hellip;</td></tr>
-						</tbody>
-					</table>
-				</div>
-			</div>
-		</div>
-<div class="tab-panel" data-tab="pkg-repo" hidden>
-			<h2>Package Repo &amp; Sync</h2>
-			<p class="hint">
-				The configured git-forge source recipes sync from (ADR-0121) -- gitea/github/gitlab,
-				fetched as a plain archive download, never the git protocol itself. Distinct from the
-				artifact server (<a href="#pkg-cache">Cache &amp; Artifacts</a>), which serves
-				precompiled binaries, not recipe text -- the checksum for each is the trust anchor
-				tying the two together (ADR-0122).
-			</p>
-			<form id="prc-form">
-				<label class="wide">
-					Repo URL
-					<input type="text" id="prc-url" placeholder="https://git.example.com/org/recipes">
-				</label>
-				<label>
-					Kind
-					<select id="prc-kind">
-						<option value="gitea">gitea</option>
-						<option value="github">github</option>
-						<option value="gitlab">gitlab</option>
-					</select>
-				</label>
-				<label>
-					Ref (branch/tag)
-					<input type="text" id="prc-ref" placeholder="main">
-				</label>
-				<label>
-					Auth token (blank = unchanged)
-					<input type="password" id="prc-token" placeholder="(unchanged)">
-				</label>
-				<label class="checkbox">
-					<input type="checkbox" id="prc-clear-token">
-					Clear token
-				</label>
-				<p class="hint">
-					When syncs run is a schedule now (ADR-0257) &mdash; see
-					<a href="#schedules">Schedules</a>, action <code>pkg.sync</code>.
-				</p>
-				<button type="submit">Save</button>
-			</form>
-			<h3>Sync status</h3>
-			<div id="pkg-sync-status-box" class="pki-ca-status"></div>
-			<button type="button" id="pkg-sync-now">Sync now</button>
-		</div>
-<div class="tab-panel" data-tab="reconcile" hidden>
-				<div class="view-list">
-					<h2>Declared vs installed</h2>
-					<p class="hint">What has a recipe, against what is actually here. The row that matters is
-						<strong>installed with no recipe</strong>: it cannot be rebuilt from source control,
-						which on a platform whose premise is "reproducible from source" is exactly the state
-						worth seeing. Either capture a recipe for it, or it is debris. The reverse &mdash; a
-						recipe nobody has applied &mdash; is harmless but worth knowing.</p>
-					<p class="hint" id="sw-summary"></p>
-					<table id="sw-table">
-						<thead><tr><th>Name</th><th>Kind</th><th>Recipe</th><th>Installed</th></tr></thead>
-						<tbody id="sw-body"></tbody>
-					</table>
-				</div>
-			</div>
-<div class="tab-panel" data-tab="images" hidden>
-			<div class="view-list">
-				<p class="hint">Every package install leaves an immutable image version behind
-					(ADR-0107/0108), and a container pins the version it was created with. Reclaim
-					removes only versions that nothing references &mdash; never an image's current
-					version, and never one a container or a stored container definition still points
-					at. Preview first: it lists what would go without touching anything.</p>
-				<div class="form-row">
-					<button type="button" id="images-gc-preview">Preview reclaimable&hellip;</button>
-					<button type="button" id="images-gc" class="button-danger">Reclaim unused versions</button>
-				</div>
-				<div id="images-gc-status" class="pki-ca-status" hidden></div>
-				<table id="images">
-					<thead>
-						<tr>
-							<th>Name</th>
-							<th></th>
-						</tr>
-					</thead>
-					<tbody id="images-body">
-						<tr><td colspan="2" class="empty">Loading&hellip;</td></tr>
-					</tbody>
-				</table>
-			</div>
-		</div>
-<div class="tab-panel" data-tab="packages" hidden>
-			<div class="view-list">
-				<p class="hint">What's actually installed, on which image, right now -- one row per real
-					installation. For the recipe catalog itself (add/edit/delete a buildable definition),
-					see Recipes.</p>
-				<table id="packages">
-					<thead>
-						<tr>
-							<th>Name</th>
-							<th>Image</th>
-							<th>Version</th>
-							<th>State</th>
-							<th></th>
-						</tr>
-					</thead>
-					<tbody id="packages-body">
-						<tr><td colspan="5" class="empty">Loading&hellip;</td></tr>
-					</tbody>
-				</table>
-			</div>
-		</div>
-<div class="tab-panel" data-tab="pkg-cache" hidden>
-			<h2>Package Cache &amp; Artifacts</h2>
-			<p class="hint">
-				Tier 1: a local build-artifact cache (LRU-evicted, keyed by name+version) that skips a
-				real rebuild on a repeat install. Tier 2: an optional plain-HTTP precompiled-artifact
-				server, checked before falling back to source, verified against the recipe's own
-				<code>pkg_artifact_sha256</code> before being trusted. Both distinct from the recipe
-				repo (<a href="#pkg-repo">Repo &amp; Sync</a>) -- recipes stay in git, compiled binaries
-				never do.
-			</p>
-			<h3>Cache</h3>
-			<div id="pkg-cache-status-box" class="pki-ca-status"></div>
-			<form id="pcc-form">
-				<label>
-					Max size (bytes)
-					<input type="number" id="pcc-max-bytes" min="0">
-				</label>
-				<button type="submit">Save</button>
-			</form>
-			<button type="button" id="pkg-cache-clear" class="button-danger">Clear cache</button>
-
-			<h3>Artifact server</h3>
-			<div id="pkg-artifact-status-box" class="pki-ca-status"></div>
-			<form id="pac-form">
-				<label class="wide">
-					Base URL
-					<input type="text" id="pac-base-url" placeholder="http://artifacts.example.com/cix">
-				</label>
-				<label>
-					Auth token (blank = unchanged)
-					<input type="password" id="pac-token" placeholder="(unchanged)">
-				</label>
-				<label class="checkbox">
-					<input type="checkbox" id="pac-clear-token">
-					Clear token
-				</label>
-				<button type="submit">Save</button>
-			</form>
-		</div>
-<div class="tab-panel" data-tab="pkg-build-config" hidden>
-			<form id="pbc-form">
-				<label>
-					Max concurrent jobs
-					<input type="number" id="pbc-max-jobs" min="1" max="10" value="10">
-				</label>
-				<label>
-					Memory budget for all builds together (bytes, 0 = unlimited)
-					<input type="number" id="pbc-memory-max" min="0" value="2147483648">
-				</label>
-				<label class="wide">
-					CPU budget for all builds together (raw cgroup v2 "quota period", empty = unlimited)
-					<input type="text" id="pbc-cpu-max" placeholder="100000 100000">
-				</label>
-				<button type="submit">Save</button>
-			</form>
-			<h3>Build logs</h3>
-			<p class="hint">
-				Issue #57: the <strong>complete</strong> output of each recent build, teed to disk as it
-				streams. The log store keeps only a ~4KB tail and the live stream is gone once a build
-				ends, so a finished build's real output used to survive nowhere &mdash; which cost two
-				multi-hour round trips on one package alone: once when a verbose configure swamped the
-				tail and hid the error, and once when working around that silenced the live stream and a
-				healthy 71-minute build was misread as hung and killed by hand. A killed build keeps its
-				log too, which is the case most worth reading.
-			</p>
-			<table id="build-logs">
-				<thead>
-					<tr><th>Log</th><th>Size</th><th>Finished</th><th></th></tr>
-				</thead>
-				<tbody id="build-logs-body">
-					<tr><td colspan="4" class="empty">Loading&hellip;</td></tr>
-				</tbody>
-			</table>
-			<pre id="build-log-view" class="log-view" hidden></pre>
-			<p class="hint">ADR-0157: how many <code>pkg install</code>/<code>pkg hostbuild</code> jobs may genuinely run at once, each in its own build container. Lowering this doesn't disrupt jobs already in flight -- only future ones once the new, lower ceiling is reached.</p>
-			<p class="hint">Issue #85: these are an <strong>aggregate</strong> budget, carried by one parent cgroup every build container is a leaf of -- not a per-build ceiling. A per-build number is not a budget: with max concurrent jobs at 10 it silently meant ten times what it said, and on a real 2-CPU box four concurrent builds at 1.5 CPU each demanded 6 CPUs, starved the daemon off the run queue and took the machine out of reach entirely. Whatever this says is now what all builds together can use.</p>
-			<p class="hint">ADR-0165 (superseded in shape by the above): the memory/CPU ceiling applied to build containers -- the same cgroup mechanism a regular container's own <code>--memory-max=</code>/<code>--cpu-max=</code> already uses. Found missing the hard way: a burst of concurrent installs with no ceiling hung a real box's daemon entirely. CPU quota is microseconds of CPU time per 100000-microsecond period -- "100000 100000" is one full CPU's worth, "50000 100000" is half a CPU.</p>
-		</div>
-<div class="tab-panel" data-tab="update" hidden>
-			<form id="sys-update-form">
-				<label class="wide">
-					Control-plane image path (optional, local to this daemon's host)
-					<input type="text" id="sys-update-image" placeholder="/path/to/cixd-root.squashfs">
-				</label>
-				<label class="wide">
-					Kernel path (optional, local to this daemon's host)
-					<input type="text" id="sys-update-kernel" placeholder="/path/to/bzImage">
-				</label>
-				<button type="submit">Stage update</button>
-			</form>
-			<p class="hint">Writes to the inactive A/B slot. Does not reboot -- reboot separately once
-				ready to cut over.</p>
-		</div>
 		</section>
 
 		
@@ -2348,137 +2465,7 @@
 		-->
 		
 
-		<section class="view" id="view-monitoring" hidden>
-			<h2>Monitoring</h2>
-			<div class="tab-bar">
-				<button type="button" class="tab-button active" data-tab="host-stats">Host Stats</button>
-				<button type="button" class="tab-button" data-tab="processes">Processes</button>
-				<button type="button" class="tab-button" data-tab="logs">Log Store</button>
-				<button type="button" class="tab-button" data-tab="server-health">Server Health</button>
-				<button type="button" class="tab-button" data-tab="stalls">Stalls</button>
-			</div>
-			<div class="tab-panel" data-tab="host-stats">
-			<div class="stats-grid">
-				<div class="stats-card">
-					<h3>CPU</h3>
-					<canvas id="hs-stats-cpu" width="420" height="130"></canvas>
-					<p class="hint" id="hs-stats-cpu-label">&hellip;</p>
-				</div>
-				<div class="stats-card">
-					<h3>Memory</h3>
-					<canvas id="hs-stats-mem" width="420" height="130"></canvas>
-					<p class="hint" id="hs-stats-mem-label">&hellip;</p>
-				</div>
-				<div class="stats-card" id="hs-stats-workload-card" hidden>
-					<h3>Workload memory (cix-workload)</h3>
-					<canvas id="hs-stats-workload" width="420" height="130"></canvas>
-					<p class="hint" id="hs-stats-workload-label">&hellip;</p>
-				</div>
-				<div class="stats-card">
-					<h3>Disk</h3>
-					<canvas id="hs-stats-disk" width="420" height="130"></canvas>
-					<p class="hint" id="hs-stats-disk-label">&hellip;</p>
-				</div>
-				<div class="stats-card">
-					<h3>Network (all interfaces combined)</h3>
-					<canvas id="hs-stats-net" width="420" height="130"></canvas>
-					<p class="hint" id="hs-stats-net-label">&hellip;</p>
-				</div>
-				<div class="stats-card">
-					<h3>CPU pressure</h3>
-					<canvas id="hs-stats-cpu-pressure" width="420" height="130"></canvas>
-					<p class="hint" id="hs-stats-cpu-pressure-label">&hellip;</p>
-				</div>
-				<div class="stats-card">
-					<h3>Memory pressure</h3>
-					<canvas id="hs-stats-mem-pressure" width="420" height="130"></canvas>
-					<p class="hint" id="hs-stats-mem-pressure-label">&hellip;</p>
-				</div>
-			</div>
-			<p class="hint" id="hs-stats-load">Load average: &hellip;</p>
-			<p class="hint">Real, host-side usage (ADR-0073/ADR-0130) -- /proc + statvfs() on the daemon's own data directory, no in-container agent, sampled every 2s while this page stays open. History resets whenever this page (re)opens. Disk is the filesystem cixd's own data directory lives on, not every mounted filesystem on the box.</p>
 		
-			</div>
-			<div class="tab-panel" data-tab="processes" hidden>
-			<div class="view-list">
-				<p class="hint">Every real process on the box (ADR-0131) -- a direct <code>/proc</code> scan, each one correlated to a container (if any) by its own real host ppid chain. A snapshot, not a live feed -- press Refresh for a fresh one. Kill is a real, immediate SIGKILL; refuses pid 1 and this daemon's own pid.</p>
-				<button type="button" id="proc-refresh">Refresh</button>
-				<table id="processes">
-					<thead>
-						<tr>
-							<th>PID</th>
-							<th>PPID</th>
-							<th>UID</th>
-							<th>GID</th>
-							<th>Container</th>
-							<th>Command</th>
-							<th></th>
-						</tr>
-					</thead>
-					<tbody id="processes-body">
-						<tr><td colspan="7" class="empty">Loading&hellip;</td></tr>
-					</tbody>
-				</table>
-			</div>
-		
-			</div>
-			<div class="tab-panel" data-tab="logs" hidden>
-			<div class="view-list">
-				<p class="hint">A consolidated log (ADR-0070/ADR-0126): real kernel dmesg, cixd's own diagnostics, a per-request audit trail, and every container's own stdout/stderr -- all in one place, size-capped with the oldest entries dropped first once the cap is reached. Browse it live in the Log panel at the bottom of every page (source filter includes this browser's own local activity too, kept client-side only) -- this page just configures the store's size cap, not what's logged.</p>
-				<h3>Size cap</h3>
-				<form id="logs-config-form">
-					<label>
-						Max bytes
-						<input type="number" id="lcf-max-bytes" min="1048576" max="107374182400" step="1048576">
-					</label>
-					<button type="submit">Save</button>
-				</form>
-				<p class="hint">Enforced at segment granularity (8 rotating segments, oldest dropped whole when a new one is needed), not byte-exact -- a few percent of slop against this cap is expected.</p>
-			</div>
-		
-			</div>
-			
-			<div class="tab-panel" data-tab="server-health" hidden>
-			<div class="view-list">
-				<p class="hint">Every registered backend server &mdash; LDAP, DNS, NTP and syslog &mdash; probed on an interval. A server that is drained or has failed its probes is dropped from the configuration handed to clients, so a registered-but-not-serving server can no longer break logins silently. <strong>Drain</strong> takes one out of service deliberately (maintenance); it persists across a daemon restart, while health itself is re-established by the next probe. The <em>Probe</em> column says how the verdict was reached: a <code>tcp:PORT</code> check is a real service check, <code>process</code> only means the container is running.</p>
-				<div id="server-health-warnings" hidden></div>
-				<table>
-					<thead>
-						<tr><th>Kind</th><th>Container</th><th>State</th><th>In service</th><th>Probe</th><th>Failures</th><th>Last error</th><th></th></tr>
-					</thead>
-					<tbody id="server-health-body"></tbody>
-				</table>
-			</div>
-		
-			</div>
-			<div class="tab-panel" data-tab="stalls" hidden>
-			<div class="view-list">
-				<h2>Control-plane stalls</h2>
-				<p class="hint">
-					Times this daemon's event loop stopped going round (issue #100). Recorded by a
-					separate watchdog process, because the loop cannot report its own silence &mdash;
-					a real multi-minute outage on the production host left <em>nothing</em> in the log
-					store for exactly that reason, and could not be analysed afterwards at all.
-				</p>
-				<p class="hint">
-					<strong>wchan</strong> is the kernel function the daemon was sleeping in, read
-					from <code>/proc</code> by the watchdog: the single most useful fact about a wedge,
-					and the one thing unavailable from inside it. <strong>state</strong> is the process
-					state &mdash; <code>D</code> is uninterruptible sleep, the kind that cannot even be
-					killed. <strong>activity</strong> is the request being served when the loop went
-					quiet, so a stall names the thing that did not come back.
-				</p>
-				<table id="stalls">
-					<thead>
-						<tr><th>When</th><th>Event</th><th>Quiet for</th><th>State</th><th>wchan</th><th>Activity</th></tr>
-					</thead>
-					<tbody id="stalls-body">
-						<tr><td colspan="6" class="empty">Loading&hellip;</td></tr>
-					</tbody>
-				</table>
-			</div>
-		</div>
-		</section>
 
 		<section class="view" id="view-syslog-targets" hidden>
 			<div class="view-list">
@@ -2496,6 +2483,23 @@
 					</tbody>
 				</table>
 			</div>
+		</section>
+
+		<section class="view" id="view-server-health" hidden>
+			<h2>Server Health</h2>
+
+			<div class="view-list">
+				<p class="hint">Every registered backend server &mdash; LDAP, DNS, NTP and syslog &mdash; probed on an interval. A server that is drained or has failed its probes is dropped from the configuration handed to clients, so a registered-but-not-serving server can no longer break logins silently. <strong>Drain</strong> takes one out of service deliberately (maintenance); it persists across a daemon restart, while health itself is re-established by the next probe. The <em>Probe</em> column says how the verdict was reached: a <code>tcp:PORT</code> check is a real service check, <code>process</code> only means the container is running.</p>
+				<div id="server-health-warnings" hidden></div>
+				<table>
+					<thead>
+						<tr><th>Kind</th><th>Container</th><th>State</th><th>In service</th><th>Probe</th><th>Failures</th><th>Last error</th><th></th></tr>
+					</thead>
+					<tbody id="server-health-body"></tbody>
+				</table>
+			</div>
+		
+			
 		</section>
 
 		

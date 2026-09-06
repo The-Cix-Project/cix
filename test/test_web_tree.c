@@ -127,6 +127,7 @@ int main(void)
 	const char *tree = strstr(app, "const topLevel = [");
 	int checked = 0, tabbed_checked = 0;
 	char parent_view[64] = "";
+	char parent_label[64] = "";
 	int parent_is_group = 0;
 
 	printf("test_web_tree\n");
@@ -157,6 +158,35 @@ int main(void)
 			while (ls > app && ls[-1] != '\n')
 				ls--;
 			is_child = strncmp(ls, "\t\t\t\t{", 5) == 0;
+		}
+		/*
+		 * A page node is itself selectable and lands on its first tab,
+		 * so a child repeating its parent's label is that same
+		 * destination listed twice -- "Networks > Networks". Caught
+		 * here because it reads as a mistake to everyone who sees it
+		 * and as nothing at all to whoever added it.
+		 */
+		{
+			const char *lb = p;
+			char label[64];
+			size_t li = 0;
+
+			while (lb > tree && strncmp(lb, "label: \"", 8) != 0)
+				lb--;
+			lb += strlen("label: \"");
+			while (lb[li] != '"' && li + 1 < sizeof(label)) {
+				label[li] = lb[li];
+				li++;
+			}
+			label[li] = '\0';
+			if (is_child) {
+				if (strcmp(label, parent_label) == 0)
+					fail("tree child \"%s\" repeats its parent's own label -- the parent is "
+					     "already selectable and lands there%s",
+					     label, "");
+			} else {
+				snprintf(parent_label, sizeof(parent_label), "%s", label);
+			}
 		}
 		p += strlen("hash: \"");
 		while (p[i] != '"' && i + 1 < sizeof(hash)) {
