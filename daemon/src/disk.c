@@ -1,4 +1,6 @@
 #include "disk.h"
+
+#include "partlabel.h"
 #include "diskpart.h"
 
 #include "diskrole.h"
@@ -56,19 +58,16 @@ static int sysfs_path_exists(const char *path)
  * convention -- also strips a trailing 'p'. A name with no trailing
  * digits at all (already a whole disk) is returned unchanged.
  */
+/*
+ * Both of these used to be defined here. They now live in
+ * partlabel.c, because the boot path needs the identical answers
+ * (#305) and two copies of a GPT parser is exactly the duplication
+ * this project refuses everywhere else -- one of them would have
+ * drifted, and the one that matters runs as pid 1.
+ */
 static void disk_name_from_partition(const char *part_name, char *out, size_t out_size)
 {
-	size_t len = strlen(part_name);
-	size_t end = len;
-
-	while (end > 0 && isdigit((unsigned char)part_name[end - 1]))
-		end--;
-	if (end > 0 && end < len && part_name[end - 1] == 'p' &&
-	    end >= 2 && isdigit((unsigned char)part_name[end - 2]))
-		end--;
-	if (end == 0 || end == len)
-		end = len; /* no trailing digits -- already a whole disk name */
-	snprintf(out, out_size, "%.*s", (int)end, part_name);
+	partlabel_parent_name(part_name, out, out_size);
 }
 
 /*
@@ -395,85 +394,6 @@ void disk_probe_fs_uuid(const char *dev_path, char *out, size_t out_size)
 	         sb[8], sb[9], sb[10], sb[11], sb[12], sb[13], sb[14], sb[15]);
 }
 
-/*
- * The GPT name of one partition, read from the parent disk's own
- * partition table (issue: OS partitions reported no role at all).
- *
- * This is the name whoever created the partition actually gave it --
- * cix-install.c writes "cix-esp", "cix-root-a", "cix-root-b",
- * "cix-config", "cix-containers", and POST /disks/{d}/partitions
- * writes whatever the caller asked for. Until now that name was
- * write-only: the API accepted it, the installer set it, and nothing
- * could ever read it back, so the fixed OS layout showed up as five
- * indistinguishable partitions with no role -- which reads as "unused"
- * for the five most load-bearing devices on the box.
- *
- * Read from the disk directly rather than via /dev/disk/by-partlabel
- * (which needs udev and device nodes) or by forking sfdisk (which would
- * be a subprocess per partition per poll). The format is fixed and
- * small: the GPT header sits at LBA 1 with "EFI PART" at its start, and
- * carries the entry array's LBA, entry count and entry size; each entry
- * holds a 72-byte UTF-16LE name at offset 56.
- *
- * Only the ASCII range is decoded, which every name this platform
- * produces is; a non-ASCII code unit is rendered '?' rather than
- * silently truncating the name to nothing.
- */
-static void read_gpt_partition_name(const char *parent_dev_path, unsigned int partno, char *out,
-                                    size_t out_size)
-{
-	unsigned char header[512];
-	unsigned char entry[512];
-	unsigned long long entry_lba;
-	unsigned int entry_count, entry_size;
-	unsigned long long offset;
-	size_t i, n = 0;
-	int fd;
-
-	if (out_size == 0)
-		return;
-	out[0] = '\0';
-	if (partno == 0)
-		return;
-
-	fd = open(parent_dev_path, O_RDONLY | O_CLOEXEC);
-	if (fd < 0)
-		return;
-	if (pread(fd, header, sizeof(header), 512) != (ssize_t)sizeof(header) ||
-	    memcmp(header, "EFI PART", 8) != 0) {
-		close(fd); /* no GPT -- an MBR disk or no table at all */
-		return;
-	}
-	entry_lba = (unsigned long long)header[72] | ((unsigned long long)header[73] << 8) |
-	            ((unsigned long long)header[74] << 16) | ((unsigned long long)header[75] << 24) |
-	            ((unsigned long long)header[76] << 32) | ((unsigned long long)header[77] << 40) |
-	            ((unsigned long long)header[78] << 48) | ((unsigned long long)header[79] << 56);
-	entry_count = (unsigned int)header[80] | ((unsigned int)header[81] << 8) |
-	              ((unsigned int)header[82] << 16) | ((unsigned int)header[83] << 24);
-	entry_size = (unsigned int)header[84] | ((unsigned int)header[85] << 8) |
-	             ((unsigned int)header[86] << 16) | ((unsigned int)header[87] << 24);
-	if (partno > entry_count || entry_size < 128 || entry_size > sizeof(entry)) {
-		close(fd);
-		return;
-	}
-	offset = entry_lba * 512ULL + (unsigned long long)(partno - 1) * entry_size;
-	if (pread(fd, entry, entry_size, (off_t)offset) != (ssize_t)entry_size) {
-		close(fd);
-		return;
-	}
-	close(fd);
-
-	/* Name: 36 UTF-16LE code units at offset 56, NUL-terminated. */
-	for (i = 0; i < 36 && n + 1 < out_size; i++) {
-		unsigned int lo = entry[56 + i * 2];
-		unsigned int hi = entry[57 + i * 2];
-
-		if (lo == 0 && hi == 0)
-			break;
-		out[n++] = (hi == 0 && lo >= 0x20 && lo < 0x7f) ? (char)lo : '?';
-	}
-	out[n] = '\0';
-}
 
 /*
  * Fills in the fields common to both a whole disk and a partition entry
@@ -687,7 +607,7 @@ int disk_enumerate(struct discovered_disk *out, int cap, const char *os_containe
 			if (suffix[0] == 'p' && suffix[1] >= '0' && suffix[1] <= '9')
 				suffix++;
 			snprintf(parent_dev, sizeof(parent_dev), "/dev/%s", parent_name);
-			read_gpt_partition_name(parent_dev, (unsigned int)strtoul(suffix, NULL, 10), e->part_label,
+			partlabel_read(parent_dev, (unsigned int)strtoul(suffix, NULL, 10), e->part_label,
 			                        sizeof(e->part_label));
 		}
 

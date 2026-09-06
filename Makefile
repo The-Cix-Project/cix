@@ -6,7 +6,7 @@ CLIENT_CFLAGS := $(CFLAGS) -Iclient/include -Idaemon/include
 NETPLANE_CFLAGS := $(CFLAGS)
 
 LIB_SRCS := src/btrfs.c src/cgroup.c src/mountns.c src/ns_create.c src/container.c src/overlay.c src/container_net.c src/container_dev.c src/container_caps.c netplane/src/rtnetlink.c
-DAEMON_SRCS := daemon/src/json.c daemon/src/http.c daemon/src/websocket.c daemon/src/exec.c daemon/src/registry.c daemon/src/staticfile.c daemon/src/network.c daemon/src/persist.c daemon/src/dns.c daemon/src/ldap.c daemon/src/pki.c daemon/src/opensslrun.c daemon/src/releasekey.c daemon/src/elfcheck.c daemon/src/pkg.c daemon/src/device.c daemon/src/devicemap.c daemon/src/image.c daemon/src/containerdef.c daemon/src/siteconfig.c daemon/src/daemon_config.c daemon/src/tlsconn.c daemon/src/quotamap.c daemon/src/swap.c daemon/src/logstore.c daemon/src/disk.c daemon/src/diskrole.c daemon/src/diskformat.c daemon/src/diskpart.c daemon/src/sysctlconfig.c daemon/src/kmod.c daemon/src/kmodconfig.c daemon/src/ping.c daemon/src/resolv.c daemon/src/ntp.c daemon/src/syslogfwd.c daemon/src/hostproc.c daemon/src/connthrottle.c daemon/src/treecopy.c daemon/src/storageplacement.c daemon/src/storagemigrate.c daemon/src/backupconfig.c daemon/src/containerstoragemigrate.c daemon/src/pwhash.c daemon/src/vendor/bcrypt.c daemon/src/vendor/blowfish.c daemon/src/hostauth.c daemon/src/ldapclient.c daemon/src/subid.c daemon/src/serverhealth.c daemon/src/volume.c daemon/src/volumebackup.c daemon/src/cpreserve.c daemon/src/pkgpolicy.c daemon/src/bootconsole.c daemon/src/esp.c daemon/src/stallwatch.c daemon/src/kernelpolicy.c daemon/src/ksm.c daemon/src/zswap.c daemon/src/dhcp.c daemon/src/targz.c daemon/src/signingkeys.c daemon/src/childdiag.c daemon/src/apiroute.c daemon/src/apiresp.c daemon/src/api_network.c daemon/src/api_storage.c daemon/src/api_pki.c daemon/src/api_ldap.c daemon/src/api_image.c daemon/src/api_dns.c daemon/src/api_logs.c daemon/src/api_hostauth.c daemon/src/api_volume.c daemon/src/api_swap.c daemon/src/api_route.c daemon/src/api_keys.c daemon/src/api_resolv.c daemon/src/api_syslog.c daemon/src/api_sysctl.c daemon/src/api_kmod.c daemon/src/api_ntp.c daemon/src/config.c daemon/src/containerpath.c
+DAEMON_SRCS := daemon/src/json.c daemon/src/http.c daemon/src/websocket.c daemon/src/exec.c daemon/src/registry.c daemon/src/staticfile.c daemon/src/network.c daemon/src/persist.c daemon/src/dns.c daemon/src/ldap.c daemon/src/pki.c daemon/src/opensslrun.c daemon/src/releasekey.c daemon/src/elfcheck.c daemon/src/pkg.c daemon/src/device.c daemon/src/devicemap.c daemon/src/image.c daemon/src/containerdef.c daemon/src/siteconfig.c daemon/src/daemon_config.c daemon/src/tlsconn.c daemon/src/quotamap.c daemon/src/swap.c daemon/src/logstore.c daemon/src/disk.c daemon/src/diskrole.c daemon/src/diskformat.c daemon/src/diskpart.c daemon/src/sysctlconfig.c daemon/src/kmod.c daemon/src/kmodconfig.c daemon/src/ping.c daemon/src/resolv.c daemon/src/ntp.c daemon/src/syslogfwd.c daemon/src/hostproc.c daemon/src/connthrottle.c daemon/src/treecopy.c daemon/src/storageplacement.c daemon/src/storagemigrate.c daemon/src/backupconfig.c daemon/src/containerstoragemigrate.c daemon/src/pwhash.c daemon/src/vendor/bcrypt.c daemon/src/vendor/blowfish.c daemon/src/hostauth.c daemon/src/ldapclient.c daemon/src/subid.c daemon/src/serverhealth.c daemon/src/volume.c daemon/src/volumebackup.c daemon/src/cpreserve.c daemon/src/pkgpolicy.c daemon/src/bootconsole.c daemon/src/esp.c daemon/src/stallwatch.c daemon/src/kernelpolicy.c daemon/src/ksm.c daemon/src/zswap.c daemon/src/dhcp.c daemon/src/targz.c daemon/src/signingkeys.c daemon/src/childdiag.c daemon/src/partlabel.c daemon/src/apiroute.c daemon/src/apiresp.c daemon/src/api_network.c daemon/src/api_storage.c daemon/src/api_pki.c daemon/src/api_ldap.c daemon/src/api_image.c daemon/src/api_dns.c daemon/src/api_logs.c daemon/src/api_hostauth.c daemon/src/api_volume.c daemon/src/api_swap.c daemon/src/api_route.c daemon/src/api_keys.c daemon/src/api_resolv.c daemon/src/api_syslog.c daemon/src/api_sysctl.c daemon/src/api_kmod.c daemon/src/api_ntp.c daemon/src/config.c daemon/src/containerpath.c
 CLIENT_SRCS := client/src/httpclient.c daemon/src/json.c
 NETPLANE_SRCS := netplane/src/rtnetlink.c
 
@@ -40,7 +40,8 @@ SELFTESTS = \
 	$(BUILD)/test_blocking_waits \
 	$(BUILD)/test_elfcheck $(BUILD)/test_elfcheck_gcc \
 	$(BUILD)/test_treecopy $(BUILD)/test_childdiag \
-	$(BUILD)/test_kernelpolicy $(BUILD)/test_releasekey $(BUILD)/test_subid \
+	$(BUILD)/test_kernelpolicy $(BUILD)/test_releasekey $(BUILD)/test_subid  \
+	$(BUILD)/test_partlabel \
 	$(BUILD)/test_btrfs $(BUILD)/test_toolchain \
 	$(DAEMON_SELFTESTS)
 
@@ -406,6 +407,9 @@ $(BUILD)/test_container_lifecycle: test/test_container_lifecycle.c test/test_ima
 $(BUILD)/test_disk_quota: test/test_disk_quota.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
+$(BUILD)/test_partlabel: test/test_partlabel.c daemon/src/partlabel.c | $(BUILD)
+	$(CC) $(CFLAGS) -Idaemon/include $^ -o $@
+
 $(BUILD)/test_diskpart: test/test_diskpart.c test/test_image_fixture.c daemon/src/disk.c daemon/src/diskpart.c daemon/src/diskrole.c daemon/src/persist.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
@@ -685,7 +689,7 @@ $(BUILD)/test_console_pki_bootstrap: test/test_console_pki_bootstrap.c test/test
 $(BUILD)/test_console_pkg_bootstrap: test/test_console_pkg_bootstrap.c test/test_disk_image.c test/test_image_fixture.c | $(BUILD)
 	$(CC) $(CFLAGS) -Itest $^ -o $@
 
-$(BUILD)/cix-install: image/src/cix-install.c image/src/dual_console.c daemon/src/treecopy.c | $(BUILD)
+$(BUILD)/cix-install: image/src/cix-install.c image/src/dual_console.c daemon/src/treecopy.c daemon/src/partlabel.c | $(BUILD)
 	$(CC) $(CFLAGS) -Idaemon/include $^ -o $@
 
 #
@@ -737,7 +741,7 @@ $(BUILD)/cix-boot.efi: image/src/cix-boot.c include/uefi.h | $(BUILD)
 	$(EFI_LD) -m i386pep --subsystem=10 -e efi_main --image-base=0x10000 -s \
 	          -o $@ $(BUILD)/cix-boot.o
 
-$(BUILD)/cix-recover: image/src/cix-recover.c image/src/dual_console.c daemon/src/json.c | $(BUILD)
+$(BUILD)/cix-recover: image/src/cix-recover.c image/src/dual_console.c daemon/src/json.c daemon/src/partlabel.c | $(BUILD)
 	$(CC) $(CFLAGS) -Idaemon/include $^ -o $@
 
 $(BUILD)/test_dual_console: test/test_dual_console.c image/src/dual_console.c | $(BUILD)
