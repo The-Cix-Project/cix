@@ -2242,14 +2242,19 @@ function renderTree() {
 			],
 		},
 		{
-			label: "System",
+			/*
+			 * Selectable, like every other node: clicking Host opens
+			 * the host's own page. Control Plane, Devices and Kernel
+			 * are the machine's other subjects, not siblings of the
+			 * host itself -- which is why there is no "Host > Host".
+			 */
+			label: "Host",
 			group: true,
 			hash: "daemon-config",
 			icon: "system",
 			children: [
-				{ label: "Devices", hash: "devicemaps", icon: "devices" },
-				{ label: "Host", hash: "daemon-config", icon: "system" },
 				{ label: "Control Plane", hash: "tls-throttle", icon: "system" },
+				{ label: "Devices", hash: "devicemaps", icon: "devices" },
 				{ label: "Kernel", hash: "kernel-policy", icon: "system" },
 			],
 		},
