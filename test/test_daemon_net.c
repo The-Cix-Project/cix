@@ -11,6 +11,7 @@
  */
 #include "httpclient.h"
 #include "json.h"
+#include "test_cleanup.h"
 #include "test_image_fixture.h"
 
 #include <arpa/inet.h>
@@ -722,52 +723,35 @@ int main(void)
 	}
 	cix_response_free(&r);
 
-	/* 11. cleanup: remove containers (kills n3, still blocked in
-	 * accept() since nothing can reach it -- no networking, isolated
-	 * netns), then both networks via the real API.
+	/*
+	 * 11. cleanup, through test_cleanup_containers_and_network()
+	 * rather than by hand.
 	 *
-	 * Each delete's status is asserted rather than discarded (#286).
-	 * These four used to be fire-and-forget, so when the network
-	 * delete below then came back 409 there was nothing in the output
-	 * naming which container had stayed -- only the consequence. That
-	 * happened for real on 192.168.15.95, and the report it produced
-	 * could not be acted on. A cleanup step is still a step. */
-	{
-		static const char *const leaving[] = { "n1", "n2", "n3", "n5" };
-		size_t li;
-
-		for (li = 0; li < sizeof(leaving) / sizeof(leaving[0]); li++) {
-			char path[64];
-
-			snprintf(path, sizeof(path), "/v1/containers/%s", leaving[li]);
-			memset(&r, 0, sizeof(r));
-			if (cix_client_request(&client, "DELETE", path, NULL, &r) != 0 ||
-			    r.status != 204) {
-				fprintf(stderr, "FAIL: DELETE container %s expected 204, got %d\n",
-				        leaving[li], r.status);
-				ok = 0;
-			}
-			cix_response_free(&r);
-		}
-	}
-
-	memset(&r, 0, sizeof(r));
-	if (cix_client_request(&client, "DELETE", "/v1/networks/" TEST_NETWORK_NAME, NULL, &r) != 0 ||
-	    r.status != 204) {
-		fprintf(stderr, "FAIL: DELETE " TEST_NETWORK_NAME " (unused) expected 204, got %d\n",
-		        r.status);
+	 * This step used to delete four named containers, assert 204 on
+	 * each, and then delete the network -- and it FLAKED, three times
+	 * in one day, each failure costing a whole hostbuild (#309). Every
+	 * container delete reported 204 and the network delete still came
+	 * back 409.
+	 *
+	 * Both answers were right. ADR-0180 (issue #67) says a DELETE of a
+	 * RUNNING container sends the kill WITHOUT waiting for the child
+	 * to be reaped -- registry_begin_kill() -- because that wait is
+	 * unbounded in principle and this daemon has one reactor thread.
+	 * So 204 there means "teardown started", and until the entry is
+	 * actually reaped registry_network_in_use() still sees it. The
+	 * network was genuinely in use; the test was asserting a
+	 * synchronous outcome from a deliberately asynchronous operation.
+	 *
+	 * test_cleanup_containers_and_network() already models exactly
+	 * this -- delete everything, try the network, pause and retry on
+	 * 409 -- and its own header says to call it "instead of deleting a
+	 * network directly at the end of a test". This test hand-rolled a
+	 * second, worse copy of it. That is the whole bug.
+	 */
+	if (test_cleanup_containers_and_network(&client, TEST_NETWORK_NAME) != 0)
 		ok = 0;
-	}
-	cix_response_free(&r);
-
-	memset(&r, 0, sizeof(r));
-	if (cix_client_request(&client, "DELETE", "/v1/networks/" TEST_NETWORK_NAME2, NULL, &r) != 0 ||
-	    r.status != 204) {
-		fprintf(stderr, "FAIL: DELETE " TEST_NETWORK_NAME2 " (unused) expected 204, got %d\n",
-		        r.status);
+	if (test_cleanup_containers_and_network(&client, TEST_NETWORK_NAME2) != 0)
 		ok = 0;
-	}
-	cix_response_free(&r);
 
 	kill(daemon_pid, SIGTERM);
 	{
