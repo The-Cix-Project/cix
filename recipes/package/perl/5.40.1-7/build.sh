@@ -16,6 +16,7 @@ pkg_name="perl"
 pkg_version="5.40.1-7"
 pkg_source="https://www.cpan.org/src/5.0/perl-5.40.1.tar.gz"
 pkg_sha256="02f8c45bb379ed0c3de7514fad48c714fd46be8f0b536bfd5320050165a1ee26"
+pkg_artifact_sha256="4eed9d1a24e93061c32477ee87f7bc4900de8aef1ef39ab37d1f41dde40f6d39"
 
 # Prebuilt artifact for THIS exact version (ADR-0122 package tier).
 # With it set, an install fetches <artifact base_url>/perl-5.40.1.tar.gz

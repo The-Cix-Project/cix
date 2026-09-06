@@ -25,6 +25,7 @@ pkg_version="1.0.8-4"
 pkg_changelog="1.0.8-4: install to /usr/lib rather than the multiarch directory (#184 stage 2). The multiarch triplet is a Debian convention for letting several architectures share one filesystem and a Cix image has one architecture, so this platform is collapsing onto a single library directory. Nothing about consumers changes: glibc's compiled-in search path is exactly slibdir plus libdir, and libdir has been /usr/lib since 2.44-7, so a linker and a loader both find the library there today. The artifact approval is dropped because those bytes came from the previous revision. 1.0.8-3: rebuilt against tcc 0.9.28rc (ADR-0223). The 2017 0.9.27 release could give two simultaneously-live locals the same stack slot (#216), a fault that corrupts values silently wherever the aliased pair is only read and written, so every binary it produced is suspect rather than merely the ones that failed. No source change: the revision exists to make the rebuild real, because an image version is a hash of the package manifest (ADR-0155) and a same-version reinstall is deduped and discarded. 1.0.8-2: declare build tools so this can be rebuilt from source (#206)"
 pkg_source="https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz"
 pkg_sha256="ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269"
+pkg_artifact_sha256="cd44f3a02459a3fef108288c93affa9c882bc24291b59b7be92ce2cfd53a02ff"
 
 # Prebuilt artifact for THIS exact version (ADR-0122 package tier).
 # With it set, an install fetches <artifact base_url>/bzip2-1.0.8.tar.gz

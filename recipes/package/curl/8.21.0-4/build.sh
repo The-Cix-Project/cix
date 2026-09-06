@@ -25,6 +25,7 @@ pkg_name="curl"
 pkg_version="8.21.0-4"
 pkg_source="https://curl.se/download/curl-8.21.0.tar.gz"
 pkg_sha256="d9b327997999045a24cda50f3983e69e51c516bd8be6ef9842fc7f99135e33bb"
+pkg_artifact_sha256="48764e89e4660bc0f965e69a7343c49404583b1bccb33d7a8aaa74729878a38c"
 
 # Prebuilt artifact for THIS exact version (ADR-0122 package tier).
 # With it set, an install fetches <artifact base_url>/curl-8.21.0.tar.gz
