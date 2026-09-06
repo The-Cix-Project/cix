@@ -2,6 +2,20 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### A published artifact approves itself in its own recipe (#306)
+
+The recurrence-stopper for the defect that bit three separate times in one session.
+
+A recipe with no `pkg_artifact_sha256` has its artifact tier skipped entirely (ADR-0122), so that package can only ever be **built**. On a host that already has a toolchain that costs nothing visible, which is why it survived indefinitely. On a cold host it is fatal and circular: bash cannot be built without bash. A freshly installed 192.168.15.95 could not obtain a compiler for exactly this reason -- `gcc` names `linux-headers` as a *runtime* dependency, dependencies always resolve to their highest revision regardless of any pin (`PkgInstallRequest.version` says so explicitly), and that revision had no approved artifact, so it had to be built with the gcc that was waiting on it.
+
+The missing step was never automated: build, publish, then go back and add the checksum by hand. It cannot be carried forward on a revision bump either -- different bytes -- so it had to be redone every time, and it was done for some revisions and not others with no rule behind which. `bash`'s revisions read `+ + - + -`; `sed`'s read `- + + - +`.
+
+`pkg_artifact_push_completed()` now writes the approval itself, at the one moment the bytes are known to be both built here and accepted by the cache. **Routed through `recipe_adds_only_artifact_sha256()`** -- the same predicate that guards an operator's own `POST /pkg/recipes` -- so there is one definition of "this edit is permitted to an immutable recipe" and this path cannot drift from it. A recipe with no `pkg_sha256=` line to anchor after is left untouched and says so, rather than guessing where the line belongs.
+
+A gate was considered and rejected: it would only report what a human then had to fix, which is the same manual step with an alarm on it.
+
+**Verification status, stated rather than implied:** the code compiles clean under `-Wall -Werror`, and the permitted-edit rule it delegates to is already covered by `test_pkg_recipe_approval`. The end-to-end path is **not** exercised yet, because artifact push on 192.168.15.95 is disabled -- `GET /v1/pkg/artifact-config` reports `auth_token_set: false` -- and enabling it needs a cache credential this host does not hold. It will be exercised by the first real publish after one is configured.
+
 ### glibc rebuilt under ADR-0251, and gcc still links (2.44-14)
 
 The first package rebuilt under the finalize policy, and the one the ISO seed is made of. Measured on 192.168.15.95 against the 2.44-13 artifact:
