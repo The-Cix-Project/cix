@@ -1408,7 +1408,7 @@ const CATEGORY_VIEWS = {
 	pci: "view-devices",
 	usb: "view-devices",
 	kmod: "view-devices",
-	sysctl: "view-sysctl",
+	sysctl: "view-kernel",
 	storage: "view-storage",
 	"dns-records": "view-dns-records",
 	"dns-servers": "view-dns-records",
@@ -1420,20 +1420,20 @@ const CATEGORY_VIEWS = {
 	"ntp-config": "view-ntp-config",
 	"ntp-servers": "view-ntp-config",
 	"ntp-time": "view-ntp-config",
-	"dhcp-servers": "view-dhcp",
-	"dhcp-ranges": "view-dhcp",
-	"dhcp-static": "view-dhcp",
-	"dhcp-leases": "view-dhcp",
+	"dhcp-servers": "view-networks",
+	"dhcp-ranges": "view-networks",
+	"dhcp-static": "view-networks",
+	"dhcp-leases": "view-networks",
 	"pki-ca": "view-pki-ca",
 	"pki-intermediate": "view-pki-ca",
 	"pki-certs": "view-pki-ca",
-	recipes: "view-recipes",
+	recipes: "view-pipeline",
 	pipeline: "view-pipeline",
 	"site": "view-host",
 	"daemon-config": "view-host",
 	"host-swap": "view-storage",
 	"rolling-restart": "view-pipeline",
-	"pkg-build-config": "view-recipes",
+	"pkg-build-config": "view-pipeline",
 	"hostauth-sessions": "view-host",
 	"host-stats": "view-monitoring",
 	processes: "view-monitoring",
@@ -1445,10 +1445,10 @@ const CATEGORY_VIEWS = {
 	"signing-keys": "view-pipeline",
 	"kernel-policy": "view-kernel",
 	logs: "view-monitoring",
-	kmsg: "view-monitoring",
+	kmsg: "view-kernel",
 	"server-health": "view-monitoring",
 	stalls: "view-monitoring",
-	volumes: "view-volumes",
+	volumes: "view-storage",
 	/* Repo & Sync and Cache & Artifacts became tabs on the Catalogue
 	 * page. Their old addresses still resolve to it (with the right tab
 	 * showing) rather than 404-ing a bookmark someone already has. */
@@ -1457,15 +1457,15 @@ const CATEGORY_VIEWS = {
 	 * addresses still resolve to it (with the right tab showing) --
 	 * #images/{name} is unaffected, since DETAIL_VIEWS is consulted
 	 * first whenever a route carries a name. */
-	images: "view-recipes",
-	packages: "view-recipes",
-	"pkg-repo": "view-recipes",
-	"pkg-cache": "view-recipes",
+	images: "view-pipeline",
+	packages: "view-pipeline",
+	"pkg-repo": "view-pipeline",
+	"pkg-cache": "view-pipeline",
 	"factory-reset": "view-host",
 	"storage-placement": "view-storage",
 	"backup": "view-storage",
-	"update": "view-recipes",
-	"running-config": "view-running-config",
+	"update": "view-pipeline",
+	"running-config": "view-host",
 };
 
 const DETAIL_VIEWS = {
@@ -1543,14 +1543,14 @@ const SERVICE_TAB_VIEWS = {
 	"ntp-config": "view-ntp-config",
 	"ntp-servers": "view-ntp-config",
 	"ntp-time": "view-ntp-config",
-	"dhcp-servers": "view-dhcp",
-	"dhcp-ranges": "view-dhcp",
-	"dhcp-static": "view-dhcp",
-	"dhcp-leases": "view-dhcp",
+	"dhcp-servers": "view-networks",
+	"dhcp-ranges": "view-networks",
+	"dhcp-static": "view-networks",
+	"dhcp-leases": "view-networks",
 	"host-stats": "view-monitoring",
 	processes: "view-monitoring",
 	logs: "view-monitoring",
-	kmsg: "view-monitoring",
+	kmsg: "view-kernel",
 	"server-health": "view-monitoring",
 	stalls: "view-monitoring",
 };
@@ -2178,7 +2178,16 @@ function renderTree() {
 			],
 		},
 		{
+			/*
+			 * A GROUP, not a page: PKI, DNS, LDAP, NTP and Syslog are
+			 * five genuinely separate subjects with their own pages.
+			 * Folding them into one tabbed view would rebuild the
+			 * sixteen-tab drawer this change exists to remove, so the
+			 * tree says "these are related" without claiming they are
+			 * one page.
+			 */
 			label: "Services",
+			group: true,
 			hash: "pki-ca",
 			icon: "pki",
 			children: [
