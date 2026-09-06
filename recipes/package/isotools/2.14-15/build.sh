@@ -51,6 +51,7 @@ pkg_changelog="2.14-15: install to /usr/lib rather than the multiarch directory 
 pkg_source="https://ftp.gnu.org/gnu/grub/grub-2.14.tar.xz"
 pkg_sha256="bc8d3c73535b8838d8c8e2654d73edc4e6ae8c8acdb45d5df5dc9a1547446d43"
 pkg_depends=""
+pkg_artifact_sha256="239511dcd8eae7f5048d185155aec42c39ff9eb6cc692b767221a7f982b44e14"
 #
 # Build tools derived from what this recipe's own pkg_build() actually
 # invokes, plus the baseline the declaring recipes converge on. See

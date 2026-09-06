@@ -2,6 +2,36 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Kernel 7.2.3: the first version this platform did not choose by hand
+
+192.168.15.95 tracked **6.18.40** — a *longterm* line, and not even current for it (kernel.org lists 6.18.49). The stated intent was `stable`. Nobody had connected the two, and the recipe on disk was simply the newest one someone had written.
+
+`kernel/7.2.3-1` is the first kernel recipe here whose version came from a release channel and whose checksum was **never computed on this platform**:
+
+```
+1. resolve   www.kernel.org/releases.json      -> latest_stable 7.2.3
+2. fetch     .../v7.x/sha256sums.asc            (PGP clearsigned)
+3. verify    Good signature, RSA key B8868C80BA62A1FFFAF5FDA9632D3A06589DA6B1
+             == the fingerprint pinned in docs/keys/
+4. read      linux-7.2.3.tar.xz -> 8ba259e8...50ecd03
+```
+
+That is kernel.org's own published checksum, quoted — precisely the thing ADR-0193 said it wanted and deferred the whole feature rather than approximate. **Verified twice by independent implementations**: this project's `pgpverify.c` earlier in the session, and stock `gpg` against the same pinned fingerprint. Both produced the identical checksum, and the recipe records the trail.
+
+A detail worth keeping: `gpg` and `gpgv` both *refuse* the pinned key file (`no user ID`, `Bad public key`) because it is stripped to bare key material with no self-signed UID. The full key was fetched from a keyserver and its fingerprint compared to the pin before use — a fingerprint being a hash over the key material is what makes that safe, and is exactly why `docs/keys/README.md` says the fingerprint is the anchor and the file is not. It is also why `pgpverify.c` exists rather than shelling out to gpg.
+
+Only three lines differ from `6.18.40-24`: version, the first field of `pkg_source`, and the first field of `pkg_sha256`. The config source, its pinned git ref and its checksum come through byte-identically — verified by diff, not assumed.
+
+**The config is the risk, and the recipe says so.** `qemu-part1.config` was written for 6.18.x; a major version renames and removes symbols, and config handling drops silently what it does not recognise. A clean build is not evidence of a bootable kernel — a lesson this project has already been taught twice by roots that assembled cleanly and then panicked. The recipe header says to install it to the spare A/B slot and boot-test before making it a box's only kernel.
+
+### isotools joins the artifact tier
+
+`isotools-2.14-15` has been sitting in the cache at 14.5 MiB, Cix-built, and was rebuilt from source on every host because its recipe never declared `pkg_artifact_sha256` — the exact waste ADR-0122's own commentary describes ("the artifact existed, was verified, and was never consulted").
+
+Approved now: `239511dcd8eae7f5048d185155aec42c39ff9eb6cc692b767221a7f982b44e14`, taken from the cache's record **and** recomputed over an independent fresh download; both agree, over all 15,235,091 bytes. Contents checked rather than assumed — all nine paths `mkinstalleriso` requires are present (`bin/{grub-mkrescue,sbsign,xorriso,mcopy,mformat,mokutil}`, `shim/{shimx64,mmx64}.efi.signed`, `lib/grub/x86_64-efi/`).
+
+**A first attempt at this was correctly refused with 409**, and the refusal was right. `recipe_adds_only_artifact_sha256()` permits exactly one added line against a published version, compared line by line — and the attempt had wrapped the checksum in a fifteen-line explanatory comment. The rule is not "an edit that only adds an approval", it is "one added line and nothing else". Documentation of *why* belongs here, not in an immutable recipe. Worth knowing before reading that allowance as more permissive than it is.
+
 ### The release key was lost with a reinstall, and kernel-builder pinned an uninstallable gcc
 
 Two independent blockers found while building an installer ISO on a freshly bootstrapped 192.168.15.95. Neither was the thing that looked broken.
