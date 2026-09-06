@@ -2,6 +2,27 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### The kernel channel's last link: a verified checksum becomes a recipe revision (#65)
+
+With ADR-0254's verifier in place, the remaining step had no security question left in it. `kernel_recipe_generate()` turns a resolved version and a **signature-verified** checksum into a publishable kernel recipe revision — and publishing is what the existing rolling machinery already reacts to, so `queue_rolling_rebuilds_for()` rebuilds every image carrying `kernel` as `mode: rolling` with no further help.
+
+Proven end to end against live data, not fixtures:
+
+```
+1. channel resolved     : 7.2.3
+   tarball              : .../v7.x/linux-7.2.3.tar.xz
+   signed checksum file : .../v7.x/sha256sums.asc
+2. signature            : ok
+3. checksum (signed)    : 8ba259e8e7b13ec6ef0941c8a39ad90b24bd4a4d6c0010ba6bafb794550ecd03
+4. recipe generated     : 15286 bytes
+```
+
+The generator is a **pure text transform** — no fetching, no verification, no writing — which is what makes it testable without a network, a key or a daemon. It is tested against the **real** kernel recipe rather than an invented one, because that is where the hazards are: two space-separated sources, two space-separated checksums, a `{{REPO_TOKEN}}` placeholder, a git ref pinning the config, and 559 lines of comment prose that mention `pkg_source` and `pkg_sha256` in passing. Only the upstream tarball's URL and hash move; the config source, its pinned ref and its checksum come through byte-identical.
+
+**A second test that passed for the wrong reason, caught the same way as the last one.** Reversing the splice order misaligns every later edit by the length change of the earlier one — and the original assertions, which only checked that expected strings were *present*, still passed against the corrupted output (`htthttps://…`, a destroyed `pkg_sha256=`). The test now compares whole field values, not presence, and catches it.
+
+Also pinned: **kernel.org's signing key**, fingerprint `B8868C80BA62A1FFFAF5FDA9632D3A06589DA6B1`, checked out of band by the owner. `docs/keys/` now distinguishes keys Cix *signs with* from keys Cix *verifies against* — they were one undifferentiated list and are not the same thing. The file is not the trust anchor; the fingerprint is, and a substituted key file fails rather than being believed.
+
 ### An upstream checksum is verified, never computed here (ADR-0254, #65)
 
 ADR-0193 gave a box a kernel channel and deliberately stopped at reporting, because generating a pin means recording a `pkg_sha256` the daemon computed over its own download -- which silently changes that field from *"an operator verified this out of band"* to *"whatever arrived first"*. That reasoning was right and is not weakened here.
