@@ -40,6 +40,9 @@
 #include "esp.h"
 #include "btrfs.h"
 #include "kernelpolicy.h"
+#include "srcpolicy.h"
+#include "srcupstream.h"
+#include "api_srcpolicy.h"
 #include "ksm.h"
 #include "zswap.h"
 #include "dhcp.h"
@@ -253,6 +256,7 @@ char CPRESERVE_STATE_PATH[PATH_MAX]; /* issue #86 -- control-plane reservation *
 char PKGPOLICY_STATE_PATH[PATH_MAX];  /* issue #64 -- per-package rolling policy */
 char BOOTCONSOLE_STATE_PATH[PATH_MAX]; /* issue #24 -- boot console parameters */
 char KERNELPOLICY_STATE_PATH[PATH_MAX]; /* issue #65 -- which kernel line this box tracks */
+char SRCPOLICY_STATE_PATH[PATH_MAX];    /* ADR-0255 -- which upstream release packages build */
 char KERNEL_RELEASES_PATH[PATH_MAX];    /* issue #65 -- cached kernel.org releases.json */
 char ZSWAP_STATE_PATH[PATH_MAX];        /* issue #51 -- compressed swap cache settings */
 char KSM_STATE_PATH[PATH_MAX];          /* issue #50 -- samepage merging settings */
@@ -425,6 +429,8 @@ static void compute_state_dir_relative_paths(void)
 	snprintf(BOOTCONSOLE_STATE_PATH, sizeof(BOOTCONSOLE_STATE_PATH), "%s/boot_console.json",
 	         STATE_DIR);
 	snprintf(KERNELPOLICY_STATE_PATH, sizeof(KERNELPOLICY_STATE_PATH), "%s/kernel_policy.json",
+	         STATE_DIR);
+	snprintf(SRCPOLICY_STATE_PATH, sizeof(SRCPOLICY_STATE_PATH), "%s/source_policy.json",
 	         STATE_DIR);
 	/*
 	 * The fetched releases.json is cached on disk rather than in
@@ -20205,6 +20211,24 @@ static void op_listPkgPolicies(const struct api_ctx *ctx)
 	handle_pkg_policies_get(ctx->fd);
 }
 
+/* GET /v1/pkg/upstreams (ADR-0255) */
+static void op_listUpstreamKinds(const struct api_ctx *ctx)
+{
+	handle_upstream_kinds_get(ctx->fd);
+}
+
+/* GET /v1/pkg/source-policy (ADR-0255) */
+static void op_getSourcePolicy(const struct api_ctx *ctx)
+{
+	handle_source_policy_get(ctx->fd);
+}
+
+/* PUT /v1/pkg/source-policy (ADR-0255) */
+static void op_setDefaultSourcePolicy(const struct api_ctx *ctx)
+{
+	handle_source_policy_default_put(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
 /* GET /v1/pkg/build-logs */
 static void op_listBuildLogs(const struct api_ctx *ctx)
 {
@@ -20688,6 +20712,16 @@ static void op_setPkgPolicy(const struct api_ctx *ctx)
 static void op_clearPkgPolicy(const struct api_ctx *ctx)
 {
 	handle_pkg_policy_delete(ctx->fd, ctx->p[0]);
+}
+
+static void op_setPkgSourcePolicy(const struct api_ctx *ctx)
+{
+	handle_pkg_source_policy_put(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);
+}
+
+static void op_clearPkgSourcePolicy(const struct api_ctx *ctx)
+{
+	handle_pkg_source_policy_delete(ctx->fd, ctx->p[0]);
 }
 
 static void op_getBuildLog(const struct api_ctx *ctx)
@@ -24110,6 +24144,7 @@ static int cixd_main(int argc, char **argv)
 		esp_set_running_slot(g_slot);
 	}
 	kernelpolicy_init(KERNELPOLICY_STATE_PATH); /* issue #65 */
+	srcpolicy_init(SRCPOLICY_STATE_PATH);       /* ADR-0255 */
 	/* Issue #51: applied here, not just on PUT -- the kernel default is
 	 * deliberately off, so this is the setting's only chance to survive
 	 * a reboot. */
