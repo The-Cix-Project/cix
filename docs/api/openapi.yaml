@@ -8666,7 +8666,7 @@ paths:
         from the occupied stages is a filtered list, and the empty
         stages are exactly the ones worth seeing are empty.
       operationId: getPipeline
-      x-cix-expose: [cli]
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: The pipeline
