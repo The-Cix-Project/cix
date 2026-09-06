@@ -2,6 +2,33 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### The pipeline is the model (ADR-0256)
+
+Getting a package from an upstream release onto a running host takes eleven steps. This platform performed all eleven and had a name for the sequence nowhere. It had four unrelated vocabularies instead — the source catalogue's four states, `enum pkg_failure_kind`'s five, a build-log line, and a boot-entry filename — so the only question an operator actually asks, *"where is this package and what is stopping it?"*, could not be asked without joining four things by hand. Nobody does that, which is how 25 of 70 installed packages drifted behind unnoticed until `/pkg/drift` was written to count them.
+
+**One vocabulary now, spoken verbatim by the API, the CLI and the dashboard:**
+
+```
+stage  = discover resolve authenticate author fetch unpack build install publish roll deploy
+status = ok blocked failed cancelled not-implemented
+```
+
+Two axes rather than one longer list, and `cancelled` is what proves it: a killed build is not a different *place*, it is the build stage with a different *outcome*, and the two need opposite responses from the same position. Folding them together would produce the cross product — `build`, `build-cancelled`, `build-blocked` — which is a table pretending to be a list.
+
+`enum pkg_failure_kind` is **replaced, not wrapped**. A translation shim would have preserved both vocabularies indefinitely, which is the thing this change exists to end. The catalogue's four states went the same way, and the mapping recovered a distinction the old one could not express: `unresolved` was both *"the release list was never fetched"* and *"policy could not pick from it"*, which need opposite responses.
+
+**`unpack` is genuinely new, and it fixes a real misdirection.** `PKG_FAILURE_BUILD` covered unpacking the source archive *and* compiling it, so an archive that downloaded intact and could not be opened reported as a build failure — sending a reader to a compile log for something that happened before any compiler ran. `stage_main_source()` and the compile were already separate code paths, separately detectable, reported as one thing.
+
+**`GET /v1/pipeline`** (`cixctl pipeline`) joins the source catalogue, the package job records and this host's own boot entry at read time and stores nothing — ADR-0155's lesson, the same rule the catalogue already follows. One row per package (the grain recipes have), reporting the **earliest** non-ok stage across that package's images with per-image detail underneath. Earliest rather than most severe: a pipeline stops at its first problem and everything after is consequence, so a package that could not be downloaded reads "could not download" and not "could not compile". `deploy` is reported once for the host rather than repeated onto 116 rows.
+
+**The boot fix, and it closes a real hole.** Confirming a boot now means the host is *reachable*, not that a socket is bound. `main.c` confirmed on "about to serve traffic", which a box whose configured uplink NIC could not be attached satisfies — issue #133 correctly stopped a missing NIC from killing PID 1, but the boot was then confirmed anyway. The result was a host up, permanently confirmed and unreachable, having already spent its A/B fallback on the slot that cannot serve anyone. Such a boot now retries the attach for two minutes (a late-loading driver is the benign case this window exists for) and then reboots, spending a try so the loader falls back. Guarded to unconfirmed boots only: a confirmed slot whose NIC fails at runtime must never reboot itself, or a pulled cable becomes a reboot loop.
+
+**The dashboard starts reorienting around it.** A Pipeline view sits above Catalogue, Build and Delivery in the tree — those three are not separate subjects, they are windows onto stages 1–4, 5–9 and 10–11 of this one. The view draws all eleven stages including the empty ones (a pipeline drawn only from the occupied stages is a filtered list) and lists only what is blocked, failed or cancelled underneath.
+
+`test_pipeline` asserts the eleven names, that they round-trip, and that `unpack` sits between `fetch` and `build` — so a rename shows up in a diff rather than shipping quietly across three surfaces at once.
+
+Not built, and named so it is not mistaken for done: nothing schedules any of this, there is no update window, and nothing knows which images consume a given package. Those act *on* this model and are deliberately after it — a scheduler over four unjoined vocabularies would have automated the confusion.
+
 ### The source catalogue: what upstream has that this platform has no recipe for
 
 `GET /v1/pkg/source-catalogue` (`cixctl pkg source-catalogue`) — ADR-0255's Resolve stage, made readable. One row per package: the release its effective source policy resolves to, the newest recipe on disk, and whether a recipe for the resolved release exists.

@@ -1424,6 +1424,7 @@ const CATEGORY_VIEWS = {
 	"pki-intermediate": "view-pki-ca",
 	"pki-certs": "view-pki-ca",
 	recipes: "view-recipes",
+	pipeline: "view-pipeline",
 	"site": "view-daemon-config",
 	"daemon-config": "view-daemon-config",
 	"host-swap": "view-daemon-config",
@@ -2220,6 +2221,19 @@ function renderTree() {
 				{ label: "Devices", hash: "devices", icon: "devices" },
 				{ label: "Kernel Modules", hash: "kmod", icon: "system" },
 			],
+		},
+		{
+			/*
+			 * ADR-0256. Deliberately FIRST, and deliberately a leaf.
+			 * Catalogue, Build and Delivery below are not three
+			 * subjects -- they are windows onto stages 1-4, 5-9 and
+			 * 10-11 of this one, and until this row existed an
+			 * operator had to visit all three and join them by hand to
+			 * answer "what is stopping this package".
+			 */
+			label: "Pipeline",
+			hash: "pipeline",
+			icon: "software",
 		},
 		{
 			/* Catalogue (ADR-0230): what software exists. */
@@ -12328,7 +12342,123 @@ const CORE_REFRESHERS = [
 
 /* Route category -> what that page actually reads. Keyed by the same
  * addresses the tree and the tab bars use. */
+/* ---------- pipeline (ADR-0256) ---------- */
+
+/*
+ * The eleven-stage flow, the host's deploy position, and a worklist of
+ * everything that needs someone to do something.
+ *
+ * Every stage is drawn even at zero. A pipeline rendered only from the
+ * occupied stages is a filtered list, and the empty stages are exactly
+ * the ones an operator wants to see are empty.
+ */
+async function refreshPipeline() {
+	let data;
+
+	try {
+		data = await apiRequest("GET", CIX_API.getPipeline());
+	} catch (e) {
+		return; /* best-effort, same as every other refresher here */
+	}
+	cache.pipeline = data;
+
+	const flow = document.getElementById("pipeline-flow");
+	const stages = data.stages || [];
+	let busiest = 0;
+
+	for (const st of stages)
+		busiest = Math.max(busiest, st.packages);
+	flow.textContent = "";
+	for (const st of stages) {
+		const cell = document.createElement("div");
+		const name = document.createElement("div");
+		const count = document.createElement("div");
+		const bar = document.createElement("div");
+		const fill = document.createElement("div");
+
+		cell.className = "pipeline-stage";
+		if (st.packages === 0)
+			cell.classList.add("pipeline-stage-empty");
+		name.className = "pipeline-stage-name";
+		name.textContent = st.stage;
+		count.className = "pipeline-stage-count";
+		count.textContent = st.packages;
+		bar.className = "pipeline-stage-bar";
+		fill.className = "pipeline-stage-fill";
+		fill.style.width = busiest > 0 ? (100 * st.packages / busiest) + "%" : "0";
+		bar.appendChild(fill);
+		/* The verb is what a failure here reads as -- worth having on
+		 * hover, since the stage name alone does not say what it does. */
+		cell.title = st.verb;
+		cell.appendChild(name);
+		cell.appendChild(count);
+		cell.appendChild(bar);
+		flow.appendChild(cell);
+	}
+
+	const deploy = document.getElementById("pipeline-deploy");
+
+	deploy.textContent = "";
+	if (data.deploy) {
+		const badge = document.createElement("span");
+		const text = document.createElement("span");
+
+		badge.className = "pipeline-badge pipeline-badge-" + data.deploy.status;
+		badge.textContent = "deploy / " + data.deploy.status;
+		text.className = "pipeline-deploy-text";
+		text.textContent = (data.deploy.entry ? data.deploy.entry + " -- " : "") +
+		                   data.deploy.reason;
+		deploy.appendChild(badge);
+		deploy.appendChild(text);
+	}
+
+	const tbody = document.getElementById("pipeline-rows");
+	const packages = data.packages || [];
+	let shown = 0;
+
+	tbody.textContent = "";
+	for (const p of packages) {
+		if (p.status === "ok" || p.status === "not-implemented")
+			continue;
+		shown++;
+		const tr = document.createElement("tr");
+		const cells = [p.name, p.stage, null, p.resolved_version || "-",
+		               p.newest_recipe_version || "-", p.reason];
+
+		for (let i = 0; i < cells.length; i++) {
+			const td = document.createElement("td");
+
+			if (i === 2) {
+				const badge = document.createElement("span");
+
+				badge.className = "pipeline-badge pipeline-badge-" + p.status;
+				badge.textContent = p.status;
+				td.appendChild(badge);
+			} else {
+				td.textContent = cells[i];
+			}
+			tr.appendChild(td);
+		}
+		tbody.appendChild(tr);
+	}
+	if (shown === 0) {
+		const tr = document.createElement("tr");
+		const td = document.createElement("td");
+
+		td.colSpan = 6;
+		td.className = "hint";
+		td.textContent = "Nothing is blocked or failed.";
+		tr.appendChild(td);
+		tbody.appendChild(tr);
+	}
+	document.getElementById("pipeline-summary").textContent =
+	    data.total + " package(s): " + data.ok + " ok, " + data.blocked + " blocked, " +
+	    data.failed + " failed, " + data.cancelled + " cancelled, " + data.not_implemented +
+	    " performed by hand";
+}
+
 const VIEW_REFRESHERS = {
+	pipeline: [refreshPipeline],
 	images: [refreshImages, refreshPkgRecipes, refreshImageRecipesList, refreshContainerRecipesList,
 	         refreshPkgList],
 	recipes: [refreshPkgRecipes, refreshImageRecipesList, refreshContainerRecipesList,
