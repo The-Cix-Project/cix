@@ -30,7 +30,8 @@
  *   container's own overlay, which is ephemeral by design. A container
  *   page shows the backups of the volumes it mounts, derived -- the
  *   same way it already shows which volumes those are.
- * - **One global schedule**, reusing the existing periodic-timer shape,
+ * - **One global schedule** -- which, since ADR-0257, is an actual
+ *   schedule (`GET /v1/schedules`) rather than an interval of its own,
  *   with per-volume retention. N independent timers is N ways for a
  *   schedule to be quietly wrong.
  * - **Onto a disk carrying the `backup` role**, the same role the
@@ -75,9 +76,16 @@ void volumebackup_repoint(const char *new_state_path);
  * which backup-role disk it writes to. Per-volume opt-in and retention
  * live on the volume itself (volume.h). */
 int volumebackup_enabled(void);
-int volumebackup_interval_hours(void);
+/*
+ * ADR-0257: read once at init from an older config file, for the
+ * one-time migration that turns it into a schedule. WHEN the sweep runs
+ * is a schedule now; this config says only where snapshots go and
+ * whether the sweep is on.
+ */
+int volumebackup_legacy_interval_hours(void);
+void volumebackup_clear_legacy_interval(void);
 const char *volumebackup_disk(void);
-enum volumebackup_error volumebackup_set(const char *disk_name, int enabled, int interval_hours);
+enum volumebackup_error volumebackup_set(const char *disk_name, int enabled);
 void volumebackup_write_config_json(struct json_writer *w);
 
 /*

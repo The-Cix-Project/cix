@@ -28,7 +28,7 @@
 static char g_state_path[PATH_MAX];
 static char g_disk[64];
 static int g_enabled;
-static int g_interval_hours = 24;
+static int g_legacy_interval_hours; /* ADR-0257 migration only */
 
 /* Outcome of the most recent attempt per volume, in memory only. A
  * replayed "it worked yesterday" is not evidence about now, the same
@@ -108,7 +108,7 @@ int volumebackup_init(const char *state_path)
 			snprintf(g_disk, sizeof(g_disk), "%s", disk);
 		g_enabled = (en != NULL && en->type == JSON_BOOL && en->u.boolean);
 		if (iv != NULL && iv->type == JSON_NUMBER && json_as_number(iv) > 0)
-			g_interval_hours = (int)json_as_number(iv);
+			g_legacy_interval_hours = (int)json_as_number(iv);
 	}
 	json_free(root);
 	return 0;
@@ -124,9 +124,14 @@ int volumebackup_enabled(void)
 	return g_enabled;
 }
 
-int volumebackup_interval_hours(void)
+int volumebackup_legacy_interval_hours(void)
 {
-	return g_interval_hours;
+	return g_legacy_interval_hours;
+}
+
+void volumebackup_clear_legacy_interval(void)
+{
+	g_legacy_interval_hours = 0;
 }
 
 const char *volumebackup_disk(void)
@@ -134,13 +139,12 @@ const char *volumebackup_disk(void)
 	return g_disk;
 }
 
-enum volumebackup_error volumebackup_set(const char *disk_name, int enabled, int interval_hours)
+enum volumebackup_error volumebackup_set(const char *disk_name, int enabled)
 {
-	if (interval_hours <= 0 || interval_hours > 24 * 365)
+	if (0)
 		return VOLUMEBACKUP_ERR_INVALID;
 	snprintf(g_disk, sizeof(g_disk), "%s", disk_name != NULL ? disk_name : "");
 	g_enabled = enabled ? 1 : 0;
-	g_interval_hours = interval_hours;
 	if (save_state() != 0)
 		return VOLUMEBACKUP_ERR_PERSIST_FAILED;
 	return VOLUMEBACKUP_OK;
@@ -156,8 +160,6 @@ void volumebackup_write_config_json(struct json_writer *w)
 		jw_null(w);
 	jw_key(w, "enabled");
 	jw_bool(w, g_enabled);
-	jw_key(w, "interval_hours");
-	jw_int(w, g_interval_hours);
 	jw_obj_close(w);
 }
 
@@ -431,13 +433,15 @@ int volumebackup_sweep(time_t now, const struct volumebackup_hooks *hooks)
 		return 0;
 	n = volume_list(list, VOLUME_MAX);
 	for (i = 0; i < n; i++) {
-		double due_after;
-
 		if (!list[i].backup_enabled)
 			continue;
-		due_after = (double)g_interval_hours * 3600.0;
-		if (list[i].backup_last_at != 0 && difftime(now, list[i].backup_last_at) < due_after)
-			continue;
+		/*
+		 * No per-volume due check any more (ADR-0257). Being called IS
+		 * the due signal: the schedule owns cadence, and a second
+		 * interval here would be the same two-places-to-look problem
+		 * that ADR replaced -- a sweep that fired and then declined to
+		 * do anything, for a reason held somewhere else.
+		 */
 		/*
 		 * A volume whose container is running and has not opted into
 		 * crash-consistent copies is skipped BEFORE take() is called,

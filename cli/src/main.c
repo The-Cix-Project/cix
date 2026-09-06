@@ -72,11 +72,11 @@ static void print_usage(FILE *out)
 	        "               back to their real state files; does NOT reboot or hot-reload --\n"
 	        "               call reboot separately for it to take effect on the next boot\n"
 	        "  backup-config show  -- which disk (if any) automatic backup snapshots write\n"
-	        "               to, whether enabled, and the auto-snapshot interval (ADR-0141)\n"
+	        "               to and whether enabled (ADR-0141). WHEN they run is a schedule:\n"
+	        "               see `cixctl schedule ls` (ADR-0257)\n"
 	        "  backup-config set [--disk=NAME | --clear-disk] [--enable | --disable]\n"
-	        "               [--interval-hours=N]  -- only the fields given are changed; the\n"
-	        "               target disk must carry the backup role; 0 hours means no automatic\n"
-	        "               schedule (manual snapshot-now only)\n"
+	        "               -- only the fields given are changed; the target disk must carry\n"
+	        "               the backup role\n"
 	        "  backup-config status  -- state/last_attempt_unixtime/error of the most recent\n"
 	        "               snapshot attempt (manual or automatic)\n"
 	        "  backup-config snapshot-now  -- write the same bundle GET /system/backup\n"
@@ -7189,9 +7189,11 @@ static void fmt_backup_config(const struct json_value *v)
 	const char *disk = json_str_field(v, "disk");
 	const struct json_value *jenabled = json_object_get(v, "enabled");
 
-	printf("disk=%s enabled=%s interval_hours=%ld\n", disk != NULL ? disk : "(none)",
-	       (jenabled != NULL && jenabled->type == JSON_BOOL && jenabled->u.boolean) ? "true" : "false",
-	       (long)json_as_number(json_object_get(v, "interval_hours")));
+	/* ADR-0257: when it runs is `cixctl schedule ls`, not here. */
+	printf("disk=%s enabled=%s  (schedule: cixctl schedule ls)\n",
+	       disk != NULL ? disk : "(none)",
+	       (jenabled != NULL && jenabled->type == JSON_BOOL && jenabled->u.boolean) ? "true"
+	                                                                                : "false");
 }
 
 static void fmt_backup_status(const struct json_value *v)
@@ -7224,7 +7226,6 @@ static int cmd_backup_config_set(const struct cix_client *c, int json_mode, int 
 	const char *disk = NULL;
 	int clear_disk = 0;
 	int want_enabled = -1; /* -1: not given */
-	const char *interval_hours = NULL;
 	struct json_writer w;
 	struct cix_response r;
 	int i;
@@ -7238,8 +7239,12 @@ static int cmd_backup_config_set(const struct cix_client *c, int json_mode, int 
 			want_enabled = 1;
 		else if (strcmp(argv[i], "--disable") == 0)
 			want_enabled = 0;
-		else if (strncmp(argv[i], "--interval-hours=", 17) == 0)
-			interval_hours = argv[i] + 17;
+		else if (strncmp(argv[i], "--interval-hours=", 17) == 0) {
+			fprintf(stderr, "cixctl: --interval-hours is gone (ADR-0257) -- use\n"
+			                "  cixctl schedule set system-backup --action=system.backup "
+			                "--every-hours=N\n");
+			return 2;
+		}
 		else {
 			fprintf(stderr, "cixctl: unknown backup-config set option '%s'\n", argv[i]);
 			return 2;
@@ -7249,10 +7254,11 @@ static int cmd_backup_config_set(const struct cix_client *c, int json_mode, int 
 		fprintf(stderr, "cixctl: --disk= and --clear-disk are mutually exclusive\n");
 		return 2;
 	}
-	if (disk == NULL && !clear_disk && want_enabled == -1 && interval_hours == NULL) {
+	if (disk == NULL && !clear_disk && want_enabled == -1) {
 		fprintf(stderr,
 		        "usage: cixctl backup-config set [--disk=NAME | --clear-disk] "
-		        "[--enable | --disable] [--interval-hours=N]\n");
+		        "[--enable | --disable]\n"
+		        "  the schedule lives in `cixctl schedule` since ADR-0257\n");
 		return 2;
 	}
 
@@ -7268,10 +7274,6 @@ static int cmd_backup_config_set(const struct cix_client *c, int json_mode, int 
 	if (want_enabled != -1) {
 		jw_key(&w, "enabled");
 		jw_bool(&w, want_enabled);
-	}
-	if (interval_hours != NULL) {
-		jw_key(&w, "interval_hours");
-		jw_int(&w, atol(interval_hours));
 	}
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
@@ -12597,17 +12599,17 @@ static void fmt_pkg_repo_config(const struct json_value *v)
 	const char *kind = json_str_field(v, "repo_kind");
 	const char *ref = json_str_field(v, "ref");
 	const struct json_value *token_set = json_object_get(v, "auth_token_set");
-	long interval = (long)json_as_number(json_object_get(v, "sync_interval_seconds"));
 
 	if (url == NULL || url[0] == '\0') {
 		printf("(no repo configured)\n");
 		return;
 	}
-	printf("repo_url=%s repo_kind=%s ref=%s auth_token=%s sync_interval_seconds=%ld\n", url,
-	       kind != NULL ? kind : "?", ref != NULL ? ref : "?",
-	       (token_set != NULL && token_set->type == JSON_BOOL && token_set->u.boolean) ? "set"
-	                                                                                    : "unset",
-	       interval);
+	/* ADR-0257: when it syncs is `cixctl schedule ls`, not here. */
+	printf("repo_url=%s repo_kind=%s ref=%s auth_token=%s  (schedule: cixctl schedule ls)\n",
+	       url, kind != NULL ? kind : "?", ref != NULL ? ref : "?",
+	       (token_set != NULL && token_set->type == JSON_BOOL && token_set->u.boolean)
+	           ? "set"
+	           : "unset");
 }
 
 static int cmd_pkg_repo_config_show(const struct cix_client *c, int json_mode)
@@ -12643,8 +12645,12 @@ static int cmd_pkg_repo_config_set(const struct cix_client *c, int json_mode, in
 			token = argv[i] + 8;
 		else if (strcmp(argv[i], "--clear-token") == 0)
 			token = "";
-		else if (strncmp(argv[i], "--sync-interval=", 16) == 0)
-			interval = strtol(argv[i] + 16, NULL, 10);
+		else if (strncmp(argv[i], "--sync-interval=", 16) == 0) {
+			fprintf(stderr, "cixctl: --sync-interval is gone (ADR-0257) -- use\n"
+			                "  cixctl schedule set recipe-sync --action=pkg.sync "
+			                "--every-minutes=N\n");
+			return 2;
+		}
 		else {
 			fprintf(stderr, "cixctl: unknown pkg repo-config set option '%s'\n", argv[i]);
 			return 2;
@@ -12692,7 +12698,7 @@ static int cmd_pkg_repo_config(const struct cix_client *c, int json_mode, int ar
 	if (argc < 1) {
 		fprintf(stderr, "usage: cixctl pkg repo-config show\n"
 		                "       cixctl pkg repo-config set [--url=URL] [--kind=gitea|github|gitlab] "
-		                "[--ref=REF] [--token=TOKEN | --clear-token] [--sync-interval=SECONDS]\n");
+		                "[--ref=REF] [--token=TOKEN | --clear-token]\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -15032,7 +15038,7 @@ static int cmd_pkg(const struct cix_client *c, int json_mode, int argc, char **a
 		                "actually in their image (#281)\n"
 		                "       cixctl pkg repo-config show\n"
 		                "       cixctl pkg repo-config set [--url=URL] [--kind=gitea|github|gitlab] "
-		                "[--ref=REF] [--token=TOKEN | --clear-token] [--sync-interval=SECONDS]\n"
+		                "[--ref=REF] [--token=TOKEN | --clear-token]  (schedule: cixctl schedule)\n"
 		                "       cixctl pkg sync [--wait]\n"
 		                "       cixctl pkg sync-status\n"
 		                "       cixctl pkg cache-config show\n"

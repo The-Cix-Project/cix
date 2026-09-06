@@ -676,7 +676,7 @@ void handle_volume_backup_config_get(int fd)
 void handle_volume_backup_config_put(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root = json_parse(body, body_len);
-	const struct json_value *jen, *jiv;
+	const struct json_value *jen;
 	const char *disk;
 	enum volumebackup_error verr;
 
@@ -685,13 +685,23 @@ void handle_volume_backup_config_put(int fd, const char *body, size_t body_len)
 		respond_error(fd, 400, "Bad Request", "invalid JSON body");
 		return;
 	}
+	/*
+	 * ADR-0257: interval_hours is gone. WHEN the sweep runs is a
+	 * schedule; this says only where snapshots go and whether the
+	 * sweep is on. Refused rather than ignored, so a client still
+	 * sending it learns that its schedule is not being set.
+	 */
+	if (json_object_get(root, "interval_hours") != NULL) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request",
+		               "interval_hours moved to /v1/schedules (ADR-0257) -- set a schedule "
+		               "with action \"volume.backup\" instead");
+		return;
+	}
 	disk = json_as_string(json_object_get(root, "disk"));
 	jen = json_object_get(root, "enabled");
-	jiv = json_object_get(root, "interval_hours");
 	verr = volumebackup_set(disk != NULL ? disk : "",
-	                        jen != NULL && jen->type == JSON_BOOL && jen->u.boolean,
-	                        (jiv != NULL && jiv->type == JSON_NUMBER) ? (int)json_as_number(jiv)
-	                                                                  : volumebackup_interval_hours());
+	                        jen != NULL && jen->type == JSON_BOOL && jen->u.boolean);
 	json_free(root);
 	if (verr != VOLUMEBACKUP_OK) {
 		respond_volumebackup_error(fd, verr);

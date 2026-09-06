@@ -1150,8 +1150,6 @@ enum conn_kind {
 	CONN_BOOTSTRAP_FETCH,   /* pkg/bootstrap's own toolchain_url curl fetch (ADR-0065) */
 	CONN_KERNEL_RELEASES_FETCH, /* kernel.org releases.json curl fetch (issue #65) */
 	CONN_PKG_SYNC_FETCH,    /* pkg sync's own repo-archive curl fetch (ADR-0121) */
-	CONN_PKG_SYNC_PERIODIC_TIMER, /* permanent, re-arms itself -- fires pkg_sync_start() periodically if configured (ADR-0121) */
-	CONN_BACKUP_PERIODIC_TIMER, /* permanent, re-arms itself -- fires do_backup_snapshot_now() periodically if enabled+configured (ADR-0141 Phase 5) */
 	CONN_DISK_FORMAT,       /* disk format+mount job (multi-disk management Phase C) */
 	CONN_STORAGE_MIGRATE,   /* state/rebuildable/log-storage migration job (ADR-0141 Phase 2) */
 	CONN_CONTAINER_STORAGE_MIGRATE, /* one container's own overlay-storage migration job (ADR-0142 Section 4) */
@@ -5707,6 +5705,149 @@ static int action_refresh_upstreams(const char *params, char *reason, size_t rea
 	return 0;
 }
 
+/* All defined further down, next to the subsystems they belong to;
+ * declared here so the actions that schedule them sit beside the
+ * scheduler rather than being scattered across the file. */
+static void do_backup_snapshot_now(void);
+static int volumebackup_sweep_now(void);
+static void register_pkg_sync_fetch_pidfd(pid_t pid, int pidfd);
+
+/*
+ * ADR-0257: the three actions that replace three periodic timers.
+ *
+ * Each calls an entry point that already existed and already respects
+ * its own queue, so a schedule cannot start work that a manual request
+ * could not. That is the whole reason actions enqueue rather than doing
+ * anything themselves.
+ */
+static int action_system_backup(const char *params, char *reason, size_t reason_size)
+{
+	(void)params;
+	if (!backupconfig_enabled()) {
+		snprintf(reason, reason_size,
+		         "system backups are disabled -- enable them in PUT /v1/system/backup-config");
+		return -1;
+	}
+	if (backupconfig_disk() == NULL || backupconfig_disk()[0] == '\0') {
+		snprintf(reason, reason_size, "no backup disk is configured");
+		return -1;
+	}
+	do_backup_snapshot_now();
+	snprintf(reason, reason_size, "wrote a system backup to %s", backupconfig_disk());
+	return 0;
+}
+
+static int action_volume_backup(const char *params, char *reason, size_t reason_size)
+{
+	int taken;
+
+	(void)params;
+	if (!volumebackup_enabled()) {
+		snprintf(reason, reason_size,
+		         "volume backups are disabled -- enable them in PUT /v1/volume-backup-config");
+		return -1;
+	}
+	taken = volumebackup_sweep_now();
+	snprintf(reason, reason_size, "snapshotted %d volume(s)", taken);
+	return 0;
+}
+
+static int action_pkg_sync(const char *params, char *reason, size_t reason_size)
+{
+	pid_t pid;
+	int pidfd;
+	enum pkg_error perr;
+
+	(void)params;
+	perr = pkg_sync_start(&pid, &pidfd);
+	if (perr == PKG_ERR_BUSY) {
+		snprintf(reason, reason_size, "a sync was already running; this one was not started");
+		return -1;
+	}
+	if (perr == PKG_ERR_NOT_FOUND) {
+		snprintf(reason, reason_size,
+		         "no repo is configured -- PUT /v1/pkg/repo-config first");
+		return -1;
+	}
+	if (perr != PKG_OK) {
+		snprintf(reason, reason_size, "could not start a sync (%d)", (int)perr);
+		return -1;
+	}
+	register_pkg_sync_fetch_pidfd(pid, pidfd);
+	snprintf(reason, reason_size, "started a recipe sync");
+	return 0;
+}
+
+/*
+ * The one-time upgrade step ADR-0257 promised: a config file that still
+ * carries an interval becomes the equivalent schedule, once, and then
+ * drops the field.
+ *
+ * Not a compatibility shim -- it runs against what is on disk, writes a
+ * real schedule, and clears the old value, so a second boot finds
+ * nothing to do. A box that never had an interval set gets no schedule
+ * at all, which is right: nothing was running before either.
+ */
+static void migrate_legacy_intervals(void)
+{
+	struct {
+		const char *name;
+		const char *action;
+		int seconds;
+	} jobs[3];
+	char body[256];
+	char err[256];
+	int i, n = 0;
+
+	if (backupconfig_legacy_interval_hours() > 0) {
+		jobs[n].name = "system-backup";
+		jobs[n].action = "system.backup";
+		jobs[n].seconds = backupconfig_legacy_interval_hours() * 3600;
+		n++;
+	}
+	if (volumebackup_legacy_interval_hours() > 0) {
+		jobs[n].name = "volume-backup";
+		jobs[n].action = "volume.backup";
+		jobs[n].seconds = volumebackup_legacy_interval_hours() * 3600;
+		n++;
+	}
+	if (pkg_repo_legacy_sync_interval_seconds() > 0) {
+		jobs[n].name = "recipe-sync";
+		jobs[n].action = "pkg.sync";
+		jobs[n].seconds = pkg_repo_legacy_sync_interval_seconds();
+		n++;
+	}
+	for (i = 0; i < n; i++) {
+		/* Never overwrite a schedule an operator already made. */
+		if (scheduler_find(jobs[i].name) != NULL)
+			continue;
+		snprintf(body, sizeof(body),
+		         "{\"action\":\"%s\",\"schedule\":{\"every\":{\"seconds\":%d}},"
+		         "\"catch_up\":true}",
+		         jobs[i].action, jobs[i].seconds);
+		if (scheduler_set_from_json(jobs[i].name, body, strlen(body), err, sizeof(err)) !=
+		    SCHEDULE_OK) {
+			logstore_write("cixd", "error",
+			                "could not migrate the %s interval into a schedule: %s",
+			                jobs[i].action, err);
+			continue;
+		}
+		logstore_write("cixd", "info",
+		                "migrated a %d-second %s interval into schedule \"%s\" (ADR-0257)",
+		                jobs[i].seconds, jobs[i].action, jobs[i].name);
+	}
+	/*
+	 * Cleared unconditionally, including when nothing was migrated:
+	 * backupconfig and volumebackup no longer write the field at all,
+	 * so the value only survives until their next save; clearing it
+	 * here makes that explicit rather than incidental.
+	 */
+	backupconfig_clear_legacy_interval();
+	volumebackup_clear_legacy_interval();
+	if (pkg_repo_legacy_sync_interval_seconds() > 0)
+		pkg_repo_clear_legacy_sync_interval();
+}
+
 static void arm_scheduler_timer(void)
 {
 	struct itimerspec its;
@@ -9177,132 +9318,7 @@ static void handle_pkg_sync_fetch_event(struct conn *cc)
 }
 
 
-/* Permanent, re-arming itself every configured interval -- identical
- * shape to arm_ntp_periodic_timer()/handle_ntp_periodic_timer_event()
- * (task #751), except an interval of 0 means "disabled": the timer is
- * simply never (re)armed, and manual `pkg sync` remains the only
- * trigger until an operator sets a real interval via PUT /v1/pkg/
- * repo-config. */
-static struct conn g_pkg_sync_periodic_conn;
 
-static void arm_pkg_sync_periodic_timer(void)
-{
-	struct itimerspec its;
-	int interval = pkg_repo_get_sync_interval_seconds();
-
-	if (interval <= 0 || g_pkg_sync_periodic_conn.fd < 0)
-		return;
-	memset(&its, 0, sizeof(its));
-	its.it_value.tv_sec = interval;
-	if (timerfd_settime(g_pkg_sync_periodic_conn.fd, 0, &its, NULL) != 0)
-		perror("timerfd_settime (pkg sync periodic re-arm)");
-}
-
-static void handle_pkg_sync_periodic_timer_event(struct conn *cc)
-{
-	uint64_t expirations;
-	pid_t pid;
-	int pidfd;
-
-	if (read(cc->fd, &expirations, sizeof(expirations)) < 0)
-		perror("read (pkg sync periodic timerfd)");
-	if (!pkg_sync_in_progress() && pkg_sync_start(&pid, &pidfd) == PKG_OK)
-		register_pkg_sync_fetch_pidfd(pid, pidfd);
-	arm_pkg_sync_periodic_timer();
-}
-
-/* Best-effort, same "never block daemon startup" posture as start_ntp_
- * periodic_timer() -- a timerfd_create() failure just means no
- * automatic sync ever happens; every pkg sync/repo-config surface
- * remains fully usable via manual trigger regardless. */
-static void start_pkg_sync_periodic_timer(void)
-{
-	struct cix_epoll_event ev;
-	int fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
-
-	g_pkg_sync_periodic_conn.fd = -1;
-	if (fd < 0) {
-		perror("timerfd_create (pkg sync periodic)");
-		return;
-	}
-	g_pkg_sync_periodic_conn.kind = CONN_PKG_SYNC_PERIODIC_TIMER;
-	g_pkg_sync_periodic_conn.fd = fd;
-	memset(&ev, 0, sizeof(ev));
-	ev.events = EPOLLIN;
-	ev.data.ptr = &g_pkg_sync_periodic_conn;
-	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
-		close(fd);
-		g_pkg_sync_periodic_conn.fd = -1;
-		return;
-	}
-	arm_pkg_sync_periodic_timer();
-}
-
-/*
- * ADR-0141 Phase 5: same shape as arm_pkg_sync_periodic_timer() --
- * interval_hours of 0 (the default, "no automatic schedule") or
- * `enabled` false means the timer is simply never (re)armed, and
- * manual POST /v1/system/backup-config/snapshot-now remains the only
- * trigger until an operator sets both a real interval and enabled:true.
- */
-static struct conn g_backup_periodic_conn;
-
-static void arm_backup_periodic_timer(void)
-{
-	struct itimerspec its;
-	int interval_hours = backupconfig_interval_hours();
-
-	if (!backupconfig_enabled() || interval_hours <= 0 || g_backup_periodic_conn.fd < 0)
-		return;
-	memset(&its, 0, sizeof(its));
-	its.it_value.tv_sec = (time_t)interval_hours * 3600;
-	if (timerfd_settime(g_backup_periodic_conn.fd, 0, &its, NULL) != 0)
-		perror("timerfd_settime (backup periodic re-arm)");
-}
-
-static void do_backup_snapshot_now(void);
-static void handle_backup_config_get(int fd);
-static void handle_backup_config_put(int fd, const char *body, size_t body_len);
-static void handle_backup_config_status_get(int fd);
-static void handle_backup_config_snapshot_now_post(int fd);
-
-static void handle_backup_periodic_timer_event(struct conn *cc)
-{
-	uint64_t expirations;
-
-	if (read(cc->fd, &expirations, sizeof(expirations)) < 0)
-		perror("read (backup periodic timerfd)");
-	do_backup_snapshot_now();
-	arm_backup_periodic_timer();
-}
-
-/* Best-effort, same "never block daemon startup" posture as start_ntp_
- * periodic_timer()/start_pkg_sync_periodic_timer() -- a timerfd_create()
- * failure just means no automatic snapshot ever happens; GET/PUT
- * /v1/system/backup-config and manual snapshot-now remain fully usable
- * regardless. */
-static void start_backup_periodic_timer(void)
-{
-	struct cix_epoll_event ev;
-	int fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
-
-	g_backup_periodic_conn.fd = -1;
-	if (fd < 0) {
-		perror("timerfd_create (backup periodic)");
-		return;
-	}
-	g_backup_periodic_conn.kind = CONN_BACKUP_PERIODIC_TIMER;
-	g_backup_periodic_conn.fd = fd;
-	memset(&ev, 0, sizeof(ev));
-	ev.events = EPOLLIN;
-	ev.data.ptr = &g_backup_periodic_conn;
-	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
-		close(fd);
-		g_backup_periodic_conn.fd = -1;
-		return;
-	}
-	arm_backup_periodic_timer();
-}
 
 /*
  * Returns 0 and forks the fetch (state -> FETCHING) on success; -1
@@ -9411,12 +9427,10 @@ static void handle_backup_config_get(int fd)
 static void handle_backup_config_put(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root;
-	const struct json_value *jdisk, *jenabled, *jinterval;
+	const struct json_value *jdisk, *jenabled;
 	const char *disk_name;
 	char disk_name_buf[64];
 	int enabled;
-	int interval_hours;
-	int schedule_changed;
 	enum backupconfig_error err;
 
 	root = json_parse(body, body_len);
@@ -9431,7 +9445,6 @@ static void handle_backup_config_put(int fd, const char *body, size_t body_len)
 	else
 		disk_name_buf[0] = '\0';
 	enabled = backupconfig_enabled();
-	interval_hours = backupconfig_interval_hours();
 
 	jdisk = json_object_get(root, "disk");
 	if (jdisk != NULL) {
@@ -9454,29 +9467,26 @@ static void handle_backup_config_put(int fd, const char *body, size_t body_len)
 		}
 		enabled = jenabled->u.boolean;
 	}
-	jinterval = json_object_get(root, "interval_hours");
-	if (jinterval != NULL) {
-		if (jinterval->type != JSON_NUMBER) {
-			json_free(root);
-			respond_error(fd, 400, "Bad Request", "interval_hours must be a number");
-			return;
-		}
-		interval_hours = (int)json_as_number(jinterval);
+	/*
+	 * ADR-0257: interval_hours is gone from this resource. WHEN a
+	 * backup runs is a schedule; this says only where it goes and
+	 * whether it is on. Refused rather than ignored, so a client still
+	 * sending it learns that its schedule is not being set.
+	 */
+	if (json_object_get(root, "interval_hours") != NULL) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request",
+		               "interval_hours moved to /v1/schedules (ADR-0257) -- set a schedule "
+		               "with action \"system.backup\" instead");
+		return;
 	}
 	json_free(root);
 
-	schedule_changed = (enabled != backupconfig_enabled()) || (interval_hours != backupconfig_interval_hours());
-
-	err = backupconfig_set(disk_name_buf[0] != '\0' ? disk_name_buf : NULL, enabled, interval_hours);
+	err = backupconfig_set(disk_name_buf[0] != '\0' ? disk_name_buf : NULL, enabled);
 	if (err != BACKUPCONFIG_OK) {
-		if (err == BACKUPCONFIG_ERR_INVALID_INTERVAL)
-			respond_error(fd, 400, "Bad Request", "interval_hours must be 0 or a positive number");
-		else
-			respond_error(fd, 500, "Internal Server Error", "could not persist backup config");
+		respond_error(fd, 500, "Internal Server Error", "could not persist backup config");
 		return;
 	}
-	if (schedule_changed)
-		arm_backup_periodic_timer();
 
 	{
 		struct json_writer w;
@@ -9488,6 +9498,13 @@ static void handle_backup_config_put(int fd, const char *body, size_t body_len)
 		respond_json(fd, 200, "OK", &w);
 		jw_free(&w);
 	}
+}
+
+/* Wrapped so the scheduler action above needs neither volumebackup.h's
+ * sweep signature nor api_volume.h's hooks accessor in scope. */
+static int volumebackup_sweep_now(void)
+{
+	return volumebackup_sweep(time(NULL), api_volume_backup_hooks());
 }
 
 static void do_backup_snapshot_now(void)
@@ -16027,7 +16044,7 @@ static void handle_pkg_repo_config_put(int fd, const char *body, size_t body_len
 	const char *repo_kind = NULL;
 	const char *ref = NULL;
 	const char *auth_token = NULL;
-	int sync_interval_seconds = -1;
+
 	enum pkg_error perr;
 
 	if (body_len > 0) {
@@ -16040,22 +16057,27 @@ static void handle_pkg_repo_config_put(int fd, const char *body, size_t body_len
 		repo_kind = json_as_string(json_object_get(root, "repo_kind"));
 		ref = json_as_string(json_object_get(root, "ref"));
 		auth_token = json_as_string(json_object_get(root, "auth_token"));
-		{
-			const struct json_value *iv = json_object_get(root, "sync_interval_seconds");
-
-			if (iv != NULL)
-				sync_interval_seconds = (int)json_as_number(iv);
+		/*
+		 * ADR-0257: sync_interval_seconds is gone from this resource.
+		 * Refused rather than ignored, so a client still sending it
+		 * learns that its schedule is not being set.
+		 */
+		if (json_object_get(root, "sync_interval_seconds") != NULL) {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request",
+			               "sync_interval_seconds moved to /v1/schedules (ADR-0257) -- set a "
+			               "schedule with action \"pkg.sync\" instead");
+			return;
 		}
 	}
 
-	perr = pkg_repo_set_config(repo_url, repo_kind, ref, auth_token, sync_interval_seconds);
+	perr = pkg_repo_set_config(repo_url, repo_kind, ref, auth_token);
 	if (root != NULL)
 		json_free(root);
 	if (perr != PKG_OK) {
 		respond_pkg_error(fd, perr);
 		return;
 	}
-	arm_pkg_sync_periodic_timer();
 	handle_pkg_repo_config_get(fd);
 }
 
@@ -24564,6 +24586,13 @@ static int cixd_main(int argc, char **argv)
 	scheduler_register_action("pkg.refresh-upstreams",
 	                           "fetch what upstream has published, for every discovery kind",
 	                           action_refresh_upstreams);
+	scheduler_register_action("system.backup", "write a system backup to the configured disk",
+	                           action_system_backup);
+	scheduler_register_action("volume.backup", "snapshot every volume that opted in",
+	                           action_volume_backup);
+	scheduler_register_action("pkg.sync", "fetch recipes from the configured repo",
+	                           action_pkg_sync);
+	migrate_legacy_intervals();
 	/* Issue #51: applied here, not just on PUT -- the kernel default is
 	 * deliberately off, so this is the setting's only chance to survive
 	 * a reboot. */
@@ -25125,9 +25154,7 @@ static int cixd_main(int argc, char **argv)
 	start_ntp_periodic_timer(); /* same g_epfd/best-effort posture, task #751 */
 	start_build_stall_timer();  /* reports an in-flight build that has gone quiet */
 	start_scheduler_timer();    /* ADR-0257 -- no-op until a schedule exists */
-	start_pkg_sync_periodic_timer(); /* same posture, ADR-0121 -- no-op until an interval is configured */
 	start_serverhealth_timer(); /* issue #81 -- probes every registered server on an interval */
-	start_backup_periodic_timer(); /* same posture, ADR-0141 Phase 5 -- no-op until enabled+interval configured */
 	fflush(stdout);
 
 	/* "About to serve traffic" is the honest definition of healthy this
@@ -25284,26 +25311,12 @@ static int cixd_main(int argc, char **argv)
 				handle_kernel_releases_fetch_event(cc);
 			else if (cc->kind == CONN_PKG_SYNC_FETCH)
 				handle_pkg_sync_fetch_event(cc);
-			else if (cc->kind == CONN_PKG_SYNC_PERIODIC_TIMER)
-				handle_pkg_sync_periodic_timer_event(cc);
 			else if (cc->kind == CONN_EXEC_OUTPUT)
 				handle_exec_output_event(cc);
 			else if (cc->kind == CONN_EXEC_CHILD)
 				handle_exec_child_event(cc);
 			else if (cc->kind == CONN_EXEC_TIMER)
 				handle_exec_timer_event(cc);
-			else if (cc->kind == CONN_BACKUP_PERIODIC_TIMER) {
-				/*
-				 * Issue #96: the volume sweep rides this same tick
-				 * rather than arming a second timer. Both are "copy
-				 * something to the backup disk on a schedule", the
-				 * intervals are independently configured and each is
-				 * checked against its own last-run time, and one timer
-				 * is one thing to reason about when backups do not run.
-				 */
-				volumebackup_sweep(time(NULL), api_volume_backup_hooks());
-				handle_backup_periodic_timer_event(cc);
-			}
 			else if (cc->kind == CONN_SERVERHEALTH_TIMER) {
 				uint64_t ticks;
 

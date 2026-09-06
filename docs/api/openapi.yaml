@@ -713,15 +713,18 @@ paths:
       description: >
         Mirrors PUT /system/daemon-config's own "only the fields given
         are changed" convention -- a request may set just `disk`, just
-        `enabled`, just `interval_hours`, or any combination. `disk`
-        must already carry the `backup` role -- validated at snapshot
-        time (GET .../status shows the real outcome), not at PUT time,
-        the same "pure bookkeeping, real validation happens where the
-        real action happens" split every other storage-placement
-        endpoint in this API already uses. `interval_hours: 0` means no
-        automatic schedule -- POST .../snapshot-now remains the only
-        trigger. When `enabled` or `interval_hours` actually change,
-        the daemon's own periodic timer is re-armed immediately.
+        `enabled`, or both. `disk` must already carry the `backup` role
+        -- validated at snapshot time (GET .../status shows the real
+        outcome), not at PUT time, the same "pure bookkeeping, real
+        validation happens where the real action happens" split every
+        other storage-placement endpoint in this API already uses.
+
+        ADR-0257: `interval_hours` is GONE. WHEN a backup runs is a
+        schedule (`PUT /v1/schedules/<name>` with action
+        `system.backup`); this resource says only where it goes and
+        whether it is on. Sending the old field is REFUSED with a 400
+        naming its replacement, rather than ignored -- a caller whose
+        schedule silently was not set is worse off than one told.
       operationId: putBackupConfig
       x-cix-expose: [cli, web]
       requestBody:
@@ -738,7 +741,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/BackupConfig"
         "400":
-          description: A present field failed its own type/range validation (interval_hours must be >= 0)
+          description: A present field failed its own type validation, or carried the removed `interval_hours`
           content:
             application/json:
               schema:
@@ -7859,9 +7862,12 @@ paths:
         Partially updates the configured recipe repo: any field omitted from the
         request body leaves that setting unchanged. An explicit "auth_token": ""
         is the one way to clear an already-set token; omitting auth_token entirely
-        leaves whatever token (if any) is already stored. Changing
-        sync_interval_seconds re-arms the periodic sync timer immediately (0
-        disables it) -- no daemon restart needed.
+        leaves whatever token (if any) is already stored.
+
+        ADR-0257: sync_interval_seconds is GONE. WHEN a sync runs is a
+        schedule (action "pkg.sync"); this resource says only where
+        recipes come from. Sending the old field is refused with a 400
+        naming its replacement.
       operationId: putPkgRepoConfig
       x-cix-expose: [cli, web]
       requestBody:
@@ -7882,9 +7888,6 @@ paths:
                 auth_token:
                   type: string
                   description: Write-only; "" clears an existing token, omitted leaves it unchanged
-                sync_interval_seconds:
-                  type: integer
-                  description: 0 disables periodic sync (default); positive re-arms a periodic timer
       responses:
         "200":
           description: Updated repo config (same shape as GET)
@@ -12809,9 +12812,6 @@ components:
           description: A disk or partition carrying the `backup` role. Null or empty means no target, and the sweep does nothing.
         enabled:
           type: boolean
-        interval_hours:
-          type: integer
-          minimum: 1
 
     VolumeBackups:
       type: object
@@ -14944,7 +14944,7 @@ components:
 
     BackupConfig:
       type: object
-      required: [disk, enabled, interval_hours]
+      required: [disk, enabled]
       properties:
         disk:
           type: string
@@ -14952,9 +14952,6 @@ components:
           description: Must carry the `backup` role. Null means no automatic snapshots are possible.
         enabled:
           type: boolean
-        interval_hours:
-          type: integer
-          description: 0 means no automatic schedule -- POST .../snapshot-now is the only trigger.
 
     BackupConfigUpdateRequest:
       type: object
@@ -14964,10 +14961,10 @@ components:
           nullable: true
         enabled:
           type: boolean
-        interval_hours:
-          type: integer
-          minimum: 0
-      description: All fields optional -- only the ones present are changed (at least one expected).
+      description: >
+        All fields optional -- only the ones present are changed (at
+        least one expected). `interval_hours` was removed by ADR-0257
+        and is refused if sent.
 
     BackupSnapshotStatus:
       type: object
@@ -16101,7 +16098,7 @@ components:
 
     PkgRepoConfig:
       type: object
-      required: [repo_url, repo_kind, ref, auth_token_set, sync_interval_seconds]
+      required: [repo_url, repo_kind, ref, auth_token_set]
       properties:
         repo_url:
           type: string
@@ -16120,9 +16117,6 @@ components:
         auth_token_set:
           type: boolean
           description: Whether an auth token is currently stored -- the token itself is never returned.
-        sync_interval_seconds:
-          type: integer
-          description: 0 means periodic sync is disabled (the default) -- only manual POST /pkg/sync runs.
 
     PkgSyncStatus:
       type: object

@@ -988,11 +988,22 @@ Actions **enqueue**; they never do heavy work inline. Each calls an entry point 
 - **`POST /schedules/{name}/run` runs a disabled job too.** The enabled flag governs the schedule, not the button. It is also never a way to *define* a schedule — only to run one that exists.
 - **`last_ok` is null before the first run.** "It has not run" and "it ran and failed" are different facts, and a boolean alone cannot hold both.
 
-### What is scheduled today, and what is not yet
+### What is scheduled, and what deliberately is not
 
-One action is registered: `pkg.refresh-upstreams`, which closes ADR-0255's open end — release lists that only ever refreshed when someone asked by hand.
+Four actions are registered:
 
-The three existing operator-set intervals (system backup, volume backup, pkg sync) have **not** migrated yet. They arrive together, so no window exists in which a job and a legacy timer drive the same work; `backup-config`, `volume-backup-config` and `repo-config` lose their `interval_*` fields at that point. NTP and serverhealth are not on the list: their intervals are compile-time constants, not operator policy.
+| Action | What it does |
+|---|---|
+| `pkg.refresh-upstreams` | Fetch what upstream has published, for every discovery kind |
+| `system.backup` | Write a system backup to the configured disk |
+| `volume.backup` | Snapshot every volume that opted in |
+| `pkg.sync` | Fetch recipes from the configured repo |
+
+**The three interval fields are gone.** `backup-config`, `volume-backup-config` and `repo-config` each lost their `interval_*`, and sending one is now a **400 naming its replacement** rather than being ignored — a caller who thought it had set a schedule and hadn't is worse off than one that was told. Those configs now answer only *where* and *whether*, never *when*.
+
+On the first boot after the upgrade, a config file still carrying an interval becomes the equivalent schedule (`system-backup`, `volume-backup`, `recipe-sync`) with `catch_up: true`, once, and the field is dropped. A box that never set an interval gets no schedule, which is right — nothing was running there before either.
+
+NTP and serverhealth are **not** on the list: their intervals are compile-time constants, not operator policy. `build-stall` and `boot-confirm` are internal watchdogs and never migrate — a scheduler that can switch off the thing that reports wedged builds, or the thing that falls a bad boot back to the other slot, is worse than five timers.
 
 `build-stall` and `boot-confirm` are **deliberately never migrating.** They are internal watchdogs with no policy in them, and putting a watchdog under an operator-editable scheduler means an operator can switch off the thing that reports wedged builds, or the thing that falls a bad boot back to the other slot.
 

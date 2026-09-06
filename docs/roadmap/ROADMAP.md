@@ -2445,6 +2445,16 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 220 (done): the interval fields are gone -- schedules own timing (ADR-0257 part 2)
+
+The cut-over Part 219 deferred. `backup-config`, `volume-backup-config` and `repo-config` lose their `interval_*` fields; the two periodic timers behind them are deleted rather than left dormant; `system.backup`, `volume.backup` and `pkg.sync` join `pkg.refresh-upstreams` in the action registry.
+
+A removed field is **refused with a 400 naming its replacement**, never ignored -- a caller that believed it had set a schedule and silently had not is worse off than one that was told. A one-time migration on first boot turns any surviving interval into the equivalent schedule with `catch_up: true` and drops the field; an operator's own schedule of the same name is never overwritten.
+
+`volumebackup_sweep()` also lost its per-volume due check: with a schedule owning cadence, a second interval inside the sweep would have been the same two-places-to-look arrangement the ADR removes. Being called is the due signal.
+
+Verified: `cixd` clean under TCC `-Wall -Werror`; all 31 sandbox-runnable selftests pass; `test_backup_config` and `test_pkg_sync` updated to assert the refusal and the absent field, since those run on a real host and would otherwise fail the release selftest there.
+
 ## Part 219 (done): one scheduler, and a schedule is structured (ADR-0257)
 
 Six periodic timers, three of them existing because an operator had set an interval, each with its own on/off, its own period and its own last-run bookkeeping — and two of them already sharing a tick without sharing anything else (issue #96, whose own comment is this ADR's context section). **ADR-0257** replaces the pattern with one scheduler, one timer armed to the next due job, and a schedule as a first-class resource.

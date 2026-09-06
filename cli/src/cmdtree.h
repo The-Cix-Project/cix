@@ -134,7 +134,6 @@ static const char *const n_backup_config_set_flags[] = {
 	"--disable",
 	"--disk=",
 	"--enable",
-	"--interval-hours=",
 	NULL
 };
 
@@ -1230,7 +1229,6 @@ static const char *const n_pkg_repo_config_set_flags[] = {
 	"--clear-token",
 	"--kind=",
 	"--ref=",
-	"--sync-interval=",
 	"--token=",
 	"--url=",
 	NULL

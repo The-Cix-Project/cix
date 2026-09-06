@@ -11,7 +11,7 @@
 static char g_state_path[512];
 static char g_disk[64]; /* empty: no disk configured */
 static int g_enabled;
-static int g_interval_hours;
+static int g_legacy_interval_hours; /* ADR-0257 migration only */
 
 static enum backup_snapshot_state g_last_state = BACKUP_SNAPSHOT_NEVER;
 static time_t g_last_attempt_unixtime;
@@ -46,9 +46,11 @@ static int load_state(void)
 	jenabled = json_object_get(root, "enabled");
 	if (jenabled != NULL && jenabled->type == JSON_BOOL)
 		g_enabled = jenabled->u.boolean;
+	/* An older file still carries this; it is migrated into a schedule
+	 * once and then never written again (ADR-0257). */
 	jinterval = json_object_get(root, "interval_hours");
 	if (jinterval != NULL)
-		g_interval_hours = (int)json_as_number(jinterval);
+		g_legacy_interval_hours = (int)json_as_number(jinterval);
 
 	json_free(root);
 	return 0;
@@ -68,8 +70,6 @@ static enum backupconfig_error save_state(void)
 		jw_null(&w);
 	jw_key(&w, "enabled");
 	jw_bool(&w, g_enabled);
-	jw_key(&w, "interval_hours");
-	jw_int(&w, g_interval_hours);
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
@@ -83,7 +83,7 @@ int backupconfig_init(const char *state_path)
 	snprintf(g_state_path, sizeof(g_state_path), "%s", state_path);
 	g_disk[0] = '\0';
 	g_enabled = 0;
-	g_interval_hours = 0;
+	g_legacy_interval_hours = 0;
 	return load_state();
 }
 
@@ -102,20 +102,21 @@ int backupconfig_enabled(void)
 	return g_enabled;
 }
 
-int backupconfig_interval_hours(void)
+int backupconfig_legacy_interval_hours(void)
 {
-	return g_interval_hours;
+	return g_legacy_interval_hours;
 }
 
-enum backupconfig_error backupconfig_set(const char *disk_name, int enabled, int interval_hours)
+void backupconfig_clear_legacy_interval(void)
+{
+	g_legacy_interval_hours = 0;
+}
+
+enum backupconfig_error backupconfig_set(const char *disk_name, int enabled)
 {
 	char prev_disk[sizeof(g_disk)];
 	int prev_enabled = g_enabled;
-	int prev_interval = g_interval_hours;
 	enum backupconfig_error err;
-
-	if (interval_hours < 0)
-		return BACKUPCONFIG_ERR_INVALID_INTERVAL;
 
 	snprintf(prev_disk, sizeof(prev_disk), "%s", g_disk);
 	if (disk_name != NULL)
@@ -123,13 +124,11 @@ enum backupconfig_error backupconfig_set(const char *disk_name, int enabled, int
 	else
 		g_disk[0] = '\0';
 	g_enabled = enabled;
-	g_interval_hours = interval_hours;
 
 	err = save_state();
 	if (err != BACKUPCONFIG_OK) {
 		snprintf(g_disk, sizeof(g_disk), "%s", prev_disk);
 		g_enabled = prev_enabled;
-		g_interval_hours = prev_interval;
 	}
 	return err;
 }
@@ -143,8 +142,6 @@ void backupconfig_write_json(struct json_writer *w)
 		jw_null(w);
 	jw_key(w, "enabled");
 	jw_bool(w, g_enabled);
-	jw_key(w, "interval_hours");
-	jw_int(w, g_interval_hours);
 }
 
 void backupconfig_record_attempt(int success, const char *error_msg)

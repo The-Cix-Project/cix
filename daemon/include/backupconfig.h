@@ -65,8 +65,18 @@ void backupconfig_repoint(const char *new_state_path);
  * possible until one is set, regardless of `enabled`). */
 const char *backupconfig_disk(void);
 int backupconfig_enabled(void);
-/* 0: no automatic schedule (manual POST .../snapshot-now only). */
-int backupconfig_interval_hours(void);
+/*
+ * ADR-0257: the interval that used to live here is gone. WHEN a backup
+ * runs is a schedule (`GET /v1/schedules`), and this config answers
+ * only WHERE it goes and whether it is on at all. Keeping both would be
+ * two places to look when backups do not run, which is the exact thing
+ * that ADR replaced.
+ *
+ * Read once at init from an older config file, for the one-time
+ * migration that turns it into a schedule. 0 when there was none.
+ */
+int backupconfig_legacy_interval_hours(void);
+void backupconfig_clear_legacy_interval(void);
 
 /*
  * Persists all three fields together. disk_name NULL clears the
@@ -83,9 +93,9 @@ int backupconfig_interval_hours(void);
  * merged result); this function itself always takes and persists a
  * complete triple, the same shape save_state() itself needs.
  */
-enum backupconfig_error backupconfig_set(const char *disk_name, int enabled, int interval_hours);
+enum backupconfig_error backupconfig_set(const char *disk_name, int enabled);
 
-/* Writes {"disk": "sdc"|null, "enabled": bool, "interval_hours": N}. */
+/* Writes {"disk": "sdc"|null, "enabled": bool}. */
 void backupconfig_write_json(struct json_writer *w);
 
 /*

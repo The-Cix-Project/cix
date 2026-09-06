@@ -33,7 +33,7 @@ const cache = {
 	logStorageMigrate: { state: "none" },
 	rebuildableStorage: { disk: null },
 	rebuildableStorageMigrate: { state: "none" },
-	backupConfig: { disk: null, enabled: false, interval_hours: 0 },
+	backupConfig: { disk: null, enabled: false },
 	backupStatus: { state: "never" },
 	dnsRecords: [],
 	dnsServers: [],
@@ -9412,14 +9412,13 @@ async function refreshPkgRepoConfig() {
 			document.getElementById("prc-token").value = "";
 			document.getElementById("prc-token").placeholder =
 				config.auth_token_set ? "(unchanged, a token is set)" : "(unchanged, no token set)";
-			document.getElementById("prc-interval").value = config.sync_interval_seconds;
 		}
 	} catch (e) {
 		/* Best-effort -- the form just stays at whatever was last shown. */
 	}
 }
 
-for (const id of ["prc-url", "prc-kind", "prc-ref", "prc-token", "prc-clear-token", "prc-interval"]) {
+for (const id of ["prc-url", "prc-kind", "prc-ref", "prc-token", "prc-clear-token"]) {
 	document.getElementById(id).addEventListener("input", () => {
 		pkgRepoConfigDirty = true;
 	});
@@ -9435,7 +9434,6 @@ document.getElementById("prc-form").addEventListener("submit", async (event) => 
 		repo_url: document.getElementById("prc-url").value.trim(),
 		repo_kind: document.getElementById("prc-kind").value,
 		ref: document.getElementById("prc-ref").value.trim(),
-		sync_interval_seconds: parseInt(document.getElementById("prc-interval").value, 10),
 	};
 	const token = document.getElementById("prc-token").value;
 
@@ -11225,7 +11223,6 @@ async function refreshVolumeBackupConfig() {
 		}
 		select.value = cfg.disk || "";
 		document.getElementById("vbc-enabled").checked = !!cfg.enabled;
-		document.getElementById("vbc-interval").value = cfg.interval_hours;
 	} catch (e) {
 		showStatus("Failed to read the volume backup config: " + e.message, true);
 	}
@@ -11237,7 +11234,6 @@ document.getElementById("vbc-form").addEventListener("submit", async (event) => 
 		await apiRequest("PUT", CIX_API.setVolumeBackupConfig(), {
 			disk: document.getElementById("vbc-disk").value,
 			enabled: document.getElementById("vbc-enabled").checked,
-			interval_hours: parseInt(document.getElementById("vbc-interval").value, 10),
 		});
 		clearStatus();
 		await refreshVolumeBackupConfig();
@@ -12197,7 +12193,6 @@ function renderBackupConfig() {
 	select.value = cache.backupConfig.disk || prevValue;
 
 	document.getElementById("bc-enabled").checked = !!cache.backupConfig.enabled;
-	document.getElementById("bc-interval").value = cache.backupConfig.interval_hours || 0;
 
 	const s = cache.backupStatus;
 	const statusP = document.getElementById("bc-status");
@@ -12220,13 +12215,11 @@ document.getElementById("bc-form").addEventListener("submit", async (event) => {
 
 	const disk = document.getElementById("bc-disk").value;
 	const enabled = document.getElementById("bc-enabled").checked;
-	const intervalHours = parseInt(document.getElementById("bc-interval").value, 10) || 0;
 
 	try {
 		cache.backupConfig = await apiRequest("PUT", CIX_API.putBackupConfig(), {
 			disk: disk === "" ? null : disk,
 			enabled: enabled,
-			interval_hours: intervalHours,
 		});
 		clearStatus();
 		renderBackupConfig();

@@ -87,7 +87,7 @@ A box that was off at 02:00 runs the job once at startup if `catch_up` is true, 
 
 **A contract change on four endpoints, when the migration lands.** `backup-config`, `volume-backup-config` and `repo-config` each lose their `interval_*` field; the schedule lives at `/v1/schedules/<name>`. Clean cut-over with no fallback field, per this project's standing no-backward-compatibility rule. On first boot after the upgrade, an old config still carrying an interval creates the equivalent job once and drops the field — a one-time upgrade step of the kind `test_layout_upgrade` already covers, not a permanent shim.
 
-**Shipped in parts, and the first part registers exactly one action.** The scheduler, its CRUD surface and `pkg.refresh-upstreams` land first. That action has no existing timer, so nothing can double-fire while both mechanisms are alive, and it closes the first gap ADR-0255 left open: release lists that only ever refreshed when someone asked by hand. The four migrating actions arrive with the cut-over, together, so no window exists in which a job and a legacy timer both drive the same work.
+**Shipped in two parts.** The first registered exactly one action. The scheduler, its CRUD surface and `pkg.refresh-upstreams` land first. That action has no existing timer, so nothing can double-fire while both mechanisms are alive, and it closes the first gap ADR-0255 left open: release lists that only ever refreshed when someone asked by hand. The four migrating actions arrive with the cut-over, together, so no window exists in which a job and a legacy timer both drive the same work.
 
 **`schedule` is a noun here.** `GET /schedules` lists; `POST /schedules/{name}/run` runs one now. Manual invocation must never become a second way to *define* a schedule.
 

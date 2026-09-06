@@ -124,18 +124,20 @@ int main(void)
 	} else {
 		const struct json_value *jdisk = json_object_get(r.json, "disk");
 		const struct json_value *jenabled = json_object_get(r.json, "enabled");
+		/* ADR-0257: this resource no longer carries a schedule. */
 		const struct json_value *jinterval = json_object_get(r.json, "interval_hours");
 
+		if (jinterval != NULL) {
+			fprintf(stderr, "FAIL: backup-config still reports interval_hours (ADR-0257 "
+			                "moved it to /v1/schedules)\n");
+			ok = 0;
+		}
 		if (jdisk == NULL || jdisk->type != JSON_NULL) {
 			fprintf(stderr, "FAIL: fresh daemon should report disk:null\n");
 			ok = 0;
 		}
 		if (jenabled == NULL || jenabled->type != JSON_BOOL || jenabled->u.boolean) {
 			fprintf(stderr, "FAIL: fresh daemon should report enabled:false\n");
-			ok = 0;
-		}
-		if (jinterval == NULL || (int)json_as_number(jinterval) != 0) {
-			fprintf(stderr, "FAIL: fresh daemon should report interval_hours:0\n");
 			ok = 0;
 		}
 	}
@@ -185,15 +187,6 @@ int main(void)
 	 * note, mirroring daemon-config): setting one field must not touch
 	 * the others. */
 	memset(&r, 0, sizeof(r));
-	if (cix_client_request(&client, "PUT", "/v1/system/backup-config", "{\"interval_hours\":6}", &r) !=
-	            0 ||
-	    r.status != 200) {
-		fprintf(stderr, "FAIL: PUT backup-config (interval_hours only), status=%d\n", r.status);
-		ok = 0;
-	}
-	cix_response_free(&r);
-
-	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "PUT", "/v1/system/backup-config", "{\"enabled\":true}", &r) != 0 ||
 	    r.status != 200) {
 		fprintf(stderr, "FAIL: PUT backup-config (enabled only), status=%d\n", r.status);
@@ -207,28 +200,28 @@ int main(void)
 		ok = 0;
 	} else {
 		const struct json_value *jenabled = json_object_get(r.json, "enabled");
-		const struct json_value *jinterval = json_object_get(r.json, "interval_hours");
 
 		if (jenabled == NULL || jenabled->type != JSON_BOOL || !jenabled->u.boolean) {
 			fprintf(stderr, "FAIL: enabled should be true after the second partial PUT\n");
 			ok = 0;
 		}
-		if (jinterval == NULL || (int)json_as_number(jinterval) != 6) {
-			fprintf(stderr,
-			        "FAIL: interval_hours should still be 6 -- the enabled-only PUT must "
-			        "not have reset it\n");
-			ok = 0;
-		}
 	}
 	cix_response_free(&r);
 
-	/* 4. A negative interval is rejected. */
+	/*
+	 * 4. ADR-0257: the removed field is REFUSED, not ignored. A client
+	 * still sending it would otherwise believe it had set a schedule.
+	 */
 	memset(&r, 0, sizeof(r));
-	if (cix_client_request(&client, "PUT", "/v1/system/backup-config", "{\"interval_hours\":-1}", &r) !=
+	if (cix_client_request(&client, "PUT", "/v1/system/backup-config", "{\"interval_hours\":6}", &r) !=
 	            0 ||
 	    r.status != 400) {
-		fprintf(stderr, "FAIL: PUT backup-config with a negative interval expected 400, got %d\n",
+		fprintf(stderr, "FAIL: PUT backup-config with the removed interval_hours expected 400, "
+		                "got %d\n",
 		        r.status);
+		ok = 0;
+	} else if (r.body == NULL || strstr(r.body, "schedules") == NULL) {
+		fprintf(stderr, "FAIL: the refusal did not name /v1/schedules as the replacement\n");
 		ok = 0;
 	}
 	cix_response_free(&r);
