@@ -290,31 +290,31 @@ static void print_usage(FILE *out)
 	        "  routes add --dest=A.B.C.D --prefix=N [--gateway=A.B.C.D]  -- add a real\n"
 	        "               kernel route (ADR-0067 Part 3); or --default --gateway=A.B.C.D\n"
 	        "  routes rm --dest=A.B.C.D --prefix=N  -- remove one; or --default\n"
-	        "  disks  -- real host block devices, including any partitions on them\n"
+	        "  storage  -- real host block devices, including any partitions on them\n"
 	        "               (task #844); which one is the fixed OS disk vs. assignable is\n"
 	        "               flagged per entry, and a partition entry names its parent disk\n"
-	        "  disks partition-table NAME  -- destructive: writes a fresh, empty GPT\n"
+	        "  storage partition-table NAME  -- destructive: writes a fresh, empty GPT\n"
 	        "               partition table to a non-OS whole disk with no role or\n"
 	        "               partitions of its own currently in use\n"
-	        "  disks add-partition NAME --name=PART_NAME [--size-mib=N]  -- appends one\n"
+	        "  storage add-partition NAME --name=PART_NAME [--size-mib=N]  -- appends one\n"
 	        "               new partition to a disk's existing table (never touches an\n"
 	        "               existing partition); omit --size-mib for \"rest of the disk\"\n"
-	        "  disks rm-partition DISK_NAME PARTITION_NAME  -- removes one partition;\n"
+	        "  storage rm-partition DISK_NAME PARTITION_NAME  -- removes one partition;\n"
 	        "               refused (409) if it still has a role assigned (diskrole rm first)\n"
-	        "  diskrole create --disk=NAME\n"
+	        "  storage-role create --disk=NAME\n"
 	        "               --role=container-storage|backup|rebuildable-storage|log-storage|swap\n"
 	        "               -- assign a persisted role to a disk (never the OS disk)\n"
-	        "  diskrole ls / diskrole rm NAME  -- list assigned roles (with whether each\n"
+	        "  storage-role ls / diskrole rm NAME  -- list assigned roles (with whether each\n"
 	        "               disk is currently present) / remove one; refused (409) if the\n"
 	        "               disk is the active rebuildable/log-storage placement (storage migrate\n"
 	        "               away first)\n"
-	        "  disks format NAME [--fs-type=ext4|btrfs]  -- destructive: mkfs + mount an\n"
+	        "  storage format NAME [--fs-type=ext4|btrfs]  -- destructive: mkfs + mount an\n"
 	        "               already role-assigned, non-OS disk (assign a role first via\n"
 	        "               diskrole create); fs_type defaults to ext4; refused (409) if the\n"
 	        "               disk is the active storage placement\n"
-	        "  disks format-status NAME  -- state/mount_path/error of the most recent\n"
+	        "  storage format-status NAME  -- state/mount_path/error of the most recent\n"
 	        "               format job for this disk\n"
-	        "  disks unmount NAME  -- a real, synchronous umount2(2) of an already-mounted,\n"
+	        "  storage unmount NAME  -- a real, synchronous umount2(2) of an already-mounted,\n"
 	        "               non-OS disk (issue #34); data on the disk is untouched, only its\n"
 	        "               attachment to the running system is removed; refused (409) if\n"
 	        "               it's the active placement for a storage singleton/backup-config/\n"
@@ -956,7 +956,7 @@ static void fmt_disk_line(const struct json_value *v)
 
 static void fmt_disk_list(const struct json_value *v)
 {
-	const struct json_value *disks = json_object_get(v, "disks");
+	const struct json_value *disks = json_object_get(v, "storage");
 	size_t i;
 
 	if (disks == NULL || disks->type != JSON_ARRAY)
@@ -977,7 +977,7 @@ static void fmt_diskrole_line(const struct json_value *v)
 
 static void fmt_diskrole_list(const struct json_value *v)
 {
-	const struct json_value *roles = json_object_get(v, "diskroles");
+	const struct json_value *roles = json_object_get(v, "storage_roles");
 	size_t i;
 
 	if (roles == NULL || roles->type != JSON_ARRAY)
@@ -1479,7 +1479,7 @@ static int cmd_disks_ls(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, CIX_API_listDisks_METHOD, CIX_API_listDisks, NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_listStorage_METHOD, CIX_API_listStorage, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -1510,7 +1510,7 @@ static void fmt_diskformat_status(const struct json_value *v)
 
 /*
  * Multi-disk management Phase C (ROADMAP.md): format + mount an
- * already-role-assigned disk (POST /v1/diskroles first). Destructive
+ * already-role-assigned disk (POST /v1/storage-roles first). Destructive
  * and deliberately explicit -- disk_name is sent as the request body's
  * own confirm_disk_name (matching what the operator already typed once
  * in the URL path), the same double-confirmation the REST layer itself
@@ -1529,7 +1529,7 @@ static int cmd_disks_format(const struct cix_client *c, int json_mode, int argc,
 	int i;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: cixctl disks format NAME [--fs-type=ext4|btrfs]\n");
+		fprintf(stderr, "usage: cixctl storage format NAME [--fs-type=ext4|btrfs]\n");
 		return 2;
 	}
 	disk_name = argv[0];
@@ -1537,7 +1537,7 @@ static int cmd_disks_format(const struct cix_client *c, int json_mode, int argc,
 		if (strncmp(argv[i], "--fs-type=", 10) == 0)
 			fs_type = argv[i] + 10;
 	}
-	snprintf(path, sizeof(path), CIX_API_formatDisk, disk_name);
+	snprintf(path, sizeof(path), CIX_API_formatStorage, disk_name);
 
 	jw_init(&w);
 	jw_obj_open(&w);
@@ -1566,11 +1566,11 @@ static int cmd_disks_format_status(const struct cix_client *c, int json_mode, in
 	struct cix_response r;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: cixctl disks format-status NAME\n");
+		fprintf(stderr, "usage: cixctl storage format-status NAME\n");
 		return 2;
 	}
 	disk_name = argv[0];
-	snprintf(path, sizeof(path), CIX_API_getDiskFormatStatus, disk_name);
+	snprintf(path, sizeof(path), CIX_API_getStorageFormatStatus, disk_name);
 	if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -1596,11 +1596,11 @@ static int cmd_disks_unmount(const struct cix_client *c, int json_mode, int argc
 	struct cix_response r;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: cixctl disks unmount NAME\n");
+		fprintf(stderr, "usage: cixctl storage unmount NAME\n");
 		return 2;
 	}
 	disk_name = argv[0];
-	snprintf(path, sizeof(path), CIX_API_unmountDisk, disk_name);
+	snprintf(path, sizeof(path), CIX_API_unmountStorage, disk_name);
 
 	jw_init(&w);
 	jw_obj_open(&w);
@@ -1700,13 +1700,13 @@ static int cmd_disks_grow_partition(const struct cix_client *c, int json_mode, i
 		}
 	}
 	if (disk_name == NULL || part_name == NULL) {
-		fprintf(stderr, "usage: cixctl disks grow-partition DISK_NAME PARTITION_NAME "
+		fprintf(stderr, "usage: cixctl storage grow-partition DISK_NAME PARTITION_NAME "
 		                "[--size-mib=N]\n"
 		                "  Omit --size-mib to take all free space immediately after it.\n"
 		                "  The partition must be unmounted, and ext4 or unformatted.\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), CIX_API_resizeDiskPartition, disk_name, part_name);
+	snprintf(path, sizeof(path), CIX_API_resizeStoragePartition, disk_name, part_name);
 
 	jw_init(&w);
 	jw_obj_open(&w);
@@ -1730,10 +1730,10 @@ static int cmd_disks_free_space(const struct cix_client *c, int json_mode, int a
 	struct cix_response r;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: cixctl disks free-space NAME\n");
+		fprintf(stderr, "usage: cixctl storage free-space NAME\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), CIX_API_getDiskFreeSpace, argv[0]);
+	snprintf(path, sizeof(path), CIX_API_getStorageFreeSpace, argv[0]);
 	if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -1749,11 +1749,11 @@ static int cmd_disks_partition_table(const struct cix_client *c, int json_mode, 
 	struct cix_response r;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: cixctl disks partition-table NAME\n");
+		fprintf(stderr, "usage: cixctl storage partition-table NAME\n");
 		return 2;
 	}
 	disk_name = argv[0];
-	snprintf(path, sizeof(path), CIX_API_createDiskPartitionTable, disk_name);
+	snprintf(path, sizeof(path), CIX_API_createStoragePartitionTable, disk_name);
 
 	jw_init(&w);
 	jw_obj_open(&w);
@@ -1783,7 +1783,7 @@ static int cmd_disks_add_partition(const struct cix_client *c, int json_mode, in
 
 	if (argc < 2) {
 		fprintf(stderr,
-		        "usage: cixctl disks add-partition NAME --name=PART_NAME [--size-mib=N]\n"
+		        "usage: cixctl storage add-partition NAME --name=PART_NAME [--size-mib=N]\n"
 		        "       (omit --size-mib to consume all remaining space on the disk)\n");
 		return 2;
 	}
@@ -1798,7 +1798,7 @@ static int cmd_disks_add_partition(const struct cix_client *c, int json_mode, in
 		fprintf(stderr, "cixctl: disks add-partition requires --name=PART_NAME\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), CIX_API_addDiskPartition, disk_name);
+	snprintf(path, sizeof(path), CIX_API_addStoragePartition, disk_name);
 
 	jw_init(&w);
 	jw_obj_open(&w);
@@ -1826,10 +1826,10 @@ static int cmd_disks_rm_partition(const struct cix_client *c, int json_mode, int
 	struct cix_response r;
 
 	if (argc < 2) {
-		fprintf(stderr, "usage: cixctl disks rm-partition DISK_NAME PARTITION_NAME\n");
+		fprintf(stderr, "usage: cixctl storage rm-partition DISK_NAME PARTITION_NAME\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), CIX_API_deleteDiskPartition, argv[0], argv[1]);
+	snprintf(path, sizeof(path), CIX_API_deleteStoragePartition, argv[0], argv[1]);
 	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -1874,15 +1874,15 @@ static int cmd_disks(const struct cix_client *c, int json_mode, int argc, char *
 	if (strcmp(sub, "rm-partition") == 0)
 		return cmd_disks_rm_partition(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "usage: cixctl disks [ls]\n"
-	                "       cixctl disks format NAME [--fs-type=ext4|btrfs]\n"
-	                "       cixctl disks format-status NAME\n"
-	                "       cixctl disks unmount NAME\n"
-	                "       cixctl disks free-space NAME\n"
-	                "       cixctl disks partition-table NAME\n"
-	                "       cixctl disks add-partition NAME --name=PART_NAME [--size-mib=N]\n"
-	                "       cixctl disks grow-partition DISK_NAME PARTITION_NAME [--size-mib=N]\n"
-	                "       cixctl disks rm-partition DISK_NAME PARTITION_NAME\n");
+	fprintf(stderr, "usage: cixctl storage [ls]\n"
+	                "       cixctl storage format NAME [--fs-type=ext4|btrfs]\n"
+	                "       cixctl storage format-status NAME\n"
+	                "       cixctl storage unmount NAME\n"
+	                "       cixctl storage free-space NAME\n"
+	                "       cixctl storage partition-table NAME\n"
+	                "       cixctl storage add-partition NAME --name=PART_NAME [--size-mib=N]\n"
+	                "       cixctl storage grow-partition DISK_NAME PARTITION_NAME [--size-mib=N]\n"
+	                "       cixctl storage rm-partition DISK_NAME PARTITION_NAME\n");
 	return 2;
 }
 
@@ -10761,7 +10761,7 @@ static int cmd_diskrole_create(const struct cix_client *c, int json_mode, int ar
 	}
 	if (disk_name == NULL || role == NULL) {
 		fprintf(stderr,
-		        "usage: cixctl diskrole create --disk=NAME --role=container-storage|backup|state-storage|rebuildable-storage|log-storage|swap\n");
+		        "usage: cixctl storage-role create --disk=NAME --role=container-storage|backup|state-storage|rebuildable-storage|log-storage|swap\n");
 		return 2;
 	}
 
@@ -10774,7 +10774,7 @@ static int cmd_diskrole_create(const struct cix_client *c, int json_mode, int ar
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (cix_client_request(c, CIX_API_createDiskRole_METHOD, CIX_API_createDiskRole, w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_createStorageRole_METHOD, CIX_API_createStorageRole, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -10788,7 +10788,7 @@ static int cmd_diskrole_ls(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, CIX_API_listDiskRoles_METHOD, CIX_API_listDiskRoles, NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_listStorageRoles_METHOD, CIX_API_listStorageRoles, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -10804,7 +10804,7 @@ static int cmd_diskrole_rm(const struct cix_client *c, int json_mode, int argc, 
 		fprintf(stderr, "cixctl: diskrole rm requires a disk name\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), CIX_API_deleteDiskRole, argv[0]);
+	snprintf(path, sizeof(path), CIX_API_deleteStorageRole, argv[0]);
 	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -10817,9 +10817,9 @@ static int cmd_diskrole(const struct cix_client *c, int json_mode, int argc, cha
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: cixctl diskrole create --disk=NAME --role=container-storage|backup|state-storage|rebuildable-storage|log-storage|swap\n"
-		                "       cixctl diskrole ls\n"
-		                "       cixctl diskrole rm NAME\n");
+		fprintf(stderr, "usage: cixctl storage-role create --disk=NAME --role=container-storage|backup|state-storage|rebuildable-storage|log-storage|swap\n"
+		                "       cixctl storage-role ls\n"
+		                "       cixctl storage-role rm NAME\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -15900,12 +15900,20 @@ static int dispatch_command(const struct cix_client *client, int json_mode, cons
 		return cmd_iso(client, json_mode, argc, argv);
 	if (strcmp(cmd, "routes") == 0)
 		return cmd_routes(client, json_mode, argc, argv);
-	if (strcmp(cmd, "disks") == 0)
+	/*
+	 * One `storage` command. Disks/partitions and storage PLACEMENT
+	 * (where the log store and rebuildable data live) were separate
+	 * top-level commands until the disks->storage rename collided them.
+	 * Their subcommand names do not overlap, so they share one command
+	 * rather than gaining an artificial `storage placement ...` level.
+	 */
+	if (strcmp(cmd, "storage") == 0) {
+		if (argc > 0 && (strcmp(argv[0], "logs") == 0 || strcmp(argv[0], "rebuildable") == 0))
+			return cmd_storage(client, json_mode, argc, argv);
 		return cmd_disks(client, json_mode, argc, argv);
-	if (strcmp(cmd, "diskrole") == 0)
+	}
+	if (strcmp(cmd, "storage-role") == 0)
 		return cmd_diskrole(client, json_mode, argc, argv);
-	if (strcmp(cmd, "storage") == 0)
-		return cmd_storage(client, json_mode, argc, argv);
 	if (strcmp(cmd, "logs") == 0)
 		return cmd_logs_top(client, json_mode, argc, argv);
 	if (strcmp(cmd, "dhcp") == 0)

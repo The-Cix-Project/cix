@@ -49,7 +49,7 @@ void handle_disk_list(int fd)
 
 	jw_init(&w);
 	jw_obj_open(&w);
-	jw_key(&w, "disks");
+	jw_key(&w, "storage");
 	disk_write_json_list(&w, CONTAINERS_DIR);
 	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
@@ -207,7 +207,7 @@ void handle_diskrole_list(int fd)
 
 	jw_init(&w);
 	jw_obj_open(&w);
-	jw_key(&w, "diskroles");
+	jw_key(&w, "storage_roles");
 	diskrole_write_json_list(&w, CONTAINERS_DIR);
 	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
@@ -390,7 +390,7 @@ void respond_diskformat_error(int fd, enum diskformat_error err)
 		break;
 	case DISKFORMAT_ERR_NO_ROLE:
 		respond_error(fd, 400, "Bad Request",
-		              "this disk has no assigned role -- assign one via POST /v1/diskroles first");
+		              "this disk has no assigned role -- assign one via POST /v1/storage-roles first");
 		break;
 	case DISKFORMAT_ERR_BUSY:
 		respond_error(fd, 409, "Conflict", "a format job is already running");
@@ -610,7 +610,7 @@ static void respond_diskpart_error(int fd, enum diskpart_error err)
 	case DISKPART_ERR_HAS_ROLE:
 		respond_error(fd, 409, "Conflict",
 		              "this disk or partition already has a role assigned -- remove it first "
-		              "(DELETE /v1/diskroles/{name})");
+		              "(DELETE /v1/storage-roles/{name})");
 		break;
 	case DISKPART_ERR_MOUNTED:
 		respond_error(fd, 409, "Conflict", "this disk or partition is currently mounted");
@@ -631,7 +631,7 @@ static void respond_diskpart_error(int fd, enum diskpart_error err)
 		respond_error(fd, 409, "Conflict",
 		              "there is not enough free space immediately after this partition -- free "
 		              "space elsewhere on the disk cannot extend it (see GET "
-		              "/v1/disks/{name}/free-space)");
+		              "/v1/storage/{name}/free-space)");
 		break;
 	case DISKPART_ERR_FS_UNSUPPORTED:
 		respond_error(fd, 400, "Bad Request",
@@ -707,7 +707,7 @@ static void respond_diskpart_error(int fd, enum diskpart_error err)
 }
 
 /*
- * GET /v1/disks/{name}/free-space (issue #95) -- how much room is
+ * GET /v1/storage/{name}/free-space (issue #95) -- how much room is
  * actually left in this disk's partition table, from sfdisk rather than
  * from subtracting the partition sizes a client can already see. That
  * subtraction is wrong in three ways it cannot detect: partition
@@ -880,7 +880,7 @@ void handle_disk_partitions_post(int fd, const char *disk_name, const char *body
 }
 
 /*
- * POST /v1/disks/{disk}/partitions/{partition}/resize (issue #94).
+ * POST /v1/storage/{disk}/partitions/{partition}/resize (issue #94).
  *
  * Grow only, and both halves of the job: the table entry, then the
  * filesystem inside it. Growing only the entry would leave the extra

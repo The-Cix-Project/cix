@@ -304,46 +304,20 @@ static const struct cli_node n_routes_subs[] = {
 	{ NULL, NULL, NULL },
 };
 
-static const char *const n_disks_add_partition_flags[] = {
+static const char *const n_storage_add_partition_flags[] = {
 	"--name=",
 	"--size-mib=",
 	NULL
 };
 
-static const char *const n_disks_format_flags[] = {
+static const char *const n_storage_format_flags[] = {
 	"--fs-type=",
 	NULL
 };
 
-static const char *const n_disks_grow_partition_flags[] = {
+static const char *const n_storage_grow_partition_flags[] = {
 	"--size-mib=",
 	NULL
-};
-
-static const struct cli_node n_disks_subs[] = {
-	{ "add-partition", n_disks_add_partition_flags, NULL },
-	{ "format", n_disks_format_flags, NULL },
-	{ "format-status", NULL, NULL },
-	{ "free-space", NULL, NULL },
-	{ "grow-partition", n_disks_grow_partition_flags, NULL },
-	{ "ls", NULL, NULL },
-	{ "partition-table", NULL, NULL },
-	{ "rm-partition", NULL, NULL },
-	{ "unmount", NULL, NULL },
-	{ NULL, NULL, NULL },
-};
-
-static const char *const n_diskrole_create_flags[] = {
-	"--disk=",
-	"--role=",
-	NULL
-};
-
-static const struct cli_node n_diskrole_subs[] = {
-	{ "create", n_diskrole_create_flags, NULL },
-	{ "ls", NULL, NULL },
-	{ "rm", NULL, NULL },
-	{ NULL, NULL, NULL },
 };
 
 static const char *const n_storage_logs_migrate_flags[] = {
@@ -370,9 +344,38 @@ static const struct cli_node n_storage_rebuildable_subs[] = {
 	{ NULL, NULL, NULL },
 };
 
+/*
+ * One `storage` command. The disk/partition subcommands and the
+ * placement ones (where the log store and rebuildable data live) were
+ * two top-level commands until the disks->storage rename collided
+ * them; their subcommand names do not overlap, so they are one list
+ * rather than an artificial `storage placement ...` level.
+ */
 static const struct cli_node n_storage_subs[] = {
+	{ "add-partition", n_storage_add_partition_flags, NULL },
+	{ "format", n_storage_format_flags, NULL },
+	{ "format-status", NULL, NULL },
+	{ "free-space", NULL, NULL },
+	{ "grow-partition", n_storage_grow_partition_flags, NULL },
+	{ "ls", NULL, NULL },
+	{ "partition-table", NULL, NULL },
+	{ "rm-partition", NULL, NULL },
 	{ "logs", NULL, n_storage_logs_subs },
 	{ "rebuildable", NULL, n_storage_rebuildable_subs },
+	{ "unmount", NULL, NULL },
+	{ NULL, NULL, NULL },
+};
+
+static const char *const n_storage_role_create_flags[] = {
+	"--disk=",
+	"--role=",
+	NULL
+};
+
+static const struct cli_node n_storage_role_subs[] = {
+	{ "create", n_storage_role_create_flags, NULL },
+	{ "ls", NULL, NULL },
+	{ "rm", NULL, NULL },
 	{ NULL, NULL, NULL },
 };
 
@@ -1335,9 +1338,8 @@ static const struct cli_node CLI_TREE[] = {
 	{ "hostauth-sessions", NULL, n_hostauth_sessions_subs },
 	{ "iso", NULL, n_iso_subs },
 	{ "routes", NULL, n_routes_subs },
-	{ "disks", NULL, n_disks_subs },
-	{ "diskrole", NULL, n_diskrole_subs },
 	{ "storage", NULL, n_storage_subs },
+	{ "storage-role", NULL, n_storage_role_subs },
 	{ "logs", NULL, n_logs_subs },
 	{ "dhcp", n_dhcp_flags, n_dhcp_subs },
 	{ "ksm", n_ksm_flags, n_ksm_subs },

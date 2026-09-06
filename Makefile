@@ -411,7 +411,7 @@ $(BUILD)/test_disk_quota: test/test_disk_quota.c test/test_image_fixture.c $(CLI
 $(BUILD)/test_partlabel: test/test_partlabel.c daemon/src/partlabel.c | $(BUILD)
 	$(CC) $(CFLAGS) -Idaemon/include $^ -o $@
 
-$(BUILD)/test_diskpart: test/test_diskpart.c test/test_image_fixture.c daemon/src/disk.c daemon/src/diskpart.c daemon/src/diskrole.c daemon/src/persist.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_diskpart: test/test_diskpart.c test/test_image_fixture.c daemon/src/disk.c daemon/src/diskpart.c daemon/src/diskrole.c daemon/src/partlabel.c daemon/src/persist.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
 $(BUILD)/test_sysctl: test/test_sysctl.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)

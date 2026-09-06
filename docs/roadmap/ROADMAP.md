@@ -2445,6 +2445,20 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 221 (done): the resource is Storage, not disks (ADR-0258)
+
+Twelve endpoints renamed (`/v1/disks` -> `/v1/storage`, `/v1/diskroles` -> `/v1/storage-roles`), with their operationIds, schemas, response keys, CLI commands and dashboard labels. A clean cut with no aliases.
+
+The two vocabularies had already collided without anyone noticing: `cixctl storage` existed for storage placement while `cixctl disks` existed for block devices. They merge into one command rather than gaining an artificial `placement` level, since their subcommands do not overlap.
+
+`is_os_disk` and `parent_disk` deliberately keep the word: they name a physical disk, and the alternative spellings collide with **Devices** (a different subject here) or describe a category where a device is meant.
+
+Historical records -- ADRs, CHANGELOG, this file's earlier parts -- were deliberately NOT rewritten; only operator-facing docs moved.
+
+Found and fixed on the way: `test_diskpart` could not link at all, because its Makefile rule never listed `daemon/src/partlabel.c` while `disk.c` calls into it. Invisible because the release build compiles named targets plus `selftest`, never `all`.
+
+Verified: `cixd` and `cixctl` clean under TCC `-Wall -Werror`; all 31 sandbox-runnable selftests pass; every storage-touching daemon test compiles.
+
 ## Part 220 (done): the interval fields are gone -- schedules own timing (ADR-0257 part 2)
 
 The cut-over Part 219 deferred. `backup-config`, `volume-backup-config` and `repo-config` lose their `interval_*` fields; the two periodic timers behind them are deleted rather than left dormant; `system.backup`, `volume.backup` and `pkg.sync` join `pkg.refresh-upstreams` in the action registry.

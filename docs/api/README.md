@@ -1940,7 +1940,7 @@ POST /v1/devicemaps
 ## Disks (multi-disk management)
 
 ```
-GET /v1/disks
+GET /v1/storage
 ```
 
 Real host block devices, live-enumerated from `/sys/class/block` on every call, the same "real hardware, never persisted" convention `GET /devices` already established. Since task #844, every partition on a disk is also listed as its own ordinary entry (`is_partition`/`parent_disk`) alongside the whole disk itself — a partition is independently assignable everywhere a whole disk name is accepted (`POST /diskroles`, `POST /disks/{name}/format`, and see "Partition-level disk management" below). `model`/`removable` are always empty/`false` for a partition entry — neither sysfs attribute exists per-partition, only on the parent whole disk. `is_os_disk` flags the one disk holding this platform's own fixed ESP/root-a/root-b/config/containers layout, and (propagated) every one of its own partitions — never a candidate for a role of its own or for formatting/repartitioning; every other disk or partition is available for a role assignment and, once role-assigned, formatting.
@@ -1952,7 +1952,7 @@ Real host block devices, live-enumerated from `/sys/class/block` on every call, 
 ### Persisted disk roles
 
 ```
-POST /v1/diskroles
+POST /v1/storage-roles
 {"disk_name": "sdb", "role": "backup"}
 ```
 
@@ -1965,18 +1965,18 @@ Real and creatable even for a `disk_name` that isn't currently present (`present
 ### Format + mount
 
 ```
-POST /v1/disks/sdb/format
+POST /v1/storage/sdb/format
 {"confirm_disk_name": "sdb", "fs_type": "btrfs"}
 ```
 
-Multi-disk management Phase C: destructively formats and mounts a disk that already has an assigned role (`POST /diskroles` — a disk with no role is `400`, `"assign one via POST /v1/diskroles first"`). Deliberately a **separate, explicit** action from role assignment — assigning a role never has a destructive side effect of its own — confirmed with the operator during design rather than assumed. `confirm_disk_name` in the request body must match `disk_name` in the URL exactly (`400` otherwise): a deliberate double-confirmation before overwriting every byte of existing content on the disk. Always rejected for the OS disk, same as role assignment.
+Multi-disk management Phase C: destructively formats and mounts a disk that already has an assigned role (`POST /diskroles` — a disk with no role is `400`, `"assign one via POST /v1/storage-roles first"`). Deliberately a **separate, explicit** action from role assignment — assigning a role never has a destructive side effect of its own — confirmed with the operator during design rather than assumed. `confirm_disk_name` in the request body must match `disk_name` in the URL exactly (`400` otherwise): a deliberate double-confirmation before overwriting every byte of existing content on the disk. Always rejected for the OS disk, same as role assignment.
 
 `fs_type` is optional (ADR-0104), `"ext4"` (the default, omit the field entirely for the original behavior) or `"btrfs"` — `400` for any other value. `"btrfs"` requires a real `mkfs.btrfs` to actually be staged on this box (`btrfs-progs.recipe`, via a real `cix-hosttools` image); if it isn't, the job still starts but fails fast with `"mkfs.btrfs failed"` once the child process's own exec attempt hits `ENOENT` — the same failure shape any other `mkfs` failure already has, not a special case.
 
 Async, like every other potentially-slow host operation this daemon runs (`pkg install`, ISO assembly, `pkg bootstrap --toolchain-url=`) — `POST` returns `202` immediately with the job's initial status; poll `GET` on the same path for completion:
 
 ```
-GET /v1/disks/sdb/format
+GET /v1/storage/sdb/format
 {"disk_name": "sdb", "state": "ready", "fs_type": "btrfs", "mount_path": "/mnt/cix/sdb"}
 ```
 
@@ -1985,7 +1985,7 @@ GET /v1/disks/sdb/format
 ### Unmount (issue #34)
 
 ```
-POST /v1/disks/sdb/unmount
+POST /v1/storage/sdb/unmount
 {"confirm_disk_name": "sdb"}
 ```
 
@@ -1998,14 +1998,14 @@ Found live: a disk with its role already removed (`DELETE /diskroles/{name}`) ha
 ### Partition-level disk management (task #844, ADR-0158)
 
 ```
-POST /v1/disks/sdb/partition-table
+POST /v1/storage/sdb/partition-table
 {"confirm_disk_name": "sdb"}
 ```
 
 Writes a fresh, empty GPT partition table to a whole disk — destructive (wipes any existing table and everything on it), same double-confirmation as `POST .../format`. Rejected (`400`) if `disk_name` is itself a partition or the OS disk, `409` if it already has a role assigned directly to it or is currently mounted. Synchronous — unlike `mkfs`, writing a partition table is metadata-only and near-instantaneous, so there's no async job/poll shape here.
 
 ```
-POST /v1/disks/sdb/partitions
+POST /v1/storage/sdb/partitions
 {"name": "data", "size_mib": 51200}
 ```
 
@@ -2016,7 +2016,7 @@ Appends one new partition to a disk's existing table via `sfdisk --append` — n
 ```
 
 ```
-DELETE /v1/disks/sdb/partitions/sdb1
+DELETE /v1/storage/sdb/partitions/sdb1
 ```
 
 Removes one partition — every other partition on the disk is untouched. `404` if `partition_name` doesn't currently exist or doesn't actually belong to `disk_name`; `400` if it isn't actually a partition at all (a whole disk name given where a partition was expected); `409` if it's part of the OS disk's own layout, still has a role assigned (`DELETE /diskroles/{name}` first, same no-silent-data-loss convention role removal already has elsewhere), or is currently mounted.
@@ -2117,7 +2117,7 @@ Both storage layouts migrate. An overlay container's `upper`/`work` are copied a
 
 The one cost worth knowing before moving a large container: **extent sharing does not cross filesystems.** On its original disk a snapshot container shares almost every extent with its image and costs only its own changes; on the target it occupies its full size, because there is no subvolume with common lineage to share against. Nothing is lost and nothing is silently degraded — but a container that "takes 80 MB" on one disk really does take its whole size on the next.
 
-`DELETE /v1/diskroles/{name}` and `POST /v1/disks/{name}/format` also now refuse (`409`) against a `container-storage`-role disk that one or more real containers currently have their own storage on — the exact same class of protection the four daemon-wide placements already had, extended to cover a gap that predated this ADR entirely (the original `POST /containers` `disk` field, `ADR-0102`, never had this safety check until migrate-storage gave the whole project a reason to add it). Migrate the container(s) away first via this endpoint.
+`DELETE /v1/storage-roles/{name}` and `POST /v1/storage/{name}/format` also now refuse (`409`) against a `container-storage`-role disk that one or more real containers currently have their own storage on — the exact same class of protection the four daemon-wide placements already had, extended to cover a gap that predated this ADR entirely (the original `POST /containers` `disk` field, `ADR-0102`, never had this safety check until migrate-storage gave the whole project a reason to add it). Migrate the container(s) away first via this endpoint.
 
 ## Per-container config files + sysctls + env
 
@@ -3098,7 +3098,7 @@ GET  /v1/system/backup-config/status
 
 Writes **exactly the same bundle `GET /system/backup` itself produces** — container definitions, networks, DNS records, installed-package state, every on-disk recipe version, site config, and (unchanged from `GET /system/backup`'s own long-standing, deliberate design) **never PKI keys/certs** — to `<mount_path>/backup.json` on the configured disk. A single, always-current snapshot, not a timestamped history: this mechanism exists to guarantee a real, fresh disaster-recovery copy always exists somewhere off the OS disk, not to be a backup-retention system in its own right. Synchronous (a plain JSON write, not a network fetch or external process), so `POST .../snapshot-now`'s own response *is* the resulting status object — no separate poll needed, though `GET .../status` reports the identical thing for checking after the fact or after an automatic run. `state: "never"` if no attempt (manual or automatic) has ever run this daemon lifetime.
 
-`DELETE /v1/diskroles/{name}` and `POST /v1/disks/{name}/format` both refuse (`409`) against the currently configured backup-config disk, the same safety net every storage-placement kind already has — reconfigure `backup-config` (a different disk, or `disk: null`) first.
+`DELETE /v1/storage-roles/{name}` and `POST /v1/storage/{name}/format` both refuse (`409`) against the currently configured backup-config disk, the same safety net every storage-placement kind already has — reconfigure `backup-config` (a different disk, or `disk: null`) first.
 
 ## Current scope boundaries (v1, deliberate — see ADR-0007)
 

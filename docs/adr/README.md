@@ -262,3 +262,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0255](0255-a-recipe-is-a-rule-not-a-version.md) | A recipe is a rule, not a version | Accepted |
 | [0256](0256-the-pipeline-is-the-model.md) | The pipeline is the model | Accepted |
 | [0257](0257-one-scheduler-structured-schedules.md) | One scheduler, and a schedule is structured, not a string | Accepted |
+| [0258](0258-storage-not-disks.md) | The resource is Storage; a disk is a device in it | Accepted |

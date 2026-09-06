@@ -166,7 +166,7 @@ static int disk_is_os_layout(const char *disk_name, const char *os_containers_di
  * This used to call disk_enumerate(), which opens every block device it
  * finds and READS ITS SUPERBLOCK to identify the filesystem
  * (disk_probe_fs_type()). stallwatch (#100) caught the consequence:
- * GET /v1/diskroles blocked in blk_execute_rq -- the kernel waiting on
+ * GET /v1/storage-roles blocked in blk_execute_rq -- the kernel waiting on
  * a block-device command -- for six seconds, on the single-threaded
  * event loop, while the disk was busy with a build.
  *

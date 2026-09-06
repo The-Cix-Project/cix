@@ -25,7 +25,7 @@
  * for the exact commands run and their output.
  *
  * What IS verified here, for real:
- *   1. GET /v1/disks reports is_partition/parent_disk correctly for
+ *   1. GET /v1/storage reports is_partition/parent_disk correctly for
  *      this sandbox's own real, pre-existing partitions -- proving
  *      disk_enumerate()'s new second pass and parent-lookup are
  *      correct against real kernel sysfs state, not just a unit test
@@ -680,7 +680,7 @@ int main(void)
 	}
 
 	/*
-	 * 1. GET /v1/disks: real, live kernel state -- find at least one
+	 * 1. GET /v1/storage: real, live kernel state -- find at least one
 	 * real partition and confirm its is_partition/parent_disk/model/
 	 * removable fields, and that its parent appears in the same list
 	 * as a whole-disk (is_partition == false) entry of the same name.
@@ -688,9 +688,9 @@ int main(void)
 	 * one exists, for the wrong-parent check below.
 	 */
 	memset(&r, 0, sizeof(r));
-	if (cix_client_request(&client, "GET", "/v1/disks", NULL, &r) != 0 || r.status != 200 ||
+	if (cix_client_request(&client, "GET", "/v1/storage", NULL, &r) != 0 || r.status != 200 ||
 	    r.json == NULL) {
-		fprintf(stderr, "FAIL: GET /v1/disks failed (status %d)\n", r.status);
+		fprintf(stderr, "FAIL: GET /v1/storage failed (status %d)\n", r.status);
 		ok = 0;
 	}
 	if (ok) {
@@ -698,7 +698,7 @@ int main(void)
 		size_t i, j;
 
 		if (disks == NULL || disks->type != JSON_ARRAY) {
-			fprintf(stderr, "FAIL: GET /v1/disks: no disks array\n");
+			fprintf(stderr, "FAIL: GET /v1/storage: no disks array\n");
 			ok = 0;
 		} else {
 			for (i = 0; i < disks->u.array.count; i++) {
@@ -775,7 +775,7 @@ int main(void)
 	/* 2. create-table/add-partition on a nonexistent disk -> 404. */
 	if (ok) {
 		memset(&r, 0, sizeof(r));
-		if (cix_client_request(&client, "POST", "/v1/disks/nosuchdisk12345/partition-table",
+		if (cix_client_request(&client, "POST", "/v1/storage/nosuchdisk12345/partition-table",
 		                       "{\"confirm_disk_name\":\"nosuchdisk12345\"}", &r) != 0 ||
 		    r.status != 404) {
 			fprintf(stderr, "FAIL: partition-table on nonexistent disk: expected 404, got %d\n",
@@ -786,7 +786,7 @@ int main(void)
 	}
 	if (ok) {
 		memset(&r, 0, sizeof(r));
-		if (cix_client_request(&client, "POST", "/v1/disks/nosuchdisk12345/partitions",
+		if (cix_client_request(&client, "POST", "/v1/storage/nosuchdisk12345/partitions",
 		                       "{\"name\":\"data\"}", &r) != 0 ||
 		    r.status != 404) {
 			fprintf(stderr, "FAIL: add-partition on nonexistent disk: expected 404, got %d\n",
@@ -800,7 +800,7 @@ int main(void)
 	if (ok) {
 		char path[128], body[128];
 
-		snprintf(path, sizeof(path), "/v1/disks/%s/partition-table", part_name);
+		snprintf(path, sizeof(path), "/v1/storage/%s/partition-table", part_name);
 		snprintf(body, sizeof(body), "{\"confirm_disk_name\":\"%s\"}", part_name);
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", path, body, &r) != 0 || r.status != 400) {
@@ -816,7 +816,7 @@ int main(void)
 	if (ok) {
 		char path[128];
 
-		snprintf(path, sizeof(path), "/v1/disks/%s/partition-table", part_parent);
+		snprintf(path, sizeof(path), "/v1/storage/%s/partition-table", part_parent);
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", path, "{\"confirm_disk_name\":\"not-the-right-name\"}",
 		                       &r) != 0 ||
@@ -832,7 +832,7 @@ int main(void)
 	if (ok) {
 		char path[128];
 
-		snprintf(path, sizeof(path), "/v1/disks/%s/partitions", part_parent);
+		snprintf(path, sizeof(path), "/v1/storage/%s/partitions", part_parent);
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", path, "{}", &r) != 0 || r.status != 400) {
 			fprintf(stderr, "FAIL: add-partition with no name: expected 400, got %d\n", r.status);
@@ -845,7 +845,7 @@ int main(void)
 	if (ok) {
 		char path[160];
 
-		snprintf(path, sizeof(path), "/v1/disks/%s/partitions/nosuchpart999", part_parent);
+		snprintf(path, sizeof(path), "/v1/storage/%s/partitions/nosuchpart999", part_parent);
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "DELETE", path, NULL, &r) != 0 || r.status != 404) {
 			fprintf(stderr, "FAIL: delete nonexistent partition: expected 404, got %d\n", r.status);
@@ -858,7 +858,7 @@ int main(void)
 	if (ok) {
 		char path[160];
 
-		snprintf(path, sizeof(path), "/v1/disks/%s/partitions/%s", part_parent, part_parent);
+		snprintf(path, sizeof(path), "/v1/storage/%s/partitions/%s", part_parent, part_parent);
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "DELETE", path, NULL, &r) != 0 || r.status != 400) {
 			fprintf(stderr, "FAIL: delete a whole disk as a partition: expected 400, got %d\n",
@@ -872,7 +872,7 @@ int main(void)
 	if (ok && other_part_name[0] != '\0') {
 		char path[160];
 
-		snprintf(path, sizeof(path), "/v1/disks/%s/partitions/%s", other_part_parent, part_name);
+		snprintf(path, sizeof(path), "/v1/storage/%s/partitions/%s", other_part_parent, part_name);
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "DELETE", path, NULL, &r) != 0 || r.status != 404) {
 			fprintf(stderr, "FAIL: delete %s via wrong parent %s: expected 404, got %d\n",
@@ -885,7 +885,7 @@ int main(void)
 	/* 9. invalid disk-name charset -> 400, distinct from not-found. */
 	if (ok) {
 		memset(&r, 0, sizeof(r));
-		if (cix_client_request(&client, "POST", "/v1/disks/bad$name/partition-table",
+		if (cix_client_request(&client, "POST", "/v1/storage/bad$name/partition-table",
 		                       "{\"confirm_disk_name\":\"bad$name\"}", &r) != 0 ||
 		    r.status != 400) {
 			fprintf(stderr, "FAIL: partition-table with invalid disk name: expected 400, got %d\n",
@@ -906,7 +906,7 @@ int main(void)
 
 		snprintf(body, sizeof(body), "{\"disk_name\":\"%s\",\"role\":\"backup\"}", part_parent);
 		memset(&r, 0, sizeof(r));
-		if (cix_client_request(&client, "POST", "/v1/diskroles", body, &r) != 0 || r.status != 201) {
+		if (cix_client_request(&client, "POST", "/v1/storage-roles", body, &r) != 0 || r.status != 201) {
 			fprintf(stderr, "FAIL: assigning backup role to %s: expected 201, got %d\n",
 			        part_parent, r.status);
 			ok = 0;
@@ -916,7 +916,7 @@ int main(void)
 	if (ok) {
 		char path[128], body[128];
 
-		snprintf(path, sizeof(path), "/v1/disks/%s/partition-table", part_parent);
+		snprintf(path, sizeof(path), "/v1/storage/%s/partition-table", part_parent);
 		snprintf(body, sizeof(body), "{\"confirm_disk_name\":\"%s\"}", part_parent);
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", path, body, &r) != 0 || r.status != 409) {
@@ -930,7 +930,7 @@ int main(void)
 	if (ok) {
 		char path[128];
 
-		snprintf(path, sizeof(path), "/v1/disks/%s/partitions", part_parent);
+		snprintf(path, sizeof(path), "/v1/storage/%s/partitions", part_parent);
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", path, "{\"name\":\"data\"}", &r) != 0 ||
 		    r.status != 409) {
@@ -943,7 +943,7 @@ int main(void)
 	{
 		char path[128];
 
-		snprintf(path, sizeof(path), "/v1/diskroles/%s", part_parent);
+		snprintf(path, sizeof(path), "/v1/storage-roles/%s", part_parent);
 		memset(&r, 0, sizeof(r));
 		cix_client_request(&client, "DELETE", path, NULL, &r);
 		cix_response_free(&r);
@@ -960,7 +960,7 @@ int main(void)
 
 		snprintf(body, sizeof(body), "{\"disk_name\":\"%s\",\"role\":\"backup\"}", part_name);
 		memset(&r, 0, sizeof(r));
-		if (cix_client_request(&client, "POST", "/v1/diskroles", body, &r) != 0 || r.status != 201) {
+		if (cix_client_request(&client, "POST", "/v1/storage-roles", body, &r) != 0 || r.status != 201) {
 			fprintf(stderr, "FAIL: assigning backup role to partition %s: expected 201, got %d\n",
 			        part_name, r.status);
 			ok = 0;
@@ -970,7 +970,7 @@ int main(void)
 	if (ok) {
 		char path[160];
 
-		snprintf(path, sizeof(path), "/v1/disks/%s/partitions/%s", part_parent, part_name);
+		snprintf(path, sizeof(path), "/v1/storage/%s/partitions/%s", part_parent, part_name);
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "DELETE", path, NULL, &r) != 0 || r.status != 409) {
 			fprintf(stderr,
@@ -983,7 +983,7 @@ int main(void)
 	{
 		char path[128];
 
-		snprintf(path, sizeof(path), "/v1/diskroles/%s", part_name);
+		snprintf(path, sizeof(path), "/v1/storage-roles/%s", part_name);
 		memset(&r, 0, sizeof(r));
 		cix_client_request(&client, "DELETE", path, NULL, &r);
 		cix_response_free(&r);

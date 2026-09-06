@@ -106,7 +106,7 @@ int diskrole_resolve_recorded(const char *recorded_name, const char *recorded_uu
  * DISKROLE_ERR_INVALID_ROLE) to disk_name. disk_name is validated
  * as a plain simple name (same charset every other simple resource
  * name uses) but is NOT required to currently resolve to a real disk
- * (GET /v1/diskroles reports whether it currently does, the same
+ * (GET /v1/storage-roles reports whether it currently does, the same
  * tolerant "present" convention devicemap.c's own mappings already
  * use for hardware that might be temporarily absent) -- EXCEPT that a
  * disk_name which DOES currently resolve to the real OS disk

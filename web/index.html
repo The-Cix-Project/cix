@@ -68,8 +68,8 @@
 		</div>
 
 		<div class="menu-dropdown">
-			<button type="button" class="menu-dropdown-toggle" data-menu="disks">Disks</button>
-			<ul class="menu-dropdown-menu" data-menu="disks" hidden>
+			<button type="button" class="menu-dropdown-toggle" data-menu="storage">Storage</button>
+			<ul class="menu-dropdown-menu" data-menu="storage" hidden>
 				<li><button type="button" data-modal="volume-form" data-title="Create volume">New Volume</button></li>
 				<li><button type="button" data-modal="diskrole-form" data-title="Assign disk role">Assign Disk Role</button></li>
 			</ul>
@@ -297,7 +297,7 @@
 				</form>
 				<p class="hint">Where this container's own overlay storage lives (ADR-0142) -- the target
 					disk must already carry the container-storage role and be currently mounted. Unlike
-					the daemon-wide storage placements on the <a href="#disks">Disks</a> page, this
+					the daemon-wide storage placements on the <a href="#storage">Storage</a> page, this
 					briefly stops and automatically restarts the container for the final cutover once the
 					bulk copy finishes; only available for a container whose restart policy is not
 					"no" (a persisted definition to restart from is required).</p>
@@ -704,7 +704,7 @@
 		</section>
 
 		<!-- Disks (multi-disk management: ADR-0071/ADR-0102/ADR-0104) -->
-		<section class="view" id="view-disks" hidden>
+		<section class="view" id="view-storage" hidden>
 			<div class="view-list">
 				<h2>Disks</h2>
 				<p class="hint">Real host block devices, discovered live from sysfs every poll. Partitions are
@@ -712,7 +712,7 @@
 					a disk to manage its partition table, or to give the whole disk a role and format it
 					directly with no partitions at all. The OS disk (this platform's own fixed
 					ESP/root-a/root-b/config/containers layout) offers no destructive action anywhere.</p>
-				<table id="disks">
+				<table id="storage">
 					<thead>
 						<tr>
 							<th>Name</th>
@@ -741,7 +741,7 @@
 		     tab is the only part a partition does not get, because only a
 		     whole disk has a partition table.
 		-->
-		<section class="view" id="view-disk-detail" hidden>
+		<section class="view" id="view-storage-detail" hidden>
 			<h2 id="dd-title"></h2>
 			<p class="hint" id="dd-subtitle"></p>
 			<div class="tab-bar">
