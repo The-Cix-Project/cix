@@ -1114,8 +1114,8 @@ static char CONTAINERS_DEVICE[64]; /* cix-containers -- resolved by label, #305 
 #define IMAGES_PREFIX "/v1/images/"
 #define IMAGE_RECIPES_PREFIX "/v1/images/recipes/"
 #define DEVICEMAPS_PREFIX "/v1/devicemaps/"
-#define DISKROLES_PREFIX "/v1/diskroles/"
-#define DISKS_PREFIX "/v1/disks/"
+#define STORAGE_ROLES_PREFIX "/v1/storage-roles/"
+#define STORAGE_PREFIX "/v1/storage/"
 
 enum conn_kind {
 	CONN_LISTENER,
@@ -15433,7 +15433,7 @@ static void respond_storagemigrate_error(int fd, enum storage_kind kind, enum st
 		break;
 	case STORAGEMIGRATE_ERR_WRONG_ROLE:
 		snprintf(msg, sizeof(msg),
-		         "this disk does not carry the %s role -- assign it via POST /v1/diskroles first",
+		         "this disk does not carry the %s role -- assign it via POST /v1/storage-roles first",
 		         storage_kind_label(kind));
 		respond_error(fd, 400, "Bad Request", msg);
 		break;
@@ -20187,8 +20187,8 @@ static void op_listDevices(const struct api_ctx *ctx)
 	handle_device_list(ctx->fd);
 }
 
-/* GET /v1/disks */
-static void op_listDisks(const struct api_ctx *ctx)
+/* GET /v1/storage */
+static void op_listStorage(const struct api_ctx *ctx)
 {
 	handle_disk_list(ctx->fd);
 }
@@ -20205,14 +20205,14 @@ static void op_createDeviceMap(const struct api_ctx *ctx)
 	handle_devicemap_create(ctx->fd, ctx->req->body, ctx->req->body_len);
 }
 
-/* GET /v1/diskroles */
-static void op_listDiskRoles(const struct api_ctx *ctx)
+/* GET /v1/storage-roles */
+static void op_listStorageRoles(const struct api_ctx *ctx)
 {
 	handle_diskrole_list(ctx->fd);
 }
 
-/* POST /v1/diskroles */
-static void op_createDiskRole(const struct api_ctx *ctx)
+/* POST /v1/storage-roles */
+static void op_createStorageRole(const struct api_ctx *ctx)
 {
 	handle_diskrole_create(ctx->fd, ctx->req->body, ctx->req->body_len);
 }
@@ -21418,48 +21418,48 @@ static void op_deleteDeviceMap(const struct api_ctx *ctx)
 	handle_devicemap_delete(ctx->fd, ctx->p[0]);
 }
 
-static void op_deleteDiskRole(const struct api_ctx *ctx)
+static void op_deleteStorageRole(const struct api_ctx *ctx)
 {
 	handle_diskrole_delete(ctx->fd, ctx->p[0]);
 }
 
-static void op_getDiskFormatStatus(const struct api_ctx *ctx)
+static void op_getStorageFormatStatus(const struct api_ctx *ctx)
 {
 	handle_disk_format_get(ctx->fd, ctx->p[0]);
 }
 
-static void op_formatDisk(const struct api_ctx *ctx)
+static void op_formatStorage(const struct api_ctx *ctx)
 {
 	handle_disk_format_post(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);
 }
 
-static void op_unmountDisk(const struct api_ctx *ctx)
+static void op_unmountStorage(const struct api_ctx *ctx)
 {
 	handle_disk_unmount_post(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);
 }
 
-static void op_getDiskFreeSpace(const struct api_ctx *ctx)
+static void op_getStorageFreeSpace(const struct api_ctx *ctx)
 {
 	handle_disk_free_space(ctx->fd, ctx->p[0]);
 }
 
-static void op_createDiskPartitionTable(const struct api_ctx *ctx)
+static void op_createStoragePartitionTable(const struct api_ctx *ctx)
 {
 	handle_disk_partition_table_post(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);
 }
 
-static void op_addDiskPartition(const struct api_ctx *ctx)
+static void op_addStoragePartition(const struct api_ctx *ctx)
 {
 	handle_disk_partitions_post(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);
 }
 
-static void op_resizeDiskPartition(const struct api_ctx *ctx)
+static void op_resizeStoragePartition(const struct api_ctx *ctx)
 {
 	handle_disk_partition_resize(ctx->fd, ctx->p[0], ctx->p[1], ctx->req->body,
 	                              ctx->req->body_len);
 }
 
-static void op_deleteDiskPartition(const struct api_ctx *ctx)
+static void op_deleteStoragePartition(const struct api_ctx *ctx)
 {
 	handle_disk_partition_delete(ctx->fd, ctx->p[0], ctx->p[1]);
 }

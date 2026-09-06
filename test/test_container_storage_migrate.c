@@ -266,7 +266,7 @@ int main(void)
 	 * below is non-destructive, the same precedent test_storage_
 	 * placement.c already established. */
 	memset(&r, 0, sizeof(r));
-	if (cix_client_request(&client, "GET", "/v1/disks", NULL, &r) == 0 && r.status == 200) {
+	if (cix_client_request(&client, "GET", "/v1/storage", NULL, &r) == 0 && r.status == 200) {
 		const struct json_value *disks = json_object_get(r.json, "disks");
 		size_t i;
 
@@ -292,8 +292,8 @@ int main(void)
 		 * assigned". */
 		snprintf(body, sizeof(body), "{\"disk_name\":\"%s\",\"role\":\"log-storage\"}", non_os_disk);
 		memset(&r, 0, sizeof(r));
-		if (cix_client_request(&client, "POST", "/v1/diskroles", body, &r) != 0 || r.status != 201) {
-			fprintf(stderr, "FAIL: POST /v1/diskroles (log-storage), status=%d\n", r.status);
+		if (cix_client_request(&client, "POST", "/v1/storage-roles", body, &r) != 0 || r.status != 201) {
+			fprintf(stderr, "FAIL: POST /v1/storage-roles (log-storage), status=%d\n", r.status);
 			ok = 0;
 		}
 		cix_response_free(&r);
@@ -312,7 +312,7 @@ int main(void)
 		{
 			char path[96];
 
-			snprintf(path, sizeof(path), "/v1/diskroles/%s", non_os_disk);
+			snprintf(path, sizeof(path), "/v1/storage-roles/%s", non_os_disk);
 			memset(&r, 0, sizeof(r));
 			cix_client_request(&client, "DELETE", path, NULL, &r);
 			cix_response_free(&r);
@@ -324,8 +324,8 @@ int main(void)
 		snprintf(body, sizeof(body), "{\"disk_name\":\"%s\",\"role\":\"container-storage\"}",
 		         non_os_disk);
 		memset(&r, 0, sizeof(r));
-		if (cix_client_request(&client, "POST", "/v1/diskroles", body, &r) != 0 || r.status != 201) {
-			fprintf(stderr, "FAIL: POST /v1/diskroles (container-storage), status=%d\n", r.status);
+		if (cix_client_request(&client, "POST", "/v1/storage-roles", body, &r) != 0 || r.status != 201) {
+			fprintf(stderr, "FAIL: POST /v1/storage-roles (container-storage), status=%d\n", r.status);
 			ok = 0;
 		}
 		cix_response_free(&r);
@@ -362,7 +362,7 @@ int main(void)
 		{
 			char path[96];
 
-			snprintf(path, sizeof(path), "/v1/diskroles/%s", non_os_disk);
+			snprintf(path, sizeof(path), "/v1/storage-roles/%s", non_os_disk);
 			memset(&r, 0, sizeof(r));
 			if (cix_client_request(&client, "DELETE", path, NULL, &r) != 0 || r.status != 204) {
 				fprintf(stderr,

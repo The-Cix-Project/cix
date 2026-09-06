@@ -157,10 +157,10 @@ The point of the exercise is usually a specific property, so check that one
 directly rather than checking that the box is up:
 
 ```sh
-curl http://<host>/v1/disks          # cix-config and cix-containers fs_type
+curl http://<host>/v1/storage          # cix-config and cix-containers fs_type
 curl http://<host>/v1/system/boot    # build_version, slot
 curl http://<host>/v1/containers     # the fleet came back
 ```
 
-`GET /v1/disks` reads the superblock, so it answers what the filesystem
+`GET /v1/storage` reads the superblock, so it answers what the filesystem
 actually is rather than what was intended.

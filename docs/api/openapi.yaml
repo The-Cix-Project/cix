@@ -4497,7 +4497,7 @@ paths:
                     items:
                       $ref: "#/components/schemas/Device"
 
-  /disks:
+  /storage:
     get:
       summary: List real host block devices, including their partitions, for multi-disk management
       description: >
@@ -4518,7 +4518,7 @@ paths:
         `disk` field, ADR-0102) -- moving an *existing* container's storage
         after creation is a separate, not-yet-built follow-up
         (ADR-0142, see docs/roadmap/ROADMAP.md).
-      operationId: listDisks
+      operationId: listStorage
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -4529,12 +4529,12 @@ paths:
                 type: object
                 required: [disks]
                 properties:
-                  disks:
+                  storage:
                     type: array
                     items:
-                      $ref: "#/components/schemas/Disk"
+                      $ref: "#/components/schemas/StorageDevice"
 
-  /disks/{disk_name}/format:
+  /storage/{name}/format:
     get:
       summary: Status of the most recent (or currently running) format+mount job for this disk
       description: >
@@ -4545,10 +4545,10 @@ paths:
         specific disk_name this daemon lifetime -- including when a
         job ran/is running for a *different* disk, since a status check
         should never show another disk's unrelated job.
-      operationId: getDiskFormatStatus
+      operationId: getStorageFormatStatus
       x-cix-expose: [cli, web]
       parameters:
-        - name: disk_name
+        - name: name
           in: path
           required: true
           schema:
@@ -4559,7 +4559,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/DiskFormatStatus"
+                $ref: "#/components/schemas/StorageFormatStatus"
     post:
       summary: Destructively formats (mkfs.ext4 or mkfs.btrfs) and mounts a disk that already has an assigned role
       description: >
@@ -4586,10 +4586,10 @@ paths:
         data directory by default; a container-storage-role disk can
         also be selected explicitly per container via POST /containers'
         own `disk` field (ADR-0102, Phase D, already built).
-      operationId: formatDisk
+      operationId: formatStorage
       x-cix-expose: [cli, web]
       parameters:
-        - name: disk_name
+        - name: name
           in: path
           required: true
           schema:
@@ -4599,14 +4599,14 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/DiskFormatRequest"
+              $ref: "#/components/schemas/StorageFormatRequest"
       responses:
         "202":
           description: Format job started
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/DiskFormatStatus"
+                $ref: "#/components/schemas/StorageFormatStatus"
         "400":
           description: >
             confirm_disk_name missing/mismatched, invalid disk name,
@@ -4639,7 +4639,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
-  /disks/{disk_name}/unmount:
+  /storage/{name}/unmount:
     post:
       summary: Detaches an already-mounted, non-OS disk from the running system, without touching its content
       description: >
@@ -4660,10 +4660,10 @@ paths:
         double-confirmation shape as POST .../format: the request
         body's `confirm_disk_name` must match disk_name in the URL
         exactly.
-      operationId: unmountDisk
+      operationId: unmountStorage
       x-cix-expose: [cli, web]
       parameters:
-        - name: disk_name
+        - name: name
           in: path
           required: true
           schema:
@@ -4684,7 +4684,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Disk"
+                $ref: "#/components/schemas/StorageDevice"
         "400":
           description: >
             confirm_disk_name missing/mismatched, invalid disk name,
@@ -4720,7 +4720,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
-  /disks/{disk_name}/free-space:
+  /storage/{name}/free-space:
     get:
       summary: How much room is left in this disk's partition table (issue #95)
       description: >
@@ -4732,10 +4732,10 @@ paths:
         subprocess and GET /disks runs on every poll for every disk.
         A partition has no answer to give (free space is a property of a
         table) and is refused.
-      operationId: getDiskFreeSpace
+      operationId: getStorageFreeSpace
       x-cix-expose: [cli, web]
       parameters:
-        - name: disk_name
+        - name: name
           in: path
           required: true
           schema:
@@ -4801,7 +4801,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
-  /disks/{disk_name}/partition-table:
+  /storage/{name}/partition-table:
     post:
       summary: Destructively writes a fresh, empty GPT partition table to a whole disk (task #844)
       description: >
@@ -4813,10 +4813,10 @@ paths:
         mounted. Synchronous -- partition-table creation is metadata-only
         and near-instantaneous, unlike POST .../format's mkfs, so this
         has no async job/poll shape.
-      operationId: createDiskPartitionTable
+      operationId: createStoragePartitionTable
       x-cix-expose: [cli, web]
       parameters:
-        - name: disk_name
+        - name: name
           in: path
           required: true
           schema:
@@ -4826,14 +4826,14 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/DiskPartitionTableRequest"
+              $ref: "#/components/schemas/StoragePartitionTableRequest"
       responses:
         "200":
           description: Table created; the disk's own current entry (now with no partitions)
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Disk"
+                $ref: "#/components/schemas/StorageDevice"
         "400":
           description: >
             confirm_disk_name missing/mismatched, invalid disk name, disk
@@ -4861,7 +4861,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
-  /disks/{disk_name}/partitions:
+  /storage/{name}/partitions:
     post:
       summary: Appends one new partition to a disk's existing partition table (task #844)
       description: >
@@ -4876,10 +4876,10 @@ paths:
         partitions -- refusing on that basis is what made an operator's
         deliberately-reserved free space unusable. Synchronous, same
         reasoning as partition-table creation above.
-      operationId: addDiskPartition
+      operationId: addStoragePartition
       x-cix-expose: [cli, web]
       parameters:
-        - name: disk_name
+        - name: name
           in: path
           required: true
           schema:
@@ -4889,14 +4889,14 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/DiskAddPartitionRequest"
+              $ref: "#/components/schemas/StorageAddPartitionRequest"
       responses:
         "201":
           description: Partition added; every partition currently on this disk
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/DiskPartitionsResponse"
+                $ref: "#/components/schemas/StoragePartitionsResponse"
         "400":
           description: >
             name missing/invalid, invalid disk name, or disk is itself
@@ -4925,7 +4925,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
-  /disks/{disk_name}/partitions/{partition_name}/resize:
+  /storage/{name}/partitions/{partition_name}/resize:
     post:
       summary: Grow a partition, and the filesystem inside it (issue #94)
       description: >
@@ -4949,10 +4949,10 @@ paths:
         bound and report success. Only free space IMMEDIATELY AFTER the
         partition can be used -- free space elsewhere on the disk cannot
         extend it (see GET /disks/{name}/free-space).
-      operationId: resizeDiskPartition
+      operationId: resizeStoragePartition
       x-cix-expose: [cli, web]
       parameters:
-        - name: disk_name
+        - name: name
           in: path
           required: true
           schema:
@@ -4982,7 +4982,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/DiskPartitionsResponse"
+                $ref: "#/components/schemas/StoragePartitionsResponse"
         "400":
           description: >
             Invalid body or names, this is a whole disk rather than a
@@ -5018,7 +5018,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
-  /disks/{disk_name}/partitions/{partition_name}:
+  /storage/{name}/partitions/{partition_name}:
     delete:
       summary: Removes one partition from a disk's table (task #844)
       description: >
@@ -5027,10 +5027,10 @@ paths:
         partition, doesn't belong to disk_name, is part of the OS disk,
         still has a role assigned (remove the role first, POST
         /diskroles), or is currently mounted.
-      operationId: deleteDiskPartition
+      operationId: deleteStoragePartition
       x-cix-expose: [cli, web]
       parameters:
-        - name: disk_name
+        - name: name
           in: path
           required: true
           schema:
@@ -5167,7 +5167,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
-  /diskroles:
+  /storage-roles:
     get:
       summary: List persisted disk role assignments -- multi-disk management Phase B (ROADMAP.md)
       description: >
@@ -5178,7 +5178,7 @@ paths:
         entry is still resolved fresh against currently-present disks
         on every call (`present`), never cached -- only the binding
         itself (disk_name -> role) persists, not a hardware snapshot.
-      operationId: listDiskRoles
+      operationId: listStorageRoles
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -5189,10 +5189,10 @@ paths:
                 type: object
                 required: [diskroles]
                 properties:
-                  diskroles:
+                  storage_roles:
                     type: array
                     items:
-                      $ref: "#/components/schemas/DiskRole"
+                      $ref: "#/components/schemas/StorageRole"
     post:
       summary: Assigns a role to a disk
       description: >
@@ -5203,21 +5203,21 @@ paths:
         for the one disk currently holding this platform's own fixed
         OS-disk layout (`is_os_disk` on GET /disks) -- it is never a
         role-assignment candidate.
-      operationId: createDiskRole
+      operationId: createStorageRole
       x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/DiskRoleCreateRequest"
+              $ref: "#/components/schemas/StorageRoleCreateRequest"
       responses:
         "201":
           description: Role assigned
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/DiskRole"
+                $ref: "#/components/schemas/StorageRole"
         "400":
           description: Invalid disk_name, invalid role, or disk_name is the real OS disk
           content:
@@ -5237,13 +5237,13 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
-  /diskroles/{disk_name}:
+  /storage-roles/{name}:
     delete:
       summary: Removes a disk's role assignment
-      operationId: deleteDiskRole
+      operationId: deleteStorageRole
       x-cix-expose: [cli, web]
       parameters:
-        - name: disk_name
+        - name: name
           in: path
           required: true
           schema:
@@ -14558,7 +14558,7 @@ components:
                 type: string
                 description: 2 hex digits (bInterfaceProtocol).
 
-    Disk:
+    StorageDevice:
       type: object
       required: [name, dev_path, model, size_bytes, removable, is_os_disk, mounted, mount_path,
                  reads_completed, writes_completed, sectors_read, sectors_written, io_time_ms,
@@ -14710,7 +14710,7 @@ components:
           type: string
           description: This partition's own whole-disk name (a Disk.name elsewhere in the same list). Empty when is_partition is false.
 
-    DiskRole:
+    StorageRole:
       type: object
       required: [disk_name, role, present]
       properties:
@@ -14748,7 +14748,7 @@ components:
           type: boolean
           description: Whether disk_name currently resolves to a real disk (GET /disks) -- re-derived fresh on every call, never cached.
 
-    DiskRoleCreateRequest:
+    StorageRoleCreateRequest:
       type: object
       required: [disk_name, role]
       properties:
@@ -14758,7 +14758,7 @@ components:
           type: string
           enum: [container-storage, backup, rebuildable-storage, log-storage, swap]
 
-    DiskFormatRequest:
+    StorageFormatRequest:
       type: object
       required: [confirm_disk_name]
       properties:
@@ -14786,7 +14786,7 @@ components:
             child process's own exec attempt hits ENOENT, the same failure
             shape any other mkfs failure already has.
 
-    DiskFormatStatus:
+    StorageFormatStatus:
       type: object
       required: [state]
       properties:
@@ -14810,7 +14810,7 @@ components:
             failed" from "mkfs.<fs_type> succeeded but mount(2) failed" from
             an abnormal job process exit.
 
-    DiskPartitionTableRequest:
+    StoragePartitionTableRequest:
       type: object
       required: [confirm_disk_name]
       properties:
@@ -14822,7 +14822,7 @@ components:
             requires. Writing a fresh, empty GPT table wipes any
             existing table and everything on the disk.
 
-    DiskAddPartitionRequest:
+    StorageAddPartitionRequest:
       type: object
       required: [name]
       properties:
@@ -14840,7 +14840,7 @@ components:
             all remaining space on the disk" -- must be the last
             partition added to the disk if so.
 
-    DiskPartitionsResponse:
+    StoragePartitionsResponse:
       type: object
       required: [disk_name, partitions]
       properties:
@@ -14849,7 +14849,7 @@ components:
         partitions:
           type: array
           items:
-            $ref: "#/components/schemas/Disk"
+            $ref: "#/components/schemas/StorageDevice"
           description: Every partition currently on disk_name, after the add.
 
     Ksm:

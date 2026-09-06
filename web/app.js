@@ -21,11 +21,11 @@ const cache = {
 	images: [],
 	devices: [],
 	deviceMaps: [],
-	disks: [],
+	storage: [],
 	/* Cached so the Storage tree can hang each volume under whichever
 	 * device actually holds it, without every tree render refetching. */
 	volumes: [],
-	diskRoles: [],
+	storageRoles: [],
 	diskFormatStatus: {},
 	stateStorage: { disk: null },
 	stateStorageMigrate: { state: "none" },
@@ -1405,7 +1405,7 @@ const CATEGORY_VIEWS = {
 	devices: "view-devices",
 	kmod: "view-kmod",
 	sysctl: "view-sysctl",
-	disks: "view-disks",
+	storage: "view-storage",
 	"dns-records": "view-dns-records",
 	"dns-servers": "view-dns-records",
 	"dns-forwarders": "view-dns-records",
@@ -1466,7 +1466,7 @@ const CATEGORY_VIEWS = {
 
 const DETAIL_VIEWS = {
 	containers: "view-container-detail",
-	disks: "view-disk-detail",
+	storage: "view-storage-detail",
 	volumes: "view-volume-detail",
 	networks: "view-network-detail",
 	images: "view-image-detail",
@@ -1592,7 +1592,7 @@ function renderCurrentView() {
 			renderNetworkDetail(route.name);
 		else if (netPortsName !== null)
 			stopNetPortsPolling();
-		else if (route.category === "disks" && route.name !== null)
+		else if (route.category === "storage" && route.name !== null)
 			renderDiskDetail(route.name);
 		else if (route.category === "routes")
 			renderRoutesList();
@@ -1640,7 +1640,7 @@ function renderCurrentView() {
 			renderImageDetail(route.name);
 		else if (route.category === "devices")
 			renderDevices();
-		else if (route.category === "disks")
+		else if (route.category === "storage")
 			renderDisks();
 		else if (route.category === "storage-placement")
 			renderAllStoragePlacements();
@@ -1808,7 +1808,7 @@ const TREE_ICONS = {
 		'<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h11l-3-3M20 17H9l3 3"/><path d="m15 4 3 3-3 3M9 14l-3 3 3 3"/></svg>',
 	stats:
 		'<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20V7"/></svg>',
-	disks:
+	storage:
 		'<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/><path d="M12 3v3M21 12h-3M12 21v-3M3 12h3"/></svg>',
 	services:
 		'<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="5" cy="12" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="19" cy="18" r="2"/><path d="M7 12h5a4 4 0 0 0 4-4V6M12 12a4 4 0 0 1 4 4v2"/></svg>',
@@ -2024,7 +2024,7 @@ function deviceHoldingVolume(v) {
 
 	if (!v.host_path)
 		return null;
-	for (const d of cache.disks) {
+	for (const d of cache.storage) {
 		if (!d.mounted || !d.mount_path)
 			continue;
 		const base = d.mount_path === "/" ? "/" : d.mount_path + "/";
@@ -2060,7 +2060,7 @@ function orphanVolumes() {
 		.map((v) => ({
 			label: v.name,
 			hash: "volumes/" + encodeURIComponent(v.name),
-			icon: "disks",
+			icon: "storage",
 			iconColor: "tree-icon-idle",
 		}));
 }
@@ -2075,15 +2075,15 @@ function diskTreeChildren(diskName) {
 			children.push({
 				label: v.name,
 				hash: "volumes/" + encodeURIComponent(v.name),
-				icon: "disks",
+				icon: "storage",
 				iconColor: "tree-icon-ok",
 			});
 	}
 	for (const p of partitionsOf(diskName)) {
 		children.push({
 			label: p.name,
-			hash: "disks/" + encodeURIComponent(p.name),
-			icon: "disks",
+			hash: "storage/" + encodeURIComponent(p.name),
+			icon: "storage",
 			iconColor: p.mounted ? "tree-icon-ok" : "tree-icon-idle",
 			children: (cache.volumes || [])
 				.filter((v) => {
@@ -2094,7 +2094,7 @@ function diskTreeChildren(diskName) {
 				.map((v) => ({
 					label: v.name,
 					hash: "volumes/" + encodeURIComponent(v.name),
-					icon: "disks",
+					icon: "storage",
 					iconColor: "tree-icon-ok",
 				})),
 		});
@@ -2199,17 +2199,17 @@ function renderTree() {
 			 * the running kernel, which is the host changing itself.
 			 */
 			label: "Hardware",
-			hash: "disks",
+			hash: "storage",
 			icon: "devices",
 			children: [
 				{
 					label: "Disks",
-					hash: "disks",
-					icon: "disks",
+					hash: "storage",
+					icon: "storage",
 					children: orphanVolumes().concat(wholeDisks().map((d) => ({
 						label: d.name,
-						hash: "disks/" + encodeURIComponent(d.name),
-						icon: "disks",
+						hash: "storage/" + encodeURIComponent(d.name),
+						icon: "storage",
 						iconColor: d.is_os_disk
 							? "tree-icon-idle"
 							: d.mounted || d.has_mounted_partition
@@ -5469,10 +5469,10 @@ async function removeDeviceMap(name) {
 /* ---------- Disks (multi-disk management: ADR-0071/ADR-0102/ADR-0104) ---------- */
 
 async function refreshDisks() {
-	const data = await apiRequest("GET", CIX_API.listDisks());
+	const data = await apiRequest("GET", CIX_API.listStorage());
 
-	cache.disks = data.disks;
-	if (parseHash().category === "disks")
+	cache.storage = data.storage;
+	if (parseHash().category === "storage")
 		renderDisks();
 	/* Keeps the "Disks > Assign Disk Role" modal's own disk select current
 	 * even when opened from the header dropdown rather than a specific
@@ -5483,16 +5483,16 @@ async function refreshDisks() {
 }
 
 async function refreshDiskRoles() {
-	const data = await apiRequest("GET", CIX_API.listDiskRoles());
+	const data = await apiRequest("GET", CIX_API.listStorageRoles());
 
-	cache.diskRoles = data.diskroles;
-	if (parseHash().category === "disks")
+	cache.storageRoles = data.storage_roles;
+	if (parseHash().category === "storage")
 		renderDisks();
 	populateDiskRoleSelect();
 }
 
-function diskRoleFor(diskName) {
-	return cache.diskRoles.find((r) => r.disk_name === diskName) || null;
+function storageRoleFor(diskName) {
+	return cache.storageRoles.find((r) => r.disk_name === diskName) || null;
 }
 
 /*
@@ -5505,20 +5505,20 @@ function diskRoleFor(diskName) {
  * keep this bounded regardless of how many disks exist.
  */
 async function refreshDiskFormatStatuses() {
-	if (parseHash().category !== "disks")
+	if (parseHash().category !== "storage")
 		return;
 
-	const candidates = cache.disks.filter((d) => !d.protected && diskRoleFor(d.name) !== null);
+	const candidates = cache.storage.filter((d) => !d.protected && storageRoleFor(d.name) !== null);
 
 	for (const d of candidates) {
 		try {
-			cache.diskFormatStatus[d.name] = await apiRequest("GET", CIX_API.getDiskFormatStatus(d.name));
+			cache.diskFormatStatus[d.name] = await apiRequest("GET", CIX_API.getStorageFormatStatus(d.name));
 		} catch (e) {
 			/* Transient -- next poll tick tries again; the row just keeps
 			 * showing whatever status it last had. */
 		}
 	}
-	if (parseHash().category === "disks")
+	if (parseHash().category === "storage")
 		renderDisks();
 }
 
@@ -5554,21 +5554,21 @@ async function refreshStoragePlacement(kind) {
 	const k = STORAGE_KINDS[kind];
 
 	cache[k.cacheKey] = await apiRequest("GET", k.showPath());
-	if (parseHash().category === "disks")
+	if (parseHash().category === "storage")
 		renderStoragePlacement(kind);
 }
 
 async function refreshStoragePlacementMigrate(kind) {
 	const k = STORAGE_KINDS[kind];
 
-	if (parseHash().category !== "disks")
+	if (parseHash().category !== "storage")
 		return;
 	try {
 		cache[k.statusCacheKey] = await apiRequest("GET", k.migrateStatusPath());
 	} catch (e) {
 		/* Transient -- next poll tick tries again. */
 	}
-	if (parseHash().category === "disks")
+	if (parseHash().category === "storage")
 		renderStoragePlacement(kind);
 }
 
@@ -5589,8 +5589,8 @@ function renderStoragePlacement(kind) {
 		opt.textContent = "(default OS-disk placement)";
 		select.appendChild(opt);
 	}
-	for (const d of cache.disks) {
-		const role = diskRoleFor(d.name);
+	for (const d of cache.storage) {
+		const role = storageRoleFor(d.name);
 
 		if (d.protected || role === null || role.role !== k.role)
 			continue;
@@ -5647,8 +5647,8 @@ for (const kind of Object.keys(STORAGE_KINDS)) {
  * same shape as STORAGE_KINDS above (current placement text, migrate
  * form populated from container-storage-role disks, inline migration
  * status), but keyed by whichever container's detail view is
- * currently open rather than a fixed daemon-wide slot, since cache.disks/
- * diskRoleFor() are already kept fresh by the global poll loop
+ * currently open rather than a fixed daemon-wide slot, since cache.storage/
+ * storageRoleFor() are already kept fresh by the global poll loop
  * regardless of which view is active.
  */
 async function refreshContainerStorageMigrate(name) {
@@ -5682,8 +5682,8 @@ function renderContainerStorage(name) {
 		opt.textContent = "(default OS-disk placement)";
 		select.appendChild(opt);
 	}
-	for (const d of cache.disks) {
-		const role = diskRoleFor(d.name);
+	for (const d of cache.storage) {
+		const role = storageRoleFor(d.name);
 
 		if (d.protected || role === null || role.role !== "container-storage")
 			continue;
@@ -5737,11 +5737,11 @@ document.getElementById("cd-storage-migrate-form").addEventListener("submit", as
  * on.
  */
 function wholeDisks() {
-	return cache.disks.filter((d) => !d.is_partition);
+	return cache.storage.filter((d) => !d.is_partition);
 }
 
 function partitionsOf(diskName) {
-	return cache.disks.filter((d) => d.is_partition && d.parent_disk === diskName);
+	return cache.storage.filter((d) => d.is_partition && d.parent_disk === diskName);
 }
 
 function renderDisks() {
@@ -5769,12 +5769,12 @@ function renderDisks() {
  * stray click away in a list. */
 function diskListRow(d) {
 	const row = document.createElement("tr");
-	const role = diskRoleFor(d.name);
+	const role = storageRoleFor(d.name);
 	const parts = partitionsOf(d.name);
 	const nameCell = document.createElement("td");
 	const link = document.createElement("a");
 
-	link.href = "#disks/" + encodeURIComponent(d.name);
+	link.href = "#storage/" + encodeURIComponent(d.name);
 	link.textContent = d.name;
 	nameCell.appendChild(link);
 	if (parts.length > 0) {
@@ -5901,7 +5901,7 @@ function diskRow(d) {
 	ioCell.textContent = "r=" + d.reads_completed + " w=" + d.writes_completed + " busy=" + d.io_time_ms + "ms";
 	row.appendChild(ioCell);
 
-	const role = diskRoleFor(d.name);
+	const role = storageRoleFor(d.name);
 	const roleCell = document.createElement("td");
 
 	roleCell.textContent = role ? role.role : d.part_label || "-";
@@ -5980,7 +5980,7 @@ let currentDiskDetailName = null;
  * whole disk has a partition table.
  */
 function renderDiskDetail(name) {
-	const d = cache.disks.find((x) => x.name === name);
+	const d = cache.storage.find((x) => x.name === name);
 	const title = document.getElementById("dd-title");
 	const subtitle = document.getElementById("dd-subtitle");
 	const fields = document.getElementById("dd-fields");
@@ -5993,7 +5993,7 @@ function renderDiskDetail(name) {
 		return;
 	}
 
-	const role = diskRoleFor(d.name);
+	const role = storageRoleFor(d.name);
 	const parts = d.is_partition ? [] : partitionsOf(d.name);
 
 	title.textContent = d.name;
@@ -6059,7 +6059,7 @@ function renderDiskDetail(name) {
 /* Switches away from a tab that has just been hidden, so a partition
  * never lands on the Partitions tab it does not have. */
 function selectDiskTabIfActive(hiddenTab, fallbackTab) {
-	const view = document.getElementById("view-disk-detail");
+	const view = document.getElementById("view-storage-detail");
 	const active = view.querySelector(".tab-bar .tab-button.active");
 
 	if (active && active.dataset.tab === hiddenTab)
@@ -6067,7 +6067,7 @@ function selectDiskTabIfActive(hiddenTab, fallbackTab) {
 }
 
 function selectDiskTab(tabName) {
-	const view = document.getElementById("view-disk-detail");
+	const view = document.getElementById("view-storage-detail");
 
 	for (const btn of view.querySelectorAll(".tab-bar .tab-button"))
 		btn.classList.toggle("active", btn.dataset.tab === tabName);
@@ -6471,10 +6471,10 @@ function renderDiskPartitions(d, parts) {
 	}
 	for (const p of parts) {
 		const row = document.createElement("tr");
-		const role = diskRoleFor(p.name);
+		const role = storageRoleFor(p.name);
 		const nameCell = document.createElement("td");
 
-		nameCell.appendChild(treeLink("#disks/" + encodeURIComponent(p.name), p.name, ""));
+		nameCell.appendChild(treeLink("#storage/" + encodeURIComponent(p.name), p.name, ""));
 		row.appendChild(nameCell);
 		for (const text of [
 			formatBytes(p.size_bytes),
@@ -6511,7 +6511,7 @@ async function growPartition(p) {
 	let room = null;
 
 	try {
-		const fs = await apiRequest("GET", CIX_API.getDiskFreeSpace(p.parent_disk));
+		const fs = await apiRequest("GET", CIX_API.getStorageFreeSpace(p.parent_disk));
 		const endSector = p.start_sector + p.size_bytes / 512;
 		const after = (fs.extents || []).find((e) => e.start_sector === endSector);
 
@@ -6550,7 +6550,7 @@ async function growPartition(p) {
 		return;
 	}
 	try {
-		await apiRequest("POST", CIX_API.resizeDiskPartition(p.parent_disk, p.name),
+		await apiRequest("POST", CIX_API.resizeStoragePartition(p.parent_disk, p.name),
 			body
 		);
 		clearStatus();
@@ -6566,12 +6566,12 @@ async function deletePartition(diskName, partitionName) {
 	if (!confirm('Delete partition "' + partitionName + '"? Everything on it is destroyed and this cannot be undone.'))
 		return;
 	try {
-		await apiRequest("DELETE", CIX_API.deleteDiskPartition(diskName, partitionName));
+		await apiRequest("DELETE", CIX_API.deleteStoragePartition(diskName, partitionName));
 		clearStatus();
 		await refreshDisks();
 		/* The deleted partition's own page no longer exists, so go back
 		 * to the disk that held it rather than rendering "not found". */
-		location.hash = "#disks/" + encodeURIComponent(diskName);
+		location.hash = "#storage/" + encodeURIComponent(diskName);
 		renderTree();
 	} catch (e) {
 		showStatus("Failed to delete partition: " + e.message, true);
@@ -6580,7 +6580,7 @@ async function deletePartition(diskName, partitionName) {
 
 async function unmountDisk(name) {
 	try {
-		await apiRequest("POST", CIX_API.unmountDisk(name), {
+		await apiRequest("POST", CIX_API.unmountStorage(name), {
 			confirm_disk_name: name,
 		});
 		clearStatus();
@@ -6616,7 +6616,7 @@ async function refreshDiskFreeSpace(d) {
 	if (d.is_partition)
 		return;
 	try {
-		const fs = await apiRequest("GET", CIX_API.getDiskFreeSpace(d.name));
+		const fs = await apiRequest("GET", CIX_API.getStorageFreeSpace(d.name));
 
 		diskFreeSpace[d.name] = fs;
 		if (!fs.has_partition_table) {
@@ -6661,7 +6661,7 @@ document.getElementById("dd-write-table").addEventListener("click", async () => 
 	)
 		return;
 	try {
-		await apiRequest("POST", CIX_API.createDiskPartitionTable(name), {
+		await apiRequest("POST", CIX_API.createStoragePartitionTable(name), {
 			confirm_disk_name: name,
 		});
 		clearStatus();
@@ -6700,7 +6700,7 @@ document.getElementById("dd-add-partition-form").addEventListener("submit", asyn
 		}
 	}
 	try {
-		await apiRequest("POST", CIX_API.addDiskPartition(name), body);
+		await apiRequest("POST", CIX_API.addStoragePartition(name), body);
 		clearStatus();
 		document.getElementById("dd-add-partition-form").reset();
 		await refreshDisks();
@@ -6715,8 +6715,8 @@ function populateDiskRoleSelect() {
 	const select = document.getElementById("drf-disk-name");
 
 	select.textContent = "";
-	for (const d of cache.disks) {
-		if (d.protected || diskRoleFor(d.name) !== null)
+	for (const d of cache.storage) {
+		if (d.protected || storageRoleFor(d.name) !== null)
 			continue;
 		const opt = document.createElement("option");
 
@@ -6735,7 +6735,7 @@ document.getElementById("diskrole-form").addEventListener("submit", async (event
 	if (diskName === "")
 		return;
 	try {
-		await apiRequest("POST", CIX_API.createDiskRole(), { disk_name: diskName, role: role });
+		await apiRequest("POST", CIX_API.createStorageRole(), { disk_name: diskName, role: role });
 		clearStatus();
 		document.getElementById("diskrole-form").reset();
 		closeModal();
@@ -6747,7 +6747,7 @@ document.getElementById("diskrole-form").addEventListener("submit", async (event
 
 async function removeDiskRole(diskName) {
 	try {
-		await apiRequest("DELETE", CIX_API.deleteDiskRole(diskName));
+		await apiRequest("DELETE", CIX_API.deleteStorageRole(diskName));
 		clearStatus();
 		await refreshDiskRoles();
 	} catch (e) {
@@ -6798,7 +6798,7 @@ async function formatDisk(diskName, fsType) {
 	if (!confirm("Format " + diskName + " as " + fsType + "? This destroys every byte of existing content on the disk. This cannot be undone."))
 		return;
 	try {
-		cache.diskFormatStatus[diskName] = await apiRequest("POST", CIX_API.formatDisk(diskName), {
+		cache.diskFormatStatus[diskName] = await apiRequest("POST", CIX_API.formatStorage(diskName), {
 			confirm_disk_name: diskName,
 			fs_type: fsType,
 		});
@@ -11210,8 +11210,8 @@ async function refreshVolumeBackupConfig() {
 		select.appendChild(none);
 		/* Only disks carrying the backup role: offering any other would
 		 * be offering a choice the daemon is going to refuse. */
-		for (const d of cache.disks) {
-			const role = diskRoleFor(d.name);
+		for (const d of cache.storage) {
+			const role = storageRoleFor(d.name);
 
 			if (!role || role.role !== "backup")
 				continue;
@@ -11549,7 +11549,7 @@ async function renderVolumeDetail(name) {
 	def.value = "";
 	def.textContent = "(default OS-disk placement)";
 	select.appendChild(def);
-	for (const d of cache.disks) {
+	for (const d of cache.storage) {
 		if (!d.mounted || d.protected)
 			continue;
 		const opt = document.createElement("option");
@@ -12179,8 +12179,8 @@ function renderBackupConfig() {
 		opt.textContent = "(none -- automatic snapshots disabled)";
 		select.appendChild(opt);
 	}
-	for (const d of cache.disks) {
-		const role = diskRoleFor(d.name);
+	for (const d of cache.storage) {
+		const role = storageRoleFor(d.name);
 
 		if (d.protected || role === null || role.role !== "backup")
 			continue;
@@ -12627,8 +12627,8 @@ function contextMenuItemsFor(category, name) {
 	 * unroled device can only be given a role, and delete is absent on
 	 * a mounted partition because it would 409.
 	 */
-	if (category === "disks") {
-		const d = cache.disks.find((x) => x.name === name);
+	if (category === "storage") {
+		const d = cache.storage.find((x) => x.name === name);
 
 		if (!d)
 			return null;
@@ -12657,7 +12657,7 @@ function contextMenuItemsFor(category, name) {
 		 */
 		if (d.protected)
 			return null;
-		const role = diskRoleFor(name);
+		const role = storageRoleFor(name);
 		const items = [];
 
 		if (!role) {

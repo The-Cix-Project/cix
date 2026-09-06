@@ -182,7 +182,7 @@ int main(void)
 	 * devices.c's own top comment already established. Every step
 	 * below (diskrole create/rm) is non-destructive. */
 	memset(&r, 0, sizeof(r));
-	if (cix_client_request(&client, "GET", "/v1/disks", NULL, &r) == 0 && r.status == 200) {
+	if (cix_client_request(&client, "GET", "/v1/storage", NULL, &r) == 0 && r.status == 200) {
 		const struct json_value *disks = json_object_get(r.json, "disks");
 		size_t i;
 
@@ -208,7 +208,7 @@ int main(void)
 		/* 4. The real OS disk itself is always rejected, regardless of
 		 * which disk that actually is on this host. */
 		memset(&r, 0, sizeof(r));
-		if (cix_client_request(&client, "GET", "/v1/disks", NULL, &r) == 0 && r.status == 200) {
+		if (cix_client_request(&client, "GET", "/v1/storage", NULL, &r) == 0 && r.status == 200) {
 			const struct json_value *disks = json_object_get(r.json, "disks");
 			size_t i;
 			char os_disk[64] = "";
@@ -247,8 +247,8 @@ int main(void)
 		snprintf(body, sizeof(body), "{\"disk_name\":\"%s\",\"role\":\"container-storage\"}",
 		         non_os_disk);
 		memset(&r, 0, sizeof(r));
-		if (cix_client_request(&client, "POST", "/v1/diskroles", body, &r) != 0 || r.status != 201) {
-			fprintf(stderr, "FAIL: POST /v1/diskroles (container-storage), status=%d\n",
+		if (cix_client_request(&client, "POST", "/v1/storage-roles", body, &r) != 0 || r.status != 201) {
+			fprintf(stderr, "FAIL: POST /v1/storage-roles (container-storage), status=%d\n",
 			        r.status);
 			ok = 0;
 		}
@@ -265,12 +265,12 @@ int main(void)
 		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		cix_client_request(&client, "DELETE", "/v1/diskroles", NULL, &r); /* no-op path, ignored */
+		cix_client_request(&client, "DELETE", "/v1/storage-roles", NULL, &r); /* no-op path, ignored */
 		cix_response_free(&r);
 		{
 			char path[96];
 
-			snprintf(path, sizeof(path), "/v1/diskroles/%s", non_os_disk);
+			snprintf(path, sizeof(path), "/v1/storage-roles/%s", non_os_disk);
 			memset(&r, 0, sizeof(r));
 			cix_client_request(&client, "DELETE", path, NULL, &r);
 			cix_response_free(&r);
@@ -283,8 +283,8 @@ int main(void)
 		snprintf(body, sizeof(body), "{\"disk_name\":\"%s\",\"role\":\"log-storage\"}",
 		         non_os_disk);
 		memset(&r, 0, sizeof(r));
-		if (cix_client_request(&client, "POST", "/v1/diskroles", body, &r) != 0 || r.status != 201) {
-			fprintf(stderr, "FAIL: POST /v1/diskroles (log-storage), status=%d\n", r.status);
+		if (cix_client_request(&client, "POST", "/v1/storage-roles", body, &r) != 0 || r.status != 201) {
+			fprintf(stderr, "FAIL: POST /v1/storage-roles (log-storage), status=%d\n", r.status);
 			ok = 0;
 		}
 		cix_response_free(&r);
@@ -309,7 +309,7 @@ int main(void)
 		{
 			char path[96];
 
-			snprintf(path, sizeof(path), "/v1/diskroles/%s", non_os_disk);
+			snprintf(path, sizeof(path), "/v1/storage-roles/%s", non_os_disk);
 			memset(&r, 0, sizeof(r));
 			if (cix_client_request(&client, "DELETE", path, NULL, &r) != 0 || r.status != 204) {
 				fprintf(stderr,
@@ -328,7 +328,7 @@ int main(void)
 		{
 			char path[96];
 
-			snprintf(path, sizeof(path), "/v1/diskroles/%s", non_os_disk);
+			snprintf(path, sizeof(path), "/v1/storage-roles/%s", non_os_disk);
 			memset(&r, 0, sizeof(r));
 			cix_client_request(&client, "DELETE", path, NULL, &r);
 			cix_response_free(&r);
@@ -353,8 +353,8 @@ int main(void)
 
 		snprintf(body, sizeof(body), "{\"disk_name\":\"%s\",\"role\":\"backup\"}", non_os_disk);
 		memset(&r, 0, sizeof(r));
-		if (cix_client_request(&client, "POST", "/v1/diskroles", body, &r) != 0 || r.status != 201) {
-			fprintf(stderr, "FAIL: POST /v1/diskroles (wrong role for rebuildable test), "
+		if (cix_client_request(&client, "POST", "/v1/storage-roles", body, &r) != 0 || r.status != 201) {
+			fprintf(stderr, "FAIL: POST /v1/storage-roles (wrong role for rebuildable test), "
 			                "status=%d\n",
 			        r.status);
 			ok = 0;
@@ -377,7 +377,7 @@ int main(void)
 		{
 			char path[96];
 
-			snprintf(path, sizeof(path), "/v1/diskroles/%s", non_os_disk);
+			snprintf(path, sizeof(path), "/v1/storage-roles/%s", non_os_disk);
 			memset(&r, 0, sizeof(r));
 			cix_client_request(&client, "DELETE", path, NULL, &r);
 			cix_response_free(&r);
@@ -386,8 +386,8 @@ int main(void)
 		snprintf(body, sizeof(body), "{\"disk_name\":\"%s\",\"role\":\"rebuildable-storage\"}",
 		         non_os_disk);
 		memset(&r, 0, sizeof(r));
-		if (cix_client_request(&client, "POST", "/v1/diskroles", body, &r) != 0 || r.status != 201) {
-			fprintf(stderr, "FAIL: POST /v1/diskroles (rebuildable-storage), status=%d\n",
+		if (cix_client_request(&client, "POST", "/v1/storage-roles", body, &r) != 0 || r.status != 201) {
+			fprintf(stderr, "FAIL: POST /v1/storage-roles (rebuildable-storage), status=%d\n",
 			        r.status);
 			ok = 0;
 		}
@@ -430,7 +430,7 @@ int main(void)
 		{
 			char path[96];
 
-			snprintf(path, sizeof(path), "/v1/diskroles/%s", non_os_disk);
+			snprintf(path, sizeof(path), "/v1/storage-roles/%s", non_os_disk);
 			memset(&r, 0, sizeof(r));
 			if (cix_client_request(&client, "DELETE", path, NULL, &r) != 0 || r.status != 204) {
 				fprintf(stderr,

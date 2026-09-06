@@ -2,6 +2,18 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### The resource is Storage, not disks (ADR-0258)
+
+`/v1/disks` -> `/v1/storage`, `/v1/diskroles` -> `/v1/storage-roles`, `{"disks":[...]}` -> `{"storage":[...]}`, `listDisks` -> `listStorage`, schema `Disk` -> `StorageDevice`. Twelve endpoints, a clean cut with no aliases.
+
+The platform had two vocabularies for one subject, and the collision was already real rather than theoretical: **`cixctl storage` existed for storage placement while `cixctl disks` existed for block devices** — two sibling top-level commands for the same noun. They are now one command, because their subcommands do not overlap (`ls`/`format`/`unmount`/`partition-table`/… against `logs`/`rebuildable`), so `cixctl storage logs migrate` and `cixctl storage format sdb` sit side by side rather than gaining an artificial `storage placement …` level that would exist only to record that these used to be two things.
+
+**Two fields keep the word "disk" and that is deliberate:** `is_os_disk` and `parent_disk` name a physical disk, which is what they are. `is_os_device`/`parent_device` would collide with **Devices**, a different top-level subject here (PCI/USB/GPU passthrough); `is_os_storage` describes a category where a device is meant. The resource is Storage; the individual thing is still a disk.
+
+**Historical documents were not rewritten.** ADRs, this changelog's earlier entries and the roadmap keep `/v1/disks` where they recorded what was true then — an append-only record edited to say something that was not true at the time trades one inaccuracy for a worse one. Only `docs/api/README.md` and the guides moved, because they describe what to do now.
+
+**A pre-existing defect surfaced on the way and was fixed:** `test_diskpart` could not link at all. `disk.c` calls `partlabel_read()`/`partlabel_parent_name()` and the test's Makefile rule never listed `daemon/src/partlabel.c`. It went unnoticed because the release build compiles named targets plus `selftest`, never `all` — so a test binary that cannot build is never asked to. Same family as the SELFTESTS-membership trap: a gate that does not run is not a gate.
+
 ### The three intervals are gone; schedules own timing now (ADR-0257 part 2)
 
 The cut-over. `backup-config`, `volume-backup-config` and `repo-config` each lose their `interval_*` field, and the two periodic timers behind them (`CONN_BACKUP_PERIODIC_TIMER`, `CONN_PKG_SYNC_PERIODIC_TIMER`) are deleted rather than left dormant. Three actions replace them: `system.backup`, `volume.backup`, `pkg.sync` — each calling the entry point that already existed, so a schedule cannot start work a manual request could not.

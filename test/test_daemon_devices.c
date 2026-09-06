@@ -606,7 +606,7 @@ int main(void)
 	 * exposes every non-OS, role-less whole disk as "disk:<name>" (see
 	 * device.c's enumerate_disk()). Genuinely host-dependent (a disk-
 	 * less sandbox is theoretically possible), so this only runs if
-	 * GET /v1/disks actually reports at least one non-OS disk -- true
+	 * GET /v1/storage actually reports at least one non-OS disk -- true
 	 * on every real machine this project targets, and confirmed true
 	 * in this dev sandbox itself.
 	 */
@@ -614,8 +614,8 @@ int main(void)
 		char disk_name[64] = "";
 
 		memset(&r, 0, sizeof(r));
-		if (cix_client_request(&client, "GET", "/v1/disks", NULL, &r) != 0 || r.status != 200) {
-			fprintf(stderr, "FAIL: GET /v1/disks, status=%d\n", r.status);
+		if (cix_client_request(&client, "GET", "/v1/storage", NULL, &r) != 0 || r.status != 200) {
+			fprintf(stderr, "FAIL: GET /v1/storage, status=%d\n", r.status);
 			ok = 0;
 		} else {
 			const struct json_value *disks = json_object_get(r.json, "disks");
@@ -700,9 +700,9 @@ int main(void)
 			snprintf(role_body, sizeof(role_body), "{\"disk_name\":\"%s\",\"role\":\"backup\"}",
 			         disk_name);
 			memset(&r, 0, sizeof(r));
-			if (cix_client_request(&client, "POST", "/v1/diskroles", role_body, &r) != 0 ||
+			if (cix_client_request(&client, "POST", "/v1/storage-roles", role_body, &r) != 0 ||
 			    r.status != 201) {
-				fprintf(stderr, "FAIL: POST /v1/diskroles %s, status=%d\n", disk_name,
+				fprintf(stderr, "FAIL: POST /v1/storage-roles %s, status=%d\n", disk_name,
 				        r.status);
 				ok = 0;
 			}
@@ -738,7 +738,7 @@ int main(void)
 			}
 
 			/* 6c. removing the role makes it passthrough-eligible again. */
-			snprintf(role_path, sizeof(role_path), "/v1/diskroles/%s", disk_name);
+			snprintf(role_path, sizeof(role_path), "/v1/storage-roles/%s", disk_name);
 			memset(&r, 0, sizeof(r));
 			if (cix_client_request(&client, "DELETE", role_path, NULL, &r) != 0 ||
 			    r.status != 204) {
