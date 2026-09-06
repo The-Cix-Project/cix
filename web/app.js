@@ -2223,9 +2223,15 @@ function renderTree() {
 			icon: "software",
 		},
 		{
+			/*
+			 * The group is selectable and lands on its own page --
+			 * the health of every registered service, which is the
+			 * overview for this group rather than a sibling of the
+			 * five services it summarises.
+			 */
 			label: "Services",
 			group: true,
-			hash: "pki-ca",
+			hash: "server-health",
 			icon: "pki",
 			children: [
 				{ label: "PKI", hash: "pki-ca", icon: "pki" },
@@ -2233,7 +2239,6 @@ function renderTree() {
 				{ label: "LDAP", hash: "ldap-servers", icon: "ldap" },
 				{ label: "NTP", hash: "ntp-config", icon: "ntp" },
 				{ label: "Syslog", hash: "syslog-targets", icon: "syslog" },
-				{ label: "Server Health", hash: "server-health", icon: "monitoring" },
 			],
 		},
 		{
