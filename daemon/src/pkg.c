@@ -1439,6 +1439,83 @@ static int copy_file_simple(const char *src, const char *dst)
 }
 
 /*
+ * ADR-0251 -- the one definition of what a package artifact carries.
+ *
+ * This lives here, in the daemon, rather than in any recipe, because a
+ * recipe convention is exactly what produced the mess it replaces: of
+ * 115 recipes, 37 pruned anything at all and they did it in twelve
+ * different spellings, while glibc shipped libc.so.6 with 9.46 MiB of
+ * debug sections and libc.a three times over. The scope of a universal
+ * rule was being re-guessed 115 times.
+ *
+ * Written into the build container beside recipe.sh and sourced by the
+ * build command after pkg_install() returns.
+ *
+ * The policy text itself is shell, and lives in its own file
+ * (daemon/policy/pkg-finalize.sh) rather than as an escaped string
+ * here, so it can be read, reviewed and run directly -- test_pkg_finalize
+ * executes that same file. It is generated into a C string so the policy
+ * travels inside the daemon binary and can never be missing at runtime.
+ * Same posture as generated/api_routes.h beside it: one source, one
+ * generated consumer.
+ */
+#include "generated/pkg_finalize.h"
+
+/*
+ * Stage PKG_FINALIZE_SH into a build container's own /build.
+ *
+ * Same shape as the recipe.sh copy beside it, and called from the same
+ * two places, so a build can never run with one and not the other.
+ */
+static int write_finalize_script(const char *upperdir)
+{
+	char path[PATH_MAX];
+	size_t len = sizeof(PKG_FINALIZE_SH) - 1;
+	ssize_t n;
+	int fd;
+
+	if ((size_t)snprintf(path, sizeof(path), "%s/build/finalize.sh", upperdir) >= sizeof(path))
+		return -1;
+
+	fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	if (fd < 0)
+		return -1;
+	n = write(fd, PKG_FINALIZE_SH, len);
+	if (close(fd) != 0 || n < 0 || (size_t)n != len)
+		return -1;
+	return 0;
+}
+
+/*
+ * The one build command, used by both the ordinary build path and the
+ * hostbuild path. It was written out twice, identically, which is the
+ * same duplication ADR-0251 is about: two copies of a rule is two
+ * chances for them to diverge.
+ *
+ * `set -e`, and semicolons rather than `&&`, both deliberately.
+ *
+ * Without set -e a command that fails partway through pkg_build() or
+ * pkg_install() does not fail the package: the function keeps going and
+ * returns the status of whatever ran last. libcap 2.78-3 shipped that
+ * way -- `make install` died with Error 2, the `rm -rf` after it
+ * succeeded, and the package was recorded as installed with four of its
+ * binaries missing. A package that quietly contains less than it should
+ * is worse than one that fails, because nothing downstream can tell.
+ *
+ * The separators matter as much as the flag. POSIX suspends set -e for
+ * any command that is part of an && list except the last, and that
+ * suspension applies inside a function called from there too -- so
+ * `pkg_build && pkg_install` would leave every failure inside
+ * pkg_build() ignored, which is precisely the case that needs catching.
+ *
+ * finalize.sh runs last and is sourced, not executed, so a non-zero
+ * return from it fails the build under the same set -e.
+ */
+#define PKG_BUILD_CMD \
+	"set -e; . /build/recipe.sh; cd /build/src; pkg_build; pkg_install; " \
+	". /build/finalize.sh"
+
+/*
  * One file of a package's own recorded manifest, copied into a rootfs
  * being composed (issue #109). Unlike copy_file_simple() above this has
  * to reproduce the thing faithfully rather than just move bytes: a
@@ -6081,6 +6158,11 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 			} else if (copy_file_simple(recipe_path, recipe_dst) != 0) {
 				prep_step = "copy recipe.sh";
 				prep_errno = errno;
+			} else if (write_finalize_script(e->build_upperdir) != 0) {
+				/* ADR-0251: the policy is not optional, so a build
+				 * that could not be given it does not run. */
+				prep_step = "write finalize.sh";
+				prep_errno = errno;
 			} else if (stage_main_source(main_src_path, src_dir, recipe.source[0]) != 0) {
 				prep_step = "stage source";
 			}
@@ -6148,28 +6230,8 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 	if (e->cache_hit)
 		snprintf(e->build_argv_cmd, sizeof(e->build_argv_cmd), ":");
 	else
-		/*
-		 * `set -e`, and semicolons rather than `&&`, both deliberately.
-		 *
-		 * Without set -e a command that fails partway through
-		 * pkg_build() or pkg_install() does not fail the package: the
-		 * function keeps going and returns the status of whatever ran
-		 * last. libcap 2.78-3 shipped that way -- `make install` died
-		 * with Error 2, the `rm -rf` after it succeeded, and the
-		 * package was recorded as installed with four of its binaries
-		 * missing. A package that quietly contains less than it should
-		 * is worse than one that fails, because nothing downstream can
-		 * tell.
-		 *
-		 * The separators matter as much as the flag. POSIX suspends
-		 * set -e for any command that is part of an && list except the
-		 * last, and that suspension applies inside a function called
-		 * from there too -- so `pkg_build && pkg_install` would leave
-		 * every failure inside pkg_build() ignored, which is precisely
-		 * the case that needs catching.
-		 */
-		snprintf(e->build_argv_cmd, sizeof(e->build_argv_cmd),
-		         "set -e; . /build/recipe.sh; cd /build/src; pkg_build; pkg_install");
+		/* See PKG_BUILD_CMD for why this is shaped the way it is. */
+		snprintf(e->build_argv_cmd, sizeof(e->build_argv_cmd), "%s", PKG_BUILD_CMD);
 	/*
 	 * /usr/bin/bash, not /bin/sh -- caught empirically (ADR-0056) the
 	 * first time a hostbuild job's own build_image was one of this
@@ -6613,6 +6675,10 @@ enum pkg_error pkg_resume_build(const char *name, const char *image, const char 
 
 	if (copy_file_simple(recipe_path, recipe_dst) != 0)
 		return PKG_ERR_PERSIST_FAILED;
+	/* ADR-0251: staged wherever recipe.sh is, so the two cannot
+	 * disagree about whether the policy ran. */
+	if (write_finalize_script(e->build_upperdir) != 0)
+		return PKG_ERR_PERSIST_FAILED;
 	{
 		char *rmargv[] = { (char *)PKG_RM_BIN, "-rf", dest_dir, NULL };
 
@@ -6624,8 +6690,7 @@ enum pkg_error pkg_resume_build(const char *name, const char *image, const char 
 
 	e->kept_build_container[0] = '\0';
 
-	snprintf(e->build_argv_cmd, sizeof(e->build_argv_cmd), "%s",
-	         "set -e; . /build/recipe.sh; cd /build/src; pkg_build; pkg_install");
+	snprintf(e->build_argv_cmd, sizeof(e->build_argv_cmd), "%s", PKG_BUILD_CMD);
 	e->build_argv[0] = "/usr/bin/bash";
 	e->build_argv[1] = "-c";
 	e->build_argv[2] = e->build_argv_cmd;
