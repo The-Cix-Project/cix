@@ -18,6 +18,7 @@ Task-oriented "how do I do X" instructions for building, installing, operating, 
 | [`web-dashboard.md`](web-dashboard.md) | A tour of the browser dashboard |
 | [`staying-updated.md`](staying-updated.md) | Keeping an already-installed system current: control plane + packages |
 | [`administration.md`](administration.md) | Monitoring, backup/restore, and disk management day to day |
+| [`reinstall-and-restore.md`](reinstall-and-restore.md) | Wiping and reinstalling a host, and what a reinstall destroys that a backup cannot carry |
 | [`networking.md`](networking.md) | Networks, physical/VLAN interface attachment, and routing |
 | [`security.md`](security.md) | PKI, HTTPS, and LDAP-backed Unix/SSH accounts |
 
