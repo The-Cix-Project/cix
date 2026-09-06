@@ -10543,6 +10543,128 @@ int pkg_artifact_push_try_start(pid_t *out_pid, int *out_pidfd, char *out_desc, 
  * bytes, which is the artifact server's immutability rule doing its
  * job and a genuine signal that two builds diverged.
  */
+/*
+ * ADR-0251, and the gap #306 turned out to be: a published artifact
+ * approves itself in its own recipe.
+ *
+ * A recipe with no pkg_artifact_sha256 has its artifact tier skipped
+ * entirely (ADR-0122), so that package can only ever be BUILT. On a host
+ * that already has a toolchain this costs nothing visible, which is why
+ * it survived indefinitely. On a cold host it is fatal and circular:
+ * bash cannot be built without bash. A freshly installed box was left
+ * unable to obtain a compiler for exactly this reason -- gcc names
+ * linux-headers as a runtime dependency, dependencies always resolve to
+ * their highest revision, and that revision had no approved artifact, so
+ * it had to be built with the gcc that was waiting on it.
+ *
+ * The missing step was never automated: build, publish, then go back and
+ * add the checksum by hand. Nobody could carry the checksum forward on a
+ * revision bump either, because different bytes -- so it had to be redone
+ * every time, and it was done for some revisions and not others with no
+ * rule behind which. Counting bash's revisions: + + - + -.
+ *
+ * A gate would only report what a human then had to fix. This does the
+ * step instead, at the one moment the bytes are known to be both built
+ * here and accepted by the cache.
+ *
+ * Deliberately routed through recipe_adds_only_artifact_sha256(), the
+ * same predicate that guards an operator's own POST /pkg/recipes: there
+ * is one definition of "this edit is permitted to an immutable recipe",
+ * and this path cannot drift from it.
+ */
+static void approve_published_artifact(const char *name, const char *version)
+{
+	char tarball[PATH_MAX], recipe_path[PATH_MAX], tmp_path[PATH_MAX];
+	char sha[65];
+	char *stored = NULL, *updated = NULL;
+	size_t stored_len = 0, head = 0, need;
+	const char *anchor, *nl;
+	int fd;
+	ssize_t w;
+
+	cache_tarball_path(name, version, tarball, sizeof(tarball));
+	if (pkg_run_capture_sha256(tarball, sha, sizeof(sha)) != 0)
+		return; /* the tarball is gone from the cache -- nothing to approve */
+
+	if ((size_t)snprintf(recipe_path, sizeof(recipe_path), "%s/%s/%s/build.sh", g_recipes_dir,
+	                      name, version) >= sizeof(recipe_path))
+		return;
+	if (persist_read_file(recipe_path, &stored, &stored_len) != 0 || stored == NULL)
+		return;
+
+	/* Already approved, by an operator or by a previous publish. */
+	if (strncmp(stored, "pkg_artifact_sha256=", 20) == 0 ||
+	    strstr(stored, "\npkg_artifact_sha256=") != NULL) {
+		free(stored);
+		return;
+	}
+
+	/*
+	 * Placed immediately after pkg_sha256=, which is where every recipe
+	 * in this set already carries it, so a human reading the file finds
+	 * it where they expect. Without that anchor there is nowhere
+	 * unambiguous to put it and the recipe is left alone.
+	 */
+	anchor = strstr(stored, "\npkg_sha256=\"");
+	if (anchor == NULL) {
+		logstore_write("cixd", "warn",
+		                "artifact push: %s@%s published but its recipe has no pkg_sha256= line to "
+		                "anchor an approval after -- add pkg_artifact_sha256 by hand or the "
+		                "artifact tier stays skipped",
+		                name, version);
+		free(stored);
+		return;
+	}
+	nl = strchr(anchor + 1, '\n');
+	if (nl == NULL) {
+		free(stored);
+		return;
+	}
+	head = (size_t)(nl - stored) + 1;
+
+	need = stored_len + strlen("pkg_artifact_sha256=\"\"\n") + strlen(sha) + 1;
+	updated = malloc(need);
+	if (updated == NULL) {
+		free(stored);
+		return;
+	}
+	memcpy(updated, stored, head);
+	w = snprintf(updated + head, need - head, "pkg_artifact_sha256=\"%s\"\n", sha);
+	memcpy(updated + head + (size_t)w, stored + head, stored_len - head);
+	updated[head + (size_t)w + (stored_len - head)] = '\0';
+
+	/* The self-check: exactly the rule an operator's POST is held to. */
+	if (!recipe_adds_only_artifact_sha256(stored, updated)) {
+		logstore_write("cixd", "warn",
+		                "artifact push: %s@%s published but writing its approval would have "
+		                "changed more than one line -- recipe left untouched",
+		                name, version);
+		free(stored);
+		free(updated);
+		return;
+	}
+
+	if ((size_t)snprintf(tmp_path, sizeof(tmp_path), "%s.approve", recipe_path) >= sizeof(tmp_path)) {
+		free(stored);
+		free(updated);
+		return;
+	}
+	fd = open(tmp_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	if (fd >= 0) {
+		size_t total = strlen(updated);
+
+		w = write(fd, updated, total);
+		if (close(fd) == 0 && w >= 0 && (size_t)w == total && rename(tmp_path, recipe_path) == 0)
+			logstore_write("cixd", "info",
+			                "artifact push: %s@%s approved its own published artifact (%.16s...)",
+			                name, version, sha);
+		else
+			unlink(tmp_path);
+	}
+	free(stored);
+	free(updated);
+}
+
 void pkg_artifact_push_completed(int exit_status)
 {
 	char status_path[PATH_MAX];
@@ -10567,6 +10689,9 @@ void pkg_artifact_push_completed(int exit_status)
 	if (code == 201 || code == 200 || code == 204) {
 		logstore_write("cixd", "info", "artifact push: %s@%s published (HTTP %ld)",
 		                g_push_current.name, g_push_current.version, code);
+		/* The bytes are now both built here and accepted by the cache,
+		 * which is the only moment an approval is honestly earnable. */
+		approve_published_artifact(g_push_current.name, g_push_current.version);
 		return;
 	}
 	if (code == 409) {
