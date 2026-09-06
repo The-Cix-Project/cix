@@ -930,7 +930,7 @@ cixctl pkg source-policy clear kernel
 
 ## Schedules — one scheduler for everything on a clock (ADR-0257)
 
-Six periodic timers ran in this daemon before `/schedules` existed, four of them because an operator had set an interval, each owning its own copy of *is it on*, *how often* and *when did it last run*. Two of them back things up to a disk, and `main.c` had already noticed:
+Six periodic timers ran in this daemon before `/schedules` existed, three of them because an operator had set an interval, each owning its own copy of *is it on*, *how often* and *when did it last run*. Two of them back things up to a disk, and `main.c` had already noticed:
 
 > *Issue #96: the volume sweep rides this same tick rather than arming a second timer. Both are "copy something to the backup disk on a schedule", the intervals are independently configured and each is checked against its own last-run time.*
 
@@ -984,7 +984,7 @@ Actions **enqueue**; they never do heavy work inline. Each calls an entry point 
 
 - **`every` is anchored on the last run**, not on a fixed epoch. An epoch-anchored period fires the instant the daemon starts whenever the box has been down longer than one period, turning every reboot into a burst of work.
 - **`catch_up` defaults to false.** A wall-clock job whose time passed while the daemon was down waits for the next occurrence unless it asked otherwise. A backup usually should catch up; a build sweep should not — it would start heavy work at the least predictable moment there is.
-- **`window_minutes` is a duration, not a second job.** A schedule fires an instant; an update window is an interval during which an action may keep *starting* work. Modelling it as an open job and a close job would put a state machine in the operator's hands.
+- **`window_minutes` is a duration, not a second job.** A schedule fires an instant; an update window is an interval during which an action may keep *starting* work. Modelling it as an open job and a close job would put a state machine in the operator's hands. **It is stored and reported and nothing consumes it yet** — `scheduler_in_window()` exists and no action calls it, because the first queue-draining action has not been written. Not a working update window until one is.
 - **`POST /schedules/{name}/run` runs a disabled job too.** The enabled flag governs the schedule, not the button. It is also never a way to *define* a schedule — only to run one that exists.
 - **`last_ok` is null before the first run.** "It has not run" and "it ran and failed" are different facts, and a boolean alone cannot hold both.
 
@@ -992,7 +992,7 @@ Actions **enqueue**; they never do heavy work inline. Each calls an entry point 
 
 One action is registered: `pkg.refresh-upstreams`, which closes ADR-0255's open end — release lists that only ever refreshed when someone asked by hand.
 
-The four existing operator-set intervals (system backup, volume backup, pkg sync, NTP) have **not** migrated yet. They arrive together, so no window exists in which a job and a legacy timer drive the same work; `backup-config`, `volume-backup-config`, `repo-config` and `ntp` lose their `interval_*` fields at that point.
+The three existing operator-set intervals (system backup, volume backup, pkg sync) have **not** migrated yet. They arrive together, so no window exists in which a job and a legacy timer drive the same work; `backup-config`, `volume-backup-config` and `repo-config` lose their `interval_*` fields at that point. NTP and serverhealth are not on the list: their intervals are compile-time constants, not operator policy.
 
 `build-stall` and `boot-confirm` are **deliberately never migrating.** They are internal watchdogs with no policy in them, and putting a watchdog under an operator-editable scheduler means an operator can switch off the thing that reports wedged builds, or the thing that falls a bad boot back to the other slot.
 

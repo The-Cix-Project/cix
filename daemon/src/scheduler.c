@@ -49,6 +49,8 @@ const char *schedule_strerror(enum schedule_error e)
 		return "no such action";
 	case SCHEDULE_ERR_INVALID_SCHEDULE:
 		return "invalid schedule";
+	case SCHEDULE_ERR_ACTION_FAILED:
+		return "the action ran and failed";
 	case SCHEDULE_ERR_PERSIST:
 	default:
 		return "could not persist the schedule";
@@ -147,6 +149,48 @@ static long next_wallclock(long now, int hour, int minute, int weekday)
 		if (ctm.tm_wday == weekday)
 			return candidate;
 		ctm.tm_mday += 1;
+		ctm.tm_hour = hour;
+		ctm.tm_min = minute;
+		ctm.tm_sec = 0;
+		ctm.tm_isdst = -1;
+		candidate = (long)mktime(&ctm);
+	}
+	return candidate;
+}
+
+/*
+ * The most recent occurrence at or before now -- the other half of
+ * next_wallclock(), and the one the due test actually needs.
+ */
+static long prev_wallclock(long now, int hour, int minute, int weekday)
+{
+	struct tm tm;
+	time_t t = (time_t)now;
+	long candidate;
+	int i;
+
+	if (localtime_r(&t, &tm) == NULL)
+		return 0;
+	tm.tm_hour = hour;
+	tm.tm_min = minute;
+	tm.tm_sec = 0;
+	tm.tm_isdst = -1;
+	candidate = (long)mktime(&tm);
+	if (candidate > now)
+		candidate -= 24 * 3600;
+	if (weekday < 0)
+		return candidate;
+	/* Step whole days backwards, re-deriving the time of day each
+	 * step, for the same DST reason next_wallclock() steps forwards. */
+	for (i = 0; i < 8; i++) {
+		time_t c = (time_t)candidate;
+		struct tm ctm;
+
+		if (localtime_r(&c, &ctm) == NULL)
+			return candidate;
+		if (ctm.tm_wday == weekday)
+			return candidate;
+		ctm.tm_mday -= 1;
 		ctm.tm_hour = hour;
 		ctm.tm_min = minute;
 		ctm.tm_sec = 0;
@@ -326,7 +370,9 @@ static void load_from(const struct json_value *root)
 		s->window_minutes = (int)json_as_number(json_object_get(e, "window_minutes"));
 		s->catch_up = json_bool(json_object_get(e, "catch_up"));
 		s->enabled = json_bool(json_object_get(e, "enabled"));
+		s->anchor_at = (long)json_as_number(json_object_get(e, "anchor_at"));
 		s->last_run_at = (long)json_as_number(json_object_get(e, "last_run_at"));
+		s->last_skipped_at = (long)json_as_number(json_object_get(e, "last_skipped_at"));
 		s->last_ok = json_bool(json_object_get(e, "last_ok"));
 		s->in_use = 1;
 		n++;
@@ -589,6 +635,12 @@ enum schedule_error scheduler_set_from_json(const char *name, const char *body, 
 		snprintf(candidate.last_reason, sizeof(candidate.last_reason), "%s", slot->last_reason);
 	}
 	candidate.in_use = 1;
+	/*
+	 * A new or edited job starts counting from now, so a job created at
+	 * 20:00 with "daily at 02:00" does not look like it missed today's
+	 * 02:00 and fire immediately.
+	 */
+	candidate.anchor_at = (long)time(NULL);
 	*slot = candidate;
 	if (persist_all() != 0) {
 		snprintf(err, err_size, "could not write %s", g_state_path);
@@ -615,6 +667,8 @@ enum schedule_error scheduler_delete(const char *name)
 static void record_outcome(struct schedule *s, long now, int ok, const char *reason)
 {
 	s->last_run_at = now;
+	if (now > s->anchor_at)
+		s->anchor_at = now;
 	s->last_ok = ok;
 	snprintf(s->last_reason, sizeof(s->last_reason), "%s", reason != NULL ? reason : "");
 	persist_all();
@@ -644,30 +698,59 @@ static void run_one(struct schedule *s, long now)
 		record_outcome(s, now, 0, reason[0] != '\0' ? reason : "failed");
 }
 
+/*
+ * Records an occurrence that passed while the daemon was down and was
+ * not caught up. The anchor moves so it is not re-offered on the next
+ * tick, and the fact is kept so it is visible rather than silent.
+ */
+static void record_skip(struct schedule *s, long occurrence)
+{
+	s->last_skipped_at = occurrence;
+	s->anchor_at = occurrence;
+	persist_all();
+}
+
 void scheduler_run_due(long now, int startup)
 {
 	int i;
 
 	for (i = 0; i < SCHEDULER_MAX_JOBS; i++) {
 		struct schedule *s = &g_jobs[i];
-		long due;
+		long done, prev;
 
 		if (!s->in_use || !s->enabled)
 			continue;
-		due = schedule_next_run(s, now);
-		if (due == 0 || due > now)
+
+		if (s->kind == SCHEDULE_EVERY) {
+			long due = s->last_run_at == 0 ? now : s->last_run_at + s->every_seconds;
+
+			if (now < due)
+				continue;
+			run_one(s, now);
+			continue;
+		}
+
+		/*
+		 * A wall-clock job is due when an occurrence has passed that
+		 * this job has not yet accounted for. Comparing against
+		 * schedule_next_run() cannot work: that is always strictly in
+		 * the future, so the test would never be true and no daily job
+		 * would ever fire.
+		 */
+		prev = prev_wallclock(now, s->hour, s->minute,
+		                       s->kind == SCHEDULE_WEEKLY ? s->weekday : -1);
+		done = s->last_run_at > s->anchor_at ? s->last_run_at : s->anchor_at;
+		if (prev <= done)
 			continue;
 		/*
-		 * A wall-clock job whose time passed while the daemon was down
-		 * runs now only if it asked to. Default off: a backup usually
-		 * should catch up, a build sweep should not -- it would start
-		 * heavy work at the least predictable moment there is, right
-		 * after a boot.
+		 * Missed while the daemon was down. Default is not to catch
+		 * up: heavy work firing the instant a box boots is the least
+		 * predictable moment there is. Only the FIRST tick after boot
+		 * can be a missed run -- after that the daemon was up and
+		 * would have run it.
 		 */
-		if (startup && s->kind != SCHEDULE_EVERY && !s->catch_up) {
-			/* Not a run, and not a failure either: just move the
-			 * anchor forward so the next occurrence is the next real
-			 * one rather than this missed one. */
+		if (startup && !s->catch_up) {
+			record_skip(s, prev);
 			continue;
 		}
 		run_one(s, now);
@@ -712,7 +795,7 @@ enum schedule_error scheduler_run_now(const char *name, char *err, size_t err_si
 	run_one(s, (long)time(NULL));
 	if (!s->last_ok) {
 		snprintf(err, err_size, "%s", s->last_reason);
-		return SCHEDULE_ERR_PERSIST; /* the run failed; the caller reports last_reason */
+		return SCHEDULE_ERR_ACTION_FAILED;
 	}
 	return SCHEDULE_OK;
 }
@@ -749,8 +832,12 @@ static void write_job(struct json_writer *w, const struct schedule *s)
 	jw_bool(w, s->catch_up);
 	jw_key(w, "enabled");
 	jw_bool(w, s->enabled);
+	jw_key(w, "anchor_at");
+	jw_num(w, (double)s->anchor_at);
 	jw_key(w, "last_run_at");
 	jw_num(w, (double)s->last_run_at);
+	jw_key(w, "last_skipped_at");
+	jw_num(w, (double)s->last_skipped_at);
 	jw_key(w, "last_ok");
 	jw_bool(w, s->last_ok);
 	jw_key(w, "last_reason");
@@ -830,6 +917,12 @@ void scheduler_write_json_one(const struct schedule *s, struct json_writer *w)
 		jw_null(w);
 	else
 		jw_bool(w, s->last_ok);
+	/* A missed occurrence is reported, not swallowed. */
+	jw_key(w, "last_skipped_at");
+	if (s->last_skipped_at == 0)
+		jw_null(w);
+	else
+		jw_num(w, (double)s->last_skipped_at);
 	jw_key(w, "last_reason");
 	jw_str(w, s->last_reason);
 	jw_obj_close(w);
