@@ -2,6 +2,25 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### An upstream checksum is verified, never computed here (ADR-0254, #65)
+
+ADR-0193 gave a box a kernel channel and deliberately stopped at reporting, because generating a pin means recording a `pkg_sha256` the daemon computed over its own download -- which silently changes that field from *"an operator verified this out of band"* to *"whatever arrived first"*. That reasoning was right and is not weakened here.
+
+But a persisted operator setting that only ever changes what is *reported* is a promise the system does not keep. A box can be told to track `stable`, be told it is behind, and have no path to acting on it. The machinery for the rest already exists -- `mode: rolling` plus `queue_rolling_rebuilds_for()` rebuild every image tracking a package the moment a new recipe revision is published. **The missing link was turning an upstream release into a recipe revision without downgrading the anchor.**
+
+kernel.org publishes `sha256sums.asc` per release directory, PGP-clearsigned. Quoting *that* checksum is what an operator does by hand, and stays checkable afterwards. `daemon/src/pgpverify.c` verifies it: **framing here, cryptography OpenSSL's** (which `cixd` already links -- a hand-rolled signature primitive is the one thing this project should never own). Key trust stays the caller's, a pinned fingerprint is mandatory rather than optional, and verified text is the only text the API can return.
+
+Measured against reality, not just fixtures: it verifies kernel.org's real `sha256sums.asc` and extracts `linux-7.2.3.tar.xz -> 8ba259e8e7b13ec6...`, and a one-hex-digit tamper of that real document is rejected.
+
+**Two real defects came out of testing against the real file**, both recorded because they are the argument for doing so:
+
+- `canonicalise()` allocated `len + 2`. LF becomes CRLF, so a k-line document grows by up to k bytes -- the ~200-line real document **overran the heap**. Now `len * 2 + 2` with a hard guard on every write.
+- `pgp_checksum_lookup()` never stripped the CR from CRLF-canonical text, so every lookup missed by exactly one byte.
+
+`test_pgpverify` embeds its fixtures (no network, no gpg -- either would make it silently stop running in a build container). Four defects were reintroduced to prove it catches them, including both above. The fixture's target line sits **mid-document on purpose**: as the last line it has no trailing CRLF and the CR bug passed against it by luck. A test that passes for the wrong reason is worse than one that fails.
+
+Still required, and not automatable: **a human pins the fingerprint**, out of band, in `docs/keys/`. Until then there is nothing to verify against and the verifier says so rather than proceeding.
+
 ### The dashboard tree names the five lifecycle domains (#182)
 
 `renderTree()` hid all of ADR-0230's five lifecycle domains behind a single **Software** leaf -- recipes, packages, images, build configuration, the artifact cache, repo sync and update policy, the whole of what makes this platform self-hosting -- while **Devices** got a leaf of its own.
