@@ -22,6 +22,7 @@
  * operator-supplied directory (see README.md's own fetch recipe --
  * upstream linux-firmware's amdgpu/ subtree, via a sparse clone).
  */
+#include "persist.h"
 #include "libdirs.h"
 #include "test_image_fixture.h"
 
@@ -449,6 +450,20 @@ int main(int argc, char **argv)
 	 */
 	host_tools_dir = argv[9];
 
+	/*
+	 * ADR-0253: the assembled root is this build's output, so it starts
+	 * empty. Inheriting it is how a root came to carry glibc objects
+	 * from two different builds -- libc.so.6 from one and
+	 * libm/libpthread/libresolv from another -- which share a private,
+	 * version-locked interface and panic pid 1 at boot. That cost two
+	 * resets of a real host. verify_platform_libs_intact() below is the
+	 * guard against staging order re-introducing it; this is the
+	 * guard against the previous build re-introducing it.
+	 */
+	if (persist_fresh_output_dir(image_root) != 0) {
+		fprintf(stderr, "could not start the image root %s empty\n", image_root);
+		return 1;
+	}
 	if (ensure_dir(image_root) != 0)
 		return 1;
 	if (test_image_fixture_build(image_root, cixd_bin, "cixd") != 0)

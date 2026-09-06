@@ -7915,7 +7915,20 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		 * reset the ordinary path had always had.
 		 */
 		pkg_entry_free_files(e);
-		if (persist_mkdir_p(artifact_dir) != 0 || merge_tree(dest_dir, artifact_dir, "", e) != 0) {
+		/*
+		 * ADR-0253: and forget the previous round's FILES, not just the
+		 * record of them. The comment above is right that the record
+		 * was the bug it was written for, and wrong as a general claim:
+		 * the paths on disk were NOT always right. mkbootroot reads
+		 * <artifacts>/cix/web, no cix recipe has ever staged it, and
+		 * every assembly worked anyway because a web/ left by an older
+		 * build was still sitting here. Reinstalling the box swept the
+		 * leftovers away and assembly began failing immediately. A
+		 * build output tree is created fresh or it is not a build
+		 * output tree.
+		 */
+		if (persist_fresh_output_dir(artifact_dir) != 0 ||
+		    merge_tree(dest_dir, artifact_dir, "", e) != 0) {
 			pkg_fail(e, 0, PKG_FAILURE_INSTALL, "failed to harvest the built artifact");
 			g_chains[chain_idx].name[0] = '\0';
 			g_chains[chain_idx].dep_queue_count = 0;

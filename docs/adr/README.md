@@ -257,3 +257,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0250](0250-a-build-that-cannot-find-a-tool-is-a-failed-build.md) | A build that cannot find a tool is a failed build, whatever it exits with | Accepted |
 | [0251](0251-a-package-artifact-carries-what-the-platform-runs.md) | A package artifact carries what the platform runs, and nothing else | Accepted |
 | [0252](0252-an-image-recipe-is-authoritative.md) | An image recipe is authoritative; the image is derived from it | Accepted |
+| [0253](0253-a-build-output-tree-is-created-fresh.md) | A build output tree is created fresh, never inherited | Accepted |
