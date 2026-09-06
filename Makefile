@@ -41,8 +41,8 @@ SELFTESTS = \
 	$(BUILD)/test_elfcheck $(BUILD)/test_elfcheck_gcc \
 	$(BUILD)/test_treecopy $(BUILD)/test_childdiag \
 	$(BUILD)/test_kernelpolicy $(BUILD)/test_releasekey $(BUILD)/test_subid  \
-	$(BUILD)/test_partlabel $(BUILD)/test_pkg_finalize $(BUILD)/test_fresh_output_dir $(BUILD)/test_pgpverify $(BUILD)/test_kernelrecipe \
-	$(BUILD)/test_pgpverify $(BUILD)/test_kernelrecipe \
+	$(BUILD)/test_partlabel $(BUILD)/test_pkg_finalize $(BUILD)/test_fresh_output_dir \
+	$(BUILD)/test_pgpverify $(BUILD)/test_kernelrecipe $(BUILD)/test_srcdepth \
 	$(BUILD)/test_btrfs $(BUILD)/test_toolchain \
 	$(DAEMON_SELFTESTS)
 
@@ -659,6 +659,9 @@ $(BUILD)/test_pgpverify: test/test_pgpverify.c daemon/src/pgpverify.c | $(BUILD)
 # that works on an invented one and not the actual file is worthless.
 $(BUILD)/test_kernelrecipe: test/test_kernelrecipe.c daemon/src/kernelrecipe.c | $(BUILD)
 	$(CC) $(CFLAGS) -Idaemon/include test/test_kernelrecipe.c daemon/src/kernelrecipe.c -o $@
+
+$(BUILD)/test_srcdepth: test/test_srcdepth.c daemon/src/srcdepth.c | $(BUILD)
+	$(CC) $(CFLAGS) -Idaemon/include test/test_srcdepth.c daemon/src/srcdepth.c -o $@
 
 $(BUILD)/test_elfcheck: test/test_elfcheck.c daemon/src/elfcheck.c | $(BUILD)
 	$(CC) $(CFLAGS) -Idaemon/include test/test_elfcheck.c daemon/src/elfcheck.c -o $@

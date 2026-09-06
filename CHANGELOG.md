@@ -2,6 +2,42 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### ADR-0255 part 1: the depth grammar
+
+`n-<lines>.<releases>`, read literally: go back that many release lines, then that many releases within the line. `daemon/src/srcdepth.c`, with `test_srcdepth` in `SELFTESTS`.
+
+Against kernel.org's real `stable` shape:
+
+```
+n        -> 7.2.3      n-1      -> 7.1.13
+n-0.1    -> 7.2.2      n-1.1    -> 7.1.12
+n-0.2    -> 7.2.1      n-2      -> 7.0.31
+```
+
+**The fixture is real data, and that is load-bearing.** The grammar exists because `n-1` and `n-0.1` differ by an entire release line on a channel that publishes several lines at once. A synthetic list with one line per major would not exercise the distinction, and the bug worth guarding — collapsing the two spellings into one meaning — would pass unnoticed. So the test asserts directly that they resolve differently, not merely that each resolves.
+
+That guard was verified by reintroducing the bug: making `lines` index into a single flat ordering produces
+
+```
+FAIL: n-1 -- got "7.2.2", want "7.1.13"
+FAIL: n-0.1 and n-1 both gave "7.2.2"
+```
+
+**A depth that cannot be satisfied fails with its reason**, per ADR-0255, and the test asserts the reason mentions the actual numbers rather than being generic:
+
+```
+n-9    -> depth asks to go back 9 release line(s), but the channel publishes only 3 line(s)
+n-0.9  -> depth asks for release 9 back within line 7.2, which publishes only 3 release(s)
+```
+
+Getting those numbers right needed two passes rather than one. A single loop that breaks once it walks past the target line has already advanced its "current line" to the *next* one, so it reports the wrong line in the message — right answer, wrong explanation, which is the kind of error that survives review.
+
+Three deliberate tolerances, each with a test: duplicate versions are collapsed (a feed listing a release twice must not make "one back" mean "the same one"), unparseable entries are skipped rather than failing the package (one bad row in an upstream feed should not take it offline), and a prerelease is **not** the release it resembles — `7.3-rc1` is rejected, while this platform's own `6.18.40-24` recipe suffix is ignored so an upstream version and the revision built from it land in the same line.
+
+`srcdepth_version_parse()` is deliberately not `pkg_version_compare()`. That one orders *recipe* versions with a dpkg-style natural sort over arbitrary strings, because it must cope with `v1.4.0` and `1.5.8.pl02`. This orders *upstream* versions, where the question is which release **line** a version belongs to — something a natural sort cannot answer at all. The header says so, so it does not read as duplication later.
+
+Also de-duplicated `SELFTESTS`, which listed `test_pgpverify` and `test_kernelrecipe` twice.
+
 ### 192.168.15.95 runs stable 7.2.3, verified before the reboot rather than after
 
 Built, checked, deployed to the spare slot and booted:
