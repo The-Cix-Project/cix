@@ -294,6 +294,22 @@ A `.pc` file is a **claim about what your package provides** — include paths, 
 
 The test to apply: *does everything this `.pc` file promises actually exist in `$PKG_DESTDIR`?* If yes, ship it. If no, either ship the missing pieces or strip the `.pc` — never ship a `.pc` that describes files you deleted.
 
+## What you do NOT have to clean up
+
+`pkg_install()` is finished when the package's files are in `$PKG_DESTDIR`. The daemon then runs a finalize phase over that tree, in your build container, before it becomes an artifact ([ADR-0251](../adr/0251-a-package-artifact-carries-what-the-platform-runs.md)). It:
+
+- **strips ELF output** — `--strip-unneeded` for shared objects and executables, `--strip-debug` for `.o`, `.ko` and archives;
+- **drops `libfoo.a` when `libfoo.so*` ships beside it** — this platform links dynamically always, so that archive is dead weight. An archive with **no** shared counterpart (`libtcc1.a`, `libgcc.a`, `libc_nonshared.a`) is kept;
+- **removes `*.la`**;
+- **removes `usr/share/{man,info,doc,locale,i18n}`**.
+
+So **do not hand-write these in your recipe.** They used to be per-recipe, and the result is the reason the phase exists: of 115 recipes, 37 pruned anything at all, in twelve different spellings, while `glibc` shipped `libc.so.6` with 9.46 MiB of debug sections and `libc.a` three times over. Existing recipes still carry those lines; they are redundant now, not wrong, and come out when a recipe next revises.
+
+Two consequences for you:
+
+- **If your package produces ELF, declare `binutils`** in `pkg_build_depends`. Without `strip` the build **fails** naming it, rather than quietly shipping an unstripped package. A package that produces no ELF at all needs nothing.
+- **The `.pc` rule above still applies, and now has one more input.** If a `.pc` file you ship promises a static archive that the finalize phase drops, the claim has become false — the same failure that section warns about, arriving from the other direction.
+
 ## Dependencies: two questions, two fields
 
 A recipe answers two different questions, and they are **not** the same list:

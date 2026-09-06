@@ -41,7 +41,7 @@ SELFTESTS = \
 	$(BUILD)/test_elfcheck $(BUILD)/test_elfcheck_gcc \
 	$(BUILD)/test_treecopy $(BUILD)/test_childdiag \
 	$(BUILD)/test_kernelpolicy $(BUILD)/test_releasekey $(BUILD)/test_subid  \
-	$(BUILD)/test_partlabel \
+	$(BUILD)/test_partlabel $(BUILD)/test_pkg_finalize \
 	$(BUILD)/test_btrfs $(BUILD)/test_toolchain \
 	$(DAEMON_SELFTESTS)
 
@@ -283,7 +283,7 @@ selftest: $(SELFTESTS) $(SELFTEST_HELPERS)
 
 .PHONY: all clean aggressive
 
-all: $(BUILD)/test_toolchain $(BUILD)/test_harness $(BUILD)/harness_child $(BUILD)/test_overlay $(BUILD)/overlay_child $(BUILD)/test_container_pty $(BUILD)/pty_child $(BUILD)/cixd $(BUILD)/test_daemon $(BUILD)/daemon_child $(BUILD)/cixctl $(BUILD)/test_cli $(BUILD)/test_web $(BUILD)/test_slow_client $(BUILD)/test_rtnetlink $(BUILD)/test_container_net $(BUILD)/net_child $(BUILD)/net_connect $(BUILD)/test_daemon_net $(BUILD)/test_networks $(BUILD)/test_network_interfaces $(BUILD)/test_images $(BUILD)/test_container_restart $(BUILD)/test_container_files $(BUILD)/tcp_listen_child $(BUILD)/test_dns $(BUILD)/test_ntp $(BUILD)/test_ldap $(BUILD)/test_pki $(BUILD)/test_pkg $(BUILD)/mkbootroot $(BUILD)/test_mkbootroot_firmware $(BUILD)/test_boot $(BUILD)/test_boot_ab $(BUILD)/cix-install $(BUILD)/cix-recover $(BUILD)/test_dual_console $(BUILD)/dual_console_child $(BUILD)/console_term_child $(BUILD)/console_input_child $(BUILD)/mkinstalleriso $(BUILD)/test_installer $(BUILD)/test_devices $(BUILD)/dev_child $(BUILD)/test_daemon_devices $(BUILD)/test_system_update $(BUILD)/test_boot_update $(BUILD)/test_system_backup $(BUILD)/test_console_shell $(BUILD)/mktoolchainimage $(BUILD)/test_console_pki_bootstrap $(BUILD)/test_console_exec $(BUILD)/test_container_lifecycle $(BUILD)/output_child $(BUILD)/stats_child $(BUILD)/test_container_stats $(BUILD)/test_disk_quota $(BUILD)/test_diskpart $(BUILD)/test_sysctl $(BUILD)/test_kmod $(BUILD)/test_kmod_build $(BUILD)/test_routes $(BUILD)/test_daemon_bind_ip $(BUILD)/test_pkg_build_log $(BUILD)/test_pkg_concurrent_stress $(BUILD)/test_pkg_sync $(BUILD)/test_pkg_cache $(BUILD)/test_image_recipe $(BUILD)/test_container_recipe $(BUILD)/test_rolling_restart $(BUILD)/syslog_recv_child $(BUILD)/test_syslogfwd $(BUILD)/test_hostproc $(BUILD)/test_tls_throttle $(BUILD)/test_https_chain $(BUILD)/test_layout_upgrade $(BUILD)/test_treecopy $(BUILD)/test_storage_placement $(BUILD)/test_backup_config $(BUILD)/test_container_storage_migrate $(BUILD)/test_container_dns_servers $(BUILD)/test_hostauth $(BUILD)/test_device_hotplug $(BUILD)/test_subid $(BUILD)/test_volume $(BUILD)/volume_child $(BUILD)/test_userns_run $(BUILD)/run_child $(BUILD)/test_factory_reset $(BUILD)/test_boot_console $(BUILD)/test_signing_keys $(BUILD)/test_pkg_recipe_approval $(BUILD)/test_stallwatch $(BUILD)/test_kernelpolicy $(BUILD)/test_dhcp $(BUILD)/test_artifact_export $(BUILD)/test_esp $(BUILD)/test_btrfs $(BUILD)/test_direct_rootfs $(BUILD)/test_targz $(BUILD)/targz_probe $(BUILD)/test_childdiag $(BUILD)/apigen $(BUILD)/test_apigen $(BUILD)/test_apiroute $(BUILD)/test_api_surfaces $(BUILD)/test_docindex $(BUILD)/test_web_vt $(BUILD)/test_toolchain_policy $(BUILD)/test_recipe_hygiene $(BUILD)/test_curl_guards $(BUILD)/test_lint $(BUILD)/test_blocking_waits $(BUILD)/test_elfcheck $(BUILD)/test_elfcheck_gcc $(BUILD)/test_releasekey $(BUILD)/test_aggressive $(BUILD)/cix-boot.efi $(BUILD)/cix-xorriso
+all: $(BUILD)/test_toolchain $(BUILD)/test_harness $(BUILD)/harness_child $(BUILD)/test_overlay $(BUILD)/overlay_child $(BUILD)/test_container_pty $(BUILD)/pty_child $(BUILD)/cixd $(BUILD)/test_daemon $(BUILD)/daemon_child $(BUILD)/cixctl $(BUILD)/test_cli $(BUILD)/test_web $(BUILD)/test_slow_client $(BUILD)/test_rtnetlink $(BUILD)/test_container_net $(BUILD)/net_child $(BUILD)/net_connect $(BUILD)/test_daemon_net $(BUILD)/test_networks $(BUILD)/test_network_interfaces $(BUILD)/test_images $(BUILD)/test_container_restart $(BUILD)/test_container_files $(BUILD)/tcp_listen_child $(BUILD)/test_dns $(BUILD)/test_ntp $(BUILD)/test_ldap $(BUILD)/test_pki $(BUILD)/test_pkg $(BUILD)/mkbootroot $(BUILD)/test_mkbootroot_firmware $(BUILD)/test_boot $(BUILD)/test_boot_ab $(BUILD)/cix-install $(BUILD)/cix-recover $(BUILD)/test_dual_console $(BUILD)/dual_console_child $(BUILD)/console_term_child $(BUILD)/console_input_child $(BUILD)/mkinstalleriso $(BUILD)/test_installer $(BUILD)/test_devices $(BUILD)/dev_child $(BUILD)/test_daemon_devices $(BUILD)/test_system_update $(BUILD)/test_boot_update $(BUILD)/test_system_backup $(BUILD)/test_console_shell $(BUILD)/mktoolchainimage $(BUILD)/test_console_pki_bootstrap $(BUILD)/test_console_exec $(BUILD)/test_container_lifecycle $(BUILD)/output_child $(BUILD)/stats_child $(BUILD)/test_container_stats $(BUILD)/test_disk_quota $(BUILD)/test_diskpart $(BUILD)/test_sysctl $(BUILD)/test_kmod $(BUILD)/test_kmod_build $(BUILD)/test_routes $(BUILD)/test_daemon_bind_ip $(BUILD)/test_pkg_build_log $(BUILD)/test_pkg_concurrent_stress $(BUILD)/test_pkg_sync $(BUILD)/test_pkg_cache $(BUILD)/test_image_recipe $(BUILD)/test_container_recipe $(BUILD)/test_rolling_restart $(BUILD)/syslog_recv_child $(BUILD)/test_syslogfwd $(BUILD)/test_hostproc $(BUILD)/test_tls_throttle $(BUILD)/test_https_chain $(BUILD)/test_layout_upgrade $(BUILD)/test_treecopy $(BUILD)/test_storage_placement $(BUILD)/test_backup_config $(BUILD)/test_container_storage_migrate $(BUILD)/test_container_dns_servers $(BUILD)/test_hostauth $(BUILD)/test_device_hotplug $(BUILD)/test_subid $(BUILD)/test_volume $(BUILD)/volume_child $(BUILD)/test_userns_run $(BUILD)/run_child $(BUILD)/test_factory_reset $(BUILD)/test_boot_console $(BUILD)/test_signing_keys $(BUILD)/test_pkg_recipe_approval $(BUILD)/test_stallwatch $(BUILD)/test_kernelpolicy $(BUILD)/test_dhcp $(BUILD)/test_artifact_export $(BUILD)/test_esp $(BUILD)/test_btrfs $(BUILD)/test_direct_rootfs $(BUILD)/test_targz $(BUILD)/targz_probe $(BUILD)/test_childdiag $(BUILD)/apigen $(BUILD)/test_apigen $(BUILD)/test_apiroute $(BUILD)/test_api_surfaces $(BUILD)/test_docindex $(BUILD)/test_web_vt $(BUILD)/test_toolchain_policy $(BUILD)/test_recipe_hygiene $(BUILD)/test_curl_guards $(BUILD)/test_lint $(BUILD)/test_blocking_waits $(BUILD)/test_pkg_finalize $(BUILD)/test_elfcheck $(BUILD)/test_elfcheck_gcc $(BUILD)/test_releasekey $(BUILD)/test_aggressive $(BUILD)/cix-boot.efi $(BUILD)/cix-xorriso
 
 $(BUILD):
 	mkdir -p $(BUILD)
@@ -335,7 +335,7 @@ $(BUILD)/test_container_pty: test/test_container_pty.c test/test_image_fixture.c
 $(BUILD)/pty_child: test/pty_child.c | $(BUILD)
 	$(CC) $(CFLAGS) $< -o $@
 
-$(BUILD)/cixd: daemon/src/main.c $(DAEMON_SRCS) $(LIB_SRCS) test/test_image_fixture.c $(BUILD)/version.h $(BUILD)/generated/api_routes.h $(BUILD)/generated/config_sections.h web/api.js | $(BUILD)
+$(BUILD)/cixd: daemon/src/main.c $(DAEMON_SRCS) $(LIB_SRCS) test/test_image_fixture.c $(BUILD)/version.h $(BUILD)/generated/api_routes.h $(BUILD)/generated/config_sections.h $(BUILD)/generated/pkg_finalize.h web/api.js | $(BUILD)
 	$(CC) $(DAEMON_CFLAGS) daemon/src/main.c $(DAEMON_SRCS) $(LIB_SRCS) test/test_image_fixture.c -lssl -lcrypto -o $@
 
 $(BUILD)/test_daemon: test/test_daemon.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
@@ -614,11 +614,32 @@ $(BUILD)/generated/config_sections.h: docs/api/openapi.yaml $(BUILD)/apigen
 	@mkdir -p $(BUILD)/generated
 	$(BUILD)/apigen docs/api/openapi.yaml --emit-config-sections $@
 
+# ADR-0251's package-finalize policy, embedded into the daemon.
+#
+# The policy is authored as shell (daemon/policy/pkg-finalize.sh) so it
+# is reviewable and directly runnable -- test_pkg_finalize runs that
+# exact file -- and embedded here so cixd carries it and can never be
+# asked to build a package without it. No build tool needed: the
+# transform is escape backslashes, escape quotes, wrap each line.
+$(BUILD)/generated/pkg_finalize.h: daemon/policy/pkg-finalize.sh
+	@mkdir -p $(BUILD)/generated
+	@printf '/* Generated from %s -- do not edit. See ADR-0251. */\n' $< > $@
+	@printf 'static const char PKG_FINALIZE_SH[] =\n' >> $@
+	@sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/^/\t"/' -e 's/$$/\\n"/' $< >> $@
+	@printf ';\n' >> $@
+
 $(BUILD)/apigen: tools/apigen.c | $(BUILD)
 	$(CC) $(CFLAGS) tools/apigen.c -o $@
 
 $(BUILD)/test_elfcheck_gcc: test/test_elfcheck_gcc.c daemon/src/elfcheck.c | $(BUILD)
 	$(CC) $(CFLAGS) -Idaemon/include test/test_elfcheck_gcc.c daemon/src/elfcheck.c -o $@
+
+# ADR-0251: runs daemon/policy/pkg-finalize.sh -- the same file the
+# daemon embeds -- against synthetic DESTDIR trees. No daemon, no
+# container, no binutils: strip is stubbed so the classification is
+# what is asserted.
+$(BUILD)/test_pkg_finalize: test/test_pkg_finalize.c daemon/policy/pkg-finalize.sh | $(BUILD)
+	$(CC) $(CFLAGS) test/test_pkg_finalize.c -o $@
 
 $(BUILD)/test_elfcheck: test/test_elfcheck.c daemon/src/elfcheck.c | $(BUILD)
 	$(CC) $(CFLAGS) -Idaemon/include test/test_elfcheck.c daemon/src/elfcheck.c -o $@

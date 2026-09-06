@@ -2,6 +2,39 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### A package artifact carries what the platform runs, and nothing else (ADR-0251)
+
+The owner asked why an installer ISO is 218 MiB when the whole thing should be "kernel + cix + some decoration". Measuring the `glibc` artifact answered it: 56.8 MiB compressed, 146.4 MiB unpacked over 2114 entries.
+
+```
+static archives (24 files)      78.39 MiB   54%
+shared objects                  37.48 MiB   26%
+i18n locale SOURCES (607)       15.04 MiB   10%
+everything else                 15.51 MiB   10%
+
+libc.so.6:  .debug_* + .symtab = 9.46 MiB of 11.42 MiB of sections  (83%)
+libc.a:     shipped 3 times, 22.43 MiB each
+usr/lib/locale (compiled locales, the thing the sources feed):  0 entries
+```
+
+Fleet-wide: 112 packages, 1004 MiB, led by gcc at 261.6 MiB.
+
+**Why.** Nothing defined what a package artifact *is*. Every recipe runs `make install DESTDIR=` and ships whatever a general-purpose distribution would want, then each recipe individually cleans up after it. Counted across the tree: **37 of 115** latest revisions prune anything at all, in **twelve different spellings** — `man` appears 280 times, `info` 135, `doc` 123, `locale` 77, `i18n` 13.
+
+`glibc` is the worked example, and it is instructive because the recipe is not ignorant. It prunes `man`, `info`, `doc` and misses `locale` and `i18n`. It strips — `strip --strip-debug` on `*crt*.o` — and misses every shared object and executable it ships. The author knew both tools and applied each to a hand-picked subset. The defect is not any one recipe: **the scope of a universal rule was being re-guessed 115 times.** Same shape as #302 (per-recipe tool declarations, no gate), #184 (per-recipe library paths) and #220 (per-recipe workarounds), and fixed the same way each time — define once, enforce centrally, gate it.
+
+**The fix.** `daemon/policy/pkg-finalize.sh`, generated into `build/generated/pkg_finalize.h` and embedded in `cixd`, staged into the build container beside `recipe.sh` and sourced after `pkg_install()` returns. It strips ELF by output kind (`--strip-unneeded` for shared objects and executables, `--strip-debug` for `.o`/`.ko`/archives, because `.symtab` is load-bearing for linking and module loading), drops `libfoo.a` where `libfoo.so*` ships beside it, removes `*.la`, and removes `usr/share/{man,info,doc,locale,i18n}`.
+
+The archive rule is a rule and not an allowlist, so it cannot rot: it keeps `libtcc1.a`, `libgcc.a`, `libc_nonshared.a` and `libfreetype.a` without naming any of them, because none has a shared counterpart, and drops `libc.a`, `libm.a`, `libpthread.a`, `librt.a`, `libdl.a` for the same reason in reverse. Checked against the fleet before adoption: `libc.a` has no consumer anywhere except the glibc copy loop that triplicates it, and every absolute-path reference to an archive is a package referencing its own during its own build, which finishes before finalize runs. It is not new behaviour either — **nineteen recipes already delete archives and `.la` files by hand**, `xz` removing `liblzma.a`/`liblzma.la` and `flex` removing `libfl.a`/`libfl.la`.
+
+If a package produced ELF and the build image has no `strip`, the build **fails** naming `binutils`, per ADR-0250 — never a silent skip. 103 of 115 recipes already declare it; of the twelve that do not, seven are probes and two ship no ELF.
+
+The build command was also written out twice, identically, at both call sites — two copies of a rule is two chances to diverge, which is what this entry is about. Now `PKG_BUILD_CMD`, once.
+
+**Verified.** `test_pkg_finalize` runs the same policy file the daemon embeds against synthetic trees with a stubbed `strip`, asserting what goes and — the half that matters — what stays: `libtcc1.a`, `libc_nonshared.a`, `libfreetype.a`, glibc's ASCII `libc.so` linker script, and symlinks. It is in `SELFTESTS`. Three deliberate regressions were reintroduced to prove it catches them: dropping all archives, skipping silently when `strip` is absent, and following symlinks — all three failed the gate. Separately confirmed that `strip --strip-unneeded` on TCC-produced ELF keeps `.dynsym` and the binary still runs, and that the generated header round-trips byte-identically to the shell file.
+
+**Existing artifacts do not shrink** — they are immutable. The fleet comes down as packages next rebuild, so gcc's 261.6 MiB waits for gcc's next bootstrap.
+
 ### A declared server role was refused by the field allowlist, so the code for it never ran (#301)
 
 `handle_create()` was taught to register a container's declared `dns_server`, `ntp_server`, `syslog_target` or `ldap_server`. `openapi.yaml` documents all four. `docs/api/README.md` describes them. The daemon refused every one of them.
