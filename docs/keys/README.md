@@ -1,13 +1,30 @@
 # Public keys
 
-The public halves of the keys Cix signs things with. Everything here is
-meant to be copied out, published, and pinned — that is the whole job of
-this directory. No private key is ever kept here, or anywhere else in
-this repository.
+Two kinds of key live here, and the difference matters.
+
+**Keys Cix signs with** — the public halves, meant to be copied out,
+published and pinned by anyone verifying a Cix artifact. No private key
+is ever kept here, or anywhere else in this repository.
 
 | File | What it verifies | Held by |
 |---|---|---|
 | [`cix-release.pub`](cix-release.pub) | Installer ISOs published to the artifact cache | The one host that cuts release media ([ADR-0220](../adr/0220-a-separate-release-signing-key.md)) |
+
+**Keys Cix verifies against** — upstream publishers' keys, pinned here so
+this platform can check what it downloads ([ADR-0254](../adr/0254-upstream-checksums-are-verified-not-computed.md)).
+
+| File | Fingerprint | What it verifies |
+|---|---|---|
+| [`kernel.org-autosigner.asc`](kernel.org-autosigner.asc) | `B8868C80BA62A1FFFAF5FDA9632D3A06589DA6B1` | kernel.org's `sha256sums.asc`, so a kernel `pkg_sha256` quotes a checksum **kernel.org signed** rather than one this platform computed over its own download |
+
+The file is not the trust anchor; **the fingerprint is**. `pgpverify.c`
+recomputes the fingerprint from the key material and refuses anything
+that does not match the pinned value, so a substituted key file fails
+rather than being believed. That is why the fingerprint is written out
+above in full: it is the part a human checked, out of band, against
+kernel.org's own published signature page. Replacing the file without
+changing that fingerprint changes nothing; changing the fingerprint is a
+trust decision and needs the same out-of-band check again.
 
 ## Verifying an installer ISO
 
