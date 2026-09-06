@@ -41,6 +41,7 @@
 #include "btrfs.h"
 #include "kernelpolicy.h"
 #include "pipelineview.h"
+#include "scheduler.h"
 #include "srcpolicy.h"
 #include "srcupstream.h"
 #include "api_srcpolicy.h"
@@ -258,6 +259,7 @@ char PKGPOLICY_STATE_PATH[PATH_MAX];  /* issue #64 -- per-package rolling policy
 char BOOTCONSOLE_STATE_PATH[PATH_MAX]; /* issue #24 -- boot console parameters */
 char KERNELPOLICY_STATE_PATH[PATH_MAX]; /* issue #65 -- which kernel line this box tracks */
 char SRCPOLICY_STATE_PATH[PATH_MAX];    /* ADR-0255 -- which upstream release packages build */
+char SCHEDULER_STATE_PATH[PATH_MAX];    /* ADR-0257 -- everything this host does on a clock */
 char KERNEL_RELEASES_PATH[PATH_MAX];    /* issue #65 -- cached kernel.org releases.json */
 char ZSWAP_STATE_PATH[PATH_MAX];        /* issue #51 -- compressed swap cache settings */
 char KSM_STATE_PATH[PATH_MAX];          /* issue #50 -- samepage merging settings */
@@ -432,6 +434,8 @@ static void compute_state_dir_relative_paths(void)
 	snprintf(KERNELPOLICY_STATE_PATH, sizeof(KERNELPOLICY_STATE_PATH), "%s/kernel_policy.json",
 	         STATE_DIR);
 	snprintf(SRCPOLICY_STATE_PATH, sizeof(SRCPOLICY_STATE_PATH), "%s/source_policy.json",
+	         STATE_DIR);
+	snprintf(SCHEDULER_STATE_PATH, sizeof(SCHEDULER_STATE_PATH), "%s/schedules.json",
 	         STATE_DIR);
 	/*
 	 * The fetched releases.json is cached on disk rather than in
@@ -1159,6 +1163,7 @@ enum conn_kind {
 	CONN_NTP_PERIODIC_TIMER, /* permanent, re-arms itself -- fires ntp_sync_start() periodically (task #751) */
 	CONN_BUILD_STALL_TIMER,  /* permanent, re-arms itself -- reports in-flight builds that have gone quiet */
 	CONN_BOOT_CONFIRM_TIMER, /* ADR-0256: re-checks a boot that could not confirm, then falls back */
+	CONN_SCHEDULER_TIMER,    /* ADR-0257: permanent, re-arms to the next due job */
 	CONN_NTP_SYNC,           /* one in-flight SNTP sync attempt's own UDP socket */
 	CONN_NTP_SYNC_TIMER,     /* same job's per-candidate timeout -- see ntp_job_teardown() */
 	/*
@@ -5661,6 +5666,107 @@ static void maybe_confirm_boot(const char *slot)
 	                "the other slot",
 	                g_uplink_unattached, BOOT_CONFIRM_RETRY_SECONDS * BOOT_CONFIRM_MAX_ATTEMPTS);
 	start_boot_confirm_timer(slot);
+}
+
+/* ---------- ADR-0257: one scheduler ---------- */
+
+static struct conn g_scheduler_conn = { .fd = -1 };
+static int g_scheduler_first_tick = 1;
+
+/* Defined with the rest of the kernel.org release plumbing, far below;
+ * declared here so the action that schedules it can sit beside the
+ * scheduler's own timer rather than being stranded next to curl. */
+static int kernel_releases_fetch_start(char *err_msg, size_t err_msg_size);
+
+/*
+ * The first registered action, and deliberately the only one in this
+ * part: refreshing what upstream has published.
+ *
+ * ADR-0255 gave the platform a source catalogue and no way to keep its
+ * inputs fresh -- kernel.org's release list only ever refreshed when
+ * somebody asked by hand. This closes that, and it has no existing
+ * timer of its own, so nothing can double-fire while the legacy timers
+ * are still alive. The four that DO have timers (system backup, volume
+ * backup, pkg sync, NTP) arrive together with the cut-over, so no
+ * window exists in which a job and a legacy timer drive the same work.
+ *
+ * Enqueues rather than fetching inline: kernel_releases_fetch_start()
+ * forks curl and watches it on this same reactor, which is what keeps
+ * a scheduled refresh from blocking the control plane.
+ */
+static int action_refresh_upstreams(const char *params, char *reason, size_t reason_size)
+{
+	char err[192];
+
+	(void)params;
+	if (kernel_releases_fetch_start(err, sizeof(err)) != 0) {
+		snprintf(reason, reason_size, "%s", err);
+		return -1;
+	}
+	snprintf(reason, reason_size, "started a kernel.org release-list refresh");
+	return 0;
+}
+
+static void arm_scheduler_timer(void)
+{
+	struct itimerspec its;
+	long now = (long)time(NULL);
+	long due = scheduler_next_due(now);
+	long delay;
+
+	/*
+	 * Armed to the next due job, never to a fixed tick, but clamped:
+	 * at least a second so a job that is already overdue cannot spin,
+	 * and at most a minute so a wall-clock job stays accurate across a
+	 * clock step (NTP moving the clock does not re-arm this timer, so
+	 * a multi-hour sleep would simply be wrong afterwards).
+	 */
+	if (due == 0)
+		delay = 60;
+	else
+		delay = due - now;
+	if (delay < 1)
+		delay = 1;
+	if (delay > 60)
+		delay = 60;
+
+	memset(&its, 0, sizeof(its));
+	its.it_value.tv_sec = delay;
+	if (timerfd_settime(g_scheduler_conn.fd, 0, &its, NULL) != 0)
+		perror("timerfd_settime (scheduler re-arm)");
+}
+
+static void handle_scheduler_timer_event(struct conn *cc)
+{
+	uint64_t expirations;
+
+	if (read(cc->fd, &expirations, sizeof(expirations)) < 0)
+		perror("read (scheduler timerfd)");
+	scheduler_run_due((long)time(NULL), g_scheduler_first_tick);
+	g_scheduler_first_tick = 0;
+	arm_scheduler_timer();
+}
+
+static void start_scheduler_timer(void)
+{
+	struct cix_epoll_event ev;
+	int fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+
+	if (fd < 0) {
+		perror("timerfd_create (scheduler)");
+		return;
+	}
+	g_scheduler_conn.kind = CONN_SCHEDULER_TIMER;
+	g_scheduler_conn.fd = fd;
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = &g_scheduler_conn;
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
+		close(fd);
+		g_scheduler_conn.fd = -1;
+		return;
+	}
+	arm_scheduler_timer();
 }
 
 static void start_build_stall_timer(void)
@@ -20406,6 +20512,108 @@ static void op_listUpstreamKinds(const struct api_ctx *ctx)
 	handle_upstream_kinds_get(ctx->fd);
 }
 
+/* GET /v1/schedule-actions (ADR-0257) */
+static void op_listScheduleActions(const struct api_ctx *ctx)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	scheduler_write_actions_json(&w);
+	respond_json(ctx->fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/* GET /v1/schedules (ADR-0257) */
+static void op_listSchedules(const struct api_ctx *ctx)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	scheduler_write_json(&w);
+	respond_json(ctx->fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/* GET /v1/schedules/{name} */
+static void op_getSchedule(const struct api_ctx *ctx)
+{
+	const struct schedule *s = scheduler_find(ctx->p[0]);
+	struct json_writer w;
+
+	if (s == NULL) {
+		respond_error(ctx->fd, 404, "Not Found", "no such schedule");
+		return;
+	}
+	jw_init(&w);
+	scheduler_write_json_one(s, &w);
+	respond_json(ctx->fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/* PUT /v1/schedules/{name} */
+static void op_setSchedule(const struct api_ctx *ctx)
+{
+	char err[320];
+	enum schedule_error e;
+	const struct schedule *s;
+	struct json_writer w;
+
+	e = scheduler_set_from_json(ctx->p[0], ctx->req->body, ctx->req->body_len, err, sizeof(err));
+	if (e != SCHEDULE_OK) {
+		respond_error(ctx->fd, 400, "Bad Request",
+		               err[0] != '\0' ? err : schedule_strerror(e));
+		return;
+	}
+	s = scheduler_find(ctx->p[0]);
+	jw_init(&w);
+	scheduler_write_json_one(s, &w);
+	respond_json(ctx->fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/* DELETE /v1/schedules/{name} */
+static void op_deleteSchedule(const struct api_ctx *ctx)
+{
+	enum schedule_error e = scheduler_delete(ctx->p[0]);
+
+	if (e == SCHEDULE_ERR_NOT_FOUND) {
+		respond_error(ctx->fd, 404, "Not Found", "no such schedule");
+		return;
+	}
+	if (e != SCHEDULE_OK) {
+		respond_error(ctx->fd, 500, "Internal Server Error", schedule_strerror(e));
+		return;
+	}
+	http_write_response(ctx->fd, 204, "No Content", "application/json", "", 0);
+}
+
+/*
+ * POST /v1/schedules/{name}/run
+ *
+ * The run's own outcome is reported in the returned schedule's
+ * last_ok/last_reason rather than as an HTTP status: a job that ran and
+ * failed is a successful request about a failed run, and collapsing
+ * those into one number is how "did the call work" and "did the work
+ * work" get confused.
+ */
+static void op_runSchedule(const struct api_ctx *ctx)
+{
+	const struct schedule *s;
+	char err[320];
+	struct json_writer w;
+
+	if (scheduler_find(ctx->p[0]) == NULL) {
+		respond_error(ctx->fd, 404, "Not Found", "no such schedule");
+		return;
+	}
+	scheduler_run_now(ctx->p[0], err, sizeof(err));
+	s = scheduler_find(ctx->p[0]);
+	jw_init(&w);
+	scheduler_write_json_one(s, &w);
+	respond_json(ctx->fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
 /* GET /v1/pipeline (ADR-0256) -- the read-time join across the source
  * catalogue, the package job records and this host's own boot entry. */
 static void op_getPipeline(const struct api_ctx *ctx)
@@ -24352,6 +24560,10 @@ static int cixd_main(int argc, char **argv)
 	}
 	kernelpolicy_init(KERNELPOLICY_STATE_PATH); /* issue #65 */
 	srcpolicy_init(SRCPOLICY_STATE_PATH);       /* ADR-0255 */
+	scheduler_init(SCHEDULER_STATE_PATH);       /* ADR-0257 */
+	scheduler_register_action("pkg.refresh-upstreams",
+	                           "fetch what upstream has published, for every discovery kind",
+	                           action_refresh_upstreams);
 	/* Issue #51: applied here, not just on PUT -- the kernel default is
 	 * deliberately off, so this is the setting's only chance to survive
 	 * a reboot. */
@@ -24912,6 +25124,7 @@ static int cixd_main(int argc, char **argv)
 	start_uevent_watch(); /* ADR-0161 Phase C -- same g_epfd/best-effort posture as start_kmsg_watch() */
 	start_ntp_periodic_timer(); /* same g_epfd/best-effort posture, task #751 */
 	start_build_stall_timer();  /* reports an in-flight build that has gone quiet */
+	start_scheduler_timer();    /* ADR-0257 -- no-op until a schedule exists */
 	start_pkg_sync_periodic_timer(); /* same posture, ADR-0121 -- no-op until an interval is configured */
 	start_serverhealth_timer(); /* issue #81 -- probes every registered server on an interval */
 	start_backup_periodic_timer(); /* same posture, ADR-0141 Phase 5 -- no-op until enabled+interval configured */
@@ -25124,6 +25337,8 @@ static int cixd_main(int argc, char **argv)
 				handle_build_stall_timer_event(cc);
 			else if (cc->kind == CONN_BOOT_CONFIRM_TIMER)
 				handle_boot_confirm_timer_event(cc);
+			else if (cc->kind == CONN_SCHEDULER_TIMER)
+				handle_scheduler_timer_event(cc);
 			else if (cc->kind == CONN_RESTART_TIMER)
 				handle_restart_timer_event(cc);
 			else if (cc->kind == CONN_ROLLING_RESTART_TIMER)

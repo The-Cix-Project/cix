@@ -37,6 +37,31 @@ static const char *const n_login_flags[] = {
 	NULL
 };
 
+static const char *const n_schedule_set_flags[] = {
+	"--action=",
+	"--catch-up",
+	"--daily-at=",
+	"--disabled",
+	"--every-days=",
+	"--every-hours=",
+	"--every-minutes=",
+	"--every-seconds=",
+	"--weekly-at=",
+	"--weekly-on=",
+	"--window-minutes=",
+	NULL
+};
+
+static const struct cli_node n_schedule_subs[] = {
+	{ "actions", NULL, NULL },
+	{ "ls", NULL, NULL },
+	{ "rm", NULL, NULL },
+	{ "run", NULL, NULL },
+	{ "set", n_schedule_set_flags, NULL },
+	{ "show", NULL, NULL },
+	{ NULL, NULL, NULL },
+};
+
 static const char *const n_pipeline_flags[] = {
 	"--all",
 	NULL
@@ -1349,6 +1374,7 @@ static const struct cli_node CLI_TREE[] = {
 	{ "ldap", NULL, n_ldap_subs },
 	{ "pki", NULL, n_pki_subs },
 	{ "pipeline", n_pipeline_flags, NULL },
+	{ "schedule", NULL, n_schedule_subs },
 	{ "pkg", NULL, n_pkg_subs },
 	{ "show", NULL, n_show_subs },
 	{ NULL, NULL, NULL },

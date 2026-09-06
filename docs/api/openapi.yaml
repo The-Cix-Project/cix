@@ -8626,6 +8626,161 @@ paths:
                     items:
                       $ref: "#/components/schemas/UpstreamKind"
 
+  /schedule-actions:
+    get:
+      summary: The actions a schedule may run (ADR-0257)
+      description: >
+        A schedule names an action from this registry. It is never free
+        text, and that is a security boundary rather than a style
+        choice: a free-text command field on a host with no shell is a
+        shell-exec endpoint wearing a friendly name.
+
+        The same reasoning as GET /pkg/upstreams' channels -- the valid
+        values are knowable, so they are published rather than invited
+        and then refused.
+      operationId: listScheduleActions
+      x-cix-expose: [cli]
+      responses:
+        "200":
+          description: Registered actions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  actions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        summary:
+                          type: string
+
+  /schedules:
+    get:
+      summary: Everything this host does on a clock (ADR-0257)
+      description: >
+        One scheduler for the whole platform. Before this, six periodic
+        timers ran independently and four of them existed because an
+        operator had set an interval, each owning its own copy of "is it
+        on", "how often" and "when did it last run" -- two of which back
+        things up to a disk and already shared a tick without sharing
+        anything else (issue #96).
+      operationId: listSchedules
+      x-cix-expose: [cli]
+      responses:
+        "200":
+          description: The schedules
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  schedules:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Schedule"
+                  total:
+                    type: integer
+
+  /schedules/{name}:
+    get:
+      summary: One schedule
+      operationId: getSchedule
+      x-cix-expose: [cli]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The schedule
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Schedule"
+        "404":
+          description: No such schedule
+    put:
+      summary: Create or replace a schedule
+      description: >
+        The name comes from the path, never from the body, so an update
+        cannot smuggle in a rename.
+
+        A refusal names the offending field and its valid range, and an
+        unknown action is answered with the list of actions this
+        platform actually runs.
+
+        An update keeps the run history -- when the job last ran and how
+        that went are facts about the job, not about its settings.
+      operationId: setSchedule
+      x-cix-expose: [cli]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScheduleWrite"
+      responses:
+        "200":
+          description: Stored
+        "400":
+          description: Invalid schedule, or no such action
+    delete:
+      summary: Remove a schedule
+      operationId: deleteSchedule
+      x-cix-expose: [cli]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Removed
+        "404":
+          description: No such schedule
+
+  /schedules/{name}/run:
+    post:
+      summary: Run one schedule now, regardless of its schedule
+      description: >
+        Manual invocation. Deliberately runs a DISABLED job too: the
+        enabled flag governs the schedule, not this button, and an
+        operator asking for this one thing now is not asking to turn the
+        schedule back on.
+
+        This is not a second way to DEFINE a schedule -- it only ever
+        runs one that already exists.
+      operationId: runSchedule
+      x-cix-expose: [cli]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Ran; the outcome is in last_ok / last_reason
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Schedule"
+        "404":
+          description: No such schedule
+
   /pipeline:
     get:
       summary: Where every package stands in the eleven-stage pipeline, and what is stopping it (ADR-0256)
@@ -13662,6 +13817,121 @@ components:
             among these; they are not free text.
         summary:
           type: string
+
+    ScheduleSpec:
+      type: object
+      description: >
+        Exactly one of `every`, `daily` or `weekly`. Two present is
+        refused rather than resolved by precedence: a caller who sent
+        both believes something untrue about what they configured, and a
+        schedule that silently means something other than what was sent
+        is the failure mode this whole format exists to avoid.
+
+        Structured rather than a cron-like string on purpose. The
+        decisive property of a schedule syntax is its FAILURE MODE, not
+        its expressiveness -- cron's real defect is that a mistyped
+        expression still parses and means something else. A structured
+        body has no syntax to mistype: a wrong field is a missing field,
+        a wrong value is out of range.
+      properties:
+        every:
+          type: object
+          description: >
+            A fixed period, anchored on the last run rather than on a
+            fixed epoch -- an epoch-anchored period fires the instant
+            the daemon starts whenever the box has been down longer
+            than one period, turning every reboot into a burst of work.
+            The fields add together; the total must be 10 seconds to a
+            year.
+          properties:
+            seconds:
+              type: integer
+            minutes:
+              type: integer
+            hours:
+              type: integer
+            days:
+              type: integer
+        daily:
+          type: object
+          required: [at]
+          properties:
+            at:
+              type: string
+              description: '"HH:MM", local time. 02:00 means 02:00 where the machine is.'
+        weekly:
+          type: object
+          required: [on, at]
+          properties:
+            on:
+              type: string
+              enum: [sun, mon, tue, wed, thu, fri, sat]
+            at:
+              type: string
+
+    ScheduleWrite:
+      type: object
+      required: [action, schedule]
+      properties:
+        action:
+          type: string
+          description: One of GET /schedule-actions. Never free text.
+        params:
+          type: object
+          description: >
+            Handed to the action unread -- the action is the only thing
+            that knows their shape, and the scheduler deliberately does
+            not learn it.
+        schedule:
+          $ref: "#/components/schemas/ScheduleSpec"
+        window_minutes:
+          type: integer
+          description: >
+            0 (default) means the job fires and is done. Above zero, an
+            action that drains a queue may keep STARTING work for this
+            long after the fire time -- which is what an update window
+            is. A schedule fires an instant; a window is an interval,
+            and modelling it as two jobs (open, close) would put a state
+            machine in the operator's hands.
+        catch_up:
+          type: boolean
+          description: >
+            Whether a wall-clock job whose time passed while the daemon
+            was down runs once at startup. Default false: a backup
+            usually should catch up, a build sweep should not -- it
+            would start heavy work at the least predictable moment
+            there is, right after a boot.
+        enabled:
+          type: boolean
+          description: Default true. A job created is a job wanted.
+
+    Schedule:
+      allOf:
+        - $ref: "#/components/schemas/ScheduleWrite"
+        - type: object
+          properties:
+            name:
+              type: string
+            describes:
+              type: string
+              description: >
+                A rendered, human-readable form ("daily at 02:00 for
+                3h") for a CLI column or a log line. ONE DIRECTION
+                ONLY -- nothing parses it back, which is why there is
+                no syntax here for anyone to mistype.
+            next_run_at:
+              type: [integer, "null"]
+              description: Null when the job is disabled -- a disabled job has no next run.
+            last_run_at:
+              type: [integer, "null"]
+            last_ok:
+              type: [boolean, "null"]
+              description: >
+                Null before the first run. "It has not run" and "it ran
+                and failed" are different facts and a boolean alone
+                cannot hold both.
+            last_reason:
+              type: string
 
     PipelinePosition:
       type: object

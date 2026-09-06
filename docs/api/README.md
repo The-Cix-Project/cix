@@ -255,6 +255,11 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | PUT | `/pkg/policies/{name}` | Set it: `highest` (default), `newest`, or `pinned` with a version |
 | DELETE | `/pkg/policies/{name}` | Back to the default |
 | GET | `/pipeline` | Where every package stands in the eleven-stage pipeline, and what is stopping it (ADR-0256) |
+| GET | `/schedules` | Everything this host does on a clock, in one place (ADR-0257) |
+| PUT | `/schedules/{name}` | Create or replace one |
+| DELETE | `/schedules/{name}` | Remove one |
+| POST | `/schedules/{name}/run` | Run one now, even if disabled |
+| GET | `/schedule-actions` | The actions a schedule may run — a registry, never free text |
 | GET | `/pkg/source-catalogue` | One row per package: what its policy resolves to, and whether a recipe builds it (ADR-0255) |
 | GET | `/pkg/upstreams` | The discovery kinds a recipe may declare, and the channels each publishes (ADR-0255) |
 | GET | `/pkg/source-policy` | Which upstream *release* packages build — the default plus per-package overrides |
@@ -922,6 +927,74 @@ cixctl pkg source-policy set-default --channel=stable --depth=n
 cixctl pkg source-policy set kernel --channel=longterm --depth=n-1
 cixctl pkg source-policy clear kernel
 ```
+
+## Schedules — one scheduler for everything on a clock (ADR-0257)
+
+Six periodic timers ran in this daemon before `/schedules` existed, four of them because an operator had set an interval, each owning its own copy of *is it on*, *how often* and *when did it last run*. Two of them back things up to a disk, and `main.c` had already noticed:
+
+> *Issue #96: the volume sweep rides this same tick rather than arming a second timer. Both are "copy something to the backup disk on a schedule", the intervals are independently configured and each is checked against its own last-run time.*
+
+That is a scheduler stopped one step short. This is the finished one.
+
+### A schedule is structured, not a cron string
+
+```json
+PUT /v1/schedules/nightly-backup
+{ "action": "system.backup",
+  "schedule": { "daily": { "at": "02:00" } },
+  "window_minutes": 180,
+  "catch_up": true }
+```
+
+Exactly one of three forms, and two present is **refused** rather than resolved by precedence:
+
+```json
+{ "every":  { "hours": 6 } }          // fields add up; 10s to a year
+{ "daily":  { "at": "02:00" } }       // local time
+{ "weekly": { "on": "sun", "at": "03:00" } }
+```
+
+**Why not a cron-like string.** The decisive property of a schedule syntax is its *failure mode*, not its expressiveness — cron's real defect is that a mistyped expression still parses and means something else (`*/5` against `5`, day-of-month against day-of-week). A structured body has no syntax to mistype: a wrong field is a missing field, a wrong value is out of range, and every refusal names the field and its range.
+
+It also serves the surfaces that are not a shell better. The **web form is the schedule** — a select, a time input, a number — where a string grammar forces the dashboard to encode one itself, a second implementation of the daemon's parser that can drift from it. And **CLI flags map one-to-one** onto the fields, so there is no sugar layer either.
+
+### `describes` is rendered, never read back
+
+```
+$ cixctl schedule ls
+NAME                   ACTION                     WHEN                       LAST     REASON
+refresh-upstreams      pkg.refresh-upstreams      every 6h                   ok       started a kernel.org release-list refresh
+nightly-backup         system.backup              daily at 02:00 for 3h      never    -
+```
+
+One direction only. Nothing parses `daily at 02:00 for 3h` back, so there is no syntax here for anyone to mistype — cron's objection answered by construction rather than by a better grammar.
+
+### Actions are a registry, and that is a security boundary
+
+`GET /schedule-actions` lists what a job may run. It is never free text, and that is not a style preference: **a free-text command field on a host with no shell is a shell-exec endpoint wearing a friendly name.** A refusal names what *is* available:
+
+```
+PUT /v1/schedules/x {"action":"rm -rf /", ...}
+-> 400 no action "rm -rf /"; this platform runs: pkg.refresh-upstreams
+```
+
+Actions **enqueue**; they never do heavy work inline. Each calls an entry point that already exists and already respects its own queue — which is what keeps a scheduler from becoming a way around "never two heavy builds at once".
+
+### The details that bite
+
+- **`every` is anchored on the last run**, not on a fixed epoch. An epoch-anchored period fires the instant the daemon starts whenever the box has been down longer than one period, turning every reboot into a burst of work.
+- **`catch_up` defaults to false.** A wall-clock job whose time passed while the daemon was down waits for the next occurrence unless it asked otherwise. A backup usually should catch up; a build sweep should not — it would start heavy work at the least predictable moment there is.
+- **`window_minutes` is a duration, not a second job.** A schedule fires an instant; an update window is an interval during which an action may keep *starting* work. Modelling it as an open job and a close job would put a state machine in the operator's hands.
+- **`POST /schedules/{name}/run` runs a disabled job too.** The enabled flag governs the schedule, not the button. It is also never a way to *define* a schedule — only to run one that exists.
+- **`last_ok` is null before the first run.** "It has not run" and "it ran and failed" are different facts, and a boolean alone cannot hold both.
+
+### What is scheduled today, and what is not yet
+
+One action is registered: `pkg.refresh-upstreams`, which closes ADR-0255's open end — release lists that only ever refreshed when someone asked by hand.
+
+The four existing operator-set intervals (system backup, volume backup, pkg sync, NTP) have **not** migrated yet. They arrive together, so no window exists in which a job and a legacy timer drive the same work; `backup-config`, `volume-backup-config`, `repo-config` and `ntp` lose their `interval_*` fields at that point.
+
+`build-stall` and `boot-confirm` are **deliberately never migrating.** They are internal watchdogs with no policy in them, and putting a watchdog under an operator-editable scheduler means an operator can switch off the thing that reports wedged builds, or the thing that falls a bad boot back to the other slot.
 
 ## The pipeline — where everything stands (ADR-0256)
 
