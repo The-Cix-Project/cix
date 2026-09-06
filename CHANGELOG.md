@@ -2,9 +2,48 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### A recipe is a rule, not a version (ADR-0255)
+
+116 packages. **1046 recipe directories.** The kernel accounts for 23 of them, and every single one is upstream **6.18.40** — not one exists because Linux released anything. They exist because a compiler flag or a build dependency changed here, and a new immutable directory was the only way this platform could record that.
+
+The cause is one string carrying two unrelated facts:
+
+```
+pkg_version="6.18.40-24"
+              ^^^^^^^ ^^
+              upstream  our build rule's revision
+```
+
+That string is the artifact cache key — `daemon/src/pkg.c` builds `<name>-<version>-<arch>.tar.gz` straight from it — so changing *either* fact forces a new directory, a new cache key, and a full copy of a file that mostly did not change.
+
+Two consequences this platform has been living with, both measured rather than assumed:
+
+- **Rolling has never reached upstream.** ADR-0188's `highest`/`newest`/`pinned` chooses among recipe revisions *we already wrote*. All 116 packages carry a literal source URL. "Rolling release" has meant rolling across our own edits.
+- **The kernel cannot roll even in principle.** No `image_packages` list contains `kernel` (checked across all 41 image recipe files), and `queue_rolling_rebuilds_for()` has one call site, reached only through an image manifest.
+
+**The decision splits the two identities.** A *recipe* becomes a standing rule — one directory per package, forever, holding variables rather than literals (`pkg_upstream`, `pkg_source_verify`, a templated `pkg_source`, and no `pkg_version`/`pkg_sha256` at all). A *build* becomes the immutable record everything else already depends on: `kernel-7.2.3-a3f19c2`, where the hash covers the recipe content, the resolved source checksums **and** the build image's manifest — closing a gap the old scheme had, since `-24` never encoded that the *compiler* had changed underneath it. The artifact name keeps its exact present shape; only the way the version comes into existence changes, from typed to computed.
+
+Nobody copies a recipe directory again, and nobody types a version number. 1046 directories collapse to 116, with the history where it belongs — in git, which a build record points at by hash.
+
+**Rollability is declared, and absence means pinned.** A recipe naming a `pkg_upstream` kind can roll; one carrying a literal version is pinned; one saying nothing is pinned. Pinned is not a compatibility shim but a permanent first-class answer — plenty of software publishes no machine-readable feed and no signed checksums. This is what makes "cannot resolve" loud by construction: a package that never declared how it discovers releases is never silently left behind, because it was never trying to move.
+
+**Depth is read literally as `n-<lines>.<releases>`** — go back that many release lines, then that many releases within the line. Against kernel.org `stable` today: `n` → 7.2.3, `n-0.1` → 7.2.2, `n-1` → 7.1.13. The last two are spelled differently because on this channel they differ by an entire release line, and a platform that guessed between them would silently walk a box across a major version boundary. ADR-0193 hit the identical ambiguity with `longterm` and resolved it the same way.
+
+**Two `pinned`s, deliberately never merged (#315).** *Source policy* decides which upstream release gets built; *artifact policy* (ADR-0188, unchanged) decides which built artifact an image takes. Separate settings, because a package rolling its source while an image holds an older artifact is exactly what a staged rollout needs.
+
+**Nine stages across ADR-0230's existing five domains** — discover, resolve, authenticate (Catalogue); fetch, build (CI); publish, roll (CD); assemble, deploy (Host lifecycle/Media). No sixth domain and no parallel vocabulary. Two rules bind them: a resolution failure **halts that package and names why** — never falling back to the newest, never to the last thing built, never presenting as current while stuck — and **no stage begins until its predecessor is verified rather than merely reported**, which is the lesson from two roots that assembled cleanly, returned 0, and then panicked at boot with `Attempted to kill init!`.
+
+**This supersedes one sentence of ADR-0193** — "The channel reports; it does not act." That ADR stopped at reporting for a stated reason: acting meant recording a checksum the daemon computed over its own download, downgrading it from *"an operator verified this"* to *"whatever arrived first"*. It also named its own way out, and called the missing keyring "the follow-on, and it is a real one rather than a hedge". That keyring now exists, so the sentence written to stop it is the sentence that lifts.
+
+**#314 dissolves rather than being answered.** It asked where a daemon-generated recipe should live. The daemon no longer generates recipes — it resolves a variable and records a build. Recipes stay hand-written in git, rarely touched.
+
+Design only; no code in this change.
+
 ### The kernel channel's last link: a verified checksum becomes a recipe revision (#65)
 
-With ADR-0254's verifier in place, the remaining step had no security question left in it. `kernel_recipe_generate()` turns a resolved version and a **signature-verified** checksum into a publishable kernel recipe revision — and publishing is what the existing rolling machinery already reacts to, so `queue_rolling_rebuilds_for()` rebuilds every image carrying `kernel` as `mode: rolling` with no further help.
+With ADR-0254's verifier in place, the remaining step had no security question left in it. `kernel_recipe_generate()` turns a resolved version and a **signature-verified** checksum into a publishable kernel recipe revision.
+
+**Correction to this entry as first written.** It claimed publishing the revision was enough, because `queue_rolling_rebuilds_for()` would rebuild "every image carrying `kernel` as `mode: rolling`". There are no such images. Checked across all 41 image recipe files, **no `image_packages` list contains `kernel`** — the kernel is a hostbuild, and `queue_rolling_rebuilds_for()` has exactly one call site, inside `pkg_recipe_add()`, reached only through an image manifest. So the generator works and is tested, but nothing downstream is waiting for it: the one package with a real published release feed is the one package with no automatic path at all. That gap is what ADR-0255 addresses.
 
 Proven end to end against live data, not fixtures:
 
