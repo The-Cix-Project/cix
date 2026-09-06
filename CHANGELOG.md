@@ -2,6 +2,35 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### 192.168.15.95 runs stable 7.2.3, verified before the reboot rather than after
+
+Built, checked, deployed to the spare slot and booted:
+
+```
+update -> 200 {"status":"staged","slot":"b","updated":["root","kernel"]}
+AFTER : slot=b kernel=7.2.3 build=v2.53.81   (55s)
+channel: "stable"  running_version: "7.2.3"  resolved_version: "7.2.3"  behind: false
+```
+
+The box had been on 6.18.40 — a longterm line, not current even for that. It is now on the channel it was told to track, and its own policy endpoint agrees rather than merely being told so.
+
+**The kernel was verified before the reboot, not by the reboot.** `panic=10` plus a `cix-b+3` try counter already covers a kernel that *panics*: it reboots itself, drains the counter, and systemd-boot falls back. What that does not cover is a kernel that boots healthily and cannot see the NIC — no panic, no counter drain, no fallback, and `main.c`'s own note says recovery is then "a human at the box", which on a shell-less host is an outage.
+
+So the config was read **out of the compiled bzImage** (`CONFIG_IKCONFIG`, kept for exactly this kind of question) before anything was staged:
+
+```
+Linux version 7.2.3 (@__pkgbuild-0) (gcc (GCC) 16.2.0, GNU ld ...)
+CONFIG_VIRTIO_NET=y  CONFIG_VIRTIO_BLK=y  CONFIG_VIRTIO_PCI=y  CONFIG_SCSI_VIRTIO=y
+CONFIG_SATA_AHCI=y   CONFIG_EXT4_FS=y     CONFIG_SQUASHFS=y    CONFIG_OVERLAY_FS=y
+CONFIG_EFI_STUB=y    CONFIG_IKCONFIG=y
+```
+
+Ten symbols, all built in. Only then was it staged. The new kernel was paired with **slot A's existing root**, so the kernel was the only variable in the boot.
+
+This is what #319 asks the recipe's own gate to do. That gate asserts the eight symbols revision `-21` was about and not one driver — a 6.18-to-7.2 build can pass all eight and still produce a kernel that cannot reach its disk. Doing it in a script worked once; it belongs in the recipe.
+
+**One correction to how this was attempted first.** `GET /v1/pkg/{name}/artifact/export/download` returned exactly 8 MiB of a 13,096,992-byte artifact, with `Content-Length: 8388608` — a truncated file that looks complete. That is not a bug and no issue was filed: the endpoint is **deliberately chunked** (`?offset=N&length=M`), because this daemon is a single event loop and streaming a large body inline would freeze the control plane, and its own documentation says the caller loops and learns the total from the export's `size_bytes`. The client assumed whole-file semantics from the endpoint's name. Checking the handler before filing is what kept this out of the tracker — the same reflex that produced four bogus reports against cix-cache when it was skipped.
+
 ### Kernel 7.2.3: the first version this platform did not choose by hand
 
 192.168.15.95 tracked **6.18.40** — a *longterm* line, and not even current for it (kernel.org lists 6.18.49). The stated intent was `stable`. Nobody had connected the two, and the recipe on disk was simply the newest one someone had written.
