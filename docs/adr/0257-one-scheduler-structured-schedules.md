@@ -15,7 +15,7 @@ start_serverhealth_timer      start_build_stall_timer     start_ntp_periodic_tim
 start_pkg_sync_periodic_timer start_backup_periodic_timer start_boot_confirm_timer
 ```
 
-Four of them exist because an operator set an interval, and each of those four owns its own copy of the same three ideas — *is it on*, *how often*, *when did it last run*: `backupconfig.interval_hours`, `volumebackup.interval_hours`, `pkg_repo.sync_interval_seconds`, and NTP's own.
+Three of them exist because an operator set an interval, and each of those three owns its own copy of the same three ideas — *is it on*, *how often*, *when did it last run*: `backupconfig.interval_hours`, `volumebackup.interval_hours`, `pkg_repo.sync_interval_seconds`. The other three are compile-time constants (`NTP_SYNC_INTERVAL_SEC`, the serverhealth probe interval) or internal watchdogs.
 
 **Two of them back up things to a disk on a schedule, and the platform already noticed.** `main.c` says so, in a comment that is really the first half of this ADR:
 
@@ -75,17 +75,17 @@ A box that was off at 02:00 runs the job once at startup if `catch_up` is true, 
 
 ### The window is a duration on the job, not a second concept
 
-`window_minutes` says how long after the fire time an action may keep *starting* work. A schedule fires an instant; an update window is an interval, and modelling it as two jobs (open, close) would put a state machine in the operator's hands. A queue-draining action asks `scheduler_in_window()` before each item.
+`window_minutes` says how long after the fire time an action may keep *starting* work. **It is stored and reported and has no consumer yet** — `scheduler_in_window()` exists and nothing calls it, because the first action that drains a queue (`pkg.build-missing`) has not been written. Said plainly here so the field is not mistaken for a working update window. A schedule fires an instant; an update window is an interval, and modelling it as two jobs (open, close) would put a state machine in the operator's hands. A queue-draining action asks `scheduler_in_window()` before each item.
 
 ### What migrates, and what deliberately does not
 
-**Migrates** (operator-facing policy): system backup, volume backup, pkg sync, NTP.
+**Migrates** (operator-facing policy): system backup, volume backup, pkg sync. **Three, not four.** An earlier draft of this ADR said NTP as well; it is wrong, and the correction belongs here rather than in a conversation. `NTP_SYNC_INTERVAL_SEC` is `#define NTP_SYNC_INTERVAL_SEC (60 * 60)` in `main.c` — a compile-time constant with no operator knob anywhere, and the same is true of the serverhealth probe interval. Neither is policy an operator sets, so neither is a schedule; if either grows a knob later, it becomes a schedule then.
 
 **Does not migrate:** `build-stall` and `boot-confirm`. These are internal watchdogs with no policy in them, and putting a watchdog under an operator-editable scheduler means an operator can switch off the thing that reports wedged builds, or the thing that falls a bad boot back to the other slot. A scheduler that can disable the safety net is worse than five timers. This is stated here so that nobody later "finishes the job" by absorbing them.
 
 ## Consequences
 
-**A contract change on four endpoints, when the migration lands.** `backup-config`, `volume-backup-config`, `repo-config` and `ntp` each lose their `interval_*` field; the schedule lives at `/v1/schedules/<name>`. Clean cut-over with no fallback field, per this project's standing no-backward-compatibility rule. On first boot after the upgrade, an old config still carrying an interval creates the equivalent job once and drops the field — a one-time upgrade step of the kind `test_layout_upgrade` already covers, not a permanent shim.
+**A contract change on four endpoints, when the migration lands.** `backup-config`, `volume-backup-config` and `repo-config` each lose their `interval_*` field; the schedule lives at `/v1/schedules/<name>`. Clean cut-over with no fallback field, per this project's standing no-backward-compatibility rule. On first boot after the upgrade, an old config still carrying an interval creates the equivalent job once and drops the field — a one-time upgrade step of the kind `test_layout_upgrade` already covers, not a permanent shim.
 
 **Shipped in parts, and the first part registers exactly one action.** The scheduler, its CRUD surface and `pkg.refresh-upstreams` land first. That action has no existing timer, so nothing can double-fire while both mechanisms are alive, and it closes the first gap ADR-0255 left open: release lists that only ever refreshed when someone asked by hand. The four migrating actions arrive with the cut-over, together, so no window exists in which a job and a legacy timer both drive the same work.
 

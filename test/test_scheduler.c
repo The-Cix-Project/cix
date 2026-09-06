@@ -174,31 +174,6 @@ int main(void)
 	else
 		printf("  failed run recorded                %s\n", s->last_reason);
 
-	/*
-	 * A missed wall-clock run does NOT fire at startup unless the job
-	 * asked to. Default off, because a heavy job firing the instant a
-	 * box boots is the least predictable moment there is.
-	 */
-	expect_set("catch_up off (default)", "missed",
-	            "{\"action\":\"test.ok\",\"schedule\":{\"daily\":{\"at\":\"02:00\"}}}", 1, NULL);
-	g_action_runs = 0;
-	/* Pretend it is exactly the fire time, on the first tick after boot. */
-	{
-		struct tm tm;
-		time_t t = (time_t)now;
-		long fire;
-
-		localtime_r(&t, &tm);
-		tm.tm_hour = 2;
-		tm.tm_min = 0;
-		tm.tm_sec = 0;
-		tm.tm_isdst = -1;
-		fire = (long)mktime(&tm);
-		scheduler_run_due(fire, 1);
-		if (g_action_runs != 0)
-			bad("a wall-clock job ran at startup without catch_up%s", "");
-	}
-
 	/* A window bounds how long an action may keep starting work. */
 	s = scheduler_find("nightly");
 	if (scheduler_in_window(s, now) != 0)
@@ -225,6 +200,134 @@ int main(void)
 		bad("delete did not remove the schedule%s", "");
 	if (scheduler_delete("nightly") != SCHEDULE_ERR_NOT_FOUND)
 		bad("deleting a missing schedule was not reported as missing%s", "");
+
+	/*
+	 * The wall-clock timing tests run against an EMPTY scheduler. Every
+	 * job above shares one action, so leaving them in place would make
+	 * the run counter measure the whole table rather than the job under
+	 * test -- which is how the first version of this test passed while
+	 * daily jobs did not fire at all.
+	 */
+	scheduler_delete("hourly-ish");
+	scheduler_delete("weekly-job");
+
+	/*
+	 * A WALL-CLOCK JOB MUST ACTUALLY FIRE. This is the case that was
+	 * broken and briefly shipped: schedule_next_run() returns the NEXT
+	 * occurrence, which is strictly in the future by construction, so a
+	 * due test written as "next_run <= now" is never true and no daily
+	 * job ever runs. The due test compares the most recent occurrence
+	 * against what the job has already accounted for instead.
+	 */
+	expect_set("daily at 02:00", "daily-job",
+	            "{\"action\":\"test.ok\",\"schedule\":{\"daily\":{\"at\":\"02:00\"}}}", 1, NULL);
+	{
+		struct tm tm;
+		time_t t = (time_t)(now + 24 * 3600);
+		long fire;
+
+		/* Tomorrow's 02:00 plus half a minute -- the real timer fires
+		 * within a minute of the instant, never exactly on it. */
+		localtime_r(&t, &tm);
+		tm.tm_hour = 2;
+		tm.tm_min = 0;
+		tm.tm_sec = 0;
+		tm.tm_isdst = -1;
+		fire = (long)mktime(&tm) + 30;
+
+		g_action_runs = 0;
+		scheduler_run_due(fire, 0);
+		if (g_action_runs != 1)
+			bad("a daily job did not fire at its own time%s", "");
+		else
+			printf("  daily job fired at its time\n");
+		/* Exactly once: a later tick must not re-run one occurrence. */
+		scheduler_run_due(fire + 60, 0);
+		if (g_action_runs != 1)
+			bad("a daily job fired twice for one occurrence%s", "");
+		else
+			printf("  and did not fire twice\n");
+	}
+	scheduler_delete("daily-job");
+
+	/*
+	 * A missed wall-clock run does NOT fire at startup unless the job
+	 * asked to -- and the skip must STICK. Skipping by simply not
+	 * running leaves the occurrence outstanding, so the very next tick
+	 * (no longer "startup") runs it after all: a one-tick deferral
+	 * wearing the word skip.
+	 */
+	expect_set("catch_up off (default)", "missed",
+	            "{\"action\":\"test.ok\",\"schedule\":{\"daily\":{\"at\":\"02:00\"}}}", 1, NULL);
+	{
+		struct tm tm;
+		time_t t = (time_t)(now + 24 * 3600);
+		long fire;
+
+		localtime_r(&t, &tm);
+		tm.tm_hour = 2;
+		tm.tm_min = 0;
+		tm.tm_sec = 0;
+		tm.tm_isdst = -1;
+		fire = (long)mktime(&tm) + 30;
+
+		g_action_runs = 0;
+		scheduler_run_due(fire, 1);
+		if (g_action_runs != 0)
+			bad("a wall-clock job ran at startup without catch_up%s", "");
+		scheduler_run_due(fire + 60, 0);
+		if (g_action_runs != 0)
+			bad("a skipped occurrence ran on the next tick anyway%s", "");
+		else
+			printf("  skipped occurrence stayed skipped\n");
+		s = scheduler_find("missed");
+		if (s->last_skipped_at == 0)
+			bad("the skipped occurrence was not recorded at all%s", "");
+	}
+	scheduler_delete("missed");
+
+	/* With catch_up on, the same missed occurrence DOES run. */
+	expect_set("catch_up on", "caught",
+	            "{\"action\":\"test.ok\",\"schedule\":{\"daily\":{\"at\":\"02:00\"}},"
+	            "\"catch_up\":true}",
+	            1, NULL);
+	{
+		struct tm tm;
+		time_t t = (time_t)(now + 24 * 3600);
+		long fire;
+
+		localtime_r(&t, &tm);
+		tm.tm_hour = 2;
+		tm.tm_min = 0;
+		tm.tm_sec = 0;
+		tm.tm_isdst = -1;
+		fire = (long)mktime(&tm) + 30;
+
+		g_action_runs = 0;
+		scheduler_run_due(fire, 1);
+		if (g_action_runs != 1)
+			bad("catch_up did not run the missed occurrence%s", "");
+		else
+			printf("  catch_up ran the missed occurrence\n");
+	}
+	scheduler_delete("caught");
+
+	/*
+	 * A job created now must not look like it missed today's earlier
+	 * occurrence. Without an anchor, last_run_at of 0 makes every past
+	 * occurrence look outstanding, so a job created this afternoon
+	 * would fire for this morning.
+	 */
+	expect_set("created after today's time", "fresh",
+	            "{\"action\":\"test.ok\",\"schedule\":{\"daily\":{\"at\":\"00:01\"}},"
+	            "\"catch_up\":true}",
+	            1, NULL);
+	g_action_runs = 0;
+	scheduler_run_due(now, 1);
+	if (g_action_runs != 0)
+		bad("a freshly created job fired for an occurrence before it existed%s", "");
+	else
+		printf("  a new job did not fire for a pre-creation occurrence\n");
 
 	unlink(g_state);
 	if (g_failures > 0) {

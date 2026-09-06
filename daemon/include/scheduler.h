@@ -56,6 +56,7 @@ enum schedule_error {
 	SCHEDULE_ERR_FULL,
 	SCHEDULE_ERR_NO_SUCH_ACTION,
 	SCHEDULE_ERR_INVALID_SCHEDULE, /* the body's own shape or values */
+	SCHEDULE_ERR_ACTION_FAILED,    /* it ran, and the action itself did not work */
 	SCHEDULE_ERR_PERSIST
 };
 
@@ -79,7 +80,21 @@ struct schedule {
 	int window_minutes;   /* 0 = fires and is done; >0 = may keep starting work */
 	int catch_up;         /* run once at startup if the time passed while down */
 	int enabled;
+	/*
+	 * When this job started counting: its creation, or its last edit.
+	 * Without it a job created at 20:00 with "daily at 02:00" looks
+	 * like it MISSED today's 02:00, because last_run_at is 0 and every
+	 * past occurrence is therefore later than it.
+	 */
+	long anchor_at;
 	long last_run_at;     /* 0 = never */
+	/*
+	 * The occurrence that passed while the daemon was down and was not
+	 * caught up. Recorded rather than silently swallowed: a schedule
+	 * that quietly did not run is the exact thing this module exists to
+	 * make visible.
+	 */
+	long last_skipped_at;
 	long next_run_at;     /* computed, never persisted as authority */
 	int last_ok;          /* meaningless when last_run_at == 0 */
 	char last_reason[SCHEDULE_REASON_MAX];
@@ -133,9 +148,15 @@ enum schedule_error scheduler_delete(const char *name);
 const struct schedule *scheduler_find(const char *name);
 
 /*
- * When this job should next fire, given now. Returns 0 for a disabled
- * job (never) -- a disabled job has no next run, which is different
- * from one whose next run has passed.
+ * When this job should next fire, given now -- for DISPLAY. Returns 0
+ * for a disabled job (never), which is different from one whose next
+ * run has passed.
+ *
+ * NOT the due test. For a wall-clock job this is always strictly in the
+ * future by construction, so "is it due" cannot be `next_run <= now` --
+ * that comparison is never true and every daily job would silently
+ * never fire. scheduler_run_due() compares the most recent occurrence
+ * against what the job has already done instead.
  *
  * SCHEDULE_EVERY is anchored on the last run rather than on a fixed
  * epoch: a period that counts from an epoch fires immediately on every
