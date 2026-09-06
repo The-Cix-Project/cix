@@ -112,6 +112,7 @@ pkg_name="tcc"
 pkg_version="0.9.28rc-29"
 pkg_source="https://codeload.github.com/TinyCC/tinycc/tar.gz/2ba12e83b3599ca8f5d50c179fe5138fe956f0c9"
 pkg_sha256="4eb5f0266d4d9deabe9650abedc3f0261dc06295f89ad798bb495abf680dc074"
+pkg_artifact_sha256="61d362643ba8969ed46dcf9042b36f9ae5f5409e03f34e97a23a86f438cc5fa0"
 pkg_depends=""
 #
 # Unchanged from 0.9.27-14. tcc is its own build dependency: the
