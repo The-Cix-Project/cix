@@ -19,6 +19,25 @@ One allowlist serves both paths — the create and the recipe's own add-time che
 
 The regression test goes in `test_container_recipe.c`, at recipe-**add** time: that is where issue #68 puts the check, so a field the catalog will not accept is refused immediately rather than sitting latent until a future apply silently drops it. It is in the selftest set, so it actually runs — unlike `test_pkg`, which is not (see #302 below).
 
+### Reinstall preparation for .95, and what a reinstall actually destroys (#161)
+
+#161's record said "192.168.15.95 is migrated". It is not — not in the sense the issue's title means. Measured against the live box:
+
+```
+vda4  fs=ext4   <- CONFIG_DEVICE     (main.c:1055 "/dev/vda4")
+vda5  fs=ext4   <- CONTAINERS_DEVICE (main.c:1070 "/dev/vda5")
+sdb   fs=btrfs  role=rebuildable-storage
+vdb1  fs=btrfs  role=container-storage
+```
+
+The btrfs disks carry *roles*; the two partitions `boot_init()` actually mounts are ext4 and take the ext4 branch of the btrfs-then-ext4 fallback on every boot. The 3.6× extent sharing the issue cites as proof of migration is real and is btrfs doing its job — on `sdb`, reached through a disk role, not on the platform's own storage.
+
+So the two retirement items were unsafe, and not as a judgement call: dropping the ext4 mount fallback makes the box **unbootable**, and dropping `resize2fs` removes the only way to grow an ext4 `cix-containers` (#163 gave us `btrfs filesystem resize`, which does nothing for ext4). The scoping that called them "the bounded safe part" inherited the issue's claim instead of checking it; running the check before touching `boot_init()` is the only reason it was caught. The issue record is corrected.
+
+Preparation done for the reinstall route: the `GET /v1/system/backup` bundle saved (1053 recipes, definitions, networks, DNS records, install state), and fresh installer media built and published — `cix-installer-2.53.73-1-x86_64.iso`, matching the running version rather than the 2.53.4 media that was the newest published.
+
+**`docs/guides/reinstall-and-restore.md`** is the new operator guide, and its point is the part a backup cannot carry. Three private keys live only on the host and **none can be read back over the API** — Secure Boot, the PKI CA, and the release signing key — each refused by its own deliberate design, quoted in the guide. The release key's loss is survivable precisely because `docs/keys/` is append-only: the retired public half stays published, so artifacts already signed stay verifiable forever, and rotation adds a key rather than replacing one. Volume *content* is not in the backup either, and the files API returns content without mode or ownership (#139), so it is not a faithful export route.
+
 ### test_console_exec now reports what the daemon was doing when it failed (#291)
 
 Every failure of this test is "output did not arrive in time", and the test could not distinguish the three causes that produce it: the child wrote nothing, the frames carried something else, or the daemon's single-threaded event loop was blocked and never got round to writing.
