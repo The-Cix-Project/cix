@@ -2,6 +2,29 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### The release key was lost with a reinstall, and kernel-builder pinned an uninstallable gcc
+
+Two independent blockers found while building an installer ISO on a freshly bootstrapped 192.168.15.95. Neither was the thing that looked broken.
+
+**The signing keys were gone.** `GET /v1/system/release-key` and `GET /v1/system/signing-keys` both returned `key_set: false`. Both private halves lived only in that box's `STATE_DIR/keys`, and the reinstall took them; nothing held a copy off-box. There was nothing to recover, so a new Ed25519 release key (id `0b19db46b2b6db6c`) and a new Secure Boot pair (`CN = Cix Secure Boot Signing`, expiring 2036-09-03) were generated and installed.
+
+**Everything already published stays verifiable**, and that is not luck — it is what `docs/keys/` is for. `cix-release.pub`'s public half was committed to this repository, so it survived the loss of its private half, and every ISO signed before 2026-09-06 verifies against it exactly as before. It is kept, not deleted, per that directory's own stated rule. What was lost is only the ability to sign *new* artifacts with that identity. The practice the design already assumed and operations did not follow: a public key in git survives anything that happens to a host, and a private key existing in exactly one place is one reinstall from gone.
+
+`docs/keys/` now also publishes `cix-secureboot.crt`, the certificate an operator enrols as a MOK to boot Cix installer media — a public half that belongs alongside the others rather than existing only inside a box.
+
+**`kernel-builder` pinned a gcc that could no longer be installed.** The install was refused with:
+
+```
+POST /v1/pkg/install {"name":"gcc","version":"16.2.0-11", "image":"kernel-builder"}
+-> 400 {"error":"no such recipe, or it failed to parse"}
+```
+
+gcc `16.2.0-11` is in the catalogue and parses fine. What does not resolve is its own `pkg_depends="binutils m4 zlib libc-dev"` — `libc-dev` was retired by ADR-0217 phase 3 in favour of `linux-headers`, and gcc moved at `16.2.0-12`, leaving `-11` as the last revision naming a package that exists nowhere. Confirmed by querying the catalogue (`libc-dev` returns zero versions) rather than trusting the message, which blames gcc. The image manifest had made that same libc-dev-to-glibc move for itself at 1.1.0 and simply never carried it into the gcc pin.
+
+Fixed in `kernel-builder` 1.2.0 — one line, `gcc:pinned:16.2.0-13`, chosen because it is already in the artifact cache at 436.4 MiB and is what `cix-builder` on the box runs, making it an install rather than a multi-hour source build. All 22 pinned packages were then re-checked the same way; gcc was the only one whose dependencies did not resolve.
+
+Both failures share a shape, and it is the same one as #317: **the error named the wrong subject.** A missing build image reported "no such package"; a retired transitive dependency reported that gcc "failed to parse". In each case the named thing was healthy and the real cause was one edge away.
+
 ### A recipe is a rule, not a version (ADR-0255)
 
 116 packages. **1046 recipe directories.** The kernel accounts for 23 of them, and every single one is upstream **6.18.40** — not one exists because Linux released anything. They exist because a compiler flag or a build dependency changed here, and a new immutable directory was the only way this platform could record that.

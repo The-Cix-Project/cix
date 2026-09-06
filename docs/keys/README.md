@@ -6,9 +6,19 @@ Two kinds of key live here, and the difference matters.
 published and pinned by anyone verifying a Cix artifact. No private key
 is ever kept here, or anywhere else in this repository.
 
-| File | What it verifies | Held by |
+| File | What it verifies | Status |
 |---|---|---|
-| [`cix-release.pub`](cix-release.pub) | Installer ISOs published to the artifact cache | The one host that cuts release media ([ADR-0220](../adr/0220-a-separate-release-signing-key.md)) |
+| [`cix-release-2026-09.pub`](cix-release-2026-09.pub) | Installer ISOs published to the artifact cache, from 2026-09-06 onward. Key id `0b19db46b2b6db6c` | **Current** — held by the one host that cuts release media ([ADR-0220](../adr/0220-a-separate-release-signing-key.md)) |
+| [`cix-release.pub`](cix-release.pub) | Installer ISOs published **before** 2026-09-06 | **Retired** — kept, never deleted; see below |
+| [`cix-secureboot.crt`](cix-secureboot.crt) | The EFI binaries on installer media (shim/GRUB/kernel), and the MOK certificate an operator enrolls to boot them. `CN = Cix Secure Boot Signing`, SHA-256 fingerprint `D6:3F:94:CA:B7:DD:72:FF:2E:56:D3:FB:67:5D:08:FC:83:EC:68:DC:E2:FF:D7:D5:77:ED:D4:02:B8:CC:93:75` | Current |
+
+### Why the release key was rotated on 2026-09-06
+
+Not a scheduled rotation and not a compromise: **the private half was lost.** 192.168.15.95 was reinstalled, both private keys lived only in that box's `STATE_DIR/keys`, and nothing held a copy off-box — `GET /v1/system/release-key` and `GET /v1/system/signing-keys` both returned `key_set: false` afterwards. There was nothing to recover, so a new key was generated and the old one retired.
+
+**Everything already published stays verifiable**, which is the whole reason `cix-release.pub` is still here: its public half was committed to this repository, so it survived the loss of its private half. Any ISO signed before this date verifies against it exactly as it always did. What is gone is the ability to sign *new* artifacts with that identity.
+
+The lesson is the one this directory's design already assumed and the operational practice did not follow: a public key in git survives anything that happens to a host, and a private key that exists in exactly one place is one reinstall from gone.
 
 **Keys Cix verifies against** — upstream publishers' keys, pinned here so
 this platform can check what it downloads ([ADR-0254](../adr/0254-upstream-checksums-are-verified-not-computed.md)).
@@ -31,7 +41,7 @@ trust decision and needs the same out-of-band check again.
 ```
 curl -fsSLO http://<cache>:8080/cix-installer-<version>-<release>-<arch>.iso
 curl -fsSLO http://<cache>:8080/cix-installer-<version>-<release>-<arch>.iso.minisig
-minisign -Vm cix-installer-<version>-<release>-<arch>.iso -p cix-release.pub
+minisign -Vm cix-installer-<version>-<release>-<arch>.iso -p cix-release-2026-09.pub
 ```
 
 A good result names the release it is vouching for, because the version
@@ -70,7 +80,7 @@ in this directory.
 
 ## Pinning
 
-Take a copy of `cix-release.pub` **once**, from a source you trust, and
+Take a copy of `cix-release-2026-09.pub` **once**, from a source you trust, and
 keep it. Re-fetching it before every verification defeats the exercise:
 whoever could hand you a bad ISO could hand you the key that matches it.
 
