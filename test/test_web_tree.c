@@ -244,6 +244,33 @@ int main(void)
 		}
 	}
 
+	/*
+	 * Every view id app.js reaches for must be a real section.
+	 *
+	 * This is not hypothetical: selectCatalogueTab() kept asking for
+	 * "view-recipes" after that section became "view-pipeline". It
+	 * returns silently on a null lookup, so the tab never switched and
+	 * four pages sat on "Loading" forever -- a dead string that no
+	 * compiler and no route check would ever notice.
+	 */
+	for (p = app; (p = strstr(p, "getElementById(\"view-")) != NULL; p++) {
+		char vid[64];
+		char open[128];
+		size_t i = 0;
+
+		p += strlen("getElementById(\"");
+		while (p[i] != '"' && i + 1 < sizeof(vid)) {
+			vid[i] = p[i];
+			i++;
+		}
+		vid[i] = '\0';
+		snprintf(open, sizeof(open), "<section class=\"view\" id=\"%s\"", vid);
+		if (strstr(html, open) == NULL)
+			fail("app.js asks for element \"%s\", which is not a section in index.html -- "
+			     "the lookup returns null and whatever it guarded silently does nothing%s",
+			     vid, "");
+	}
+
 	if (checked == 0) {
 		fprintf(stderr, "FAIL: parsed no tree hashes at all -- this test is not testing\n");
 		return 1;
