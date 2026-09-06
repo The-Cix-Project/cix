@@ -11594,6 +11594,43 @@ int pkg_recipe_list_names(char names[][PKG_IMAGE_NAME_MAX], int max)
 	return count;
 }
 
+int pkg_recipe_list_versions(const char *name, char versions[][PKG_VERSION_MAX], int max)
+{
+	char name_dir[PATH_MAX];
+	DIR *d;
+	struct dirent *de;
+	int count = 0;
+
+	if (!pkg_name_is_valid(name))
+		return 0;
+	snprintf(name_dir, sizeof(name_dir), "%s/%s", g_recipes_dir, name);
+	d = opendir(name_dir);
+	if (d == NULL)
+		return 0;
+	while ((de = readdir(d)) != NULL && count < max) {
+		if (de->d_name[0] == '.')
+			continue;
+		snprintf(versions[count], PKG_VERSION_MAX, "%s", de->d_name);
+		count++;
+	}
+	closedir(d);
+	return count;
+}
+
+int pkg_recipe_latest_version(const char *name, char *out, size_t out_size)
+{
+	char latest[PKG_VERSION_MAX];
+
+	if (name == NULL || out == NULL || out_size == 0)
+		return -1;
+	if (!pkg_name_is_valid(name))
+		return -1;
+	if (recipe_latest_version(name, latest, sizeof(latest)) != 0)
+		return -1;
+	snprintf(out, out_size, "%s", latest);
+	return 0;
+}
+
 /*
  * Installed package names, de-duplicated: the same package installed
  * into three images is one piece of software, not three.

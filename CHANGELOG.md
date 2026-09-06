@@ -2,6 +2,33 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### The source catalogue: what upstream has that this platform has no recipe for
+
+`GET /v1/pkg/source-catalogue` (`cixctl pkg source-catalogue`) — ADR-0255's Resolve stage, made readable. One row per package: the release its effective source policy resolves to, the newest recipe on disk, and whether a recipe for the resolved release exists.
+
+Until now, setting a source policy recorded intent and nothing read it back. This is the first thing that does, and it turns "which packages need attention" from an archaeology exercise across recipes and upstream feeds into one call.
+
+**The verdict is "do we have it", not "is upstream newer" — and those come apart.** With recipes for both `6.18.40-24` and `7.2.3-2` present, a `longterm` policy resolving to `6.18.46` needs a recipe written *even though the highest recipe on disk is numerically greater*. A "newer available" boolean answers no; `missing` answers yes. Both versions are always reported so the direction is visible without inferring it from the verdict. `test_srcresolve` asserts exactly that shape, because it is the one a naive comparison gets wrong.
+
+Four states, and `pinned` is one of them: a package declaring no `pkg_upstream` is a permanent, correct answer, not a gap to be closed. In this repo that is currently 115 of 116 package recipes (`kernel` is the only one declaring `pkg_upstream`), and the catalogue says so plainly rather than leaving them blank.
+
+**A failure is a row with a reason, never an absence** — a package that vanished from the list would read as up to date, the one wrong answer that looks reassuring. The reasons distinguish causes that need opposite operator responses, which both arrive as "zero candidates" internally:
+
+```
+kernel.org release data has never been fetched on this host -- refresh it,
+  then read this catalogue again
+```
+
+is not the same as "this channel publishes nothing". And the first place the depth grammar met a real feed produced a limitation worth naming rather than reporting as a bare not-found: kernel.org's `releases.json` lists only the newest release of each line, so `n-1` (one release *line* back) resolves and `n-0.1` (one release back *within* a line) never can.
+
+**Computed on every read, never stored.** A row is a pure function of the kind's cached release list, the effective policy and the recipes on disk — all three of which already have an owner. A persisted fourth copy would go stale the moment a recipe was published, with no event to invalidate it: the same shape as ADR-0155's image dedup, where a correct answer was discarded because something else had already been recorded. Reading the endpoint *is* running the check, which is what makes manual invocation free. Reading never fetches — refreshing a kind's release list stays that kind's own endpoint, and every row carries `upstream_fetched_at` so stale data is visible rather than implied.
+
+Mechanically: `srcupstream` kinds gained a candidate-enumeration hook, so the resolver asks the kind instead of growing a switch on kind names that a second kind would have to remember to edit. kernel.org's hook reads `kernelpolicy`'s existing `releases.json` cache rather than keeping a second copy of the same file — two caches would answer differently the moment one was refreshed and nothing would say which was right.
+
+Note the kernel now has two resolvers with different jobs: `GET /system/kernel-policy` (ADR-0193) steers `longterm` by the running kernel's own series, while the catalogue uses the depth expression. Both are correct answers to different questions; ADR-0255 already records that it partly supersedes ADR-0193 on this point.
+
+Not yet built, and named here so it is not mistaken for done: nothing turns a `missing` row into a build. That needs a scheduler, an update window, and a consumer index answering "which images and containers use this package" — `queue_rolling_rebuilds_for()` walks image manifests only, so it reaches no hostbuild today.
+
 ### ADR-0255 verified live: the kernel is the first rollable package
 
 Deployed to 192.168.15.95 as `v2.53.82` (slot a, kernel 7.2.3) and exercised against the running daemon, because compiling is not proof:

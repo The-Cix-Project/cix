@@ -254,6 +254,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/pkg/policies` | Per-package rolling policy — which version an omitted version resolves to (issue #64) |
 | PUT | `/pkg/policies/{name}` | Set it: `highest` (default), `newest`, or `pinned` with a version |
 | DELETE | `/pkg/policies/{name}` | Back to the default |
+| GET | `/pkg/source-catalogue` | One row per package: what its policy resolves to, and whether a recipe builds it (ADR-0255) |
 | GET | `/pkg/upstreams` | The discovery kinds a recipe may declare, and the channels each publishes (ADR-0255) |
 | GET | `/pkg/source-policy` | Which upstream *release* packages build — the default plus per-package overrides |
 | PUT | `/pkg/source-policy` | Set the platform-wide default (channel preference + depth) |
@@ -920,6 +921,47 @@ cixctl pkg source-policy set-default --channel=stable --depth=n
 cixctl pkg source-policy set kernel --channel=longterm --depth=n-1
 cixctl pkg source-policy clear kernel
 ```
+
+## The source catalogue — what upstream has that we do not
+
+`GET /pkg/source-catalogue` is the list this whole axis exists to produce. One row per package: the release its effective policy resolves to, the newest recipe on disk, and a verdict.
+
+```
+cixctl pkg source-catalogue
+
+PACKAGE              STATE       CHANNEL    RESOLVED     NEWEST RECIPE
+kernel               missing     longterm   6.18.46      7.2.3-2
+  longterm resolves to 6.18.46 and no recipe builds it (newest recipe is 7.2.3-2)
+zlib                 pinned      -          -            1.3.2-11
+```
+
+**The verdict is "do we have it", not "is upstream newer".** Those come apart, and the row above is the case that proves it: recipes exist for both `6.18.40-24` and `7.2.3-2`, so a longterm policy resolving to `6.18.46` needs a recipe written *even though the highest recipe on disk is numerically greater*. A "newer available" boolean answers no. Both versions are reported so the direction is never hidden behind the verdict.
+
+The four states:
+
+| State | Meaning |
+|---|---|
+| `pinned` | The recipe declares no `pkg_upstream`. A permanent, correct answer — a project publishing neither a machine-readable release list nor signed checksums cannot be rolled safely |
+| `current` | A recipe exists for the resolved release |
+| `missing` | The policy resolved, and no recipe builds that release yet |
+| `unresolved` | A kind is declared but resolution failed — `reason` says why |
+
+**A failure is a row with a reason, never an absence.** A package that vanished from the list would read as up to date, which is the one wrong answer that looks reassuring. So an unresolvable package appears with the sentence that explains it, and the sentences distinguish causes that need opposite responses:
+
+```
+kernel.org release data has never been fetched on this host -- refresh it,
+  then read this catalogue again
+
+depth asks for release 1 back within line 7.2, which publishes only 1 release(s)
+  -- kernel.org publishes only the newest release of each line, so a depth
+  reaching back within a line cannot resolve against it
+```
+
+**Computed on every read, never stored.** A row is a pure function of three things that each already have an owner: the kind's cached release list, the effective policy, and the recipes on disk. A stored fourth copy would go stale the instant a recipe is published, with no event to invalidate it. So reading this endpoint *is* running the check — which is what makes manual invocation free.
+
+Reading never fetches. Refreshing a kind's release list is a network operation and belongs to that kind's own endpoint (`POST /system/kernel-releases` for kernel.org). Every row carries `upstream_fetched_at` so stale data is visible rather than implied.
+
+> **Two kernel resolvers.** `GET /system/kernel-policy` (ADR-0193) steers `longterm` by the running kernel's own series; the catalogue uses the depth expression instead. Both are legitimate answers to different questions — ADR-0255 records the split and partly supersedes ADR-0193.
 
 ## Persisted containers and the `restart` policy
 

@@ -4,6 +4,8 @@
  */
 #include "srcupstream.h"
 
+#include "kernelpolicy.h"
+
 #include <stdio.h>
 #include <string.h>
 
@@ -32,10 +34,49 @@ const char *srcupstream_strerror(enum srcupstream_error e)
  */
 static const char *const KORG_CHANNELS[] = { "mainline", "stable", "longterm", NULL };
 
+/*
+ * kernel.org's release list is already cached, parsed and persisted by
+ * kernelpolicy (issue #65) -- this reads that one cache rather than
+ * keeping a second copy of the same file. Two caches of releases.json
+ * would answer differently the moment one was refreshed and the other
+ * was not, and nothing would say which was right.
+ */
+static size_t kernelorg_candidates(const char *channel,
+                                    char out[][SRCUPSTREAM_VERSION_MAX], size_t max)
+{
+	int n;
+
+	if (channel == NULL || channel[0] == '\0')
+		return 0;
+	n = kernelpolicy_channel_versions(channel, out[0], SRCUPSTREAM_VERSION_MAX, (int)max);
+	return n < 0 ? 0 : (size_t)n;
+}
+
+static long kernelorg_fetched_at(void)
+{
+	return kernelpolicy_fetched_at();
+}
+
 static const struct srcupstream_kind KINDS[] = {
 	{ "kernel.org", KORG_CHANNELS,
-	  "kernel.org releases.json; checksums from its signed sha256sums.asc" },
+	  "kernel.org releases.json; checksums from its signed sha256sums.asc",
+	  kernelorg_candidates, kernelorg_fetched_at },
 };
+
+size_t srcupstream_candidates(const struct srcupstream_kind *kind, const char *channel,
+                               char out[][SRCUPSTREAM_VERSION_MAX], size_t max)
+{
+	if (kind == NULL || kind->candidates == NULL || out == NULL || max == 0)
+		return 0;
+	return kind->candidates(channel, out, max);
+}
+
+long srcupstream_fetched_at(const struct srcupstream_kind *kind)
+{
+	if (kind == NULL || kind->fetched_at == NULL)
+		return 0;
+	return kind->fetched_at();
+}
 
 size_t srcupstream_count(void)
 {

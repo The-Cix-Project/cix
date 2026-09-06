@@ -85,6 +85,26 @@ int kernelpolicy_ingest_releases(const char *path, long now);
 long kernelpolicy_fetched_at(void);
 
 /*
+ * Every version this cache holds for `moniker`, written into `out` as
+ * `max` slots of `stride` bytes each. Returns how many were written.
+ *
+ * ADR-0255's source catalogue needs the release LIST, not the single
+ * answer kernelpolicy_resolve() picks: depth ("n-1" and friends) is
+ * what chooses among lines there, where this module's own channel
+ * resolution steers longterm by the running kernel's series instead.
+ * Both are legitimate answers to different questions, so this exposes
+ * the raw list rather than either module second-guessing the other.
+ *
+ * Note what kernel.org's releases.json actually contains: the newest
+ * release of each line and nothing else. So "longterm" yields one entry
+ * per maintained line (six, currently) while "stable" and "mainline"
+ * yield exactly one -- a depth asking to go back WITHIN a line has
+ * nothing to go back to, and that is a property of the feed, not a bug
+ * in the caller.
+ */
+int kernelpolicy_channel_versions(const char *moniker, char *out, size_t stride, int max);
+
+/*
  * Resolves channel against the cached list. running_series is the line
  * the box is on (from its running kernel) and steers longterm only.
  * Always fills *out; out->known is 0 when nothing has been ingested

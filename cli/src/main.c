@@ -14451,6 +14451,47 @@ static void fmt_upstreams(const struct json_value *root)
 	}
 }
 
+static void fmt_source_catalogue(const struct json_value *root)
+{
+	const struct json_value *arr = json_object_get(root, "packages");
+	size_t i;
+
+	if (arr == NULL || arr->type != JSON_ARRAY || arr->u.array.count == 0) {
+		printf("no package recipes\n");
+		return;
+	}
+	printf("%-20s %-11s %-10s %-12s %-12s\n", "PACKAGE", "STATE", "CHANNEL", "RESOLVED",
+	        "NEWEST RECIPE");
+	for (i = 0; i < arr->u.array.count; i++) {
+		const struct json_value *e = arr->u.array.items[i];
+		const char *state = json_str_field(e, "state");
+		const char *channel = json_str_field(e, "channel");
+		const char *resolved = json_str_field(e, "resolved_version");
+		const char *newest = json_str_field(e, "newest_recipe_version");
+		const char *name = json_str_field(e, "name");
+		const char *reason = json_str_field(e, "reason");
+
+		printf("%-20s %-11s %-10s %-12s %-12s\n", name != NULL ? name : "-",
+		        state != NULL ? state : "-", channel != NULL ? channel : "-",
+		        resolved != NULL ? resolved : "-", newest != NULL ? newest : "-");
+		/*
+		 * The reason is printed only for the rows that need an action.
+		 * A `current` package explaining itself on every line would
+		 * bury the handful that do not resolve, which are the whole
+		 * point of reading this.
+		 */
+		if (state != NULL && reason != NULL &&
+		    (strcmp(state, "missing") == 0 || strcmp(state, "unresolved") == 0))
+			printf("  %s\n", reason);
+	}
+	printf("\n%ld package(s): %ld current, %ld missing, %ld unresolved, %ld pinned\n",
+	        (long)json_as_number(json_object_get(root, "total")),
+	        (long)json_as_number(json_object_get(root, "current")),
+	        (long)json_as_number(json_object_get(root, "missing")),
+	        (long)json_as_number(json_object_get(root, "unresolved")),
+	        (long)json_as_number(json_object_get(root, "pinned")));
+}
+
 static void fmt_source_policy(const struct json_value *root)
 {
 	const struct json_value *def = json_object_get(root, "default");
@@ -14557,6 +14598,21 @@ static int cmd_pkg_source_policy(const struct cix_client *c, int json_mode, int 
 	return 2;
 }
 
+static int cmd_pkg_source_catalogue(const struct cix_client *c, int json_mode, int argc,
+                                     char **argv)
+{
+	struct cix_response r;
+
+	(void)argc;
+	(void)argv;
+	if (cix_client_request(c, CIX_API_getSourceCatalogue_METHOD, CIX_API_getSourceCatalogue, NULL,
+	                        &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_source_catalogue);
+}
+
 static int cmd_pkg_upstreams(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	struct cix_response r;
@@ -14593,6 +14649,7 @@ static int cmd_pkg(const struct cix_client *c, int json_mode, int argc, char **a
 		                "       cixctl pkg build-logs [--last | --file=NAME]\n"
 		                "       cixctl pkg policy ls | set NAME --policy=... | clear NAME\n"
 		                "       cixctl pkg upstreams  -- discovery kinds and their channels\n"
+		                "       cixctl pkg source-catalogue  -- what upstream has that we have no recipe for\n"
 		                "       cixctl pkg source-policy ls | set-default | set NAME | clear NAME\n"
 		                "       cixctl pkg ls\n"
 		                "       cixctl pkg rm NAME[@IMAGE]\n"
@@ -14641,6 +14698,8 @@ static int cmd_pkg(const struct cix_client *c, int json_mode, int argc, char **a
 		return cmd_pkg_source_policy(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "upstreams") == 0)
 		return cmd_pkg_upstreams(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "source-catalogue") == 0)
+		return cmd_pkg_source_catalogue(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "build-logs") == 0)
 		return cmd_pkg_build_logs(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "ls") == 0)

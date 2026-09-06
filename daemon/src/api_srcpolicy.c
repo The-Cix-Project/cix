@@ -6,6 +6,7 @@
 #include "namecheck.h"
 #include "pkg.h"
 #include "srcpolicy.h"
+#include "srcresolve.h"
 #include "srcupstream.h"
 
 #include <stdio.h>
@@ -21,6 +22,21 @@
  * has mainline, stable, longterm" is done; one who reads "invalid
  * channel" has to go and find out.
  */
+
+/*
+ * The catalogue is recomputed here on every read rather than served
+ * from a store -- see srcresolve.h for why derived state with no
+ * invalidation event is worse than recomputing it.
+ */
+void handle_source_catalogue_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	srcresolve_write_json(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
 
 void handle_upstream_kinds_get(int fd)
 {

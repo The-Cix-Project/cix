@@ -1484,6 +1484,30 @@ void container_recipe_write_json_list(struct json_writer *w);
 int image_recipe_list_names(char names[][PKG_IMAGE_NAME_MAX], int max);
 int container_recipe_list_names(char names[][PKG_IMAGE_NAME_MAX], int max);
 int pkg_recipe_list_names(char names[][PKG_IMAGE_NAME_MAX], int max);
+
+/*
+ * Every recipe version that exists for one package (ADR-0107's
+ * version-keyed layout: the directory names under recipes/<name>/ ARE
+ * the versions). Returns how many were written, unordered.
+ *
+ * ADR-0255's source catalogue needs all of them, not just the highest:
+ * the question it asks is "does a recipe exist for the release the
+ * policy resolved to", and the answer can be yes while a *different*
+ * line has a higher version. With 6.18.40-24 and 7.2.3-2 both present,
+ * a longterm policy resolving to 6.18.46 is missing a recipe even
+ * though the highest recipe on disk is numerically greater.
+ */
+int pkg_recipe_list_versions(const char *name, char versions[][PKG_VERSION_MAX], int max);
+
+/*
+ * The highest recipe version for `name` (pkg_version_compare()-ordered),
+ * or -1 if the package has no parseable recipe. The daemon has resolved
+ * this internally since ADR-0107; ADR-0255's catalogue is the first
+ * caller outside this module that needs the same answer, and reaching
+ * for a second scan of the same directory would be a parallel
+ * implementation of a cached one.
+ */
+int pkg_recipe_latest_version(const char *name, char *out, size_t out_size);
 /* Installed package names, de-duplicated -- the same package in three
  * images is one piece of software, not three. */
 int pkg_installed_list_names(char names[][PKG_IMAGE_NAME_MAX], int max);

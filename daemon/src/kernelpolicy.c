@@ -232,6 +232,21 @@ static void fill_from(struct kernel_resolution *out, const struct release_entry 
 	snprintf(out->series, sizeof(out->series), "%s", e->series);
 }
 
+int kernelpolicy_channel_versions(const char *moniker, char *out, size_t stride, int max)
+{
+	int i, n = 0;
+
+	if (moniker == NULL || out == NULL || stride == 0 || max <= 0)
+		return 0;
+	for (i = 0; i < g_release_count && n < max; i++) {
+		if (strcmp(g_releases[i].moniker, moniker) != 0)
+			continue;
+		snprintf(out + (size_t)n * stride, stride, "%s", g_releases[i].version);
+		n++;
+	}
+	return n;
+}
+
 void kernelpolicy_resolve(enum kernel_channel channel, const char *running_series,
                            struct kernel_resolution *out)
 {
