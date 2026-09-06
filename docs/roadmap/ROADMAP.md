@@ -2445,6 +2445,20 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 218 (done): the pipeline is the model — one vocabulary, one join, one honest boot confirm (ADR-0256)
+
+Part 217 produced stages 1–4 of a sequence nobody had named. **ADR-0256** names all eleven and replaces the four unrelated vocabularies that described them with one `(stage, status)` pair, spoken verbatim by the API, the CLI and the dashboard.
+
+`enum pkg_failure_kind` is replaced rather than wrapped, and the source catalogue's four states go with it — a shim would have preserved both indefinitely, which is exactly what the ADR exists to end. `unpack` is genuinely new: `PKG_FAILURE_BUILD` covered unpacking the archive *and* compiling it, so a source that downloaded intact and could not be opened sent a reader to a compile log for something that happened before any compiler ran.
+
+`GET /v1/pipeline` (`cixctl pipeline`, plus a Pipeline view above Catalogue/Build/Delivery in the dashboard tree) joins the source catalogue, the package job records and this host's own boot entry at read time and stores nothing. One row per package, reporting the **earliest** non-ok stage across its images — earliest rather than most severe, because a pipeline stops at its first problem and everything after is consequence.
+
+The boot half closes a real hole rather than tidying a vocabulary: `confirm_boot()` ran once cixd was "about to serve traffic", which a box whose uplink NIC could not be attached satisfies. Issue #133 was right that a missing NIC must not kill PID 1; what was wrong was confirming the boot anyway, leaving a host up, permanently confirmed and unreachable with its A/B fallback already spent. Such a boot now retries the attach for two minutes and then reboots to spend a try, guarded to unconfirmed boots only so a runtime link fault can never become a reboot loop.
+
+Verified: `cixd` clean under TCC `-Wall -Werror`; all 30 sandbox-runnable selftests pass, including new `test_pipeline` (eleven names, round-trip, and `unpack` between `fetch` and `build`, so a rename across three surfaces shows up in a diff). `docs/architecture/architecture.svg` was checked and needs no change — it maps subsystems and their connections, and this adds a read over existing ones rather than a new box.
+
+**Named as not done:** nothing schedules any of this, there is no update window, and nothing knows which images consume a given package. Those act on this model and come after it.
+
 ## Part 217 (done): a recipe is a rule, and the source catalogue that reads it back (ADR-0255)
 
 **ADR-0255** splits two things this project had conflated since ADR-0107: a recipe as *the rule for getting a package* and a build as *the immutable record of one*. Shipped in five parts, the first four of which are the rule's vocabulary and the fifth is the first thing that reads it.

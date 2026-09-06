@@ -1879,6 +1879,36 @@
 		     the tab handler only touches its own bar's panels, so the nesting
 		     works.
 		-->
+		<section class="view" id="view-pipeline" hidden>
+			<h2>Pipeline</h2>
+			<p class="hint">
+				The eleven steps between "upstream released something" and "this host is
+				running it" (ADR-0256). Every package stands at exactly one of them.
+			</p>
+			<div id="pipeline-flow" class="pipeline-flow"></div>
+			<div id="pipeline-deploy" class="pipeline-deploy"></div>
+			<h3>Needs attention</h3>
+			<p class="hint">
+				Packages that are blocked, failed or cancelled. A package sitting at
+				<code>not-implemented</code> is not a problem &mdash; it means this platform
+				performs that stage by hand.
+			</p>
+			<table id="pipeline-table">
+				<thead>
+					<tr>
+						<th>Package</th>
+						<th>Stage</th>
+						<th>Status</th>
+						<th>Resolved</th>
+						<th>Newest recipe</th>
+						<th>Reason</th>
+					</tr>
+				</thead>
+				<tbody id="pipeline-rows"></tbody>
+			</table>
+			<p id="pipeline-summary" class="hint"></p>
+		</section>
+
 		<section class="view" id="view-recipes" hidden>
 			<h2>Catalogue</h2>
 			<div class="tab-bar">

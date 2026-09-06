@@ -254,6 +254,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/pkg/policies` | Per-package rolling policy — which version an omitted version resolves to (issue #64) |
 | PUT | `/pkg/policies/{name}` | Set it: `highest` (default), `newest`, or `pinned` with a version |
 | DELETE | `/pkg/policies/{name}` | Back to the default |
+| GET | `/pipeline` | Where every package stands in the eleven-stage pipeline, and what is stopping it (ADR-0256) |
 | GET | `/pkg/source-catalogue` | One row per package: what its policy resolves to, and whether a recipe builds it (ADR-0255) |
 | GET | `/pkg/upstreams` | The discovery kinds a recipe may declare, and the channels each publishes (ADR-0255) |
 | GET | `/pkg/source-policy` | Which upstream *release* packages build — the default plus per-package overrides |
@@ -922,6 +923,65 @@ cixctl pkg source-policy set kernel --channel=longterm --depth=n-1
 cixctl pkg source-policy clear kernel
 ```
 
+## The pipeline — where everything stands (ADR-0256)
+
+`GET /pipeline` (`cixctl pipeline`) answers the only question an operator actually asks: **where is this package, and what is stopping it?**
+
+Getting a package from an upstream release onto a running host takes eleven steps. This platform performed all eleven and had a name for the sequence nowhere — it had four unrelated vocabularies instead (the catalogue's four states, five package failure kinds, a build-log line, a boot-entry filename), so answering that question meant joining four things by hand. Nobody does that.
+
+### The eleven stages
+
+| Stage | The question | A failure reads as |
+|---|---|---|
+| `discover` | What has upstream published? | could not check for versions |
+| `resolve` | Which of those does policy want? | could not resolve a version |
+| `authenticate` | Are these really upstream's bytes? | could not verify the signature |
+| `author` | Is there a recipe for it? | no recipe for the resolved release |
+| `fetch` | Can we download it? | could not download |
+| `unpack` | Is the archive usable? | could not unpack |
+| `build` | Does it compile? | could not compile |
+| `install` | Does the output merge into the image? | could not install |
+| `publish` | Does the artifact reach the cache? | could not publish |
+| `roll` | Do the images that use it rebuild? | could not rebuild dependents |
+| `deploy` | Does the new root boot and serve? | could not deploy |
+
+The list is ordered and total. Adding a twelfth is a deliberate act with an ADR, and `test_pipeline` asserts the count so it cannot happen quietly.
+
+### Status is a second axis
+
+`ok` · `blocked` · `failed` · `cancelled` · `not-implemented`
+
+`cancelled` is what proves these are two axes rather than one longer list: a killed build is not a different *place*, it is the build stage with a different *outcome*, and the two need opposite responses from the same position.
+
+`blocked` means waiting on something outside this stage — an earlier stage, or a person. `not-implemented` means this platform performs the stage by hand today: `authenticate` and `author` both honestly are, and saying so keeps a manual step visible as a position in a sequence rather than as an absence. A green tick there would mean "we did not check".
+
+### What a row means
+
+One row per package, because that is the grain recipes have. Builds are per `(package, image)`, so a row reports the **earliest** stage that is not ok across that package's images, with per-image detail under `images`.
+
+Earliest, not most severe — a pipeline stops at its first problem and everything after it is consequence. A package that could not be downloaded and therefore also could not be built reads *"could not download"*; ranking by severity would report the build and send the reader to the wrong log.
+
+`deploy` is reported **once**, beside the package list, not on every row. It is a single fact about this host, and repeating it onto 116 rows would make the summary counts meaningless.
+
+```
+cixctl pipeline          # the flow, the deploy position, and what needs attention
+cixctl pipeline --all    # every row, including ok and not-implemented
+```
+
+`stages` carries the per-stage tally the dashboard renders as a flow. Every stage appears even at zero: a pipeline drawn only from the occupied stages is a filtered list, and the empty stages are exactly the ones worth seeing are empty.
+
+### `unpack` is new, and it fixes a real misdirection
+
+`enum pkg_failure_kind` had `build` cover both unpacking a source archive and compiling it. So an archive that downloaded intact and could not be opened reported as a *build* failure, and an operator went to read a compile log for something that happened before any compiler ran. Splitting `unpack` out is the one behaviour change ADR-0256 makes to existing failure reporting.
+
+`GET /pkg/{name}` and the package list therefore no longer carry `failure_kind`; they carry `stage` and `status`. A field that changes meaning is worse than a field that is gone.
+
+### `deploy` means reachable, not bound
+
+The deploy stage is only `ok` when the host is actually reachable at the address an operator uses. `confirm_boot()` used to run once cixd was "about to serve traffic" — which a box whose configured uplink NIC could not be attached satisfies: the management bridge and its address exist, cixd binds, boot confirmed. The result was a host that was up, permanently confirmed, and unreachable, having spent its A/B fallback on a slot that cannot serve anyone.
+
+Now such a boot is not confirmed. It retries the attach for two minutes (a late-loading NIC driver is the benign case) and then **reboots**, spending a try so the loader falls back to the other slot. The guard is the whole safety of it: this applies only while the boot is unconfirmed. A confirmed slot whose NIC fails at runtime never reboots itself — otherwise a pulled cable becomes a reboot loop.
+
 ## The source catalogue — what upstream has that we do not
 
 `GET /pkg/source-catalogue` is the list this whole axis exists to produce. One row per package: the release its effective policy resolves to, the newest recipe on disk, and a verdict.
@@ -929,22 +989,25 @@ cixctl pkg source-policy clear kernel
 ```
 cixctl pkg source-catalogue
 
-PACKAGE              STATE       CHANNEL    RESOLVED     NEWEST RECIPE
-kernel               missing     longterm   6.18.46      7.2.3-2
+PACKAGE          STAGE     STATUS           CHANNEL    RESOLVED   NEWEST RECIPE
+kernel           author    blocked          longterm   6.18.46    7.2.3-2
   longterm resolves to 6.18.46 and no recipe builds it (newest recipe is 7.2.3-2)
-zlib                 pinned      -          -            1.3.2-11
+zlib             discover  not-implemented  -          -          1.3.2-11
 ```
 
 **The verdict is "do we have it", not "is upstream newer".** Those come apart, and the row above is the case that proves it: recipes exist for both `6.18.40-24` and `7.2.3-2`, so a longterm policy resolving to `6.18.46` needs a recipe written *even though the highest recipe on disk is numerically greater*. A "newer available" boolean answers no. Both versions are reported so the direction is never hidden behind the verdict.
 
-The four states:
+Each row reports a `stage` and a `status` — ADR-0256's one vocabulary, the same pair `GET /pipeline` and `GET /pkg/{name}` use. The four situations the catalogue describes map onto it exactly:
 
-| State | Meaning |
+| stage / status | Meaning |
 |---|---|
-| `pinned` | The recipe declares no `pkg_upstream`. A permanent, correct answer — a project publishing neither a machine-readable release list nor signed checksums cannot be rolled safely |
-| `current` | A recipe exists for the resolved release |
-| `missing` | The policy resolved, and no recipe builds that release yet |
-| `unresolved` | A kind is declared but resolution failed — `reason` says why |
+| `discover` / `not-implemented` | The recipe declares no `pkg_upstream`. Finding a new release of that project is something a person does — a permanent, correct answer, not a gap |
+| `author` / `ok` | A recipe exists for the resolved release |
+| `author` / `blocked` | The policy resolved and no recipe builds that release yet. Blocked on a person, not failed |
+| `discover` / `failed` | The release list has never been fetched on this host |
+| `resolve` / `failed` | The list is there and policy could not pick from it — a channel the project does not publish, a depth deeper than the feed goes |
+
+The last two used to be one `unresolved` state, and they need opposite responses.
 
 **A failure is a row with a reason, never an absence.** A package that vanished from the list would read as up to date, which is the one wrong answer that looks reassuring. So an unresolvable package appears with the sentence that explains it, and the sentences distinguish causes that need opposite responses:
 
