@@ -368,7 +368,7 @@ $(BUILD)/net_connect: test/net_connect.c | $(BUILD)
 $(BUILD)/test_container_net: test/test_container_net.c test/test_image_fixture.c $(LIB_SRCS) | $(BUILD)
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/test_daemon_net: test/test_daemon_net.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_daemon_net: test/test_daemon_net.c test/test_image_fixture.c test/test_cleanup.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
 $(BUILD)/test_networks: test/test_networks.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
