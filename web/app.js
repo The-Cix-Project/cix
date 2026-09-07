@@ -1511,7 +1511,7 @@ const CATEGORY_VIEWS = {
 	"pipeline-errors": "view-pipeline",
 	"site": "view-host",
 	"daemon-config": "view-control-plane",
-	"host-swap": "view-storage",
+	"host-swap": "view-host",
 	"rolling-restart": "view-deployment",
 	"pkg-build-config": "view-integration",
 	"hostauth-sessions": "view-host",
