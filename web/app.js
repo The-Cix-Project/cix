@@ -11112,8 +11112,11 @@ function fillScheduleActions() {
 		const name = typeof a === "string" ? a : a.name;
 
 		opt.value = name;
-		opt.textContent = typeof a === "string" || !a.description
-		    ? name : name + " — " + a.description;
+		/* The field is `summary`, checked against a live
+		 * /schedule-actions rather than guessed. */
+		const summary = typeof a === "string" ? "" : a.summary;
+
+		opt.textContent = summary ? name + " — " + summary : name;
 		sel.appendChild(opt);
 	}
 }
