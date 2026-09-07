@@ -8692,7 +8692,7 @@ paths:
     get:
       summary: One schedule
       operationId: getSchedule
-      x-cix-expose: [cli, web]
+      x-cix-expose: [cli]
       parameters:
         - name: name
           in: path
