@@ -14,6 +14,8 @@ Measured by pulling the published 217.9 MiB artifact apart, because none of this
 | `libc.a` and friends — static archives whose shared counterpart ships beside them | 46.8 MiB (glibc artifact 56.8 → 10.0 MiB at `2.44-14`) | ADR-0251 |
 | Unstripped `.debug*` sections — **57% of the media's ELF payload**, 18.5 MiB of 32.6 MiB, 9.08 MiB of it in `libc.so.6` alone | 18.5 MiB | ADR-0251's finalize policy |
 
+**Measured after the fact, through the new field:** an ISO built on `v2.54.9` is **84.7 MiB** (`iso_bytes: 88848384`), against 217.9 MiB at 2.53.73 — a 61% reduction, and the confirmation that all three fixes actually take effect on a real host rather than only in the tree.
+
 All three were found and fixed on their own merits; the point is that **none of them was visible from the thing that builds ISOs**. A number that appears in a diff is what stops the fourth one. The size is read from the filesystem on each request rather than recorded at build time — the file is the truth, and a stored number is one more thing that can disagree with it. The dashboard's Installer ISO tab shows it.
 
 ### The ISO builds, and where libraries live had one more stale copy
