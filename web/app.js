@@ -1528,6 +1528,7 @@ const CATEGORY_VIEWS = {
 	kmsg: "view-kernel",
 	"server-health": "view-server-health",
 	stalls: "view-control-plane",
+	schedules: "view-control-plane",
 	volumes: "view-storage",
 	/* Repo & Sync and Cache & Artifacts became tabs on the Catalogue
 	 * page. Their old addresses still resolve to it (with the right tab
@@ -1703,6 +1704,8 @@ function renderCurrentView() {
 			refreshServerHealth();
 		if (onPageOf("stalls"))
 			refreshStalls();
+		if (onPageOf("schedules"))
+			refreshSchedules();
 		if (onPageOf("running-config"))
 			refreshRunningConfig();
 		if (onPageOf("volume-backup-config"))
@@ -7420,6 +7423,170 @@ document.getElementById("running-config-copy").addEventListener("click", async (
 
 /* ---------- Control-plane stalls (issue #100) ---------- */
 
+/*
+ * Everything this host does on a clock (ADR-0257).
+ *
+ * The action is picked from GET /schedule-actions, never typed: a
+ * free-text command field on a shell-less host is a shell-exec
+ * endpoint, and the closed registry is the security boundary rather
+ * than a convenience.
+ *
+ * `describes` is rendered by the daemon and only ever read -- nothing
+ * parses it back. The schedule itself is a structured body, so there
+ * is no syntax for anyone to mistype; a wrong field is a missing
+ * field, not a valid expression meaning something else.
+ */
+let scheduleActions = [];
+
+async function refreshScheduleActions() {
+	try {
+		const data = await apiRequest("GET", CIX_API.listScheduleActions());
+
+		scheduleActions = data.actions || [];
+	} catch (e) {
+		/* The list only feeds the create form's own select. */
+	}
+}
+
+function scheduleWhenText(s) {
+	/* The daemon's own rendering when it gave one -- one source of
+	 * truth for "daily at 02:00", rather than a second formatter here
+	 * that could disagree with the CLI's. */
+	if (s.describes)
+		return s.describes;
+	return "—";
+}
+
+async function refreshSchedules() {
+	const body = document.getElementById("schedules-body");
+
+	if (body === null)
+		return;
+	try {
+		const data = await apiRequest("GET", CIX_API.listSchedules());
+		const rows = data.schedules || [];
+
+		body.textContent = "";
+		if (rows.length === 0) {
+			const tr = document.createElement("tr");
+			const td = document.createElement("td");
+
+			td.colSpan = 7;
+			td.className = "empty";
+			td.textContent = "Nothing is scheduled.";
+			tr.appendChild(td);
+			body.appendChild(tr);
+			return;
+		}
+		for (const s of rows) {
+			const tr = document.createElement("tr");
+
+			for (const text of [s.name, s.action, scheduleWhenText(s)]) {
+				const td = document.createElement("td");
+
+				td.textContent = text;
+				tr.appendChild(td);
+			}
+
+			const en = document.createElement("td");
+
+			en.textContent = s.enabled === false ? "no" : "yes";
+			tr.appendChild(en);
+
+			const last = document.createElement("td");
+
+			if (s.last_run_at) {
+				/* "has not run" and "ran and failed" are different
+				 * facts, which is why last_ok is nullable -- say which
+				 * one this is rather than collapsing them. */
+				last.textContent = new Date(s.last_run_at * 1000).toLocaleString() +
+				                   (s.last_ok === false ? " — failed" : "");
+				if (s.last_ok === false) {
+					last.className = "cell-error";
+					last.title = s.last_reason || "";
+				}
+			} else {
+				last.textContent = "never";
+			}
+			tr.appendChild(last);
+
+			const next = document.createElement("td");
+
+			/* Null when disabled: a disabled job has no next run, and
+			 * inventing one would be a time nothing will happen at. */
+			next.textContent = s.next_run_at
+			    ? new Date(s.next_run_at * 1000).toLocaleString() : "—";
+			tr.appendChild(next);
+
+			const actions = document.createElement("td");
+			const run = document.createElement("button");
+
+			run.type = "button";
+			run.textContent = "Run now";
+			run.addEventListener("click", async () => {
+				try {
+					await apiRequest("POST", CIX_API.runSchedule(s.name), {});
+					showStatus("Ran " + s.name + ".", false);
+				} catch (e) {
+					showStatus("Could not run " + s.name + ": " + e.message, true);
+				}
+				refreshSchedules();
+			});
+			actions.appendChild(run);
+
+			const toggle = document.createElement("button");
+
+			toggle.type = "button";
+			toggle.textContent = s.enabled === false ? "Enable" : "Disable";
+			toggle.addEventListener("click", async () => {
+				try {
+					await apiRequest("PUT", CIX_API.setSchedule(s.name), {
+						action: s.action,
+						params: s.params || {},
+						schedule: s.schedule,
+						window_minutes: s.window_minutes || 0,
+						catch_up: s.catch_up === true,
+						enabled: s.enabled === false,
+					});
+				} catch (e) {
+					showStatus("Could not update " + s.name + ": " + e.message, true);
+				}
+				refreshSchedules();
+			});
+			actions.appendChild(toggle);
+
+			const del = document.createElement("button");
+
+			del.type = "button";
+			del.className = "button-danger";
+			del.textContent = "Delete";
+			del.addEventListener("click", async () => {
+				if (!confirm("Delete schedule \"" + s.name + "\"?"))
+					return;
+				try {
+					await apiRequest("DELETE", CIX_API.deleteSchedule(s.name));
+				} catch (e) {
+					showStatus("Could not delete " + s.name + ": " + e.message, true);
+				}
+				refreshSchedules();
+			});
+			actions.appendChild(del);
+			tr.appendChild(actions);
+			body.appendChild(tr);
+		}
+	} catch (e) {
+		body.textContent = "";
+		const tr = document.createElement("tr");
+		const td = document.createElement("td");
+
+		td.colSpan = 7;
+		td.className = "empty";
+		td.textContent = "Could not load schedules: " + e.message;
+		tr.appendChild(td);
+		body.appendChild(tr);
+	}
+}
+
 async function refreshStalls() {
 	const body = document.getElementById("stalls-body");
 
@@ -10881,6 +11048,87 @@ function parseKeyValueList(text) {
 	return result;
 }
 
+/* The action list is a closed registry (ADR-0257) -- populated from the
+ * daemon, never typed, because a free-text command field on a
+ * shell-less host is a shell-exec endpoint. */
+function fillScheduleActions() {
+	const sel = document.getElementById("schf-action");
+
+	if (sel === null)
+		return;
+	sel.textContent = "";
+	for (const a of scheduleActions) {
+		const opt = document.createElement("option");
+		const name = typeof a === "string" ? a : a.name;
+
+		opt.value = name;
+		opt.textContent = typeof a === "string" || !a.description
+		    ? name : name + " — " + a.description;
+		sel.appendChild(opt);
+	}
+}
+
+function scheduleKindChanged() {
+	const kind = document.getElementById("schf-kind").value;
+
+	document.getElementById("schf-every-fields").hidden = kind !== "every";
+	document.getElementById("schf-clock-fields").hidden = kind === "every";
+	document.getElementById("schf-weekday-label").hidden = kind !== "weekly";
+}
+
+document.getElementById("schf-kind").addEventListener("change", scheduleKindChanged);
+
+document.getElementById("schedule-add").addEventListener("click", async () => {
+	await refreshScheduleActions();
+	fillScheduleActions();
+	scheduleKindChanged();
+	openModal("schedule-form", "Add schedule");
+});
+
+document.getElementById("schedule-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	const name = document.getElementById("schf-name").value.trim();
+	const kind = document.getElementById("schf-kind").value;
+	const at = document.getElementById("schf-at").value;
+	let spec;
+
+	if (name === "")
+		return;
+	/* Exactly one of every/daily/weekly -- the daemon refuses two
+	 * rather than resolving by precedence, so the form sends one. */
+	if (kind === "every") {
+		spec = { every: {
+			days: Number(document.getElementById("schf-days").value) || 0,
+			hours: Number(document.getElementById("schf-hours").value) || 0,
+			minutes: Number(document.getElementById("schf-minutes").value) || 0,
+		} };
+	} else if (kind === "daily") {
+		spec = { daily: { at: at } };
+	} else {
+		/* The field is `on`, a three-letter day name -- not a weekday
+		 * number. Checked against ScheduleSpec rather than guessed. */
+		spec = { weekly: {
+			at: at,
+			on: document.getElementById("schf-weekday").value,
+		} };
+	}
+	try {
+		await apiRequest("PUT", CIX_API.setSchedule(name), {
+			action: document.getElementById("schf-action").value,
+			schedule: spec,
+			catch_up: document.getElementById("schf-catchup").checked,
+			enabled: true,
+		});
+		clearStatus();
+		document.getElementById("schedule-form").reset();
+		closeModal();
+		await refreshSchedules();
+	} catch (e) {
+		showStatus("Failed to create schedule: " + e.message, true);
+	}
+});
+
 document.getElementById("sysctl-set-form").addEventListener("submit", async (event) => {
 	event.preventDefault();
 
@@ -12563,6 +12811,7 @@ const VIEW_REFRESHERS = {
 	"rolling-restart": [refreshRollingConfig],
 	"tls-throttle": [refreshTlsThrottleConfig, refreshTlsThrottleStatus],
 	backup: [refreshBackupConfig, refreshBackupStatus],
+	schedules: [refreshSchedules, refreshScheduleActions],
 	volumes: [refreshVolumeCache],
 };
 

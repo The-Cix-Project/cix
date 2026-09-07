@@ -8642,7 +8642,7 @@ paths:
         values are knowable, so they are published rather than invited
         and then refused.
       operationId: listScheduleActions
-      x-cix-expose: [cli]
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Registered actions
@@ -8672,7 +8672,7 @@ paths:
         things up to a disk and already shared a tick without sharing
         anything else (issue #96).
       operationId: listSchedules
-      x-cix-expose: [cli]
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: The schedules
@@ -8692,7 +8692,7 @@ paths:
     get:
       summary: One schedule
       operationId: getSchedule
-      x-cix-expose: [cli]
+      x-cix-expose: [cli, web]
       parameters:
         - name: name
           in: path
@@ -8721,7 +8721,7 @@ paths:
         An update keeps the run history -- when the job last ran and how
         that went are facts about the job, not about its settings.
       operationId: setSchedule
-      x-cix-expose: [cli]
+      x-cix-expose: [cli, web]
       parameters:
         - name: name
           in: path
@@ -8742,7 +8742,7 @@ paths:
     delete:
       summary: Remove a schedule
       operationId: deleteSchedule
-      x-cix-expose: [cli]
+      x-cix-expose: [cli, web]
       parameters:
         - name: name
           in: path
@@ -8767,7 +8767,7 @@ paths:
         This is not a second way to DEFINE a schedule -- it only ever
         runs one that already exists.
       operationId: runSchedule
-      x-cix-expose: [cli]
+      x-cix-expose: [cli, web]
       parameters:
         - name: name
           in: path

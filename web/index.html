@@ -807,7 +807,7 @@
 				<p class="hint">Two more placements live on their own pages, and are linked rather than
 					repeated here &mdash; one control in two places is one that drifts.
 					<a href="#backup">Maintenance &gt; Backup</a> chooses the disk automatic snapshots are
-					written to; <a href="#swap">Host &gt; Host Swap</a> chooses the disk the swap file lives
+					written to; <a href="#host-swap">Host &gt; Swap</a> chooses the disk the swap file lives
 					on (ADR-0169).</p>
 			</div>
 		</div>
@@ -1188,10 +1188,11 @@
 		<section class="view" id="view-control-plane" hidden>
 			<h2>Control Plane</h2>
 			<div class="tab-bar">
-				<button type="button" class="tab-button active" data-tab="daemon-config">Daemon</button>
-				<button type="button" class="tab-button" data-tab="tls-throttle">TLS Throttle</button>
+				<button type="button" class="tab-button active" data-tab="daemon-config">Ports</button>
+				<button type="button" class="tab-button" data-tab="tls-throttle">Throttling</button>
 				<button type="button" class="tab-button" data-tab="control-plane-reservation">CPU &amp; Memory</button>
 				<button type="button" class="tab-button" data-tab="stalls">Stalls</button>
+				<button type="button" class="tab-button" data-tab="schedules">Schedules</button>
 			</div>
 <div class="tab-panel" data-tab="daemon-config">
 			<p class="hint">
@@ -1345,6 +1346,37 @@
 				</table>
 			</div>
 		</div>
+<div class="tab-panel" data-tab="schedules" hidden>
+			<p class="hint">
+				Everything this host does on a clock (ADR-0257). One scheduler
+				rather than a timer per subsystem: before this, six periodic
+				timers ran independently, each owning its own copy of "is it
+				on", "how often" and "when did it last run".
+				An action is chosen from a closed list &mdash; there is no free-text
+				command field, because on a shell-less host that would be a
+				shell-exec endpoint.
+			</p>
+			<div class="list-toolbar">
+				<button type="button" id="schedule-add">Add schedule&hellip;</button>
+			</div>
+			<table id="schedules-table">
+				<thead>
+					<tr>
+						<th>Name</th>
+						<th>Action</th>
+						<th>When</th>
+						<th>Enabled</th>
+						<th>Last run</th>
+						<th>Next run</th>
+						<th></th>
+					</tr>
+				</thead>
+				<tbody id="schedules-body">
+					<tr><td colspan="7" class="empty">Loading&hellip;</td></tr>
+				</tbody>
+			</table>
+		</div>
+
 		</section>
 
 		<section class="view" id="view-kernel" hidden>
@@ -3009,6 +3041,64 @@
 					<label>
 						Address (optional)
 						<input type="text" id="nf-address" placeholder="(none), or e.g. 172.31.0.1">
+					</label>
+					<button type="submit">Create</button>
+				</form>
+			</div>
+
+			<div id="modal-schedule-form" hidden>
+				<form id="schedule-form">
+					<label>
+						Name
+						<input type="text" id="schf-name" placeholder="nightly-backup" required>
+					</label>
+					<label>
+						Action
+						<select id="schf-action" required></select>
+					</label>
+					<label>
+						When
+						<select id="schf-kind">
+							<option value="every">Every (a fixed period)</option>
+							<option value="daily">Daily at a time</option>
+							<option value="weekly">Weekly on a day</option>
+						</select>
+					</label>
+					<div id="schf-every-fields">
+						<label>
+							Days
+							<input type="number" id="schf-days" min="0" value="0">
+						</label>
+						<label>
+							Hours
+							<input type="number" id="schf-hours" min="0" value="1">
+						</label>
+						<label>
+							Minutes
+							<input type="number" id="schf-minutes" min="0" value="0">
+						</label>
+					</div>
+					<div id="schf-clock-fields" hidden>
+						<label>
+							At (HH:MM, this machine's local time)
+							<input type="time" id="schf-at" value="02:00">
+						</label>
+						<label id="schf-weekday-label" hidden>
+							Weekday
+							<select id="schf-weekday">
+								<option value="sun">Sunday</option>
+								<option value="mon">Monday</option>
+								<option value="tue">Tuesday</option>
+								<option value="wed">Wednesday</option>
+								<option value="thu">Thursday</option>
+								<option value="fri">Friday</option>
+								<option value="sat">Saturday</option>
+							</select>
+						</label>
+					</div>
+					<label class="checkbox">
+						<input type="checkbox" id="schf-catchup">
+						Catch up if the daemon was down at the scheduled time
 					</label>
 					<button type="submit">Create</button>
 				</form>
