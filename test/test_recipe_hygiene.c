@@ -52,7 +52,7 @@
 static const char *const g_stale_comment[] = {
 	"bash", "bc", "binutils", "bison", "bzip2", "chrony", "coreutils", "curl", "dhcpcd",
 	"diffutils", "dnsmasq", "findutils", "flex", "gawk", "gcc", "grep", "gzip",
-	"libcap", "libuuid", "linux-pam", "make", "mtr", "nss-pam-ldapd", "openldap-client",
+	"libcap", "linux-pam", "make", "mtr", "nss-pam-ldapd", "openldap-client",
 	"openssh", "patch", "perl", "pkgconf", "psmisc", "screen", "sed",
 	"squashfs-tools", "sysklogd", "tar", "vim", "xz", "zlib",
 };
