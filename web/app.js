@@ -6063,7 +6063,7 @@ function diskRow(d) {
 		assignBtn.type = "button";
 		assignBtn.textContent = "Assign role…";
 		assignBtn.addEventListener("click", () => {
-			populateDiskRoleSelect();
+			populateDiskRoleSelect(true);
 			document.getElementById("drf-disk-name").value = d.name;
 			document.getElementById("drf-role").value = "container-storage";
 			openModal("diskrole-form", "Assign disk role");
@@ -6358,7 +6358,7 @@ function renderDiskRoleTab(d, role) {
 }
 
 function openAssignRole(name) {
-	populateDiskRoleSelect();
+	populateDiskRoleSelect(true);
 	document.getElementById("drf-disk-name").value = name;
 	document.getElementById("drf-role").value = "container-storage";
 	openModal("diskrole-form", "Assign disk role");
@@ -6838,9 +6838,19 @@ document.getElementById("dd-add-partition-form").addEventListener("submit", asyn
 	}
 });
 
-function populateDiskRoleSelect() {
+/*
+ * `force` is for the paths that OPEN the dialog: they populate and then
+ * select a value, so they need the options rebuilt now. The poll path
+ * passes nothing and rebuilds only when the disks or their roles
+ * actually changed -- repopulating a <select> under someone who is
+ * using it throws away what they had chosen.
+ */
+function populateDiskRoleSelect(force) {
 	const select = document.getElementById("drf-disk-name");
 
+	if (!force && !dataChanged("diskrole-options",
+	                           { storage: cache.storage, roles: cache.storageRoles }))
+		return;
 	select.textContent = "";
 	for (const d of cache.storage) {
 		if (d.protected || storageRoleFor(d.name) !== null)
@@ -7443,11 +7453,13 @@ function formatRunningConfig(doc) {
 async function refreshRunningConfig() {
 	const pre = document.getElementById("running-config-text");
 
-	pre.textContent = "Loading…";
+	if (pre.textContent === "")
+		pre.textContent = "Loading…";
 	try {
 		const doc = await apiRequest("GET", CIX_API.getConfig());
 
-		pre.textContent = formatRunningConfig(doc);
+		if (dataChanged("running-config", doc))
+			pre.textContent = formatRunningConfig(doc);
 	} catch (e) {
 		pre.textContent = "Could not load the running configuration: " + e.message;
 	}
@@ -11575,6 +11587,10 @@ async function refreshVolumeBackupConfig() {
 	try {
 		const cfg = await apiRequest("GET", CIX_API.getVolumeBackupConfig());
 
+		/* Rebuilding this select on every poll discarded whatever the
+		 * operator had picked while they were still picking. */
+		if (!dataChanged("volume-backup-config", { cfg: cfg, disks: cache.storage }))
+			return;
 		select.textContent = "";
 		const none = document.createElement("option");
 
@@ -12019,8 +12035,6 @@ async function refreshVolumeCache() {
 
 async function refreshVolumes() {
 	const body = document.getElementById("volumes-body");
-
-	body.textContent = "";
 	let vols = [];
 	let containers = [];
 	try {
@@ -12050,6 +12064,10 @@ async function refreshVolumes() {
 			mountedBy[v.name].push(c.name + " at " + v.path + (v.read_only ? " (ro)" : ""));
 		}
 	}
+
+	if (!dataChanged("volumes", { vols: vols, mountedBy: mountedBy }))
+		return;
+	body.textContent = "";
 	if (vols.length === 0) {
 		const row = document.createElement("tr");
 		const cell = document.createElement("td");
