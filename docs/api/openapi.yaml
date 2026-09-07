@@ -15508,6 +15508,23 @@ components:
             release key was installed at build time -- an unsigned ISO
             is still a usable ISO, so a missing key does not fail the
             build, it just leaves this null.
+        iso_bytes:
+          type: [integer, "null"]
+          description: >
+            Size of the finished ISO in bytes; null unless state is
+            "ready". Read from the filesystem on each request rather
+            than recorded at build time -- the file is the truth, and a
+            stored number is one more thing that can disagree with it.
+
+
+            This was absent, and the only way to learn an ISO's size was
+            to publish it and read the cache back. That is how an
+            installer grew from 71.7 MiB to 217.9 MiB across a release
+            series with nobody counting: a seed shipped twice (#307),
+            static archives with shared counterparts beside them
+            (ADR-0251), and debug sections that had not been stripped
+            yet -- each fixed on its own, none of them visible from
+            here.
         publish_state:
           type: string
           enum: [none, publishing, published, failed]

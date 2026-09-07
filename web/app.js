@@ -7677,6 +7677,10 @@ async function refreshIso() {
 			box.appendChild(fieldBlock("Built from", s.built_version));
 		if (s.iso_path)
 			box.appendChild(fieldBlock("ISO", s.iso_path));
+		/* Size on the page, because an installer that quietly triples
+		 * is invisible otherwise -- one did. */
+		if (s.iso_bytes)
+			box.appendChild(fieldBlock("Size", formatBytes(s.iso_bytes)));
 		/* An unsigned ISO is still a usable ISO, so a missing release
 		 * key does not fail the build -- it just leaves this empty,
 		 * and saying so is the point. */
