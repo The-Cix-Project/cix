@@ -142,10 +142,16 @@ a future revision — the daemon refused them with a 409, correctly. `materializ
 then went to 22 of 22 ready with `artifact_cached=true` on all four and no
 compiler invoked.
 
-The mechanism that lets this recur is untouched and is #325. Its cost is
-measured twice now: `recipe_adds_only_artifact_sha256()`'s own comment records 12
-of 37 packages sitting unapproved on the first real box, "including grub, python,
-openssl and tcc, the expensive ones".
+**Correction, made after this entry was first written:** it does not recur. The
+mechanism that closes the loop shipped the day before, in 605087d9 (#306) — a
+package that builds and successfully pushes now writes the approval into its own
+recipe, and `libuuid@2.42.2-4` and `libblkid@2.42.2-7` were both observed doing
+exactly that later the same day. The seven packages found unapproved were a
+historical backlog from before that landed, not an ongoing leak, and this entry
+originally claimed otherwise on the strength of the seven rather than of the
+code. What is still true is that nothing reported the backlog: the gap was
+visible only by comparing the recipe set against `GET /api/v1/artifacts` by
+hand. #325 carries the correction and is closed.
 
 The wider lesson is that the failures were all real and all beside the point. A
 missing approval does not present as a missing approval; it presents as whatever
