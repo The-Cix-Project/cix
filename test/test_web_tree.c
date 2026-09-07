@@ -524,6 +524,35 @@ int main(void)
 			     stack[depth - 1], "1 or more");
 	}
 
+	/*
+	 * Every internal #link in index.html resolves to a real route.
+	 *
+	 * Three hint paragraphs linked to "#schedules" -- a page that was
+	 * never built, written when the scheduler shipped CLI-only. A
+	 * fourth linked to "#swap" when the address has always been
+	 * "#host-swap". All four looked exactly like working links and did
+	 * nothing at all: the router falls through to the default view, so
+	 * a dead link reads as a page that ignored the click.
+	 */
+	for (p = html; (p = strstr(p, "href=\"#")) != NULL; p++) {
+		char hash[64];
+		char target[64];
+		size_t i = 0;
+
+		p += strlen("href=\"#");
+		while (p[i] != '"' && i + 1 < sizeof(hash)) {
+			hash[i] = p[i];
+			i++;
+		}
+		hash[i] = '\0';
+		if (hash[0] == '\0')
+			continue; /* href="#" is a deliberate no-op anchor */
+		if (route_target(app, hash, target, sizeof(target)) != 0)
+			fail("index.html links to \"#%s\", which is not a route -- the click falls "
+			     "through to the default view and reads as a page that ignored it%s",
+			     hash, "");
+	}
+
 	if (checked == 0) {
 		fprintf(stderr, "FAIL: parsed no tree hashes at all -- this test is not testing\n");
 		return 1;

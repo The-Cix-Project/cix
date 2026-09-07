@@ -93,7 +93,7 @@ Services         (the health of every registered service)
   DHCP           (tabs: Servers / Ranges / Reservations / Leases)
   Syslog
 Host             (tabs: Stats / Processes / Swap / Sessions / Running Config / Name / Log Store / Factory Reset)
-  Control Plane  (tabs: Daemon / TLS Throttle / CPU & Memory / Stalls)
+  Control Plane  (tabs: Ports / Throttling / CPU & Memory / Stalls / Schedules)
   Devices        (tabs: Named Mappings / Discovery / Kernel Modules)
   Kernel         (tabs: Kernel Line / Sysctl / Kernel Log)
   Bootloader     (tabs: Boot Slots / Signing Keys / Boot Console)
@@ -116,6 +116,8 @@ Container leaves are colored by live status (running/paused/stopped -- tinted ic
 **Host holds the machine's own subjects**: Control Plane (what the daemon does), Devices (what is plugged in), Kernel (what it boots with), and Bootloader (which slot, signed by whom, and what the last boot printed). Host itself is the page about the host -- its name, sessions, stats, processes and log store -- which is why there is no "Host > Host".
 
 **Boot Slots and Signing Keys are Bootloader, not Kernel.** Both were briefly filed under Kernel because they are boot-adjacent, but neither is about the kernel: an A/B slot is what the bootloader picks, and a signing key is what it will accept. Boot Console joins them because it is the record of what that choice produced.
+
+**Schedules is Control Plane's**, because the scheduler is daemon machinery that fires actions across every subsystem rather than belonging to any one of the things it drives. It lists what runs on a clock, with Run now / Enable / Disable / Delete per row and a create form whose **action is a select, never a text field** -- the closed registry is a security boundary, not a convenience: free text there would be a shell-exec endpoint on a shell-less host.
 
 **Host reads in the order an operator asks its questions**: what the box is doing and how its memory is set up (Stats, Processes, Swap), then who is on it (Sessions), then how it is configured (Running Config, Name, Log Store), with the destructive one (Factory Reset) last. Clicking Host in the tree lands on Stats -- what it is doing is the answer to "I clicked Host", not what it is called.
 
