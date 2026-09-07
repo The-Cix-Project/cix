@@ -17,7 +17,7 @@
 
 cix_finalize() {
 	local dest="$PKG_DESTDIR"
-	local elfmagic armagic f base stem magic d arhead
+	local elfmagic armagic f base stem magic d arsize t
 	local shared_stems=""
 	local -a elf_dyn=() elf_rel=() archives=()
 
@@ -26,13 +26,17 @@ cix_finalize() {
 	fi
 
 	# ADR-0250: name every tool this phase needs, and fail on absence
-	# rather than skipping. rm is the only external tool the prune
-	# needs; strip is checked later, and only if ELF was produced.
-	if ! command -v rm >/dev/null 2>&1; then
-		echo "cix: package finalize needs rm and the build image has none." >&2
-		echo "cix: add coreutils to pkg_build_depends (ADR-0199, ADR-0251)." >&2
-		return 1
-	fi
+	# rather than skipping. rm and wc are what the prune needs -- both
+	# from coreutils, so this asks for no package the prune did not
+	# already require; strip is checked later, and only if ELF was
+	# produced.
+	for t in rm wc; do
+		if ! command -v "$t" >/dev/null 2>&1; then
+			echo "cix: package finalize needs $t and the build image has none." >&2
+			echo "cix: add coreutils to pkg_build_depends (ADR-0199, ADR-0251)." >&2
+			return 1
+		fi
+	done
 
 	shopt -s nullglob dotglob globstar
 
@@ -69,7 +73,7 @@ cix_finalize() {
 			# An archive with NO MEMBERS is exactly eight bytes --
 			# the magic and nothing else -- and clause 2 below must
 			# not touch it. That clause drops an archive because it
-			# duplicates a shared object that ships beside it; an
+			# duplicates a shared object shipping beside it; an
 			# empty archive duplicates nothing, and for glibc's
 			# folded-in stubs it IS the link-time contract.
 			#
@@ -84,15 +88,15 @@ cix_finalize() {
 			# Every gcc-toolchain package passing -pthread then
 			# failed to link (#324, found on btop).
 			#
-			# Read one byte past the magic: a short read means the
-			# file ended there. -d '' is required, not incidental --
-			# the magic's own eighth byte is a newline, which is
-			# read's default delimiter, so without it every archive
-			# looks eight bytes long.
+			# wc, and not a read builtin, because the shell cannot
+			# measure binary at all: a NUL byte cannot be held in a
+			# variable, and `read` stops at one regardless of -N or
+			# -d. Both were tried against a NUL-padded archive and
+			# both reported eight bytes for a 64-byte file, which
+			# would have kept every archive on the system.
 			#
-			arhead=""
-			LC_ALL=C IFS= read -r -d '' -n 9 arhead < "$f" 2>/dev/null || true
-			if test "${#arhead}" -le 8; then
+			arsize=$(wc -c < "$f")
+			if test "$arsize" -le 8; then
 				continue
 			fi
 			archives+=("$f")
