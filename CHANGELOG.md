@@ -2,6 +2,82 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### A routed services subnet behind a VRRP gateway pair (cr-1, cr-2)
+
+The seven service containers moved off the management LAN onto a private
+`192.168.150.0/24`, reached through two forwarding routers that float one
+gateway address between them. Each service kept its old last octet, so
+`ldap-1` went `192.168.15.103` → `192.168.150.103` and the mapping stays
+readable at a glance.
+
+| management 192.168.15.0/24 | services 192.168.150.0/24 (gw .254) |
+|---|---|
+| .101 cr-1, .102 cr-2 | .101 dns-1, .102 dns-2, .103 ldap-1, .104 ldap-2 |
+| .107 syslog-1, .108 syslog-2 | .105 ntp-1, .106 ntp-2, .109 jump |
+| | .253 cr-1, .252 cr-2, **.254 VIP** |
+
+**Almost no new code, because the platform already had the pieces** — which is
+the interesting part. The services network is created with **no host address**,
+and `src/container_net.c` already says what that means and why:
+
+> a container on a pure-L2 network gets no default route at all, same as a real
+> host plugged into a real switch with no DHCP (its image/operator owns routing
+> entirely, e.g. via an explicit `--route=0.0.0.0/0:VIA`)
+
+So the gateway is ours to choose *because* the network has no address of its
+own, and each service carries exactly that one route via the VRRP address.
+`ip_forward` is already a first-class container field, so the routers forward
+with no software doing it, and each attached subnet's connected route is
+installed by the address assignment itself — a two-interface container is
+already a router in everything but the floating address.
+
+`cap_add` is deliberately absent. `CAP_NET_ADMIN`/`CAP_NET_RAW` are not on
+`container_caps.c`'s deny-list — a container keeps them, needing them for its
+own netns — and asking for them is refused with *"must be a capability that's
+actually on the default deny-list"*. keepalived sets the VIP with what it has.
+
+The `router` image is two packages. Forwarding needs no software; keepalived
+owns the one job the kernel cannot do alone. No iproute2: this project talks
+rtnetlink and never shells out to `ip(8)`, and every package in an image is
+surface to build and trust. The VRRP config carries no authentication block on
+purpose — VRRPv2's shared password authenticates nothing against an attacker
+who can already inject on the segment (RFC 5798 removed it for that reason),
+and this is a private bridge; writing one would look like a control without
+being one.
+
+**Measured, not assumed** — every step:
+
+```
+cr-1  Entering MASTER STATE, sets 192.168.150.254, gratuitous ARP
+cr-2  master set to 192.168.150.253
+host  ping .15.101 / .150.253 / .150.254 / .150.103 / .150.109 -> all reachable
+stop cr-1  -> cr-2 Entering MASTER STATE, takes the VIP
+start cr-1 -> BACKUP (init) -> MASTER; cr-2 -> BACKUP   (preempt, as designed)
+ssh from 192.168.15.31 routed via cr-1 to jump at 192.168.150.109:
+      uid=10002(topotest) gid=10001(staff)   -- LDAP behind the same routers
+jump's own default route: FE96A8C0 = 192.168.150.254
+```
+
+One measurement was wrong before it was right, and the correction is the point:
+the first reachability test ran from the **dev sandbox**, which has no route to
+the new subnet, and read as "routing is broken". The route had been added on
+the *host*. Re-run from the host through its own ICMP, everything answered.
+Testing from the wrong vantage point produces a real failure that means nothing.
+
+**Two consequences worth stating plainly, both inherent to the design rather
+than defects.** Inbound HA is asymmetric: VRRP covers traffic *leaving* the
+services subnet, so with the VIP only on the services side, the host's static
+route names one router and dies with it — measured directly, `stop cr-1` made
+the subnet unreachable from management until the route was repointed at cr-2,
+which answered immediately because it held the VIP. And the platform has no
+NAT, so external egress from `192.168.150.0/24` (ntp's upstream sync, notably)
+needs a static route on the site gateway rather than anything on this box.
+
+The renumber also proved #327's fix in the most direct way available: LDAP moved
+to a different subnet and jump's rendered `/etc/ldap-authkeys.conf` followed on
+its own, because the URI derives from the registered servers. `client_uri` is
+still unset and nothing was edited.
+
 ### The jump host could not authenticate anyone, for three unrelated reasons (#327, #184)
 
 "jump was usable previously" turned out to be true and to have nothing to do
