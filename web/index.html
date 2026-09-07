@@ -1839,13 +1839,13 @@
 			<div class="tab-bar">
 				<button type="button" class="tab-button active" data-tab="pipeline">Overview</button>
 				<button type="button" class="tab-button" data-tab="pipeline-errors">Errors</button>
-				<button type="button" class="tab-button" data-tab="pkg-repo">Repo &amp; Sync</button>
 				
 				
 				
 				
 				
-				<button type="button" class="tab-button" data-tab="pkg-build-config">Package Builds</button>
+				
+				
 				
 				<button type="button" class="tab-button" data-tab="rolling-restart">Rolling Restart</button>
 				
@@ -1882,94 +1882,13 @@
 			</table>
 		</div>
 
-<div class="tab-panel" data-tab="pkg-repo" hidden>
-			<h2>Package Repo &amp; Sync</h2>
-			<p class="hint">
-				The configured git-forge source recipes sync from (ADR-0121) -- gitea/github/gitlab,
-				fetched as a plain archive download, never the git protocol itself. Distinct from the
-				artifact server (<a href="#pkg-cache">Cache &amp; Artifacts</a>), which serves
-				precompiled binaries, not recipe text -- the checksum for each is the trust anchor
-				tying the two together (ADR-0122).
-			</p>
-			<form id="prc-form">
-				<label class="wide">
-					Repo URL
-					<input type="text" id="prc-url" placeholder="https://git.example.com/org/recipes">
-				</label>
-				<label>
-					Kind
-					<select id="prc-kind">
-						<option value="gitea">gitea</option>
-						<option value="github">github</option>
-						<option value="gitlab">gitlab</option>
-					</select>
-				</label>
-				<label>
-					Ref (branch/tag)
-					<input type="text" id="prc-ref" placeholder="main">
-				</label>
-				<label>
-					Auth token (blank = unchanged)
-					<input type="password" id="prc-token" placeholder="(unchanged)">
-				</label>
-				<label class="checkbox">
-					<input type="checkbox" id="prc-clear-token">
-					Clear token
-				</label>
-				<p class="hint">
-					When syncs run is a schedule now (ADR-0257) &mdash; see
-					<a href="#schedules">Schedules</a>, action <code>pkg.sync</code>.
-				</p>
-				<button type="submit">Save</button>
-			</form>
-			<h3>Sync status</h3>
-			<div id="pkg-sync-status-box" class="pki-ca-status"></div>
-			<button type="button" id="pkg-sync-now">Sync now</button>
-		</div>
 
 
 
 
 
-<div class="tab-panel" data-tab="pkg-build-config" hidden>
-			<form id="pbc-form">
-				<label>
-					Max concurrent jobs
-					<input type="number" id="pbc-max-jobs" min="1" max="10" value="10">
-				</label>
-				<label>
-					Memory budget for all builds together (bytes, 0 = unlimited)
-					<input type="number" id="pbc-memory-max" min="0" value="2147483648">
-				</label>
-				<label class="wide">
-					CPU budget for all builds together (raw cgroup v2 "quota period", empty = unlimited)
-					<input type="text" id="pbc-cpu-max" placeholder="100000 100000">
-				</label>
-				<button type="submit">Save</button>
-			</form>
-			<h3>Build logs</h3>
-			<p class="hint">
-				Issue #57: the <strong>complete</strong> output of each recent build, teed to disk as it
-				streams. The log store keeps only a ~4KB tail and the live stream is gone once a build
-				ends, so a finished build's real output used to survive nowhere &mdash; which cost two
-				multi-hour round trips on one package alone: once when a verbose configure swamped the
-				tail and hid the error, and once when working around that silenced the live stream and a
-				healthy 71-minute build was misread as hung and killed by hand. A killed build keeps its
-				log too, which is the case most worth reading.
-			</p>
-			<table id="build-logs">
-				<thead>
-					<tr><th>Log</th><th>Size</th><th>Finished</th><th></th></tr>
-				</thead>
-				<tbody id="build-logs-body">
-					<tr><td colspan="4" class="empty">Loading&hellip;</td></tr>
-				</tbody>
-			</table>
-			<pre id="build-log-view" class="log-view" hidden></pre>
-			<p class="hint">ADR-0157: how many <code>pkg install</code>/<code>pkg hostbuild</code> jobs may genuinely run at once, each in its own build container. Lowering this doesn't disrupt jobs already in flight -- only future ones once the new, lower ceiling is reached.</p>
-			<p class="hint">Issue #85: these are an <strong>aggregate</strong> budget, carried by one parent cgroup every build container is a leaf of -- not a per-build ceiling. A per-build number is not a budget: with max concurrent jobs at 10 it silently meant ten times what it said, and on a real 2-CPU box four concurrent builds at 1.5 CPU each demanded 6 CPUs, starved the daemon off the run queue and took the machine out of reach entirely. Whatever this says is now what all builds together can use.</p>
-			<p class="hint">ADR-0165 (superseded in shape by the above): the memory/CPU ceiling applied to build containers -- the same cgroup mechanism a regular container's own <code>--memory-max=</code>/<code>--cpu-max=</code> already uses. Found missing the hard way: a burst of concurrent installs with no ceiling hung a real box's daemon entirely. CPU quota is microseconds of CPU time per 100000-microsecond period -- "100000 100000" is one full CPU's worth, "50000 100000" is half a CPU.</p>
-		</div>
+
+
 
 
 <div class="tab-panel" data-tab="rolling-restart" hidden>
@@ -2363,25 +2282,18 @@
 		</section>
 		<section class="view" id="view-catalogue" hidden>
 			<h2>Catalogue</h2>
-			<div class="tab-bar">
-				<button type="button" class="tab-button active" data-tab="recipes">Recipes</button>
-				<button type="button" class="tab-button" data-tab="packages">Packages</button>
-				<button type="button" class="tab-button" data-tab="images">Images</button>
-			</div>
-<div class="tab-panel" data-tab="recipes">
-			<div class="view-list">
-				<p class="hint">Three git-syncable recipe kinds (ADR-0040/ADR-0123/ADR-0151), one catalog:
+			<p class="hint">Three git-syncable recipe kinds (ADR-0040/ADR-0123/ADR-0151), one catalog:
 					<strong>Packages</strong> build one piece of software from source; <strong>Images</strong>
 					declare a whole package manifest for an image in one shot; <strong>Containers</strong>
 					capture a full, reproducible container definition (cmd/files/network/restart) that
 					creates a real container when applied.</p>
-				<div class="tab-bar">
-					<button type="button" class="tab-button active" data-tab="pkg-recipes" id="recipes-tab-pkg">Packages</button>
-					<button type="button" class="tab-button" data-tab="image-recipes" id="recipes-tab-image">Images</button>
-					<button type="button" class="tab-button" data-tab="container-recipes" id="recipes-tab-container">Containers</button>
-				</div>
-
-				<div class="tab-panel" id="recipes-panel-pkg" data-tab="pkg-recipes">
+			<div class="tab-bar">
+				<button type="button" class="tab-button active" data-tab="pkg-recipes">Package Recipes</button>
+				<button type="button" class="tab-button" data-tab="image-recipes">Image Recipes</button>
+				<button type="button" class="tab-button" data-tab="container-recipes">Container Recipes</button>
+				<button type="button" class="tab-button" data-tab="pkg-repo">Repo &amp; Sync</button>
+			</div>
+<div class="tab-panel" id="recipes-panel-pkg" data-tab="pkg-recipes">
 					<div class="list-toolbar">
 						<input type="search" id="recipes-pkg-search" placeholder="Search package recipes by name&hellip;">
 						<button type="button" id="recipes-pkg-add">Add recipe&hellip;</button>
@@ -2400,8 +2312,7 @@
 						</tbody>
 					</table>
 				</div>
-
-				<div class="tab-panel" id="recipes-panel-image" data-tab="image-recipes" hidden>
+<div class="tab-panel" id="recipes-panel-image" data-tab="image-recipes" hidden>
 					<div class="list-toolbar">
 						<input type="search" id="recipes-image-search" placeholder="Search image recipes by name&hellip;">
 						<button type="button" id="recipes-image-add">Add recipe&hellip;</button>
@@ -2421,8 +2332,7 @@
 						</tbody>
 					</table>
 				</div>
-
-				<div class="tab-panel" id="recipes-panel-container" data-tab="container-recipes" hidden>
+<div class="tab-panel" id="recipes-panel-container" data-tab="container-recipes" hidden>
 					<div class="list-toolbar">
 						<input type="search" id="recipes-container-search" placeholder="Search container recipes by name&hellip;">
 						<button type="button" id="recipes-container-add">Add recipe&hellip;</button>
@@ -2443,7 +2353,98 @@
 						</tbody>
 					</table>
 				</div>
+<div class="tab-panel" data-tab="pkg-repo" hidden>
+			<h2>Package Repo &amp; Sync</h2>
+			<p class="hint">
+				The configured git-forge source recipes sync from (ADR-0121) -- gitea/github/gitlab,
+				fetched as a plain archive download, never the git protocol itself. Distinct from the
+				artifact server (<a href="#pkg-cache">Cache &amp; Artifacts</a>), which serves
+				precompiled binaries, not recipe text -- the checksum for each is the trust anchor
+				tying the two together (ADR-0122).
+			</p>
+			<form id="prc-form">
+				<label class="wide">
+					Repo URL
+					<input type="text" id="prc-url" placeholder="https://git.example.com/org/recipes">
+				</label>
+				<label>
+					Kind
+					<select id="prc-kind">
+						<option value="gitea">gitea</option>
+						<option value="github">github</option>
+						<option value="gitlab">gitlab</option>
+					</select>
+				</label>
+				<label>
+					Ref (branch/tag)
+					<input type="text" id="prc-ref" placeholder="main">
+				</label>
+				<label>
+					Auth token (blank = unchanged)
+					<input type="password" id="prc-token" placeholder="(unchanged)">
+				</label>
+				<label class="checkbox">
+					<input type="checkbox" id="prc-clear-token">
+					Clear token
+				</label>
+				<p class="hint">
+					When syncs run is a schedule now (ADR-0257) &mdash; see
+					<a href="#schedules">Schedules</a>, action <code>pkg.sync</code>.
+				</p>
+				<button type="submit">Save</button>
+			</form>
+			<h3>Sync status</h3>
+			<div id="pkg-sync-status-box" class="pki-ca-status"></div>
+			<button type="button" id="pkg-sync-now">Sync now</button>
+		</div>
+		</section>
+
+		<section class="view" id="view-integration" hidden>
+			<h2>Integration</h2>
+			<div class="tab-bar">
+				<button type="button" class="tab-button active" data-tab="pkg-build-config">Build</button>
+				<button type="button" class="tab-button" data-tab="packages">Local Packages</button>
+				<button type="button" class="tab-button" data-tab="images">Local Images</button>
+				<button type="button" class="tab-button" data-tab="pkg-cache">Remote Cache</button>
 			</div>
+<div class="tab-panel" data-tab="pkg-build-config">
+			<form id="pbc-form">
+				<label>
+					Max concurrent jobs
+					<input type="number" id="pbc-max-jobs" min="1" max="10" value="10">
+				</label>
+				<label>
+					Memory budget for all builds together (bytes, 0 = unlimited)
+					<input type="number" id="pbc-memory-max" min="0" value="2147483648">
+				</label>
+				<label class="wide">
+					CPU budget for all builds together (raw cgroup v2 "quota period", empty = unlimited)
+					<input type="text" id="pbc-cpu-max" placeholder="100000 100000">
+				</label>
+				<button type="submit">Save</button>
+			</form>
+			<h3>Build logs</h3>
+			<p class="hint">
+				Issue #57: the <strong>complete</strong> output of each recent build, teed to disk as it
+				streams. The log store keeps only a ~4KB tail and the live stream is gone once a build
+				ends, so a finished build's real output used to survive nowhere &mdash; which cost two
+				multi-hour round trips on one package alone: once when a verbose configure swamped the
+				tail and hid the error, and once when working around that silenced the live stream and a
+				healthy 71-minute build was misread as hung and killed by hand. A killed build keeps its
+				log too, which is the case most worth reading.
+			</p>
+			<table id="build-logs">
+				<thead>
+					<tr><th>Log</th><th>Size</th><th>Finished</th><th></th></tr>
+				</thead>
+				<tbody id="build-logs-body">
+					<tr><td colspan="4" class="empty">Loading&hellip;</td></tr>
+				</tbody>
+			</table>
+			<pre id="build-log-view" class="log-view" hidden></pre>
+			<p class="hint">ADR-0157: how many <code>pkg install</code>/<code>pkg hostbuild</code> jobs may genuinely run at once, each in its own build container. Lowering this doesn't disrupt jobs already in flight -- only future ones once the new, lower ceiling is reached.</p>
+			<p class="hint">Issue #85: these are an <strong>aggregate</strong> budget, carried by one parent cgroup every build container is a leaf of -- not a per-build ceiling. A per-build number is not a budget: with max concurrent jobs at 10 it silently meant ten times what it said, and on a real 2-CPU box four concurrent builds at 1.5 CPU each demanded 6 CPUs, starved the daemon off the run queue and took the machine out of reach entirely. Whatever this says is now what all builds together can use.</p>
+			<p class="hint">ADR-0165 (superseded in shape by the above): the memory/CPU ceiling applied to build containers -- the same cgroup mechanism a regular container's own <code>--memory-max=</code>/<code>--cpu-max=</code> already uses. Found missing the hard way: a burst of concurrent installs with no ceiling hung a real box's daemon entirely. CPU quota is microseconds of CPU time per 100000-microsecond period -- "100000 100000" is one full CPU's worth, "50000 100000" is half a CPU.</p>
 		</div>
 <div class="tab-panel" data-tab="packages" hidden>
 			<div class="view-list">
@@ -2491,13 +2492,7 @@
 				</table>
 			</div>
 		</div>
-		</section>
-		<section class="view" id="view-artifacts" hidden>
-			<h2>Artifacts</h2>
-			<div class="tab-bar">
-				<button type="button" class="tab-button active" data-tab="pkg-cache">Cache &amp; Artifacts</button>
-			</div>
-<div class="tab-panel" data-tab="pkg-cache">
+<div class="tab-panel" data-tab="pkg-cache" hidden>
 			<h2>Package Cache &amp; Artifacts</h2>
 			<p class="hint">
 				Tier 1: a local build-artifact cache (LRU-evicted, keyed by name+version) that skips a
@@ -2537,6 +2532,7 @@
 			</form>
 		</div>
 		</section>
+
 		<section class="view" id="view-deployment" hidden>
 			<h2>Deployment</h2>
 			<div class="tab-bar">
