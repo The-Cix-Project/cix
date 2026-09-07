@@ -415,6 +415,115 @@ int main(void)
 			     "", "");
 	}
 
+	/*
+	 * index.html is well-formed: every element that opens, closes, in
+	 * order.
+	 *
+	 * Restructuring this file means lifting elements out of one
+	 * section and dropping them into another, and a slice that takes
+	 * one line too few leaves an orphan </p> or </div> behind. That
+	 * has happened twice: once leaving two stray closes after a fold,
+	 * once leaving the tail of a paragraph inside the panel that
+	 * replaced it. A browser forgives both silently -- it repairs the
+	 * tree and paints something plausible -- so neither showed up in a
+	 * screenshot or a DOM dump. Nothing was checking.
+	 *
+	 * Plain tag matching is sound HERE specifically: index.html's one
+	 * inline script contains no tag-like text, and it is skipped along
+	 * with comments. This is not a general HTML parser and must not be
+	 * pointed at app.js, where '<div' does appear inside strings.
+	 */
+	{
+		static const char *const void_tags[] = {
+			"area", "base", "br", "col", "embed", "hr", "img", "input",
+			"link", "meta", "param", "source", "track", "wbr", NULL
+		};
+		char stack[64][32];
+		int depth = 0;
+		const char *q = html;
+
+		while ((q = strchr(q, '<')) != NULL) {
+			char tag[32];
+			size_t j = 0;
+			int closing;
+			const char *gt;
+			int k;
+
+			if (strncmp(q, "<!--", 4) == 0) {
+				const char *ce = strstr(q, "-->");
+
+				if (ce == NULL)
+					break;
+				q = ce + 3;
+				continue;
+			}
+			if (strncmp(q, "<script", 7) == 0) {
+				const char *se = strstr(q, "</script>");
+
+				if (se == NULL)
+					break;
+				q = se + strlen("</script>");
+				continue;
+			}
+			if (q[1] == '!' || q[1] == '?') {
+				q++;
+				continue;
+			}
+			closing = q[1] == '/';
+			gt = strchr(q, '>');
+			if (gt == NULL)
+				break;
+			{
+				const char *n = q + (closing ? 2 : 1);
+
+				while (n < gt && *n != ' ' && *n != '\t' && *n != '\n' &&
+				       *n != '/' && j + 1 < sizeof(tag)) {
+					tag[j] = *n;
+					j++;
+					n++;
+				}
+			}
+			tag[j] = '\0';
+			if (j == 0) {
+				q = gt + 1;
+				continue;
+			}
+			if (gt[-1] == '/') { /* self-closing */
+				q = gt + 1;
+				continue;
+			}
+			for (k = 0; void_tags[k] != NULL; k++)
+				if (strcmp(tag, void_tags[k]) == 0)
+					break;
+			if (void_tags[k] != NULL) {
+				q = gt + 1;
+				continue;
+			}
+			if (!closing) {
+				if (depth < (int)(sizeof(stack) / sizeof(stack[0]))) {
+					snprintf(stack[depth], sizeof(stack[0]), "%s", tag);
+					depth++;
+				}
+			} else if (depth == 0) {
+				fail("index.html closes </%s> with nothing open -- a stray close "
+				     "tag, which a browser silently repairs%s", tag, "");
+			} else if (strcmp(stack[depth - 1], tag) != 0) {
+				fail("index.html closes </%s> while <%s> is the open element -- "
+				     "mismatched nesting", tag, stack[depth - 1]);
+				while (depth > 0 && strcmp(stack[depth - 1], tag) != 0)
+					depth--;
+				if (depth > 0)
+					depth--;
+			} else {
+				depth--;
+			}
+			q = gt + 1;
+		}
+		if (depth != 0)
+			fail("index.html ends with <%s> still open -- %s element(s) never closed",
+			     stack[depth - 1], "1 or more");
+	}
+
 	if (checked == 0) {
 		fprintf(stderr, "FAIL: parsed no tree hashes at all -- this test is not testing\n");
 		return 1;
