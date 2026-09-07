@@ -94,24 +94,18 @@ static int mount_container_tmpfs(const char *target, const char *opts, unsigned 
 	return mount("tmpfs", target, "tmpfs", flags, full);
 }
 
-int mountns_pivot(const char *new_root, const struct mount_spec *mnt)
+int mountns_pivot(const struct mount_spec *mnt)
 {
-	char put_old_path[PATH_MAX];
-
-	if (snprintf(put_old_path, sizeof(put_old_path), "%s/%s",
-	             new_root, mnt->put_old_rel) >= (int)sizeof(put_old_path)) {
-		errno = ENAMETOOLONG;
-		return MOUNTNS_PIVOT_ERR_PATH_TOO_LONG;
-	}
-
-	if (mkdir(put_old_path, 0700) != 0 && errno != EEXIST) {
-		perror("mountns_pivot: mkdir(put_old_path)");
+	/*
+	 * Relative to cwd, which the caller has already made the new root
+	 * (see the header's contract). No path is walked from / here, so
+	 * this works whether or not the process can still traverse the
+	 * host path its rootfs lives under -- which, after a user
+	 * namespace's privilege drop, it may not be able to.
+	 */
+	if (mkdir(mnt->put_old_rel, 0700) != 0 && errno != EEXIST) {
+		perror("mountns_pivot: mkdir(put_old)");
 		return MOUNTNS_PIVOT_ERR_MKDIR_PUT_OLD;
-	}
-
-	if (chdir(new_root) != 0) {
-		perror("mountns_pivot: chdir(new_root)");
-		return MOUNTNS_PIVOT_ERR_CHDIR_NEW_ROOT;
 	}
 
 	if (sys_pivot_root(".", mnt->put_old_rel) != 0) {

@@ -45,6 +45,7 @@
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -305,6 +306,40 @@ static int run_presentation(int idmap, const char *label)
 		         "denied (43) -- read its output above rather than trusting this test",
 		         status);
 		check(0, msg);
+	}
+
+	/*
+	 * The storage model itself, not just that the container worked.
+	 *
+	 * ADR-0207 phase 3's whole claim is that the snapshot stays
+	 * host-uid-0 on disk and the kernel does the presenting -- so the
+	 * mount point the container's own root just created inside its
+	 * rootfs must land as on-disk 0 under the id-map, and as the
+	 * subordinate base under copy+chown, where there is no map to
+	 * translate it. Asserting the two directions separately is what
+	 * makes this a test of the model rather than of the code: a "fix"
+	 * that chowned the snapshot to the subordinate base would leave
+	 * every container running perfectly and fail right here, which is
+	 * exactly the wrong turn taken while diagnosing #321.
+	 */
+	{
+		char vp[PATH_MAX];
+		struct stat vst;
+
+		snprintf(vp, sizeof(vp), "%s/containers/runprobe/rootfs/vol", g_data_dir);
+		if (stat(vp, &vst) != 0) {
+			check(0, "the container's rootfs still carries its volume mount point");
+		} else {
+			printf("  %s/vol on-disk uid=%u\n", vp, (unsigned)vst.st_uid);
+			if (idmap)
+				check(vst.st_uid == 0,
+				      "id-mapped presentation: the rootfs stays host-uid-0 on "
+				      "disk, the kernel does the presenting (ADR-0207 phase 3)");
+			else
+				check(vst.st_uid != 0,
+				      "copy+chown presentation: the rootfs is owned by the "
+				      "container's subordinate base (ADR-0179 phase 2b)");
+		}
 	}
 
 	memset(&r, 0, sizeof(r));

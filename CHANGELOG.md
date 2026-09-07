@@ -56,7 +56,30 @@ That first failure also showed the diagnostic was too coarse to trust: exit 125
 covers four different volume steps and 112 covers eight `mkdir` sites, so the
 status alone names a group and never a cause. The test now reports the child's
 own `exit_reason`, without which a traversal failure reads as a wrong array
-index.
+index — which is how it was in fact first misread.
+
+With the reason printed, the *next* build named its own defect in one line:
+`volume move_mount idmap: Bad file descriptor`. Making the volume target
+relative had left its destination dirfd as `-1`, and `move_mount()` ignores that
+argument only for an **absolute** path — for a relative one `-1` is a real,
+invalid descriptor, so the kernel answered `EBADF`, which reads exactly like a
+closed volume fd and is not one. `AT_FDCWD` is the correct value and both call
+sites now use it.
+
+**`mountns_pivot()` no longer takes a root to walk.** Its contract is that the
+caller has already entered the new root, so `put_old` is created relative to the
+cwd and the function resolves no path at all. A parameter that had to be `"."`
+for the userns path to be correct is a trap for the next caller, so it is gone
+rather than documented — along with the two failure codes (`CHDIR_NEW_ROOT`,
+`PATH_TOO_LONG`) that only existed to describe walking it.
+
+**The test now asserts the storage model, not just that the container ran.**
+After the probe exits, the mount point its own root created inside the rootfs is
+`stat`ed on the host: on-disk uid **0** under the id-map (ADR-0207 phase 3's
+actual claim — the disk stays host-0 and the kernel does the presenting), and
+the subordinate base under copy+chown. A "fix" that chowned the snapshot to the
+base would leave every container running perfectly and fail exactly there, which
+is the wrong turn taken while diagnosing this.
 
 ### A container's second volume was attached from the first one's descriptor (#322)
 
