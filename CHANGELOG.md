@@ -2,6 +2,69 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### The fleet is restored, and rebuilding it from its recipes found five real gaps
+
+The nine workload definitions were lost in the btrfs reformat (`container_defs: []`,
+measured), and #321 is why they could not simply be recreated. With that fixed, the
+fleet was rebuilt from the recipes in this repo — and building those images from
+their recipes for the *first* time, rather than inheriting directories populated by
+hand before the recipes existed, surfaced five defects that had been latent:
+
+**`dns` and `syslog` images declared no C library.** `container apply-recipe dns-1`
+was refused outright: *"image \"dns\" has no C library"*. `dnsmasq` and `sysklogd`
+both declare `pkg_depends=""`, so nothing pulled glibc in transitively, and
+`pkg_seed_image_baseline()` stages a loader and `libnss_files`, not a libc. `ldap`
+and `chrony` already declared it; these two were the outliers. Fixed in
+`dns/1.2.0` and `syslog/1.2.0`.
+
+**`sysklogd` never declared `diffutils` or `pkgconf`.** Its configure reaches for
+`cmp` (a "working dd" probe) and for `pkg-config` (`$PKG_CONFIG` expanded to
+nothing, so the shell tried to run `--variable=systemdsystemunitdir` as a command —
+which reads like a stray argument and is one). Both were named by the #302 gate the
+first time it was rebuilt from source. Its own comment predicted exactly this: *"If
+that turns out to be incomplete the build says so by name."* Fixed in `2.7.0-6`;
+the gate refuses on **any** occurrence of the phrase, not on a count, so silencing
+one would only have surfaced the other.
+
+**`linux-pam` never declared `diffutils` either**, same `cmp`, same gate — and
+`jumpbox` pinned `1.6.1-7` while the recipe set had moved to `-8`, so the restore
+rebuilt a revision two behind. Fixed in `1.6.1-9`, pin bumped in `jumpbox/2.5.0`.
+
+**`ntp-1`/`ntp-2` cannot be user-namespaced, and ADR-0207 phase 3 made them so.**
+They crash-looped on `Fatal error : adjtimex(0x8001) failed : Operation not
+permitted` despite declaring `cap_add: ["CAP_SYS_TIME"]`. The capability is real;
+the namespace is the problem. `adjtimex()` sets the **global** system clock, which
+is owned by the initial user namespace, so it requires `CAP_SYS_TIME` *there* — and
+no user-namespaced container can ever hold that. Confirmed by direct A/B on the
+box: the identical container with `"userns": false` starts and reports *"Running
+with root privileges"*.
+
+These recipes declared no `userns` at all and so followed the platform default,
+which phase 3 flipped to true — before that they were non-userns and worked. A
+container whose whole job is mutating host-global state has to say so, exactly as
+phase 3 already carves out for build and hostbuild containers. Declared in
+`ntp-1/1.1.0` and `ntp-2/1.1.0`.
+
+Eight of nine are running: `dns-1/2`, `ldap-1/2`, `ntp-1/2`, `syslog-1/2`. `jump`
+is blocked on a sixth finding, recorded rather than worked around — see below.
+
+### `-lpthread` cannot be linked on this platform (blocked, not fixed)
+
+`btop` fails at link with `ld: cannot find -lpthread`, and it is not a btop problem.
+The glibc package ships `lib/x86_64-linux-gnu/libpthread.so.0` and `usr/lib/libpthread.so.0`
+— the **runtime** sonames — and no `libpthread.so` link name and no `libpthread.a`.
+`ld -lpthread` looks for exactly those two and finds neither.
+
+ADR-0251 removed the archives deliberately and correctly: *"an archive whose shared
+counterpart ships beside it is dead weight."* What was never added alongside is the
+link-time symlink, which is not an archive and is what a compiler driver's own
+`-pthread` expands to. Every gcc-toolchain package that passes `-pthread` hits this;
+btop is simply the first to be rebuilt from source since.
+
+The fix belongs in the glibc recipe, beside its existing *"link-time set, at the
+paths a compiler here actually searches"* block. That is a glibc rebuild, which this
+project requires the owner to approve before it starts, so it is recorded and left.
+
 ### Every workload on a btrfs host is running again (#321)
 
 A container created with the platform default — `userns: true` — died before it
