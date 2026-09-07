@@ -15785,6 +15785,11 @@ static void respond_pkg_error(int fd, enum pkg_error err)
 		              "requested -- omit build_image to use the declared one, or check the "
 		              "recipe's pkg_build_image= (the daemon log names both)");
 		break;
+	case PKG_ERR_NO_BUILD_IMAGE:
+		respond_error(fd, 400, "Bad Request",
+		              "this recipe declares no pkg_build_image=, so a build_image must be "
+		              "given -- pass one, or add pkg_build_image= to the recipe");
+		break;
 	case PKG_ERR_INVALID_NAME:
 		respond_error(fd, 400, "Bad Request", "invalid package name");
 		break;

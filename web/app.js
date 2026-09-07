@@ -1547,6 +1547,7 @@ const CATEGORY_VIEWS = {
 	"backup": "view-storage",
 	"update": "view-deployment",
 	"reconcile": "view-deployment",
+	iso: "view-deployment",
 	"running-config": "view-host",
 };
 /*
@@ -1758,6 +1759,8 @@ function renderCurrentView() {
 		}
 		if (onPageOf("update"))
 			refreshSoftwareReconcile();
+		if (onPageOf("iso"))
+			refreshIso();
 	}
 
 	/*
@@ -7651,6 +7654,83 @@ async function refreshSchedules() {
 	}
 }
 
+/*
+ * Installer media, built server-side (ADR-0064).
+ *
+ * Only one build is ever in flight -- a second POST while state is
+ * "building" is refused with 409 rather than starting another, so the
+ * button reflects that rather than pretending otherwise.
+ */
+async function refreshIso() {
+	const box = document.getElementById("iso-status");
+
+	if (box === null)
+		return;
+	try {
+		const s = await apiRequest("GET", CIX_API.getSystemIso());
+
+		if (!dataChanged("iso", s))
+			return;
+		box.textContent = "";
+		box.appendChild(fieldBlock("State", s.state));
+		if (s.built_version)
+			box.appendChild(fieldBlock("Built from", s.built_version));
+		if (s.iso_path)
+			box.appendChild(fieldBlock("ISO", s.iso_path));
+		/* An unsigned ISO is still a usable ISO, so a missing release
+		 * key does not fail the build -- it just leaves this empty,
+		 * and saying so is the point. */
+		box.appendChild(fieldBlock("Signature",
+		    s.signature_path || (s.state === "ready" ? "unsigned — no release key at build time"
+		                                            : "—")));
+		if (s.error)
+			box.appendChild(fieldBlock("Error", s.error));
+		box.appendChild(fieldBlock("Publish", s.publish_state +
+		    (s.published_name ? " — " + s.published_name : "") +
+		    (s.publish_error ? " — " + s.publish_error : "")));
+
+		document.getElementById("iso-build").disabled = s.state === "building";
+		document.getElementById("iso-publish").disabled = s.state !== "ready";
+	} catch (e) {
+		/* Best-effort, same as every other panel here. */
+	}
+}
+
+document.getElementById("iso-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	const body = {};
+
+	/* Every field is optional and independent -- an omitted one is
+	 * simply not passed, and the installer asks on the console. Sending
+	 * "" would be claiming an answer nobody gave. */
+	for (const [field, id] of [["disk", "isof-disk"], ["ip", "isof-ip"],
+	                           ["prefix", "isof-prefix"], ["gateway", "isof-gateway"],
+	                           ["interface", "isof-interface"]]) {
+		const v = document.getElementById(id).value.trim();
+
+		if (v !== "")
+			body[field] = v;
+	}
+	try {
+		await apiRequest("POST", CIX_API.postSystemIso(), body);
+		showStatus("Building installer media\u2026", false);
+	} catch (e) {
+		showStatus("Could not start the ISO build: " + e.message, true);
+	}
+	refreshIso();
+});
+
+document.getElementById("iso-publish").addEventListener("click", async () => {
+	try {
+		await apiRequest("POST", CIX_API.publishSystemIso(), {});
+		showStatus("Publishing the installer to the artifact cache\u2026", false);
+	} catch (e) {
+		showStatus("Could not publish the ISO: " + e.message, true);
+	}
+	refreshIso();
+});
+
 async function refreshStalls() {
 	const body = document.getElementById("stalls-body");
 
@@ -12886,6 +12966,7 @@ const VIEW_REFRESHERS = {
 	"tls-throttle": [refreshTlsThrottleConfig, refreshTlsThrottleStatus],
 	backup: [refreshBackupConfig, refreshBackupStatus],
 	schedules: [refreshSchedules, refreshScheduleActions],
+	iso: [refreshIso],
 	volumes: [refreshVolumeCache],
 };
 
