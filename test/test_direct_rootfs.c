@@ -37,6 +37,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -157,9 +158,30 @@ int main(void)
 			return 1;
 		}
 	}
+	/*
+	 * A device node of our own, because the shared fixture builder does
+	 * not stage any -- the /dev set lives in
+	 * test_image_fixture_stage_toolchain(), which this test does not
+	 * use. Without this, dt4's open() below fails ENOENT and would
+	 * "prove" a nodev bug that was never exercised.
+	 */
 	if (test_image_fixture_build(g_image_root, "build/daemon_child", "daemon_child") != 0) {
 		test_data_dir_cleanup(g_data_dir);
 		return 1;
+	}
+
+	{
+		char devdir[PATH_MAX], devnode[PATH_MAX];
+
+		snprintf(devdir, sizeof(devdir), "%s/dev", g_image_root);
+		snprintf(devnode, sizeof(devnode), "%s/dev/urandom", g_image_root);
+		if (mkdir(devdir, 0755) != 0 && errno != EEXIST) {
+			fprintf(stderr, "FAIL: mkdir %s: %s\n", devdir, strerror(errno));
+			failures++;
+		} else if (mknod(devnode, S_IFCHR | 0666, makedev(1, 9)) != 0 && errno != EEXIST) {
+			fprintf(stderr, "FAIL: mknod %s: %s\n", devnode, strerror(errno));
+			failures++;
+		}
 	}
 
 	daemon_pid = start_daemon();
@@ -572,11 +594,28 @@ int main(void)
 			cix_response_free(&r);
 			usleep(200000);
 		}
-		if (said[0] != '\0')
-			printf("  dt4 said: %s", said);
+		/*
+		 * Captured output can lag the status flip, so re-read once
+		 * after it. Without the child's own line this reports a code
+		 * and no cause, and 91 covers both "the mount is nodev" and
+		 * "the node is not there" -- two different bugs.
+		 */
+		if (said[0] == '\0') {
+			usleep(300000);
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/containers/dt4", NULL, &r) == 0 &&
+			    r.json != NULL) {
+				const char *cap = json_str_field(r.json, "captured_output");
+
+				snprintf(said, sizeof(said), "%s", cap != NULL ? cap : "");
+			}
+			cix_response_free(&r);
+		}
+		printf("  dt4 exit=%d said: %s\n", code, said[0] != '\0' ? said : "(nothing)");
 		CHECK(code == 0,
-		      "a direct-rootfs container can open /dev/urandom -- 91 means the node is "
-		      "there and the mount is nodev (#173 on the direct path)");
+		      "a direct-rootfs container can open /dev/urandom (got exit %d) -- 91 with "
+		      "EACCES/EPERM is the nodev bind (#173 on the direct path), 91 with ENOENT "
+		      "means the node never reached the rootfs", code);
 	}
 
 	memset(&r, 0, sizeof(r));
