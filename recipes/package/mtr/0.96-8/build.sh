@@ -21,6 +21,7 @@ pkg_name="mtr"
 pkg_version="0.96-8"
 pkg_source="https://github.com/traviscross/mtr/archive/refs/tags/v0.96.tar.gz"
 pkg_sha256="73e6aef3fb6c8b482acb5b5e2b8fa7794045c4f2420276f035ce76c5beae632d"
+pkg_artifact_sha256="3661d4e7389d73319851b8e7722d6e4ccdab361ad775aa20af158ed0e2e71c2c"
 
 # Prebuilt artifact for THIS exact version (ADR-0122 package tier).
 # With it set, an install fetches <artifact base_url>/mtr-0.96-3.tar.gz

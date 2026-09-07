@@ -16,6 +16,7 @@ pkg_name="btop"
 pkg_version="1.4.7-1"
 pkg_source="https://github.com/aristocratos/btop/archive/refs/tags/v1.4.7.tar.gz"
 pkg_sha256="933de2e4d1b2211a638be463eb6e8616891bfba73aef5d38060bd8319baeefc6"
+pkg_artifact_sha256="f7ad51f373152ee2af914320c8e4c0c32e50c46b3b498b3e23b24e8e2ad377f8"
 #
 # Nothing at runtime beyond libc. btop draws its own ANSI directly and
 # links no curses at all -- it is not an ncurses program despite looking
