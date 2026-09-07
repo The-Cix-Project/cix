@@ -5772,7 +5772,7 @@ enum pkg_error pkg_hostbuild_start(const char *name, const char *build_image, co
 		               "pkg hostbuild %s: no build image given and the recipe declares none -- "
 		               "pass one, or add pkg_build_image= to the recipe",
 		               name);
-		return PKG_ERR_INVALID_NAME;
+		return PKG_ERR_NO_BUILD_IMAGE;
 	}
 
 	/* build_image must already exist -- there is no sane default the

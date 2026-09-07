@@ -2,6 +2,22 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### The ISO builds, and where libraries live had one more stale copy
+
+Proving "can this host build installer media?" as a measurement rather than a reading of the contract turned up four things.
+
+**`isotools` had never been hostbuilt on this box** — the recipe was there (15 revisions), the artifact was not. It builds in 20 seconds.
+
+**The first ISO attempt was refused, correctly**: *"the installer seed needs dnsmasq and this host has none installed — an ISO built now could not bring up DNS on a fresh box."* That is ADR-0229's seed check doing its job — failing rather than shipping media that claims a bootstrappable seed it does not have, because an incomplete seed only reveals itself on the installed box, standing there unable to resolve anything. `dnsmasq 2.90-3` installed into `base`.
+
+**`POST /pkg/hostbuild {"name":"isotools"}` answered `"invalid package name"`** for a perfectly valid name. The real cause — isotools declares no `pkg_build_image=`, so one must be passed — was only in the daemon log. New `PKG_ERR_NO_BUILD_IMAGE` with its own message; this is exactly what the `PKG_ERR_WRONG_BUILD_IMAGE` comment beside it says that enum exists to prevent, one case further along.
+
+**`mkinstalleriso` kept its own copy of where libraries live, and it went stale.** #184 gave this platform one definition (`CIX_LIB_DIRS_SEARCH`) and fixed the *host* search list, whose comment reads: a library is looked for "wherever this platform puts libraries, not in a list that has to be remembered separately here". Five lines below it, the *artifact* list was two hand-written entries — `lib/x86_64-linux-gnu` and `lib64` — omitting `usr/lib`, which is where the isotools artifact actually puts `libcrypto`, `libefivar` and the rest. Staging mokutil's closure failed with nothing but the last directory tried as its message.
+
+The same stale copy was in `LD_LIBRARY_PATH` for `grub-mkrescue`/`xorriso`/`sbsign`, and that one is worse: those are artifact binaries exec'd off the bare host, so per ADR-0154 a wrong path does not fail loudly — a host carrying a same-named library is used instead and the child exits 0 having run against a library it was never built with. Both now derive from the layout.
+
+**The ISO has a dashboard**, on Deployment: state, built-from version, path, signature (saying "unsigned — no release key at build time" rather than blank, since an unsigned ISO is still usable), the optional unattended fields with an empty form documented as the right way to build shippable media, and Publish. Build is disabled while one is in flight — a second POST is a 409, not a second job.
+
 ### Refresh artefacts, reclaimed space, and a log that spans the window
 
 **Nothing re-renders unless its data changed.** Every view renderer runs on the poll loop, and most cleared their table and rebuilt it from scratch each time — identical rows, every couple of seconds. That is not free: it drops text selection, resets scroll inside the table, restarts hover state, and makes a busy page visibly churn. `dataChanged()` compares the DATA rather than diffing the DOM — one `JSON.stringify` against a value already in hand, and a page whose data has not changed has nothing to say.

@@ -184,7 +184,7 @@ int main(int argc, char **argv)
 	char grub_module_dir[600];
 	char xorriso_bin[600];
 	char isotools_bin_dir[600];
-	char isotools_lib_dir[600];
+	char isotools_lib_dir[2048];
 
 	if (argc != 14) {
 		fprintf(stderr,
@@ -289,8 +289,36 @@ int main(int argc, char **argv)
 		}
 	}
 	snprintf(isotools_bin_dir, sizeof(isotools_bin_dir), "%s/bin", g_isotools_root);
-	snprintf(isotools_lib_dir, sizeof(isotools_lib_dir), "%s/" CIX_LIB_DIR_RUNTIME,
-	         g_isotools_root);
+	/*
+	 * Every directory this platform puts libraries in, rooted at the
+	 * artifact -- not one hand-picked path.
+	 *
+	 * The children below are dynamically linked binaries from the
+	 * isotools artifact, exec'd off the bare host rather than inside a
+	 * chroot, so this is the only thing that points the loader at
+	 * their own libraries (ADR-0154). Naming a single directory made
+	 * that silently wrong the moment the artifact's libraries sat
+	 * somewhere else -- and silently is the word: a genuinely missing
+	 * library aborts loudly, but a host that happens to carry a
+	 * same-named one is used instead, and the child exits 0 having run
+	 * against a library it was never built with.
+	 */
+	{
+		static const char *const lib_rel[] = CIX_LIB_DIRS_SEARCH;
+		size_t li, used = 0;
+
+		isotools_lib_dir[0] = '\0';
+		for (li = 0; li < sizeof(lib_rel) / sizeof(lib_rel[0]); li++) {
+			int n = snprintf(isotools_lib_dir + used, sizeof(isotools_lib_dir) - used,
+			                 "%s%s/%s", used > 0 ? ":" : "", g_isotools_root, lib_rel[li]);
+
+			if (n < 0 || (size_t)n >= sizeof(isotools_lib_dir) - used) {
+				fprintf(stderr, "isotools library search path does not fit\n");
+				return 1;
+			}
+			used += (size_t)n;
+		}
+	}
 	/*
 	 * grub-mkrescue itself is always invoked by full explicit path
 	 * below (never PATH-searched), but it in turn fork/execs "xorriso"
@@ -513,8 +541,8 @@ int main(int argc, char **argv)
 		char host_dir_buf[sizeof(host_dir_rel) / sizeof(host_dir_rel[0])][64];
 		const char *host_dirs[sizeof(host_dir_rel) / sizeof(host_dir_rel[0]) + 1];
 		size_t hd;
-		char artifact_lib[700], artifact_lib64[700];
-		const char *artifact_dirs[3];
+		char artifact_dir_buf[sizeof(host_dir_rel) / sizeof(host_dir_rel[0])][700];
+		const char *artifact_dirs[sizeof(host_dir_rel) / sizeof(host_dir_rel[0]) + 1];
 		size_t bi;
 		static const char *const host_bins[] = {
 			"/usr/sbin/sfdisk", "/usr/sbin/mkfs.ext4", "/usr/sbin/mkfs.btrfs", NULL,
@@ -527,12 +555,27 @@ int main(int argc, char **argv)
 		}
 		host_dirs[hd] = NULL;
 
-		snprintf(artifact_lib, sizeof(artifact_lib), "%s/" CIX_LIB_DIR_RUNTIME,
-		         g_isotools_root);
-		snprintf(artifact_lib64, sizeof(artifact_lib64), "%s/lib64", g_isotools_root);
-		artifact_dirs[0] = artifact_lib;
-		artifact_dirs[1] = artifact_lib64;
-		artifact_dirs[2] = NULL;
+		/*
+		 * The SAME layout list as the host dirs above, rooted at the
+		 * artifact instead of at /.
+		 *
+		 * This was two hand-written entries -- lib/x86_64-linux-gnu
+		 * and lib64 -- which is precisely the "list that has to be
+		 * remembered separately here" the comment above warns against.
+		 * It omitted usr/lib, which is where the isotools artifact
+		 * actually puts libcrypto, libefivar and the rest, so staging
+		 * mokutil's closure failed with nothing but the last directory
+		 * tried as its message. #184 gave this platform one definition
+		 * of where libraries live and fixed the host side; the
+		 * artifact side kept its own copy and went stale the moment
+		 * the layout moved.
+		 */
+		for (hd = 0; hd < sizeof(host_dir_rel) / sizeof(host_dir_rel[0]); hd++) {
+			snprintf(artifact_dir_buf[hd], sizeof(artifact_dir_buf[hd]), "%s/%s",
+			         g_isotools_root, host_dir_rel[hd]);
+			artifact_dirs[hd] = artifact_dir_buf[hd];
+		}
+		artifact_dirs[hd] = NULL;
 
 		for (bi = 0; host_bins[bi] != NULL; bi++) {
 			if (test_image_fixture_stage_closure(stage_dir, host_bins[bi], host_dirs) != 0)

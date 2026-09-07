@@ -2547,6 +2547,7 @@
 				<button type="button" class="tab-button active" data-tab="update">Update</button>
 				<button type="button" class="tab-button" data-tab="reconcile">Reconcile</button>
 				<button type="button" class="tab-button" data-tab="rolling-restart">Rolling Restart</button>
+				<button type="button" class="tab-button" data-tab="iso">Installer ISO</button>
 			</div>
 <div class="tab-panel" data-tab="update">
 			<form id="sys-update-form">
@@ -2588,6 +2589,60 @@
 			</form>
 			<p class="hint">Part 5, ADR-0124: when a rolling image auto-rebuilds, every <code>follow_rolling</code> container on it gets a uniformly-random restart delay up to this window, spreading the restarts out instead of killing them all in the same instant. 0 disables jitter (restart immediately).</p>
 		</div>
+<div class="tab-panel" data-tab="iso" hidden>
+			<p class="hint">
+				Assembles installer media server-side (ADR-0064), the same
+				fetch/build pipeline everything else here uses. The media carries a
+				<strong>package seed</strong> (ADR-0229) &mdash; every recipe this host has,
+				plus the artifacts a fresh box needs to reach name resolution. A
+				build <em>fails</em> rather than producing media that claims a seed it
+				cannot bootstrap from, because an incomplete seed only reveals
+				itself on the installed box, standing there unable to resolve
+				anything.
+			</p>
+			<div id="iso-status" class="field-grid"></div>
+			<h2>Build</h2>
+			<p class="hint">
+				Every field is optional, and <strong>an empty form is the right way to build
+				shippable media</strong>: the installer asks for the disk and the network on
+				the console, listing the machine's own disks and NICs. Fill fields in
+				to build media that installs one specific machine unattended; mixing
+				is meaningful &mdash; a fixed disk with a prompted address, for a fleet of
+				identical machines.
+			</p>
+			<form id="iso-form">
+				<label>
+					Target disk
+					<input type="text" id="isof-disk" placeholder="/dev/sda">
+				</label>
+				<label>
+					Static IP
+					<input type="text" id="isof-ip" placeholder="192.168.15.20">
+				</label>
+				<label>
+					Prefix
+					<input type="text" id="isof-prefix" placeholder="24">
+				</label>
+				<label>
+					Gateway
+					<input type="text" id="isof-gateway" placeholder="192.168.15.1">
+				</label>
+				<label>
+					Interface
+					<input type="text" id="isof-interface" placeholder="eth0">
+				</label>
+				<button type="submit" id="iso-build">Build ISO</button>
+			</form>
+			<h2>Publish</h2>
+			<p class="hint">
+				Pushes the finished ISO and its signature to the artifact cache. An
+				unsigned installer is refused by the cache (409) &mdash; the signature goes
+				first, because an installer is the one artifact nothing on the far
+				side can check for you.
+			</p>
+			<button type="button" id="iso-publish">Publish to cache</button>
+		</div>
+
 		</section>
 		<section class="view" id="view-volume-detail" hidden>
 			<table class="detail-table"><tbody id="vd-fields"></tbody></table>

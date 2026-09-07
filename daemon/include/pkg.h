@@ -302,6 +302,17 @@ enum pkg_error {
 	 * which is the failure this project keeps having to unpick.
 	 */
 	PKG_ERR_WRONG_BUILD_IMAGE,
+	/*
+	 * No build image was given and the recipe declares none. Its own
+	 * code because it was reported as PKG_ERR_INVALID_NAME, which is
+	 * a lie about a perfectly valid name: `POST /pkg/hostbuild
+	 * {"name":"isotools"}` answered "invalid package name" while the
+	 * real reason -- that isotools declares no pkg_build_image= and
+	 * so needs one passed -- sat only in the daemon log. The reader is
+	 * then debugging the wrong field. Same failure this enum's own
+	 * WRONG_BUILD_IMAGE comment above exists to prevent.
+	 */
+	PKG_ERR_NO_BUILD_IMAGE,
 	PKG_ERR_INVALID_TOOLCHAIN, /* toolchain_path missing, unreadable, or not a regular file */
 	/*
 	 * Issue #213: pkg_cancel() found the entry, but it has no build in

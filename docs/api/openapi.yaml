@@ -4142,7 +4142,7 @@ paths:
         its own fire-and-forget job. state is "none" until the first
         POST this daemon has ever handled.
       operationId: getSystemIso
-      x-cix-expose: [cli]
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Current ISO build status
@@ -4190,7 +4190,7 @@ paths:
         own image/keys/ already has: a release-signing private key must
         never propagate onto every deployed box).
       operationId: postSystemIso
-      x-cix-expose: [cli]
+      x-cix-expose: [cli, web]
       requestBody:
         required: false
         content:
@@ -4249,7 +4249,7 @@ paths:
         it. The architecture is part of the name because a checksum
         cannot distinguish an aarch64 image from an x86_64 one.
       operationId: publishSystemIso
-      x-cix-expose: [cli]
+      x-cix-expose: [cli, web]
       responses:
         "202":
           description: Publish started; poll GET /system/iso for the result
