@@ -88,6 +88,18 @@ for `rm`, and is named in the tool check beside it.
 package is actually rebuilt, since an image version is a hash of the manifest
 (ADR-0155) and a same-version reinstall is deduped and discarded.
 
+**It has not been rebuilt, and cannot be from here.** The fix keeps the archive
+in every glibc built from now on; it does nothing for the artifact already
+published without it, and rebuilding glibc is what needs it. Every attempt
+produces a one-line build log — `ld: cannot find -lpthread` — because the
+installed glibc has no `libpthread.a` and glibc's own build links `-lpthread`.
+Measured alongside it: every prior `glibc-*` build log on this host is 0 bytes,
+so glibc has never been rebuilt here at all; the installed copy came from the
+cache. Breaking the loop means putting the eight-byte stub into the build sandbox
+once, which sits on the bootstrap/provenance boundary and is the owner's call.
+Recorded in #324 with its evidence rather than escalated. All eight fleet
+containers are unaffected and every image's `current_version` is intact.
+
 ### The fleet is restored, and rebuilding it from its recipes found five real gaps
 
 The nine workload definitions were lost in the btrfs reformat (`container_defs: []`,
