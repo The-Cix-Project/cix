@@ -459,12 +459,24 @@ function closeAllMenus() {
 function positionMenu(toggle, menu) {
 	const t = toggle.getBoundingClientRect();
 
-	menu.style.left = t.left + "px";
+	/*
+	 * Line the panel's ENTRIES up with the trigger's own label, not
+	 * its box with the trigger's box. Both carry horizontal padding
+	 * and the two are not equal, so a box-to-box alignment leaves the
+	 * words a few pixels apart -- close enough to look like a mistake
+	 * rather than a margin. Both paddings are read from the live
+	 * computed style, so this stays true if either changes in CSS.
+	 */
+	const item = menu.querySelector("a, button");
+	const pad = parseFloat(getComputedStyle(toggle).paddingLeft) -
+	            (item !== null ? parseFloat(getComputedStyle(item).paddingLeft) : 0);
+
+	menu.style.left = Math.max(8, t.left + pad) + "px";
 	menu.style.top = t.bottom + 5 + "px";
 
 	const m = menu.getBoundingClientRect();
 	if (m.right > window.innerWidth - 8)
-		menu.style.left = Math.max(8, t.right - m.width) + "px";
+		menu.style.left = Math.max(8, t.right - m.width - pad) + "px";
 }
 
 for (const dropdown of document.querySelectorAll(".menu-dropdown")) {
@@ -1424,8 +1436,9 @@ const CATEGORY_VIEWS = {
 	"pki-ca": "view-pki-ca",
 	"pki-intermediate": "view-pki-ca",
 	"pki-certs": "view-pki-ca",
-	recipes: "view-pipeline",
+	recipes: "view-catalogue",
 	pipeline: "view-pipeline",
+	"pipeline-errors": "view-pipeline",
 	"site": "view-host",
 	"daemon-config": "view-control-plane",
 	"host-swap": "view-storage",
@@ -1437,9 +1450,9 @@ const CATEGORY_VIEWS = {
 	"syslog-targets": "view-syslog-targets",
 	"tls-throttle": "view-control-plane",
 	"control-plane-reservation": "view-control-plane",
-	"boot-console": "view-kernel",
-	esp: "view-kernel",
-	"signing-keys": "view-pipeline",
+	"boot-console": "view-bootloader",
+	esp: "view-bootloader",
+	"signing-keys": "view-bootloader",
 	"kernel-policy": "view-kernel",
 	logs: "view-host",
 	kmsg: "view-kernel",
@@ -1454,14 +1467,15 @@ const CATEGORY_VIEWS = {
 	 * addresses still resolve to it (with the right tab showing) --
 	 * #images/{name} is unaffected, since DETAIL_VIEWS is consulted
 	 * first whenever a route carries a name. */
-	images: "view-pipeline",
-	packages: "view-pipeline",
+	images: "view-catalogue",
+	packages: "view-catalogue",
 	"pkg-repo": "view-pipeline",
-	"pkg-cache": "view-pipeline",
+	"pkg-cache": "view-artifacts",
 	"factory-reset": "view-host",
 	"storage-placement": "view-storage",
 	"backup": "view-storage",
-	"update": "view-pipeline",
+	"update": "view-deployment",
+	"reconcile": "view-deployment",
 	"running-config": "view-host",
 };
 /*
@@ -1492,86 +1506,44 @@ const DETAIL_VIEWS = {
 	packages: "view-package-detail",
 };
 
-/* Shows one of the Pipeline page's tabs. Every tab is now named after
- * the route that selects it, so this is a lookup rather than the
- * translation table it used to be -- and the table is what broke when
- * the Catalogue page became the Pipeline page, since it still asked for
- * a section id that no longer existed and silently returned. */
-function selectCatalogueTab(tabName) {
-	const view = document.getElementById("view-pipeline");
-	const bar = view.querySelector(".tab-bar");
-
-	if (bar === null)
-		return;
-	for (const btn of bar.querySelectorAll(".tab-button"))
-		btn.classList.toggle("active", btn.dataset.tab === tabName);
-	for (const panel of view.querySelectorAll(":scope > .tab-panel"))
-		panel.hidden = panel.dataset.tab !== tabName;
-}
-
 /*
- * PKI, DNS, LDAP and NTP are each one page with tabs now, so their old
- * per-page addresses select a tab instead of a view. Each tab is named
- * after the address it replaced, which makes this a lookup rather than
- * a table that has to be kept in step.
+ * Shows the tab that `category` addresses, on whichever page owns it.
  *
- * On arrival only -- renderCurrentView() also runs every poll, and
- * forcing the tab there would snap the page back roughly every two
- * seconds, which is exactly the bug the Catalogue had.
+ * There used to be two of these plus a SERVICE_TAB_VIEWS table -- a
+ * hand-kept second copy of CATEGORY_VIEWS naming, for every tab-shaped
+ * address, the page it sat on. Two tables describing one fact is how a
+ * tab moves pages and silently stops selecting itself, and moving tabs
+ * between pages is now routine rather than rare. Neither fact needs
+ * storing twice: the page is CATEGORY_VIEWS' answer already, and
+ * whether an address is a tab at all is a question that page's own tab
+ * bar answers by having (or not having) a button for it.
+ *
+ * Scoped to the page's OWN tab bar and panels -- Catalogue's Recipes
+ * panel contains a second, nested tab bar, and an unscoped query would
+ * hide its sub-panels every time the outer tab changed.
  */
-function selectServiceTab(viewId, tabName) {
-	const view = document.getElementById(viewId);
-	const bar = view !== null ? view.querySelector(".tab-bar") : null;
+function tabButtonFor(category) {
+	const view = document.getElementById(CATEGORY_VIEWS[category] || "");
 
-	if (bar === null)
-		return;
-	for (const btn of bar.querySelectorAll(".tab-button"))
-		btn.classList.toggle("active", btn.dataset.tab === tabName);
-	for (const panel of view.querySelectorAll(":scope > .tab-panel"))
-		panel.hidden = panel.dataset.tab !== tabName;
+	if (view === null)
+		return null;
+	return view.querySelector(
+		':scope > .tab-bar > .tab-button[data-tab="' + category + '"]');
 }
 
-const SERVICE_TAB_VIEWS = {
-	"daemon-config": "view-control-plane",
-	site: "view-host",
-	"hostauth-sessions": "view-host",
-	"host-swap": "view-storage",
-	"rolling-restart": "view-pipeline",
-	"storage-placement": "view-storage",
-	routes: "view-networks",
-	"tls-throttle": "view-control-plane",
-	"control-plane-reservation": "view-control-plane",
-	"boot-console": "view-kernel",
-	esp: "view-kernel",
-	"signing-keys": "view-pipeline",
-	"kernel-policy": "view-kernel",
-	backup: "view-storage",
-	"volume-backup-config": "view-storage",
-	"factory-reset": "view-host",
-	"pki-ca": "view-pki-ca",
-	"pki-intermediate": "view-pki-ca",
-	"pki-certs": "view-pki-ca",
-	"dns-records": "view-dns-records",
-	"dns-servers": "view-dns-records",
-	"dns-forwarders": "view-dns-records",
-	"ldap-servers": "view-ldap-servers",
-	"ldap-groups": "view-ldap-servers",
-	"ldap-users": "view-ldap-servers",
-	"ldap-config": "view-ldap-servers",
-	"ntp-config": "view-ntp-config",
-	"ntp-servers": "view-ntp-config",
-	"ntp-time": "view-ntp-config",
-	"dhcp-servers": "view-dhcp",
-	"dhcp-ranges": "view-dhcp",
-	"dhcp-static": "view-dhcp",
-	"dhcp-leases": "view-dhcp",
-	"host-stats": "view-host",
-	processes: "view-host",
-	logs: "view-host",
-	kmsg: "view-kernel",
-	"server-health": "view-server-health",
-	stalls: "view-control-plane",
-};
+function selectTabFor(category) {
+	const btn = tabButtonFor(category);
+
+	if (btn === null)
+		return;
+
+	const view = btn.closest("section.view");
+
+	for (const other of view.querySelectorAll(":scope > .tab-bar > .tab-button"))
+		other.classList.toggle("active", other === btn);
+	for (const panel of view.querySelectorAll(":scope > .tab-panel"))
+		panel.hidden = panel.dataset.tab !== category;
+}
 
 /* The category last rendered, so a re-render triggered by the poll loop
  * can be told apart from real navigation. Anything that a user can
@@ -1659,56 +1631,64 @@ function renderCurrentView() {
 			refreshKmsg();
 		if (onPageOf("server-health"))
 			refreshServerHealth();
-		else if (route.category === "stalls")
+		if (onPageOf("stalls"))
 			refreshStalls();
-		else if (route.category === "running-config")
+		if (onPageOf("running-config"))
 			refreshRunningConfig();
-		else if (route.category === "volume-backup-config")
+		if (onPageOf("volume-backup-config"))
 			refreshVolumeBackupConfig();
-		else if (route.category === "volumes" && route.name !== null)
-			renderVolumeDetail(route.name);
-		else if (route.category === "volumes")
-			refreshVolumes();
-		else if (route.category === "images" && route.name !== null)
-			renderImageDetail(route.name);
-		else if (route.category === "devices")
+		if (onPageOf("devices"))
 			renderDevices();
-		else if (route.category === "storage")
+		if (onPageOf("storage"))
 			renderDisks();
-		else if (route.category === "storage-placement")
+		if (onPageOf("storage-placement"))
 			renderAllStoragePlacements();
-		else if (route.category === "packages" && route.name !== null)
+		if (onPageOf("backup"))
+			renderBackupConfig();
+		if (onPageOf("hostauth-sessions"))
+			refreshHostauthSessions();
+
+		/*
+		 * A name in the address means a DETAIL page, which is a
+		 * different section from the list it came from -- so these stay
+		 * paired with else, unlike every check above.
+		 */
+		if (route.category === "volumes" && route.name !== null)
+			renderVolumeDetail(route.name);
+		else if (onPageOf("volumes"))
+			refreshVolumes();
+		if (route.category === "images" && route.name !== null)
+			renderImageDetail(route.name);
+		if (route.category === "packages" && route.name !== null)
 			renderPackagesView(route.name);
-		else if (route.category === "recipes" || route.category === "pkg-repo" ||
-		         route.category === "pkg-cache" || route.category === "images" ||
-		         route.category === "packages" || route.category === "pkg-build-config" ||
-		         route.category === "update") {
-			/*
-			 * Only when the route actually CHANGED. renderCurrentView()
-			 * also runs on every poll, so forcing the tab here
-			 * unconditionally snapped the page back to Recipes roughly
-			 * every two seconds -- clicking any other Catalogue tab
-			 * appeared to bounce. An address selects a tab on arrival;
-			 * after that the tab bar owns it.
-			 */
-			if (lastRenderedRoute !== route.category)
-				selectCatalogueTab(route.category);
+
+		/*
+		 * The Pipeline's four pages. Each renders everything its own
+		 * tabs show, because a tab is switched without navigating and a
+		 * panel that renders only when addressed sits on "Loading".
+		 */
+		if (onPageOf("pipeline"))
+			refreshBuildLogs();
+		if (onPageOf("recipes")) {
 			renderImages(cache.images);
 			renderPackagesView(null);
-			refreshBuildLogs();
-			refreshSoftwareReconcile();
 			renderRecipesList();
 			renderImageRecipesTable();
 			renderContainerRecipesTable();
 		}
-		else if (route.category === "backup")
-			renderBackupConfig();
-		else if (route.category === "hostauth-sessions")
-			refreshHostauthSessions();
+		if (onPageOf("update"))
+			refreshSoftwareReconcile();
 	}
 
-	if (lastRenderedRoute !== route.category && SERVICE_TAB_VIEWS[route.category] !== undefined)
-		selectServiceTab(SERVICE_TAB_VIEWS[route.category], route.category);
+	/*
+	 * On ARRIVAL only. renderCurrentView() also runs every poll, and
+	 * forcing the tab there snapped the page back to its addressed tab
+	 * roughly every two seconds -- clicking any other tab appeared to
+	 * bounce. An address selects a tab on arrival; after that the tab
+	 * bar owns it.
+	 */
+	if (lastRenderedRoute !== route.category)
+		selectTabFor(route.category);
 	lastRenderedRoute = route.category;
 	renderTreeActive();
 }
@@ -2243,9 +2223,26 @@ function renderTree() {
 				),
 		},
 		{
+			/*
+			 * The pipeline is a group because its children are its
+			 * STAGES, not instances of a thing -- the one place in this
+			 * tree where a child is a subject rather than something
+			 * that exists on the box. That is deliberate: an operator
+			 * asking "where did this stop?" is asking about the stage,
+			 * so the stages are what the tree should offer.
+			 *
+			 * Selectable like every other group: clicking Pipeline
+			 * opens its own overview.
+			 */
 			label: "Pipeline",
+			group: true,
 			hash: "pipeline",
 			icon: "software",
+			children: [
+				{ label: "Catalogue", hash: "recipes", icon: "recipes" },
+				{ label: "Artifacts", hash: "pkg-cache", icon: "packages" },
+				{ label: "Deployment", hash: "update", icon: "update" },
+			],
 		},
 		{
 			/*
@@ -2282,6 +2279,7 @@ function renderTree() {
 				{ label: "Control Plane", hash: "tls-throttle", icon: "system" },
 				{ label: "Devices", hash: "devicemaps", icon: "devices" },
 				{ label: "Kernel", hash: "kernel-policy", icon: "system" },
+				{ label: "Bootloader", hash: "esp", icon: "system" },
 			],
 		},
 	];
@@ -3500,7 +3498,7 @@ for (const tabButton of document.querySelectorAll(".tab-bar .tab-button")) {
 		 * (that page renders all of its content for any of its own
 		 * addresses) -- are left alone.
 		 */
-		if (SERVICE_TAB_VIEWS[tabName] !== undefined && parseHash().category !== tabName)
+		if (tabButtonFor(tabName) !== null && parseHash().category !== tabName)
 			location.hash = "#" + tabName;
 		if (tabName === "console") {
 			/*
@@ -12437,6 +12435,8 @@ async function refreshPipeline() {
 
 const VIEW_REFRESHERS = {
 	pipeline: [refreshPipeline],
+	"pipeline-errors": [refreshPipeline],
+	reconcile: [refreshImages, refreshPkgList],
 	images: [refreshImages, refreshPkgRecipes, refreshImageRecipesList, refreshContainerRecipesList,
 	         refreshPkgList],
 	recipes: [refreshPkgRecipes, refreshImageRecipesList, refreshContainerRecipesList,
