@@ -29,6 +29,7 @@ pkg_sha256="67bea6fbc3a42a535a0230c9e891e5ddfb4d9d39422d46565a2990d1ace15216"
 # bytes change with them; a checksum is added only after a real Cix
 # host has built and published those exact bytes, never carried
 # forward from a previous revision.
+pkg_artifact_sha256="2efa3e7bf57549cf6a0ac58f4d352e44b7f330cac6f7f7a8d4c33d18879b83c6"
 pkg_depends=""
 #
 # Build tools derived from what this recipe's own pkg_build() actually
