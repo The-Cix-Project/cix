@@ -2,6 +2,63 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### The jump host could not authenticate anyone, for three unrelated reasons (#327, #184)
+
+"jump was usable previously" turned out to be true and to have nothing to do
+with the recipe, which has carried `LDAP_URI="{{LDAP:URI}}"` unchanged since
+1.0.0. It worked because an operator had once hand-set `client_uri` in the
+daemon's LDAP config, and that state was lost. Three defects sat behind it,
+each of which alone was enough to break login, and none of which named itself.
+
+**1. `{{LDAP:URI}}` never derived (#327).** The token read `lc->client_uri`
+directly and left itself verbatim when that field was empty, while the daemon's
+own `nslcd.conf` rendering has always used `ldap_effective_client_uri()`. One
+container create produced two files disagreeing about the same servers. The
+half that broke was the quiet half: nslcd held the good value, so password and
+NSS lookups worked, while sshd's `AuthorizedKeysCommand` sourced the token file
+and searched a nonsense URI — reporting no keys for the user rather than a
+broken configuration. Fixed by calling the function that already answers this
+question, which returns an explicit `client_uri` when one is set and the
+registered servers' live addresses otherwise, health-filtered either way.
+
+`test_container_recipe`'s existing LDAP scenario sets an explicit `client_uri`,
+so it only ever exercised the branch that already worked — which is why this
+shipped. The new scenario registers a real network-attached container as an
+LDAP server, clears `client_uri`, and asserts the rendered file carries that
+server's own address and no literal token.
+
+**2. `ldapsearch` could not start at all (#184).** Even with a correct URI it
+exited 127: `error while loading shared libraries: libuuid.so.1`. util-linux
+splits its output when `--prefix=/usr` is given without `--libdir` — the real
+`.so.1` to `/lib`, the dev symlink to `/usr/lib` — and the loader does not
+search a bare `/lib` here. A sweep of every installed package found exactly
+`libuuid` and `libblkid` in that state; everything else uses
+`lib/x86_64-linux-gnu`, which the loader does search, so this was not the
+multiarch story. Both now pass `--libdir=/usr/lib` explicitly.
+
+**3. Nothing reported any of it.** A `POST` returning `running`, a container
+listed as up, and an sshd answering on port 22 were all true throughout. The
+cause was found by making the `AuthorizedKeysCommand` print its own
+environment — the discriminating measurement being that **zero** searches
+carrying the script's own `(cn=cixtest)` filter ever reached glauth, against 18
+nslcd-style `(uid=cixtest)` ones in the same window. That said "the query never
+left the box" and ruled out everything on the server side at once.
+
+Two theories were tested and disproven en route, so don't re-run them: it is
+NOT the `0600` permission on `/etc/ldap-authkeys.conf` (the recipe stages it
+owned by the `authkeys` user in every revision, and the script confirmed it
+readable), and it is NOT bash process substitution against a missing `/dev/fd`
+(`ls` inside that subprocess genuinely cannot see `/dev/fd`, and `< <(...)`
+works there anyway — the shipped script is fine as written).
+
+Verified end to end, with an account created for the purpose:
+`ssh -i <key> cixtest@192.168.15.109` returns
+`uid=10001(cixtest) gid=10001(staff)`, home directory created on the
+`jump-home` volume by `pam_mkhomedir`, the key served from LDAP, and the
+`(cn=cixtest)` filter now reaching glauth four times where it previously
+reached it zero. `client_uri` is unset — the URI the container renders is
+derived. Fleet is 9 of 9 and no package on the host reports an error.
+
 ### The identity plane stood itself up; only the base DN had to be chosen (#327)
 
 `jump` was the last of the nine workloads still down, and the assumption going
