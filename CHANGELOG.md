@@ -41,8 +41,22 @@ final set. See ADR-0207's addendum.
 under `/tmp`, which is not btrfs, so the id-mapped branch was unreachable in this
 suite and had never once executed. `test_userns_run` now runs its whole body
 against *both* presentations via a `--test-userns-idmap` daemon flag that makes
-the copy present itself the way a snapshot does. It creates containers, so it is
-not in `SELFTESTS` and gates nothing at release time — it runs on a real host.
+the copy present itself the way a snapshot does.
+
+It reaches the release gate through `DAEMON_SELFTESTS_2` and failed the first
+build of this fix, which is the point of it. The drop was early enough that the
+child could no longer **traverse** the host path to its own rootfs — a test
+daemon's `mkdtemp` directory is 0700, and `volume_mkdir_p()` died on the first
+component. The child now enters the new root by path once, while still host
+root, and everything after the drop is relative to that cwd: the volume mount
+points, and `put_old`. A privilege drop must not leave the process depending on
+`o+x` for a directory it does not own.
+
+That first failure also showed the diagnostic was too coarse to trust: exit 125
+covers four different volume steps and 112 covers eight `mkdir` sites, so the
+status alone names a group and never a cause. The test now reports the child's
+own `exit_reason`, without which a traversal failure reads as a wrong array
+index.
 
 ### A container's second volume was attached from the first one's descriptor (#322)
 

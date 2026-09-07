@@ -55,6 +55,7 @@ extern char **environ;
 
 static char g_data_dir[PATH_MAX];
 static char g_image_root[PATH_MAX];
+static char g_exit_reason[256];
 static int g_failures;
 
 static void check(int ok, const char *what)
@@ -141,8 +142,19 @@ static int wait_exit_status(const struct cix_client *c, const char *name, char *
 			    jes->type == JSON_NUMBER) {
 				const char *cap =
 				        json_as_string(json_object_get(r.json, "captured_output"));
+				/*
+				 * The child's own diag line. Four different volume
+				 * steps share exit 125 and eight mkdir sites share
+				 * 112, so the status alone names a group, never a
+				 * cause -- reporting one without this is how a
+				 * traversal failure got read as a wrong array index.
+				 */
+				const char *why =
+				        json_as_string(json_object_get(r.json, "exit_reason"));
 				int status = (int)jes->u.number;
 
+				snprintf(g_exit_reason, sizeof(g_exit_reason), "%s",
+				         why != NULL ? why : "(none)");
 				snprintf(out, out_size, "%s", cap != NULL ? cap : "");
 				cix_response_free(&r);
 				return status;
@@ -251,9 +263,12 @@ static int run_presentation(int idmap, const char *label)
 	}
 
 	out[0] = '\0';
+	g_exit_reason[0] = '\0';
 	status = wait_exit_status(&client, "runprobe", out, sizeof(out));
 	if (out[0] != '\0')
 		printf("  container said: %s", out);
+	if (g_exit_reason[0] != '\0')
+		printf("  exit_reason: %s\n", g_exit_reason);
 
 	if (status == 42) {
 		printf("  PASS: the container's own root can write to /run, read a 0600 "
@@ -271,16 +286,15 @@ static int run_presentation(int idmap, const char *label)
 		         "mode 0600 -- the staged file's ownership landed outside the "
 		         "container's mapped range (#265); stage_container_file()'s "
 		         "id_offset in daemon/src/main.c is what sets this");
-	} else if (status == 125) {
-		check(0, "the container died attaching a VOLUME -- with two volumes this is "
-		         "#322: the child's volume loop subscripts volume_idmap_fds[] with "
-		         "the wrong index (i, left at cap_add_count, instead of vi), so the "
-		         "second volume re-uses the first's closed descriptor");
-	} else if (status == 112) {
-		check(0, "the container died in mountns_pivot -- if this is the id-mapped "
-		         "pass and the errno is EOVERFLOW, this is #321: the child is still "
-		         "host uid 0, which falls outside the rootfs id-map, so every mkdir "
-		         "it makes into its own rootfs is refused");
+	} else if (status == 125 || status == 112 || status == 126) {
+		char msg[320];
+
+		/* Say which step, from the child's own diag line: 125 covers
+		 * four volume steps and 112 covers eight mkdir sites. */
+		snprintf(msg, sizeof(msg),
+		         "the container died before it ran (exit %d) -- %s", status,
+		         g_exit_reason[0] != '\0' ? g_exit_reason : "no exit_reason recorded");
+		check(0, msg);
 	} else if (status < 0) {
 		check(0, "the /run probe container never reached 'exited'");
 	} else {
