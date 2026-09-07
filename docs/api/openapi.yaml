@@ -4164,8 +4164,13 @@ paths:
 
 
         The media carries a **package seed** (issue #135, ADR-0229):
-        every recipe this host has, plus the artifacts a fresh box needs
-        to reach name resolution. Without it a fresh install cannot
+        the current version of every recipe this host has, plus the
+        artifacts a fresh box needs to reach name resolution. One
+        version per package, not the whole store -- a superseded
+        revision has no artifact on the media to install from, and a box
+        that has a forge syncs the real history anyway. A seeded
+        artifact's own recipe version ships even when superseded, or the
+        box would resolve to a recipe the media carries no artifact for. Without it a fresh install cannot
         obtain a single recipe -- no recipes without a git forge, no
         forge without DNS, no DNS without a recipe -- and the only way
         through was hand-feeding hundreds of recipes from another

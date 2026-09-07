@@ -2,6 +2,14 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### The seed carries one recipe version per package, not the whole store
+
+11.9 MiB of the installer's 12.8 MiB recipe tree was superseded revisions — **94%**, including 302 revisions of `cix` alone — on media a fresh box boots once.
+
+A superseded revision cannot serve the seed's purpose. The only artifacts on the media are the three staged beside the recipes, so an older recipe has nothing to install from; and the moment the box has a forge it syncs the real history. Git is where revisions live.
+
+**The exception is load-bearing:** a seeded artifact's own version is copied even when it is not the latest. Ship only the newest recipe beside an older artifact and a fresh box resolves `glibc` to a version the media does not carry, then tries to build a C library on a machine that has no compiler yet.
+
 ### The installer ISO is measurable
 
 `GET /v1/system/iso` reports `iso_bytes`. It reported a path and nothing else, so the only way to learn an ISO's size was to publish it and read the cache back — and that is how an installer grew from **71.7 MiB (2.5.0) to 217.9 MiB (2.53.73)** across a release series with nobody counting.

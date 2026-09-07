@@ -10233,6 +10233,74 @@ void pkg_artifact_cache_path(const char *name, const char *version, char *out, s
  */
 static const char *const g_seed_packages[] = { PKG_BASE_LIBC, "zlib", "dnsmasq" };
 
+/*
+ * One recipe version per package onto the media, not the whole store.
+ *
+ * The seed exists so a fresh box can reach name resolution before it
+ * has a forge (ADR-0229). A superseded revision cannot serve that: the
+ * only artifacts on the media are the three staged below, so an older
+ * recipe has nothing to install from, and the moment the box does have
+ * a forge it syncs the real history anyway. It was 11.9 MiB of 12.8 --
+ * 94% of the recipe tree, 302 revisions of `cix` alone -- on media
+ * that a fresh box boots once.
+ *
+ * The exception is load-bearing: a seeded ARTIFACT's own version is
+ * copied even when it is not the latest. Ship only the newest recipe
+ * beside an older artifact and a fresh box resolves glibc to a version
+ * the media does not carry, then tries to build a C library on a
+ * machine that has no compiler yet.
+ */
+static int seed_copy_one_recipe(const char *recipes_dst, const char *name, const char *version)
+{
+	char src[PATH_MAX];
+	char dst_dir[PATH_MAX];
+	char dst[PATH_MAX];
+	struct stat st;
+
+	if (snprintf(src, sizeof(src), "%s/%s/%s", g_recipes_dir, name, version) >=
+	        (int)sizeof(src) ||
+	    snprintf(dst_dir, sizeof(dst_dir), "%s/%s", recipes_dst, name) >=
+	        (int)sizeof(dst_dir) ||
+	    snprintf(dst, sizeof(dst), "%s/%s", dst_dir, version) >= (int)sizeof(dst))
+		return -1;
+	if (stat(src, &st) != 0 || !S_ISDIR(st.st_mode))
+		return 0; /* nothing there to copy is not a failure */
+	if (stat(dst, &st) == 0)
+		return 0; /* already staged -- latest and artifact agree */
+	if (persist_mkdir_p(dst_dir) != 0)
+		return -1;
+	return treecopy_recursive(src, dst);
+}
+
+static int seed_stage_recipes(const char *recipes_dst)
+{
+	DIR *d;
+	struct dirent *de;
+	int rc = 0;
+
+	if (persist_mkdir_p(recipes_dst) != 0)
+		return -1;
+	d = opendir(g_recipes_dir);
+	if (d == NULL)
+		return -1;
+	while ((de = readdir(d)) != NULL) {
+		char latest[PKG_VERSION_MAX];
+
+		if (de->d_name[0] == '.')
+			continue;
+		if (!pkg_name_is_valid(de->d_name))
+			continue;
+		if (recipe_latest_version(de->d_name, latest, sizeof(latest)) != 0)
+			continue;
+		if (seed_copy_one_recipe(recipes_dst, de->d_name, latest) != 0) {
+			rc = -1;
+			break;
+		}
+	}
+	closedir(d);
+	return rc;
+}
+
 enum pkg_error pkg_seed_stage(const char *dest_dir, char *err, size_t err_size)
 {
 	char recipes_dst[PATH_MAX];
@@ -10255,7 +10323,7 @@ enum pkg_error pkg_seed_stage(const char *dest_dir, char *err, size_t err_size)
 		return PKG_ERR_PERSIST_FAILED;
 	}
 
-	if (treecopy_recursive(g_recipes_dir, recipes_dst) != 0) {
+	if (seed_stage_recipes(recipes_dst) != 0) {
 		snprintf(err, err_size, "could not stage recipes from %s: %s", g_recipes_dir,
 		         treecopy_last_error());
 		return PKG_ERR_PERSIST_FAILED;
@@ -10289,6 +10357,20 @@ enum pkg_error pkg_seed_stage(const char *dest_dir, char *err, size_t err_size)
 			         g_seed_packages[i]);
 			return PKG_ERR_NOT_FOUND;
 		}
+		/*
+		 * This artifact's OWN recipe version, even if a newer one is
+		 * what seed_stage_recipes() already staged. Otherwise a fresh
+		 * box resolves this package to a recipe the media carries no
+		 * artifact for, and tries to build a C library on a machine
+		 * with no compiler.
+		 */
+		if (seed_copy_one_recipe(recipes_dst, e->name, e->version) != 0) {
+			snprintf(err, err_size, "could not stage the %s@%s recipe the seeded artifact "
+			                        "needs: %s",
+			         e->name, e->version, treecopy_last_error());
+			return PKG_ERR_PERSIST_FAILED;
+		}
+
 		cache_tarball_path(e->name, e->version, src, sizeof(src));
 		if (!pkg_artifact_cache_has(e->name, e->version)) {
 			snprintf(err, err_size,
