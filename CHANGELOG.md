@@ -29,12 +29,17 @@ built to expect and costs eight bytes. It stays at `/usr/lib`, where glibc puts 
 and where a compiler here searches; copying it into the multiarch directories
 would duplicate for no reason.
 
-Detecting emptiness reads one byte past the magic, and `-d ''` on that read is
-load-bearing: the magic's own eighth byte is a newline, `read`'s default
-delimiter, so without it every archive measures eight bytes and none would ever be
-dropped. Measured both ways before it was written. `test_pkg_finalize` — which is
-in `SELFTESTS` — asserts an empty `libpthread.a` beside a `libpthread.so.0`
-survives, with `libc.a` beside `libc.so.6` as the control.
+Emptiness is measured with `wc -c`. The first attempt used a `read` builtin and
+was wrong: **the shell cannot measure binary at all** — a NUL byte cannot be held
+in a variable, and `read` stops at one regardless of `-N` or `-d ''`. Both
+spellings reported eight bytes for a 64-byte NUL-padded archive, which would have
+kept every archive on the system instead of only the empty ones. `test_pkg_finalize`
+caught it and failed the build with `libc.a survived and must be removed`, because
+its own `wr_ar()` helper pads with NUL. `wc` comes from coreutils, already required
+for `rm`, and is named in the tool check beside it.
+
+`test_pkg_finalize` is in `SELFTESTS` and asserts an empty `libpthread.a` beside a
+`libpthread.so.0` survives, with `libc.a` beside `libc.so.6` as the control.
 
 `glibc 2.44-15` carries no source or recipe change; the revision exists so the
 package is actually rebuilt, since an image version is a hash of the manifest

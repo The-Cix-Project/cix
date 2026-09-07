@@ -236,9 +236,18 @@ that passes `-pthread`, a runtime dependency edge upstream deliberately does not
 create. Keeping the empty archive is what glibc itself is built to expect, and it
 adds eight bytes.
 
-Detecting emptiness needs one byte read past the magic, and `-d ''` on that read
-is load-bearing rather than incidental: the magic's own eighth byte is a newline,
-which is `read`'s default delimiter, so without it every archive measures eight
-bytes long and none would ever be dropped. Measured both ways before it was
-written. `test_pkg_finalize` asserts an empty `libpthread.a` beside a
-`libpthread.so.0` survives, with `libc.a` beside `libc.so.6` as the control.
+Emptiness is measured with `wc -c`, not with a `read` builtin, and that is a
+correction rather than a preference. **The shell cannot measure binary at all:** a
+NUL byte cannot be held in a variable, and `read` stops at one regardless of `-N`
+or `-d ''`. Both spellings were written, and both reported eight bytes for a
+64-byte NUL-padded archive — which would have kept every archive on the system
+rather than only the empty ones. `test_pkg_finalize` caught exactly that, because
+its own `wr_ar()` helper pads with NUL, and it failed the build with `libc.a
+survived and must be removed`.
+
+`wc` comes from coreutils, which the prune already required for `rm`, so this asks
+for no package it did not already need; it is named in the tool check beside `rm`,
+per ADR-0250.
+
+`test_pkg_finalize` asserts an empty `libpthread.a` beside a `libpthread.so.0`
+survives, with `libc.a` beside `libc.so.6` as the control.
