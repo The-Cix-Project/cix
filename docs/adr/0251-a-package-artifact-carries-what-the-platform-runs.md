@@ -202,3 +202,43 @@ own library resolution is the trap ADR-0154 documents.
 knob with no current caller — the rule's construction already protects
 every archive this platform links against. If a real case appears it gets
 added then, with the case recorded.
+
+---
+
+## Addendum (2026-09-07): clause 2 does not reach an archive with no members
+
+Clause 2 drops an archive whose shared counterpart ships beside it, because on a
+platform that links dynamically always such an archive is a duplicate of bytes
+already present. The rule was written against `libc.a` — 22.43 MiB, copied into
+three directories, deleted again by this phase.
+
+It matched on the stem alone, and that is wider than its own reason. An archive
+with **no members** is eight bytes: the `!<arch>` magic and nothing else. It
+duplicates nothing, so the justification above does not apply to it — and for
+glibc's folded-in stubs it is not dead weight at all, it is the link-time
+contract.
+
+glibc ≥ 2.34 folds `pthread_create`, and the `rt` and `dl` entry points, into
+`libc.so.6`. What it still installs is `libpthread.a` / `librt.a` / `libdl.a` at
+eight bytes each, `libpthread.so.0` as a runtime stub, and **no `libpthread.so`**.
+So `ld -lpthread` — which every gcc driver's `-pthread` expands to — has exactly
+one file it can resolve against, and clause 2 was deleting it on a stem match
+with the runtime stub. Every gcc-toolchain package passing `-pthread` then failed
+to link with `cannot find -lpthread` (#324, found on `btop` while restoring the
+fleet — the first such package rebuilt from source since this clause landed).
+
+The scan now classifies a member-less archive as "keep" before clause 2 ever sees
+it. `libc.a` is unaffected: it has real members and is still dropped.
+
+**The fix is not a `libpthread.so` symlink.** That would work, and it would be
+wrong: it makes `-lpthread` record a `DT_NEEDED libpthread.so.0` in every binary
+that passes `-pthread`, a runtime dependency edge upstream deliberately does not
+create. Keeping the empty archive is what glibc itself is built to expect, and it
+adds eight bytes.
+
+Detecting emptiness needs one byte read past the magic, and `-d ''` on that read
+is load-bearing rather than incidental: the magic's own eighth byte is a newline,
+which is `read`'s default delimiter, so without it every archive measures eight
+bytes long and none would ever be dropped. Measured both ways before it was
+written. `test_pkg_finalize` asserts an empty `libpthread.a` beside a
+`libpthread.so.0` survives, with `libc.a` beside `libc.so.6` as the control.

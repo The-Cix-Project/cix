@@ -17,7 +17,7 @@
 
 cix_finalize() {
 	local dest="$PKG_DESTDIR"
-	local elfmagic armagic f base stem magic d
+	local elfmagic armagic f base stem magic d arhead
 	local shared_stems=""
 	local -a elf_dyn=() elf_rel=() archives=()
 
@@ -65,6 +65,36 @@ cix_finalize() {
 		LC_ALL=C IFS= read -r -n 4 magic < "$f" 2>/dev/null || true
 
 		if test "$magic" = "$armagic"; then
+			#
+			# An archive with NO MEMBERS is exactly eight bytes --
+			# the magic and nothing else -- and clause 2 below must
+			# not touch it. That clause drops an archive because it
+			# duplicates a shared object that ships beside it; an
+			# empty archive duplicates nothing, and for glibc's
+			# folded-in stubs it IS the link-time contract.
+			#
+			# glibc >= 2.34 folds pthread_create, and the rt and dl
+			# entry points, into libc.so.6. What it still installs
+			# is libpthread.a / librt.a / libdl.a at eight bytes
+			# each, and libpthread.so.0 as a runtime stub -- and no
+			# libpthread.so at all. So `ld -lpthread`, which every
+			# gcc driver's -pthread expands to, has exactly one
+			# thing it can resolve against, and clause 2 was
+			# deleting it on a stem match with the runtime stub.
+			# Every gcc-toolchain package passing -pthread then
+			# failed to link (#324, found on btop).
+			#
+			# Read one byte past the magic: a short read means the
+			# file ended there. -d '' is required, not incidental --
+			# the magic's own eighth byte is a newline, which is
+			# read's default delimiter, so without it every archive
+			# looks eight bytes long.
+			#
+			arhead=""
+			LC_ALL=C IFS= read -r -d '' -n 9 arhead < "$f" 2>/dev/null || true
+			if test "${#arhead}" -le 8; then
+				continue
+			fi
 			archives+=("$f")
 			continue
 		fi
@@ -95,6 +125,9 @@ cix_finalize() {
 	# dead weight on a platform that links dynamically always. An
 	# archive with no shared counterpart -- libtcc1.a, libgcc.a,
 	# libgcc_eh.a, libc_nonshared.a -- is kept, without being named.
+	# So is one with no members, which never reaches this list at all
+	# (see the scan above): it duplicates nothing, so the reason this
+	# clause exists does not apply to it.
 	#
 	# A kept archive is left exactly as it is, deliberately. "ar
 	# archive" does not imply "archive of ELF": go-bootstrap ships
