@@ -164,6 +164,119 @@ static int sbsign_to(const char *key, const char *cert, const char *src, const c
 	return run_subprocess(g_sbsign_bin, argv_sbsign);
 }
 
+/*
+ * Where the media's bytes went, printed on every build.
+ *
+ * cixd captures this tool's stdout and writes it to the log store, so
+ * a line here is a permanent, queryable record of the ISO's shape --
+ * which is the thing that was missing when an installer grew from 71.7
+ * MiB to 217.9 MiB across a release series. Three separate causes each
+ * went unnoticed for weeks: a seed staged twice, static archives
+ * shipped beside their shared counterparts, and unstripped debug
+ * sections. None was hard to see once someone pulled the artifact
+ * apart by hand; the problem was that pulling it apart by hand was the
+ * only way to look.
+ *
+ * Reported per top-level directory of the staging tree, because that
+ * is the granularity a regression actually shows up at: the seed, the
+ * control-plane squashfs, the kernel, the installer's own closure.
+ */
+static long long dir_bytes(const char *path)
+{
+	DIR *d = opendir(path);
+	struct dirent *de;
+	long long total = 0;
+
+	if (d == NULL) {
+		struct stat st;
+
+		return stat(path, &st) == 0 && S_ISREG(st.st_mode) ? (long long)st.st_size : 0;
+	}
+	while ((de = readdir(d)) != NULL) {
+		char child[PATH_MAX];
+		struct stat st;
+
+		if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
+			continue;
+		if (snprintf(child, sizeof(child), "%s/%s", path, de->d_name) >= (int)sizeof(child))
+			continue;
+		if (lstat(child, &st) != 0)
+			continue;
+		if (S_ISLNK(st.st_mode))
+			continue; /* a link costs its name, not its target */
+		if (S_ISDIR(st.st_mode))
+			total += dir_bytes(child);
+		else if (S_ISREG(st.st_mode))
+			total += (long long)st.st_size;
+	}
+	closedir(d);
+	return total;
+}
+
+/*
+ * The media's size budget, in MiB.
+ *
+ * A number that has to change in a diff, which is the only thing that
+ * would have stopped what actually happened: an installer went from
+ * 71.7 MiB to 217.9 MiB across a release series, by three separate
+ * causes, with nothing anywhere counting. Each cause was obvious once
+ * someone looked; none of them was ever looked at.
+ *
+ * The per-component line below makes ordinary drift visible; this
+ * stops the disaster. Raising it is allowed and expected -- a kernel
+ * bump is real growth -- but it is a deliberate edit someone reviews,
+ * never something that happens to an artifact while nobody counts.
+ *
+ * Set with headroom over the 70 MiB an ISO measures today (ADR-0229's
+ * seed included), sized to catch a multiple rather than a rounding.
+ */
+#define MEDIA_BUDGET_MIB 96
+
+static int report_media_sizes(const char *stage_dir, const char *out_iso)
+{
+	DIR *d = opendir(stage_dir);
+	struct dirent *de;
+	struct stat st;
+	long long staged = 0;
+
+	if (d != NULL) {
+		while ((de = readdir(d)) != NULL) {
+			char child[PATH_MAX];
+			long long n;
+
+			if (de->d_name[0] == '.')
+				continue;
+			if (snprintf(child, sizeof(child), "%s/%s", stage_dir, de->d_name) >=
+			    (int)sizeof(child))
+				continue;
+			n = dir_bytes(child);
+			staged += n;
+			if (n >= 1024 * 1024)
+				printf("media: %-24s %6lld MiB\n", de->d_name, n / (1024 * 1024));
+		}
+		closedir(d);
+		printf("media: %-24s %6lld MiB staged\n", "TOTAL", staged / (1024 * 1024));
+	}
+	if (stat(out_iso, &st) != 0)
+		return 0; /* nothing to judge; the caller already has its own errors */
+
+	{
+		long long mib = (long long)st.st_size / (1024 * 1024);
+
+		printf("media: %-24s %6lld MiB\n", "ISO", mib);
+		if (mib > MEDIA_BUDGET_MIB) {
+			fprintf(stderr,
+			        "installer media is %lld MiB, over the %d MiB budget.\n"
+			        "The per-component sizes above say where it went. Either remove "
+			        "what grew, or raise MEDIA_BUDGET_MIB in image/src/mkinstalleriso.c "
+			        "deliberately.\n",
+			        mib, MEDIA_BUDGET_MIB);
+			return -1;
+		}
+	}
+	return 0;
+}
+
 int main(int argc, char **argv)
 {
 	const char *stage_dir;
@@ -802,6 +915,8 @@ int main(int argc, char **argv)
 			return 1;
 	}
 
+	if (report_media_sizes(stage_dir, out_iso) != 0)
+		return 1;
 	printf("wrote %s\n", out_iso);
 	return 0;
 }
