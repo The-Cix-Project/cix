@@ -7,6 +7,7 @@
  * without ever committing the real value to git.
  */
 #include "httpclient.h"
+#include "test_cleanup.h"
 #include "json.h"
 #include "test_image_fixture.h"
 
@@ -403,6 +404,91 @@ int main(void)
 	      "all four {{LDAP:*}} tokens substituted from daemon config");
 	cix_response_free(&r);
 
+	/* --- scenario 6.6 (#327): {{LDAP:URI}} is DERIVED from the
+	 * registered LDAP servers, not read straight off client_uri.
+	 *
+	 * Scenario 6.5 above sets an explicit client_uri, so it only ever
+	 * exercised the branch that already worked -- which is exactly why
+	 * this shipped. With no explicit list, the daemon's own nslcd.conf
+	 * rendering used ldap_effective_client_uri() while the token path
+	 * read the raw (empty) field and left "{{LDAP:URI}}" verbatim, so
+	 * one container create produced two files disagreeing about the
+	 * same servers. That is #66's own spec unmet: the token is meant to
+	 * be "rendered from the registered-servers list".
+	 *
+	 * The failure it caused was narrow and misleading rather than loud:
+	 * nslcd holds the good value, so password and NSS lookups work,
+	 * while sshd's AuthorizedKeysCommand sources the token file and
+	 * searches a nonsense URI -- reporting no keys for the user instead
+	 * of a broken configuration. --- */
+	memset(&r, 0, sizeof(r));
+	CHECK(cix_client_request(&client, "DELETE", "/v1/containers/crtest", NULL, &r) == 0,
+	      "rm crtest to free the name for the derived-URI scenario");
+	cix_response_free(&r);
+	{
+		int i;
+
+		/* ADR-0180: settle the async delete before reusing the name. */
+		for (i = 0; i < 50; i++) {
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/containers/crtest", NULL, &r) == 0 &&
+			    r.status == 404) {
+				cix_response_free(&r);
+				break;
+			}
+			cix_response_free(&r);
+			usleep(100 * 1000);
+		}
+	}
+	memset(&r, 0, sizeof(r));
+	CHECK(cix_client_request(&client, "POST", "/v1/networks",
+	                         "{\"name\":\"crtnet\",\"subnet\":\"172.41.0.0\",\"prefix_len\":24}",
+	                         &r) == 0 &&
+	          r.status == 201,
+	      "create a network, so a registered server has a real address to be derived from");
+	cix_response_free(&r);
+	memset(&r, 0, sizeof(r));
+	CHECK(cix_client_request(&client, "POST", "/v1/containers",
+	                         "{\"name\":\"crtldap\",\"image\":\"base\","
+	                         "\"cmd\":[\"/bin/true\",\"60\"],"
+	                         "\"networks\":[\"crtnet\"]}",
+	                         &r) == 0 &&
+	          r.status == 201,
+	      "create a container that stays up long enough to serve as an LDAP server");
+	cix_response_free(&r);
+	memset(&r, 0, sizeof(r));
+	CHECK(cix_client_request(&client, "POST", "/v1/ldap/servers",
+	                         "{\"container\":\"crtldap\","
+	                         "\"config_path\":\"/etc/glauth/glauth.cfg\"}",
+	                         &r) == 0 &&
+	          r.status == 201,
+	      "register that container as an LDAP server");
+	cix_response_free(&r);
+	memset(&r, 0, sizeof(r));
+	CHECK(cix_client_request(&client, "PUT", "/v1/ldap/config", "{\"client_uri\":\"\"}", &r) == 0 &&
+	          r.status == 200,
+	      "clear client_uri -- the registered server is now the only thing naming the URI");
+	cix_response_free(&r);
+	memset(&r, 0, sizeof(r));
+	CHECK(cix_client_request(&client, "POST", "/v1/containers/recipes/crtest/apply", "{}", &r) ==
+	              0 &&
+	          r.status == 201,
+	      "re-apply the LDAP-token recipe with no explicit client_uri");
+	cix_response_free(&r);
+	memset(&r, 0, sizeof(r));
+	CHECK(cix_client_request(&client, "GET", "/v1/containers/crtest/files?path=/etc/nslcd.conf",
+	                         NULL, &r) == 0 &&
+	          r.status == 200,
+	      "GET the rendered nslcd.conf for the derived case");
+	CHECK(r.body != NULL && strstr(r.body, "{{LDAP:URI}}") == NULL,
+	      "{{LDAP:URI}} is not left verbatim when only a registered server names the URI");
+	CHECK(r.body != NULL && strstr(r.body, "uri ldap://172.41.0.") != NULL &&
+	          strstr(r.body, ":3893/") != NULL,
+	      "{{LDAP:URI}} resolved to the registered server's own live address");
+	if (r.body != NULL && strstr(r.body, "uri ldap://172.41.0.") == NULL)
+		fprintf(stderr, "  rendered nslcd.conf was: %s\n", r.body);
+	cix_response_free(&r);
+
 	/* --- scenario 7: apply on a name with no stored recipe is 404 --- */
 	memset(&r, 0, sizeof(r));
 	CHECK(cix_client_request(&client, "POST", "/v1/containers/recipes/noexist/apply", "{}", &r) ==
@@ -422,6 +508,12 @@ int main(void)
 	          r.status == 404,
 	      "GET removed recipe is 404");
 	cix_response_free(&r);
+
+	/* Enumerated cleanup, never a hand-kept list: a leaked bridge makes
+	 * the NEXT run's network create fail with a 500 that reads exactly
+	 * like a code regression (test_cleanup.h). */
+	CHECK(test_cleanup_containers_and_network(&client, "crtnet") == 0,
+	      "containers and crtnet removed, leaving no host bridge behind");
 
 	CHECK(stop_daemon(daemon_pid) == 0, "daemon shut down cleanly");
 	test_data_dir_cleanup(g_data_dir);

@@ -11472,6 +11472,7 @@ static char *container_recipe_substitute_secrets(const char *content,
 		size_t key_len;
 		const struct json_value *jval;
 		const char *val;
+		char uri[600];
 
 		if (stok == NULL && ltok == NULL) {
 			jw_raw_text(&w, p, strlen(p));
@@ -11508,9 +11509,29 @@ static char *container_recipe_substitute_secrets(const char *content,
 			const struct ldap_config *lc = ldap_config_get();
 
 			val = NULL;
-			if (strcmp(key, "URI") == 0 && lc->client_uri[0] != '\0')
-				val = lc->client_uri;
-			else if (strcmp(key, "BASE_DN") == 0 && lc->base_dn[0] != '\0')
+			if (strcmp(key, "URI") == 0) {
+				/*
+				 * Derived, not read straight off client_uri (#327).
+				 * ldap_effective_client_uri() is the one place that
+				 * answers "which LDAP servers should a client talk
+				 * to": an explicitly configured list when there is
+				 * one, otherwise the live IPs of the registered
+				 * servers, health-filtered either way (#81/#84).
+				 *
+				 * Reading the raw field meant this token resolved
+				 * only when an operator had also hand-typed a copy
+				 * of the server list the daemon already tracks --
+				 * the exact duplication #66 was filed to remove,
+				 * and which that issue's own spec says this token
+				 * should be "rendered from the registered-servers
+				 * list". The daemon's own nslcd.conf rendering has
+				 * always used the derived value, so one container
+				 * create produced two files disagreeing about the
+				 * same servers, with only the token left verbatim.
+				 */
+				if (ldap_effective_client_uri(uri, sizeof(uri)))
+					val = uri;
+			} else if (strcmp(key, "BASE_DN") == 0 && lc->base_dn[0] != '\0')
 				val = lc->base_dn;
 			else if (strcmp(key, "BIND_DN") == 0 && lc->bind_dn[0] != '\0')
 				val = lc->bind_dn;
