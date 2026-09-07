@@ -81,10 +81,10 @@ Storage          (tabs: Storage / Placement / Swap / System Backup / Volume Back
     <one leaf per partition on it>
       <volumes held on that partition>
     <volumes held on the disk itself>
-Pipeline         (tabs: Overview / Errors / Rolling Restart)
+Pipeline         (tabs: Overview / Errors)
   Catalogue      (tabs: Package Recipes / Image Recipes / Container Recipes / Repo & Sync)
   Integration    (tabs: Build / Local Packages / Local Images / Remote Cache)
-  Deployment     (tabs: Update / Reconcile)
+  Deployment     (tabs: Update / Reconcile / Rolling Restart)
 Services         (the health of every registered service)
   PKI            (tabs: Root CA / Intermediate CA / Certificates)
   DNS            (tabs: Records / Servers / Forwarders)
@@ -109,7 +109,7 @@ Container leaves are colored by live status (running/paused/stopped -- tinted ic
 
 **Every group is selectable.** Clicking Services opens the health of every registered service; clicking Host opens the host's own page; clicking Pipeline opens its overview. A group that is only a container for its children forces a click that answers nothing, and it produced the "Networks > Networks" duplication this tree used to carry -- the group and its own page listed twice because the group could not be its own destination.
 
-**The three stage pages split by what the stage DOES, not by what it holds.** **Catalogue** is what is declared and where declarations come from -- the three recipe kinds, each its own tab now rather than sub-tabs buried inside one, plus Repo & Sync, since where a declaration arrives from belongs with the declarations. **Integration** is turning those declarations into things: Build, then what exists locally (Local Packages, Local Images) and what exists remotely (Remote Cache). **Deployment** is getting them onto hosts. An earlier version split the middle stage by artifact *type* -- a Catalogue holding packages and images, an Artifacts page holding the cache -- which put "the packages on this box" and "the cache they came from" on different pages, with the thing that produced both somewhere else again.
+**The three stage pages split by what the stage DOES, not by what it holds.** **Catalogue** is what is declared and where declarations come from -- the three recipe kinds, each its own tab now rather than sub-tabs buried inside one, plus Repo & Sync, since where a declaration arrives from belongs with the declarations. **Integration** is turning those declarations into things: Build, then what exists locally (Local Packages, Local Images) and what exists remotely (Remote Cache). **Deployment** is getting them onto hosts -- including the rolling restart that follows an update landing. That leaves Pipeline itself as purely the view of the whole thing: the stage flow and the list of what is stuck. An earlier version split the middle stage by artifact *type* -- a Catalogue holding packages and images, an Artifacts page holding the cache -- which put "the packages on this box" and "the cache they came from" on different pages, with the thing that produced both somewhere else again.
 
 **A child in the tree is a live thing, with one deliberate exception.** Under Containers sit the containers; under Networks the networks; under Storage the disks, their partitions and the volumes on them. The exception is Pipeline, whose children are its *stages* -- Catalogue, Integration, Deployment. That is deliberate: an operator asking "where did this stop?" is asking about a stage, so the stages are what the tree should offer. `test_web_tree` knows about this exception rather than being weakened for it.
 

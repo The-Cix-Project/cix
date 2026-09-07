@@ -1456,7 +1456,7 @@ const CATEGORY_VIEWS = {
 	"site": "view-host",
 	"daemon-config": "view-control-plane",
 	"host-swap": "view-storage",
-	"rolling-restart": "view-pipeline",
+	"rolling-restart": "view-deployment",
 	"pkg-build-config": "view-integration",
 	"hostauth-sessions": "view-host",
 	"host-stats": "view-host",

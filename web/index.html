@@ -1847,7 +1847,7 @@
 				
 				
 				
-				<button type="button" class="tab-button" data-tab="rolling-restart">Rolling Restart</button>
+				
 				
 			</div>
 <div class="tab-panel" data-tab="pipeline">
@@ -1891,16 +1891,7 @@
 
 
 
-<div class="tab-panel" data-tab="rolling-restart" hidden>
-			<form id="rc-form">
-				<label>
-					Jitter window (seconds)
-					<input type="number" id="rc-jitter-window" min="0" max="3600" value="60">
-				</label>
-				<button type="submit">Save</button>
-			</form>
-			<p class="hint">Part 5, ADR-0124: when a rolling image auto-rebuilds, every <code>follow_rolling</code> container on it gets a uniformly-random restart delay up to this window, spreading the restarts out instead of killing them all in the same instant. 0 disables jitter (restart immediately).</p>
-		</div>
+
 
 		</section>
 
@@ -2538,6 +2529,7 @@
 			<div class="tab-bar">
 				<button type="button" class="tab-button active" data-tab="update">Update</button>
 				<button type="button" class="tab-button" data-tab="reconcile">Reconcile</button>
+				<button type="button" class="tab-button" data-tab="rolling-restart">Rolling Restart</button>
 			</div>
 <div class="tab-panel" data-tab="update">
 			<form id="sys-update-form">
@@ -2569,6 +2561,16 @@
 					</table>
 				</div>
 			</div>
+<div class="tab-panel" data-tab="rolling-restart" hidden>
+			<form id="rc-form">
+				<label>
+					Jitter window (seconds)
+					<input type="number" id="rc-jitter-window" min="0" max="3600" value="60">
+				</label>
+				<button type="submit">Save</button>
+			</form>
+			<p class="hint">Part 5, ADR-0124: when a rolling image auto-rebuilds, every <code>follow_rolling</code> container on it gets a uniformly-random restart delay up to this window, spreading the restarts out instead of killing them all in the same instant. 0 disables jitter (restart immediately).</p>
+		</div>
 		</section>
 		<section class="view" id="view-volume-detail" hidden>
 			<h2 id="vd-title"></h2>
