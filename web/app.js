@@ -82,7 +82,7 @@ const LOG_COLLAPSE_KEY = "cix-log-collapsed";
 const LOG_HEIGHT_KEY = "cix-log-height";
 
 /* Collapsing/expanding must also manage #log-panel's own inline
- * flex-basis -- makeResizable() below (log-panel-resize-handle) sets
+ * height -- makeResizable() below (log-panel-resize-handle) sets
  * that directly as a plain element style, which (being inline) always
  * outranks the .collapsed class's own `flex: 0 0 auto` rule regardless
  * of stylesheet specificity. Without this, the class toggles and
@@ -97,15 +97,15 @@ function setLogCollapsed(collapsed) {
 	logPanel.classList.toggle("collapsed", collapsed);
 	logPanelArrow.textContent = collapsed ? "▸" : "▾";
 	if (collapsed) {
-		logPanel.style.flexBasis = "";
+		logPanel.style.height = "";
 	} else {
 		try {
 			const saved = localStorage.getItem(LOG_HEIGHT_KEY);
 
-			if (saved !== null) logPanel.style.flexBasis = saved + "px";
+			if (saved !== null) logPanel.style.height = saved + "px";
 		} catch (e) {
-			/* localStorage unavailable -- default flex-basis (#log-panel's
-			 * own base 200px rule) stands. */
+			/* localStorage unavailable -- the base 200px height on
+			 * #log-panel stands. */
 		}
 	}
 	try {
@@ -240,7 +240,7 @@ makeResizable(document.getElementById("log-panel-resize-handle"), {
 	max: Math.round(window.innerHeight * 0.7),
 	getSize: () => logPanel.getBoundingClientRect().height,
 	apply: (size) => {
-		logPanel.style.flexBasis = size + "px";
+		logPanel.style.height = size + "px";
 	},
 	skipInitialApplyIf: () => logPanel.classList.contains("collapsed"),
 });
