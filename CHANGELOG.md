@@ -2,6 +2,44 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### `-lpthread` links again: the finalize policy does not reach an empty archive (#324)
+
+`btop` failed with `ld: cannot find -lpthread`, and it was not a btop problem. The
+glibc package shipped `libpthread.so.0` — the runtime soname — and neither
+`libpthread.so` nor `libpthread.a`, which are the only two names `ld -lpthread`
+looks for. Every gcc-toolchain package passing `-pthread` was affected; btop was
+simply the first rebuilt from source since.
+
+ADR-0251 clause 2 drops an archive whose shared counterpart ships beside it,
+because on a platform that links dynamically always it duplicates bytes already
+present. It matched on the stem alone, which is wider than its own reason. An
+archive with **no members** is eight bytes — the magic and nothing else. It
+duplicates nothing, and for glibc's folded-in stubs it is not dead weight but the
+link-time contract: glibc ≥ 2.34 folds pthread into `libc.so.6` and still installs
+an eight-byte `libpthread.a` (and `librt.a`, `libdl.a`), a `libpthread.so.0` stub,
+and no `libpthread.so` at all.
+
+A member-less archive is now classified as "keep" before clause 2 sees it.
+`libc.a` is unaffected — real members, still dropped.
+
+**Not fixed with a `libpthread.so` symlink**, which would have worked and been
+wrong: it makes every `-pthread` binary record a `DT_NEEDED libpthread.so.0`, a
+runtime edge upstream deliberately avoids. Keeping the archive is what glibc is
+built to expect and costs eight bytes. It stays at `/usr/lib`, where glibc puts it
+and where a compiler here searches; copying it into the multiarch directories
+would duplicate for no reason.
+
+Detecting emptiness reads one byte past the magic, and `-d ''` on that read is
+load-bearing: the magic's own eighth byte is a newline, `read`'s default
+delimiter, so without it every archive measures eight bytes and none would ever be
+dropped. Measured both ways before it was written. `test_pkg_finalize` — which is
+in `SELFTESTS` — asserts an empty `libpthread.a` beside a `libpthread.so.0`
+survives, with `libc.a` beside `libc.so.6` as the control.
+
+`glibc 2.44-15` carries no source or recipe change; the revision exists so the
+package is actually rebuilt, since an image version is a hash of the manifest
+(ADR-0155) and a same-version reinstall is deduped and discarded.
+
 ### The fleet is restored, and rebuilding it from its recipes found five real gaps
 
 The nine workload definitions were lost in the btrfs reformat (`container_defs: []`,

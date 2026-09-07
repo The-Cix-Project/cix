@@ -16,6 +16,8 @@
  *   libc_nonshared.a  no shared counterpart -- gcc's dynamic links
  *                     need it
  *   libfreetype.a     a real package that ships an archive and no .so
+ *   libpthread.a      eight bytes, no members, beside libpthread.so.0 --
+ *                     the only thing `ld -lpthread` can resolve (#324)
  *   libc.so           glibc ships this as an ASCII ld script, not ELF
  *   a symlink         never followed, never stripped
  *
@@ -109,6 +111,18 @@ static void wr_ar(const char *path)
 	memset(buf, 0, sizeof(buf));
 	memcpy(buf, "!<arch>\n", 8);
 	wr(path, buf, sizeof(buf), 0644);
+}
+
+/*
+ * An archive with NO members: exactly the eight-byte magic and nothing
+ * else, which is what glibc installs for its folded-in stubs. wr_ar()
+ * above pads to 64 bytes, so it is a *non-empty* archive and keeps its
+ * existing classification -- the two helpers are the whole distinction
+ * this case turns on.
+ */
+static void wr_ar_empty(const char *path)
+{
+	wr(path, "!<arch>\n", 8, 0644);
 }
 
 static int exists(const char *path)
@@ -228,6 +242,21 @@ static void case_classification(const char *root)
 	snprintf(path, sizeof(path), "%s/usr/lib/go-bootstrap/pkg/linux_amd64/runtime.a", dest);
 	wr_ar(path);
 
+	/*
+	 * #324: an EMPTY archive beside a shared object of the same stem.
+	 * glibc >= 2.34 folds pthread into libc.so.6 and still installs an
+	 * eight-byte libpthread.a plus a libpthread.so.0 runtime stub, and
+	 * no libpthread.so -- so that archive is the only thing `ld
+	 * -lpthread` can resolve against. Clause 2 dropped it on the stem
+	 * match and every gcc package passing -pthread stopped linking.
+	 * libc.a above is the control: same stem match, real members, still
+	 * dropped.
+	 */
+	snprintf(path, sizeof(path), "%s/usr/lib/libpthread.a", dest);
+	wr_ar_empty(path);
+	snprintf(path, sizeof(path), "%s/lib/x86_64-linux-gnu/libpthread.so.0", dest);
+	wr_elf(path);
+
 	/* glibc ships libc.so as an ASCII linker script, not ELF */
 	snprintf(path, sizeof(path), "%s/usr/lib/libc.so", dest);
 	wr_text(path, "GROUP ( libc.so.6 libc_nonshared.a )\n");
@@ -270,6 +299,10 @@ static void case_classification(const char *root)
 	want(dest, "usr/lib/libc.a", 0);
 	want(dest, "lib/x86_64-linux-gnu/libc.a", 0);
 	want(dest, "usr/lib/libfoo.a", 0);
+
+	/* #324: empty archive beside its own shared stem -- kept. */
+	want(dest, "usr/lib/libpthread.a", 1);
+	want(dest, "lib/x86_64-linux-gnu/libpthread.so.0", 1);
 
 	want(dest, "usr/lib/libtcc1.a", 1);
 	want(dest, "usr/lib/libc_nonshared.a", 1);
