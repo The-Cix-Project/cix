@@ -207,3 +207,53 @@ begins; the security default flips only in phase 3.
    onto the new model and watched back up. Once proven, `mkfs.ext4`/`e2fsprogs`
    are removed from the host-tool set and ext4 retired from the install default
    path.
+
+---
+
+## Addendum (2026-09-07): an id-mapped mount presents ownership for lookups; a *create* additionally constrains the caller
+
+Phase 3's model above — "the disk stays host-0, extent sharing intact, and the
+kernel does the presenting" — is correct, and incomplete in a way that took
+every workload on the first btrfs host down (#321).
+
+The mapping is not only consulted to answer *who owns this inode*. On a
+**create**, the kernel also has to decide what on-disk owner to write, and it
+does that by mapping the **caller's own fsuid** back down through the mount's
+id-map. `may_create()` calls `fsuidgid_has_mapping()` for exactly this. With a
+map of `"0 <base> <len>"`, a caller whose uid is not in `[base, base+len)` maps
+to `INVALID_UID`, and the create fails **`EOVERFLOW`** — not `EPERM`, which is
+why it does not read as a permissions problem.
+
+The container child performed its whole setup as real host uid 0, on the
+reasoning that host root was what let it mount, mknod and pivot. Host uid 0 is
+deliberately *outside* the map. So every directory the child created inside its
+own rootfs — each volume mount point, and all eight in `mountns_pivot()`,
+`put_old` first — was refused, and the container exited 112 with
+`mkdir(put_old): Value too large for defined data type` before it ever ran.
+
+The reasoning was also wrong on its own terms: `pivot_root`, `move_mount`,
+`mount(proc)` and the netlink work are gated on **capabilities in the new user
+namespace**, which the child holds regardless of its uid, and `mknod` of a
+device node is gated on `capable(CAP_MKNOD)` against the **initial** user
+namespace, which no user-namespaced container has ever held. Host uid 0 bought
+nothing and cost this.
+
+**The rule this adds: under the id-mapped presentation the child must already
+be the namespace's mapped root before its first write into its own rootfs.**
+The `setgid(0)/setuid(0)` therefore happens the moment the rootfs is attached,
+not just before `execve`. Capabilities survive it — the kernel compares against
+`make_kuid(cred->user_ns, 0)`, i.e. `<base>`, not host 0 — so
+`container_caps_drop()` still governs the final set, exactly as before.
+
+This is a correction to how phase 3 is implemented, not a reversal of it: the
+storage model, the host-0-owned snapshot and the id-mapped presentation are all
+unchanged.
+
+**Why no test caught it.** The branch is selected by `cix_btrfs_is_backing()`,
+and every daemon-linked test runs against a `mkdtemp` under `/tmp`, which is not
+btrfs — so the id-mapped presentation was unreachable in this suite and had
+never once executed here. `test_userns_run` now runs its whole body against
+*both* presentations, using a `--test-userns-idmap` daemon flag that makes the
+copy present itself the way a snapshot does (host-0-owned, id-mapped); id-mapped
+mounts need only the kernel, not btrfs. It is a container-creating test, so it
+is not in `SELFTESTS` and does not gate a release build — it runs on a real host.

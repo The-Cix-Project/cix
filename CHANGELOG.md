@@ -2,6 +2,48 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Every workload on a btrfs host is running again (#321)
+
+A container created with the platform default — `userns: true` — died before it
+ran, on every attempt:
+
+```
+child: mountns_pivot: mkdir(put_old): Value too large for defined data type
+status=exited exit=112
+```
+
+`"userns": false` ran fine, which made it look like a user-namespace problem.
+It was narrower than that: it was the **id-mapped** presentation specifically,
+which is chosen by `cix_btrfs_is_backing()` — so it appeared the moment a host
+moved to the btrfs substrate and never before.
+
+An id-mapped mount does not only re-present ownership for lookups. On a
+**create** the kernel maps the *caller's own fsuid* back down through the map to
+decide the on-disk owner, and a caller outside `[base, base+len)` maps to
+`INVALID_UID`: `EOVERFLOW`. The child did its whole setup as real host uid 0,
+which is deliberately outside the map, so every directory it made inside its own
+rootfs was refused — each volume mount point, and all eight in `mountns_pivot()`.
+
+The stated reason for staying host root ("which is why it could
+mount/mknod/pivot") was wrong on its own terms: `pivot_root`, `move_mount`,
+`mount(proc)` and the netlink work are gated on **capabilities in the new user
+namespace**, held regardless of uid, and `mknod` of a device node is gated on
+`capable(CAP_MKNOD)` against the **initial** namespace, which no userns
+container has ever held. Host uid 0 bought nothing.
+
+The child now becomes the namespace's mapped root the moment its rootfs is
+attached, before its first write into it, instead of just before `execve`.
+Capabilities survive it — the kernel compares against `make_kuid(cred->user_ns,
+0)`, i.e. `<base>`, not host 0 — so `container_caps_drop()` still governs the
+final set. See ADR-0207's addendum.
+
+**Why nothing caught it.** Every daemon-linked test runs against a `mkdtemp`
+under `/tmp`, which is not btrfs, so the id-mapped branch was unreachable in this
+suite and had never once executed. `test_userns_run` now runs its whole body
+against *both* presentations via a `--test-userns-idmap` daemon flag that makes
+the copy present itself the way a snapshot does. It creates containers, so it is
+not in `SELFTESTS` and gates nothing at release time — it runs on a real host.
+
 ### A container's overlay is unmounted on every teardown, not only on delete
 
 `overlay_create()` mounts `container_base/merged` once per incarnation, and only DELETE ever unmounted it. A stop, a crash or a restart left the mount live — so the next incarnation's `overlay_create()`, on the **same** upperdir and workdir, was a second live mount on them:

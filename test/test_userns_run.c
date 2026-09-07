@@ -22,6 +22,14 @@
  * the test would pass just as happily against the broken code. The bug is
  * only reachable when the two differ.
  *
+ * It runs the whole body TWICE, once against each rootfs presentation --
+ * the phase-2b copy+chown tree, and the phase-3 host-0-owned tree behind an
+ * id-mapped mount -- because those differ in who owns the rootfs on disk,
+ * and a container's root has to own what it is given either way. #321 is
+ * why: the id-mapped branch is chosen by cix_btrfs_is_backing(), this test
+ * runs on /tmp, and so the branch that broke every workload on a btrfs host
+ * had never once been executed by any test in this suite.
+ *
  * That means this test needs an environment that can actually run one. The
  * dev sandbox cannot (see test_image_fixture.c, which seeds
  * userns_default=false for that reason), so it SKIPS there rather than
@@ -75,17 +83,29 @@ static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 	return -1;
 }
 
-static pid_t start_daemon(void)
+static pid_t start_daemon(int idmap)
 {
 	pid_t pid;
-	char *dargv[4];
+	char *dargv[5];
+	int n = 0;
 	static char data_dir_arg[PATH_MAX + 11];
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
-	dargv[0] = "build/cixd";
-	dargv[1] = PORT_ARG;
-	dargv[2] = data_dir_arg;
-	dargv[3] = NULL;
+	dargv[n++] = "build/cixd";
+	dargv[n++] = PORT_ARG;
+	dargv[n++] = data_dir_arg;
+	/*
+	 * #321: without this the id-mapped presentation is unreachable here.
+	 * It is selected by cix_btrfs_is_backing(), and this test's data dir
+	 * is a mkdtemp under /tmp, which is not btrfs -- so every run of this
+	 * test for the life of the feature exercised copy+chown and nothing
+	 * else. --test-userns-idmap makes the copy present itself exactly as
+	 * a snapshot does (host-0-owned, id-mapped); id-mapped mounts need no
+	 * btrfs, only the kernel.
+	 */
+	if (idmap)
+		dargv[n++] = "--test-userns-idmap";
+	dargv[n] = NULL;
 
 	pid = fork();
 	if (pid < 0)
@@ -134,7 +154,13 @@ static int wait_exit_status(const struct cix_client *c, const char *name, char *
 	return -1;
 }
 
-int main(void)
+/*
+ * One full pass against ONE rootfs presentation. Everything below is
+ * identical for both -- which is the point: the container's own root must
+ * own what the platform gives it no matter how its rootfs was provisioned,
+ * and the two presentations disagree about who owns the tree on disk.
+ */
+static int run_presentation(int idmap, const char *label)
 {
 	pid_t daemon_pid;
 	struct cix_client client;
@@ -142,7 +168,9 @@ int main(void)
 	char out[512];
 	int created;
 	int status;
+	int before = g_failures;
 
+	printf("== presentation: %s ==\n", label);
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
 	snprintf(g_image_root, sizeof(g_image_root), "%s/rebuildable/images/runtest/v1/rootfs",
@@ -161,7 +189,7 @@ int main(void)
 		return 1;
 	}
 
-	daemon_pid = start_daemon();
+	daemon_pid = start_daemon(idmap);
 	if (daemon_pid < 0) {
 		test_data_dir_cleanup(g_data_dir);
 		return 1;
@@ -228,6 +256,11 @@ int main(void)
 		         "mode 0600 -- the staged file's ownership landed outside the "
 		         "container's mapped range (#265); stage_container_file()'s "
 		         "id_offset in daemon/src/main.c is what sets this");
+	} else if (status == 112) {
+		check(0, "the container died in mountns_pivot -- if this is the id-mapped "
+		         "pass and the errno is EOVERFLOW, this is #321: the child is still "
+		         "host uid 0, which falls outside the rootfs id-map, so every mkdir "
+		         "it makes into its own rootfs is refused");
 	} else if (status < 0) {
 		check(0, "the /run probe container never reached 'exited'");
 	} else {
@@ -248,6 +281,19 @@ done:
 	kill(daemon_pid, SIGTERM);
 	waitpid(daemon_pid, NULL, 0);
 	test_data_dir_cleanup(g_data_dir);
+	return g_failures > before ? 1 : 0;
+}
+
+int main(void)
+{
+	/*
+	 * Both presentations, every time. Running only the one this host's
+	 * filesystem happens to select is what let #321 ship: the id-mapped
+	 * path took every workload on a btrfs host down while this test, on
+	 * /tmp, went on passing against the other branch entirely.
+	 */
+	run_presentation(0, "copy+chown (ADR-0179 phase 2b)");
+	run_presentation(1, "id-mapped snapshot (ADR-0207 phase 3)");
 
 	if (g_failures > 0) {
 		fprintf(stderr, "USERNS /run: FAIL (%d)\n", g_failures);

@@ -646,6 +646,60 @@ int container_create(const struct container_spec *spec, struct container_handle 
 			}
 			close(overlay_lower_fd);
 		}
+
+		/*
+		 * ADR-0179 phase 2c: drop into the namespace's mapped root, and
+		 * do it HERE -- the moment the rootfs is attached, before the
+		 * first write into it.
+		 *
+		 * #321. This used to sit just before execve, on the stated
+		 * reasoning that the setup steps needed real host root "which
+		 * is why it could mount/mknod/pivot". That reasoning was wrong
+		 * twice over, and the second half of it is what took every
+		 * workload on a btrfs-backed host down: pivot_root, move_mount,
+		 * mount(proc) and the netlink work are all gated on CAPABILITIES
+		 * in this new userns, which this process holds regardless of its
+		 * uid, and mknod of a device node is gated on capable(CAP_MKNOD)
+		 * against the INITIAL userns, which no userns container has ever
+		 * held. Host uid 0 bought nothing.
+		 *
+		 * What it cost: under ADR-0207 phase 3 the rootfs above is an
+		 * id-mapped mount ("0 <base> <len>"), and the kernel presents
+		 * that mapping for LOOKUPS only. A CREATE additionally requires
+		 * the caller's own fsuid to fall INSIDE the map -- may_create()
+		 * calls fsuidgid_has_mapping(), which maps the caller's fsuid
+		 * back down through the mount's id-map to pick the on-disk
+		 * owner, and host uid 0 is not in [base, base+len). It maps to
+		 * INVALID_UID and the create fails EOVERFLOW. So every mkdir the
+		 * child performs from here on -- each volume mount point, and
+		 * all eight in mountns_pivot(), put_old first -- died with
+		 * "Value too large for defined data type" and the container
+		 * exited 112 before it ever ran. Only the id-mapped presentation
+		 * was affected; copy+chown (and every non-userns container) has
+		 * no map for a uid to fall outside of, which is exactly why the
+		 * test suite never saw it: it runs on /tmp, which is not btrfs,
+		 * so cix_btrfs_is_backing() is false and the snapshot branch
+		 * that sets userns_idmap is unreachable there.
+		 *
+		 * Becoming userns uid/gid 0 -- i.e. host <base> -- is what puts
+		 * the caller inside the map, and is what the workload has to run
+		 * as anyway: genuinely unprivileged on the host, the whole point
+		 * of the user namespace. The first process in a new userns holds
+		 * full caps there regardless of its unmapped host uid, and
+		 * setuid TO uid 0 keeps them (the kernel compares against
+		 * make_kuid(cred->user_ns, 0) -- <base> -- not against host 0),
+		 * so container_caps_drop() before exec still governs the final
+		 * set. The one remaining step addressed by a host path rather
+		 * than an fd is mountns_pivot()'s own chdir(new_root), which
+		 * only needs the container directory traversable; it is created
+		 * 0755. (setgroups() is denied in this userns -- see
+		 * write_userns_maps -- so supplementary groups are left as-is;
+		 * harmless.)
+		 */
+		if (spec->userns_enabled && (setgid(0) != 0 || setuid(0) != 0)) {
+			child_diag(diag_pipe[1], "child: userns setgid/setuid(0)");
+			_exit(124);
+		}
 		/*
 		 * Issue #88: bind persistent volumes into the container's
 		 * future root BEFORE pivot_root, while `merged` is still
@@ -797,26 +851,6 @@ int container_create(const struct container_spec *spec, struct container_handle 
 			if (spec->stderr_fd != STDOUT_FILENO && spec->stderr_fd != STDERR_FILENO &&
 			    spec->stderr_fd != spec->stdout_fd)
 				close(spec->stderr_fd);
-		}
-
-		/*
-		 * ADR-0179 phase 2c: drop into the namespace's mapped root before
-		 * exec. Every privileged setup step above ran as real host root
-		 * (host uid 0 -- the child inherits cixd's uid, which is unmapped
-		 * in this new userns), which is why it could mount/mknod/pivot. Now
-		 * that setup is done, become userns uid/gid 0 -- i.e. host <base> --
-		 * so the workload runs genuinely unprivileged on the host, the whole
-		 * point of the user namespace. The first process in a new userns
-		 * holds full caps there regardless of its unmapped host uid, and
-		 * setuid TO uid 0 keeps them, so container_caps_drop below still
-		 * governs the final set. Done before caps_drop so CAP_SETUID/SETGID
-		 * are still present to perform it. (setgroups() is denied in this
-		 * userns -- see write_userns_maps -- so supplementary groups are left
-		 * as-is; harmless.)
-		 */
-		if (spec->userns_enabled && (setgid(0) != 0 || setuid(0) != 0)) {
-			child_diag(diag_pipe[1], "child: userns setgid/setuid(0)");
-			_exit(124);
 		}
 
 		/*
@@ -1191,7 +1225,7 @@ void container_decode_exit_status(int exit_status, int term_signal, char *buf, s
 		{ 120, "container_caps_drop failed" },
 		{ 121, "userns map sync failed (parent never released the child)" },
 		{ 122, "userns per-container rootfs move_mount failed (pre-pivot_root)" },
-		{ 124, "userns setgid/setuid(0) to the mapped root failed (pre-exec)" },
+		{ 124, "userns setgid/setuid(0) to the mapped root failed (pre-pivot)" },
 		/* Three volume-mount failures share this code; the child_diag
 		 * line says which. Named because an unnamed code decodes as a
 		 * bare number, which is the diagnostic saying nothing. */
