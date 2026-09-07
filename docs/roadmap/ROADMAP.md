@@ -2445,6 +2445,22 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 224 (done): the installer ISO, measured — 217.9 MiB to 70.0 MiB
+
+Cix builds installer media on the fly, proven end to end rather than read off the contract: `isotools` hostbuilt (20 s), the ADR-0229 seed check correctly refusing media that could not bring up DNS on a fresh box until `dnsmasq` was installed, then a signed ISO built from the running version.
+
+Two stale copies of the library layout were found on the way. `mkinstalleriso` searched the isotools artifact in two hand-written directories, omitting `usr/lib` — five lines below a comment saying a library is looked for "wherever this platform puts libraries, not in a list that has to be remembered separately here". #184 fixed the host side and left the artifact side behind. The same stale path was in `LD_LIBRARY_PATH` for `grub-mkrescue`/`xorriso`/`sbsign`, which is worse: those are artifact binaries exec'd off the bare host, so per ADR-0154 a wrong path does not fail loudly — a host carrying a same-named library is used instead and the child exits 0. Both derive from `CIX_LIB_DIRS_SEARCH` now.
+
+**The size, and why nobody saw it.** The published installer had gone from 71.7 MiB (2.5.0) to 217.9 MiB (2.53.73). Pulling the artifact apart gave four causes: the seed shipped **twice** at `payload/seed/` and `payload/seed/.seed/` (69.9 MiB, ADR-0253/#307); static archives beside their shared counterparts (46.8 MiB, ADR-0251); unstripped `.debug*` sections, 57% of the media's ELF payload (18.5 MiB, ADR-0251); and the seed carrying the whole recipe store, 94% of it superseded revisions (14.7 MiB, fixed here). Three were already fixed in tree and invisible.
+
+The result is **70.0 MiB — below the 71.7 MiB baseline that predates the package seed entirely**, so this media carries a full bootstrap kit and is still smaller than media that carried none.
+
+**The squashfs was investigated and is at its floor**: `mksquashfs` already deduplicates (18.26 MiB default against 26.54 MiB with `-no-duplicates`, shipped 18.25 MiB). It does carry a real ABI-shape defect — zero symlinks and 30.93 MiB of duplicate content, because the staging primitive materialises every `libfoo.so → .so.5 → .so.5.8.3` chain as full copies — recorded but deliberately not fixed, since squashfs dedups it on disk and a dangling symlink in the control-plane root is an unbootable box.
+
+**What actually shipped is the counting.** `GET /v1/system/iso` reports `iso_bytes`; `mkinstalleriso` prints a per-component breakdown that cixd's existing stdout capture writes to the log store on every build; and `MEDIA_BUDGET_MIB` (96) fails the build when the media exceeds it. Pulling the artifact apart by hand was previously the only way to look, which is why three regressions each survived for weeks.
+
+Verified: ISO built and published as `cix-installer-2.55.0-1-x86_64.iso` (70.0 MiB) beside the stale 217.9 MiB one; the breakdown read back out of the log store on a v2.55.1 host; all sandbox-runnable selftests pass.
+
 ## Part 223 (done): the Pipeline's stages split by what they do, not what they hold
 
 `Artifacts` becomes **Integration**. Pipeline keeps Overview / Errors; **Catalogue** takes Package Recipes / Image Recipes / Container Recipes / Repo & Sync; **Integration** takes Build / Local Packages / Local Images / Remote Cache; Deployment gains Rolling Restart, which is what happens once an update has landed -- leaving Pipeline as purely the view of the whole thing.
