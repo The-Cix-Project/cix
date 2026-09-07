@@ -11,6 +11,8 @@ Two pages were unusable rather than merely busy:
 - **Processes** blanked its whole table to "Loading…" *before* every fetch, every two seconds. It also should never have been polling: its own design was fetch-on-demand, because a real process table changes faster than a person can read it. That intent was undone when the renderers moved to `onPageOf()`; it now fetches on arrival and on its own Refresh button. "Loading" belongs to a panel that has never had content, not to every refresh of one that has.
 - **Services** cleared its table *before* awaiting the request, so the panel sat empty for the length of every poll.
 
+A sweep of the deployed build found a third instance and a fourth: **Running Config** blanked its pane to "Loading…" before every poll's request, and **Volumes** cleared its table before awaiting. Both fixed the same way. Two `<select>` rebuilders (the volume-backup target disk, and the disk-role dialog's disk list) were repopulating on every poll, which throws away whatever the operator had chosen while they were still choosing — the disk-role one now takes a `force` flag so the paths that *open* the dialog still rebuild immediately, while the poll path rebuilds only on real change.
+
 **Processes is legible now**: the four numeric columns take only the width they need with tabular figures, and the command is one ellipsised line with the full text on hover — a wrapped cmdline made every row a different height.
 
 **The log panel spans the whole window.** It is about the whole system and had been sitting inside `<main>` — the content column — so it started at the tree's right edge no matter what the CSS said, because it was never a grid item of `.layout` at all.
