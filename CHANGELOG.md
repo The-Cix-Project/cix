@@ -2,6 +2,62 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### The artifact cache was full of packages nobody was allowed to use (#325)
+
+Restoring the fleet, `image materialize jumpbox` failed 4 of 22 packages, each
+for a different and convincing reason: `mtr` and `procps` wanted an `autoconf`
+that is installed nowhere, `nss-pam-ldapd` timed out fetching from
+`arthurdejong.org`, and `btop` hit the `-lpthread` link deadlock (#324). Four
+independent build-time problems.
+
+None of the four needed building. The cache held a Cix-built, checksum-verified
+artifact for each, stamped with the exact recipe version the box had:
+
+| package | recipe on box | approved | in cache |
+|---|---|---|---|
+| btop | 1.4.7-1 | no | yes |
+| mtr | 0.96-8 | no | yes |
+| procps | 4.0.6-9 | no | yes |
+| nss-pam-ldapd | 0.9.13-6 | no | yes |
+
+ADR-0122's artifact tier is entered only when a recipe declares
+`pkg_artifact_sha256=`. A revision bump drops that line — correctly, since the
+bytes it approved came from the previous revision — and nothing re-adds it after
+the new revision is built and pushed. So the artifacts existed, were reachable
+(HTTP 200 at the daemon's own URL form, with `push=enabled` and the token set
+throughout), and were never consulted. Every install compiled from source.
+
+Adding the four checksums is the one edit a published recipe may take:
+`recipe_adds_only_artifact_sha256()` accepts absent → present and nothing else,
+which is why the accompanying comment corrections had to be reverted and left for
+a future revision — the daemon refused them with a 409, correctly. `materialize`
+then went to 22 of 22 ready with `artifact_cached=true` on all four and no
+compiler invoked.
+
+The mechanism that lets this recur is untouched and is #325. Its cost is
+measured twice now: `recipe_adds_only_artifact_sha256()`'s own comment records 12
+of 37 packages sitting unapproved on the first real box, "including grub, python,
+openssl and tcc, the expensive ones".
+
+The wider lesson is that the failures were all real and all beside the point. A
+missing approval does not present as a missing approval; it presents as whatever
+the build happens to trip over, which invites fixing the toolchain instead. The
+question that found it was "why drop btop, it was working fine before?" — and it
+was, from an artifact, before the bump.
+
+### glibc 2.44-15 withdrawn from 192.168.15.95 (#324)
+
+That revision existed only to force a rebuild so the corrected finalize policy's
+member-less `libpthread.a`/`librt.a`/`libdl.a` would reach the artifact. It never
+built, and because images track `rolling`, `rolling` resolved to it and took
+`ldap`, `syslog`, `dns` and `jumpbox` down — two failing at fetch with `checksum
+mismatch (source 0)`, two at build. Withdrawn from the box (kept in git);
+`rolling` resolves to `2.44-14`, which has a cached artifact, and the first three
+materialize clean. `jumpbox` kept an inconsistent record — `state=installed` with
+no version and a stale error that no operation clears — which is #326.
+
+The platform still cannot rebuild glibc. That, not `-lpthread`, is the defect.
+
 ### A direct-rootfs container could not open any device node (#173, on the other path)
 
 `ntp-1`/`ntp-2` came back from a reboot crash-looping on `Fatal error : Could not
