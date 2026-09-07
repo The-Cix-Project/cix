@@ -15260,10 +15260,17 @@ components:
           type: string
           nullable: true
           description: >
-            The full client URI list, verbatim (e.g. "ldap://a:3893/
-            ldap://b:3893/"). Explicit rather than derived from the
-            registered-server bindings (which store no address/port) --
-            auto-derivation is tracked on #66.
+            An OPTIONAL override of the client URI list, verbatim
+            (e.g. "ldap://a:3893/ ldap://b:3893/"). Leave it unset and
+            the list is derived from the registered LDAP servers' own
+            live addresses, which is the normal case -- a registered
+            server already tracks exactly those addresses, so a typed
+            copy here is a second source of truth that goes stale the
+            moment a server moves (#66). Either way the list is
+            health-filtered before use (#81/#84), and either way it is
+            what both the daemon's own nslcd.conf rendering and the
+            {{LDAP:URI}} recipe token resolve to -- one derivation, not
+            one per consumer (#327).
         base_dn:
           type: string
           nullable: true

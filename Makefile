@@ -552,7 +552,7 @@ $(BUILD)/test_pkg_cache: test/test_pkg_cache.c test/test_image_fixture.c $(CLIEN
 $(BUILD)/test_image_recipe: test/test_image_recipe.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_container_recipe: test/test_container_recipe.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_container_recipe: test/test_container_recipe.c test/test_image_fixture.c test/test_cleanup.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
 $(BUILD)/test_rolling_restart: test/test_rolling_restart.c test/test_image_fixture.c $(CLIENT_SRCS) $(BUILD)/daemon_child | $(BUILD)
