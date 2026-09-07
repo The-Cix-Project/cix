@@ -255,5 +255,11 @@ btrfs — so the id-mapped presentation was unreachable in this suite and had
 never once executed here. `test_userns_run` now runs its whole body against
 *both* presentations, using a `--test-userns-idmap` daemon flag that makes the
 copy present itself the way a snapshot does (host-0-owned, id-mapped); id-mapped
-mounts need only the kernel, not btrfs. It is a container-creating test, so it
-is not in `SELFTESTS` and does not gate a release build — it runs on a real host.
+mounts need only the kernel, not btrfs. It reaches the release gate through
+`DAEMON_SELFTESTS_2`, and it caught a second defect there on its first run: the
+privilege drop was placed early enough that the child could no longer *traverse*
+the host path to its own rootfs (a test daemon's `mkdtemp` directory is 0700).
+The child now enters the new root by path once, while still host root, and
+addresses everything after the drop relative to that — the volume mount points
+and `put_old` included. **A privilege drop must not leave the process depending
+on `o+x` for a directory it does not own.**

@@ -648,6 +648,26 @@ int container_create(const struct container_spec *spec, struct container_handle 
 		}
 
 		/*
+		 * Enter the new root by path ONCE, here, while still host root
+		 * -- everything from this point on addresses it relatively.
+		 *
+		 * The container's rootfs lives under the daemon's data
+		 * directory, and nothing guarantees that path is traversable by
+		 * an unprivileged uid: the default /var/lib/cix is 0755, but a
+		 * test daemon's mkdtemp() directory is 0700 and an operator may
+		 * legitimately tighten the real one. The child is about to stop
+		 * being host root, and a privilege drop that silently requires
+		 * o+x on somebody else's directory is not a property to depend
+		 * on -- so the one path resolution that needs it happens before
+		 * the drop, and the volume mount points and put_old below are
+		 * created relative to this cwd rather than re-walked from /.
+		 */
+		if (chdir(spec->ov.merged) != 0) {
+			child_diag(diag_pipe[1], "child: chdir(new root)");
+			_exit(126);
+		}
+
+		/*
 		 * ADR-0179 phase 2c: drop into the namespace's mapped root, and
 		 * do it HERE -- the moment the rootfs is attached, before the
 		 * first write into it.
@@ -689,12 +709,10 @@ int container_create(const struct container_spec *spec, struct container_handle 
 		 * setuid TO uid 0 keeps them (the kernel compares against
 		 * make_kuid(cred->user_ns, 0) -- <base> -- not against host 0),
 		 * so container_caps_drop() before exec still governs the final
-		 * set. The one remaining step addressed by a host path rather
-		 * than an fd is mountns_pivot()'s own chdir(new_root), which
-		 * only needs the container directory traversable; it is created
-		 * 0755. (setgroups() is denied in this userns -- see
-		 * write_userns_maps -- so supplementary groups are left as-is;
-		 * harmless.)
+		 * set. Nothing after this point resolves a host path: the chdir
+		 * above is the last one. (setgroups() is denied in this userns
+		 * -- see write_userns_maps -- so supplementary groups are left
+		 * as-is; harmless.)
 		 */
 		if (spec->userns_enabled && (setgid(0) != 0 || setuid(0) != 0)) {
 			child_diag(diag_pipe[1], "child: userns setgid/setuid(0)");
@@ -721,7 +739,10 @@ int container_create(const struct container_spec *spec, struct container_handle 
 				const struct container_volume *vol = &spec->volumes[vi];
 				char target[PATH_MAX];
 
-				if (snprintf(target, sizeof(target), "%s%s", spec->ov.merged,
+				/* Relative to the new root, which is cwd: this runs
+				 * after the privilege drop and must not re-walk the
+				 * host path to get here. */
+				if (snprintf(target, sizeof(target), ".%s",
 				             vol->mount_path) >= (int)sizeof(target)) {
 					errno = ENAMETOOLONG;
 					child_diag(diag_pipe[1], "child: volume target path");
@@ -792,7 +813,10 @@ int container_create(const struct container_spec *spec, struct container_handle 
 
 			mnt.mount_cgroup2 = ((spec->ns.clone_flags & CLONE_NEWCGROUP) != 0 &&
 			                      spec_has_cap(spec, "CAP_SYS_ADMIN"));
-			mountns_pivot_ret = mountns_pivot(spec->ov.merged, &mnt);
+			/* "." -- the new root is already cwd (see the chdir
+			 * above), so put_old is created relative to it and no
+			 * host path is resolved after the privilege drop. */
+			mountns_pivot_ret = mountns_pivot(".", &mnt);
 
 			if (mountns_pivot_ret != 0) {
 				child_diag_mountns_pivot(diag_pipe[1], mountns_pivot_ret);
@@ -1241,6 +1265,8 @@ void container_decode_exit_status(int exit_status, int term_signal, char *buf, s
 		 * line says which. Named because an unnamed code decodes as a
 		 * bare number, which is the diagnostic saying nothing. */
 		{ 125, "volume mount failed (target path, mkdir, or move_mount)" },
+		{ 126, "chdir into the new root failed (pre-pivot_root) -- the "
+		       "container's rootfs path is not traversable" },
 		{ 127, "exec failed (errno out of encodable range)" },
 		{ 130, "overlay: lowerdir stat failed" },
 		{ 131, "overlay: upperdir mkdir failed" },
