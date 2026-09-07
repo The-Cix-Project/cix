@@ -2445,6 +2445,28 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 222 (done): the Pipeline is a branch, and three navigation gates
+
+Pipeline becomes a selectable tree group with three stage pages under it -- **Catalogue** (Recipes/Packages/Images), **Artifacts**, **Deployment** (Update/Reconcile) -- and its own tabs are Overview, **Errors**, Repo & Sync, Package Builds, Rolling Restart. Errors is not a second table: the Overview's "needs attention" list was always the non-ok rows, so it moved to the tab that names it. This is the one place in the tree where a child is a *subject* rather than a live thing on the box, and it is deliberate -- an operator asking "where did this stop?" is asking about a stage.
+
+**Boot Slots and Signing Keys leave Kernel for a new Bootloader page under Host**, with Boot Console. A slot is what the bootloader picks and a key is what it will accept; neither is about the kernel.
+
+**Three sources of truth collapsed into one.** `SERVICE_TAB_VIEWS` was a hand-kept second copy of `CATEGORY_VIEWS`, and `selectCatalogueTab()`/`selectServiceTab()` were the same function twice, one hardcoded to `view-pipeline`. Both facts already existed elsewhere -- the page is `CATEGORY_VIEWS`' answer, and whether an address is a tab is a question that page's own tab bar answers by having a button for it. One `selectTabFor()` replaced all three, which is what made moving ten tabs across five pages a pure HTML edit.
+
+**The route-vs-page defect's fourth and last location.** `renderCurrentView()` still ended in an else-if chain on the route for fourteen renderers. Measured, not assumed: a headless DOM sweep of all 56 routes against the live v2.54.0 found **12 with a panel stuck on "Loading…"**.
+
+**Three new gates in `test_web_tree`, each proven by reintroducing the bug it exists for:**
+
+- Every page-level tab must be an address. The tree-walking checks only see tabs the tree names, and Pipeline > Reconcile had no route entry at all -- reachable by clicking, never by URL. Detail-page tabs are exempt by design.
+- The menu bar's topics are the tree's top-level names in the tree's order. ADR-0184 states this and nothing checked it, so the bar had Pipeline as a submenu two levels inside Host.
+- `index.html` is well-formed. Two restructures of this file have left orphan close tags, and a browser silently repairs both -- so neither showed in a screenshot or a DOM dump.
+
+Header trimmed 56px -> 42px with the triggers' padding cut to match; dropdown panels align with the trigger's label rather than its box, both paddings read from the live computed style.
+
+`docs/guides/web-dashboard.md` was rewritten against the shipped tree -- its map, its rationale, its menu-bar table, and 21 stale page paths naming folders this tree no longer has.
+
+Verified: all sandbox-runnable selftests pass; `index.html` parses clean under a real HTML parser; every one of the 56 routes lands on the right section with the right tab active, checked headlessly.
+
 ## Part 221 (done): the resource is Storage, not disks (ADR-0258)
 
 Twelve endpoints renamed (`/v1/disks` -> `/v1/storage`, `/v1/diskroles` -> `/v1/storage-roles`), with their operationIds, schemas, response keys, CLI commands and dashboard labels. A clean cut with no aliases.
