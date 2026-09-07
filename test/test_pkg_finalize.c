@@ -146,15 +146,31 @@ static void want(const char *dest, const char *rel, int should_exist)
 }
 
 /*
- * A stub strip that records how it was called, plus the real rm the
- * policy needs. PATH is set to this directory alone, so a real strip on
- * the machine cannot mask a policy that failed to invoke one.
+ * A stub strip that records how it was called, plus the real coreutils
+ * the policy needs. PATH is set to this directory alone, so a real strip
+ * on the machine cannot mask a policy that failed to invoke one -- which
+ * also means every tool the policy declares has to be provided here, and
+ * the policy refusing on a missing one is itself asserted below.
  */
+static void real_tool(const char *bin, const char *name)
+{
+	char path[512];
+	char script[512];
+	char real[64];
+
+	snprintf(real, sizeof(real), "/usr/bin/%s", name);
+	if (access(real, X_OK) != 0)
+		snprintf(real, sizeof(real), "/bin/%s", name);
+
+	snprintf(script, sizeof(script), "#!/usr/bin/bash\nexec %s \"$@\"\n", real);
+	snprintf(path, sizeof(path), "%s/%s", bin, name);
+	wr(path, script, strlen(script), 0755);
+}
+
 static void make_stub_bin(const char *bin, const char *log, int with_strip)
 {
 	char path[512];
 	char script[512];
-	const char *rm = access("/usr/bin/rm", X_OK) == 0 ? "/usr/bin/rm" : "/bin/rm";
 
 	mkdir(bin, 0755);
 
@@ -165,9 +181,14 @@ static void make_stub_bin(const char *bin, const char *log, int with_strip)
 		wr(path, script, strlen(script), 0755);
 	}
 
-	snprintf(script, sizeof(script), "#!/usr/bin/bash\nexec %s \"$@\"\n", rm);
-	snprintf(path, sizeof(path), "%s/rm", bin);
-	wr(path, script, strlen(script), 0755);
+	/*
+	 * rm does the pruning; wc measures an archive, because the shell
+	 * cannot -- a NUL byte cannot live in a variable and read stops at
+	 * one regardless of -N or -d '' (#324). Both are coreutils, so the
+	 * policy asks for no package it did not already need.
+	 */
+	real_tool(bin, "rm");
+	real_tool(bin, "wc");
 }
 
 static int run_policy(const char *dest, const char *bin, const char *errfile)
@@ -393,6 +414,46 @@ static void case_missing_strip(const char *root)
 		fail("the failure did not name binutils as the fix");
 }
 
+/*
+ * Case 4: wc missing -- ADR-0250 again, and the reason it earns its own
+ * case rather than riding on case 3. wc is what measures an archive, so
+ * without it the prune cannot tell an eight-byte glibc stub from a real
+ * one (#324) -- and a policy that silently skipped that check would drop
+ * libpthread.a again, which is precisely the bug. Fail, do not skip.
+ */
+static void case_missing_wc(const char *root)
+{
+	char dest[512], bin[512], err[512], path[512], line[512];
+	int rc, named = 0;
+	FILE *f;
+
+	snprintf(dest, sizeof(dest), "%s/c4", root);
+	snprintf(bin, sizeof(bin), "%s/c4bin", root);
+	snprintf(err, sizeof(err), "%s/c4.err", root);
+
+	snprintf(path, sizeof(path), "%s/usr/share/man/x.1", dest);
+	wr_text(path, "man\n");
+
+	/* Everything the policy needs except wc. */
+	mkdir(bin, 0755);
+	real_tool(bin, "rm");
+
+	rc = run_policy(dest, bin, err);
+	if (rc == 0)
+		fail("the policy ran without wc, so no archive could be measured");
+
+	f = fopen(err, "r");
+	if (f != NULL) {
+		while (fgets(line, sizeof(line), f) != NULL) {
+			if (strstr(line, "coreutils") != NULL)
+				named = 1;
+		}
+		fclose(f);
+	}
+	if (!named)
+		fail("the failure did not name coreutils as the fix");
+}
+
 int main(void)
 {
 	char root[] = "/tmp/cix_finalize_XXXXXX";
@@ -409,12 +470,13 @@ int main(void)
 	case_classification(root);
 	case_data_only(root);
 	case_missing_strip(root);
+	case_missing_wc(root);
 
 	if (g_failures > 0) {
 		fprintf(stderr, "PKG FINALIZE: FAIL (%d) -- tree kept at %s\n", g_failures, root);
 		return 1;
 	}
 
-	printf("PKG FINALIZE: ok (classification, data-only, missing-strip)\n");
+	printf("PKG FINALIZE: ok (classification, data-only, missing-strip, missing-wc)\n");
 	return 0;
 }
