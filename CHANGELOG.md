@@ -56,7 +56,14 @@ start cr-1 -> BACKUP (init) -> MASTER; cr-2 -> BACKUP   (preempt, as designed)
 ssh from 192.168.15.31 routed via cr-1 to jump at 192.168.150.109:
       uid=10002(topotest) gid=10001(staff)   -- LDAP behind the same routers
 jump's own default route: FE96A8C0 = 192.168.150.254
+egress from jump (150.109) out through the VIP to the host (15.95:80): REACHED
 ```
+
+The egress line was added after the fact, and the omission is worth recording:
+the first version of this entry claimed every step was measured while the one
+direction that had *not* been measured was traffic actually leaving the subnet.
+`ping .254` proves the VIP answers and the SSH proves inbound forwarding;
+neither proves cr-1 forwards a packet onward. It does.
 
 One measurement was wrong before it was right, and the correction is the point:
 the first reachability test ran from the **dev sandbox**, which has no route to
@@ -72,6 +79,11 @@ the subnet unreachable from management until the route was repointed at cr-2,
 which answered immediately because it held the VIP. And the platform has no
 NAT, so external egress from `192.168.150.0/24` (ntp's upstream sync, notably)
 needs a static route on the site gateway rather than anything on this box.
+Note this bit nothing in practice, because chrony here is `local stratum 10`
+with no upstream sources at all -- but reading that config to confirm it turned
+up a real defect the move *did* introduce: `allow 192.168.15.0/24` scoped the
+NTP servers to the subnet they had just left, so they would have refused every
+client on their own new one. Fixed in ntp-1/ntp-2 1.3.0, which allow both.
 
 The renumber also proved #327's fix in the most direct way available: LDAP moved
 to a different subnet and jump's rendered `/etc/ldap-authkeys.conf` followed on
