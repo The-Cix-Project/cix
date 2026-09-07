@@ -1293,16 +1293,69 @@ let statusMetaBase = null;
  */
 let statusVersion = null;
 
+/*
+ * The build this PAGE came from.
+ *
+ * These assets were served by the daemon that answered the first
+ * /system/boot of this page's life, so the first version seen is the
+ * version of the HTML and JavaScript now running. If a later answer
+ * differs, the daemon has been updated underneath a page that has not
+ * been -- the dashboard is then a client of a contract it was not
+ * built against, which is exactly how a renamed field reads as an
+ * empty panel rather than as an error.
+ *
+ * Derived, never stamped at build time: nothing has to be kept in step
+ * for this to stay true.
+ */
+let loadedVersion = null;
+
+function versionIsSkewed() {
+	return loadedVersion !== null && statusVersion !== null &&
+	       statusVersion.version !== loadedVersion;
+}
+
+/*
+ * Built once and updated in place, never rebuilt.
+ *
+ * This runs on a one-second ticker (the uptimes count up), and
+ * recreating the version control each tick would reset a tooltip the
+ * moment someone hovered it and could swallow a click landing between
+ * the removal and the re-append. The listener is attached once; only
+ * text and class change.
+ */
+let statusVersionEl = null;
+let statusRestEl = null;
+
 function renderStatusMeta() {
 	const parts = [];
+
+	if (statusVersionEl === null) {
+		statusVersionEl = document.createElement("button");
+		statusVersionEl.type = "button";
+		statusVersionEl.className = "status-version";
+		statusVersionEl.addEventListener("click", () => location.reload());
+		statusRestEl = document.createElement("span");
+		statusMeta.textContent = "";
+		statusMeta.appendChild(statusVersionEl);
+		statusMeta.appendChild(statusRestEl);
+	}
 
 	if (statusVersion !== null) {
 		/* Slot is an A/B fact and only a real installed host has one --
 		 * a dev daemon reports none, and "slot ?" would be inventing an
 		 * answer to a question that does not apply. */
-		parts.push("Cix " + statusVersion.version +
-		           (statusVersion.slot !== null ? " · slot " + statusVersion.slot : ""));
+		statusVersionEl.hidden = false;
+		statusVersionEl.textContent = "Cix " + statusVersion.version +
+		    (statusVersion.slot !== null ? " \u00b7 slot " + statusVersion.slot : "");
+		statusVersionEl.classList.toggle("status-version-skew", versionIsSkewed());
+		statusVersionEl.title = versionIsSkewed()
+		    ? "This page was loaded from Cix " + loadedVersion + ", but the daemon is now " +
+		      "running " + statusVersion.version + ". Click to reload the dashboard."
+		    : "Click to reload the dashboard.";
+	} else {
+		statusVersionEl.hidden = true;
 	}
+
 	if (statusMetaBase !== null) {
 		const elapsed = Math.floor((Date.now() - statusMetaBase.fetchedAt) / 1000);
 
@@ -1312,7 +1365,8 @@ function renderStatusMeta() {
 		           " " + statusMetaBase.load5.toFixed(2) +
 		           " " + statusMetaBase.load15.toFixed(2));
 	}
-	statusMeta.textContent = parts.join("  ·  ");
+	statusRestEl.textContent = parts.length === 0 ? ""
+	    : (statusVersion !== null ? "  \u00b7  " : "") + parts.join("  \u00b7  ");
 }
 
 /*
@@ -1326,6 +1380,8 @@ async function refreshStatusVersion() {
 		const b = await apiRequest("GET", CIX_API.getSystemBoot());
 
 		statusVersion = { version: b.build_version || "unknown", slot: b.slot || null };
+		if (loadedVersion === null)
+			loadedVersion = statusVersion.version;
 		statusMeta.title = "Cix " + statusVersion.version +
 		                   ", built " + (b.build_time || "unknown") +
 		                   (statusVersion.slot !== null ? ", running from slot " + statusVersion.slot : "") +
@@ -1852,6 +1908,24 @@ function treeIcon(name, colorClass) {
 	return span;
 }
 
+/*
+ * The row's text, wrapped so it can be styled on its own.
+ *
+ * The active row is marked with a copper underline, matching the tab
+ * bars. The row is a full-width flex anchor, so a border-bottom on it
+ * would draw a rule right across the panel under a word a third as
+ * wide; and text-decoration set on a flex container does not reach the
+ * anonymous item its bare text node becomes. A real element for the
+ * label is the one thing that can carry the underline.
+ */
+function treeLabel(text) {
+	const span = document.createElement("span");
+
+	span.className = "tree-label";
+	span.textContent = text;
+	return span;
+}
+
 function treeLink(href, text, className, icon, iconColorClass) {
 	const a = document.createElement("a");
 
@@ -1859,7 +1933,7 @@ function treeLink(href, text, className, icon, iconColorClass) {
 	a.className = className;
 	if (icon)
 		a.appendChild(treeIcon(icon, iconColorClass));
-	a.appendChild(document.createTextNode(text));
+	a.appendChild(treeLabel(text));
 	return a;
 }
 
@@ -1890,7 +1964,7 @@ function treeItemLinkWithStatus(href, label, status, icon) {
 	a.className = "tree-item";
 	if (icon)
 		a.appendChild(treeIcon(icon, containerStatusColorClass(status)));
-	a.appendChild(document.createTextNode(label));
+	a.appendChild(treeLabel(label));
 	return a;
 }
 
@@ -2288,7 +2362,7 @@ function renderTree() {
 			 */
 			label: "Host",
 			group: true,
-			hash: "site",
+			hash: "host-stats",
 			icon: "system",
 			children: [
 				{ label: "Control Plane", hash: "tls-throttle", icon: "system" },

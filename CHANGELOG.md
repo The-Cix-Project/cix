@@ -2,6 +2,20 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### The dashboard says when it is stale, and the active row is marked
+
+**A version skew indicator.** The status bar's `Cix vX.Y.Z` is now a control: always clickable to reload, and copper + bold when this page's assets are older than the daemon answering them, with a tooltip naming both builds. The page's own build is *derived*, never stamped -- these assets were served by the daemon that answered the first `/system/boot` of the page's life, so the first version seen is the version now running; a later answer that differs means the daemon moved and the page did not. Nothing has to be kept in step for it to stay true.
+
+This state was previously invisible, and it is not cosmetic: an updated daemon serving a stale page looks exactly like a working one until a renamed field turns up as an empty panel rather than an error.
+
+The status bar element is built once and updated in place -- it re-renders on a one-second ticker for the uptimes, and recreating a control each tick resets a tooltip mid-hover and can swallow a click landing between the removal and the re-append.
+
+**The active tree row carries a copper underline**, matching the tab bars' mark for the same meaning. It sits on a new `.tree-label` element rather than the row: the row is a full-width flex anchor, so a border on it would rule across the whole panel under a word a third as wide, and `text-decoration` on a flex container does not reach the anonymous item a bare text node becomes.
+
+**Content links are copper, underlining on hover** -- scoped to `.view`, `.modal` and `#log-panel`, because tree rows and header menus are anchors too and carry their own colour and active mark. A bare `a:hover` rule would have reached them: specificity is resolved per property, so their own `:hover` rules, which set only a background, would not have stopped an underline.
+
+**Host reads in the order the questions get asked**: Stats (renamed from Host Stats), Processes, Sessions, Running Config, Name, Log Store, Factory Reset -- destructive last. Clicking Host in the tree lands on Stats.
+
 ### The Pipeline's stages split by what they do, not what they hold
 
 `Artifacts` becomes **Integration**, and the middle stage stops being a place where things are *kept* and becomes the place where they are *made*:
