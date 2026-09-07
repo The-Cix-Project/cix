@@ -1892,6 +1892,18 @@ const TREE_ICONS = {
 		'<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20V7"/></svg>',
 	storage:
 		'<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/><path d="M12 3v3M21 12h-3M12 21v-3M3 12h3"/></svg>',
+	/*
+	 * A volume is a cylinder, deliberately NOT the storage platter.
+	 * `storage` is a disk -- concentric circles around a spindle, a
+	 * physical device -- and a volume sits INSIDE one of those, so
+	 * drawing it with the same glyph would make the two
+	 * indistinguishable at exactly the point the tree is trying to
+	 * show the relationship (#329). The stacked drum is the long-
+	 * standing convention for "a body of persistent data" and reads
+	 * as a different kind of thing at 14px.
+	 */
+	volume:
+		'<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v12c0 1.66 3.13 3 7 3s7-1.34 7-3V6"/><path d="M19 12c0 1.66-3.13 3-7 3s-7-1.34-7-3"/></svg>',
 	services:
 		'<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="5" cy="12" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="19" cy="18" r="2"/><path d="M7 12h5a4 4 0 0 0 4-4V6M12 12a4 4 0 0 1 4 4v2"/></svg>',
 	ldap:
@@ -2160,7 +2172,7 @@ function orphanVolumes() {
 		.map((v) => ({
 			label: v.name,
 			hash: "volumes/" + encodeURIComponent(v.name),
-			icon: "storage",
+			icon: "volume",
 			iconColor: "tree-icon-idle",
 		}));
 }
@@ -2175,7 +2187,7 @@ function diskTreeChildren(diskName) {
 			children.push({
 				label: v.name,
 				hash: "volumes/" + encodeURIComponent(v.name),
-				icon: "storage",
+				icon: "volume",
 				iconColor: "tree-icon-ok",
 			});
 	}
@@ -2194,7 +2206,7 @@ function diskTreeChildren(diskName) {
 				.map((v) => ({
 					label: v.name,
 					hash: "volumes/" + encodeURIComponent(v.name),
-					icon: "storage",
+					icon: "volume",
 					iconColor: "tree-icon-ok",
 				})),
 		});
@@ -2296,8 +2308,19 @@ function renderTree() {
 			label: "Storage",
 			hash: "storage",
 			icon: "storage",
-			/* Disks with their partitions nested under them, then the
-			 * volumes -- the shape the storage page's own tables use. */
+			/*
+			 * Disks, their partitions nested under them, and each
+			 * volume under the device that actually holds it --
+			 * diskTreeChildren() derives that from the mount points
+			 * (#329). This used to append the volumes flat onto the
+			 * disk list, which put jump-home level with vda and sda
+			 * and said nothing about which partition it consumes;
+			 * the placement logic existed the whole time and was
+			 * simply never called.
+			 *
+			 * orphanVolumes() is the tail: a volume whose holder
+			 * cannot be derived hangs here rather than vanishing.
+			 */
 			children: cache.storage
 				.filter((d) => !d.is_partition)
 				.map((d) => ({
@@ -2305,23 +2328,9 @@ function renderTree() {
 					hash: "storage/" + encodeURIComponent(d.name),
 					icon: "storage",
 					iconColor: d.mounted ? "tree-icon-ok" : "tree-icon-idle",
-					children: cache.storage
-						.filter((x) => x.is_partition && x.parent_disk === d.name)
-						.map((x) => ({
-							label: x.name,
-							hash: "storage/" + encodeURIComponent(x.name),
-							icon: "storage",
-							iconColor: x.mounted ? "tree-icon-ok" : "tree-icon-idle",
-						})),
+					children: diskTreeChildren(d.name),
 				}))
-				.concat(
-					cache.volumes.map((v) => ({
-						label: v.name,
-						hash: "volumes/" + encodeURIComponent(v.name),
-						icon: "rebuildable",
-						iconColor: "tree-icon-ok",
-					})),
-				),
+				.concat(orphanVolumes()),
 		},
 		{
 			/*
