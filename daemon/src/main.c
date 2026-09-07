@@ -9926,6 +9926,32 @@ static void write_iso_status(struct json_writer *w)
 		jw_str(w, g_iso_built_version);
 	else
 		jw_null(w);
+	/*
+	 * How big the media actually is.
+	 *
+	 * This endpoint reported a path and nothing else, so the only way
+	 * to learn an ISO's size was to publish it and read the cache
+	 * back. That is how an installer grew from 71.7 MiB to 217.9 MiB
+	 * across a release series with nobody counting: 69.9 MiB of it a
+	 * seed shipped twice (#307), 46.8 MiB static archives with shared
+	 * counterparts beside them, and 18.5 MiB of debug sections -- each
+	 * fixed on its own, none of them visible here.
+	 *
+	 * Read from the filesystem on each request rather than recorded at
+	 * build time: the file is the truth, and a stored number is one
+	 * more thing that can disagree with it.
+	 */
+	jw_key(w, "iso_bytes");
+	if (g_iso_build_state == ISO_BUILD_READY) {
+		struct stat ist;
+
+		if (stat(ISO_OUTPUT_PATH, &ist) == 0)
+			jw_num(w, (double)ist.st_size);
+		else
+			jw_null(w);
+	} else {
+		jw_null(w);
+	}
 	jw_obj_close(w);
 }
 

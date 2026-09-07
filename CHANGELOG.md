@@ -2,6 +2,20 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### The installer ISO is measurable
+
+`GET /v1/system/iso` reports `iso_bytes`. It reported a path and nothing else, so the only way to learn an ISO's size was to publish it and read the cache back — and that is how an installer grew from **71.7 MiB (2.5.0) to 217.9 MiB (2.53.73)** across a release series with nobody counting.
+
+Measured by pulling the published 217.9 MiB artifact apart, because none of this was visible from the API:
+
+| Cause | Weight | Already fixed by |
+|---|---|---|
+| The package seed shipped **twice**, at `payload/seed/` and `payload/seed/.seed/` | 69.9 MiB | ADR-0253 / #307 |
+| `libc.a` and friends — static archives whose shared counterpart ships beside them | 46.8 MiB (glibc artifact 56.8 → 10.0 MiB at `2.44-14`) | ADR-0251 |
+| Unstripped `.debug*` sections — **57% of the media's ELF payload**, 18.5 MiB of 32.6 MiB, 9.08 MiB of it in `libc.so.6` alone | 18.5 MiB | ADR-0251's finalize policy |
+
+All three were found and fixed on their own merits; the point is that **none of them was visible from the thing that builds ISOs**. A number that appears in a diff is what stops the fourth one. The size is read from the filesystem on each request rather than recorded at build time — the file is the truth, and a stored number is one more thing that can disagree with it. The dashboard's Installer ISO tab shows it.
+
 ### The ISO builds, and where libraries live had one more stale copy
 
 Proving "can this host build installer media?" as a measurement rather than a reading of the contract turned up four things.
