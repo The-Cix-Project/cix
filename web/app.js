@@ -1678,7 +1678,13 @@ function renderCurrentView() {
 			renderKmodList();
 		if (onPageOf("host-stats"))
 			startHostStatsPolling();
-		if (onPageOf("processes"))
+		/*
+		 * On ARRIVAL and on its own Refresh button only. A real
+		 * process table churns far faster than a person can read it,
+		 * which is why this page was always fetch-on-demand; polling
+		 * it made the page unusable rather than live.
+		 */
+		if (onPageOf("processes") && lastRenderedRoute !== route.category)
 			renderProcessesList();
 		if (onPageOf("syslog-targets"))
 			renderSyslogTargetsList();
@@ -2417,14 +2423,29 @@ function findCurrentNodeId() {
  * findCurrentNodeId()'s own comment for why hash matching alone would
  * incorrectly light up an unrelated sibling that merely happens to
  * share an address). */
+/*
+ * Two different facts, two different marks.
+ *
+ * `active` is "on the path to what you are looking at" -- every
+ * ancestor of the current row, which is what keeps the branch you came
+ * through legible. `current` is the one row you are actually on.
+ *
+ * They were one class until the active row gained a copper underline:
+ * an underline means "you are here", and drawing it on Host as well as
+ * Control Plane said it twice, about two different rows. Bold still
+ * marks the path; the underline marks the destination.
+ */
 function renderTreeActive() {
 	const owning = new Set();
+	const current = findCurrentNodeId();
 
-	for (let id = findCurrentNodeId(); id !== undefined; id = nodeParent[id])
+	for (let id = current; id !== undefined; id = nodeParent[id])
 		owning.add(id);
 
-	for (const [id, anchor] of Object.entries(nodeAnchor))
+	for (const [id, anchor] of Object.entries(nodeAnchor)) {
 		anchor.classList.toggle("active", owning.has(Number(id)));
+		anchor.classList.toggle("current", Number(id) === current);
+	}
 }
 
 /* Only called on real navigation (hashchange + the very first render),
@@ -3482,16 +3503,56 @@ function startHostStatsPolling() {
  * watch scroll by live. Same "no reason to keep re-polling while
  * nobody's looking" reasoning the old fetch-on-demand Logs page had.
  */
+/*
+ * Rebuild a panel only when its data actually changed.
+ *
+ * Every view renderer runs on the poll loop, and most of them cleared
+ * their table and rebuilt it from scratch each time -- identical rows,
+ * every couple of seconds. That is not free: it drops text selection,
+ * resets any scroll inside the table, restarts the browser's own
+ * hover state, and makes a page with a lot of rows visibly churn.
+ * Processes and Server Health were the two where it made the page
+ * unusable rather than merely busy.
+ *
+ * Comparing the DATA is the right test rather than diffing the DOM: it
+ * is one JSON.stringify against a value we already have, and a page
+ * whose data has not changed has nothing to say.
+ */
+const renderSignatures = Object.create(null);
+
+function dataChanged(key, data) {
+	const sig = JSON.stringify(data);
+
+	if (renderSignatures[key] === sig)
+		return false;
+	renderSignatures[key] = sig;
+	return true;
+}
+
+/*
+ * "Loading" belongs to a panel that has never had content, not to
+ * every refresh of one that has. Blanking a populated table before a
+ * fetch is what made Processes flash empty twice a second.
+ */
+function showLoadingIfEmpty(tbody, colspan) {
+	if (tbody.querySelector("tr") !== null)
+		return;
+	tbody.innerHTML = '<tr><td colspan="' + colspan +
+	                  '" class="empty">Loading&hellip;</td></tr>';
+}
+
 async function refreshProcesses() {
 	const tbody = document.getElementById("processes-body");
 
-	tbody.innerHTML = '<tr><td colspan="7" class="empty">Loading&hellip;</td></tr>';
+	showLoadingIfEmpty(tbody, 7);
 	try {
 		const procs = await apiRequest("GET", CIX_API.listSystemProcesses());
 
-		renderProcessesTable(procs);
+		if (dataChanged("processes", procs))
+			renderProcessesTable(procs);
 	} catch (e) {
-		tbody.innerHTML = '<tr><td colspan="7" class="empty">Failed to load.</td></tr>';
+		if (tbody.querySelector("tr td.empty") !== null || tbody.querySelector("tr") === null)
+			tbody.innerHTML = '<tr><td colspan="7" class="empty">Failed to load.</td></tr>';
 	}
 }
 
@@ -3529,6 +3590,8 @@ function renderProcessesTable(procs) {
 		}
 		cmdCell.textContent = p.command_line;
 		cmdCell.className = "processes-cmdline";
+		/* The cell shows one line; the whole command is still here. */
+		cmdCell.title = p.command_line;
 
 		killButton.textContent = "Kill";
 		killButton.className = "button-danger button-small";
@@ -3699,14 +3762,12 @@ async function loadContainerRecipe(name) {
 
 function renderContainerDetail(name) {
 	const c = cache.containers.find((x) => x.name === name);
-	const title = document.getElementById("cd-title");
 	const fields = document.getElementById("cd-fields");
 
 	currentContainerDetailName = name;
 
 	if (!c) {
-		title.textContent = name + " (not found)";
-		fields.textContent = "";
+		fields.textContent = name + " \u2014 not found.";
 		closeConsole();
 		stopStatsPolling();
 		return;
@@ -3738,7 +3799,6 @@ function renderContainerDetail(name) {
 		startStatsPolling(name);
 	else if (statsContainerName !== null)
 		stopStatsPolling();
-	title.textContent = c.name;
 
 	/* Summary -- identity/runtime status only. */
 	fields.textContent = "";
@@ -4631,17 +4691,14 @@ function startNetPortsPolling(name) {
 
 function renderNetworkDetail(name) {
 	const n = cache.networks.find((x) => x.name === name);
-	const title = document.getElementById("nd-title");
 	const fields = document.getElementById("nd-fields");
 
 	if (!n) {
-		title.textContent = name + " (not found)";
-		fields.textContent = "";
+		fields.textContent = name + " \u2014 not found.";
 		stopNetPortsPolling();
 		return;
 	}
 
-	title.textContent = n.name;
 	startNetPortsPolling(n.name);
 	refreshNetworkDhcp(n.name);
 	fields.textContent = "";
@@ -4897,8 +4954,6 @@ async function removeImage(name) {
 }
 
 function renderImageDetail(name) {
-	document.getElementById("imgd-title").textContent = name;
-
 	const usingContainers = cache.containers.filter((c) => c.image === name);
 	const containersBody = document.querySelector("#imgd-containers tbody");
 
@@ -6056,14 +6111,12 @@ let currentDiskDetailName = null;
  */
 function renderDiskDetail(name) {
 	const d = cache.storage.find((x) => x.name === name);
-	const title = document.getElementById("dd-title");
 	const subtitle = document.getElementById("dd-subtitle");
 	const fields = document.getElementById("dd-fields");
 
 	currentDiskDetailName = name;
 	if (!d) {
-		title.textContent = name + " (not found)";
-		subtitle.textContent = "";
+		subtitle.textContent = name + " \u2014 not found.";
 		fields.textContent = "";
 		return;
 	}
@@ -6071,7 +6124,6 @@ function renderDiskDetail(name) {
 	const role = storageRoleFor(d.name);
 	const parts = d.is_partition ? [] : partitionsOf(d.name);
 
-	title.textContent = d.name;
 	subtitle.textContent = d.is_partition
 		? "Partition of " + d.parent_disk +
 		  (d.protected ? " — part of the fixed OS layout" : d.is_os_disk ? " — on the OS disk" : "")
@@ -9015,8 +9067,6 @@ async function loadPkgRecipeContent(name) {
 }
 
 function renderPackageDetail(name) {
-	document.getElementById("pkgd-title").textContent = name;
-
 	/* issue #19: .find() alone returns whatever GET /pkg/recipes
 	 * happened to list first for this name -- not necessarily the
 	 * latest version (confirmed live: squashfs-tools' 5 stored
@@ -11796,7 +11846,6 @@ let currentVolumeDetailName = null;
  * wrong lifetime to fix at one moment.
  */
 async function renderVolumeDetail(name) {
-	const title = document.getElementById("vd-title");
 	const fields = document.getElementById("vd-fields");
 	const note = document.getElementById("vd-migrate-note");
 	const select = document.getElementById("vd-target-disk");
@@ -11811,11 +11860,9 @@ async function renderVolumeDetail(name) {
 	const v = (cache.volumes || []).find((x) => x.name === name);
 
 	if (!v) {
-		title.textContent = name + " (not found)";
-		fields.textContent = "";
+		fields.textContent = name + " \u2014 not found.";
 		return;
 	}
-	title.textContent = v.name;
 
 	const holder = deviceHoldingVolume(v);
 	const users = (cache.containers || []).filter((c) =>
@@ -12132,10 +12179,9 @@ document.getElementById("volume-form").addEventListener("submit", async (event) 
 
 async function refreshServerHealth() {
 	const body = document.getElementById("server-health-body");
-
-	body.textContent = "";
 	let servers = [];
 	let warnings = [];
+
 	try {
 		const data = await apiRequest("GET", CIX_API.getServerHealth());
 		servers = data.servers || [];
@@ -12144,6 +12190,13 @@ async function refreshServerHealth() {
 		showStatus("Failed to read server health: " + e.message, true);
 		return;
 	}
+
+	/* Identical every two seconds is the normal case for a health
+	 * table, and rebuilding it then is pure churn. */
+	if (!dataChanged("server-health", { servers: servers, warnings: warnings }))
+		return;
+	body.textContent = "";
+
 	/* Issue #83: a warning here means Cix is managing state with nowhere
 	   to deliver it -- a silent, total failure of that subsystem, not a
 	   degradation. Shown above the table because it is more urgent than

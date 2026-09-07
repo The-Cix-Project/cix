@@ -191,7 +191,6 @@
 		<!-- Containers -->
 		<section class="view" id="view-containers" hidden>
 			<div class="view-list">
-				<h2>Containers</h2>
 				<table id="containers">
 					<thead>
 						<tr>
@@ -211,7 +210,6 @@
 
 		<section class="view" id="view-container-detail" hidden>
 			<div class="detail-topbar">
-				<h2 id="cd-title"></h2>
 				<div class="detail-actions">
 					<button type="button" id="cd-start">Start</button>
 					<button type="button" id="cd-pause">Pause</button>
@@ -341,7 +339,6 @@
 
 		<!-- Networks -->
 		<section class="view" id="view-networks" hidden>
-			<h2>Networks</h2>
 			<div class="tab-bar">
 				<button type="button" class="tab-button active" data-tab="networks">Overview</button>
 				<button type="button" class="tab-button" data-tab="routes">Routes</button>
@@ -391,7 +388,6 @@
 
 		<section class="view" id="view-network-detail" hidden>
 			<div class="detail-topbar">
-				<h2 id="nd-title"></h2>
 				<div class="detail-actions">
 					<button type="button" id="nd-remove" class="button-danger">Remove network</button>
 				</div>
@@ -477,7 +473,6 @@
 
 		<section class="view" id="view-image-detail" hidden>
 			<div class="detail-topbar">
-				<h2 id="imgd-title"></h2>
 				<div class="detail-actions">
 					<button type="button" id="imgd-remove" class="button-danger">Remove image</button>
 				</div>
@@ -597,7 +592,6 @@
 
 		<!-- Devices -->
 		<section class="view" id="view-devices" hidden>
-			<h2>Devices</h2>
 			<div class="tab-bar">
 				<button type="button" class="tab-button active" data-tab="devicemaps">Named Mappings</button>
 				<button type="button" class="tab-button" data-tab="devices">Discovery</button>
@@ -730,9 +724,8 @@
 
 		<!-- Disks (multi-disk management: ADR-0071/ADR-0102/ADR-0104) -->
 		<section class="view" id="view-storage" hidden>
-			<h2>Storage</h2>
 			<div class="tab-bar">
-				<button type="button" class="tab-button active" data-tab="storage">Storage</button>
+				<button type="button" class="tab-button active" data-tab="storage">Overview</button>
 				<button type="button" class="tab-button" data-tab="storage-placement">Placement</button>
 				
 				<button type="button" class="tab-button" data-tab="backup">System Backup</button>
@@ -900,7 +893,6 @@
 		     whole disk has a partition table.
 		-->
 		<section class="view" id="view-storage-detail" hidden>
-			<h2 id="dd-title"></h2>
 			<p class="hint" id="dd-subtitle"></p>
 			<div class="tab-bar">
 				<button type="button" class="tab-button active" data-tab="dd-overview">Overview</button>
@@ -970,7 +962,6 @@
      not settings about the daemon.
 		-->
 				<section class="view" id="view-host" hidden>
-			<h2>Host</h2>
 			<div class="tab-bar">
 				<button type="button" class="tab-button active" data-tab="host-stats">Stats</button>
 				<button type="button" class="tab-button" data-tab="processes">Processes</button>
@@ -1186,7 +1177,6 @@
 		</section>
 
 		<section class="view" id="view-control-plane" hidden>
-			<h2>Control Plane</h2>
 			<div class="tab-bar">
 				<button type="button" class="tab-button active" data-tab="daemon-config">Ports</button>
 				<button type="button" class="tab-button" data-tab="tls-throttle">Throttling</button>
@@ -1380,7 +1370,6 @@
 		</section>
 
 		<section class="view" id="view-kernel" hidden>
-			<h2>Kernel</h2>
 			<div class="tab-bar">
 				<button type="button" class="tab-button active" data-tab="kernel-policy">Kernel Line</button>
 				<button type="button" class="tab-button" data-tab="sysctl">Sysctl</button>
@@ -1468,7 +1457,6 @@
 		     address still resolves, to its tab.
 		-->
 		<section class="view" id="view-dns-records" hidden>
-			<h2>DNS</h2>
 			<div class="tab-bar">
 				<button type="button" class="tab-button active" data-tab="dns-records">Records</button>
 				<button type="button" class="tab-button" data-tab="dns-servers">Servers</button>
@@ -1552,7 +1540,6 @@
 		     address still resolves, to its tab.
 		-->
 		<section class="view" id="view-ldap-servers" hidden>
-			<h2>LDAP</h2>
 			<div class="tab-bar">
 				<button type="button" class="tab-button active" data-tab="ldap-servers">Servers</button>
 				<button type="button" class="tab-button" data-tab="ldap-groups">Groups</button>
@@ -1682,7 +1669,6 @@
 		
 
 		<section class="view" id="view-ntp-config" hidden>
-			<h2>NTP</h2>
 			<div class="tab-bar">
 				<button type="button" class="tab-button active" data-tab="ntp-config">Config</button>
 				<button type="button" class="tab-button" data-tab="ntp-servers">Servers</button>
@@ -1769,7 +1755,6 @@
 		     address still resolves, to its tab.
 		-->
 		<section class="view" id="view-pki-ca" hidden>
-			<h2>PKI</h2>
 			<div class="tab-bar">
 				<button type="button" class="tab-button active" data-tab="pki-ca">Root CA</button>
 				<button type="button" class="tab-button" data-tab="pki-intermediate">Intermediate CA</button>
@@ -1876,7 +1861,6 @@
 		     works.
 		-->
 		<section class="view" id="view-pipeline" hidden>
-			<h2>Pipeline</h2>
 			<div class="tab-bar">
 				<button type="button" class="tab-button active" data-tab="pipeline">Overview</button>
 				<button type="button" class="tab-button" data-tab="pipeline-errors">Errors</button>
@@ -1940,7 +1924,6 @@
 
 		<section class="view" id="view-package-detail" hidden>
 			<div class="detail-topbar">
-				<h2 id="pkgd-title"></h2>
 			</div>
 			<div class="tab-bar">
 				<button type="button" class="tab-button active" data-tab="recipe" id="pkgd-tab-recipe">Recipe</button>
@@ -2020,7 +2003,6 @@
 
 		<section class="view" id="view-syslog-targets" hidden>
 			<div class="view-list">
-				<h2>Syslog Targets</h2>
 				<p class="hint">Registered containers (e.g. syslog-1/syslog-2 running sysklogd) that every container-sourced log line is also forwarded to as a real RFC 3164 UDP datagram, alongside (never instead of) the consolidated log store, which stays the one source of truth (ADR-0127). Register one via the "+ Create" menu above.</p>
 				<table id="syslog-targets">
 					<thead>
@@ -2037,7 +2019,6 @@
 		</section>
 
 		<section class="view" id="view-dhcp" hidden>
-			<h2>DHCP</h2>
 			<div class="tab-bar">
 				<button type="button" class="tab-button active" data-tab="dhcp-servers">Servers</button>
 				<button type="button" class="tab-button" data-tab="dhcp-ranges">Ranges</button>
@@ -2097,7 +2078,6 @@
 		</section>
 
 		<section class="view" id="view-server-health" hidden>
-			<h2>Services</h2>
 
 			<div class="view-list">
 				<p class="hint">Every registered backend server &mdash; LDAP, DNS, NTP and syslog &mdash; probed on an interval. A server that is drained or has failed its probes is dropped from the configuration handed to clients, so a registered-but-not-serving server can no longer break logins silently. <strong>Drain</strong> takes one out of service deliberately (maintenance); it persists across a daemon restart, while health itself is re-established by the next probe. The <em>Probe</em> column says how the verdict was reached: a <code>tcp:PORT</code> check is a real service check, <code>process</code> only means the container is running.</p>
@@ -2127,7 +2107,6 @@
 
 		<!-- One volume: where its data lives, who mounts it, and moving it. -->
 		<section class="view" id="view-bootloader" hidden>
-			<h2>Bootloader</h2>
 			<div class="tab-bar">
 				<button type="button" class="tab-button active" data-tab="esp">Boot Slots</button>
 				<button type="button" class="tab-button" data-tab="signing-keys">Signing Keys</button>
@@ -2313,7 +2292,6 @@
 		</div>
 		</section>
 		<section class="view" id="view-catalogue" hidden>
-			<h2>Catalogue</h2>
 			<p class="hint">Three git-syncable recipe kinds (ADR-0040/ADR-0123/ADR-0151), one catalog:
 					<strong>Packages</strong> build one piece of software from source; <strong>Images</strong>
 					declare a whole package manifest for an image in one shot; <strong>Containers</strong>
@@ -2432,7 +2410,6 @@
 		</section>
 
 		<section class="view" id="view-integration" hidden>
-			<h2>Integration</h2>
 			<div class="tab-bar">
 				<button type="button" class="tab-button active" data-tab="pkg-build-config">Build</button>
 				<button type="button" class="tab-button" data-tab="packages">Local Packages</button>
@@ -2566,7 +2543,6 @@
 		</section>
 
 		<section class="view" id="view-deployment" hidden>
-			<h2>Deployment</h2>
 			<div class="tab-bar">
 				<button type="button" class="tab-button active" data-tab="update">Update</button>
 				<button type="button" class="tab-button" data-tab="reconcile">Reconcile</button>
@@ -2614,7 +2590,6 @@
 		</div>
 		</section>
 		<section class="view" id="view-volume-detail" hidden>
-			<h2 id="vd-title"></h2>
 			<table class="detail-table"><tbody id="vd-fields"></tbody></table>
 			<h3>Owner</h3>
 			<p class="hint" id="vd-owner-note"></p>
@@ -2727,6 +2702,9 @@
 		
 	</div>
 
+	
+	</main>
+
 	<div id="log-panel">
 		<div id="log-panel-resize-handle" class="resize-handle resize-handle-h" title="Drag to resize"></div>
 		<div class="log-panel-header" id="log-panel-header">
@@ -2742,7 +2720,6 @@
 		</div>
 		<div id="log-output"></div>
 	</div>
-	</main>
 </div>
 
 <footer id="status-bar" class="status-bar">

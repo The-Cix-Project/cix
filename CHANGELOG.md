@@ -2,6 +2,25 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Refresh artefacts, reclaimed space, and a log that spans the window
+
+**Nothing re-renders unless its data changed.** Every view renderer runs on the poll loop, and most cleared their table and rebuilt it from scratch each time — identical rows, every couple of seconds. That is not free: it drops text selection, resets scroll inside the table, restarts hover state, and makes a busy page visibly churn. `dataChanged()` compares the DATA rather than diffing the DOM — one `JSON.stringify` against a value already in hand, and a page whose data has not changed has nothing to say.
+
+Two pages were unusable rather than merely busy:
+
+- **Processes** blanked its whole table to "Loading…" *before* every fetch, every two seconds. It also should never have been polling: its own design was fetch-on-demand, because a real process table changes faster than a person can read it. That intent was undone when the renderers moved to `onPageOf()`; it now fetches on arrival and on its own Refresh button. "Loading" belongs to a panel that has never had content, not to every refresh of one that has.
+- **Services** cleared its table *before* awaiting the request, so the panel sat empty for the length of every poll.
+
+**Processes is legible now**: the four numeric columns take only the width they need with tabular figures, and the command is one ellipsised line with the full text on hover — a wrapped cmdline made every row a different height.
+
+**The log panel spans the whole window.** It is about the whole system and had been sitting inside `<main>` — the content column — so it started at the tree's right edge no matter what the CSS said, because it was never a grid item of `.layout` at all.
+
+**No page carries a title any more** (25 removed). The underlined tree row already says where you are; repeating it as a heading cost a line of vertical space on every page to say what the screen already said. The storage detail page keeps its subtitle, because "Partition of vda — part of the fixed OS layout" is a fact the tree does not carry, and the "(not found)" cases moved into the field area rather than being lost.
+
+**The current row's underline is dotted, 1px, and belongs to one row.** `renderTreeActive()` marked every ancestor `active`, which was right when active meant bold — but an underline means "you are here", and drawing it on Host as well as Control Plane said it twice about two different rows. `active` is now the path, `current` is the destination.
+
+**Storage's first tab is Overview**, not a second copy of the page's own name.
+
 ### The dashboard says when it is stale, and the active row is marked
 
 **A version skew indicator.** The status bar's `Cix vX.Y.Z` is now a control: always clickable to reload, and copper + bold when this page's assets are older than the daemon answering them, with a tooltip naming both builds. The page's own build is *derived*, never stamped -- these assets were served by the daemon that answered the first `/system/boot` of the page's life, so the first version seen is the version now running; a later answer that differs means the daemon moved and the page did not. Nothing has to be kept in step for it to stay true.

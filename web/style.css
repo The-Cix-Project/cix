@@ -783,8 +783,33 @@ header {
 .layout {
 	display: grid;
 	grid-template-columns: var(--tree-width, 240px) 1fr;
+	/*
+	 * Two explicit rows: the tree and the content share the first, and
+	 * the log panel spans BOTH columns underneath them. It used to be
+	 * placed automatically, which landed it in the content column and
+	 * left it starting at the tree's right edge -- a log that is about
+	 * the whole system, indented as though it belonged to one pane.
+	 * The status bar below already spans the full width for the same
+	 * reason (issue #45).
+	 */
+	grid-template-rows: minmax(0, 1fr) auto;
 	flex: 1 1 auto;
 	min-height: 0;
+}
+
+.tree-panel {
+	grid-row: 1;
+	grid-column: 1;
+}
+
+main {
+	grid-row: 1;
+	grid-column: 2;
+}
+
+#log-panel {
+	grid-row: 2;
+	grid-column: 1 / -1;
 }
 
 /* issue #45: a genuine full-width status bar, spanning the whole page
@@ -1015,10 +1040,10 @@ header {
  * anchor, so a border on it would draw a rule across the whole panel
  * under a word a third as wide.
  */
-.tree-item.active .tree-label,
-.tree-category.active .tree-label {
-	border-bottom: 2px solid var(--accent);
-	padding-bottom: 1px;
+.tree-item.current .tree-label,
+.tree-category.current .tree-label {
+	border-bottom: 1px dotted var(--accent);
+	padding-bottom: 2px;
 }
 
 /* The label is what carries the underline, so it must also be what
@@ -1542,9 +1567,34 @@ table {
 	border-collapse: collapse;
 }
 
+/*
+ * A process table is five short numeric columns and one long string.
+ * Left to itself the command wraps to three lines and every number
+ * column stretches to fit a header, so a hundred rows scroll for
+ * pages. Numbers get tabular figures and only the width they need;
+ * the command keeps one line and says the rest on hover.
+ */
+#processes td:nth-child(-n+4),
+#processes th:nth-child(-n+4) {
+	width: 1%;
+	white-space: nowrap;
+	font-variant-numeric: tabular-nums;
+	text-align: right;
+	padding-right: 1rem;
+}
+
+#processes tbody tr:hover {
+	background: var(--tree-active-bg);
+}
+
 .processes-cmdline {
-	max-width: 32rem;
-	overflow-wrap: break-word;
+	max-width: 0;
+	width: 100%;
+	/* One line, ellipsised, full text on hover -- a wrapped cmdline
+	   makes every row a different height and the table unscannable. */
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 	font-family: "JetBrains Mono", "DejaVu Sans Mono", ui-monospace, SFMono-Regular, Menlo,
 		Consolas, "Liberation Mono", monospace;
 	font-size: 0.85rem;
