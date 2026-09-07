@@ -2,6 +2,34 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### A direct-rootfs container could not open any device node (#173, on the other path)
+
+`ntp-1`/`ntp-2` came back from a reboot crash-looping on `Fatal error : Could not
+open /dev/urandom : Permission denied`, while the six containers beside them ran.
+They are this platform's only `userns: false` workloads, which is what made them
+the only ones affected — and the reason is not the device policy.
+
+`container_dev_bpf_attach()` returns early when a container declares no devices,
+so ntp has no ADR-0017 program at all. `EPERM` on a node that is present and mode
+0666 means the **mount** refuses it: `boot_init()` mounts the containers partition
+`MS_NOSUID|MS_NODEV`, correct hardening for the host, and ADR-0207 phase 2
+replaced this path's overlay with a **self-bind of that partition**, which
+inherits its flags.
+
+This is #173 exactly, on the path that fix's own comment ruled out: *"Non-userns
+containers never hit it because OverlayFS is a fresh mount inheriting nothing."*
+True when non-userns meant overlay. The nodev clear now runs beside the direct
+path's own bind, and that comment says what it is really claiming.
+
+`stat()` succeeds on a nodev mount and only `open()` fails, which is why nothing
+saw it: the nodes were all present, all mode 0666. `daemon_child` takes an
+optional device path to open (purely additive — every existing caller passes at
+most two arguments), and `test_direct_rootfs` asserts a direct-rootfs container
+can open `/dev/urandom`. Whether that *reproduces* the bug depends on the test
+host — it bites only when the filesystem backing the data directory is itself
+nodev — so the live proof is on a real host, where the containers partition
+always is.
+
 ### `-lpthread` links again: the finalize policy does not reach an empty archive (#324)
 
 `btop` failed with `ld: cannot find -lpthread`, and it was not a btop problem. The

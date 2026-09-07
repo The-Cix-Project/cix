@@ -510,6 +510,75 @@ int main(void)
 	 * strip the pinned key from the persisted file (exactly what a
 	 * pre-upgrade file looks like), set the default to true, restart.
 	 */
+	/*
+	 * A direct-rootfs container can OPEN a device node, not merely see
+	 * one.
+	 *
+	 * ADR-0207 phase 2 replaced this path's overlay with a self-bind of
+	 * the containers partition, which boot_init() mounts
+	 * MS_NOSUID|MS_NODEV -- correct hardening for the host, and
+	 * inherited by every bind of it. Every node in the image was then
+	 * present and mode 0666 and unopenable, which is #173 again on the
+	 * path that fix's own comment said could never need it. chronyd
+	 * found it live: ntp-1/ntp-2 are this platform's only userns:false
+	 * workloads, so they are the only containers taking this path, and
+	 * they crash-looped on "Could not open /dev/urandom : Permission
+	 * denied" while six userns containers beside them ran.
+	 *
+	 * open(), never stat(): a nodev mount answers stat() perfectly and
+	 * refuses only the open, which is exactly why this went unseen.
+	 *
+	 * Whether this REPRODUCES the bug depends on the test host: it bites
+	 * only when the filesystem backing the data directory is itself
+	 * mounted nodev, and the assertion is correct either way. The live
+	 * proof is on a real host, where the containers partition always is.
+	 */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "POST", "/v1/containers",
+	                       "{\"name\":\"dt4\",\"image\":\"dtest\","
+	                       "\"cmd\":[\"/bin/daemon_child\",\"0\",\"0\",\"/dev/urandom\"],"
+	                       "\"capture_output\":true,\"restart\":\"no\"}",
+	                       &r) != 0 ||
+	    r.status != 201) {
+		fprintf(stderr, "FAIL: create dt4, status=%d\n", r.status);
+		failures++;
+	}
+	cix_response_free(&r);
+	{
+		int i, code = -1;
+		char said[256];
+
+		said[0] = '\0';
+		for (i = 0; i < 50; i++) {
+			const char *st_field = NULL;
+
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/containers/dt4", NULL, &r) == 0 &&
+			    r.json != NULL) {
+				const struct json_value *jes;
+
+				st_field = json_str_field(r.json, "status");
+				jes = json_object_get(r.json, "exit_status");
+				if (st_field != NULL && strcmp(st_field, "exited") == 0 &&
+				    jes != NULL && jes->type == JSON_NUMBER) {
+					const char *cap = json_str_field(r.json, "captured_output");
+
+					code = (int)jes->u.number;
+					snprintf(said, sizeof(said), "%s", cap != NULL ? cap : "");
+					cix_response_free(&r);
+					break;
+				}
+			}
+			cix_response_free(&r);
+			usleep(200000);
+		}
+		if (said[0] != '\0')
+			printf("  dt4 said: %s", said);
+		CHECK(code == 0,
+		      "a direct-rootfs container can open /dev/urandom -- 91 means the node is "
+		      "there and the mount is nodev (#173 on the direct path)");
+	}
+
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"dt3\",\"image\":\"dtest\","

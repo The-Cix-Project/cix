@@ -393,8 +393,12 @@ int container_create(const struct container_spec *spec, struct container_handle 
 		 * The effect was that a userns container could open NO device
 		 * node at all: not /dev/null, not /dev/zero, read or write,
 		 * with every node present at mode 0666 and correctly mapped to
-		 * container-root. Non-userns containers never hit it because
-		 * OverlayFS is a fresh mount inheriting nothing.
+		 * container-root. A non-userns container on the OVERLAY path
+		 * never hits it -- OverlayFS is a fresh mount inheriting
+		 * nothing -- but one on ADR-0207 phase 2's direct-rootfs path
+		 * does, because that self-binds the containers partition and a
+		 * bind inherits its flags. That case is cleared beside its own
+		 * bind, in the child; see there.
 		 *
 		 * Done HERE, right after open_tree, rather than beside the
 		 * MOUNT_ATTR_IDMAP call below, because that call only runs for
@@ -596,6 +600,48 @@ int container_create(const struct container_spec *spec, struct container_handle 
 			if (mount(spec->ov.merged, spec->ov.merged, NULL, MS_BIND, NULL) != 0) {
 				child_diag(diag_pipe[1], "child: bind direct rootfs");
 				_exit(123);
+			}
+			/*
+			 * ...and clear nodev on it, for the same reason the
+			 * userns path clears it after open_tree (#173) and by
+			 * the same argument.
+			 *
+			 * That fix's own comment says non-userns containers
+			 * never need this "because OverlayFS is a fresh mount
+			 * inheriting nothing". True when non-userns meant
+			 * overlay; ADR-0207 phase 2 made it a BIND of the
+			 * containers partition, which boot_init() mounts
+			 * MS_NOSUID|MS_NODEV -- correct hardening for the host,
+			 * inherited by every bind of it. So a direct-rootfs
+			 * container could not open ANY device node: not
+			 * /dev/null, not /dev/urandom, read or write, with
+			 * every node present and mode 0666.
+			 *
+			 * chronyd found it -- ntp-1/ntp-2 are the platform's
+			 * only userns:false workloads, so they are the only
+			 * containers that take this path at all, and they
+			 * crash-looped on "Could not open /dev/urandom :
+			 * Permission denied" while the six userns containers
+			 * beside them ran.
+			 *
+			 * Rootfs device nodes are deliberate content:
+			 * pkg_seed_image_baseline() stages null, zero, full,
+			 * random, urandom and ptmx into every image. What a
+			 * container may DO with a device stays enforced by the
+			 * BPF_CGROUP_DEVICE allow-list (ADR-0017), which is the
+			 * real control and is untouched by this.
+			 */
+			{
+				struct cix_mount_attr devattr;
+
+				memset(&devattr, 0, sizeof(devattr));
+				devattr.attr_clr = MOUNT_ATTR_NODEV;
+				if (cix_mount_setattr(AT_FDCWD, spec->ov.merged, 0,
+				                      &devattr) != 0) {
+					child_diag(diag_pipe[1],
+					           "child: mount_setattr(clear nodev) on direct rootfs");
+					_exit(123);
+				}
 			}
 		}
 		if (!spec->userns_enabled && !spec->ov.direct_rootfs) {

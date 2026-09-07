@@ -24,8 +24,11 @@
  * daemon sends it from the ancestor namespace -- that path is covered
  * live, not here.)
  */
+#include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/prctl.h>
 #include <unistd.h>
 
@@ -33,6 +36,30 @@ int main(int argc, char **argv)
 {
 	int sleep_s = argc > 1 ? atoi(argv[1]) : 0;
 	int code = argc > 2 ? atoi(argv[2]) : 5;
+
+	/*
+	 * argv[3] (optional): a device node to open before anything else,
+	 * exiting 91 if it cannot be. Purely additive -- every existing
+	 * caller passes at most two arguments and is unaffected.
+	 *
+	 * It exists because a container's rootfs can carry a device node
+	 * that is present, mode 0666, and still unopenable: a mount marked
+	 * nodev refuses it with EACCES/EPERM rather than ENOENT. That is
+	 * #173 on the userns path, and it returned on ADR-0207 phase 2's
+	 * direct-rootfs path, which binds the containers partition and
+	 * inherits its nodev. Only an open() finds it -- stat() succeeds
+	 * either way, which is exactly why it stayed invisible.
+	 */
+	if (argc > 3) {
+		int fd = open(argv[3], O_RDONLY);
+
+		if (fd < 0) {
+			fprintf(stderr, "daemon_child: open(%s): %s\n", argv[3], strerror(errno));
+			return 91;
+		}
+		close(fd);
+		fprintf(stderr, "daemon_child: open(%s) ok\n", argv[3]);
+	}
 
 	if (sleep_s > 0)
 		sleep((unsigned int)sleep_s);
