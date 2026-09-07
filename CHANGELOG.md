@@ -2,6 +2,16 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Installer media reports and budgets its own size
+
+The squashfs was investigated and is **not the problem**: `mksquashfs` already deduplicates. Measured directly — default 18.26 MiB against `-no-duplicates` 26.54 MiB, and the shipped one is 18.25 MiB, so it is already at its content floor for 55.52 MiB of unique bytes.
+
+It *does* carry a real defect worth recording: the control-plane root has **zero symlinks** and 30.93 MiB of duplicate content, because the staging primitive is a plain `open()`/`read()`/`write()` that materialises every `libfoo.so → .so.5 → .so.5.8.3` chain as full copies (`liblzma` appears four times, `libcrypto` three). squashfs dedups it on disk, so this costs almost nothing in shipped bytes — it is an ABI-shape problem, not a size one, and it is not fixed here.
+
+**What is fixed is that nobody was counting.** `mkinstalleriso` now prints a per-component size breakdown on every build — the seed, the squashfs, the kernel, the installer's own closure — and cixd already captures its stdout into the log store, so every ISO build leaves a queryable record of where its bytes went. Pulling the artifact apart by hand was previously the only way to look, which is why three separate regressions each went unnoticed for weeks.
+
+**`MEDIA_BUDGET_MIB` (96) fails the build when the media exceeds it**, printing the breakdown. Raising it is expected — a kernel bump is real growth — but it is a deliberate edit someone reviews, never something that happens to an artifact while nobody counts. Same device as `test_toolchain_policy`'s asserted count: the per-component line catches drift, the budget catches the disaster.
+
 ### The seed carries one recipe version per package, not the whole store
 
 11.9 MiB of the installer's 12.8 MiB recipe tree was superseded revisions — **94%**, including 302 revisions of `cix` alone — on media a fresh box boots once.
