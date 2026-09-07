@@ -2445,6 +2445,16 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 223 (done): the Pipeline's stages split by what they do, not what they hold
+
+`Artifacts` becomes **Integration**. Pipeline keeps Overview / Errors / Rolling Restart; **Catalogue** takes Package Recipes / Image Recipes / Container Recipes / Repo & Sync; **Integration** takes Build / Local Packages / Local Images / Remote Cache; Deployment is unchanged.
+
+**The three recipe kinds were a tab bar inside a tab bar** -- three clicks deep from the tree, so the catalogue's own three subjects were the least reachable thing on the page. Promoted to page-level tabs, which also makes each a real address (`#pkg-recipes`, `#image-recipes`, `#container-recipes`). `#recipes` still resolves to the page so no bookmark breaks.
+
+The previous shape split the middle stage by artifact *type* -- packages and images on one page, the cache on another -- which separated "the packages on this box" from "the cache they came from" and left what produced both elsewhere again. Splitting by what the stage does puts each answer next to the question that leads to it.
+
+Verified: `test_web_tree`'s three gates pass (tree destinations reach real tabs, every page-level tab is an address, `index.html` is well-formed); all 32 sandbox-runnable static selftests pass; every one of the 14 affected routes lands on the right section with the right tab active, checked headlessly, including the legacy `#recipes`.
+
 ## Part 222 (done): the Pipeline is a branch, and three navigation gates
 
 Pipeline becomes a selectable tree group with three stage pages under it -- **Catalogue** (Recipes/Packages/Images), **Artifacts**, **Deployment** (Update/Reconcile) -- and its own tabs are Overview, **Errors**, Repo & Sync, Package Builds, Rolling Restart. Errors is not a second table: the Overview's "needs attention" list was always the non-ok rows, so it moved to the tab that names it. This is the one place in the tree where a child is a *subject* rather than a live thing on the box, and it is deliberate -- an operator asking "where did this stop?" is asking about a stage.

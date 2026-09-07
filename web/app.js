@@ -1443,14 +1443,21 @@ const CATEGORY_VIEWS = {
 	"pki-ca": "view-pki-ca",
 	"pki-intermediate": "view-pki-ca",
 	"pki-certs": "view-pki-ca",
+	/* The three recipe kinds were sub-tabs inside one "Recipes" tab;
+	 * they are page-level tabs now, so each is a real address. The
+	 * old #recipes still lands on the page (with its first tab) so a
+	 * bookmark does not break -- it just no longer names a tab. */
 	recipes: "view-catalogue",
+	"pkg-recipes": "view-catalogue",
+	"image-recipes": "view-catalogue",
+	"container-recipes": "view-catalogue",
 	pipeline: "view-pipeline",
 	"pipeline-errors": "view-pipeline",
 	"site": "view-host",
 	"daemon-config": "view-control-plane",
 	"host-swap": "view-storage",
 	"rolling-restart": "view-pipeline",
-	"pkg-build-config": "view-pipeline",
+	"pkg-build-config": "view-integration",
 	"hostauth-sessions": "view-host",
 	"host-stats": "view-host",
 	processes: "view-host",
@@ -1474,10 +1481,10 @@ const CATEGORY_VIEWS = {
 	 * addresses still resolve to it (with the right tab showing) --
 	 * #images/{name} is unaffected, since DETAIL_VIEWS is consulted
 	 * first whenever a route carries a name. */
-	images: "view-catalogue",
-	packages: "view-catalogue",
-	"pkg-repo": "view-pipeline",
-	"pkg-cache": "view-artifacts",
+	images: "view-integration",
+	packages: "view-integration",
+	"pkg-repo": "view-catalogue",
+	"pkg-cache": "view-integration",
 	"factory-reset": "view-host",
 	"storage-placement": "view-storage",
 	"backup": "view-storage",
@@ -1674,14 +1681,15 @@ function renderCurrentView() {
 		 * tabs show, because a tab is switched without navigating and a
 		 * panel that renders only when addressed sits on "Loading".
 		 */
-		if (onPageOf("pipeline"))
-			refreshBuildLogs();
-		if (onPageOf("recipes")) {
-			renderImages(cache.images);
-			renderPackagesView(null);
+		if (onPageOf("pkg-recipes")) {
 			renderRecipesList();
 			renderImageRecipesTable();
 			renderContainerRecipesTable();
+		}
+		if (onPageOf("pkg-build-config")) {
+			refreshBuildLogs();
+			renderPackagesView(null);
+			renderImages(cache.images);
 		}
 		if (onPageOf("update"))
 			refreshSoftwareReconcile();
@@ -2246,8 +2254,8 @@ function renderTree() {
 			hash: "pipeline",
 			icon: "software",
 			children: [
-				{ label: "Catalogue", hash: "recipes", icon: "recipes" },
-				{ label: "Artifacts", hash: "pkg-cache", icon: "packages" },
+				{ label: "Catalogue", hash: "pkg-recipes", icon: "recipes" },
+				{ label: "Integration", hash: "pkg-build-config", icon: "packages" },
 				{ label: "Deployment", hash: "update", icon: "update" },
 			],
 		},
@@ -12444,11 +12452,12 @@ const VIEW_REFRESHERS = {
 	pipeline: [refreshPipeline],
 	"pipeline-errors": [refreshPipeline],
 	reconcile: [refreshImages, refreshPkgList],
-	images: [refreshImages, refreshPkgRecipes, refreshImageRecipesList, refreshContainerRecipesList,
-	         refreshPkgList],
-	recipes: [refreshPkgRecipes, refreshImageRecipesList, refreshContainerRecipesList,
-	          refreshImages, refreshPkgList],
-	packages: [refreshPkgList, refreshImages, refreshPkgRecipes],
+	images: [refreshImages, refreshPkgList],
+	recipes: [refreshPkgRecipes, refreshImageRecipesList, refreshContainerRecipesList],
+	"pkg-recipes": [refreshPkgRecipes, refreshImageRecipesList, refreshContainerRecipesList],
+	"image-recipes": [refreshImageRecipesList, refreshPkgRecipes, refreshContainerRecipesList],
+	"container-recipes": [refreshContainerRecipesList, refreshPkgRecipes, refreshImageRecipesList],
+	packages: [refreshPkgList, refreshImages],
 	"pkg-repo": [refreshPkgRepoConfig, refreshPkgSyncStatus],
 	"pkg-cache": [refreshPkgCacheConfig, refreshPkgCacheStatus, refreshPkgArtifactConfig],
 	"pkg-build-config": [refreshPkgBuildConfig],

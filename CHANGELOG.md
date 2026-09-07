@@ -2,6 +2,25 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### The Pipeline's stages split by what they do, not what they hold
+
+`Artifacts` becomes **Integration**, and the middle stage stops being a place where things are *kept* and becomes the place where they are *made*:
+
+| Page | Tabs |
+|---|---|
+| **Pipeline** | Overview, Errors, Rolling Restart |
+| **Catalogue** | Package Recipes, Image Recipes, Container Recipes, Repo & Sync |
+| **Integration** | Build, Local Packages, Local Images, Remote Cache |
+| **Deployment** | Update, Reconcile |
+
+**The three recipe kinds are page-level tabs now.** They were sub-tabs *inside* a single "Recipes" tab -- a tab bar within a tab bar, three clicks deep from the tree -- so the catalogue's own three subjects were the least reachable thing on the page. Each is a real address now (`#pkg-recipes`, `#image-recipes`, `#container-recipes`); `#recipes` still resolves to the page so no bookmark breaks, it simply no longer names a tab.
+
+**Repo & Sync joins Catalogue**, because where a declaration arrives from belongs with the declarations, not with the machinery that builds them. **Package Builds becomes Integration > Build**, next to what it produces.
+
+The previous split was by artifact *type*: a Catalogue holding packages and images, an Artifacts page holding the cache. That put "the packages on this box" and "the cache they came from" on separate pages while the thing that produced both sat somewhere else again. Splitting by what the stage *does* -- declare, integrate, deploy -- puts each answer next to the question that leads to it.
+
+No API change: every page here was already backed by endpoints and still is.
+
 ### The Pipeline is a branch, and two navigation gates that would have caught the drift
 
 **Pipeline becomes a selectable group** with its own overview and three stage pages under it: **Catalogue** (Recipes / Packages / Images), **Artifacts**, **Deployment** (Update / Reconcile). Its own tabs are Overview, **Errors**, Repo & Sync, Package Builds and Rolling Restart. This is the one place in the tree where a child is a *subject* rather than a live thing on the box, and that is deliberate: an operator asking "where did this stop?" is asking about a stage.
