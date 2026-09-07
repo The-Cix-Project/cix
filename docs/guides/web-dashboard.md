@@ -121,7 +121,7 @@ Container leaves are colored by live status (running/paused/stopped -- tinted ic
 
 None of this changes the API. Every page here was already backed by endpoints and still is; the tree is navigation, and reorganising it neither adds nor removes a capability. Where a page's own address changed, the old address still resolves -- to the right tab -- rather than breaking a bookmark.
 
-## Disks in the tree, and right-click actions
+## Storage in the tree, and right-click actions
 
 Disks are top-level, and the tree mirrors the real shape of the box: every disk is a node, every partition hangs under the disk it belongs to, and every volume hangs under the device that actually holds it.
 

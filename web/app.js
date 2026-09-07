@@ -474,9 +474,16 @@ function positionMenu(toggle, menu) {
 	menu.style.left = Math.max(8, t.left + pad) + "px";
 	menu.style.top = t.bottom + 5 + "px";
 
+	/*
+	 * Flipped to hang off the trigger's RIGHT edge when a left-aligned
+	 * panel would run past the window. `pad` is ADDED back here rather
+	 * than subtracted again: on this edge it is the panel's own right
+	 * inset that has to line up, and subtracting a negative pad pushed
+	 * the panel out past the trigger by those same few pixels.
+	 */
 	const m = menu.getBoundingClientRect();
 	if (m.right > window.innerWidth - 8)
-		menu.style.left = Math.max(8, t.right - m.width - pad) + "px";
+		menu.style.left = Math.max(8, t.right - m.width + pad) + "px";
 }
 
 for (const dropdown of document.querySelectorAll(".menu-dropdown")) {
