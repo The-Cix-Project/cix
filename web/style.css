@@ -39,7 +39,11 @@
 	/* Chrome heights, so the menu bar, status bar and panel headers
 	 * agree with each other instead of each being whatever its padding
 	 * happened to produce. */
-	--h-menubar: 56px;
+	/* 42px, down from 56px -- the bar was taking more of a dense
+	 * console's vertical space than a menu needs. The triggers'
+	 * own padding was cut to match, so the row still sizes from
+	 * this token rather than pressing against it. */
+	--h-menubar: 42px;
 	--h-statusbar: 28px;
 	--h-panel-header: 40px;
 
@@ -366,7 +370,7 @@ header {
 	color: var(--text);
 	border: none;
 	border-radius: 6px;
-	padding: 0.5rem 0.7rem;
+	padding: 0.32rem 0.65rem;
 	font-size: 0.85rem;
 	white-space: nowrap;
 	cursor: pointer;
@@ -385,7 +389,7 @@ header {
 .menu-dropdown-toggle-logo {
 	display: flex;
 	align-items: center;
-	padding: 0.4rem 0.7rem;
+	padding: 0.22rem 0.65rem;
 }
 
 

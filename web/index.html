@@ -76,6 +76,16 @@
 		</div>
 
 		<div class="menu-dropdown">
+			<button type="button" class="menu-dropdown-toggle" data-menu="pipeline">Pipeline</button>
+			<ul class="menu-dropdown-menu" data-menu="pipeline" hidden>
+				<li><button type="button" data-modal="image-form" data-title="Create image">New Image</button></li>
+				<li><button type="button" data-modal="pkg-install-form" data-title="Install a package">Install Package</button></li>
+				<li><button type="button" data-modal="pkg-recipe-form" data-title="Add or update a recipe">New/Update Recipe</button></li>
+				<li><button type="button" data-modal="pkg-bootstrap-form" data-title="Bootstrap build image">Bootstrap Build Image</button></li>
+			</ul>
+		</div>
+
+		<div class="menu-dropdown">
 			<button type="button" class="menu-dropdown-toggle" data-menu="services">Services</button>
 			<ul class="menu-dropdown-menu" data-menu="services" hidden>
 				<li class="menu-submenu">
@@ -125,15 +135,6 @@
 		<div class="menu-dropdown">
 			<button type="button" class="menu-dropdown-toggle" data-menu="system">Host</button>
 			<ul class="menu-dropdown-menu" data-menu="system" hidden>
-				<li class="menu-submenu">
-					<button type="button" class="menu-submenu-toggle" aria-haspopup="true" aria-expanded="false">Pipeline</button>
-					<ul class="menu-submenu-menu" hidden>
-						<li><button type="button" data-modal="image-form" data-title="Create image">New Image</button></li>
-						<li><button type="button" data-modal="pkg-install-form" data-title="Install a package">Install Package</button></li>
-						<li><button type="button" data-modal="pkg-recipe-form" data-title="Add or update a recipe">New/Update Recipe</button></li>
-						<li><button type="button" data-modal="pkg-bootstrap-form" data-title="Bootstrap build image">Bootstrap Build Image</button></li>
-					</ul>
-				</li>
 				<li class="menu-submenu">
 					<button type="button" class="menu-submenu-toggle" aria-haspopup="true" aria-expanded="false">Daemon</button>
 					<ul class="menu-submenu-menu" hidden>
@@ -1339,9 +1340,9 @@
 			<div class="tab-bar">
 				<button type="button" class="tab-button active" data-tab="kernel-policy">Kernel Line</button>
 				<button type="button" class="tab-button" data-tab="sysctl">Sysctl</button>
-				<button type="button" class="tab-button" data-tab="boot-console">Boot Console</button>
+				
 				<button type="button" class="tab-button" data-tab="kmsg">Kernel Log</button>
-							<button type="button" class="tab-button" data-tab="esp">Boot Slots</button>
+							
 			</div>
 <div class="tab-panel" data-tab="kernel-policy">
 			<div class="view-list">
@@ -1393,43 +1394,7 @@
 				</table>
 			</div>
 			</div>
-<div class="tab-panel" data-tab="boot-console" hidden>
-			<div class="view-list">
-				<p class="hint">
-					What this machine's own boot line says about consoles (issue #24). An installed
-					host boots through systemd-boot, and its loader entries carried a fixed
-					<code>console=tty0 console=ttyS0</code> &mdash; fine as a default, and impossible
-					to change without reinstalling. Real hardware sometimes needs a serial console at
-					a particular baud, a framebuffer argument to produce any output at all, or
-					exactly the opposite (<code>nomodeset</code>) when the framebuffer is the problem.
-				</p>
-				<p class="hint">
-					Saving rewrites the loader entries already on the ESP, so it takes effect at the
-					<strong>next boot</strong> rather than at the next A/B update. Everything from
-					<code>root=</code> onward is left exactly as it was: that half of the line decides
-					whether the machine boots at all, and is not editable here.
-				</p>
-				<form id="bcf-form">
-					<label class="wide">
-						Consoles (space separated, in order &mdash; e.g. <code>tty0 ttyS0,115200n8</code>)
-						<input type="text" id="bcf-consoles" placeholder="tty0 ttyS0">
-					</label>
-					<label class="wide">
-						Extra kernel parameters (e.g. <code>nomodeset video=efifb:off</code>)
-						<input type="text" id="bcf-extra" placeholder="">
-					</label>
-					<button type="submit">Save</button>
-				</form>
-				<h3>In effect</h3>
-				<table class="detail-table"><tbody id="bcf-effect"></tbody></table>
-				<table id="boot-entries">
-					<thead><tr><th>Loader entry</th><th>options</th></tr></thead>
-					<tbody id="boot-entries-body">
-						<tr><td colspan="2" class="empty">Loading&hellip;</td></tr>
-					</tbody>
-				</table>
-			</div>
-		</div>
+
 <div class="tab-panel" data-tab="kmsg" hidden hidden>
 			<div class="view-list">
 				<p class="hint">The kernel's own ring buffer (<code>/dev/kmsg</code>) &mdash; dmesg over REST. This is where mount failures, driver probes and OOM kills surface, and on a real installed host with no shell it is the only way to read them. Distinct from the Log Store, which carries <code>cixd</code>'s own diagnostics and the audit trail.</p>
@@ -1444,65 +1409,7 @@
 			</div>
 		
 			</div>
-<div class="tab-panel" data-tab="esp" hidden>
-			<div class="view-list">
-				<h2>Boot Entries (ESP)</h2>
-				<p class="hint">
-					What this machine will actually boot next, and why. <strong>Will boot</strong>
-					is computed the way systemd-boot itself chooses: entries whose boot counter has
-					run out sort last, then by <code>sort-key</code> and <code>version</code>
-					descending &mdash; so a freshly staged update outranks an older entry whatever
-					its slot letter (ADR-0202).
-				</p>
-				<p class="hint">
-					<strong>Default is a glob pattern, not a name.</strong> That is what made a real
-					host reboot into the image it was already running, repeatedly, with no error
-					anywhere: a stale <code>thinc-*</code> written at install time went on matching
-					six obsolete entries and outranking every correctly staged one (issue #128).
-					Leave it as <code>cix-*</code> unless you have a specific reason &mdash; pinning
-					it to one slot breaks the <em>next</em> update, which stages the other one.
-				</p>
-				<div id="esp-summary" class="pki-ca-status"><p>Loading&hellip;</p></div>
-				<p class="hint">
-					<strong>Boot a slot once.</strong> The rollback control: it applies to the
-					next boot only and then reverts to normal selection, so a machine that
-					fails to come back is not left pinned to a broken slot. Use this to steer
-					one boot; use the default pattern below to fix a persistent mistake
-					(issue #154).
-				</p>
-				<div id="esp-boot-next-row">
-					<span id="esp-boot-next-state">&nbsp;</span>
-					<button type="button" id="esp-boot-next-a">Boot slot A once</button>
-					<button type="button" id="esp-boot-next-b">Boot slot B once</button>
-					<button type="button" id="esp-boot-next-clear">Disarm</button>
-				</div>
-				<form id="esp-loader-form">
-					<label class="wide">
-						Default pattern
-						<input type="text" id="esp-default" placeholder="cix-*">
-					</label>
-					<label class="wide">
-						Menu timeout (seconds)
-						<input type="number" id="esp-timeout" min="0" max="600">
-					</label>
-					<button type="submit">Save</button>
-				</form>
-				<table id="esp-entries">
-					<thead>
-						<tr>
-							<th>Entry</th>
-							<th>Title</th>
-							<th>Matches default</th>
-							<th>Running slot</th>
-							<th></th>
-						</tr>
-					</thead>
-					<tbody id="esp-entries-body">
-						<tr><td colspan="5" class="empty">Loading&hellip;</td></tr>
-					</tbody>
-				</table>
-			</div>
-		</div>
+
 		</section>
 
 
@@ -1928,16 +1835,17 @@
 			<h2>Pipeline</h2>
 			<div class="tab-bar">
 				<button type="button" class="tab-button active" data-tab="pipeline">Overview</button>
+				<button type="button" class="tab-button" data-tab="pipeline-errors">Errors</button>
 				<button type="button" class="tab-button" data-tab="pkg-repo">Repo &amp; Sync</button>
-				<button type="button" class="tab-button" data-tab="packages">Packages</button>
-				<button type="button" class="tab-button" data-tab="images">Images</button>
-				<button type="button" class="tab-button" data-tab="reconcile">Reconcile</button>
-				<button type="button" class="tab-button" data-tab="update">Update</button>
-				<button type="button" class="tab-button" data-tab="recipes">Recipes</button>
+				
+				
+				
+				
+				
 				<button type="button" class="tab-button" data-tab="pkg-build-config">Package Builds</button>
-				<button type="button" class="tab-button" data-tab="pkg-cache">Cache &amp; Artifacts</button>
+				
 				<button type="button" class="tab-button" data-tab="rolling-restart">Rolling Restart</button>
-				<button type="button" class="tab-button" data-tab="signing-keys">Signing Keys</button>
+				
 			</div>
 <div class="tab-panel" data-tab="pipeline">
 			
@@ -1947,9 +1855,15 @@
 			</p>
 			<div id="pipeline-flow" class="pipeline-flow"></div>
 			<div id="pipeline-deploy" class="pipeline-deploy"></div>
-			<h3>Needs attention</h3>
+			<p id="pipeline-summary" class="hint"></p>
+			</div>
+<div class="tab-panel" data-tab="pipeline-errors" hidden>
 			<p class="hint">
-				Packages that are blocked, failed or cancelled. A package sitting at
+				Every package whose pipeline is not clean, and the stage it stopped
+				at. A package sitting at <code>not-implemented</code> is not a
+				problem &mdash; it means this platform performs that stage by hand,
+				so it is not listed here.
+			</p>
 				<code>not-implemented</code> is not a problem &mdash; it means this platform
 				performs that stage by hand.
 			</p>
@@ -1966,8 +1880,8 @@
 				</thead>
 				<tbody id="pipeline-rows"></tbody>
 			</table>
-			<p id="pipeline-summary" class="hint"></p>
-			</div>
+		</div>
+
 <div class="tab-panel" data-tab="pkg-repo" hidden>
 			<h2>Package Repo &amp; Sync</h2>
 			<p class="hint">
@@ -2012,159 +1926,11 @@
 			<div id="pkg-sync-status-box" class="pki-ca-status"></div>
 			<button type="button" id="pkg-sync-now">Sync now</button>
 		</div>
-<div class="tab-panel" data-tab="packages" hidden>
-			<div class="view-list">
-				<p class="hint">What's actually installed, on which image, right now -- one row per real
-					installation. For the recipe catalog itself (add/edit/delete a buildable definition),
-					see Recipes.</p>
-				<table id="packages">
-					<thead>
-						<tr>
-							<th>Name</th>
-							<th>Image</th>
-							<th>Version</th>
-							<th>State</th>
-							<th></th>
-						</tr>
-					</thead>
-					<tbody id="packages-body">
-						<tr><td colspan="5" class="empty">Loading&hellip;</td></tr>
-					</tbody>
-				</table>
-			</div>
-		</div>
-<div class="tab-panel" data-tab="images" hidden>
-			<div class="view-list">
-				<p class="hint">Every package install leaves an immutable image version behind
-					(ADR-0107/0108), and a container pins the version it was created with. Reclaim
-					removes only versions that nothing references &mdash; never an image's current
-					version, and never one a container or a stored container definition still points
-					at. Preview first: it lists what would go without touching anything.</p>
-				<div class="form-row">
-					<button type="button" id="images-gc-preview">Preview reclaimable&hellip;</button>
-					<button type="button" id="images-gc" class="button-danger">Reclaim unused versions</button>
-				</div>
-				<div id="images-gc-status" class="pki-ca-status" hidden></div>
-				<table id="images">
-					<thead>
-						<tr>
-							<th>Name</th>
-							<th></th>
-						</tr>
-					</thead>
-					<tbody id="images-body">
-						<tr><td colspan="2" class="empty">Loading&hellip;</td></tr>
-					</tbody>
-				</table>
-			</div>
-		</div>
-<div class="tab-panel" data-tab="reconcile" hidden>
-				<div class="view-list">
-					<h2>Declared vs installed</h2>
-					<p class="hint">What has a recipe, against what is actually here. The row that matters is
-						<strong>installed with no recipe</strong>: it cannot be rebuilt from source control,
-						which on a platform whose premise is "reproducible from source" is exactly the state
-						worth seeing. Either capture a recipe for it, or it is debris. The reverse &mdash; a
-						recipe nobody has applied &mdash; is harmless but worth knowing.</p>
-					<p class="hint" id="sw-summary"></p>
-					<table id="sw-table">
-						<thead><tr><th>Name</th><th>Kind</th><th>Recipe</th><th>Installed</th></tr></thead>
-						<tbody id="sw-body"></tbody>
-					</table>
-				</div>
-			</div>
-<div class="tab-panel" data-tab="update" hidden>
-			<form id="sys-update-form">
-				<label class="wide">
-					Control-plane image path (optional, local to this daemon's host)
-					<input type="text" id="sys-update-image" placeholder="/path/to/cixd-root.squashfs">
-				</label>
-				<label class="wide">
-					Kernel path (optional, local to this daemon's host)
-					<input type="text" id="sys-update-kernel" placeholder="/path/to/bzImage">
-				</label>
-				<button type="submit">Stage update</button>
-			</form>
-			<p class="hint">Writes to the inactive A/B slot. Does not reboot -- reboot separately once
-				ready to cut over.</p>
-		</div>
-<div class="tab-panel" data-tab="recipes" hidden>
-			<div class="view-list">
-				<p class="hint">Three git-syncable recipe kinds (ADR-0040/ADR-0123/ADR-0151), one catalog:
-					<strong>Packages</strong> build one piece of software from source; <strong>Images</strong>
-					declare a whole package manifest for an image in one shot; <strong>Containers</strong>
-					capture a full, reproducible container definition (cmd/files/network/restart) that
-					creates a real container when applied.</p>
-				<div class="tab-bar">
-					<button type="button" class="tab-button active" data-tab="pkg-recipes" id="recipes-tab-pkg">Packages</button>
-					<button type="button" class="tab-button" data-tab="image-recipes" id="recipes-tab-image">Images</button>
-					<button type="button" class="tab-button" data-tab="container-recipes" id="recipes-tab-container">Containers</button>
-				</div>
 
-				<div class="tab-panel" id="recipes-panel-pkg" data-tab="pkg-recipes">
-					<div class="list-toolbar">
-						<input type="search" id="recipes-pkg-search" placeholder="Search package recipes by name&hellip;">
-						<button type="button" id="recipes-pkg-add">Add recipe&hellip;</button>
-					</div>
-					<table id="recipes">
-						<thead>
-							<tr>
-								<th>Name</th>
-								<th>Version</th>
-								<th>Depends</th>
-								<th></th>
-							</tr>
-						</thead>
-						<tbody id="recipes-body">
-							<tr><td colspan="4" class="empty">Loading&hellip;</td></tr>
-						</tbody>
-					</table>
-				</div>
 
-				<div class="tab-panel" id="recipes-panel-image" data-tab="image-recipes" hidden>
-					<div class="list-toolbar">
-						<input type="search" id="recipes-image-search" placeholder="Search image recipes by name&hellip;">
-						<button type="button" id="recipes-image-add">Add recipe&hellip;</button>
-					</div>
-					<p class="hint">A recipe's own name is always its target image's name (1:1, ADR-0123) --
-						applying bulk-declares that image's manifest (or, for a fully-pinned recipe with a
-						matching artifact server, fetches one whole-rootfs tarball).</p>
-					<table id="image-recipes">
-						<thead>
-							<tr>
-								<th>Image</th>
-								<th></th>
-							</tr>
-						</thead>
-						<tbody id="image-recipes-body">
-							<tr><td colspan="2" class="empty">Loading&hellip;</td></tr>
-						</tbody>
-					</table>
-				</div>
 
-				<div class="tab-panel" id="recipes-panel-container" data-tab="container-recipes" hidden>
-					<div class="list-toolbar">
-						<input type="search" id="recipes-container-search" placeholder="Search container recipes by name&hellip;">
-						<button type="button" id="recipes-container-add">Add recipe&hellip;</button>
-					</div>
-					<p class="hint">A recipe's own name is always the container it creates (ADR-0151) --
-						content is a real <code>POST /containers</code> body; applying creates that
-						container. A recipe may embed <code>{{SECRET:KEY}}</code> tokens in staged file
-						content -- supply real values only at apply time, never committed to git.</p>
-					<table id="container-recipes">
-						<thead>
-							<tr>
-								<th>Name</th>
-								<th></th>
-							</tr>
-						</thead>
-						<tbody id="container-recipes-body">
-							<tr><td colspan="2" class="empty">Loading&hellip;</td></tr>
-						</tbody>
-					</table>
-				</div>
-			</div>
-		</div>
+
+
 <div class="tab-panel" data-tab="pkg-build-config" hidden>
 			<form id="pbc-form">
 				<label>
@@ -2204,45 +1970,7 @@
 			<p class="hint">Issue #85: these are an <strong>aggregate</strong> budget, carried by one parent cgroup every build container is a leaf of -- not a per-build ceiling. A per-build number is not a budget: with max concurrent jobs at 10 it silently meant ten times what it said, and on a real 2-CPU box four concurrent builds at 1.5 CPU each demanded 6 CPUs, starved the daemon off the run queue and took the machine out of reach entirely. Whatever this says is now what all builds together can use.</p>
 			<p class="hint">ADR-0165 (superseded in shape by the above): the memory/CPU ceiling applied to build containers -- the same cgroup mechanism a regular container's own <code>--memory-max=</code>/<code>--cpu-max=</code> already uses. Found missing the hard way: a burst of concurrent installs with no ceiling hung a real box's daemon entirely. CPU quota is microseconds of CPU time per 100000-microsecond period -- "100000 100000" is one full CPU's worth, "50000 100000" is half a CPU.</p>
 		</div>
-<div class="tab-panel" data-tab="pkg-cache" hidden>
-			<h2>Package Cache &amp; Artifacts</h2>
-			<p class="hint">
-				Tier 1: a local build-artifact cache (LRU-evicted, keyed by name+version) that skips a
-				real rebuild on a repeat install. Tier 2: an optional plain-HTTP precompiled-artifact
-				server, checked before falling back to source, verified against the recipe's own
-				<code>pkg_artifact_sha256</code> before being trusted. Both distinct from the recipe
-				repo (<a href="#pkg-repo">Repo &amp; Sync</a>) -- recipes stay in git, compiled binaries
-				never do.
-			</p>
-			<h3>Cache</h3>
-			<div id="pkg-cache-status-box" class="pki-ca-status"></div>
-			<form id="pcc-form">
-				<label>
-					Max size (bytes)
-					<input type="number" id="pcc-max-bytes" min="0">
-				</label>
-				<button type="submit">Save</button>
-			</form>
-			<button type="button" id="pkg-cache-clear" class="button-danger">Clear cache</button>
 
-			<h3>Artifact server</h3>
-			<div id="pkg-artifact-status-box" class="pki-ca-status"></div>
-			<form id="pac-form">
-				<label class="wide">
-					Base URL
-					<input type="text" id="pac-base-url" placeholder="http://artifacts.example.com/cix">
-				</label>
-				<label>
-					Auth token (blank = unchanged)
-					<input type="password" id="pac-token" placeholder="(unchanged)">
-				</label>
-				<label class="checkbox">
-					<input type="checkbox" id="pac-clear-token">
-					Clear token
-				</label>
-				<button type="submit">Save</button>
-			</form>
-		</div>
 
 <div class="tab-panel" data-tab="rolling-restart" hidden>
 			<form id="rc-form">
@@ -2254,88 +1982,7 @@
 			</form>
 			<p class="hint">Part 5, ADR-0124: when a rolling image auto-rebuilds, every <code>follow_rolling</code> container on it gets a uniformly-random restart delay up to this window, spreading the restarts out instead of killing them all in the same instant. 0 disables jitter (restart immediately).</p>
 		</div>
-<div class="tab-panel" data-tab="signing-keys" hidden>
-			<div class="view-list">
-				<h2>Secure Boot Signing Keys</h2>
-				<p class="hint">
-					The key pair this host signs installer media with. <strong>Building an ISO
-					 needs it</strong> &mdash; without it <code>POST /system/iso</code> refuses,
-					naming this as the missing input.
-				</p>
-				<p class="hint">
-					ADR-0064 originally required this to be placed here out of band, comparing it
-					to a file already <code>scp</code>'d onto the box. A real Cix host runs no
-					sshd and has no console, so there was never a way to do that &mdash; which
-					meant ISO assembly could not actually run on any installed machine. Pasting
-					the pair in is that missing transport (ADR-0212).
-				</p>
-				<p class="hint">
-					<strong>Install this on the one host that cuts media, not on every box.</strong>
-					A release-signing private key on every machine means any single machine's
-					compromise leaks the fleet's Secure Boot identity. Only the public
-					<code>.cer</code> is ever staged onto an installed target, for MOK enrolment.
-				</p>
-				<div id="signing-keys-summary" class="pki-ca-status"><p>Loading&hellip;</p></div>
-				<h3>Install a key pair</h3>
-				<p class="hint">
-					Paste both PEM blocks. The DER <code>.cer</code> that <code>mokutil</code>
-					needs is derived from the certificate here, so there is no third thing to
-					keep in step. The certificate is checked against the private key before
-					anything is written: a mismatched pair is refused outright rather than
-					discovered later as an image that signs cleanly and then will not boot.
-				</p>
-				<form id="signing-keys-form">
-					<label class="wide">
-						Private key (PEM)
-						<textarea id="signing-key-pem" rows="8" spellcheck="false"
-							placeholder="-----BEGIN PRIVATE KEY-----"></textarea>
-					</label>
-					<label class="wide">
-						Certificate (PEM)
-						<textarea id="signing-cert-pem" rows="8" spellcheck="false"
-							placeholder="-----BEGIN CERTIFICATE-----"></textarea>
-					</label>
-					<button type="submit">Install key pair</button>
-					<button type="button" id="signing-keys-clear" class="button-danger">Remove from this host</button>
-				</form>
 
-				<h2>Release Signing Key</h2>
-				<p class="hint">
-					A <strong>separate</strong> key, and deliberately so (ADR-0220). The pair
-					above is RSA because UEFI mandates RSA, and answers &ldquo;may this firmware
-					boot this image?&rdquo; This one is Ed25519 because
-					<code>minisign</code> mandates Ed25519, and answers &ldquo;did Cix publish
-					these bytes?&rdquo; One key for both would mean whoever can sign a download
-					can also sign a bootloader &mdash; and the two have very different blast
-					radii: republishing a public key, versus re-enrolling firmware on every host.
-				</p>
-				<p class="hint">
-					Installer ISOs built here are signed with it. Anyone who downloads one
-					verifies with stock <code>minisign</code> against the public key below
-					&mdash; no Cix software required on their side, which is the point: the last
-					check between a substituted ISO and a machine should not be code from the
-					project that produced the ISO.
-				</p>
-				<div id="release-key-summary" class="pki-ca-status"><p>Loading&hellip;</p></div>
-				<h3>Install a release key</h3>
-				<p class="hint">
-					Generate one with
-					<code>openssl genpkey -algorithm ed25519</code> and paste it here. The key is
-					validated by deriving its public half before anything is written, so an RSA
-					key &mdash; the realistic mistake, given the pair sitting right above &mdash;
-					is refused now rather than at signing time on a real release.
-				</p>
-				<form id="release-key-form">
-					<label class="wide">
-						Ed25519 private key (PEM)
-						<textarea id="release-key-pem" rows="5" spellcheck="false"
-							placeholder="-----BEGIN PRIVATE KEY-----"></textarea>
-					</label>
-					<button type="submit">Install release key</button>
-					<button type="button" id="release-key-clear" class="button-danger">Remove from this host</button>
-				</form>
-			</div>
-			</div>
 		</section>
 
 		
@@ -2528,6 +2175,405 @@
 		
 
 		<!-- One volume: where its data lives, who mounts it, and moving it. -->
+		<section class="view" id="view-bootloader" hidden>
+			<h2>Bootloader</h2>
+			<div class="tab-bar">
+				<button type="button" class="tab-button active" data-tab="esp">Boot Slots</button>
+				<button type="button" class="tab-button" data-tab="signing-keys">Signing Keys</button>
+				<button type="button" class="tab-button" data-tab="boot-console">Boot Console</button>
+			</div>
+<div class="tab-panel" data-tab="esp">
+			<div class="view-list">
+				<h2>Boot Entries (ESP)</h2>
+				<p class="hint">
+					What this machine will actually boot next, and why. <strong>Will boot</strong>
+					is computed the way systemd-boot itself chooses: entries whose boot counter has
+					run out sort last, then by <code>sort-key</code> and <code>version</code>
+					descending &mdash; so a freshly staged update outranks an older entry whatever
+					its slot letter (ADR-0202).
+				</p>
+				<p class="hint">
+					<strong>Default is a glob pattern, not a name.</strong> That is what made a real
+					host reboot into the image it was already running, repeatedly, with no error
+					anywhere: a stale <code>thinc-*</code> written at install time went on matching
+					six obsolete entries and outranking every correctly staged one (issue #128).
+					Leave it as <code>cix-*</code> unless you have a specific reason &mdash; pinning
+					it to one slot breaks the <em>next</em> update, which stages the other one.
+				</p>
+				<div id="esp-summary" class="pki-ca-status"><p>Loading&hellip;</p></div>
+				<p class="hint">
+					<strong>Boot a slot once.</strong> The rollback control: it applies to the
+					next boot only and then reverts to normal selection, so a machine that
+					fails to come back is not left pinned to a broken slot. Use this to steer
+					one boot; use the default pattern below to fix a persistent mistake
+					(issue #154).
+				</p>
+				<div id="esp-boot-next-row">
+					<span id="esp-boot-next-state">&nbsp;</span>
+					<button type="button" id="esp-boot-next-a">Boot slot A once</button>
+					<button type="button" id="esp-boot-next-b">Boot slot B once</button>
+					<button type="button" id="esp-boot-next-clear">Disarm</button>
+				</div>
+				<form id="esp-loader-form">
+					<label class="wide">
+						Default pattern
+						<input type="text" id="esp-default" placeholder="cix-*">
+					</label>
+					<label class="wide">
+						Menu timeout (seconds)
+						<input type="number" id="esp-timeout" min="0" max="600">
+					</label>
+					<button type="submit">Save</button>
+				</form>
+				<table id="esp-entries">
+					<thead>
+						<tr>
+							<th>Entry</th>
+							<th>Title</th>
+							<th>Matches default</th>
+							<th>Running slot</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody id="esp-entries-body">
+						<tr><td colspan="5" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+			</div>
+		</div>
+<div class="tab-panel" data-tab="signing-keys" hidden>
+			<div class="view-list">
+				<h2>Secure Boot Signing Keys</h2>
+				<p class="hint">
+					The key pair this host signs installer media with. <strong>Building an ISO
+					 needs it</strong> &mdash; without it <code>POST /system/iso</code> refuses,
+					naming this as the missing input.
+				</p>
+				<p class="hint">
+					ADR-0064 originally required this to be placed here out of band, comparing it
+					to a file already <code>scp</code>'d onto the box. A real Cix host runs no
+					sshd and has no console, so there was never a way to do that &mdash; which
+					meant ISO assembly could not actually run on any installed machine. Pasting
+					the pair in is that missing transport (ADR-0212).
+				</p>
+				<p class="hint">
+					<strong>Install this on the one host that cuts media, not on every box.</strong>
+					A release-signing private key on every machine means any single machine's
+					compromise leaks the fleet's Secure Boot identity. Only the public
+					<code>.cer</code> is ever staged onto an installed target, for MOK enrolment.
+				</p>
+				<div id="signing-keys-summary" class="pki-ca-status"><p>Loading&hellip;</p></div>
+				<h3>Install a key pair</h3>
+				<p class="hint">
+					Paste both PEM blocks. The DER <code>.cer</code> that <code>mokutil</code>
+					needs is derived from the certificate here, so there is no third thing to
+					keep in step. The certificate is checked against the private key before
+					anything is written: a mismatched pair is refused outright rather than
+					discovered later as an image that signs cleanly and then will not boot.
+				</p>
+				<form id="signing-keys-form">
+					<label class="wide">
+						Private key (PEM)
+						<textarea id="signing-key-pem" rows="8" spellcheck="false"
+							placeholder="-----BEGIN PRIVATE KEY-----"></textarea>
+					</label>
+					<label class="wide">
+						Certificate (PEM)
+						<textarea id="signing-cert-pem" rows="8" spellcheck="false"
+							placeholder="-----BEGIN CERTIFICATE-----"></textarea>
+					</label>
+					<button type="submit">Install key pair</button>
+					<button type="button" id="signing-keys-clear" class="button-danger">Remove from this host</button>
+				</form>
+
+				<h2>Release Signing Key</h2>
+				<p class="hint">
+					A <strong>separate</strong> key, and deliberately so (ADR-0220). The pair
+					above is RSA because UEFI mandates RSA, and answers &ldquo;may this firmware
+					boot this image?&rdquo; This one is Ed25519 because
+					<code>minisign</code> mandates Ed25519, and answers &ldquo;did Cix publish
+					these bytes?&rdquo; One key for both would mean whoever can sign a download
+					can also sign a bootloader &mdash; and the two have very different blast
+					radii: republishing a public key, versus re-enrolling firmware on every host.
+				</p>
+				<p class="hint">
+					Installer ISOs built here are signed with it. Anyone who downloads one
+					verifies with stock <code>minisign</code> against the public key below
+					&mdash; no Cix software required on their side, which is the point: the last
+					check between a substituted ISO and a machine should not be code from the
+					project that produced the ISO.
+				</p>
+				<div id="release-key-summary" class="pki-ca-status"><p>Loading&hellip;</p></div>
+				<h3>Install a release key</h3>
+				<p class="hint">
+					Generate one with
+					<code>openssl genpkey -algorithm ed25519</code> and paste it here. The key is
+					validated by deriving its public half before anything is written, so an RSA
+					key &mdash; the realistic mistake, given the pair sitting right above &mdash;
+					is refused now rather than at signing time on a real release.
+				</p>
+				<form id="release-key-form">
+					<label class="wide">
+						Ed25519 private key (PEM)
+						<textarea id="release-key-pem" rows="5" spellcheck="false"
+							placeholder="-----BEGIN PRIVATE KEY-----"></textarea>
+					</label>
+					<button type="submit">Install release key</button>
+					<button type="button" id="release-key-clear" class="button-danger">Remove from this host</button>
+				</form>
+			</div>
+			</div>
+<div class="tab-panel" data-tab="boot-console" hidden>
+			<div class="view-list">
+				<p class="hint">
+					What this machine's own boot line says about consoles (issue #24). An installed
+					host boots through systemd-boot, and its loader entries carried a fixed
+					<code>console=tty0 console=ttyS0</code> &mdash; fine as a default, and impossible
+					to change without reinstalling. Real hardware sometimes needs a serial console at
+					a particular baud, a framebuffer argument to produce any output at all, or
+					exactly the opposite (<code>nomodeset</code>) when the framebuffer is the problem.
+				</p>
+				<p class="hint">
+					Saving rewrites the loader entries already on the ESP, so it takes effect at the
+					<strong>next boot</strong> rather than at the next A/B update. Everything from
+					<code>root=</code> onward is left exactly as it was: that half of the line decides
+					whether the machine boots at all, and is not editable here.
+				</p>
+				<form id="bcf-form">
+					<label class="wide">
+						Consoles (space separated, in order &mdash; e.g. <code>tty0 ttyS0,115200n8</code>)
+						<input type="text" id="bcf-consoles" placeholder="tty0 ttyS0">
+					</label>
+					<label class="wide">
+						Extra kernel parameters (e.g. <code>nomodeset video=efifb:off</code>)
+						<input type="text" id="bcf-extra" placeholder="">
+					</label>
+					<button type="submit">Save</button>
+				</form>
+				<h3>In effect</h3>
+				<table class="detail-table"><tbody id="bcf-effect"></tbody></table>
+				<table id="boot-entries">
+					<thead><tr><th>Loader entry</th><th>options</th></tr></thead>
+					<tbody id="boot-entries-body">
+						<tr><td colspan="2" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+			</div>
+		</div>
+		</section>
+		<section class="view" id="view-catalogue" hidden>
+			<h2>Catalogue</h2>
+			<div class="tab-bar">
+				<button type="button" class="tab-button active" data-tab="recipes">Recipes</button>
+				<button type="button" class="tab-button" data-tab="packages">Packages</button>
+				<button type="button" class="tab-button" data-tab="images">Images</button>
+			</div>
+<div class="tab-panel" data-tab="recipes">
+			<div class="view-list">
+				<p class="hint">Three git-syncable recipe kinds (ADR-0040/ADR-0123/ADR-0151), one catalog:
+					<strong>Packages</strong> build one piece of software from source; <strong>Images</strong>
+					declare a whole package manifest for an image in one shot; <strong>Containers</strong>
+					capture a full, reproducible container definition (cmd/files/network/restart) that
+					creates a real container when applied.</p>
+				<div class="tab-bar">
+					<button type="button" class="tab-button active" data-tab="pkg-recipes" id="recipes-tab-pkg">Packages</button>
+					<button type="button" class="tab-button" data-tab="image-recipes" id="recipes-tab-image">Images</button>
+					<button type="button" class="tab-button" data-tab="container-recipes" id="recipes-tab-container">Containers</button>
+				</div>
+
+				<div class="tab-panel" id="recipes-panel-pkg" data-tab="pkg-recipes">
+					<div class="list-toolbar">
+						<input type="search" id="recipes-pkg-search" placeholder="Search package recipes by name&hellip;">
+						<button type="button" id="recipes-pkg-add">Add recipe&hellip;</button>
+					</div>
+					<table id="recipes">
+						<thead>
+							<tr>
+								<th>Name</th>
+								<th>Version</th>
+								<th>Depends</th>
+								<th></th>
+							</tr>
+						</thead>
+						<tbody id="recipes-body">
+							<tr><td colspan="4" class="empty">Loading&hellip;</td></tr>
+						</tbody>
+					</table>
+				</div>
+
+				<div class="tab-panel" id="recipes-panel-image" data-tab="image-recipes" hidden>
+					<div class="list-toolbar">
+						<input type="search" id="recipes-image-search" placeholder="Search image recipes by name&hellip;">
+						<button type="button" id="recipes-image-add">Add recipe&hellip;</button>
+					</div>
+					<p class="hint">A recipe's own name is always its target image's name (1:1, ADR-0123) --
+						applying bulk-declares that image's manifest (or, for a fully-pinned recipe with a
+						matching artifact server, fetches one whole-rootfs tarball).</p>
+					<table id="image-recipes">
+						<thead>
+							<tr>
+								<th>Image</th>
+								<th></th>
+							</tr>
+						</thead>
+						<tbody id="image-recipes-body">
+							<tr><td colspan="2" class="empty">Loading&hellip;</td></tr>
+						</tbody>
+					</table>
+				</div>
+
+				<div class="tab-panel" id="recipes-panel-container" data-tab="container-recipes" hidden>
+					<div class="list-toolbar">
+						<input type="search" id="recipes-container-search" placeholder="Search container recipes by name&hellip;">
+						<button type="button" id="recipes-container-add">Add recipe&hellip;</button>
+					</div>
+					<p class="hint">A recipe's own name is always the container it creates (ADR-0151) --
+						content is a real <code>POST /containers</code> body; applying creates that
+						container. A recipe may embed <code>{{SECRET:KEY}}</code> tokens in staged file
+						content -- supply real values only at apply time, never committed to git.</p>
+					<table id="container-recipes">
+						<thead>
+							<tr>
+								<th>Name</th>
+								<th></th>
+							</tr>
+						</thead>
+						<tbody id="container-recipes-body">
+							<tr><td colspan="2" class="empty">Loading&hellip;</td></tr>
+						</tbody>
+					</table>
+				</div>
+			</div>
+		</div>
+<div class="tab-panel" data-tab="packages" hidden>
+			<div class="view-list">
+				<p class="hint">What's actually installed, on which image, right now -- one row per real
+					installation. For the recipe catalog itself (add/edit/delete a buildable definition),
+					see Recipes.</p>
+				<table id="packages">
+					<thead>
+						<tr>
+							<th>Name</th>
+							<th>Image</th>
+							<th>Version</th>
+							<th>State</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody id="packages-body">
+						<tr><td colspan="5" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+			</div>
+		</div>
+<div class="tab-panel" data-tab="images" hidden>
+			<div class="view-list">
+				<p class="hint">Every package install leaves an immutable image version behind
+					(ADR-0107/0108), and a container pins the version it was created with. Reclaim
+					removes only versions that nothing references &mdash; never an image's current
+					version, and never one a container or a stored container definition still points
+					at. Preview first: it lists what would go without touching anything.</p>
+				<div class="form-row">
+					<button type="button" id="images-gc-preview">Preview reclaimable&hellip;</button>
+					<button type="button" id="images-gc" class="button-danger">Reclaim unused versions</button>
+				</div>
+				<div id="images-gc-status" class="pki-ca-status" hidden></div>
+				<table id="images">
+					<thead>
+						<tr>
+							<th>Name</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody id="images-body">
+						<tr><td colspan="2" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+			</div>
+		</div>
+		</section>
+		<section class="view" id="view-artifacts" hidden>
+			<h2>Artifacts</h2>
+			<div class="tab-bar">
+				<button type="button" class="tab-button active" data-tab="pkg-cache">Cache &amp; Artifacts</button>
+			</div>
+<div class="tab-panel" data-tab="pkg-cache">
+			<h2>Package Cache &amp; Artifacts</h2>
+			<p class="hint">
+				Tier 1: a local build-artifact cache (LRU-evicted, keyed by name+version) that skips a
+				real rebuild on a repeat install. Tier 2: an optional plain-HTTP precompiled-artifact
+				server, checked before falling back to source, verified against the recipe's own
+				<code>pkg_artifact_sha256</code> before being trusted. Both distinct from the recipe
+				repo (<a href="#pkg-repo">Repo &amp; Sync</a>) -- recipes stay in git, compiled binaries
+				never do.
+			</p>
+			<h3>Cache</h3>
+			<div id="pkg-cache-status-box" class="pki-ca-status"></div>
+			<form id="pcc-form">
+				<label>
+					Max size (bytes)
+					<input type="number" id="pcc-max-bytes" min="0">
+				</label>
+				<button type="submit">Save</button>
+			</form>
+			<button type="button" id="pkg-cache-clear" class="button-danger">Clear cache</button>
+
+			<h3>Artifact server</h3>
+			<div id="pkg-artifact-status-box" class="pki-ca-status"></div>
+			<form id="pac-form">
+				<label class="wide">
+					Base URL
+					<input type="text" id="pac-base-url" placeholder="http://artifacts.example.com/cix">
+				</label>
+				<label>
+					Auth token (blank = unchanged)
+					<input type="password" id="pac-token" placeholder="(unchanged)">
+				</label>
+				<label class="checkbox">
+					<input type="checkbox" id="pac-clear-token">
+					Clear token
+				</label>
+				<button type="submit">Save</button>
+			</form>
+		</div>
+		</section>
+		<section class="view" id="view-deployment" hidden>
+			<h2>Deployment</h2>
+			<div class="tab-bar">
+				<button type="button" class="tab-button active" data-tab="update">Update</button>
+				<button type="button" class="tab-button" data-tab="reconcile">Reconcile</button>
+			</div>
+<div class="tab-panel" data-tab="update">
+			<form id="sys-update-form">
+				<label class="wide">
+					Control-plane image path (optional, local to this daemon's host)
+					<input type="text" id="sys-update-image" placeholder="/path/to/cixd-root.squashfs">
+				</label>
+				<label class="wide">
+					Kernel path (optional, local to this daemon's host)
+					<input type="text" id="sys-update-kernel" placeholder="/path/to/bzImage">
+				</label>
+				<button type="submit">Stage update</button>
+			</form>
+			<p class="hint">Writes to the inactive A/B slot. Does not reboot -- reboot separately once
+				ready to cut over.</p>
+		</div>
+<div class="tab-panel" data-tab="reconcile" hidden>
+				<div class="view-list">
+					<h2>Declared vs installed</h2>
+					<p class="hint">What has a recipe, against what is actually here. The row that matters is
+						<strong>installed with no recipe</strong>: it cannot be rebuilt from source control,
+						which on a platform whose premise is "reproducible from source" is exactly the state
+						worth seeing. Either capture a recipe for it, or it is debris. The reverse &mdash; a
+						recipe nobody has applied &mdash; is harmless but worth knowing.</p>
+					<p class="hint" id="sw-summary"></p>
+					<table id="sw-table">
+						<thead><tr><th>Name</th><th>Kind</th><th>Recipe</th><th>Installed</th></tr></thead>
+						<tbody id="sw-body"></tbody>
+					</table>
+				</div>
+			</div>
+		</section>
 		<section class="view" id="view-volume-detail" hidden>
 			<h2 id="vd-title"></h2>
 			<table class="detail-table"><tbody id="vd-fields"></tbody></table>

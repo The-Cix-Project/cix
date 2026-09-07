@@ -2,6 +2,27 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### The Pipeline is a branch, and two navigation gates that would have caught the drift
+
+**Pipeline becomes a selectable group** with its own overview and three stage pages under it: **Catalogue** (Recipes / Packages / Images), **Artifacts**, **Deployment** (Update / Reconcile). Its own tabs are Overview, **Errors**, Repo & Sync, Package Builds and Rolling Restart. This is the one place in the tree where a child is a *subject* rather than a live thing on the box, and that is deliberate: an operator asking "where did this stop?" is asking about a stage.
+
+Errors is not a second table — the Overview's "needs attention" list was always the non-ok rows, so it moved to the tab that names it, leaving Overview as the stage flow, deploy state and summary line.
+
+**Boot Slots and Signing Keys leave Kernel for a new Bootloader page under Host**, joined by Boot Console. Neither is about the kernel: a slot is what the bootloader picks, a key is what it will accept, and the console is the record of what that choice produced. Kernel keeps Kernel Line / Sysctl / Kernel Log.
+
+**Three sources of truth collapsed into one.** `SERVICE_TAB_VIEWS` was a hand-kept second copy of `CATEGORY_VIEWS` naming, for every tab-shaped address, the page it sat on — and `selectCatalogueTab()`/`selectServiceTab()` were the same function twice, one of them hardcoded to `view-pipeline`. Both facts are already available: the page is `CATEGORY_VIEWS`' answer, and whether an address is a tab at all is a question that page's own tab bar answers by having a button for it. One `selectTabFor()` replaces all three, which is what made moving ten tabs between five pages a pure HTML edit.
+
+**The "Loading…" defect's fourth and last location.** `renderCurrentView()` still ended in a route-based `else if` chain for fourteen renderers — the same mistake as the three fixed before it: comparing *routes* where the thing that matters is the *page*. Measured against the live v2.54.0 with a headless DOM sweep of every route: **12 of 56 routes had a panel stuck on "Loading…"** (`view-host` on six of them, `view-control-plane` on two, `view-pipeline` on three). All fourteen are now independent `onPageOf()` checks; only the two detail-page renderers stay route-based, because a name in the address means a different section.
+
+**Two new gates in `test_web_tree`, each proven by reintroducing the bug it exists for:**
+
+- **Every page-level tab must be an address.** The existing checks walk the *tree*, so they only ever see tabs the tree names. Pipeline > Reconcile had no `CATEGORY_VIEWS` entry at all — reachable by clicking, never by URL, and nothing said so. Detail-page tabs (a container's Summary/Console) are explicitly exempt: they belong to one container, not to a hash.
+- **The menu bar's topics are the tree's top-level names, in the tree's order.** ADR-0184's stated rule, ungated until now — and already drifted: the tree called Pipeline top-level while the bar had it as a submenu two levels down inside Host. Pipeline is now a top-level menu, and the bar reads Containers / Networks / Storage / Pipeline / Services / Host on both surfaces.
+
+**Header trimmed 56px -> 42px** (25%), triggers' padding cut to match so the row still sizes from the `--h-menubar` token rather than pressing against it. Dropdown panels now align with the trigger's own **label** rather than its box — both paddings read from the live computed style, so the words stay aligned if either changes.
+
+`docs/guides/web-dashboard.md` was rewritten against the shipped tree: its map, its "why", its menu-bar table, and **21 stale page paths** (`System > Monitoring > …`, `Software > Build Pipeline > …`, `Maintenance > Backup`) naming folders this tree no longer has.
+
 ### The resource is Storage, not disks (ADR-0258)
 
 `/v1/disks` -> `/v1/storage`, `/v1/diskroles` -> `/v1/storage-roles`, `{"disks":[...]}` -> `{"storage":[...]}`, `listDisks` -> `listStorage`, schema `Disk` -> `StorageDevice`. Twelve endpoints, a clean cut with no aliases.
