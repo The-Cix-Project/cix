@@ -10,11 +10,12 @@
 # package is only half of it: this image PINS its versions, so a
 # materialize would put the old bytes straight back.
 #
-# btrfs-progs stays pinned at 7.1-10 deliberately. 7.1-11 exists and
-# does not build: it links -lpthread through gcc and the installed
-# glibc ships no libpthread.a (#324). Pinning the version that works
-# is not a workaround here -- it is the accurate statement of what
-# this image can currently contain.
+# btrfs-progs moves to 7.1-11 as well. It could not build when this
+# revision was first drafted -- it links -lpthread through gcc and the
+# installed glibc shipped no libpthread.a -- and glibc 2.44-16 restored
+# those member-less archives (#324), after which 7.1-11 built on the
+# first attempt. mkfs.btrfs was 80% debug and is the single largest
+# piece of the 3.93 MiB this set of rebuilds exists to remove.
 #
 #
 # cix-hosttools -- the binaries the daemon itself execve()s on the host,
@@ -53,4 +54,4 @@
 # approved artifact must be BUILT, and a host assembling its first
 # control plane has nothing to build with.
 #
-image_packages="glibc:pinned:2.44-14 bash:pinned:5.2.37-5 btrfs-progs:pinned:7.1-10 bzip2:pinned:1.0.8-4 coreutils:pinned:9.11-7 curl:pinned:8.21.0-4 gzip:pinned:1.13-4 openssl:pinned:3.0.20-6 perl:pinned:5.40.1-7 squashfs-tools:pinned:4.7.5-12 tar:pinned:1.35-6 xz:pinned:5.8.3-8 zlib:pinned:1.3.2-10"
+image_packages="glibc:pinned:2.44-14 bash:pinned:5.2.37-5 btrfs-progs:pinned:7.1-11 bzip2:pinned:1.0.8-4 coreutils:pinned:9.11-7 curl:pinned:8.21.0-4 gzip:pinned:1.13-4 openssl:pinned:3.0.20-6 perl:pinned:5.40.1-7 squashfs-tools:pinned:4.7.5-12 tar:pinned:1.35-6 xz:pinned:5.8.3-8 zlib:pinned:1.3.2-10"
