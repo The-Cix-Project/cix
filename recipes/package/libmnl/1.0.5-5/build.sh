@@ -22,6 +22,7 @@ pkg_name="libmnl"
 pkg_version="1.0.5-5"
 pkg_source="https://www.netfilter.org/projects/libmnl/files/libmnl-1.0.5.tar.bz2"
 pkg_sha256="274b9b919ef3152bfb3da3a13c950dd60d6e2bcd54230ffeca298d03b40d0525"
+pkg_artifact_sha256="8510081b45084c637d40ce1b6da7f812ade3ce17c747843bc354f85e656b75ad"
 pkg_depends=""
 #
 # The autotools baseline (docs/guides/writing-recipes.md). libmnl is a

@@ -1,0 +1,48 @@
+{
+  "name": "cr-1",
+  "image": "router",
+  "cmd": [
+    "/usr/sbin/keepalived",
+    "-n",
+    "-l",
+    "-D",
+    "-P",
+    "-f",
+    "/etc/keepalived/keepalived.conf",
+    "-p",
+    "/run/keepalived.pid",
+    "-r",
+    "/run/vrrp.pid"
+  ],
+  "capture_output": true,
+  "ip_forward": true,
+  "networks": [
+    {
+      "name": "management",
+      "ip": "192.168.15.101"
+    },
+    {
+      "name": "services",
+      "ip": "192.168.150.253"
+    }
+  ],
+  "restart": "always",
+  "restart_delay_seconds": 2,
+  "files": [
+    {
+      "path": "/etc/keepalived/keepalived.conf",
+      "mode": "0644",
+      "content": "# cr-1 -- VRRP for the services subnet's floating gateway.\n#\n# One instance, on eth1 (the services side). eth0 faces management and\n# carries no virtual address: the pair is highly available for traffic\n# LEAVING the services subnet, which is what a default gateway is for.\n# Traffic entering from management names cr-1 or cr-2 directly.\n#\n# No authentication block. VRRPv2's shared password is not a security\n# control -- RFC 5798 dropped it precisely because it authenticates\n# nothing against an attacker who can already inject on the segment --\n# and this segment is a private bridge with no host address on it.\n# Writing one here would look like a control without being one.\n#\n# preempt is left at its default (on): cr-1 is the designated master by\n# priority and takes the address back when it returns, so steady state\n# is always the same router, which is the state anything debugging this\n# will assume.\nglobal_defs {\n    router_id cr-1\n}\n\nvrrp_instance services_gw {\n    state MASTER\n    interface eth1\n    virtual_router_id 150\n    priority 200\n    advert_int 1\n    virtual_ipaddress {\n        192.168.150.254/24 dev eth1\n    }\n}\n"
+    },
+    {
+      "path": "/etc/passwd",
+      "mode": "0644",
+      "content": "root:x:0:0:root:/root:/usr/bin/bash\n"
+    },
+    {
+      "path": "/etc/group",
+      "mode": "0644",
+      "content": "root:x:0:\n"
+    }
+  ]
+}
