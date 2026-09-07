@@ -2,6 +2,19 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### A container's overlay is unmounted on every teardown, not only on delete
+
+`overlay_create()` mounts `container_base/merged` once per incarnation, and only DELETE ever unmounted it. A stop, a crash or a restart left the mount live — so the next incarnation's `overlay_create()`, on the **same** upperdir and workdir, was a second live mount on them:
+
+```
+overlayfs: upperdir is in-use as upperdir/workdir of another mount,
+           accessing files from both mounts will result in undefined behavior
+```
+
+which means exactly what it says. It is also a leak: a container that crash-restarts N times leaves N overlay mounts behind, unbounded. The reported instance came in pairs, each beside a fresh veth, three inside one second — a fast restart loop, one remount per round.
+
+`unmount_container_overlay()` now runs on every path that ends an incarnation: delete, stop, and the unprompted-exit path before the restart timer is armed. A deliberately kept build container (ADR-0175) is the one exception — it is preserved mounted so a failed build can actually be looked at.
+
 ### The control-plane root keeps its symlinks
 
 `mkbootroot` staged the platform's libraries with `stat()`, which **follows** symlinks — so every `libfoo.so -> .so.5 -> .so.5.8.3` chain passed `S_ISREG` and had its *content* copied at each name. The assembled root had **zero symlinks** and 30.93 MiB of duplicate content against 55.52 MiB of unique bytes: `liblzma` four times, `libcrypto` three, `libc` twice.
