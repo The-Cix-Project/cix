@@ -40,9 +40,18 @@ narrow and misleading — nslcd holds the good value, so password and NSS lookup
 work, while sshd's `AuthorizedKeysCommand` searches a nonsense URI and reports
 no keys for the user rather than a broken configuration.
 
-Verified end to end: `svc-nslcd` present with `can_search=yes`, all four tokens
-resolved in the container's rendered config, and OpenSSH_10.4 answering on
+Measured: `svc-nslcd` present with `can_search=yes`, all four tokens resolved in
+the container's rendered config, and OpenSSH_10.4 answering on
 192.168.15.109:22. Fleet is 9 of 9.
+
+One link in that chain is NOT exercised and is not claimed: nslcd inside the
+container actually binding to glauth and resolving an identity. There is no
+account to resolve yet — `svc-nslcd` is the only entry in the directory and its
+shell is `/usr/bin/nologin` — and the console endpoint's `cmd` is a single path
+with no argv, so `getent passwd <name>` cannot be driven through it. This is
+exactly the link that failed silently in #228, where `getent` returned nothing
+while `id` worked, so it deserves a real check once a real account exists rather
+than an inference from correct-looking config.
 
 ### The artifact cache was full of packages nobody was allowed to use (#325)
 
