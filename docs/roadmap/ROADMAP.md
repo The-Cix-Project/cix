@@ -2453,7 +2453,7 @@ Pipeline becomes a selectable tree group with three stage pages under it -- **Ca
 
 **Three sources of truth collapsed into one.** `SERVICE_TAB_VIEWS` was a hand-kept second copy of `CATEGORY_VIEWS`, and `selectCatalogueTab()`/`selectServiceTab()` were the same function twice, one hardcoded to `view-pipeline`. Both facts already existed elsewhere -- the page is `CATEGORY_VIEWS`' answer, and whether an address is a tab is a question that page's own tab bar answers by having a button for it. One `selectTabFor()` replaced all three, which is what made moving ten tabs across five pages a pure HTML edit.
 
-**The route-vs-page defect's fourth and last location.** `renderCurrentView()` still ended in an else-if chain on the route for fourteen renderers. Measured, not assumed: a headless DOM sweep of all 56 routes against the live v2.54.0 found **12 with a panel stuck on "Loading…"**.
+**The route-vs-page defect's fourth and last location.** `renderCurrentView()` still ended in an else-if chain on the route for fourteen renderers. Measured, not assumed: a headless DOM sweep of all 57 routes against the live v2.54.0 found **12 with a panel stuck on "Loading…"**. Re-run against the deployed fix, widened to catch any stuck text rather than only table cells: **0 of 59** (the count moved because this change shipped two addresses that did not exist).
 
 **Three new gates in `test_web_tree`, each proven by reintroducing the bug it exists for:**
 
