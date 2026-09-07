@@ -12,9 +12,18 @@ readable at a glance.
 
 | management 192.168.15.0/24 | services 192.168.150.0/24 (gw .254) |
 |---|---|
-| .101 cr-1, .102 cr-2 | .101 dns-1, .102 dns-2, .103 ldap-1, .104 ldap-2 |
-| .107 syslog-1, .108 syslog-2 | .105 ntp-1, .106 ntp-2, .109 jump |
-| | .253 cr-1, .252 cr-2, **.254 VIP** |
+| .101 cr-1 | .101 dns-1, .102 dns-2, .103 ldap-1, .104 ldap-2 |
+| .102 cr-2 | .105 ntp-1, .106 ntp-2, .107 syslog-1, .108 syslog-2 |
+| | .109 jump, .253 cr-1, .252 cr-2, **.254 VIP** |
+
+syslog-1/-2 followed in 1.1.0, after the rest. They were held back on purpose
+while the argument for keeping them was considered: a log collector behind the
+routers makes log delivery from the management side depend on the component
+whose failures you would most want logged. The owner chose symmetry, and the
+move needed no config change at all -- unlike chrony, syslog.conf carries no
+subnet-scoped ACL, and nothing pointed at the old addresses
+(`GET /v1/syslog/targets` was empty). Management now holds only the two
+routers.
 
 **Almost no new code, because the platform already had the pieces** — which is
 the interesting part. The services network is created with **no host address**,
