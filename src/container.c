@@ -735,16 +735,27 @@ int container_create(const struct container_spec *spec, struct container_handle 
 					child_diag(diag_pipe[1], "child: volume mkdir");
 					_exit(125);
 				}
-				if (spec->userns_enabled && spec->volume_idmap_fds[i] >= 0) {
+				/*
+				 * #322: subscript with THIS loop's own vi, not i.
+				 * `i` is the enclosing function's index, last left
+				 * pointing at spec->cap_add_count by the cap_add scan
+				 * near the top of container_create() -- so a container
+				 * with no cap_add and exactly one volume indexed [0]
+				 * and worked by accident, while any cap_add at all, or
+				 * a second volume, attached the wrong volume's mount
+				 * (or read past volume_count entirely) and closed an
+				 * unrelated descriptor.
+				 */
+				if (spec->userns_enabled && spec->volume_idmap_fds[vi] >= 0) {
 					/* The parent's id-mapped detached tree -- attaching
 					 * it is what makes a host-0-owned volume writable
 					 * by this container's mapped root (ADR-0207 ph3). */
-					if (cix_move_mount(spec->volume_idmap_fds[i], "", -1, target,
+					if (cix_move_mount(spec->volume_idmap_fds[vi], "", -1, target,
 					                  MOVE_MOUNT_F_EMPTY_PATH) != 0) {
 						child_diag(diag_pipe[1], "child: volume move_mount idmap");
 						_exit(125);
 					}
-					close(spec->volume_idmap_fds[i]);
+					close(spec->volume_idmap_fds[vi]);
 				} else if (mount(vol->host_path, target, NULL, MS_BIND | MS_REC, NULL) != 0) {
 					child_diag(diag_pipe[1], "child: volume bind mount");
 					_exit(125);

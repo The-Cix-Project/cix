@@ -203,12 +203,26 @@ static int run_presentation(int idmap, const char *label)
 		return 1;
 	}
 
-	/* A real volume to attach: #266 broke every one of these for a
-	 * userns container, and a volume is the only way to reach that. */
+	/*
+	 * Real volumes to attach: #266 broke every one of these for a userns
+	 * container, and a volume is the only way to reach that.
+	 *
+	 * TWO of them, for #322. The child's volume loop indexed its fd array
+	 * with the enclosing function's `i` rather than its own `vi`, and `i`
+	 * is left holding spec->cap_add_count -- zero for this container --
+	 * so the FIRST volume was attached correctly by coincidence and only
+	 * a second one exposes it (it re-uses the first volume's now-closed
+	 * descriptor and the container dies at "volume move_mount idmap").
+	 */
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/volumes", "{\"name\":\"runvol\"}", &r) != 0 ||
 	    r.status != 201)
 		check(0, "POST /v1/volumes creates the volume this test attaches");
+	cix_response_free(&r);
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "POST", "/v1/volumes", "{\"name\":\"runvol2\"}", &r) != 0 ||
+	    r.status != 201)
+		check(0, "POST /v1/volumes creates the SECOND volume (#322 needs two)");
 	cix_response_free(&r);
 
 	/*
@@ -223,7 +237,8 @@ static int run_presentation(int idmap, const char *label)
 	                              "\"userns\":true,\"capture_output\":true,"
 	                              "\"files\":[{\"path\":\"/etc/staged_probe.conf\","
 	                              "\"content\":\"secret\\n\",\"mode\":\"0600\"}],"
-	                              "\"volumes\":[{\"name\":\"runvol\",\"path\":\"/vol\"}],"
+	                              "\"volumes\":[{\"name\":\"runvol\",\"path\":\"/vol\"},"
+	                              "{\"name\":\"runvol2\",\"path\":\"/vol2\"}],"
 	                              "\"cmd\":[\"/bin/run_child\"]}",
 	                              &r) == 0 &&
 	           r.status == 201);
@@ -256,6 +271,11 @@ static int run_presentation(int idmap, const char *label)
 		         "mode 0600 -- the staged file's ownership landed outside the "
 		         "container's mapped range (#265); stage_container_file()'s "
 		         "id_offset in daemon/src/main.c is what sets this");
+	} else if (status == 125) {
+		check(0, "the container died attaching a VOLUME -- with two volumes this is "
+		         "#322: the child's volume loop subscripts volume_idmap_fds[] with "
+		         "the wrong index (i, left at cap_add_count, instead of vi), so the "
+		         "second volume re-uses the first's closed descriptor");
 	} else if (status == 112) {
 		check(0, "the container died in mountns_pivot -- if this is the id-mapped "
 		         "pass and the errno is EOVERFLOW, this is #321: the child is still "

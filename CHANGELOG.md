@@ -44,6 +44,22 @@ against *both* presentations via a `--test-userns-idmap` daemon flag that makes
 the copy present itself the way a snapshot does. It creates containers, so it is
 not in `SELFTESTS` and gates nothing at release time — it runs on a real host.
 
+### A container's second volume was attached from the first one's descriptor (#322)
+
+Found while reading the same function. The child's volume loop iterates `vi` and
+subscripted `spec->volume_idmap_fds[i]` — `i` being the *enclosing function's*
+index, left holding `spec->cap_add_count` by the capability scan near the top of
+`container_create()`.
+
+For a container with no `cap_add` and exactly one volume that is `[0]`, so it
+worked by coincidence, which is every volume this platform has run so far. A
+second volume re-used the first's already-closed descriptor (`EBADF`), and any
+`cap_add` at all indexed past the volumes entirely — attaching the wrong tree or
+closing an unrelated file descriptor.
+
+`test_userns_run` attaches two volumes now and `run_child` writes to both; one
+volume could never have caught this.
+
 ### A container's overlay is unmounted on every teardown, not only on delete
 
 `overlay_create()` mounts `container_base/merged` once per incarnation, and only DELETE ever unmounted it. A stop, a crash or a restart left the mount live — so the next incarnation's `overlay_create()`, on the **same** upperdir and workdir, was a second live mount on them:

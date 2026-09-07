@@ -16,7 +16,7 @@
  *   42  both checks passed             -- correct
  *   43  /run rejected the write        -- #264
  *   45  a staged 0600 file was unreadable -- #265
- *   46  an attached volume rejected a write -- #266
+ *   46  an attached volume rejected a write -- #266 (either of the two)
  *   44  something else went wrong      -- neither, report it rather than guess
  */
 #include <errno.h>
@@ -28,8 +28,14 @@
 
 /* Staged by the test at mode 0600 with no explicit owner. */
 #define STAGED_PATH "/etc/staged_probe.conf"
-/* A real volume the test attaches -- id-mapped for a userns container. */
+/* Real volumes the test attaches -- id-mapped for a userns container.
+ * TWO of them, because one is not enough to catch #322: the child's volume
+ * loop subscripted its fd array with the wrong index, and that index
+ * happened to be 0 for a container with no cap_add -- so a single volume
+ * was attached correctly by accident and the bug only showed on the
+ * second. */
 #define VOLUME_PATH "/vol"
+#define VOLUME2_PATH "/vol2"
 
 int main(void)
 {
@@ -108,5 +114,23 @@ int main(void)
 	close(fd);
 	unlink(VOLUME_PATH "/probe.tmp");
 	printf("VOLUME_WRITE ok\n");
+
+	if (stat(VOLUME2_PATH, &st) != 0) {
+		printf("VOLUME2_STAT_FAILED %s\n", strerror(errno));
+		return 44;
+	}
+	printf("VOLUME2_OWNER uid=%u gid=%u\n", (unsigned)st.st_uid, (unsigned)st.st_gid);
+	fd = open(VOLUME2_PATH "/probe.tmp", O_CREAT | O_WRONLY, 0644);
+	if (fd < 0) {
+		if (errno == EACCES || errno == EPERM || errno == EOVERFLOW) {
+			printf("VOLUME2_WRITE denied: %s\n", strerror(errno));
+			return 46;
+		}
+		printf("VOLUME2_WRITE unexpected: %s\n", strerror(errno));
+		return 44;
+	}
+	close(fd);
+	unlink(VOLUME2_PATH "/probe.tmp");
+	printf("VOLUME2_WRITE ok\n");
 	return 42;
 }
