@@ -51,6 +51,7 @@ pkg_name="login"
 pkg_version="2.42.2-2"
 pkg_source="https://www.kernel.org/pub/linux/utils/util-linux/v2.42/util-linux-2.42.2.tar.xz"
 pkg_sha256="03a05d3adf9602ef128f2da05b84b3205ce60c351e5737c0370f74000679ce8a"
+pkg_artifact_sha256="3c980dee64f5406172e962262083979f0ae41692de1458720ee13ce50ddc283d"
 #
 # linux-pam at runtime, not merely at build time: login dlopens
 # nothing -- it links libpam and libpam_misc directly and

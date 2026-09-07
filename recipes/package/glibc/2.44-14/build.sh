@@ -47,6 +47,7 @@ pkg_version="2.44-14"
 # which is the same pair every real recipe now declares (#187).
 pkg_source="https://mirrors.kernel.org/gnu/libc/glibc-2.44.tar.xz"
 pkg_sha256="37f600f2bef3c5e8300147059568b2a2e40a7ad6ccc65ce942556d49429cc667"
+pkg_artifact_sha256="094bb9c0e3aa041878d63aabeeed6cf02926be43b976a8b31a6f004fd9b8297d"
 pkg_depends=""
 
 
