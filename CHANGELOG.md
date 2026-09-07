@@ -21,14 +21,29 @@ containers never hit it because OverlayFS is a fresh mount inheriting nothing."*
 True when non-userns meant overlay. The nodev clear now runs beside the direct
 path's own bind, and that comment says what it is really claiming.
 
+Confirmed on the box before it was fixed, rather than reasoned about — a
+throwaway `userns: false` container from `cix-builder`:
+
+```
+crw-rw-rw- 1 0 0 1, 9 /dev/urandom          <- present, mode 0666
+/usr/bin/bash: line 1: /dev/null: Permission denied
+/dev/vda5 / btrfs rw,nosuid,nodev,... subvol=/containers/devprobe/rootfs
+```
+
 `stat()` succeeds on a nodev mount and only `open()` fails, which is why nothing
-saw it: the nodes were all present, all mode 0666. `daemon_child` takes an
-optional device path to open (purely additive — every existing caller passes at
-most two arguments), and `test_direct_rootfs` asserts a direct-rootfs container
-can open `/dev/urandom`. Whether that *reproduces* the bug depends on the test
-host — it bites only when the filesystem backing the data directory is itself
-nodev — so the live proof is on a real host, where the containers partition
-always is.
+saw it: every node present, every one mode 0666. `daemon_child` takes an optional
+device path to open (purely additive — every existing caller passes at most two
+arguments), and `test_direct_rootfs` asserts a direct-rootfs container can open
+`/dev/urandom`.
+
+That assertion took two goes to be worth anything. The first version failed for a
+reason that had nothing to do with nodev: the shared fixture builder stages no
+device nodes at all — the `/dev` set lives in `test_image_fixture_stage_toolchain()`,
+which this test does not use — so the open failed `ENOENT` and would have
+"proved" a bug it never exercised. The test stages its own node now, and reports
+the child's exit code and message rather than asserting a cause it has not
+measured. Whether it *reproduces* the bug still depends on the host, since it
+bites only where the filesystem backing the data directory is itself nodev.
 
 ### `-lpthread` links again: the finalize policy does not reach an empty archive (#324)
 
