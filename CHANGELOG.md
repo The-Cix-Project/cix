@@ -2,6 +2,48 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### The identity plane stood itself up; only the base DN had to be chosen (#327)
+
+`jump` was the last of the nine workloads still down, and the assumption going
+in was that it needed an invented identity scheme: a bind account, a password,
+a directory populated by hand. It needed none of that. `ldap.c` already owns
+the whole provisioning path — `ldap_ensure_service_bind_account()` creates the
+`svc-accounts` group and the `svc-nslcd` account, generates the secret from
+`/dev/urandom`, sets `can_search`, and records the resulting DN and password as
+the client bind identity, pushing the records to every registered glauth server
+as it goes. It is called on the exact right edge: when a container declaring
+`ldap_client` is created, so the servers are up to receive the account.
+
+Its only gate is `hostauth_ldap_base_dn()` being non-empty — ADR-0148's one
+canonical base DN. Setting that single value is the whole operator action:
+
+    hostauth-config set --ldap-base-dn=dc=cix,dc=internal
+
+which matches the `baseDN` the deployed glauth servers were already serving, so
+it is the same value in one place rather than a fourth typed copy. Everything
+else self-provisioned. The generated bind secret is write-only in the daemon's
+root-only state and is never echoed, which is why standing this up produced no
+credential for anyone to hold or lose.
+
+Two prerequisites the recipe declares surfaced as ordinary 400s and were met the
+ordinary way: `pki_issue` needed the platform CA (`pki ca bootstrap`, CN "Cix
+Platform CA", valid to 2036-09-04) and the `jump-home` volume (ADR-0183) had to
+exist before a container could mount it.
+
+One real defect came out of it, #327. The container renders two files that both
+need the LDAP server list, and they read it from different places: the daemon's
+own `nslcd.conf` uses `ldap_effective_client_uri()`, derived from the registered
+servers, while the `{{LDAP:URI}}` recipe token reads the explicitly-set
+`client_uri` and leaves the token verbatim when it is empty. `BIND_DN`, `BIND_PW`
+and `LDAP_BASE` all resolved; `URI` alone did not. The effect would have been
+narrow and misleading — nslcd holds the good value, so password and NSS lookups
+work, while sshd's `AuthorizedKeysCommand` searches a nonsense URI and reports
+no keys for the user rather than a broken configuration.
+
+Verified end to end: `svc-nslcd` present with `can_search=yes`, all four tokens
+resolved in the container's rendered config, and OpenSSH_10.4 answering on
+192.168.15.109:22. Fleet is 9 of 9.
+
 ### The artifact cache was full of packages nobody was allowed to use (#325)
 
 Restoring the fleet, `image materialize jumpbox` failed 4 of 22 packages, each
