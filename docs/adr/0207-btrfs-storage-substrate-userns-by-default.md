@@ -262,4 +262,14 @@ the host path to its own rootfs (a test daemon's `mkdtemp` directory is 0700).
 The child now enters the new root by path once, while still host root, and
 addresses everything after the drop relative to that — the volume mount points
 and `put_old` included. **A privilege drop must not leave the process depending
-on `o+x` for a directory it does not own.**
+on `o+x` for a directory it does not own.** `mountns_pivot()` therefore no
+longer takes a root to walk at all: its contract is that the caller has already
+entered it, so a caller cannot pass the wrong thing because there is nothing to
+pass.
+
+The test also asserts the storage model directly now, in both directions: the
+mount point the container's own root creates inside its rootfs lands as on-disk
+uid **0** under the id-map, and as the subordinate base under copy+chown. That
+is phase 3's actual claim, and it is the assertion that refuses the plausible
+wrong fix — chowning the snapshot to the subordinate base leaves every container
+running perfectly and breaks the extent-sharing property this ADR exists for.

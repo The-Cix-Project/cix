@@ -34,34 +34,46 @@ int mountns_make_private(void);
  */
 enum mountns_pivot_error {
 	MOUNTNS_PIVOT_ERR_MKDIR_PUT_OLD = -1,
-	MOUNTNS_PIVOT_ERR_CHDIR_NEW_ROOT = -2,
-	MOUNTNS_PIVOT_ERR_PIVOT_ROOT = -3,
-	MOUNTNS_PIVOT_ERR_CHDIR_ROOT = -4,
-	MOUNTNS_PIVOT_ERR_UMOUNT_PUT_OLD = -5,
-	MOUNTNS_PIVOT_ERR_MKDIR_PROC = -6,
-	MOUNTNS_PIVOT_ERR_MOUNT_PROC = -7,
-	MOUNTNS_PIVOT_ERR_UMOUNT_SYS = -8,
-	MOUNTNS_PIVOT_ERR_MKDIR_SYS = -9,
-	MOUNTNS_PIVOT_ERR_MOUNT_SYS = -10,
-	MOUNTNS_PIVOT_ERR_MKDIR_RUN = -11,
-	MOUNTNS_PIVOT_ERR_MOUNT_RUN = -12,
-	MOUNTNS_PIVOT_ERR_MKDIR_DEV = -13,
-	MOUNTNS_PIVOT_ERR_MKDIR_DEV_PTS = -14,
-	MOUNTNS_PIVOT_ERR_MOUNT_DEV_PTS = -15,
-	MOUNTNS_PIVOT_ERR_PATH_TOO_LONG = -16,
+	MOUNTNS_PIVOT_ERR_PIVOT_ROOT = -2,
+	MOUNTNS_PIVOT_ERR_CHDIR_ROOT = -3,
+	MOUNTNS_PIVOT_ERR_UMOUNT_PUT_OLD = -4,
+	MOUNTNS_PIVOT_ERR_MKDIR_PROC = -5,
+	MOUNTNS_PIVOT_ERR_MOUNT_PROC = -6,
+	MOUNTNS_PIVOT_ERR_UMOUNT_SYS = -7,
+	MOUNTNS_PIVOT_ERR_MKDIR_SYS = -8,
+	MOUNTNS_PIVOT_ERR_MOUNT_SYS = -9,
+	MOUNTNS_PIVOT_ERR_MKDIR_RUN = -10,
+	MOUNTNS_PIVOT_ERR_MOUNT_RUN = -11,
+	MOUNTNS_PIVOT_ERR_MKDIR_DEV = -12,
+	MOUNTNS_PIVOT_ERR_MKDIR_DEV_PTS = -13,
+	MOUNTNS_PIVOT_ERR_MOUNT_DEV_PTS = -14,
 };
 
 /*
  * Called from inside the child, after mountns_make_private() and
- * overlay_create(). new_root must already be a populated mount point
- * (overlay_create() guarantees this for ov->merged). Pivot_roots into
- * new_root, detaches the old root at mnt->put_old_rel, and mounts a
- * fresh /proc and /sys. On failure, returns a negative enum
- * mountns_pivot_error value identifying which step failed (see
- * above) -- every current caller treats any nonzero return as
- * failure, so this refines rather than changes existing behavior.
+ * overlay_create().
+ *
+ * THE CALLER MUST ALREADY HAVE chdir()ed INTO THE NEW ROOT. That is the
+ * whole contract, and it is a requirement rather than a convenience:
+ * under a user namespace the child drops to its mapped root before it
+ * gets here, and the rootfs lives under the daemon's data directory,
+ * which is not guaranteed to be traversable by that uid (a test
+ * daemon's mkdtemp is 0700). So the one path resolution that needs
+ * host-root privilege happens once, in the caller, before the drop --
+ * and everything here is relative to that cwd, resolving nothing.
+ *
+ * Taking new_root as a parameter and re-walking it invited exactly the
+ * bug this replaces (#321), so the parameter is gone rather than
+ * documented: a caller cannot pass the wrong thing if there is nothing
+ * to pass.
+ *
+ * Pivot_roots into it, detaches the old root at mnt->put_old_rel, and
+ * mounts a fresh /proc and /sys. On failure, returns a negative enum
+ * mountns_pivot_error value identifying which step failed (see above)
+ * -- every current caller treats any nonzero return as failure, so this
+ * refines rather than changes existing behavior.
  */
-int mountns_pivot(const char *new_root, const struct mount_spec *mnt);
+int mountns_pivot(const struct mount_spec *mnt);
 
 /*
  * Issue #92 part 2: bind-mount host_dir at container_path inside an

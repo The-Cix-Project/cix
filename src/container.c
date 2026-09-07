@@ -75,7 +75,6 @@ static void child_diag_mountns_pivot(int fd, int mountns_pivot_ret)
 		const char *step;
 	} steps[] = {
 		{ MOUNTNS_PIVOT_ERR_MKDIR_PUT_OLD, "mkdir(put_old)" },
-		{ MOUNTNS_PIVOT_ERR_CHDIR_NEW_ROOT, "chdir(new_root)" },
 		{ MOUNTNS_PIVOT_ERR_PIVOT_ROOT, "pivot_root" },
 		{ MOUNTNS_PIVOT_ERR_CHDIR_ROOT, "chdir(/)" },
 		{ MOUNTNS_PIVOT_ERR_UMOUNT_PUT_OLD, "umount2(put_old)" },
@@ -89,7 +88,6 @@ static void child_diag_mountns_pivot(int fd, int mountns_pivot_ret)
 		{ MOUNTNS_PIVOT_ERR_MKDIR_DEV, "mkdir(/dev)" },
 		{ MOUNTNS_PIVOT_ERR_MKDIR_DEV_PTS, "mkdir(/dev/pts)" },
 		{ MOUNTNS_PIVOT_ERR_MOUNT_DEV_PTS, "mount(devpts)" },
-		{ MOUNTNS_PIVOT_ERR_PATH_TOO_LONG, "path too long" },
 	};
 	const char *step = "unknown step";
 	size_t i;
@@ -639,7 +637,7 @@ int container_create(const struct container_spec *spec, struct container_handle 
 		 * of this.
 		 */
 		if (spec->userns_enabled) {
-			if (cix_move_mount(overlay_lower_fd, "", -1, spec->ov.merged,
+			if (cix_move_mount(overlay_lower_fd, "", AT_FDCWD, spec->ov.merged,
 			                  MOVE_MOUNT_F_EMPTY_PATH) != 0) {
 				child_diag(diag_pipe[1], "child: move_mount userns rootfs");
 				_exit(122);
@@ -771,8 +769,17 @@ int container_create(const struct container_spec *spec, struct container_handle 
 					/* The parent's id-mapped detached tree -- attaching
 					 * it is what makes a host-0-owned volume writable
 					 * by this container's mapped root (ADR-0207 ph3). */
-					if (cix_move_mount(spec->volume_idmap_fds[vi], "", -1, target,
-					                  MOVE_MOUNT_F_EMPTY_PATH) != 0) {
+					/*
+					 * AT_FDCWD, not -1. move_mount() only
+					 * ignores its destination dirfd for an
+					 * ABSOLUTE path; target is relative to
+					 * the new root now, so -1 is a real,
+					 * invalid descriptor and the kernel
+					 * answers EBADF -- which reads as a
+					 * closed volume fd and is not one.
+					 */
+					if (cix_move_mount(spec->volume_idmap_fds[vi], "", AT_FDCWD,
+					                  target, MOVE_MOUNT_F_EMPTY_PATH) != 0) {
 						child_diag(diag_pipe[1], "child: volume move_mount idmap");
 						_exit(125);
 					}
@@ -813,10 +820,9 @@ int container_create(const struct container_spec *spec, struct container_handle 
 
 			mnt.mount_cgroup2 = ((spec->ns.clone_flags & CLONE_NEWCGROUP) != 0 &&
 			                      spec_has_cap(spec, "CAP_SYS_ADMIN"));
-			/* "." -- the new root is already cwd (see the chdir
-			 * above), so put_old is created relative to it and no
-			 * host path is resolved after the privilege drop. */
-			mountns_pivot_ret = mountns_pivot(".", &mnt);
+			/* The new root is already cwd (see the chdir above),
+			 * which is mountns_pivot()'s stated contract. */
+			mountns_pivot_ret = mountns_pivot(&mnt);
 
 			if (mountns_pivot_ret != 0) {
 				child_diag_mountns_pivot(diag_pipe[1], mountns_pivot_ret);
