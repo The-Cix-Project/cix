@@ -341,6 +341,62 @@ static int files_identical(const char *a, const char *b)
 	return same;
 }
 
+/*
+ * A staged symlink must resolve to something inside the root.
+ *
+ * Recreating links instead of copying their targets is the correct
+ * shape -- libfoo.so.5 has always been a link to libfoo.so.5.8.3, and
+ * materialising both put 30.93 MiB of duplicate content into a root
+ * that has 55.52 MiB of unique bytes. But a link is only better than a
+ * copy while it resolves: a dangling one is a library the loader
+ * cannot find, and a control-plane root whose loader cannot find libc
+ * is a box that panics at boot with exit 127.
+ *
+ * So every link this staging creates is checked, here, against the
+ * assembled root rather than against the source it came from.
+ */
+static int symlink_resolves_in_root(const char *image_root, const char *lib_dir,
+                                    const char *target)
+{
+	char path[PATH_MAX];
+	struct stat st;
+
+	if (target[0] == '/') {
+		/* Absolute inside the image: resolves against the root, which
+		 * is what it will mean once this tree IS /. */
+		if (snprintf(path, sizeof(path), "%s%s", image_root, target) >= (int)sizeof(path))
+			return 0;
+	} else {
+		if (snprintf(path, sizeof(path), "%s/%s/%s", image_root, lib_dir, target) >=
+		    (int)sizeof(path))
+			return 0;
+	}
+	return stat(path, &st) == 0 && S_ISREG(st.st_mode);
+}
+
+/* Reproduce a symlink at dst rather than copying what it points at. */
+static int stage_symlink(const char *src, const char *dst)
+{
+	char target[PATH_MAX];
+	ssize_t n;
+
+	n = readlink(src, target, sizeof(target) - 1);
+	if (n < 0) {
+		perror(src);
+		return -1;
+	}
+	target[n] = '\0';
+	if (unlink(dst) != 0 && errno != ENOENT) {
+		perror(dst);
+		return -1;
+	}
+	if (symlink(target, dst) != 0) {
+		perror(dst);
+		return -1;
+	}
+	return 0;
+}
+
 static int verify_platform_libs_intact(const char *image_root, const char *host_tools_dir)
 {
 	static const char *const lib_dirs[] = CIX_LIB_DIRS_PLATFORM;
@@ -366,9 +422,52 @@ static int verify_platform_libs_intact(const char *image_root, const char *host_
 			if (strstr(de->d_name, ".so") == NULL)
 				continue;
 			snprintf(src, sizeof(src), "%s/%s", src_dir, de->d_name);
-			if (stat(src, &fst) != 0 || !S_ISREG(fst.st_mode))
+			if (lstat(src, &fst) != 0)
 				continue;
 			snprintf(dst, sizeof(dst), "%s/%s/%s", image_root, lib_dirs[d], de->d_name);
+			if (S_ISLNK(fst.st_mode)) {
+				char want[PATH_MAX], got[PATH_MAX];
+				ssize_t wn, gn;
+
+				wn = readlink(src, want, sizeof(want) - 1);
+				gn = readlink(dst, got, sizeof(got) - 1);
+				if (wn < 0 || gn < 0) {
+					fprintf(stderr,
+					        "%s/%s is a symlink in the host-tools image but not in the "
+					        "assembled root -- refusing to write a root whose library "
+					        "layout does not match what it was built from\n",
+					        lib_dirs[d], de->d_name);
+					closedir(dh);
+					return -1;
+				}
+				want[wn] = '\0';
+				got[gn] = '\0';
+				if (strcmp(want, got) != 0) {
+					fprintf(stderr, "%s/%s points at %s in the root, %s in the source\n",
+					        lib_dirs[d], de->d_name, got, want);
+					closedir(dh);
+					return -1;
+				}
+				/*
+				 * The one that actually matters: a link is only
+				 * better than a copy while it resolves. Checked
+				 * against the ASSEMBLED root, because that is the
+				 * tree that will be mounted as /.
+				 */
+				if (!symlink_resolves_in_root(image_root, lib_dirs[d], got)) {
+					fprintf(stderr,
+					        "%s/%s points at %s, which is not in the assembled root -- "
+					        "a dangling library link is a loader that cannot find libc, "
+					        "which is a box that panics at boot\n",
+					        lib_dirs[d], de->d_name, got);
+					closedir(dh);
+					return -1;
+				}
+				checked++;
+				continue;
+			}
+			if (!S_ISREG(fst.st_mode))
+				continue;
 			if (!files_identical(src, dst)) {
 				fprintf(stderr,
 				        "%s/%s in the assembled root is not the copy this "
@@ -994,10 +1093,33 @@ int main(int argc, char **argv)
 					if (strstr(de->d_name, ".so") == NULL)
 						continue;
 					snprintf(src, sizeof(src), "%s/%s", src_dir, de->d_name);
-					if (stat(src, &fst) != 0 || !S_ISREG(fst.st_mode))
+					/*
+					 * lstat, not stat. stat() follows the link, so
+					 * every libfoo.so -> .so.5 -> .so.5.8.3 chain
+					 * passed S_ISREG and had its CONTENT copied three
+					 * times over -- 30.93 MiB of duplicates in a root
+					 * carrying 55.52 MiB of unique bytes, and a root
+					 * with no symlinks at all where the ABI expects
+					 * them.
+					 */
+					if (lstat(src, &fst) != 0)
+						continue;
+					if (!S_ISREG(fst.st_mode) && !S_ISLNK(fst.st_mode))
 						continue;
 					snprintf(dst, sizeof(dst), "%s/%s/%s", image_root, lib_dirs[d],
 					         de->d_name);
+					if (S_ISLNK(fst.st_mode)) {
+						if (stage_symlink(src, dst) != 0) {
+							fprintf(stderr, "staging the platform's own libraries: "
+							                "%s/%s is a symlink and could not be "
+							                "reproduced\n",
+							        lib_dirs[d], de->d_name);
+							closedir(dh);
+							return 1;
+						}
+						staged_libs++;
+						continue;
+					}
 					if (test_image_fixture_copy_file(src, dst) != 0) {
 						fprintf(stderr,
 						        "staging the platform's own libraries: %s/%s failed -- "

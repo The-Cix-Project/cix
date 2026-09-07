@@ -2,6 +2,20 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### The control-plane root keeps its symlinks
+
+`mkbootroot` staged the platform's libraries with `stat()`, which **follows** symlinks — so every `libfoo.so -> .so.5 -> .so.5.8.3` chain passed `S_ISREG` and had its *content* copied at each name. The assembled root had **zero symlinks** and 30.93 MiB of duplicate content against 55.52 MiB of unique bytes: `liblzma` four times, `libcrypto` three, `libc` twice.
+
+`lstat()` now, and a symlink is reproduced as a symlink.
+
+**The safety property is the point, not the bytes.** squashfs deduplicates, so this changes little in shipped size; what it fixes is the root's shape, and the risk in fixing it is real — a dangling library link is a loader that cannot find libc, which is a box that panics at boot with exit 127. So `verify_platform_libs_intact()` learned links: it checks the destination is a link, that it points where the source pointed, and that it **resolves inside the assembled root**. A dangling link fails the build.
+
+Verified by running a real assembly, not by reading the diff: a three-link chain staged as two links plus one 70000-byte file (was 210000 as copies), both links resolving; and with a deliberately dangling link added, `mkbootroot` exits 1 and writes no squashfs at all.
+
+### The log panel is resizable again
+
+Moving it out of `<main>` to span the window made it a **grid** item of `.layout`, and `flex-basis` means nothing to a grid item — so the `auto` row sized itself to the content, the log opened all the way to the menu bar, and the drag handle was writing a property nothing read. Sized by `height` now, which is what a grid row honours.
+
 ### Installer media reports and budgets its own size
 
 The squashfs was investigated and is **not the problem**: `mksquashfs` already deduplicates. Measured directly — default 18.26 MiB against `-no-duplicates` 26.54 MiB, and the shipped one is 18.25 MiB, so it is already at its content floor for 55.52 MiB of unique bytes.

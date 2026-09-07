@@ -1091,7 +1091,14 @@ main {
 
 #log-panel {
 	position: relative;
-	flex: 0 0 200px;
+	/*
+	 * height, not flex-basis. This panel became a GRID item of .layout
+	 * when it moved out of <main> to span the window, and flex-basis
+	 * means nothing to a grid item -- so the row sized itself to the
+	 * content and the log opened all the way up to the menu bar, with
+	 * the drag handle writing a property nothing read.
+	 */
+	height: 200px;
 	display: flex;
 	flex-direction: column;
 	border-top: 1px solid var(--border);
@@ -1138,7 +1145,7 @@ main {
 }
 
 #log-panel.collapsed {
-	flex: 0 0 auto;
+	height: auto;
 }
 
 #log-panel.collapsed .resize-handle {
