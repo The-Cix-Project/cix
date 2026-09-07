@@ -22,6 +22,7 @@ pkg_name="libnl"
 pkg_version="3.11.0-6"
 pkg_source="https://github.com/thom311/libnl/releases/download/libnl3_11_0/libnl-3.11.0.tar.gz"
 pkg_sha256="2a56e1edefa3e68a7c00879496736fdbf62fc94ed3232c0baba127ecfa76874d"
+pkg_artifact_sha256="6b5dba8c0c7462666406708c0c98b0e4a8e894b72bce6469cc925929c4bc4358"
 pkg_depends=""
 #
 # The autotools baseline (docs/guides/writing-recipes.md), plus flex and
