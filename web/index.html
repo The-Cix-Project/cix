@@ -1008,93 +1008,23 @@
 				<section class="view" id="view-host" hidden>
 			<h2>Host</h2>
 			<div class="tab-bar">
-				<button type="button" class="tab-button active" data-tab="site">Name</button>
-				<button type="button" class="tab-button" data-tab="hostauth-sessions">Sessions</button>
-				<button type="button" class="tab-button" data-tab="factory-reset">Factory Reset</button>
-				<button type="button" class="tab-button" data-tab="running-config">Running Config</button>
-				<button type="button" class="tab-button" data-tab="host-stats">Host Stats</button>
+				<button type="button" class="tab-button active" data-tab="host-stats">Stats</button>
 				<button type="button" class="tab-button" data-tab="processes">Processes</button>
+				<button type="button" class="tab-button" data-tab="hostauth-sessions">Sessions</button>
+				<button type="button" class="tab-button" data-tab="running-config">Running Config</button>
+				<button type="button" class="tab-button" data-tab="site">Name</button>
 				<button type="button" class="tab-button" data-tab="logs">Log Store</button>
+				<button type="button" class="tab-button" data-tab="factory-reset">Factory Reset</button>
 			</div>
 
-<div class="tab-panel" data-tab="site" hidden>
-			<p class="hint">
-				A real, operator-set identity for this install, used to label it in the
-				dashboard header and backups, and to suggest a default FQDN
-				(<code>&lt;name&gt;.&lt;site_name&gt;.&lt;domain_suffix&gt;</code>) when
-				creating a DNS record or issuing a PKI cert -- never enforced.
-			</p>
-			<form id="sys-site-form">
-				<label>
-					Instance name
-					<input type="text" id="sitef-instance-name" placeholder="cix">
-				</label>
-				<label>
-					Site name (optional)
-					<input type="text" id="sitef-site-name" placeholder="lab1">
-				</label>
-				<label>
-					Domain suffix
-					<input type="text" id="sitef-domain-suffix" placeholder="internal">
-				</label>
-				<button type="submit">Save</button>
-			</form>
-		</div>
-<div class="tab-panel" data-tab="hostauth-sessions" hidden>
-			<div class="view-list">
-				<p class="hint">Every currently active host-auth session (ADR-0152) -- the raw token is
-					never shown here, before or after issuance; only the one-time login response ever
-					carries it. "Log out everywhere" revokes every active session for that user at once
-					(there is no per-session ID to target just one).</p>
-				<table id="hostauth-sessions">
-					<thead>
-						<tr>
-							<th>Username</th>
-							<th>Expires in</th>
-							<th></th>
-						</tr>
-					</thead>
-					<tbody id="hostauth-sessions-body">
-						<tr><td colspan="3" class="empty">Loading&hellip;</td></tr>
-					</tbody>
-				</table>
-			</div>
-		</div>
-<div class="tab-panel" data-tab="factory-reset" hidden>
-				<div class="view-list">
-					<p class="hint">Returns this box to its <strong>just-installed</strong> state and reboots.
-						Destroys every container, image, network, DNS/PKI/LDAP/NTP registration, package state,
-						the log store, and <strong>every volume and all data in them</strong>. This cannot be
-						undone and there is no backup taken on your behalf.</p>
-					<p class="hint">It keeps the installed OS itself &mdash; both root slots, the kernel, the
-						ESP and the install-time config &mdash; so the box comes back exactly as the installer
-						left it rather than as nothing. Disks that carried a role are <em>forgotten</em>, not
-						reformatted: the filesystems on them are left alone.</p>
-					<form id="factory-reset-form">
-						<label>
-							Type this install's instance name to confirm
-							<input type="text" id="fr-confirm" placeholder="instance name" required>
-						</label>
-						<button type="submit" class="danger">Factory reset and reboot</button>
-					</form>
-				</div>
-			</div>
-<div class="tab-panel" data-tab="running-config" hidden>
-			
-			<p class="view-intro">
-				Everything this host is configured to do, in one ordered document
-				(ADR-0206). Rendered live from the daemon on every load -- it is a
-				view, never a stored file, so it cannot drift from what the box is
-				actually doing. Secrets are never shown: tokens and passwords appear
-				as a set/not-set flag, and PKI private keys never appear at all.
-			</p>
-			<div class="toolbar">
-				<button type="button" id="running-config-refresh">Refresh</button>
-				<button type="button" id="running-config-copy">Copy</button>
-			</div>
-			<pre id="running-config-text" class="logs-pre">Loading…</pre>
-			</div>
-<div class="tab-panel" data-tab="host-stats" hidden>
+
+
+
+
+
+
+
+<div class="tab-panel" data-tab="host-stats">
 			<div class="stats-grid">
 				<div class="stats-card">
 					<h3>CPU</h3>
@@ -1159,6 +1089,64 @@
 			</div>
 		
 			</div>
+<div class="tab-panel" data-tab="hostauth-sessions" hidden>
+			<div class="view-list">
+				<p class="hint">Every currently active host-auth session (ADR-0152) -- the raw token is
+					never shown here, before or after issuance; only the one-time login response ever
+					carries it. "Log out everywhere" revokes every active session for that user at once
+					(there is no per-session ID to target just one).</p>
+				<table id="hostauth-sessions">
+					<thead>
+						<tr>
+							<th>Username</th>
+							<th>Expires in</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody id="hostauth-sessions-body">
+						<tr><td colspan="3" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+			</div>
+		</div>
+<div class="tab-panel" data-tab="running-config" hidden>
+			
+			<p class="view-intro">
+				Everything this host is configured to do, in one ordered document
+				(ADR-0206). Rendered live from the daemon on every load -- it is a
+				view, never a stored file, so it cannot drift from what the box is
+				actually doing. Secrets are never shown: tokens and passwords appear
+				as a set/not-set flag, and PKI private keys never appear at all.
+			</p>
+			<div class="toolbar">
+				<button type="button" id="running-config-refresh">Refresh</button>
+				<button type="button" id="running-config-copy">Copy</button>
+			</div>
+			<pre id="running-config-text" class="logs-pre">Loading…</pre>
+			</div>
+<div class="tab-panel" data-tab="site" hidden>
+			<p class="hint">
+				A real, operator-set identity for this install, used to label it in the
+				dashboard header and backups, and to suggest a default FQDN
+				(<code>&lt;name&gt;.&lt;site_name&gt;.&lt;domain_suffix&gt;</code>) when
+				creating a DNS record or issuing a PKI cert -- never enforced.
+			</p>
+			<form id="sys-site-form">
+				<label>
+					Instance name
+					<input type="text" id="sitef-instance-name" placeholder="cix">
+				</label>
+				<label>
+					Site name (optional)
+					<input type="text" id="sitef-site-name" placeholder="lab1">
+				</label>
+				<label>
+					Domain suffix
+					<input type="text" id="sitef-domain-suffix" placeholder="internal">
+				</label>
+				<button type="submit">Save</button>
+			</form>
+		</div>
 <div class="tab-panel" data-tab="logs" hidden>
 			<div class="view-list">
 				<p class="hint">A consolidated log (ADR-0070/ADR-0126): real kernel dmesg, cixd's own diagnostics, a per-request audit trail, and every container's own stdout/stderr -- all in one place, size-capped with the oldest entries dropped first once the cap is reached. Browse it live in the Log panel at the bottom of every page (source filter includes this browser's own local activity too, kept client-side only) -- this page just configures the store's size cap, not what's logged.</p>
@@ -1173,6 +1161,25 @@
 				<p class="hint">Enforced at segment granularity (8 rotating segments, oldest dropped whole when a new one is needed), not byte-exact -- a few percent of slop against this cap is expected.</p>
 			</div>
 		
+			</div>
+<div class="tab-panel" data-tab="factory-reset" hidden>
+				<div class="view-list">
+					<p class="hint">Returns this box to its <strong>just-installed</strong> state and reboots.
+						Destroys every container, image, network, DNS/PKI/LDAP/NTP registration, package state,
+						the log store, and <strong>every volume and all data in them</strong>. This cannot be
+						undone and there is no backup taken on your behalf.</p>
+					<p class="hint">It keeps the installed OS itself &mdash; both root slots, the kernel, the
+						ESP and the install-time config &mdash; so the box comes back exactly as the installer
+						left it rather than as nothing. Disks that carried a role are <em>forgotten</em>, not
+						reformatted: the filesystems on them are left alone.</p>
+					<form id="factory-reset-form">
+						<label>
+							Type this install's instance name to confirm
+							<input type="text" id="fr-confirm" placeholder="instance name" required>
+						</label>
+						<button type="submit" class="danger">Factory reset and reboot</button>
+					</form>
+				</div>
 			</div>
 		</section>
 

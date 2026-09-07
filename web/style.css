@@ -536,6 +536,34 @@ header {
  * different radii, so a blink reads as the lamp brightening rather
  * than as a different lamp.
  */
+/*
+ * The running build, and the one control in the status bar.
+ *
+ * Always clickable (it reloads the dashboard); copper and bold only
+ * when this page's assets are older than the daemon answering them.
+ * That state is otherwise invisible -- an updated daemon serving a
+ * stale page looks exactly like a working one until a renamed field
+ * turns up as an empty panel.
+ */
+.status-version {
+	background: none;
+	border: none;
+	padding: 0;
+	font: inherit;
+	color: inherit;
+	cursor: pointer;
+}
+
+.status-version:hover {
+	text-decoration: underline;
+	filter: none;
+}
+
+.status-version-skew {
+	color: var(--accent);
+	font-weight: 600;
+}
+
 .status-meta {
 	font-size: 0.72rem;
 	color: var(--muted);
@@ -919,6 +947,28 @@ header {
 	color: var(--text);
 }
 
+/*
+ * Content links are copper and quiet, underlining only on hover.
+ *
+ * Scoped to content: the tree rows and the header menus are anchors
+ * too, and they carry their own colour and their own active mark. A
+ * bare `a:hover { text-decoration: underline }` would reach them --
+ * specificity is resolved per property, so their own :hover rules,
+ * which set only a background, would not stop it.
+ */
+.view a,
+.modal a,
+#log-panel a {
+	color: var(--accent);
+	text-decoration: none;
+}
+
+.view a:hover,
+.modal a:hover,
+#log-panel a:hover {
+	text-decoration: underline;
+}
+
 .tree-item {
 	user-select: none;
 	flex: 1 1 auto;
@@ -956,6 +1006,27 @@ header {
 .tree-item.active {
 	font-weight: 600;
 	color: var(--text);
+}
+
+/*
+ * The active row is underlined in copper, the same mark the tab bars
+ * use for the same meaning: "this is the one you are looking at". It
+ * sits on the LABEL, not the row -- the row is a full-width flex
+ * anchor, so a border on it would draw a rule across the whole panel
+ * under a word a third as wide.
+ */
+.tree-item.active .tree-label,
+.tree-category.active .tree-label {
+	border-bottom: 2px solid var(--accent);
+	padding-bottom: 1px;
+}
+
+/* The label is what carries the underline, so it must also be what
+ * truncates -- the ellipsis belongs to the text, not to the row. */
+.tree-label {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 
 /* Tints the icon itself (stroke="currentColor" inherits it) instead of

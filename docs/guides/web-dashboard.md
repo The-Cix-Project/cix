@@ -92,7 +92,7 @@ Services         (the health of every registered service)
   NTP            (tabs: Config / Servers / Time & Sync)
   DHCP           (tabs: Servers / Ranges / Reservations / Leases)
   Syslog
-Host             (tabs: Name / Sessions / Factory Reset / Running Config / Host Stats / Processes / Log Store)
+Host             (tabs: Stats / Processes / Sessions / Running Config / Name / Log Store / Factory Reset)
   Control Plane  (tabs: Daemon / TLS Throttle / CPU & Memory / Stalls)
   Devices        (tabs: Named Mappings / Discovery / Kernel Modules)
   Kernel         (tabs: Kernel Line / Sysctl / Kernel Log)
@@ -116,6 +116,12 @@ Container leaves are colored by live status (running/paused/stopped -- tinted ic
 **Host holds the machine's own subjects**: Control Plane (what the daemon does), Devices (what is plugged in), Kernel (what it boots with), and Bootloader (which slot, signed by whom, and what the last boot printed). Host itself is the page about the host -- its name, sessions, stats, processes and log store -- which is why there is no "Host > Host".
 
 **Boot Slots and Signing Keys are Bootloader, not Kernel.** Both were briefly filed under Kernel because they are boot-adjacent, but neither is about the kernel: an A/B slot is what the bootloader picks, and a signing key is what it will accept. Boot Console joins them because it is the record of what that choice produced.
+
+**Host reads in the order an operator asks its questions**: what the box is doing (Stats, Processes), then who is on it (Sessions), then how it is configured (Running Config, Name, Log Store), with the destructive one (Factory Reset) last. Clicking Host in the tree lands on Stats -- what it is doing is the answer to "I clicked Host", not what it is called.
+
+**The active tree row carries a copper underline**, the same mark the tab bars use for the same meaning. It sits on the label rather than the row, because a row is a full-width flex anchor and a border on it would draw a rule across the whole panel under a word a third as wide. Content links are copper too, underlining only on hover -- scoped to `.view`/`.modal`/`#log-panel`, since tree rows and header menus are anchors as well and carry their own active mark.
+
+**The status bar's version is a control, and it says when this page is stale.** These assets were served by the daemon that answered the first `/system/boot` of the page's life, so the first version seen is the version of the HTML and JavaScript now running. If a later answer differs, the daemon has been updated underneath a page that has not been -- the version goes copper and bold, its tooltip names both builds, and clicking it reloads. Nothing is stamped at build time; the fact is derived, so nothing has to be kept in step for it to stay true. This state was previously invisible: an updated daemon serving a stale page looks exactly like a working one until a renamed field turns up as an empty panel.
 
 **Every tab is an address.** Clicking one changes the URL to the address that tab replaced (`#routes`, `#processes`, `#ldap-users`), so tabs are bookmarkable and the browser's back button walks them. Two gates hold this: `test_web_tree` checks that every tree destination reaches a real tab, and -- since the tree cannot see a tab it does not name -- that every page-level tab is itself an address. The second check exists because Pipeline > Reconcile had no address at all: it could be reached by clicking and never by URL, and nothing said so. Detail-page tabs (a container's Summary/Console) are deliberately not addresses; they belong to one container, not to a hash.
 
