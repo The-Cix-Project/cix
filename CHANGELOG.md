@@ -8,12 +8,14 @@ All notable changes to this project are recorded here. Format is loosely [Keep a
 
 | Page | Tabs |
 |---|---|
-| **Pipeline** | Overview, Errors, Rolling Restart |
+| **Pipeline** | Overview, Errors |
 | **Catalogue** | Package Recipes, Image Recipes, Container Recipes, Repo & Sync |
 | **Integration** | Build, Local Packages, Local Images, Remote Cache |
-| **Deployment** | Update, Reconcile |
+| **Deployment** | Update, Reconcile, Rolling Restart |
 
 **The three recipe kinds are page-level tabs now.** They were sub-tabs *inside* a single "Recipes" tab -- a tab bar within a tab bar, three clicks deep from the tree -- so the catalogue's own three subjects were the least reachable thing on the page. Each is a real address now (`#pkg-recipes`, `#image-recipes`, `#container-recipes`); `#recipes` still resolves to the page so no bookmark breaks, it simply no longer names a tab.
+
+**Rolling Restart joins Deployment**, where it belongs: it is what happens once an update has landed, and it was the only tab keeping Pipeline from being purely the view of the whole thing. Pipeline is now the stage flow and the list of what is stuck, nothing else.
 
 **Repo & Sync joins Catalogue**, because where a declaration arrives from belongs with the declarations, not with the machinery that builds them. **Package Builds becomes Integration > Build**, next to what it produces.
 

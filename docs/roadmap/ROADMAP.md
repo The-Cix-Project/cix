@@ -2447,7 +2447,7 @@ Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build tar
 
 ## Part 223 (done): the Pipeline's stages split by what they do, not what they hold
 
-`Artifacts` becomes **Integration**. Pipeline keeps Overview / Errors / Rolling Restart; **Catalogue** takes Package Recipes / Image Recipes / Container Recipes / Repo & Sync; **Integration** takes Build / Local Packages / Local Images / Remote Cache; Deployment is unchanged.
+`Artifacts` becomes **Integration**. Pipeline keeps Overview / Errors; **Catalogue** takes Package Recipes / Image Recipes / Container Recipes / Repo & Sync; **Integration** takes Build / Local Packages / Local Images / Remote Cache; Deployment gains Rolling Restart, which is what happens once an update has landed -- leaving Pipeline as purely the view of the whole thing.
 
 **The three recipe kinds were a tab bar inside a tab bar** -- three clicks deep from the tree, so the catalogue's own three subjects were the least reachable thing on the page. Promoted to page-level tabs, which also makes each a real address (`#pkg-recipes`, `#image-recipes`, `#container-recipes`). `#recipes` still resolves to the page so no bookmark breaks.
 
