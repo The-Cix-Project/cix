@@ -14,6 +14,8 @@ The status bar element is built once and updated in place -- it re-renders on a 
 
 **Content links are copper, underlining on hover** -- scoped to `.view`, `.modal` and `#log-panel`, because tree rows and header menus are anchors too and carry their own colour and active mark. A bare `a:hover` rule would have reached them: specificity is resolved per property, so their own `:hover` rules, which set only a background, would not have stopped an underline.
 
+**Swap moves from Storage to Host**, restoring where it sat before this session's tree rework. It is a host memory setting, not a storage one -- and Storage was carrying it twice over, since *where the swap file lives* is already Storage > Placement's `swap` role. It sits next to Stats and Processes: what the machine's memory is doing, then how it is set up.
+
 **Host reads in the order the questions get asked**: Stats (renamed from Host Stats), Processes, Sessions, Running Config, Name, Log Store, Factory Reset -- destructive last. Clicking Host in the tree lands on Stats.
 
 ### The Pipeline's stages split by what they do, not what they hold
