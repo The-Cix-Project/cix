@@ -23477,6 +23477,38 @@ static void apply_rolling_container_restarts(void)
  * from the pidfd event that learns the exit, so the policy reads as one
  * thing rather than as a tail of the event handler.
  */
+/*
+ * Drop this incarnation's overlay mount.
+ *
+ * overlay_create() mounts container_base/merged once per incarnation,
+ * and until now only DELETE ever unmounted it. A stop, a crash, or a
+ * restart left the mount live -- so the next incarnation's
+ * overlay_create() on the SAME upperdir and workdir was a second live
+ * mount on them, which the kernel reports as
+ *
+ *   overlayfs: upperdir is in-use as upperdir/workdir of another mount,
+ *   accessing files from both mounts will result in undefined behavior
+ *
+ * and means exactly what it says. It is also a leak: a container that
+ * crash-restarts N times leaves N overlay mounts behind, unbounded.
+ *
+ * MNT_DETACH because the process is already dead by every path that
+ * reaches here; the mount goes as soon as its last reference does.
+ * EINVAL/ENOENT are the ordinary "there was nothing mounted" answers
+ * -- a container whose overlay_create() never got as far as the mount
+ * still reaches this teardown.
+ */
+static void unmount_container_overlay(const char *disk, const char *name)
+{
+	char container_root[PATH_MAX];
+	char merged[PATH_MAX];
+
+	container_root_for(disk, container_root, sizeof(container_root));
+	snprintf(merged, sizeof(merged), "%s/%s/merged", container_root, name);
+	if (umount2(merged, MNT_DETACH) != 0 && errno != EINVAL && errno != ENOENT)
+		fprintf(stderr, "%s: umount2(%s) failed: %s\n", name, merged, strerror(errno));
+}
+
 static void container_exit_finalize(struct registry_entry *entry)
 {
 	char name_copy[REGISTRY_NAME_MAX];
@@ -23570,18 +23602,22 @@ static void container_exit_finalize(struct registry_entry *entry)
 		if (found != NULL && found->started_at == started_at &&
 		    found->handle.pid == incarnation_pid)
 			registry_remove(name_copy);
+		/*
+		 * Both kinds: the incarnation is over either way, and a stop
+		 * that left its overlay mounted is what made the next start a
+		 * second mount on the same upperdir. A deliberately KEPT build
+		 * container (ADR-0175) is the one exception -- it is preserved
+		 * mounted so a failed build can actually be looked at.
+		 */
+		if (!kept_build_container)
+			unmount_container_overlay(disk_copy, name_copy);
 		if (teardown_kind == REGISTRY_TEARDOWN_DELETE) {
 			char container_root[PATH_MAX];
 			char container_base[PATH_MAX];
-			char merged[PATH_MAX];
 
 			container_root_for(disk_copy, container_root, sizeof(container_root));
 			snprintf(container_base, sizeof(container_base), "%s/%s", container_root,
 			         name_copy);
-			snprintf(merged, sizeof(merged), "%s/merged", container_base);
-			if (umount2(merged, MNT_DETACH) != 0 && errno != EINVAL && errno != ENOENT)
-				fprintf(stderr, "DELETE %s (async completion): umount2(%s) failed: %s\n",
-				        name_copy, merged, strerror(errno));
 			{
 				/* ADR-0207: same subvolume pre-destroy as the sync
 				 * delete path above. */
@@ -23607,6 +23643,22 @@ static void container_exit_finalize(struct registry_entry *entry)
 	 * cannot survive a daemon restart (exit_status is never persisted),
 	 * a stated v1 boundary, see ADR-0027.
 	 */
+	/*
+	 * An unprompted exit is a finished incarnation too, and this is
+	 * the path that actually accumulated mounts: a crash-restarting
+	 * container mounted its overlay again on the same upperdir and
+	 * workdir every time round, each remount emitting the kernel's
+	 * "in-use as upperdir/workdir of another mount" pair and leaving
+	 * the previous mount live. Unmounted here, before the restart
+	 * timer is ever armed, so the next overlay_create() is the only
+	 * mount on those directories.
+	 *
+	 * Not for a kept build container (ADR-0175): that one is preserved
+	 * mounted on purpose so a failed build can be inspected.
+	 */
+	if (!kept_build_container)
+		unmount_container_overlay(disk_copy, name_copy);
+
 	def = containerdef_find(name_copy);
 	if (def != NULL) {
 		/*
