@@ -76,7 +76,7 @@ Containers                       (tabs: Overview / <per-container detail>)
   <one leaf per container>
 Networks
   <one leaf per network>
-Storage          (tabs: Storage / Placement / System Backup / Volume Backups / Volumes)
+Storage          (tabs: Overview / Placement / System Backup / Volume Backups / Volumes)
   <one leaf per real disk>
     <one leaf per partition on it>
       <volumes held on that partition>
@@ -121,7 +121,13 @@ Container leaves are colored by live status (running/paused/stopped -- tinted ic
 
 **Host reads in the order an operator asks its questions**: what the box is doing and how its memory is set up (Stats, Processes, Swap), then who is on it (Sessions), then how it is configured (Running Config, Name, Log Store), with the destructive one (Factory Reset) last. Clicking Host in the tree lands on Stats -- what it is doing is the answer to "I clicked Host", not what it is called.
 
-**The active tree row carries a copper underline**, the same mark the tab bars use for the same meaning. It sits on the label rather than the row, because a row is a full-width flex anchor and a border on it would draw a rule across the whole panel under a word a third as wide. Content links are copper too, underlining only on hover -- scoped to `.view`/`.modal`/`#log-panel`, since tree rows and header menus are anchors as well and carry their own active mark.
+**No page carries a title.** The underlined tree row already says where you are, and repeating it as a heading on every page cost a line of vertical space to say something the screen already said. Only the storage detail page keeps a subtitle, because "Partition of vda — part of the fixed OS layout" is a fact the tree does not carry.
+
+**Nothing re-renders unless its data changed.** Every view renderer runs on the poll loop, and most of them cleared their table and rebuilt it identically each time -- which drops text selection, resets scroll inside the table and makes a busy page churn. A signature check on the DATA gates the rebuild. Processes goes further and fetches only on arrival and on its own Refresh button: a real process table changes faster than a person can read it, which is why that page was always meant to be fetch-on-demand.
+
+**The log panel spans the whole window.** It is about the whole system, and it had been sitting inside the content column, indented as though it belonged to one pane.
+
+**The current tree row carries a dotted copper underline**, on the row you are on and no other. Its ancestors stay bold -- "on the path to here" and "here" are different facts, and drawing the underline on both said it twice about two different rows. It sits on the label rather than the row, because a row is a full-width flex anchor and a border on it would draw a rule across the whole panel under a word a third as wide. Content links are copper too, underlining only on hover -- scoped to `.view`/`.modal`/`#log-panel`, since tree rows and header menus are anchors as well and carry their own active mark.
 
 **The status bar's version is a control, and it says when this page is stale.** These assets were served by the daemon that answered the first `/system/boot` of the page's life, so the first version seen is the version of the HTML and JavaScript now running. If a later answer differs, the daemon has been updated underneath a page that has not been -- the version goes copper and bold, its tooltip names both builds, and clicking it reloads. Nothing is stamped at build time; the fact is derived, so nothing has to be kept in step for it to stay true. This state was previously invisible: an updated daemon serving a stale page looks exactly like a working one until a renamed field turns up as an empty panel.
 
