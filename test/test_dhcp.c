@@ -155,6 +155,20 @@ int main(void)
 	        "{\"name\":\"dhcplab\",\"subnet\":\"172.30.7.0\",\"prefix_len\":24,"
 	        "\"address\":\"172.30.7.1\"}",
 	        201, "create the lab network");
+	/*
+	 * A second network, created here rather than later, because the
+	 * serving container has to be ATTACHED to a network before DHCP can
+	 * be enabled for it there -- and a live attach would not survive
+	 * what happens next. Enabling a range restarts the servers that
+	 * serve it, and a live attachment is deliberately ephemeral (it is
+	 * never written into the container's own definition), so the
+	 * attachment would be gone by the second assertion. Declaring both
+	 * at creation is what a real multi-segment DHCP server does anyway.
+	 */
+	expect(&client, "POST", "/v1/networks",
+	        "{\"name\":\"dhcplab2\",\"subnet\":\"172.30.8.0\",\"prefix_len\":24,"
+	        "\"address\":\"172.30.8.1\"}",
+	        201, "create the second lab network");
 
 	/* 1. A network with no DHCP config is DHCP-off, which is an answer
 	 * rather than a 404 -- and it reports the same default lease a PUT
@@ -214,9 +228,10 @@ int main(void)
 	 */
 	expect(&client, "POST", "/v1/containers",
 	        "{\"name\":\"dhcpsrv\",\"image\":\"dhcptest\","
-	        "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"60\",\"0\"]}],\"networks\":[\"dhcplab\"],"
+	        "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"60\",\"0\"]}],"
+	        "\"networks\":[\"dhcplab\",\"dhcplab2\"],"
 	        "\"restart\":\"always\"}",
-	        201, "create the first serving container");
+	        201, "create the first serving container, on both segments");
 	expect(&client, "POST", "/v1/containers",
 	        "{\"name\":\"dhcpsrv2\",\"image\":\"dhcptest\","
 	        "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"60\",\"0\"]}],\"networks\":[\"dhcplab\"],"
@@ -369,10 +384,12 @@ int main(void)
 	 * that the tagged forms are present, but that no UNTAGGED router
 	 * option is left anywhere in the file.
 	 */
-	expect(&client, "POST", "/v1/networks",
-	        "{\"name\":\"dhcplab2\",\"subnet\":\"172.30.8.0\",\"prefix_len\":24,"
-	        "\"address\":\"172.30.8.1\"}",
-	        201, "create a second network");
+	/*
+	 * dhcpsrv was created on both segments above, which is what lets it
+	 * be named here: enabling DHCP for a server with no interface on
+	 * the network is refused -- "it has no interface in this subnet, so
+	 * it could not answer here".
+	 */
 	expect(&client, "PUT", "/v1/dhcp/networks/dhcplab2",
 	        "{\"enabled\":true,\"range_start\":\"172.30.8.100\",\"range_end\":\"172.30.8.150\","
 	        "\"router\":\"172.30.8.254\",\"servers\":[\"dhcpsrv\"]}",
