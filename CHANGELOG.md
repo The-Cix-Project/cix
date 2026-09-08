@@ -36,6 +36,12 @@ Three changes, each the smallest form of itself:
   to happen. `rtw88-firmware` is pinned to one linux-firmware commit by
   checksum and asserts the 8822B header before installing.
 
+`mkbootroot` now also prints `staged N firmware file(s) from <root>`.
+It staged silently before, so the first evidence a blob had landed was a
+device working, or not, after a reboot — and a count, not a bare line,
+because an image created but never installed into copies nothing and
+succeeds indistinguishably.
+
 `rtw88-firmware` is a blob nobody can build from source — it is executed
 by the adapter's own processor. The owner approved shipping it
 explicitly; ADR-0263 records why that is not a Build Provenance
