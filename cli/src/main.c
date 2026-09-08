@@ -97,7 +97,14 @@ static void print_usage(FILE *out)
 	        "      [--interface=IFNAME ...] [--cap-add=CAP_NAME ...] [--restart=always|on-failure|unless-stopped]\n"
 	        "      [--restart-delay=N] [--follow-rolling] [--follow-rolling-jitter-seconds=N]\n"
 	        "      [--depends-on=NAME ...] [--dns-server=A.B.C.D ...]\n"
-	        "      [--readiness-tcp-port=N [--readiness-timeout=N]] -- CMD [ARGS...]\n"
+	        "      --service=NAME=/path [args] ... [--oneshot=NAME=/path [args] ...]\n"
+	        "      [--after=NAME:DEP[,DEP] ...] [--ready=NAME:tcp:PORT|socket:PATH|command:/path [args] ...]\n"
+	        "      [--on-exit=NAME:restart|stop|fail-container ...]\n"
+	        "               -- what the container runs (ADR-0260): its services, started in --after\n"
+	        "               order by cix-init, pid 1 in every container. A container with one daemon\n"
+	        "               declares one --service. No -- CMD: there is no single command any more.\n"
+	        "  container service start|stop|restart NAME SERVICE  -- one declared service; a stop\n"
+	        "               is held until the next container start, never an edit\n"
 	        "  container inspect NAME\n"
 	        "  container start NAME  -- bring a stopped container back up\n"
 	        "  container stop NAME   -- stop it but keep it (start it again later); rm deletes\n"
@@ -520,11 +527,11 @@ static void fmt_container_line(const struct json_value *v)
 	const struct json_value *follow_rolling = json_object_get(v, "follow_rolling");
 	const struct json_value *follow_rolling_jitter =
 	    json_object_get(v, "follow_rolling_jitter_seconds");
-	const struct json_value *readiness = json_object_get(v, "readiness");
+	const struct json_value *ready = json_object_get(v, "ready");
 	const struct json_value *files = json_object_get(v, "files");
 	const struct json_value *sysctls = json_object_get(v, "sysctls");
 	const struct json_value *env = json_object_get(v, "env");
-	const struct json_value *cmd = json_object_get(v, "cmd");
+	const struct json_value *services = json_object_get(v, "services");
 	const struct json_value *memory_max = json_object_get(v, "memory_max");
 	const struct json_value *cpu_max = json_object_get(v, "cpu_max");
 	const struct json_value *pids_max = json_object_get(v, "pids_max");
@@ -535,7 +542,6 @@ static void fmt_container_line(const struct json_value *v)
 	const struct json_value *cap_add = json_object_get(v, "cap_add");
 	char exit_buf[16];
 	char net_buf[256];
-	char readiness_buf[32];
 	char delay_buf[16];
 	char jitter_buf[16];
 	char cmd_buf[256];
@@ -577,13 +583,6 @@ static void fmt_container_line(const struct json_value *v)
 		}
 	}
 
-	if (readiness != NULL && readiness->type == JSON_OBJECT) {
-		snprintf(readiness_buf, sizeof(readiness_buf), "tcp/%ld",
-		         (long)json_as_number(json_object_get(readiness, "tcp_port")));
-	} else {
-		snprintf(readiness_buf, sizeof(readiness_buf), "-");
-	}
-
 	if (restart_delay != NULL && restart_delay->type == JSON_NUMBER)
 		snprintf(delay_buf, sizeof(delay_buf), "%ld", (long)json_as_number(restart_delay));
 	else
@@ -594,12 +593,16 @@ static void fmt_container_line(const struct json_value *v)
 	else
 		snprintf(jitter_buf, sizeof(jitter_buf), "-");
 
+	/* ADR-0260: each declared service and its live state, in cix-init's order. */
 	cmd_buf[0] = '\0';
-	if (cmd != NULL && cmd->type == JSON_ARRAY) {
-		for (i = 0; i < cmd->u.array.count && cmd_off < sizeof(cmd_buf) - 1; i++) {
-			const char *s = json_as_string(cmd->u.array.items[i]);
-			int written = snprintf(cmd_buf + cmd_off, sizeof(cmd_buf) - cmd_off, "%s%s",
-			                        i > 0 ? " " : "", s != NULL ? s : "?");
+	if (services != NULL && services->type == JSON_ARRAY) {
+		for (i = 0; i < services->u.array.count && cmd_off < sizeof(cmd_buf) - 1; i++) {
+			const struct json_value *item = services->u.array.items[i];
+			const char *sname = json_str_field(item, "name");
+			const char *state = json_str_field(item, "state");
+			int written = snprintf(cmd_buf + cmd_off, sizeof(cmd_buf) - cmd_off, "%s%s:%s",
+			                        i > 0 ? "," : "", sname != NULL ? sname : "?",
+			                        state != NULL ? state : "?");
 
 			if (written > 0)
 				cmd_off += (size_t)written;
@@ -622,9 +625,9 @@ static void fmt_container_line(const struct json_value *v)
 		snprintf(quota_buf, sizeof(quota_buf), "-");
 
 	printf("%-20s %-8s pid=%-8ld exit_status=%-6s networks=%-20s fwd=%-4s restart=%-15s "
-	       "delay=%-4s roll=%-4s jitter=%-4s stopped=%-5s readiness=%-10s files=%-3zu sysctls=%-3zu "
+	       "delay=%-4s roll=%-4s jitter=%-4s stopped=%-5s ready=%-5s files=%-3zu sysctls=%-3zu "
 	       "env=%-3zu memory_max=%-12s cpu_max=%-14s pids_max=%-5s cpuset=%-8s disk_quota=%-12s "
-	       "caps=%-3zu cmd=%s\n",
+	       "caps=%-3zu services=%s\n",
 	       name, status, pid, exit_buf, net_buf[0] != '\0' ? net_buf : "-",
 	       (ip_forward != NULL && ip_forward->type == JSON_BOOL && ip_forward->u.boolean) ? "yes"
 	                                                                                        : "no",
@@ -634,7 +637,8 @@ static void fmt_container_line(const struct json_value *v)
 	           : "no",
 	       jitter_buf,
 	       (stopped != NULL && stopped->type == JSON_BOOL && stopped->u.boolean) ? "yes" : "no",
-	       readiness_buf, files != NULL && files->type == JSON_ARRAY ? files->u.array.count : 0,
+	       (ready != NULL && ready->type == JSON_BOOL && ready->u.boolean) ? "yes" : "no",
+	       files != NULL && files->type == JSON_ARRAY ? files->u.array.count : 0,
 	       sysctls != NULL && sysctls->type == JSON_OBJECT ? sysctls->u.object.count : 0,
 	       env != NULL && env->type == JSON_OBJECT ? env->u.object.count : 0, mem_buf,
 	       cpu_max != NULL && cpu_max->type == JSON_STRING ? cpu_max->u.string : "-", pids_buf,
@@ -4595,6 +4599,46 @@ static int cmd_container_device_detach(const struct cix_client *c, int json_mode
 	return emit(&r, json_mode, fmt_container_line);
 }
 
+/*
+ * ADR-0260: cixctl container service start|stop|restart NAME SERVICE --
+ * the control plane reaching one declared service inside a container.
+ */
+static int cmd_container_service_op(const struct cix_client *c, int json_mode, int argc,
+                                    char **argv, const char *op_path, const char *verb)
+{
+	struct cix_response r;
+	char path[512];
+
+	if (argc < 2 || argv[0][0] == '-' || argv[1][0] == '-') {
+		fprintf(stderr, "cixctl: container service %s requires a container name and a service name\n",
+		        verb);
+		return 2;
+	}
+	snprintf(path, sizeof(path), op_path, argv[0], argv[1]);
+	if (cix_client_request(c, "POST", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_health);
+}
+
+static int cmd_container_service(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	if (argc >= 1 && strcmp(argv[0], "start") == 0)
+		return cmd_container_service_op(c, json_mode, argc - 1, argv + 1, CIX_API_startContainerService,
+		                                "start");
+	if (argc >= 1 && strcmp(argv[0], "stop") == 0)
+		return cmd_container_service_op(c, json_mode, argc - 1, argv + 1, CIX_API_stopContainerService,
+		                                "stop");
+	if (argc >= 1 && strcmp(argv[0], "restart") == 0)
+		return cmd_container_service_op(c, json_mode, argc - 1, argv + 1,
+		                                CIX_API_restartContainerService, "restart");
+	fprintf(stderr, "usage: cixctl container service start NAME SERVICE    -- start a stopped, exited or failed service\n"
+	                "       cixctl container service stop NAME SERVICE     -- stop it and hold it stopped until the next container start\n"
+	                "       cixctl container service restart NAME SERVICE  -- stop then start it; the rest of the container is untouched\n");
+	return 2;
+}
+
 static int cmd_container_device(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	if (argc >= 1 && strcmp(argv[0], "attach") == 0)
@@ -4658,6 +4702,8 @@ static int cmd_container(const struct cix_client *c, int json_mode, int argc, ch
 		return cmd_start(c, json_mode, argc - 1, argv + 1);
 	if (argc >= 1 && strcmp(argv[0], "stop") == 0)
 		return cmd_stop(c, json_mode, argc - 1, argv + 1);
+	if (argc >= 1 && strcmp(argv[0], "service") == 0)
+		return cmd_container_service(c, json_mode, argc - 1, argv + 1);
 	if (argc >= 1 && strcmp(argv[0], "pause") == 0)
 		return cmd_pause(c, json_mode, argc - 1, argv + 1);
 	if (argc >= 1 && strcmp(argv[0], "unpause") == 0)
@@ -6012,6 +6058,185 @@ static int cmd_console(const struct cix_client *c, int argc, char **argv)
 /* Issue #88: matches CONTAINER_MAX_VOLUMES in include/container.h. */
 #define CLI_MAX_VOLUMES 8
 /* Issue #248: matches REGISTRY_MAX_CONSOLES / REGISTRY_CONSOLE_ARGC_MAX. */
+/*
+ * ADR-0260: one declared service, from --service=/--oneshot= plus the
+ * per-service attribute flags that name it. Mirrors --console=NAME=/path
+ * args, which is the CLI's existing answer to "how is a named argv
+ * given"; the attributes follow the same NAME:value shape.
+ */
+#define CLI_MAX_SERVICES 16
+#define CLI_SERVICE_ARGC_MAX 32
+
+struct cli_service_decl {
+	char name[32];
+	char argv[CLI_SERVICE_ARGC_MAX][128];
+	int argc;
+	int oneshot;
+	char after[256];   /* comma-separated names, or "" */
+	char ready[256];   /* "tcp:PORT" | "socket:PATH" | "command:/path args" | "" */
+	char on_exit[24];  /* "" = the API's default for the type */
+};
+
+static int parse_service_flag(const char *arg, struct cli_service_decl *out)
+{
+	const char *eq = strchr(arg, '=');
+	const char *p;
+	size_t nlen;
+
+	if (eq == NULL || eq == arg)
+		return -1;
+	nlen = (size_t)(eq - arg);
+	if (nlen >= sizeof(out->name))
+		return -1;
+	memset(out, 0, sizeof(*out));
+	memcpy(out->name, arg, nlen);
+	out->name[nlen] = '\0';
+	p = eq + 1;
+	while (*p != '\0') {
+		size_t len = 0;
+
+		while (*p == ' ')
+			p++;
+		if (*p == '\0')
+			break;
+		if (out->argc >= CLI_SERVICE_ARGC_MAX)
+			return -1;
+		while (p[len] != '\0' && p[len] != ' ')
+			len++;
+		if (len >= sizeof(out->argv[0]))
+			return -1;
+		memcpy(out->argv[out->argc], p, len);
+		out->argv[out->argc][len] = '\0';
+		out->argc++;
+		p += len;
+	}
+	if (out->argc == 0 || out->argv[0][0] != '/')
+		return -1;
+	return 0;
+}
+
+/* NAME:value -- the service the attribute flag names, and the value. */
+static struct cli_service_decl *service_attr_target(const char *arg, struct cli_service_decl *svcs,
+                                                    int count, const char **value_out)
+{
+	const char *colon = strchr(arg, ':');
+	size_t nlen;
+	int i;
+
+	if (colon == NULL || colon == arg)
+		return NULL;
+	nlen = (size_t)(colon - arg);
+	for (i = 0; i < count; i++) {
+		if (strlen(svcs[i].name) == nlen && strncmp(svcs[i].name, arg, nlen) == 0) {
+			*value_out = colon + 1;
+			return &svcs[i];
+		}
+	}
+	return NULL;
+}
+
+/* Writes one comma-separated list as a JSON array of strings. */
+static void jw_csv_array(struct json_writer *w, const char *csv)
+{
+	const char *p = csv;
+
+	jw_arr_open(w);
+	while (*p != '\0') {
+		const char *end = strchr(p, ',');
+		size_t len = end != NULL ? (size_t)(end - p) : strlen(p);
+		char item[64];
+
+		if (len > 0 && len < sizeof(item)) {
+			memcpy(item, p, len);
+			item[len] = '\0';
+			jw_str(w, item);
+		}
+		p += len;
+		if (*p == ',')
+			p++;
+	}
+	jw_arr_close(w);
+}
+
+/* Writes a space-separated argv string as a JSON array of strings. */
+static void jw_words_array(struct json_writer *w, const char *words)
+{
+	const char *p = words;
+
+	jw_arr_open(w);
+	while (*p != '\0') {
+		size_t len = 0;
+		char item[128];
+
+		while (*p == ' ')
+			p++;
+		if (*p == '\0')
+			break;
+		while (p[len] != '\0' && p[len] != ' ')
+			len++;
+		if (len < sizeof(item)) {
+			memcpy(item, p, len);
+			item[len] = '\0';
+			jw_str(w, item);
+		}
+		p += len;
+	}
+	jw_arr_close(w);
+}
+
+static void jw_service_decl(struct json_writer *w, const struct cli_service_decl *s)
+{
+	int a;
+
+	jw_obj_open(w);
+	jw_key(w, "name");
+	jw_str(w, s->name);
+	if (s->oneshot) {
+		jw_key(w, "type");
+		jw_str(w, "oneshot");
+	}
+	jw_key(w, "cmd");
+	jw_arr_open(w);
+	for (a = 0; a < s->argc; a++)
+		jw_str(w, s->argv[a]);
+	jw_arr_close(w);
+	if (s->after[0] != '\0') {
+		jw_key(w, "after");
+		jw_csv_array(w, s->after);
+	}
+	if (s->ready[0] != '\0') {
+		jw_key(w, "ready");
+		jw_obj_open(w);
+		if (strncmp(s->ready, "tcp:", 4) == 0) {
+			jw_key(w, "tcp_port");
+			jw_int(w, atol(s->ready + 4));
+		} else if (strncmp(s->ready, "socket:", 7) == 0) {
+			jw_key(w, "socket");
+			jw_str(w, s->ready + 7);
+		} else if (strncmp(s->ready, "command:", 8) == 0) {
+			jw_key(w, "command");
+			jw_words_array(w, s->ready + 8);
+		}
+		jw_obj_close(w);
+	}
+	if (s->on_exit[0] != '\0') {
+		jw_key(w, "on_exit");
+		jw_str(w, s->on_exit);
+	}
+	jw_obj_close(w);
+}
+
+static int ready_spec_ok(const char *v)
+{
+	if (strncmp(v, "tcp:", 4) == 0)
+		return atol(v + 4) >= 1 && atol(v + 4) <= 65535;
+	if (strncmp(v, "socket:", 7) == 0)
+		return v[7] == '/';
+	if (strncmp(v, "command:", 8) == 0)
+		return v[8] == '/';
+	return 0;
+}
+
 #define CLI_MAX_CONSOLES 4
 #define CLI_CONSOLE_ARGC_MAX 8
 
@@ -8549,8 +8774,8 @@ static int cmd_run(const struct cix_client *c, int json_mode, int argc, char **a
 	long follow_rolling_jitter = -1;
 	const char *depends_on[CLI_MAX_DEPENDS];
 	int depends_on_count = 0;
-	long readiness_tcp_port = -1;
-	long readiness_timeout = -1;
+	struct cli_service_decl services[CLI_MAX_SERVICES];
+	int service_count = 0;
 	int ip_forward = 0;
 	int ksm = 0;
 	int dns_register = 0;
@@ -8595,15 +8820,10 @@ static int cmd_run(const struct cix_client *c, int json_mode, int argc, char **a
 	const char *dns_servers[CLI_MAX_DNS_SERVERS];
 	int dns_server_count = 0;
 	int i = 0;
-	int cmd_start = -1;
 	struct json_writer w;
 	struct cix_response r;
 
 	while (i < argc) {
-		if (strcmp(argv[i], "--") == 0) {
-			cmd_start = i + 1;
-			break;
-		}
 		if (strncmp(argv[i], "--name=", 7) == 0)
 			name = argv[i] + 7;
 		else if (strncmp(argv[i], "--image=", 8) == 0)
@@ -8704,10 +8924,47 @@ static int cmd_run(const struct cix_client *c, int json_mode, int argc, char **a
 				return 2;
 			}
 			depends_on[depends_on_count++] = argv[i] + 13;
-		} else if (strncmp(argv[i], "--readiness-tcp-port=", 21) == 0) {
-			readiness_tcp_port = atol(argv[i] + 21);
-		} else if (strncmp(argv[i], "--readiness-timeout=", 20) == 0) {
-			readiness_timeout = atol(argv[i] + 20);
+		} else if (strncmp(argv[i], "--service=", 10) == 0 || strncmp(argv[i], "--oneshot=", 10) == 0) {
+			if (service_count >= CLI_MAX_SERVICES) {
+				fprintf(stderr, "cixctl: too many services (max %d)\n", CLI_MAX_SERVICES);
+				return 2;
+			}
+			if (parse_service_flag(argv[i] + 10, &services[service_count]) != 0) {
+				fprintf(stderr, "cixctl: invalid %.9s value '%s' (expected NAME=/absolute/path [args...])\n",
+				        argv[i], argv[i] + 10);
+				return 2;
+			}
+			services[service_count].oneshot = strncmp(argv[i], "--oneshot=", 10) == 0;
+			service_count++;
+		} else if (strncmp(argv[i], "--after=", 8) == 0 || strncmp(argv[i], "--ready=", 8) == 0 ||
+		           strncmp(argv[i], "--on-exit=", 10) == 0) {
+			/* Attribute flags name the service they belong to; it must be declared first. */
+			int is_after = strncmp(argv[i], "--after=", 8) == 0;
+			int is_ready = strncmp(argv[i], "--ready=", 8) == 0;
+			const char *val = NULL;
+			struct cli_service_decl *t = service_attr_target(argv[i] + (is_after || is_ready ? 8 : 10),
+			                                                 services, service_count, &val);
+
+			if (t == NULL) {
+				fprintf(stderr, "cixctl: %s names a service not declared by an earlier --service=/--oneshot=\n",
+				        argv[i]);
+				return 2;
+			}
+			if (is_after) {
+				snprintf(t->after, sizeof(t->after), "%s", val);
+			} else if (is_ready) {
+				if (!ready_spec_ok(val)) {
+					fprintf(stderr, "cixctl: --ready= wants tcp:PORT, socket:/path or command:/path [args]\n");
+					return 2;
+				}
+				snprintf(t->ready, sizeof(t->ready), "%s", val);
+			} else {
+				if (strcmp(val, "restart") != 0 && strcmp(val, "stop") != 0 && strcmp(val, "fail-container") != 0) {
+					fprintf(stderr, "cixctl: --on-exit= wants restart, stop or fail-container\n");
+					return 2;
+				}
+				snprintf(t->on_exit, sizeof(t->on_exit), "%s", val);
+			}
 		} else if (strcmp(argv[i], "--ksm") == 0) {
 			/* #260: volunteer this container's memory for samepage
 			 * merging. Does nothing unless the host scanner is on --
@@ -8827,7 +9084,7 @@ static int cmd_run(const struct cix_client *c, int json_mode, int argc, char **a
 		i++;
 	}
 
-	if (name == NULL || image == NULL || cmd_start < 0 || cmd_start >= argc) {
+	if (name == NULL || image == NULL || service_count == 0) {
 		fprintf(stderr,
 		        "usage: cixctl run --name=NAME --image=IMAGE [--memory-max=N] "
 		        "[--pids-max=N] [--cpu-max=\"QUOTA PERIOD\"] [--cpuset=0-1,3] "
@@ -8842,12 +9099,13 @@ static int cmd_run(const struct cix_client *c, int json_mode, int argc, char **a
 		        "[--restart=always|on-failure|unless-stopped] [--restart-delay=N] "
 		        "[--follow-rolling] [--follow-rolling-jitter-seconds=N] "
 		        "[--depends-on=NAME ...] "
-		        "[--readiness-tcp-port=N [--readiness-timeout=N]] "
+		        "--service=NAME=/path [args] ... [--oneshot=NAME=/path [args] ...] "
+		        "[--after=NAME:DEP,DEP ...] [--ready=NAME:tcp:PORT|socket:PATH|command:/path ...] "
+		        "[--on-exit=NAME:restart|stop|fail-container ...] "
 		        "[--file=CONTAINER_PATH=LOCAL_PATH[:MODE] ...] "
 		        "[--file-owner=CONTAINER_PATH:UID:GID ...] [--sysctl=KEY=VALUE ...] "
 		        "[--env=KEY=VALUE ...] "
-		        "[--dns-server=A.B.C.D ...] "
-		        "-- CMD [ARGS...]\n");
+		        "[--dns-server=A.B.C.D ...]\n");
 		return 2;
 	}
 
@@ -8886,10 +9144,10 @@ static int cmd_run(const struct cix_client *c, int json_mode, int argc, char **a
 	jw_str(&w, name);
 	jw_key(&w, "image");
 	jw_str(&w, image);
-	jw_key(&w, "cmd");
+	jw_key(&w, "services");
 	jw_arr_open(&w);
-	for (i = cmd_start; i < argc; i++)
-		jw_str(&w, argv[i]);
+	for (i = 0; i < service_count; i++)
+		jw_service_decl(&w, &services[i]);
 	jw_arr_close(&w);
 	if (memory_max >= 0) {
 		jw_key(&w, "memory_max");
@@ -9100,17 +9358,6 @@ static int cmd_run(const struct cix_client *c, int json_mode, int argc, char **a
 		for (i = 0; i < depends_on_count; i++)
 			jw_str(&w, depends_on[i]);
 		jw_arr_close(&w);
-	}
-	if (readiness_tcp_port >= 0) {
-		jw_key(&w, "readiness");
-		jw_obj_open(&w);
-		jw_key(&w, "tcp_port");
-		jw_int(&w, readiness_tcp_port);
-		if (readiness_timeout >= 0) {
-			jw_key(&w, "timeout_seconds");
-			jw_int(&w, readiness_timeout);
-		}
-		jw_obj_close(&w);
 	}
 	if (file_count > 0) {
 		jw_key(&w, "files");
@@ -14251,9 +14498,9 @@ static int cmd_container_edit(const struct cix_client *c, int json_mode, int arg
 	char path[256];
 
 	if (argc < 2 || argv[0][0] == '-') {
-		fprintf(stderr, "usage: cixctl container edit NAME --json='{\"cmd\":[...]}'\n"
+		fprintf(stderr, "usage: cixctl container edit NAME --json='{\"env\":{...}}'\n"
 		                "  Fields given replace those fields; a field set to null removes it.\n"
-		                "  restart/depends_on/readiness/follow_rolling cannot be edited yet --\n"
+		                "  restart/depends_on/services/follow_rolling cannot be edited --\n"
 		                "  recreate the container to change those.\n");
 		return 2;
 	}

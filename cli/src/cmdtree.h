@@ -720,6 +720,7 @@ static const struct cli_node n_container_recipe_subs[] = {
 };
 
 static const char *const n_container_run_flags[] = {
+	"--after=",
 	"--cap-add=",
 	"--capture-output",
 	"--cpu-max=",
@@ -750,20 +751,29 @@ static const char *const n_container_run_flags[] = {
 	"--memory-swap-max=",
 	"--name=",
 	"--network=",
+	"--on-exit=",
+	"--oneshot=",
 	"--optional-device=",
 	"--pids-max=",
 	"--pki-cert-dir=",
 	"--pki-days=",
 	"--pki-issue",
-	"--readiness-tcp-port=",
-	"--readiness-timeout=",
+	"--ready=",
 	"--restart-delay=",
 	"--restart=",
 	"--route=",
+	"--service=",
 	"--sysctl=",
 	"--userns",
 	"--volume=",
 	NULL
+};
+
+static const struct cli_node n_container_service_subs[] = {
+	{ "restart", NULL, NULL },
+	{ "start", NULL, NULL },
+	{ "stop", NULL, NULL },
+	{ NULL, NULL, NULL },
 };
 
 static const char *const n_container_volume_attach_flags[] = {
@@ -794,6 +804,7 @@ static const struct cli_node n_container_subs[] = {
 	{ "recipe", NULL, n_container_recipe_subs },
 	{ "rm", NULL, NULL },
 	{ "run", n_container_run_flags, NULL },
+	{ "service", NULL, n_container_service_subs },
 	{ "start", NULL, NULL },
 	{ "stats", NULL, NULL },
 	{ "stop", NULL, NULL },
