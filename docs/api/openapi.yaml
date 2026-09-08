@@ -2375,10 +2375,16 @@ paths:
                   type: string
                   description: >
                     The default route handed to clients on this network.
-                    Omit it to advertise none -- which is rendered as an
-                    explicit suppressing option, not as silence, because
+                    This PUT is a partial update over whatever is already
+                    stored, so omitting it KEEPS the current value rather
+                    than clearing it; pass "0.0.0.0" to say explicitly
+                    that there is none, or simply never set one.
+
+
+                    A network with no router is rendered as an explicit
+                    suppressing option rather than as silence, because
                     dnsmasq's own default when the router option is
-                    absent is to send its own address: clients would be
+                    absent is to send its own address -- clients would be
                     pointed at whichever container serves DHCP, which
                     does not route.
                 servers:
