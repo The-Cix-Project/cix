@@ -64,6 +64,47 @@ cixctl --host=<box> boot
 
 `build_version` is `git describe --tags --always --dirty` **at build time** — check it against the commit you actually intended to ship, not just that the daemon answered. `slot` is the direct answer to "did I actually boot into the slot I just wrote," and `kernel_version` (`uname -r`) confirms the running kernel matches what you just wrote too. A bare `200` from `health` on its own proves only that *some* daemon answered — it doesn't prove it's the one you just deployed, especially right after a reboot where a stale connection or a fallback-to-the-old-slot could both look identical from the outside. Poll through at least one connection failure during the reboot itself (a `curl` timeout or connection-refused) before trusting the recovery — a suspiciously instant reply can mean you never actually lost the old connection.
 
+### A deploy is not verified until the new daemon has built something
+
+`health` and `boot` prove the daemon you meant is running and answering.
+They do not prove it still works. Finish every deploy by building a real
+package:
+
+```sh
+cixctl --host=<box> pkg publish  recipes/package/probe-selftest-one/1/build.sh
+cixctl --host=<box> pkg hostbuild probe-selftest-one 1
+```
+
+It fails on purpose -- the log is the product -- and the line to read is
+`BUILD-PATH RESULT`. Reaching it means the daemon composed a build
+image, created a build container and ran something in it.
+
+This step exists because it was missing once, and the cost was the whole
+platform's ability to build. `v2.55.24` was verified across eleven
+containers, `birdcl show protocols` on both routers and a real SSH
+banner from the jump host -- and it could not build a single package.
+ADR-0260 had made a build container's capture pipe the same descriptor
+`cix-init` was told to keep, and the pre-exec tidy-up closed it: every
+build died with `EBADF` before writing a byte, reported as the fictional
+`build killed by signal 10`. Recovering needed a rollback to the
+previous release and a second deploy, with every container down in
+between.
+
+The reason it survived verification generalises beyond that one bug:
+**a release that changes the build path is itself built by the daemon it
+replaces**, so the first real exercise of the new build code is always
+the build *after* the one that ships it. That is a property of
+self-hosting, not of any particular change, and it will be true of the
+next one.
+
+If the box is already on a daemon that cannot build, the recovery is
+API-only and does not need console access: install a previous version
+whose artifact is already in the cache (a cache hit does not need a
+working build), let the assembly run, `POST /system/update` and reboot.
+Delete any containers whose declaration the older daemon predates
+first -- a daemon that cannot load its own persisted state is the one
+failure the API cannot recover from.
+
 ## When something goes wrong: read the real diagnostics, not just the exit code
 
 `GET /system/logs?source=cixd&tail=N` is the log store (ADR-0070) — every internal `cixd` diagnostic, not just the audit trail, reaches it. For a failed `pkg install`/`pkg hostbuild`, this includes the real captured stdout/stderr of the build container itself (not just its exit status) — a build failure's *actual* error text, e.g.:
