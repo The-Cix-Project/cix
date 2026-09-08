@@ -71,4 +71,18 @@ int nl80211_is_wireless(const char *ifname);
  */
 int nl80211_move_phy_to_netns_fd(const char *ifname, int netns_fd);
 
+
+/*
+ * The runtime message type of the nl80211 family, or -1 with errno set.
+ *
+ * Public because it is the step that silently failed (#341) and a
+ * regression gate needs to be able to call it. Generic netlink assigns
+ * family ids at runtime, so every nl80211 operation begins by asking
+ * the controller for this number by name; when that lookup fails,
+ * nothing is sent to the kernel at all and the operation's reported
+ * errno describes the lookup rather than the operation. Callers inside
+ * this file use it for exactly that reason too -- there is one path.
+ */
+int nl80211_family_id(void);
+
 #endif /* CIX_NL80211_H */

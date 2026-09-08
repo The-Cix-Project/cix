@@ -2,6 +2,7 @@
 
 #include "nlmsg.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -115,28 +116,47 @@ static int genl_open(void)
  * cannot be used -- it would see a non-NLMSG_ERROR reply and call it a
  * failure.
  *
+ * The reply is read into a buffer sized from the datagram itself rather
+ * than a fixed one. This is not caution: nl80211's family description
+ * lists every command and multicast group it has, and measures 2556
+ * bytes on this platform's own kernel (measured, not estimated), while
+ * every other message this file sends fits in a few dozen. A netlink
+ * datagram larger than the supplied buffer is TRUNCATED and its
+ * remainder discarded, so a fixed buffer here does not degrade -- the
+ * family lookup simply never succeeds, and every wireless operation
+ * fails before it sends anything. That was #341: the failure surfaced
+ * as an errno left behind by an unrelated earlier syscall, attributed
+ * to a phy move that had not been attempted.
+ *
  * Returns the family id, or -1.
  */
-static int genl_family_id(int fd, const char *family)
+static int genl_family_id_on(int fd, const char *family)
 {
 	struct nl_msg m;
 	struct nlmsghdr *nh;
 	struct cix_genlmsghdr *gh;
-	char rbuf[NL_MSG_MAX];
+	char *rbuf;
 	ssize_t n;
+	ssize_t dgram;
 	struct nlmsghdr *rnh;
 	struct rtattr *rta;
 	size_t remaining;
+	int id = -1;
+	int saved;
 
 	nl_msg_init(&m);
 	nh = nl_msg_put(&m, sizeof(*nh));
 	gh = nl_msg_put(&m, sizeof(*gh));
-	if (nh == NULL || gh == NULL)
+	if (nh == NULL || gh == NULL) {
+		errno = ENOBUFS;
 		return -1;
+	}
 	gh->cmd = CIX_CTRL_CMD_GETFAMILY;
 	gh->version = 1;
-	if (nl_msg_put_attr_str(&m, CIX_CTRL_ATTR_FAMILY_NAME, family) == NULL)
+	if (nl_msg_put_attr_str(&m, CIX_CTRL_ATTR_FAMILY_NAME, family) == NULL) {
+		errno = ENOBUFS;
 		return -1;
+	}
 
 	nh->nlmsg_type = CIX_GENL_ID_CTRL;
 	nh->nlmsg_len = (uint32_t)m.len;
@@ -144,26 +164,65 @@ static int genl_family_id(int fd, const char *family)
 	nh->nlmsg_seq = 1;
 	nh->nlmsg_pid = 0;
 
+	/* Same errno discipline as nl_msg_send_and_ack(): a caller that
+	 * reports errno must never be handed a stale one. */
 	n = send(fd, m.buf, m.len, 0);
-	if (n < 0 || (size_t)n != m.len)
+	if (n < 0)
+		return -1; /* errno from send() */
+	if ((size_t)n != m.len) {
+		errno = EIO;
 		return -1;
-	n = recv(fd, rbuf, sizeof(rbuf), 0);
-	if (n < 0 || (size_t)n < sizeof(*rnh))
+	}
+	/* How big is the waiting datagram? MSG_PEEK|MSG_TRUNC reports the
+	 * real length while leaving the message queued. */
+	dgram = recv(fd, NULL, 0, MSG_PEEK | MSG_TRUNC);
+	if (dgram < 0)
+		return -1; /* errno from recv() */
+	if ((size_t)dgram < sizeof(*rnh)) {
+		errno = EBADMSG;
 		return -1;
+	}
+	rbuf = malloc((size_t)dgram);
+	if (rbuf == NULL) {
+		errno = ENOMEM;
+		return -1;
+	}
+
+	n = recv(fd, rbuf, (size_t)dgram, 0);
+	if (n < 0) {
+		saved = errno; /* from recv() */
+		free(rbuf);
+		errno = saved;
+		return -1;
+	}
+	if (n != dgram) {
+		/* The datagram shrank between the peek and the read, which
+		 * cannot happen on a socket only this function is using. */
+		free(rbuf);
+		errno = EBADMSG;
+		return -1;
+	}
 
 	rnh = (struct nlmsghdr *)rbuf;
 	if (rnh->nlmsg_type == NLMSG_ERROR) {
 		struct nlmsgerr *err;
 
-		if ((size_t)n < NLMSG_LENGTH(sizeof(*err)))
+		if ((size_t)n < NLMSG_LENGTH(sizeof(*err))) {
+			free(rbuf);
+			errno = EBADMSG;
 			return -1;
+		}
 		err = (struct nlmsgerr *)NLMSG_DATA(rnh);
-		if (err->error != 0)
-			errno = -err->error;
+		saved = err->error != 0 ? -err->error : EPROTO;
+		free(rbuf);
+		errno = saved;
 		return -1;
 	}
-	if (rnh->nlmsg_len > (size_t)n || rnh->nlmsg_len < NLMSG_LENGTH(sizeof(*gh)))
+	if (rnh->nlmsg_len > (size_t)n || rnh->nlmsg_len < NLMSG_LENGTH(sizeof(*gh))) {
+		free(rbuf);
+		errno = EBADMSG;
 		return -1;
+	}
 
 	/* Attributes start after the netlink header and the generic one. */
 	rta = (struct rtattr *)((char *)NLMSG_DATA(rnh) + NLMSG_ALIGN(sizeof(*gh)));
@@ -171,14 +230,20 @@ static int genl_family_id(int fd, const char *family)
 	while (RTA_OK(rta, remaining)) {
 		if (rta->rta_type == CIX_CTRL_ATTR_FAMILY_ID &&
 		    RTA_PAYLOAD(rta) >= sizeof(uint16_t)) {
-			uint16_t id;
+			uint16_t v;
 
-			memcpy(&id, RTA_DATA(rta), sizeof(id));
-			return (int)id;
+			memcpy(&v, RTA_DATA(rta), sizeof(v));
+			id = (int)v;
+			break;
 		}
 		rta = RTA_NEXT(rta, remaining);
 	}
-	return -1;
+	free(rbuf);
+	if (id < 0)
+		/* The controller answered, but without the one attribute the
+		 * request exists to obtain. */
+		errno = ENOENT;
+	return id;
 }
 
 /*
@@ -192,6 +257,22 @@ static int genl_family_id(int fd, const char *family)
  * could name instead without assuming something about its own parent.
  * Passing the attribute in keeps one implementation for both.
  */
+int nl80211_family_id(void)
+{
+	int fd;
+	int id;
+	int saved;
+
+	fd = genl_open();
+	if (fd < 0)
+		return -1;
+	id = genl_family_id_on(fd, "nl80211");
+	saved = errno;
+	close(fd);
+	errno = saved;
+	return id;
+}
+
 static int move_phy(const char *ifname, unsigned short attr, uint32_t value)
 {
 	struct nl_msg m;
@@ -208,22 +289,18 @@ static int move_phy(const char *ifname, unsigned short attr, uint32_t value)
 		return -1;
 	}
 
+	/* Resolve the family before opening the socket the move goes out
+	 * on. The lookup is a self-contained round trip and needs no
+	 * particular socket -- a family id is a property of the kernel,
+	 * not of a connection -- so it has one implementation, used here
+	 * and by anything else that needs the number. */
+	family = nl80211_family_id();
+	if (family < 0)
+		return -1;
+
 	fd = genl_open();
 	if (fd < 0)
 		return -1;
-
-	family = genl_family_id(fd, "nl80211");
-	if (family < 0) {
-		int saved = errno;
-
-		close(fd);
-		/* No nl80211 family means no wireless stack in this kernel at
-		 * all, which is a different problem from a failed move and
-		 * deserves its own errno rather than inheriting whatever the
-		 * socket last set. */
-		errno = saved != 0 ? saved : ENOPROTOOPT;
-		return -1;
-	}
 
 	nl_msg_init(&m);
 	nh = nl_msg_put(&m, sizeof(*nh));

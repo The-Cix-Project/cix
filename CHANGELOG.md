@@ -2,6 +2,73 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### The nl80211 family lookup never fit in its buffer, and blamed a syscall it never made (#341)
+
+`ar-1` would not create. The error named the radio move:
+
+```
+500 failed to create container:
+    container_create: radio "wlan0": nl80211 phy netns move: File exists
+```
+
+`EEXIST` from a namespace move is strange — a fresh netns holds only
+`lo`, so no name can already be taken in it. Two fixes were built on
+readings of that errno and neither changed anything: downing the
+interface before the move (the precondition `nl80211.h` documents, and a
+real one), then naming the destination by namespace fd instead of pid.
+The third attempt measured instead of reasoning, and the errno turned
+out to be describing nothing at all.
+
+Generic netlink assigns family ids at runtime, so every nl80211
+operation begins by asking the controller for the number by name. That
+reply was read into a 1024-byte buffer. **It is 2556 bytes** — measured
+against this kernel with `recv(MSG_PEEK|MSG_TRUNC)`, alongside the
+controller's own 136-byte reply for contrast:
+
+```
+nlctrl       full datagram = 136 bytes   (fits)
+nl80211      full datagram = 2556 bytes  (TRUNCATED)
+```
+
+A netlink datagram larger than the supplied buffer is truncated and its
+remainder discarded, so the lookup failed on every call, on every host,
+since the file was written. Nothing was ever sent to the kernel. The
+`SET_WIPHY_NETNS` command, the wiphy index, the netns fd — none of it
+was reached.
+
+The buffer is now sized from the datagram itself (`MSG_PEEK|MSG_TRUNC`,
+then a matching allocation) rather than from an assumption about how big
+a reply ought to be.
+
+**The wrong errno is the more important half.** The lookup returned -1
+without setting `errno`, and so did three other failure paths in the
+shared `nl_msg_send_and_ack()`. A caller that reports `errno` after such
+a return reports whatever an earlier, unrelated syscall left there —
+`container_create()` runs `mkdir()` on its way here, which is where
+`File exists` came from. An absent errno would have said "something
+failed"; a stale one named a cause, and two rounds of work followed the
+name. Every failure return in `nlmsg.h` and `nl80211.c` now sets a
+distinct errno: `EBADMSG` for a malformed or short reply, `EPROTO` for a
+reply that is not the expected kind, `ENOENT` when the controller
+answers without the attribute the request exists to obtain.
+
+`nl80211_family_id()` is now public, because the step that silently
+failed had no way to be called on its own. `test_rtnetlink` (a release
+selftest) seeds `errno` with a sentinel, calls it, and fails if the call
+returns -1 having left the sentinel in place. The assertion is about
+errno discipline rather than about wireless, so it holds on a host with
+no radio: without cfg80211 the lookup reports `ENOENT` and passes. Only
+silence fails. Proven both ways — the fixed code reports family id 41,
+and a deliberately re-broken copy reproduces the original stale
+`EEXIST`.
+
+Two working theories were tested and disproven, so they need not be
+re-run: the interface being up is not what refused the move, and naming
+the destination by pid rather than fd is not either. Both changes are
+kept — the precondition is real and documented, and an fd the caller
+already holds beats a pid the kernel must re-resolve — but neither was
+the fault.
+
 ### dns-1/dns-2 can actually serve DHCP (#30)
 
 They could not before, and nothing said so. Their dnsmasq command was
@@ -198,8 +265,9 @@ is no way to share one, because the kernel does not offer one.
 Tested where it can be: `test_rtnetlink` asserts the classifier never
 claims an ordinary interface, verified by breaking it on purpose and
 watching the test fail. The move itself needs a real wiphy and real
-privileges, so it is verified on the box — a mocked wiphy would only
-assert that the mock behaves.
+privileges, so it can only be verified on the box — a mocked wiphy would
+only assert that the mock behaves. That verification did not succeed on
+this build; see the entry above, which is why.
 
 ### Firmware is an image the host root is assembled from (#30, ADR-0263)
 
