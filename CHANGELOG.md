@@ -2,6 +2,65 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### BIRD on cr-2, RIPv2 authenticating against the site (partial — route installation unresolved)
+
+`cr-2` runs a RIPv2 speaker alongside keepalived. **`cr-1` is
+deliberately still on its 1.0.0 recipe** so the pair is not both in an
+unverified state; it moves when the open item below is settled.
+
+This is the first consumer of ADR-0259 and it works: `GET
+/v1/containers/cr-2` reports `ifname=management` and `ifname=services`,
+and keepalived's own log now reads *"Assigned address 192.168.150.252
+for interface services"* where it used to say `eth1`.
+`keepalived.conf`'s three literal `eth1` references became `services`
+in the same change, so neither container depends on the order of its
+`networks` array any more.
+
+**A real peer was discovered by doing it.** With a freshly generated
+password, bird logged:
+
+    <AUTH> rip1: Authentication failed for 192.168.15.252 on management - wrong password (0)
+
+192.168.15.252 is neither router. Something on the management LAN
+already speaks RIPv2, and the password in the owner's original config
+is the one it expects — so the value is site infrastructure, not ours to
+invent. Re-applied with it: **zero authentication failures** across
+several update cycles. The `{{SECRET:RIP_PASSWORD}}` mechanism is
+unchanged; only the value is the site's.
+
+`router` 1.1.0 declares `bash` and `bird`. bash is not the "shell
+tooling for debugging" 1.0.0 ruled out — that refusal still stands. The
+image now runs two daemons, and this project supervises two peers in
+one container with a start script that backgrounds both and `wait -n`s
+(the pattern `jump` uses for sshd and nslcd), so either exiting takes
+the container down as a unit. That script needs a shell as its PID 1;
+without one the container died instantly with
+`execve(/usr/bin/bash): No such file or directory`, which is how this
+was found.
+
+`autoconf`, `automake` and `libtool` went into `base` beside the build
+tools already there. All three had recipes *and* cached artifacts and
+were simply not installed anywhere — the daemon reported them one per
+failed build, the ordinary shape of a composed build environment
+(ADR-0199). `cix-builder` was deliberately left alone: it builds the
+control plane.
+
+**Open, and not guessed at:** bird logs a burst of `Netlink: Invalid
+argument` every 60 seconds, so it is not installing what it learns.
+`EINVAL` is not a permission error and `keepalived` manages addresses
+in the same netns without trouble, so the capability set is not the
+obvious suspect. Several candidate causes exist (exporting device or
+loopback routes back into a table that already has them among them) and
+none has been measured. Diagnosing it needs bird's own view
+(`birdc show route`/`show protocols`) through a console session, which
+has not been done. Recorded rather than explained.
+
+**Egress beyond the routers is still owner-side.** RIP only changes
+reachability if the site gateway accepts these advertisements; the
+platform's own measurement stands — the host has no route to
+`192.168.150.0/24`, `cixctl ping 192.168.15.101` answers in 0.05 ms
+while `.150.101`, `.150.103` and the VRRP `.254` all time out.
+
 ### An attachment's interface can be named (ADR-0259)
 
 A container's interface names have always been positional --
