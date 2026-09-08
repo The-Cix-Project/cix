@@ -2,6 +2,42 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### A container is stopped by a message, not a signal: PID 1 discards what it cannot yet handle (#334)
+
+The last of the ADR-0260 selftest failures, and the most interesting.
+Two tests failed on a network delete refused `409` because the
+container holding it was still tearing down, and both already waited
+for it to go. `cix-init` handled `SIGTERM` correctly in isolation, and
+the daemon was sending it.
+
+Lifecycle diagnostics, added because nothing anywhere said what a stop
+was doing, named the difference in one run:
+
+    router: deleting -- SIGTERM to pid 1213 ... router: exited after 0s
+    n8:     deleting -- SIGTERM to pid 1225 ... n8: exited after 0s
+    n3:     deleting -- SIGTERM to pid 1209 ... n3: exited after 1s
+    n7:     deleting -- SIGTERM to pid 1223      (no exit, ever)
+
+`n7` is the one container the test creates and deletes milliseconds
+apart. **The kernel treats PID 1 of a PID namespace as
+`SIGNAL_UNKILLABLE` and discards any signal it has no handler for yet
+-- it is not queued.** `execve()` leaves every disposition at `SIG_DFL`
+until the new program calls `sigaction()`, so a stop arriving in that
+window silently does nothing and the container waits out the full
+15-second `SIGKILL` grace. Measured directly with a standalone probe: a
+namespace init that installs its handler 300 ms late never sees the
+signal at all; the same probe with the handler installed first works.
+
+So a stop is now `CIXINIT_OP_SHUTDOWN` on the control socket -- which
+waits in the buffer until `cix-init` reaches its loop, whether that is
+before or after the daemon asked -- with `SIGTERM` alongside it as the
+fallback for a PID 1 that is not reading, and `SIGKILL` still behind
+both. `test_cix_init` gains case 12 (SIGTERM, the path the daemon
+actually uses, which case 5's control command did not cover) and case
+13 (a shutdown queued *before* `cix-init` starts is still honoured).
+Recorded in `CLAUDE.md`: the fix for this class is never a longer
+timeout.
+
 ### The ADR-0260 migration preserves the old `cmd` semantics; v2.55.18 was refused by its own gate (#334)
 
 `v2.55.18` was tagged, built, and **refused by its own selftest** -- which

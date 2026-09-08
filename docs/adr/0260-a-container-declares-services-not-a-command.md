@@ -296,6 +296,16 @@ Until the supervisor ships, `cr-1`/`cr-2` and `jump` keep their start scripts, a
 above is real rather than theoretical: a bird crash on a router presents as a container restart with
 no indication which daemon failed.
 
+**Stopping a container is a message first and a signal second.** `CIXINIT_OP_SHUTDOWN` on the control
+socket is the authoritative channel; `SIGTERM` goes alongside it only as a fallback. This is not
+belt-and-braces — a signal alone is *wrong* here. The kernel treats PID 1 of a PID namespace as
+`SIGNAL_UNKILLABLE` and **discards** any signal it has not yet installed a handler for, so a `SIGTERM`
+landing in the window between `execve()` and `cix-init`'s own `sigaction()` is gone, not queued, and
+the container then sits until the `SIGKILL` escalation. Found the hard way: every container stopped in
+under a second except the one a test created and deleted milliseconds apart, which hung for the full
+grace, every run. The command has no such window because a socket buffer keeps it until the reader
+exists.
+
 **The migration preserves each container's existing behaviour exactly, and per-service restart is opt-in.**
 Every service translated from an old `cmd` carries `on_exit: fail-container` — so its exit still ends
 the container with its status, and the container-level `restart` policy still decides what happens

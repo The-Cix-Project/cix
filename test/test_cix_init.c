@@ -66,6 +66,10 @@ struct init_run {
 	int report_fd;
 	int out_fd[CIXINIT_MAX_SERVICES];
 	int count;
+	/* the child's own ends, held between prepare and exec */
+	int ctl_child;
+	int rep_child;
+	int out_child[CIXINIT_MAX_SERVICES];
 };
 
 static void argv_pack(char *dst, size_t size, const char *const *argv)
@@ -103,25 +107,35 @@ static void svc_init(struct cixinit_service *s, const char *name, int type, cons
 	s->gid = -1;
 }
 
-/* Spawns cix-init with the table written before exec, the way cixd does. */
-static int init_spawn(struct init_run *r, const struct cixinit_service *svcs, int count, int corrupt_hello)
+/*
+ * Setting up the transport and writing the table is one step; exec'ing
+ * cix-init is another. Splitting them is what lets a test put something
+ * else in the control socket first -- the way a daemon that deletes a
+ * container immediately after creating it does.
+ */
+static int init_spawn_prepare(struct init_run *r, const struct cixinit_service *svcs, int count,
+                              int corrupt_hello)
 {
 	int ctl[2], rep[2];
-	int pipes[CIXINIT_MAX_SERVICES][2];
 	struct cixinit_hello hello;
 	int i;
 
 	memset(r, 0, sizeof(*r));
 	r->count = count;
-	if (socketpair(AF_UNIX, SOCK_SEQPACKET, 0, ctl) != 0 || socketpair(AF_UNIX, SOCK_SEQPACKET, 0, rep) != 0) {
+	if (socketpair(AF_UNIX, SOCK_SEQPACKET, 0, ctl) != 0 ||
+	    socketpair(AF_UNIX, SOCK_SEQPACKET, 0, rep) != 0) {
 		perror("socketpair");
 		return -1;
 	}
 	for (i = 0; i < count; i++) {
-		if (pipe(pipes[i]) != 0) {
+		int pfd[2];
+
+		if (pipe(pfd) != 0) {
 			perror("pipe");
 			return -1;
 		}
+		r->out_fd[i] = pfd[0];
+		r->out_child[i] = pfd[1];
 	}
 
 	memset(&hello, 0, sizeof(hello));
@@ -138,6 +152,16 @@ static int init_spawn(struct init_run *r, const struct cixinit_service *svcs, in
 			return -1;
 		}
 	}
+	r->control_fd = ctl[0];
+	r->ctl_child = ctl[1];
+	r->report_fd = rep[0];
+	r->rep_child = rep[1];
+	return 0;
+}
+
+static int init_spawn_exec(struct init_run *r)
+{
+	int i;
 
 	r->pid = fork();
 	if (r->pid < 0) {
@@ -149,16 +173,16 @@ static int init_spawn(struct init_run *r, const struct cixinit_service *svcs, in
 		char nums[2 + CIXINIT_MAX_SERVICES][16];
 		int n = 0;
 
-		close(ctl[0]);
-		close(rep[0]);
+		close(r->control_fd);
+		close(r->report_fd);
 		argv[n++] = (char *)"cix-init";
-		snprintf(nums[0], sizeof(nums[0]), "%d", ctl[1]);
-		snprintf(nums[1], sizeof(nums[1]), "%d", rep[1]);
+		snprintf(nums[0], sizeof(nums[0]), "%d", r->ctl_child);
+		snprintf(nums[1], sizeof(nums[1]), "%d", r->rep_child);
 		argv[n++] = nums[0];
 		argv[n++] = nums[1];
-		for (i = 0; i < count; i++) {
-			close(pipes[i][0]);
-			snprintf(nums[2 + i], sizeof(nums[2 + i]), "%d", pipes[i][1]);
+		for (i = 0; i < r->count; i++) {
+			close(r->out_fd[i]);
+			snprintf(nums[2 + i], sizeof(nums[2 + i]), "%d", r->out_child[i]);
 			argv[n++] = nums[2 + i];
 		}
 		argv[n] = NULL;
@@ -166,15 +190,28 @@ static int init_spawn(struct init_run *r, const struct cixinit_service *svcs, in
 		perror("execv cix-init");
 		_exit(99);
 	}
-	close(ctl[1]);
-	close(rep[1]);
-	for (i = 0; i < count; i++) {
-		close(pipes[i][1]);
-		r->out_fd[i] = pipes[i][0];
+	close(r->ctl_child);
+	r->ctl_child = -1;
+	close(r->rep_child);
+	r->rep_child = -1;
+	for (i = 0; i < r->count; i++) {
+		close(r->out_child[i]);
+		r->out_child[i] = -1;
 	}
-	r->control_fd = ctl[0];
-	r->report_fd = rep[0];
 	return 0;
+}
+
+static int init_spawn_deferred(struct init_run *r, const struct cixinit_service *svcs, int count)
+{
+	return init_spawn_prepare(r, svcs, count, 0);
+}
+
+/* Spawns cix-init with the table written before exec, the way cixd does. */
+static int init_spawn(struct init_run *r, const struct cixinit_service *svcs, int count, int corrupt_hello)
+{
+	if (init_spawn_prepare(r, svcs, count, corrupt_hello) != 0)
+		return -1;
+	return init_spawn_exec(r);
 }
 
 static int read_report(struct init_run *r, struct cixinit_report *out, int timeout_ms)
@@ -728,6 +765,51 @@ static int test_sigterm_shutdown(void)
 	return 0;
 }
 
+/*
+ * The race that made this necessary: a shutdown asked for BEFORE
+ * cix-init has even started must still be honoured. A signal cannot do
+ * this -- pid 1 of a pidns discards one it has no handler for yet -- so
+ * the command has to be the authoritative channel, and this writes it
+ * into the control socket before the fork to prove the queued path.
+ */
+static int test_shutdown_before_start(void)
+{
+	struct cixinit_service svcs[1];
+	struct init_run r;
+	struct cixinit_command c;
+	int status;
+	struct timespec t0, t1;
+	static const char *const idle_argv[] = { "/bin/sh", "-c", "exec sleep 60", NULL };
+
+	printf("13. a shutdown queued before cix-init starts is still honoured\n");
+	svc_init(&svcs[0], "idle", CIXINIT_TYPE_DAEMON, idle_argv);
+	if (init_spawn_deferred(&r, svcs, 1) != 0)
+		return -1;
+	memset(&c, 0, sizeof(c));
+	c.magic = CIXINIT_MAGIC;
+	c.op = CIXINIT_OP_SHUTDOWN;
+	c.service = -1;
+	if (write(r.control_fd, &c, sizeof(c)) != (ssize_t)sizeof(c)) {
+		perror("  queueing the shutdown");
+		return -1;
+	}
+	clock_gettime(CLOCK_MONOTONIC, &t0);
+	if (init_spawn_exec(&r) != 0)
+		return -1;
+	if (wait_exit(&r, &status) != 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+		fprintf(stderr, "  FAIL: a pre-queued shutdown did not end in a clean exit 0 (0x%x)\n", status);
+		return -1;
+	}
+	clock_gettime(CLOCK_MONOTONIC, &t1);
+	if (t1.tv_sec - t0.tv_sec > 2) {
+		fprintf(stderr, "  FAIL: took %lds\n", (long)(t1.tv_sec - t0.tv_sec));
+		return -1;
+	}
+	printf("  honoured a shutdown it was told about before it existed\n");
+	init_close(&r);
+	return 0;
+}
+
 static int test_sigpipe_default(void)
 {
 	struct cixinit_service svcs[1];
@@ -776,6 +858,7 @@ int main(void)
 	fails += test_fd_hygiene() != 0;
 	fails += test_sigpipe_default() != 0;
 	fails += test_sigterm_shutdown() != 0;
+	fails += test_shutdown_before_start() != 0;
 
 	printf("CIX-INIT RESULT: %s (%d failure(s))\n", fails == 0 ? "PASS" : "FAIL", fails);
 	return fails == 0 ? 0 : 1;
