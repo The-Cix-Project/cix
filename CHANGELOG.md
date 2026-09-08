@@ -2,6 +2,43 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### dns-1/dns-2 can actually serve DHCP (#30)
+
+They could not before, and nothing said so. Their dnsmasq command was
+DNS-only — no `--conf-file`, no `--dhcp-hostsfile`, no
+`--dhcp-leasefile` — so every rendered range would have been staged into
+a container that never read it. 1.7.0 adds the three flags, the two
+rendered files as `files[]` placeholders (they must exist at creation:
+dnsmasq refuses to start on a `--conf-file` that is not there, and a
+server that will not start is worse than one serving no ranges), and an
+`access` attachment.
+
+**The attachment is what makes the network configurable at all**, not a
+convenience: `PUT /v1/dhcp/networks/{network}` refuses a server with no
+interface on the segment — *"it has no interface in this subnet, so it
+could not answer here"*. Attachment rather than a DHCP relay on the
+router pair is deliberate. Relay exists because you cannot physically
+put a server on every VLAN; here an attachment is one line and a veth
+the daemon makes anyway, while relay would need a package that does not
+exist (only `dhcpcd`, a client), a service on each router, and a
+relaxation of that check. The argument that will eventually favour relay
+is blast radius — attachment puts these two on every broadcast domain
+they serve — and it starts to bite when a segment exists precisely so
+the service containers are not on it.
+
+No `cap_add`: `CAP_NET_ADMIN` and `CAP_NET_RAW` are deliberately kept by
+default (`cix_default_deny[]` names neither), so dnsmasq's DHCP sockets
+have what they need. Checked in the source rather than assumed.
+
+Addresses follow the existing convention — `.101`/`.102` on access, as
+on services. Infrastructure there is `.101`, `.102`, `.110` (ar-1),
+`.252`, `.253` and the `.254` VRRP address, so a pool must start above
+those; it is set through the API, not in a recipe.
+
+Still unproven, and deliberately not claimed: that a Cix container
+serves a real DHCP client. Everything to this point is asserted at the
+render. The first lease on the access segment is the measurement.
+
 ### DHCP options are tagged per network, so one server can serve several (#30)
 
 Asked how ranges are differentiated per network when the same servers
