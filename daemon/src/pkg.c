@@ -7742,30 +7742,34 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		 * to surface which step failed than through this same exit
 		 * status pkg.c already receives.
 		 */
-		static const char *const setup_step_names[] = {
-			"mountns_make_private", "overlay_create", "mountns_pivot", "container_dev_mknod",
-			"sethostname",          "net_configure",   "net_install_routes",
-			"net_enable_ip_forward", "net_apply_sysctl", "prctl(PDEATHSIG)",
-		};
-		/* overlay_create()'s own six named sub-steps (include/container.h's
-		 * enum overlay_error, translated by src/container.c into exit
-		 * codes 130-136 -- see that translation's own comment). */
-		static const char *const overlay_step_names[] = {
-			"overlay_create: stat(lowerdir)", "overlay_create: mkdir(upperdir)",
-			"overlay_create: quota tagging",  "overlay_create: mkdir(workdir)",
-			"overlay_create: mkdir(merged)",  "overlay_create: options string too long",
-			"overlay_create: mount(overlay)",
-		};
+		/*
+		 * The pre-execve exit codes belong to src/container.c and are
+		 * named by container_decode_exit_status(), the same function
+		 * registry.c already reports ordinary containers through.
+		 *
+		 * This file used to carry its own copies of those two tables,
+		 * and the duplication cost exactly what a second copy always
+		 * costs: ADR-0260 added exit 138 (an fd named on cix-init's
+		 * argv was not open) to container.c's table and not to this
+		 * one, so every package build on the platform failed with
+		 * "build killed by signal 10" -- 138 is also 128+10 -- while
+		 * the container's own log line next to it said "fcntl(keep_fds,
+		 * F_SETFD): Bad file descriptor". One table, read from one
+		 * place, cannot drift from itself.
+		 *
+		 * Captured output is the discriminator, and it is decisive
+		 * rather than a heuristic: container.c emits these codes only
+		 * BEFORE execve() succeeds, so a single byte of build output
+		 * proves the number came from the recipe shell instead --
+		 * where 130-136 mean "killed by signal 2..8" and nothing to do
+		 * with overlayfs. The old 130-136 branch had no such guard and
+		 * would have reported a shell killed by SIGKILL... as an
+		 * overlay mkdir failure.
+		 */
+		if (exit_status >= 110 && exit_status <= 139 && e->build_output_captured_len == 0) {
+			char step[192];
 
-		if (exit_status >= 110 && exit_status <= 119) {
-			const char *step = setup_step_names[exit_status - 110];
-
-			logstore_write("cixd", "error", "pkg %s@%s: build container setup failed (%s)",
-			                e->name, g_chains[chain_idx].image, step);
-			pkg_fail(e, is_upgrade, PIPELINE_BUILD, "build container setup failed (%s)", step);
-		} else if (exit_status >= 130 && exit_status <= 136) {
-			const char *step = overlay_step_names[exit_status - 130];
-
+			container_decode_exit_status(exit_status, 0, step, sizeof(step));
 			logstore_write("cixd", "error", "pkg %s@%s: build container setup failed (%s)",
 			                e->name, g_chains[chain_idx].image, step);
 			pkg_fail(e, is_upgrade, PIPELINE_BUILD, "build container setup failed (%s)", step);

@@ -2,6 +2,55 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### A kept descriptor must not be closed by the tidy-up next to it: no package could build (#334)
+
+The first package build attempted under the new daemon failed in 100
+seconds having written zero bytes of log, and the daemon reported
+
+    pkg kernel@__hostbuild: build killed by signal 10
+
+There is no signal 10 here. The container's own line, logged one second
+earlier from the same event, said what actually happened:
+
+    container __pkgbuild-0 exited abnormally:
+      child: fcntl(keep_fds, F_SETFD): Bad file descriptor
+
+**Two independent bugs, and the second is what made the first hard to
+see.**
+
+The fault: a build container's capture pipe and the output fd named on
+`cix-init`'s argv are deliberately the same descriptor -- one service,
+one stream, which is the whole point of the shape. `container_create()`'s
+`capture_output` block dup2s that fd onto 1 and 2 and then closes the
+original to avoid leaking a duplicate. That close was written years
+before anything needed the original to survive, and ADR-0260 gave it a
+reason to: the `fcntl(F_SETFD)` loop that clears close-on-exec for
+cix-init's descriptors then ran against a closed fd and got `EBADF`.
+Every package build on the platform failed this way, before producing a
+byte. Fixed by not closing a descriptor the spec has named as kept.
+
+The report: `pkg.c` carried **its own copies** of `container.c`'s
+exit-code tables. ADR-0260 added exit 138 to container.c's table and not
+to the copy, so pkg.c fell through to its "128+N means killed by signal
+N" branch -- and 138 is also 128+10. A precise, correctly-produced
+diagnostic was rewritten into a fictional signal on its way out.
+
+The copies are gone; pkg.c now calls
+`container_decode_exit_status()`, the same function `registry.c` already
+reports ordinary containers through. That also closes a latent bug in
+the old copy: its overlay branch (130-136) had no guard, so a recipe
+shell killed by `SIGKILL` would have been reported as an overlay mkdir
+failure. Captured output is the discriminator and it is decisive rather
+than a heuristic -- container.c emits these codes only before `execve()`
+succeeds, so a single byte of build output proves the number came from
+the shell instead.
+
+**Worth stating plainly: this shipped.** `v2.55.24` was verified live
+across eleven containers and was still a daemon that could not build a
+package, because the release that introduced the fault was itself built
+by the daemon it replaced. A cut-over's first real exercise of the new
+code is the build *after* the one that ships it.
+
 ### ADR-0260 is live on 192.168.15.95: eleven containers, no `cmd` anywhere (#334)
 
 `v2.55.24` booted (slot a, kernel 7.2.3) and every container was

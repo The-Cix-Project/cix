@@ -215,6 +215,22 @@ static int write_userns_maps(pid_t pid, long long base, long long len)
  * syscalls, which is exactly what the shared header exists to prevent.
  */
 
+/*
+ * Is this descriptor one of the ones cix-init is told about on its argv
+ * (ADR-0260)? Those must survive the pre-exec setup: they are the whole
+ * channel between the daemon and the container's pid 1, so a close()
+ * meant to tidy up a duplicate must never take one of them with it.
+ */
+static int spec_keeps_fd(const struct container_spec *spec, int fd)
+{
+	int i;
+
+	for (i = 0; i < spec->keep_fd_count; i++)
+		if (spec->keep_fds[i] == fd)
+			return 1;
+	return 0;
+}
+
 /* True if this container was explicitly granted a named capability
  * (#257). cap_add is the operator's own opt-in list, so this asks a
  * question about intent rather than about the current capability set --
@@ -932,11 +948,24 @@ int container_create(const struct container_spec *spec, struct container_handle 
 			 * pkg.c), so a bare close() without the guard would
 			 * double-close a already-closed fd if stderr_fd ==
 			 * stdout_fd and both already collapsed onto the same
-			 * number as one of the standard streams. */
-			if (spec->stdout_fd != STDOUT_FILENO && spec->stdout_fd != STDERR_FILENO)
+			 * number as one of the standard streams.
+			 *
+			 * ADR-0260 added a third reason not to close: a build
+			 * container's capture pipe IS the write end named on
+			 * cix-init's argv, because the one service's output
+			 * and the container's stdio are the same stream by
+			 * design. Closing it here left the fcntl() loop below
+			 * calling F_SETFD on a closed descriptor, so every
+			 * package build died with EBADF before it produced a
+			 * single byte -- and the daemon reported that as
+			 * "killed by signal 10", because 138 is also 128+10.
+			 * A descriptor this container was told to keep is
+			 * kept. */
+			if (spec->stdout_fd != STDOUT_FILENO && spec->stdout_fd != STDERR_FILENO &&
+			    !spec_keeps_fd(spec, spec->stdout_fd))
 				close(spec->stdout_fd);
 			if (spec->stderr_fd != STDOUT_FILENO && spec->stderr_fd != STDERR_FILENO &&
-			    spec->stderr_fd != spec->stdout_fd)
+			    spec->stderr_fd != spec->stdout_fd && !spec_keeps_fd(spec, spec->stderr_fd))
 				close(spec->stderr_fd);
 		}
 
