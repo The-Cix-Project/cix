@@ -48,16 +48,6 @@ struct container_def {
 	char depends_on[CONTAINERDEF_MAX_DEPENDS][REGISTRY_NAME_MAX];
 	int depends_on_count;
 	/*
-	 * Cached from the same request's own "readiness" field (see
-	 * ADR-0026), the same "parsed once, not re-parsed from body on
-	 * every read" shape depends_on already has above. has_readiness
-	 * == 0 means no readiness check was configured; the other two
-	 * fields are meaningless in that case.
-	 */
-	int has_readiness;
-	int readiness_tcp_port;
-	int readiness_timeout_seconds;
-	/*
 	 * "no" | "always" | "on-failure" | "unless-stopped". ADR-0181 (#73,
 	 * superseding ADR-0027): every container is now persisted, so a def CAN
 	 * be "no" -- it just means "never auto-restart" (not on exit, boot, or
@@ -139,14 +129,14 @@ int containerdef_init(const char *state_path);
 void containerdef_repoint(const char *new_state_path);
 
 /*
- * Persists name's definition (body verbatim, depends_on/readiness/
+ * Persists name's definition (body verbatim, depends_on/
  * restart_policy/restart_delay_seconds already parsed/validated by the
  * caller from that same body -- kept alongside it as a cached index
  * for containerdef_resolve_order()/containerdef_autostart_all(), not a
  * second source of truth: only this function ever writes a
  * definition, and it always receives these from the same request
- * parse). has_readiness == 0 means no readiness check (the other two
- * readiness parameters are then ignored). restart_policy may be any of
+ * parse). Readiness is not here: ADR-0260 derives a container's
+ * readiness from its services' own reports. restart_policy may be any of
  * "no", "always", "on-failure", or "unless-stopped" -- ADR-0181 persists
  * every container, "no" included (it then means "kept but never
  * auto-restarted"); a "no" definition simply isn't autostarted at boot,
@@ -160,7 +150,6 @@ void containerdef_repoint(const char *new_state_path);
  */
 int containerdef_add(const char *name, const char *body, size_t body_len,
                       const char depends_on[][REGISTRY_NAME_MAX], int depends_on_count,
-                      int has_readiness, int readiness_tcp_port, int readiness_timeout_seconds,
                       const char *restart_policy, int restart_delay_seconds, int follow_rolling,
                       int has_follow_rolling_jitter, int follow_rolling_jitter_seconds);
 

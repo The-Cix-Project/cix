@@ -113,10 +113,13 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/containers` | List all containers this daemon knows about |
 | POST | `/containers` | Create and start a container |
 | GET | `/containers/{name}` | Inspect one container |
-| PATCH | `/containers/{name}` | Edit the stored definition in place — cmd, env, files, limits, volumes (issue #11). Applies at next start |
+| PATCH | `/containers/{name}` | Edit the stored definition in place — env, files, limits, volumes (issue #11). Applies at next start. `services` is recreate-only |
 | DELETE | `/containers/{name}` | Stop (if running), remove it, and forget any persisted definition |
 | POST | `/containers/{name}/start` | Bring a stopped or exited container back to life |
-| POST | `/containers/{name}/stop` | Kill it now, always keep its persisted definition (only `DELETE` removes a container) |
+| POST | `/containers/{name}/stop` | Stop it now — SIGTERM to its cix-init, which stops the services in reverse dependency order, SIGKILL after the declared grace — always keeping its persisted definition (only `DELETE` removes a container) |
+| POST | `/containers/{name}/services/{service}/start` | Start one declared service (lifts an operator stop) — ADR-0260 |
+| POST | `/containers/{name}/services/{service}/stop` | Stop one declared service and hold it stopped until the next container start |
+| POST | `/containers/{name}/services/{service}/restart` | Stop then start one service, the rest of the container untouched |
 | POST | `/containers/{name}/pause` | Freeze a running container via the cgroup v2 freezer |
 | POST | `/containers/{name}/unpause` | Thaw a paused container |
 | GET | `/containers/{name}/stats` | Real, host-side CPU/memory/disk/network usage, a point-in-time snapshot |
@@ -793,7 +796,7 @@ POST /v1/containers
 {
   "name": "dns-1",
   "image": "dns",
-  "cmd": ["/usr/sbin/dnsmasq", "-k", "-H", "/etc/dnsmasq-hosts", ...],
+  "services": [{"name": "dnsmasq", "cmd": ["/usr/sbin/dnsmasq", "-k", "-H", "/etc/dnsmasq-hosts", ...]}],
   "dns_server": {"hosts_path": "/etc/dnsmasq-hosts"}
 }
 ```
@@ -804,6 +807,35 @@ Forget-on-delete stays correct — nothing dangles — and `POST /v1/containers/
 
 **A declared role that cannot be registered is a `500`, not a warning.** The container is created and the response says so, naming the role that failed. A server that is running and unregistered is the exact silent state this exists to end, so it is never the quiet outcome.
 
+## What a container runs: services (ADR-0260)
+
+Pid 1 in every container is `cix-init`, the platform's own supervisor — a freestanding binary the daemon stages into the container's tree at creation, that reads no file inside the image and holds no policy of its own. What it runs is the container's `services[]`:
+
+```json
+POST /v1/containers
+{
+  "name": "jump",
+  "image": "jumpbox",
+  "services": [
+    {"name": "hostkeys", "type": "oneshot", "cmd": ["/usr/bin/ssh-keygen", "-A"]},
+    {"name": "nslcd", "cmd": ["/usr/sbin/nslcd", "-d"], "ready": {"socket": "/run/nslcd/socket"}},
+    {"name": "sshd", "cmd": ["/usr/sbin/sshd", "-D", "-e"], "after": ["hostkeys", "nslcd"], "ready": {"tcp_port": 22}}
+  ]
+}
+```
+
+- A **daemon** (the default `type`) is long-running and supervised; a **oneshot** runs to completion and must exit 0 — it is how setup work happens without a shell script in the image.
+- `after` names services this one starts after, once each is *ready*: a daemon that passed its `ready` probe (or started, if it has none), a oneshot that exited 0. Any declaration order is accepted; a cycle or an unknown name is a `400` naming the service.
+- `ready` is exactly one of `tcp_port` (a connect to the container's own first address), `socket` (a unix socket path) or `command` (an argv that exits 0, run as the service's uid, 5 s timeout, output discarded), with `timeout_seconds` (default 30). A probe that never passes is reported as a failure and the service is treated as ready so dependents proceed — the behaviour the old container-level check had.
+- `on_exit` is `restart` (daemons' default: restart after `restart_delay_seconds`, default 2 — **declared, never computed**), `stop` (leave it exited), or `fail-container` (oneshots' default: stop everything else in reverse order and end the container with this service's status, which the container-level `restart` policy then acts on). A failing daemon restarts alone; there is no cascade.
+- `stop_signal` (default `SIGTERM`) and `stop_timeout_seconds` (default 10) govern both an operator stop and the container's shutdown, which stops services in reverse dependency order. `uid`/`gid` run the service (and its probe) as someone other than the container's root.
+
+The declaration is the only truth, and every state is read back: `GET /containers/{name}` carries `ready` (derived: every probed service passed, every oneshot exited 0) and `services[]` with each service's `state` (`pending`, `starting`, `running`, `exited`, `restart-wait`, `stopped`, `failed`), `pid`, `restarts`, `last_exit` and `failure`. Output is attributed: every captured or forwarded line is prefixed with the service that wrote it, `cix-init:` for the supervisor's own.
+
+`POST /containers/{name}/services/{service}/start|stop|restart` are the control plane reaching inside. A stop is an **override, not an edit**: the service is held `stopped` until the next container start replays the declaration, and nothing an operator does here rewrites the persisted body — a recipe keeps describing the container it created.
+
+The container's exit status is `cix-init`'s: the code of the service that ended it (`128+signal` for a signal death), `0` after an orderly shutdown, `125` for a table it could not read, `140+errno` for a service whose `execve()` failed. A container whose every service has exited and nothing restarts simply exits — a oneshot-only container is a job.
+
 ## Creating a container
 
 ```
@@ -811,7 +843,7 @@ POST /v1/containers
 {
   "name": "my-container",
   "image": "test",
-  "cmd": ["/bin/some-binary", "arg1"],
+  "services": [{"name": "main", "cmd": ["/bin/some-binary", "arg1"]}],
   "memory_max": 67108864,
   "pids_max": 32,
   "cpu_max": "50000 100000",
@@ -1120,7 +1152,7 @@ POST /v1/containers
 {
   "name": "router1",
   "image": "router",
-  "cmd": ["/bin/bird", "-f"],
+  "services": [{"name": "bird", "cmd": ["/bin/bird", "-f"]}],
   "restart": "always"
 }
 ```
@@ -1136,12 +1168,12 @@ For a policy other than `"no"`, the persisted request is replayed automatically 
 `depends_on` controls the order persisted containers start in at boot:
 
 ```json
-{"name": "router1", "image": "router", "cmd": ["/bin/bird", "-f"], "restart": "always", "depends_on": ["dns1"], "readiness": {"tcp_port": 53, "timeout_seconds": 10}}
+{"name": "router1", "image": "router", "services": [{"name": "bird", "cmd": ["/bin/bird", "-f"], "ready": {"socket": "/run/bird.ctl"}}], "restart": "always", "depends_on": ["dns1"]}
 ```
 
-`dns1` (itself persisted) is guaranteed to have been *started* before `router1` — and, if `dns1` sets its own `readiness` (`{"tcp_port": N, "timeout_seconds": N}`, requires `networks` to be non-empty), genuinely TCP-ready, not just process-started. Readiness is a plain, blocking `connect()` retried until it succeeds or `timeout_seconds` elapses, consulted in exactly one place — daemon-boot autostart, right before a dependent starts — best-effort: if it never succeeds, a warning is logged and boot proceeds anyway, never blocking or failing it. It is never consulted for a live `POST` or for crash-restart. A `depends_on` naming an unknown or non-persisted container, or forming a cycle, is skipped at boot (logged, not fatal to anything else starting).
+`dns1` (itself persisted) is guaranteed to have been *started* before `router1` — and **ready**, which since [ADR-0260](../adr/0260-a-container-declares-services-not-a-command.md) is derived from `dns1`'s own services rather than declared separately: every service with a `ready` probe has passed it, and every oneshot has exited 0. A container-level `readiness` field used to exist for this; it was a second definition of the same thing and is gone. Readiness is consulted in exactly one place — daemon-boot autostart, right before a dependent starts — best-effort: if a container is not ready within its services' longest probe timeout, a warning is logged and boot proceeds anyway, never blocking or failing it. It is never consulted for a live `POST` or for crash-restart. A `depends_on` naming an unknown or non-persisted container, or forming a cycle, is skipped at boot (logged, not fatal to anything else starting).
 
-`GET`/inspect responses always report the current `restart`/`restart_delay_seconds`/`stopped`/`depends_on`/`readiness` state, read live from the persisted definition rather than a stale echo of what creation was originally given.
+`GET`/inspect responses always report the current `restart`/`restart_delay_seconds`/`stopped`/`depends_on` state, read live from the persisted definition rather than a stale echo of what creation was originally given, and `ready` derived live from the services.
 
 ## Registered-server health (issue #81)
 
@@ -1351,7 +1383,7 @@ POST /v1/containers
 {
   "name": "ntp1",
   "image": "ntp_server",
-  "cmd": ["/usr/sbin/chronyd", "-d", "-f", "/etc/chrony.conf"],
+  "services": [{"name": "chronyd", "cmd": ["/usr/sbin/chronyd", "-d", "-f", "/etc/chrony.conf"]}],
   "capture_output": true,
   "files": [
     {"path": "/etc/chrony.conf", "content": "local stratum 10\nallow 192.168.15.0/24\ndriftfile /run/chrony.drift\n"},
@@ -1395,7 +1427,7 @@ POST /v1/containers
 {
   "name": "syslog1",
   "image": "syslog_server",
-  "cmd": ["/usr/sbin/syslogd", "-F", "-K", "-n", "-H", "-P", "/run/syslogd.pid", "-C", "/run/syslogd.cache", "-f", "/etc/syslog.conf"],
+  "services": [{"name": "syslogd", "cmd": ["/usr/sbin/syslogd", "-F", "-K", "-n", "-H", "-P", "/run/syslogd.pid", "-C", "/run/syslogd.cache", "-f", "/etc/syslog.conf"]}],
   "networks": ["management"]
 }
 ```
@@ -1524,7 +1556,7 @@ POST /v1/containers
 {
   "name": "router",
   "image": "test",
-  "cmd": ["/sbin/some-router-process"],
+  "services": [{"name": "main", "cmd": ["/sbin/some-router-process"]}],
   "networks": ["internal", "dmz"],
   "ip_forward": true
 }
@@ -1537,7 +1569,7 @@ POST /v1/containers
 {
   "name": "internal-host",
   "image": "test",
-  "cmd": ["/bin/some-binary"],
+  "services": [{"name": "main", "cmd": ["/bin/some-binary"]}],
   "networks": ["internal"],
   "routes": [{"dest": "172.32.0.0", "prefix_len": 24, "via": "172.31.0.2"}]
 }
@@ -1566,7 +1598,7 @@ POST /v1/containers
 {
   "name": "jumpbox1",
   "image": "jumpbox",
-  "cmd": ["/usr/sbin/sshd", "-D", "-e"],
+  "services": [{"name": "sshd", "cmd": ["/usr/sbin/sshd", "-D", "-e"]}],
   "capture_output": true
 }
 ```
@@ -1666,7 +1698,7 @@ POST /v1/containers
 {
   "name": "db",
   "image": "test",
-  "cmd": ["/bin/some-binary"],
+  "services": [{"name": "main", "cmd": ["/bin/some-binary"]}],
   "networks": ["internal"],
   "dns_register": true
 }
@@ -1748,7 +1780,7 @@ Verified end-to-end against a real throwaway LDAP account (created, tested, dele
 An `ldap_client` container hands every account in the directory to the container's own NSS and PAM stack, which means every account can log into every such container. `ldap_allow_groups` on `POST /v1/containers` narrows that to named groups:
 
 ```json
-{"name": "jumpbox1", "image": "jumpbox", "cmd": ["/usr/sbin/sshd", "-D"],
+{"name": "jumpbox1", "image": "jumpbox", "services": [{"name": "sshd", "cmd": ["/usr/sbin/sshd", "-D"]}],
  "ldap_client": true, "ldap_allow_groups": ["jumpusers", "admins"]}
 ```
 
@@ -1850,7 +1882,7 @@ POST /v1/containers
 {
   "name": "web",
   "image": "test",
-  "cmd": ["/bin/some-binary"],
+  "services": [{"name": "main", "cmd": ["/bin/some-binary"]}],
   "pki_issue": true,
   "pki_cert_dir": "/etc/cix-tls",
   "pki_days": 365
@@ -1881,7 +1913,7 @@ POST /v1/containers
 {
   "name": "nas",
   "image": "base",
-  "cmd": ["/bin/some-binary"],
+  "services": [{"name": "main", "cmd": ["/bin/some-binary"]}],
   "devices": ["usb:1-2", "gpu:0"]
 }
 ```
@@ -2127,7 +2159,7 @@ POST /v1/containers
 {
   "name": "router2",
   "image": "router",
-  "cmd": ["/usr/bin/bash", "/usr/local/bin/pbr.sh"],
+  "services": [{"name": "bash", "cmd": ["/usr/bin/bash", "/usr/local/bin/pbr.sh"]}],
   "files": [{"path": "/etc/bird.conf", "content": "...", "mode": "0644"}],
   "sysctls": {"net.ipv4.conf.all.rp_filter": "0"},
   "env": {"DEBUG": "1", "LOG_LEVEL": "info"}
@@ -2152,7 +2184,7 @@ POST /v1/containers
 {
   "name": "jump",
   "image": "jumpbox",
-  "cmd": ["/usr/bin/bash", "/usr/local/bin/jumpbox-start.sh"],
+  "services": [{"name": "bash", "cmd": ["/usr/bin/bash", "/usr/local/bin/jumpbox-start.sh"]}],
   "volumes": [{"name": "jump-home", "path": "/home"}]
 }
 ```
@@ -2313,7 +2345,7 @@ The daemon now tees each build's stdout/stderr to `<data-dir>/pkg/build-logs/<na
 ## Editing a container without recreating it (issue #11)
 
 ```
-PATCH /v1/containers/{name}   {"cmd": ["/usr/bin/dnsmasq", "-k", "..."], "env": {"TZ": "UTC"}}
+PATCH /v1/containers/{name}   {"env": {"TZ": "UTC"}, "files": [...]}
 ```
 
 Until now, changing a `cmd`, an env var or a staged file meant delete-and-recreate — reconstructing the whole request body by hand, with every chance to drop a field. A `PATCH` merges the fields you give into the stored definition: a key present replaces that key, a key set to `null` removes it, everything else is untouched. The merge is top-level only; a deep merge would make "how do I clear one entry of `files[]`" unanswerable.
@@ -2323,7 +2355,7 @@ Until now, changing a `cmd`, an env var or a staged file meant delete-and-recrea
 Two groups of fields are refused rather than silently ignored:
 
 - **`name`** — a container's name is its identity; that would be a different container.
-- **`restart`, `restart_delay_seconds`, `depends_on`, `readiness`, `follow_rolling`, `follow_rolling_jitter_seconds`** — these feed the definition index, and its one parser lives in the create path. A second parser here would be a parallel implementation of the same validation, which this project does not do. The `400` names the offending field and says to recreate the container; extracting that parser is the follow-up that lifts the restriction.
+- **`restart`, `restart_delay_seconds`, `depends_on`, `services`, `follow_rolling`, `follow_rolling_jitter_seconds`** — these feed the definition index, and its one parser lives in the create path. A second parser here would be a parallel implementation of the same validation, which this project does not do. The `400` names the offending field and says to recreate the container; extracting that parser is the follow-up that lifts the restriction.
 
 `cixctl container edit NAME --json='{...}'` is the CLI surface.
 
@@ -2595,7 +2627,7 @@ POST /v1/containers
 {
   "name": "ntp-1",
   "image": "chrony",
-  "cmd": ["/usr/sbin/chronyd", "-d", "-f", "/etc/chrony.conf"],
+  "services": [{"name": "chronyd", "cmd": ["/usr/sbin/chronyd", "-d", "-f", "/etc/chrony.conf"]}],
   "cap_add": ["CAP_SYS_TIME"]
 }
 ```
@@ -2612,7 +2644,7 @@ POST /v1/containers
 {
   "name": "app1",
   "image": "base",
-  "cmd": ["/usr/bin/myapp"],
+  "services": [{"name": "myapp", "cmd": ["/usr/bin/myapp"]}],
   "dns_servers": ["192.168.15.101", "192.168.15.102"]
 }
 ```
