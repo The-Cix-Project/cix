@@ -21,13 +21,28 @@
 # which means the generation is deterministic and this platform's copy
 # is genuinely its own build rather than a repackaged download.
 #
-# WHY THE .p7s IS NOT HERE. Upstream also ships regulatory.db.p7s, a
-# detached signature. The kernel only demands it when
-# CFG80211_REQUIRE_SIGNED_REGDB is set, and this platform deliberately
-# does not set it -- see image/kernel/qemu-part1.config, where turning
-# it off is what removed the kernel's whole certs/ subsystem and fixed
-# the 7.2.3-5 build. Shipping a signature nothing verifies would be
-# decoration.
+# THE .p7s SHIPS TOO, AND THAT IS LOAD-BEARING. The kernel demands a
+# signature whenever CFG80211_REQUIRE_SIGNED_REGDB is set, and on this
+# platform it always is -- not by choice but by construction: that
+# symbol's prompt is conditional on CFG80211_CERTIFICATION_ONUS, so
+# with that off it has no prompt, cannot be set from .config, and
+# olddefconfig forces it to its `default y` (measured directly,
+# probe-wifi-driver/4, after a config line trying to disable it turned
+# out to do nothing).
+#
+# Which is fine, because the signature is real protection worth having
+# and it costs nothing here: upstream signs regulatory.db with a key
+# already carried in the kernel's own net/wireless/certs/, and this
+# recipe reproduces regulatory.db byte-for-byte from db.txt -- so
+# upstream's detached signature validates over OUR build. Ship the .db
+# we built and the .p7s upstream published, and the kernel is satisfied
+# without this platform holding a signing key.
+#
+# Note what would break silently without the byte-for-byte check in
+# pkg_build(): a .db that differed from upstream's by even one byte
+# would fail signature verification at boot, cfg80211 would fall back
+# to the world domain, and the only symptom would be an access point
+# refusing channels it should allow.
 #
 # WHY IT MATTERS FOR AN ACCESS POINT. Without a regulatory database
 # cfg80211 falls back to its built-in world domain, which is the most
@@ -47,7 +62,7 @@ pkg_source="https://mirrors.kernel.org/pub/software/network/wireless-regdb/wirel
 pkg_sha256="b22e0901227b820cd1c280abe681a15b773a5103a5e10dc442e94ebb34cbf58d"
 pkg_build_image="cix-builder"
 pkg_build_depends="bash coreutils python"
-pkg_changelog="2026.09.03: the regulatory database, BUILT from db.txt by the tarball's own stdlib-only db2fw.py rather than shipped as a blob -- and the build proves it by regenerating and comparing byte-for-byte against upstream's copy. Needed so an access point is not stuck on cfg80211's most-restrictive built-in world domain. The .p7s signature is deliberately not shipped: this platform does not set CFG80211_REQUIRE_SIGNED_REGDB, so nothing would verify it."
+pkg_changelog="2026.09.03: the regulatory database, BUILT from db.txt by the tarball's own stdlib-only db2fw.py rather than shipped as a blob -- and the build proves it by regenerating and comparing byte-for-byte against upstream's copy. Needed so an access point is not stuck on cfg80211's most-restrictive built-in world domain. Ships upstream's regulatory.db.p7s alongside: this kernel always requires a signed database (the symbol is promptless and forced to its default y), and upstream's signature validates over our build precisely because we reproduce it byte-for-byte."
 
 pkg_build() {
 	PY=""
@@ -118,4 +133,15 @@ pkg_install() {
 	cp regulatory.db "$dir/regulatory.db"
 	chmod 0644 "$dir/regulatory.db"
 	echo "installed $(wc -c < "$dir/regulatory.db") bytes to /lib/firmware/regulatory.db"
+
+	# The detached signature, upstream's own, over the bytes we just
+	# proved we reproduce. Without it the kernel refuses the database
+	# and silently falls back to the world regulatory domain.
+	[ -f regulatory.db.p7s ] || {
+		echo "wireless-regdb: upstream shipped no regulatory.db.p7s, which this kernel requires" >&2
+		exit 1
+	}
+	cp regulatory.db.p7s "$dir/regulatory.db.p7s"
+	chmod 0644 "$dir/regulatory.db.p7s"
+	echo "installed $(wc -c < "$dir/regulatory.db.p7s") bytes to /lib/firmware/regulatory.db.p7s"
 }
