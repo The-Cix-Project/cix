@@ -46,6 +46,26 @@ Files are copied faithfully rather than merely read and written: mode preserved,
 
 **The composed environment is an ordinary image named for the hash of the declared set** (`__buildenv-<hash>`), so the same set is composed once and reused, two different sets can never collide, and the set is sorted before hashing so order of declaration is not part of identity. That reuse is not an optimisation bolted on afterwards — it is what makes declaring tools cheap enough to do everywhere.
 
+**This governs an ordinary `pkg install`, and not a host build.** A recipe
+carrying `pkg_build_image=` and built through `POST /pkg/hostbuild` runs in
+that named image's own current-version rootfs instead, and its
+`pkg_build_depends` composes nothing at all — `daemon/src/pkg.c` tests
+`is_hostbuild` first and only reaches the composition branch when that is
+false. Both behaviours are deliberate: a host build is building the thing
+this box runs, against an environment an operator curated and can inspect,
+which is a different guarantee from "exactly what the recipe declared".
+
+Recorded here because the asymmetry is invisible from a recipe, and it
+cost a real build to learn. Kernel 7.2.3-7 added `openssl` to its
+`pkg_build_depends` to fix `certs/extract-cert.c: fatal error:
+openssl/bio.h: No such file or directory`, and failed at the identical
+line, because the kernel is a host build and that field was never going
+to compose anything. On this path `pkg_build_depends` is a *description*
+of what the build image must already contain; the image is what has to
+gain the package. A recipe that declares both fields is stating two
+different things at once, and which one is load-bearing depends entirely
+on how the build is started.
+
 **A declared tool that cannot be provided fails the build.** There is deliberately no fallback to the shared sandbox. A fallback would let the build succeed against something fuller than it declared — the exact failure this replaces — and would teach everyone that the declaration is decorative.
 
 ## Consequences
