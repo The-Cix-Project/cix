@@ -2,6 +2,46 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### An attachment's interface can be named (ADR-0259)
+
+A container's interface names have always been positional --
+`src/container_net.c` derived them from the attachment index and nothing
+else, `snprintf(ifname, sizeof(ifname), "eth%d", idx)`. An attachment may
+now carry `ifname`, and absent it the platform assigns the same
+`eth<index>` it always has, so no existing container changes.
+
+**Nothing was broken, which is the point.** Measured on both routers
+before deciding: `cr-1` and `cr-2` each have `eth0` on management and
+`eth1` on services, consistently. What was wrong is that the fact lived
+nowhere -- a routing daemon told to use `eth0` is correct only until
+someone reorders a recipe's `networks` array, an edit that produces no
+error and silently moves the protocol onto another subnet. `cr-1`'s own
+`keepalived.conf` already carried three literal `eth1` references and a
+comment explaining in prose which interface faced which way.
+
+The field is accepted at create and on a live attach, through the one
+shared `NetworkAttachmentRequest` schema -- which the live-attach
+endpoint had been duplicating inline, and now references instead.
+`cixctl container network attach` grows `--ifname=`.
+
+Every rule is enforced at parse time so the refusal names it, rather
+than surfacing later as `failed to create container` from a bare
+`rtnl_link_rename()` failure: 1-15 characters (`IFNAMSIZ - 1`) of
+`[A-Za-z0-9._-]`; `lo` refused; **`eth<digits>` refused outright**,
+because that is the namespace unnamed attachments draw from and
+refusing the prefix is a rule rather than a collision matrix; and two
+attachments on one container may not share a name (400 at create, 409
+on a live attach).
+
+Persistence needed no new mechanism: `containerdef.c` already persists
+the creation body and replays it, so a name survives a restart the way
+every other field does. Recorded in the ADR so nobody adds one.
+
+`registry_network_attachment.ifname`'s comment claimed the field was
+populated only for live attachments. That had already stopped being
+true when create-time attachments began recording their positional name
+there, and it is corrected in the same change.
+
 ### Five pre-policy artifacts rebuilt; the installer ISO loses 3.36 MiB of debug (#328, #324)
 
 ADR-0251's finalize policy strips ELF debug sections, but it only runs when a

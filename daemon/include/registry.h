@@ -76,17 +76,24 @@ struct registry_network_attachment {
 	char name[NETWORK_NAME_MAX];
 	uint32_t ip_be; /* network byte order */
 	/*
-	 * veth_host/ifname (ADR-0156): only ever populated for a LIVE
-	 * attachment (POST .../networks on an already-running container,
-	 * task #861) -- empty for every attachment made the ordinary way,
-	 * at container-creation time, since those never need a standalone
-	 * detach path (the whole container tears down together). veth_host
-	 * is the real host-side veth interface name (deleting it removes
-	 * both ends of the pair, including the container-side one, no
-	 * setns() needed for detach); ifname is the interface name inside
-	 * the container's own netns (echoed back so an operator can tell
-	 * which live-attached interface is which without cross-referencing
-	 * anything else).
+	 * veth_host (ADR-0156) is only ever populated for a LIVE attachment
+	 * (POST .../networks on an already-running container, task #861) --
+	 * empty for every attachment made the ordinary way, at
+	 * container-creation time, since those never need a standalone
+	 * detach path (the whole container tears down together). It is the
+	 * real host-side veth interface name; deleting it removes both ends
+	 * of the pair, including the container-side one, with no setns()
+	 * needed for detach. It doubles as this attachment's "live" flag in
+	 * GET /v1/containers, which is why it is emptiness that means
+	 * "created the ordinary way" rather than a separate field.
+	 *
+	 * ifname is the interface name inside the container's own netns and
+	 * is populated for BOTH kinds -- create-time attachments included.
+	 * This comment used to say it was live-only, which had been untrue
+	 * since create-time attachments started recording their positional
+	 * eth<idx> here; ADR-0259 then made it operator-choosable, so it is
+	 * now the answer to "what is this interface actually called", which
+	 * is a question every attachment has.
 	 */
 	char veth_host[16];
 	char ifname[16];

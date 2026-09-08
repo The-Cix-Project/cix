@@ -11457,7 +11457,7 @@ paths:
       description: >
         Same request shape as one entry of POST /containers' own
         "networks" array -- a bare network-name string for an
-        auto-allocated IP, or {"name":..., "ip":...} for an
+        auto-allocated IP, or {"name":..., "ip":..., "ifname":...} for an
         operator-chosen one. Deliberately live and ephemeral, the same
         posture ADR-0153 already established for PUT
         .../files: never persisted into the container's own create-request
@@ -11485,15 +11485,7 @@ paths:
               oneOf:
                 - type: string
                   description: Network name; an IP is auto-allocated.
-                - type: object
-                  required:
-                    - name
-                  properties:
-                    name:
-                      type: string
-                    ip:
-                      type: string
-                      description: An explicit, operator-chosen IPv4 address on this network.
+                - $ref: "#/components/schemas/NetworkAttachmentRequest"
       responses:
         "200":
           description: The container's own full current state, networks included.
@@ -11514,7 +11506,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "409":
-          description: Already attached to this network, or the container already has the maximum number of networks.
+          description: Already attached to this network, the container already has the maximum number of networks, or an interface with the requested ifname already exists on it.
           content:
             application/json:
               schema:
@@ -12086,8 +12078,9 @@ components:
             Networks (see POST /networks) to attach to, in order -- any
             name not currently known to this daemon is a 400. Each entry
             is either a bare network name (an IP is auto-allocated, the
-            original v1 behavior) or a {name, ip} object naming an
-            explicit, operator-chosen address instead -- 400 if ip isn't
+            original v1 behavior) or a {name, ip, ifname} object naming
+            an explicit, operator-chosen address and/or interface name
+            instead -- 400 if ip isn't
             a usable address on that network (wrong subnet, the reserved
             address/network address, or out of the network's host range),
             409 if it's already assigned to a running container. Omit
@@ -12941,6 +12934,19 @@ components:
             within the network's own subnet, not its reserved address
             or network address, and not already assigned to a running
             container.
+        ifname:
+          type: string
+          maxLength: 15
+          description: >
+            What this attachment is called INSIDE the container
+            (ADR-0259). Omit it and the platform assigns the positional
+            eth<index> it always has, so leaving this out changes
+            nothing. 1-15 characters (IFNAMSIZ - 1) of [A-Za-z0-9._-].
+            "lo" is refused, and so is any "eth<digits>" name: that is
+            the namespace assigned to unnamed attachments, and refusing
+            the prefix is a rule rather than a collision matrix. Two
+            attachments on the same container may not share a name --
+            400 at create, 409 on a live attach.
 
     RouteSpec:
       type: object

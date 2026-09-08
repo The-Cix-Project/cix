@@ -4343,6 +4343,7 @@ static int cmd_container_network_attach(const struct cix_client *c, int json_mod
 	const char *name = NULL;
 	const char *network = NULL;
 	const char *ip = NULL;
+	const char *ifname = NULL;
 	struct json_writer w;
 	char path[300];
 	struct cix_response r;
@@ -4353,6 +4354,8 @@ static int cmd_container_network_attach(const struct cix_client *c, int json_mod
 			network = argv[i] + 10;
 		else if (strncmp(argv[i], "--ip=", 5) == 0)
 			ip = argv[i] + 5;
+		else if (strncmp(argv[i], "--ifname=", 9) == 0)
+			ifname = argv[i] + 9;
 		else if (name == NULL)
 			name = argv[i];
 		else {
@@ -4362,7 +4365,8 @@ static int cmd_container_network_attach(const struct cix_client *c, int json_mod
 	}
 	if (name == NULL || network == NULL) {
 		fprintf(stderr,
-		        "usage: cixctl container network attach NAME --network=NETWORK [--ip=A.B.C.D]\n");
+		        "usage: cixctl container network attach NAME --network=NETWORK [--ip=A.B.C.D] "
+		        "[--ifname=NAME]\n");
 		return 2;
 	}
 
@@ -4373,6 +4377,10 @@ static int cmd_container_network_attach(const struct cix_client *c, int json_mod
 	if (ip != NULL) {
 		jw_key(&w, "ip");
 		jw_str(&w, ip);
+	}
+	if (ifname != NULL) {
+		jw_key(&w, "ifname");
+		jw_str(&w, ifname);
 	}
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
@@ -4411,7 +4419,7 @@ static int cmd_container_network(const struct cix_client *c, int json_mode, int 
 		return cmd_container_network_attach(c, json_mode, argc - 1, argv + 1);
 	if (argc >= 1 && strcmp(argv[0], "detach") == 0)
 		return cmd_container_network_detach(c, json_mode, argc - 1, argv + 1);
-	fprintf(stderr, "usage: cixctl container network attach NAME --network=NETWORK [--ip=A.B.C.D]\n"
+	fprintf(stderr, "usage: cixctl container network attach NAME --network=NETWORK [--ip=A.B.C.D] [--ifname=NAME]\n"
 	                "       cixctl container network detach NAME NETWORK\n");
 	return 2;
 }

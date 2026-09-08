@@ -10036,14 +10036,72 @@ static void handle_system_iso_post(int fd, const char *body, size_t body_len)
  * or -1 if item is neither shape, name is missing, or a present ip
  * doesn't parse as an IPv4 address.
  */
+/*
+ * ADR-0259: may an operator give a container's own interface this name?
+ *
+ * 15 characters is IFNAMSIZ - 1, the kernel's own ceiling rather than a
+ * limit invented here. The charset is deliberately narrower than what
+ * the kernel would accept: a name containing a space, a slash or a
+ * colon parses perfectly well and then reads as two fields in every
+ * tool that prints one interface per line.
+ *
+ * "eth<digits>" is refused outright rather than collision-checked,
+ * because that is the namespace the platform hands out positionally to
+ * unnamed attachments. Allowing an explicit "eth1" would mean reasoning
+ * about whether it collides with the default the next attachment is
+ * about to be given -- a matrix, where refusing the prefix is a rule
+ * that fits in one sentence. Bare "eth" is not in that namespace and is
+ * allowed.
+ */
+static int container_ifname_is_valid(const char *s)
+{
+	size_t i;
+	size_t len;
+
+	if (s == NULL)
+		return 0;
+	len = strlen(s);
+	if (len == 0 || len > 15)
+		return 0;
+	if (strcmp(s, "lo") == 0 || strcmp(s, ".") == 0 || strcmp(s, "..") == 0)
+		return 0;
+	for (i = 0; i < len; i++) {
+		char c = s[i];
+
+		if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+		      (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.'))
+			return 0;
+	}
+	if (len > 3 && strncmp(s, "eth", 3) == 0) {
+		for (i = 3; i < len; i++)
+			if (s[i] < '0' || s[i] > '9')
+				break;
+		if (i == len)
+			return 0;
+	}
+	return 1;
+}
+
+/*
+ * Returns 0, or -1 for a malformed entry -- and -2 specifically for an
+ * "ifname" that is present but not a legal interface name, so the
+ * caller can say which rule was broken instead of the generic "invalid
+ * networks entry". Getting that wrong matters here: the alternative is
+ * failing later at rtnl_link_rename(), which returns a bare -1 and
+ * surfaces to the operator as "failed to create container".
+ */
 static int parse_network_entry(const struct json_value *item, char *name_out, size_t name_out_size,
-                                uint32_t *out_ip_be, int *out_has_ip)
+                                uint32_t *out_ip_be, int *out_has_ip, char *ifname_out,
+                                size_t ifname_out_size)
 {
 	const char *n;
 	const char *ip_str;
+	const char *ifn;
 	struct in_addr addr;
 
 	*out_has_ip = 0;
+	if (ifname_out != NULL && ifname_out_size > 0)
+		ifname_out[0] = '\0';
 	if (item->type == JSON_STRING) {
 		n = json_as_string(item);
 		if (n == NULL)
@@ -10063,6 +10121,13 @@ static int parse_network_entry(const struct json_value *item, char *name_out, si
 			return -1;
 		*out_ip_be = addr.s_addr;
 		*out_has_ip = 1;
+	}
+	ifn = json_as_string(json_object_get(item, "ifname"));
+	if (ifn != NULL) {
+		if (!container_ifname_is_valid(ifn))
+			return -2;
+		if (ifname_out != NULL && ifname_out_size > 0)
+			snprintf(ifname_out, ifname_out_size, "%s", ifn);
 	}
 	return 0;
 }
@@ -10653,6 +10718,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	int env_count = 0;
 	size_t argc, i;
 	struct registry_network_attachment net_attachments[CONTAINER_MAX_NETWORKS];
+	char chosen_ifname[16]; /* ADR-0259: this attachment's operator-chosen name, "" if none */
 	int net_count = 0;
 	int ip_forward = 0;
 	int ksm = 0;
@@ -10943,6 +11009,11 @@ static int create_container_from_body(const char *body, size_t body_len,
 		return 400;
 	}
 	if (jnetworks != NULL) {
+		/* ADR-0259: each attachment's resolved interface name, kept so
+		 * two of them cannot claim the same one. */
+		char seen_ifnames[CONTAINER_MAX_NETWORKS][16];
+
+		memset(seen_ifnames, 0, sizeof(seen_ifnames));
 		if (jnetworks->type != JSON_ARRAY || jnetworks->u.array.count == 0 ||
 		    jnetworks->u.array.count > CONTAINER_MAX_NETWORKS) {
 			json_free(root);
@@ -10953,12 +11024,41 @@ static int create_container_from_body(const char *body, size_t body_len,
 			char n[NETWORK_NAME_MAX];
 			uint32_t ip_be;
 			int has_ip;
+			int prc;
+			size_t j;
 
-			if (parse_network_entry(jnetworks->u.array.items[i], n, sizeof(n), &ip_be,
-			                         &has_ip) != 0) {
+			prc = parse_network_entry(jnetworks->u.array.items[i], n, sizeof(n), &ip_be,
+			                           &has_ip, seen_ifnames[i], sizeof(seen_ifnames[i]));
+			if (prc == -2) {
+				json_free(root);
+				snprintf(err_msg, err_msg_size,
+				         "networks[%d].ifname must be 1-15 characters of "
+				         "[A-Za-z0-9._-], and may not be \"lo\" or an \"eth<N>\" name "
+				         "(those are what this platform assigns to unnamed attachments)",
+				         (int)i);
+				return 400;
+			}
+			if (prc != 0) {
 				json_free(root);
 				snprintf(err_msg, err_msg_size, "invalid networks entry");
 				return 400;
+			}
+			/*
+			 * ADR-0259: two attachments cannot share a name. Only
+			 * explicit names can collide -- an explicit "eth<N>" is
+			 * already refused above, so a chosen name can never equal
+			 * another attachment's positional default.
+			 */
+			for (j = 0; j < i; j++) {
+				if (seen_ifnames[i][0] != '\0' &&
+				    strcmp(seen_ifnames[i], seen_ifnames[j]) == 0) {
+					json_free(root);
+					snprintf(err_msg, err_msg_size,
+					         "networks[%d].ifname \"%s\" is already used by "
+					         "networks[%d] -- each interface needs its own name",
+					         (int)i, seen_ifnames[i], (int)j);
+					return 400;
+				}
 			}
 			if (network_find(n) == NULL) {
 				json_free(root);
@@ -11672,7 +11772,8 @@ static int create_container_from_body(const char *body, size_t body_len,
 			/* Already validated above (name exists; a given ip is
 			 * in-range and free) -- re-parsed only to recover the
 			 * values, no new failure mode expected here. */
-			parse_network_entry(jnetworks->u.array.items[i], n, sizeof(n), &ip_be, &has_ip);
+			parse_network_entry(jnetworks->u.array.items[i], n, sizeof(n), &ip_be, &has_ip,
+			                     chosen_ifname, sizeof(chosen_ifname));
 			if (!has_ip) {
 				int arc = network_alloc_ip(n, &ip_be);
 
@@ -11699,7 +11800,17 @@ static int create_container_from_body(const char *body, size_t body_len,
 			memset(&net_attachments[i], 0, sizeof(net_attachments[i]));
 			strncpy(net_attachments[i].name, n, sizeof(net_attachments[i].name) - 1);
 			net_attachments[i].ip_be = ip_be;
-			snprintf(net_attachments[i].ifname, sizeof(net_attachments[i].ifname), "eth%d", (int)i);
+			/*
+			 * ADR-0259: the operator's name when one was given, the
+			 * positional default otherwise. Validated in the pass
+			 * above, so nothing here can fail.
+			 */
+			if (chosen_ifname[0] != '\0')
+				snprintf(net_attachments[i].ifname, sizeof(net_attachments[i].ifname), "%s",
+				         chosen_ifname);
+			else
+				snprintf(net_attachments[i].ifname, sizeof(net_attachments[i].ifname), "eth%d",
+				         (int)i);
 			/* veth_host stays empty -- only a live attachment (task #861)
 			 * ever needs a standalone detach path; see its own comment
 			 * in registry.h. */
@@ -12337,6 +12448,8 @@ static int create_container_from_body(const char *body, size_t body_len,
 		spec.nets[i].has_address = net->has_address;
 		spec.nets[i].address_ip_be = net->address_be;
 		spec.nets[i].prefix_len = net->prefix_len;
+		snprintf(spec.nets[i].ifname, sizeof(spec.nets[i].ifname), "%s",
+		         net_attachments[i].ifname);
 	}
 	spec.ip_forward = ip_forward;
 	spec.ksm = ksm;
@@ -13981,6 +14094,8 @@ static void handle_container_network_attach(int fd, const char *container_name, 
 	struct network_def *net;
 	struct registry_network_attachment att;
 	char veth_host[16], veth_ctr[16], ifname[16];
+	char chosen_ifname[16];
+	int prc;
 	struct json_writer w;
 	int i;
 
@@ -13995,7 +14110,17 @@ static void handle_container_network_attach(int fd, const char *container_name, 
 		respond_error(fd, 400, "Bad Request", "invalid JSON body");
 		return;
 	}
-	if (parse_network_entry(root, net_name, sizeof(net_name), &ip_be, &has_ip) != 0) {
+	prc = parse_network_entry(root, net_name, sizeof(net_name), &ip_be, &has_ip, chosen_ifname,
+	                           sizeof(chosen_ifname));
+	if (prc == -2) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request",
+		              "ifname must be 1-15 characters of [A-Za-z0-9._-], and may not be "
+		              "\"lo\" or an \"eth<N>\" name (those are what this platform assigns "
+		              "to unnamed attachments)");
+		return;
+	}
+	if (prc != 0) {
 		json_free(root);
 		respond_error(fd, 400, "Bad Request", "invalid network entry");
 		return;
@@ -14052,7 +14177,24 @@ static void handle_container_network_attach(int fd, const char *container_name, 
 	 * earlier live attachments. */
 	snprintf(veth_host, sizeof(veth_host), "vh%d-a%d", (int)e->handle.pid, e->net_count);
 	snprintf(veth_ctr, sizeof(veth_ctr), "vc%d-a%d", (int)e->handle.pid, e->net_count);
-	snprintf(ifname, sizeof(ifname), "eth%d", e->net_count);
+	/*
+	 * ADR-0259: the operator's name if given, else the positional
+	 * default. Uniqueness is checked against the attachments this
+	 * container already has -- an explicit "eth<N>" is refused by
+	 * container_ifname_is_valid(), so a chosen name can never collide
+	 * with a default this container was given earlier.
+	 */
+	if (chosen_ifname[0] != '\0')
+		snprintf(ifname, sizeof(ifname), "%s", chosen_ifname);
+	else
+		snprintf(ifname, sizeof(ifname), "eth%d", e->net_count);
+	for (i = 0; i < e->net_count; i++) {
+		if (strcmp(e->nets[i].ifname, ifname) == 0) {
+			respond_error(fd, 409, "Conflict",
+			              "this container already has an interface with that name");
+			return;
+		}
+	}
 
 	if (container_net_attach_running(net->name, ip_be, net->prefix_len, e->handle.pid, veth_host,
 	                                  veth_ctr, ifname) != 0) {

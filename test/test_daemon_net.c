@@ -714,6 +714,159 @@ int main(void)
 		}
 	}
 
+	/*
+	 * 9b. ADR-0259: an attachment's interface can be named, and every
+	 * refusal says which rule was broken.
+	 *
+	 * The names matter more than they look: a routing daemon told to
+	 * use "eth0" is correct only until someone reorders a recipe's
+	 * networks array -- an edit that produces no error and silently
+	 * moves the protocol onto another subnet.
+	 */
+	{
+		size_t i;
+		int saw_mgmt = 0;
+		int saw_svc = 0;
+
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/containers",
+		                       "{\"name\":\"n8\",\"image\":\"nettest\","
+		                       "\"cmd\":[\"/bin/net_child\"],"
+		                       "\"networks\":[{\"name\":\"" TEST_NETWORK_NAME "\","
+		                       "\"ifname\":\"mgmt\"}]}",
+		                       &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: POST n8 with a named interface, status=%d\n", r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		/* The chosen name is what the container actually reports. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "GET", "/v1/containers/n8", NULL, &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: GET n8\n");
+			ok = 0;
+		} else {
+			const struct json_value *networks = json_object_get(r.json, "networks");
+
+			if (networks != NULL && networks->type == JSON_ARRAY) {
+				for (i = 0; i < networks->u.array.count; i++) {
+					if (str_eq(json_str_field(networks->u.array.items[i], "ifname"), "mgmt"))
+						saw_mgmt = 1;
+				}
+			}
+			if (!saw_mgmt) {
+				fprintf(stderr, "FAIL: n8 does not report its chosen interface name\n");
+				ok = 0;
+			}
+		}
+		cix_response_free(&r);
+
+		/*
+		 * Each of these is refused at parse time rather than later by
+		 * rtnl_link_rename(), which returns a bare -1 and reaches the
+		 * operator as "failed to create container".
+		 */
+		{
+			static const struct {
+				const char *what;
+				const char *ifname;
+			} bad[] = {
+				{ "an eth<N> name (the platform's own positional namespace)", "eth1" },
+				{ "lo", "lo" },
+				{ "a name longer than IFNAMSIZ - 1", "abcdefghijklmnop" },
+				{ "a name with a character outside [A-Za-z0-9._-]", "eth zero" },
+			};
+			size_t bi;
+
+			for (bi = 0; bi < sizeof(bad) / sizeof(bad[0]); bi++) {
+				char body[512];
+
+				snprintf(body, sizeof(body),
+				         "{\"name\":\"n9\",\"image\":\"nettest\","
+				         "\"cmd\":[\"/bin/net_child\"],"
+				         "\"networks\":[{\"name\":\"" TEST_NETWORK_NAME "\","
+				         "\"ifname\":\"%s\"}]}",
+				         bad[bi].ifname);
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "POST", "/v1/containers", body, &r) != 0 ||
+				    r.status != 400) {
+					fprintf(stderr, "FAIL: creating with %s expected 400, got %d\n",
+					        bad[bi].what, r.status);
+					ok = 0;
+				}
+				cix_response_free(&r);
+			}
+		}
+
+		/* Two attachments on one container cannot claim the same name. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/containers",
+		                       "{\"name\":\"n9\",\"image\":\"nettest\","
+		                       "\"cmd\":[\"/bin/net_child\"],"
+		                       "\"networks\":["
+		                       "{\"name\":\"" TEST_NETWORK_NAME "\",\"ifname\":\"same\"},"
+		                       "{\"name\":\"" TEST_NETWORK_NAME2 "\",\"ifname\":\"same\"}]}",
+		                       &r) != 0 ||
+		    r.status != 400) {
+			fprintf(stderr, "FAIL: two attachments sharing an ifname expected 400, got %d\n",
+			        r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		/*
+		 * A live attach of a DIFFERENT network onto a name this
+		 * container already uses is a 409 -- and it has to be the
+		 * ifname that refuses it, not the already-attached check,
+		 * which is why the network here is one n8 does not have.
+		 */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/containers/n8/networks",
+		                       "{\"name\":\"" TEST_NETWORK_NAME2 "\",\"ifname\":\"mgmt\"}",
+		                       &r) != 0 ||
+		    r.status != 409) {
+			fprintf(stderr, "FAIL: live attach reusing an existing ifname expected 409, got %d\n",
+			        r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		/* The same attach with a free name succeeds and reads back. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/containers/n8/networks",
+		                       "{\"name\":\"" TEST_NETWORK_NAME2 "\",\"ifname\":\"svc\"}",
+		                       &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: live attach with a free ifname expected 200, got %d\n",
+			        r.status);
+			ok = 0;
+		} else {
+			const struct json_value *networks = json_object_get(r.json, "networks");
+
+			if (networks != NULL && networks->type == JSON_ARRAY) {
+				for (i = 0; i < networks->u.array.count; i++) {
+					if (str_eq(json_str_field(networks->u.array.items[i], "ifname"), "svc"))
+						saw_svc = 1;
+				}
+			}
+			if (!saw_svc) {
+				fprintf(stderr, "FAIL: live-attached interface did not keep its chosen name\n");
+				ok = 0;
+			}
+		}
+		cix_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "DELETE", "/v1/containers/n8", NULL, &r) != 0 ||
+		    r.status != 204) {
+			fprintf(stderr, "FAIL: DELETE container n8 expected 204, got %d\n", r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+	}
+
 	/* 10. deleting a network still in use by a container -> 409 */
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "DELETE", "/v1/networks/" TEST_NETWORK_NAME, NULL, &r) != 0 ||

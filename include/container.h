@@ -78,6 +78,18 @@ struct network_spec {
 	                   * meaningless, no default route gets installed */
 	uint32_t address_ip_be;
 	int prefix_len;
+	/*
+	 * What this attachment is called INSIDE the container (ADR-0259).
+	 * Empty means "the platform picks", which is eth<idx> -- the name
+	 * this field's absence produced for the platform's whole history,
+	 * so an unset value changes nothing.
+	 *
+	 * A fixed array rather than the `const char *` bridge uses above,
+	 * deliberately: this is read by container_net_child_configure(),
+	 * which runs in the cloned child, and a value living in the struct
+	 * cannot outlive its own pointee. 16 is IFNAMSIZ.
+	 */
+	char ifname[16];
 };
 
 #define CONTAINER_MAX_ROUTES 8
