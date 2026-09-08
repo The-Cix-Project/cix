@@ -6,6 +6,7 @@
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
 #include <linux/veth.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -455,13 +456,27 @@ int rtnl_route_dump_ipv4(int fd, struct kernel_route *out, int max, int *out_cou
 	struct nl_msg m;
 	struct nlmsghdr *nh;
 	struct rtmsg *rtm;
-	/* A dump's response can span several recv()s worth of messages --
-	 * generously sized for a real routing table, not just the single
-	 * request/single-ack NL_MSG_MAX every other function here needs. */
-	char rbuf[8192];
+	/*
+	 * A dump's response is several datagrams, each holding many
+	 * messages, and each sized by the kernel rather than by us. The
+	 * buffer is therefore sized per datagram from the datagram itself.
+	 *
+	 * It used to be a fixed 8192 bytes, "generously sized for a real
+	 * routing table". Generous is not a property a receive buffer can
+	 * have: a netlink datagram larger than the buffer is TRUNCATED and
+	 * its remainder discarded, with no error and no short-read to
+	 * notice. A big enough routing table would have silently dropped
+	 * routes, and dropping the NLMSG_DONE that ends the sequence would
+	 * have left this loop waiting for a datagram that had already been
+	 * delivered. Same defect as the nl80211 family lookup (#341),
+	 * found by looking for it after that one was measured.
+	 */
+	char *rbuf = NULL;
+	size_t rbuf_size = 0;
 	ssize_t n;
 	int count = 0;
 	int done = 0;
+	int rc = -1;
 
 	nl_msg_init(&m);
 	nh = nl_msg_put(&m, sizeof(*nh));
@@ -480,16 +495,39 @@ int rtnl_route_dump_ipv4(int fd, struct kernel_route *out, int max, int *out_cou
 	nh->nlmsg_pid = 0;
 
 	n = send(fd, m.buf, m.len, 0);
-	if (n < 0 || (size_t)n != m.len)
+	if (n < 0)
 		return -1;
+	if ((size_t)n != m.len) {
+		errno = EIO;
+		return -1;
+	}
 
 	while (!done) {
 		struct nlmsghdr *rnh;
 		int len;
+		ssize_t dgram;
 
-		n = recv(fd, rbuf, sizeof(rbuf), 0);
+		dgram = recv(fd, NULL, 0, MSG_PEEK | MSG_TRUNC);
+		if (dgram < 0)
+			goto out;
+		if ((size_t)dgram > rbuf_size) {
+			char *grown = realloc(rbuf, (size_t)dgram);
+
+			if (grown == NULL) {
+				errno = ENOMEM;
+				goto out;
+			}
+			rbuf = grown;
+			rbuf_size = (size_t)dgram;
+		}
+
+		n = recv(fd, rbuf, rbuf_size, 0);
 		if (n < 0)
-			return -1;
+			goto out;
+		if (n != dgram) {
+			errno = EBADMSG;
+			goto out;
+		}
 
 		rnh = (struct nlmsghdr *)rbuf;
 		len = (int)n;
@@ -503,8 +541,10 @@ int rtnl_route_dump_ipv4(int fd, struct kernel_route *out, int max, int *out_cou
 				done = 1;
 				break;
 			}
-			if (rnh->nlmsg_type == NLMSG_ERROR)
-				return -1;
+			if (rnh->nlmsg_type == NLMSG_ERROR) {
+				errno = EPROTO;
+				goto out;
+			}
 			if (rnh->nlmsg_type != RTM_NEWROUTE)
 				continue;
 
@@ -542,7 +582,15 @@ int rtnl_route_dump_ipv4(int fd, struct kernel_route *out, int max, int *out_cou
 	}
 
 	*out_count = count;
-	return 0;
+	rc = 0;
+out:
+	{
+		int saved = errno;
+
+		free(rbuf);
+		errno = saved;
+	}
+	return rc;
 }
 
 int rtnl_link_delete(int fd, const char *name)

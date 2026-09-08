@@ -69,6 +69,16 @@ kept — the precondition is real and documented, and an fd the caller
 already holds beats a pid the kernel must re-resolve — but neither was
 the fault.
 
+**One sibling had the same shape.** `rtnl_route_dump_ipv4()` read a
+route dump into a fixed 8192-byte buffer described in its own comment as
+"generously sized for a real routing table". Generous is not a property
+a receive buffer can have: a large enough table would have dropped
+routes silently, and dropping the `NLMSG_DONE` that ends the sequence
+would have left the loop waiting for a datagram already delivered. It
+now sizes each datagram the same way, and its failure returns set errno
+too. Found by looking for the pattern rather than by hitting it — no
+host here has a routing table anywhere near that size.
+
 ### dns-1/dns-2 can actually serve DHCP (#30)
 
 They could not before, and nothing said so. Their dnsmasq command was
