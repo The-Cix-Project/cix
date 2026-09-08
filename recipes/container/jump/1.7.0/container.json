@@ -1,0 +1,152 @@
+{
+  "name": "jump",
+  "image": "jumpbox",
+  "services": [
+    {
+      "name": "mkdirs",
+      "type": "oneshot",
+      "cmd": [
+        "/usr/bin/mkdir",
+        "-p",
+        "/run/sshd-empty/run/nslcd",
+        "/run/nslcd",
+        "/etc/ssh",
+        "/etc/skel"
+      ]
+    },
+    {
+      "name": "hostkeys",
+      "type": "oneshot",
+      "cmd": [
+        "/usr/bin/ssh-keygen",
+        "-A"
+      ],
+      "after": [
+        "mkdirs"
+      ]
+    },
+    {
+      "name": "nslcd",
+      "cmd": [
+        "/usr/sbin/nslcd",
+        "-d"
+      ],
+      "after": [
+        "mkdirs"
+      ],
+      "ready": {
+        "socket": "/run/nslcd/socket",
+        "timeout_seconds": 10
+      },
+      "on_exit": "fail-container"
+    },
+    {
+      "name": "linksock",
+      "type": "oneshot",
+      "cmd": [
+        "/usr/bin/ln",
+        "/run/nslcd/socket",
+        "/run/sshd-empty/run/nslcd/socket"
+      ],
+      "after": [
+        "nslcd"
+      ]
+    },
+    {
+      "name": "sshd",
+      "cmd": [
+        "/usr/sbin/sshd",
+        "-D",
+        "-e"
+      ],
+      "after": [
+        "hostkeys",
+        "linksock"
+      ],
+      "ready": {
+        "tcp_port": 22
+      },
+      "on_exit": "fail-container"
+    }
+  ],
+  "consoles": [
+    {
+      "name": "login",
+      "cmd": [
+        "/bin/login"
+      ]
+    }
+  ],
+  "networks": [
+    {
+      "name": "services",
+      "ip": "192.168.150.109"
+    }
+  ],
+  "restart": "always",
+  "follow_rolling": true,
+  "files": [
+    {
+      "path": "/etc/passwd",
+      "content": "root:x:0:0:root:/root:/usr/bin/bash\nsshd:x:74:74:sshd privsep:/var/empty:/usr/bin/bash\nauthkeys:x:75:75:AuthorizedKeysCommand user:/run:/usr/bin/bash\n"
+    },
+    {
+      "path": "/etc/group",
+      "content": "root:x:0:\nsshd:x:74:\nauthkeys:x:75:\n"
+    },
+    {
+      "path": "/etc/pam.d/sshd",
+      "content": "auth     required     pam_ldap.so\naccount  required     pam_ldap.so\npassword required     pam_ldap.so\nsession  required     pam_mkhomedir.so skel=/etc/skel umask=0077\nsession  required     pam_ldap.so\n"
+    },
+    {
+      "path": "/etc/pam.d/login",
+      "content": "auth     required     pam_ldap.so\naccount  required     pam_ldap.so\npassword required     pam_ldap.so\nsession  required     pam_mkhomedir.so skel=/etc/skel umask=0077\nsession  required     pam_ldap.so\n"
+    },
+    {
+      "path": "/etc/ldap-authkeys.conf",
+      "content": "LDAP_URI=\"{{LDAP:URI}}\"\nBIND_DN=\"{{LDAP:BIND_DN}}\"\nBIND_PW=\"{{LDAP:BIND_PASSWORD}}\"\nLDAP_BASE=\"{{LDAP:BASE_DN}}\"\n",
+      "mode": "0600",
+      "owner": 75,
+      "group": 75
+    },
+    {
+      "path": "/usr/sbin/ldap-authorized-keys",
+      "content": "#!/usr/bin/bash\n# ldap-authorized-keys -- sshd's own AuthorizedKeysCommand script.\n# Invoked as: /usr/bin/bash /usr/sbin/ldap-authorized-keys %u\n# Queries live LDAP (via the svc-nslcd service-account bind, never the\n# connecting user's own credentials) for %u's sshPublicKey attribute\n# and prints each key on its own line for sshd to accept.\nUSERNAME=\"$1\"\n. /etc/ldap-authkeys.conf\n\nwhile IFS= read -r line; do\n\tcase \"$line\" in\n\tsshPublicKey:\\ *)\n\t\techo \"${line#sshPublicKey: }\"\n\t\t;;\n\tesac\ndone < <(/usr/bin/ldapsearch -x -LLL -o ldif-wrap=no -H \"$LDAP_URI\" -D \"$BIND_DN\" -w \"$BIND_PW\" \\\n\t-b \"$LDAP_BASE\" \"(cn=$USERNAME)\" sshPublicKey 2>/dev/null)\n",
+      "mode": "0755"
+    },
+    {
+      "path": "/etc/ssh/sshd_config",
+      "content": "Port 22\nHostKey /etc/ssh/ssh_host_rsa_key\nHostKey /etc/ssh/ssh_host_ed25519_key\nPidFile /run/sshd.pid\n\nUsePAM yes\nPasswordAuthentication yes\nPubkeyAuthentication yes\nPermitRootLogin no\n\nAuthorizedKeysCommand /usr/bin/bash /usr/sbin/ldap-authorized-keys %u\nAuthorizedKeysCommandUser authkeys\n"
+    },
+    {
+      "path": "/etc/profile",
+      "content": "# /etc/profile -- system-wide shell setup for every login on this box.\n#\n# Staged from the container recipe, deliberately: this is setup that\n# should be here for every account, including one created after the\n# fact -- so it belongs in the recipe, which is re-staged on every\n# create, rather than in any one user's home. Per-user files live in\n# ~, which is a persistent volume on this box (ADR-0183).\n\numask 022\nexport PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\nexport LANG=C.UTF-8\nexport EDITOR=vim\nexport PAGER=less\n\n# A real prompt. Red user@host when root, cyan otherwise, then the cwd --\n# the point being that you can always see who and where you are on a box\n# whose whole purpose is reaching other machines.\nif [ \"$(id -u)\" -eq 0 ]; then\n\tPS1='\\[\\033[1;31m\\]\\u@\\h\\[\\033[0m\\]:\\[\\033[1;34m\\]\\w\\[\\033[0m\\]# '\nelse\n\tPS1='\\[\\033[1;36m\\]\\u@\\h\\[\\033[0m\\]:\\[\\033[1;34m\\]\\w\\[\\033[0m\\]$ '\nfi\nexport PS1\n\nalias ll='ls -alF'\nalias la='ls -A'\nalias l='ls -CF'\n\n# History worth having on a jump host: generous, de-duplicated, appended\n# rather than overwritten so concurrent sessions don't clobber each other.\nexport HISTSIZE=10000\nexport HISTFILESIZE=20000\nexport HISTCONTROL=ignoredups:erasedups\nshopt -s histappend 2>/dev/null || true\nshopt -s checkwinsize 2>/dev/null || true\n\n# Per-user customisation lives in ~/.bashrc, on the jump-home volume --\n# it survives both a restart and a full recreate (ADR-0183).\nif [ -r \"$HOME/.bashrc\" ]; then\n\t. \"$HOME/.bashrc\"\nfi\n",
+      "mode": "0644"
+    },
+    {
+      "path": "/etc/skel/.bashrc",
+      "content": "# ~/.bashrc -- your own customisations.\n#\n# This home directory lives on the `jump-home` volume (ADR-0183), so\n# anything you put here survives the container being restarted, and\n# survives it being recreated -- which happens on its own whenever the\n# jumpbox image is rebuilt (follow_rolling). Before volumes existed,\n# every recreate silently took this file with it.\n#\n# Shell setup that should be there for EVERYONE still belongs in the\n# container recipe's /etc/profile instead, so a brand-new account gets\n# it too.\n\n# Examples:\n# alias k='kubectl'\n# export PATH=\"$HOME/bin:$PATH\"\n",
+      "mode": "0644"
+    }
+  ],
+  "dns_register": true,
+  "pki_issue": true,
+  "cpu_max": "100000 100000",
+  "memory_max": 2147483648,
+  "cpuset_cpus": "0-1",
+  "disk_quota_bytes": 16106127360,
+  "ldap_client": true,
+  "volumes": [
+    {
+      "name": "jump-home",
+      "path": "/home"
+    }
+  ],
+  "routes": [
+    {
+      "dest": "0.0.0.0",
+      "prefix_len": 0,
+      "via": "192.168.150.254"
+    }
+  ]
+}

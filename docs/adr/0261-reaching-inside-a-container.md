@@ -121,8 +121,24 @@ different targets as well as different failure modes.
 both places and cannot type a path that only works in one of them.
 
 Every existing container recipe that relied on ad-hoc exec for diagnosis must declare the consoles
-it actually wants -- and today not one of them declares any, `cr-1`/`cr-2` included, so removing
-free-text exec without that pass would leave the routers with no way in at all. They gain `birdc`,
-`bird` and `keepalived` consoles for the work that found this; anything that
+it actually wants. Measured across every container recipe in this repo: **`jump` declares two
+(`login` and `shell`) and the other nine declare none**, `cr-1`/`cr-2` included -- so removing
+free-text exec without a recipe pass first would leave the routers with no way in at all.
+
+(An earlier revision of this paragraph said no container declared any. That was wrong: it
+generalised from `cr-2` alone without reading the other ten. Corrected here rather than only in
+conversation, because a wrong count in an accepted ADR is what the next person plans against.)
+
+The owner's decision on which containers get what:
+
+| container | console | why |
+|---|---|---|
+| `cr-1`, `cr-2` | `birdc` | the routing daemon's own control client |
+| `jump` | `login` | a jump host's way in is a login; the `shell` entry is dropped as the looser second way |
+| `ar-1` | `hostapd_cli` | when that container exists -- the AP is not built yet (#30) |
+| `dns-*`, `ldap-*`, `syslog-*` | none | nothing in them a console is the right shape for |
+
+`keepalived` gets no entry yet because the `service:` form is not implemented; it is the strongest
+case for building it, having no control client of its own at all. anything that
 expects a shell must have one installed by its image. A container that declares nothing has no
 interactive access at all, by design.
