@@ -7392,9 +7392,30 @@ static void handle_stop_escalation_timer_event(struct conn *cc)
 	free(cc);
 }
 
+/*
+ * ADR-0260: stopping a container is a message first and a signal
+ * second, and the order is load-bearing.
+ *
+ * A signal is not enough on its own. pid 1 of a PID namespace is
+ * SIGNAL_UNKILLABLE: the kernel DISCARDS any signal it has no handler
+ * installed for -- it is not queued and not delivered later. So a
+ * SIGTERM that arrives in the window between execve() and cix-init's
+ * own install_signal() is simply gone, and the container then sits
+ * until the SIGKILL escalation. That is not theoretical: a container
+ * created and deleted a few milliseconds apart hit it every run, and
+ * it was measured directly (a pidns init that installs its handler
+ * 300ms late never sees the signal at all).
+ *
+ * CIXINIT_OP_SHUTDOWN has no such window. It waits in the control
+ * socket's buffer and is read the moment cix-init reaches its loop,
+ * whether that is before or after the daemon sent it. The signal stays
+ * as the fallback for a cix-init that has stopped reading, and for any
+ * container whose pid 1 is not cix-init at all.
+ */
 static void begin_container_stop(struct registry_entry *e, int teardown_kind)
 {
 	int grace = container_stop_grace_seconds(e);
+	int told = container_init_command(e, CIXINIT_OP_SHUTDOWN, 0) == 0;
 
 	registry_begin_kill(e, teardown_kind);
 	arm_stop_escalation_timer(e);
@@ -7404,9 +7425,11 @@ static void begin_container_stop(struct registry_entry *e, int teardown_kind)
 	 * operator can be waiting on -- and until this line the only trace
 	 * of it anywhere was the container's status flipping to "stopping".
 	 */
-	fprintf(stderr, "%s: %s -- SIGTERM to pid %ld, SIGKILL in %ds if it has not gone\n", e->name,
+	fprintf(stderr, "%s: %s -- %s, SIGKILL in %ds if it has not gone\n", e->name,
 	        teardown_kind == REGISTRY_TEARDOWN_DELETE ? "deleting" : "stopping",
-	        (long)e->handle.pid, grace);
+	        told ? "shutdown asked of cix-init, SIGTERM alongside it"
+	             : "SIGTERM only (no control socket)",
+	        grace);
 }
 
 static void register_container_pidfd(struct registry_entry *entry)
