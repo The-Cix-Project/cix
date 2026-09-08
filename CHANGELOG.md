@@ -2,6 +2,61 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### cix-init: pid 1 for every container, freestanding, measured (#334, ADR-0260 Stage A)
+
+The supervisor exists again, and this time it will run. `init/src/cix_init.c`
+is pid 1 for every container under ADR-0260: it reads a service table from
+cixd, starts services in `after` order, probes readiness (tcp, unix socket,
+command), restarts a daemon after its **declared** delay, holds an operator
+stop as a visible override, stops in reverse dependency order at shutdown,
+and exits with the mapped status when nothing is left to supervise. The
+reap loop and bounded report ring are the ones removed with ADR-0246's
+supervisor in `594ec1fc`.
+
+**It is freestanding, not static-against-glibc, and the difference was
+measured rather than chosen.** ADR-0260 said "statically linked";
+`probe-tcc-conformance/25` found no `libc.a` on a Cix host, which ADR-0251
+guarantees by dropping static archives from every artifact. So
+`cix-init` includes no header at all: `-nostdlib -static`, its own
+`_start`, syscall trampoline, `sigreturn` and `memcpy`. `probe-tcc-conformance/26`
+and `27` measured the pinned tcc producing exactly that:
+
+    tcc -nostdlib -static: PT_INTERP=0 DT_NEEDED=0 UND symbols=0 size=4860 bytes
+    _start, syscalls, SIGUSR1 delivered through SA_RESTORER, fork/execve/
+    poll/wait4, implicit memcpy: all ran, exit 42
+    tcc -nostdlib alone:  PT_INTERP=1 -- so -static is load-bearing
+
+`include/cixinit.h` is the one definition of the wire format for both
+sides: SOCK_SEQPACKET for the table, commands and reports (a pipe would
+merge two 16-byte reports into one read), per-service pipes for output,
+fd numbers on cix-init's argv (never fixed -- at exec time fd 3 may be
+the diag pipe -- and never the environment, which every service would
+inherit). The container's exit status mapping is in its header comment:
+a service's code or 128+signal when a service ended the container, 0
+after an orderly shutdown, 125 for a bad table, 140+errno for an
+`execve()` that failed, the encoding `src/container.c` already uses.
+
+`test/test_cix_init.c` drives the real binary as a plain child and is in
+`SELFTESTS`, having been measured there first (`recipes/package/probe-cix-init/1`,
+in a composed build container on the platform's tcc):
+
+    0. wire-format sizes   1. ELF shape   2. after-order   3. output
+    attribution   4. operator stop held, start lifted   5. reverse-order
+    shutdown, exit 0   6. failed oneshot -> container exits 3
+    7. restart after the declared 2 s   8. bad hello -> 125
+    9. execve() failure -> 142   CIX-INIT RESULT: PASS
+
+Two things found on the way and recorded for Stage B: the daemon's stop
+path is SIGKILL-only (`registry_begin_kill`), so it must become
+stop-signal-then-SIGKILL for cix-init's reverse-order shutdown to ever
+run; and `elfcheck_undefined_builtin()` scans only `.dynsym`, so a
+freestanding binary passes the install gate unscanned rather than
+deliberately.
+
+Nothing executes on a host yet: `services[]`, the removal of `cmd`, the
+daemon-side staging and the recipe cut-over are the stages after this,
+and the `cix` recipe pins a ref.
+
 ### Kernel 7.2.3-3: IP multipath, and bird's `Netlink: Invalid argument` stops
 
 The one link the router work left unproven is now measured. A kernel built

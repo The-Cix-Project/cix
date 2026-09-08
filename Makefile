@@ -44,6 +44,7 @@ SELFTESTS = \
 	$(BUILD)/test_partlabel $(BUILD)/test_pkg_finalize $(BUILD)/test_fresh_output_dir \
 	$(BUILD)/test_pgpverify $(BUILD)/test_kernelrecipe $(BUILD)/test_srcdepth $(BUILD)/test_srcupstream $(BUILD)/test_srcpolicy $(BUILD)/test_srcresolve $(BUILD)/test_pipeline $(BUILD)/test_scheduler \
 	$(BUILD)/test_btrfs $(BUILD)/test_toolchain \
+	$(BUILD)/test_cix_init \
 	$(DAEMON_SELFTESTS)
 
 #
@@ -814,6 +815,12 @@ $(BUILD)/cix-boot.efi: image/src/cix-boot.c include/uefi.h | $(BUILD)
 $(BUILD)/cix-init: init/src/cix_init.c include/cixinit.h | $(BUILD)
 	$(CC) -Wall -Werror -nostdlib -static -Iinclude init/src/cix_init.c -o $@
 
+#
+# In SELFTESTS: measured passing inside a composed build container on the
+# platform's own tcc by recipes/package/probe-cix-init/1 (2026-09-08),
+# which is the list's own rule for membership. It forks cix-init as a
+# plain child -- no namespace, mount or capability involved.
+#
 $(BUILD)/test_cix_init: test/test_cix_init.c include/cixinit.h $(BUILD)/cix-init | $(BUILD)
 	$(CC) $(CFLAGS) test/test_cix_init.c -o $@
 
