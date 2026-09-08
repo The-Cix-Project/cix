@@ -574,7 +574,13 @@ int dhcp_render_conf(const char *server_name, char *out, size_t out_size)
 	             "# changing one restarts this container.\n"
 	             "# Only this server's own slice of each range appears here:\n"
 	             "# dnsmasq has no failover protocol, so two servers on one\n"
-	             "# wire are safe only because their pools do not overlap.\n");
+	             "# wire are safe only because their pools do not overlap.\n"
+	             "# Each range is tagged with its network name, and every\n"
+	             "# option is tagged to match. dnsmasq picks a RANGE by the\n"
+	             "# subnet of the interface a request arrived on, but an\n"
+	             "# untagged OPTION goes to every client on every range -- so\n"
+	             "# one server on two networks would hand both segments the\n"
+	             "# same default gateway.\n");
 	if (n < 0 || (size_t)n >= out_size)
 		return -1;
 	off = (size_t)n;
@@ -602,18 +608,55 @@ int dhcp_render_conf(const char *server_name, char *out, size_t out_size)
 			continue;
 		ip_str(slice_start, start, sizeof(start));
 		ip_str(slice_end, end, sizeof(end));
-		n = snprintf(out + off, out_size - off, "dhcp-range=%s,%s,%ds\n", start, end,
-		             g_networks[i].lease_seconds);
+		/*
+		 * set:<network> labels this range so its options can be
+		 * addressed to it alone (dnsmasq's own "so that DHCP options
+		 * may be specified on a per-network basis"). The network name
+		 * is the tag: it is already unique, already what an operator
+		 * reads in every other endpoint, and needs no second namespace.
+		 *
+		 * Without this, a server on two networks emitted two untagged
+		 * dhcp-option lines, and dnsmasq sends an untagged option to
+		 * every client on every range -- so whichever gateway was
+		 * rendered last became the gateway for BOTH segments. The
+		 * ranges themselves were always fine, because dnsmasq matches a
+		 * request to a range by the subnet of the interface it arrived
+		 * on; it is only the options that needed saying which network
+		 * they belong to.
+		 */
+		n = snprintf(out + off, out_size - off, "dhcp-range=set:%s,%s,%s,%ds\n",
+		             g_networks[i].network, start, end, g_networks[i].lease_seconds);
 		if (n < 0 || (size_t)n >= out_size - off)
 			return -1;
 		off += (size_t)n;
 		if (g_networks[i].router_be != 0) {
 			ip_str(g_networks[i].router_be, router, sizeof(router));
-			n = snprintf(out + off, out_size - off, "dhcp-option=3,%s\n", router);
-			if (n < 0 || (size_t)n >= out_size - off)
-				return -1;
-			off += (size_t)n;
+			n = snprintf(out + off, out_size - off, "dhcp-option=tag:%s,3,%s\n",
+			             g_networks[i].network, router);
+		} else {
+			/*
+			 * router_be == 0 means "advertise no default route", and
+			 * saying nothing does NOT mean that: dnsmasq documents its
+			 * own default as sending its own address as the default
+			 * route. Omitting the line therefore pointed clients at
+			 * whichever container happened to be serving DHCP -- a
+			 * gateway that does not route, which is a black hole rather
+			 * than an absent route.
+			 *
+			 * Suppressing it is the documented no-data form, spelled by
+			 * option NAME because that is the spelling dnsmasq's manual
+			 * documents for it ("Options for which dnsmasq normally
+			 * provides default values can be omitted by defining the
+			 * option with no data ... --dhcp-option = option:router will
+			 * result in no router option being sent"). The numeric
+			 * spelling stays on the line above, where it carries a value.
+			 */
+			n = snprintf(out + off, out_size - off, "dhcp-option=tag:%s,option:router\n",
+			             g_networks[i].network);
 		}
+		if (n < 0 || (size_t)n >= out_size - off)
+			return -1;
+		off += (size_t)n;
 	}
 	return (int)off;
 }

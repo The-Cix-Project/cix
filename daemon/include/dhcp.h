@@ -41,6 +41,15 @@
  * machines is impossible because no two servers hold it. Any one of
  * them alone keeps serving from its own slice.
  *
+ * Ranges are per network and options are TAGGED with the network's
+ * name, which is what makes one server able to serve several. dnsmasq
+ * already picks a range by the subnet of the interface a request
+ * arrived on, so ranges never needed help -- but an untagged option is
+ * sent to every client on every range, so a server on two networks
+ * would hand both segments whichever default gateway was rendered
+ * last. set:<network> on the range and tag:<network> on each option is
+ * how a network's settings stay its own.
+ *
  * Two rendered files, because dnsmasq treats them differently and
  * pretending otherwise would mean silently-inert settings:
  *   - the hosts file (static MAC->IP reservations) is re-read on
@@ -76,7 +85,16 @@ struct dhcp_network {
 	uint32_t range_start_be;
 	uint32_t range_end_be;
 	int lease_seconds;
-	uint32_t router_be; /* 0 = advertise no default route */
+	/*
+	 * The default route handed to clients on this network. 0 means
+	 * advertise none -- and that takes a deliberate line in the
+	 * rendered conf rather than silence, because dnsmasq's documented
+	 * default when the router option is absent is to send its OWN
+	 * address. Saying nothing pointed clients at whichever container
+	 * was serving DHCP, which does not route: a black hole rather than
+	 * an absent route.
+	 */
+	uint32_t router_be;
 	/*
 	 * Which registered DHCP servers serve this range. Named rather
 	 * than inferred: how many servers a wire should have is an
