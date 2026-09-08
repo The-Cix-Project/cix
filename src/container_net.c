@@ -230,11 +230,59 @@ int container_net_host_attach_interfaces(const char *const *interfaces, int inte
 		 * radio until this container is deleted. That is the kernel's
 		 * model, not a choice made here.
 		 */
-		int rc = nl80211_is_wireless(interfaces[i])
-		                 ? nl80211_move_phy_to_netns(interfaces[i], child_pid)
-		                 : rtnl_link_set_netns_pid(fd, interfaces[i], child_pid);
+		int wireless = nl80211_is_wireless(interfaces[i]);
+		int rc;
+
+		/*
+		 * A wiphy will not move while its interfaces are up. nl80211.h
+		 * says so in as many words -- "all devices associated with
+		 * this wiphy must be down and will follow" -- and skipping it
+		 * is why the move failed with a kernel errno that named no
+		 * cause anyone could act on.
+		 *
+		 * Down first, then move. The interface comes back up inside
+		 * the container by the helper below, which this path already
+		 * did for the rtnetlink case: the kernel downs a link as part
+		 * of moving it either way, so "up" always belonged after the
+		 * move rather than before it.
+		 *
+		 * Only for the wireless path. An ordinary netdev needs no
+		 * such preparation, and downing one that the operator handed
+		 * over already-configured would be a change this code has no
+		 * reason to make.
+		 */
+		if (wireless && rtnl_link_set_down(fd, interfaces[i]) != 0) {
+			char step[128];
+
+			snprintf(step, sizeof(step),
+			         "container_create: radio \"%s\": could not be brought down before the "
+			         "phy move",
+			         interfaces[i]);
+			container_set_last_error_step(step);
+			rtnl_close(fd);
+			close(*out_netns_fd);
+			*out_netns_fd = -1;
+			return -1;
+		}
+
+		rc = wireless ? nl80211_move_phy_to_netns(interfaces[i], child_pid)
+		              : rtnl_link_set_netns_pid(fd, interfaces[i], child_pid);
 
 		if (rc != 0) {
+			char step[128];
+
+			/*
+			 * Name the mechanism AND the interface. "attach
+			 * interfaces failed" plus an errno leaves an operator
+			 * guessing which of two netlink families refused and
+			 * which of several interfaces it was about -- and the two
+			 * families fail for entirely different reasons, so the
+			 * distinction is the first thing worth knowing.
+			 */
+			snprintf(step, sizeof(step), "container_create: %s \"%s\": %s netns move",
+			         wireless ? "radio" : "interface", interfaces[i],
+			         wireless ? "nl80211 phy" : "rtnetlink");
+			container_set_last_error_step(step);
 			/* Preserve the errno of the move itself: rtnl_close() and
 			 * close() below can both overwrite it, and which of the two
 			 * mechanisms refused is the whole diagnosis. */
@@ -306,6 +354,11 @@ int container_net_host_attach_interfaces(const char *const *interfaces, int inte
 		close(*out_netns_fd);
 		*out_netns_fd = -1;
 		errno = e > 0 ? e : EIO;
+		/* The move itself already succeeded if we are here, so this
+		 * is specifically the inside-the-namespace half: setns, a
+		 * netlink socket in that namespace, or bringing a link up. */
+		container_set_last_error_step(
+		        "container_create: bringing moved interfaces up inside the container netns");
 		return -1;
 	}
 

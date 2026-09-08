@@ -274,6 +274,34 @@ int rtnl_link_set_master(int fd, const char *name, const char *bridge_name)
 	return nl_msg_send_and_ack(fd, &m);
 }
 
+/*
+ * The mirror of rtnl_link_set_up(). ifi_change names IFF_UP as the bit
+ * being written and ifi_flags leaves it clear, so this touches nothing
+ * else about the link.
+ */
+int rtnl_link_set_down(int fd, const char *name)
+{
+	struct nl_msg m;
+	struct nlmsghdr *nh;
+	struct ifinfomsg *ifi;
+
+	nl_msg_init(&m);
+	nh = nl_msg_put(&m, sizeof(*nh));
+	ifi = nl_msg_put(&m, sizeof(*ifi));
+	if (nh == NULL || ifi == NULL)
+		return -1;
+	ifi->ifi_family = AF_UNSPEC;
+	ifi->ifi_flags = 0;
+	ifi->ifi_change = IFF_UP;
+
+	if (nl_msg_put_attr_str(&m, IFLA_IFNAME, name) == NULL)
+		return -1;
+
+	nh->nlmsg_type = RTM_NEWLINK;
+	nh->nlmsg_flags = 0;
+	return nl_msg_send_and_ack(fd, &m);
+}
+
 int rtnl_link_set_up(int fd, const char *name)
 {
 	struct nl_msg m;

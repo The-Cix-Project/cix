@@ -69,6 +69,12 @@ int rtnl_vlan_create(int fd, const char *name, const char *parent_ifname, int vl
 /* Brings a link up (IFF_UP). */
 int rtnl_link_set_up(int fd, const char *name);
 
+/* Administratively downs a link. Needed before moving a wireless PHY
+ * between namespaces: nl80211.h states the precondition plainly --
+ * "all devices associated with this wiphy must be down and will
+ * follow" (NL80211_CMD_SET_WIPHY_NETNS). */
+int rtnl_link_set_down(int fd, const char *name);
+
 /* Assigns an IPv4 address/prefix to a link. */
 int rtnl_addr_add_ipv4(int fd, const char *link_name, uint32_t addr_be, int prefix_len);
 
