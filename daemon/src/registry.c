@@ -1,4 +1,5 @@
 #include "registry.h"
+#include "cixinit_table.h"
 #include "containerdef.h"
 #include "internal.h"
 #include "linux_compat.h"
@@ -127,10 +128,12 @@ enum registry_error registry_create(const char *name, const char *image,
 	e->cap_add_count = spec->cap_add_count;
 	for (i = 0; i < spec->cap_add_count; i++)
 		strncpy(e->cap_add[i], spec->cap_add[i], sizeof(e->cap_add[i]) - 1);
-	memset(e->cmd, 0, sizeof(e->cmd));
-	for (i = 0; i < CONTAINER_MAX_ARGV && spec->argv[i] != NULL; i++)
-		strncpy(e->cmd[i], spec->argv[i], sizeof(e->cmd[i]) - 1);
-	e->cmd_count = i;
+	memset(e->services, 0, sizeof(e->services));
+	e->service_count = 0;
+	e->init_control_fd = -1;
+	e->init_report_fd = -1;
+	e->init_up = 0;
+	e->ready = 0;
 	memset(e->env, 0, sizeof(e->env));
 	for (i = 0; i < CONTAINER_MAX_ENV && spec->envp[i] != NULL; i++) {
 		const char *entry = spec->envp[i];
@@ -378,6 +381,7 @@ int registry_remove(const char *name)
 	if (e->handle.bpf_prog_fd >= 0)
 		close(e->handle.bpf_prog_fd);
 	close(e->handle.cgroup_fd);
+	registry_close_init_fds(e);
 	e->in_use = 0;
 	return 0;
 }
@@ -387,7 +391,13 @@ int registry_remove(const char *name)
 void registry_begin_kill(struct registry_entry *e, int teardown_kind)
 {
 	registry_set_paused(e, 0);
-	sys_pidfd_send_signal(e->handle.pidfd, SIGKILL);
+	/*
+	 * ADR-0260: SIGTERM, not SIGKILL. pid 1 is cix-init, which stops
+	 * the services in reverse dependency order and exits; the caller
+	 * (main.c's begin_container_stop) arms the SIGKILL that follows if
+	 * that does not finish within the container's grace.
+	 */
+	sys_pidfd_send_signal(e->handle.pidfd, SIGTERM);
 	e->teardown_kind = teardown_kind;
 	e->teardown_started_at = time(NULL);   /* issue #119 */
 	e->teardown_stall_reported = 0;
@@ -567,6 +577,9 @@ int registry_device_live_detach(struct registry_entry *e, const char *id,
 	return 0;
 }
 
+static void registry_write_json_service(const struct registry_entry *entry, int idx,
+                                        struct json_writer *w);
+
 void registry_write_json_one(const struct registry_entry *entry, struct json_writer *w)
 {
 	int i;
@@ -708,10 +721,17 @@ void registry_write_json_one(const struct registry_entry *entry, struct json_wri
 	for (i = 0; i < entry->cap_add_count; i++)
 		jw_str(w, entry->cap_add[i]);
 	jw_arr_close(w);
-	jw_key(w, "cmd");
+	/*
+	 * ADR-0260: what this container runs, in the order cix-init runs
+	 * it, each entry the declaration plus the live state derived from
+	 * cix-init's reports.
+	 */
+	jw_key(w, "ready");
+	jw_bool(w, entry->ready);
+	jw_key(w, "services");
 	jw_arr_open(w);
-	for (i = 0; i < entry->cmd_count; i++)
-		jw_str(w, entry->cmd[i]);
+	for (i = 0; i < entry->service_count; i++)
+		registry_write_json_service(entry, i, w);
 	jw_arr_close(w);
 	jw_key(w, "env");
 	jw_obj_open(w);
@@ -905,6 +925,264 @@ void registry_write_json_list(struct json_writer *w)
 	 */
 	containerdef_write_json_inactive_list(w, registry_name_is_live);
 	jw_arr_close(w);
+}
+
+/* ------------------------------------------------------------------ */
+/* ADR-0260: services.                                                 */
+
+const char *registry_service_state_name(int state)
+{
+	switch (state) {
+	case REGISTRY_SVC_PENDING: return "pending";
+	case REGISTRY_SVC_STARTING: return "starting";
+	case REGISTRY_SVC_RUNNING: return "running";
+	case REGISTRY_SVC_EXITED: return "exited";
+	case REGISTRY_SVC_RESTART_WAIT: return "restart-wait";
+	case REGISTRY_SVC_STOPPED: return "stopped";
+	case REGISTRY_SVC_FAILED: return "failed";
+	default: return "?";
+	}
+}
+
+int registry_service_index(const struct registry_entry *e, const char *name)
+{
+	int i;
+
+	if (name == NULL)
+		return -1;
+	for (i = 0; i < e->service_count; i++)
+		if (strcmp(e->services[i].def.name, name) == 0)
+			return i;
+	return -1;
+}
+
+void registry_set_services(struct registry_entry *e, const struct cixinit_table *table,
+                           const int output_fds[], int control_fd, int report_fd)
+{
+	int i;
+
+	memset(e->services, 0, sizeof(e->services));
+	e->service_count = table->count;
+	for (i = 0; i < table->count; i++) {
+		e->services[i].def = table->svc[i];
+		e->services[i].body_index = table->order[i];
+		e->services[i].state = REGISTRY_SVC_PENDING;
+		e->services[i].output_fd = output_fds != NULL ? output_fds[i] : -1;
+	}
+	e->init_control_fd = control_fd;
+	e->init_report_fd = report_fd;
+	e->init_up = 0;
+	e->ready = 0;
+}
+
+/*
+ * Derived readiness (ADR-0260): every service with a probe has passed
+ * it and every oneshot has exited 0. A service held stopped by an
+ * operator is not counted against it -- the operator asked for that --
+ * and neither is a daemon whose on_exit is "stop" once it has exited.
+ */
+static int derive_ready(const struct registry_entry *e)
+{
+	int i;
+
+	if (!e->init_up || e->service_count == 0)
+		return 0;
+	for (i = 0; i < e->service_count; i++) {
+		const struct registry_service *s = &e->services[i];
+
+		if (s->state == REGISTRY_SVC_STOPPED)
+			continue;
+		if (s->def.type == CIXINIT_TYPE_ONESHOT) {
+			if (!(s->state == REGISTRY_SVC_EXITED && s->has_exit &&
+			      s->exit_kind == CIXINIT_EXIT_KIND_EXITED && s->exit_value == 0))
+				return 0;
+			continue;
+		}
+		if (s->state == REGISTRY_SVC_EXITED && s->def.on_exit == CIXINIT_ON_EXIT_STOP)
+			continue;
+		if (s->state != REGISTRY_SVC_RUNNING)
+			return 0;
+	}
+	return 1;
+}
+
+int registry_apply_init_report(struct registry_entry *e, const struct cixinit_report *r)
+{
+	struct registry_service *s;
+	int was_ready = e->ready;
+
+	if (r->service == -1) {
+		if (r->event == CIXINIT_EV_UP)
+			e->init_up = 1;
+		e->ready = derive_ready(e);
+		return e->ready != was_ready;
+	}
+	if (r->service < 0 || r->service >= e->service_count)
+		return 0;
+	s = &e->services[r->service];
+	switch (r->event) {
+	case CIXINIT_EV_STARTING:
+		s->state = REGISTRY_SVC_STARTING;
+		s->pid = 0;
+		s->fail_reason = 0;
+		break;
+	case CIXINIT_EV_STARTED:
+		s->state = REGISTRY_SVC_STARTING;
+		s->pid = (pid_t)r->a;
+		break;
+	case CIXINIT_EV_READY:
+		s->state = REGISTRY_SVC_RUNNING;
+		break;
+	case CIXINIT_EV_EXITED:
+		s->pid = 0;
+		s->has_exit = 1;
+		s->exit_kind = r->a;
+		s->exit_value = r->b;
+		s->state = REGISTRY_SVC_EXITED;
+		break;
+	case CIXINIT_EV_RESTART_IN:
+		s->state = REGISTRY_SVC_RESTART_WAIT;
+		s->restarts = r->b;
+		break;
+	case CIXINIT_EV_STOPPED:
+		s->state = REGISTRY_SVC_STOPPED;
+		s->pid = 0;
+		break;
+	case CIXINIT_EV_FAILED:
+		s->fail_reason = r->a;
+		s->fail_detail = r->b;
+		/* A probe timeout is reported and the service carries on; the rest are terminal. */
+		if (r->a != CIXINIT_FAIL_PROBE)
+			s->state = REGISTRY_SVC_FAILED;
+		break;
+	default:
+		break;
+	}
+	e->ready = derive_ready(e);
+	return e->ready != was_ready;
+}
+
+static void registry_write_json_argv(const char *packed, struct json_writer *w)
+{
+	const char *p = packed;
+
+	jw_arr_open(w);
+	while (*p != '\0') {
+		jw_str(w, p);
+		p += strlen(p) + 1;
+	}
+	jw_arr_close(w);
+}
+
+static void registry_write_json_service(const struct registry_entry *entry, int idx,
+                                        struct json_writer *w)
+{
+	const struct registry_service *s = &entry->services[idx];
+	int j;
+
+	jw_obj_open(w);
+	jw_key(w, "name");
+	jw_str(w, s->def.name);
+	jw_key(w, "type");
+	jw_str(w, cixinit_type_name(s->def.type));
+	jw_key(w, "cmd");
+	registry_write_json_argv(s->def.argv, w);
+	jw_key(w, "after");
+	jw_arr_open(w);
+	for (j = 0; j < idx; j++)
+		if ((s->def.after_mask & (1u << j)) != 0)
+			jw_str(w, entry->services[j].def.name);
+	jw_arr_close(w);
+	jw_key(w, "ready_probe");
+	if (s->def.ready_kind == CIXINIT_READY_NONE) {
+		jw_null(w);
+	} else {
+		jw_obj_open(w);
+		if (s->def.ready_kind == CIXINIT_READY_TCP) {
+			jw_key(w, "tcp_port");
+			jw_int(w, s->def.ready_port);
+		} else if (s->def.ready_kind == CIXINIT_READY_SOCKET) {
+			jw_key(w, "socket");
+			jw_str(w, s->def.ready_path);
+		} else {
+			jw_key(w, "command");
+			registry_write_json_argv(s->def.ready_path, w);
+		}
+		jw_key(w, "timeout_seconds");
+		jw_int(w, s->def.ready_timeout_seconds);
+		jw_obj_close(w);
+	}
+	jw_key(w, "on_exit");
+	jw_str(w, cixinit_on_exit_name(s->def.on_exit));
+	jw_key(w, "restart_delay_seconds");
+	jw_int(w, s->def.restart_delay_seconds);
+	jw_key(w, "stop_signal");
+	jw_str(w, cixinit_signal_name(s->def.stop_signal));
+	jw_key(w, "stop_timeout_seconds");
+	jw_int(w, s->def.stop_timeout_seconds);
+	jw_key(w, "uid");
+	if (s->def.uid >= 0)
+		jw_int(w, s->def.uid);
+	else
+		jw_null(w);
+	jw_key(w, "gid");
+	if (s->def.gid >= 0)
+		jw_int(w, s->def.gid);
+	else
+		jw_null(w);
+
+	jw_key(w, "state");
+	jw_str(w, registry_service_state_name(s->state));
+	jw_key(w, "pid");
+	if (s->pid > 0)
+		jw_int(w, (long long)s->pid);
+	else
+		jw_null(w);
+	jw_key(w, "restarts");
+	jw_int(w, s->restarts);
+	jw_key(w, "last_exit");
+	if (s->has_exit) {
+		jw_obj_open(w);
+		jw_key(w, "kind");
+		jw_str(w, s->exit_kind == CIXINIT_EXIT_KIND_EXITED ? "exited"
+		       : s->exit_kind == CIXINIT_EXIT_KIND_DUMPED ? "dumped" : "killed");
+		jw_key(w, s->exit_kind == CIXINIT_EXIT_KIND_EXITED ? "status" : "signal");
+		jw_int(w, s->exit_value);
+		jw_obj_close(w);
+	} else {
+		jw_null(w);
+	}
+	jw_key(w, "failure");
+	if (s->fail_reason != 0) {
+		jw_obj_open(w);
+		jw_key(w, "reason");
+		jw_str(w, s->fail_reason == CIXINIT_FAIL_PROBE ? "probe-timeout"
+		       : s->fail_reason == CIXINIT_FAIL_ONESHOT ? "oneshot-status"
+		       : s->fail_reason == CIXINIT_FAIL_SPAWN ? "spawn"
+		       : s->fail_reason == CIXINIT_FAIL_DEPENDENCY ? "dependency" : "?");
+		jw_key(w, "detail");
+		if (s->fail_reason == CIXINIT_FAIL_DEPENDENCY && s->fail_detail >= 0 &&
+		    s->fail_detail < entry->service_count)
+			jw_str(w, entry->services[s->fail_detail].def.name);
+		else
+			jw_int(w, s->fail_detail);
+		jw_obj_close(w);
+	} else {
+		jw_null(w);
+	}
+	jw_obj_close(w);
+}
+
+void registry_close_init_fds(struct registry_entry *e)
+{
+	if (e->init_control_fd >= 0) {
+		close(e->init_control_fd);
+		e->init_control_fd = -1;
+	}
+	if (e->init_report_fd >= 0) {
+		close(e->init_report_fd);
+		e->init_report_fd = -1;
+	}
 }
 
 void registry_set_consoles(const char *name, const struct registry_console *consoles, int count)

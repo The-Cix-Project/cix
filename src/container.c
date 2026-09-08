@@ -965,6 +965,24 @@ int container_create(const struct container_spec *spec, struct container_handle 
 			_exit(120);
 		}
 
+		/*
+		 * ADR-0260: the fds cix-init is told about on its argv must
+		 * survive the execve() below. Everything the daemon opened is
+		 * close-on-exec; these, and only these, are switched back
+		 * here, as the very last thing before exec so nothing above
+		 * can fork with them open.
+		 */
+		{
+			int k;
+
+			for (k = 0; k < spec->keep_fd_count; k++) {
+				if (fcntl(spec->keep_fds[k], F_SETFD, 0) != 0) {
+					child_diag(diag_pipe[1], "child: fcntl(keep_fds, F_SETFD)");
+					_exit(138);
+				}
+			}
+		}
+
 		execve(spec->argv[0], spec->argv, spec->envp);
 		{
 			/*
@@ -1320,6 +1338,7 @@ void container_decode_exit_status(int exit_status, int term_signal, char *buf, s
 		{ 126, "chdir into the new root failed (pre-pivot_root) -- the "
 		       "container's rootfs path is not traversable" },
 		{ 127, "exec failed (errno out of encodable range)" },
+		{ 138, "fcntl(keep_fds, F_SETFD) failed -- an fd named on cix-init's argv was not open" },
 		{ 130, "overlay: lowerdir stat failed" },
 		{ 131, "overlay: upperdir mkdir failed" },
 		{ 132, "overlay: disk quota setup failed" },
