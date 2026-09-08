@@ -651,6 +651,12 @@ void registry_write_json_one(const struct registry_entry *entry, struct json_wri
 		jw_str(w, ipstr);
 		jw_key(w, "ifname");
 		jw_str(w, entry->nets[i].ifname);
+		/* ADR-0264: only when set -- an ordinary attachment should not
+		 * grow an empty field it has no relationship to. */
+		if (entry->nets[i].container_bridge[0] != '\0') {
+			jw_key(w, "container_bridge");
+			jw_str(w, entry->nets[i].container_bridge);
+		}
 		jw_key(w, "live");
 		jw_bool(w, entry->nets[i].veth_host[0] != '\0');
 		jw_obj_close(w);

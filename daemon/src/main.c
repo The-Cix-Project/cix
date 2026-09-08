@@ -10349,16 +10349,19 @@ static int container_ifname_is_valid(const char *s)
  */
 static int parse_network_entry(const struct json_value *item, char *name_out, size_t name_out_size,
                                 uint32_t *out_ip_be, int *out_has_ip, char *ifname_out,
-                                size_t ifname_out_size)
+                                size_t ifname_out_size, char *bridge_out, size_t bridge_out_size)
 {
 	const char *n;
 	const char *ip_str;
 	const char *ifn;
+	const char *brn;
 	struct in_addr addr;
 
 	*out_has_ip = 0;
 	if (ifname_out != NULL && ifname_out_size > 0)
 		ifname_out[0] = '\0';
+	if (bridge_out != NULL && bridge_out_size > 0)
+		bridge_out[0] = '\0';
 	if (item->type == JSON_STRING) {
 		n = json_as_string(item);
 		if (n == NULL)
@@ -10385,6 +10388,21 @@ static int parse_network_entry(const struct json_value *item, char *name_out, si
 			return -2;
 		if (ifname_out != NULL && ifname_out_size > 0)
 			snprintf(ifname_out, ifname_out_size, "%s", ifn);
+	}
+	/*
+	 * ADR-0264: this attachment is a port of a bridge inside the
+	 * container. Same name rules as ifname, and for the same reason --
+	 * it becomes a real interface in the same namespace, so it cannot
+	 * be "lo" and cannot collide with the eth<N> names this platform
+	 * assigns to unnamed attachments. -3 rather than -2 so the caller
+	 * can name the field the operator actually got wrong.
+	 */
+	brn = json_as_string(json_object_get(item, "container_bridge"));
+	if (brn != NULL) {
+		if (!container_ifname_is_valid(brn))
+			return -3;
+		if (bridge_out != NULL && bridge_out_size > 0)
+			snprintf(bridge_out, bridge_out_size, "%s", brn);
 	}
 	return 0;
 }
@@ -10982,6 +11000,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	size_t i;
 	struct registry_network_attachment net_attachments[CONTAINER_MAX_NETWORKS];
 	char chosen_ifname[16]; /* ADR-0259: this attachment's operator-chosen name, "" if none */
+	char chosen_bridge[16]; /* ADR-0264: in-container bridge this attachment joins, "" if none */
 	int net_count = 0;
 	int ip_forward = 0;
 	int ksm = 0;
@@ -11235,6 +11254,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 		/* ADR-0259: each attachment's resolved interface name, kept so
 		 * two of them cannot claim the same one. */
 		char seen_ifnames[CONTAINER_MAX_NETWORKS][16];
+		char chosen_bridge[16];
 
 		memset(seen_ifnames, 0, sizeof(seen_ifnames));
 		if (jnetworks->type != JSON_ARRAY || jnetworks->u.array.count == 0 ||
@@ -11251,7 +11271,17 @@ static int create_container_from_body(const char *body, size_t body_len,
 			size_t j;
 
 			prc = parse_network_entry(jnetworks->u.array.items[i], n, sizeof(n), &ip_be,
-			                           &has_ip, seen_ifnames[i], sizeof(seen_ifnames[i]));
+			                           &has_ip, seen_ifnames[i], sizeof(seen_ifnames[i]),
+			                           chosen_bridge, sizeof(chosen_bridge));
+			if (prc == -3) {
+				json_free(root);
+				snprintf(err_msg, err_msg_size,
+				         "networks[%d].container_bridge must be 1-15 characters of "
+				         "[A-Za-z0-9._-], and may not be \"lo\" or an \"eth<N>\" name "
+				         "(it becomes a real interface in the same namespace)",
+				         (int)i);
+				return 400;
+			}
 			if (prc == -2) {
 				json_free(root);
 				snprintf(err_msg, err_msg_size,
@@ -11994,7 +12024,8 @@ static int create_container_from_body(const char *body, size_t body_len,
 			 * in-range and free) -- re-parsed only to recover the
 			 * values, no new failure mode expected here. */
 			parse_network_entry(jnetworks->u.array.items[i], n, sizeof(n), &ip_be, &has_ip,
-			                     chosen_ifname, sizeof(chosen_ifname));
+			                     chosen_ifname, sizeof(chosen_ifname), chosen_bridge,
+			                     sizeof(chosen_bridge));
 			if (!has_ip) {
 				int arc = network_alloc_ip(n, &ip_be);
 
@@ -12026,6 +12057,8 @@ static int create_container_from_body(const char *body, size_t body_len,
 			 * positional default otherwise. Validated in the pass
 			 * above, so nothing here can fail.
 			 */
+			snprintf(net_attachments[i].container_bridge,
+			         sizeof(net_attachments[i].container_bridge), "%s", chosen_bridge);
 			if (chosen_ifname[0] != '\0')
 				snprintf(net_attachments[i].ifname, sizeof(net_attachments[i].ifname), "%s",
 				         chosen_ifname);
@@ -12671,6 +12704,8 @@ static int create_container_from_body(const char *body, size_t body_len,
 		spec.nets[i].prefix_len = net->prefix_len;
 		snprintf(spec.nets[i].ifname, sizeof(spec.nets[i].ifname), "%s",
 		         net_attachments[i].ifname);
+		snprintf(spec.nets[i].container_bridge, sizeof(spec.nets[i].container_bridge), "%s",
+		         net_attachments[i].container_bridge);
 	}
 	spec.ip_forward = ip_forward;
 	spec.ksm = ksm;
@@ -14341,6 +14376,7 @@ static void handle_container_network_attach(int fd, const char *container_name, 
 	struct registry_network_attachment att;
 	char veth_host[16], veth_ctr[16], ifname[16];
 	char chosen_ifname[16];
+	char chosen_bridge[16];
 	int prc;
 	struct json_writer w;
 	int i;
@@ -14357,7 +14393,29 @@ static void handle_container_network_attach(int fd, const char *container_name, 
 		return;
 	}
 	prc = parse_network_entry(root, net_name, sizeof(net_name), &ip_be, &has_ip, chosen_ifname,
-	                           sizeof(chosen_ifname));
+	                           sizeof(chosen_ifname), chosen_bridge, sizeof(chosen_bridge));
+	if (prc == -3) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request",
+		              "container_bridge must be 1-15 characters of [A-Za-z0-9._-], and may "
+		              "not be \"lo\" or an \"eth<N>\" name");
+		return;
+	}
+	if (prc == 0 && chosen_bridge[0] != '\0') {
+		/*
+		 * ADR-0264 is a creation-time capability, and saying so is
+		 * better than accepting the field and ignoring it. Building the
+		 * bridge means acting inside the container's own netns, which
+		 * this path cannot do -- it has no setns() primitive, the same
+		 * reason route_spec is documented as create-time only.
+		 */
+		json_free(root);
+		respond_error(fd, 400, "Bad Request",
+		              "container_bridge can only be set when the container is created -- "
+		              "attaching a network to a running container cannot build a bridge "
+		              "inside its network namespace");
+		return;
+	}
 	if (prc == -2) {
 		json_free(root);
 		respond_error(fd, 400, "Bad Request",

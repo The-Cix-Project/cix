@@ -98,6 +98,14 @@ struct registry_network_attachment {
 	 */
 	char veth_host[16];
 	char ifname[16];
+	/*
+	 * ADR-0264: a bridge inside the container that this attachment is
+	 * a port of, "" for the ordinary case. Recorded so GET
+	 * /v1/containers can answer "why does this interface have no
+	 * address" -- the address sits on the bridge, and without this
+	 * field the attachment would simply look wrong.
+	 */
+	char container_bridge[16];
 };
 
 /*

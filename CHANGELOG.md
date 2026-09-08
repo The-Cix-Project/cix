@@ -2,6 +2,70 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### A container may bridge its own interfaces (#30, ADR-0264)
+
+An access point is a bridge between a radio and a wired segment, and on
+this platform the two halves arrived from opposite directions with
+nothing joining them. hostapd owns the radio: given `bridge=br0` it puts
+the wireless interface into that bridge, creating it if needed, but it
+knows nothing about the container's other interfaces and will never
+enslave one. Cix owns the wired half: it makes the veth and moves one
+end into the namespace. So an AP could reach its own clients and nothing
+behind them.
+
+A network attachment may now declare the bridge inside the container it
+becomes a port of:
+
+```json
+{"name": "access", "ip": "192.168.151.1", "container_bridge": "br0"}
+```
+
+Cix builds the bridge in the container's netns at creation, **before any
+service starts**, so hostapd finds it and adds the radio. That ordering
+is the design — it is what lets the two halves meet without either
+knowing about the other. The address goes on the **bridge**, never the
+port, because a bridge port with an address of its own does not receive
+on it. Several attachments may name one bridge; the first creates it and
+the rest join, so `EEXIST` in a fresh namespace is success rather than
+tolerance.
+
+Creation-time only: `POST /containers/{name}/networks` refuses it with a
+400, because building a bridge means acting inside the namespace and
+that path has no primitive for it. Refused explicitly rather than
+accepted and ignored — a silently-dropped field is a lie the operator
+finds out about later.
+
+The primitives already existed (`rtnl_bridge_create()`,
+`rtnl_link_set_master()`, both already used for host bridges), so this
+is a new arrangement of them rather than new networking code. It is not
+AP-specific either: any container needing two segments joined at layer 2
+now declares it. `test_daemon_net` covers the name rules, a real create
+with a bridge, its read-back, and the live-attach refusal.
+
+### kernel-builder gains perl, because a signed regdb needs an OID registry (#30)
+
+Kernel 7.2.3-7 got past `certs/` — `extract-cert`, `x509_certificate_list`
+and `certs/built-in.a` all built — and died in `lib/`:
+
+```
+GEN     lib/oid_registry_data.c
+/usr/bin/bash: line 1: perl: command not found
+```
+
+`lib/build_OID_registry` is a Perl script, and the OID registry is
+reached from asymmetric key parsing, which is reached from
+`SYSTEM_DATA_VERIFICATION` — the same symbol that pulled in openssl one
+build earlier. One config change, two build dependencies, arriving a
+build apart.
+
+This image's own 1.0.3 header had explicitly considered perl and ruled
+it out: *"perl is only reached through recordmcount.pl (ftrace, off
+under allnoconfig)"*. A careful reading of the build machinery, and
+measurably incomplete — in exactly the way 1.3.0 had already warned
+about in writing. The warning was written and the next dependency still
+arrived unannounced, which is the honest lesson: reading Makefiles
+predicts what a build reaches for less reliably than building it does.
+
 ### Firmware is an image the host root is assembled from (#30, ADR-0263)
 
 Wireless needs two blobs the host kernel loads before any container

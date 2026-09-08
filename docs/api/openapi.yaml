@@ -11409,7 +11409,9 @@ paths:
         Same request shape as one entry of POST /containers' own
         "networks" array -- a bare network-name string for an
         auto-allocated IP, or {"name":..., "ip":..., "ifname":...} for an
-        operator-chosen one. Deliberately live and ephemeral, the same
+        operator-chosen one. "container_bridge" is the one field of that
+        shape this endpoint refuses (400): it is creation-time only, see
+        ADR-0264. Deliberately live and ephemeral, the same
         posture ADR-0153 already established for PUT
         .../files: never persisted into the container's own create-request
         body, so a future restart or recreate replays the original
@@ -13052,6 +13054,36 @@ components:
             the prefix is a rule rather than a collision matrix. Two
             attachments on the same container may not share a name --
             400 at create, 409 on a live attach.
+        container_bridge:
+          type: string
+          maxLength: 15
+          description: >
+            Make this attachment a PORT of a bridge inside the container
+            rather than an addressed interface (ADR-0264). The bridge is
+            created in the container's own network namespace at creation
+            time, before any service starts, and the veth is enslaved to
+            it. Same name rules as ifname, and for the same reason -- it
+            becomes a real interface in the same namespace.
+
+
+            The attachment's address is then assigned to the BRIDGE, not
+            to the veth: a bridge port with an address of its own does
+            not receive on it. Several attachments may name the same
+            bridge; the first creates it and the rest join.
+
+
+            This exists for access points. hostapd puts the radio into
+            whatever bridge its own `bridge=` names and will create that
+            bridge if it has to, but it knows nothing about the
+            container's other interfaces and will never enslave one.
+            Cix builds the bridge first, so hostapd finds it and adds
+            the radio, and wireless clients reach the wired segment.
+
+
+            Creation-time only. POST /containers/{name}/networks refuses
+            it with a 400 -- building a bridge means acting inside the
+            container's network namespace, which the live-attach path
+            has no primitive for.
 
     RouteSpec:
       type: object
