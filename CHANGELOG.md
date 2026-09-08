@@ -2,6 +2,40 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### DHCP options are tagged per network, so one server can serve several (#30)
+
+Asked how ranges are differentiated per network when the same servers
+serve more than one. The model already answers it — DHCP config is keyed
+by network, each owning its range, lease, router and server list — but
+the render did not.
+
+dnsmasq matches a *range* to a request by the subnet of the interface it
+arrived on, so ranges were never the problem. An untagged *option* is a
+different thing: dnsmasq sends it to every client on every range. A
+server on two networks rendered two bare `dhcp-option=3,...` lines, and
+both segments would have received whichever default gateway came last —
+correct-looking output, one wrong subnet. Now rendered as
+`dhcp-range=set:<network>,…` and `dhcp-option=tag:<network>,…`.
+
+**A second bug in the same two lines.** `dhcp.h` documented
+`router_be == 0` as "advertise no default route" and the code implemented
+it by omitting the line — but dnsmasq's own manual says that when the
+router option is absent it sends *its own address*. A network with no
+router therefore pointed every client at whichever container was serving
+DHCP, which does not route: a black hole, not an absent route. Now
+rendered as the documented no-data form,
+`dhcp-option=tag:<network>,option:router`.
+
+Both behaviours verified against dnsmasq's manual rather than recalled.
+Nothing live was affected — `GET /v1/dhcp` returns
+`{"networks":[],"static":[]}`, so no range has ever been configured on
+the box — and it was untested because `test_dhcp` had only ever
+configured one network. It now configures two on one server and asserts
+both tagged forms plus the absence of any untagged `dhcp-option=3,`,
+which is the assertion that actually catches a regression. No ADR:
+multi-network was the documented design (`DHCP_MAX_NETWORKS 32`,
+per-network server lists), this is the render finally implementing it.
+
 ### A container may bridge its own interfaces (#30, ADR-0264)
 
 An access point is a bridge between a radio and a wired segment, and on

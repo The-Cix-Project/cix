@@ -278,7 +278,7 @@ int main(void)
 	 * the split is real in the file dnsmasq reads, not just in the
 	 * answer we give about it. */
 	if (!wait_for_file(&client, "/v1/containers/dhcpsrv2/files?path=/etc/dnsmasq-dhcp.conf",
-	                    "dhcp-range=172.30.7.151,172.30.7.200,3600s"))
+	                    "dhcp-range=set:dhcplab,172.30.7.151,172.30.7.200,3600s"))
 		fprintf(stderr, "FAIL: the second server did not get its own slice\n");
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "GET",
@@ -344,15 +344,85 @@ int main(void)
 	 * rendered conf ends up there, not how quickly.
 	 */
 	if (!wait_for_file(&client, "/v1/containers/dhcpsrv/files?path=/etc/dnsmasq-dhcp.conf",
-	                    "dhcp-range=172.30.7.100,172.30.7.150,3600s"))
+	                    "dhcp-range=set:dhcplab,172.30.7.100,172.30.7.150,3600s"))
 		fprintf(stderr, "FAIL: the rendered dhcp conf did not reach the first server\n");
 	if (!wait_for_file(&client, "/v1/containers/dhcpsrv/files?path=/etc/dnsmasq-dhcp.conf",
-	                    "dhcp-option=3,172.30.7.1"))
+	                    "dhcp-option=tag:dhcplab,3,172.30.7.1"))
 		fprintf(stderr, "FAIL: the router option did not reach the first server\n");
 
 	if (!wait_for_file(&client, "/v1/containers/dhcpsrv/files?path=/etc/dnsmasq-dhcp-hosts",
 	                    "aa:bb:cc:dd:ee:01,172.30.7.50,printer"))
 		fprintf(stderr, "FAIL: the rendered reservations did not reach the server\n");
+
+	/*
+	 * One server, TWO networks -- the case the whole per-network model
+	 * exists for, and the one nothing exercised until now.
+	 *
+	 * dnsmasq picks a RANGE by the subnet of the interface a request
+	 * arrived on, so untagged ranges were always fine. An untagged
+	 * OPTION is a different thing entirely: dnsmasq sends it to every
+	 * client on every range. So a server on two networks used to render
+	 * two bare "dhcp-option=3,..." lines and hand both segments the
+	 * same default gateway -- correct-looking output, one wrong subnet.
+	 *
+	 * The assertion that catches a regression is the third one: not
+	 * that the tagged forms are present, but that no UNTAGGED router
+	 * option is left anywhere in the file.
+	 */
+	expect(&client, "POST", "/v1/networks",
+	        "{\"name\":\"dhcplab2\",\"subnet\":\"172.30.8.0\",\"prefix_len\":24,"
+	        "\"address\":\"172.30.8.1\"}",
+	        201, "create a second network");
+	expect(&client, "PUT", "/v1/dhcp/networks/dhcplab2",
+	        "{\"enabled\":true,\"range_start\":\"172.30.8.100\",\"range_end\":\"172.30.8.150\","
+	        "\"router\":\"172.30.8.254\",\"servers\":[\"dhcpsrv\"]}",
+	        200, "the same server also serves the second network");
+
+	if (!wait_for_file(&client, "/v1/containers/dhcpsrv/files?path=/etc/dnsmasq-dhcp.conf",
+	                    "dhcp-range=set:dhcplab2,172.30.8.100,172.30.8.150,3600s"))
+		fprintf(stderr, "FAIL: the second network's range did not reach the shared server\n");
+	if (!wait_for_file(&client, "/v1/containers/dhcpsrv/files?path=/etc/dnsmasq-dhcp.conf",
+	                    "dhcp-option=tag:dhcplab2,3,172.30.8.254"))
+		fprintf(stderr, "FAIL: the second network's router option is not tagged to it\n");
+
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "GET",
+	                       "/v1/containers/dhcpsrv/files?path=/etc/dnsmasq-dhcp.conf", NULL,
+	                       &r) == 0 && r.status == 200 && r.body != NULL) {
+		/* Both networks' own tagged options, and no global one. */
+		if (strstr(r.body, "dhcp-option=3,") != NULL) {
+			fprintf(stderr, "FAIL: an UNTAGGED router option is in a two-network conf -- "
+			                "every client on every range would receive it\n");
+			ok = 0;
+		}
+		if (strstr(r.body, "dhcp-option=tag:dhcplab,3,172.30.7.1") == NULL) {
+			fprintf(stderr, "FAIL: the first network's tagged router option went missing when "
+			                "a second network was added\n");
+			ok = 0;
+		}
+	} else {
+		fprintf(stderr, "FAIL: could not read back the two-network conf\n");
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+	/*
+	 * router omitted means "no default route", and dnsmasq's own
+	 * default is to send ITS OWN address when the option is absent --
+	 * so saying nothing would point clients at a container that does
+	 * not route. The suppressing form has to actually be emitted.
+	 */
+	expect(&client, "PUT", "/v1/dhcp/networks/dhcplab2",
+	        "{\"enabled\":true,\"range_start\":\"172.30.8.100\",\"range_end\":\"172.30.8.150\","
+	        "\"servers\":[\"dhcpsrv\"]}",
+	        200, "the second network with no router at all");
+	if (!wait_for_file(&client, "/v1/containers/dhcpsrv/files?path=/etc/dnsmasq-dhcp.conf",
+	                    "dhcp-option=tag:dhcplab2,option:router"))
+		fprintf(stderr, "FAIL: a network with no router did not suppress the router option -- "
+		                "dnsmasq would advertise itself as the gateway\n");
+
+	expect(&client, "DELETE", "/v1/dhcp/networks/dhcplab2", NULL, 204,
+	        "turn the second network's DHCP back off");
 
 	/*
 	 * The render survives a restart, which is the property that
@@ -389,7 +459,7 @@ int main(void)
 			if (cix_client_request(&client, "GET",
 			                       "/v1/containers/dhcpsrv/files?path=/etc/dnsmasq-dhcp.conf",
 			                       NULL, &r) == 0 && r.status == 200 && r.body != NULL &&
-			    strstr(r.body, "dhcp-range=172.30.7.100,172.30.7.150,3600s") != NULL) {
+			    strstr(r.body, "dhcp-range=set:dhcplab,172.30.7.100,172.30.7.150,3600s") != NULL) {
 				cix_response_free(&r);
 				break;
 			}

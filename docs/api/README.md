@@ -2444,6 +2444,15 @@ Enforcing it would mean one service reaching into another's table; reporting it 
 
 **A lease is not a DNS record.** A record is durable operator intent — persisted, surviving every server, listed at `/v1/dns/records`. A lease is short-lived state owned by the server that issued it. Mirroring leases into the record store would put two writers in one namespace and leave a record pointing at an address another machine now holds the first time a lease expired uncleanly. `GET /v1/dhcp/leases` reads them from each server's own lease file, every time.
 
+**A range belongs to a network, and one server serves as many networks as you name it on.** DHCP config is keyed by network (`PUT /v1/dhcp/networks/{network}`), and each network owns its own `range_start`/`range_end`, `lease_seconds`, `router` and `servers` list. There is no global range and no per-server range — the same container can appear in the `servers` list of every network, and each one's settings stay its own.
+
+Two different mechanisms keep them apart, and only one of them is dnsmasq's to handle:
+
+- **Ranges** need no help. dnsmasq matches a request to a range by the subnet of the interface it arrived on, so a server attached to two bridges serves the right pool on each by construction.
+- **Options** do. An untagged `dhcp-option` is sent to every client on every range, so a server on two networks would hand both segments whichever default gateway was rendered last. Cix therefore renders each range as `dhcp-range=set:<network>,…` and every option as `dhcp-option=tag:<network>,…`, so a network's settings can only reach that network's clients.
+
+**Omitting `router` means no default route, and that is rendered explicitly.** dnsmasq's documented default when the router option is absent is to send *its own* address — which would point clients at the container serving DHCP, a machine that does not route. A network with no `router` gets a suppressing `dhcp-option=tag:<network>,option:router` instead of silence.
+
 **Redundancy is split scope, because with dnsmasq it has to be.** dnsmasq implements no failover protocol — there is no equivalent of ISC dhcpd's primary/backup peer relationship for it to join, so two instances share no lease database and cannot coordinate. A range names the servers that serve it, and Cix divides it into one disjoint slice each: all of them answer, a client takes whichever offer reaches it first, and handing one address to two machines is impossible because no two servers hold it. Any one alone keeps serving from its own slice.
 
 ```json

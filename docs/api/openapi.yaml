@@ -2373,10 +2373,29 @@ paths:
                   type: integer
                 router:
                   type: string
+                  description: >
+                    The default route handed to clients on this network.
+                    Omit it to advertise none -- which is rendered as an
+                    explicit suppressing option, not as silence, because
+                    dnsmasq's own default when the router option is
+                    absent is to send its own address: clients would be
+                    pointed at whichever container serves DHCP, which
+                    does not route.
                 servers:
                   type: array
                   items:
                     type: string
+                  description: >
+                    Which registered DHCP servers serve this network's
+                    range. The range is split into one disjoint slice
+                    per name, in this order, because dnsmasq has no
+                    failover protocol and two servers on one wire are
+                    safe only when their pools cannot overlap. One
+                    server may appear on as many networks as you like --
+                    each network's range, lease and router are its own,
+                    and every option is rendered tagged with the network
+                    name so a shared server cannot leak one segment's
+                    settings onto another.
       responses:
         "200":
           description: Saved and rendered
