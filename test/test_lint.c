@@ -64,6 +64,7 @@
 static const char *const g_globs[] = {
 	"daemon/src/*.c", "src/*.c", "netplane/src/*.c",
 	"image/src/*.c", "tools/*.c", "cli/src/*.c", "client/src/*.c",
+	"init/src/*.c",
 };
 #define NGLOBS ((int)(sizeof(g_globs) / sizeof(g_globs[0])))
 
