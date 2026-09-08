@@ -2,6 +2,59 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### sysfs does not follow a namespace, so deleting a wireless container stranded the radio (#345)
+
+Deleting `ar-1` while it was running left the host with no `wlan0`, and
+it did not come back. The adapter was still enumerated and the driver
+still bound — `usb:2357:012e:123456 Realtek 802.11ac NIC`, with
+`rtw88_8822bu` messages in the log — but 26 polls of `GET /v1/devices`
+over more than a minute reported only `net:eth0`. Recreating the
+container failed with `400 unknown or unassignable interface`, which is
+how it was noticed. Recovery was a reboot.
+
+**The cause, measured.** A sysfs instance is bound to the network
+namespace it was **mounted** in, not to the reader's current one. A
+standalone probe listing `/sys/class/net`, unsharing into a brand-new
+namespace that by definition holds only `lo`, and listing it again:
+
+```
+host netns:            eth0 bonding_masters lo
+after unshare(NET):    eth0 bonding_masters lo
+```
+
+Identical. `container_net_teardown_interfaces()` forks a helper that does
+`setns(CLONE_NEWNET)` and no mount-namespace change, then asked
+`nl80211_is_wireless()` — which read `/sys/class/net/<if>/phy80211`. That
+read went to the daemon's host-side view, where the interface is absent
+because it is inside the container. So the classifier answered "not
+wireless" for a radio, every time, and the radio went down the
+`rtnl_link_set_netns_fd()` path that returns EINVAL — precisely the
+failure #341 opened with. `wiphy_index_for()` read sysfs too and was
+broken the same way in the same direction.
+
+**Not a regression from the #341 fix.** Teardown has never returned a
+radio; the fix made it reachable, because before it no container could
+hold a radio at all. Earlier delete/recreate cycles that did find `wlan0`
+back were containers that had crash-looped, where the kernel's own
+netns-exit path returns a wiphy to `init_net` when the namespace dies —
+not our code working.
+
+**The fix is to ask the kernel where the interface actually is.** A
+netlink socket has the opposite property to sysfs: it is scoped to the
+namespace it was created in. `NL80211_CMD_GET_INTERFACE` returns the
+wiphy index in its reply, so one query answers both halves — whether
+there is a wiphy and which one — and `if_nametoindex()` is
+namespace-correct for the same reason. Both sysfs reads are gone, and
+"is it wireless" is now `wiphy_for(ifname) >= 0` rather than a second
+implementation that can drift from the first.
+
+Verified locally for the negatives and errno discipline: `lo` and `eth0`
+are answered not-wireless by the kernel's own `ENODEV` (so the query
+really does reach it), a missing name gives `ENODEV`, and an empty or
+NULL name gives `EINVAL` — none leaving a seeded sentinel errno in
+place. The positive case and the teardown itself need a real radio and
+are verified on the box.
+
 ### ar-1 is a live access point, and rtw88 does do USB AP mode (#30)
 
 The question this container existed to answer has an answer. `iw list`

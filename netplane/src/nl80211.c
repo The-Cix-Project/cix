@@ -4,6 +4,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <net/if.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/stat.h>
@@ -24,7 +25,9 @@
 #define CIX_CTRL_CMD_GETFAMILY 3
 #define CIX_CTRL_ATTR_FAMILY_ID 1
 #define CIX_CTRL_ATTR_FAMILY_NAME 2
+#define CIX_NL80211_CMD_GET_INTERFACE 5
 #define CIX_NL80211_CMD_SET_WIPHY_NETNS 49
+#define CIX_NL80211_ATTR_IFINDEX 3
 #define CIX_NL80211_ATTR_WIPHY 1
 #define CIX_NL80211_ATTR_NETNS_FD 219
 
@@ -38,52 +41,48 @@ struct cix_genlmsghdr {
 	uint16_t reserved;
 };
 
-int nl80211_is_wireless(const char *ifname)
-{
-	char path[256];
-	struct stat st;
-
-	if (ifname == NULL || ifname[0] == '\0')
-		return 0;
-	if (snprintf(path, sizeof(path), "/sys/class/net/%s/phy80211", ifname) >= (int)sizeof(path))
-		return 0;
-	/* stat(), not lstat(): phy80211 is a symlink into /sys/class/ieee80211
-	 * and it is the target's existence that matters. */
-	return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
-}
-
 /*
- * The wiphy index that owns this interface, or -1.
+ * Reads one netlink datagram into a buffer sized from the datagram.
  *
- * Read from sysfs rather than asked over nl80211. Resolving it the
- * netlink way means NL80211_CMD_GET_INTERFACE and then parsing a reply
- * for one attribute -- a whole response-parsing path that exists for no
- * other reason. The kernel publishes the same number as a file.
+ * Shared by every reply this file parses, for the reason #341 exists: a
+ * netlink datagram larger than the buffer handed to recv() is truncated
+ * and its remainder discarded, silently. The caller frees *out.
+ *
+ * Returns the length, or -1 with errno set.
  */
-static int wiphy_index_for(const char *ifname)
+static ssize_t genl_recv_sized(int fd, char **out)
 {
-	char path[256];
-	char buf[32];
-	int fd;
-	ssize_t n;
-	long idx;
-	char *end;
+	ssize_t dgram, n;
+	char *buf;
 
-	if (snprintf(path, sizeof(path), "/sys/class/net/%s/phy80211/index", ifname) >=
-	    (int)sizeof(path))
+	*out = NULL;
+	dgram = recv(fd, NULL, 0, MSG_PEEK | MSG_TRUNC);
+	if (dgram < 0)
+		return -1; /* errno from recv() */
+	if ((size_t)dgram < sizeof(struct nlmsghdr)) {
+		errno = EBADMSG;
 		return -1;
-	fd = open(path, O_RDONLY | O_CLOEXEC);
-	if (fd < 0)
+	}
+	buf = malloc((size_t)dgram);
+	if (buf == NULL) {
+		errno = ENOMEM;
 		return -1;
-	n = read(fd, buf, sizeof(buf) - 1);
-	close(fd);
-	if (n <= 0)
+	}
+	n = recv(fd, buf, (size_t)dgram, 0);
+	if (n < 0) {
+		int saved = errno;
+
+		free(buf);
+		errno = saved;
 		return -1;
-	buf[n] = '\0';
-	idx = strtol(buf, &end, 10);
-	if (end == buf || idx < 0 || idx > 0x7fffffff)
+	}
+	if (n != dgram) {
+		free(buf);
+		errno = EBADMSG;
 		return -1;
-	return (int)idx;
+	}
+	*out = buf;
+	return n;
 }
 
 static int genl_open(void)
@@ -137,7 +136,6 @@ static int genl_family_id_on(int fd, const char *family)
 	struct cix_genlmsghdr *gh;
 	char *rbuf;
 	ssize_t n;
-	ssize_t dgram;
 	struct nlmsghdr *rnh;
 	struct rtattr *rta;
 	size_t remaining;
@@ -173,35 +171,10 @@ static int genl_family_id_on(int fd, const char *family)
 		errno = EIO;
 		return -1;
 	}
-	/* How big is the waiting datagram? MSG_PEEK|MSG_TRUNC reports the
-	 * real length while leaving the message queued. */
-	dgram = recv(fd, NULL, 0, MSG_PEEK | MSG_TRUNC);
-	if (dgram < 0)
-		return -1; /* errno from recv() */
-	if ((size_t)dgram < sizeof(*rnh)) {
-		errno = EBADMSG;
+	n = genl_recv_sized(fd, &rbuf);
+	if (n < 0)
 		return -1;
-	}
-	rbuf = malloc((size_t)dgram);
-	if (rbuf == NULL) {
-		errno = ENOMEM;
-		return -1;
-	}
 
-	n = recv(fd, rbuf, (size_t)dgram, 0);
-	if (n < 0) {
-		saved = errno; /* from recv() */
-		free(rbuf);
-		errno = saved;
-		return -1;
-	}
-	if (n != dgram) {
-		/* The datagram shrank between the peek and the read, which
-		 * cannot happen on a socket only this function is using. */
-		free(rbuf);
-		errno = EBADMSG;
-		return -1;
-	}
 
 	rnh = (struct nlmsghdr *)rbuf;
 	if (rnh->nlmsg_type == NLMSG_ERROR) {
@@ -247,6 +220,147 @@ static int genl_family_id_on(int fd, const char *family)
 }
 
 /*
+ * The wiphy that owns this interface, or -1 with errno set.
+ *
+ * ASKED OVER NETLINK, NOT READ FROM SYSFS, AND THAT IS THE WHOLE POINT.
+ *
+ * This used to read /sys/class/net/<if>/phy80211, which is correct in
+ * the namespace the interface is actually in and silently wrong
+ * everywhere else -- because **a sysfs instance is bound to the network
+ * namespace it was MOUNTED in, not to the reader's current one**.
+ * Measured directly: a process that unshares into a brand-new network
+ * namespace holding only `lo` still sees the host's `eth0` in
+ * /sys/class/net.
+ *
+ * That broke teardown (#345). The teardown helper does setns() into the
+ * container's network namespace and no mount-namespace change, so its
+ * sysfs reads still went to the daemon's host-side view -- where the
+ * interface is absent, because it is inside the container. The
+ * classifier therefore answered "not wireless" for a radio, every time,
+ * and the radio was sent down the rtnetlink path that returns EINVAL:
+ * exactly the failure #341 opened with. An operator who deleted a
+ * wireless container lost the radio until the host rebooted.
+ *
+ * A netlink socket has the opposite property: it is scoped to the
+ * namespace it was created in, which is the one the caller means. So
+ * the question is asked where the interface actually is, and one query
+ * answers both halves of it -- whether there is a wiphy at all, and
+ * which one -- because NL80211_CMD_GET_INTERFACE returns the wiphy
+ * index in its reply. if_nametoindex() is namespace-correct for the
+ * same reason.
+ */
+static int wiphy_for(const char *ifname)
+{
+	struct nl_msg m;
+	struct nlmsghdr *nh;
+	struct cix_genlmsghdr *gh;
+	char *rbuf = NULL;
+	ssize_t n;
+	int fd, family, saved, wiphy = -1;
+	unsigned int ifindex;
+	struct nlmsghdr *rnh;
+	struct rtattr *rta;
+	size_t remaining;
+
+	if (ifname == NULL || ifname[0] == '\0') {
+		errno = EINVAL;
+		return -1;
+	}
+	ifindex = if_nametoindex(ifname);
+	if (ifindex == 0)
+		return -1; /* errno from if_nametoindex(): ENODEV */
+
+	family = nl80211_family_id();
+	if (family < 0)
+		return -1;
+	fd = genl_open();
+	if (fd < 0)
+		return -1;
+
+	nl_msg_init(&m);
+	nh = nl_msg_put(&m, sizeof(*nh));
+	gh = nl_msg_put(&m, sizeof(*gh));
+	if (nh == NULL || gh == NULL) {
+		close(fd);
+		errno = ENOBUFS;
+		return -1;
+	}
+	gh->cmd = CIX_NL80211_CMD_GET_INTERFACE;
+	gh->version = 0;
+	if (nl_msg_put_attr_u32(&m, CIX_NL80211_ATTR_IFINDEX, (uint32_t)ifindex) == NULL) {
+		close(fd);
+		errno = ENOBUFS;
+		return -1;
+	}
+	nh->nlmsg_type = (uint16_t)family;
+	nh->nlmsg_len = (uint32_t)m.len;
+	nh->nlmsg_flags = NLM_F_REQUEST;
+	nh->nlmsg_seq = 1;
+	nh->nlmsg_pid = 0;
+
+	n = send(fd, m.buf, m.len, 0);
+	if (n < 0 || (size_t)n != m.len) {
+		saved = n < 0 ? errno : EIO;
+		close(fd);
+		errno = saved;
+		return -1;
+	}
+
+	n = genl_recv_sized(fd, &rbuf);
+	saved = errno;
+	close(fd);
+	if (n < 0) {
+		errno = saved;
+		return -1;
+	}
+
+	rnh = (struct nlmsghdr *)rbuf;
+	if (rnh->nlmsg_type == NLMSG_ERROR) {
+		/* An ordinary netdev is not an nl80211 interface: the kernel
+		 * says ENODEV, which is a real answer rather than a fault. */
+		struct nlmsgerr *err = (struct nlmsgerr *)NLMSG_DATA(rnh);
+
+		saved = ((size_t)n >= NLMSG_LENGTH(sizeof(*err)) && err->error != 0) ? -err->error
+		                                                                    : EPROTO;
+		free(rbuf);
+		errno = saved;
+		return -1;
+	}
+	if (rnh->nlmsg_len > (size_t)n || rnh->nlmsg_len < NLMSG_LENGTH(sizeof(*gh))) {
+		free(rbuf);
+		errno = EBADMSG;
+		return -1;
+	}
+
+	rta = (struct rtattr *)((char *)NLMSG_DATA(rnh) + NLMSG_ALIGN(sizeof(*gh)));
+	remaining = rnh->nlmsg_len - NLMSG_LENGTH(NLMSG_ALIGN(sizeof(*gh)));
+	while (RTA_OK(rta, remaining)) {
+		if (rta->rta_type == CIX_NL80211_ATTR_WIPHY &&
+		    RTA_PAYLOAD(rta) >= sizeof(uint32_t)) {
+			uint32_t v;
+
+			memcpy(&v, RTA_DATA(rta), sizeof(v));
+			if (v <= 0x7fffffff)
+				wiphy = (int)v;
+			break;
+		}
+		rta = RTA_NEXT(rta, remaining);
+	}
+	free(rbuf);
+	if (wiphy < 0)
+		errno = ENOENT;
+	return wiphy;
+}
+
+int nl80211_is_wireless(const char *ifname)
+{
+	/* One question, one implementation. "Is it wireless" is "does it
+	 * have a wiphy", and asking twice in two ways is how the two
+	 * answers drift apart. */
+	return wiphy_for(ifname) >= 0;
+}
+
+/*
  * The move itself, with the destination namespace named by whichever
  * attribute the caller can actually supply.
  *
@@ -283,11 +397,9 @@ static int move_phy(const char *ifname, unsigned short attr, uint32_t value)
 	int wiphy;
 	int rc;
 
-	wiphy = wiphy_index_for(ifname);
-	if (wiphy < 0) {
-		errno = ENODEV;
-		return -1;
-	}
+	wiphy = wiphy_for(ifname);
+	if (wiphy < 0)
+		return -1; /* errno already describes why */
 
 	/* Resolve the family before opening the socket the move goes out
 	 * on. The lookup is a self-contained round trip and needs no
