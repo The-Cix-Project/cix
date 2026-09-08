@@ -2,6 +2,38 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### The ADR-0260 migration preserves the old `cmd` semantics; v2.55.18 was refused by its own gate (#334)
+
+`v2.55.18` was tagged, built, and **refused by its own selftest** -- which
+is the gate doing its job, and the log named the cause six times over:
+
+    depA: not ready within 35s -- starting dependents anyway
+
+Every container body had been translated to a `oneshot`. A oneshot is
+ready only once it has **exited 0**, so a long-running process declared
+as one never becomes ready, and `containerdef_autostart_all()` blocked
+the full timeout on each -- before the event loop, so the daemon
+answered nothing for minutes after a restart. That is also why
+`test_daemon_net`'s cleanup could not win its two-second budget and
+reported `409` on the network delete: the daemon was not serving.
+
+The faithful translation of one `cmd` is a **daemon with
+`on_exit: fail-container`**: ready as soon as it starts, and its exit
+ends the container with its status. Applied to all 29 test files and
+every migrated container recipe, so `cr-1`/`cr-2` keep the property
+their wrapper's comment argued for (a router whose routing daemon dies
+must not keep advertising VRRP) and the single-service containers keep
+container-level restart rather than silently gaining per-service
+restart. Per-service restart is available and opt-in.
+
+Two more from the same log: `test_container_recipe`'s two recipe bodies
+are doubly-escaped and the first pass missed them, so every apply 400d;
+and one `GET` assertion still read container-level `readiness`.
+
+The daemon change is the hazard the failure exposed rather than the bug
+itself: **autostart blocks on readiness only when another definition
+depends on that container.** Shipped as `v2.55.19`.
+
 ### services[] replaces cmd; every container is created around cix-init (#334, ADR-0260 Stages B and C)
 
 The cut-over. `POST /v1/containers` takes `services[]` and no `cmd`
