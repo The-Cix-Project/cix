@@ -2,6 +2,88 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### ar-1 is a live access point, and rtw88 does do USB AP mode (#30)
+
+The question this container existed to answer has an answer. `iw list`
+inside `ar-1`, on the real adapter:
+
+```
+Supported interface modes:
+     * IBSS
+     * managed
+     * AP
+     * AP/VLAN
+     * monitor
+```
+
+And the AP itself, from `hostapd_cli status`:
+
+```
+state=ENABLED
+phy=phy0
+freq=2437
+channel=6
+ssid[0]=cix
+bssid[0]=98:25:4a:5b:de:5b
+```
+
+`wlan0` is absent from the host's own device list while this runs, which
+is the PHY move working rather than a report of it.
+
+**Four recipe revisions, each a real thing being wrong.** Worth listing
+because every one presented as something other than what it was.
+
+- **1.0.1 — hostapd is in `/usr/bin`, not `/usr/sbin`.** `cix-init`
+  reported `execve(/usr/sbin/hostapd) failed, errno 2` and the container
+  crash-looped. `iw` is the other way round (`/usr/sbin/iw`), and 1.0.4
+  fixed that one after the console 500'd with `No such file or
+  directory`. Two packages, opposite conventions, both named wrongly.
+- **1.0.2 — no VHT.** hostapd rejected `ieee80211ac` and the two `vht_`
+  lines as "unknown configuration item" and refused to start. Upstream's
+  defconfig, which `hostapd.recipe` uses as-is, leaves
+  `CONFIG_IEEE80211AC` out. An unknown item is fatal to hostapd, not a
+  warning.
+- **1.0.3 — no country code, and therefore 2.4 GHz.** With
+  `country_code=GB` hostapd got as far as driving the radio and died:
+  `interface state UNINITIALIZED->COUNTRY_UPDATE` / `Failed to set
+  country code`. Setting a country needs the regulatory database, which
+  this host does not load (#342). With no country the kernel applies its
+  built-in world domain, which marks every 5 GHz band NO-IR — and
+  initiating radiation is exactly what an AP does. So 5 GHz is
+  unavailable until #342 is fixed, and channel 6 is a consequence rather
+  than a preference. The config records that, with what to restore.
+- **1.0.6 — the container needs a `/tmp`.** `hostapd_cli` attached and
+  said `Could not connect to hostapd`, while hostapd was healthy and its
+  control socket was exactly where the config put it. `hostapd_cli`
+  creates its OWN client socket first and `wpa_ctrl` hardcodes that to
+  `/tmp`, which these images do not have (measured: `files?path=/tmp` →
+  404, `/run` and `/run/hostapd` → both directories). Declaring a file
+  at `/tmp/.keep` is a blunt way for a container to ask for a directory;
+  #343 is the general fix, since this is the third time the missing
+  `/tmp` has cost real debugging.
+
+**The wired half is configured too.** `cr-1`/`cr-2` and `dns-1`/`dns-2`
+now attach to `access` (`.253`/`.252` and `.101`/`.102`), and the
+network has a DHCP range served by both:
+
+```
+dns-1  192.168.151.150 - 192.168.151.199
+dns-2  192.168.151.200 - 192.168.151.249
+router 192.168.151.254        (the keepalived VIP)
+```
+
+The daemon computed those disjoint slices from one range and two named
+servers; the operator does not split them by hand. This is also the
+first live exercise of the per-network option tagging fixed earlier this
+session — both rendered configs carry `dhcp-range=set:access,...` and
+`dhcp-option=tag:access,3,192.168.151.254`, which is what stops one
+server on two segments handing both the same gateway.
+
+Not yet done, and deliberately: no client has associated, so the
+passphrase, the bridge path from a wireless client to the wired segment,
+and a real DHCP lease over the air are all still unproven. The AP
+beacons; that is a different claim from the network working end to end.
+
 ### The nl80211 family lookup never fit in its buffer, and blamed a syscall it never made (#341)
 
 `ar-1` would not create. The error named the radio move:
@@ -276,8 +358,9 @@ Tested where it can be: `test_rtnetlink` asserts the classifier never
 claims an ordinary interface, verified by breaking it on purpose and
 watching the test fail. The move itself needs a real wiphy and real
 privileges, so it can only be verified on the box — a mocked wiphy would
-only assert that the mock behaves. That verification did not succeed on
-this build; see the entry above, which is why.
+only assert that the mock behaves. It took three more builds to get
+there: see the two entries above for why, and for what it looks like
+now that it works.
 
 ### Firmware is an image the host root is assembled from (#30, ADR-0263)
 
