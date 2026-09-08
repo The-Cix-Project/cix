@@ -306,6 +306,20 @@ under a second except the one a test created and deleted milliseconds apart, whi
 grace, every run. The command has no such window because a socket buffer keeps it until the reader
 exists.
 
+**A build container is the one place where a container's stdio and a service's output are the same
+descriptor, and that made it the only place this design could break the build path.** A build
+container has exactly one service, whose output *is* the build log the daemon already holds, so
+`init_transport_open()` is given that write end as the shared output fd rather than making a pipe
+per service. It is therefore simultaneously `spec->stdout_fd` (capture) and a member of
+`spec->keep_fds` (cix-init's argv) — and `container_create()`'s pre-exec setup closed the original
+`stdout_fd` after dup2-ing it onto 1 and 2, a tidy-up written years before anything needed that
+descriptor to survive. The `fcntl(F_SETFD)` loop then ran against a closed fd and every package
+build on the platform died with `EBADF` before producing a byte. Ordinary containers were unaffected,
+because they get a pipe per service and their capture fd is a different descriptor entirely — which
+is exactly why eleven containers could be verified running and ready by a daemon that could not build
+anything. Fixed by never closing a descriptor the spec names as kept; recorded here because the
+coincidence is a property of the design, not an accident of one function.
+
 **The migration preserves each container's existing behaviour exactly, and per-service restart is opt-in.**
 Every service translated from an old `cmd` carries `on_exit: fail-container` — so its exit still ends
 the container with its status, and the container-level `restart` policy still decides what happens
