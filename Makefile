@@ -679,7 +679,7 @@ $(BUILD)/test_srcpolicy: test/test_srcpolicy.c daemon/src/srcpolicy.c daemon/src
 $(BUILD)/test_srcresolve: test/test_srcresolve.c daemon/src/srcresolve.c daemon/src/pipeline.c daemon/src/srcpolicy.c daemon/src/srcdepth.c daemon/src/srcupstream.c daemon/src/kernelpolicy.c daemon/src/persist.c daemon/src/json.c | $(BUILD)
 	$(CC) $(DAEMON_CFLAGS) $^ -o $@
 
-$(BUILD)/test_elfcheck: test/test_elfcheck.c daemon/src/elfcheck.c | $(BUILD)
+$(BUILD)/test_elfcheck: test/test_elfcheck.c daemon/src/elfcheck.c $(BUILD)/cix-init | $(BUILD)
 	$(CC) $(CFLAGS) -Idaemon/include test/test_elfcheck.c daemon/src/elfcheck.c -o $@
 
 $(BUILD)/test_clitree: test/test_clitree.c cli/src/cmdtree.h | $(BUILD)
