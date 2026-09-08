@@ -817,6 +817,109 @@ int main(void)
 		cix_response_free(&r);
 
 		/*
+		 * ADR-0264: an attachment may be a port of a bridge inside the
+		 * container.
+		 *
+		 * The name rules are ifname's, so the same four bad names are
+		 * refused -- checked rather than assumed, because the two
+		 * fields are validated by separate calls and a copy-paste that
+		 * dropped the check would still pass every test above.
+		 */
+		{
+			static const char *const bad_bridge[] = { "eth0", "lo", "abcdefghijklmnop",
+				                                      "br zero" };
+			size_t bi;
+
+			for (bi = 0; bi < sizeof(bad_bridge) / sizeof(bad_bridge[0]); bi++) {
+				char body[512];
+
+				snprintf(body, sizeof(body),
+				         "{\"name\":\"n9\",\"image\":\"nettest\","
+				         "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/net_child\"]}],"
+				         "\"networks\":[{\"name\":\"" TEST_NETWORK_NAME "\","
+				         "\"container_bridge\":\"%s\"}]}",
+				         bad_bridge[bi]);
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "POST", "/v1/containers", body, &r) != 0 ||
+				    r.status != 400) {
+					fprintf(stderr,
+					        "FAIL: creating with container_bridge \"%s\" expected 400, got %d\n",
+					        bad_bridge[bi], r.status);
+					ok = 0;
+				}
+				cix_response_free(&r);
+			}
+		}
+
+		/*
+		 * A real one: the bridge is created inside the container's own
+		 * netns and the veth enslaved to it. This is the assertion that
+		 * matters -- the refusals above only prove validation runs.
+		 */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/containers",
+		                       "{\"name\":\"n10\",\"image\":\"nettest\","
+		                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/net_child\"]}],"
+		                       "\"networks\":[{\"name\":\"" TEST_NETWORK_NAME "\","
+		                       "\"container_bridge\":\"br0\"}]}",
+		                       &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: creating with container_bridge br0 expected 201, got %d\n",
+			        r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		/* And it reads back, so an operator can see why that interface
+		 * carries no address of its own. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "GET", "/v1/containers/n10", NULL, &r) == 0 &&
+		    r.status == 200) {
+			struct json_value *root = json_parse(r.body, r.body_len);
+			const struct json_value *networks =
+			        root != NULL ? json_object_get(root, "networks") : NULL;
+			int seen = 0;
+
+			if (networks != NULL && networks->type == JSON_ARRAY) {
+				size_t i;
+
+				for (i = 0; i < networks->u.array.count; i++)
+					if (str_eq(json_str_field(networks->u.array.items[i], "container_bridge"),
+					           "br0"))
+						seen = 1;
+			}
+			if (!seen) {
+				fprintf(stderr, "FAIL: n10 did not report container_bridge br0\n");
+				ok = 0;
+			}
+			json_free(root);
+		} else {
+			fprintf(stderr, "FAIL: GET /v1/containers/n10 did not return 200\n");
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		/*
+		 * Creation-time only: the live-attach path cannot build a
+		 * bridge inside a running container's netns, and refuses the
+		 * field rather than accepting and ignoring it.
+		 */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/containers/n8/networks",
+		                       "{\"name\":\"" TEST_NETWORK_NAME2 "\",\"container_bridge\":\"br1\"}",
+		                       &r) != 0 ||
+		    r.status != 400) {
+			fprintf(stderr, "FAIL: live attach with container_bridge expected 400, got %d\n",
+			        r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		cix_client_request(&client, "DELETE", "/v1/containers/n10", NULL, &r);
+		cix_response_free(&r);
+
+		/*
 		 * A live attach of a DIFFERENT network onto a name this
 		 * container already uses is a 409 -- and it has to be the
 		 * ifname that refuses it, not the already-attached check,

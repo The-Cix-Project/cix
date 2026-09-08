@@ -1,6 +1,7 @@
 #include "internal.h"
 #include "rtnetlink.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <sched.h>
 #include <stdio.h>
@@ -115,8 +116,54 @@ int container_net_child_configure(const struct network_spec *nets, int net_count
 		else
 			snprintf(ifname, sizeof(ifname), "eth%d", idx);
 
-		if (rtnl_link_rename(fd, veth_ctr, ifname) != 0 ||
-		    rtnl_addr_add_ipv4(fd, ifname, nets[idx].container_ip_be, nets[idx].prefix_len) != 0 ||
+		if (rtnl_link_rename(fd, veth_ctr, ifname) != 0) {
+			rtnl_close(fd);
+			return -1;
+		}
+
+		if (nets[idx].container_bridge[0] != '\0') {
+			/*
+			 * This attachment is a PORT of a bridge inside the
+			 * container (#30, ADR-0264), not an addressed interface.
+			 *
+			 * EEXIST is success, not tolerance for its own sake: the
+			 * netns is fresh, so the only way the bridge already
+			 * exists is that an earlier attachment in this same loop
+			 * named it, which is exactly the "several ports, one
+			 * bridge" case this supports. Any other errno is a real
+			 * failure and still fails the container.
+			 *
+			 * The address goes on the bridge, never on the port -- a
+			 * bridge port with an address of its own does not receive
+			 * on it. Zero means no address at all, which is a pure
+			 * port and the ordinary case for an access point's own
+			 * wireless-side attachment.
+			 */
+			const char *br = nets[idx].container_bridge;
+
+			if (rtnl_bridge_create(fd, br) != 0 && errno != EEXIST) {
+				rtnl_close(fd);
+				return -1;
+			}
+			if (rtnl_link_set_master(fd, ifname, br) != 0 ||
+			    rtnl_link_set_up(fd, ifname) != 0) {
+				rtnl_close(fd);
+				return -1;
+			}
+			if (nets[idx].container_ip_be != 0 &&
+			    rtnl_addr_add_ipv4(fd, br, nets[idx].container_ip_be,
+			                        nets[idx].prefix_len) != 0) {
+				rtnl_close(fd);
+				return -1;
+			}
+			if (rtnl_link_set_up(fd, br) != 0) {
+				rtnl_close(fd);
+				return -1;
+			}
+			continue;
+		}
+
+		if (rtnl_addr_add_ipv4(fd, ifname, nets[idx].container_ip_be, nets[idx].prefix_len) != 0 ||
 		    rtnl_link_set_up(fd, ifname) != 0) {
 			rtnl_close(fd);
 			return -1;

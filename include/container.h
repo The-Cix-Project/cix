@@ -92,6 +92,43 @@ struct network_spec {
 	 * cannot outlive its own pointee. 16 is IFNAMSIZ.
 	 */
 	char ifname[16];
+	/*
+	 * A bridge INSIDE the container that this attachment becomes a
+	 * port of (#30). Empty -- the default, and what every attachment
+	 * before this had -- means the veth is configured directly, which
+	 * is the ordinary case.
+	 *
+	 * This exists because an access point is a bridge between a radio
+	 * and a wired segment, and the two halves arrive from opposite
+	 * directions. hostapd owns the radio: it puts wlan0 into whatever
+	 * bridge its own `bridge=` names, and it will create that bridge
+	 * if it has to -- but it knows nothing about this container's
+	 * other interfaces and will never enslave one. Cix owns the wired
+	 * half: it makes the veth pair and moves one end into the netns.
+	 * Nothing joined them, so the AP could carry traffic between its
+	 * clients and nowhere else.
+	 *
+	 * Cix creates the bridge and enslaves the veth at container
+	 * creation, before any service starts, so hostapd finds an
+	 * existing bridge and adds the radio to it. That ordering is the
+	 * whole design: the alternative is a service inside the container
+	 * running `ip link`, which would need iproute2 in the image, a
+	 * shell to drive it, and a network the platform did not build --
+	 * three things this platform deliberately does not have.
+	 *
+	 * A port carries no address of its own, so when this is set the
+	 * container_ip_be above is assigned to the BRIDGE instead of to
+	 * the veth. An attachment that wants no address at all leaves
+	 * container_ip_be zero and gets a pure port, which is what an AP's
+	 * own access-side attachment usually wants -- its clients are
+	 * addressed by DHCP from elsewhere on the segment, and the AP
+	 * needs no presence on it.
+	 *
+	 * Several attachments may name the same bridge; the first creates
+	 * it and the rest join it. A fixed array for the same reason
+	 * ifname above is one: this is read in the cloned child.
+	 */
+	char container_bridge[16];
 };
 
 #define CONTAINER_MAX_ROUTES 8
