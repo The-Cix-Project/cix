@@ -16,17 +16,18 @@ for interface services"* where it used to say `eth1`.
 in the same change, so neither container depends on the order of its
 `networks` array any more.
 
-**A real peer was discovered by doing it.** With a freshly generated
-password, bird logged:
+**The password was specified, and substituting a generated one was an
+error on my part.** The owner's config named `rip_password` explicitly;
+the `{{SECRET:}}` decision was about how the value is carried, not about
+what it should be. With a generated value bird logged:
 
     <AUTH> rip1: Authentication failed for 192.168.15.252 on management - wrong password (0)
 
-192.168.15.252 is neither router. Something on the management LAN
-already speaks RIPv2, and the password in the owner's original config
-is the one it expects — so the value is site infrastructure, not ours to
-invent. Re-applied with it: **zero authentication failures** across
-several update cycles. The `{{SECRET:RIP_PASSWORD}}` mechanism is
-unchanged; only the value is the site's.
+192.168.15.252 is neither router — a pre-existing RIPv2 speaker on the
+management LAN, and the specified password is the one it expects.
+Re-applied with it: **zero authentication failures** across several
+update cycles. The `{{SECRET:RIP_PASSWORD}}` mechanism is unchanged;
+only the value is the site's, as it was always going to be.
 
 `router` 1.1.0 declares `bash` and `bird`. bash is not the "shell
 tooling for debugging" 1.0.0 ruled out — that refusal still stands. The
@@ -49,17 +50,24 @@ control plane.
 argument` every 60 seconds, so it is not installing what it learns.
 `EINVAL` is not a permission error and `keepalived` manages addresses
 in the same netns without trouble, so the capability set is not the
-obvious suspect. Several candidate causes exist (exporting device or
+obvious suspect. It is also not a symptom of the subnet being
+unreachable: reachability was fixed owner-side and the warnings
+continue unchanged (35 and counting). Several candidate causes exist (exporting device or
 loopback routes back into a table that already has them among them) and
 none has been measured. Diagnosing it needs bird's own view
 (`birdc show route`/`show protocols`) through a console session, which
 has not been done. Recorded rather than explained.
 
-**Egress beyond the routers is still owner-side.** RIP only changes
-reachability if the site gateway accepts these advertisements; the
-platform's own measurement stands — the host has no route to
-`192.168.150.0/24`, `cixctl ping 192.168.15.101` answers in 0.05 ms
-while `.150.101`, `.150.103` and the VRRP `.254` all time out.
+**Reachability was settled owner-side, and the platform needed nothing
+for it.** An earlier measurement here — the host could not reach
+`192.168.150.0/24` at all — was true when taken and is no longer.
+Re-measured 2026-09-08 after the owner routed the subnet across their
+legacy and testing LANs: `192.168.150.101`, `.103`, `.252`, `.253` and
+the VRRP `.254` all answer from the host in 0.26–0.47 ms. The box's own
+route table still carries **no** `192.168.150.0/24` entry, so this is
+going out via the default route and coming back through the site
+gateway, exactly where that decision belongs. Recorded because the
+stale form of this claim sat in this file as present tense.
 
 ### An attachment's interface can be named (ADR-0259)
 
