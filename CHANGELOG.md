@@ -21,8 +21,14 @@ with `readelf -SW` over every ELF in each artifact pulled from the cache:
 | `libxcrypt 4.4.36-10` | 0.42 MiB | **0.00 MiB** |
 | `openssl 3.0.20-6` | 0.00 MiB | 0.00 MiB |
 
-A freshly built ISO reports 66,603,008 bytes (**63.52 MiB**) against the
-70.0 MiB baseline. `efivar` (0.58 MiB of `libefivar.so.1`) and `keyutils`
+A freshly built ISO reports 66,603,008 bytes (63.52 MiB) where the 3.93 MiB
+baseline was measured on a 70.0 MiB `2.55.0-1` image -- but those two numbers
+are sixteen releases apart and the difference is not a measurement of the debug
+drop. The artifact figures above are the claim; the ISO size only has to be
+consistent with them. The deployed root's own `mkfs.btrfs` has not been read
+directly either: the chain artifact -> `cix-hosttools` -> assembly -> reboot is
+verified link by link, and reading the file inside the ISO needs
+`iso publish` first. `efivar` (0.58 MiB of `libefivar.so.1`) and `keyutils`
 (0.02 MiB) are left as they are: re-entering the ISO needs an `isotools`
 rebuild, which needs the `iso-builder` image and its 38 stale pins, and
 ~0.6 MiB does not justify that while the media sits far under
@@ -64,12 +70,22 @@ What the logs actually show is that every failing assertion read
 `exec_into_container: open /proc/841/ns/mnt: No such file or directory` — the
 target container's init was already gone. Every other container test in the
 same run passed. The fragile thing is specifically exec-into-a-*running*-
-container: the test does not hold the container still, and a build-container
-selftest on a two-CPU host is where that shows. A previous fix already raised
-that read timeout to ten seconds for the same symptom (#291); the remaining fix
-is for the test to check the target's init is alive and its `/proc/<pid>/ns/*`
-open-able immediately before exec'ing, so a dead container is reported as one
-instead of as zero bytes.
+container.
+
+That is run 1's shape only. Runs 2 and 3 log no `exec_into_container` line at
+all -- the namespaces were open-able and the child still wrote nothing -- so
+there are two shapes here and no single explanation yet covers both. An earlier
+draft of this entry blamed the fourth run's pass on an idle box; that does not
+survive the evidence either, since the failures were measured at load1 0.16
+with 6.8 GB free and took 230/205/215 s against the passing run's 241 s. **The
+cause is not established** -- recorded rather than explained, after two guesses
+that were checkable and wrong.
+
+A previous fix already raised that read timeout to ten seconds for the same
+symptom (#291). The next concrete step is for the test to check the target's
+init is alive and its `/proc/<pid>/ns/*` open-able immediately before exec'ing,
+so at least run 1's shape is reported as a dead container rather than as zero
+bytes.
 
 ### A routed services subnet behind a VRRP gateway pair (cr-1, cr-2)
 
