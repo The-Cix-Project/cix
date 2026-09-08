@@ -30,8 +30,11 @@
  *   9. an execve() failure is a service exit of 140 + errno, and with
  *      on_exit: stop and nothing else to run, cix-init exits with it
  *  10. a service sees exactly fds 0 1 2 -- not the control socket, not
- *      the report socket, not another service's pipe -- and when the
- *      only service exits, its output pipe reads EOF
+ *      the report socket, not another service's pipe -- and once
+ *      cix-init has exited nothing else holds a service's pipe, so it
+ *      reads EOF. Not before: cix-init keeps every service's pipe for
+ *      the slot's lifetime, so a restarted instance writes to the same
+ *      pipe, and the EXITED report, not EOF, is how an exit is known.
  *  11. a service starts with SIGPIPE at its default disposition, so a
  *      self-sent SIGPIPE kills it (KILLED, 13)
  */
@@ -634,15 +637,22 @@ static int test_fd_hygiene(void)
 		return -1;
 	}
 	printf("  service fd table: 0 1 2\n");
-	if (read(r.out_fd[0], eofbuf, sizeof(eofbuf)) != 0) {
-		fprintf(stderr, "  FAIL: the exited service's pipe is still held open by someone\n");
-		return -1;
-	}
-	printf("  exited service's pipe: EOF\n");
 	if (send_command(&r, CIXINIT_OP_SHUTDOWN, -1) != 0)
 		return -1;
 	if (wait_exit(&r, &status) != 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
 		return -1;
+	{
+		struct pollfd p;
+
+		p.fd = r.out_fd[0];
+		p.events = POLLIN;
+		p.revents = 0;
+		if (poll(&p, 1, 2000) <= 0 || read(r.out_fd[0], eofbuf, sizeof(eofbuf)) != 0) {
+			fprintf(stderr, "  FAIL: cix-init has exited but something still holds the lister's pipe\n");
+			return -1;
+		}
+	}
+	printf("  after cix-init exited, the service's pipe reads EOF\n");
 	init_close(&r);
 	return 0;
 }
