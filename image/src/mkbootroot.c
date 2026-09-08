@@ -50,6 +50,58 @@ static int ensure_dir(const char *path)
 	return 0;
 }
 
+/*
+ * How many regular files a staged tree actually holds.
+ *
+ * Assembly reporting success is not evidence the image is right -- this
+ * platform has booted a machine into a kernel panic off a root that
+ * assembled cleanly, twice. Firmware staging was entirely silent: the
+ * only success output was "wrote <path>", so the first evidence that a
+ * blob had landed was a device working, or not, after a reboot. On a
+ * shell-less host that is a very expensive place to learn it.
+ *
+ * A count rather than a bare "staged firmware" line, because the
+ * failure worth catching is a firmware root that exists and is EMPTY --
+ * a cix-firmware image created but never installed into, say, which
+ * copies nothing, succeeds, and is indistinguishable from a correct run
+ * in any output that does not count.
+ *
+ * Errors are not fatal and are not reported: this walks a tree that has
+ * just been written successfully, purely to describe it. A checkpoint
+ * that could fail the build it is only observing would be worse than no
+ * checkpoint.
+ */
+static long count_files_recursive(const char *dir)
+{
+	DIR *d = opendir(dir);
+	struct dirent *e;
+	long n = 0;
+
+	if (d == NULL)
+		return -1;
+	while ((e = readdir(d)) != NULL) {
+		char path[PATH_MAX];
+		struct stat st;
+
+		if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0)
+			continue;
+		if (snprintf(path, sizeof(path), "%s/%s", dir, e->d_name) >= (int)sizeof(path))
+			continue;
+		if (lstat(path, &st) != 0)
+			continue;
+		if (S_ISDIR(st.st_mode)) {
+			long sub = count_files_recursive(path);
+
+			if (sub > 0)
+				n += sub;
+		} else {
+			n++;
+		}
+	}
+	closedir(d);
+	return n;
+}
+
 static int ensure_dir_under(const char *image_root, const char *rel)
 {
 	char path[PATH_MAX];
@@ -1305,6 +1357,8 @@ int main(int argc, char **argv)
 		 * why "lib" alone is pre-created here. */
 		if (test_image_fixture_copy_dir_recursive(firmware_dir, fw_dst) != 0)
 			return 1;
+		printf("staged %ld firmware file(s) from %s\n", count_files_recursive(fw_dst),
+		       firmware_dir);
 	}
 
 	/* Same "empty means skip, non-empty is a real explicit request and

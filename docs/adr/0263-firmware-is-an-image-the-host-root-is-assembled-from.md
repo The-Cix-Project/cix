@@ -76,6 +76,14 @@ byte-identical to upstream's**. That is what makes shipping upstream's `regulato
 signature alongside this platform's own build correct — the kernel verifies a signature over bytes
 this platform produced and proved identical, rather than trusting a file it was handed.
 
+**Assembly says what it staged.** Firmware staging was entirely silent — the only success output
+was `wrote <path>` — so the first evidence a blob had landed was a device working, or not, after a
+reboot. On a shell-less host that is an expensive place to learn it, and this project's standing
+rule is to verify an image before booting it. `mkbootroot` now prints `staged N firmware file(s)
+from <root>`. A count and not a bare line, because the failure worth catching is a firmware root
+that exists and is empty — an image created but never installed into copies nothing, succeeds, and
+is indistinguishable from a correct run in any output that does not count.
+
 **The old comment encoded a false premise, and removing it is part of the fix.** "A control-plane
 rebuild needs no firmware re-staging" was not a description of a working system — it was the reason
 firmware never reached a single assembled root. It is replaced by a comment saying what is actually
