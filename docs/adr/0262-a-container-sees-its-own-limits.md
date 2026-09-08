@@ -66,6 +66,12 @@ already has. The FUSE server takes that shape. Its loop blocks on `/dev/fuse`, w
 it must not be in the reactor — and being a separate process is what makes blocking there correct
 rather than a violation.
 
+The child closes every inherited descriptor before it starts (`close_range(3, ~0U, 0)`, keeping only
+`/dev/fuse`). `stallwatch` gets away without this because it opens nothing, but a fork of `cixd`
+inherits the HTTPS listener, every accepted connection, the epoll set and every pidfd — and a child
+holding the listener is a daemon that cannot be restarted, for a reason nothing in the restart path
+would name.
+
 ### It speaks the `/dev/fuse` protocol directly, in our own C
 
 The alternative is packaging libfuse and calling `fuse_main()`. Against that: a read-only filesystem
@@ -74,6 +80,14 @@ serving seven synthetic files needs `INIT`, `LOOKUP`, `GETATTR`, `OPEN`, `READ`,
 `FUSE_USE_VERSION` to track, and no third-party dependency for one consumer. This is Cix's own code,
 so it is TCC by the Toolchain Tenet either way; writing it against a library would add a package to
 the platform without removing any of the work that matters.
+
+**Two protocol flags are load-bearing and belong in the decision, not in a later bug report.** The
+content of every file here depends on *who is reading it*, which is exactly the assumption the
+kernel's caching breaks: `OPEN` must reply with `FOPEN_DIRECT_IO` so a read reaches the server
+rather than the page cache, and `GETATTR` must return `attr_valid = 0` so a stale size or mtime is
+never reused. Without both, the first container to read `/proc/meminfo` populates a cache and the
+second container is served its numbers. lxcfs runs direct I/O for this reason; it is not a
+performance knob.
 
 ### What it serves, and from what
 
@@ -94,8 +108,18 @@ Synthesised per requester, from that requester's cgroup:
 The runtime bind-mounts each file over the real one at container creation, in the mount namespace it
 already builds (`src/mountns.c` mounts `/proc` today). Default on, because a default that has to be
 remembered is the bug: nobody writing a recipe knows they need it until something has already sized
-itself wrong. A container may decline with an explicit field, and the build container is the case to
-watch — its own `nproc` decides `make -j`.
+itself wrong. A container may decline with an explicit field.
+
+**The build container is not a case to watch; it is the case that decides whether the default can be
+on at all.** `/cix-workload`'s budget is `cpu.max` of `"100000 100000"` — one CPU — so a `cpuinfo`
+derived from the quota makes `nproc` report 1 inside `__pkgbuild-0`, and every recipe running
+`make -j$(nproc)` becomes `-j1`. The kernel build goes from tens of minutes to hours, and nothing in
+the build output would say why. This is measured before the server is written, not after: a probe
+recipe reports `nproc`, `cpu.max` and `cpuset.cpus.effective` from inside a real build container,
+and the answer picks one of two designs — build containers opt out of `cpuinfo`, or `cpuinfo`
+follows `cpuset.cpus.effective` (which is a real parallelism bound) while only `meminfo` follows the
+quota. Shipping the default on without that measurement would slow every build on the platform to
+find out.
 
 ## Consequences
 

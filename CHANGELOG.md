@@ -2,6 +2,41 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### ADR-0260 is live on 192.168.15.95: eleven containers, no `cmd` anywhere (#334)
+
+`v2.55.24` booted (slot a, kernel 7.2.3) and every container was
+recreated onto its services recipe in dependency order. Measured after
+the deploy, not predicted before it:
+
+    jump    ready=True  mkdirs:exited hostkeys:exited nslcd:running
+                        linksock:exited sshd:running
+    cr-1    ready=True  keepalived:running bird:running
+    cr-2    ready=True  keepalived:running bird:running
+    dns-1/2 ldap-1/2 ntp-1/2 syslog-1/2   all ready=True
+
+`jump` is the migration's hardest case -- one `wait -n` shell wrapper
+became five ordered services -- and `sshd` answers `SSH-2.0-OpenSSH_10.4`
+to a TCP connection from off the box. `birdcl show protocols` reports
+all six protocols up on both routers, through the exec endpoint rather
+than a shell.
+
+**The near-miss is the part worth recording.** This cut-over has no
+compatibility shim, by charter: a persisted body still saying `cmd`
+does not autostart, so the recreate script is not a tidy-up step, it is
+the recovery. That script carried a hardcoded check for the version it
+was first written against, and four revisions since had edited only its
+sibling. Had it run as written it would have halted immediately after
+the reboot, with both DNS servers, both LDAP servers, NTP, syslog, the
+jump host and both routers down and nothing bringing them back until
+someone read a failed task. It was caught with minutes to spare and the
+check is now parameterised.
+
+The general form, which is not specific to this script: **when a
+deployment's recovery step can refuse to run, the refusal is the
+outage.** A guard that protects a destructive action must be bumped in
+the same edit that bumps what it guards, or it must derive the value it
+checks rather than restate it.
+
 ### A container is stopped by a message, not a signal: PID 1 discards what it cannot yet handle (#334)
 
 The last of the ADR-0260 selftest failures, and the most interesting.
