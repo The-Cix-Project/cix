@@ -14,13 +14,15 @@
  * are deliberately never part of this image -- Phase 11's root A/B slots
  * are scoped to the control plane only (docs/roadmap/ROADMAP.md).
  *
- * Phase 14 part 2 (ADR-0029): optionally also stages GPU firmware
- * (amdgpu) into this same root, since the kernel's own request_firmware()
+ * Phase 14 part 2 (ADR-0029): optionally also stages device firmware
+ * into this same root -- originally amdgpu only, now any firmware root
+ * whose layout mirrors /lib/firmware (#30) -- since request_firmware()
  * calls happen at driver-probe time, on the host root, before any
  * container exists -- nowhere else this could live. The firmware itself
  * isn't fetched by this tool or vendored into the repo; it's an
  * operator-supplied directory (see README.md's own fetch recipe --
- * upstream linux-firmware's amdgpu/ subtree, via a sparse clone).
+ * a real Cix-built image's own lib/firmware, e.g. the cix-firmware
+ * image carrying rtw88-firmware and wireless-regdb).
  */
 #include "persist.h"
 #include "libdirs.h"
@@ -503,7 +505,7 @@ int main(int argc, char **argv)
 	if (argc != 10) {
 		fprintf(stderr,
 		        "usage: %s <staging-dir> <build/cixd> <build/cixctl> <web-dir> "
-		        "<out.squashfs> <amdgpu-firmware-dir-or-\"\"> <modules-dir-or-\"\"> "
+		        "<out.squashfs> <firmware-root-or-\"\"> <modules-dir-or-\"\"> "
 		        "<kmod-bin-dir-or-\"\"> <host-tools-image-rootfs-or-\"\">\n",
 		        argv[0]);
 		return 2;
@@ -1263,30 +1265,45 @@ int main(int argc, char **argv)
 	}
 
 	/* Empty string means "skip" -- every test call site passes this,
-	 * since a QEMU/CI boot test needs no real GPU firmware and this
-	 * keeps the test suite's own fast, no-network posture completely
+	 * since a QEMU/CI boot test needs no real firmware and this keeps
+	 * the test suite's own fast, no-network posture completely
 	 * unaffected. A non-empty firmware_dir is a real, explicit operator
 	 * request, so unlike test_image_fixture_add_lib()'s own tolerant-
-	 * if-missing precedent, test_image_fixture_copy_dir_files() failing here is fatal, not
-	 * silently skipped -- an operator who asked for firmware staging
-	 * and didn't get it should find out now, not at first GPU use on
-	 * the installed system.
+	 * if-missing precedent, a failure here is fatal, not silently
+	 * skipped -- an operator who asked for firmware staging and didn't
+	 * get it should find out now, not at first device use on the
+	 * installed system.
+	 *
+	 * firmware_dir is a firmware ROOT: its contents mirror
+	 * /lib/firmware exactly, so "amdgpu/vega10_smc.bin" and
+	 * "rtw88/rtw8822b_fw.bin" and a bare "regulatory.db" all land where
+	 * request_firmware() looks for them, with no knowledge here of
+	 * which drivers exist.
+	 *
+	 * It used to be an amdgpu directory specifically -- a flat copy
+	 * into a hardcoded lib/firmware/amdgpu (ADR-0029, when a GPU was
+	 * the only device on this platform that wanted firmware). The
+	 * access-point work (#30) added a second consumer, and a second
+	 * hardcoded subdirectory beside the first would have been two
+	 * mechanisms for one job, growing by one every time a device needs
+	 * a blob. One recursive copy of a mirrored tree is the same
+	 * capability without the branching, and amdgpu keeps working by
+	 * being a subdirectory of the root rather than the whole of it.
 	 */
 	if (firmware_dir[0] != '\0') {
 		char fw_dst[PATH_MAX];
 
 		if (ensure_dir_under(image_root, "lib") != 0)
 			return 1;
-		if (ensure_dir_under(image_root, "lib/firmware") != 0)
-			return 1;
-		if (ensure_dir_under(image_root, "lib/firmware/amdgpu") != 0)
-			return 1;
-		if (snprintf(fw_dst, sizeof(fw_dst), "%s/lib/firmware/amdgpu", image_root) >=
+		if (snprintf(fw_dst, sizeof(fw_dst), "%s/lib/firmware", image_root) >=
 		    (int)sizeof(fw_dst)) {
-			fprintf(stderr, "path too long: %s/lib/firmware/amdgpu\n", image_root);
+			fprintf(stderr, "path too long: %s/lib/firmware\n", image_root);
 			return 1;
 		}
-		if (test_image_fixture_copy_dir_files(firmware_dir, fw_dst) != 0)
+		/* Recursive, and the destination is created BY the copy --
+		 * same contract the modules staging below relies on, which is
+		 * why "lib" alone is pre-created here. */
+		if (test_image_fixture_copy_dir_recursive(firmware_dir, fw_dst) != 0)
 			return 1;
 	}
 
@@ -1298,8 +1315,7 @@ int main(int argc, char **argv)
 	 * here, not the flat copy_dir_files() above, since modules_dir
 	 * nests by kernel/drivers/... -- its own contract requires the
 	 * destination to not already exist, so unlike firmware_dir's own
-	 * lib/firmware/amdgpu (pre-created via ensure_dir_under so a
-	 * second run can add more files into the same directory), only
+	 * lib/firmware (created BY its own recursive copy), only
 	 * "lib" itself is pre-created here; "lib/modules" is created BY
 	 * the copy, fresh, every run (mksquashfs's own -noappend already
 	 * means every run starts from a clean image_root regardless). */

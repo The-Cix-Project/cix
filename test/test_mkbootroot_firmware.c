@@ -112,27 +112,56 @@ int main(void)
 	}
 	system("rm -rf " STAGE_DIR " " OUT_SQUASHFS);
 
-	/* 2. a real (synthetic) firmware_dir stages its files into
-	 * lib/firmware/amdgpu, verbatim, via the same copy_dir_files()
-	 * web/ already proves. */
+	/* 2. firmware_dir is a firmware ROOT whose layout mirrors
+	 * /lib/firmware, copied recursively and verbatim.
+	 *
+	 * This used to stage a FLAT directory into a hardcoded
+	 * lib/firmware/amdgpu, back when a GPU was the only device on this
+	 * platform wanting firmware. #30 added a second consumer, and the
+	 * fixture below is built to prove the generalisation rather than
+	 * merely tolerate it: it contains two different driver
+	 * subdirectories AND a file at the root. Under the old flat copy
+	 * the subdirectories would not have been recursed into at all, and
+	 * regulatory.db -- which the kernel looks for at the TOP of
+	 * /lib/firmware -- would have been buried in amdgpu/, which is
+	 * exactly the bug this shape prevents. */
 	mkdir(FW_SRC_DIR, 0755);
-	snprintf(path, sizeof(path), "%s/vega10_smc.bin", FW_SRC_DIR);
+	snprintf(path, sizeof(path), "%s/amdgpu", FW_SRC_DIR);
+	mkdir(path, 0755);
+	snprintf(path, sizeof(path), "%s/amdgpu/vega10_smc.bin", FW_SRC_DIR);
 	write_fake_blob(path, "fake firmware blob one");
-	snprintf(path, sizeof(path), "%s/navi10_vcn.bin", FW_SRC_DIR);
+	snprintf(path, sizeof(path), "%s/rtw88", FW_SRC_DIR);
+	mkdir(path, 0755);
+	snprintf(path, sizeof(path), "%s/rtw88/rtw8822b_fw.bin", FW_SRC_DIR);
 	write_fake_blob(path, "fake firmware blob two");
+	snprintf(path, sizeof(path), "%s/regulatory.db", FW_SRC_DIR);
+	write_fake_blob(path, "fake regulatory database");
 
 	if (run_mkbootroot(FW_SRC_DIR) != 0) {
-		fprintf(stderr, "FAIL: mkbootroot with a real firmware_dir failed\n");
+		fprintf(stderr, "FAIL: mkbootroot with a real firmware root failed\n");
 		ok = 0;
 	}
 	snprintf(path, sizeof(path), "%s/lib/firmware/amdgpu/vega10_smc.bin", STAGE_DIR);
 	if (!file_exists(path)) {
-		fprintf(stderr, "FAIL: vega10_smc.bin not staged to lib/firmware/amdgpu\n");
+		fprintf(stderr, "FAIL: amdgpu/vega10_smc.bin not staged to lib/firmware/amdgpu\n");
 		ok = 0;
 	}
-	snprintf(path, sizeof(path), "%s/lib/firmware/amdgpu/navi10_vcn.bin", STAGE_DIR);
+	snprintf(path, sizeof(path), "%s/lib/firmware/rtw88/rtw8822b_fw.bin", STAGE_DIR);
 	if (!file_exists(path)) {
-		fprintf(stderr, "FAIL: navi10_vcn.bin not staged to lib/firmware/amdgpu\n");
+		fprintf(stderr, "FAIL: rtw88/rtw8822b_fw.bin not staged -- a second driver's "
+		                "subdirectory must survive the copy, not just amdgpu's\n");
+		ok = 0;
+	}
+	snprintf(path, sizeof(path), "%s/lib/firmware/regulatory.db", STAGE_DIR);
+	if (!file_exists(path)) {
+		fprintf(stderr, "FAIL: regulatory.db not staged at the root of lib/firmware -- "
+		                "request_firmware() looks for it there, not under a driver dir\n");
+		ok = 0;
+	}
+	snprintf(path, sizeof(path), "%s/lib/firmware/amdgpu/regulatory.db", STAGE_DIR);
+	if (file_exists(path)) {
+		fprintf(stderr, "FAIL: regulatory.db landed under amdgpu/ -- the old flat copy's "
+		                "behaviour, which is what this change removes\n");
 		ok = 0;
 	}
 	system("rm -rf " STAGE_DIR " " OUT_SQUASHFS);
