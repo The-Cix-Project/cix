@@ -71,15 +71,26 @@ place later.
 daemons and `wait -n`s is not a pattern this platform has any more, and `jump`, `cr-1` and `cr-2`
 lose theirs.
 
-**`cix-init` is statically linked** — the single exception to `CLAUDE.md`'s "never `-static`", named
-there and at its own link line. Two problems dissolve at once. It is built by the control-plane
-build rather than as a package, so no build container needs it before it exists: the package route
-considered first collided head-on with `daemon/src/pkg.c`'s own statement that build containers
-*"already go through container_create() like any other"*, which made `__pkgbuild-<n>` a container
-that would have required `cix-init` in order to build `cix-init`. And a binary that resolves nothing
-at runtime cannot skew against whichever glibc an image happens to carry — 2.44-14 and 2.44-16 both
-exist on the box today. The rule it excepts exists so Cix binaries track the platform's glibc; a
-PID 1 whose whole job runs before the image's userspace is the one binary that must not.
+**`cix-init` is freestanding** — compiled `-nostdlib -static`, with its own `_start`, its own
+syscall trampoline and its own `memcpy`, linked against nothing, including no header. This is the
+single exception to `CLAUDE.md`'s "never `-static`", named there and at its own link line. It was
+first written as "statically linked", meaning against glibc, and that route measured closed:
+`probe-tcc-conformance/25` found no `libc.a` anywhere on a Cix host, by design — ADR-0251 keeps
+static archives out of every artifact because the platform links dynamically always — so a
+static-glibc `cix-init` would have needed a superseding ADR and a glibc rebuild for one binary.
+`probe-tcc-conformance/26` and `27` then measured that the pinned tcc builds a freestanding
+executable that runs: a 4860-byte binary with no `PT_INTERP`, no `DT_NEEDED` and no undefined
+symbol, through a delivered signal, fork, execve, poll and wait4. Two problems dissolve at once. It is
+built by the control-plane build rather than as a package, so no build container needs it before it
+exists: the package route considered first collided head-on with `daemon/src/pkg.c`'s own statement
+that build containers *"already go through container_create() like any other"*, which made
+`__pkgbuild-<n>` a container that would have required `cix-init` in order to build `cix-init`. And a
+binary that includes no header and resolves nothing at runtime cannot skew against whichever glibc
+an image happens to carry — 2.44-14 and 2.44-16 both exist on the box today. The rule it excepts
+exists so Cix binaries track the platform's glibc; a PID 1 whose whole job runs before the image's
+userspace is the one binary that must not. **The freestanding syscall layer is `cix-init`'s own and
+nothing else in Cix may use it**: a second freestanding binary is not to appear by imitation, and
+`init/src/cix_init.c`'s header says so where the next reader will look.
 
 **The daemon stages it at container-create time**, copying it into the container's tree as it
 already stages `files[]`. Not at image-seed time: ADR-0155 means a same-manifest reinstall would
