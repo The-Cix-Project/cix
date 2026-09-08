@@ -13,6 +13,7 @@
  */
 #include "httpclient.h"
 #include "json.h"
+#include "test_cleanup.h"
 #include "test_image_fixture.h"
 
 #include <limits.h>
@@ -547,32 +548,30 @@ int main(void)
 	expect(&client, "DELETE", "/v1/containers/dhcpsrv", NULL, 204, "remove the first container");
 	expect(&client, "DELETE", "/v1/containers/dhcpsrv2", NULL, 204, "remove the second container");
 	/*
-	 * The bridge is real kernel state that outlives this daemon, so
-	 * leaving it behind would make the NEXT run of this test fail at
-	 * its first request with a 404 that looks nothing like its cause.
-	 * Settle-poll the container away first -- it still holds the
-	 * network's attachment for a moment after DELETE returns.
+	 * A bridge is real kernel state that outlives this daemon, so
+	 * leaving one behind makes the NEXT run fail at its first request
+	 * with a 404 that looks nothing like its cause.
+	 *
+	 * This used to settle-poll by hand for 5 seconds (50 x 100ms), and
+	 * that is shorter than the daemon's own stop grace --
+	 * container_stop_grace_seconds() is max(10, longest stop_timeout)
+	 * + 5, so 15 by default. It passed for as long as the containers
+	 * happened to stop quickly and failed the moment they did not,
+	 * with "expected 204, got 409".
+	 *
+	 * test_cleanup_containers_and_network() is that wait done once,
+	 * with a budget that exceeds the grace and a diagnostic that names
+	 * which container is still holding the network. Three files had
+	 * hand-rolled versions of this with three different budgets; this
+	 * is one of them stopping.
 	 */
-	{
-		const char *gone[] = { "/v1/containers/dhcpsrv", "/v1/containers/dhcpsrv2" };
-		size_t g;
-		int i;
-
-		for (g = 0; g < sizeof(gone) / sizeof(gone[0]); g++) {
-			for (i = 0; i < 50; i++) {
-				memset(&r, 0, sizeof(r));
-				if (cix_client_request(&client, "GET", gone[g], NULL, &r) == 0 &&
-				    r.status == 404) {
-					cix_response_free(&r);
-					break;
-				}
-				cix_response_free(&r);
-				usleep(100 * 1000);
-			}
-		}
-	}
-	expect(&client, "DELETE", "/v1/networks/dhcplab", NULL, 204, "remove the lab network");
+	if (test_cleanup_containers_and_network(&client, "dhcplab") != 0)
+		ok = 0;
 	expect(&client, "DELETE", "/v1/networks/dhcpother", NULL, 204, "remove the unrelated network");
+	/* dhcplab2 is this test's own second segment (the one-server,
+	 * two-networks case). Removing its DHCP config above does not
+	 * remove the network, and a leaked bridge breaks the next run. */
+	expect(&client, "DELETE", "/v1/networks/dhcplab2", NULL, 204, "remove the second network");
 
 	kill(daemon_pid, SIGTERM);
 	waitpid(daemon_pid, NULL, 0);
