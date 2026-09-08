@@ -181,10 +181,15 @@ Three things worth knowing:
   family appeared. `static`, deliberately not `inline` — TCC emits a bare
   `inline` as a strong global per translation unit, which is the
   "defined twice" failure the m4 build found.
-- **Both directions exist**, by pid and by namespace fd, because they
-  differ: going in, the daemon has a pid and no namespace fd yet; coming
-  back out, the teardown helper is already inside the container holding
-  an fd for the host's.
+- **The destination is always a namespace fd, never a pid.** nl80211
+  accepts either, and every caller here already holds the fd — so asking
+  the kernel to re-resolve a pid (read in the caller's own pid
+  namespace) buys nothing.
+- **The interface is downed before the move.** `nl80211.h` states the
+  precondition where the command is defined: *"all devices associated
+  with this wiphy must be down and will follow."* Only the wireless
+  path; it comes back up inside the container via the helper that
+  already did that for the rtnetlink path.
 
 **The host loses the radio while the container exists**, along with every
 other interface on that wiphy. Intended for a dedicated AP adapter; there

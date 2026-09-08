@@ -46,8 +46,20 @@
  */
 int nl80211_is_wireless(const char *ifname);
 
+
 /*
- * Moves the wiphy that owns ifname into the network namespace of pid.
+ * Moves the wiphy that owns ifname into the namespace named by an open
+ * fd (as from /proc/<pid>/ns/net).
+ *
+ * An fd and not a pid, in both directions, deliberately. nl80211 accepts
+ * either -- NL80211_ATTR_PID resolves the pid to a namespace kernel-side
+ * -- and the pid form asks the kernel to re-derive something the caller
+ * already holds exactly. Every caller here has, or can trivially open,
+ * the fd: going in, container_net_host_attach_interfaces() opens
+ * /proc/<pid>/ns/net before it does anything else; coming back out, the
+ * teardown helper holds an fd for the host's namespace and has no pid it
+ * could name without assuming something about its own parent. One
+ * spelling, no ambiguity about whose pid namespace a number is read in.
  *
  * Opens its own socket, resolves the nl80211 family, and closes
  * everything before returning -- unlike the rtnetlink calls, which take
@@ -56,16 +68,6 @@ int nl80211_is_wireless(const char *ifname);
  * call it serves is worth more than saving the open.
  *
  * Returns 0, or -1 with errno set from the kernel's own netlink error.
- */
-int nl80211_move_phy_to_netns(const char *ifname, pid_t pid);
-
-/*
- * The same move, with the destination namespace named by an open fd.
- *
- * This is the direction that runs on container teardown, from a helper
- * that has already setns()'d into the container and holds an fd for the
- * host's namespace -- it has no pid it could name instead without
- * assuming something about its own parent.
  */
 int nl80211_move_phy_to_netns_fd(const char *ifname, int netns_fd);
 

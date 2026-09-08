@@ -25,7 +25,6 @@
 #define CIX_CTRL_ATTR_FAMILY_NAME 2
 #define CIX_NL80211_CMD_SET_WIPHY_NETNS 49
 #define CIX_NL80211_ATTR_WIPHY 1
-#define CIX_NL80211_ATTR_PID 82
 #define CIX_NL80211_ATTR_NETNS_FD 219
 
 /* struct genlmsghdr, which is 4 bytes and has no packing subtleties --
@@ -238,10 +237,12 @@ static int move_phy(const char *ifname, unsigned short attr, uint32_t value)
 	gh->version = 0;
 
 	/*
-	 * The wiphy by index, and the destination namespace by whichever
-	 * attribute the caller named. NL80211_ATTR_PID is what
-	 * `iw phy <phy> set netns <pid>` sends; NL80211_ATTR_NETNS_FD is
-	 * the same operation addressed by an open namespace fd.
+	 * The wiphy by index, and the destination namespace by an open fd.
+	 * NL80211_ATTR_PID is the other spelling the kernel accepts (it is
+	 * what `iw phy <phy> set netns <pid>` sends) and is deliberately
+	 * not used: a pid is read in the caller's own pid namespace and
+	 * re-resolved to a namespace kernel-side, while every caller here
+	 * already holds the fd for the namespace it means.
 	 */
 	if (nl_msg_put_attr_u32(&m, CIX_NL80211_ATTR_WIPHY, (uint32_t)wiphy) == NULL ||
 	    nl_msg_put_attr_u32(&m, attr, value) == NULL) {
@@ -261,10 +262,6 @@ static int move_phy(const char *ifname, unsigned short attr, uint32_t value)
 	return rc;
 }
 
-int nl80211_move_phy_to_netns(const char *ifname, pid_t pid)
-{
-	return move_phy(ifname, CIX_NL80211_ATTR_PID, (uint32_t)pid);
-}
 
 int nl80211_move_phy_to_netns_fd(const char *ifname, int netns_fd)
 {

@@ -265,7 +265,7 @@ int container_net_host_attach_interfaces(const char *const *interfaces, int inte
 			return -1;
 		}
 
-		rc = wireless ? nl80211_move_phy_to_netns(interfaces[i], child_pid)
+		rc = wireless ? nl80211_move_phy_to_netns_fd(interfaces[i], *out_netns_fd)
 		              : rtnl_link_set_netns_pid(fd, interfaces[i], child_pid);
 
 		if (rc != 0) {
