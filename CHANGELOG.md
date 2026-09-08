@@ -46,6 +46,17 @@ in a composed build container on the platform's tcc):
     7. restart after the declared 2 s   8. bad hello -> 125
     9. execve() failure -> 142   CIX-INIT RESULT: PASS
 
+Three things the advisor's review of the first cut found, fixed with their
+tests before the probe was re-run: every service inherited cix-init's whole
+fd table (the control and report sockets, every other service's pipe), so
+all inherited fds are now close-on-exec and a service sees exactly `0 1 2`,
+and an exited service's pipe reads EOF; a service started with SIGPIPE
+ignored, because cix-init ignores it for itself and `SIG_IGN` survives
+`execve()` -- which is also what every payload started with **today**,
+inherited from cixd, so restoring `SIG_DFL` in the child is a fix rather
+than parity; and a comment promised that a container outlives its daemon,
+which `PR_SET_PDEATHSIG` makes untrue.
+
 Two things found on the way and recorded for Stage B: the daemon's stop
 path is SIGKILL-only (`registry_begin_kill`), so it must become
 stop-signal-then-SIGKILL for cix-init's reverse-order shutdown to ever
