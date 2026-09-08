@@ -1,0 +1,48 @@
+{
+  "name": "ldap-2",
+  "image": "ldap",
+  "services": [
+    {
+      "name": "glauth",
+      "cmd": [
+        "/usr/bin/glauth",
+        "-c",
+        "/etc/glauth/glauth.cfg"
+      ]
+    }
+  ],
+  "capture_output": true,
+  "restart": "always",
+  "restart_delay_seconds": 2,
+  "follow_rolling": true,
+  "networks": [
+    {
+      "name": "services",
+      "ip": "192.168.150.104"
+    }
+  ],
+  "files": [
+    {
+      "path": "/etc/glauth/glauth.cfg",
+      "content": "watchconfig = true\n\n[ldap]\n  enabled = true\n  listen = \"0.0.0.0:3893\"\n\n[ldaps]\n  enabled = false\n\n[backend]\n  datastore = \"config\"\n  baseDN = \"dc=cix,dc=internal\"\n  sshkeyattr = \"sshPublicKey\"\n\n[behaviors]\n  IgnoreCapabilities = true\n"
+    },
+    {
+      "path": "/etc/passwd",
+      "content": "root:x:0:0:root:/root:/usr/bin/bash\n"
+    },
+    {
+      "path": "/etc/group",
+      "content": "root:x:0:\n"
+    }
+  ],
+  "ldap_server": {
+    "config_path": "/etc/glauth/glauth.cfg"
+  },
+  "routes": [
+    {
+      "dest": "0.0.0.0",
+      "prefix_len": 0,
+      "via": "192.168.150.254"
+    }
+  ]
+}

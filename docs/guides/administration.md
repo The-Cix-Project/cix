@@ -36,7 +36,7 @@ Wraps real `modprobe`/`modinfo` (ADR-0159 Phase A) -- `kmod ls` reads the kernel
 ## Device hotplug
 
 ```sh
-cixctl container run --name=printer --image=base --optional-device=usb:04b8:0202:12345 -- /usr/bin/print-daemon
+cixctl container run --name=printer --image=base --optional-device=usb:04b8:0202:12345--service=print-daemon=/usr/bin/print-daemon
 cixctl container device attach printer usb:04b8:0202:12345
 cixctl container device detach printer usb:04b8:0202:12345
 cixctl device ls

@@ -193,7 +193,7 @@ int main(void)
 	check(cix_client_request(&client, "POST", "/v1/containers",
 	                         "{\"name\":\"cbad\",\"image\":\"voltest\","
 	                         "\"volumes\":[{\"name\":\"nosuchvol\",\"path\":\"/vol\"}],"
-	                         "\"cmd\":[\"/bin/volume_child\"]}",
+	                         "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/volume_child\"]}]}",
 	                         &r) == 0 &&
 	          r.status == 400,
 	      "a container naming an unknown volume is refused (400), never auto-created");
@@ -204,7 +204,7 @@ int main(void)
 	check(cix_client_request(&client, "POST", "/v1/containers",
 	                         "{\"name\":\"cwrite\",\"image\":\"voltest\",\"capture_output\":true,"
 	                         "\"volumes\":[{\"name\":\"vol1\",\"path\":\"/vol\"}],"
-	                         "\"cmd\":[\"/bin/volume_child\",\"write\"]}",
+	                         "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/volume_child\",\"write\"]}]}",
 	                         &r) == 0 &&
 	          r.status == 201,
 	      "container with a volume is created");
@@ -248,7 +248,7 @@ int main(void)
 	check(cix_client_request(&client, "POST", "/v1/containers",
 	                         "{\"name\":\"cread\",\"image\":\"voltest\",\"capture_output\":true,"
 	                         "\"volumes\":[{\"name\":\"vol1\",\"path\":\"/vol\"}],"
-	                         "\"cmd\":[\"/bin/volume_child\"]}",
+	                         "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/volume_child\"]}]}",
 	                         &r) == 0 &&
 	          r.status == 201,
 	      "second container with the same volume is created");
@@ -277,7 +277,7 @@ int main(void)
 	check(cix_client_request(&client, "POST", "/v1/containers",
 	                         "{\"name\":\"cattach\",\"image\":\"voltest\",\"capture_output\":true,"
 	                         "\"restart\":\"no\","
-	                         "\"cmd\":[\"/bin/volume_child\",\"write\"]}",
+	                         "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/volume_child\",\"write\"]}]}",
 	                         &r) == 0 &&
 	          r.status == 201,
 	      "container created with no volumes at all");
@@ -699,7 +699,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	check(cix_client_request(&client, "POST", "/v1/containers",
 	                         "{\"name\":\"clive\",\"image\":\"voltest\",\"restart\":\"no\","
-	                         "\"cmd\":[\"/bin/volume_child\",\"sleep\"]}",
+	                         "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/volume_child\",\"sleep\"]}]}",
 	                         &r) == 0 &&
 	          r.status == 201,
 	      "a running container with no volumes");
@@ -750,7 +750,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	check(cix_client_request(&client, "POST", "/v1/containers",
 	                         "{\"name\":\"cexec\",\"image\":\"voltest\",\"restart\":\"no\","
-	                         "\"cmd\":[\"/bin/volume_child\",\"sleep\"]}",
+	                         "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/volume_child\",\"sleep\"]}]}",
 	                         &r) == 0 &&
 	          r.status == 201,
 	      "a running container to exec into");
@@ -812,7 +812,7 @@ int main(void)
 	check(cix_client_request(&client, "POST", "/v1/containers",
 	                         "{\"name\":\"cexecread\",\"image\":\"voltest\",\"capture_output\":true,"
 	                         "\"volumes\":[{\"name\":\"execvol\",\"path\":\"/vol\"}],"
-	                         "\"cmd\":[\"/bin/volume_child\"]}",
+	                         "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/volume_child\"]}]}",
 	                         &r) == 0 &&
 	          r.status == 201,
 	      "a reader for what the exec wrote");

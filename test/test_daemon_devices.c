@@ -238,7 +238,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"devbad\",\"image\":\"devicestest\","
-	                       "\"cmd\":[\"/bin/daemon_child\",\"0\",\"0\"],"
+	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"0\",\"0\"]}],"
 	                       "\"devices\":[\"usb:0000:0000:nonexistent\"]}",
 	                       &r) != 0 ||
 	    r.status != 400) {
@@ -257,7 +257,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"devgpubad\",\"image\":\"devicestest\","
-	                       "\"cmd\":[\"/bin/daemon_child\",\"0\",\"0\"],"
+	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"0\",\"0\"]}],"
 	                       "\"devices\":[\"gpu:0\"]}",
 	                       &r) != 0 ||
 	    r.status != 400) {
@@ -276,7 +276,7 @@ int main(void)
 
 		snprintf(body, sizeof(body),
 		         "{\"name\":\"devgood\",\"image\":\"devicestest\","
-		         "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],\"devices\":[\"%s\"]}",
+		         "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}],\"devices\":[\"%s\"]}",
 		         first_assignable_id);
 
 		memset(&r, 0, sizeof(r));
@@ -363,7 +363,7 @@ int main(void)
 		 * whole mechanism. */
 		snprintf(body, sizeof(body),
 		         "{\"name\":\"devmapgood\",\"image\":\"devicestest\","
-		         "\"cmd\":[\"/bin/daemon_child\",\"0\",\"0\"],\"devices\":[\"mapexact\"]}");
+		         "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"0\",\"0\"]}],\"devices\":[\"mapexact\"]}");
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/containers", body, &r) != 0 || r.status != 201) {
 			fprintf(stderr, "FAIL: POST devmapgood via mapping name, status=%d\n", r.status);
@@ -471,7 +471,7 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"devmapabsent\",\"image\":\"devicestest\","
-		                       "\"cmd\":[\"/bin/daemon_child\",\"0\",\"0\"],"
+		                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"0\",\"0\"]}],"
 		                       "\"devices\":[\"mapabsent\"]}",
 		                       &r) != 0 ||
 		    r.status != 400) {
@@ -578,7 +578,7 @@ int main(void)
 
 					snprintf(body, sizeof(body),
 					         "{\"name\":\"devveth\",\"image\":\"devicestest\","
-					         "\"cmd\":[\"/bin/daemon_child\",\"0\",\"0\"],"
+					         "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"0\",\"0\"]}],"
 					         "\"interfaces\":[\"%s\"]}",
 					         veth_b);
 

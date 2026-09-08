@@ -230,7 +230,7 @@ int main(void)
 	{
 		struct json_writer w;
 		const char *content =
-		    "{\"name\":\"crtest\",\"image\":\"base\",\"cmd\":[\"/bin/true\"],\"restart\":\"no\","
+		    "{\"name\":\"crtest\",\"image\":\"base\",\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/true\"]}],\"restart\":\"no\","
 		    "\"files\":[{\"path\":\"/etc/secret.conf\",\"content\":\"password={{SECRET:PW}}\\n\"}]}";
 
 		jw_init(&w);
@@ -450,7 +450,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	CHECK(cix_client_request(&client, "POST", "/v1/containers",
 	                         "{\"name\":\"crtldap\",\"image\":\"base\","
-	                         "\"cmd\":[\"/bin/true\",\"60\"],"
+	                         "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/true\",\"60\"]}],"
 	                         "\"networks\":[\"crtnet\"]}",
 	                         &r) == 0 &&
 	          r.status == 201,

@@ -46,7 +46,7 @@ Full detail: [`docs/api/README.md`](../api/README.md#creating-a-network).
 ## 4. Run a container
 
 ```sh
-build/cixctl container run --name=hello --image=base --network=lan1 -- /usr/bin/bash -c "echo hello from inside Cix"
+build/cixctl container run --name=hello --image=base --network=lan1--service=bash=/usr/bin/bash -c"echo hello from inside Cix"
 build/cixctl container inspect hello
 ```
 

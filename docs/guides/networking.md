@@ -55,13 +55,13 @@ A real, live `RTM_GETROUTE` dump plus thin add/remove wrappers (ADR-0066/ADR-006
 A container attached to two networks with IP forwarding on will actually forward packets between them:
 
 ```sh
-cixctl container run --name=router --image=frr --network=internal --network=dmz --ip-forward -- /usr/sbin/some-router-daemon
+cixctl container run --name=router --image=frr --network=internal --network=dmz --ip-forward--service=main=/usr/sbin/some-router-daemon
 ```
 
 Enough for a container running a real dynamic routing protocol (BIRD, FRR) to do the routing itself, or for pure static routing. Other containers then need their own static route pointing at the router's address to actually reach the far side:
 
 ```sh
-cixctl container run --name=internal-host --image=base --network=internal --route=172.32.0.0/24:172.31.0.2 -- /usr/bin/some-binary
+cixctl container run --name=internal-host --image=base --network=internal --route=172.32.0.0/24:172.31.0.2--service=main=/usr/bin/some-binary
 ```
 
 Up to 8 routes, set once at container creation — not modifiable on an already-running container. `--ip-forward` is per-netns and defaults off; it never affects the host or any other container. That's a different, container-scoped mechanism from the host's own `net.ipv4.ip_forward` — see [`cixctl sysctl`](administration.md#host-sysctl-tuning) to tune the host's own kernel directly.

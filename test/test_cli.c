@@ -194,9 +194,8 @@ int main(void)
 	{
 		char *argv[] = { "cixctl",  PORT_ARG,
 			          "container", "run", "--name=c1",
-			          "--image=test", "--",
-			          "/bin/daemon_child", "0",
-			          "5",         NULL };
+			          "--image=test",
+			          "--service=main=/bin/daemon_child 0 5", NULL };
 
 		if (run_cli(argv, out, sizeof(out), &rc) != 0 || rc != 0 ||
 		    strstr(out, "running") == NULL) {
@@ -241,9 +240,8 @@ int main(void)
 	{
 		char *run_argv[] = { "cixctl",  PORT_ARG,
 			              "container", "run", "--name=c2",
-			              "--image=test", "--",
-			              "/bin/daemon_child", "30",
-			              "0",         NULL };
+			              "--image=test",
+			              "--service=main=/bin/daemon_child 30 0", NULL };
 		char *rm_argv[] = { "cixctl", PORT_ARG, "container", "rm", "c2", NULL };
 		char *inspect_argv[] = { "cixctl", PORT_ARG, "container", "inspect", "c2", NULL };
 		long pid;
@@ -287,9 +285,8 @@ int main(void)
 	{
 		char *argv[] = { "cixctl",  PORT_ARG,
 			          "container", "run", "--name=c1",
-			          "--image=test", "--",
-			          "/bin/daemon_child", "0",
-			          "1",         NULL };
+			          "--image=test",
+			          "--service=main=/bin/daemon_child 0 1", NULL };
 
 		if (run_cli(argv, out, sizeof(out), &rc) != 0 || rc == 0 ||
 		    strstr(out, "cixctl:") == NULL) {
@@ -316,7 +313,7 @@ int main(void)
 			                     "--prefix=24",    NULL };
 		char *run_argv[] = { "cixctl", PORT_ARG, "container", "run",
 			              "--name=c3", "--image=test", "--network=clitest",
-			              "--", "/bin/net_child", NULL };
+			              "--service=main=/bin/net_child", NULL };
 		char *rm_argv[] = { "cixctl", PORT_ARG, "container", "rm", "c3", NULL };
 		char *net_rm_argv[] = { "cixctl", PORT_ARG, "network", "rm", "clitest", NULL };
 

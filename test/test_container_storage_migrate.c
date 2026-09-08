@@ -175,7 +175,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"noreplay\",\"image\":\"migtest\","
-	                       "\"cmd\":[\"/bin/daemon_child\",\"60\",\"0\"]}",
+	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"60\",\"0\"]}]}",
 	                       &r) != 0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: POST noreplay, status=%d\n", r.status);
@@ -202,7 +202,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"migc\",\"image\":\"migtest\","
-	                       "\"cmd\":[\"/bin/daemon_child\",\"60\",\"0\"],"
+	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"60\",\"0\"]}],"
 	                       "\"restart\":\"always\"}",
 	                       &r) != 0 ||
 	    r.status != 201) {
