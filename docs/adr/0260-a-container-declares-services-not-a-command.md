@@ -91,6 +91,17 @@ back into a wrapper script.
         cmd: ["/usr/sbin/sshd", "-D", "-e"]
         depends_on: [hostkeys, nslcd]
 
+**`cix-init` is not in the console path.** Console sessions remain the daemon's own work — it
+enters the container's namespaces from outside via `setns()`, exactly as it does now, and the
+supervisor neither sees nor routes them. The single exception is the `service:` console kind in
+[ADR-0261](0261-reaching-inside-a-container.md), which needs the supervisor to hand out a running
+service's stdio fd; that is deliberately not in the first cut, since the `cmd:` kind covers
+everything done today, including the `birdcl` session that diagnosed bird.
+
+Nor is `cix-init` an init system. No socket activation, no timers, no logging daemon, no host
+service management. It reads no configuration from inside the image — its service table arrives
+from the daemon over an inherited fd — writes nothing to disk, and does no networking.
+
 **PID 1 is a supervisor this project writes in C**, which starts services in dependency order,
 reaps them, applies each one's restart policy, and attributes output per service. Services appear
 in `GET /containers/{name}` with their own state and exit reason, and one can be started, stopped
@@ -108,9 +119,22 @@ refuses to install a binary whose symbols do not resolve, so the failure surface
 against a named package, rather than at `execve()` of PID 1 where it would present as a container
 that never starts.
 
-An image with no `cix-init` cannot run a container, and the daemon refuses at create time with a
-message naming what to install — the same shape as the existing "image has no C library" refusal,
-reusing that reasoning rather than inventing a second one.
+**`cix-init` is NOT part of every container**, and that is a constraint rather than an optimisation.
+A container declaring a single `daemon` service with no `oneshot`, no `depends_on` and no `ready`
+probe has that service `execve()`'d directly as PID 1, exactly as every container works today — no
+supervisor, and no `cix-init` in its image. The supervisor appears only when the container declares
+something that actually needs supervising.
+
+The measurement is why: of the twelve containers running on 192.168.15.95, **nine are a single
+process** (dns-1/-2, ldap-1/-2, ntp-1/-2, syslog-1/-2, cr-1). Only `jump` and `cr-2` run more than
+one thing. Making the supervisor universal would put an init process inside nine containers to
+solve a problem two of them have.
+
+The cost is stated rather than buried: there are two shapes for PID 1 — the declared service
+itself, or `cix-init`. That is one contract with two implementations rather than two models (the
+service declaration is identical either way, and so is everything the API reports), but No Parallel
+Implementations is a maxim and this is the place it applies, so the boundary is drawn once, here,
+and by a single predicate: does this container declare anything beyond one bare daemon.
 
 **Stopping is the reverse dependency order.** Nothing else is defensible once ordering is a graph.
 
