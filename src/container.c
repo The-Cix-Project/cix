@@ -1239,7 +1239,13 @@ int container_create(const struct container_spec *spec, struct container_handle 
 			siginfo_t info;
 
 			perror("container_create: container_net_host_attach_interfaces");
-			container_set_last_error_step("container_create: container_net_host_attach_interfaces");
+			/*
+			 * No generic step here: container_net_host_attach_interfaces()
+			 * sets a precise one at each of its own failure points --
+			 * which mechanism, which interface, which half of the move
+			 * -- and overwriting it with the function's name would
+			 * throw away everything worth knowing.
+			 */
 			sys_pidfd_send_signal(pidfd, SIGKILL);
 			waitid(P_PIDFD, pidfd, &info, WEXITED);
 			close(diag_pipe[0]);
