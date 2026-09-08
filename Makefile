@@ -504,7 +504,7 @@ $(BUILD)/test_btrfs: test/test_btrfs.c src/btrfs.c | $(BUILD)
 $(BUILD)/test_subid: test/test_subid.c daemon/src/subid.c daemon/src/persist.c daemon/src/json.c | $(BUILD)
 	$(CC) $(DAEMON_CFLAGS) $^ -o $@
 
-$(BUILD)/test_dhcp: test/test_dhcp.c test/test_image_fixture.c client/src/httpclient.c daemon/src/json.c | $(BUILD)
+$(BUILD)/test_dhcp: test/test_dhcp.c test/test_image_fixture.c test/test_cleanup.c client/src/httpclient.c daemon/src/json.c | $(BUILD)
 	$(CC) $(DAEMON_CFLAGS) -Iclient/include $^ -o $@
 
 $(BUILD)/test_kernelpolicy: test/test_kernelpolicy.c daemon/src/kernelpolicy.c daemon/src/persist.c daemon/src/json.c | $(BUILD)
