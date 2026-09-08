@@ -296,6 +296,29 @@ Until the supervisor ships, `cr-1`/`cr-2` and `jump` keep their start scripts, a
 above is real rather than theoretical: a bird crash on a router presents as a container restart with
 no indication which daemon failed.
 
+**The migration preserves each container's existing behaviour exactly, and per-service restart is opt-in.**
+Every service translated from an old `cmd` carries `on_exit: fail-container` — so its exit still ends
+the container with its status, and the container-level `restart` policy still decides what happens
+next, which is what one `cmd` did. `on_exit: restart` is strictly better for most of them and is
+deliberately *not* applied by the migration: arriving as a side effect of a translation is how a
+behaviour change ships unmeasured. `cr-1`/`cr-2` are the case that makes this concrete — their shell
+wrapper's own comment argued that a router whose routing daemon has died must not keep advertising
+VRRP, and `fail-container` on both services is that argument, now stated in the declaration instead
+of implied by `wait -n`.
+
+The first cut of this migration translated everything to `oneshot` instead, and the selftest refused
+it. A oneshot is ready only once it has **exited 0**, so a long-running process declared as one never
+becomes ready — and since autostart blocks on readiness before the event loop, the daemon answered
+nothing for minutes after a restart. Worth stating because the mistake is available to anyone reading
+"one process, and its exit is the container's" and reaching for the type whose name says
+run-to-completion.
+
+**Autostart blocks on a container's readiness only when another definition depends on it.** Every
+second there is a second the daemon serves nothing. The container-level check this replaced was
+declared by almost nothing, so the cost was rare; a derived readiness that every container has makes
+waiting the default, and waiting on a container nobody is waiting for is startup latency paid on
+every boot.
+
 **The cut-over is a dependency-ordered rolling recreate, not a loop over the container list.** Every
 container must be recreated to gain a pid 1, and the box runs containers that depend on each other
 and a VRRP pair that must not lose both members at once. The ordering that makes this safe is the
