@@ -42,17 +42,6 @@ static int save_state(void)
 		for (j = 0; j < d->depends_on_count; j++)
 			jw_str(&w, d->depends_on[j]);
 		jw_arr_close(&w);
-		jw_key(&w, "readiness");
-		if (d->has_readiness) {
-			jw_obj_open(&w);
-			jw_key(&w, "tcp_port");
-			jw_int(&w, d->readiness_tcp_port);
-			jw_key(&w, "timeout_seconds");
-			jw_int(&w, d->readiness_timeout_seconds);
-			jw_obj_close(&w);
-		} else {
-			jw_null(&w);
-		}
 		jw_key(&w, "restart_policy");
 		jw_str(&w, d->restart_policy);
 		jw_key(&w, "restart_delay_seconds");
@@ -78,7 +67,6 @@ static int save_state(void)
 
 int containerdef_add(const char *name, const char *body, size_t body_len,
                       const char depends_on[][REGISTRY_NAME_MAX], int depends_on_count,
-                      int has_readiness, int readiness_tcp_port, int readiness_timeout_seconds,
                       const char *restart_policy, int restart_delay_seconds, int follow_rolling,
                       int has_follow_rolling_jitter, int follow_rolling_jitter_seconds)
 {
@@ -116,10 +104,6 @@ int containerdef_add(const char *name, const char *body, size_t body_len,
 		memset(d->depends_on[i], 0, sizeof(d->depends_on[i]));
 		strncpy(d->depends_on[i], depends_on[i], sizeof(d->depends_on[i]) - 1);
 	}
-
-	d->has_readiness = has_readiness;
-	d->readiness_tcp_port = readiness_tcp_port;
-	d->readiness_timeout_seconds = readiness_timeout_seconds;
 
 	snprintf(d->restart_policy, sizeof(d->restart_policy), "%s", restart_policy);
 	d->restart_delay_seconds = restart_delay_seconds;
@@ -400,17 +384,6 @@ static void write_stopped_def_json_one(struct container_def *d, struct json_writ
 	for (j = 0; j < d->depends_on_count; j++)
 		jw_str(w, d->depends_on[j]);
 	jw_arr_close(w);
-	jw_key(w, "readiness");
-	if (d->has_readiness) {
-		jw_obj_open(w);
-		jw_key(w, "tcp_port");
-		jw_int(w, d->readiness_tcp_port);
-		jw_key(w, "timeout_seconds");
-		jw_int(w, d->readiness_timeout_seconds);
-		jw_obj_close(w);
-	} else {
-		jw_null(w);
-	}
 	jw_obj_close(w);
 
 	json_free(root);
@@ -442,7 +415,6 @@ static int parse_persisted_entry(const struct json_value *item, struct container
 	const char *name = json_as_string(json_object_get(item, "name"));
 	const char *body = json_as_string(json_object_get(item, "body"));
 	const struct json_value *jdeps = json_object_get(item, "depends_on");
-	const struct json_value *jready = json_object_get(item, "readiness");
 	const struct json_value *jrestart_policy = json_object_get(item, "restart_policy");
 	const struct json_value *jrestart_delay = json_object_get(item, "restart_delay_seconds");
 	const struct json_value *jstopped = json_object_get(item, "stopped");
@@ -480,20 +452,6 @@ static int parse_persisted_entry(const struct json_value *item, struct container
 			        sizeof(slot->depends_on[slot->depends_on_count]) - 1);
 			slot->depends_on_count++;
 		}
-	}
-
-	if (jready != NULL && jready->type == JSON_OBJECT) {
-		const struct json_value *jport = json_object_get(jready, "tcp_port");
-		const struct json_value *jtimeout = json_object_get(jready, "timeout_seconds");
-
-		if (jport == NULL) {
-			free(slot->body);
-			return -1;
-		}
-		slot->has_readiness = 1;
-		slot->readiness_tcp_port = (int)json_as_number(jport);
-		slot->readiness_timeout_seconds =
-		    jtimeout != NULL ? (int)json_as_number(jtimeout) : 30;
 	}
 
 	if (jrestart_policy != NULL) {

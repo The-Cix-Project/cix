@@ -796,17 +796,6 @@ void registry_write_json_one(const struct registry_entry *entry, struct json_wri
 				jw_str(w, def->depends_on[i]);
 		}
 		jw_arr_close(w);
-		jw_key(w, "readiness");
-		if (def != NULL && def->has_readiness) {
-			jw_obj_open(w);
-			jw_key(w, "tcp_port");
-			jw_int(w, def->readiness_tcp_port);
-			jw_key(w, "timeout_seconds");
-			jw_int(w, def->readiness_timeout_seconds);
-			jw_obj_close(w);
-		} else {
-			jw_null(w);
-		}
 	}
 	/*
 	 * Resource limits, read live from the real cgroup (entry->handle.

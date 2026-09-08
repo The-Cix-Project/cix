@@ -10851,7 +10851,7 @@ static const char *container_body_unknown_key(const struct json_value *root)
 		"sysctls", "env", "dns_servers", "dns_register", "pki_issue", "pki_cert_dir",
 		"pki_days", "disk", "ldap_provision", "ldap_user", "ldap_group", "ldap_uid",
 		"ldap_secret_dir", "restart", "restart_delay_seconds", "follow_rolling",
-		"follow_rolling_jitter_seconds", "depends_on", "readiness", "memory_max", "memory_swap_max",
+		"follow_rolling_jitter_seconds", "depends_on", "memory_max", "memory_swap_max",
 		"cpu_max", "pids_max", "cpuset_cpus", "disk_quota_bytes", "ldap_client",
 		"ldap_allow_groups",
 		"userns",
@@ -11181,9 +11181,7 @@ static int create_container_from_body(const char *body, size_t body_len,
                                        struct registry_entry **out_entry,
                                        char out_restart_policy[16], int *out_restart_delay_seconds,
                                        char out_depends_on[][REGISTRY_NAME_MAX],
-                                       int *out_depends_on_count, int *out_has_readiness,
-                                       int *out_readiness_tcp_port,
-                                       int *out_readiness_timeout_seconds, int *out_follow_rolling,
+                                       int *out_depends_on_count, int *out_follow_rolling,
                                        int *out_has_follow_rolling_jitter,
                                        int *out_follow_rolling_jitter_seconds, char *err_msg,
                                        size_t err_msg_size)
@@ -11198,7 +11196,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	const struct json_value *jinterfaces;
 	const struct json_value *jcap_add;
 	const struct json_value *jfiles, *jsysctls, *jenv;
-	const struct json_value *jrestart, *jrestart_delay, *jdepends_on, *jreadiness;
+	const struct json_value *jrestart, *jrestart_delay, *jdepends_on;
 	const struct json_value *jfollow_rolling, *jfollow_rolling_jitter;
 	const char *restart_str;
 	long restart_delay, follow_rolling_jitter;
@@ -11229,7 +11227,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	char env_buf[CONTAINER_MAX_ENV][CONTAINER_ENV_ENTRY_MAX];
 	char *envp_ptrs[CONTAINER_MAX_ENV + 1];
 	int env_count = 0;
-	size_t argc, i;
+	size_t i;
 	struct registry_network_attachment net_attachments[CONTAINER_MAX_NETWORKS];
 	char chosen_ifname[16]; /* ADR-0259: this attachment's operator-chosen name, "" if none */
 	int net_count = 0;
@@ -11295,7 +11293,6 @@ static int create_container_from_body(const char *body, size_t body_len,
 	snprintf(out_restart_policy, 16, "no");
 	*out_restart_delay_seconds = CONTAINERDEF_DEFAULT_RESTART_DELAY_SECONDS;
 	*out_depends_on_count = 0;
-	*out_has_readiness = 0;
 	*out_follow_rolling = 0;
 	*out_has_follow_rolling_jitter = 0;
 	*out_follow_rolling_jitter_seconds = 0;
@@ -11476,43 +11473,6 @@ static int create_container_from_body(const char *body, size_t body_len,
 		}
 	}
 
-	jreadiness = json_object_get(root, "readiness");
-	if (jreadiness != NULL) {
-		const struct json_value *jport, *jtimeout;
-		long port, timeout;
-
-		if (jreadiness->type != JSON_OBJECT) {
-			json_free(root);
-			snprintf(err_msg, err_msg_size, "readiness must be an object");
-			return 400;
-		}
-		jport = json_object_get(jreadiness, "tcp_port");
-		port = jport != NULL ? (long)json_as_number(jport) : 0;
-		if (jport == NULL || port < 1 || port > 65535) {
-			json_free(root);
-			snprintf(err_msg, err_msg_size, "readiness.tcp_port must be 1-65535");
-			return 400;
-		}
-		jtimeout = json_object_get(jreadiness, "timeout_seconds");
-		timeout = jtimeout != NULL ? (long)json_as_number(jtimeout) : 30;
-		if (timeout < 1 || timeout > 300) {
-			json_free(root);
-			snprintf(err_msg, err_msg_size, "readiness.timeout_seconds must be 1-300");
-			return 400;
-		}
-		/* jnetworks itself already guarantees >= 1 entry if non-NULL
-		 * (its own validation below rejects an empty array), so this
-		 * check doesn't need net_count, which isn't computed until the
-		 * second networks pass, further down. */
-		if (jnetworks == NULL) {
-			json_free(root);
-			snprintf(err_msg, err_msg_size, "readiness requires networks");
-			return 400;
-		}
-		*out_has_readiness = 1;
-		*out_readiness_tcp_port = (int)port;
-		*out_readiness_timeout_seconds = (int)timeout;
-	}
 
 	if (!name_is_valid(name) || image == NULL || image[0] == '\0' || jservices == NULL) {
 		json_free(root);
@@ -13397,7 +13357,6 @@ static int create_container_persisted(const char *body, size_t body_len,
 	int restart_delay_seconds;
 	char depends_on[CONTAINERDEF_MAX_DEPENDS][REGISTRY_NAME_MAX];
 	int depends_on_count;
-	int has_readiness, readiness_tcp_port, readiness_timeout_seconds;
 	int follow_rolling;
 	int has_follow_rolling_jitter, follow_rolling_jitter_seconds;
 	int status;
@@ -13425,8 +13384,7 @@ static int create_container_persisted(const char *body, size_t body_len,
 
 	status = create_container_from_body(body, body_len, &entry, restart_policy,
 	                                     &restart_delay_seconds, depends_on, &depends_on_count,
-	                                     &has_readiness, &readiness_tcp_port,
-	                                     &readiness_timeout_seconds, &follow_rolling,
+	                                     &follow_rolling,
 	                                     &has_follow_rolling_jitter, &follow_rolling_jitter_seconds,
 	                                     err_msg, err_msg_size);
 	if (status != 0)
@@ -13502,7 +13460,6 @@ static int create_container_persisted(const char *body, size_t body_len,
 		}
 
 		if (containerdef_add(entry->name, persist_src, persisted_len, depends_on, depends_on_count,
-		                      has_readiness, readiness_tcp_port, readiness_timeout_seconds,
 		                      restart_policy, restart_delay_seconds, follow_rolling,
 		                      has_follow_rolling_jitter, follow_rolling_jitter_seconds) != 0) {
 			fprintf(stderr,
@@ -13943,16 +13900,15 @@ static void finalize_container_storage_migration(const char *name)
 		if (def != NULL) {
 			struct registry_entry *entry;
 			char restart_policy[16];
-			int restart_delay_seconds, depends_on_count, has_readiness, readiness_tcp_port;
-			int readiness_timeout_seconds, follow_rolling, has_follow_rolling_jitter;
+			int restart_delay_seconds, depends_on_count;
+			int follow_rolling, has_follow_rolling_jitter;
 			int follow_rolling_jitter_seconds;
 			char depends_on[CONTAINERDEF_MAX_DEPENDS][REGISTRY_NAME_MAX];
 			char err_msg[256];
 
 			if (create_container_from_body(def->body, def->body_len, &entry, restart_policy,
 			                                &restart_delay_seconds, depends_on, &depends_on_count,
-			                                &has_readiness, &readiness_tcp_port,
-			                                &readiness_timeout_seconds, &follow_rolling,
+			                                &follow_rolling,
 			                                &has_follow_rolling_jitter,
 			                                &follow_rolling_jitter_seconds, err_msg,
 			                                sizeof(err_msg)) != 0)
@@ -13972,16 +13928,15 @@ static void finalize_container_storage_migration(const char *name)
 	if (def != NULL) {
 		struct registry_entry *entry;
 		char restart_policy[16];
-		int restart_delay_seconds, depends_on_count, has_readiness, readiness_tcp_port;
-		int readiness_timeout_seconds, follow_rolling, has_follow_rolling_jitter;
+		int restart_delay_seconds, depends_on_count;
+		int follow_rolling, has_follow_rolling_jitter;
 		int follow_rolling_jitter_seconds;
 		char depends_on[CONTAINERDEF_MAX_DEPENDS][REGISTRY_NAME_MAX];
 		char err_msg[256];
 
 		if (create_container_from_body(def->body, def->body_len, &entry, restart_policy,
 		                                &restart_delay_seconds, depends_on, &depends_on_count,
-		                                &has_readiness, &readiness_tcp_port,
-		                                &readiness_timeout_seconds, &follow_rolling,
+		                                &follow_rolling,
 		                                &has_follow_rolling_jitter, &follow_rolling_jitter_seconds,
 		                                err_msg, sizeof(err_msg)) != 0) {
 			containerstoragemigrate_mark_failed(name, err_msg);
@@ -14053,7 +14008,6 @@ static void handle_start(int fd, const char *name)
 	int restart_delay_seconds;
 	char depends_on[CONTAINERDEF_MAX_DEPENDS][REGISTRY_NAME_MAX];
 	int depends_on_count;
-	int has_readiness, readiness_tcp_port, readiness_timeout_seconds;
 	int follow_rolling;
 	int has_follow_rolling_jitter, follow_rolling_jitter_seconds;
 	char err_msg[256];
@@ -14109,8 +14063,7 @@ static void handle_start(int fd, const char *name)
 
 	status = create_container_from_body(def->body, def->body_len, &entry, restart_policy,
 	                                     &restart_delay_seconds, depends_on, &depends_on_count,
-	                                     &has_readiness, &readiness_tcp_port,
-	                                     &readiness_timeout_seconds, &follow_rolling,
+	                                     &follow_rolling,
 	                                     &has_follow_rolling_jitter, &follow_rolling_jitter_seconds,
 	                                     err_msg, sizeof(err_msg));
 	if (status != 0) {
@@ -14260,7 +14213,7 @@ static void respond_container_volumes(int fd, int status, const char *status_tex
 static void handle_container_patch(int fd, const char *name, const char *body, size_t body_len)
 {
 	static const char *const index_fields[] = { "restart", "restart_delay_seconds", "depends_on",
-		                                        "readiness", "follow_rolling",
+		                                        "services", "follow_rolling",
 		                                        "follow_rolling_jitter_seconds" };
 	struct container_def *def = containerdef_find(name);
 	struct registry_entry *e = registry_find(name);
@@ -21566,6 +21519,69 @@ static void op_stopContainer(const struct api_ctx *ctx)
 	handle_stop(ctx->fd, ctx->p[0]);
 }
 
+/*
+ * ADR-0260: POST /containers/{name}/services/{service}/{start|stop|restart}.
+ *
+ * The control plane reaching the software inside a container. Each is
+ * one command record to the container's cix-init; the state that
+ * results arrives as reports and is read back through GET. The
+ * declaration is never touched: a stop is a visible override that the
+ * next container start lifts by replaying the declaration.
+ */
+static void handle_container_service(int fd, const char *name, const char *service, int op,
+                                     const char *action)
+{
+	struct registry_entry *e = registry_find(name);
+	struct json_writer w;
+	int idx;
+
+	if (e == NULL || !e->in_use) {
+		respond_error(fd, 404, "Not Found", containerdef_find(name) != NULL
+		                                         ? "container is not running"
+		                                         : "no such container");
+		return;
+	}
+	idx = registry_service_index(e, service);
+	if (idx < 0) {
+		respond_error(fd, 404, "Not Found", "no such service in this container's declaration");
+		return;
+	}
+	if (!e->running || e->teardown_kind != REGISTRY_TEARDOWN_NONE || e->init_control_fd < 0) {
+		respond_error(fd, 409, "Conflict", "container is not running, so there is no cix-init to tell");
+		return;
+	}
+	if (container_init_command(e, op, idx) != 0) {
+		respond_error(fd, 500, "Internal Server Error", "could not deliver the command to cix-init");
+		return;
+	}
+	logstore_write_container(name, "info", "operator: %s service %s", action, service);
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "name");
+	jw_str(&w, name);
+	jw_key(&w, "service");
+	jw_str(&w, service);
+	jw_key(&w, "action");
+	jw_str(&w, action);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+}
+
+static void op_startContainerService(const struct api_ctx *ctx)
+{
+	handle_container_service(ctx->fd, ctx->p[0], ctx->p[1], CIXINIT_OP_START, "start");
+}
+
+static void op_stopContainerService(const struct api_ctx *ctx)
+{
+	handle_container_service(ctx->fd, ctx->p[0], ctx->p[1], CIXINIT_OP_STOP, "stop");
+}
+
+static void op_restartContainerService(const struct api_ctx *ctx)
+{
+	handle_container_service(ctx->fd, ctx->p[0], ctx->p[1], CIXINIT_OP_RESTART, "restart");
+}
+
 static void op_pauseContainer(const struct api_ctx *ctx)
 {
 	handle_pause(ctx->fd, ctx->p[0]);
@@ -23939,14 +23955,12 @@ static void handle_restart_timer_event(struct conn *cc)
 		 * own comment on why) -- these are validated/extracted the same
 		 * way regardless of caller, but a crash restart never acts on
 		 * them. */
-		int has_readiness, readiness_tcp_port, readiness_timeout_seconds;
 		int follow_rolling;
 		int has_follow_rolling_jitter, follow_rolling_jitter_seconds;
 		char err_msg[256];
 		int status = create_container_from_body(
 		    def->body, def->body_len, &entry, restart_policy, &restart_delay_seconds, depends_on,
-		    &depends_on_count, &has_readiness, &readiness_tcp_port, &readiness_timeout_seconds,
-		    &follow_rolling, &has_follow_rolling_jitter, &follow_rolling_jitter_seconds, err_msg,
+		    &depends_on_count, &follow_rolling, &has_follow_rolling_jitter, &follow_rolling_jitter_seconds, err_msg,
 		    sizeof(err_msg));
 
 		if (status != 0)
@@ -24078,14 +24092,12 @@ static void handle_rolling_restart_timer_event(struct conn *cc)
 			int restart_delay_seconds;
 			char depends_on[CONTAINERDEF_MAX_DEPENDS][REGISTRY_NAME_MAX];
 			int depends_on_count;
-			int has_readiness, readiness_tcp_port, readiness_timeout_seconds;
 			int follow_rolling;
 			int has_follow_rolling_jitter, follow_rolling_jitter_seconds;
 			char err_msg[256];
 			int status = create_container_from_body(
 			    def->body, def->body_len, &entry, restart_policy, &restart_delay_seconds,
-			    depends_on, &depends_on_count, &has_readiness, &readiness_tcp_port,
-			    &readiness_timeout_seconds, &follow_rolling, &has_follow_rolling_jitter,
+			    depends_on, &depends_on_count, &follow_rolling, &has_follow_rolling_jitter,
 			    &follow_rolling_jitter_seconds, err_msg, sizeof(err_msg));
 
 			if (status != 0)
@@ -25125,7 +25137,6 @@ static void containerdef_autostart_all(void)
 		int restart_delay_seconds;
 		char depends_on[CONTAINERDEF_MAX_DEPENDS][REGISTRY_NAME_MAX];
 		int depends_on_count;
-		int has_readiness, readiness_tcp_port, readiness_timeout_seconds;
 		int follow_rolling;
 		int has_follow_rolling_jitter, follow_rolling_jitter_seconds;
 		char err_msg[256];
@@ -25152,8 +25163,7 @@ static void containerdef_autostart_all(void)
 
 		status = create_container_from_body(def->body, def->body_len, &entry, restart_policy,
 		                                     &restart_delay_seconds, depends_on, &depends_on_count,
-		                                     &has_readiness, &readiness_tcp_port,
-		                                     &readiness_timeout_seconds, &follow_rolling,
+		                                     &follow_rolling,
 		                                     &has_follow_rolling_jitter, &follow_rolling_jitter_seconds,
 		                                     err_msg, sizeof(err_msg));
 		if (status != 0) {

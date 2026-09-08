@@ -9766,7 +9766,7 @@ paths:
         unanswerable.
 
         `name` is refused -- a container's name is its identity.
-        `restart`, `restart_delay_seconds`, `depends_on`, `readiness`,
+        `restart`, `restart_delay_seconds`, `depends_on`, `services`,
         `follow_rolling` and `follow_rolling_jitter_seconds` are refused
         too, with a 400 naming the field: they feed the definition
         index, whose one parser lives in the create path, and a second
@@ -10173,6 +10173,88 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /containers/{name}/services/{service}/start:
+    post:
+      summary: Start one declared service that is stopped, exited or failed (ADR-0260).
+      description: >
+        Tells the container's cix-init to start the named service. It
+        starts once its `after` set is ready, exactly as at container
+        start; a service held stopped by an operator has that override
+        lifted. An already-running service is a no-op. 404 if the
+        container or the service is not declared; 409 if the container
+        is not running. This is the control plane reaching the software
+        inside a container: the declaration stays the only truth, and
+        what an operator does to it is visible in GET as the service's
+        state.
+      operationId: startContainerService
+      x-cix-expose: [cli, web]
+      parameters:
+        - $ref: "#/components/parameters/ContainerName"
+        - $ref: "#/components/parameters/ServiceName"
+      responses:
+        "200":
+          description: Command delivered; the state follows in GET.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceCommandResult"
+        "404":
+          description: No such container, or no such service in its declaration.
+        "409":
+          description: The container is not running, so there is no cix-init to tell.
+  /containers/{name}/services/{service}/stop:
+    post:
+      summary: Stop one declared service and hold it stopped (ADR-0260).
+      description: >
+        An operator override, not an edit: the service gets its
+        declared stop_signal (SIGKILL after stop_timeout_seconds), is
+        reported as `stopped`, and is not restarted -- until the next
+        container start, which replays the declaration. Nothing an
+        operator does here rewrites the persisted body, so a recipe
+        keeps describing the container it created. Dependents that are
+        already running are left alone (a failing daemon does not
+        cascade); ones not yet started cannot start while it is held.
+      operationId: stopContainerService
+      x-cix-expose: [cli, web]
+      parameters:
+        - $ref: "#/components/parameters/ContainerName"
+        - $ref: "#/components/parameters/ServiceName"
+      responses:
+        "200":
+          description: Command delivered; the state follows in GET.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceCommandResult"
+        "404":
+          description: No such container, or no such service in its declaration.
+        "409":
+          description: The container is not running.
+  /containers/{name}/services/{service}/restart:
+    post:
+      summary: Stop then start one declared service (ADR-0260).
+      description: >
+        Its declared stop_signal, then a fresh start once it has exited,
+        with no delay and no operator hold left behind. The rest of the
+        container is untouched, which is the whole reason services are
+        modelled separately: bouncing bird on a router no longer bounces
+        keepalived.
+      operationId: restartContainerService
+      x-cix-expose: [cli, web]
+      parameters:
+        - $ref: "#/components/parameters/ContainerName"
+        - $ref: "#/components/parameters/ServiceName"
+      responses:
+        "200":
+          description: Command delivered; the state follows in GET.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceCommandResult"
+        "404":
+          description: No such container, or no such service in its declaration.
+        "409":
+          description: The container is not running.
   /containers/{name}/console:
     get:
       summary: >
@@ -11686,6 +11768,14 @@ components:
         type: string
         pattern: "^[A-Za-z0-9_-]+$"
 
+    ServiceName:
+      name: service
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: "^[A-Za-z0-9_-]+$"
+
     NetworkName:
       name: name
       in: path
@@ -11922,12 +12012,23 @@ components:
             at /var/lib/cix/rebuildable/images/{image}/rootfs (ADR-0141).
             This daemon never creates image content itself -- only 400s if
             it's missing.
-        cmd:
+        services:
           type: array
-          items:
-            type: string
           minItems: 1
-          description: argv for the container's entry process (cmd[0] is the executable path, relative to the container's own root).
+          maxItems: 16
+          items:
+            $ref: "#/components/schemas/ServiceDeclaration"
+          description: >
+            What this container runs (ADR-0260). Pid 1 in every
+            container is cix-init, the platform's own supervisor; it
+            starts these services in `after` order, probes their
+            readiness, restarts the ones declared restartable after
+            their DECLARED delay, holds an operator's stop as a visible
+            override, and stops them in reverse dependency order at
+            shutdown. There is no `cmd`: a container with one daemon
+            declares one service. Order of declaration is kept where
+            the `after` graph allows; a cycle or an unknown `after`
+            name is a 400 naming the service.
         dns_server:
           type: object
           required: [hosts_path]
@@ -12585,18 +12686,16 @@ components:
           maxItems: 16
           description: >
             Other persisted (any restart policy other than "no")
-            container names that must be started -- and, if that
-            dependency's own `readiness` is set, TCP-ready per that
-            check -- before this one, at daemon-boot autostart time only
-            (never for a live POST, and never for crash-restart -- see
-            `readiness` below for both). Ignored for a live POST that
+            container names that must be started -- and READY, which
+            since ADR-0260 is derived from the dependency's own
+            services (every one with a probe has passed it, every
+            oneshot has exited 0), not declared separately -- before
+            this one, at daemon-boot autostart time only (never for a
+            live POST, and never for crash-restart). Ignored for a live POST that
             isn't itself persisted (nothing to persist, so no future
             boot ordering to honor). A dependency naming an unknown
             definition, or one that participates in a cycle, is skipped
             at boot (logged, not fatal to the rest of startup).
-        readiness:
-          $ref: "#/components/schemas/Readiness"
-
         volumes:
           type: array
           maxItems: 8
@@ -12699,34 +12798,172 @@ components:
           type: integer
           description: Numeric gid, same real semantics as owner above. Omitted means root's own real egid.
 
-    Readiness:
+    ServiceDeclaration:
       type: object
-      required: [tcp_port]
+      required: [name, cmd]
+      additionalProperties: false
       description: >
-        An optional plain-TCP-connect readiness check (ADR-0026) on
-        this container's own primary network address
-        (`networks[0]`'s assigned IP -- so `networks` must be
-        non-empty, 400 otherwise). Consulted in exactly one place:
-        daemon-boot autostart (`containerdef_autostart_all()`), right
-        after this container itself starts and before any
-        "restart":"always" container that lists it in `depends_on`
-        starts. Never consulted for a live POST (this container's own
-        creation never blocks on its own readiness) or for
-        crash-restart (that path only ever restarts the one container
-        that exited -- its dependents, if any, are normally already
-        running/ready). Best-effort: if the check never succeeds
-        within `timeout_seconds`, a warning is logged and dependents
-        start anyway -- this never blocks or fails boot.
+        One service a container declares (ADR-0260). The declaration is
+        the only truth about what runs; cix-init holds no policy of its
+        own -- every delay, signal, timeout and probe here is a number it
+        reads, never one it decides.
       properties:
-        tcp_port:
-          type: integer
-          minimum: 1
-          maximum: 65535
-        timeout_seconds:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 31
+          pattern: "^[A-Za-z0-9_-]+$"
+          description: Unique within the container. Names the service everywhere -- reports, output attribution, the service endpoints.
+        type:
+          type: string
+          enum: [daemon, oneshot]
+          default: daemon
+          description: >
+            A daemon is long-running and supervised. A oneshot runs to
+            completion and must exit 0 -- it is how setup work such as
+            `ssh-keygen -A` happens without a shell script in the image.
+        cmd:
+          type: array
+          minItems: 1
+          maxItems: 32
+          items:
+            type: string
+          description: Real argv, exec'd by cix-init inside the container -- no shell, no quoting. cmd[0] is a path.
+        after:
+          type: array
+          maxItems: 16
+          items:
+            type: string
+          description: >
+            Services this one starts after -- once each is READY: a
+            daemon that passed its probe (or started, if it has none),
+            a oneshot that exited 0. Names declared in the same list,
+            in any order; cix-init receives them topologically sorted.
+        ready:
+          type: object
+          description: >
+            How cix-init knows this service is ready. Exactly one of
+            tcp_port (a connect to the container's own first address),
+            socket (a connect to a unix socket path) or command (an argv
+            that exits 0, run as the service's uid with a 5 s timeout,
+            output discarded). Without one, a service is ready when it
+            has started. If the probe has not passed within
+            timeout_seconds the failure is reported and the service is
+            treated as ready so dependents proceed -- the same
+            behaviour the container-level check had one layer up.
+          properties:
+            tcp_port:
+              type: integer
+              minimum: 1
+              maximum: 65535
+            socket:
+              type: string
+              description: Absolute path.
+            command:
+              type: array
+              items:
+                type: string
+            timeout_seconds:
+              type: integer
+              minimum: 1
+              maximum: 300
+              default: 30
+        on_exit:
+          type: string
+          enum: [restart, stop, fail-container]
+          description: >
+            What cix-init does when this service exits. Daemons default
+            to restart, oneshots to fail-container (a oneshot cannot
+            restart). fail-container stops everything else in reverse
+            order and ends the container with this service's status,
+            which is what the container-level restart policy then acts
+            on. A failing daemon with restart restarts alone -- no
+            cascade into its dependents.
+        restart_delay_seconds:
           type: integer
           minimum: 1
           maximum: 300
-          default: 30
+          default: 2
+          description: Declared, never computed -- the wait before a restart.
+        stop_signal:
+          type: string
+          enum: [SIGTERM, SIGINT, SIGHUP, SIGQUIT, SIGUSR1, SIGUSR2, SIGKILL]
+          default: SIGTERM
+          description: Sent first at shutdown or an operator stop; SIGKILL follows after stop_timeout_seconds.
+        stop_timeout_seconds:
+          type: integer
+          minimum: 1
+          maximum: 300
+          default: 10
+        uid:
+          type: integer
+          minimum: 0
+          description: Run as this uid (and probe as it). Omitted means the container's root.
+        gid:
+          type: integer
+          minimum: 0
+      example:
+        name: sshd
+        cmd: ["/usr/sbin/sshd", "-D", "-e"]
+        after: [hostkeys, nslcd]
+        ready: {tcp_port: 22}
+
+    ServiceCommandResult:
+      type: object
+      properties:
+        name: {type: string, description: The container.}
+        service: {type: string}
+        action: {type: string, enum: [start, stop, restart]}
+
+    Service:
+      type: object
+      description: >
+        A declared service and what cix-init has reported about it
+        (ADR-0260). The declaration fields are as sent to cix-init;
+        the state fields are live.
+      properties:
+        name: {type: string}
+        type: {type: string, enum: [daemon, oneshot]}
+        cmd:
+          type: array
+          items: {type: string}
+        after:
+          type: array
+          items: {type: string}
+          description: In cix-init's own (topological) order.
+        ready_probe:
+          type: object
+          nullable: true
+          description: The declared probe (tcp_port | socket | command, plus timeout_seconds), or null.
+        on_exit: {type: string, enum: [restart, stop, fail-container]}
+        restart_delay_seconds: {type: integer}
+        stop_signal: {type: string}
+        stop_timeout_seconds: {type: integer}
+        uid: {type: integer, nullable: true}
+        gid: {type: integer, nullable: true}
+        state:
+          type: string
+          enum: [pending, starting, running, exited, restart-wait, stopped, failed]
+          description: >
+            pending: not started yet (waiting for its `after` set or for a
+            start). starting: running, probe not yet passed. running:
+            ready. exited: exited and not restarting (a finished oneshot,
+            or on_exit stop). restart-wait: exited, respawning after its
+            declared delay. stopped: held stopped by an operator -- an
+            override that lasts until the next container start, which
+            replays the declaration. failed: cannot run (a failed
+            oneshot, a dependency that can never be ready, or fork()
+            failing).
+        pid: {type: integer, nullable: true}
+        restarts: {type: integer}
+        last_exit:
+          type: object
+          nullable: true
+          description: "{kind: exited|killed|dumped, status: N} or {kind, signal: N}."
+        failure:
+          type: object
+          nullable: true
+          description: "{reason: probe-timeout|oneshot-status|spawn|dependency, detail}."
 
     ContainerVolumeMount:
       type: object
@@ -13142,21 +13379,21 @@ components:
             The net.* sysctls applied inside this container's own netns
             at creation (see ContainerCreateRequest.sysctls). Empty if
             none.
-        cmd:
+        ready:
+          type: boolean
+          description: >
+            Derived from the services (ADR-0260): every service with a
+            probe has passed it and every oneshot has exited 0. What
+            depends_on one level up waits for. Never declared.
+        services:
           type: array
           items:
-            type: string
+            $ref: "#/components/schemas/Service"
           description: >
-            The entrypoint argv this container was created with (see
-            ContainerCreateRequest.cmd) -- cmd[0] is the executable
-            path. Previously not retrievable at all after creation: the
-            create request's own argv only ever pointed into that
-            request's transient parsed-JSON tree, freed immediately
-            once the process was spawned. Sourced from the live
-            registry entry while running/recently-exited, or from the
-            persisted create-request body while genuinely stopped (see
-            ADR-0100) -- either way, one real answer to "what is this
-            container actually running."
+            What this container runs, in the order cix-init runs it,
+            each with its live state. Sourced from the live registry
+            entry; for a stopped container the persisted body carries
+            the declaration.
         env:
           type: object
           additionalProperties:
@@ -13229,14 +13466,6 @@ components:
           items:
             type: string
           description: Empty unless restart is not "no".
-        readiness:
-          allOf:
-            - $ref: "#/components/schemas/Readiness"
-          nullable: true
-          description: >
-            Sourced live from the persisted definition, same as restart/
-            depends_on above; null if none was configured or restart is
-            "no".
         memory_max:
           type: integer
           format: int64
