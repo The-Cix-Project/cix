@@ -657,6 +657,77 @@ static int test_fd_hygiene(void)
 	return 0;
 }
 
+/*
+ * SIGTERM is how the daemon stops a container (ADR-0260):
+ * registry_begin_kill() signals pid 1 and expects the graph to come
+ * down and cix-init to exit. Test 5 covers the same shutdown reached
+ * by a control command, which is NOT the same path -- the signal has
+ * to be delivered, seen by the loop, and turned into a shutdown.
+ */
+static int test_sigterm_shutdown(void)
+{
+	struct cixinit_service svcs[2];
+	struct init_run r;
+	struct cixinit_report rep;
+	int status;
+	struct timespec t0, t1;
+	static const char *const idle_argv[] = { "/bin/sh", "-c", "exec sleep 60", NULL };
+	static const char *const idle2_argv[] = { "/bin/sh", "-c", "exec sleep 60", NULL };
+
+	printf("12. SIGTERM to cix-init stops the graph and exits 0\n");
+	svc_init(&svcs[0], "base", CIXINIT_TYPE_DAEMON, idle_argv);
+	svc_init(&svcs[1], "top", CIXINIT_TYPE_DAEMON, idle2_argv);
+	svcs[1].after_mask = 1u << 0;
+	if (init_spawn(&r, svcs, 2, 0) != 0)
+		return -1;
+	if (wait_for(&r, 1, CIXINIT_EV_READY, NULL) < 0)
+		return -1;
+
+	clock_gettime(CLOCK_MONOTONIC, &t0);
+	if (kill(r.pid, SIGTERM) != 0) {
+		perror("  kill(SIGTERM)");
+		return -1;
+	}
+	{
+		int top_exited = 0;
+
+		for (;;) {
+			if (read_report(&r, &rep, REPORT_TIMEOUT_MS) != 0) {
+				fprintf(stderr, "  FAIL: no shutdown reports after SIGTERM\n");
+				return -1;
+			}
+			printf("    report: service=%d %s a=%d b=%d\n", rep.service, ev_name(rep.event), rep.a, rep.b);
+			if (rep.service == 1 && rep.event == CIXINIT_EV_EXITED)
+				top_exited = 1;
+			if (rep.service == 0 && rep.event == CIXINIT_EV_EXITED && !top_exited) {
+				fprintf(stderr, "  FAIL: base stopped before its dependent top\n");
+				return -1;
+			}
+			if (rep.service == -1 && rep.event == CIXINIT_EV_SHUTDOWN && rep.a == 1)
+				break;
+		}
+	}
+	if (wait_exit(&r, &status) != 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+		fprintf(stderr, "  FAIL: SIGTERM did not end in a clean exit 0 (status 0x%x)\n", status);
+		return -1;
+	}
+	clock_gettime(CLOCK_MONOTONIC, &t1);
+	/*
+	 * The daemon's own delete path gives a container a grace and then
+	 * SIGKILLs it. A shutdown that needs seconds would turn every
+	 * container delete into a multi-second wait, so this is a real
+	 * bound and not a formality.
+	 */
+	if (t1.tv_sec - t0.tv_sec > 2) {
+		fprintf(stderr, "  FAIL: SIGTERM shutdown took %lds -- far too slow for a delete\n",
+		        (long)(t1.tv_sec - t0.tv_sec));
+		return -1;
+	}
+	printf("  shut down and exited 0 in under %lds\n", (long)(t1.tv_sec - t0.tv_sec) + 1);
+	init_close(&r);
+	return 0;
+}
+
 static int test_sigpipe_default(void)
 {
 	struct cixinit_service svcs[1];
@@ -704,6 +775,7 @@ int main(void)
 	fails += test_exec_failure() != 0;
 	fails += test_fd_hygiene() != 0;
 	fails += test_sigpipe_default() != 0;
+	fails += test_sigterm_shutdown() != 0;
 
 	printf("CIX-INIT RESULT: %s (%d failure(s))\n", fails == 0 ? "PASS" : "FAIL", fails);
 	return fails == 0 ? 0 : 1;
