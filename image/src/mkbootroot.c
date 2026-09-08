@@ -1357,8 +1357,17 @@ int main(int argc, char **argv)
 		 * why "lib" alone is pre-created here. */
 		if (test_image_fixture_copy_dir_recursive(firmware_dir, fw_dst) != 0)
 			return 1;
-		printf("staged %ld firmware file(s) from %s\n", count_files_recursive(fw_dst),
-		       firmware_dir);
+		/*
+		 * stderr, not stdout. Every other progress line here is
+		 * stderr and therefore unbuffered; a printf to a pipe is
+		 * block-buffered and flushes at exit, so this checkpoint
+		 * appeared at the very END of the captured output instead of
+		 * in sequence -- which is exactly where the log store's own
+		 * truncation lands. A checkpoint that can be cut off is not
+		 * one.
+		 */
+		fprintf(stderr, "staged %ld firmware file(s) from %s\n",
+		        count_files_recursive(fw_dst), firmware_dir);
 	}
 
 	/* Same "empty means skip, non-empty is a real explicit request and
