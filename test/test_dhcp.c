@@ -390,10 +390,34 @@ int main(void)
 	 * the network is refused -- "it has no interface in this subnet, so
 	 * it could not answer here".
 	 */
+	/*
+	 * Configured with NO router first, deliberately. This PUT is a
+	 * partial update over whatever is already stored -- the same
+	 * convention every config PUT here uses -- so omitting "router"
+	 * later would KEEP the previous one rather than clear it. The only
+	 * way to observe the no-router rendering is on a network that has
+	 * never had one.
+	 *
+	 * It matters because saying nothing is not the same as saying none:
+	 * dnsmasq's documented default, when the router option is absent,
+	 * is to send its own address. A network with no gateway would
+	 * otherwise point every client at the container serving DHCP, which
+	 * does not route.
+	 */
+	expect(&client, "PUT", "/v1/dhcp/networks/dhcplab2",
+	        "{\"enabled\":true,\"range_start\":\"172.30.8.100\",\"range_end\":\"172.30.8.150\","
+	        "\"servers\":[\"dhcpsrv\"]}",
+	        200, "the same server also serves the second network, with no router");
+	if (!wait_for_file(&client, "/v1/containers/dhcpsrv/files?path=/etc/dnsmasq-dhcp.conf",
+	                    "dhcp-option=tag:dhcplab2,option:router"))
+		fprintf(stderr, "FAIL: a network with no router did not suppress the router option -- "
+		                "dnsmasq would advertise itself as the gateway\n");
+
+	/* Now give it one, and the tagged value replaces the suppression. */
 	expect(&client, "PUT", "/v1/dhcp/networks/dhcplab2",
 	        "{\"enabled\":true,\"range_start\":\"172.30.8.100\",\"range_end\":\"172.30.8.150\","
 	        "\"router\":\"172.30.8.254\",\"servers\":[\"dhcpsrv\"]}",
-	        200, "the same server also serves the second network");
+	        200, "give the second network a router");
 
 	if (!wait_for_file(&client, "/v1/containers/dhcpsrv/files?path=/etc/dnsmasq-dhcp.conf",
 	                    "dhcp-range=set:dhcplab2,172.30.8.100,172.30.8.150,3600s"))
@@ -422,21 +446,6 @@ int main(void)
 		ok = 0;
 	}
 	cix_response_free(&r);
-
-	/*
-	 * router omitted means "no default route", and dnsmasq's own
-	 * default is to send ITS OWN address when the option is absent --
-	 * so saying nothing would point clients at a container that does
-	 * not route. The suppressing form has to actually be emitted.
-	 */
-	expect(&client, "PUT", "/v1/dhcp/networks/dhcplab2",
-	        "{\"enabled\":true,\"range_start\":\"172.30.8.100\",\"range_end\":\"172.30.8.150\","
-	        "\"servers\":[\"dhcpsrv\"]}",
-	        200, "the second network with no router at all");
-	if (!wait_for_file(&client, "/v1/containers/dhcpsrv/files?path=/etc/dnsmasq-dhcp.conf",
-	                    "dhcp-option=tag:dhcplab2,option:router"))
-		fprintf(stderr, "FAIL: a network with no router did not suppress the router option -- "
-		                "dnsmasq would advertise itself as the gateway\n");
 
 	expect(&client, "DELETE", "/v1/dhcp/networks/dhcplab2", NULL, 204,
 	        "turn the second network's DHCP back off");

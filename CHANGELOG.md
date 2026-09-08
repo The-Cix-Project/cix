@@ -64,6 +64,11 @@ rendered as the documented no-data form,
 `dhcp-option=tag:<network>,option:router`.
 
 Both behaviours verified against dnsmasq's manual rather than recalled.
+Worth knowing when setting one: `PUT /v1/dhcp/networks/{network}` is a
+partial update over what is already stored, like every other config PUT
+here, so omitting `router` KEEPS the current value rather than clearing
+it — pass `"0.0.0.0"` to remove one. The test found this the hard way by
+asserting the suppression on a network that already had a router.
 Nothing live was affected — `GET /v1/dhcp` returns
 `{"networks":[],"static":[]}`, so no range has ever been configured on
 the box — and it was untested because `test_dhcp` had only ever
