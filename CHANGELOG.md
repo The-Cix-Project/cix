@@ -2,6 +2,61 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### ADR-0260 hardened against the maxims, and an ADR-0247 self-contradiction fixed (#334)
+
+Still design-only — no code. The owner asked for the model to be reviewed as a
+complete vision: a unix box with an rc.d, except the declaration and the control
+both live outside the box. Five things were missing or wrong.
+
+**A stop is now an override, not an edit.** Nothing in the ADR said what
+happens when an operator stops a service the declaration still lists. The
+answer is the one `container stop` already gives a level up: the declaration
+stays the only truth, the action is recorded as `stopped-by-operator` (distinct
+from `exited`), it is visible in `GET /v1/containers/{name}`, and its lifetime
+ends at the next container start. The rejected alternative — a stop editing the
+persisted body — would have made `pkg apply-recipe` produce a diff nobody
+authored.
+
+**A restart delay is declared, never computed.** `restart_delay_seconds` sits
+beside `on_exit: restart`. Backoff was the one place policy was going to leak
+into `cix-init`, which is the only process in this design that is meant to hold
+no opinions.
+
+**The two-supervisors objection dissolved on measurement rather than argument.**
+`cix-init` is not a new program: it was built for ADR-0246, ran as the machine's
+pid 1, and was deleted in `594ec1fc` — deleted precisely because it shipped
+everywhere and executed nowhere. All 469 lines are recoverable at
+`594ec1fc^:init/src/cix_init.c` with `include/supervisor.h` and the daemon-side
+`CONN_SUPERVISOR_REAP` channel, so Stage A starts from proven code: the
+unconditional `waitpid(WNOHANG)` drain that survives coalesced `SIGCHLD`, the
+bounded pending ring with a dropped count, and the `exit_kind`/`exit_value`
+naming that exists because glibc makes `si_status` a macro. Reviving it for the
+container role *resolves* the objection that removed it. And the host has no
+supervisor to be parallel to — ADR-0247 chose a non-blocking reactor over one,
+and `init=/bin/cixd` stands.
+
+Its three old defects do not come back: #297 and #298 describe supervising
+`cixd` across a boot slot, which a container supervisor does not do, and #299
+(status port on `INADDR_ANY`, unauthenticated) is dissolved by the transport
+rather than fixed — the service table and reap stream travel over inherited fds,
+so there is no port. Stage A must not revive that code.
+
+**The cut-over is a dependency-ordered rolling recreate.** Every container needs
+recreating to gain a pid 1, and the box runs a VRRP pair that must not lose both
+members at once. Uses the existing `depends_on` graph and the existing jittered
+rolling-restart timer; no new machinery.
+
+**The dashboard services panel is in scope, not a later discovery** — service
+rows with state, readiness and last exit, and the ADR-0261 console list rendered
+in the same panel.
+
+Separately, [ADR-0247](docs/adr/0247-the-reactor-does-not-block-and-that-is-the-defence.md)
+contradicted itself: its Decision said `cix-init` "remains built, staged and
+installed" while its own Consequences recorded deleting it. Corrected in place
+as a factual staleness, not a reversal — the decision (host defence is a reactor
+that cannot block) is untouched, and it now points at ADR-0260 for where
+`cix-init` actually went back in.
+
 ### Two proposed ADRs: what a container runs, and how you reach into one (#334, #335)
 
 Both **Proposed**, neither started. Written because the owner looked at a
