@@ -119,6 +119,50 @@ refuses to install a binary whose symbols do not resolve, so the failure surface
 against a named package, rather than at `execve()` of PID 1 where it would present as a container
 that never starts.
 
+**`cix-init` is PID 1 in every container, without exception.** Whatever a container declares — one
+bare daemon or seven services with dependencies — the process the kernel starts is `cix-init`, and
+it starts the declared services. There is no second shape for PID 1 and no predicate deciding
+between them, because a boundary is a thing that gets drawn in the wrong place later.
+
+**The bash wrapper as a concept is gone.** Not discouraged, not "only where needed": a start script
+that backgrounds daemons and `wait -n`s is not a pattern this platform has any more, and `jump`,
+`cr-1` and `cr-2` lose theirs.
+
+**How `cix-init` reaches a container is still open**, and it is open for a specific reason recorded
+here rather than discovered later. The package route decided above collides with the package build
+sandbox: `daemon/src/pkg.c` states plainly that build containers *"already go through
+container_create() like any other"*, so `__pkgbuild-<n>` is a real container that would need
+`cix-init` as its PID 1 — and building the `cix-init` package needs a build container. That is a
+bootstrap cycle, not a detail. It is resolved before implementation starts, not during.
+
+**`cix-init` is not in the console path.** Console sessions remain the daemon's own work — it
+enters the container's namespaces from outside via `setns()`, exactly as it does now, and the
+supervisor neither sees nor routes them. The single exception is the `service:` console kind in
+[ADR-0261](0261-reaching-inside-a-container.md), which needs the supervisor to hand out a running
+service's stdio fd; that is deliberately not in the first cut, since the `cmd:` kind covers
+everything done today, including the `birdcl` session that diagnosed bird.
+
+Nor is `cix-init` an init system. No socket activation, no timers, no logging daemon, no host
+service management. It reads no configuration from inside the image — its service table arrives
+from the daemon over an inherited fd — writes nothing to disk, and does no networking.
+
+**PID 1 is a supervisor this project writes in C**, which starts services in dependency order,
+reaps them, applies each one's restart policy, and attributes output per service. Services appear
+in `GET /containers/{name}` with their own state and exit reason, and one can be started, stopped
+and restarted without disturbing its neighbours.
+
+**`cix-init` reaches an image as an ordinary Cix package**, declared in that image's manifest the
+same way `glibc` already is, and dynamically linked like everything else this project builds. No
+exception to "never `-static`" is taken, and no new staging mechanism is invented.
+
+The obvious objection is glibc skew — the supervisor is built once in `cix-builder` and installed
+into images carrying other glibc revisions (2.44-14 and 2.44-16 both exist on the box today). Two
+things answer it. The failure is directional: a binary built against an older glibc runs on a newer
+one, and only the reverse breaks. And that reverse case is already gated — `daemon/src/elfcheck.c`
+refuses to install a binary whose symbols do not resolve, so the failure surfaces at install time,
+against a named package, rather than at `execve()` of PID 1 where it would present as a container
+that never starts.
+
 **`cix-init` is NOT part of every container**, and that is a constraint rather than an optimisation.
 A container declaring a single `daemon` service with no `oneshot`, no `depends_on` and no `ready`
 probe has that service `execve()`'d directly as PID 1, exactly as every container works today — no
