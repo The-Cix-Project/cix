@@ -2,6 +2,44 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Two proposed ADRs: what a container runs, and how you reach into one (#334, #335)
+
+Both **Proposed**, neither started. Written because the owner looked at a
+real router and asked why its `cmd` was a single keepalived invocation
+when it also runs bird.
+
+[ADR-0260](docs/adr/0260-a-container-declares-services-not-a-command.md)
+— a container declares `services[]`, not one `cmd`. The measurement is
+the argument:
+
+    cr-1   cmd = /usr/sbin/keepalived -n -l -D -P -f ...
+    cr-2   cmd = /usr/bin/bash /usr/local/bin/router-start.sh
+
+`cr-1` is the old single-daemon recipe and names what runs; `cr-2` is
+the new one and names nothing that runs. The start-script workaround did
+not merely fail to add information, it **destroyed** what the API
+reported before. Everything else follows from the platform seeing one
+PID where there are two: which daemon died is unanswerable, output has
+no attribution, restart is all-or-nothing, and ordering lives in a shell
+retry loop inside an image. The owner floated rc-style numbered scripts
+and distrusted them; the ADR agrees and says why — a number is a
+convention with no model behind it, and this platform already orders by
+`depends_on`, with cycle detection, one level up.
+
+[ADR-0261](docs/adr/0261-reaching-inside-a-container.md) — reaching
+inside. It opens by establishing that the console is **not** broken: a
+bash session on cr-2 started correctly in every namespace and its
+builtins worked; `ls` is missing because the `router` image has no
+coreutils, which that image's own recipe states deliberately. What is
+unmodelled is that one endpoint serves two different acts — attaching to
+a declared console, and exec'ing an arbitrary program — and that a
+minimal image contains nothing to inspect *with*. The central choice is
+left open on purpose: whether inspecting a minimal container is a
+platform capability (a toolbox mounted for the session, the shape
+`kubectl debug` settled on) or an image concern ("install coreutils if
+you want `ls`"). That is a decision about how this platform expects to be
+operated, not an engineering detail.
+
 ### BIRD on cr-2, RIPv2 authenticating against the site (partial — route installation unresolved)
 
 `cr-2` runs a RIPv2 speaker alongside keepalived. **`cr-1` is
