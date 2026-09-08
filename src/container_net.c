@@ -108,7 +108,12 @@ int container_net_child_configure(const struct network_spec *nets, int net_count
 		/* Defensive: guarantee termination regardless of whether the
 		 * sender's NUL already landed within these n bytes. */
 		veth_ctr[n] = '\0';
-		snprintf(ifname, sizeof(ifname), "eth%d", idx);
+		/* ADR-0259: the operator's chosen name when there is one, and
+		 * the positional eth<idx> when there is not. */
+		if (nets[idx].ifname[0] != '\0')
+			snprintf(ifname, sizeof(ifname), "%s", nets[idx].ifname);
+		else
+			snprintf(ifname, sizeof(ifname), "eth%d", idx);
 
 		if (rtnl_link_rename(fd, veth_ctr, ifname) != 0 ||
 		    rtnl_addr_add_ipv4(fd, ifname, nets[idx].container_ip_be, nets[idx].prefix_len) != 0 ||

@@ -215,7 +215,7 @@ Every container operation is a subcommand of `container` — one noun-based name
 | `container recipe rm NAME` | Remove a stored container recipe |
 | `container recipe ls` | List container recipes (metadata only) |
 | `container apply-recipe NAME [--secret=KEY=VALUE ...]` | Render `NAME`'s own stored recipe (substituting `{{SECRET:KEY}}` tokens, plus `{{LDAP:*}}` tokens from `ldap config`'s stored client settings) and create the container -- always synchronous, real `POST /containers` under the hood |
-| `container network attach NAME --network=NETWORK [--ip=A.B.C.D]` | Attach a network to an already-running container, live, without a recreate (ADR-0156) |
+| `container network attach NAME --network=NETWORK [--ip=A.B.C.D] [--ifname=NAME]` | Attach a network to an already-running container, live, without a recreate (ADR-0156). `--ifname=` names the interface inside the container ([ADR-0259](../adr/0259-an-interface-may-be-named.md)); omit it for the positional `eth<N>` |
 | `container network detach NAME NETWORK` | Detach a live-attached network; refuses (409) a network attached at container creation |
 | `container device attach NAME ID` | Live-grant one more device to an already-running container, no recreate (ADR-0161 Phase D) — `ID` is a real device id or devicemap name, resolved fresh |
 | `container device detach NAME ID` | Detach a live-attached device; refuses (409) a device granted at container creation |

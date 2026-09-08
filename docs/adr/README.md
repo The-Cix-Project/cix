@@ -263,3 +263,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0256](0256-the-pipeline-is-the-model.md) | The pipeline is the model | Accepted |
 | [0257](0257-one-scheduler-structured-schedules.md) | One scheduler, and a schedule is structured, not a string | Accepted |
 | [0258](0258-storage-not-disks.md) | The resource is Storage; a disk is a device in it | Accepted |
+| [0259](0259-an-interface-may-be-named.md) | An attachment's interface may be named, and defaults to the position it always had | Accepted |
