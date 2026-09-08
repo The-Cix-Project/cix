@@ -2,6 +2,75 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Five pre-policy artifacts rebuilt; the installer ISO loses 3.36 MiB of debug (#328, #324)
+
+ADR-0251's finalize policy strips ELF debug sections, but it only runs when a
+package is *built*. Five artifacts in the cache predated it, and
+`pkg install` installs an already-approved cached artifact rather than
+rebuilding — so their unstripped bytes kept reaching the installer ISO long
+after the policy landed. Measured on the published
+`cix-installer-2.55.0-1-x86_64.iso`: **3.93 MiB of debug**, 2.94 MiB of it in
+`mkfs.btrfs` alone, which was 80% of that binary.
+
+Three are now rebuilt, published, and live on 192.168.15.95. Debug bytes read
+with `readelf -SW` over every ELF in each artifact pulled from the cache:
+
+| package | before | after |
+|---|---|---|
+| `btrfs-progs 7.1-11` | 2.94 MiB | **0.00 MiB** |
+| `libxcrypt 4.4.36-10` | 0.42 MiB | **0.00 MiB** |
+| `openssl 3.0.20-6` | 0.00 MiB | 0.00 MiB |
+
+A freshly built ISO reports 66,603,008 bytes (**63.52 MiB**) against the
+70.0 MiB baseline. `efivar` (0.58 MiB of `libefivar.so.1`) and `keyutils`
+(0.02 MiB) are left as they are: re-entering the ISO needs an `isotools`
+rebuild, which needs the `iso-builder` image and its 38 stale pins, and
+~0.6 MiB does not justify that while the media sits far under
+`MEDIA_BUDGET_MIB`.
+
+**`glibc 2.44-16` was the prerequisite, and it closed #324.** Rebuilding it
+under the amended policy restored the member-less `libpthread.a`/`librt.a`/
+`libdl.a` that glibc >= 2.34 still installs as the link-time contract for
+`-lpthread` — archives went 7 → 12. `btrfs-progs` had been failing with
+`ld: cannot find -lpthread` and built first attempt afterwards.
+
+**A rebuilt host tool reaches an ISO only after a reboot.** `mkinstalleriso`
+stages `/usr/sbin/*` from the *running* control-plane root, not from
+`cix-hosttools`, so the first ISO built after these packages landed showed only
+0.54 MiB of the drop. `v2.55.16` exists for no reason other than to force the
+reassembly and reboot that makes the new tools current.
+
+### `test_console_exec` is environment-sensitive, and #331 said otherwise three times (#331)
+
+`v2.55.16` failed `SELFTEST` three consecutive times, each on a different
+assertion inside `test_console_exec`, then **passed on a fourth run of the
+identical tag** with only the box's state different. Everything that was
+proposed as the cause has since been measured and excluded:
+
+    git diff v2.55.14 v2.55.16 -- '*.c' '*.h' Makefile   ->  (empty)
+    git diff v2.55.12 v2.55.14 -- '*.c' '*.h' Makefile   ->  one test's expected count
+
+The issue blamed a glibc change in the build environment. `cix` declares
+`pkg_build_image="cix-builder"`, `daemon/src/pkg.c:6019-6033` roots a
+hostbuild's container on that image's current rootfs, and `GET /v1/pkg` reports
+`cix-builder` still carrying glibc 2.44-14 and openssl 3.0.20-5. The five
+images that received 2.44-16 are `dns`, `ldap`, `syslog`, `jumpbox` and
+`router` — none of them is the build image. One grep and one API call, both
+available before the claim was written.
+
+What the logs actually show is that every failing assertion read
+`got (0 bytes in 0 frame(s), ended: read failed or peer closed)` with
+`worst_pass_ms=9`, and that run 1 additionally reported
+`exec_into_container: open /proc/841/ns/mnt: No such file or directory` — the
+target container's init was already gone. Every other container test in the
+same run passed. The fragile thing is specifically exec-into-a-*running*-
+container: the test does not hold the container still, and a build-container
+selftest on a two-CPU host is where that shows. A previous fix already raised
+that read timeout to ten seconds for the same symptom (#291); the remaining fix
+is for the test to check the target's init is alive and its `/proc/<pid>/ns/*`
+open-able immediately before exec'ing, so a dead container is reported as one
+instead of as zero bytes.
+
 ### A routed services subnet behind a VRRP gateway pair (cr-1, cr-2)
 
 The seven service containers moved off the management LAN onto a private
