@@ -110,17 +110,41 @@ static long parse_pid(const char *out)
  * (via inspect exiting nonzero once the name 404s) before deleting a
  * network the container was attached to, or the network rm can
  * transiently 409 off the not-yet-reaped attachment. */
+/*
+ * Waits for a removed container to actually be gone, so what follows --
+ * removing the network it was attached to -- does not race it.
+ *
+ * The budget has to exceed the daemon's OWN stop grace, and it did not:
+ * 50 x 100ms is 5 seconds against container_stop_grace_seconds(), which
+ * is max(10, longest stop_timeout) + 5 and therefore 15 seconds by
+ * default. So this returned while the container was still stopping and
+ * the next call got "network is still in use by a container" (409) --
+ * an intermittent that reads as a CLI bug and is arithmetic.
+ *
+ * Exactly the same mistake test_cleanup.c had (2 seconds against the
+ * same 15), and for the same reason: a container that is asked to stop
+ * within a few milliseconds of being created can take the full grace,
+ * because a signal sent to a pid-namespace init before it installs a
+ * handler is discarded rather than queued (ADR-0260). How long this
+ * takes is a property of the container's age, not of the code under
+ * test, which is what makes it look random.
+ *
+ * 200 x 100ms is 20 seconds: the grace plus margin. It still returns
+ * the moment the container is gone, so a healthy run costs nothing.
+ */
 static void wait_rm_settled(const char *name)
 {
 	char *inspect_argv[] = { "cixctl", PORT_ARG, "container", "inspect", (char *)name, NULL };
 	char out[4096];
 	int rc, i;
 
-	for (i = 0; i < 50; i++) {
+	for (i = 0; i < 200; i++) {
 		if (run_cli(inspect_argv, out, sizeof(out), &rc) == 0 && rc != 0)
 			return;
 		usleep(100 * 1000);
 	}
+	fprintf(stderr, "  wait_rm_settled(%s): still present after 20s -- the next step will "
+	                "probably fail, and this line is why\n", name);
 }
 
 int main(void)
