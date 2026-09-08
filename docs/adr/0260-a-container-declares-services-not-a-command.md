@@ -2,7 +2,11 @@
 
 ## Status
 
-Proposed.
+Accepted.
+
+Decided by the owner after reading the proposal: *"i want to remove cmd and make it service, and I
+want to be able to make services depend on other services right? so cmd gets dropped"*, together
+with the four follow-up answers recorded in the Decision below.
 
 Raised by the owner, looking at a real router: *"the cmd is /usr/sbin/keepalived -n -l -D -P -f
 /etc/keepalived/keepalived.conf ...? I am not sure this makes sense to me since we run bird,
@@ -47,23 +51,58 @@ What the platform gives up, all of it a consequence of seeing one PID where ther
 The platform already models the analogous thing one level up: containers have `depends_on`, with
 cycle detection and readiness gating. Inside a container there is no model at all.
 
-## Decision (proposed)
+## Decision
 
-**A container declares `services[]` — named processes — and the platform supervises them.**
+**`cmd` is removed. A container declares `services[]`, and the platform supervises them.**
 
-Each service carries a name, an argv, and its own lifecycle policy: restart behaviour, stop signal
-and stop timeout, and `depends_on` naming *other services in the same container*. PID 1 becomes a
-small supervisor this project writes in C, which starts services in dependency order, reaps them,
-applies each one's restart policy, and attributes output per service.
+A clean cut-over, in keeping with this project's standing no-backward-compatibility rule: `cmd` is
+not deprecated alongside `services`, it is gone, a body carrying it is refused, and every container
+recipe in this repository migrates in the same change. Two ways to say the same thing is exactly
+the duplicate state One Source of Truth forbids.
 
-The REST surface follows from that: services appear in `GET /containers/{name}`, with per-service
-state and exit reason; a single service can be started, stopped and restarted without disturbing
-its neighbours; captured output is retrievable per service.
+**A service has a type.** `daemon` is long-running and supervised; `oneshot` runs to completion and
+must exit 0. The oneshot kind is load-bearing rather than a convenience: `jump`'s start script does
+real work before any daemon starts — `mkdir`, `ssh-keygen -A`, and hard-linking the nslcd socket
+into sshd's privsep chroot — and without run-to-completion steps that work has nowhere to go and
+the shell script survives. A model that only halves the problem is not worth the disruption of
+changing the model.
 
-`cmd` becomes the one-service shorthand for the common case, so nothing existing has to change.
+**Ordering is `depends_on`, by service name, within the container.** Cycle-detected, exactly as the
+container-level `depends_on` already is. Not numbers — see the alternatives below.
 
-Ordering is by **name**, through the `depends_on` this platform already has — not by number. That
-is the direct answer to the shape the owner floated and distrusted (below).
+**A dependency waits for readiness, not for spawn.** A service may declare a `ready` probe: a
+listening TCP port, a **unix socket path**, or a command that exits 0. `depends_on` waits for the
+probe to pass when one is declared, and for "started" when it is not. The unix-socket form exists
+because that is jump's real case — its script polls for `/run/nslcd/socket` for up to six seconds
+today, and a dependency model that could not express that would have pushed the same retry loop
+back into a wrapper script.
+
+    services:
+      - name: hostkeys
+        type: oneshot
+        cmd: ["/usr/bin/ssh-keygen", "-A"]
+      - name: nslcd
+        type: daemon
+        cmd: ["/usr/sbin/nslcd", "-d"]
+        ready:
+          socket: /run/nslcd/socket
+      - name: sshd
+        type: daemon
+        cmd: ["/usr/sbin/sshd", "-D", "-e"]
+        depends_on: [hostkeys, nslcd]
+
+**PID 1 is a supervisor this project writes in C**, which starts services in dependency order,
+reaps them, applies each one's restart policy, and attributes output per service. Services appear
+in `GET /containers/{name}` with their own state and exit reason, and one can be started, stopped
+and restarted without disturbing its neighbours.
+
+**Stopping is the reverse dependency order.** Nothing else is defensible once ordering is a graph.
+
+**A failing daemon restarts alone; it does not cascade into its dependents.** Narrowing the blast
+radius is the entire point of modelling services separately — a crash that took down every
+dependent would reproduce the all-or-nothing restart this decision exists to remove. A dependent
+that genuinely cannot survive its dependency restarting is a service whose own restart policy
+should say so.
 
 ## Alternatives considered
 
@@ -96,7 +135,7 @@ not neutral, it actively removes what the API reported before.
 
 ## Consequences
 
-If accepted, this is real work — a supervisor process, an API surface, per-service output
+This is real work — a supervisor process, an API surface, per-service output
 plumbing — and it is the kind that gets bigger the longer it waits, because every image that grows
 a second daemon meanwhile writes another bespoke start script.
 
@@ -104,6 +143,9 @@ It also changes what a container *is* in this platform, from "a process in names
 supervised set of processes in namespaces". That is a genuine conceptual cost and the reason this
 is an ADR rather than a ticket.
 
-Until it is decided, `cr-1`/`cr-2` and `jump` keep their start scripts, and the limitation above
-is real rather than theoretical: a bird crash on a router presents as a container restart with no
-indication which daemon failed.
+Every container recipe in this repository changes, and so does every test that creates a container.
+That is the cost of a clean cut-over and it is paid once.
+
+Until the supervisor ships, `cr-1`/`cr-2` and `jump` keep their start scripts, and the limitation
+above is real rather than theoretical: a bird crash on a router presents as a container restart with
+no indication which daemon failed.

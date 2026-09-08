@@ -2,7 +2,11 @@
 
 ## Status
 
-Proposed.
+Accepted.
+
+Decided by the owner: *"console is also a list, no dependencies, but should be very specific and
+cannot be freetext, and in the webui will show a drop down, and cli will also, exactly and
+consistently as we are doing everything"*, plus the two answers recorded in the Decision below.
 
 Raised by the owner: *"the console seems to allow any arbitrary command, even though I try with
 bash, and it does not allow me to see things, I think access to the containers and how stuff is
@@ -50,41 +54,55 @@ Two further gaps make it sharper:
   (ADR-0260); `dns-1` has no shell at all. So the honest answer to "console in and look around" is
   currently "there is nothing in there to look with", and nobody has decided whether that is fine.
 
-## The decision this ADR exists to make
+## Decision
 
-**Is inspecting a minimal container a platform capability, or an image concern?** Everything else
-here follows from that answer, and it is the owner's to give.
+**Consoles are a declared list. There is no free-text exec.** `?cmd=<arbitrary path>` is removed;
+an operator attaches to one of the entries the container declares, chosen by name. Consoles have no
+dependencies on one another and no ordering — they are not services, they are ways in.
 
-**(a) Image concern — "install coreutils where you want it."** Honest and cheap; keeps the
-minimality that makes these images small and auditable. Cost: an operator cannot look inside a
-running container that was not built in advance to be looked inside, which is exactly when they
-most want to. Debugging capability becomes a build-time decision made before the incident.
+This is not a security change and is not argued as one: as `openapi.yaml` already says, anyone
+authorised to reach this endpoint can run arbitrary code in the container, so gating exec behind a
+declaration would be theatre. It is a **model** change. A declared, enumerable set is something the
+CLI and the dashboard can both present identically — a dropdown, the same names, in both — and a
+free-text path is something neither can offer consistently. Consistency across surfaces is the
+reason, and it is the same reason every other resource here is declarative.
 
-**(b) Platform capability — an inspection session brings its own tools.** The daemon mounts a
-read-only toolbox into the container's mount namespace for the life of the session and execs a
-shell from it, so the image stays minimal and any container can still be inspected. This is the
-shape `kubectl debug` settled on, for the same reason. Cost: a real feature — a toolbox image the
-platform builds and ships, a mount into a running container's namespace, and a new privilege
-surface to reason about.
+**An entry points at one of two things, and says which.**
 
-**(c) Status quo plus documentation.** Say plainly what a console is, what `cmd` is, and that a
-minimal image has no tools. Cheapest, changes no code, and leaves the operational gap exactly
-where it is.
+    consoles:
+      - name: birdcl
+        cmd: ["/usr/sbin/birdcl"]     # run a program
+      - name: bird-live
+        service: bird                  # attach to a running service's stdio
 
-## Also proposed, independent of that answer
+Both kinds are real needs and neither subsumes the other: diagnosing bird today needed `birdcl`, a
+separate control program, while watching a daemon's live output is attaching to something already
+running. After [ADR-0260](0260-a-container-declares-services-not-a-command.md) the second form has
+a name to point at.
 
-Whatever is chosen, **the two operations should be named separately** rather than sharing one
-endpoint with an overriding parameter: attaching to something the container offers is not the same
-act as starting a new program inside it, and they have different failure modes, different audit
-meaning, and — after ADR-0260 — different targets. Naming them apart is what makes the model
-teachable.
+**Inspecting a minimal container is an image concern, not a platform capability.** A container is
+reachable through what it declares; if an image is to be inspected with a shell, that image installs
+one and the container declares a console for it. The platform does **not** mount a toolbox into a
+running container's namespaces.
+
+This is the owner's call and it is deliberately the more austere of the two options considered. Its
+cost is stated plainly rather than glossed: **debuggability becomes a build-time decision, made
+before the incident.** `dns-1` today has no shell at all, so under this decision it cannot be
+inspected interactively until its image gains one and its recipe declares a console — and the
+moment when someone wants that is precisely the moment it is too late to add it. The trade accepted
+in exchange is that images stay minimal and auditable, and that there is no new privileged
+mount-into-a-running-namespace surface to reason about.
 
 ## Consequences
 
-Option (b) is the only one that makes a minimal image and a debuggable container both true at
-once; it is also the only one with real cost. Option (a) is coherent but should then be *stated*,
-so nobody expects otherwise mid-incident. Option (c) resolves the confusion without resolving the
-gap.
+The two acts are named apart, which is what makes the model teachable: attaching to something a
+container offers is not the same as starting a new program inside it, and after ADR-0260 they have
+different targets as well as different failure modes.
 
-Deliberately not decided here, because the trade-off is the owner's: it is a choice about how this
-platform expects to be operated, not an engineering detail.
+`cixctl` and the dashboard both enumerate the declared set, so an operator sees the same names in
+both places and cannot type a path that only works in one of them.
+
+Every existing container recipe that relied on ad-hoc exec for diagnosis must declare the consoles
+it actually wants. `cr-2` gains a `birdcl` console for the work that found this; anything that
+expects a shell must have one installed by its image. A container that declares nothing has no
+interactive access at all, by design.
