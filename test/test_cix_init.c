@@ -29,6 +29,11 @@
  *   8. a bad hello exits CIXINIT_EXIT_BAD_TABLE
  *   9. an execve() failure is a service exit of 140 + errno, and with
  *      on_exit: stop and nothing else to run, cix-init exits with it
+ *  10. a service sees exactly fds 0 1 2 -- not the control socket, not
+ *      the report socket, not another service's pipe -- and when the
+ *      only service exits, its output pipe reads EOF
+ *  11. a service starts with SIGPIPE at its default disposition, so a
+ *      self-sent SIGPIPE kills it (KILLED, 13)
  */
 
 #include "cixinit.h"
@@ -598,6 +603,75 @@ static int test_exec_failure(void)
 	return 0;
 }
 
+static int test_fd_hygiene(void)
+{
+	struct cixinit_service svcs[2];
+	struct init_run r;
+	struct cixinit_report rep;
+	char buf[256];
+	char eofbuf[8];
+	int status;
+	/* Two commands, so the shell forks for ls rather than exec'ing it:
+	 * a single-command -c execs in place, and ls would then list the
+	 * directory fd it opened itself. */
+	static const char *const ls_argv[] = { "/bin/sh", "-c", "ls /proc/$$/fd; true", NULL };
+	static const char *const idle_argv[] = { "/bin/sh", "-c", "exec sleep 60", NULL };
+
+	printf("10. a service sees only fds 0 1 2, and its pipe reads EOF once it exits\n");
+	svc_init(&svcs[0], "lister", CIXINIT_TYPE_ONESHOT, ls_argv);
+	svcs[0].on_exit = CIXINIT_ON_EXIT_STOP;
+	svc_init(&svcs[1], "idle", CIXINIT_TYPE_DAEMON, idle_argv);
+	if (init_spawn(&r, svcs, 2, 0) != 0)
+		return -1;
+	if (wait_for(&r, 0, CIXINIT_EV_EXITED, &rep) < 0 || rep.a != CIXINIT_EXIT_KIND_EXITED || rep.b != 0)
+		return -1;
+	if (read_output(&r, 0, buf, sizeof(buf)) != 0) {
+		fprintf(stderr, "  FAIL: no output from the lister\n");
+		return -1;
+	}
+	if (strcmp(buf, "0\n1\n2\n") != 0) {
+		fprintf(stderr, "  FAIL: the service saw fds other than 0 1 2:\n%s", buf);
+		return -1;
+	}
+	printf("  service fd table: 0 1 2\n");
+	if (read(r.out_fd[0], eofbuf, sizeof(eofbuf)) != 0) {
+		fprintf(stderr, "  FAIL: the exited service's pipe is still held open by someone\n");
+		return -1;
+	}
+	printf("  exited service's pipe: EOF\n");
+	if (send_command(&r, CIXINIT_OP_SHUTDOWN, -1) != 0)
+		return -1;
+	if (wait_exit(&r, &status) != 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
+		return -1;
+	init_close(&r);
+	return 0;
+}
+
+static int test_sigpipe_default(void)
+{
+	struct cixinit_service svcs[1];
+	struct init_run r;
+	struct cixinit_report rep;
+	int status;
+	static const char *const argv[] = { "/bin/sh", "-c", "kill -PIPE $$", NULL };
+
+	printf("11. a service starts with SIGPIPE at SIG_DFL\n");
+	svc_init(&svcs[0], "piped", CIXINIT_TYPE_DAEMON, argv);
+	svcs[0].on_exit = CIXINIT_ON_EXIT_STOP;
+	if (init_spawn(&r, svcs, 1, 0) != 0)
+		return -1;
+	if (wait_for(&r, 0, CIXINIT_EV_EXITED, &rep) < 0 || rep.a != CIXINIT_EXIT_KIND_KILLED || rep.b != SIGPIPE) {
+		fprintf(stderr, "  FAIL: expected KILLED by %d, got kind=%d value=%d\n", SIGPIPE, rep.a, rep.b);
+		return -1;
+	}
+	if (wait_exit(&r, &status) != 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 128 + SIGPIPE) {
+		fprintf(stderr, "  FAIL: cix-init status 0x%x, expected exit %d\n", status, 128 + SIGPIPE);
+		return -1;
+	}
+	init_close(&r);
+	return 0;
+}
+
 int main(void)
 {
 	int fails = 0;
@@ -618,6 +692,8 @@ int main(void)
 	fails += test_declared_restart() != 0;
 	fails += test_bad_hello() != 0;
 	fails += test_exec_failure() != 0;
+	fails += test_fd_hygiene() != 0;
+	fails += test_sigpipe_default() != 0;
 
 	printf("CIX-INIT RESULT: %s (%d failure(s))\n", fails == 0 ? "PASS" : "FAIL", fails);
 	return fails == 0 ? 0 : 1;

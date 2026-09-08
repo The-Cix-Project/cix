@@ -129,8 +129,10 @@ void cix_sigreturn(void);
 #define O_RDWR 2
 #define O_NONBLOCK 04000
 #define O_CLOEXEC 02000000
+#define F_SETFD 2
 #define F_GETFL 3
 #define F_SETFL 4
+#define FD_CLOEXEC 1
 #define AT_FDCWD (-100)
 
 #define WNOHANG 1
@@ -146,6 +148,7 @@ void cix_sigreturn(void);
 #define SA_NOCLDSTOP 0x00000001UL
 #define SA_RESTORER 0x04000000UL
 #define SA_RESTART 0x10000000UL
+#define SIG_DFL ((void (*)(int))0)
 #define SIG_IGN ((void (*)(int))1)
 
 #define AF_UNIX 1
@@ -563,6 +566,13 @@ static void child_exec(struct svc *s)
 	/* Its own output pipe becomes stdout and stderr; cix-init's stay behind. */
 	sc2(SYS_dup2, s->out_fd, 1);
 	sc2(SYS_dup2, s->out_fd, 2);
+	/*
+	 * An init gives its children default dispositions. Handlers do
+	 * not survive execve but SIG_IGN does, and cix-init ignores
+	 * SIGPIPE for its own sake -- a service inheriting that would
+	 * have `producer | head` spin in every shell script it runs.
+	 */
+	install_signal(SIGPIPE, SIG_DFL);
 
 	if (s->def.gid >= 0) {
 		if (sc2(SYS_setgroups, 0, 0) != 0 || sc1(SYS_setgid, s->def.gid) != 0) {
@@ -659,6 +669,7 @@ static void probe_command_spawn(struct svc *s)
 			sc2(SYS_dup2, devnull, 1);
 			sc2(SYS_dup2, devnull, 2);
 		}
+		install_signal(SIGPIPE, SIG_DFL);
 		if (s->def.gid >= 0) {
 			sc2(SYS_setgroups, 0, 0);
 			sc1(SYS_setgid, s->def.gid);
@@ -993,10 +1004,14 @@ static void drain_control(long now)
 			return;
 		if (n == 0) {
 			/*
-			 * The daemon closed its end. It only does that by dying,
-			 * and a container outliving its daemon keeps running --
-			 * so this is logged once and the socket forgotten, not a
-			 * reason to stop anything.
+			 * The daemon closed its end. In a real container this is
+			 * not survivable for long: src/container.c sets
+			 * PR_SET_PDEATHSIG SIGKILL before execve and cix-init
+			 * inherits it, so a dead cixd means the kernel kills pid 1
+			 * next -- the same fate today's payload has. Under the
+			 * unit test there is no such tie, and either way the
+			 * right thing is to log once, forget the socket and keep
+			 * supervising for as long as the kernel allows.
 			 */
 			say("control socket closed by the daemon -- no further commands can arrive");
 			sc1(SYS_close, g_control_fd);
@@ -1132,6 +1147,18 @@ int cix_main(long argc, char **argv)
 				die("an fd argument that is not a number");
 			fds[i] = v;
 		}
+		/*
+		 * Every fd the daemon handed over is cix-init's and nobody
+		 * else's. Marked close-on-exec here, once, whatever way the
+		 * daemon created them: a service must not hold the control
+		 * socket (it could read commands), the report socket (it
+		 * could forge reports), or any other service's output pipe
+		 * (the daemon would never see that pipe's EOF until every
+		 * service had exited). dup2() clears the flag on the 1 and 2
+		 * a service is given, so a child keeps exactly what it should.
+		 */
+		for (i = 0; i < nfd; i++)
+			sc3(SYS_fcntl, fds[i], F_SETFD, FD_CLOEXEC);
 		g_control_fd = (int)fds[0];
 		g_report_fd = (int)fds[1];
 		set_nonblock(g_report_fd);
