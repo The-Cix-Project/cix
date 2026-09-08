@@ -96,7 +96,33 @@ reaps them, applies each one's restart policy, and attributes output per service
 in `GET /containers/{name}` with their own state and exit reason, and one can be started, stopped
 and restarted without disturbing its neighbours.
 
+**`cix-init` reaches an image as an ordinary Cix package**, declared in that image's manifest the
+same way `glibc` already is, and dynamically linked like everything else this project builds. No
+exception to "never `-static`" is taken, and no new staging mechanism is invented.
+
+The obvious objection is glibc skew — the supervisor is built once in `cix-builder` and installed
+into images carrying other glibc revisions (2.44-14 and 2.44-16 both exist on the box today). Two
+things answer it. The failure is directional: a binary built against an older glibc runs on a newer
+one, and only the reverse breaks. And that reverse case is already gated — `daemon/src/elfcheck.c`
+refuses to install a binary whose symbols do not resolve, so the failure surfaces at install time,
+against a named package, rather than at `execve()` of PID 1 where it would present as a container
+that never starts.
+
+An image with no `cix-init` cannot run a container, and the daemon refuses at create time with a
+message naming what to install — the same shape as the existing "image has no C library" refusal,
+reusing that reasoning rather than inventing a second one.
+
 **Stopping is the reverse dependency order.** Nothing else is defensible once ordering is a graph.
+
+**A `ready` probe of the `command:` kind runs inside the container** as the same uid as the service
+it probes, with a five-second default timeout, its output discarded and only its exit status read.
+Stated here because a probe that could log, hang or run as someone else is three more things to
+reason about during an incident.
+
+**A daemon gets a pty only when it asks for one.** Attaching a console to a running service's stdio
+([ADR-0261](0261-reaching-inside-a-container.md)) needs more than a plain pipe, but most daemons
+neither want a tty nor behave the same when they see one, so it is declared per service rather than
+given to every service by default.
 
 **A failing daemon restarts alone; it does not cascade into its dependents.** Narrowing the blast
 radius is the entire point of modelling services separately — a crash that took down every
