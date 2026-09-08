@@ -7148,6 +7148,18 @@ static void container_init_log_report(struct registry_entry *entry, const struct
 	                      ? entry->services[r->service].def.name
 	                      : "cix-init";
 
+	/*
+	 * DIAGNOSTIC, this revision only: what a container's supervisor
+	 * actually reported. Two selftests have a container that is told to
+	 * shut down and never exits while its neighbours stop in under a
+	 * second, and the log store that holds these is not readable from a
+	 * build log. Three outcomes tell three different stories -- no
+	 * reports at all means cix-init is not reading, a shutdown with no
+	 * exit means the service is not dying, both means the daemon is not
+	 * reaping.
+	 */
+	fprintf(stderr, "  [init] %s/%s event=%d a=%d b=%d\n", entry->name, svc, r->event, r->a, r->b);
+
 	switch (r->event) {
 	case CIXINIT_EV_UP:
 		logstore_write_container(entry->name, "info", "cix-init up, %d service(s)", r->b);
