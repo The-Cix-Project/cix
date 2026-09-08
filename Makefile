@@ -5,10 +5,19 @@ DAEMON_CFLAGS := $(CFLAGS) -Idaemon/include -Itest -I$(BUILD)
 CLIENT_CFLAGS := $(CFLAGS) -Iclient/include -Idaemon/include
 NETPLANE_CFLAGS := $(CFLAGS)
 
-LIB_SRCS := src/btrfs.c src/cgroup.c src/mountns.c src/ns_create.c src/container.c src/overlay.c src/container_net.c src/container_dev.c src/container_caps.c netplane/src/rtnetlink.c
+#
+# Every netplane translation unit, in one place. LIB_SRCS and two test
+# rules used to name netplane/src/rtnetlink.c literally, which was fine
+# while it was the only one -- then nl80211.c arrived and cixd failed to
+# link with three unresolved references, because the variable had grown
+# and the literals had not. One list, referenced everywhere, so the next
+# family lands in every binary that needs it without a second edit.
+#
+NETPLANE_SRCS := netplane/src/rtnetlink.c netplane/src/nl80211.c
+
+LIB_SRCS := src/btrfs.c src/cgroup.c src/mountns.c src/ns_create.c src/container.c src/overlay.c src/container_net.c src/container_dev.c src/container_caps.c $(NETPLANE_SRCS)
 DAEMON_SRCS := daemon/src/json.c daemon/src/http.c daemon/src/websocket.c daemon/src/exec.c daemon/src/registry.c daemon/src/staticfile.c daemon/src/network.c daemon/src/persist.c daemon/src/dns.c daemon/src/ldap.c daemon/src/pki.c daemon/src/opensslrun.c daemon/src/releasekey.c daemon/src/elfcheck.c daemon/src/pkg.c daemon/src/device.c daemon/src/devicemap.c daemon/src/image.c daemon/src/containerdef.c daemon/src/siteconfig.c daemon/src/daemon_config.c daemon/src/tlsconn.c daemon/src/quotamap.c daemon/src/swap.c daemon/src/logstore.c daemon/src/disk.c daemon/src/diskrole.c daemon/src/diskformat.c daemon/src/diskpart.c daemon/src/sysctlconfig.c daemon/src/kmod.c daemon/src/kmodconfig.c daemon/src/ping.c daemon/src/resolv.c daemon/src/ntp.c daemon/src/syslogfwd.c daemon/src/hostproc.c daemon/src/connthrottle.c daemon/src/treecopy.c daemon/src/storageplacement.c daemon/src/storagemigrate.c daemon/src/backupconfig.c daemon/src/containerstoragemigrate.c daemon/src/pwhash.c daemon/src/vendor/bcrypt.c daemon/src/vendor/blowfish.c daemon/src/hostauth.c daemon/src/ldapclient.c daemon/src/subid.c daemon/src/serverhealth.c daemon/src/volume.c daemon/src/volumebackup.c daemon/src/cpreserve.c daemon/src/pkgpolicy.c daemon/src/bootconsole.c daemon/src/esp.c daemon/src/stallwatch.c daemon/src/kernelpolicy.c daemon/src/srcpolicy.c daemon/src/srcdepth.c daemon/src/srcupstream.c daemon/src/srcresolve.c daemon/src/pipeline.c daemon/src/pipelineview.c daemon/src/scheduler.c daemon/src/api_srcpolicy.c daemon/src/ksm.c daemon/src/zswap.c daemon/src/dhcp.c daemon/src/targz.c daemon/src/signingkeys.c daemon/src/childdiag.c daemon/src/partlabel.c daemon/src/apiroute.c daemon/src/apiresp.c daemon/src/api_network.c daemon/src/api_storage.c daemon/src/api_pki.c daemon/src/api_ldap.c daemon/src/api_image.c daemon/src/api_dns.c daemon/src/api_logs.c daemon/src/api_hostauth.c daemon/src/api_volume.c daemon/src/api_swap.c daemon/src/api_route.c daemon/src/api_keys.c daemon/src/api_resolv.c daemon/src/api_syslog.c daemon/src/api_sysctl.c daemon/src/api_kmod.c daemon/src/api_ntp.c daemon/src/config.c daemon/src/containerpath.c daemon/src/cixinit_table.c
 CLIENT_SRCS := client/src/httpclient.c daemon/src/json.c
-NETPLANE_SRCS := netplane/src/rtnetlink.c netplane/src/nl80211.c
 
 #
 # The tests that need nothing but a filesystem: no daemon to fork, no
@@ -504,7 +513,7 @@ $(BUILD)/test_kernelpolicy: test/test_kernelpolicy.c daemon/src/kernelpolicy.c d
 $(BUILD)/test_routes: test/test_routes.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_daemon_bind_ip: test/test_daemon_bind_ip.c test/test_image_fixture.c $(CLIENT_SRCS) netplane/src/rtnetlink.c | $(BUILD)
+$(BUILD)/test_daemon_bind_ip: test/test_daemon_bind_ip.c test/test_image_fixture.c $(CLIENT_SRCS) $(NETPLANE_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
 $(BUILD)/test_console_exec: test/test_console_exec.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
@@ -555,7 +564,7 @@ $(BUILD)/test_container_stats: test/test_container_stats.c test/test_image_fixtu
 $(BUILD)/test_devices: test/test_devices.c test/test_image_fixture.c $(LIB_SRCS) | $(BUILD)
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/test_daemon_devices: test/test_daemon_devices.c test/test_image_fixture.c $(CLIENT_SRCS) netplane/src/rtnetlink.c | $(BUILD)
+$(BUILD)/test_daemon_devices: test/test_daemon_devices.c test/test_image_fixture.c $(CLIENT_SRCS) $(NETPLANE_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
 $(BUILD)/test_dns: test/test_dns.c test/test_image_fixture.c test/test_cleanup.c daemon/src/elfcheck.c $(CLIENT_SRCS) | $(BUILD)
