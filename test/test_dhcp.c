@@ -214,12 +214,12 @@ int main(void)
 	 */
 	expect(&client, "POST", "/v1/containers",
 	        "{\"name\":\"dhcpsrv\",\"image\":\"dhcptest\","
-	        "\"cmd\":[\"/bin/daemon_child\",\"60\",\"0\"],\"networks\":[\"dhcplab\"],"
+	        "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"60\",\"0\"]}],\"networks\":[\"dhcplab\"],"
 	        "\"restart\":\"always\"}",
 	        201, "create the first serving container");
 	expect(&client, "POST", "/v1/containers",
 	        "{\"name\":\"dhcpsrv2\",\"image\":\"dhcptest\","
-	        "\"cmd\":[\"/bin/daemon_child\",\"60\",\"0\"],\"networks\":[\"dhcplab\"],"
+	        "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"60\",\"0\"]}],\"networks\":[\"dhcplab\"],"
 	        "\"restart\":\"always\"}",
 	        201, "create the second serving container");
 	expect(&client, "POST", "/v1/dhcp/servers", "{\"container\":\"dhcpsrv\"}", 201,
@@ -302,7 +302,7 @@ int main(void)
 	        201, "create an unrelated network");
 	expect(&client, "POST", "/v1/containers",
 	        "{\"name\":\"dhcpelsewhere\",\"image\":\"dhcptest\","
-	        "\"cmd\":[\"/bin/daemon_child\",\"60\",\"0\"],\"networks\":[\"dhcpother\"],"
+	        "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"60\",\"0\"]}],\"networks\":[\"dhcpother\"],"
 	        "\"restart\":\"always\"}",
 	        201, "a server on the unrelated network");
 	expect(&client, "POST", "/v1/dhcp/servers", "{\"container\":\"dhcpelsewhere\"}", 201,

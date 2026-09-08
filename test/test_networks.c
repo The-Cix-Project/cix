@@ -272,7 +272,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"c1\",\"image\":\"networkstest\","
-	                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],\"networks\":[\"neta\"]}",
+	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}],\"networks\":[\"neta\"]}",
 	                       &r) != 0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: POST c1, status=%d\n", r.status);
@@ -398,7 +398,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"c2\",\"image\":\"networkstest\","
-	                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
+	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}],"
 	                       "\"networks\":[{\"name\":\"netip\",\"ip\":\"172.46.0.42\"}]}",
 	                       &r) != 0 ||
 	    r.status != 201) {
@@ -423,7 +423,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"cgw\",\"image\":\"networkstest\","
-	                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
+	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}],"
 	                       "\"networks\":[{\"name\":\"netip\",\"ip\":\"172.46.0.1\"}]}",
 	                       &r) != 0 ||
 	    r.status != 400) {
@@ -436,7 +436,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"coor\",\"image\":\"networkstest\","
-	                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
+	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}],"
 	                       "\"networks\":[{\"name\":\"netip\",\"ip\":\"172.99.0.5\"}]}",
 	                       &r) != 0 ||
 	    r.status != 400) {
@@ -449,7 +449,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"cdup\",\"image\":\"networkstest\","
-	                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
+	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}],"
 	                       "\"networks\":[{\"name\":\"netip\",\"ip\":\"172.46.0.42\"}]}",
 	                       &r) != 0 ||
 	    r.status != 409) {
@@ -637,7 +637,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"awc1\",\"image\":\"networkstest\","
-	                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
+	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}],"
 	                       "\"networks\":[\"allocwin\"]}",
 	                       &r) != 0 ||
 	    r.status != 201) {
@@ -756,7 +756,7 @@ int main(void)
 			memset(&r, 0, sizeof(r));
 			if (cix_client_request(&client, "POST", "/v1/containers",
 			                       "{\"name\":\"c137a\",\"image\":\"networkstest\","
-			                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
+			                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}],"
 			                       "\"networks\":[\"bridgednopool\"]}",
 			                       &r) == 0) {
 				if (r.status != 409) {
@@ -774,7 +774,7 @@ int main(void)
 			memset(&r, 0, sizeof(r));
 			if (cix_client_request(&client, "POST", "/v1/containers",
 			                       "{\"name\":\"c137b\",\"image\":\"networkstest\","
-			                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
+			                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}],"
 			                       "\"networks\":[{\"name\":\"bridgednopool\","
 			                       "\"ip\":\"172.31.7.55\"}]}",
 			                       &r) == 0) {
@@ -796,7 +796,7 @@ int main(void)
 			memset(&r, 0, sizeof(r));
 			if (cix_client_request(&client, "POST", "/v1/containers",
 			                       "{\"name\":\"c137c\",\"image\":\"networkstest\","
-			                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
+			                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}],"
 			                       "\"networks\":[\"bridgedpool\"]}",
 			                       &r) == 0) {
 				const struct json_value *nets =

@@ -252,7 +252,7 @@ static int run_presentation(int idmap, const char *label)
 	                              "\"content\":\"secret\\n\",\"mode\":\"0600\"}],"
 	                              "\"volumes\":[{\"name\":\"runvol\",\"path\":\"/vol\"},"
 	                              "{\"name\":\"runvol2\",\"path\":\"/vol2\"}],"
-	                              "\"cmd\":[\"/bin/run_child\"]}",
+	                              "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/run_child\"]}]}",
 	                              &r) == 0 &&
 	           r.status == 201);
 	cix_response_free(&r);

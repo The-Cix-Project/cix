@@ -323,7 +323,8 @@ Attach one at container creation with `--volume=NAME:/path[:ro]`. The volume mus
 cixctl run --name=jump --image=jumpbox \
   --console='shell=/usr/bin/bash -l' \
   --console='logs=/usr/bin/tail -F /var/log/messages' \
-  -- /usr/bin/bash /usr/local/bin/jumpbox-start.sh
+  --oneshot=hostkeys=/usr/bin/ssh-keygen -A --service=nslcd=/usr/sbin/nslcd -d --ready=nslcd:socket:/run/nslcd/socket \
+  --service=sshd=/usr/sbin/sshd -D -e --after=sshd:hostkeys,nslcd
 ```
 
 The first declared is what `container console NAME` attaches to with no `--console=`. `argv[0]` must be an absolute path — it is `execve`'d directly, with no shell to resolve a bare name, and a bare name is refused at creation rather than failing confusingly at attach.

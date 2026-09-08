@@ -287,7 +287,7 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"crasher\",\"image\":\"restarttest\","
-		                       "\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"],"
+		                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"]}],"
 		                       "\"restart\":\"always\"}",
 		                       &r) != 0 ||
 		    r.status != 201 || !str_eq(json_str_field(r.json, "restart"), "always")) {
@@ -356,7 +356,7 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"onfailclean\",\"image\":\"restarttest\","
-		                       "\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"],"
+		                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"]}],"
 		                       "\"restart\":\"on-failure\"}",
 		                       &r) != 0 ||
 		    r.status != 201) {
@@ -437,7 +437,7 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"sigdeath\",\"image\":\"restarttest\","
-		                       "\"cmd\":[\"/bin/daemon_child\",\"1\",\"-1\"]}",
+		                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"1\",\"-1\"]}]}",
 		                       &r) != 0 ||
 		    r.status != 201) {
 			fprintf(stderr, "FAIL: POST sigdeath, status=%d\n", r.status);
@@ -457,15 +457,24 @@ int main(void)
 		if (r.status != 200 || !str_eq(json_str_field(r.json, "status"), "exited")) {
 			fprintf(stderr, "FAIL: sigdeath never reached exited\n");
 			ok = 0;
-		} else if (json_num_field(r.json, "term_signal") != 11) {
-			fprintf(stderr, "FAIL: sigdeath term_signal expected 11 (SIGSEGV), got %ld\n",
-			        json_num_field(r.json, "term_signal"));
+		} else if (json_num_field(r.json, "exit_status") != 128 + 11 ||
+		           json_num_field(r.json, "term_signal") != 0) {
+			/* ADR-0260: pid 1 is cix-init, so the CONTAINER never dies by
+			 * a signal; the service did, and cix-init exits 128+signal. */
+			fprintf(stderr, "FAIL: sigdeath expected exit_status 139 / term_signal 0, got %ld / %ld\n",
+			        json_num_field(r.json, "exit_status"), json_num_field(r.json, "term_signal"));
 			ok = 0;
-		} else if (strstr(json_str_field(r.json, "exit_reason") ? json_str_field(r.json, "exit_reason") : "",
-		                  "signal 11") == NULL) {
-			fprintf(stderr, "FAIL: sigdeath exit_reason should name signal 11, got \"%s\"\n",
-			        json_str_field(r.json, "exit_reason"));
-			ok = 0;
+		} else {
+			const struct json_value *svcs = json_object_get(r.json, "services");
+			const struct json_value *svc0 = (svcs != NULL && svcs->type == JSON_ARRAY && svcs->u.array.count > 0)
+			                                    ? svcs->u.array.items[0] : NULL;
+			const struct json_value *last = svc0 != NULL ? json_object_get(svc0, "last_exit") : NULL;
+
+			if (last == NULL || !str_eq(json_str_field(last, "kind"), "killed") ||
+			    json_num_field(last, "signal") != 11) {
+				fprintf(stderr, "FAIL: sigdeath services[0].last_exit should be killed by signal 11\n");
+				ok = 0;
+			}
 		}
 		cix_response_free(&r);
 
@@ -484,7 +493,7 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"onfailcrash\",\"image\":\"restarttest\","
-		                       "\"cmd\":[\"/bin/daemon_child\",\"1\",\"7\"],"
+		                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"1\",\"7\"]}],"
 		                       "\"restart\":\"on-failure\"}",
 		                       &r) != 0 ||
 		    r.status != 201) {
@@ -523,7 +532,7 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"delaytest\",\"image\":\"restarttest\","
-		                       "\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"],"
+		                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"]}],"
 		                       "\"restart\":\"always\",\"restart_delay_seconds\":5}",
 		                       &r) != 0 ||
 		    r.status != 201 || json_num_field(r.json, "restart_delay_seconds") != 5) {
@@ -564,7 +573,7 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"stopwindow\",\"image\":\"restarttest\","
-		                       "\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"],"
+		                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"]}],"
 		                       "\"restart\":\"always\",\"restart_delay_seconds\":5}",
 		                       &r) != 0 ||
 		    r.status != 201) {
@@ -610,7 +619,7 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"backoffgrow\",\"image\":\"restarttest\","
-		                       "\"cmd\":[\"/bin/daemon_child\",\"1\",\"1\"],"
+		                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"1\",\"1\"]}],"
 		                       "\"restart\":\"always\",\"restart_delay_seconds\":2}",
 		                       &r) != 0 ||
 		    r.status != 201) {
@@ -670,7 +679,7 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"backoffstable\",\"image\":\"restarttest\","
-		                       "\"cmd\":[\"/bin/daemon_child\",\"32\",\"9\"],"
+		                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"32\",\"9\"]}],"
 		                       "\"restart\":\"always\",\"restart_delay_seconds\":2}",
 		                       &r) != 0 ||
 		    r.status != 201) {
@@ -708,7 +717,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"badrestart\",\"image\":\"restarttest\","
-	                       "\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"],\"restart\":\"bogus\"}",
+	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"]}],\"restart\":\"bogus\"}",
 	                       &r) != 0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: restart:\"bogus\" expected 400, got %d\n", r.status);
@@ -719,7 +728,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"baddelay\",\"image\":\"restarttest\","
-	                       "\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"],\"restart\":\"always\","
+	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"]}],\"restart\":\"always\","
 	                       "\"restart_delay_seconds\":0}",
 	                       &r) != 0 ||
 	    r.status != 400) {
@@ -739,7 +748,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"deleteme\",\"image\":\"restarttest\","
-	                       "\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"],"
+	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"]}],"
 	                       "\"restart\":\"always\"}",
 	                       &r) != 0 ||
 	    r.status != 201) {
@@ -761,7 +770,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"depA\",\"image\":\"restarttest\","
-	                       "\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"],"
+	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"]}],"
 	                       "\"restart\":\"always\"}",
 	                       &r) != 0 ||
 	    r.status != 201) {
@@ -773,7 +782,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"depB\",\"image\":\"restarttest\","
-	                       "\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"],"
+	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"]}],"
 	                       "\"restart\":\"always\",\"depends_on\":[\"depA\"]}",
 	                       &r) != 0 ||
 	    r.status != 201) {
@@ -788,7 +797,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"cycleA\",\"image\":\"restarttest\","
-	                       "\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"],"
+	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"]}],"
 	                       "\"restart\":\"always\",\"depends_on\":[\"cycleB\"]}",
 	                       &r) != 0 ||
 	    r.status != 201) {
@@ -800,7 +809,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"cycleB\",\"image\":\"restarttest\","
-	                       "\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"],"
+	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"]}],"
 	                       "\"restart\":\"always\",\"depends_on\":[\"cycleA\"]}",
 	                       &r) != 0 ||
 	    r.status != 201) {
@@ -812,7 +821,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"innocent\",\"image\":\"restarttest\","
-	                       "\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"],"
+	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"]}],"
 	                       "\"restart\":\"always\"}",
 	                       &r) != 0 ||
 	    r.status != 201) {
@@ -825,7 +834,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"needsghost\",\"image\":\"restarttest\","
-	                       "\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"],"
+	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"]}],"
 	                       "\"restart\":\"always\",\"depends_on\":[\"ghost\"]}",
 	                       &r) != 0 ||
 	    r.status != 201) {
@@ -834,16 +843,17 @@ int main(void)
 	}
 	cix_response_free(&r);
 
-	/* 6. readiness (Phase 13 part 2): a network is required (400
-	 * without one), mirroring dns_register's existing requirement. */
+	/* 6. ADR-0260: readiness is derived from the services and there is
+	 * no container-level field any more -- one that carries the old
+	 * key is refused as unknown, not silently ignored. */
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"noreadynet\",\"image\":\"restarttest\","
-	                       "\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"],"
+	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"]}],"
 	                       "\"readiness\":{\"tcp_port\":" STR(READY_TCP_PORT) "}}",
 	                       &r) != 0 ||
 	    r.status != 400) {
-		fprintf(stderr, "FAIL: readiness without networks expected 400, got %d\n", r.status);
+		fprintf(stderr, "FAIL: a container-level readiness field expected 400 (unknown key), got %d\n", r.status);
 		ok = 0;
 	}
 	cix_response_free(&r);
@@ -866,27 +876,38 @@ int main(void)
 	cix_response_free(&r);
 
 	/* depR only starts listening on READY_TCP_PORT after a real 2s
-	 * delay (tcp_listen_child) -- depS (depends_on depR, with depR's
-	 * own readiness configured) must genuinely wait for that, proven
-	 * below by timing the daemon restart itself. */
+	 * delay (tcp_listen_child) -- depS (depends_on depR, whose listener
+	 * service declares a tcp ready probe, ADR-0260) must genuinely wait
+	 * for that, proven below by timing the daemon restart itself. The
+	 * probe is cix-init's, run from inside the container against its
+	 * own address. */
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"depR\",\"image\":\"restarttest\","
-	                       "\"cmd\":[\"/bin/tcp_listen_child\",\"" STR(READY_TCP_PORT) "\",\"2\"],"
-	                       "\"networks\":[\"" READY_NETWORK_NAME "\"],\"restart\":\"always\","
-	                       "\"readiness\":{\"tcp_port\":" STR(READY_TCP_PORT) ",\"timeout_seconds\":10}}",
+	                       "\"services\":[{\"name\":\"listener\",\"cmd\":[\"/bin/tcp_listen_child\",\"" STR(READY_TCP_PORT) "\",\"2\"],"
+	                       "\"on_exit\":\"stop\",\"ready\":{\"tcp_port\":" STR(READY_TCP_PORT) ",\"timeout_seconds\":10}}],"
+	                       "\"networks\":[\"" READY_NETWORK_NAME "\"],\"restart\":\"always\"}",
 	                       &r) != 0 ||
-	    r.status != 201 ||
-	    json_num_field(json_object_get(r.json, "readiness"), "tcp_port") != READY_TCP_PORT) {
+	    r.status != 201) {
 		fprintf(stderr, "FAIL: POST depR, status=%d\n", r.status);
 		ok = 0;
+	} else {
+		const struct json_value *svcs = json_object_get(r.json, "services");
+		const struct json_value *svc0 = (svcs != NULL && svcs->type == JSON_ARRAY && svcs->u.array.count > 0)
+		                                    ? svcs->u.array.items[0] : NULL;
+
+		if (svc0 == NULL ||
+		    json_num_field(json_object_get(svc0, "ready_probe"), "tcp_port") != READY_TCP_PORT) {
+			fprintf(stderr, "FAIL: depR's declared probe is not read back on services[0].ready_probe\n");
+			ok = 0;
+		}
 	}
 	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"depS\",\"image\":\"restarttest\","
-	                       "\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"],"
+	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"]}],"
 	                       "\"networks\":[\"" READY_NETWORK_NAME "\"],\"restart\":\"always\","
 	                       "\"depends_on\":[\"depR\"]}",
 	                       &r) != 0 ||
@@ -897,15 +918,15 @@ int main(void)
 	cix_response_free(&r);
 
 	/* neverready never listens on NEVER_READY_TCP_PORT at all -- its
-	 * own readiness must time out (1s) without blocking boot forever,
+	 * service's probe must time out (1s) without blocking boot forever,
 	 * and afterNeverReady (depends on it) must still autostart anyway
 	 * (best-effort, not a hard failure). */
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"neverready\",\"image\":\"restarttest\","
-	                       "\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"],"
-	                       "\"networks\":[\"" READY_NETWORK_NAME "\"],\"restart\":\"always\","
-	                       "\"readiness\":{\"tcp_port\":" STR(NEVER_READY_TCP_PORT) ",\"timeout_seconds\":1}}",
+	                       "\"services\":[{\"name\":\"main\",\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"],"
+	                       "\"on_exit\":\"stop\",\"ready\":{\"tcp_port\":" STR(NEVER_READY_TCP_PORT) ",\"timeout_seconds\":1}}],"
+	                       "\"networks\":[\"" READY_NETWORK_NAME "\"],\"restart\":\"always\"}",
 	                       &r) != 0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: POST neverready, status=%d\n", r.status);
@@ -916,7 +937,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"afterNeverReady\",\"image\":\"restarttest\","
-	                       "\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"],"
+	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"]}],"
 	                       "\"networks\":[\"" READY_NETWORK_NAME "\"],\"restart\":\"always\","
 	                       "\"depends_on\":[\"neverready\"]}",
 	                       &r) != 0 ||
@@ -933,7 +954,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"stopalways\",\"image\":\"restarttest\","
-	                       "\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"],"
+	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"]}],"
 	                       "\"restart\":\"always\"}",
 	                       &r) != 0 ||
 	    r.status != 201) {
@@ -945,7 +966,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"stopunless\",\"image\":\"restarttest\","
-	                       "\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"],"
+	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"]}],"
 	                       "\"restart\":\"unless-stopped\"}",
 	                       &r) != 0 ||
 	    r.status != 201) {
@@ -1002,7 +1023,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"plainno\",\"image\":\"restarttest\","
-	                       "\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"]}",
+	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"]}]}",
 	                       &r) != 0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: POST plainno (restart:\"no\"), status=%d\n", r.status);

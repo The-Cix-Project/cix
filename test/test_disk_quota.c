@@ -181,7 +181,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"quotafail1\",\"image\":\"quotatest\","
-	                       "\"cmd\":[\"/bin/daemon_child\"],\"disk_quota_bytes\":1048576}",
+	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\"]}],\"disk_quota_bytes\":1048576}",
 	                       &r) != 0 ||
 	    r.status != 500) {
 		fprintf(stderr, "FAIL: quota create on unsupported fs: expected 500, got %d\n", r.status);
@@ -211,7 +211,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (ok && (cix_client_request(&client, "POST", "/v1/containers",
 	                              "{\"name\":\"quotafail1\",\"image\":\"quotatest\","
-	                              "\"cmd\":[\"/bin/daemon_child\"],\"disk_quota_bytes\":2097152}",
+	                              "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\"]}],\"disk_quota_bytes\":2097152}",
 	                              &r) != 0 ||
 	           r.status != 500)) {
 		fprintf(stderr, "FAIL: second quota create on quotafail1: expected 500, got %d\n",
@@ -238,7 +238,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (ok && (cix_client_request(&client, "POST", "/v1/containers",
 	                              "{\"name\":\"quotafail2\",\"image\":\"quotatest\","
-	                              "\"cmd\":[\"/bin/daemon_child\"],\"disk_quota_bytes\":1048576}",
+	                              "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\"]}],\"disk_quota_bytes\":1048576}",
 	                              &r) != 0 ||
 	           r.status != 500)) {
 		fprintf(stderr, "FAIL: quota create on quotafail2: expected 500, got %d\n", r.status);
@@ -267,7 +267,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (ok && (cix_client_request(&client, "POST", "/v1/containers",
 	                              "{\"name\":\"noquota\",\"image\":\"quotatest\","
-	                              "\"cmd\":[\"/bin/daemon_child\"]}",
+	                              "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\"]}]}",
 	                              &r) != 0 ||
 	           r.status != 201)) {
 		fprintf(stderr, "FAIL: no-quota create: expected 201, got %d\n", r.status);

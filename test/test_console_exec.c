@@ -424,7 +424,7 @@ int main(void)
 	                       "\"consoles\":["
 	                       "{\"name\":\"first\",\"cmd\":[\"/bin/dual_console_child\"]},"
 	                       "{\"name\":\"second\",\"cmd\":[\"/bin/dual_console_child\"]}],"
-	                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}",
+	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}]}",
 	                       &r) != 0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: POST consoletest, status=%d\n", r.status);
@@ -574,7 +574,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"nocon\",\"image\":\"consoletest\","
-	                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}",
+	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}]}",
 	                       &r) != 0 ||
 	    r.status != 201) {
 		CHECK(0, "POST nocon (a container declaring no console)");

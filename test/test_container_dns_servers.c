@@ -147,7 +147,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"badip\",\"image\":\"dnstest\","
-	                       "\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"],"
+	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"]}],"
 	                       "\"dns_servers\":[\"not-an-ip\"]}",
 	                       &r) != 0 ||
 	    r.status != 400) {
@@ -160,7 +160,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"toomany\",\"image\":\"dnstest\","
-	                       "\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"],"
+	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"]}],"
 	                       "\"dns_servers\":[\"1.1.1.1\",\"2.2.2.2\",\"3.3.3.3\",\"4.4.4.4\"]}",
 	                       &r) != 0 ||
 	    r.status != 400) {
@@ -174,7 +174,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"conflict\",\"image\":\"dnstest\","
-	                       "\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"],"
+	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"]}],"
 	                       "\"dns_servers\":[\"1.1.1.1\"],"
 	                       "\"files\":[{\"path\":\"/etc/resolv.conf\",\"content\":\"nameserver 9.9.9.9\\n\"}]}",
 	                       &r) != 0 ||
@@ -190,7 +190,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"realdns\",\"image\":\"dnstest\","
-	                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
+	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}],"
 	                       "\"dns_servers\":[\"192.168.15.101\",\"192.168.15.102\"]}",
 	                       &r) != 0 ||
 	    r.status != 201) {
@@ -244,7 +244,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"nodns\",\"image\":\"dnstest\","
-	                       "\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"]}",
+	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"]}]}",
 	                       &r) != 0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: POST nodns, status=%d\n", r.status);

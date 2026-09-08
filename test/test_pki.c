@@ -216,7 +216,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"earlypki\",\"image\":\"pkitest\","
-	                       "\"cmd\":[\"/bin/daemon_child\"],\"pki_issue\":true}",
+	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\"]}],\"pki_issue\":true}",
 	                       &r) != 0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: pki_issue before CA bootstrap expected 400, got %d\n", r.status);
@@ -448,7 +448,7 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"webtls\",\"image\":\"pkitest\","
-		                       "\"cmd\":[\"/bin/daemon_child\",\"20\"],\"pki_issue\":true}",
+		                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"20\"]}],\"pki_issue\":true}",
 		                       &r) != 0 ||
 		    r.status != 201) {
 			fprintf(stderr, "FAIL: POST webtls (pki_issue), status=%d\n", r.status);
@@ -553,7 +553,7 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"shadow3\",\"image\":\"pkitest\","
-		                       "\"cmd\":[\"/bin/daemon_child\"],\"pki_issue\":true}",
+		                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\"]}],\"pki_issue\":true}",
 		                       &r) != 0 ||
 		    r.status != 201) {
 			fprintf(stderr,
@@ -1052,7 +1052,7 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"resetlive\",\"image\":\"pkitest\","
-		                       "\"cmd\":[\"/bin/daemon_child\",\"60\"],\"pki_issue\":true}",
+		                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"60\"]}],\"pki_issue\":true}",
 		                       &r) != 0 ||
 		    r.status != 201) {
 			fprintf(stderr, "FAIL: POST resetlive, status=%d\n", r.status);

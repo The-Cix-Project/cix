@@ -741,7 +741,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"aggressive\",\"image\":\"aggressive\",\"userns\":true,"
-	                       "\"cmd\":[\"/bin/daemon_child\",\"600\",\"0\"]}",
+	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"600\",\"0\"]}]}",
 	                       &r) != 0 ||
 	    r.status != 201) {
 		/*

@@ -275,7 +275,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"lc1\",\"image\":\"lifecycletest\","
-	                       "\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"],"
+	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"]}],"
 	                       "\"restart\":\"always\"}",
 	                       &r) != 0 ||
 	    r.status != 201) {
@@ -369,7 +369,7 @@ int main(void)
 		 */
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "PATCH", "/v1/containers/lc1",
-		                       "{\"cmd\":[\"/bin/daemon_child\",\"45\",\"0\"],"
+		                       "{\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"45\",\"0\"]}],"
 		                       "\"env\":{\"PATCHED\":\"yes\"}}",
 		                       &r) != 0 ||
 		    r.status != 200 || !str_eq(json_str_field(r.json, "applies"), "next-start") ||
@@ -596,7 +596,7 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"lc2\",\"image\":\"lifecycletest\","
-		                       "\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"],"
+		                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"]}],"
 		                       "\"restart\":\"always\"}",
 		                       &r) != 0 ||
 		    r.status != 201) {
@@ -658,7 +658,7 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"lc3\",\"image\":\"lifecycletest\","
-		                       "\"cmd\":[\"/bin/no-such-binary-here\"],"
+		                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/no-such-binary-here\"]}],"
 		                       "\"restart\":\"always\",\"restart_delay_seconds\":60}",
 		                       &r) != 0 ||
 		    r.status != 201) {
@@ -710,7 +710,7 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"lc3\",\"image\":\"lifecycletest\","
-		                       "\"cmd\":[\"/bin/daemon_child\",\"5\",\"0\"],"
+		                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"5\",\"0\"]}],"
 		                       "\"cpu_max\":\"50000 100000\"}",
 		                       &r) != 0 ||
 		    r.status != 201) {
@@ -747,7 +747,7 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"lc4\",\"image\":\"lifecycletest\","
-		                       "\"cmd\":[\"/bin/daemon_child\",\"5\",\"0\"],"
+		                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"5\",\"0\"]}],"
 		                       "\"cpuset_cpus\":\"0\"}",
 		                       &r) != 0 ||
 		    r.status != 201) {
@@ -790,7 +790,7 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"lc4s\",\"image\":\"lifecycletest\","
-		                       "\"cmd\":[\"/bin/daemon_child\",\"5\",\"0\"],"
+		                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"5\",\"0\"]}],"
 		                       "\"memory_swap_max\":0}",
 		                       &r) != 0 ||
 		    r.status != 201) {
@@ -829,7 +829,7 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"lc4t\",\"image\":\"lifecycletest\","
-		                       "\"cmd\":[\"/bin/daemon_child\",\"5\",\"0\"]}",
+		                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"5\",\"0\"]}]}",
 		                       &r) != 0 ||
 		    r.status != 201) {
 			fprintf(stderr, "FAIL: POST lc4t, status=%d\n", r.status);
@@ -855,7 +855,7 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"lc4u\",\"image\":\"lifecycletest\","
-		                       "\"cmd\":[\"/bin/daemon_child\",\"5\",\"0\"],"
+		                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"5\",\"0\"]}],"
 		                       "\"memory_swap_max\":-1}",
 		                       &r) != 0 ||
 		    r.status != 400) {
@@ -884,7 +884,7 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"lc5\",\"image\":\"lifecycletest\","
-		                       "\"cmd\":[\"/bin/output_child\"],"
+		                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/output_child\"]}],"
 		                       "\"capture_output\":true}",
 		                       &r) != 0 ||
 		    r.status != 201) {
@@ -969,7 +969,7 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"lc6\",\"image\":\"lifecycletest\","
-		                       "\"cmd\":[\"/bin/output_child\"]}",
+		                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/output_child\"]}]}",
 		                       &r) != 0 ||
 		    r.status != 201) {
 			fprintf(stderr, "FAIL: POST lc6 without capture_output, status=%d\n", r.status);

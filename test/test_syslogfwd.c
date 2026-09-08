@@ -137,7 +137,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"stoppedsl\",\"image\":\"syslogfwdtest\","
-	                       "\"cmd\":[\"/bin/daemon_child\",\"0\",\"0\"]}",
+	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"0\",\"0\"]}]}",
 	                       &r) != 0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: POST stoppedsl, status=%d\n", r.status);
@@ -163,7 +163,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"slbook1\",\"image\":\"syslogfwdtest\","
-	                       "\"cmd\":[\"/bin/daemon_child\",\"300\",\"0\"]}",
+	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"300\",\"0\"]}]}",
 	                       &r) != 0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: POST slbook1, status=%d\n", r.status);
@@ -261,7 +261,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"slrecv\",\"image\":\"syslogfwdtest\","
-	                       "\"cmd\":[\"/bin/syslog_recv_child\"],"
+	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/syslog_recv_child\"]}],"
 	                       "\"networks\":[\"" SYSLOG_NETWORK_NAME "\"]}",
 	                       &r) != 0 ||
 	    r.status != 201) {
@@ -282,7 +282,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"slsend\",\"image\":\"syslogfwdtest\","
-	                       "\"cmd\":[\"/bin/output_child\"],"
+	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/output_child\"]}],"
 	                       "\"networks\":[\"" SYSLOG_NETWORK_NAME "\"]}",
 	                       &r) != 0 ||
 	    r.status != 201) {

@@ -656,7 +656,7 @@ int main(void)
 	/* 2b. dns_register requires networks -- 400 without it (Phase 8 part 2) */
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
-	                       "{\"name\":\"badreg\",\"image\":\"dnstest\",\"cmd\":[\"/bin/dnsmasq\"],"
+	                       "{\"name\":\"badreg\",\"image\":\"dnstest\",\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/dnsmasq\"]}],"
 	                       "\"dns_register\":true}",
 	                       &r) != 0 ||
 	    r.status != 400) {
@@ -669,9 +669,9 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"dnsserver\",\"image\":\"dnstest\","
-	                       "\"cmd\":[\"/bin/dnsmasq\",\"-k\",\"-u\",\"root\",\"-g\",\"root\","
+	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/dnsmasq\",\"-k\",\"-u\",\"root\",\"-g\",\"root\","
 	                       "\"-p\",\"53\",\"-H\",\"/etc/dnsmasq-hosts\",\"-R\",\"-h\","
-	                       "\"-x\",\"/etc/dnsmasq.pid\"],"
+	                       "\"-x\",\"/etc/dnsmasq.pid\"]}],"
 	                       "\"memory_max\":67108864,\"pids_max\":32,"
 	                       "\"networks\":[\"" TEST_NETWORK_NAME "\"]}",
 	                       &r) != 0 ||
@@ -860,9 +860,9 @@ int main(void)
 			memset(&r, 0, sizeof(r));
 			if (cix_client_request(&client, "POST", "/v1/containers",
 			                       "{\"name\":\"webapp\",\"image\":\"dnstest\","
-			                       "\"cmd\":[\"/bin/dnsmasq\",\"-k\",\"-u\",\"root\",\"-g\",\"root\","
+			                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/dnsmasq\",\"-k\",\"-u\",\"root\",\"-g\",\"root\","
 			                       "\"-p\",\"53\",\"-H\",\"/etc/dnsmasq-hosts\",\"-R\",\"-h\","
-			                       "\"-x\",\"/etc/dnsmasq.pid\"],"
+			                       "\"-x\",\"/etc/dnsmasq.pid\"]}],"
 			                       "\"networks\":[\"" TEST_NETWORK_NAME "\"],"
 			                       "\"dns_register\":true}",
 			                       &r) != 0 ||
@@ -928,9 +928,9 @@ int main(void)
 			memset(&r, 0, sizeof(r));
 			if (cix_client_request(&client, "POST", "/v1/containers",
 			                       "{\"name\":\"shadow\",\"image\":\"dnstest\","
-			                       "\"cmd\":[\"/bin/dnsmasq\",\"-k\",\"-u\",\"root\",\"-g\",\"root\","
+			                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/dnsmasq\",\"-k\",\"-u\",\"root\",\"-g\",\"root\","
 			                       "\"-p\",\"53\",\"-H\",\"/etc/dnsmasq-hosts\",\"-R\",\"-h\","
-			                       "\"-x\",\"/etc/dnsmasq.pid\"],"
+			                       "\"-x\",\"/etc/dnsmasq.pid\"]}],"
 			                       "\"networks\":[\"" TEST_NETWORK_NAME "\"],"
 			                       "\"dns_register\":true}",
 			                       &r) != 0 ||
