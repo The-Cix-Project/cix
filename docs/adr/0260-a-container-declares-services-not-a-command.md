@@ -86,6 +86,40 @@ already stages `files[]`. Not at image-seed time: ADR-0155 means a same-manifest
 silently discard the reseed. Create-time staging has no such trap, no manifest to forget, and
 guarantees a container runs the `cix-init` its own daemon shipped with.
 
+### There is one `cix-init`, and it is the one that was removed
+
+`cix-init` is not a new program. It was written for [ADR-0246](0246-the-control-plane-is-one-process-doing-five-jobs.md),
+ran as the machine's pid 1, and was deleted in `594ec1fc` once [ADR-0247](0247-the-reactor-does-not-block-and-that-is-the-defence.md)
+superseded that design — deleted precisely because it *shipped to every host and executed on none*,
+which is the definition of a parallel implementation this project does not keep. The 469 lines are
+recoverable at `594ec1fc^:init/src/cix_init.c`, together with `include/supervisor.h`, the
+`CONN_SUPERVISOR_REAP` channel and `handle_supervisor_reap_event()` on the daemon side.
+
+This ADR revives that code for the container role, and doing so **resolves** the objection that
+removed it rather than repeating it: the binary now runs, on every container, as the only thing it
+is for. Three properties of it were proven on the box and are inherited rather than re-derived — the
+`waitpid(-1, &status, WNOHANG)` drain that runs unconditionally on every loop turn rather than only
+when a `SIGCHLD` flag is set (coalesced signals make the flag lossy), the bounded pending-record ring
+with an explicit dropped count, and `struct supervisor_reap_record`'s `exit_kind`/`exit_value` field
+names, which exist because glibc defines `si_status` and `si_pid` as macros.
+
+**It also settles the question of whether this platform now has two supervisors. It does not.** The
+host has none: ADR-0247 chose a reactor that cannot block over a supervisor that restarts one that
+did, and `init=/bin/cixd` stands. So `cix-init` is the platform's single supervisor, in the single
+place a supervisor is warranted, and there is nothing for it to be a parallel of. Should the host
+ever acquire one — ADR-0247 names its prerequisite, an `--init-mode` startup path idempotent to a
+second start in one kernel lifetime — the decision to make then is *reuse*, not a second program.
+
+The three defects the removed code carried do **not** come back with it, because all three were
+properties of the host role rather than of the program: #297 (a worker restart orphans build
+containers) and #298 (a slowly crash-looping worker never trips the fast-fail rollback) both
+describe supervising `cixd` across a boot slot, which is not a thing a container supervisor does at
+all. #299 (the status port binds `INADDR_ANY` unauthenticated) is dissolved by the transport this
+ADR chooses rather than inherited and fixed: the service table and the reap stream travel over fds
+inherited across `clone3()`, so there is no port to bind, no listener inside a container, and
+nothing on the network to authenticate. Stage A must therefore not revive the status-port code, and
+that is the one part of `594ec1fc^` deliberately left where it is.
+
 ### What a service is
 
 A service has a type. `daemon` is long-running and supervised; `oneshot` runs to completion and must
@@ -100,6 +134,13 @@ vocabulary stays exactly as deployed — `depends_on`, `readiness`, `restart`. S
 (ordering within the container), `ready` (the probe), and `on_exit` (`restart` / `stop` /
 `fail-container`). `depends_on` therefore always means containers and `after` always means
 services, and no interface needs prose to disambiguate them.
+
+**A restart delay is declared, never computed.** `on_exit: restart` carries an explicit
+`restart_delay_seconds` alongside it, defaulting to the same value the container-level `restart`
+already uses. This is not a tuning knob — it is the line that keeps `cix-init` an executor. The
+moment the supervisor derives its own backoff schedule it is holding policy that no declaration
+states and no operator can read, inside the one process this design deliberately gives no opinions
+of its own. Its whole vocabulary stays: start this, stop that, wait this long, run this probe.
 
     services:
       - name: hostkeys
@@ -175,6 +216,29 @@ Nor is `cix-init` an init system: no socket activation, no timers, no logging da
 service management. It reads no configuration from inside the image — its service table arrives from
 the daemon over an inherited fd — writes nothing to disk, and does no networking.
 
+### A stop is an override, not an edit
+
+Once services can be started and stopped over REST, the declaration and the running state can
+disagree, and that disagreement is the classic way a control plane grows a second source of truth.
+Two models are coherent and only one of them is ours.
+
+**The declaration is the only truth. An operator action is a visible, bounded override.** Stopping a
+service records it as `stopped-by-operator` — a state distinct from `exited` and from `failed`, so
+`GET /v1/containers/{name}` reports both what was declared and what was done to it, and reading the
+API never conceals an intervention. The override's lifetime ends at the next container start, which
+therefore always reconstitutes the declared set. Drift cannot outlive a restart, and nothing an
+operator does over REST ever rewrites the persisted creation body.
+
+The rejected alternative is that a stop edits the declaration. It reads as tidier — one state, no
+override concept — and it is the trap: the container's definition then says something its recipe
+never said, `pkg apply-recipe` becomes a diff nobody authored, and the recipe stops describing the
+container it created.
+
+This is exactly what `container stop` already means one level up: stopping a container does not
+unpersist it. The service level inherits that meaning rather than inventing a second one, and
+`cix-init` stays an executor here too — an override reaches it as a message on the control fd, not
+as a rule it holds.
+
 ## Alternatives considered
 
 **Numbered rc-style start/kill scripts (`cmd 1..999`), the owner's own suggestion — and the
@@ -220,3 +284,17 @@ That is the cost of a clean cut-over and it is paid once.
 Until the supervisor ships, `cr-1`/`cr-2` and `jump` keep their start scripts, and the limitation
 above is real rather than theoretical: a bird crash on a router presents as a container restart with
 no indication which daemon failed.
+
+**The cut-over is a dependency-ordered rolling recreate, not a loop over the container list.** Every
+container must be recreated to gain a pid 1, and the box runs containers that depend on each other
+and a VRRP pair that must not lose both members at once. The ordering that makes this safe is the
+`depends_on` graph the platform already holds, and the pacing is the jittered rolling-restart timer a
+rolling image update already uses. No new machinery — the deploy uses both rather than iterating
+blindly.
+
+**The dashboard's container detail view gains a services panel**, and it is part of this work rather
+than a discovery after it: services as rows carrying state, readiness and last exit, with start and
+stop per row. It is also where [ADR-0261](0261-reaching-inside-a-container.md)'s console list is
+rendered, since the set of things a container runs and the set of ways to reach into it are one
+panel, not two. This is the visible form of what the model actually buys — the control plane's reach
+now extends to the operation of the software inside a container, not merely to the container.

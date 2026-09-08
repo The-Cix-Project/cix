@@ -106,9 +106,15 @@ So:
    nothing above the worker can usefully restart it, and `init=/bin/cixd`
    stands.
 
-`cix-init` remains built, staged and installed. It is correct, it is proven
-to work, and it is not `init`. It goes back in **behind** its prerequisite,
-not in front of it.
+`cix-init` is correct, it is proven to work, and it is not `init`. It goes
+back in **behind** its prerequisite, not in front of it.
+
+*(Factual correction, not a reversal. As first written this paragraph said
+`cix-init` "remains built, staged and installed" — true that day, and made
+false by this same ADR's own Consequences below, which removed it. The
+decision is unchanged: the host's defence is a non-blocking reactor, and
+`init=/bin/cixd` stands. Where `cix-init` went back in was the container, not
+the host — see [ADR-0260](0260-a-container-declares-services-not-a-command.md).)*
 
 ## Consequences
 
