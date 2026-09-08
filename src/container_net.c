@@ -235,9 +235,15 @@ int container_net_host_attach_interfaces(const char *const *interfaces, int inte
 		                 : rtnl_link_set_netns_pid(fd, interfaces[i], child_pid);
 
 		if (rc != 0) {
+			/* Preserve the errno of the move itself: rtnl_close() and
+			 * close() below can both overwrite it, and which of the two
+			 * mechanisms refused is the whole diagnosis. */
+			int e = errno;
+
 			rtnl_close(fd);
 			close(*out_netns_fd);
 			*out_netns_fd = -1;
+			errno = e;
 			return -1;
 		}
 	}
@@ -262,23 +268,44 @@ int container_net_host_attach_interfaces(const char *const *interfaces, int inte
 	if (helper == 0) {
 		int hfd;
 
+		/*
+		 * Exit with the REAL errno of whatever failed, clamped into an
+		 * exit status. The parent cannot see this child's errno any
+		 * other way, and it used to _exit(1) for all three failures --
+		 * so the parent returned -1 with whatever errno happened to be
+		 * lying around from earlier in container_create(), typically a
+		 * long-ignored EEXIST from a mkdir. That reported "File exists"
+		 * for a failure that had nothing to do with a file, and cost a
+		 * full deploy cycle to see through.
+		 */
 		if (setns(*out_netns_fd, CLONE_NEWNET) != 0)
-			_exit(1);
+			_exit(errno > 0 && errno < 256 ? errno : EIO);
 		hfd = rtnl_open();
 		if (hfd < 0)
-			_exit(1);
+			_exit(errno > 0 && errno < 256 ? errno : EIO);
 		for (i = 0; i < interface_count; i++) {
 			if (rtnl_link_set_up(hfd, interfaces[i]) != 0) {
+				int e = errno;
+
 				rtnl_close(hfd);
-				_exit(1);
+				_exit(e > 0 && e < 256 ? e : EIO);
 			}
 		}
 		rtnl_close(hfd);
 		_exit(0);
 	}
-	if (waitpid(helper, &status, 0) != helper || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+	if (waitpid(helper, &status, 0) != helper) {
 		close(*out_netns_fd);
 		*out_netns_fd = -1;
+		return -1;
+	}
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+		/* The child's own errno, not this process's stale one. */
+		int e = WIFEXITED(status) ? WEXITSTATUS(status) : EIO;
+
+		close(*out_netns_fd);
+		*out_netns_fd = -1;
+		errno = e > 0 ? e : EIO;
 		return -1;
 	}
 
