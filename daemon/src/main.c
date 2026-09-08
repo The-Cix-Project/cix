@@ -8072,6 +8072,26 @@ static void spawn_cix_bootroot_assembly(const char *artifact_dir)
 			else if (stat(firmware_dir, &firmware_st) != 0 || !S_ISDIR(firmware_st.st_mode))
 				firmware_dir[0] = '\0';
 		}
+		/*
+		 * Logged as its own entry rather than left to mkbootroot's
+		 * captured output, which is one long message the log store
+		 * truncates -- so "did this assembly stage firmware?" was not
+		 * answerable after the fact, and that question came up the
+		 * first time a booted host was missing its firmware.
+		 *
+		 * Both branches say something. Silence on the absent path
+		 * would leave the most likely cause of a firmware-less host
+		 * looking identical to a host that was never meant to have
+		 * any.
+		 */
+		if (firmware_dir[0] != '\0')
+			logstore_write("cixd", "info", "cix bootroot assembly: staging firmware from %s",
+			               firmware_dir);
+		else
+			logstore_write("cixd", "info",
+			               "cix bootroot assembly: no firmware to stage -- image \"%s\" has no "
+			               "current version, or no lib/firmware in it",
+			               FIRMWARE_IMAGE);
 	}
 
 	argv[0] = mkbootroot_bin;
