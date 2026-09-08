@@ -8,7 +8,8 @@
         "/usr/bin/glauth",
         "-c",
         "/etc/glauth/glauth.cfg"
-      ]
+      ],
+      "on_exit": "fail-container"
     }
   ],
   "capture_output": true,

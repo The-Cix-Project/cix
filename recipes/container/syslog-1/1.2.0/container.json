@@ -16,7 +16,8 @@
         "/run/syslogd.cache",
         "-f",
         "/etc/syslog.conf"
-      ]
+      ],
+      "on_exit": "fail-container"
     }
   ],
   "networks": [

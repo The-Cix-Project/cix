@@ -252,7 +252,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"filetest\",\"image\":\"filestest\","
-	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}],"
+	                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}],"
 	                       "\"files\":[{\"path\":\"/etc/bird.conf\","
 	                       "\"content\":\"router id 1.1.1.1;\\n\",\"mode\":\"0640\"}]}",
 	                       &r) != 0 ||
@@ -323,7 +323,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"badpath1\",\"image\":\"filestest\","
-	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"]}],"
+	                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"]}],"
 	                       "\"files\":[{\"path\":\"/../../etc/passwd\",\"content\":\"x\"}]}",
 	                       &r) != 0 ||
 	    r.status != 400) {
@@ -335,7 +335,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"badpath2\",\"image\":\"filestest\","
-	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"]}],"
+	                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"]}],"
 	                       "\"files\":[{\"path\":\"etc/passwd\",\"content\":\"x\"}]}",
 	                       &r) != 0 ||
 	    r.status != 400) {
@@ -349,7 +349,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"sysctltest\",\"image\":\"filestest\","
-	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}],"
+	                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}],"
 	                       "\"sysctls\":{\"net.ipv4.conf.all.rp_filter\":\"0\"}}",
 	                       &r) != 0 ||
 	    r.status != 201) {
@@ -384,7 +384,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"badsysctl1\",\"image\":\"filestest\","
-	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"]}],"
+	                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"]}],"
 	                       "\"sysctls\":{\"vm.swappiness\":\"10\"}}",
 	                       &r) != 0 ||
 	    r.status != 400) {
@@ -396,7 +396,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"badsysctl2\",\"image\":\"filestest\","
-	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"]}],"
+	                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"]}],"
 	                       "\"sysctls\":{\"net..foo\":\"1\"}}",
 	                       &r) != 0 ||
 	    r.status != 400) {
@@ -411,7 +411,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"persisttest\",\"image\":\"filestest\","
-	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"]}],\"restart\":\"always\","
+	                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"]}],\"restart\":\"always\","
 	                       "\"files\":[{\"path\":\"/etc/pbr.conf\",\"content\":\"mode=pbr\\n\"}]}",
 	                       &r) != 0 ||
 	    r.status != 201) {
@@ -482,7 +482,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"readtest\",\"image\":\"filestest\","
-	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"0\",\"0\"]}],"
+	                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"0\",\"0\"]}],"
 	                       "\"files\":[{\"path\":\"/etc/only-in-upper.conf\","
 	                       "\"content\":\"from-upper\\n\"}]}",
 	                       &r) != 0 ||
@@ -578,7 +578,7 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"ownertest\",\"image\":\"filestest\","
-		                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}],"
+		                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}],"
 		                       "\"files\":[{\"path\":\"/etc/owned\",\"content\":\"x\\n\","
 		                       "\"mode\":\"0640\",\"owner\":75,\"group\":76}]}",
 		                       &r) != 0 ||
@@ -612,7 +612,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"writetest\",\"image\":\"filestest\","
-	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}]}",
+	                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}]}",
 	                       &r) != 0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: POST writetest, status=%d\n", r.status);
@@ -753,7 +753,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"writetest2\",\"image\":\"filestest\","
-	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"0\",\"0\"]}]}",
+	                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"0\",\"0\"]}]}",
 	                       &r) != 0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: POST writetest2, status=%d\n", r.status);

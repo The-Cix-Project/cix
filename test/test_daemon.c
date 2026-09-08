@@ -150,7 +150,7 @@ int main(void)
 
 	/* 2. create c1, exits quickly with code 5 */
 	if (cix_client_request(&client, "POST", "/v1/containers",
-	                       "{\"name\":\"c1\",\"image\":\"test\",\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"0\",\"5\"]}]}",
+	                       "{\"name\":\"c1\",\"image\":\"test\",\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"0\",\"5\"]}]}",
 	                       &r) != 0 ||
 	    r.status != 201 || !str_eq(json_str_field(r.json, "status"), "running")) {
 		fprintf(stderr, "FAIL: POST /v1/containers (c1), status=%d\n", r.status);
@@ -193,7 +193,7 @@ int main(void)
 
 	/* 5. create c2, sleeps 30s -- then delete it while running */
 	if (cix_client_request(&client, "POST", "/v1/containers",
-	                       "{\"name\":\"c2\",\"image\":\"test\",\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}]}",
+	                       "{\"name\":\"c2\",\"image\":\"test\",\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}]}",
 	                       &r) != 0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: POST /v1/containers (c2), status=%d\n", r.status);
@@ -282,7 +282,7 @@ int main(void)
 	 * (cpuset live from the real cgroup file; quota from the
 	 * creation-time mirror). */
 	if (cix_client_request(&client, "POST", "/v1/containers",
-	                       "{\"name\":\"c49\",\"image\":\"test\",\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}],"
+	                       "{\"name\":\"c49\",\"image\":\"test\",\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}],"
 	                       "\"cpuset\":\"0\"}",
 	                       &r) != 0 ||
 	    r.status != 400 || r.json == NULL ||
@@ -298,7 +298,7 @@ int main(void)
 	 * serializer path asserted below and is verified against a real
 	 * quota-capable install instead. */
 	if (cix_client_request(&client, "POST", "/v1/containers",
-	                       "{\"name\":\"c49\",\"image\":\"test\",\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}],"
+	                       "{\"name\":\"c49\",\"image\":\"test\",\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}],"
 	                       "\"cpuset_cpus\":\"0\"}",
 	                       &r) != 0 ||
 	    r.status != 201) {
@@ -516,7 +516,7 @@ int main(void)
 	 * rendered from that config (nslcd.conf carries the bind values,
 	 * proving they came from the daemon, not the recipe). */
 	if (cix_client_request(&client, "POST", "/v1/containers",
-	                       "{\"name\":\"cll\",\"image\":\"test\",\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}],"
+	                       "{\"name\":\"cll\",\"image\":\"test\",\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}],"
 	                       "\"ldap_client\":true}",
 	                       &r) != 0 ||
 	    r.status != 400) {
@@ -534,7 +534,7 @@ int main(void)
 	}
 	cix_response_free(&r);
 	if (cix_client_request(&client, "POST", "/v1/containers",
-	                       "{\"name\":\"cll\",\"image\":\"test\",\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}],"
+	                       "{\"name\":\"cll\",\"image\":\"test\",\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}],"
 	                       "\"ldap_client\":true}",
 	                       &r) != 0 ||
 	    r.status != 201) {
@@ -568,7 +568,7 @@ int main(void)
 	 */
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
-	                       "{\"name\":\"cllg\",\"image\":\"test\",\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}],"
+	                       "{\"name\":\"cllg\",\"image\":\"test\",\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}],"
 	                       "\"ldap_client\":true,\"ldap_allow_groups\":[\"nosuchgroup\"]}",
 	                       &r) != 0 ||
 	    r.status != 400 || json_str_field(r.json, "error") == NULL ||
@@ -593,7 +593,7 @@ int main(void)
 	 */
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
-	                       "{\"name\":\"cllg\",\"image\":\"test\",\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}],"
+	                       "{\"name\":\"cllg\",\"image\":\"test\",\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}],"
 	                       "\"ldap_client\":true,\"ldap_allow_groups\":[\"evil)(uid=*\"]}",
 	                       &r) != 0 ||
 	    r.status != 400) {
@@ -604,7 +604,7 @@ int main(void)
 
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
-	                       "{\"name\":\"cllg\",\"image\":\"test\",\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}],"
+	                       "{\"name\":\"cllg\",\"image\":\"test\",\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}],"
 	                       "\"ldap_client\":true,\"ldap_allow_groups\":[\"jumpusers\"]}",
 	                       &r) != 0 ||
 	    r.status != 201) {
@@ -641,7 +641,7 @@ int main(void)
 
 	/* 7. duplicate name -> 409 */
 	if (cix_client_request(&client, "POST", "/v1/containers",
-	                       "{\"name\":\"c1\",\"image\":\"test\",\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"0\",\"1\"]}]}",
+	                       "{\"name\":\"c1\",\"image\":\"test\",\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"0\",\"1\"]}]}",
 	                       &r) != 0 ||
 	    r.status != 409) {
 		fprintf(stderr, "FAIL: duplicate name expected 409, got %d\n", r.status);
@@ -651,7 +651,7 @@ int main(void)
 
 	/* 8. missing image -> 400 */
 	if (cix_client_request(&client, "POST", "/v1/containers",
-	                       "{\"name\":\"c3\",\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\"]}]}", &r) != 0 ||
+	                       "{\"name\":\"c3\",\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\"]}]}", &r) != 0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: missing image expected 400, got %d\n", r.status);
 		ok = 0;

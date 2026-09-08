@@ -213,7 +213,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	CHECK(cix_client_request(&client, "POST", "/v1/containers/recipes",
 	                         "{\"name\":\"crroles\",\"content\":\"{\\\"name\\\":\\\"crroles\\\","
-	                         "\\\"image\\\":\\\"base\\\",\\\"cmd\\\":[\\\"/bin/true\\\"],"
+	                         "\\\"image\\\":\\\"base\\\",\\\"services\\\":[{\\\"name\\\":\\\"main\\\",\\\"on_exit\\\":\\\"fail-container\\\",\\\"cmd\\\":[\\\"/bin/true\\\"]}],"
 	                         "\\\"dns_server\\\":{\\\"hosts_path\\\":\\\"/etc/hosts\\\"},"
 	                         "\\\"ntp_server\\\":true,\\\"syslog_target\\\":true,"
 	                         "\\\"ldap_server\\\":{\\\"config_path\\\":\\\"/etc/glauth.cfg\\\"}}\"}",
@@ -230,7 +230,7 @@ int main(void)
 	{
 		struct json_writer w;
 		const char *content =
-		    "{\"name\":\"crtest\",\"image\":\"base\",\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/true\"]}],\"restart\":\"no\","
+		    "{\"name\":\"crtest\",\"image\":\"base\",\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/true\"]}],\"restart\":\"no\","
 		    "\"files\":[{\"path\":\"/etc/secret.conf\",\"content\":\"password={{SECRET:PW}}\\n\"}]}";
 
 		jw_init(&w);
@@ -372,7 +372,7 @@ int main(void)
 		static const char ldap_recipe_body[] =
 		    "{\"name\":\"crtest\",\"content\":\"{"
 		    "\\\"name\\\":\\\"crtest\\\",\\\"image\\\":\\\"base\\\","
-		    "\\\"cmd\\\":[\\\"/bin/true\\\"],"
+		    "\\\"services\\\":[{\\\"name\\\":\\\"main\\\",\\\"on_exit\\\":\\\"fail-container\\\",\\\"cmd\\\":[\\\"/bin/true\\\"]}],"
 		    "\\\"files\\\":[{\\\"path\\\":\\\"/etc/nslcd.conf\\\","
 		    "\\\"content\\\":\\\"uri {{LDAP:URI}}\\\\nbase {{LDAP:BASE_DN}}\\\\n"
 		    "binddn {{LDAP:BIND_DN}}\\\\nbindpw {{LDAP:BIND_PASSWORD}}\\\\n\\\"}]}\"}";
@@ -450,7 +450,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	CHECK(cix_client_request(&client, "POST", "/v1/containers",
 	                         "{\"name\":\"crtldap\",\"image\":\"base\","
-	                         "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/true\",\"60\"]}],"
+	                         "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/true\",\"60\"]}],"
 	                         "\"networks\":[\"crtnet\"]}",
 	                         &r) == 0 &&
 	          r.status == 201,

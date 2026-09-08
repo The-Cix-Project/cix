@@ -209,7 +209,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"ldapsrv\",\"image\":\"ldaptest\","
-	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}]}",
+	                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}]}",
 	                       &r) != 0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: POST ldapsrv, status=%d\n", r.status);
@@ -343,7 +343,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"ldapsrv2\",\"image\":\"ldaptest\","
-	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}]}",
+	                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}]}",
 	                       &r) != 0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: POST ldapsrv2, status=%d\n", r.status);
@@ -394,7 +394,7 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"ldapcfg\",\"image\":\"ldaptest\","
-		                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}],"
+		                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}],"
 		                       "\"files\":[{\"path\":\"/etc/glauth/glauth.cfg\","
 		                       "\"content\":\"# base config\\nwatchconfig = true\\n\"}]}",
 		                       &r) != 0 ||
@@ -787,7 +787,7 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"badprov\",\"image\":\"ldaptest\","
-		                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}],"
+		                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}],"
 		                       "\"ldap_provision\":true}",
 		                       &r) != 0 ||
 		    r.status != 400) {
@@ -803,7 +803,7 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"provtest\",\"image\":\"ldaptest\","
-		                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}],"
+		                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}],"
 		                       "\"ldap_provision\":true,\"ldap_group\":\"svcaccts\"}",
 		                       &r) != 0 ||
 		    r.status != 201) {
@@ -1126,7 +1126,7 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"ldapresync\",\"image\":\"ldaptest\","
-		                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}],\"restart\":\"always\","
+		                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}],\"restart\":\"always\","
 		                       "\"files\":[{\"path\":\"/etc/glauth/glauth.cfg\","
 		                       "\"content\":\"watchconfig = true\\n\"}]}",
 		                       &r) != 0 ||
@@ -1221,7 +1221,7 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"basedntest\",\"image\":\"ldaptest\","
-		                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}],"
+		                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}],"
 		                       "\"files\":[{\"path\":\"/etc/glauth/glauth.cfg\","
 		                       "\"content\":\"[backend]\\n  datastore = \\\"config\\\"\\n  "
 		                       "baseDN = \\\"dc=old,dc=example\\\"\\n\\n[behaviors]\\n  "
@@ -1350,7 +1350,7 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"ldapfsrv\",\"image\":\"ldaptest\","
-		                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}],"
+		                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}],"
 		                       "\"networks\":[{\"name\":\"ldapfilt\"}]}",
 		                       &r) != 0 ||
 		    r.status != 201) {

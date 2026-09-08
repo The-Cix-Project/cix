@@ -217,7 +217,7 @@ int main(void)
 	 * real connectivity through it */
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
-	                       "{\"name\":\"n1\",\"image\":\"nettest\",\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/net_child\"]}],"
+	                       "{\"name\":\"n1\",\"image\":\"nettest\",\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/net_child\"]}],"
 	                       "\"networks\":[\"" TEST_NETWORK_NAME "\"]}",
 	                       &r) != 0 ||
 	    r.status != 201) {
@@ -242,7 +242,7 @@ int main(void)
 	/* 4. second networked container gets a DIFFERENT ip */
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
-	                       "{\"name\":\"n2\",\"image\":\"nettest\",\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/net_child\"]}],"
+	                       "{\"name\":\"n2\",\"image\":\"nettest\",\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/net_child\"]}],"
 	                       "\"networks\":[\"" TEST_NETWORK_NAME "\"]}",
 	                       &r) != 0 ||
 	    r.status != 201) {
@@ -302,7 +302,7 @@ int main(void)
 	 * on unchanged default behavior */
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
-	                       "{\"name\":\"n3\",\"image\":\"nettest\",\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/net_child\"]}]}",
+	                       "{\"name\":\"n3\",\"image\":\"nettest\",\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/net_child\"]}]}",
 	                       &r) != 0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: POST n3 (no networks), status=%d\n", r.status);
@@ -320,7 +320,7 @@ int main(void)
 	/* 7. unsupported network name -> 400 */
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
-	                       "{\"name\":\"n4\",\"image\":\"nettest\",\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/net_child\"]}],"
+	                       "{\"name\":\"n4\",\"image\":\"nettest\",\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/net_child\"]}],"
 	                       "\"networks\":[\"bogus\"]}",
 	                       &r) != 0 ||
 	    r.status != 400) {
@@ -332,7 +332,7 @@ int main(void)
 	/* 8. multi-homing: one container, two networks -- Phase 7 part 2 */
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
-	                       "{\"name\":\"n5\",\"image\":\"nettest\",\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/net_child\",\"2\"]}],"
+	                       "{\"name\":\"n5\",\"image\":\"nettest\",\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/net_child\",\"2\"]}],"
 	                       "\"networks\":[\"" TEST_NETWORK_NAME "\",\"" TEST_NETWORK_NAME2 "\"]}",
 	                       &r) != 0 ||
 	    r.status != 201) {
@@ -379,7 +379,7 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"router\",\"image\":\"nettest\","
-		                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"6\",\"0\"]}],"
+		                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"6\",\"0\"]}],"
 		                       "\"networks\":[\"" TEST_NETWORK_NAME "\",\"" TEST_NETWORK_NAME2
 		                       "\"],\"ip_forward\":true}",
 		                       &r) != 0 ||
@@ -407,7 +407,7 @@ int main(void)
 			 * directly reachable on one of the container's own
 			 * connected subnets, not the far one. */
 			snprintf(body, sizeof(body),
-			         "{\"name\":\"t\",\"image\":\"nettest\",\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/net_child\"]}],"
+			         "{\"name\":\"t\",\"image\":\"nettest\",\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/net_child\"]}],"
 			         "\"networks\":[\"%s\"],"
 			         "\"routes\":[{\"dest\":\"%s\",\"prefix_len\":24,\"via\":\"%s\"}]}",
 			         TEST_NETWORK_NAME2, TEST_NETWORK_SUBNET, r_ip_b);
@@ -440,7 +440,7 @@ int main(void)
 			 * that SAME network (r_ip_a), for the same reason as t's
 			 * route above. */
 			snprintf(body, sizeof(body),
-			         "{\"name\":\"h\",\"image\":\"nettest\",\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/net_connect\",\"%s\"]}],"
+			         "{\"name\":\"h\",\"image\":\"nettest\",\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/net_connect\",\"%s\"]}],"
 			         "\"networks\":[\"%s\"],"
 			         "\"routes\":[{\"dest\":\"%s\",\"prefix_len\":24,\"via\":\"%s\"}]}",
 			         t_ip, TEST_NETWORK_NAME, TEST_NETWORK_SUBNET2, r_ip_a);
@@ -503,7 +503,7 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"n6\",\"image\":\"nettest\","
-		                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/net_child\",\"2\"]}]}",
+		                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/net_child\",\"2\"]}]}",
 		                       &r) != 0 ||
 		    r.status != 201) {
 			fprintf(stderr, "FAIL: POST n6 (no networks), status=%d\n", r.status);
@@ -670,7 +670,7 @@ int main(void)
 		 * this one. */
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/containers",
-		                       "{\"name\":\"n7\",\"image\":\"nettest\",\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/net_child\"]}],"
+		                       "{\"name\":\"n7\",\"image\":\"nettest\",\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/net_child\"]}],"
 		                       "\"networks\":[\"" TEST_NETWORK_NAME "\"]}",
 		                       &r) != 0 ||
 		    r.status != 201) {
@@ -731,7 +731,7 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"n8\",\"image\":\"nettest\","
-		                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/net_child\"]}],"
+		                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/net_child\"]}],"
 		                       "\"networks\":[{\"name\":\"" TEST_NETWORK_NAME "\","
 		                       "\"ifname\":\"mgmt\"}]}",
 		                       &r) != 0 ||
@@ -785,7 +785,7 @@ int main(void)
 
 				snprintf(body, sizeof(body),
 				         "{\"name\":\"n9\",\"image\":\"nettest\","
-				         "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/net_child\"]}],"
+				         "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/net_child\"]}],"
 				         "\"networks\":[{\"name\":\"" TEST_NETWORK_NAME "\","
 				         "\"ifname\":\"%s\"}]}",
 				         bad[bi].ifname);
@@ -804,7 +804,7 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"n9\",\"image\":\"nettest\","
-		                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/net_child\"]}],"
+		                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/net_child\"]}],"
 		                       "\"networks\":["
 		                       "{\"name\":\"" TEST_NETWORK_NAME "\",\"ifname\":\"same\"},"
 		                       "{\"name\":\"" TEST_NETWORK_NAME2 "\",\"ifname\":\"same\"}]}",
