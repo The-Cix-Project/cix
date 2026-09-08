@@ -25,13 +25,14 @@
  * failure (a message is already printed to stderr).
  */
 /*
- * cmd, when non-NULL, is percent-encoded into the request's own `cmd`
- * query parameter (ADR-0245) and overrides whatever
- * the container declares. console_name, when non-NULL, selects one of
- * the container's DECLARED consoles by name (issue #248); NULL means
- * the first one it declares.
+ * console_name, when non-NULL, selects one of the container's DECLARED
+ * consoles by name (issue #248); NULL means the first one it declares.
+ *
+ * There is no free-text command. ADR-0261 removed the `cmd` query
+ * parameter and the separate exec endpoint together, so a container is
+ * reachable only through what its own recipe declares.
  */
-int cix_console_run(const struct cix_client *c, const char *container_name, const char *cmd,
+int cix_console_run(const struct cix_client *c, const char *container_name,
                     const char *console_name);
 
 /*

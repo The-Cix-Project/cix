@@ -94,20 +94,4 @@ int exec_into_container(pid_t target_pid, char *const cmd_argv[],
  */
 int exec_resize_pty(int pty_master_fd, unsigned short cols, unsigned short rows);
 
-/*
- * Issue #62: the same namespace entry, but the command's output goes to
- * a PIPE and it gets no controlling terminal. A pty exists to carry an
- * interactive session and is precisely what makes the console a poor
- * diagnostic tool -- its line discipline echoes and edits what passes
- * through, which is how a piped one-liner came back visibly corrupted
- * during the Part 201 hang investigation and fed a wrong diagnosis. A
- * pipe carries exactly the bytes the command wrote.
- *
- * *out_read_fd is the readable end; *out_child_pid is the grandchild's
- * outer-namespace pid, reaped by the caller via pidfd like every other
- * child this daemon tracks. Returns -1 with errno set on failure.
- */
-int exec_into_container_piped(pid_t target_pid, char *const cmd_argv[], int *out_read_fd,
-                              pid_t *out_child_pid);
-
 #endif /* EXEC_H */

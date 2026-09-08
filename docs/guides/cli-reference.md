@@ -206,7 +206,7 @@ Every container operation is a subcommand of `container` — one noun-based name
 | `container stats NAME` | Real, host-side CPU/memory/disk/network usage, including this container's own cpu/memory/io pressure-stall (PSI) figures (ADR-0074), one point-in-time snapshot |
 | `container migrate-storage NAME [--disk=NAME]` | Move a container's own overlay storage to a disk carrying the `container-storage` role (or `--disk=` omitted for the default OS-disk placement) — briefly stops and automatically restarts the container for the final cutover; requires `restart` other than `"no"` (ADR-0142) |
 | `container migrate-storage-status NAME` | State/disk/error of the most recent (or running) container-storage migration |
-| `container console NAME [--console=NAME] [--cmd=PATH]` | Attach to one of the consoles the container **declares** ([#248](https://git.home.arpa/itdlabs/cix/issues/248)). `--console=` picks which; omitted means the first declared. A container that declares none has no console and says so &mdash; that is the correct answer for an image with no shell, which is most of this platform's own. `--cmd=` still runs an arbitrary command instead, including on a container declaring none: it answers "run this specific thing" rather than "what does this container offer", and is not a security boundary (anyone who can reach this endpoint can already run code in the container) |
+| `container console NAME [--console=NAME]` | Attach to one of the consoles the container **declares** ([#248](https://git.home.arpa/itdlabs/cix/issues/248)). `--console=` picks which; omitted means the first declared. A container that declares none has no console and says so &mdash; that is the correct answer for an image with no shell, which is most of this platform's own. There is no free-text command: [ADR-0261](../adr/0261-reaching-inside-a-container.md) removed `--cmd=` and the separate `exec` endpoint together, so a container is reachable only through what its own recipe declares. To debug with something new, add it to the container's `consoles` and re-apply &mdash; the set is meant to be edited when the need changes |
 | `container files get NAME --path=/some/path [--output=PATH]` | Read one file's raw bytes back out of a container's rootfs; stdout if `--output=` omitted |
 | `container files put NAME --path=/some/path --file=LOCAL_PATH [--mode=0644]` | Write/overwrite one file inside an already-existing container, live and ephemeral, without a recreate (ADR-0153) |
 | `container rm NAME` | Stop (if running), remove, and forget the persisted definition — the only way to make a container truly gone (ADR-0181) |
@@ -250,7 +250,6 @@ Each flag maps directly to the matching `ContainerCreateRequest` field — see [
 
 | Command | |
 |---|---|
-| `exec NAME -- COMMAND [ARGS...]` | Run a command inside a **running** container's own namespaces and print what it wrote. No shell (nothing reinterprets your arguments) and no pty (nothing echoes or edits the output) &mdash; which is what makes it a usable diagnostic where the interactive console is not. Exits with the command's own status |
 
 ## Networks
 
@@ -336,7 +335,7 @@ The first declared is what `container console NAME` attaches to with no `--conso
 Before this they still *ran* — which is why it was easy to miss — but always at a fixed 80×24 in the corner of the screen, because the pty was never sized and ncurses fell back to the terminfo defaults.
 
 ```
-cixctl container console jump --cmd=/usr/bin/htop
+cixctl container console jump --console=login
 ```
 
 Two things it needs, both usually already true:

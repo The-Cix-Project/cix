@@ -321,7 +321,7 @@ static int wait_for_daemon(struct cix_client *client, int tries)
 }
 
 /* A console websocket, upgraded and left open for the caller to abuse. */
-static int open_console(const char *container, const char *cmd)
+static int open_console(const char *container, const char *console_name)
 {
 	char req[512];
 	char resp[2048];
@@ -332,13 +332,13 @@ static int open_console(const char *container, const char *cmd)
 	if (fd < 0)
 		return -1;
 	rlen = snprintf(req, sizeof(req),
-	                "GET /v1/containers/%s/console?cmd=%s HTTP/1.1\r\n"
+	                "GET /v1/containers/%s/console?console=%s HTTP/1.1\r\n"
 	                "Host: 127.0.0.1\r\n"
 	                "Upgrade: websocket\r\n"
 	                "Connection: Upgrade\r\n"
 	                "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
 	                "Sec-WebSocket-Version: 13\r\n\r\n",
-	                container, cmd);
+	                container, console_name);
 	if (cix_write_all(fd, req, (size_t)rlen) != 0) {
 		close(fd);
 		return -1;
@@ -479,7 +479,7 @@ static void attack_console_input_flood(void)
 	for (i = 63; i < (int)sizeof(chunk); i += 64)
 		chunk[i] = '\n';
 
-	fd = open_console("aggressive", "/bin/console_term_child");
+	fd = open_console("aggressive", "term");
 	if (fd < 0) {
 		/* Reported, never silent: an attack that did not reach its
 		 * target is not the same as one the daemon survived, and a
@@ -560,7 +560,7 @@ static void attack_abandoned_sessions(void)
 	lg.l_linger = 0;
 
 	for (i = 0; i < 12; i++) {
-		int fd = open_console("aggressive", "/bin/console_term_child");
+		int fd = open_console("aggressive", "term");
 
 		if (fd < 0)
 			continue;
@@ -741,6 +741,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"aggressive\",\"image\":\"aggressive\",\"userns\":true,"
+	                       "\"consoles\":[{\"name\":\"term\",\"cmd\":[\"/bin/console_term_child\"]}],"
 	                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"600\",\"0\"]}]}",
 	                       &r) != 0 ||
 	    r.status != 201) {

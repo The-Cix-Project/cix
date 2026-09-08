@@ -510,7 +510,7 @@ static void relay(int ws_fd)
 	}
 }
 
-int cix_console_run(const struct cix_client *c, const char *container_name, const char *cmd,
+int cix_console_run(const struct cix_client *c, const char *container_name,
                     const char *console_name)
 {
 	int fd;
@@ -557,22 +557,6 @@ int cix_console_run(const struct cix_client *c, const char *container_name, cons
 			sep = "&";
 		}
 
-		/*
-		 * --cmd: run this specific program instead of one of the
-		 * container's declared consoles. Percent-encoded, because a
-		 * command is an absolute path and '/' is not the only byte in
-		 * one that a query string cannot carry raw.
-		 */
-		if (cmd != NULL && cmd[0] != '\0') {
-			char enc[512];
-
-			if (url_encode_component(cmd, enc, sizeof(enc)) != 0) {
-				fprintf(stderr, "console: --cmd is too long\n");
-				return -1;
-			}
-			used += (size_t)snprintf(path + used, sizeof(path) - used, "%scmd=%s", sep, enc);
-			sep = "&";
-		}
 		(void)sep;
 
 		fd = do_ws_handshake(c, "console", path);

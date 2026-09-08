@@ -509,7 +509,7 @@ static const struct cli_node n_resolv_subs[] = {
 };
 
 static const char *const n_console_flags[] = {
-	"--cmd=",
+	"--console=",
 	NULL
 };
 
@@ -654,7 +654,7 @@ static const char *const n_container_apply_recipe_flags[] = {
 };
 
 static const char *const n_container_console_flags[] = {
-	"--cmd=",
+	"--console=",
 	NULL
 };
 
@@ -1358,7 +1358,6 @@ static const struct cli_node CLI_TREE[] = {
 	{ "swap", NULL, n_swap_subs },
 	{ "host-stats", NULL, NULL },
 	{ "server-health", NULL, n_server_health_subs },
-	{ "exec", NULL, NULL },
 	{ "factory-reset", n_factory_reset_flags, NULL },
 	{ "software", NULL, NULL },
 	{ "volume", n_volume_flags, n_volume_subs },
