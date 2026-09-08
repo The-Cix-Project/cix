@@ -57,6 +57,24 @@ cixctl pkg install --name=e2fsprogs --image=cix-hosttools
 
 `cix-hosttools` is a fixed, well-known name (`HOST_TOOLS_IMAGE` in `daemon/src/main.c`) -- `spawn_cix_bootroot_assembly()` (the server-side handler behind a `cix` hostbuild's own automatic bootroot assembly, ADR-0057) checks for it and, if present, passes its rootfs to `mkbootroot.c`'s own `host_tools_dir` argument so `cp`/`rm`/`sha256sum`/`gzip` come from there instead of the box running the build. This is entirely optional and purely additive: a box that never builds this image keeps today's behavior (those four tools sourced from wherever `mkbootroot` itself runs) -- nothing breaks either way. `openssl`/`curl`/`tar`/`bzip2`/`xz`/`squashfs-tools`/`mkfs.ext4` (e2fsprogs) don't have a `mkbootroot.c` wiring point yet (a real, tracked follow-on, not silently dropped) -- installing them onto this same image is still worthwhile today since it's the same real, from-source artifact a future wiring pass will point at.
 
+### 1c. Build the firmware image (optional, ADR-0263)
+
+A driver asks the kernel for firmware during device probe, and the kernel answers it out of the root filesystem it booted — before any container exists, so a blob inside a container can never be reached. Any host whose hardware needs firmware therefore needs it in the control-plane root.
+
+Build one more image, named for what it holds:
+
+```
+cixctl image create --name=cix-firmware
+cixctl pkg install --name=rtw88-firmware --image=cix-firmware
+cixctl pkg install --name=wireless-regdb --image=cix-firmware
+```
+
+`cix-firmware` is a fixed, well-known name (`FIRMWARE_IMAGE` in `daemon/src/main.c`), resolved the same way `cix-hosttools` is: `spawn_cix_bootroot_assembly()` takes the image's current version, then its own `lib/firmware`, and hands that to `mkbootroot` as the firmware root to stage. That subdirectory is used rather than the image rootfs because it is where firmware packages install, so its contents already mirror `/lib/firmware` exactly — `rtw88/rtw8822b_fw.bin` and a bare `regulatory.db` land where `request_firmware()` looks, with no knowledge anywhere of which drivers exist.
+
+Optional and purely additive, like `cix-hosttools`: a box that never builds this image passes an empty firmware root and `mkbootroot` skips the staging. Install only what the hardware actually needs — the two above are what an 802.11ac access point on an RTL8822BU adapter takes (`rtw88-firmware` for the radio, `wireless-regdb` for the channels and powers `cfg80211` will permit). A machine with an AMD GPU adds `amdgpu` firmware to this same image; nothing about the mechanism changes per device.
+
+The staged firmware is part of the assembled root, and `mkbootroot` assembles a **fresh** root every run. So this is not a one-time action whose result persists: the image has to exist at assembly time, every time, or the resulting root simply has no firmware in it.
+
 ### 2. Point `cix.recipe` at a real source snapshot
 
 `recipes/package/cix/`'s `pkg_source` is this repo's own self-hosted git remote's archive-download endpoint, pinned to a real tag — never floating `main`, the same fixed-version discipline every other recipe in this catalog follows:
