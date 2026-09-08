@@ -314,6 +314,9 @@
 				<h3>Effective definition</h3>
 				<p class="hint">What this container actually is &mdash; the definition the daemon replays whenever it starts this container, including after a reboot. Summary, Hardware and Options show most of it; these are the parts they do not.</p>
 				<table class="detail-table"><tbody id="cd-config-fields"></tbody></table>
+				<h3>Services</h3>
+				<p class="hint">What this container runs (ADR-0260): its declared services, in the order cix-init starts them, each with the state cix-init last reported. Stop holds a service stopped until the next container start &mdash; an override, never an edit of the declaration.</p>
+				<table id="cd-config-services"><thead><tr><th>Service</th><th>Type</th><th>State</th><th>PID</th><th>Restarts</th><th>Last exit</th><th>Command</th><th></th></tr></thead><tbody></tbody></table>
 				<h3>Declared consoles</h3>
 				<p class="hint">What <code>cixctl container console NAME --console=</code> and the Console tab offer. A container that declares none has no console, which is the right answer for an image with no shell.</p>
 				<table id="cd-config-consoles"><tbody></tbody></table>
@@ -2840,8 +2843,9 @@
 							<input type="text" id="f-image" required>
 						</label>
 						<label class="wide">
-							Command
-							<input type="text" id="f-cmd" placeholder="/bin/echo hello world" required>
+							Services (one per line: NAME=/path args | after=a,b | ready=tcp:22 or socket:/run/x or command:/path | type=oneshot | on-exit=restart,stop,fail-container)
+							<textarea id="f-services" rows="4" required
+							          placeholder="hostkeys=/usr/bin/ssh-keygen -A | type=oneshot&#10;sshd=/usr/sbin/sshd -D -e | after=hostkeys | ready=tcp:22"></textarea>
 						</label>
 					</fieldset>
 					<fieldset>
@@ -2967,14 +2971,6 @@
 						<label class="wide">
 							Depends on
 							<input type="text" id="f-depends-on" placeholder="(none), or comma-separated: db,cache">
-						</label>
-						<label>
-							Readiness TCP port
-							<input type="number" id="f-readiness-port" min="1" max="65535">
-						</label>
-						<label>
-							Readiness timeout (seconds)
-							<input type="number" id="f-readiness-timeout" min="1" max="300" placeholder="30">
 						</label>
 						<label class="wide">
 							Sysctls

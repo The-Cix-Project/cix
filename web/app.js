@@ -2624,6 +2624,145 @@ async function unpauseContainer(name) {
  * <th> and not a styled <td>, because that is what these are: the
  * label is the header for its row. Screen readers announce it as one.
  */
+/*
+ * ADR-0260: services. The create form takes one service per line,
+ *   NAME=/path args | after=a,b | ready=tcp:22 | type=oneshot | on-exit=stop
+ * -- the same shape cixctl's --service=/--after=/--ready=/--on-exit=
+ * flags take, so an operator learns one notation. Returns the array
+ * for the request body, or null after showing what was wrong.
+ */
+function parseServicesText(text) {
+	const out = [];
+	const lines = text.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
+
+	for (const line of lines) {
+		const parts = line.split("|").map((p) => p.trim());
+		const eq = parts[0].indexOf("=");
+
+		if (eq <= 0) {
+			showStatus("Service line needs NAME=/path args: " + line, true);
+			return null;
+		}
+		const svc = {
+			name: parts[0].slice(0, eq).trim(),
+			cmd: parts[0].slice(eq + 1).trim().split(/\s+/).filter((s) => s.length > 0),
+		};
+		if (svc.cmd.length === 0 || svc.cmd[0][0] !== "/") {
+			showStatus("Service " + svc.name + " needs an absolute program path", true);
+			return null;
+		}
+		for (const attr of parts.slice(1)) {
+			const aeq = attr.indexOf("=");
+			const key = aeq > 0 ? attr.slice(0, aeq).trim() : attr;
+			const val = aeq > 0 ? attr.slice(aeq + 1).trim() : "";
+
+			if (key === "after") {
+				svc.after = val.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+			} else if (key === "type") {
+				svc.type = val;
+			} else if (key === "on-exit") {
+				svc.on_exit = val;
+			} else if (key === "ready") {
+				if (val.startsWith("tcp:"))
+					svc.ready = { tcp_port: parseInt(val.slice(4), 10) };
+				else if (val.startsWith("socket:"))
+					svc.ready = { socket: val.slice(7) };
+				else if (val.startsWith("command:"))
+					svc.ready = { command: val.slice(8).split(/\s+/).filter((s) => s.length > 0) };
+				else {
+					showStatus("Service " + svc.name + ": ready wants tcp:PORT, socket:/path or command:/path", true);
+					return null;
+				}
+			} else {
+				showStatus("Service " + svc.name + ": unknown attribute '" + key + "'", true);
+				return null;
+			}
+		}
+		out.push(svc);
+	}
+	if (out.length === 0) {
+		showStatus("A container declares at least one service", true);
+		return null;
+	}
+	return out;
+}
+
+function summarizeServices(c) {
+	const svcs = Array.isArray(c.services) ? c.services : [];
+
+	if (svcs.length === 0)
+		return "-";
+	return svcs.map((s) => s.name + ":" + (s.state || "?")).join(", ");
+}
+
+function formatServiceExit(s) {
+	if (!s.last_exit)
+		return "-";
+	if (s.last_exit.kind === "exited")
+		return "exit " + s.last_exit.status;
+	return s.last_exit.kind + " by signal " + s.last_exit.signal;
+}
+
+async function containerServiceAction(name, service, action) {
+	const path = action === "start" ? CIX_API.startContainerService(name, service)
+	           : action === "stop" ? CIX_API.stopContainerService(name, service)
+	           : CIX_API.restartContainerService(name, service);
+
+	try {
+		await apiRequest("POST", path);
+		clearStatus();
+		await refreshContainers();
+		renderCurrentView();
+	} catch (e) {
+		showStatus("Failed to " + action + " " + service + " in " + name + ": " + e.message, true);
+	}
+}
+
+/* The services panel: declaration and live state per row, with the
+ * three operations the API offers on one service. */
+function renderServicesTable(c) {
+	const tbody = document.querySelector("#cd-config-services tbody");
+	const svcs = Array.isArray(c.services) ? c.services : [];
+
+	tbody.textContent = "";
+	if (svcs.length === 0) {
+		const tr = document.createElement("tr");
+		const td = document.createElement("td");
+
+		td.colSpan = 8;
+		td.textContent = "This container declares no service.";
+		tr.appendChild(td);
+		tbody.appendChild(tr);
+		return;
+	}
+	for (const s of svcs) {
+		const tr = document.createElement("tr");
+		const cells = [s.name, s.type || "daemon", s.state || "?", s.pid ? String(s.pid) : "-",
+		               String(s.restarts || 0), formatServiceExit(s), (s.cmd || []).join(" ")];
+
+		for (const text of cells) {
+			const td = document.createElement("td");
+
+			td.textContent = text;
+			tr.appendChild(td);
+		}
+		const actions = document.createElement("td");
+
+		for (const action of ["start", "stop", "restart"]) {
+			const b = document.createElement("button");
+
+			b.type = "button";
+			b.className = "secondary";
+			b.textContent = action;
+			b.disabled = c.status !== "running";
+			b.addEventListener("click", () => containerServiceAction(c.name, s.name, action));
+			actions.appendChild(b);
+		}
+		tr.appendChild(actions);
+		tbody.appendChild(tr);
+	}
+}
+
 function fieldBlock(label, value) {
 	const row = document.createElement("tr");
 	const labelCell = document.createElement("th");
@@ -3827,7 +3966,8 @@ function renderContainerDetail(name) {
 	fields.appendChild(fieldBlock("Exit status", formatExitStatus(c)));
 	if (c.exit_reason)
 		fields.appendChild(fieldBlock("Exit reason", c.exit_reason));
-	fields.appendChild(fieldBlock("Command", (c.cmd || []).join(" ") || "-"));
+	fields.appendChild(fieldBlock("Services", summarizeServices(c)));
+	fields.appendChild(fieldBlock("Ready", c.ready ? "yes" : "no"));
 
 	/* Resource limits -- moved onto the Hardware tab (issue #69,
 	 * user-requested): the full resource envelope lives with the rest
@@ -3974,15 +4114,14 @@ function renderContainerDetail(name) {
 
 		configFields.textContent = "";
 		configFields.appendChild(
-			fieldBlock("Command", Array.isArray(c.cmd) && c.cmd.length > 0 ? c.cmd.join(" ")
-			                                                              : "(image default)"));
-		configFields.appendChild(
 			fieldBlock("Added capabilities",
 			           Array.isArray(c.cap_add) && c.cap_add.length > 0 ? c.cap_add.join(", ")
 			                                                           : "none (the default set)"));
 		configFields.appendChild(fieldBlock("User namespace", c.userns ? "yes" : "no"));
 		configFields.appendChild(fieldBlock("Capture output", c.captured_output ? "yes" : "no"));
 		configFields.appendChild(fieldBlock("Image", c.image || "?"));
+
+		renderServicesTable(c);
 
 		/* Its own table, like env/sysctls/files: fieldBlock renders with
 		 * textContent, so a newline-joined list would collapse to one
@@ -4021,12 +4160,6 @@ function renderContainerDetail(name) {
 	optionsFields.appendChild(fieldBlock("Pinned image version", c.image_version || "-"));
 	optionsFields.appendChild(fieldBlock("Depends on", (c.depends_on || []).join(", ") || "-"));
 	optionsFields.appendChild(fieldBlock("DNS servers", (c.dns_servers || []).join(", ") || "-"));
-	optionsFields.appendChild(
-		fieldBlock(
-			"Readiness",
-			c.readiness ? "tcp:" + c.readiness.tcp_port + " (timeout " + c.readiness.timeout_seconds + "s)" : "-"
-		)
-	);
 	simpleTableRows(
 		document.querySelector("#cd-sysctls tbody"),
 		Object.entries(c.sysctls || {}).map(([k, v]) => [k, v]),
@@ -10271,7 +10404,7 @@ document.getElementById("run-form").addEventListener("submit", async (event) => 
 
 	const name = document.getElementById("f-name").value.trim();
 	const image = document.getElementById("f-image").value.trim();
-	const cmdText = document.getElementById("f-cmd").value.trim();
+	const servicesText = document.getElementById("f-services").value;
 	const memoryMaxText = document.getElementById("f-memory-max").value.trim();
 	const memorySwapMaxText = document.getElementById("f-memory-swap-max").value.trim();
 	const pidsMaxText = document.getElementById("f-pids-max").value.trim();
@@ -10295,8 +10428,6 @@ document.getElementById("run-form").addEventListener("submit", async (event) => 
 	const followRolling = document.getElementById("f-follow-rolling").checked;
 	const followRollingJitterText = document.getElementById("f-follow-rolling-jitter").value.trim();
 	const dependsOnText = document.getElementById("f-depends-on").value.trim();
-	const readinessPortText = document.getElementById("f-readiness-port").value.trim();
-	const readinessTimeoutText = document.getElementById("f-readiness-timeout").value.trim();
 	const sysctlsText = document.getElementById("f-sysctls").value.trim();
 	const envText = document.getElementById("f-env").value.trim();
 	const pkiIssue = document.getElementById("f-pki-issue").checked;
@@ -10308,10 +10439,13 @@ document.getElementById("run-form").addEventListener("submit", async (event) => 
 	const ldapUidText = document.getElementById("f-ldap-uid").value.trim();
 	const ldapSecretDir = document.getElementById("f-ldap-secret-dir").value.trim();
 
+	const services = parseServicesText(servicesText);
+	if (services === null)
+		return;
 	const body = {
 		name: name,
 		image: image,
-		cmd: cmdText.split(/\s+/).filter((s) => s.length > 0),
+		services: services,
 	};
 	if (memoryMaxText !== "")
 		body.memory_max = parseInt(memoryMaxText, 10);
@@ -10393,11 +10527,6 @@ document.getElementById("run-form").addEventListener("submit", async (event) => 
 			.split(",")
 			.map((s) => s.trim())
 			.filter((s) => s.length > 0);
-	}
-	if (readinessPortText !== "") {
-		body.readiness = { tcp_port: parseInt(readinessPortText, 10) };
-		if (readinessTimeoutText !== "")
-			body.readiness.timeout_seconds = parseInt(readinessTimeoutText, 10);
 	}
 	if (sysctlsText !== "") {
 		body.sysctls = {};
