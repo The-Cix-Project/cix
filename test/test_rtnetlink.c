@@ -419,6 +419,54 @@ int main(void)
 		}
 	}
 
+	/*
+	 * The route dump reads a real kernel table (#341).
+	 *
+	 * Nothing exercised this at all before -- no test called it and no
+	 * test touched /v1/routes -- which mattered when its receive buffer
+	 * was rewritten. It used to be a fixed 8192 bytes, described in its
+	 * own comment as "generously sized for a real routing table";
+	 * generous is not a property a receive buffer can have, since a
+	 * larger datagram is truncated and its remainder silently dropped,
+	 * and losing the NLMSG_DONE that ends a dump leaves the loop
+	 * waiting for a datagram already delivered.
+	 *
+	 * Three things are asserted, and the third is the contract most
+	 * easily broken by a rewrite: the dump succeeds, it finds routes (a
+	 * host running this test has some, if only loopback), and a max
+	 * smaller than the table still reports the TRUE total rather than
+	 * what it managed to store -- which is how a caller tells
+	 * "truncated" from "that is all of them".
+	 */
+	{
+		struct kernel_route routes[256];
+		int count = -1;
+
+		errno = EEXIST;
+		if (rtnl_route_dump_ipv4(fd, routes, 256, &count) != 0) {
+			fprintf(stderr, "FAIL: rtnl_route_dump_ipv4: %s\n", strerror(errno));
+			ok = 0;
+		} else if (count <= 0) {
+			fprintf(stderr, "FAIL: rtnl_route_dump_ipv4 reported %d routes; this host has some\n",
+			        count);
+			ok = 0;
+		} else {
+			int full = count;
+
+			count = -1;
+			if (rtnl_route_dump_ipv4(fd, routes, 1, &count) != 0) {
+				fprintf(stderr, "FAIL: rtnl_route_dump_ipv4 with max=1 failed\n");
+				ok = 0;
+			} else if (count != full) {
+				fprintf(stderr,
+				        "FAIL: rtnl_route_dump_ipv4 with max=1 reported %d, not the real "
+				        "total %d -- a caller cannot tell truncation from completeness\n",
+				        count, full);
+				ok = 0;
+			}
+		}
+	}
+
 	cleanup_leftovers(fd);
 	rtnl_close(fd);
 
