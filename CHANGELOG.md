@@ -2,6 +2,44 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### services[] replaces cmd; every container is created around cix-init (#334, ADR-0260 Stages B and C)
+
+The cut-over. `POST /v1/containers` takes `services[]` and no `cmd`
+(a body carrying one is refused as an unknown key); the daemon opens
+cix-init's transport on both create paths -- the REST one and the
+package build, which is one oneshot named `build` -- writes the table
+before there is a child to read it, stages `/cix-init` into the tree
+through the same helper `files[]` uses (now binary-safe), and hands the
+fd numbers over on argv. `container_create()` switches exactly those fds
+back from close-on-exec as the last thing before `execve()`.
+
+The registry carries each service's declaration and live state from
+cix-init's reports; `GET` returns `services[]` and a derived `ready`.
+The container-level `readiness` field is gone from the body, the
+definition index, the persisted state, the API, the CLI and the
+dashboard: it was a second definition of readiness, and autostart now
+waits on the derived one through the same report pump the reactor
+uses. Output is attributed per service: one reactor conn per service
+pipe, every line tagged in the log store, syslog forwarding and
+`captured_output`.
+
+A stop is SIGTERM to cix-init -- reverse-order shutdown -- with a
+SIGKILL escalation timer after the container's declared grace; it was
+SIGKILL-only, which would have made the orderly shutdown unreachable.
+Three endpoints reach one service: `POST /containers/{name}/services/{service}/start|stop|restart`,
+292 routes. `cixctl container run --service=NAME=/path args`
+(`--oneshot=`, `--after=`, `--ready=`, `--on-exit=`), `container service
+start|stop|restart NAME SERVICE`, `ls` showing `services=name:state`
+and `ready=`; the dashboard's create form takes one service per line in
+the same notation and the detail view gains a Services panel with the
+three actions per row.
+
+The install gate scans a freestanding binary's `.symtab` rather than
+passing it unexamined; `mkbootroot` stages `cix-init` beside `cixd`. 29
+test files, 11 container recipes (the routers' and jump's shell wrappers
+gone, replaced by declared services with no shell) and 5 guides
+translated.
+
 ### cix-init: pid 1 for every container, freestanding, measured (#334, ADR-0260 Stage A)
 
 The supervisor exists again, and this time it will run. `init/src/cix_init.c`
