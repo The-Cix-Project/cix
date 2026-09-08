@@ -1,0 +1,65 @@
+{
+  "name": "ar-1",
+  "image": "wifi_router",
+  "services": [
+    {
+      "name": "hostapd",
+      "cmd": [
+        "/usr/bin/hostapd",
+        "/etc/hostapd/hostapd.conf"
+      ],
+      "on_exit": "fail-container"
+    }
+  ],
+  "consoles": [
+    {
+      "name": "hostapd_cli",
+      "cmd": [
+        "/usr/bin/hostapd_cli"
+      ]
+    },
+    {
+      "name": "iw-list",
+      "cmd": [
+        "/usr/bin/iw",
+        "list"
+      ]
+    }
+  ],
+  "capture_output": true,
+  "interfaces": [
+    "wlan0"
+  ],
+  "networks": [
+    {
+      "name": "services",
+      "ip": "192.168.150.110",
+      "ifname": "services"
+    },
+    {
+      "name": "access",
+      "ip": "192.168.151.110",
+      "ifname": "access",
+      "container_bridge": "br0"
+    }
+  ],
+  "restart": "always",
+  "restart_delay_seconds": 2,
+  "files": [
+    {
+      "path": "/etc/hostapd/hostapd.conf",
+      "mode": "0600",
+      "content": "# ar-1 -- the site access point (#30).\n#\n# interface is the real radio, moved into this container's own network\n# namespace by the \"interfaces\" list in this recipe. It is a netdev\n# passthrough, not a USB device passthrough: a wireless adapter is\n# claimed by its driver on the host, and what a container needs is the\n# resulting interface, not the USB endpoint (daemon/src/device.c says\n# so in as many words).\n#\n# bridge is the whole reason ADR-0264 exists. hostapd puts wlan0 into\n# br0 and will create br0 if it is missing -- but it knows nothing\n# about this container's other interfaces and would never enslave one,\n# so a bridge hostapd built alone would carry the radio and nothing\n# else. Cix builds br0 first, with the access-network veth already in\n# it, and hostapd then adds the radio to the bridge it finds. Wireless\n# clients and the wired access segment are one layer-2 domain.\n#\n# ctrl_interface is what the hostapd_cli console attaches to.\n#\ninterface=wlan0\nbridge=br0\ndriver=nl80211\nctrl_interface=/run/hostapd\n\n#\n# REGULATORY DOMAIN -- confirm this before the AP is used in anger.\n#\n# country_code decides which channels and powers are legal, and it is\n# the one setting in this file that is a legal question rather than a\n# technical one. GB is a placeholder chosen from the site's own domain\n# (git.uk.home.arpa), which is an inference and not a measurement.\n#\n# It is also load-bearing beyond legality: with ieee80211d/ieee80211h\n# on, cfg80211 applies the regulatory database (wireless-regdb, shipped\n# in the cix-firmware image) for this country, and an AP asking for a\n# channel that country does not allow simply fails to start.\n#\ncountry_code=GB\nieee80211d=1\nieee80211h=1\n\n#\n# Band and channel.\n#\n# 5 GHz, channel 36. The adapter is an RTL8822BU -- 802.11ac dual-band\n# -- and channel 36 is the bottom of UNII-1, which is non-DFS in every\n# common domain. A DFS channel would make the AP wait out a radar scan\n# before it ever beacons, which is a poor thing to debug a first\n# bring-up through.\n#\n# For 2.4 GHz instead, this becomes: hw_mode=g, channel=6, and drop the\n# three vht lines. Worth knowing because rtw88's USB AP support is the\n# open question this container exists to answer, and if 5 GHz AP mode\n# is not supported, 2.4 GHz is the next thing to try rather than a\n# rebuild.\n#\nhw_mode=a\nchannel=36\nieee80211n=1\nieee80211ac=1\nvht_oper_chwidth=0\nvht_oper_centr_freq_seg0_idx=36\n\n#\n# The network itself.\n#\n# WPA2-PSK with CCMP only. TKIP is not offered at all -- it is broken,\n# and offering it as a fallback is how a network ends up negotiating it.\n#\n# The passphrase below is a secret placeholder in the committed\n# recipe, substituted from the apply request rather than stored here.\n# This file is in git; the passphrase is not, and never will be.\n#\n# The placeholder is deliberately not spelled out in this comment:\n# cixd warns when a RENDERED container still contains the token prefix,\n# and prose describing it trips that check exactly as a forgotten\n# secret would. A warning that cries wolf at documentation is worse\n# than no warning.\n#\nssid=cix\nwpa=2\nwpa_key_mgmt=WPA-PSK\nrsn_pairwise=CCMP\nwpa_passphrase={{SECRET:WIFI_PASSPHRASE}}\n\n# Clients talk to each other through the bridge, which is what a normal\n# wireless LAN does. Set to 1 to isolate them from one another.\nap_isolate=0\n"
+    },
+    {
+      "path": "/etc/passwd",
+      "mode": "0644",
+      "content": "root:x:0:0:root:/root:/usr/bin/bash\n"
+    },
+    {
+      "path": "/etc/group",
+      "mode": "0644",
+      "content": "root:x:0:\n"
+    }
+  ]
+}
