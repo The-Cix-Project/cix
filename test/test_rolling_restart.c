@@ -446,7 +446,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	CHECK(cix_client_request(&client, "POST", "/v1/containers",
 	                         "{\"name\":\"rollctr-follow\",\"image\":\"rollctrimg\","
-	                         "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/usr/bin/rollsvc\",\"300\",\"0\"]}],"
+	                         "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/usr/bin/rollsvc\",\"300\",\"0\"]}],"
 	                         "\"restart\":\"always\",\"follow_rolling\":true}",
 	                         &r) == 0 &&
 	          r.status == 201,
@@ -462,7 +462,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	CHECK(cix_client_request(&client, "POST", "/v1/containers",
 	                         "{\"name\":\"rollctr-plain\",\"image\":\"rollctrimg\","
-	                         "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/usr/bin/rollsvc\",\"300\",\"0\"]}],"
+	                         "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/usr/bin/rollsvc\",\"300\",\"0\"]}],"
 	                         "\"restart\":\"always\"}",
 	                         &r) == 0 &&
 	          r.status == 201,
@@ -597,7 +597,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	CHECK(cix_client_request(&client, "POST", "/v1/containers",
 	                         "{\"name\":\"rollctr-jitter\",\"image\":\"rollctrimg\","
-	                         "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/usr/bin/rollsvc\",\"300\",\"0\"]}],"
+	                         "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/usr/bin/rollsvc\",\"300\",\"0\"]}],"
 	                         "\"restart\":\"always\",\"follow_rolling\":true,"
 	                         "\"follow_rolling_jitter_seconds\":0}",
 	                         &r) == 0 &&

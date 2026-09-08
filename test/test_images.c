@@ -359,7 +359,7 @@ int main(void)
 			memset(&cr, 0, sizeof(cr));
 			if (cix_client_request(&client, "POST", "/v1/containers",
 			                        "{\"name\":\"nolibc-ctr\",\"image\":\"imgtest_empty\","
-			                        "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/usr/bin/true\"]}]}", &cr) != 0 ||
+			                        "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/usr/bin/true\"]}]}", &cr) != 0 ||
 			    cr.status != 400) {
 				fprintf(stderr,
 				        "FAIL: a container from an image with no C library was not refused "
@@ -454,7 +454,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"imgtest-c1\",\"image\":\"imgtest_ctr\","
-	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"5\",\"0\"]}]}",
+	                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"5\",\"0\"]}]}",
 	                       &r) != 0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: POST imgtest-c1, status=%d\n", r.status);
@@ -779,7 +779,7 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"gcpin\",\"image\":\"gcimg\","
-		                       "\"image_version\":\"pinnedv\",\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/usr/bin/true\"]}]}",
+		                       "\"image_version\":\"pinnedv\",\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/usr/bin/true\"]}]}",
 		                       &r) != 0 ||
 		    (r.status != 201 && r.status != 200)) {
 			fprintf(stderr, "FAIL: gc: could not pin a container to pinnedv, status=%d\n",

@@ -10,7 +10,8 @@
         "-d",
         "-f",
         "/etc/chrony.conf"
-      ]
+      ],
+      "on_exit": "fail-container"
     }
   ],
   "capture_output": true,

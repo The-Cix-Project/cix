@@ -16,7 +16,8 @@
         "/run/keepalived.pid",
         "-r",
         "/run/vrrp.pid"
-      ]
+      ],
+      "on_exit": "fail-container"
     },
     {
       "name": "bird",
@@ -25,7 +26,8 @@
         "-f",
         "-c",
         "/etc/bird.conf"
-      ]
+      ],
+      "on_exit": "fail-container"
     }
   ],
   "capture_output": true,

@@ -17,7 +17,8 @@
         "-h",
         "--pid-file=",
         "--servers-file=/etc/dnsmasq-servers"
-      ]
+      ],
+      "on_exit": "fail-container"
     }
   ],
   "networks": [

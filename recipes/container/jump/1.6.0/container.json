@@ -37,7 +37,8 @@
       "ready": {
         "socket": "/run/nslcd/socket",
         "timeout_seconds": 10
-      }
+      },
+      "on_exit": "fail-container"
     },
     {
       "name": "linksock",
@@ -64,7 +65,8 @@
       ],
       "ready": {
         "tcp_port": 22
-      }
+      },
+      "on_exit": "fail-container"
     }
   ],
   "consoles": [

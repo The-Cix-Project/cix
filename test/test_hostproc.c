@@ -151,7 +151,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"hpc1\",\"image\":\"hostproctest\","
-	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"300\",\"0\"]}]}",
+	                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"300\",\"0\"]}]}",
 	                       &r) != 0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: POST hpc1, status=%d\n", r.status);

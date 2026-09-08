@@ -168,7 +168,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"statsctr\",\"image\":\"statstest\","
-	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/stats_child\"]}],"
+	                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/stats_child\"]}],"
 	                       "\"memory_max\":67108864,"
 	                       "\"networks\":[\"statsnet\"]}",
 	                       &r) != 0 ||
@@ -284,7 +284,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"statsexited\",\"image\":\"statstest\","
-	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"1\",\"7\"]}]}",
+	                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"1\",\"7\"]}]}",
 	                       &r) != 0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: POST statsexited, status=%d\n", r.status);

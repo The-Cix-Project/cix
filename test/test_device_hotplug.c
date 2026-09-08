@@ -205,7 +205,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"devoptional\",\"image\":\"hotplugtest\","
-	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"0\",\"0\"]}],"
+	                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"0\",\"0\"]}],"
 	                       "\"devices\":[{\"id\":\"usb:0000:0000:nonexistent\",\"optional\":true}]}",
 	                       &r) != 0 ||
 	    r.status != 201) {
@@ -241,7 +241,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"devrequired\",\"image\":\"hotplugtest\","
-	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"0\",\"0\"]}],"
+	                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"0\",\"0\"]}],"
 	                       "\"devices\":[\"usb:0000:0000:nonexistent\"]}",
 	                       &r) != 0 ||
 	    r.status != 400) {
@@ -256,7 +256,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"devbadoptional\",\"image\":\"hotplugtest\","
-	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"0\",\"0\"]}],"
+	                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"0\",\"0\"]}],"
 	                       "\"devices\":[{\"id\":\"usb:0000:0000:nonexistent\",\"optional\":"
 	                       "\"not-a-bool\"}]}",
 	                       &r) != 0 ||
@@ -273,7 +273,7 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"devlive\",\"image\":\"hotplugtest\","
-		                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}]}",
+		                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}]}",
 		                       &r) != 0 ||
 		    r.status != 201) {
 			fprintf(stderr, "FAIL: POST devlive (no devices at creation): expected 201, got %d\n",
@@ -367,7 +367,7 @@ int main(void)
 
 			snprintf(body, sizeof(body),
 			         "{\"name\":\"devlivecreate\",\"image\":\"hotplugtest\","
-			         "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}],\"devices\":[\"%s\"]}",
+			         "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}],\"devices\":[\"%s\"]}",
 			         first_assignable_id);
 			memset(&r, 0, sizeof(r));
 			if (cix_client_request(&client, "POST", "/v1/containers", body, &r) != 0 ||

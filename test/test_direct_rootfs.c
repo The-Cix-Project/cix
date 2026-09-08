@@ -250,7 +250,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"dt\",\"image\":\"dtest\","
-	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"60\",\"0\"]}],"
+	                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"60\",\"0\"]}],"
 	                       "\"restart\":\"no\","
 	                       "\"files\":[{\"path\":\"/etc/seed.conf\","
 	                       "\"content\":\"seeded\\n\"}]}",
@@ -453,7 +453,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"dt2\",\"image\":\"dtest\","
-	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"]}],"
+	                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"]}],"
 	                       "\"restart\":\"no\","
 	                       "\"files\":[{\"path\":\"/etc/seed2.conf\","
 	                       "\"content\":\"seeded2\\n\"}]}",
@@ -558,7 +558,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"dt4\",\"image\":\"dtest\","
-	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"0\",\"0\",\"/dev/urandom\"]}],"
+	                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"0\",\"0\",\"/dev/urandom\"]}],"
 	                       "\"capture_output\":true,\"restart\":\"no\"}",
 	                       &r) != 0 ||
 	    r.status != 201) {
@@ -621,7 +621,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"dt3\",\"image\":\"dtest\","
-	                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"]}],"
+	                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"]}],"
 	                       "\"restart\":\"no\"}",
 	                       &r) != 0 ||
 	    r.status != 201) {

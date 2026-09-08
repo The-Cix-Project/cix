@@ -25124,6 +25124,26 @@ static void accept_loop(struct conn *listener)
  * own real --restart=always semantics (a manual stop doesn't survive a
  * daemon restart). See ADR-0027.
  */
+/*
+ * Does any definition in this autostart order list `name` in its own
+ * depends_on? Only then is there anything to hold the boot for.
+ */
+static int containerdef_is_depended_on(const char *name, char order[][REGISTRY_NAME_MAX], int count)
+{
+	int i, j;
+
+	for (i = 0; i < count; i++) {
+		const struct container_def *d = containerdef_find(order[i]);
+
+		if (d == NULL || strcmp(order[i], name) == 0)
+			continue;
+		for (j = 0; j < d->depends_on_count; j++)
+			if (strcmp(d->depends_on[j], name) == 0)
+				return 1;
+	}
+	return 0;
+}
+
 static void containerdef_autostart_all(void)
 {
 	char order[CONTAINERDEF_MAX][REGISTRY_NAME_MAX];
@@ -25195,10 +25215,21 @@ static void containerdef_autostart_all(void)
 		 * authoritative, already-persisted source for readiness -- see
 		 * wait_for_tcp_ready()'s own comment for why this wait is
 		 * boot-autostart-only. */
-		/* ADR-0260: readiness is derived from the services' own reports;
-		 * dependents wait for it here exactly as they waited for the tcp
-		 * probe before. */
-		if (!wait_for_container_ready(entry, container_ready_timeout_seconds(entry))) {
+		/*
+		 * ADR-0260: readiness is derived from the services' own reports,
+		 * and dependents wait for it here exactly as they waited for the
+		 * tcp probe before.
+		 *
+		 * Only when something actually depends on this container. This
+		 * runs BEFORE the event loop, so every second spent here is a
+		 * second the daemon answers nothing at all -- and unlike the
+		 * container-level check this replaced, which almost nothing
+		 * declared, every container now has a derived readiness. Waiting
+		 * on one nobody is waiting for would be pure startup latency,
+		 * paid on every boot.
+		 */
+		if (containerdef_is_depended_on(order[i], order, count) &&
+		    !wait_for_container_ready(entry, container_ready_timeout_seconds(entry))) {
 			fprintf(stderr, "%s: not ready within %ds -- starting dependents anyway\n", entry->name,
 			        container_ready_timeout_seconds(entry));
 		}

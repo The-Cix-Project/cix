@@ -3395,7 +3395,7 @@ skip_rolling_rebuild:
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"pintest-old\",\"image\":\"pintest\","
-		                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/usr/bin/pinpkg\"]}]}",
+		                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/usr/bin/pinpkg\"]}]}",
 		                       &r) != 0 ||
 		    r.status != 201) {
 			fprintf(stderr, "FAIL: POST pintest-old, status=%d\n", r.status);
@@ -3495,7 +3495,7 @@ skip_rolling_rebuild:
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"pintest-new\",\"image\":\"pintest\","
-		                       "\"services\":[{\"name\":\"main\",\"type\":\"oneshot\",\"cmd\":[\"/usr/bin/pinpkg\"]}]}",
+		                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/usr/bin/pinpkg\"]}]}",
 		                       &r) != 0 ||
 		    r.status != 201) {
 			fprintf(stderr, "FAIL: POST pintest-new, status=%d\n", r.status);
