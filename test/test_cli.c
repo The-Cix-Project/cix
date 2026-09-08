@@ -195,7 +195,8 @@ int main(void)
 		char *argv[] = { "cixctl",  PORT_ARG,
 			          "container", "run", "--name=c1",
 			          "--image=test",
-			          "--service=main=/bin/daemon_child 0 5", NULL };
+			          "--service=main=/bin/daemon_child 0 5",
+			          "--on-exit=main:fail-container", NULL };
 
 		if (run_cli(argv, out, sizeof(out), &rc) != 0 || rc != 0 ||
 		    strstr(out, "running") == NULL) {
@@ -241,7 +242,8 @@ int main(void)
 		char *run_argv[] = { "cixctl",  PORT_ARG,
 			              "container", "run", "--name=c2",
 			              "--image=test",
-			              "--service=main=/bin/daemon_child 30 0", NULL };
+			              "--service=main=/bin/daemon_child 30 0",
+			              "--on-exit=main:fail-container", NULL };
 		char *rm_argv[] = { "cixctl", PORT_ARG, "container", "rm", "c2", NULL };
 		char *inspect_argv[] = { "cixctl", PORT_ARG, "container", "inspect", "c2", NULL };
 		long pid;
@@ -286,7 +288,8 @@ int main(void)
 		char *argv[] = { "cixctl",  PORT_ARG,
 			          "container", "run", "--name=c1",
 			          "--image=test",
-			          "--service=main=/bin/daemon_child 0 1", NULL };
+			          "--service=main=/bin/daemon_child 0 1",
+			          "--on-exit=main:fail-container", NULL };
 
 		if (run_cli(argv, out, sizeof(out), &rc) != 0 || rc == 0 ||
 		    strstr(out, "cixctl:") == NULL) {
@@ -313,7 +316,8 @@ int main(void)
 			                     "--prefix=24",    NULL };
 		char *run_argv[] = { "cixctl", PORT_ARG, "container", "run",
 			              "--name=c3", "--image=test", "--network=clitest",
-			              "--service=main=/bin/net_child", NULL };
+			              "--service=main=/bin/net_child",
+			              "--on-exit=main:fail-container", NULL };
 		char *rm_argv[] = { "cixctl", PORT_ARG, "container", "rm", "c3", NULL };
 		char *net_rm_argv[] = { "cixctl", PORT_ARG, "network", "rm", "clitest", NULL };
 
@@ -350,9 +354,9 @@ int main(void)
 		char *run_argv[] = { "cixctl",         PORT_ARG,
 			              "container", "run", "--name=c4",
 			              "--image=test",      "--network=climulti1",
-			              "--network=climulti2", "--",
-			              "/bin/net_child",    "2",
-			              NULL };
+			              "--network=climulti2",
+			              "--service=main=/bin/net_child 2",
+			              "--on-exit=main:fail-container", NULL };
 		char *rm_argv[] = { "cixctl", PORT_ARG, "container", "rm", "c4", NULL };
 		char *net_rm_a_argv[] = { "cixctl", PORT_ARG, "network", "rm", "climulti1", NULL };
 		char *net_rm_b_argv[] = { "cixctl", PORT_ARG, "network", "rm", "climulti2", NULL };
@@ -399,8 +403,8 @@ int main(void)
 			              "container", "run", "--name=c5",
 			              "--image=test",  "--network=clifwd",
 			              "--ip-forward",  "--route=10.0.0.0/24:172.38.0.1",
-			              "--",            "/bin/net_child",
-			              NULL };
+			              "--service=main=/bin/net_child",
+			              "--on-exit=main:fail-container", NULL };
 		char *rm_argv[] = { "cixctl", PORT_ARG, "container", "rm", "c5", NULL };
 		char *net_rm_argv[] = { "cixctl", PORT_ARG, "network", "rm", "clifwd", NULL };
 

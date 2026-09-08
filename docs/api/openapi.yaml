@@ -9766,7 +9766,7 @@ paths:
         unanswerable.
 
         `name` is refused -- a container's name is its identity.
-        `restart`, `restart_delay_seconds`, `depends_on`, `services`,
+        `restart`, `restart_delay_seconds`, `depends_on`,
         `follow_rolling` and `follow_rolling_jitter_seconds` are refused
         too, with a 400 naming the field: they feed the definition
         index, whose one parser lives in the create path, and a second
