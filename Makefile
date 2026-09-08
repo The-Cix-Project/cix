@@ -44,7 +44,7 @@ SELFTESTS = \
 	$(BUILD)/test_partlabel $(BUILD)/test_pkg_finalize $(BUILD)/test_fresh_output_dir \
 	$(BUILD)/test_pgpverify $(BUILD)/test_kernelrecipe $(BUILD)/test_srcdepth $(BUILD)/test_srcupstream $(BUILD)/test_srcpolicy $(BUILD)/test_srcresolve $(BUILD)/test_pipeline $(BUILD)/test_scheduler \
 	$(BUILD)/test_btrfs $(BUILD)/test_toolchain \
-	$(BUILD)/test_cix_init \
+	$(BUILD)/test_cix_init $(BUILD)/test_cixinit_table \
 	$(DAEMON_SELFTESTS)
 
 #
@@ -821,6 +821,8 @@ $(BUILD)/cix-init: init/src/cix_init.c include/cixinit.h | $(BUILD)
 # which is the list's own rule for membership. It forks cix-init as a
 # plain child -- no namespace, mount or capability involved.
 #
+# In SELFTESTS: measured passing in a composed build container by
+# recipes/package/probe-cix-init/5 (2026-09-08). Pure parsing.
 $(BUILD)/test_cixinit_table: test/test_cixinit_table.c daemon/src/cixinit_table.c daemon/src/json.c | $(BUILD)
 	$(CC) $(CFLAGS) -Idaemon/include $^ -o $@
 
