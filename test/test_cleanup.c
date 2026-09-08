@@ -11,11 +11,31 @@
 
 /*
  * How many enumerate-and-delete passes before giving up, and how long
- * to pause between them. Ten passes at 200ms is two seconds, which is
- * far longer than any autostart sequence these tests set up and short
- * enough that a genuine leak still fails promptly.
+ * to pause between them.
+ *
+ * The budget has to cover how long a delete is ALLOWED to take, and
+ * that changed under this test's feet. Before ADR-0260 a delete was a
+ * SIGKILL (registry_begin_kill, until commit 174fb9c5), so a container
+ * was gone essentially at once and two seconds was generous. A delete
+ * is now a graceful stop: cix-init is asked to shut down, each service
+ * gets its declared stop_signal and up to its stop_timeout_seconds, and
+ * only then does the daemon's own escalation SIGKILL the container --
+ * container_stop_grace_seconds() in daemon/src/main.c, which is
+ * max(10, longest stop_timeout) + 5, i.e. fifteen seconds by default.
+ *
+ * Two seconds was therefore asserting a promise the platform had
+ * deliberately stopped making, and it failed exactly as you would
+ * expect: intermittently, on whichever container happened to still
+ * have a service RUNNING when it was deleted rather than one that had
+ * already exited on its own. n7 in test_daemon_net is created and
+ * deleted milliseconds apart, so it is the one that catches it -- three
+ * separate release cycles were spent on it before the arithmetic was
+ * checked against the daemon's own grace.
+ *
+ * Twenty seconds is the daemon's fifteen plus margin. A genuine leak
+ * still fails, five seconds later than it used to.
  */
-#define TEST_CLEANUP_PASSES 10
+#define TEST_CLEANUP_PASSES 100
 #define TEST_CLEANUP_PAUSE_NANOS (200L * 1000L * 1000L)
 
 /* Enumerates containers and deletes every one of them. Returns how many

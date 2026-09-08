@@ -2,6 +2,37 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### The cleanup budget was still asserting that a delete is a SIGKILL (#334)
+
+`test_daemon_net` failed intermittently on `n7` across three separate
+release cycles, always the same shape: one container told to stop, never
+reported as exited, while every sibling exited in under a second.
+
+    n7: deleting -- shutdown asked of cix-init, SIGTERM alongside it
+    FAIL: DELETE /v1/networks/dnettest, status=409 after 10 passes
+      still here: n7 status=deleting networks=dnettest
+
+The arithmetic settles it. `test_cleanup.c` allowed ten passes at 200 ms
+-- **two seconds** -- for a container to disappear. The daemon's own
+contract is `container_stop_grace_seconds()`: `max(10, longest
+stop_timeout) + 5`, or **fifteen seconds** by default, because ADR-0260
+turned a delete from a `SIGKILL` into a graceful stop (commit
+`174fb9c5`). Before that a deleted container was gone at once and two
+seconds was generous; afterwards the test was asserting a promise the
+platform had deliberately stopped making.
+
+That also explains the intermittency, which had made it look like a
+race worth hunting: it fails only on a container still running a service
+when it is deleted, rather than one whose service had already exited on
+its own. `n7` is created and deleted milliseconds apart, so it is the
+one that catches it.
+
+The budget is now 20 seconds -- the daemon's fifteen plus margin. A real
+leak still fails, five seconds later than before. **No production code
+changed**: the daemon was doing exactly what it says it does, and the
+test had not been re-derived when the behaviour under it was
+deliberately replaced.
+
 ### A kept descriptor must not be closed by the tidy-up next to it: no package could build (#334)
 
 The first package build attempted under the new daemon failed in 100
