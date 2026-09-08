@@ -53,29 +53,53 @@ cycle detection and readiness gating. Inside a container there is no model at al
 
 ## Decision
 
-**`cmd` is removed. A container declares `services[]`, and the platform supervises them.**
+**`cmd` is removed. A container declares `services[]`, and `cix-init` supervises them.**
 
-A clean cut-over, in keeping with this project's standing no-backward-compatibility rule: `cmd` is
-not deprecated alongside `services`, it is gone, a body carrying it is refused, and every container
-recipe in this repository migrates in the same change. Two ways to say the same thing is exactly
-the duplicate state One Source of Truth forbids.
+A clean cut-over, per this project's standing no-backward-compatibility rule: `cmd` is not
+deprecated alongside `services`, it is gone, a body carrying it is refused, and every container
+recipe in this repository migrates in the same change. Two ways to say the same thing is exactly the
+duplicate state One Source of Truth forbids.
 
-**A service has a type.** `daemon` is long-running and supervised; `oneshot` runs to completion and
-must exit 0. The oneshot kind is load-bearing rather than a convenience: `jump`'s start script does
-real work before any daemon starts — `mkdir`, `ssh-keygen -A`, and hard-linking the nslcd socket
-into sshd's privsep chroot — and without run-to-completion steps that work has nowhere to go and
-the shell script survives. A model that only halves the problem is not worth the disruption of
-changing the model.
+### `cix-init` is PID 1 in every container, without exception
 
-**Ordering is `depends_on`, by service name, within the container.** Cycle-detected, exactly as the
-container-level `depends_on` already is. Not numbers — see the alternatives below.
+Whatever a container declares — one bare daemon or seven services with dependencies — the process
+the kernel starts is `cix-init`, and it starts the declared services. There is no second shape for
+PID 1 and no predicate choosing between them; a boundary like that only gets drawn in the wrong
+place later.
 
-**A dependency waits for readiness, not for spawn.** A service may declare a `ready` probe: a
-listening TCP port, a **unix socket path**, or a command that exits 0. `depends_on` waits for the
-probe to pass when one is declared, and for "started" when it is not. The unix-socket form exists
-because that is jump's real case — its script polls for `/run/nslcd/socket` for up to six seconds
-today, and a dependency model that could not express that would have pushed the same retry loop
-back into a wrapper script.
+**The bash wrapper is gone as a concept**, not merely discouraged. A start script that backgrounds
+daemons and `wait -n`s is not a pattern this platform has any more, and `jump`, `cr-1` and `cr-2`
+lose theirs.
+
+**`cix-init` is statically linked** — the single exception to `CLAUDE.md`'s "never `-static`", named
+there and at its own link line. Two problems dissolve at once. It is built by the control-plane
+build rather than as a package, so no build container needs it before it exists: the package route
+considered first collided head-on with `daemon/src/pkg.c`'s own statement that build containers
+*"already go through container_create() like any other"*, which made `__pkgbuild-<n>` a container
+that would have required `cix-init` in order to build `cix-init`. And a binary that resolves nothing
+at runtime cannot skew against whichever glibc an image happens to carry — 2.44-14 and 2.44-16 both
+exist on the box today. The rule it excepts exists so Cix binaries track the platform's glibc; a
+PID 1 whose whole job runs before the image's userspace is the one binary that must not.
+
+**The daemon stages it at container-create time**, copying it into the container's tree as it
+already stages `files[]`. Not at image-seed time: ADR-0155 means a same-manifest reinstall would
+silently discard the reseed. Create-time staging has no such trap, no manifest to forget, and
+guarantees a container runs the `cix-init` its own daemon shipped with.
+
+### What a service is
+
+A service has a type. `daemon` is long-running and supervised; `oneshot` runs to completion and must
+exit 0. The oneshot kind is load-bearing rather than a convenience: `jump`'s start script does real
+work before any daemon starts — `mkdir`, `ssh-keygen -A`, and hard-linking the nslcd socket into
+sshd's privsep chroot — and without run-to-completion steps that work has nowhere to go and the
+shell script survives. A model that only half-solves the problem is not worth changing the model
+for.
+
+**Service-level fields are named so they cannot be confused with container-level ones.** Container
+vocabulary stays exactly as deployed — `depends_on`, `readiness`, `restart`. Services get `after`
+(ordering within the container), `ready` (the probe), and `on_exit` (`restart` / `stop` /
+`fail-container`). `depends_on` therefore always means containers and `after` always means
+services, and no interface needs prose to disambiguate them.
 
     services:
       - name: hostkeys
@@ -89,114 +113,67 @@ back into a wrapper script.
       - name: sshd
         type: daemon
         cmd: ["/usr/sbin/sshd", "-D", "-e"]
-        depends_on: [hostkeys, nslcd]
+        after: [hostkeys, nslcd]
 
-**`cix-init` is not in the console path.** Console sessions remain the daemon's own work — it
-enters the container's namespaces from outside via `setns()`, exactly as it does now, and the
-supervisor neither sees nor routes them. The single exception is the `service:` console kind in
-[ADR-0261](0261-reaching-inside-a-container.md), which needs the supervisor to hand out a running
-service's stdio fd; that is deliberately not in the first cut, since the `cmd:` kind covers
-everything done today, including the `birdcl` session that diagnosed bird.
+**`after` waits for readiness, not for spawn.** A service may declare a `ready` probe: a listening
+TCP port, a **unix socket path**, or a command that exits 0. A dependent waits for the probe to pass
+when one is declared, and for "started" when it is not. The unix-socket form exists because it is
+jump's real case — its script polls `/run/nslcd/socket` for up to six seconds today, and a model
+that could not express that would have pushed the same retry loop back into a wrapper.
 
-Nor is `cix-init` an init system. No socket activation, no timers, no logging daemon, no host
-service management. It reads no configuration from inside the image — its service table arrives
-from the daemon over an inherited fd — writes nothing to disk, and does no networking.
+A `command:` probe runs inside the container as the same uid as the service it probes, with a
+five-second default timeout, its output discarded and only its exit status read. A probe that could
+log, hang, or run as someone else is three more things to reason about during an incident.
 
-**PID 1 is a supervisor this project writes in C**, which starts services in dependency order,
-reaps them, applies each one's restart policy, and attributes output per service. Services appear
-in `GET /containers/{name}` with their own state and exit reason, and one can be started, stopped
-and restarted without disturbing its neighbours.
+### How the layers compose
 
-**`cix-init` reaches an image as an ordinary Cix package**, declared in that image's manifest the
-same way `glibc` already is, and dynamically linked like everything else this project builds. No
-exception to "never `-static`" is taken, and no new staging mechanism is invented.
+**Container readiness is derived from service readiness**: a container is ready when every service
+with a probe has passed it and every oneshot has exited 0. `cix-init` reports each service's state
+on its control pipe and the daemon derives the container's from those reports. This keeps the
+existing meaning of container-level `readiness` and `depends_on` intact — `jump` depending on
+`ldap-1` still waits for glauth to accept connections. Defining container readiness as "`cix-init`
+is up" was considered and rejected: `cix-init` is up in milliseconds, before any service starts, so
+every cross-container dependency on the box would fire early — the nslcd-socket race, moved one
+level up.
 
-The obvious objection is glibc skew — the supervisor is built once in `cix-builder` and installed
-into images carrying other glibc revisions (2.44-14 and 2.44-16 both exist on the box today). Two
-things answer it. The failure is directional: a binary built against an older glibc runs on a newer
-one, and only the reverse breaks. And that reverse case is already gated — `daemon/src/elfcheck.c`
-refuses to install a binary whose symbols do not resolve, so the failure surfaces at install time,
-against a named package, rather than at `execve()` of PID 1 where it would present as a container
-that never starts.
+**Container-level `restart` means "`cix-init` died or errored".** Service restarts are `cix-init`'s
+job; container restart is the daemon's. The two do not overlap.
 
-**`cix-init` is PID 1 in every container, without exception.** Whatever a container declares — one
-bare daemon or seven services with dependencies — the process the kernel starts is `cix-init`, and
-it starts the declared services. There is no second shape for PID 1 and no predicate deciding
-between them, because a boundary is a thing that gets drawn in the wrong place later.
+**A failing daemon restarts alone.** No cascade into its dependents: narrowing the blast radius is
+the whole reason for modelling services separately, and a crash that took down every dependent would
+reproduce the all-or-nothing restart this decision exists to remove. A dependent that genuinely
+cannot survive its dependency restarting says so in its own `on_exit`.
 
-**The bash wrapper as a concept is gone.** Not discouraged, not "only where needed": a start script
-that backgrounds daemons and `wait -n`s is not a pattern this platform has any more, and `jump`,
-`cr-1` and `cr-2` lose theirs.
+**A failed `oneshot` fails its dependents.** `cix-init` reports it and exits non-zero, and
+container-level restart applies — `on_exit: fail-container` is the oneshot default. `ssh-keygen -A`
+failing must not leave sshd starting with no host keys.
 
-**How `cix-init` reaches a container is still open**, and it is open for a specific reason recorded
-here rather than discovered later. The package route decided above collides with the package build
-sandbox: `daemon/src/pkg.c` states plainly that build containers *"already go through
-container_create() like any other"*, so `__pkgbuild-<n>` is a real container that would need
-`cix-init` as its PID 1 — and building the `cix-init` package needs a build container. That is a
-bootstrap cycle, not a detail. It is resolved before implementation starts, not during.
+**`cix-init` exits when there is nothing left to supervise**, with the status of the last daemon to
+exit. A supervisor idling over nothing would report the container `running` while it does nothing at
+all, which is the "201 running only proves the child `execve()`'d" trap this project has already
+paid for twice — the dnsmasq pidfile crash-loop, and the router with no `/usr/bin/bash`. Exiting
+also makes a oneshot-only container a job, for free.
 
-**`cix-init` is not in the console path.** Console sessions remain the daemon's own work — it
-enters the container's namespaces from outside via `setns()`, exactly as it does now, and the
-supervisor neither sees nor routes them. The single exception is the `service:` console kind in
-[ADR-0261](0261-reaching-inside-a-container.md), which needs the supervisor to hand out a running
-service's stdio fd; that is deliberately not in the first cut, since the `cmd:` kind covers
-everything done today, including the `birdcl` session that diagnosed bird.
+### Stopping, and output
 
-Nor is `cix-init` an init system. No socket activation, no timers, no logging daemon, no host
-service management. It reads no configuration from inside the image — its service table arrives
-from the daemon over an inherited fd — writes nothing to disk, and does no networking.
+**Stopping is the reverse dependency order**, each service getting its own stop signal and timeout.
+Nothing else is defensible once ordering is a graph.
 
-**PID 1 is a supervisor this project writes in C**, which starts services in dependency order,
-reaps them, applies each one's restart policy, and attributes output per service. Services appear
-in `GET /containers/{name}` with their own state and exit reason, and one can be started, stopped
-and restarted without disturbing its neighbours.
+**`capture_output` stays one container-level flag meaning "capture everything"**, with output
+attributed per service on the way in. The daemon creates one pipe per service before `clone3()` and
+adds the read ends to its own epoll set — the same mechanism `container_net_child_configure()`'s
+ready-pipe already uses — so attribution costs nothing extra and the existing merged
+`captured_output` view survives, each line carrying the service that wrote it.
 
-**`cix-init` reaches an image as an ordinary Cix package**, declared in that image's manifest the
-same way `glibc` already is, and dynamically linked like everything else this project builds. No
-exception to "never `-static`" is taken, and no new staging mechanism is invented.
+**`cix-init` is not in the console path.** Console sessions remain the daemon's own work, entering
+the container's namespaces from outside via `setns()` exactly as now. The one exception is the
+`service:` console kind in [ADR-0261](0261-reaching-inside-a-container.md), which needs the
+supervisor to hand out a running service's stdio; that is deliberately out of the first cut, since
+the `cmd:` kind covers everything done today including the `birdcl` session that diagnosed bird.
 
-The obvious objection is glibc skew — the supervisor is built once in `cix-builder` and installed
-into images carrying other glibc revisions (2.44-14 and 2.44-16 both exist on the box today). Two
-things answer it. The failure is directional: a binary built against an older glibc runs on a newer
-one, and only the reverse breaks. And that reverse case is already gated — `daemon/src/elfcheck.c`
-refuses to install a binary whose symbols do not resolve, so the failure surfaces at install time,
-against a named package, rather than at `execve()` of PID 1 where it would present as a container
-that never starts.
-
-**`cix-init` is NOT part of every container**, and that is a constraint rather than an optimisation.
-A container declaring a single `daemon` service with no `oneshot`, no `depends_on` and no `ready`
-probe has that service `execve()`'d directly as PID 1, exactly as every container works today — no
-supervisor, and no `cix-init` in its image. The supervisor appears only when the container declares
-something that actually needs supervising.
-
-The measurement is why: of the twelve containers running on 192.168.15.95, **nine are a single
-process** (dns-1/-2, ldap-1/-2, ntp-1/-2, syslog-1/-2, cr-1). Only `jump` and `cr-2` run more than
-one thing. Making the supervisor universal would put an init process inside nine containers to
-solve a problem two of them have.
-
-The cost is stated rather than buried: there are two shapes for PID 1 — the declared service
-itself, or `cix-init`. That is one contract with two implementations rather than two models (the
-service declaration is identical either way, and so is everything the API reports), but No Parallel
-Implementations is a maxim and this is the place it applies, so the boundary is drawn once, here,
-and by a single predicate: does this container declare anything beyond one bare daemon.
-
-**Stopping is the reverse dependency order.** Nothing else is defensible once ordering is a graph.
-
-**A `ready` probe of the `command:` kind runs inside the container** as the same uid as the service
-it probes, with a five-second default timeout, its output discarded and only its exit status read.
-Stated here because a probe that could log, hang or run as someone else is three more things to
-reason about during an incident.
-
-**A daemon gets a pty only when it asks for one.** Attaching a console to a running service's stdio
-([ADR-0261](0261-reaching-inside-a-container.md)) needs more than a plain pipe, but most daemons
-neither want a tty nor behave the same when they see one, so it is declared per service rather than
-given to every service by default.
-
-**A failing daemon restarts alone; it does not cascade into its dependents.** Narrowing the blast
-radius is the entire point of modelling services separately — a crash that took down every
-dependent would reproduce the all-or-nothing restart this decision exists to remove. A dependent
-that genuinely cannot survive its dependency restarting is a service whose own restart policy
-should say so.
+Nor is `cix-init` an init system: no socket activation, no timers, no logging daemon, no host
+service management. It reads no configuration from inside the image — its service table arrives from
+the daemon over an inherited fd — writes nothing to disk, and does no networking.
 
 ## Alternatives considered
 
