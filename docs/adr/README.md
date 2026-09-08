@@ -266,3 +266,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0259](0259-an-interface-may-be-named.md) | An attachment's interface may be named, and defaults to the position it always had | Accepted |
 | [0260](0260-a-container-declares-services-not-a-command.md) | A container declares the services it runs, not a single command | Accepted |
 | [0261](0261-reaching-inside-a-container.md) | Reaching inside a container: what a console is, what exec is, and what you find there | Accepted |
+| [0262](0262-a-container-sees-its-own-limits.md) | A container sees its own limits, not the host's: one host-side FUSE server for a virtualised /proc | Proposed |
