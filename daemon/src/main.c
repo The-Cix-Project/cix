@@ -7386,6 +7386,7 @@ static void handle_stop_escalation_timer_event(struct conn *cc)
 	    e->started_at == cc->escalate_started_at) {
 		logstore_write("cixd", "warn",
 		               "container %s did not stop within its grace -- SIGKILL to pid 1", e->name);
+		fprintf(stderr, "%s: did not stop within its grace -- SIGKILL to pid 1\n", e->name);
 		sys_pidfd_send_signal(e->handle.pidfd, SIGKILL);
 	}
 	free(cc);
@@ -7393,8 +7394,19 @@ static void handle_stop_escalation_timer_event(struct conn *cc)
 
 static void begin_container_stop(struct registry_entry *e, int teardown_kind)
 {
+	int grace = container_stop_grace_seconds(e);
+
 	registry_begin_kill(e, teardown_kind);
 	arm_stop_escalation_timer(e);
+	/*
+	 * A container's stop is now a conversation with its pid 1 rather
+	 * than a SIGKILL, so how long it takes is a real, variable thing an
+	 * operator can be waiting on -- and until this line the only trace
+	 * of it anywhere was the container's status flipping to "stopping".
+	 */
+	fprintf(stderr, "%s: %s -- SIGTERM to pid %ld, SIGKILL in %ds if it has not gone\n", e->name,
+	        teardown_kind == REGISTRY_TEARDOWN_DELETE ? "deleting" : "stopping",
+	        (long)e->handle.pid, grace);
 }
 
 static void register_container_pidfd(struct registry_entry *entry)
@@ -24284,6 +24296,9 @@ static void container_exit_finalize(struct registry_entry *entry)
 	 * the async-teardown completion further down runs after the
 	 * pkgbuild block's own possible registry_remove(). */
 	snprintf(name_copy, sizeof(name_copy), "%s", entry->name);
+	fprintf(stderr, "%s: exited (status %d, signal %d) after %llds\n", entry->name,
+	        entry->exit_status, entry->term_signal,
+	        (long long)(time(NULL) - entry->started_at));
 	exit_status = entry->exit_status;
 	started_at = entry->started_at;
 	incarnation_pid = entry->handle.pid;
