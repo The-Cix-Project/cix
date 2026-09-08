@@ -421,9 +421,15 @@ int main(void)
 	                        * nothing on a host where that default is off. */
 	                       "{\"name\":\"consoletest\",\"image\":\"consoletest\","
 	                       "\"userns\":true,"
+	                       /* ADR-0261: there is no free-text cmd= any more, so every
+	                        * program this file attaches to is declared here. Four is
+	                        * REGISTRY_MAX_CONSOLES, which is why the missing-binary
+	                        * case below gets a container of its own. */
 	                       "\"consoles\":["
 	                       "{\"name\":\"first\",\"cmd\":[\"/bin/dual_console_child\"]},"
-	                       "{\"name\":\"second\",\"cmd\":[\"/bin/dual_console_child\"]}],"
+	                       "{\"name\":\"second\",\"cmd\":[\"/bin/dual_console_child\"]},"
+	                       "{\"name\":\"term\",\"cmd\":[\"/bin/console_term_child\"]},"
+	                       "{\"name\":\"input\",\"cmd\":[\"/bin/console_input_child\"]}],"
 	                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}]}",
 	                       &r) != 0 ||
 	    r.status != 201) {
@@ -481,11 +487,27 @@ int main(void)
 	 * the failure is reported before the upgrade, while an HTTP status
 	 * can still carry it. A 101 here is the bug, whatever happens
 	 * afterwards. */
+	/* Its own container: consoletest already declares four consoles,
+	 * which is REGISTRY_MAX_CONSOLES, and since ADR-0261 a program can
+	 * only be reached by being declared. */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "POST", "/v1/containers",
+	                       "{\"name\":\"misscon\",\"image\":\"consoletest\",\"userns\":true,"
+	                       "\"consoles\":[{\"name\":\"gone\","
+	                       "\"cmd\":[\"/bin/definitely-not-in-this-image\"]}],"
+	                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\","
+	                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}]}",
+	                       &r) != 0 ||
+	    r.status != 201) {
+		CHECK(0, "POST misscon (a container declaring a console whose binary is absent)");
+	}
+	cix_response_free(&r);
+
 	fd = raw_connect(TEST_PORT);
 	CHECK(fd >= 0, "raw_connect for missing-exec-target scenario");
 	if (fd >= 0) {
 		rlen = snprintf(req, sizeof(req),
-		                 "GET /v1/containers/consoletest/console?cmd=/bin/definitely-not-in-this-image HTTP/1.1\r\n"
+		                 "GET /v1/containers/misscon/console?console=gone HTTP/1.1\r\n"
 		                 "Host: 127.0.0.1\r\n"
 		                 "Upgrade: websocket\r\n"
 		                 "Connection: Upgrade\r\n"
@@ -525,9 +547,9 @@ int main(void)
 	    r.status == 200) {
 		const struct json_value *cs = json_object_get(r.json, "consoles");
 
-		CHECK(cs != NULL && cs->type == JSON_ARRAY && cs->u.array.count == 2,
-		      "GET .../{name} echoes the two declared consoles");
-		if (cs != NULL && cs->type == JSON_ARRAY && cs->u.array.count == 2) {
+		CHECK(cs != NULL && cs->type == JSON_ARRAY && cs->u.array.count == 4,
+		      "GET .../{name} echoes every declared console");
+		if (cs != NULL && cs->type == JSON_ARRAY && cs->u.array.count == 4) {
 			const char *n0 = json_as_string(json_object_get(cs->u.array.items[0], "name"));
 
 			CHECK(n0 != NULL && strcmp(n0, "first") == 0,
@@ -599,120 +621,12 @@ int main(void)
 
 			CHECK(n > 0 && strstr(resp, "409") != NULL,
 			      "a container declaring no console refuses with 409");
-			CHECK(n > 0 && strstr(resp, "cmd") != NULL,
-			      "the 409 names the override rather than just refusing");
+			CHECK(n > 0 && strstr(resp, "definition") != NULL,
+			      "the 409 says how to fix it -- declare one -- since ADR-0261 left no "
+			      "override to point at");
 		}
 		close(fd);
 	}
-
-	/* An explicit cmd= still works on that same console-less container.
-	 * It answers a different question -- "run this specific thing" --
-	 * and is deliberately not gated by the declaration, since anyone
-	 * who can reach this endpoint can already run arbitrary code here. */
-	fd = raw_connect(TEST_PORT);
-	CHECK(fd >= 0, "raw_connect for override-on-console-less scenario");
-	if (fd >= 0) {
-		rlen = snprintf(req, sizeof(req),
-		                 "GET /v1/containers/nocon/console?cmd=/bin/dual_console_child HTTP/1.1\r\n"
-		                 "Host: 127.0.0.1\r\n"
-		                 "Upgrade: websocket\r\n"
-		                 "Connection: Upgrade\r\n"
-		                 "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
-		                 "Sec-WebSocket-Version: 13\r\n\r\n");
-		if (write(fd, req, (size_t)rlen) == rlen) {
-			ssize_t n = read(fd, resp, sizeof(resp) - 1);
-
-			if (n > 0)
-				resp[n] = '\0';
-
-			CHECK(n > 0 && strstr(resp, "101") != NULL,
-			      "cmd= still attaches to a container declaring no console");
-		}
-		close(fd);
-	}
-
-	/*
-	 * cmd= is percent-decoded, and a browser is why.
-	 *
-	 * The dashboard builds this URL with encodeURIComponent(), which
-	 * escapes '/' as %2F -- and it has no choice about that, since a
-	 * browser's WebSocket constructor cannot send the request header
-	 * this parameter replaced. A raw path and an encoded one therefore
-	 * have to mean the same thing, or the feature works from cixctl
-	 * and not from the web, which is the exact split retiring the
-	 * header was meant to end.
-	 */
-	fd = raw_connect(TEST_PORT);
-	CHECK(fd >= 0, "raw_connect for percent-encoded cmd scenario");
-	if (fd >= 0) {
-		rlen = snprintf(req, sizeof(req),
-		                 "GET /v1/containers/nocon/console"
-		                 "?cmd=%%2Fbin%%2Fdual_console_child HTTP/1.1\r\n"
-		                 "Host: 127.0.0.1\r\n"
-		                 "Upgrade: websocket\r\n"
-		                 "Connection: Upgrade\r\n"
-		                 "Sec-WebSocket-Key: %s\r\n"
-		                 "Sec-WebSocket-Version: 13\r\n"
-		                 "\r\n",
-		                 TEST_WS_KEY);
-		if (write_all_raw(fd, req, (size_t)rlen) == 0) {
-			ssize_t n = read(fd, resp, sizeof(resp) - 1);
-
-			if (n > 0)
-				resp[n] = '\0';
-			CHECK(n > 0 && strstr(resp, "101") != NULL,
-			      "a percent-encoded cmd= means the same as a raw one");
-		}
-		close(fd);
-	}
-
-	/*
-	 * A relative cmd is refused, and refused with a reason.
-	 *
-	 * It is handed straight to execve() with no shell and no PATH
-	 * search, so a bare name cannot work -- and failing at exec would
-	 * surface as a session that opens and instantly dies, which is
-	 * indistinguishable from the container being broken. Rejecting it
-	 * at the request says which of the two it is.
-	 */
-	fd = raw_connect(TEST_PORT);
-	CHECK(fd >= 0, "raw_connect for relative cmd scenario");
-	if (fd >= 0) {
-		rlen = snprintf(req, sizeof(req),
-		                 "GET /v1/containers/nocon/console?cmd=bash HTTP/1.1\r\n"
-		                 "Host: 127.0.0.1\r\n"
-		                 "Upgrade: websocket\r\n"
-		                 "Connection: Upgrade\r\n"
-		                 "Sec-WebSocket-Key: %s\r\n"
-		                 "Sec-WebSocket-Version: 13\r\n"
-		                 "\r\n",
-		                 TEST_WS_KEY);
-		if (write_all_raw(fd, req, (size_t)rlen) == 0) {
-			ssize_t n = read(fd, resp, sizeof(resp) - 1);
-
-			if (n > 0)
-				resp[n] = '\0';
-			CHECK(n > 0 && strstr(resp, "400") != NULL,
-			      "a relative cmd= is refused with 400, not left to fail at execve");
-			CHECK(n > 0 && strstr(resp, "absolute") != NULL,
-			      "the 400 says what was wrong with it");
-		}
-		close(fd);
-	}
-
-	/* --- ADR-0242: a console is a sized terminal of a declared type.
-	 *
-	 * The assertions below deliberately read what the EXEC'D PROCESS
-	 * saw, via console_term_child's own TIOCGWINSZ/$TERM report coming
-	 * back through the relay -- not what the daemon believes it set.
-	 * The bug this fixes was invisible for the endpoint's whole history
-	 * precisely because every layer looked correct from the outside:
-	 * the pty existed, the upgrade succeeded, bytes flowed, and a real
-	 * vim even started -- ncurses falls back to the terminfo entry's
-	 * own lines#/cols# when TIOCGWINSZ answers 0x0, so nothing errored.
-	 * It simply drew at a fixed 80x24 that matched no real terminal and
-	 * no resize could change, under a $TERM that was always the kernel
-	 * console's. --- */
 
 	/* A malformed parameter is refused before the upgrade, while an
 	 * HTTP status can still carry the reason. Silently substituting a
@@ -856,7 +770,7 @@ int main(void)
 				continue;
 			}
 			rlen = snprintf(req, sizeof(req),
-			                 "GET /v1/containers/consoletest/console%s%scmd=/bin/console_term_child HTTP/1.1\r\n"
+			                 "GET /v1/containers/consoletest/console%s%sconsole=term HTTP/1.1\r\n"
 			                 "Host: 127.0.0.1\r\n"
 			                 "Upgrade: websocket\r\n"
 			                 "Connection: Upgrade\r\n"
@@ -969,7 +883,7 @@ int main(void)
 		static const char probe[] = "console-input-probe\n";
 
 		rlen = snprintf(req, sizeof(req),
-		                 "GET /v1/containers/consoletest/console?cmd=/bin/console_input_child HTTP/1.1\r\n"
+		                 "GET /v1/containers/consoletest/console?console=input HTTP/1.1\r\n"
 		                 "Host: 127.0.0.1\r\n"
 		                 "Upgrade: websocket\r\n"
 		                 "Connection: Upgrade\r\n"
@@ -1062,7 +976,7 @@ int main(void)
 	CHECK(fd >= 0, "raw_connect for live-resize scenario");
 	if (fd >= 0) {
 		rlen = snprintf(req, sizeof(req),
-		                 "GET /v1/containers/consoletest/console?cols=80&rows=24&cmd=/bin/console_term_child HTTP/1.1\r\n"
+		                 "GET /v1/containers/consoletest/console?cols=80&rows=24&console=term HTTP/1.1\r\n"
 		                 "Host: 127.0.0.1\r\n"
 		                 "Upgrade: websocket\r\n"
 		                 "Connection: Upgrade\r\n"
@@ -1195,7 +1109,7 @@ int main(void)
 	CHECK(fd >= 0, "raw_connect for real console session");
 	if (fd >= 0) {
 		rlen = snprintf(req, sizeof(req),
-		                 "GET /v1/containers/consoletest/console?cmd=/bin/dual_console_child HTTP/1.1\r\n"
+		                 "GET /v1/containers/consoletest/console?console=first HTTP/1.1\r\n"
 		                 "Host: 127.0.0.1\r\n"
 		                 "Upgrade: websocket\r\n"
 		                 "Connection: Upgrade\r\n"

@@ -156,8 +156,6 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/system/rebuildable-storage` | Which disk (if any) is the active placement for images/packages/artifacts |
 | GET | `/system/rebuildable-storage/migrate` | Status of the most recent (or running) rebuildable-storage migration |
 | POST | `/system/rebuildable-storage/migrate` | Move images/packages/artifacts to a new disk, or back to the default |
-| POST | `/containers/{name}/exec` | Run a command inside a running container, no shell and no pty (issue #62) |
-| GET | `/containers/{name}/exec` | That command's state, output and exit status |
 | POST | `/containers/{name}/volumes` | Attach a volume to an existing container -- edits the definition, applies on next start (issue #92) |
 | DELETE | `/containers/{name}/volumes/{volume}` | Detach it again; never touches the volume or its data |
 | POST | `/disks/{name}/partitions/{part}/resize` | Grow a partition **and** the filesystem inside it — grow only (issue #94) |
@@ -458,13 +456,15 @@ GET /v1/containers/jump/console?console=nope  -> 404, listing what IS declared
 
 ```
 GET /v1/containers/dns-1/console
--> 409 {"error":"this container declares no console -- add one to its
-         definition, or name a command with the cmd query parameter"}
+-> 409 {"error":"this container declares no console, so there is nothing
+         to attach to -- add one to its definition"}
 ```
 
 That is the intended outcome for most of this platform's own containers, not a gap: `dns`, `ldap`, `syslog` and `chrony` images each hold one static binary and no shell, so there has never been anything for a console to run. Both clients render it as "this container declares no console" instead of offering a control that cannot work.
 
-**The `cmd` query parameter wins**, including on a container that declares nothing. The two answer different questions and neither substitutes for the other: `consoles` is *what this container offers* — the published surface `cixctl` and the dashboard present — while `cmd` is *let me run this specific thing*. It is deliberately not a security boundary and never was: anyone authorized to reach this endpoint can already execute arbitrary code inside the container, and this endpoint is gated as a write despite being a `GET` (see Host authentication below).
+**There is no way to name a program the container has not declared.** ADR-0261 removed the `cmd` query parameter and `POST /containers/{name}/exec` together, so `consoles` is not the *published* surface — it is the *only* one. Removing one and keeping the other would have left the model claiming to be declarative while the same hole stayed open under a different name.
+
+This narrows a real capability and the cost is accepted knowingly: a scripted, non-interactive query is no longer a single request. Every diagnostic in this repository's own tooling used that endpoint. The trade is that a debugging tool becomes something a container *declares*, and changing what you can debug with means editing a recipe — the set is meant to be fungible, not fixed at image-build time.
 
 A declared command whose binary is missing fails at exec and is reported as an error naming it, not as a session that opens and dies.
 
@@ -474,7 +474,6 @@ From the CLI:
 cixctl run --name=jump --image=jumpbox --console='shell=/usr/bin/bash -l' -- /usr/bin/bash /usr/local/bin/jumpbox-start.sh
 cixctl container console jump                  # first declared
 cixctl container console jump --console=logs   # by name
-cixctl container console jump --cmd=/usr/bin/id  # the override
 ```
 
 The `--console=NAME=/path args` form splits the command on spaces, so an argument containing a literal space cannot be written that way — a real limit, and the reason a container recipe (`recipes/container/<name>/*/container.json`, a real JSON array with nothing to lose in quoting) is the better place to declare anything non-trivial.
@@ -495,7 +494,7 @@ Omitting any of them takes the documented default (`xterm-256color`, 80, 24) rat
 
 They are query parameters rather than headers for one decisive reason: a browser's `WebSocket` constructor cannot set request headers at all. A header would have worked for `cixctl` and been permanently unreachable from the dashboard — the same feature with two different capabilities depending on the client.
 
-That reasoning applied to `X-Cix-Exec-Cmd` too, which sat alongside them as a header and was exactly the split it warns about: `cixctl --cmd` worked, and the dashboard had no way to offer it at all. It is the `cmd` query parameter now, and the header is retired rather than kept beside it — a second way to say the same thing is not compatibility, it is two things to keep correct. `cmd` is percent-decoded, so a browser's `encodeURIComponent()` (which escapes `/` as `%2F`) and a raw path mean the same thing, and it must be absolute: it goes to `execve()` with no shell and no `PATH` search, so a bare name is refused with `400` rather than left to fail at exec where it would look like a broken container.
+That reasoning applied to `X-Cix-Exec-Cmd` too, which sat alongside them as a header and was exactly the split it warns about: `cixctl --cmd` worked and the dashboard could not offer it at all. It became the `cmd` query parameter for that reason — and ADR-0261 has since removed it altogether, along with the exec endpoint. The lesson it was carried here to teach still stands: a capability reachable from one client and not the other is one capability with two behaviours, which is worse than not having it.
 
 **Resizing a session already in progress** uses the WebSocket's own opcodes rather than any new framing. RFC 6455 already distinguishes a UTF-8 text message from an opaque binary one, so that distinction carries the two kinds of traffic:
 
@@ -1580,11 +1579,11 @@ POST /v1/containers
 
 ## Interactive container console (`docker exec -it`-style)
 
-`GET /v1/containers/{name}/console` opens a real, fully-interactive shell inside an already-running container (ADR-0043) — not a normal request/response endpoint, an HTTP/1.1 Upgrade to a hand-rolled RFC 6455 WebSocket (no fragmentation, 64KiB payload cap; OpenAPI 3.0 has no first-class way to type this, so `openapi.yaml` documents it as a GET whose success response is `101 Switching Protocols`). The exec'd process joins the target container's own mount/UTS/network/pid namespaces (`setns()`, equivalent to `nsenter --mount --uts --net --pid --target <pid>`) against a PTY allocated from the **container's own** `devpts` — `/proc/<pid>/root/dev/pts/ptmx`, so the kernel's `path_pts()` puts the slave in the container's instance and the process can name its own terminal (#290; a slave from the daemon's devpts reads and writes fine but fails `ttyname()`, which silently breaks `login(1)`, `agetty`, `who`, `w` and anything writing utmp). The command comes from the container's declared `consoles`, or from the `cmd` query parameter to run one specific program instead.
+`GET /v1/containers/{name}/console` opens a real, fully-interactive shell inside an already-running container (ADR-0043) — not a normal request/response endpoint, an HTTP/1.1 Upgrade to a hand-rolled RFC 6455 WebSocket (no fragmentation, 64KiB payload cap; OpenAPI 3.0 has no first-class way to type this, so `openapi.yaml` documents it as a GET whose success response is `101 Switching Protocols`). The exec'd process joins the target container's own mount/UTS/network/pid namespaces (`setns()`, equivalent to `nsenter --mount --uts --net --pid --target <pid>`) against a PTY allocated from the **container's own** `devpts` — `/proc/<pid>/root/dev/pts/ptmx`, so the kernel's `path_pts()` puts the slave in the container's instance and the process can name its own terminal (#290; a slave from the daemon's devpts reads and writes fine but fails `ttyname()`, which silently breaks `login(1)`, `agetty`, `who`, `w` and anything writing utmp). The command comes from the container's declared `consoles`, and only from there (ADR-0261).
 
 Two real, ready-to-use clients — neither requires hand-rolling the handshake yourself:
 
-- **`cixctl console NAME [--cmd=/path/to/shell]`** — a full, `termios` raw-mode terminal: tab completion, Ctrl-C, `vim`/`top`/`less` all work correctly, since it drives a real local terminal end to end.
+- **`cixctl console NAME [--console=NAME]`** — a full, `termios` raw-mode terminal: tab completion, Ctrl-C, `vim`/`top`/`less` all work correctly, since it drives a real local terminal end to end.
 - **The web dashboard's own Console tab** (a container's default view when selected in the left tree) — the browser's native `WebSocket` object talks directly to this endpoint, no hand-rolled handshake needed client-side. Deliberately reduced fidelity by design (ADR-0010's "no framework" constraint, confirmed with the user rather than silently accepted): a line-buffer renderer with `\r`/`\n`/backspace/Tab and SGR color support, no cursor-addressable screen model, so full-screen redraw programs (`vim`, `top`, `less`) render wrong there specifically — `cixctl console` has no such limitation.
 
 Any frame-parse failure post-upgrade (including an unmasked client frame, which RFC 6455 requires a server to reject) — or a WebSocket CLOSE frame from either side, or the exec'd process exiting on its own — ends the session the same way: `SIGKILL` the exec'd process, then close the raw connection immediately (no WS CLOSE frame is sent back, no HTTP status is possible once the connection is a WebSocket at all) — no leaked processes survive session teardown. No new authentication layer exists for this endpoint — exactly as protected as every other existing mutating endpoint today (network reachability only), a more sensitive capability than most, worth stating plainly rather than leaving implicit.

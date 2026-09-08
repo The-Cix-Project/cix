@@ -328,15 +328,11 @@
 				<div class="console-toolbar">
 					<label for="cd-console-pick" id="cd-console-pick-label" hidden>Console</label>
 					<select id="cd-console-pick" hidden></select>
-					<label for="cd-console-cmd">Run</label>
-					<input type="text" id="cd-console-cmd" placeholder="/usr/bin/bash"
-					       spellcheck="false" autocapitalize="off" autocorrect="off">
-					<button type="button" id="cd-console-cmd-run" class="secondary">Attach</button>
 					<span id="cd-console-status" class="hint">&hellip;</span>
 				</div>
 				<div class="console-output" id="cd-console-output" tabindex="0"></div>
 				<p class="hint">A real terminal, built here (ADR-0243) -- a full VT with a cell grid, scroll regions and the alternate screen, so <code>vim</code>, <code>htop</code> and <code>top</code> render and resize with the pane. Mouse reporting and bracketed paste are supported when a program asks for them.</p>
-				<p class="hint"><strong>Run</strong> attaches to one specific program by absolute path instead of a declared console, the same thing <code>cixctl container console NAME --cmd=PATH</code> does. Leave it empty to use the console selected above. It grants nothing extra: anyone who can open this pane can already run code in the container.</p>
+				<p class="hint">A container is reachable only through the consoles its recipe <strong>declares</strong>. ADR-0261 removed the free-text command box and the separate exec endpoint together -- so what the picker above offers is everything there is. To debug with something new, add it to the container's <code>consoles</code> and re-apply: the set is meant to be edited when the need changes.</p>
 			</div>
 		</section>
 

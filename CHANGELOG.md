@@ -2,6 +2,65 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### There is one way into a container: a console it declares (#335, ADR-0261)
+
+`?cmd=<path>` and `POST /containers/{name}/exec` are both gone. An
+operator attaches to one of the entries a container's own recipe
+declares, chosen by name, and there is no way to name a program it has
+not declared.
+
+Owner's decision, on being shown that removing `?cmd=` alone would leave
+a second endpoint taking an arbitrary argv: *"remove CMD and the API
+exec, that's just a hole in the system."* Deleting one and keeping the
+other would have been worse than doing nothing, because the model would
+then claim to be declarative while the hole stayed open under a
+different name.
+
+**The recipes had to land first.** Measured across all eleven container
+recipes before touching any code: `jump` declared two consoles and the
+other nine declared none. Removing free-text exec first would have left
+both routers with no way in at all. So:
+
+| container | console |
+|---|---|
+| `cr-1`, `cr-2` | `birdc` |
+| `jump` | `login` (its `shell` entry dropped) |
+| `ntp-1`, `ntp-2` | `chronyc` |
+| `dns-*`, `ldap-*`, `syslog-*` | none — nothing in them a console is the right shape for |
+
+`ar-1` would take `hostapd_cli`; that container does not exist yet, and
+the requirement is recorded on #30 rather than left to be remembered,
+because a container declaring no console is now unreachable by
+construction.
+
+**`birdc`, not `birdcl`.** ADR-0261's own example named the light client
+until it was checked against what the console actually provides:
+`daemon/src/exec.c` allocates a real PTY from the *container's own*
+devpts and propagates window size, so the readline client is the one
+worth declaring. `birdcl` exists precisely for environments with no
+readline and no terminal.
+
+**What this costs, stated rather than glossed:** a scripted,
+non-interactive query is no longer a single request. Every diagnostic in
+this repository's own tooling used that endpoint — including, this same
+week, `birdcl show protocols` and reading `/proc/net/tcp` to prove sshd
+was listening. That is the intended trade: a debugging tool becomes
+something a container *declares*, and changing what you can debug with
+means editing a recipe. The owner's framing is the one to keep —
+*enable debugging tools specifically, and make them fungible as needed,
+but not open.*
+
+The original ADR argued this was "not a security change" because anyone
+authorised can already run code. That argument was kept for `?cmd=` and
+overruled here, correctly: an authorisation *equivalent to* arbitrary
+execution is still worth not offering as a plain, always-present verb.
+It does not stop a determined token holder and is not claimed to.
+
+Also removed as dead once their only caller went: `exec_into_container_piped()`,
+`percent_decode_inplace()` and `exec_cmd_is_valid()`. Two ratchets
+tightened deliberately rather than silently — the API surface is 292
+operations to 290, and `test_blocking_waits` is 65 blocking waits to 63.
+
 ### The cleanup budget was still asserting that a delete is a SIGKILL (#334)
 
 `test_daemon_net` failed intermittently on `n7` across three separate

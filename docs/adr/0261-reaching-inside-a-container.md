@@ -60,9 +60,33 @@ Two further gaps make it sharper:
 an operator attaches to one of the entries the container declares, chosen by name. Consoles have no
 dependencies on one another and no ordering — they are not services, they are ways in.
 
-This is not a security change and is not argued as one: as `openapi.yaml` already says, anyone
-authorised to reach this endpoint can run arbitrary code in the container, so gating exec behind a
-declaration would be theatre. It is a **model** change. A declared, enumerable set is something the
+**And `POST /containers/{name}/exec` is removed with it.** Owner's decision, on being shown that
+removing `?cmd=` alone would leave a second endpoint taking an arbitrary argv: *"remove CMD and the
+API exec, that's just a hole in the system."* Deleting one free-text path and keeping the other
+would have been theatre — worse than theatre, because the model would then *claim* to be
+declarative while the hole stayed open under a different name.
+
+So there is exactly one way into a running container: attach to a console it declares. The cost is
+real and is accepted knowingly: **a scripted, non-interactive query is no longer a single request.**
+Every diagnostic in this repository's own tooling used that endpoint — `birdcl show protocols`,
+reading `/proc/net/tcp` to prove sshd was listening, checking a binary's path before declaring a
+console for it — and all of it now goes through a console attach instead. That is the intended
+trade: a debugging tool becomes something a container *declares*, and changing what you can debug
+with means editing a recipe rather than typing a different path.
+
+The owner's framing is the one to keep: *"enable debugging tools specifically, and make them
+fungible as needed, but not open."* Fungible is the operative word — the set is meant to be edited
+when the need changes, not fixed forever at image-build time.
+
+The original framing of this decision said it was *not* a security change, on the grounds that
+anyone authorised to reach the endpoint can already run arbitrary code. That argument holds for
+`?cmd=` considered alone, and it is why the first cut of this ADR kept `POST /exec`. The owner
+overruled it, and the reasoning is better: an authorisation that is *equivalent to* arbitrary code
+execution is still worth not offering as a plain, always-present verb. Removing it does not stop a
+determined holder of a write token, and is not claimed to; it removes a standing capability that
+nothing legitimate now needs, which is a different and real kind of narrowing.
+
+It remains primarily a **model** change. A declared, enumerable set is something the
 CLI and the dashboard can both present identically — a dropdown, the same names, in both — and a
 free-text path is something neither can offer consistently. Consistency across surfaces is the
 reason, and it is the same reason every other resource here is declarative.

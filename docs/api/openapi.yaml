@@ -10327,12 +10327,11 @@ paths:
         needing arguments could not be expressed at all.
 
 
-        The `cmd` query parameter wins over any declaration,
-        including on a container that declares nothing.
-        It is deliberately NOT a security boundary and never was:
-        anyone authorized to reach this endpoint can already run
-        arbitrary code in the container, and this endpoint is gated as
-        a write despite being a GET (ADR-0144). `consoles` answers
+        There is no way to name a program that the container has not
+        declared. ADR-0261 removed the `cmd` query parameter and the
+        separate exec endpoint together, so attaching to a declared
+        console is the only way into a running container. `consoles`
+        answers
         "what does this container offer" -- the surface `cixctl` and
         the dashboard present; the header answers "let me run this
         specific thing". Both are legitimate and they are not
@@ -10433,46 +10432,14 @@ paths:
           schema:
             type: string
             enum: ["13"]
-        - name: cmd
-          in: query
-          required: false
-          schema:
-            type: string
-          description: >
-            Absolute path of the program to exec inside the container,
-            in place of one of its declared consoles. No argument
-            splitting -- this is a single executable path (typically a
-            shell), not a full command line; give arguments
-            interactively once inside.
-
-            Percent-decoded, so a browser's own encodeURIComponent()
-            (which escapes `/` as `%2F`) and a raw path mean the same
-            thing. Must be absolute: it is handed to execve() with no
-            shell and no PATH search, so a bare name is refused with
-            400 rather than left to fail at exec, where it would be
-            indistinguishable from a broken container.
-
-            Wins over `console` when both are given, and works on a
-            container that declares no console at all -- anyone
-            authorised to reach this endpoint can already run arbitrary
-            code in the container, so gating this behind a declaration
-            would be theatre.
-
-            This was the `X-Cix-Exec-Cmd` request header until
-            v2.53.34. A header is unreachable from the dashboard --
-            a browser's WebSocket constructor sets none -- so the
-            feature worked from the CLI and not from the web. It is a
-            query parameter for the same reason `term`/`cols`/`rows`
-            are, and the header is retired rather than kept alongside.
       responses:
         "101":
           description: Switching Protocols -- the connection is now a WebSocket carrying raw PTY bytes both ways, per this endpoint's own description above.
         "400":
           description: >
             Missing/invalid Upgrade, Connection, Sec-WebSocket-Key, or
-            Sec-WebSocket-Version header, a malformed container name,
-            a malformed `term`/`cols`/`rows`, or a `cmd` that is not an
-            absolute path.
+            Sec-WebSocket-Version header, a malformed container name, or
+            a malformed `term`/`cols`/`rows`.
           content:
             application/json:
               schema:
@@ -10489,9 +10456,9 @@ paths:
         "409":
           description: >
             This container declares no consoles, so there is nothing
-            to attach to. An explicit `cmd` still works and is the way
-            to run something on a container that publishes no console
-            of its own.
+            to attach to, and since ADR-0261 there is no way to name a
+            program it has not declared. A container reachable
+            interactively is one whose recipe says so.
         "500":
           description: Failed to start the console session (handshake computation, or the exec/PTY mechanism itself failed).
           content:
@@ -11329,104 +11296,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-
-  /containers/{name}/exec:
-    post:
-      summary: Run a command inside a running container (issue #62)
-      description: >
-        Enters the RUNNING container's own namespaces and runs argv
-        directly -- no shell, so no quoting, globbing or word splitting
-        happens anywhere, and no pty, so nothing echoes or edits what
-        passes through.
-
-        Both of those are the point. The interactive console's pty line
-        discipline mangles piped input (a /proc-walking one-liner came
-        back visibly corrupted during a hang investigation and fed a
-        wrong diagnosis), and a throwaway container with capture_output
-        gets a FRESH namespace, which is useless for inspecting the
-        state of an already-running container -- the actual need.
-
-        Asynchronous with a poll endpoint, not a blocking call: holding
-        the daemon's event loop for the length of someone's command is
-        exactly the wedge ADR-0180 exists to prevent. Every other slow
-        operation here has the same shape. `cixctl exec` polls for
-        you, so it still behaves like a synchronous command.
-
-        One at a time. Concurrent execs would need per-job identifiers
-        for a tool used one command at a time, and "another exec is
-        already running" is a clearer answer than silent queueing.
-      operationId: execInContainer
-      x-cix-expose: [cli]
-      parameters:
-        - $ref: "#/components/parameters/ContainerName"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [argv]
-              properties:
-                argv:
-                  type: array
-                  minItems: 1
-                  maxItems: 32
-                  items:
-                    type: string
-                  description: >
-                    argv[0] is exec'd directly by path. There is no
-                    shell to resolve a bare name or expand anything.
-                timeout_seconds:
-                  type: integer
-                  minimum: 1
-                  maximum: 300
-                  default: 30
-                  description: >
-                    After this the command is SIGKILLed rather than left
-                    running invisibly -- an exec nobody is waiting for is
-                    the kind of orphan that turns up later as a mystery
-                    process.
-      responses:
-        "200":
-          description: Started; poll GET for the result
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ContainerExec"
-        "400":
-          description: Invalid body, empty argv, too many entries, or a timeout out of range
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "409":
-          description: >
-            The container is not running (no namespace to enter), is
-            paused (a command started in it would be frozen too), or
-            another exec is already running
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "500":
-          description: Could not enter the container's namespaces
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-    get:
-      summary: The most recent exec's state and output
-      operationId: getContainerExec
-      x-cix-expose: []
-      parameters:
-        - $ref: "#/components/parameters/ContainerName"
-      responses:
-        "200":
-          description: State, output so far, and exit status once finished
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ContainerExec"
 
   /containers/{name}/volumes:
     post:
@@ -12273,14 +12142,13 @@ components:
             disagree with the list.
 
 
-            This is the PUBLISHED surface -- what `cixctl` and the
-            dashboard offer. It is not a security boundary: the `cmd`
-            query parameter still runs an arbitrary command for a
-            caller authorized to use this endpoint at all, which is
-            gated as a write despite being a GET (ADR-0144). The two
-            answer different questions -- "what does this container
-            offer" versus "let me run something specific" -- and both
-            are legitimate.
+            This is the ONLY surface, not merely the published one.
+            ADR-0261 removed both free-text routes -- the `cmd` query
+            parameter and `POST /containers/{name}/exec` -- so what a
+            container declares here is exactly what can be reached
+            inside it. Changing what you can debug with means editing
+            the declaration, which is the point: the set is meant to be
+            fungible, not fixed at image-build time.
           items:
             type: object
             required: [name, cmd]
