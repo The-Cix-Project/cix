@@ -269,3 +269,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0262](0262-a-container-sees-its-own-limits.md) | A container sees its own limits, not the host's: one host-side FUSE server for a virtualised /proc | Proposed |
 | [0263](0263-firmware-is-an-image-the-host-root-is-assembled-from.md) | Device firmware is an ordinary image, and the control-plane root is assembled from its `lib/firmware` | Accepted |
 | [0264](0264-a-container-may-bridge-its-own-interfaces.md) | A network attachment may be a port of a bridge inside the container, so an AP's radio and wired segment meet | Accepted |
+| [0265](0265-a-radio-moves-as-a-phy-not-as-an-interface.md) | A radio moves as a whole PHY over nl80211, not as an interface over rtnetlink, so it can enter a container | Accepted |

@@ -1,4 +1,5 @@
 #include "internal.h"
+#include "nl80211.h"
 #include "rtnetlink.h"
 
 #include <errno.h>
@@ -215,7 +216,25 @@ int container_net_host_attach_interfaces(const char *const *interfaces, int inte
 	}
 
 	for (i = 0; i < interface_count; i++) {
-		if (rtnl_link_set_netns_pid(fd, interfaces[i], child_pid) != 0) {
+		/*
+		 * A radio does not move the way a netdev does (#341).
+		 *
+		 * rtnl_link_set_netns_pid() on a wireless interface returns
+		 * EINVAL: the netdev belongs to a wiphy, one wiphy can own
+		 * several netdevs, and the kernel refuses to let one of them
+		 * leave alone. NL80211_CMD_SET_WIPHY_NETNS moves the whole PHY
+		 * instead, which is what an access point needs -- hostapd
+		 * drives the radio, so the radio has to be where hostapd is.
+		 *
+		 * Everything on that wiphy goes with it and the host loses the
+		 * radio until this container is deleted. That is the kernel's
+		 * model, not a choice made here.
+		 */
+		int rc = nl80211_is_wireless(interfaces[i])
+		                 ? nl80211_move_phy_to_netns(interfaces[i], child_pid)
+		                 : rtnl_link_set_netns_pid(fd, interfaces[i], child_pid);
+
+		if (rc != 0) {
 			rtnl_close(fd);
 			close(*out_netns_fd);
 			*out_netns_fd = -1;
@@ -302,7 +321,18 @@ int container_net_teardown_interfaces(const char *const *interfaces, int interfa
 			_exit(1);
 
 		for (i = 0; i < interface_count; i++) {
-			if (rtnl_link_set_netns_fd(fd, interfaces[i], root_fd) != 0)
+			/*
+			 * Same split as the inbound move: a wiphy goes back by
+			 * nl80211, everything else by rtnetlink. Checked from
+			 * inside the container, where the interface now lives --
+			 * /sys/class/net is namespaced, so this reads the right
+			 * one.
+			 */
+			int one = nl80211_is_wireless(interfaces[i])
+			                  ? nl80211_move_phy_to_netns_fd(interfaces[i], root_fd)
+			                  : rtnl_link_set_netns_fd(fd, interfaces[i], root_fd);
+
+			if (one != 0)
 				rc = 1;
 		}
 

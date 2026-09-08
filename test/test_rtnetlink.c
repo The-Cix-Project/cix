@@ -12,6 +12,7 @@
  * later step.
  */
 #include "internal.h"
+#include "nl80211.h"
 #include "rtnetlink.h"
 
 #include <arpa/inet.h>
@@ -335,6 +336,41 @@ int main(void)
 
 		rtnl_link_delete(fd, vlan_sub);
 		rtnl_link_delete(fd, vlan_parent);
+	}
+
+	/*
+	 * ADR-0265: which mechanism a named interface needs.
+	 *
+	 * Only the CLASSIFIER is asserted here, and that is deliberate. The
+	 * move itself (NL80211_CMD_SET_WIPHY_NETNS) needs a real wiphy and
+	 * real privileges, so it cannot run in this sandbox or in a build
+	 * container -- and a test that mocked a wiphy would assert that the
+	 * mock behaves, which is the one thing already known. The move is
+	 * verified on a host with a radio.
+	 *
+	 * What this does catch is the failure that would actually hurt: the
+	 * classifier answering "wireless" for an ordinary interface, which
+	 * would route every veth and uplink down the nl80211 path and break
+	 * container creation everywhere.
+	 */
+	{
+		static const char *const not_wireless[] = { "lo", BRIDGE_NAME, "",
+			                                        "no-such-interface-here" };
+		size_t wi;
+
+		for (wi = 0; wi < sizeof(not_wireless) / sizeof(not_wireless[0]); wi++) {
+			if (nl80211_is_wireless(not_wireless[wi])) {
+				fprintf(stderr, "FAIL: nl80211_is_wireless(\"%s\") says wireless -- an "
+				                "ordinary interface would be moved with nl80211 and fail\n",
+				        not_wireless[wi]);
+				ok = 0;
+			}
+		}
+		/* A NULL name must be answered, not dereferenced. */
+		if (nl80211_is_wireless(NULL)) {
+			fprintf(stderr, "FAIL: nl80211_is_wireless(NULL) says wireless\n");
+			ok = 0;
+		}
 	}
 
 	cleanup_leftovers(fd);
