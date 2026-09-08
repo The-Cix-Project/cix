@@ -121,6 +121,8 @@ void cix_sigreturn(void);
 #define SYS_exit_group 231
 #define SYS_openat 257
 #define SYS_pipe2 293
+#define SYS_close_range 436
+#define CLOSE_RANGE_CLOEXEC 4
 
 #define EINTR 4
 #define EAGAIN 11
@@ -1148,17 +1150,24 @@ int cix_main(long argc, char **argv)
 			fds[i] = v;
 		}
 		/*
-		 * Every fd the daemon handed over is cix-init's and nobody
-		 * else's. Marked close-on-exec here, once, whatever way the
-		 * daemon created them: a service must not hold the control
-		 * socket (it could read commands), the report socket (it
-		 * could forge reports), or any other service's output pipe
-		 * (the daemon would never see that pipe's EOF until every
-		 * service had exited). dup2() clears the flag on the 1 and 2
-		 * a service is given, so a child keeps exactly what it should.
+		 * Nothing cix-init holds reaches a service. Every fd from 3 up
+		 * is marked close-on-exec here, once: the ones the daemon
+		 * handed over -- a service must not hold the control socket
+		 * (it could read commands), the report socket (it could forge
+		 * reports), or another service's output pipe (the daemon would
+		 * never see that pipe's EOF until every service had exited) --
+		 * and anything else that leaked in from whoever exec'd
+		 * cix-init, which probe-cix-init/2 caught for real: a build
+		 * container's shell had fds 4 and 5 open, the test inherited
+		 * them, and a service listed them. dup2() clears the flag on
+		 * the 1 and 2 a service is given, so a child keeps exactly
+		 * what it should. One close_range() does the whole table; the
+		 * loop is for a kernel without it.
 		 */
-		for (i = 0; i < nfd; i++)
-			sc3(SYS_fcntl, fds[i], F_SETFD, FD_CLOEXEC);
+		if (sc3(SYS_close_range, 3, ~0U, CLOSE_RANGE_CLOEXEC) != 0) {
+			for (i = 3; i < 4096; i++)
+				sc3(SYS_fcntl, i, F_SETFD, FD_CLOEXEC);
+		}
 		g_control_fd = (int)fds[0];
 		g_report_fd = (int)fds[1];
 		set_nonblock(g_report_fd);
