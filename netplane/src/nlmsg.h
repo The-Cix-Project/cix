@@ -117,21 +117,45 @@ static int nl_msg_send_and_ack(int fd, struct nl_msg *m)
 	nh->nlmsg_seq = 1;
 	nh->nlmsg_pid = 0;
 
+	/*
+	 * Every failure below sets errno, including the ones where no
+	 * syscall failed.
+	 *
+	 * This is not defensive tidiness. A caller that reports errno
+	 * after a -1 from here would otherwise report whatever the last
+	 * unrelated syscall left behind -- and container_create() runs
+	 * mkdir() on its way to this code, so a malformed reply surfaced
+	 * to an operator as "File exists" on a netlink operation that has
+	 * no files in it. A wrong errno is worse than none: it names a
+	 * cause, and the whole diagnosis follows the name.
+	 */
 	n = send(fd, m->buf, m->len, 0);
-	if (n < 0 || (size_t)n != m->len)
+	if (n < 0)
+		return -1; /* errno from send() */
+	if ((size_t)n != m->len) {
+		errno = EIO; /* a datagram socket does not do partial sends */
 		return -1;
+	}
 
 	n = recv(fd, rbuf, sizeof(rbuf), 0);
 	if (n < 0)
+		return -1; /* errno from recv() */
+	if ((size_t)n < sizeof(*rnh)) {
+		errno = EBADMSG;
 		return -1;
-	if ((size_t)n < sizeof(*rnh))
-		return -1;
+	}
 
 	rnh = (struct nlmsghdr *)rbuf;
-	if (rnh->nlmsg_type != NLMSG_ERROR)
+	if (rnh->nlmsg_type != NLMSG_ERROR) {
+		/* We asked for an ack; anything else means we are not
+		 * speaking the protocol we think we are. */
+		errno = EPROTO;
 		return -1;
-	if ((size_t)n < NLMSG_LENGTH(sizeof(*err)))
+	}
+	if ((size_t)n < NLMSG_LENGTH(sizeof(*err))) {
+		errno = EBADMSG;
 		return -1;
+	}
 
 	err = (struct nlmsgerr *)NLMSG_DATA(rnh);
 	if (err->error != 0) {

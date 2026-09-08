@@ -20,6 +20,7 @@
 #include <sched.h>
 #include <signal.h>
 #include <stdio.h>
+#include <errno.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -370,6 +371,51 @@ int main(void)
 		if (nl80211_is_wireless(NULL)) {
 			fprintf(stderr, "FAIL: nl80211_is_wireless(NULL) says wireless\n");
 			ok = 0;
+		}
+	}
+
+	/*
+	 * The nl80211 family lookup either succeeds or reports why (#341).
+	 *
+	 * This is the regression gate for a bug that cost three wrong
+	 * fixes. nl80211's family description is 2556 bytes on this
+	 * platform's kernel (measured) and the lookup read it into a
+	 * 1024-byte buffer. A netlink datagram larger than the buffer is
+	 * truncated and its remainder discarded, so the lookup failed
+	 * every single time -- and it failed by returning -1 without
+	 * setting errno, so the caller reported whatever an earlier,
+	 * unrelated syscall had left behind. container_create() runs
+	 * mkdir() on its way here, so moving a radio into a container
+	 * reported "File exists": a plausible-sounding cause, for an
+	 * operation that had not been attempted, on a code path with no
+	 * files in it.
+	 *
+	 * The assertion is therefore about errno discipline rather than
+	 * about wireless, and holds on a host with no radio at all: seed
+	 * errno with a sentinel no netlink path can legitimately produce,
+	 * and require that the call either succeed or replace it. A host
+	 * without cfg80211 reports ENOENT here and passes; only silence
+	 * fails.
+	 */
+	{
+		int fam;
+
+		errno = EEXIST;
+		fam = nl80211_family_id();
+		if (fam < 0 && errno == EEXIST) {
+			fprintf(stderr,
+			        "FAIL: nl80211_family_id() failed and left errno untouched -- the "
+			        "caller would report a stale errno as the cause (#341)\n");
+			ok = 0;
+		} else if (fam >= 0 && fam <= 16) {
+			/* 16 is GENL_ID_CTRL; a real family sits above the
+			 * controller's own reserved id. */
+			fprintf(stderr, "FAIL: nl80211_family_id() returned %d, not a runtime family id\n",
+			        fam);
+			ok = 0;
+		} else if (fam < 0) {
+			printf("note: no nl80211 family here (%s) -- lookup reported it correctly\n",
+			       strerror(errno));
 		}
 	}
 
