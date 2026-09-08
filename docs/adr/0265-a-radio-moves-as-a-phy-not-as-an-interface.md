@@ -58,10 +58,22 @@ so resolving it over nl80211 would mean a whole response-parsing path existing f
 includers collide at link with "defined twice" — the failure the m4 build found. One copy per
 includer is the price, and for functions this small it is not worth engineering around.
 
-**Both directions exist as separate calls**, by pid and by namespace fd, because the two directions
-genuinely differ. Going in, the daemon has the container's pid and no fd for its namespace yet.
-Coming back out, the teardown helper is already inside the container and holds an fd for the
-host's — with no pid it could name instead without assuming something about its own parent.
+**The destination namespace is always an open fd, never a pid.** nl80211 accepts either —
+`NL80211_ATTR_PID` is what `iw phy <phy> set netns <pid>` sends, and the kernel resolves it to a
+namespace itself — and the fd is the better primitive here because every caller already holds one.
+Going in, the attach path opens `/proc/<pid>/ns/net` before it does anything else; coming back out,
+the teardown helper holds an fd for the host's namespace and has no pid it could name without
+assuming something about its own parent. A pid is also read in the caller's own pid namespace,
+which is one more thing to be sure of for no benefit. This started as two calls and became one when
+the pid form turned out to buy nothing.
+
+**A wiphy will not move while its interfaces are up**, and `nl80211.h` says so where the command is
+defined: *"Note that all devices associated with this wiphy must be down and will follow."* The
+attach path downs the interface first, and only for the wireless case — an ordinary netdev needs no
+such preparation, and downing one an operator handed over already configured would be a change this
+code has no reason to make. The interface comes back up inside the container by the helper that
+already did exactly that for the rtnetlink path, since the kernel downs a link as part of moving it
+either way.
 
 ## Consequences
 
