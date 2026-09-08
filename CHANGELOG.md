@@ -2,6 +2,40 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Kernel 7.2.3-3: IP multipath, and bird's `Netlink: Invalid argument` stops
+
+The one link the router work left unproven is now measured. A kernel built
+with `CONFIG_IP_ADVANCED_ROUTER=y` / `CONFIG_IP_ROUTE_MULTIPATH=y`
+(`image/kernel/qemu-part1.config`, `recipes/package/kernel/7.2.3-3`) was
+staged from the `base` image's own installed package onto the inactive slot
+with `POST /v1/system/update {"kernel_path": ...}` and booted:
+
+    before (7.2.3-1, slot a): cr-2 captured_output, 4095-byte window --
+      40 x "<WARN> Netlink: Invalid argument", a burst every 60 s
+    after  (7.2.3-3, slot b): 0 in 6 minutes of uptime, and birdcl on cr-2:
+      kernel1  Routes: 0 imported, 10 exported
+               Export updates: 20 received ... 20 accepted
+      every RIP prefix installed as two-nexthop multipath
+      via 192.168.15.252 and .253 on `management`
+
+So the diagnosis was right: bird was handing the kernel `RTA_MULTIPATH`
+routes and a kernel without multipath support answers that with `EINVAL`.
+Not a capability problem, not a bird configuration problem.
+
+`cr-1` was then brought from recipe 1.0.0 to 1.1.0 (delete, then
+`POST /v1/containers/recipes/cr-1/apply` with the RIP secret), since it had
+been parked deliberately until this result was in. Both routers now run
+bird with named interfaces and neither logs the warning.
+
+One thing learned about the deploy path itself: a `pkg install` of the
+kernel into `base` does not feed the control-plane assembly, which takes its
+bzImage from a kernel *hostbuild* artifact (`ARTIFACTS_DIR/kernel/bzImage`,
+`daemon/src/main.c`). The installed package's `bzImage` is nonetheless a
+real file on the box under `IMAGES_DIR/base/<version>/rootfs/`, and
+`kernel_path` accepts any readable bzImage, so a kernel-only update needs no
+second 40-minute build. The daemon validates the boot-sector magic before
+writing, so a wrong path is a 400, not a bricked slot.
+
 ### ADR-0260 hardened against the maxims, and an ADR-0247 self-contradiction fixed (#334)
 
 Still design-only — no code. The owner asked for the model to be reviewed as a
