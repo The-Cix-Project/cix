@@ -113,7 +113,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/containers` | List all containers this daemon knows about |
 | POST | `/containers` | Create and start a container |
 | GET | `/containers/{name}` | Inspect one container |
-| PATCH | `/containers/{name}` | Edit the stored definition in place — env, files, limits, volumes (issue #11). Applies at next start. `services` is recreate-only |
+| PATCH | `/containers/{name}` | Edit the stored definition in place — services, env, files, limits, volumes (issue #11). Applies at next start |
 | DELETE | `/containers/{name}` | Stop (if running), remove it, and forget any persisted definition |
 | POST | `/containers/{name}/start` | Bring a stopped or exited container back to life |
 | POST | `/containers/{name}/stop` | Stop it now — SIGTERM to its cix-init, which stops the services in reverse dependency order, SIGKILL after the declared grace — always keeping its persisted definition (only `DELETE` removes a container) |
@@ -2355,7 +2355,7 @@ Until now, changing a `cmd`, an env var or a staged file meant delete-and-recrea
 Two groups of fields are refused rather than silently ignored:
 
 - **`name`** — a container's name is its identity; that would be a different container.
-- **`restart`, `restart_delay_seconds`, `depends_on`, `services`, `follow_rolling`, `follow_rolling_jitter_seconds`** — these feed the definition index, and its one parser lives in the create path. A second parser here would be a parallel implementation of the same validation, which this project does not do. The `400` names the offending field and says to recreate the container; extracting that parser is the follow-up that lifts the restriction.
+- **`restart`, `restart_delay_seconds`, `depends_on`, `follow_rolling`, `follow_rolling_jitter_seconds`** — these feed the definition index, and its one parser lives in the create path. A second parser here would be a parallel implementation of the same validation, which this project does not do. The `400` names the offending field and says to recreate the container; extracting that parser is the follow-up that lifts the restriction.
 
 `cixctl container edit NAME --json='{...}'` is the CLI surface.
 

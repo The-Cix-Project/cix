@@ -104,7 +104,39 @@ int test_cleanup_containers_and_network(const struct cix_client *client, const c
 		nanosleep(&pause, NULL);
 	}
 
+	/*
+	 * Name what is still holding it. A bare 409 says only "something",
+	 * and the daemon's own answer -- which container, in what state,
+	 * on which networks -- is one GET away. Without this the next
+	 * occurrence costs another ten-minute build cycle to learn nothing.
+	 */
 	fprintf(stderr, "FAIL: DELETE /v1/networks/%s, status=%d after %d passes\n", network_name,
 	        status, TEST_CLEANUP_PASSES);
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(client, "GET", "/v1/containers", NULL, &r) == 0 && r.json != NULL) {
+		const struct json_value *arr = json_object_get(r.json, "containers");
+		size_t j;
+
+		if (arr != NULL && arr->type == JSON_ARRAY) {
+			if (arr->u.array.count == 0)
+				fprintf(stderr, "  no containers remain -- the network is held by something else\n");
+			for (j = 0; j < arr->u.array.count; j++) {
+				const struct json_value *c = arr->u.array.items[j];
+				const struct json_value *nets = json_object_get(c, "networks");
+				const char *nm = json_as_string(json_object_get(c, "name"));
+				const char *st = json_as_string(json_object_get(c, "status"));
+				size_t k;
+
+				fprintf(stderr, "  still here: %s status=%s networks=", nm != NULL ? nm : "?",
+				        st != NULL ? st : "?");
+				if (nets != NULL && nets->type == JSON_ARRAY)
+					for (k = 0; k < nets->u.array.count; k++)
+						fprintf(stderr, "%s%s", k > 0 ? "," : "",
+						        json_as_string(json_object_get(nets->u.array.items[k], "name")));
+				fprintf(stderr, "\n");
+			}
+		}
+	}
+	cix_response_free(&r);
 	return -1;
 }

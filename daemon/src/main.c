@@ -14213,7 +14213,7 @@ static void respond_container_volumes(int fd, int status, const char *status_tex
 static void handle_container_patch(int fd, const char *name, const char *body, size_t body_len)
 {
 	static const char *const index_fields[] = { "restart", "restart_delay_seconds", "depends_on",
-		                                        "services", "follow_rolling",
+		                                        "follow_rolling",
 		                                        "follow_rolling_jitter_seconds" };
 	struct container_def *def = containerdef_find(name);
 	struct registry_entry *e = registry_find(name);
