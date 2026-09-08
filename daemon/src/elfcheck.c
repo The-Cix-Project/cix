@@ -333,6 +333,27 @@ int elfcheck_needed_libs(const char *path, char out[][ELFCHECK_SONAME_MAX], int 
 	return count;
 }
 
+#define SHT_SYMTAB_LOCAL 2
+
+/* Does this ELF carry a .dynsym section at all? */
+static int has_dynsym(int fd, const unsigned char *ehdr)
+{
+	unsigned long long e_shoff = rd(ehdr + 0x28, 8);
+	unsigned int e_shentsize = (unsigned int)rd(ehdr + 0x3a, 2);
+	unsigned int e_shnum = (unsigned int)rd(ehdr + 0x3c, 2);
+	unsigned int i;
+
+	for (i = 0; i < e_shnum && i < ELFCHECK_MAX_SECTIONS; i++) {
+		unsigned char sh[64];
+
+		if (read_at(fd, sh, sizeof(sh), (off_t)(e_shoff + (unsigned long long)i * e_shentsize)) != 0)
+			return 0;
+		if ((unsigned int)rd(sh + 0x04, 4) == SHT_DYNSYM_LOCAL)
+			return 1;
+	}
+	return 0;
+}
+
 int elfcheck_undefined_builtin(const char *path, char *out_sym, size_t sym_size)
 {
 	int fd;
@@ -383,7 +404,15 @@ int elfcheck_undefined_builtin(const char *path, char *out_sym, size_t sym_size)
 		if (read_at(fd, sh, sizeof(sh), (off_t)(e_shoff + (unsigned long long)i * e_shentsize)) != 0)
 			break;
 		sh_type = (unsigned int)rd(sh + 0x04, 4);
-		if (sh_type != SHT_DYNSYM_LOCAL)
+		/*
+		 * A dynamic object's undefined references are in .dynsym. A
+		 * freestanding executable (ADR-0260's cix-init) has no .dynsym
+		 * at all, and its .symtab is where an unresolved __builtin_
+		 * would sit -- so it is scanned the same way rather than passing
+		 * this gate unexamined. A static binary that somehow reached the
+		 * link with one undefined is exactly what the gate exists for.
+		 */
+		if (sh_type != SHT_DYNSYM_LOCAL && !(sh_type == SHT_SYMTAB_LOCAL && !has_dynsym(fd, ehdr)))
 			continue;
 
 		sh_off = rd(sh + 0x18, 8);

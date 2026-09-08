@@ -568,6 +568,30 @@ int main(int argc, char **argv)
 	if (test_image_fixture_build(image_root, cixd_bin, "cixd") != 0)
 		return 1;
 	/*
+	 * ADR-0260: cix-init, pid 1 in every container, travels beside
+	 * cixd and is staged beside it -- the daemon finds it next to its
+	 * own executable (/bin/cix-init next to /bin/cixd) and copies it
+	 * into each container's tree at creation. Freestanding: no
+	 * libraries to stage. Required, not optional: a control plane
+	 * without it cannot create a container at all.
+	 */
+	{
+		char init_src[PATH_MAX];
+		char init_dst[PATH_MAX];
+		const char *slash = strrchr(cixd_bin, '/');
+
+		if (slash != NULL)
+			snprintf(init_src, sizeof(init_src), "%.*s/cix-init", (int)(slash - cixd_bin), cixd_bin);
+		else
+			snprintf(init_src, sizeof(init_src), "cix-init");
+		snprintf(init_dst, sizeof(init_dst), "%s/bin/cix-init", image_root);
+		if (test_image_fixture_copy_file(init_src, init_dst) != 0) {
+			fprintf(stderr, "cix-init is not beside %s (%s) -- build/cix-init must exist\n", cixd_bin,
+			        init_src);
+			return 1;
+		}
+	}
+	/*
 	 * cixctl itself: staged so cixd --init-mode (Phase 19) has
 	 * something to execve() when it spawns a managed shell on each
 	 * console -- previously absent from this image entirely, meaning

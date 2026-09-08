@@ -102,6 +102,37 @@ int main(void)
 	check(r == 1, "an undefined __builtin_* symbol is detected");
 	check(strcmp(sym, "__builtin_notreal") == 0, "the reported symbol is the offending name");
 
+	/*
+	 * ADR-0260: a freestanding executable has no .dynsym, and the gate
+	 * must scan its .symtab rather than pass it unexamined. Two halves:
+	 * the real cix-init is clean, and a relocatable with an undefined
+	 * __builtin_ (the only static shape tcc will emit one into -- an
+	 * executable link refuses it) is caught.
+	 */
+	{
+		const char *init_bin = getenv("CIX_INIT_BIN") != NULL ? getenv("CIX_INIT_BIN") : "build/cix-init";
+		char obj[256];
+
+		if (access(init_bin, R_OK) == 0) {
+			sym[0] = '\0';
+			r = elfcheck_undefined_builtin(init_bin, sym, sizeof(sym));
+			check(r == 0, "the freestanding cix-init is scanned and clean");
+		} else {
+			printf("  (no %s here -- the freestanding-clean half is skipped)\n", init_bin);
+		}
+		snprintf(obj, sizeof(obj), "%s/u.o", dir);
+		snprintf(cmd, sizeof(cmd), "tcc -nostdlib -c -o %s %s 2>/dev/null", obj, src);
+		if (system(cmd) == 0 && access(obj, R_OK) == 0) {
+			sym[0] = '\0';
+			r = elfcheck_undefined_builtin(obj, sym, sizeof(sym));
+			check(r == 1, "an undefined __builtin_* in a .symtab-only object is detected");
+			check(strcmp(sym, "__builtin_notreal") == 0, "and named");
+			unlink(obj);
+		} else {
+			printf("  (could not build the freestanding object fixture -- that half is skipped)\n");
+		}
+	}
+
 	unlink(src);
 	unlink(so);
 	rmdir(dir);
