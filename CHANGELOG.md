@@ -142,6 +142,60 @@ about in writing. The warning was written and the next dependency still
 arrived unannounced, which is the honest lesson: reading Makefiles
 predicts what a build reaches for less reliably than building it does.
 
+### A radio moves as a PHY, not as an interface (#341, ADR-0265)
+
+Standing up `ar-1` failed at creation:
+
+```
+500 failed to create container: container_net_host_attach_interfaces: Invalid argument
+```
+
+`interfaces[]` moves a netdev with `rtnl_link_set_netns_pid()`, and for
+`wlan0` the kernel returns EINVAL. The call is not broken —
+`test_container_net` moves a veth through the identical path and passes.
+A wireless netdev belongs to a **wiphy**, one wiphy can own several
+netdevs, and the kernel refuses to let one leave alone because the
+hardware underneath cannot be in two namespaces at once.
+
+`NL80211_CMD_SET_WIPHY_NETNS` moves the whole PHY, and it lives in the
+**nl80211** family — *generic* netlink, a different protocol whose family
+id is not a compile-time constant and must be resolved at runtime by
+name. Everything else this platform says to the kernel is rtnetlink,
+where the message types are fixed numbers. So this is a new protocol
+family in `netplane/`, not three more functions.
+
+**The container contract does not change.** A recipe still says
+`"interfaces": ["wlan0"]`; the platform tests whether the name is backed
+by a wiphy and picks the mechanism the kernel requires. Nobody has to
+know a radio is special.
+
+Three things worth knowing:
+
+- **"Is this wireless?" is answered from sysfs** (`/sys/class/net/<n>/phy80211`),
+  because the caller must choose a mechanism *before* opening a socket
+  for either. The wiphy index comes from the same place — the kernel
+  publishes it as a file, so resolving it over netlink would mean a
+  response-parsing path existing for one integer.
+- **The message helpers are shared, not copied.** They were file-static
+  in `rtnetlink.c`; they moved to `netplane/src/nlmsg.h` when a second
+  family appeared. `static`, deliberately not `inline` — TCC emits a bare
+  `inline` as a strong global per translation unit, which is the
+  "defined twice" failure the m4 build found.
+- **Both directions exist**, by pid and by namespace fd, because they
+  differ: going in, the daemon has a pid and no namespace fd yet; coming
+  back out, the teardown helper is already inside the container holding
+  an fd for the host's.
+
+**The host loses the radio while the container exists**, along with every
+other interface on that wiphy. Intended for a dedicated AP adapter; there
+is no way to share one, because the kernel does not offer one.
+
+Tested where it can be: `test_rtnetlink` asserts the classifier never
+claims an ordinary interface, verified by breaking it on purpose and
+watching the test fail. The move itself needs a real wiphy and real
+privileges, so it is verified on the box — a mocked wiphy would only
+assert that the mock behaves.
+
 ### Firmware is an image the host root is assembled from (#30, ADR-0263)
 
 Wireless needs two blobs the host kernel loads before any container
