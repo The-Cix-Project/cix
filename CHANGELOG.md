@@ -12,7 +12,8 @@ with `POST /v1/system/update {"kernel_path": ...}` and booted:
 
     before (7.2.3-1, slot a): cr-2 captured_output, 4095-byte window --
       40 x "<WARN> Netlink: Invalid argument", a burst every 60 s
-    after  (7.2.3-3, slot b): 0 in 6 minutes of uptime, and birdcl on cr-2:
+    after  (7.2.3-3, slot b): 0 between 10:42:51 (bird "Started") and
+      11:02:59, a 20-minute window read from the same field, and birdcl on cr-2:
       kernel1  Routes: 0 imported, 10 exported
                Export updates: 20 received ... 20 accepted
       every RIP prefix installed as two-nexthop multipath
