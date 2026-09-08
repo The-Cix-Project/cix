@@ -267,6 +267,41 @@ SELFTEST_HELPERS = \
 aggressive: $(BUILD)/test_aggressive $(BUILD)/cixd $(BUILD)/daemon_child $(BUILD)/console_term_child
 	@$(BUILD)/test_aggressive
 
+#
+# The dashboard is the only surface this project ships that no compiler
+# ever reads, and that cost a live outage: removing the free-text cmd=
+# arm of an if/else left the `else` behind, app.js failed to parse, and
+# the whole web UI was down on a deployed release with nothing in any
+# gate to catch it.
+#
+# A textual check cannot catch this class. The broken shape was an
+# `else` preceded by `;`, which is perfectly legal after a braceless
+# `if` -- so telling the two apart needs a real JavaScript parser, and
+# no JS runtime is packaged for a Cix host (see the issue this target
+# links to). So this runs where a parser exists and says plainly when
+# it does not, rather than pretending to be a gate everywhere.
+#
+.PHONY: web-syntax
+web-syntax:
+	@if command -v node >/dev/null 2>&1; then \
+		fail=0; \
+		for f in web/*.js; do \
+			if node --check "$$f" >/tmp/websyntax.$$$$.log 2>&1; then \
+				printf '  %-24s PARSES\n' "$$f"; \
+			else \
+				printf '  %-24s SYNTAX ERROR\n' "$$f"; \
+				cat /tmp/websyntax.$$$$.log; \
+				fail=1; \
+			fi; \
+			rm -f /tmp/websyntax.$$$$.log; \
+		done; \
+		[ $$fail -eq 0 ] || { echo "WEB SYNTAX: FAIL"; exit 1; }; \
+		echo "WEB SYNTAX: PASS"; \
+	else \
+		echo "WEB SYNTAX: SKIPPED -- no node here, so nothing checked."; \
+		echo "  This is not a pass. The dashboard ships unparsed on this host."; \
+	fi
+
 selftest: $(SELFTESTS) $(SELFTEST_HELPERS)
 	@fail=0; \
 	for t in $(SELFTESTS); do \

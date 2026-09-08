@@ -2960,11 +2960,13 @@ function openConsole(name) {
 
 	/* #248: attach to the console the operator picked. Omitted entirely
 	 * when nothing is picked, so the daemon applies its own "first
-	 * declared" rule rather than this client duplicating it. */
-	/* An explicit command wins over the declared console, and the
-	 * daemon enforces that -- this client sends one or the other, not
-	 * both, so the two can never disagree about what is running. */
-	else if (consoleSelected)
+	 * declared" rule rather than this client duplicating it.
+	 *
+	 * A console NAME is the only thing that can be sent here (ADR-0261).
+	 * This used to be the second arm of an if/else whose first arm sent
+	 * a free-text cmd=, and removing that arm left the else behind --
+	 * a syntax error that took the whole dashboard down. */
+	if (consoleSelected)
 		params.push("console=" + encodeURIComponent(consoleSelected));
 	/* xterm-256color rather than anything more exotic: it is what this
 	 * emulator actually implements, and naming a terminfo entry the
