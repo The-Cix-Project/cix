@@ -2,6 +2,76 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Firmware is an image the host root is assembled from (#30, ADR-0263)
+
+Wireless needs two blobs the host kernel loads before any container
+exists: `rtw88/rtw8822b_fw.bin` for the RTL8822BU adapter, and
+`regulatory.db` for the channels and powers `cfg80211` will allow. Both
+have to be in the control-plane root, because `request_firmware()` is
+answered out of the booted root during driver probe.
+
+**The staging existed and had no caller.** `mkbootroot` accepted a
+firmware directory; the daemon's only invocation passed `""`, with a
+comment explaining that a control-plane-only rebuild needs no firmware
+re-staging. `mkbootroot` assembles a *fresh* root every run, so that
+reasoning was backwards — whatever it is not given is simply absent from
+the result. ADR-0029's firmware staging had therefore never reached a
+single assembled root.
+
+Three changes, each the smallest form of itself:
+
+- `mkbootroot` now takes a firmware **root** whose contents mirror
+  `/lib/firmware`, copied in recursively, instead of an `amdgpu`
+  directory flat-copied into a hardcoded `lib/firmware/amdgpu`. amdgpu
+  keeps working by being a subdirectory rather than the whole thing, and
+  a new device needs no code change at all.
+- `cixd` resolves that root from a well-known image, `cix-firmware`,
+  exactly as it already resolves `cix-hosttools` (ADR-0078) — current
+  version, its rootfs, its own `lib/firmware`. Additive: a box that never
+  built the image gets `""` and today's behaviour.
+- Two new packages. `wireless-regdb` regenerates `regulatory.db` from
+  `db.txt` and **refuses to install unless it is byte-identical to
+  upstream's**, which is what makes shipping upstream's `.p7s` signature
+  over this platform's own build correct rather than a mismatch waiting
+  to happen. `rtw88-firmware` is pinned to one linux-firmware commit by
+  checksum and asserts the 8822B header before installing.
+
+`rtw88-firmware` is a blob nobody can build from source — it is executed
+by the adapter's own processor. The owner approved shipping it
+explicitly; ADR-0263 records why that is not a Build Provenance
+exception so much as a case the mandate does not reach.
+
+### A build's sandbox depends on how it was started, and ADR-0199 did not say so (#338)
+
+Four kernel builds died on `certs/extract-cert.c: fatal error:
+openssl/bio.h: No such file or directory`, and three probes written to
+explain why each measured the wrong sandbox.
+
+`daemon/src/pkg.c` chooses the build environment by how the build was
+**started**: a host build gets `pkg_build_image`'s own rootfs, an
+ordinary install gets one composed from `pkg_build_depends`, and a cache
+hit gets none. ADR-0199 documented only the composition path. The
+asymmetry is invisible from a recipe, and it cost a build directly —
+kernel 7.2.3-7 added `openssl` to its `pkg_build_depends` and failed at
+the identical line, because the kernel is a host build and that field
+composes nothing there.
+
+The probes that were supposed to diagnose it all set
+`pkg_build_image="kernel-builder"` and were started with `POST
+/v1/pkg/install`, so they ran in an environment composed from their own
+four declared tools and correctly reported it holds no `zlib.h`,
+`libelf.h` or `openssl/bio.h`. `probe-wifi-driver/7` is the control:
+revision 6 with the image name changed to `cix-builder` and nothing
+else, producing byte-identical output.
+
+There was no defect. `probe-wifi-driver/9`, the first probe actually run
+inside `kernel-builder`, found all three headers present. openssl had
+been installed into that image eleven minutes *after* the last kernel
+build started; the fix was already in place and nothing had rebuilt
+since. Issue #338 was filed on the wrong reading, has been corrected to
+what was measured, and is closed. ADR-0199 now records the host-build
+path.
+
 ### There is one way into a container: a console it declares (#335, ADR-0261)
 
 `?cmd=<path>` and `POST /containers/{name}/exec` are both gone. An

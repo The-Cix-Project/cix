@@ -7788,6 +7788,30 @@ static void register_bootroot_assemble_pidfd(pid_t pid, int pidfd)
 #define HOST_TOOLS_IMAGE "cix-hosttools"
 
 /*
+ * #30, extending ADR-0029: the well-known name of the image holding
+ * device firmware, resolved and staged the same way HOST_TOOLS_IMAGE
+ * above is -- an operator builds it with ordinary `pkg install
+ * --image=cix-firmware` calls, no special-cased creation path, and a
+ * box that never built one keeps today's behaviour through
+ * mkbootroot.c's own "" fallback.
+ *
+ * Firmware has to live in the control-plane root specifically, and
+ * that is ADR-0029's original argument rather than a new one:
+ * request_firmware() is answered by the kernel out of the HOST root,
+ * during driver probe, before any container exists to hold anything.
+ * A firmware blob in a container is a blob the kernel will never see.
+ *
+ * The image's own lib/firmware is the root that gets staged, not the
+ * image rootfs itself, because that is where its packages install --
+ * rtw88-firmware writes lib/firmware/rtw88/rtw8822b_fw.bin and
+ * wireless-regdb writes lib/firmware/regulatory.db. Handing mkbootroot
+ * that subdirectory means its contents already mirror /lib/firmware
+ * exactly, which is the shape it documents wanting, and it needs to
+ * know nothing about which packages or drivers exist.
+ */
+#define FIRMWARE_IMAGE "cix-firmware"
+
+/*
  * ADR-0057: when a hostbuild job named "cix" completes, assembles a
  * fresh control-plane squashfs from its own just-harvested artifacts
  * by forking+exec'ing the real, unmodified build/mkbootroot binary --
@@ -7969,6 +7993,7 @@ static void spawn_cix_bootroot_assembly(const char *artifact_dir)
 	char out_squashfs[PATH_MAX];
 	char stage_dir[PATH_MAX];
 	char host_tools_dir[PATH_MAX];
+	char firmware_dir[PATH_MAX];
 	struct stat host_tools_st;
 	char *argv[11];
 	pid_t pid;
@@ -8016,13 +8041,46 @@ static void spawn_cix_bootroot_assembly(const char *artifact_dir)
 		}
 	}
 
+	/*
+	 * Same resolution as host_tools_dir above, one directory deeper:
+	 * mkbootroot wants a firmware ROOT whose contents mirror
+	 * /lib/firmware, and that is the image's own lib/firmware rather
+	 * than its rootfs.
+	 *
+	 * This argument used to be a hardcoded "" with a comment saying a
+	 * control-plane-only rebuild needs no firmware re-staging. That was
+	 * true of nothing: mkbootroot assembles a FRESH root every time, so
+	 * whatever it is not given, the resulting root does not have. The
+	 * effect was that ADR-0029's firmware staging had no caller at all
+	 * -- the capability existed in mkbootroot and no code path ever
+	 * reached it -- which is why a wireless adapter needing
+	 * rtw88/rtw8822b_fw.bin had nowhere for that file to come from.
+	 */
+	firmware_dir[0] = '\0';
+	{
+		char firmware_version[IMAGE_VERSION_MAX];
+		char firmware_root[PATH_MAX];
+		struct stat firmware_st;
+
+		if (image_current_version(FIRMWARE_IMAGE, firmware_version, sizeof(firmware_version)) ==
+		    IMAGE_OK) {
+			image_version_rootfs_path(FIRMWARE_IMAGE, firmware_version, firmware_root,
+			                           sizeof(firmware_root));
+			if (snprintf(firmware_dir, sizeof(firmware_dir), "%s/lib/firmware", firmware_root) >=
+			    (int)sizeof(firmware_dir))
+				firmware_dir[0] = '\0';
+			else if (stat(firmware_dir, &firmware_st) != 0 || !S_ISDIR(firmware_st.st_mode))
+				firmware_dir[0] = '\0';
+		}
+	}
+
 	argv[0] = mkbootroot_bin;
 	argv[1] = stage_dir;
 	argv[2] = cixd_bin;
 	argv[3] = cixctl_bin;
 	argv[4] = web_dir;
 	argv[5] = out_squashfs;
-	argv[6] = ""; /* firmware dir -- a control-plane-only rebuild needs no GPU firmware re-staging */
+	argv[6] = firmware_dir; /* "" if cix-firmware was never built on this box */
 	argv[7] = ""; /* modules dir -- a control-plane-only rebuild (cixd/cixctl/web only,
 	               * ADR-0057) touches no kernel module tree at all */
 	argv[8] = ""; /* kmod bin dir -- same reasoning */
