@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include <sys/types.h>
 
+#include "cixinit.h"
+
 struct ns_config {
 	unsigned long clone_flags;
 	const char *hostname;
@@ -340,6 +342,9 @@ struct container_sysctl {
  */
 #define CONTAINER_MAX_VOLUMES 8
 
+/* ADR-0260: two sockets plus one output pipe per service (include/cixinit.h). */
+#define CONTAINER_MAX_KEEP_FDS (2 + CIXINIT_MAX_SERVICES)
+
 struct container_volume {
 	char host_path[4096];
 	char mount_path[256];
@@ -491,6 +496,17 @@ struct container_spec {
 	int capture_output;
 	int stdout_fd;
 	int stderr_fd;
+	/*
+	 * ADR-0260: fds the child keeps across execve() -- cix-init's
+	 * control and report sockets and the per-service output pipes. The
+	 * daemon creates every one of them close-on-exec so nothing else it
+	 * forks inherits them, and the child clears FD_CLOEXEC on exactly
+	 * these immediately before execve(). Their numbers survive clone3()
+	 * unchanged, which is what lets the daemon name them on cix-init's
+	 * argv (include/cixinit.h).
+	 */
+	int keep_fds[CONTAINER_MAX_KEEP_FDS];
+	int keep_fd_count;
 };
 
 struct container_handle {

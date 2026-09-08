@@ -2,6 +2,7 @@
 #define REGISTRY_H
 
 #include "container.h"
+#include "cixinit.h"
 #include "diskrole.h"
 #include "json.h"
 #include "network.h"
@@ -134,6 +135,34 @@ struct registry_device_attachment {
 	 * registry_network_detach() already enforces for networks.
 	 */
 	int live;
+};
+
+/*
+ * ADR-0260: one declared service and what cix-init has said about it.
+ * The states mirror cix-init's own; "running" means ready -- the probe
+ * passed, or it started and has none.
+ */
+#define REGISTRY_MAX_SERVICES CIXINIT_MAX_SERVICES
+#define REGISTRY_SVC_PENDING 0
+#define REGISTRY_SVC_STARTING 1
+#define REGISTRY_SVC_RUNNING 2
+#define REGISTRY_SVC_EXITED 3
+#define REGISTRY_SVC_RESTART_WAIT 4
+#define REGISTRY_SVC_STOPPED 5
+#define REGISTRY_SVC_FAILED 6
+
+struct registry_service {
+	struct cixinit_service def; /* as sent: after_mask is in table order */
+	int body_index;             /* where it sat in the request body */
+	int state;                  /* REGISTRY_SVC_* */
+	pid_t pid;                  /* the running instance, 0 when none */
+	int has_exit;               /* exit_kind/exit_value describe the last exit */
+	int exit_kind;              /* CIXINIT_EXIT_KIND_* */
+	int exit_value;
+	int restarts;
+	int fail_reason;            /* CIXINIT_FAIL_*, 0 when none */
+	int fail_detail;
+	int output_fd;              /* read end of its output pipe; -1 once closed */
 };
 
 struct registry_entry {
@@ -319,6 +348,25 @@ struct registry_entry {
 	struct registry_console consoles[REGISTRY_MAX_CONSOLES];
 	int console_count; /* 0 = this container declares no console */
 	/*
+	 * ADR-0260: the services this container declared, in the order
+	 * cix-init runs them (dependencies first), each carrying the
+	 * declaration as sent and the live state derived from cix-init's
+	 * reports. The declaration is the only truth; an operator's stop
+	 * shows up here as REGISTRY_SVC_STOPPED and lasts until the next
+	 * container start, which replays the declaration.
+	 */
+	struct registry_service services[REGISTRY_MAX_SERVICES];
+	int service_count;
+	int init_control_fd; /* cixd -> cix-init commands; -1 once closed */
+	int init_report_fd;  /* cix-init -> cixd reports; -1 once closed */
+	int init_up;         /* cix-init has read its table (CIXINIT_EV_UP seen) */
+	/*
+	 * Derived, never declared: every service with a probe has passed
+	 * it and every oneshot has exited 0 (ADR-0260). What depends_on
+	 * one level up waits for.
+	 */
+	int ready;
+	/*
 	 * net.* sysctls applied inside this container's own netns at
 	 * creation time -- mirrors container_spec.sysctls[] directly
 	 * (read from spec inside registry_create(), same as interfaces[]
@@ -349,8 +397,6 @@ struct registry_entry {
 	 * ever pointed into the create request's own parsed JSON tree,
 	 * freed immediately after container_create() returns.
 	 */
-	char cmd[CONTAINER_MAX_ARGV][CONTAINER_ARGV_MAX];
-	int cmd_count; /* always >= 1 for an in-use entry */
 	/*
 	 * Extra environment variables this container was created with
 	 * (POST /v1/containers' own "env" field, see struct container_env's
@@ -485,6 +531,20 @@ struct registry_entry *registry_find(const char *name);
  * successful create; a container with none simply never calls it.
  */
 void registry_set_consoles(const char *name, const struct registry_console *consoles, int count);
+/*
+ * ADR-0260: records the declaration cix-init was sent and the fds the
+ * daemon keeps for it. output_fds[i] is the read end of service i's
+ * pipe. Services start in REGISTRY_SVC_PENDING; reports move them.
+ */
+struct cixinit_table;
+void registry_set_services(struct registry_entry *e, const struct cixinit_table *table,
+                           const int output_fds[], int control_fd, int report_fd);
+/* Applies one report from cix-init; returns 1 if the container's derived readiness changed. */
+int registry_apply_init_report(struct registry_entry *e, const struct cixinit_report *r);
+const char *registry_service_state_name(int state);
+/* Index of the named service in the entry's (table) order, or -1. */
+int registry_service_index(const struct registry_entry *e, const char *name);
+void registry_close_init_fds(struct registry_entry *e);
 
 /*
  * Writes up to max in-use entries' own names into out_names (any

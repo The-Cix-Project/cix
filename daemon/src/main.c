@@ -55,6 +55,7 @@
 #include "iohelpers.h"
 #include "json.h"
 #include "linux_compat.h"
+#include "cixinit_table.h"
 #include "namecheck.h"
 #include "network.h"
 #include "persist.h"
@@ -136,6 +137,7 @@
 #include <sys/mount.h>
 #include <sys/quota.h>
 #include <sys/reboot.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
@@ -1129,6 +1131,8 @@ enum conn_kind {
 	CONN_PKG_BUILDENV, /* #238: a forked build-environment composition */
 	CONN_PKG_BUILD_OUTPUT,  /* pkg.c's build-output capture pipe, drained incrementally
 	                          * as the container runs rather than once at exit (ADR-0087) */
+	CONN_CONTAINER_INIT,    /* ADR-0260: one container's cix-init report socket -- service state */
+	CONN_STOP_ESCALATE_TIMER, /* ADR-0260: SIGKILL if a SIGTERM'd container has not stopped in its grace */
 	CONN_CONTAINER_OUTPUT,  /* an ordinary container's own stdout/stderr capture pipe --
 	                          * always present since transparent container-log capture
 	                          * landed (every container, not just capture_output=true
@@ -1226,6 +1230,8 @@ struct conn {
 	 */
 	char output_line_buf[1024];             /* CONN_CONTAINER_OUTPUT only */
 	int output_line_len;                    /* CONN_CONTAINER_OUTPUT only */
+	int service_index;                      /* CONN_CONTAINER_OUTPUT only: which service's pipe, -1 = cix-init's own stdio */
+	time_t escalate_started_at;             /* CONN_STOP_ESCALATE_TIMER only: the incarnation it was armed for */
 	pid_t pkg_fetch_pid;                    /* CONN_PKG_FETCH / CONN_BOOTROOT_ASSEMBLE / CONN_ISO_ASSEMBLE / CONN_BOOTSTRAP_FETCH / CONN_DISK_FORMAT / CONN_STORAGE_MIGRATE / CONN_CONTAINER_STORAGE_MIGRATE */
 	int pkg_chain_idx;                      /* CONN_PKG_FETCH / CONN_PKG_BUILD_OUTPUT / CONN_PKG_BUILD_LOG_WS -- ADR-0157 Phase 2: which g_chains[] slot this conn belongs to */
 	enum storage_kind storage_migrate_kind; /* CONN_STORAGE_MIGRATE only */
@@ -6930,6 +6936,467 @@ static void handle_get_one(int fd, const char *name)
 	jw_free(&w);
 }
 
+/* ------------------------------------------------------------------ */
+/* ADR-0260: cix-init -- staging the binary, wiring its transport,     */
+/* reading its reports.                                                */
+
+/*
+ * Where this daemon's own cix-init lives: beside its own executable.
+ * /bin/cixd finds /bin/cix-init on an installed host; a test's
+ * build/cixd finds build/cix-init. One rule, no flag, and a daemon can
+ * only ever stage the cix-init it shipped with.
+ */
+static int stage_container_bytes(const char *upperdir, const char *path, const void *content,
+                                  size_t content_len, mode_t mode, uid_t owner, gid_t group,
+                                  uid_t id_offset);
+
+static const char *cix_init_source_path(void)
+{
+	static char path[PATH_MAX];
+	static int resolved;
+
+	if (!resolved) {
+		char exe[PATH_MAX];
+		ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+		char *slash;
+
+		if (n <= 0)
+			return NULL;
+		exe[n] = '\0';
+		slash = strrchr(exe, '/');
+		if (slash == NULL)
+			return NULL;
+		*slash = '\0';
+		if (snprintf(path, sizeof(path), "%s/cix-init", exe) >= (int)sizeof(path))
+			return NULL;
+		resolved = 1;
+	}
+	return path;
+}
+
+/*
+ * Stages /cix-init into a container's tree at creation time, through
+ * the same helper files[] uses so the direct-rootfs and id-mapped
+ * cases are inherited rather than re-derived. Not at image-seed time:
+ * ADR-0155's manifest-hash dedup would discard a reseed, and a
+ * container must run the cix-init its own daemon shipped with.
+ */
+static int stage_cix_init(const char *upperdir, uid_t id_offset, char *err, size_t err_size)
+{
+	const char *src = cix_init_source_path();
+	int fd;
+	struct stat st;
+	char *buf;
+	ssize_t got;
+	int rc;
+
+	if (src == NULL || (fd = open(src, O_RDONLY | O_CLOEXEC)) < 0) {
+		snprintf(err, err_size, "cix-init is not beside this daemon's executable (%s)",
+		         src != NULL ? src : "unresolvable");
+		return -1;
+	}
+	if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0 || st.st_size > (1 << 20)) {
+		close(fd);
+		snprintf(err, err_size, "cix-init at %s is not a plausible binary", src);
+		return -1;
+	}
+	buf = malloc((size_t)st.st_size);
+	if (buf == NULL) {
+		close(fd);
+		snprintf(err, err_size, "out of memory staging cix-init");
+		return -1;
+	}
+	got = read(fd, buf, (size_t)st.st_size);
+	close(fd);
+	if (got != (ssize_t)st.st_size) {
+		free(buf);
+		snprintf(err, err_size, "short read of %s", src);
+		return -1;
+	}
+	rc = stage_container_bytes(upperdir, "/cix-init", buf, (size_t)st.st_size, 0755, (uid_t)-1,
+	                            (gid_t)-1, id_offset);
+	free(buf);
+	if (rc != 0) {
+		snprintf(err, err_size, "failed to stage /cix-init: %s", strerror(errno));
+		return -1;
+	}
+	return 0;
+}
+
+/*
+ * The fds a container's cix-init is handed: both ends of two
+ * SOCK_SEQPACKET pairs and one pipe per service, every one of them
+ * close-on-exec (the child switches its own back, src/container.c).
+ * The parent's ends are non-blocking; a reactor never blocks (ADR-0247).
+ */
+struct init_transport {
+	int ctl[2];                        /* [0] daemon, [1] cix-init */
+	int rep[2];                        /* [0] daemon, [1] cix-init */
+	int out[CIXINIT_MAX_SERVICES][2];  /* [0] daemon reads, [1] the service writes */
+	int count;
+	char argv_store[2 + CIXINIT_MAX_SERVICES][16];
+	char *argv[4 + CIXINIT_MAX_SERVICES];
+};
+
+static void init_transport_init(struct init_transport *t)
+{
+	int k;
+
+	memset(t, 0, sizeof(*t));
+	t->ctl[0] = t->ctl[1] = t->rep[0] = t->rep[1] = -1;
+	for (k = 0; k < CIXINIT_MAX_SERVICES; k++)
+		t->out[k][0] = t->out[k][1] = -1;
+}
+
+static void close_if_open(int *fd)
+{
+	if (*fd >= 0) {
+		close(*fd);
+		*fd = -1;
+	}
+}
+
+/* The child's ends, once the child has them (or never will). */
+static void init_transport_close_child_ends(struct init_transport *t)
+{
+	int k;
+
+	close_if_open(&t->ctl[1]);
+	close_if_open(&t->rep[1]);
+	for (k = 0; k < t->count; k++)
+		close_if_open(&t->out[k][1]);
+}
+
+static void init_transport_close_all(struct init_transport *t)
+{
+	int k;
+
+	init_transport_close_child_ends(t);
+	close_if_open(&t->ctl[0]);
+	close_if_open(&t->rep[0]);
+	for (k = 0; k < t->count; k++)
+		close_if_open(&t->out[k][0]);
+}
+
+/*
+ * Creates the sockets and pipes, writes the table into the control
+ * socket before there is a child to read it (the socket buffer is
+ * sized to hold all of it), and fills spec->argv and spec->keep_fds.
+ * shared_out, when >= 0, is used as every service's output fd instead
+ * of a pipe per service -- the build container's shape, where the
+ * build log pipe already exists and the one service writes to it.
+ */
+static int init_transport_open(struct init_transport *t, const struct cixinit_table *table,
+                               int shared_out, struct container_spec *spec, char *err,
+                               size_t err_size)
+{
+	int so = (int)cixinit_table_socket_bytes(table) + 4096;
+	int k, argn = 0;
+
+	init_transport_init(t);
+	t->count = table->count;
+	if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, t->ctl) != 0 ||
+	    socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, t->rep) != 0) {
+		snprintf(err, err_size, "cannot create cix-init's sockets: %s", strerror(errno));
+		init_transport_close_all(t);
+		return -1;
+	}
+	(void)setsockopt(t->ctl[0], SOL_SOCKET, SO_SNDBUF, &so, sizeof(so));
+	(void)setsockopt(t->ctl[1], SOL_SOCKET, SO_RCVBUF, &so, sizeof(so));
+	(void)fcntl(t->ctl[0], F_SETFL, O_NONBLOCK);
+	(void)fcntl(t->rep[0], F_SETFL, O_NONBLOCK);
+	if (shared_out < 0) {
+		for (k = 0; k < t->count; k++) {
+			if (pipe2(t->out[k], O_CLOEXEC) != 0) {
+				snprintf(err, err_size, "cannot create a service output pipe: %s", strerror(errno));
+				init_transport_close_all(t);
+				return -1;
+			}
+			(void)fcntl(t->out[k][0], F_SETFL, O_NONBLOCK);
+		}
+	}
+	if (cixinit_table_send(table, t->ctl[0]) != 0) {
+		snprintf(err, err_size, "cannot hand cix-init its table: %s", strerror(errno));
+		init_transport_close_all(t);
+		return -1;
+	}
+
+	t->argv[argn++] = (char *)"/cix-init";
+	snprintf(t->argv_store[0], sizeof(t->argv_store[0]), "%d", t->ctl[1]);
+	t->argv[argn++] = t->argv_store[0];
+	snprintf(t->argv_store[1], sizeof(t->argv_store[1]), "%d", t->rep[1]);
+	t->argv[argn++] = t->argv_store[1];
+	spec->keep_fd_count = 0;
+	spec->keep_fds[spec->keep_fd_count++] = t->ctl[1];
+	spec->keep_fds[spec->keep_fd_count++] = t->rep[1];
+	for (k = 0; k < t->count; k++) {
+		int fd = shared_out >= 0 ? shared_out : t->out[k][1];
+
+		snprintf(t->argv_store[2 + k], sizeof(t->argv_store[2 + k]), "%d", fd);
+		t->argv[argn++] = t->argv_store[2 + k];
+		if (shared_out < 0 || k == 0)
+			spec->keep_fds[spec->keep_fd_count++] = fd;
+	}
+	t->argv[argn] = NULL;
+	spec->argv = t->argv;
+	return 0;
+}
+
+static void container_init_log_report(struct registry_entry *entry, const struct cixinit_report *r)
+{
+	const char *svc = (r->service >= 0 && r->service < entry->service_count)
+	                      ? entry->services[r->service].def.name
+	                      : "cix-init";
+
+	switch (r->event) {
+	case CIXINIT_EV_UP:
+		logstore_write_container(entry->name, "info", "cix-init up, %d service(s)", r->b);
+		break;
+	case CIXINIT_EV_STARTED:
+		logstore_write_container(entry->name, "info", "service %s started, pid %d", svc, r->a);
+		break;
+	case CIXINIT_EV_READY:
+		logstore_write_container(entry->name, "info", "service %s ready%s", svc,
+		                         r->a == 1 ? " (probe timed out; proceeding)" : "");
+		break;
+	case CIXINIT_EV_EXITED:
+		logstore_write_container(entry->name, r->a == CIXINIT_EXIT_KIND_EXITED && r->b == 0 ? "info" : "warn",
+		                         "service %s %s %d", svc,
+		                         r->a == CIXINIT_EXIT_KIND_EXITED ? "exited with status" : "killed by signal",
+		                         r->b);
+		break;
+	case CIXINIT_EV_RESTART_IN:
+		logstore_write_container(entry->name, "warn", "service %s restarting in %ds (restart %d)", svc,
+		                         r->a, r->b);
+		break;
+	case CIXINIT_EV_STOPPED:
+		logstore_write_container(entry->name, "info", "service %s stopped by operator", svc);
+		break;
+	case CIXINIT_EV_FAILED:
+		logstore_write_container(entry->name, "error", "service %s failed: %s (%d)", svc,
+		                         r->a == CIXINIT_FAIL_PROBE ? "ready probe timed out"
+		                         : r->a == CIXINIT_FAIL_ONESHOT ? "oneshot exited non-zero"
+		                         : r->a == CIXINIT_FAIL_SPAWN ? "fork failed"
+		                         : r->a == CIXINIT_FAIL_DEPENDENCY ? "a service it is after can never be ready"
+		                         : "unknown reason",
+		                         r->b);
+		break;
+	case CIXINIT_EV_SHUTDOWN:
+		logstore_write_container(entry->name, "info", r->a == 0 ? "cix-init: shutdown begins"
+		                                                        : "cix-init: shutdown complete");
+		break;
+	default:
+		break;
+	}
+}
+
+/*
+ * Drains cix-init's report socket. Returns 0 while the socket is open,
+ * 1 once cix-init has closed it (it only does that by exiting).
+ */
+static int container_init_pump(struct registry_entry *entry, int fd)
+{
+	for (;;) {
+		struct cixinit_report r;
+		ssize_t n = recv(fd, &r, sizeof(r), MSG_DONTWAIT);
+
+		if (n < 0) {
+			if (errno == EINTR)
+				continue;
+			return 0; /* EAGAIN: drained */
+		}
+		if (n == 0)
+			return 1;
+		if (n != (ssize_t)sizeof(r))
+			continue; /* a short record cannot be interpreted */
+		if (!entry->in_use || entry->init_report_fd != fd)
+			continue;
+		container_init_log_report(entry, &r);
+		registry_apply_init_report(entry, &r);
+	}
+}
+
+static void handle_container_init_event(struct conn *cc)
+{
+	struct registry_entry *entry = cc->entry;
+
+	if (container_init_pump(entry, cc->fd)) {
+		cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+		close(cc->fd);
+		if (entry->init_report_fd == cc->fd)
+			entry->init_report_fd = -1;
+		free(cc);
+	}
+}
+
+static void register_container_init(struct registry_entry *entry)
+{
+	struct conn *cc;
+	struct cix_epoll_event ev;
+
+	if (entry->init_report_fd < 0)
+		return;
+	cc = calloc(1, sizeof(*cc));
+	if (cc == NULL) {
+		perror("malloc (container init reactor conn)");
+		abort();
+	}
+	cc->kind = CONN_CONTAINER_INIT;
+	cc->fd = entry->init_report_fd;
+	cc->entry = entry;
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = cc;
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+		perror("epoll_ctl ADD container init fd");
+		abort();
+	}
+}
+
+/* Sends one command to a container's cix-init. 0, or -1 with errno. */
+static int container_init_command(struct registry_entry *entry, int op, int service)
+{
+	struct cixinit_command c;
+
+	if (entry->init_control_fd < 0) {
+		errno = ENOTCONN;
+		return -1;
+	}
+	memset(&c, 0, sizeof(c));
+	c.magic = CIXINIT_MAGIC;
+	c.op = op;
+	c.service = service;
+	return send(entry->init_control_fd, &c, sizeof(c), MSG_DONTWAIT | MSG_NOSIGNAL) == (ssize_t)sizeof(c)
+	           ? 0
+	           : -1;
+}
+
+/*
+ * How long a container is given to stop on its own before SIGKILL:
+ * the longest declared per-service stop timeout, plus a margin for
+ * cix-init to work through the graph.
+ */
+static int container_stop_grace_seconds(const struct registry_entry *entry)
+{
+	int i, grace = 10;
+
+	for (i = 0; i < entry->service_count; i++)
+		if (entry->services[i].def.stop_timeout_seconds > grace)
+			grace = entry->services[i].def.stop_timeout_seconds;
+	return grace + 5;
+}
+
+/*
+ * Autostart's wait for a container to become ready, on the same
+ * reports the reactor will consume once it runs: this is called before
+ * the event loop starts, so the socket is pumped here. Returns 1 when
+ * ready, 0 on timeout or when cix-init went away.
+ */
+static int wait_for_container_ready(struct registry_entry *entry, int timeout_seconds)
+{
+	time_t deadline = time(NULL) + timeout_seconds;
+
+	while (!entry->ready) {
+		struct pollfd p;
+		long left = (long)(deadline - time(NULL));
+		int rc;
+
+		if (left <= 0 || entry->init_report_fd < 0)
+			return entry->ready;
+		p.fd = entry->init_report_fd;
+		p.events = POLLIN;
+		p.revents = 0;
+		rc = poll(&p, 1, (int)(left * 1000 > 250 ? 250 : left * 1000));
+		if (rc < 0 && errno != EINTR)
+			return entry->ready;
+		if (rc > 0 && container_init_pump(entry, entry->init_report_fd)) {
+			/* cix-init exited; the reactor's own conn will see the EOF too. */
+			return entry->ready;
+		}
+	}
+	return 1;
+}
+
+static int container_ready_timeout_seconds(const struct registry_entry *entry)
+{
+	int i, t = 5;
+
+	for (i = 0; i < entry->service_count; i++)
+		if (entry->services[i].def.ready_timeout_seconds > t)
+			t = entry->services[i].def.ready_timeout_seconds;
+	return t + 5;
+}
+
+/*
+ * ADR-0260: a stop is SIGTERM to cix-init, which stops the services in
+ * reverse dependency order, and SIGKILL only if that has not finished
+ * within the container's grace. This timer is the escalation.
+ */
+static void arm_stop_escalation_timer(struct registry_entry *entry)
+{
+	int tfd;
+	struct itimerspec its;
+	struct conn *cc;
+	struct cix_epoll_event ev;
+
+	tfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+	if (tfd < 0) {
+		perror("timerfd_create (stop escalation)");
+		return;
+	}
+	memset(&its, 0, sizeof(its));
+	its.it_value.tv_sec = container_stop_grace_seconds(entry);
+	if (timerfd_settime(tfd, 0, &its, NULL) != 0) {
+		perror("timerfd_settime (stop escalation)");
+		close(tfd);
+		return;
+	}
+	cc = calloc(1, sizeof(*cc));
+	if (cc == NULL) {
+		perror("malloc (stop escalation timer conn)");
+		close(tfd);
+		return;
+	}
+	cc->kind = CONN_STOP_ESCALATE_TIMER;
+	cc->fd = tfd;
+	snprintf(cc->restart_name, sizeof(cc->restart_name), "%s", entry->name);
+	cc->escalate_started_at = entry->started_at;
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = cc;
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, tfd, &ev) != 0) {
+		perror("epoll_ctl ADD stop escalation timer");
+		close(tfd);
+		free(cc);
+	}
+}
+
+static void handle_stop_escalation_timer_event(struct conn *cc)
+{
+	uint64_t expirations;
+	struct registry_entry *e;
+
+	if (read(cc->fd, &expirations, sizeof(expirations)) < 0)
+		perror("read (stop escalation timerfd)");
+	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	close(cc->fd);
+
+	e = registry_find(cc->restart_name);
+	if (e != NULL && e->in_use && e->running && e->teardown_kind != REGISTRY_TEARDOWN_NONE &&
+	    e->started_at == cc->escalate_started_at) {
+		logstore_write("cixd", "warn",
+		               "container %s did not stop within its grace -- SIGKILL to pid 1", e->name);
+		sys_pidfd_send_signal(e->handle.pidfd, SIGKILL);
+	}
+	free(cc);
+}
+
+static void begin_container_stop(struct registry_entry *e, int teardown_kind)
+{
+	registry_begin_kill(e, teardown_kind);
+	arm_stop_escalation_timer(e);
+}
+
 static void register_container_pidfd(struct registry_entry *entry)
 {
 	struct conn *cc;
@@ -7225,12 +7692,12 @@ static void handle_pkg_build_output_event(struct conn *cc)
  * unavailable, the container still runs, exactly like pkg.c's own
  * build path degrades on the same failure).
  */
-static void register_container_output(struct registry_entry *entry)
+static void register_container_output_fd(struct registry_entry *entry, int fd, int service_index)
 {
 	struct conn *cc;
 	struct cix_epoll_event ev;
 
-	if (entry->output_fd < 0)
+	if (fd < 0)
 		return;
 
 	cc = calloc(1, sizeof(*cc));
@@ -7240,8 +7707,9 @@ static void register_container_output(struct registry_entry *entry)
 	}
 	memset(cc, 0, sizeof(*cc));
 	cc->kind = CONN_CONTAINER_OUTPUT;
-	cc->fd = entry->output_fd;
+	cc->fd = fd;
 	cc->entry = entry;
+	cc->service_index = service_index;
 
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
@@ -7250,6 +7718,23 @@ static void register_container_output(struct registry_entry *entry)
 		perror("epoll_ctl ADD container output fd");
 		abort();
 	}
+}
+
+static void register_container_output(struct registry_entry *entry)
+{
+	register_container_output_fd(entry, entry->output_fd, -1);
+}
+
+/* Is this output conn still the one its entry knows about? */
+static int container_output_conn_live(const struct conn *cc)
+{
+	const struct registry_entry *e = cc->entry;
+
+	if (!e->in_use)
+		return 0;
+	if (cc->service_index < 0)
+		return e->output_fd == cc->fd;
+	return cc->service_index < e->service_count && e->services[cc->service_index].output_fd == cc->fd;
 }
 
 /*
@@ -7294,6 +7779,37 @@ static void register_container_output(struct registry_entry *entry)
  * epic Part 2, ADR-0127) -- a no-op unless at least one syslog forward
  * target is registered, so this costs nothing in the common case.
  */
+/*
+ * One complete line of a container's output: to the log store and
+ * syslog forwarding, and into captured_output when capture was
+ * requested -- prefixed with the service that wrote it (ADR-0260), so
+ * the merged view keeps its attribution. cix-init's own lines carry
+ * its name.
+ */
+static void container_output_line(struct conn *cc, const char *line)
+{
+	struct registry_entry *e = cc->entry;
+	const char *svc = cc->service_index >= 0 ? e->services[cc->service_index].def.name : "cix-init";
+	char tagged[1024 + CIXINIT_NAME_MAX + 4];
+
+	snprintf(tagged, sizeof(tagged), "%s: %s", svc, line);
+	logstore_write_container(e->name, "info", "%s", tagged);
+	syslogfwd_send(e->name, "info", tagged);
+	if (e->capture_requested) {
+		size_t tl = strlen(tagged);
+		int room = (int)sizeof(e->captured_output) - e->captured_output_len - 2;
+
+		if (room > 0) {
+			int take = (int)tl < room ? (int)tl : room;
+
+			memcpy(e->captured_output + e->captured_output_len, tagged, (size_t)take);
+			e->captured_output_len += take;
+			e->captured_output[e->captured_output_len++] = '\n';
+			e->captured_output[e->captured_output_len] = '\0';
+		}
+	}
+}
+
 static void forward_container_output_to_logstore(struct conn *cc, const char *data, size_t len,
                                                    int flush_partial)
 {
@@ -7303,10 +7819,8 @@ static void forward_container_output_to_logstore(struct conn *cc, const char *da
 		if (data[i] == '\n' ||
 		    cc->output_line_len >= (int)sizeof(cc->output_line_buf) - 1) {
 			cc->output_line_buf[cc->output_line_len] = '\0';
-			if (cc->output_line_len > 0) {
-				logstore_write_container(cc->entry->name, "info", "%s", cc->output_line_buf);
-				syslogfwd_send(cc->entry->name, "info", cc->output_line_buf);
-			}
+			if (cc->output_line_len > 0)
+				container_output_line(cc, cc->output_line_buf);
 			cc->output_line_len = 0;
 			if (data[i] == '\n')
 				continue;
@@ -7316,8 +7830,7 @@ static void forward_container_output_to_logstore(struct conn *cc, const char *da
 
 	if (flush_partial && cc->output_line_len > 0) {
 		cc->output_line_buf[cc->output_line_len] = '\0';
-		logstore_write_container(cc->entry->name, "info", "%s", cc->output_line_buf);
-		syslogfwd_send(cc->entry->name, "info", cc->output_line_buf);
+		container_output_line(cc, cc->output_line_buf);
 		cc->output_line_len = 0;
 	}
 }
@@ -7331,21 +7844,8 @@ static void handle_container_output_event(struct conn *cc)
 	for (;;) {
 		n = read(cc->fd, new_data, sizeof(new_data));
 		if (n > 0) {
-			if (cc->entry->in_use && cc->entry->output_fd == cc->fd) {
-				if (cc->entry->capture_requested) {
-					int room = (int)sizeof(cc->entry->captured_output) -
-					           cc->entry->captured_output_len - 1;
-					int take = (int)n < room ? (int)n : room;
-
-					if (take > 0) {
-						memcpy(cc->entry->captured_output + cc->entry->captured_output_len,
-						       new_data, (size_t)take);
-						cc->entry->captured_output_len += take;
-						cc->entry->captured_output[cc->entry->captured_output_len] = '\0';
-					}
-				}
+			if (container_output_conn_live(cc))
 				forward_container_output_to_logstore(cc, new_data, (size_t)n, 0);
-			}
 			if (n < (ssize_t)sizeof(new_data))
 				break; /* drained everything currently buffered */
 			continue;
@@ -7364,12 +7864,17 @@ static void handle_container_output_event(struct conn *cc)
 	}
 
 	if (eof) {
-		if (cc->entry->in_use && cc->entry->output_fd == cc->fd)
+		if (container_output_conn_live(cc))
 			forward_container_output_to_logstore(cc, "", 0, 1);
 		cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 		close(cc->fd);
-		if (cc->entry->output_fd == cc->fd)
-			cc->entry->output_fd = -1;
+		if (cc->service_index < 0) {
+			if (cc->entry->output_fd == cc->fd)
+				cc->entry->output_fd = -1;
+		} else if (cc->service_index < cc->entry->service_count &&
+		           cc->entry->services[cc->service_index].output_fd == cc->fd) {
+			cc->entry->services[cc->service_index].output_fd = -1;
+		}
 		free(cc);
 	}
 }
@@ -10341,7 +10846,7 @@ void container_root_for(const char *disk_name, char *out, size_t out_size)
 static const char *container_body_unknown_key(const struct json_value *root)
 {
 	static const char *const known[] = {
-		"name", "image", "image_version", "cmd", "networks", "ip_forward", "ksm",
+		"name", "image", "image_version", "services", "networks", "ip_forward", "ksm",
 		"capture_output", "routes", "devices", "interfaces", "cap_add", "files",
 		"sysctls", "env", "dns_servers", "dns_register", "pki_issue", "pki_cert_dir",
 		"pki_days", "disk", "ldap_provision", "ldap_user", "ldap_group", "ldap_uid",
@@ -10519,13 +11024,13 @@ static void chown_staged_parents(const char *upperdir, const char *path, uid_t i
  * this, such a recipe got on-disk uid 75, unmapped inside, which is not
  * what any author would expect it to mean.
  */
-static int stage_container_file(const char *upperdir, const char *path, const char *content,
-                                 mode_t mode, uid_t owner, gid_t group, uid_t id_offset)
+static int stage_container_bytes(const char *upperdir, const char *path, const void *content,
+                                  size_t content_len, mode_t mode, uid_t owner, gid_t group,
+                                  uid_t id_offset)
 {
 	char target[PATH_MAX];
 	char target_dir[PATH_MAX];
 	char *slash;
-	size_t content_len = strlen(content);
 	uid_t eff_owner;
 	gid_t eff_group;
 	int fd;
@@ -10562,6 +11067,13 @@ static int stage_container_file(const char *upperdir, const char *path, const ch
 	}
 	close(fd);
 	return 0;
+}
+
+static int stage_container_file(const char *upperdir, const char *path, const char *content,
+                                 mode_t mode, uid_t owner, gid_t group, uid_t id_offset)
+{
+	return stage_container_bytes(upperdir, path, content, strlen(content), mode, owner, group,
+	                             id_offset);
 }
 
 
@@ -10677,7 +11189,7 @@ static int create_container_from_body(const char *body, size_t body_len,
                                        size_t err_msg_size)
 {
 	struct json_value *root;
-	const struct json_value *jname, *jimage, *jimage_version, *jcmd, *jmem, *jswapmax, *jpids, *jcpu, *jcpuset,
+	const struct json_value *jname, *jimage, *jimage_version, *jservices, *jmem, *jswapmax, *jpids, *jcpu, *jcpuset,
 	    *jnetworks, *jip_forward, *jksm, *jroutes;
 	const struct json_value *jdisk_quota;
 	long long disk_quota_bytes;
@@ -10712,7 +11224,8 @@ static int create_container_from_body(const char *body, size_t body_len,
 	struct registry_entry *entry;
 	enum registry_error rerr;
 	int create_errno;
-	char *argv_buf[CONTAINER_MAX_ARGV];
+	struct cixinit_table init_table;
+	struct init_transport init_tp;
 	char env_buf[CONTAINER_MAX_ENV][CONTAINER_ENV_ENTRY_MAX];
 	char *envp_ptrs[CONTAINER_MAX_ENV + 1];
 	int env_count = 0;
@@ -10796,7 +11309,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	jname = json_object_get(root, "name");
 	jimage = json_object_get(root, "image");
 	jimage_version = json_object_get(root, "image_version");
-	jcmd = json_object_get(root, "cmd");
+	jservices = json_object_get(root, "services");
 	jnetworks = json_object_get(root, "networks");
 	jip_forward = json_object_get(root, "ip_forward");
 	jksm = json_object_get(root, "ksm");
@@ -11001,11 +11514,9 @@ static int create_container_from_body(const char *body, size_t body_len,
 		*out_readiness_timeout_seconds = (int)timeout;
 	}
 
-	if (!name_is_valid(name) || image == NULL || image[0] == '\0' || jcmd == NULL ||
-	    jcmd->type != JSON_ARRAY || jcmd->u.array.count == 0 ||
-	    jcmd->u.array.count >= (sizeof(argv_buf) / sizeof(argv_buf[0]))) {
+	if (!name_is_valid(name) || image == NULL || image[0] == '\0' || jservices == NULL) {
 		json_free(root);
-		snprintf(err_msg, err_msg_size, "name/image/cmd missing or invalid");
+		snprintf(err_msg, err_msg_size, "name/image/services missing or invalid");
 		return 400;
 	}
 	if (jnetworks != NULL) {
@@ -11675,18 +12186,16 @@ static int create_container_from_body(const char *body, size_t body_len,
 		}
 	}
 
-	argc = jcmd->u.array.count;
-	for (i = 0; i < argc; i++) {
-		const char *s = json_as_string(jcmd->u.array.items[i]);
-
-		if (s == NULL) {
-			json_free(root);
-			snprintf(err_msg, err_msg_size, "cmd must be an array of strings");
-			return 400;
-		}
-		argv_buf[i] = (char *)s;
+	/*
+	 * ADR-0260: what the container runs is its services[], translated
+	 * once into cix-init's table. A tcp probe connects to the
+	 * container's own first address.
+	 */
+	if (cixinit_table_from_json(jservices, net_count > 0 ? net_attachments[0].ip_be : 0, &init_table,
+	                            err_msg, err_msg_size) != 0) {
+		json_free(root);
+		return 400;
 	}
-	argv_buf[argc] = NULL;
 	envp_ptrs[env_count] = NULL;
 
 	/*
@@ -12468,8 +12977,21 @@ static int create_container_from_body(const char *body, size_t body_len,
 	spec.cap_add_count = cap_add_count;
 	for (i = 0; i < (size_t)cap_add_count; i++)
 		snprintf(spec.cap_add[i], sizeof(spec.cap_add[i]), "%s", cap_add_names[i]);
-	spec.argv = argv_buf;
 	spec.envp = envp_ptrs;
+	/*
+	 * ADR-0260: pid 1 is cix-init. Its transport is opened and its
+	 * table written now, its binary staged into the tree, and its argv
+	 * -- the fd numbers -- becomes the container's.
+	 */
+	if (init_transport_open(&init_tp, &init_table, -1, &spec, err_msg, err_msg_size) != 0) {
+		json_free(root);
+		return 500;
+	}
+	if (stage_cix_init(stage_dir, stage_id_offset, err_msg, err_msg_size) != 0) {
+		init_transport_close_all(&init_tp);
+		json_free(root);
+		return 500;
+	}
 
 	/*
 	 * Always-on stdout/stderr capture for an ordinary, operator-created
@@ -12542,6 +13064,11 @@ static int create_container_from_body(const char *body, size_t body_len,
 	 * an operator nothing to act on beyond a bare 500.
 	 */
 	create_errno = errno;
+	/* ADR-0260: the child's ends of cix-init's transport are the child's
+	 * now -- or there is no child, and then nothing keeps ours either. */
+	init_transport_close_child_ends(&init_tp);
+	if (rerr != REGISTRY_OK)
+		init_transport_close_all(&init_tp);
 	/*
 	 * The parent's own copy of the pipe's write end must be closed
 	 * explicitly here, win or lose -- clone3() (no CLONE_FILES) gave
@@ -12602,6 +13129,20 @@ static int create_container_from_body(const char *body, size_t body_len,
 	}
 
 	register_container_pidfd(entry);
+
+	/* ADR-0260: the daemon's ends of cix-init's transport, and one
+	 * reactor conn per service output pipe. */
+	{
+		int k;
+		int out_read[CIXINIT_MAX_SERVICES];
+
+		for (k = 0; k < init_tp.count; k++)
+			out_read[k] = init_tp.out[k][0];
+		registry_set_services(entry, &init_table, out_read, init_tp.ctl[0], init_tp.rep[0]);
+		register_container_init(entry);
+		for (k = 0; k < init_tp.count; k++)
+			register_container_output_fd(entry, init_tp.out[k][0], k);
+	}
 
 	/* ADR-0161 Phase B: live-run-only bookkeeping (see registry.h's own
 	 * comment) -- a restart-capable container's own persisted body
@@ -13146,7 +13687,7 @@ static void handle_delete(int fd, const char *name)
 		syslogfwd_target_forget(name);
 		serverhealth_forget(name); /* issue #81 -- no health record for a gone container */
 		containerdef_remove(name);
-		registry_begin_kill(e, REGISTRY_TEARDOWN_DELETE);
+		begin_container_stop(e, REGISTRY_TEARDOWN_DELETE);
 		http_set_blocking(fd);
 		http_write_response(fd, 204, "No Content", "application/json", "", 0);
 		return;
@@ -15223,7 +15764,7 @@ static void handle_stop(int fd, const char *name)
 	if (e != NULL && e->running) {
 		containerdef_set_stopped(name, 1);
 		if (e->teardown_kind == REGISTRY_TEARDOWN_NONE)
-			registry_begin_kill(e, REGISTRY_TEARDOWN_STOP);
+			begin_container_stop(e, REGISTRY_TEARDOWN_STOP);
 
 		jw_init(&w);
 		jw_obj_open(&w);
@@ -19092,6 +19633,8 @@ static enum registry_error spawn_pkgbuild_container(int chain_idx, const char *w
 	char build_container_name[PKG_NAME_MAX];
 	struct registry_entry *entry;
 	enum registry_error rerr;
+	struct cixinit_table init_table;
+	struct init_transport init_tp;
 
 	pkg_build_container_name(chain_idx, build_container_name, sizeof(build_container_name));
 
@@ -19105,8 +19648,46 @@ static enum registry_error spawn_pkgbuild_container(int chain_idx, const char *w
 	 * change to how these specs are built.
 	 */
 	spec->userns_enabled = 0;
-	rerr = registry_create(build_container_name, "pkgbuild", "", spec, NULL, 0, 0, NULL, 0, NULL,
-	                        0, NULL, NULL, 0, &entry);
+
+	/*
+	 * ADR-0260: a build container is a container like any other, so its
+	 * pid 1 is cix-init and its build is one oneshot named "build" that
+	 * fails the container when it fails. The build log pipe the daemon
+	 * already holds is both cix-init's stdio and the service's output,
+	 * so the log path is unchanged.
+	 */
+	{
+		char err[256];
+		int out = stdio_write_fd;
+		int devnull = -1;
+
+		if (out < 0) {
+			devnull = open("/dev/null", O_WRONLY | O_CLOEXEC);
+			out = devnull;
+		}
+		if (cixinit_table_single(&init_table, "build", spec->argv, CIXINIT_TYPE_ONESHOT,
+		                         CIXINIT_ON_EXIT_FAIL_CONTAINER) != 0 ||
+		    init_transport_open(&init_tp, &init_table, out, spec, err, sizeof(err)) != 0 ||
+		    stage_cix_init(spec->ov.upperdir, 0, err, sizeof(err)) != 0) {
+			logstore_write("cixd", "error", "pkgbuild %s (%s): cix-init setup failed: %s", what,
+			               build_container_name, err);
+			init_transport_close_all(&init_tp);
+			if (devnull >= 0)
+				close(devnull);
+			if (stdio_write_fd >= 0)
+				close(stdio_write_fd);
+			pkg_build_spawn_failed(chain_idx);
+			try_start_queued_pkg_rebuild();
+			return REGISTRY_ERR_CREATE_FAILED;
+		}
+		rerr = registry_create(build_container_name, "pkgbuild", "", spec, NULL, 0, 0, NULL, 0, NULL,
+		                        0, NULL, NULL, 0, &entry);
+		if (devnull >= 0)
+			close(devnull);
+		init_transport_close_child_ends(&init_tp);
+		if (rerr != REGISTRY_OK)
+			init_transport_close_all(&init_tp);
+	}
 
 	/*
 	 * The child (if registry_create() actually forked one) already
@@ -19147,6 +19728,8 @@ static enum registry_error spawn_pkgbuild_container(int chain_idx, const char *w
 	}
 	register_container_pidfd(entry);
 	register_pkg_build_output(pkg_build_output_fd(chain_idx), chain_idx);
+	registry_set_services(entry, &init_table, NULL, init_tp.ctl[0], init_tp.rep[0]);
+	register_container_init(entry);
 	return REGISTRY_OK;
 }
 
@@ -24509,33 +25092,6 @@ static void accept_loop(struct conn *listener)
  * returns immediately (ECONNREFUSED), never hangs the way a genuinely
  * unreachable route would.
  */
-static int wait_for_tcp_ready(uint32_t ip_be, int port, int timeout_seconds)
-{
-	time_t deadline = time(NULL) + timeout_seconds;
-
-	while (time(NULL) < deadline) {
-		int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
-		struct sockaddr_in addr;
-		int rc;
-
-		if (fd < 0)
-			return 0;
-
-		memset(&addr, 0, sizeof(addr));
-		addr.sin_family = AF_INET;
-		addr.sin_port = htons((uint16_t)port);
-		addr.sin_addr.s_addr = ip_be;
-
-		rc = connect(fd, (struct sockaddr *)&addr, sizeof(addr));
-		close(fd);
-		if (rc == 0)
-			return 1;
-
-		usleep(200000);
-	}
-	return 0;
-}
-
 /*
  * Starts every persisted restart:"always"/"on-failure"/"unless-stopped"
  * definition, in dependency order -- called once, right after
@@ -24629,13 +25185,12 @@ static void containerdef_autostart_all(void)
 		 * authoritative, already-persisted source for readiness -- see
 		 * wait_for_tcp_ready()'s own comment for why this wait is
 		 * boot-autostart-only. */
-		if (def->has_readiness &&
-		    !wait_for_tcp_ready(entry->nets[0].ip_be, def->readiness_tcp_port,
-		                         def->readiness_timeout_seconds)) {
-			fprintf(stderr,
-			        "%s: readiness check on tcp/%d did not succeed within %ds -- "
-			        "starting dependents anyway\n",
-			        entry->name, def->readiness_tcp_port, def->readiness_timeout_seconds);
+		/* ADR-0260: readiness is derived from the services' own reports;
+		 * dependents wait for it here exactly as they waited for the tcp
+		 * probe before. */
+		if (!wait_for_container_ready(entry, container_ready_timeout_seconds(entry))) {
+			fprintf(stderr, "%s: not ready within %ds -- starting dependents anyway\n", entry->name,
+			        container_ready_timeout_seconds(entry));
 		}
 
 		printf("%s: autostarted (restart:%s)\n", entry->name, def->restart_policy);
@@ -25534,6 +26089,10 @@ static int cixd_main(int argc, char **argv)
 				handle_pkg_build_output_event(cc);
 			else if (cc->kind == CONN_CONTAINER_OUTPUT)
 				handle_container_output_event(cc);
+			else if (cc->kind == CONN_CONTAINER_INIT)
+				handle_container_init_event(cc);
+			else if (cc->kind == CONN_STOP_ESCALATE_TIMER)
+				handle_stop_escalation_timer_event(cc);
 			else if (cc->kind == CONN_BOOTROOT_ASSEMBLE)
 				handle_bootroot_assemble_event(cc);
 			else if (cc->kind == CONN_ISO_OUTPUT)
