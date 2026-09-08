@@ -44,7 +44,24 @@ static const char *const g_gcc_recipes[] = {
 	"btop", "binutils", "binutils-dev", "bird", "btrfs-progs", "efivar", "elfutils",
 	"gcc", "gitea", "glauth", "glibc", "gnu-efi", "go", "go-bootstrap",
 	"grub", "kernel", "keyutils", "kmod", "libblkid", "libxcrypt",
-	"linux-headers", "perl", "probe-gcc-headers", "probe-gcc-postglibc", "python",
+	"linux-headers", "perl", "probe-gcc-headers", "probe-gcc-postglibc",
+	/*
+	 * probe-wifi-driver names /usr/bin/gcc to ASK ABOUT it, not to
+	 * build with it: revision 9 runs `gcc -E -Wp,-v` to print HOSTCC's
+	 * own include search path, and revision 10 tests `[ -x
+	 * /usr/bin/gcc ]` to confirm it is running in kernel-builder
+	 * rather than a four-tool composed environment. The scan below is
+	 * textual and cannot tell a compile from a question about the
+	 * compiler.
+	 *
+	 * Listed rather than excluded, because that is what this file
+	 * already does with probe-gcc-headers and probe-gcc-postglibc, and
+	 * because the point of the list is that a name appearing here is
+	 * visible in a diff. Teaching the scan to skip probe-* would make
+	 * every future probe invisible to it, which is a worse trade than
+	 * one honest line with a reason attached.
+	 */
+	"probe-wifi-driver", "python",
 };
 #define GCC_RECIPE_COUNT ((int)(sizeof(g_gcc_recipes) / sizeof(g_gcc_recipes[0])))
 
