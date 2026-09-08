@@ -70,15 +70,33 @@ reason, and it is the same reason every other resource here is declarative.
 **An entry points at one of two things, and says which.**
 
     consoles:
-      - name: birdcl
-        cmd: ["/usr/sbin/birdcl"]     # run a program
-      - name: bird-live
+      - name: birdc
+        cmd: ["/usr/sbin/birdc"]      # run a program
+      - name: bird
         service: bird                  # attach to a running service's stdio
 
-Both kinds are real needs and neither subsumes the other: diagnosing bird today needed `birdcl`, a
-separate control program, while watching a daemon's live output is attaching to something already
-running. After [ADR-0260](0260-a-container-declares-services-not-a-command.md) the second form has
-a name to point at.
+Both kinds are real needs and neither subsumes the other: diagnosing bird today needed a separate
+control program, while watching a daemon's live output is attaching to something already running.
+After [ADR-0260](0260-a-container-declares-services-not-a-command.md) the second form has a name to
+point at.
+
+**`birdc`, not `birdcl`, and the difference is the terminal.** This example named the light client
+until it was checked against what the console actually provides: `daemon/src/exec.c` allocates a
+real PTY from the *container's own* devpts instance and propagates window size. `birdc` is BIRD's
+readline client — line editing, history, completion — and `birdcl` exists precisely for
+environments with no readline and no terminal. Given a PTY, the readline client is the one worth
+declaring. Both are present in the `router` image already (measured on `cr-2`), and the recipe
+carries `libreadline` specifically so that `birdc` links.
+
+`birdcl` keeps its place on the other path: `POST /containers/{name}/exec` is a **pipe**, not a
+PTY, so a one-shot scripted `birdcl show protocols` is the right tool there and a readline client
+is not. The two clients map onto the two mechanisms this ADR names apart, which is a small piece of
+evidence that the split is the real one.
+
+A router should declare a third entry for the same reason ADR-0260 exists: **keepalived has no
+control client at all**, so `service: keepalived` is the only way to see it. "Which daemon died"
+was the question that started this pair of ADRs, and an attach-to-stdio console is half the
+answer.
 
 **Inspecting a minimal container is an image concern, not a platform capability.** A container is
 reachable through what it declares; if an image is to be inspected with a shell, that image installs
@@ -103,6 +121,8 @@ different targets as well as different failure modes.
 both places and cannot type a path that only works in one of them.
 
 Every existing container recipe that relied on ad-hoc exec for diagnosis must declare the consoles
-it actually wants. `cr-2` gains a `birdcl` console for the work that found this; anything that
+it actually wants -- and today not one of them declares any, `cr-1`/`cr-2` included, so removing
+free-text exec without that pass would leave the routers with no way in at all. They gain `birdc`,
+`bird` and `keepalived` consoles for the work that found this; anything that
 expects a shell must have one installed by its image. A container that declares nothing has no
 interactive access at all, by design.
