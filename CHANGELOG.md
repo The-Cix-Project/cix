@@ -6,6 +6,43 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Eight tests each guessed how long a container takes to stop (#309)
+
+`v2.57.26` failed on `test_cli` and `test_container_lifecycle`, both
+waiting on async container teardown, both bounded at five seconds. That
+is the third and fourth build lost to this shape today.
+
+`test_cli` already contained the answer, in a comment on a *different*
+wait in the same file:
+
+> a container that is asked to stop within a few milliseconds of being
+> created can take the full grace, because a signal sent to a
+> pid-namespace init before it installs a handler is discarded rather
+> than queued (ADR-0260). How long this takes is a property of the
+> container's age, not of the code under test, which is what makes it
+> look random.
+
+So that file held two waits on the same event: one corrected to 20 s
+with the explanation, and one still asserting that ">5s ... is a
+regression". `test_container_lifecycle` carried the same five-second
+claim. **Both contradict a grace the platform deliberately promises.**
+
+An audit found eight such waits across seven files, each with its own
+budget. They now share one definition — `TEST_SETTLE_ATTEMPTS` in
+`test/test_image_fixture.h`, which every one of those files already
+includes — carrying the reasoning once instead of eight times, or (as
+was actually the case) two times correctly and six times wrongly.
+
+**This is not a timeout enlarged to quiet a race.** It is a bound that
+asserted something the design does not promise, corrected to what the
+design guarantees, and put where the next test cannot quietly guess
+again. Every one of these waits still returns the instant the container
+settles, so a healthy run costs nothing.
+
+Two waits were deliberately left alone because they are not this case:
+`test_cli`'s wait for `exit_status=5` and `test_direct_rootfs`'s wait
+for `exited` are containers ending on their own, not being stopped.
+
 ### A synthesised /proc/stat counter must still be monotonic (#359)
 
 Found in the output that confirmed the cap fix, on `v2.57.25`, a

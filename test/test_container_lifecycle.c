@@ -117,17 +117,34 @@ static long fetch_pid(const struct cix_client *c, const char *name)
 	return pid;
 }
 
-/* ADR-0180: stop/delete of a live container are asynchronous -- the
+/*
+ * ADR-0180: stop/delete of a live container are asynchronous -- the
  * response records intent; the registry entry settles ("stopped" /
- * gone) when the reactor reaps the SIGKILLed child, typically within
- * one loop turn. Tests poll to the settled state, bounded tightly:
- * a SIGKILLed sleeping child taking >5s to settle is a regression. */
+ * gone) when the reactor reaps the child. Usually that is one loop
+ * turn.
+ *
+ * 200 x 100ms, not 50. This said "a SIGKILLed sleeping child taking
+ * >5s to settle is a regression", which contradicts what the platform
+ * actually promises: a container asked to stop within milliseconds of
+ * being created can take the FULL 15-second grace, because a signal
+ * sent to a pid-namespace init before it has installed a handler is
+ * discarded rather than queued (ADR-0260, and test_cli.c's own
+ * wait_rm_settled() documents the same mechanism). How long it takes
+ * is a property of the container's AGE, not of the code under test,
+ * which is exactly what makes it look random -- and it failed a
+ * release build on that (#309).
+ *
+ * Not a timeout raised to quiet a race: a bound that asserted
+ * something the design deliberately does not promise, corrected to
+ * what it does. It returns the instant the state settles, so a healthy
+ * run costs nothing.
+ */
 static int wait_status(struct cix_client *client, const char *path, const char *want, int want_http)
 {
 	struct cix_response r;
 	int i;
 
-	for (i = 0; i < 50; i++) {
+	for (i = 0; i < TEST_SETTLE_ATTEMPTS; i++) {
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(client, "GET", path, NULL, &r) == 0) {
 			if (want_http == 404 && r.status == 404) {
@@ -409,7 +426,7 @@ int main(void)
 		{
 			int i;
 
-			for (i = 0; i < 50; i++) {
+			for (i = 0; i < TEST_SETTLE_ATTEMPTS; i++) {
 				memset(&r, 0, sizeof(r));
 				if (cix_client_request(&client, "GET", "/v1/containers/lc1", NULL, &r) == 0 &&
 				    r.status == 200 && str_eq(json_str_field(r.json, "status"), "stopped")) {
@@ -569,7 +586,7 @@ int main(void)
 		{
 			int i, gone = 0;
 
-			for (i = 0; i < 50; i++) {
+			for (i = 0; i < TEST_SETTLE_ATTEMPTS; i++) {
 				memset(&r, 0, sizeof(r));
 				if (cix_client_request(&client, "GET", "/v1/containers/lc1", NULL, &r) == 0 &&
 				    r.status == 404) {

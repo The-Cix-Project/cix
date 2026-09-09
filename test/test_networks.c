@@ -113,7 +113,7 @@ static int wait_container_gone(const struct cix_client *c, const char *name)
 	int i;
 
 	snprintf(path, sizeof(path), "/v1/containers/%s", name);
-	for (i = 0; i < 300; i++) {
+	for (i = 0; i < TEST_SETTLE_ATTEMPTS; i++) {
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(c, "GET", path, NULL, &r) == 0) {
 			last_status = r.status;
@@ -123,9 +123,9 @@ static int wait_container_gone(const struct cix_client *c, const char *name)
 			}
 		}
 		cix_response_free(&r);
-		usleep(100 * 1000);
+		usleep(TEST_SETTLE_INTERVAL_US);
 	}
-	fprintf(stderr, "FAIL: %s did not finish tearing down in 30s (last GET status %d)\n", name,
+	fprintf(stderr, "FAIL: %s did not finish tearing down in time (last GET status %d)\n", name,
 	        last_status);
 	return -1;
 }

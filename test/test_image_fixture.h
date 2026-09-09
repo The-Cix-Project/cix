@@ -283,4 +283,37 @@ int test_image_fixture_seed_floor_packages(const char *data_dir, const char *art
  */
 int test_image_fixture_clear_floor_cache(const char *data_dir);
 
+/*
+ * How long a test may wait for a container to finish stopping or being
+ * deleted, in 100ms polls. ONE definition, because eight sites across
+ * seven test files were each carrying their own and they disagreed.
+ *
+ * ADR-0180 made stop and delete asynchronous: the response records the
+ * intent, and the registry entry settles when the reactor reaps the
+ * child. Usually that is a single loop turn, and every wait built on
+ * this returns the instant it settles, so a healthy run costs nothing.
+ *
+ * THE BOUND IS 20 SECONDS BECAUSE THE PLATFORM PROMISES 15.
+ * A container asked to stop within milliseconds of being created can
+ * take the full SIGKILL grace: a signal sent to a pid-namespace init
+ * that has not yet installed a handler is discarded rather than queued
+ * (ADR-0260). How long a stop takes is therefore a property of the
+ * container's AGE, not of the code under test -- which is exactly what
+ * makes it look random when a test guesses lower.
+ *
+ * Most of these sites said 50 (five seconds), several with a comment
+ * asserting that longer "is a regression". That contradicted both the
+ * documented grace and test_cli.c's own neighbouring wait, which had
+ * already been corrected to 20 s for precisely this reason and carried
+ * the explanation. Two of the five-second ones then failed a release
+ * build (#309), one after another, each looking like a fresh bug.
+ *
+ * This is not a timeout enlarged to quiet a race. It is a bound that
+ * asserted something the design deliberately does not promise,
+ * corrected to what the design actually guarantees -- and put in one
+ * place so the next test cannot quietly guess again.
+ */
+#define TEST_SETTLE_ATTEMPTS 200
+#define TEST_SETTLE_INTERVAL_US (100 * 1000)
+
 #endif /* TEST_IMAGE_FIXTURE_H */
