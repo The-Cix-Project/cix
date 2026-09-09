@@ -52,8 +52,22 @@ Verified locally for the negatives and errno discipline: `lo` and `eth0`
 are answered not-wireless by the kernel's own `ENODEV` (so the query
 really does reach it), a missing name gives `ENODEV`, and an empty or
 NULL name gives `EINVAL` — none leaving a seeded sentinel errno in
-place. The positive case and the teardown itself need a real radio and
-are verified on the box.
+place.
+
+**Verified on 192.168.15.95 with v2.57.7**, which is the only test that
+settles it: `DELETE /v1/containers/ar-1` on a running AP, then poll the
+host. `wlan0` was back in **1 second**, with no reboot, where before it
+never returned at all. Re-applying the container immediately afterwards
+returned 201 and reached `AP-ENABLED` — so the `400 unknown or
+unassignable interface` that first exposed this is gone too.
+
+One thing the test harness got wrong, worth knowing before writing
+another: `ar-1` persists across a reboot and autostarts, so it claims the
+radio the instant it appears. A script that waits for `wlan0` **on the
+host** after a reboot therefore sees nothing and concludes the firmware
+race was lost, while the AP is in fact already up. Six "failed" boots
+were logged that way before `hostapd: AP-ENABLED` in the log store gave
+the lie to it. Poll the container, not the host.
 
 ### ar-1 is a live access point, and rtw88 does do USB AP mode (#30)
 
