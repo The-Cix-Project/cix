@@ -59,6 +59,50 @@ int main(void)
 	CHECK(match("GET", "/v1/containers", p) == 1 && match("POST", "/v1/containers", p) == 2,
 	      "method selects between rows sharing a path");
 
+	/*
+	 * Percent-decoding of PATH parameters.
+	 *
+	 * Query strings have been decoded for a long time; path segments
+	 * never were, and no client can tell. `@` is legal unencoded in a
+	 * segment and equally legal encoded, and general-purpose client
+	 * libraries encode it by default -- Python's urllib.parse.quote()
+	 * does. Measured on 192.168.15.95 against a real entry:
+	 * /v1/pkg/cix@__hostbuild returned it and /v1/pkg/cix%40__hostbuild
+	 * answered "no such package". Same package, same request, different
+	 * answer depending on who wrote the URL.
+	 */
+	CHECK(match("GET", "/v1/containers/cix%40__hostbuild", p) == 3 &&
+	          strcmp(p[0], "cix@__hostbuild") == 0,
+	      "a percent-encoded path parameter decodes (%%40 -> @), got \"%s\"", p[0]);
+	CHECK(match("GET", "/v1/containers/cix@__hostbuild", p) == 3 &&
+	          strcmp(p[0], "cix@__hostbuild") == 0,
+	      "the unencoded form still resolves identically, got \"%s\"", p[0]);
+	CHECK(match("GET", "/v1/containers/a%2Db", p) == 3 && strcmp(p[0], "a-b") == 0,
+	      "an ordinary escape decodes, got \"%s\"", p[0]);
+
+	/*
+	 * %2F and %00 are REFUSED, not decoded, and that is the part that
+	 * matters. Routing has already happened: the path was split on '/'
+	 * and matched. Decoding a slash into a segment afterwards inserts a
+	 * separator after the decision about what the path meant was taken,
+	 * which is how path-confusion bugs are built; a NUL would truncate
+	 * the parameter and hide the rest from every check downstream.
+	 */
+	CHECK(match("GET", "/v1/containers/a%2Fb", p) == -1,
+	      "%%2F in a path parameter is refused, never decoded into a separator");
+	CHECK(match("GET", "/v1/containers/a%2fb", p) == -1,
+	      "%%2f is refused in lowercase too");
+	CHECK(match("GET", "/v1/containers/a%00b", p) == -1,
+	      "%%00 in a path parameter is refused");
+
+	/* A malformed escape is an ordinary character, matching what
+	 * url_query_param() already does rather than inventing a stricter
+	 * rule here. */
+	CHECK(match("GET", "/v1/containers/100%25", p) == 3 && strcmp(p[0], "100%") == 0,
+	      "a trailing bare %% is left alone, got \"%s\"", p[0]);
+	CHECK(match("GET", "/v1/containers/a%zzb", p) == 3 && strcmp(p[0], "a%zzb") == 0,
+	      "a non-hex escape is left alone, got \"%s\"", p[0]);
+
 	/* Parameter extraction, including names with the characters this
 	 * API really uses (@ in pkg names, dots in versions). */
 	CHECK(match("GET", "/v1/containers/dns-1", p) == 3 && strcmp(p[0], "dns-1") == 0,

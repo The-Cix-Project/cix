@@ -65,6 +65,59 @@ static int route_beats(const struct api_route *a, const struct api_route *b)
 	return 0;
 }
 
+/*
+ * Percent-decoding for a path parameter, in place.
+ *
+ * Query strings have been decoded since url_query_param() below; path
+ * segments never were, and a correct client cannot tell. `@` is legal
+ * unencoded in a path segment but encoding it is equally legal, and
+ * every general-purpose client library does: Python's
+ * urllib.parse.quote() escapes it by default. So a package addressed
+ * the documented way, `name@image`, resolved perfectly as
+ * /v1/pkg/cix@__hostbuild and answered "no such package" as
+ * /v1/pkg/cix%40__hostbuild -- the same package, the same request, a
+ * 200 or a 404 depending on which client wrote the URL. Measured
+ * against a real entry on 192.168.15.95.
+ *
+ * TWO ESCAPES ARE REFUSED RATHER THAN DECODED, and this is the part
+ * that matters. Routing has already happened by the time this runs:
+ * the segments were split on '/' and matched against the table. A
+ * %2F decoded now would insert a separator into a segment AFTER the
+ * decision about what that path meant was taken, which is exactly how
+ * path-confusion bugs are built. %00 is refused for the same reason in
+ * the other direction -- it would truncate the parameter and hide
+ * whatever followed from every check downstream. Neither has a
+ * legitimate use in any parameter this API defines, so both are a
+ * refusal (-1, a 404 from the caller) rather than a silent
+ * substitution.
+ *
+ * A malformed escape (`%zz`, or a `%` at the end) is left alone rather
+ * than rejected, matching url_query_param()'s own behaviour: a literal
+ * percent is an ordinary character and this is not the place to
+ * invent a stricter rule than the query parser applies.
+ */
+static int decode_path_param(char *sv)
+{
+	size_t r = 0, w = 0;
+
+	while (sv[r] != '\0') {
+		if (sv[r] == '%' && isxdigit((unsigned char)sv[r + 1]) &&
+		    isxdigit((unsigned char)sv[r + 2])) {
+			char hex[3] = { sv[r + 1], sv[r + 2], '\0' };
+			int c = (int)strtol(hex, NULL, 16);
+
+			if (c == '/' || c == '\0')
+				return -1;
+			sv[w++] = (char)c;
+			r += 3;
+			continue;
+		}
+		sv[w++] = sv[r++];
+	}
+	sv[w] = '\0';
+	return 0;
+}
+
 int api_route_match(const struct api_route *routes, int n_routes, const char *method,
                     const char *path, char params[][APIROUTE_PARAM_MAX])
 {
@@ -109,6 +162,8 @@ int api_route_match(const struct api_route *routes, int n_routes, const char *me
 			if (r->segs[s] == NULL) {
 				memcpy(params[p], starts[s], seg_lens[s]);
 				params[p][seg_lens[s]] = '\0';
+				if (decode_path_param(params[p]) != 0)
+					return -1;
 				p++;
 			}
 		}

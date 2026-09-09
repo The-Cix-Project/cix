@@ -246,6 +246,39 @@ int mountns_pivot(const struct mount_spec *mnt)
 	}
 
 	/*
+	 * /tmp, on exactly the same terms as /run and for the same reason:
+	 * software assumes it exists (#343).
+	 *
+	 * These images have never had one, and it has cost three separate
+	 * investigations. The last was hostapd_cli, which creates its OWN
+	 * client socket before connecting and hardcodes that path to /tmp
+	 * in wpa_ctrl.c -- so it printed "Could not connect to hostapd -
+	 * re-trying" while hostapd was healthy the whole time, its control
+	 * socket exactly where the config said, and nothing in the message
+	 * pointed at /tmp. That is the shape of this gap every time: the
+	 * failure names the thing that could not be reached, never the
+	 * directory that was missing.
+	 *
+	 * MODE 01777, with the sticky bit, which is not decoration. /tmp is
+	 * world-writable by definition, and without the sticky bit any
+	 * process could delete another's files there. Every Unix has shipped
+	 * it this way for decades and software depends on the guarantee.
+	 *
+	 * Fresh on every start, like /run: a tmpfs rather than
+	 * overlay-persisted storage, so nothing survives a restart. That is
+	 * what /tmp promises, and a /tmp that quietly persisted would break
+	 * the same class of assumption in the opposite direction.
+	 */
+	if (mkdir("/tmp", 01777) != 0 && errno != EEXIST) {
+		perror("mountns_pivot: mkdir(/tmp)");
+		return MOUNTNS_PIVOT_ERR_MKDIR_TMP;
+	}
+	if (mount_container_tmpfs("/tmp", "mode=1777", MS_NOSUID | MS_NODEV) != 0) {
+		perror("mountns_pivot: mount(tmpfs /tmp)");
+		return MOUNTNS_PIVOT_ERR_MOUNT_TMP;
+	}
+
+	/*
 	 * The same devpts gap task #764/ADR-pending-#426 already found and
 	 * fixed for the daemon's own host-namespace console-exec feature
 	 * (cixd's exec.c posix_openpt()s /dev/ptmx fine regardless --

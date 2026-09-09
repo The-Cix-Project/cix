@@ -6,6 +6,72 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A percent-encoded path parameter 404s (#360)
+
+Found while re-verifying #310. Measured on 192.168.15.95, against a real
+installed entry:
+
+```
+GET /v1/pkg/cix@__hostbuild    -> 200
+GET /v1/pkg/cix%40__hostbuild  -> 404 {"error":"no such package"}
+```
+
+Same package, same request. `@` is legal unencoded in a path segment and
+equally legal encoded, and general-purpose clients encode it by default —
+Python's `urllib.parse.quote()` does — so a correct client addressing a
+package the documented `name@image` way could not reach it at all.
+
+`url_query_param()` has decoded `%XX` for **query** strings since the
+first route needed one; nothing ever decoded **path** segments. The
+asymmetry is invisible from outside, because `?path=%2Fetc%2Fhosts`
+works perfectly and suggests decoding happens generally.
+
+**`%2F` and `%00` are refused rather than decoded.** Routing has already
+happened when a parameter is extracted — the path was split on `/` and
+matched. Decoding a slash into a segment afterwards inserts a separator
+*after* the decision about what the path meant was taken, which is how
+path-confusion bugs are built; a NUL would truncate the parameter and
+hide the rest from every check downstream. A malformed escape is left
+alone, matching `url_query_param()` rather than inventing a stricter
+rule for paths than queries.
+
+Eight cases in `test_apiroute`; six fire with the fix removed.
+
+### Every container has a /tmp (#343)
+
+ADR-0119 gave every container a `/run`. Nothing gave it a `/tmp`, and
+software kept assuming one — three separate investigations, the last
+being `hostapd_cli`, which creates its own client socket before
+connecting and hardcodes that path to `/tmp` in `wpa_ctrl.c`. It printed
+`Could not connect to hostapd - re-trying` while hostapd was healthy
+throughout, its control socket exactly where the config said. That is
+this gap's shape every time: **the failure names what could not be
+reached, never the directory that was missing.**
+
+Mounted on the same terms as `/run` — a fresh tmpfs per start, so
+nothing persists, which is what `/tmp` promises — with mode `1777`. The
+sticky bit is not decoration: `/tmp` is world-writable by definition and
+without it any process could delete another's files.
+
+`test_container_files` asserts both that `/tmp` is a directory (the
+issue's own measurement: `404` was the bug, `400 "path is a directory"`
+is correct) and that a file can actually be written there — a directory
+that exists but is not writable would satisfy the first check and none
+of the callers.
+
+### PUT /v1/containers/{name}/files now says which step failed (#333)
+
+Four syscalls shared one error message, so `500 "failed to write file"`
+was the whole of what an operator got — for a refused open, a short
+write, a chmod or a chown, with no errno and no way to tell a read-only
+mount from a permission problem from an id-mapping one. The endpoint was
+reported failing on *every* running container and the report could not
+say why, which is most of why it stayed open.
+
+Each step now names itself and carries `strerror(errno)`, captured
+before `close()` can overwrite it, and the reason is written to the log
+store as well as the response.
+
 ### Eight tests each guessed how long a container takes to stop (#309)
 
 `v2.57.26` failed on `test_cli` and `test_container_lifecycle`, both

@@ -314,6 +314,45 @@ int main(void)
 	}
 	cix_response_free(&r);
 
+	/*
+	 * 1c. #343: every container has a /tmp, and it is a directory.
+	 *
+	 * These images never had one and it cost three separate
+	 * investigations, the last being hostapd_cli -- which creates its
+	 * own client socket before connecting and hardcodes that path to
+	 * /tmp, so it reported "Could not connect to hostapd" while hostapd
+	 * was healthy throughout. The failure always names what could not
+	 * be reached, never the directory that was missing.
+	 *
+	 * Asserted exactly as the issue measured it: 400 "path is a
+	 * directory, not a file" is what /run already answers and what a
+	 * present /tmp must answer too. A 404 here is the bug.
+	 */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "GET", "/v1/containers/filetest/files?path=%2Ftmp", NULL,
+	                       &r) != 0 ||
+	    r.status != 400) {
+		fprintf(stderr, "FAIL: /tmp in a running container: expected 400 (a directory), got %d"
+		                " -- 404 means the container has no /tmp (#343)\n",
+		        r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+	/* A file really can be written there, which is the thing software
+	 * actually wants -- a directory that exists but is not writable
+	 * would satisfy the check above and none of the callers. */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "PUT",
+	                       "/v1/containers/filetest/files?path=%2Ftmp%2Fprobe.txt",
+	                       "{\"content\":\"tmp is writable\\n\"}", &r) != 0 ||
+	    (r.status != 204 && r.status != 200)) {
+		fprintf(stderr, "FAIL: writing /tmp/probe.txt in a running container, status=%d\n",
+		        r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+
 	memset(&r, 0, sizeof(r));
 	cix_client_request(&client, "DELETE", "/v1/containers/filetest", NULL, &r);
 	cix_response_free(&r);
