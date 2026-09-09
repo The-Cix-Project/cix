@@ -396,7 +396,63 @@ paths:
                       Where the assembled control-plane image is, so a
                       client that wants to deploy it need not know this
                       daemon's filesystem layout.
+    post:
+      summary: Assemble a control-plane root now (issue #308)
+      description: >
+        The GET above reports on something an operator could not ask
+        for. Assembly happened only as a side effect of a hostbuild
+        named `cix` completing, so re-assembling a root -- after
+        building an image one of its staging arguments reads from, say
+        -- meant inventing a new `cix` version whose code had not
+        changed, because `POST /pkg/hostbuild` answers an
+        already-installed version with 409.
 
+
+        That cost is real rather than theoretical: staging kernel
+        modules into the root (#347, ADR-0266) requires one assembly to
+        run under a daemon that knows how to stage them, and reaching
+        it consumed a version number that existed for no other reason.
+
+
+        This runs the same assembly the hostbuild path runs, from the
+        same `cix` artifact directory, with the same arguments. Nothing
+        about how a root is assembled changes; it simply becomes
+        reachable. Returns immediately -- poll the GET above and wait
+        for `completed_generation` to pass the value you captured
+        before the call.
+      operationId: postSystemAssembly
+      x-cix-expose: [cli]
+      responses:
+        "202":
+          description: Assembly started; poll GET /system/assembly
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  running:
+                    type: boolean
+                  started_generation:
+                    type: integer
+                  completed_generation:
+                    type: integer
+                  image_path:
+                    type: string
+        "404":
+          description: >
+            This host has never completed a hostbuild of `cix`, so
+            there is no artifact -- and in particular no freshly built
+            mkbootroot (ADR-0057) -- to assemble from.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: An assembly is already running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /system/boot:
     get:
       summary: Build/slot/kernel identity

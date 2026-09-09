@@ -2,6 +2,40 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Control-plane assembly can be asked for, not only watched (#308)
+
+`GET /v1/system/assembly` has reported on assembly since ADR-0230. There
+was no way to request one. It happened only as a side effect of a
+hostbuild named `cix` completing, and `POST /v1/pkg/hostbuild` answers
+an already-installed version with:
+
+```
+409 {"error":"package is already installed"}
+```
+
+So re-assembling a root — after building an image one of its staging
+arguments reads from, say — meant inventing a new `cix` version whose
+code had not changed.
+
+That is not theoretical. Staging kernel modules into the root (#347
+above) needs one assembly to run under a daemon that knows how to stage
+them: the assembly is performed by the *running* daemon, so the round
+that builds the fix assembles a root using the old logic. Reaching the
+second assembly cost a version number that existed for no other reason,
+and this change is what that round was spent on instead.
+
+`POST /v1/system/assembly` runs the same assembly the hostbuild path
+runs, from the same `cix` artifact directory, with the same arguments.
+Nothing about how a root is assembled changes; it becomes reachable.
+`202` and returns immediately — poll the GET and wait for
+`completed_generation` to pass the baseline you captured, exactly as
+`--deploy` already does. `409` if one is already running: refused rather
+than queued, because two `mkbootroot` processes writing the same output
+squashfs produce a root that is neither, and this daemon tracks one
+assembly child. `404` if the host has never completed a hostbuild of
+`cix`, since ADR-0057 assembles with that round's own freshly built
+`mkbootroot` and there would be none.
+
 ### No kernel module could ever load, on any host this platform has assembled (#347)
 
 `GET /v1/system/kmod/e1000e` on 192.168.15.95 answered:
