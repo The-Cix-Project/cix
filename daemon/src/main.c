@@ -15576,16 +15576,51 @@ static void handle_container_file_write(int fd, const char *name, const char *re
 		return;
 	}
 
-	file_fd = open(full_path, O_CREAT | O_TRUNC | O_WRONLY, (mode_t)mode);
-	if (file_fd < 0 ||
-	    (content_len > 0 && write(file_fd, content, content_len) != (ssize_t)content_len) ||
-	    (fchmod(file_fd, (mode_t)mode) != 0) ||
-	    ((owner != (uid_t)-1 || group != (gid_t)-1) && fchown(file_fd, owner, group) != 0)) {
-		if (file_fd >= 0)
-			close(file_fd);
-		free(content);
-		respond_error(fd, 500, "Internal Server Error", "failed to write file");
-		return;
+	/*
+	 * #333: four different syscalls used to share one error message, so
+	 * "failed to write file" was the whole of what an operator got --
+	 * for an open that was refused, a short write, a chmod, or a chown,
+	 * with no errno and no way to tell a read-only mount from a
+	 * permission problem from an id-mapping one. The endpoint was
+	 * reported failing on EVERY running container and the report could
+	 * not say why, which is most of why it stayed open.
+	 *
+	 * Each step now names itself and carries strerror(errno). errno is
+	 * captured immediately, before close() or anything else can
+	 * overwrite it.
+	 */
+	{
+		const char *step = NULL;
+		int saved_errno = 0;
+
+		file_fd = open(full_path, O_CREAT | O_TRUNC | O_WRONLY, (mode_t)mode);
+		if (file_fd < 0) {
+			step = "open";
+			saved_errno = errno;
+		} else if (content_len > 0 &&
+		           write(file_fd, content, content_len) != (ssize_t)content_len) {
+			step = "write";
+			saved_errno = errno;
+		} else if (fchmod(file_fd, (mode_t)mode) != 0) {
+			step = "fchmod";
+			saved_errno = errno;
+		} else if ((owner != (uid_t)-1 || group != (gid_t)-1) &&
+		           fchown(file_fd, owner, group) != 0) {
+			step = "fchown";
+			saved_errno = errno;
+		}
+		if (step != NULL) {
+			char errmsg[512];
+
+			if (file_fd >= 0)
+				close(file_fd);
+			free(content);
+			snprintf(errmsg, sizeof(errmsg), "%s(%s) failed: %s", step, full_path,
+			         strerror(saved_errno));
+			logstore_write_container(name, "error", "PUT files: %s", errmsg);
+			respond_error(fd, 500, "Internal Server Error", errmsg);
+			return;
+		}
 	}
 	close(file_fd);
 	free(content);

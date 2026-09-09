@@ -85,6 +85,8 @@ static void child_diag_mountns_pivot(int fd, int mountns_pivot_ret)
 		{ MOUNTNS_PIVOT_ERR_MOUNT_SYS, "mount(sysfs)" },
 		{ MOUNTNS_PIVOT_ERR_MKDIR_RUN, "mkdir(/run)" },
 		{ MOUNTNS_PIVOT_ERR_MOUNT_RUN, "mount(tmpfs /run)" },
+		{ MOUNTNS_PIVOT_ERR_MKDIR_TMP, "mkdir(/tmp)" },
+		{ MOUNTNS_PIVOT_ERR_MOUNT_TMP, "mount(tmpfs /tmp)" },
 		{ MOUNTNS_PIVOT_ERR_MKDIR_DEV, "mkdir(/dev)" },
 		{ MOUNTNS_PIVOT_ERR_MKDIR_DEV_PTS, "mkdir(/dev/pts)" },
 		{ MOUNTNS_PIVOT_ERR_MOUNT_DEV_PTS, "mount(devpts)" },
