@@ -28,6 +28,40 @@ Enslaves a real host interface into a network's bridge (ADR-0038) — the "physi
 
 This is a different mechanism from a NIC passed straight into one container's own network namespace at creation time (`run --interface=IFNAME`, ADR-0022) — that's exclusive, dedicated hardware for one container; attaching to a network's bridge is shared L2 connectivity any number of containers on that network can use.
 
+An interface enslaved to a bridge this way stays visible on the host but reports `assignable: false` — read from the kernel's own `master` symlink, not from a bookkeeping table Cix maintains. An interface *moved* into a container disappears from the listing entirely. Both are ground truth rather than record-keeping, which is why neither can drift. (`--device=` grants are not like this: the same USB, PCI or GPU device can currently be granted to several containers with nothing reporting it — issue #356.)
+
+See [Giving a container a radio](#giving-a-container-a-radio) below for the wireless case, which is a third thing again.
+
+## Giving a container a radio
+
+```sh
+cixctl container run --name=ar-1 --image=wifi_router --interface=wlan0 \
+    --network=access:192.168.151.1:br0 --service=hostapd=/usr/bin/hostapd:/etc/hostapd/hostapd.conf
+```
+
+A wireless adapter is passed as an **interface**, never as a device — and that catches people out, because a USB dongle looks like a USB device.
+
+By the time a container exists, the adapter's USB endpoint has already been claimed by its driver on the host (`rtw88_8822bu`, say) and turned into `wlan0`. Granting the container the raw USB device with `--device=usb:...` would hand it something the host driver already owns, and `hostapd` would still have nothing to drive: what it wants is the interface. So `--interface=wlan0` is the whole grant, and no device passthrough is involved.
+
+**A radio moves differently from a network card, and Cix handles that for you.** A wireless netdev belongs to a *wiphy* — one radio, which can own several interfaces — and the kernel refuses to let one of them leave the namespace alone (`EINVAL`). Cix detects a wireless interface over netlink and moves the entire PHY instead, with everything on it. See [ADR-0265](../adr/0265-a-radio-moves-as-a-phy-not-as-an-interface.md) for why, and issue #341 for what it cost to find out.
+
+**One container owns the radio, exclusively, for as long as it exists.** This is not a Cix policy — it is what moving a PHY into a namespace means:
+
+- while the container runs, `cixctl device ls` shows no `net:wlan0` on the host, and the host cannot use that radio for anything
+- a second container asking for it is refused with `unknown or unassignable interface`, because the ordinary lookup finds nothing to give
+- deleting the container moves the PHY back, and the host has it again in about a second
+- if you want both an AP and a client interface on one adapter, both must live in the *same* container — a wiphy cannot be split across namespaces
+
+**Driver loading is separate and explicit.** A radio driver is a kernel module (see [administration.md](administration.md#kernel-modules)), so the interface only exists once the module is loaded. Mark it to load on every boot rather than loading it by hand:
+
+```sh
+cixctl kmod-config set rtw88_8822bu --autoload
+```
+
+That is deliberate: building the driver into the kernel instead means it probes a USB device at an unpredictable point relative to the root mount, and it can lose the race to its own firmware — measured at three failed boots in six before the driver became a module (issue #346).
+
+**Bridging the radio to a wired segment** needs `container_bridge`, because the two halves arrive from opposite directions: `hostapd` puts the radio into whatever bridge its `bridge=` names and will create that bridge itself, but it knows nothing about the container's other interfaces and will never enslave one. Cix builds the bridge first with the wired attachment already in it, and `hostapd` then adds the radio to the bridge it finds. See [ADR-0264](../adr/0264-a-container-may-bridge-its-own-interfaces.md).
+
 ## The management network
 
 Exactly one network is `is_management` at a time — the one `cixd` itself binds to. It's bootstrapped automatically at install time from the physical interface and address given to `cix-install` (see [`installing.md`](installing.md)), but from then on it's an ordinary, API-visible network like any other (`GET /networks`), not a special case hidden from the API.
