@@ -298,6 +298,14 @@ static void print_usage(FILE *out)
 	        "  routes add --dest=A.B.C.D --prefix=N [--gateway=A.B.C.D]  -- add a real\n"
 	        "               kernel route (ADR-0067 Part 3); or --default --gateway=A.B.C.D\n"
 	        "  routes rm --dest=A.B.C.D --prefix=N  -- remove one; or --default\n"
+	        "  assembly status  -- what control-plane assembly is doing, and where the\n"
+	        "               assembled root is (image_path, ready for update --image=)\n"
+	        "  assembly start  -- assemble a fresh control-plane root now (#308). Until\n"
+	        "               this existed, assembly happened only as a side effect of a\n"
+	        "               hostbuild named cix completing, so re-assembling meant\n"
+	        "               inventing a version number whose code had not changed.\n"
+	        "               Returns immediately -- poll status for completed_generation\n"
+	        "               to pass what it read before the call\n"
 	        "  storage  -- real host block devices, including any partitions on them\n"
 	        "               (task #844); which one is the fixed OS disk vs. assignable is\n"
 	        "               flagged per entry, and a partition entry names its parent disk\n"
@@ -7687,6 +7695,65 @@ static int cmd_stalls(const struct cix_client *c, int json_mode)
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_stalls);
+}
+
+
+/*
+ * Issue #308: cixctl assembly status|start.
+ *
+ * Assembly had status and no trigger -- it happened only as a side
+ * effect of a hostbuild named "cix" completing, and `pkg hostbuild`
+ * answers an already-installed version with 409, so re-assembling a
+ * root meant inventing a version number whose code had not changed.
+ *
+ * `status` reads the same endpoint --deploy already polls; `start`
+ * asks for one. Both print image_path, because the next thing an
+ * operator does with a fresh root is `cixctl update --image=<that>`.
+ */
+static void fmt_assembly(const struct json_value *v)
+{
+	const struct json_value *running = json_object_get(v, "running");
+	const char *image_path = json_str_field(v, "image_path");
+	int is_running = running != NULL && running->type == JSON_BOOL && running->u.boolean;
+
+	printf("running:              %s\n", is_running ? "yes" : "no");
+	printf("started_generation:   %ld\n",
+	       (long)json_as_number(json_object_get(v, "started_generation")));
+	printf("completed_generation: %ld\n",
+	       (long)json_as_number(json_object_get(v, "completed_generation")));
+	printf("image_path:           %s\n", image_path != NULL ? image_path : "-");
+}
+
+static int cmd_assembly(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	struct cix_response r;
+	const char *sub = argc > 0 ? argv[0] : "status";
+
+	if (strcmp(sub, "status") == 0) {
+		if (cix_client_request(c, CIX_API_getSystemAssembly_METHOD, CIX_API_getSystemAssembly,
+		                       NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_assembly);
+	}
+	if (strcmp(sub, "start") == 0) {
+		if (cix_client_request(c, CIX_API_postSystemAssembly_METHOD, CIX_API_postSystemAssembly,
+		                       NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		/*
+		 * Deliberately does not wait. An assembly takes tens of
+		 * seconds and `--deploy` already owns the wait-and-then-deploy
+		 * flow; this is the primitive underneath it, and a client that
+		 * wants to block polls `assembly status` for
+		 * completed_generation to pass what it saw before the call.
+		 */
+		return emit(&r, json_mode, fmt_assembly);
+	}
+	fprintf(stderr, "cixctl: unknown assembly subcommand \"%s\" (status, start)\n", sub);
+	return 2;
 }
 
 
@@ -16053,6 +16120,8 @@ static int dispatch_command(const struct cix_client *client, int json_mode, cons
 		return cmd_boot_console(client, json_mode, argc, argv);
 	if (strcmp(cmd, "stalls") == 0)
 		return cmd_stalls(client, json_mode);
+	if (strcmp(cmd, "assembly") == 0)
+		return cmd_assembly(client, json_mode, argc, argv);
 	if (strcmp(cmd, "hostauth-config") == 0)
 		return cmd_hostauth_config(client, json_mode, argc, argv);
 	if (strcmp(cmd, "hostauth-sessions") == 0)

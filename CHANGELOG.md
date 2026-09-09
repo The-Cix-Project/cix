@@ -36,6 +36,21 @@ assembly child. `404` if the host has never completed a hostbuild of
 `cix`, since ADR-0057 assembles with that round's own freshly built
 `mkbootroot` and there would be none.
 
+`cixctl assembly status` and `cixctl assembly start` expose both.
+`status` reads the endpoint `--deploy` already polls and prints
+`image_path`, because the next thing an operator does with a fresh root
+is `cixctl update --image=<that>`. `start` does not wait: an assembly
+takes tens of seconds, `--deploy` already owns the wait-then-deploy
+flow, and this is the primitive underneath it.
+
+The first attempt at this shipped the endpoint with no CLI caller, and
+two gates caught it in the same build — `test_apigen` on the operation
+count (291, a number that has to be changed deliberately) and
+`test_api_surfaces` with `postSystemAssembly is declared x-cix-expose
+[cli] but the CLI never calls it`. The second is the one worth noting:
+an `x-cix-expose` list is a claim about what a surface offers, and it
+is checked rather than trusted.
+
 ### No kernel module could ever load, on any host this platform has assembled (#347)
 
 `GET /v1/system/kmod/e1000e` on 192.168.15.95 answered:
