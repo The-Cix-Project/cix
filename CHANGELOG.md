@@ -6,6 +6,66 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A container can see its own memory and CPU limits (#336, ADR-0262) — part 1: the server
+
+The failure this exists to stop is not cosmetic: #278/#279 was a build
+sizing itself by host memory against a 2 GiB cgroup ceiling it could not
+see, surfacing as an unexplained OOM against a machine reporting plenty
+free.
+
+**The measurement ADR-0262 demanded before any code was written has now
+been taken, and it picked the design.** `probe-cgroup-view/1` had been
+published and never run. Run now, with the host-side numbers from the
+daemon's own API:
+
+| | |
+|---|---|
+| `GET /system/pkg-build-config` | `cpu_max: "100000 100000"` → **1.0 CPU**, `memory_max` 2 GiB |
+| `GET /system/control-plane-reservation` | `host_cpus: 2` |
+| probe, inside a real build container | `nproc: 2` |
+
+A `cpuinfo` derived from the **quota** would report 1 where `nproc`
+reports 2 — turning every `make -j$(nproc)` on this platform into `-j1`,
+silently. And the same number settles it: `nproc` reads
+`sched_getaffinity`, which a **cpuset** constrains and a quota does not,
+and it returned the full host set. So `cpuinfo` follows
+`cpuset.cpus.effective` (a real parallelism bound), `meminfo` follows the
+memory limit, and no build-container opt-out is needed.
+
+**`CONFIG_FUSE_FS` was already shipped** — since `kernel@7.2.3-4`, with
+the gate asserting it — so the "needs a kernel rebuild, owner go-ahead
+required" prerequisite recorded on the issue had not been true for some
+time.
+
+`daemon/src/procfuse.c` is the server: one host-side process, forked and
+supervised the way `stallwatch` is, answering `/proc/meminfo`,
+`cpuinfo`, `stat`, `uptime`, `loadavg` and `swaps` from the **requester's**
+cgroup — resolved from `fuse_in_header.pid` through `/proc/<pid>/cgroup`.
+One server answers every container correctly, which is why it is not one
+server per container and not part of `cix-init` (which by then has no
+capabilities to mount with).
+
+Two protocol details are load-bearing rather than tuning, and ADR-0262
+says so: `OPEN` replies `FOPEN_DIRECT_IO` and every `attr_valid`/
+`entry_valid` is zero. Without both, the first container to read
+`/proc/meminfo` populates the page cache and the second container is
+served *its* numbers — not a stale figure, a different container's
+figure.
+
+The ABI comes from the kernel's own `<linux/fuse.h>`, which is what
+ADR-0262's "raw protocol, not libfuse" meant: the argument was against
+libfuse's ABI surface, its `FUSE_USE_VERSION` and a third-party
+dependency for one consumer, none of which a uapi header brings. Checked
+before relying on it, because this platform has been bitten by a kernel
+header before — that header contains no `__attribute__((packed))` at
+all, so ADR-0008's TCC packing trap cannot apply.
+
+This part ships the server and its mount. The bind-mounts that put those
+files in front of a container's own `/proc`, and the per-container
+opt-out, are the next part; until then the files are readable at the
+mount point and nothing about any container changes. ADR-0262 stays
+**Proposed** until the whole of it is verified on a real box.
+
 ### Documentation audit, part 2: a documented endpoint that never existed (#335)
 
 `docs/api/README.md` carried a full section, *"Running a command in a container

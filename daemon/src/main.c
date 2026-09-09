@@ -48,6 +48,7 @@
 #include "ksm.h"
 #include "zswap.h"
 #include "dhcp.h"
+#include "procfuse.h"
 #include "stallwatch.h"
 #include "exec.h"
 #include "http.h"
@@ -26107,6 +26108,20 @@ static int cixd_main(int argc, char **argv)
 	 * the production box left no trace anywhere.
 	 */
 	stallwatch_start(STALLWATCH_RECORDS_PATH);
+
+	/*
+	 * ADR-0262/#336: the host-side FUSE server behind a container's own
+	 * /proc/meminfo. Started after stallwatch and before any container
+	 * is created, because the runtime asks for its mount path at
+	 * creation time.
+	 *
+	 * Best-effort, exactly like start_uevent_watch() below: a kernel
+	 * without FUSE, an absent /dev/fuse or a refused mount leaves every
+	 * other capability untouched and containers reading the host's own
+	 * /proc, which is what they read before this existed. The reason is
+	 * logged with a real errno rather than left to be guessed at.
+	 */
+	procfuse_start(STATE_DIR);
 
 	/*
 	 * Responses are buffered against their connection and drained on
