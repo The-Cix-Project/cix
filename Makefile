@@ -53,7 +53,8 @@ SELFTESTS = \
 	$(BUILD)/test_partlabel $(BUILD)/test_pkg_finalize $(BUILD)/test_fresh_output_dir \
 	$(BUILD)/test_pgpverify $(BUILD)/test_kernelrecipe $(BUILD)/test_srcdepth $(BUILD)/test_srcupstream $(BUILD)/test_srcpolicy $(BUILD)/test_srcresolve $(BUILD)/test_pipeline $(BUILD)/test_scheduler \
 	$(BUILD)/test_btrfs $(BUILD)/test_toolchain \
-	$(BUILD)/test_cix_init $(BUILD)/test_cixinit_table \
+	$(BUILD)/test_cix_init $(BUILD)/test_cixinit_table  \
+	$(BUILD)/test_bootroot_args \
 	$(DAEMON_SELFTESTS)
 
 #
@@ -455,6 +456,9 @@ $(BUILD)/test_disk_quota: test/test_disk_quota.c test/test_image_fixture.c $(CLI
 
 $(BUILD)/test_partlabel: test/test_partlabel.c daemon/src/partlabel.c | $(BUILD)
 	$(CC) $(CFLAGS) -Idaemon/include $^ -o $@
+
+$(BUILD)/test_bootroot_args: test/test_bootroot_args.c | $(BUILD)
+	$(CC) $(CFLAGS) $^ -o $@
 
 $(BUILD)/test_diskpart: test/test_diskpart.c test/test_image_fixture.c daemon/src/disk.c daemon/src/diskpart.c daemon/src/diskrole.c daemon/src/partlabel.c daemon/src/persist.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@

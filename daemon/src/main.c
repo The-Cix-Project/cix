@@ -7812,6 +7812,25 @@ static void register_bootroot_assemble_pidfd(pid_t pid, int pidfd)
 #define FIRMWARE_IMAGE "cix-firmware"
 
 /*
+ * #347: the well-known name of the image holding the module tools --
+ * modprobe/depmod/insmod/lsmod/modinfo/rmmod, all six symlinks to one
+ * real kmod binary (recipes/package/kmod). Resolved and staged exactly
+ * like FIRMWARE_IMAGE above, built with an ordinary `pkg install
+ * --image=cix-kmod kmod`, and absent on a box that never built one.
+ *
+ * Its own image rather than a few more files inside cix-hosttools,
+ * because mkbootroot stages THIS directory with the flat copy
+ * (copy_dir_files(): every file in it, into usr/bin), not the
+ * named-absolute-path copy hosttools gets. cix-hosttools' own usr/bin
+ * carries curl, tar, perl and bash among others, so pointing the flat
+ * copy at it would put a shell in the control-plane root -- a property
+ * this platform deliberately does not have. A one-package image's
+ * usr/bin holds exactly the seven files kmod installs, and nothing
+ * else.
+ */
+#define KMOD_IMAGE "cix-kmod"
+
+/*
  * ADR-0057: when a hostbuild job named "cix" completes, assembles a
  * fresh control-plane squashfs from its own just-harvested artifacts
  * by forking+exec'ing the real, unmodified build/mkbootroot binary --
@@ -7994,6 +8013,8 @@ static void spawn_cix_bootroot_assembly(const char *artifact_dir)
 	char stage_dir[PATH_MAX];
 	char host_tools_dir[PATH_MAX];
 	char firmware_dir[PATH_MAX];
+	char modules_dir[PATH_MAX];
+	char kmod_bin_dir[PATH_MAX];
 	struct stat host_tools_st;
 	char *argv[11];
 	pid_t pid;
@@ -8094,16 +8115,106 @@ static void spawn_cix_bootroot_assembly(const char *artifact_dir)
 			               FIRMWARE_IMAGE);
 	}
 
+	/*
+	 * #347: the kernel module tree, taken from the kernel package's own
+	 * artifact directory -- ARTIFACTS_DIR/kernel, a SIBLING of the
+	 * artifact_dir parameter above, which is the "cix" package's.
+	 * kernel.recipe's own pkg_install() runs modules_install followed
+	 * by depmod -b, so what is staged here is a complete,
+	 * dependency-indexed tree (modules.dep and friends), not a bag of
+	 * .ko files modprobe cannot resolve.
+	 *
+	 * This argument used to be a hardcoded "" whose comment said a
+	 * control-plane-only rebuild touches no module tree. That is the
+	 * same mistake firmware_dir above carried, for the same reason:
+	 * mkbootroot assembles a FRESH root every time, so whatever it is
+	 * not given, the resulting root does not have. The effect was that
+	 * no kernel module could load on any Cix host ever assembled --
+	 * GET /v1/system/kmod/e1000e answered "no such module
+	 * (not built/available)" because there was no tree to find it in.
+	 * A box whose drivers are all built in never notices; a bare-metal
+	 * box, whose NIC driver is a module and which has no shell to
+	 * repair itself with, is simply unreachable.
+	 *
+	 * The tree and the booting bzImage have to come from the same
+	 * build, and nothing here enforces that because nothing needs to:
+	 * modules are namespaced by kernel release (lib/modules/<release>)
+	 * and modprobe selects by uname -r, so a mismatched release
+	 * degrades to "module not found" -- exactly today's behaviour --
+	 * while a matching release built from a different config is
+	 * refused outright with "invalid module format". Neither failure
+	 * is silent. It is still why a deploy should pass the kernel_path
+	 * out of the same artifact this staged from.
+	 */
+	modules_dir[0] = '\0';
+	{
+		struct stat modules_st;
+
+		if (snprintf(modules_dir, sizeof(modules_dir), "%s/kernel/lib/modules", ARTIFACTS_DIR) >=
+		    (int)sizeof(modules_dir))
+			modules_dir[0] = '\0';
+		else if (stat(modules_dir, &modules_st) != 0 || !S_ISDIR(modules_st.st_mode))
+			modules_dir[0] = '\0';
+
+		if (modules_dir[0] != '\0')
+			logstore_write("cixd", "info", "cix bootroot assembly: staging kernel modules from %s",
+			               modules_dir);
+		else
+			logstore_write("cixd", "info",
+			               "cix bootroot assembly: no kernel modules to stage -- no module tree "
+			               "at %s/kernel/lib/modules; nothing will be loadable on the assembled "
+			               "host",
+			               ARTIFACTS_DIR);
+	}
+
+	/*
+	 * #347: the module tools, resolved exactly the way firmware_dir
+	 * above is -- KMOD_IMAGE's own current version, one directory
+	 * deeper, because mkbootroot wants the directory whose files land
+	 * flat in usr/bin rather than the image rootfs.
+	 *
+	 * Staged even when modules_dir came back empty. They are two
+	 * independent capabilities: an operator can load a module by hand
+	 * from a tree this assembly did not produce, and "the tools are
+	 * missing" and "the tree is missing" are different diagnoses that
+	 * should not be collapsed into one silence.
+	 */
+	kmod_bin_dir[0] = '\0';
+	{
+		char kmod_version[IMAGE_VERSION_MAX];
+		char kmod_root[PATH_MAX];
+		struct stat kmod_st;
+
+		if (image_current_version(KMOD_IMAGE, kmod_version, sizeof(kmod_version)) == IMAGE_OK) {
+			image_version_rootfs_path(KMOD_IMAGE, kmod_version, kmod_root, sizeof(kmod_root));
+			if (snprintf(kmod_bin_dir, sizeof(kmod_bin_dir), "%s/usr/bin", kmod_root) >=
+			    (int)sizeof(kmod_bin_dir))
+				kmod_bin_dir[0] = '\0';
+			else if (stat(kmod_bin_dir, &kmod_st) != 0 || !S_ISDIR(kmod_st.st_mode))
+				kmod_bin_dir[0] = '\0';
+		}
+
+		if (kmod_bin_dir[0] != '\0')
+			logstore_write("cixd", "info", "cix bootroot assembly: staging module tools from %s",
+			               kmod_bin_dir);
+		else
+			logstore_write("cixd", "info",
+			               "cix bootroot assembly: no module tools to stage -- image \"%s\" has "
+			               "no current version, or no usr/bin in it; modprobe will be absent from "
+			               "the assembled host",
+			               KMOD_IMAGE);
+	}
+
+
 	argv[0] = mkbootroot_bin;
 	argv[1] = stage_dir;
 	argv[2] = cixd_bin;
 	argv[3] = cixctl_bin;
 	argv[4] = web_dir;
 	argv[5] = out_squashfs;
-	argv[6] = firmware_dir; /* "" if cix-firmware was never built on this box */
-	argv[7] = ""; /* modules dir -- a control-plane-only rebuild (cixd/cixctl/web only,
-	               * ADR-0057) touches no kernel module tree at all */
-	argv[8] = ""; /* kmod bin dir -- same reasoning */
+	argv[6] = firmware_dir;  /* "" if cix-firmware was never built on this box */
+	argv[7] = modules_dir;   /* "" if this box has no kernel artifact to take a tree from */
+	argv[8] = kmod_bin_dir;  /* "" if cix-kmod was never built on this box */
 	argv[9] = host_tools_dir; /* "" if cix-hosttools was never built on this box */
 	argv[10] = NULL;
 

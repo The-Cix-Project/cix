@@ -270,3 +270,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0263](0263-firmware-is-an-image-the-host-root-is-assembled-from.md) | Device firmware is an ordinary image, and the control-plane root is assembled from its `lib/firmware` | Accepted |
 | [0264](0264-a-container-may-bridge-its-own-interfaces.md) | A network attachment may be a port of a bridge inside the container, so an AP's radio and wired segment meet | Accepted |
 | [0265](0265-a-radio-moves-as-a-phy-not-as-an-interface.md) | A radio moves as a whole PHY over nl80211, not as an interface over rtnetlink, so it can enter a container | Accepted |
+| [0266](0266-the-module-tools-are-an-image-the-module-tree-is-the-kernels.md) | The module tools are an image and the module tree is the kernel's own artifact, so a kernel module can load at all | Accepted |

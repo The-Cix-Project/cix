@@ -2,6 +2,68 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### No kernel module could ever load, on any host this platform has assembled (#347)
+
+`GET /v1/system/kmod/e1000e` on 192.168.15.95 answered:
+
+```
+{"error":"no such module (not built/available)"}
+```
+
+and so did `tg3`, `usb-storage` and `ehci-hcd` — every module
+`load_boot_modules()` tries at boot. Not "failed to load". *Not present.*
+The control-plane root carried no module tree to find them in, and no
+`modprobe` to load them with.
+
+Every part of the mechanism was already built. `recipes/package/kernel`'s
+`pkg_install()` has always run `modules_install` then `depmod -b`, and
+`kernel@7.2.3-8` on the box carries 21 `.ko` files alongside
+`modules.dep`, `modules.alias` and `modules.symbols`. `mkbootroot` has
+always accepted a `modules_dir` and a `kmod_bin_dir` and staged both
+correctly, with a test proving it. `recipes/package/kmod` has always
+built the tools. `daemon/src/kmod.c` has always known how to call them.
+
+The only missing thing was the call. `spawn_cix_bootroot_assembly()`
+passed a literal `""` for both, with a comment explaining that a
+control-plane-only rebuild touches no kernel module tree.
+
+**That is ADR-0263's bug, verbatim, on the next argument along.** The
+same wrong reasoning — `mkbootroot` assembles a *fresh* root every run,
+so whatever it is not given is absent from the result — had been found
+and fixed one argument to the left, for firmware, weeks earlier. It
+survived on `argv[7]` and `argv[8]` because nothing looked at them. Two
+of four optional arguments shipped complete, tested and never called.
+
+**Why nobody noticed.** 192.168.15.95 is a VM whose NIC is `virtio_net`,
+built in. Every driver it needs to boot and be reached on is `=y`, so
+nothing ever asked for a module. On bare metal it is fatal: a machine
+whose NIC driver is a module has no network, and the root is
+deliberately shell-less, so there is no way in. Unreachable, not
+degraded.
+
+**The fix** (ADR-0266) resolves both arguments instead of hardcoding
+them. The module tree comes from `ARTIFACTS_DIR/kernel/lib/modules`, a
+sibling of the `cix` artifact directory the function already has. The
+tools come from a new one-package `cix-kmod` image, resolved by the same
+two calls `cix-firmware` uses. Both keep the `""` fallback, and both now
+log which branch they took.
+
+`cix-kmod` is its own image rather than `kmod` added to `cix-hosttools`
+because that argument is staged by the **flat** copy — every file in the
+directory, into `usr/bin` — and hosttools carries `curl`, `tar`, `perl`
+and `bash`. It would have put a shell in the control-plane root, which
+is a property this platform deliberately does not have.
+
+**The gate is on the call site, because that is where both bugs were.**
+`test_bootroot_args` (in `SELFTESTS`) fails the build if any of
+`mkbootroot`'s four optional arguments is assigned a string literal in
+`spawn_cix_bootroot_assembly()`. Neither this defect nor ADR-0263's was
+reachable by a runtime test: the code was correct, and the call site was
+where the feature was switched off.
+
+This also unblocks the driver tiering — `=m` is not a decision anyone
+could take while no module could load.
+
 ### The regulatory database is inside the kernel now, because of when cfg80211 asks for it (#342)
 
 Every boot of this platform carried these two lines:
