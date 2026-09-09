@@ -359,7 +359,7 @@
   <text x="165" y="804" text-anchor="middle" class="module-text">upperdir (own diff)</text>
   <text x="165" y="818" text-anchor="middle" class="module-text">netns + pidns + cgroup</text>
   <text x="165" y="832" text-anchor="middle" class="module-text">veth → bridge (network N)</text>
-  <text x="165" y="846" text-anchor="middle" class="module-text">restart/depends_on/readiness</text>
+  <text x="165" y="846" text-anchor="middle" class="module-text">cix-init pid 1 &#8594; services[]</text>
 
   <rect x="300" y="768" width="220" height="90" class="card" fill="#fffaf4" stroke="#f4ddc3"/>
   <rect x="303" y="774" width="5" height="78" rx="2.5" fill="#c05621"/>

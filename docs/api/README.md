@@ -2327,22 +2327,6 @@ The gap was not hypothetical: on a live box 11 images existed and 8 had recipes,
 
 `GET /containers/{name}/files?list=1` lists a directory instead of reading a file. A **running** container is listed through `/proc/<pid>/root`, which is the kernel's own merged overlay view and correct by construction. An **exited** one has no such view, so its upper and lower layers are merged here — with whiteouts handled, because overlayfs marks a deleted file as a character device with `rdev 0` and a naive listing would show files the container had deleted, which is a listing that lies. Opaque directories are not handled, and that is stated rather than assumed away: the failure mode is showing a stale name, not hiding a real one.
 
-## Running a command in a container without a terminal
-
-```
-POST /v1/containers/jump/exec   {"argv":["/usr/bin/ps","aux"],"timeout_seconds":20}
-GET  /v1/containers/jump/exec
-```
-
-There were two ways to do this before and both were poor diagnostics. The interactive console runs through a **pty**, whose line discipline echoes and edits what passes through it — a `/proc`-walking one-liner came back visibly corrupted during a hang investigation (`$p`→`$pp`) and fed a wrong diagnosis. A throwaway container with `capture_output` gets a **fresh namespace**, which is useless for inspecting the state of an already-running container, which is the actual need.
-
-This enters the running container's own namespaces and runs `argv` directly. **No shell** — nothing resolves a bare name, expands a glob or splits a word, which is the point: a shell between you and the command is one more thing that can reinterpret what you asked for. **No pty** — the output is exactly the bytes the command wrote.
-
-It is **asynchronous with a poll endpoint** rather than a blocking call, because holding the daemon's event loop for the length of someone's command is precisely the wedge [ADR-0180](../adr/0180-async-container-teardown.md) exists to prevent; every other slow operation here has the same shape, and `cixctl exec NAME -- cmd...` polls for you so it still feels synchronous.
-
-A command that outruns `timeout_seconds` is SIGKILLed rather than left running invisibly, and reported as `timeout` rather than `done` so it is never mistaken for a command that finished. Output is capped, and `truncated` says so — silently dropping the tail of a diagnostic is how someone concludes the wrong thing from it.
-
-
 ## Factory reset
 
 ```

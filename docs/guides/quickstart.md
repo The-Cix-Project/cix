@@ -55,7 +55,7 @@ Full detail: [`docs/api/README.md`](../api/README.md#creating-a-container).
 ## 5. Look around
 
 ```sh
-build/cixctl ps
+build/cixctl process
 build/cixctl container console hello   # a real interactive shell inside it, if it's still running
 ```
 
