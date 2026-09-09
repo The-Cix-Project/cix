@@ -6,6 +6,54 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The CPU cap belongs in the idle denominator too (#359)
+
+Caught by the owner reviewing the fix above: the new idle column read
+`cpuset.cpus.effective` and ignored `cpu.max` entirely.
+
+`cpuset.cpus.effective` bounds **parallelism** — how many CPUs may run a
+container's tasks at once. `cpu.max` bounds **throughput** — how much
+CPU time it may consume per period. A container commonly has both, and
+its real ceiling is the smaller.
+
+Measured on 192.168.15.95 running `v2.57.23`, a container with
+`cpuset_cpus: "0"` and `cpu_max: "50000 100000"` running one busy loop
+for 20 s:
+
+```
+delta: [1002, 0, 1, 998, 0, 0, 0, 0, 0, 0]   →  a CPU tool reads 50.1%
+```
+
+1003 ticks over 20 s is 0.5 CPU — **exactly its cap**. The container was
+throttled flat out and could not consume another cycle, and the tool
+called it half idle. Same shape as the defect above and as #278/#279
+before it: a number claiming headroom that does not exist. Only the
+direction of the lie changed.
+
+The denominator is now `min(cpuset count, quota / period)`. `"max
+<period>"` is the unlimited form and leaves the cpuset deciding; a quota
+*larger* than the cpuset cannot widen the ceiling.
+
+**`/proc/cpuinfo` is deliberately unchanged** and still follows the
+cpuset alone. `procfuse.h` already recorded why and it still holds: a
+quota-derived processor count would report 1 for a build container whose
+`cpu.max` is `"100000 100000"`, turning every `make -j$(nproc)` on this
+platform into `-j1` with nothing in the build output saying why.
+Parallelism and throughput are separate limits and each file answers the
+one its readers act on.
+
+`test_procfuse` gained four cases: pegged at a half-CPU quota reads
+~100%, a quota above the cpuset does not widen the denominator, `"max"`
+is not parsed as a number, and cpuinfo still reports a whole processor
+under a half-CPU quota.
+
+One more instance of the mtime fragility, this time inside the test:
+every `put()` writes a file into the fake cgroup directory, which bumps
+that directory's mtime and silently reset the container's apparent age
+to zero. `put()` now re-ages it. That is the same instability that moved
+the production anchor off directory mtime and onto `cgroup.procs`, and
+it is worth recording that it reappeared within an hour in new code.
+
 ### procfuse reported 100% CPU at any load, and dropped 42 of 50 meminfo fields (#359)
 
 `/proc/stat` and `/proc/uptime` were verified in #336 for the wrong
