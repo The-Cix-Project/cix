@@ -6,6 +6,86 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A container's virtualised /proc, reported instead of assumed
+
+`jump` reported 7.71 GiB of memory and two CPUs to `htop` while its
+real limits were 1 GiB and one CPU. It had been doing so since it was
+created, and nothing anywhere said a word about it.
+
+The feature had not silently declined -- the log showed the daemon
+offering it a valid path (`container jump: procfuse dir=/config/state/
+procfuse`) in the same second the server logged `serving 6 virtualised
+/proc files`. So the spec was right, the bind loop ran, and the binds
+failed inside the child, where `mountns_pivot()` reports them with
+`perror()`. That goes to the child's stderr, which is `dup2`'d to the
+container's own output fd, never to the diag pipe and never to the log
+store. A comment in `src/mountns.c` claimed otherwise; it was wrong,
+and it is corrected rather than left to mislead the next reader.
+
+The diag pipe is not the fix either, despite its general name: it is
+drained once at reap time and its contents become `last_exit_reason`,
+so a non-fatal message written into it would surface later as the
+reason the container exited.
+
+So the parent asks the kernel instead. Right after `container_create()`
+returns, `registry.c` counts the procfuse binds in the child's own
+`/proc/<pid>/mountinfo` and records `procfuse_expected` /
+`procfuse_bound` on the entry, both exposed on `GET /containers/{name}`
+and logged either way. `bound < expected` means the container runs but
+reads the host's `/proc` for the rest -- a wrong answer rather than a
+missing feature, and now a visible one. `expected == 0` (declined, or
+no server) stays distinguishable from a bind that failed.
+
+Non-fatal by choice, on the owner's call. Fatal would be the stricter
+reading of the tenets, but this host is shell-less: a procfuse fault at
+boot would start no containers at all, and an unreachable box is worse
+than a container reporting the wrong memory total loudly.
+
+The cause of the failed binds is not yet established and is not
+guessed at here. The instrument to find it is what shipped.
+
+### GET /containers/{name}/files can read /proc again
+
+The handler sized every read from `st_size`. A procfs or sysfs file
+reports `st_size == 0`, so it allocated nothing, read nothing, and
+answered **200 with an empty body** -- a success carrying no data,
+which is the worst shape a failure can take: every caller believed it
+had read the file and found it empty.
+
+This was not a cosmetic gap. `/proc/self/mountinfo` and
+`/proc/meminfo` are precisely how one asks a running container what it
+actually sees, and this endpoint answered "nothing" to both -- which
+is why the procfuse fault above could not be measured from outside the
+container at all. Zero-`st_size` files are now read to EOF into a
+growing buffer capped at 4 MiB, and `X-Cix-Size` reports the bytes
+actually served.
+
+### cix-init moves to /sbin, behind one definition
+
+It was staged at the container's root as `/cix-init`, visible in every
+container's top-level listing. It is a system binary and now lives at
+`/sbin/cix-init`; `stage_container_bytes()` already `mkdir -p`s the
+parent, so an image without `/sbin` gets one and an image with a real
+`/sbin` merges through overlayfs.
+
+The path is named twice -- staging the bytes, and as `argv[0]` of pid 1
+-- and the two must agree or no container on the host starts, so they
+are now one `CIX_INIT_CONTAINER_PATH` definition rather than two
+literals a future edit could move independently.
+
+### .old_root no longer left behind in every container
+
+`mountns_pivot()` created the `pivot_root` staging directory, pivoted
+into it and detached it with `MNT_DETACH`, but never removed it.
+Because `mkdir()` runs after the `chdir` into the new root, the
+directory is created inside the container's own overlay and lands in
+the upperdir -- so an operator listing the root of a long-running
+container found a stray `.old_root` sitting next to their own files,
+for the life of the container. It is now `rmdir`'d after the detach,
+non-fatally: a slightly untidy root is not worth refusing to start a
+container over. Containers created before this keep the husk until
+they are recreated.
+
 ### The console: full height, a real switch, and its own window
 
 Three dashboard changes, one of which was a genuine bug.

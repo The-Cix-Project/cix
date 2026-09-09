@@ -6632,6 +6632,22 @@ static int stage_container_bytes(const char *upperdir, const char *path, const v
                                   size_t content_len, mode_t mode, uid_t owner, gid_t group,
                                   uid_t id_offset);
 
+/*
+ * Where cix-init lands INSIDE a container, as one definition.
+ *
+ * It is named twice -- once staging the bytes, once as argv[0] of pid
+ * 1 -- and the two must agree or every container on the host fails to
+ * start, so they are not allowed to be two literals that a future edit
+ * could move independently.
+ *
+ * /sbin rather than the root directory: it is a system binary and
+ * belongs where system binaries go. stage_container_bytes() runs
+ * persist_mkdir_p() on the parent, so an image with no /sbin of its
+ * own gets one; on an image that has a real /sbin, overlayfs merges
+ * with it rather than replacing it.
+ */
+#define CIX_INIT_CONTAINER_PATH "/sbin/cix-init"
+
 static const char *cix_init_source_path(void)
 {
 	static char path[PATH_MAX];
@@ -6657,7 +6673,8 @@ static const char *cix_init_source_path(void)
 }
 
 /*
- * Stages /cix-init into a container's tree at creation time, through
+ * Stages cix-init into a container's tree at creation time (at
+ * CIX_INIT_CONTAINER_PATH), through
  * the same helper files[] uses so the direct-rootfs and id-mapped
  * cases are inherited rather than re-derived. Not at image-seed time:
  * ADR-0155's manifest-hash dedup would discard a reseed, and a
@@ -6695,11 +6712,13 @@ static int stage_cix_init(const char *upperdir, uid_t id_offset, char *err, size
 		snprintf(err, err_size, "short read of %s", src);
 		return -1;
 	}
-	rc = stage_container_bytes(upperdir, "/cix-init", buf, (size_t)st.st_size, 0755, (uid_t)-1,
+	rc = stage_container_bytes(upperdir, CIX_INIT_CONTAINER_PATH, buf, (size_t)st.st_size, 0755,
+	                            (uid_t)-1,
 	                            (gid_t)-1, id_offset);
 	free(buf);
 	if (rc != 0) {
-		snprintf(err, err_size, "failed to stage /cix-init: %s", strerror(errno));
+		snprintf(err, err_size, "failed to stage %s: %s", CIX_INIT_CONTAINER_PATH,
+		          strerror(errno));
 		return -1;
 	}
 	return 0;
@@ -6803,7 +6822,7 @@ static int init_transport_open(struct init_transport *t, const struct cixinit_ta
 		return -1;
 	}
 
-	t->argv[argn++] = (char *)"/cix-init";
+	t->argv[argn++] = (char *)CIX_INIT_CONTAINER_PATH;
 	snprintf(t->argv_store[0], sizeof(t->argv_store[0]), "%d", t->ctl[1]);
 	t->argv[argn++] = t->argv_store[0];
 	snprintf(t->argv_store[1], sizeof(t->argv_store[1]), "%d", t->rep[1]);
@@ -15290,6 +15309,13 @@ static void handle_container_dir_list(int fd, const char *name, const char *rel_
 	jw_free(&w);
 }
 
+/*
+ * Cap on a file whose stat() size is 0 (procfs/sysfs), read to EOF.
+ * Generous next to the kilobytes these files actually hold, and finite
+ * so a synthetic file that never ends cannot exhaust the daemon.
+ */
+#define FILE_STREAM_READ_MAX (4u * 1024u * 1024u)
+
 static void handle_container_file_read(int fd, const char *name, const char *rel_path)
 {
 	struct registry_entry *e = registry_find(name);
@@ -15384,19 +15410,74 @@ static void handle_container_file_read(int fd, const char *name, const char *rel
 		return;
 	}
 
-	buf = st.st_size > 0 ? malloc((size_t)st.st_size) : NULL;
-	if (st.st_size > 0 && buf == NULL) {
-		close(file_fd);
-		respond_error(fd, 500, "Internal Server Error", "out of memory");
-		return;
-	}
+	/*
+	 * Two different kinds of file reach this point, and only one of
+	 * them can be read by its stat() size.
+	 *
+	 * An ordinary file reports a real st_size and is read to exactly
+	 * that -- unchanged, and still the common case.
+	 *
+	 * A procfs or sysfs file reports st_size == 0 and yields its
+	 * content only to a read that runs to EOF. The size-bounded loop
+	 * below used to allocate nothing, read nothing, and answer 200
+	 * with an EMPTY BODY -- a success carrying no data, which is the
+	 * worst shape a failure can take: every caller believed it had
+	 * read the file and simply found it empty. That cost real
+	 * diagnostic work here, because /proc/self/mountinfo and
+	 * /proc/meminfo are exactly how one asks a running container what
+	 * it actually sees, and this endpoint silently answered "nothing"
+	 * to both.
+	 *
+	 * Grow-until-EOF, capped: these files are kilobytes, and the cap
+	 * exists so an endless synthetic file cannot exhaust the daemon.
+	 */
 	total = 0;
-	while (total < (size_t)st.st_size) {
-		ssize_t n = read(file_fd, buf + total, (size_t)st.st_size - total);
+	if (st.st_size > 0) {
+		buf = malloc((size_t)st.st_size);
+		if (buf == NULL) {
+			close(file_fd);
+			respond_error(fd, 500, "Internal Server Error", "out of memory");
+			return;
+		}
+		while (total < (size_t)st.st_size) {
+			ssize_t n = read(file_fd, buf + total, (size_t)st.st_size - total);
 
-		if (n <= 0)
-			break;
-		total += (size_t)n;
+			if (n <= 0)
+				break;
+			total += (size_t)n;
+		}
+	} else {
+		size_t cap = 65536;
+
+		buf = malloc(cap);
+		if (buf == NULL) {
+			close(file_fd);
+			respond_error(fd, 500, "Internal Server Error", "out of memory");
+			return;
+		}
+		for (;;) {
+			ssize_t n;
+
+			if (total == cap) {
+				char *bigger;
+
+				if (cap >= FILE_STREAM_READ_MAX)
+					break;
+				cap *= 2;
+				bigger = realloc(buf, cap);
+				if (bigger == NULL) {
+					free(buf);
+					close(file_fd);
+					respond_error(fd, 500, "Internal Server Error", "out of memory");
+					return;
+				}
+				buf = bigger;
+			}
+			n = read(file_fd, buf + total, cap - total);
+			if (n <= 0)
+				break;
+			total += (size_t)n;
+		}
 	}
 	close(file_fd);
 
@@ -15426,7 +15507,12 @@ static void handle_container_file_read(int fd, const char *name, const char *rel
 		         "X-Cix-Gid: %u\r\n"
 		         "X-Cix-Size: %lld\r\n",
 		         (unsigned)(st.st_mode & 07777), (unsigned)st.st_uid, (unsigned)st.st_gid,
-		         (long long)st.st_size);
+		         /*
+		          * The bytes actually served. For an ordinary file that
+		          * is st_size; for a procfs file st_size is 0 and the
+		          * only true size is what the read produced.
+		          */
+		         (long long)(st.st_size > 0 ? (long long)st.st_size : (long long)total));
 		http_set_blocking(fd);
 		http_write_response_hdrs(fd, 200, "OK", "application/octet-stream", meta, buf, total);
 	}

@@ -329,13 +329,23 @@ int mountns_pivot(const struct mount_spec *mnt)
 	 * and before the detach immediately below. A bind attempted anywhere
 	 * else has either no source or no target.
 	 *
-	 * Every failure here is deliberately non-fatal and silent to the
-	 * caller. A container that does not get these files reads the host's
-	 * real /proc, which is exactly what every container read before this
-	 * feature existed -- degraded, not broken, and never a reason to
-	 * refuse to start a container. The reason still reaches an operator:
-	 * perror writes to the child's diag pipe, which container_create()
-	 * already surfaces.
+	 * Every failure here is deliberately non-fatal. A container that
+	 * does not get these files reads the host's real /proc, which is
+	 * exactly what every container read before this feature existed --
+	 * degraded, not broken, and never a reason to refuse to start a
+	 * container.
+	 *
+	 * WHERE THE REASON ACTUALLY GOES, corrected: this comment used to
+	 * claim the message reached "the child's diag pipe, which
+	 * container_create() already surfaces". It does not. The diag pipe
+	 * is written by child_diag() with an explicit fd; this child's
+	 * stderr is dup2'd to the container's own output fd, so the text
+	 * below lands there or nowhere, and a bind that failed for every
+	 * file said nothing an operator could find. It stays here because
+	 * capture_output makes it readable when someone is looking; the
+	 * thing that actually reports is the parent, which counts the
+	 * landed binds in the child's mount table right after creation
+	 * (registry.c) and logs the count either way.
 	 */
 	if (mnt != NULL && mnt->procfuse_dir != NULL && mnt->procfuse_dir[0] != '\0' &&
 	    mnt->procfuse_files != NULL) {
@@ -382,6 +392,23 @@ int mountns_pivot(const struct mount_spec *mnt)
 		perror("mountns_pivot: umount2(put_old, MNT_DETACH)");
 		return MOUNTNS_PIVOT_ERR_UMOUNT_PUT_OLD;
 	}
+
+	/*
+	 * And remove the husk. mkdir(put_old) above runs AFTER the chdir
+	 * into the new root, so the directory is created inside the
+	 * container's own overlay -- it lands in the upperdir and persists
+	 * for the life of the container, which is why an operator listing
+	 * the root of a long-running container saw a stray .old_root
+	 * sitting next to their own files.
+	 *
+	 * MNT_DETACH has already removed the mount from this namespace, so
+	 * what is left is an ordinary empty directory and rmdir() takes it.
+	 * Non-fatal: a container whose root is one empty directory untidier
+	 * than it should be is still a correct container, and refusing to
+	 * start one over cosmetics would be the worse trade.
+	 */
+	if (rmdir(mnt->put_old_rel) != 0 && errno != ENOENT)
+		perror("mountns_pivot: rmdir(put_old)");
 
 	return 0;
 }

@@ -75,6 +75,66 @@ enum registry_error registry_create(const char *name, const char *image,
 	if (container_create(spec, &e->handle) != 0)
 		return REGISTRY_ERR_CREATE_FAILED;
 
+	/*
+	 * Did the procfuse binds actually land? (#336)
+	 *
+	 * Checked from the PARENT, against the child's real mount table,
+	 * rather than trusting the child to report a failure. It cannot:
+	 * the bind is deliberately non-fatal, so it only writes to the
+	 * child's stderr -- which is dup2'd to the container's own output
+	 * fd, not to the diag pipe, despite a comment in mountns.c claiming
+	 * otherwise. So a bind that failed for every file said nothing
+	 * anywhere, and "the runtime was asked to bind" was the only thing
+	 * in the log.
+	 *
+	 * That is the SAME hole this feature already fell into once: the
+	 * server used to start after the containers that needed it, every
+	 * one took the documented degraded path, and the graceful
+	 * degradation covered for it. A best-effort subsystem needs its
+	 * skip logged as loudly as its failure, or "correctly declined" and
+	 * "silently broken" are the same observation.
+	 *
+	 * One line either way, so the answer is in the log before anyone
+	 * has to ask.
+	 */
+	e->procfuse_expected = 0;
+	e->procfuse_bound = 0;
+	if (spec->mnt.procfuse_dir != NULL && spec->mnt.procfuse_dir[0] != '\0' &&
+	    spec->mnt.procfuse_file_count > 0) {
+		char path[64];
+		FILE *f;
+		int bound = 0;
+
+		e->procfuse_expected = spec->mnt.procfuse_file_count;
+
+		snprintf(path, sizeof(path), "/proc/%d/mountinfo", (int)e->handle.pid);
+		f = fopen(path, "r");
+		if (f != NULL) {
+			char line[4096];
+
+			while (fgets(line, sizeof(line), f) != NULL) {
+				if (strstr(line, "cix-procfuse") != NULL)
+					bound++;
+			}
+			fclose(f);
+			e->procfuse_bound = bound;
+			if (bound == spec->mnt.procfuse_file_count) {
+				logstore_write("cixd", "info",
+				               "container %s: procfuse %d/%d files bound", name, bound,
+				               spec->mnt.procfuse_file_count);
+			} else {
+				logstore_write("cixd", "error",
+				               "container %s: procfuse bound only %d of %d files -- it reads "
+				               "the host's /proc for the rest",
+				               name, bound, spec->mnt.procfuse_file_count);
+			}
+		} else {
+			logstore_write("cixd", "error",
+			               "container %s: cannot read %s to confirm the procfuse binds: %s",
+			               name, path, strerror(errno));
+		}
+	}
+
 	memset(e->name, 0, sizeof(e->name));
 	strncpy(e->name, name, sizeof(e->name) - 1);
 	memset(e->image, 0, sizeof(e->image));
@@ -631,6 +691,17 @@ void registry_write_json_one(const struct registry_entry *entry, struct json_wri
 		jw_null(w);
 	else
 		jw_str(w, entry->last_exit_reason);
+	/*
+	 * ADR-0262: the virtualised /proc, as a fact rather than an
+	 * assumption. bound < expected means this container is reading the
+	 * host's real /proc for the missing files -- running, but answering
+	 * questions about memory and cpu count with the host's numbers.
+	 * expected 0 means it never asked for them.
+	 */
+	jw_key(w, "procfuse_expected");
+	jw_int(w, entry->procfuse_expected);
+	jw_key(w, "procfuse_bound");
+	jw_int(w, entry->procfuse_bound);
 	jw_key(w, "captured_output");
 	if (entry->capture_requested)
 		jw_str(w, entry->captured_output);
