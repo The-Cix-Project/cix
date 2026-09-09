@@ -6,6 +6,33 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A container sees its own limits — verified end to end (#336, ADR-0262)
+
+Measured on 192.168.15.95 running `v2.57.22`, in a container declaring
+`memory_max: 1073741824` and `cpuset_cpus: "0"` on a 2-CPU, 7894 MB host:
+
+| file | container reads | host's own figure |
+|---|---|---|
+| `/proc/meminfo` | `MemTotal: 1048576 kB` — exactly the declared 1 GiB | 7894 MB |
+| `/proc/cpuinfo` | one `processor` block | two |
+| `/proc/uptime` | `0.00` → `20.00` → `40.00` → `60.00` over a minute | the host's uptime |
+| `/proc/stat` | `cpu 0 0 0` rising to `cpu 1 0 1` as a tick was used | the host's totals |
+
+All six files present in the container's own `/proc/self/mountinfo` as
+`fuse cix-procfuse`. ADR-0262 moves from Proposed to Accepted.
+
+Two readings that looked like stubs and were not, checked rather than
+assumed: `/proc/uptime` showing `0.00` and `/proc/stat` showing zeros
+were a container seconds old at whole-second resolution, and genuine
+sub-tick CPU use. Both advance correctly once there is something to
+report.
+
+`nproc` reporting 1 is a separate mechanism and worth not conflating
+with this: it reads `sched_getaffinity`, which the cpuset constrains
+directly and which needed nothing from procfuse. What this delivers is
+every tool that sizes itself by *reading a file* — which is what
+#278/#279 was.
+
 ### procfuse started after the containers that needed it (#336, ADR-0262)
 
 Part 2 shipped the bind mounts and no container had them. `jump` still
