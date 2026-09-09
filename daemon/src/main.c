@@ -6853,6 +6853,36 @@ static void container_init_log_report(struct registry_entry *entry, const struct
 	switch (r->event) {
 	case CIXINIT_EV_UP:
 		logstore_write_container(entry->name, "info", "cix-init up, %d service(s)", r->b);
+		/*
+		 * ADR-0262: and now that pid 1 is talking to us, its mount
+		 * table is certainly finished -- the first moment the procfuse
+		 * binds can be counted truthfully. Counting them at creation
+		 * reads a mount namespace the child is still building.
+		 *
+		 * Reported here so the answer is in the log without anyone
+		 * having to ask. A container short of its binds still runs; it
+		 * reads the HOST's /proc for the files it did not get, which
+		 * is a wrong answer to "how much memory do I have", not a
+		 * missing feature.
+		 */
+		if (entry->procfuse_expected > 0) {
+			int bound = registry_procfuse_bound(entry);
+
+			if (bound == entry->procfuse_expected) {
+				logstore_write_container(entry->name, "info",
+				                          "procfuse: %d/%d files bound", bound,
+				                          entry->procfuse_expected);
+			} else if (bound < 0) {
+				logstore_write_container(entry->name, "error",
+				                          "procfuse: cannot read the mount table to confirm "
+				                          "%d expected binds", entry->procfuse_expected);
+			} else {
+				logstore_write_container(entry->name, "error",
+				                          "procfuse: only %d of %d files bound -- this container "
+				                          "reads the host's /proc for the rest", bound,
+				                          entry->procfuse_expected);
+			}
+		}
 		break;
 	case CIXINIT_EV_STARTED:
 		logstore_write_container(entry->name, "info", "service %s started, pid %d", svc, r->a);
@@ -22841,6 +22871,7 @@ static enum console_route_result try_console_upgrade(struct conn *cc, const stru
 	const char *query;
 	char accept_val[64];
 	int master_fd;
+	int cgroup_procs_fd;
 	pid_t exec_pid;
 	char response[512];
 	int rlen;
@@ -23061,7 +23092,26 @@ static enum console_route_result try_console_upgrade(struct conn *cc, const stru
 	 * is repurposed below; every value taken from req has already
 	 * been copied into a local buffer above. */
 
-	if (exec_into_container(entry->handle.pid, cmd_argv, &term, &master_fd, &exec_pid) != 0) {
+	/*
+	 * ADR-0262: the session has to join the container's CGROUP, not
+	 * just its namespaces, or its virtualised /proc answers with the
+	 * host's numbers -- those files are computed from the reader's own
+	 * cgroup. Opened here, before exec_into_container() does any
+	 * setns(), because /sys/fs/cgroup is not reachable from inside the
+	 * container's mount namespace.
+	 */
+	cgroup_procs_fd = entry->handle.cgroup_fd >= 0
+	                       ? openat(entry->handle.cgroup_fd, "cgroup.procs",
+	                                 O_WRONLY | O_CLOEXEC)
+	                       : -1;
+	if (entry->handle.cgroup_fd >= 0 && cgroup_procs_fd < 0)
+		logstore_write_container(entry->name, "warn",
+		                          "console: cannot open cgroup.procs (%s) -- this session will "
+		                          "read the host's /proc, not the container's",
+		                          strerror(errno));
+
+	if (exec_into_container(entry->handle.pid, cgroup_procs_fd, cmd_argv, &term, &master_fd,
+	                         &exec_pid) != 0) {
 		/* task #764: exec_into_container()'s own diagnostics
 		 * (daemon/src/exec.c's fprintf(stderr,...) calls) go to
 		 * cixd's own stderr -- invisible to a REST client on a
@@ -23075,9 +23125,17 @@ static enum console_route_result try_console_upgrade(struct conn *cc, const stru
 		char errmsg[256];
 
 		snprintf(errmsg, sizeof(errmsg), "failed to start console session: %s", strerror(errno));
+		if (cgroup_procs_fd >= 0)
+			close(cgroup_procs_fd);
 		respond_error(cc->fd, 500, "Internal Server Error", errmsg);
 		return CONSOLE_FAILED;
 	}
+	/*
+	 * The child has written itself into it by now (or failed to, and
+	 * said so); this end is the daemon's and is done with.
+	 */
+	if (cgroup_procs_fd >= 0)
+		close(cgroup_procs_fd);
 
 	rlen = snprintf(response, sizeof(response),
 	                 "HTTP/1.1 101 Switching Protocols\r\n"

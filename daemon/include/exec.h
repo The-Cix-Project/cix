@@ -76,7 +76,25 @@ struct exec_term {
 #define EXEC_TERM_ROWS_DEFAULT 24
 #define EXEC_TERM_NAME_DEFAULT "xterm-256color"
 
-int exec_into_container(pid_t target_pid, char *const cmd_argv[],
+/*
+ * cgroup_procs_fd: a writable fd on the container's own
+ * cgroup.procs, opened by the caller before any setns() so it stays
+ * usable after the child has moved into the container's mount
+ * namespace (where the host's /sys/fs/cgroup is not reachable). The
+ * exec'd process writes "0" to it and becomes a real member of the
+ * container's cgroup.
+ *
+ * This is not a detail. ADR-0262's virtualised /proc answers every
+ * question from the READER's own cgroup, so a session that joined the
+ * container's namespaces but not its cgroup sees the container's
+ * bound /proc files and reads the HOST's memory and cpu count out of
+ * them -- htop in a console reporting 7.71 GiB against a 1 GiB limit,
+ * measured. Namespaces decide which files are visible; the cgroup
+ * decides what they say. Pass -1 to skip (the container has no
+ * cgroup), which restores the old, wrong-answer behaviour and is
+ * meant only for that case.
+ */
+int exec_into_container(pid_t target_pid, int cgroup_procs_fd, char *const cmd_argv[],
                          const struct exec_term *term,
                          int *out_pty_master_fd, pid_t *out_child_pid);
 

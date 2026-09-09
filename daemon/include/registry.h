@@ -264,10 +264,12 @@ struct registry_entry {
 	 *
 	 * expected == 0 means the container declined procfuse (or the server
 	 * was not running when it was created), which is a different thing
-	 * from bound < expected and must not read as a fault.
+	 * from a bind that failed and must not read as a fault.
+	 *
+	 * How many actually landed is NOT stored -- see
+	 * registry_procfuse_bound(), which asks the kernel each time.
 	 */
 	int procfuse_expected;
-	int procfuse_bound;
 	/*
 	 * 1 while frozen via the cgroup v2 freezer (POST .../pause,
 	 * ADR-0045) -- the process itself is still `running` (its pid is
@@ -560,6 +562,16 @@ enum registry_error registry_create(const char *name, const char *image,
                                      const char dns_server_ips[][RESOLV_IP_STRLEN],
                                      int dns_server_count,
                                      struct registry_entry **out);
+
+/*
+ * How many procfuse binds (ADR-0262) are in this container's mount
+ * table right now, read from the kernel rather than remembered -- the
+ * child is still building that table when container_create() returns,
+ * so any count taken at creation is a snapshot of a half-built mount
+ * namespace. -1 when the table cannot be read (not running, or gone),
+ * which is deliberately distinct from 0.
+ */
+int registry_procfuse_bound(const struct registry_entry *entry);
 
 struct registry_entry *registry_find(const char *name);
 
