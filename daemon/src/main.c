@@ -12926,6 +12926,18 @@ static int create_container_from_body(const char *body, size_t body_len,
 		spec.mnt.procfuse_dir = procfuse_mount_path();
 		spec.mnt.procfuse_files = procfuse_names;
 		spec.mnt.procfuse_file_count = PROCFUSE_FILE_COUNT;
+		/*
+		 * Logged, because the first attempt at this bound nothing and
+		 * there was no way to tell which half had failed. The bind
+		 * itself happens in the container child, whose perror() goes
+		 * to stderr -- and stderr is never mirrored into the log store
+		 * (CLAUDE.md records this exactly), so a NON-FATAL failure
+		 * there is invisible. This line at least says whether the
+		 * daemon had a path to offer, which splits that question in
+		 * two.
+		 */
+		logstore_write("cixd", "info", "container %s: procfuse dir=%s", name,
+		                spec.mnt.procfuse_dir != NULL ? spec.mnt.procfuse_dir : "(server not running)");
 	}
 	spec.net_count = net_count;
 	for (i = 0; i < (size_t)net_count; i++) {

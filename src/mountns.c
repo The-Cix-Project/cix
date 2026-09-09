@@ -322,9 +322,19 @@ int mountns_pivot(const struct mount_spec *mnt)
 			 * MS_BIND only. A recursive bind would drag the whole FUSE
 			 * mount in, and the target is one file over one file.
 			 */
-			if (mount(src, dst, NULL, MS_BIND, NULL) != 0)
-				perror("mountns_pivot: bind procfuse file (container reads the host's /proc "
-				        "for it)");
+			if (mount(src, dst, NULL, MS_BIND, NULL) != 0) {
+				/*
+				 * Named in full: which source, which target, which
+				 * errno. The first version of this printed a fixed
+				 * sentence, and when nothing got bound it could not
+				 * say whether the source was missing, the target was
+				 * missing, or the mount was refused -- three different
+				 * fixes.
+				 */
+				fprintf(stderr, "mountns_pivot: bind %s -> %s failed: %s (container reads the "
+				                 "host's /proc for it)\n",
+				         src, dst, strerror(errno));
+			}
 		}
 	}
 
