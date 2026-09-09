@@ -1,8 +1,10 @@
-# ADR-0236: A disk is identified by its filesystem UUID, not by its kernel name
+# 0236 — A disk is identified by its filesystem UUID, not by its kernel name
 
-- **Status:** Accepted
-- **Date:** 2026-09-02
-- **Issue:** [#255](https://git.home.arpa/itdlabs/cix/issues/255)
+## Status
+
+Accepted
+
+Issue [#255](https://git.home.arpa/itdlabs/cix/issues/255). Decided 2026-09-02.
 
 ## Context
 

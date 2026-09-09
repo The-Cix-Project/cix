@@ -1,4 +1,4 @@
-# ADR-0224: The Toolchain Tenet — TCC by right, gcc by evidence
+# 0224 — The Toolchain Tenet — TCC by right, gcc by evidence
 
 Date: 2026-09-01
 

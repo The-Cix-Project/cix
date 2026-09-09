@@ -1,4 +1,4 @@
-# ADR-0104: fs_type on the disk-format REST endpoint -- real btrfs disk formatting alongside ext4
+# 0104 — fs_type on the disk-format REST endpoint -- real btrfs disk formatting alongside ext4
 
 ## Status
 

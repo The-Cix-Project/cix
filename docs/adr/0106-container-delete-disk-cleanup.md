@@ -1,4 +1,4 @@
-# ADR-0106: DELETE /containers actually removes on-disk state (upper/work/merged), and unmounts first
+# 0106 — DELETE /containers actually removes on-disk state (upper/work/merged), and unmounts first
 
 ## Status
 

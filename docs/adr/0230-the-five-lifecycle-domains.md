@@ -1,8 +1,10 @@
-# ADR-0230: The platform has five lifecycle domains, named in the CLI and the docs, not in URLs
+# 0230 — The platform has five lifecycle domains, named in the CLI and the docs, not in URLs
 
-- **Status:** Accepted
-- **Date:** 2026-09-02
-- **Issue:** [#182](https://git.home.arpa/itdlabs/cix/issues/182)
+## Status
+
+Accepted
+
+Issue [#182](https://git.home.arpa/itdlabs/cix/issues/182). Decided 2026-09-02.
 
 ## Context
 

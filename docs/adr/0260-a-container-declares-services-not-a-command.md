@@ -2,8 +2,7 @@
 
 ## Status
 
-Accepted.
-
+Accepted
 Decided by the owner after reading the proposal: *"i want to remove cmd and make it service, and I
 want to be able to make services depend on other services right? so cmd gets dropped"*, together
 with the four follow-up answers recorded in the Decision below.

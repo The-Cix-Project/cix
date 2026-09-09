@@ -1,6 +1,72 @@
 # Changelog
 
-All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
+All notable changes to this project are recorded here, **newest first**. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS: there is no `[Unreleased]` section, because every entry here is already committed, and no version-numbered sections, because releases are git tags rather than curated milestones (`git tag --sort=v:refname` is the ground truth for the full list — deliberately not restated here, since a hand-maintained copy of it is exactly what went stale before).
+
+**Structure.** One `###` entry per meaningful change, in reverse chronological order. Entries below the [Phase 16 heading](#phase-16-parts-1-2-host-os-update-mechanism-root--kernel-and-automatic-package-updates) are additionally grouped under `## Phase N` headings: that grouping is a record of how the project worked in its first sixteen phases, and it stopped when development moved from phases to a continuous stream of issues and release tags. It is kept rather than back-filled, because inventing phase boundaries for work that never had them would make this file less true, not more organised. *What* shipped and how it was verified is `docs/roadmap/ROADMAP.md`'s job, which does still group by phase; this file is the chronological record and does not duplicate it.
+
+**Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
+
+### Documentation audit: one ADR format, an accurate CHANGELOG, and a gate for both
+
+A full pass over the documentation tree, prompted by the owner asking for one.
+Every finding below was measured, and two of them were things the documentation
+said about *itself* that were not true.
+
+**The ADR corpus had drifted into two formats.** 250 files used
+`# NNNN — Title` and 17 used `# ADR-NNNN: Title`; seven of those additionally
+carried Status, Date and Issue as a bullet list instead of a `## Status`
+heading. Neither form was wrong — they were a second way of saying the same
+thing, which is what One Source of Truth forbids of a document set as much as
+of a registry, and a reader had to work out which shape they were looking at
+before they could find the status. All 267 now use one form. The seven
+converted files keep their date and issue, moved into the prose line under
+Status that the majority convention already uses.
+
+**`ADR-0000` declared a status vocabulary the corpus did not follow.** It
+listed `Proposed`, `Accepted`, `Superseded by ADR-00NN`, `Deprecated`, while
+the corpus also used `Accepted; phased.` (0179, 0207) and `Accepted, with two
+decisions in it superseded` (0184). The practice is better than the rule — a
+phased acceptance is real information a bare token cannot carry — so the rule
+now describes it: the **first word** is the status and comes from the declared
+set, and qualifying prose after it is expected. Thirty files were nearly
+"corrected" into saying less; inspecting them first is what stopped that.
+
+**`CHANGELOG.md` described itself inaccurately.** Its preamble said entries are
+"grouped by roadmap phase". Measured: 375 of 427 entries (88%) sit *above* the
+first `## Phase` heading, which is at line 7903 of 8637 — the grouping stopped
+at Phase 16, when development moved from phases to issues and release tags.
+`CLAUDE.md`'s Documentation Map repeated the same claim. Both now say what the
+file is, and the historical grouping is kept rather than back-filled: inventing
+phase boundaries for work that never had them would make the file less true,
+not more organised.
+
+**Three broken relative links**, all to ADRs that had been renamed —
+`0144-host-authentication.md`, `0179-user-namespaces.md`,
+`0199-composed-build-environments.md`. All 300 markdown files are now checked;
+zero broken links.
+
+**The root README's Repository Layout omitted two tracked directories** —
+`init/` (cix-init, PID 1 in every container, and the one exception to the
+TCC-and-glibc rule) and `tools/` (apigen, verify-symbols.sh). It also listed
+six of the nine `docs/` subdirectories, described `test/` as one test "per
+phase/part", and carried a `(Phase 11)` phase reference the Documentation Map
+forbids in that file specifically. All corrected.
+
+**`docs/retrospective/` had three documents and no index**, alone among the
+multi-document directories. It has one now, and `docs/README.md`'s taxonomy
+section — previously covering the naming rules for two directories — now covers
+all nine, with each assigned one of two lifecycles (append-only sequence, or
+living document) that the naming follows from. The rule that a
+single-document directory gets no index is stated rather than merely practised:
+a README beside one file could only repeat it.
+
+**`test_docindex` now enforces the ADR schema**, for the reason its own
+file-level comment already gives about index rows: the drift happened while the
+rule existed, and a rule cannot notice. It checks the H1 shape, that a
+`## Status` heading exists, and that its first word is a declared status —
+and deliberately nothing about the prose that follows. Verified against all 267
+ADRs, and against deliberately broken copies for each of the three drift types
+it is meant to catch.
 
 ### `GET /v1/dhcp/leases` always returned an empty list (#357)
 

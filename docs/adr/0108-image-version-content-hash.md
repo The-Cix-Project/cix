@@ -1,4 +1,4 @@
-# ADR-0108: image versions are a manifest-content hash, not a sequential integer
+# 0108 — image versions are a manifest-content hash, not a sequential integer
 
 ## Status
 

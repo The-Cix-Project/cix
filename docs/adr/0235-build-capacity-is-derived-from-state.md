@@ -1,8 +1,10 @@
-# ADR-0235: Build capacity is derived from package state, not from a field someone has to clear
+# 0235 — Build capacity is derived from package state, not from a field someone has to clear
 
-- **Status:** Accepted
-- **Date:** 2026-09-02
-- **Issue:** [#246](https://git.home.arpa/itdlabs/cix/issues/246)
+## Status
+
+Accepted
+
+Issue [#246](https://git.home.arpa/itdlabs/cix/issues/246). Decided 2026-09-02.
 
 ## Context
 

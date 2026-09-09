@@ -92,6 +92,22 @@ static int file_exists(const char *path)
  * about something else satisfy the check, which is how a gate ends up
  * green while the row it is meant to enforce is missing.
  */
+/*
+ * NNNN-slug.md, and never README.md itself -- the index does not index
+ * itself. Named once because two checks ask it (#201's index coverage
+ * and the header schema below), and two copies of "what counts as an
+ * ADR file" is exactly the kind of second definition this file exists
+ * to prevent.
+ */
+static int is_adr_filename(const char *name)
+{
+	size_t len = strlen(name);
+
+	if (len < 8 || strcmp(name + len - 3, ".md") != 0)
+		return 0;
+	return name[0] >= '0' && name[0] <= '9';
+}
+
 static void check_adr_index(void)
 {
 	char *index = slurp("docs/adr/README.md");
@@ -110,13 +126,7 @@ static void check_adr_index(void)
 		return;
 	}
 	while ((e = readdir(d)) != NULL) {
-		size_t len = strlen(e->d_name);
-
-		/* NNNN-slug.md, and never README.md itself -- the index does
-		 * not index itself. */
-		if (len < 8 || strcmp(e->d_name + len - 3, ".md") != 0)
-			continue;
-		if (e->d_name[0] < '0' || e->d_name[0] > '9')
+		if (!is_adr_filename(e->d_name))
 			continue;
 		if (strstr(index, e->d_name) == NULL)
 			fail("ADR %s has no row in docs/adr/README.md -- the decision shipped and the "
@@ -265,9 +275,87 @@ static void check_guides_index(void)
 	free(index);
 }
 
+/*
+ * Every ADR presents itself the same way (#357-adjacent doc audit).
+ *
+ * This corpus drifted into two formats and nobody noticed: seventeen
+ * files used "# ADR-NNNN: Title" against two hundred and fifty using
+ * "# NNNN — Title", and seven of those additionally carried Status,
+ * Date and Issue as a bullet list instead of a "## Status" heading.
+ * Neither form was wrong. They were a second way of saying the same
+ * thing, which is what One Source of Truth forbids of a document set
+ * as much as of a registry -- and a reader should never have to work
+ * out which shape they are looking at before they can find the status.
+ *
+ * Checked here rather than left to care for the reason the file-level
+ * comment above already gives: the drift happened while the rule
+ * existed, and a rule cannot notice.
+ *
+ * Deliberately narrow. The H1 must have the canonical shape, a
+ * "## Status" heading must exist, and its first word must be a status
+ * from ADR-0000's declared set. What follows that word is prose and is
+ * not checked -- "Accepted; phased." and "Accepted. Supersedes
+ * ADR-0123" both say something a bare token cannot, and a gate that
+ * rejected them would be asking documents to be less accurate.
+ */
+static void check_adr_headers(void)
+{
+	DIR *d = opendir("docs/adr");
+	struct dirent *e;
+
+	if (d == NULL) {
+		fail("docs/adr is unreadable");
+		return;
+	}
+	while ((e = readdir(d)) != NULL) {
+		char path[512];
+		char *text;
+		const char *status;
+		size_t n;
+
+		if (!is_adr_filename(e->d_name))
+			continue;
+		snprintf(path, sizeof(path), "docs/adr/%s", e->d_name);
+		text = slurp(path);
+		if (text == NULL) {
+			fail("%s is unreadable", path);
+			continue;
+		}
+
+		/* H1: "# NNNN — Title", the number matching the filename. */
+		if (strncmp(text, "# ", 2) != 0 || strncmp(text + 2, e->d_name, 4) != 0 ||
+		    strncmp(text + 6, " \xe2\x80\x94 ", 5) != 0)
+			fail("%s: first line must be \"# %.4s \xe2\x80\x94 Title\" (see docs/adr/0000-adr-process.md)",
+			      path, e->d_name);
+
+		/* A "## Status" heading, and a recognised status as its first word. */
+		status = strstr(text, "\n## Status\n");
+		if (status == NULL) {
+			fail("%s: no \"## Status\" heading -- a bullet list is the format this corpus "
+			      "drifted into and no longer accepts", path);
+			free(text);
+			continue;
+		}
+		status += strlen("\n## Status\n");
+		while (*status == '\n' || *status == ' ')
+			status++;
+		n = strcspn(status, " \n.,;:");
+		if (!(n == 8 && strncmp(status, "Accepted", 8) == 0) &&
+		    !(n == 8 && strncmp(status, "Proposed", 8) == 0) &&
+		    !(n == 10 && strncmp(status, "Superseded", 10) == 0) &&
+		    !(n == 10 && strncmp(status, "Deprecated", 10) == 0))
+			fail("%s: status starts with \"%.*s\" -- must be Proposed, Accepted, "
+			      "Superseded or Deprecated (qualifying prose after it is fine)",
+			      path, (int)n, status);
+		free(text);
+		}
+	closedir(d);
+}
+
 int main(void)
 {
 	check_adr_index();
+	check_adr_headers();
 	check_directory_indexes();
 	check_guides_index();
 

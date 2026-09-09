@@ -1,4 +1,4 @@
-# ADR-0105: real freshness tracking for `pkg hostbuild cix --deploy`
+# 0105 — real freshness tracking for `pkg hostbuild cix --deploy`
 
 ## Status
 

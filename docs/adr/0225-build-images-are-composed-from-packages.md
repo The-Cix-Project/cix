@@ -1,4 +1,4 @@
-# ADR-0225: Build images are composed from packages, not copied from a host
+# 0225 — Build images are composed from packages, not copied from a host
 
 Date: 2026-09-01
 
