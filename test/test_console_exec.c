@@ -26,6 +26,7 @@
 #include <stdint.h>
 #include <arpa/inet.h>
 #include <errno.h>
+#include <time.h>
 #include <limits.h>
 #include <netinet/in.h>
 #include <signal.h>
@@ -297,6 +298,42 @@ static int send_ws_frame(int fd, int opcode, const void *payload, size_t len)
  * not, and treated a one-byte read as a dead connection, discarding a
  * frame that was perfectly good and only late.
  */
+/*
+ * Why a read stopped, kept apart rather than collapsed into -1.
+ *
+ * #331/#291. This test has failed intermittently four times and every
+ * report said "read failed or peer closed", because read_full() folded
+ * a TIMEOUT and a CLOSED PEER into the same -1. Those are opposite
+ * faults with opposite fixes: a timeout means the container's child had
+ * not produced its first byte inside the budget on a loaded two-CPU
+ * box, and a close means the session really did collapse, which is a
+ * daemon bug. Four investigations had no way to tell which, and the
+ * previous attempt at this raised the budget from 2 s to 10 s -- a
+ * change that cannot distinguish them either.
+ */
+enum read_stop {
+	READ_OK = 0,
+	READ_TIMEOUT,     /* SO_RCVTIMEO expired: nothing arrived in time */
+	READ_PEER_CLOSED, /* orderly close: the session ended */
+	READ_ERROR        /* anything else, errno preserved */
+};
+
+static enum read_stop g_last_stop = READ_OK;
+
+static const char *read_stop_name(enum read_stop s)
+{
+	switch (s) {
+	case READ_OK:
+		return "ok";
+	case READ_TIMEOUT:
+		return "TIMED OUT waiting for the first byte";
+	case READ_PEER_CLOSED:
+		return "PEER CLOSED the session";
+	default:
+		return "read error";
+	}
+}
+
 static int read_full(int fd, void *buf, size_t want)
 {
 	unsigned char *p = buf;
@@ -305,8 +342,14 @@ static int read_full(int fd, void *buf, size_t want)
 	while (got < want) {
 		ssize_t n = read(fd, p + got, want - got);
 
-		if (n <= 0)
+		if (n == 0) {
+			g_last_stop = READ_PEER_CLOSED;
 			return -1;
+		}
+		if (n < 0) {
+			g_last_stop = (errno == EAGAIN || errno == EWOULDBLOCK) ? READ_TIMEOUT : READ_ERROR;
+			return -1;
+		}
 		got += (size_t)n;
 	}
 	return 0;
@@ -806,8 +849,11 @@ int main(void)
 				int attempts;
 				int frames = 0;
 				int recv_failed = 0;
+				struct timespec t_wait0;
 
 				acc[0] = '\0';
+				g_last_stop = READ_OK;
+				clock_gettime(CLOCK_MONOTONIC, &t_wait0);
 				for (attempts = 0; attempts < 20 && !found; attempts++) {
 					int opcode;
 					unsigned char buf[512];
@@ -840,10 +886,17 @@ int main(void)
 					 * no way to tell those apart, so the next one
 					 * says which.
 					 */
+					struct timespec t_wait1;
+					long waited_ms;
+
+					clock_gettime(CLOCK_MONOTONIC, &t_wait1);
+					waited_ms = (t_wait1.tv_sec - t_wait0.tv_sec) * 1000L +
+					            (t_wait1.tv_nsec - t_wait0.tv_nsec) / 1000000L;
 					fprintf(stderr,
-					        "  wanted: %s\n  got (%zu bytes in %d frame(s), ended: %s): %s\n",
-					        geom[gi].expect, acc_len, frames,
-					        recv_failed ? "read failed or peer closed"
+					        "  wanted: %s\n  got (%zu bytes in %d frame(s) after %ldms, "
+					        "ended: %s): %s\n",
+					        geom[gi].expect, acc_len, frames, waited_ms,
+					        recv_failed ? read_stop_name(g_last_stop)
 					                    : "20 frames without a match",
 					        acc_len > 0 ? acc : "(nothing)");
 					report_loop_health(&client);
@@ -953,7 +1006,7 @@ int main(void)
 				        "  wanted: INPUT-ECHO:console-input-probe\n"
 				        "  got (%zu bytes in %d frame(s), ready=%d sent=%d, ended: %s): %s\n",
 				        acc_len, frames, ready, sent,
-				        recv_failed ? "read failed or peer closed"
+				        recv_failed ? read_stop_name(g_last_stop)
 				                    : "40 frames without a match",
 				        acc_len > 0 ? acc : "(nothing)");
 				report_loop_health(&client);
@@ -1036,7 +1089,7 @@ int main(void)
 			if (!saw_first) {
 				fprintf(stderr, "  got (%zu bytes in %d frame(s), ended: %s): %s\n", acc_len,
 				        first_frames,
-				        first_recv_failed ? "read failed or peer closed"
+				        first_recv_failed ? read_stop_name(g_last_stop)
 				                          : "20 frames without a match",
 				        acc_len > 0 ? acc : "(nothing)");
 				report_loop_health(&client);
