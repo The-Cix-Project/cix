@@ -1328,6 +1328,8 @@ GET /v1/system/kmod/e1000e
 
 Real `modinfo <name>` output, parsed -- the one place this can't be replaced by `GET /v1/system/kmod` above, which only ever shows what's currently *loaded*, not what's available to load. Reports description, version, license, author, `depends` (an array), `in_tree` (built as part of this project's own kernel source vs. a genuinely third-party module), and `params` (every real `module_param()` the module declares, with its type and description) -- `404` if the module isn't built/available at all.
 
+`params` and `current_params` answer different questions and the difference is the point. `params` is modinfo -- what the module *accepts* -- and reads identically whether the module is loaded or not. `current_params` is `/sys/module/<name>/parameters` -- what the kernel is *running with right now* -- and is an empty object when the module isn't loaded. Before it existed, an operator could set a module parameter and had no way to confirm the kernel took it (#354), and that confirmation is not a formality: `modprobe` on an already-loaded module exits 0 without applying anything, a parameter can be rejected, and a read-only one quietly keeps its built-in default. "It worked" was an inference from an exit status.
+
 **Persisted per-module defaults + boot autoload** -- `kmod-config`, a small persisted table distinct from, and unrelated to, ADR-0061's own hardcoded, hardware-detection boot module list:
 
 ```

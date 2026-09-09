@@ -13643,7 +13643,7 @@ components:
           type: string
     KmodInfo:
       type: object
-      required: [name, depends, in_tree, params]
+      required: [name, depends, in_tree, params, current_params]
       properties:
         name:
           type: string
@@ -13667,6 +13667,31 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/KmodParam"
+          description: >
+            What this module ACCEPTS, from modinfo -- name, type and
+            description of every declared parameter. Reads identically
+            whether the module is loaded or not.
+        current_params:
+          type: object
+          additionalProperties:
+            type: string
+          description: >
+            What the kernel is running with RIGHT NOW, read from
+            /sys/module/<name>/parameters. Empty when the module is not
+            loaded, and empty for a module that declares no writable
+            parameters -- reported as an empty object either way rather
+            than an absent key, so a client never has to tell "none"
+            apart from "not looked for". Values are the kernel's own
+            text, untouched (a bool prints Y/N, an int prints digits):
+            their types belong to the module author, not to this API.
+
+
+            Without this, setting a module parameter could not be
+            confirmed (#354), and confirmation is not a formality --
+            modprobe on an already-loaded module exits 0 without
+            applying anything, a parameter can be rejected, and a
+            read-only one keeps its built-in default. "It worked" was
+            an inference from an exit status.
     KmodConfigEntry:
       type: object
       required: [name, default_options, autoload]
