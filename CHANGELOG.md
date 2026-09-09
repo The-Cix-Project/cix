@@ -6,6 +6,39 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A container can see its own memory and CPU limits — part 2: the bind mounts (#336, ADR-0262)
+
+Part 1 built the server. This puts its files in front of a container's
+own `/proc`, and gives a container a way to decline.
+
+**There is exactly one window in which the bind can happen**, and saying
+so is most of the change. `mountns_pivot()` runs *inside* the
+container's mount namespace after `pivot_root()`, so the host-side
+source is reachable only through `put_old`, and the target is the fresh
+`/proc` mounted a few lines earlier. Before that mount there is no
+target; after the `put_old` detach there is no source. The bind sits
+between them.
+
+**Every failure there is non-fatal and deliberately so.** A container
+that does not get these files reads the host's real `/proc` — exactly
+what every container read before this existed. Degraded, never a reason
+to refuse to start a container. The reason still reaches an operator
+through the child's diag pipe.
+
+**The runtime is told what to bind, not what it means.** `mount_spec`
+carries a directory and a list of names; `src/` learns nothing about
+FUSE, cgroups or what a `meminfo` is. That keeps the runtime library
+free of any dependency on `daemon/`, which is the layering this
+codebase already holds everywhere else.
+
+**`procfuse: false` on the create declines it**, and absent means on.
+The default is the whole point: a virtualised `/proc` a recipe has to
+remember to ask for is useless, because nobody knows they need it until
+something has already sized itself wrong. It is also silently a no-op
+when the host's server is not running — `procfuse_mount_path()` returns
+NULL and nothing is bound, rather than a create failing over a
+capability the host simply does not have.
+
 ### A container can see its own memory and CPU limits (#336, ADR-0262) — part 1: the server
 
 The failure this exists to stop is not cosmetic: #278/#279 was a build

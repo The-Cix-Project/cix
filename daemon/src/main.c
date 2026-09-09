@@ -10780,6 +10780,8 @@ static const char *container_body_unknown_key(const struct json_value *root)
 		"cpu_max", "pids_max", "cpuset_cpus", "disk_quota_bytes", "ldap_client",
 		"ldap_allow_groups",
 		"userns",
+		/* ADR-0262/#336: decline the virtualised /proc. */
+		"procfuse",
 		/* Issue #248: the consoles this container declares. */
 		"consoles",
 		/* Issue #88: persistent volumes. */
@@ -11166,6 +11168,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	int capture_output = 0;
 	const struct json_value *juserns; /* ADR-0179 #29 phase 2 opt-in */
 	int userns = 0;
+	int no_procfuse = 0;
 	int ldap_client = 0; /* issue #66 */
 	/*
 	 * Issue #76: which LDAP groups may log in here. Empty means no
@@ -11239,6 +11242,23 @@ static int create_container_from_body(const char *body, size_t body_len,
 	jcapture_output = json_object_get(root, "capture_output");
 	jconsoles = json_object_get(root, "consoles");
 	juserns = json_object_get(root, "userns");
+	{
+		const struct json_value *jprocfuse = json_object_get(root, "procfuse");
+
+		/*
+		 * Absent means on. ADR-0262: a virtualised /proc that has to be
+		 * remembered is useless, because nobody knows they need it
+		 * until something has already sized itself wrong.
+		 */
+		if (jprocfuse != NULL) {
+			if (jprocfuse->type != JSON_BOOL) {
+				json_free(root);
+				snprintf(err_msg, err_msg_size, "procfuse must be a boolean");
+				return 400;
+			}
+			no_procfuse = !jprocfuse->u.boolean;
+		}
+	}
 	jroutes = json_object_get(root, "routes");
 	jdevices = json_object_get(root, "devices");
 	jinterfaces = json_object_get(root, "interfaces");
@@ -12888,6 +12908,25 @@ static int create_container_from_body(const char *body, size_t body_len,
 	spec.ov.merged = merged;
 	spec.ov.userns_rootfs = userns ? userns_rootfs : NULL;
 	spec.mnt.put_old_rel = ".old_root";
+	/*
+	 * ADR-0262/#336. Default ON: a virtualised /proc a recipe has to
+	 * remember to ask for is useless, because nobody knows they need it
+	 * until something has already sized itself wrong -- which is
+	 * #278/#279 exactly. `procfuse: false` on the create declines it.
+	 *
+	 * procfuse_mount_path() is NULL when the server is not running (no
+	 * /dev/fuse, a kernel without FUSE, a refused mount), and that
+	 * silently means "bind nothing" rather than failing the create: a
+	 * container reading the host's real /proc is what every container
+	 * did before this existed.
+	 */
+	if (!no_procfuse) {
+		static const char *const procfuse_names[] = PROCFUSE_FILES;
+
+		spec.mnt.procfuse_dir = procfuse_mount_path();
+		spec.mnt.procfuse_files = procfuse_names;
+		spec.mnt.procfuse_file_count = PROCFUSE_FILE_COUNT;
+	}
 	spec.net_count = net_count;
 	for (i = 0; i < (size_t)net_count; i++) {
 		struct network_def *net = network_find(net_attachments[i].name);
