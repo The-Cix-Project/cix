@@ -54,6 +54,47 @@ void logstore_write(const char *source, const char *level, const char *fmt, ...)
 
 static char g_dir[256];
 
+/*
+ * Ages the fake cgroup directory to SECS seconds old, with matching
+ * nanoseconds.
+ *
+ * Nanoseconds matter: utimes(2) takes microseconds, and zeroing them
+ * leaves the directory somewhere between 15.00 and 16.00 seconds old
+ * depending on where in the current second the test happens to run --
+ * which moved the derived idle by 60 ticks between runs. That is the
+ * #309 whole-second shape, met here in a test's own setup.
+ */
+static void age_dir(int secs)
+{
+	struct timespec now;
+	struct timespec times[2];
+
+	if (clock_gettime(CLOCK_REALTIME, &now) != 0) {
+		perror("clock_gettime");
+		exit(1);
+	}
+	times[0].tv_sec = now.tv_sec - secs;
+	times[0].tv_nsec = now.tv_nsec;
+	times[1] = times[0];
+	if (utimensat(AT_FDCWD, g_dir, times, 0) != 0) {
+		perror("utimensat");
+		exit(1);
+	}
+}
+
+/*
+ * Writes one cgroup file and RE-AGES the directory, because writing a
+ * file into a directory updates that directory's own mtime -- which is
+ * the fallback container_uptime() reads here, so without this every
+ * mid-test edit silently reset the container's apparent age to zero and
+ * took the idle column with it.
+ *
+ * That is not merely a test artefact. It is exactly the instability
+ * that moved the production anchor off the directory's mtime and onto
+ * the oldest starttime in cgroup.procs (#359): src/cgroup.c records
+ * that a nested cixd creates cgroups under its own, and that would
+ * reset a real container's uptime the same way this reset the test's.
+ */
 static void put(const char *name, const char *content)
 {
 	char path[512];
@@ -67,6 +108,7 @@ static void put(const char *name, const char *content)
 	}
 	fputs(content, f);
 	fclose(f);
+	age_dir(15);
 }
 
 /* The value of a "key: N kB" line, or -1 when the key is absent. */
@@ -148,32 +190,6 @@ int main(void)
 	    "pagetables 524288\nunevictable 0\n");
 	put("cgroup.procs", "");
 
-	{
-		/*
-		 * Aged with matching NANOSECONDS, not just seconds. utimes(2)
-		 * takes microseconds and zeroing them leaves the directory
-		 * somewhere between 15.00 and 16.00 seconds old depending on
-		 * where in the current second the test happens to run -- which
-		 * moved the derived idle by 60 ticks between runs. Same
-		 * whole-second trap as #309, met here in the test's own setup
-		 * rather than in its assertion.
-		 */
-		struct timespec now;
-		struct timespec times[2];
-
-		if (clock_gettime(CLOCK_REALTIME, &now) != 0) {
-			perror("clock_gettime");
-			return 1;
-		}
-		times[0].tv_sec = now.tv_sec - 15;
-		times[0].tv_nsec = now.tv_nsec;
-		times[1] = times[0];
-		if (utimensat(AT_FDCWD, g_dir, times, 0) != 0) {
-			perror("utimensat");
-			return 1;
-		}
-	}
-
 	printf("1. /proc/stat: idle is real, so a percentage is derivable\n");
 	n = procfuse_render_for_cgroup(2, g_dir, buf, sizeof(buf));
 	buf[n < sizeof(buf) ? n : sizeof(buf) - 1] = '\0';
@@ -209,9 +225,70 @@ int main(void)
 		printf("     (derived %lld%%, busy=%lld idle=%lld)\n", pct, busy, idle);
 	}
 
+	printf("1b. the CPU CAP counts, not just the cpuset\n");
+	{
+		/*
+		 * The same container, now also held to half a CPU by cpu.max.
+		 * Its 7.5 CPU-seconds over 15 s IS half a CPU, so it is
+		 * running flat out at its ceiling and a tool must say so.
+		 *
+		 * Reading the cpuset alone put a whole CPU in the denominator
+		 * and reported 50% -- "half idle" for a workload that cannot
+		 * go any faster, which is #278/#279's own shape: a number
+		 * claiming headroom that does not exist.
+		 */
+		long long cc[10];
+		long long cbusy, cidle, pct;
+
+		put("cpu.max", "50000 100000");
+		n = procfuse_render_for_cgroup(2, g_dir, buf, sizeof(buf));
+		buf[n < sizeof(buf) ? n : sizeof(buf) - 1] = '\0';
+		CHECK(cpu_line(buf, "cpu ", cc) == 0, "an aggregate cpu line is present under a quota");
+		cbusy = cc[0] + cc[2];
+		cidle = cc[3];
+		pct = 100 * cbusy / (cbusy + cidle > 0 ? cbusy + cidle : 1);
+		CHECK(pct >= 90, "a container pegged at its cpu.max reads ~100%, not 50%");
+		printf("     (derived %lld%%, busy=%lld idle=%lld)\n", pct, cbusy, cidle);
+
+		/* A quota LARGER than the cpuset cannot raise the ceiling. */
+		put("cpu.max", "400000 100000");
+		n = procfuse_render_for_cgroup(2, g_dir, buf, sizeof(buf));
+		buf[n < sizeof(buf) ? n : sizeof(buf) - 1] = '\0';
+		cpu_line(buf, "cpu ", cc);
+		CHECK(cc[3] >= 740 && cc[3] <= 760,
+		      "a quota above the cpuset's own count does not widen the denominator");
+
+		/* "max" is the unlimited form and must not be read as a number. */
+		put("cpu.max", "max 100000");
+		n = procfuse_render_for_cgroup(2, g_dir, buf, sizeof(buf));
+		buf[n < sizeof(buf) ? n : sizeof(buf) - 1] = '\0';
+		cpu_line(buf, "cpu ", cc);
+		CHECK(cc[3] >= 740 && cc[3] <= 760, "cpu.max of \"max\" means the cpuset alone decides");
+
+		/*
+		 * cpuinfo deliberately does NOT follow the quota: it is a
+		 * parallelism bound, and a quota-derived processor count would
+		 * turn every make -j$(nproc) into -j1 (procfuse.h).
+		 */
+		put("cpu.max", "50000 100000");
+		n = procfuse_render_for_cgroup(1, g_dir, buf, sizeof(buf));
+		buf[n < sizeof(buf) ? n : sizeof(buf) - 1] = '\0';
+		CHECK(strstr(buf, "processor\t: 0\n") != NULL,
+		      "cpuinfo still reports a whole processor under a half-CPU quota");
+
+		/* Restored, so the cases below see the scenario they describe. */
+		put("cpu.max", "max 100000");
+	}
+
 	printf("2. /proc/stat: the parts sum to the whole\n");
+	n = procfuse_render_for_cgroup(2, g_dir, buf, sizeof(buf));
+	buf[n < sizeof(buf) ? n : sizeof(buf) - 1] = '\0';
 	{
 		long long c0[10];
+
+		/* Re-read the aggregate from THIS render: the per-CPU lines
+		 * are compared against the total they were split from. */
+		cpu_line(buf, "cpu ", c);
 
 		CHECK(cpu_line(buf, "cpu0", c0) == 0, "a per-CPU line is present (htop draws nothing without one)");
 		CHECK(c0[0] == c[0] && c0[2] == c[2] && c0[3] == c[3],
