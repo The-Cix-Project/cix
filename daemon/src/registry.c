@@ -895,6 +895,38 @@ static int registry_name_is_live(const char *name)
 	return registry_find(name) != NULL;
 }
 
+int registry_device_holders(const char *device_id, char out[][DEVICE_HOLDER_NAME_MAX], int max)
+{
+	int i, j;
+	int count = 0;
+
+	if (device_id == NULL || device_id[0] == '\0' || out == NULL || max <= 0)
+		return 0;
+
+	for (i = 0; i < REGISTRY_MAX_CONTAINERS && count < max; i++) {
+		const struct registry_entry *e = &g_entries[i];
+
+		if (!e->in_use)
+			continue;
+		for (j = 0; j < e->device_count; j++) {
+			if (strcmp(e->devices[j].id, device_id) != 0)
+				continue;
+			/*
+			 * One entry per container, not per grant. A
+			 * vendor_model mapping can expand to several devices
+			 * and a container can name the same device twice
+			 * through two mappings; the question being answered
+			 * is "who holds this", and a name repeated tells a
+			 * reader nothing extra.
+			 */
+			snprintf(out[count], DEVICE_HOLDER_NAME_MAX, "%s", e->name);
+			count++;
+			break;
+		}
+	}
+	return count;
+}
+
 void registry_write_json_list(struct json_writer *w)
 {
 	int i;

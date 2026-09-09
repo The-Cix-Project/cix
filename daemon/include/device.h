@@ -91,9 +91,40 @@ const struct discovered_device *device_find(const char *id, const char *os_conta
 int device_find_group(const char *id, const char *os_containers_dir,
                        const struct discovered_device *out[], int cap);
 
-void device_write_json_one(const struct discovered_device *d, struct json_writer *w);
+/*
+ * Who currently holds a device (#356).
+ *
+ * `assignable` answers "does the host consider this grantable" and has
+ * never answered "is anything already using it" -- it is a driver-bound
+ * check for USB, unconditional for PCI, and a not-enslaved check for a
+ * netdev. Nothing reported the second question at all, and nothing
+ * refuses a second grant, so the same USB/PCI/GPU device could be
+ * granted to any number of containers with no way to notice.
+ *
+ * Supplied as a callback rather than looked up here, because device.c
+ * knows nothing about the registry and must not learn: the same
+ * dependency injection registry_write_json_list() already uses to ask
+ * containerdef.c a question without either module depending on the
+ * other. Pass NULL and every device reports an empty holder list, which
+ * is what a context with no live containers (a test, a tool) should
+ * say.
+ *
+ * Fills out with up to max container names and returns the count, or 0
+ * for none. Names are truncated to DEVICE_HOLDER_NAME_MAX rather than
+ * dropped -- a truncated name still tells an operator something is
+ * holding it.
+ */
+#define DEVICE_HOLDER_NAME_MAX 64
+#define DEVICE_HOLDERS_MAX 16
+
+typedef int (*device_holders_fn)(const char *device_id,
+                                  char out[][DEVICE_HOLDER_NAME_MAX], int max);
+
+void device_write_json_one(const struct discovered_device *d, struct json_writer *w,
+                            device_holders_fn holders);
 
 /* Calls device_enumerate() itself, then writes the whole list. */
-void device_write_json_list(struct json_writer *w, const char *os_containers_dir);
+void device_write_json_list(struct json_writer *w, const char *os_containers_dir,
+                             device_holders_fn holders);
 
 #endif /* DEVICE_H */

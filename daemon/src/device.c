@@ -907,7 +907,8 @@ int device_find_group(const char *id, const char *os_containers_dir,
 	return found > 0 ? found : -1;
 }
 
-void device_write_json_one(const struct discovered_device *d, struct json_writer *w)
+void device_write_json_one(const struct discovered_device *d, struct json_writer *w,
+                            device_holders_fn holders)
 {
 	jw_obj_open(w);
 	jw_key(w, "id");
@@ -955,10 +956,38 @@ void device_write_json_one(const struct discovered_device *d, struct json_writer
 		}
 	}
 	jw_arr_close(w);
+
+	/*
+	 * #356. Always written, even when empty and even with no callback,
+	 * because an absent key and an empty array would be two different
+	 * things for a client to distinguish and only one of them is ever
+	 * meant.
+	 *
+	 * A "net" device never appears here with a holder, and that is
+	 * correct rather than an omission: an interface moved into a
+	 * container's netns stops being enumerated at all, so it is not in
+	 * this list to be annotated. Exclusivity there is the kernel's,
+	 * not a field. This answers for the buses where a grant is a
+	 * cgroup rule rather than a move -- usb, pci, gpu, disk -- and
+	 * where nothing was exclusive at all.
+	 */
+	jw_key(w, "held_by");
+	jw_arr_open(w);
+	if (holders != NULL) {
+		char names[DEVICE_HOLDERS_MAX][DEVICE_HOLDER_NAME_MAX];
+		int n = holders(d->id, names, DEVICE_HOLDERS_MAX);
+		int i;
+
+		for (i = 0; i < n && i < DEVICE_HOLDERS_MAX; i++)
+			jw_str(w, names[i]);
+	}
+	jw_arr_close(w);
+
 	jw_obj_close(w);
 }
 
-void device_write_json_list(struct json_writer *w, const char *os_containers_dir)
+void device_write_json_list(struct json_writer *w, const char *os_containers_dir,
+                             device_holders_fn holders)
 {
 	struct discovered_device devices[DEVICE_ENUM_MAX];
 	int n = device_enumerate(devices, DEVICE_ENUM_MAX, os_containers_dir);
@@ -966,6 +995,6 @@ void device_write_json_list(struct json_writer *w, const char *os_containers_dir
 
 	jw_arr_open(w);
 	for (i = 0; i < n; i++)
-		device_write_json_one(&devices[i], w);
+		device_write_json_one(&devices[i], w, holders);
 	jw_arr_close(w);
 }
