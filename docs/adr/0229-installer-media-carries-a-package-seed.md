@@ -1,8 +1,10 @@
-# ADR-0229: Installer media carries a package seed, so a fresh box can name the network
+# 0229 — Installer media carries a package seed, so a fresh box can name the network
 
-- **Status:** Accepted
-- **Date:** 2026-09-02
-- **Issue:** [#135](https://git.home.arpa/itdlabs/cix/issues/135), [#189](https://git.home.arpa/itdlabs/cix/issues/189)
+## Status
+
+Accepted
+
+Issue [#135](https://git.home.arpa/itdlabs/cix/issues/135), [#189](https://git.home.arpa/itdlabs/cix/issues/189). Decided 2026-09-02.
 
 ## Context
 

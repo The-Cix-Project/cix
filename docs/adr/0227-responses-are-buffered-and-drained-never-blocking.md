@@ -1,8 +1,10 @@
-# ADR-0227: Responses are buffered against their connection and drained on EPOLLOUT, never written blocking
+# 0227 — Responses are buffered against their connection and drained on EPOLLOUT, never written blocking
 
-- **Status:** Accepted
-- **Date:** 2026-09-01
-- **Issue:** [#237](https://git.home.arpa/itdlabs/cix/issues/237)
+## Status
+
+Accepted
+
+Issue [#237](https://git.home.arpa/itdlabs/cix/issues/237). Decided 2026-09-01.
 
 ## Context
 

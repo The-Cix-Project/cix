@@ -16,7 +16,29 @@ We keep Architecture Decision Records (ADRs) in `docs/adr/`, one file per signif
 - Is **append-only**. An ADR is never edited to reverse its own decision. If a later decision supersedes an earlier one, the earlier ADR's Status changes to `Superseded by ADR-00NN` and a new ADR is written — the history of *why we changed our mind* is itself worth keeping, consistent with No Regressions (we can always see what guarantee we're moving away from and why).
 - Only exists for decisions with real, durable consequences — a choice that would be expensive to reverse, that constrains later work, or that isn't obvious from reading the code. Routine implementation choices don't get one; that would be its own kind of clutter, against Zen.
 
-Status values: `Proposed`, `Accepted`, `Superseded by ADR-00NN`, `Deprecated`.
+### File and header schema
+
+Every ADR is `docs/adr/NNNN-kebab-case-title.md`, four digits, zero-padded, one number per file and no gaps. The first line is the H1, in exactly this form, and the Status heading follows it:
+
+```markdown
+# NNNN — Title in sentence case
+
+## Status
+
+Accepted
+
+Issue [#123](https://git.home.arpa/itdlabs/cix/issues/123). Supersedes [ADR-0099](0099-something.md).
+
+## Context
+```
+
+The prose line under the status is optional and is where an issue reference, a supersession, a relationship to another ADR, or a decision date belongs. Both the H1 form and the Status heading are mechanically checked (`test/test_docindex.c`), because this corpus has drifted twice: seventeen files once used `# ADR-NNNN: Title`, and seven of those additionally carried Status, Date and Issue as a bullet list instead of a heading. Both forms were readable and neither was wrong — they were simply a second way to say the same thing, which is what One Source of Truth forbids of a document set as much as of a registry.
+
+### Status values
+
+The **first word** is the status and comes from this set: `Proposed`, `Accepted`, `Superseded by ADR-00NN`, `Deprecated`.
+
+It may be followed by qualifying prose, on the same line or the next, and often should be. `Accepted; phased.` ([ADR-0179](0179-user-namespaces-by-default-subordinate-id-allocation.md), [ADR-0207](0207-btrfs-storage-substrate-userns-by-default.md)) and `Accepted, with two decisions in it superseded` ([ADR-0184](0184-dashboard-navigation-one-vocabulary.md)) both say something a bare token cannot, and a rule that forbade them would be a rule asking documents to be less accurate. What is fixed is the first word; what follows is prose.
 
 ## Consequences
 

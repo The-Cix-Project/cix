@@ -1,9 +1,10 @@
-# ADR-0228: Build-environment composition runs in a forked child, and the install resumes
+# 0228 — Build-environment composition runs in a forked child, and the install resumes
 
-- **Status:** Accepted
-- **Date:** 2026-09-01
-- **Issue:** [#238](https://git.home.arpa/itdlabs/cix/issues/238)
-- **Related:** [ADR-0199](0199-composed-build-environments.md) (what composition is), [ADR-0227](0227-responses-are-buffered-and-drained-never-blocking.md) (the same principle for responses)
+## Status
+
+Accepted
+
+Issue [#238](https://git.home.arpa/itdlabs/cix/issues/238). Related: [ADR-0199](0199-recipes-declare-their-build-tools.md) (what composition is), [ADR-0227](0227-responses-are-buffered-and-drained-never-blocking.md) (the same principle for responses). Decided 2026-09-01.
 
 ## Context
 

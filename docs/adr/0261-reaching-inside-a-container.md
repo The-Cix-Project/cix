@@ -2,8 +2,7 @@
 
 ## Status
 
-Accepted.
-
+Accepted
 Decided by the owner: *"console is also a list, no dependencies, but should be very specific and
 cannot be freetext, and in the webui will show a drop down, and cli will also, exactly and
 consistently as we are doing everything"*, plus the two answers recorded in the Decision below.

@@ -3,7 +3,7 @@
 ## Status
 
 Accepted. Refines the user-namespace setup in
-[ADR-0179](0179-user-namespaces.md) / [ADR-0207](0207-btrfs-storage-substrate-userns-by-default.md);
+[ADR-0179](0179-user-namespaces-by-default-subordinate-id-allocation.md) / [ADR-0207](0207-btrfs-storage-substrate-userns-by-default.md);
 neither decision changes, only how the maps are written.
 
 Found by the owner, whose DNS containers would not start after a

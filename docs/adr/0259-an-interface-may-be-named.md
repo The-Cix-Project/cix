@@ -2,8 +2,7 @@
 
 ## Status
 
-Accepted.
-
+Accepted
 Requested by the owner while adding BIRD to the `cr-1`/`cr-2` router pair: *"maybe we can name
 interfaces if needed if they are unpredictable names?"* — and, asked to choose between writing
 `eth0` in the routing config and building the capability: *"make namaable a real feature"*.

@@ -1,4 +1,4 @@
-# ADR-0180: Asynchronous container teardown (delete/stop never block the daemon)
+# 0180 — Asynchronous container teardown (delete/stop never block the daemon)
 
 ## Status
 

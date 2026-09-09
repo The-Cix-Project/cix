@@ -1,8 +1,10 @@
-# ADR-0237: A missing placement disk degrades the daemon, it does not stop it
+# 0237 — A missing placement disk degrades the daemon, it does not stop it
 
-- **Status:** Accepted
-- **Date:** 2026-09-02
-- **Issue:** [#256](https://git.home.arpa/itdlabs/cix/issues/256)
+## Status
+
+Accepted
+
+Issue [#256](https://git.home.arpa/itdlabs/cix/issues/256). Decided 2026-09-02.
 
 ## Context
 

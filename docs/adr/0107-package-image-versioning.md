@@ -1,4 +1,4 @@
-# ADR-0107: package + image versioning model (pinned/rolling, per-version immutable rootfs)
+# 0107 — package + image versioning model (pinned/rolling, per-version immutable rootfs)
 
 ## Status
 

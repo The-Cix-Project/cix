@@ -1,4 +1,4 @@
-# ADR-0103: btrfs qgroup-based disk quotas as a second backend alongside ext4 project quotas
+# 0103 — btrfs qgroup-based disk quotas as a second backend alongside ext4 project quotas
 
 ## Status
 

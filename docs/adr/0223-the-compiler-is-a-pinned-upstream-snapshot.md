@@ -1,4 +1,4 @@
-# ADR-0223: The compiler is a pinned upstream snapshot, not a patched release
+# 0223 — The compiler is a pinned upstream snapshot, not a patched release
 
 Date: 2026-09-01
 

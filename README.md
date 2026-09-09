@@ -44,9 +44,12 @@ daemon/        cixd: the REST daemon — the only process with direct runtime/ne
 client/        shared HTTP client library used by the CLI and the daemon's own test suite
 cli/           cixctl: pure REST API client, no direct runtime access
 web/           browser dashboard: vanilla HTML/CSS/JS, no framework, no build step, served by cixd
-image/         bare-metal boot tooling (Phase 11): kernel config, mkbootroot, cix-install, mkinstalleriso
+image/         bare-metal boot tooling: kernel config, mkbootroot, cix-install, mkinstalleriso
+init/          cix-init: PID 1 in every container, freestanding (no libc) — the one exception to the TCC-and-glibc rule
+tools/         build-time tooling: apigen (generates the API surface from openapi.yaml), verify-symbols.sh
 recipes/       package/ + image/ build & manifest recipes for `pkg install`/`image apply-recipe` (see recipes/README.md and docs/guides/writing-recipes.md)
-test/          one demonstrable test (+ exec target, where needed) per phase/part
-docs/          mission/roadmap/adr/api/architecture/guides — see docs/README.md for what lives where
+test/          the test suite: per-feature tests, contract gates, and the subset the release selftest runs
+docs/          all documentation — see docs/README.md, which indexes every subdirectory
 build/         compiled output (gitignored)
+build-inputs/  hand-fetched build inputs that `make` does not reproduce (gitignored): the Phase 11 kernel bzImage, the test floor's package artifacts
 ```
