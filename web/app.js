@@ -1623,9 +1623,68 @@ function selectTabFor(category) {
  * the latter. */
 let lastRenderedRoute = null;
 
+/*
+ * The console as its own window.
+ *
+ * Same page, same origin, same session cookie, same VT -- only the
+ * chrome is gone. That is deliberate: a popout built as a second
+ * standalone page would be a second copy of the terminal, the resize
+ * handling and the reconnect rules, and this project has paid for
+ * parallel implementations before. The route carries the container and,
+ * optionally, which declared console to attach to.
+ *
+ * Idempotent, because the poll loop calls renderCurrentView() every two
+ * seconds: openConsole()'s own same-container guard makes the repeat a
+ * no-op rather than a reconnect.
+ */
+function renderConsolePopout(spec) {
+	const slash = spec.indexOf("/");
+	const cname = slash < 0 ? spec : spec.slice(0, slash);
+	const csel = slash < 0 ? null : spec.slice(slash + 1);
+	const panel = document.getElementById("cd-panel-console");
+	/* The console lives in the container DETAIL view, not the list --
+	 * DETAIL_VIEWS.containers. Naming the list here rendered the
+	 * container table in the popout window instead of the terminal. */
+	const view = document.getElementById(DETAIL_VIEWS.containers);
+
+	document.body.classList.add("console-popout");
+	{
+		const btn = document.getElementById("cd-console-popout");
+
+		/* This window IS the popout; offering to open another one from
+		 * inside it is a control that does nothing useful. */
+		if (btn !== null)
+			btn.hidden = true;
+	}
+	document.title = cname + (csel ? " \u2014 " + csel : "") + " \u2014 console";
+
+	/* The picker is not shown here: which console this window is for was
+	 * decided when it was opened, and it is in the URL. Set the
+	 * selection directly rather than deriving it from the container
+	 * list, so this window does not depend on that fetch having
+	 * completed. */
+	if (csel)
+		consoleSelected = csel;
+
+	/* Every other view stays hidden: this window shows one thing. */
+	for (const v of document.querySelectorAll(".view"))
+		v.hidden = v.id !== DETAIL_VIEWS.containers;
+	if (view !== null && panel !== null) {
+		for (const other of view.querySelectorAll(":scope > .tab-panel"))
+			other.hidden = other !== panel;
+		panel.hidden = false;
+	}
+	openConsole(cname);
+}
+
 function renderCurrentView() {
 	const route = parseHash();
 	const allViews = document.querySelectorAll(".view");
+
+	if (route.category === "console-popout" && route.name !== null) {
+		renderConsolePopout(route.name);
+		return;
+	}
 
 	for (const v of allViews)
 		v.hidden = true;
@@ -2808,7 +2867,37 @@ let consoleTerminal = null;
 let consoleContainerName = null;
 let currentContainerDetailName = null;
 
+/*
+ * Which console session is the CURRENT one.
+ *
+ * A WebSocket does not stop delivering the moment close() is called:
+ * frames already in flight still arrive, and onclose fires later still.
+ * Every handler below used to write through the module-level
+ * `consoleTerminal` and the shared status element -- so switching from
+ * container A to container B left A's socket briefly alive while those
+ * names already pointed at B, and A's remaining output was rendered
+ * into B's terminal while A's onclose stamped "session ended" over B's
+ * "connected".
+ *
+ * That is the whole of "the console doesn't switch when I change
+ * container": it had switched, and was being written to by the previous
+ * container.
+ *
+ * Each session takes a number on open. A handler that finds its number
+ * is no longer the current one returns without touching anything.
+ * Closing bumps the counter too, so a late frame after a plain close
+ * has nothing to land on either.
+ */
+let consoleSession = 0;
+
 function closeConsole() {
+	{
+		const detail = document.getElementById("view-container-detail");
+
+		if (detail !== null)
+			detail.classList.remove("console-fills");
+	}
+	consoleSession++;
 	if (consoleWs !== null) {
 		consoleWs.close();
 		consoleWs = null;
@@ -2897,9 +2986,51 @@ function renderConsolePicker(c) {
  * guard would otherwise refuse to reconnect, so the close is what makes
  * the change take effect.
  */
+/*
+ * The popout button. Wired once, alongside the picker, and for the same
+ * reason: this pane is re-rendered every two seconds by the poll loop,
+ * so anything that adds a listener here must be idempotent or it
+ * accumulates one per refresh.
+ */
+function wireConsolePopout() {
+	const btn = document.getElementById("cd-console-popout");
+
+	if (btn === null || btn.dataset.wired === "1")
+		return;
+	btn.dataset.wired = "1";
+	btn.addEventListener("click", () => {
+		const name = consoleContainerName || currentContainerDetailName;
+
+		if (name === null)
+			return;
+		/*
+		 * The container AND the chosen console both go in the URL, so
+		 * the new window attaches to what this pane was showing rather
+		 * than to whatever the container happens to declare first.
+		 */
+		let route = "#console-popout/" + encodeURIComponent(name);
+
+		if (consoleSelected)
+			route += "/" + encodeURIComponent(consoleSelected);
+		/*
+		 * A named window per container+console, so clicking twice
+		 * raises the existing window instead of opening a second
+		 * session against the same pty. The name is sanitised because
+		 * a window name may not contain spaces or punctuation that the
+		 * browser treats as a feature separator.
+		 */
+		const winName = ("cix-console-" + name + "-" + (consoleSelected || "default"))
+			.replace(/[^A-Za-z0-9_-]/g, "_");
+
+		window.open(location.pathname + route, winName,
+		            "width=960,height=640,menubar=no,toolbar=no,location=no,status=no");
+	});
+}
+
 function wireConsolePicker() {
 	const pick = document.getElementById("cd-console-pick");
 
+	wireConsolePopout();
 	if (pick === null || pick.dataset.wired === "1")
 		return;
 	pick.dataset.wired = "1";
@@ -2923,6 +3054,16 @@ function openConsole(name) {
 		         * or every keystroke/prompt would reset every 2s */
 
 	closeConsole();
+	{
+		const detail = document.getElementById("view-container-detail");
+
+		if (detail !== null)
+			detail.classList.add("console-fills");
+	}
+	/* closeConsole() bumped the counter; this session claims the value
+	 * it left behind, and every handler below compares against it. */
+	const mySession = consoleSession;
+
 	consoleContainerName = name;
 
 	const outputEl = document.getElementById("cd-console-output");
@@ -2955,6 +3096,11 @@ function openConsole(name) {
 	});
 	consoleTerminal.fit();
 
+	/* This session's own terminal, captured rather than read back
+	 * through the module-level name: by the time a frame arrives that
+	 * name may belong to a different container's session. */
+	const term = consoleTerminal;
+
 	const size = consoleTerminal.size();
 	const params = [];
 
@@ -2984,8 +3130,13 @@ function openConsole(name) {
 	const decoder = new TextDecoder();
 
 	ws.onopen = () => {
+		if (mySession !== consoleSession)
+			return;
 		statusEl.textContent = "connected";
-		outputEl.focus();
+		/* preventScroll: the console pane fills the content area, and a
+		 * plain focus() scrolls it into view -- carrying the tab bar and
+		 * the container's own action buttons off the top of the page. */
+		outputEl.focus({ preventScroll: true });
 		/* Remeasure once the pane is definitely laid out. A fit taken
 		 * while the tab was still hidden measures a zero-sized element,
 		 * and the daemon would then hold a size the operator never
@@ -2995,15 +3146,26 @@ function openConsole(name) {
 	ws.onmessage = (event) => {
 		const bytes = new Uint8Array(event.data);
 
+		/* A frame from a session that has been superseded belongs to a
+		 * container the operator has already navigated away from. It is
+		 * dropped rather than rendered: writing it would put one
+		 * container's output in another's terminal. */
+		if (mySession !== consoleSession || term === null)
+			return;
 		/* stream: true matters -- a UTF-8 character can be split across
 		 * two WebSocket frames, and decoding each frame independently
 		 * turns a box-drawing glyph into two replacement characters. */
-		consoleTerminal.feed(decoder.decode(bytes, { stream: true }));
+		term.feed(decoder.decode(bytes, { stream: true }));
 	};
 	ws.onclose = () => {
+		if (mySession !== consoleSession)
+			return; /* the previous container's socket closing, after
+			         * this pane already belongs to another one */
 		statusEl.textContent = "session ended";
 	};
 	ws.onerror = () => {
+		if (mySession !== consoleSession)
+			return;
 		statusEl.textContent = "connection error";
 	};
 
@@ -3730,6 +3892,19 @@ for (const tabButton of document.querySelectorAll(".tab-bar .tab-button")) {
 			panel.hidden = panel.dataset.tab !== tabName;
 
 		/*
+		 * Leaving the Console tab ends the session immediately rather
+		 * than on the next poll. Two reasons, and the second is the one
+		 * that shows: a pty held open behind a hidden tab is a process
+		 * in the container nobody is watching, and closeConsole() is
+		 * also what drops the "console-fills" class -- without this the
+		 * detail view stayed a full-height flex column for up to two
+		 * seconds while another tab's content was already in it.
+		 */
+		if (tabBar.parentElement.id === "view-container-detail" && tabName !== "console" &&
+		    consoleContainerName !== null)
+			closeConsole();
+
+		/*
 		 * Every tab on a collapsed page is named after the address it
 		 * replaced, so a tab that IS an address navigates to it rather
 		 * than only revealing its panel. Without this the panel came up
@@ -3763,7 +3938,7 @@ for (const tabButton of document.querySelectorAll(".tab-bar .tab-button")) {
 			 */
 			if (currentContainerDetailName !== null)
 				openConsole(currentContainerDetailName);
-			document.getElementById("cd-console-output").focus();
+			document.getElementById("cd-console-output").focus({ preventScroll: true });
 		}
 		/*
 		 * The recipe is fetched on tab open, not on every detail

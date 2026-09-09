@@ -6,6 +6,79 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The console: full height, a real switch, and its own window
+
+Three dashboard changes, one of which was a genuine bug.
+
+**Switching container showed the previous container's output.** Every
+socket handler wrote through the module-level `consoleTerminal` and the
+shared status element:
+
+```js
+ws.onmessage = (e) => { consoleTerminal.feed(...) };
+ws.onclose    = ()  => { statusEl.textContent = "session ended"; };
+```
+
+A WebSocket does not stop delivering when `close()` is called — frames
+already in flight still arrive, and `onclose` fires later still. So
+switching from A to B left A's socket briefly alive while those names
+already pointed at B: **A's remaining output was rendered into B's
+terminal**, and A's `onclose` stamped "session ended" over B's
+"connected". It had switched; the old container was writing to it.
+
+Each session now takes a number on open, and a handler whose number is
+no longer current returns without touching anything. Closing bumps the
+counter too, so a late frame after a plain close has nothing to land on.
+
+**Full height.** The terminal was a fixed `420px`. It now fills the
+content area — which is not cosmetic: the VT tells the remote program
+how many rows it has, so every pixel returned is a row `htop`, `vim` or
+a build log can use. The long explanatory notes moved into a collapsed
+`<details>` to give that space back.
+
+Sized from its **container**, not the viewport. `calc(100vh - <guess>)`
+was tried first and a headless render showed why it is wrong: the chrome
+above is a menu bar, a detail topbar, a tab bar and a toolbar, and the
+log panel below is user-resizable and collapsible, so any constant is
+right at one log height and wrong at every other. It overflowed, and
+`outputEl.focus()` then scrolled the tab bar and the container's own
+action buttons off the top of the page. `main` and `#content-scroll`
+were already a flex column with a definite height; only the last two
+links were missing. Focus is now `{ preventScroll: true }` as well.
+
+Leaving the Console tab closes the session immediately rather than on
+the next poll — a pty held open behind a hidden tab is a process in the
+container nobody is watching.
+
+**Its own window.** `#console-popout/<container>/<console>` is the same
+page with the chrome removed: same origin, same session, same VT. A
+separate standalone page would have been a second copy of the terminal,
+its resize handling and its reconnect rules, and this project has paid
+for parallel implementations before. The button names the window per
+container+console, so clicking twice raises the existing window instead
+of opening a second session against the same pty.
+
+Two layout faults were caught by rendering it headless rather than by
+reading the CSS: the popout first showed the container *list*, because
+the console panel lives in `view-container-detail` and not
+`view-containers`; and it opened with ~600px of dead space down its left
+edge, because `--tree-width` is an inline custom property on `:root` and
+the grid template kept honouring it with the tree itself hidden.
+
+### test_cix_init: the restart-delay bound matches what cix-init promises (#361)
+
+`elapsed_ms()` replaced a whole-`tv_sec` comparison under #309, and the
+real measurement immediately failed a build at `1262ms` against a
+declared 2-second delay. Not measurement lag: `cix-init` computes
+`restart_at` from `now_seconds()`, which truncates, so a declared *N*
+seconds fires anywhere in `(N-1, N]`.
+
+The bound is now 1000ms — the contract that genuinely holds today, still
+decisive against a restart with no delay applied at all. The imprecision
+itself is #361: at `restart_delay_seconds = 1` the same truncation
+permits a delay of very nearly zero, which defeats the point of a
+backoff.
+
 ### A percent-encoded path parameter 404s (#360)
 
 Found while re-verifying #310. Measured on 192.168.15.95, against a real

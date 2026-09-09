@@ -1926,6 +1926,139 @@ td.empty {
 
 .console-toolbar {
 	margin-bottom: 0.5rem;
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+	flex: 0 0 auto;
+}
+
+.console-toolbar #cd-console-status {
+	/* Pushes the popout button to the far end without a spacer element. */
+	margin-right: auto;
+}
+
+.console-popout-btn {
+	font: inherit;
+	font-size: 0.8rem;
+	padding: 0.2rem 0.6rem;
+	background: var(--panel);
+	color: var(--text);
+	border: 1px solid var(--border);
+	border-radius: 5px;
+	cursor: pointer;
+}
+
+.console-popout-btn:hover {
+	border-color: var(--accent);
+}
+
+/*
+ * The console tab is a column that fills the page, so the terminal can
+ * take everything the notes and toolbar do not.
+ *
+ * Height comes from the viewport rather than from a parent chain: every
+ * ancestor between here and <body> would otherwise need an explicit
+ * height for a percentage to resolve, which is four rules that all have
+ * to stay true instead of one. The subtraction is the masthead, tab bar
+ * and page padding above this panel.
+ */
+/*
+ * The console tab fills the content area, sized from its CONTAINER
+ * rather than from the viewport.
+ *
+ * calc(100vh - <guess>) was tried first and is wrong for a reason worth
+ * keeping: the chrome above the panel is a menu bar, a detail topbar, a
+ * tab bar and a toolbar, and the log panel below it is user-resizable
+ * and collapsible. Any constant subtracted here is right at one log
+ * height and wrong at every other. A headless render showed the result
+ * -- the panel overflowed, and focusing the terminal scrolled the tab
+ * bar and the container's own action buttons off the top of the page.
+ *
+ * `main` is already a flex column with a definite height and
+ * `#content-scroll` already fills it, so the chain to measure against
+ * exists; only the last two links were missing. The class is set by
+ * openConsole()/closeConsole() rather than by :has(), so the rule does
+ * not depend on selector support this dashboard has never otherwise
+ * needed.
+ */
+#view-container-detail.console-fills {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	min-height: 0;
+}
+
+#view-container-detail.console-fills > #cd-panel-console:not([hidden]) {
+	display: flex;
+	flex-direction: column;
+	flex: 1 1 auto;
+	min-height: 0;
+}
+
+#cd-panel-console:not([hidden]) {
+	display: flex;
+	flex-direction: column;
+}
+
+.console-notes {
+	flex: 0 0 auto;
+	margin-top: 0.5rem;
+}
+
+.console-notes summary {
+	cursor: pointer;
+}
+
+/*
+ * Popout: the same page with the chrome removed (#console-popout/...).
+ * Nothing here is a second implementation of the terminal -- only the
+ * furniture around it is hidden, and the console panel is given the
+ * whole window.
+ */
+body.console-popout #tree-panel,
+body.console-popout > header,
+body.console-popout .tab-bar,
+body.console-popout .detail-topbar,
+body.console-popout .console-notes,
+body.console-popout #log-panel,
+body.console-popout #status {
+	display: none !important;
+}
+
+body.console-popout #cd-panel-console:not([hidden]) {
+	height: 100vh;
+	padding: 0.5rem;
+	box-sizing: border-box;
+}
+
+/*
+ * The tree's grid COLUMN has to go, not just the tree. Hiding
+ * #tree-panel alone left `grid-template-columns: var(--tree-width) 1fr`
+ * still reserving 240px, so the popout opened with an empty band down
+ * its left edge -- caught in a headless render before this shipped.
+ */
+body.console-popout .layout {
+	/*
+	 * display:block, not a one-column grid. --tree-width is set as an
+	 * inline custom property on :root by the tree's resize handle, so
+	 * the grid template kept honouring a stored width even with the
+	 * tree itself hidden -- a headless render showed the popout opening
+	 * with ~600px of dead space down its left edge. Dropping the grid
+	 * leaves nothing for that width to apply to.
+	 */
+	display: block;
+	height: 100vh;
+	margin: 0;
+	padding: 0;
+}
+
+body.console-popout main,
+body.console-popout #content-scroll {
+	margin: 0;
+	padding: 0;
+	max-width: none;
+	overflow: hidden;
+	height: 100%;
 }
 
 .console-output {
@@ -1955,7 +2088,19 @@ td.empty {
 	line-height: 1.35;
 	padding: 0.75rem 1rem;
 	border-radius: 6px;
-	height: 420px;
+	/*
+	 * Fills the panel rather than standing at a fixed 420px. The
+	 * terminal tells the remote program how many rows it has, so this
+	 * height is not cosmetic -- every pixel given back here is a row
+	 * that htop, vim or a build log can actually use.
+	 *
+	 * min-height: 0 is load-bearing, not defensive: a flex child's
+	 * default min-height is auto, which refuses to shrink below its
+	 * content, and a terminal whose content is its own scrollback would
+	 * grow the pane forever instead of scrolling inside it.
+	 */
+	flex: 1 1 auto;
+	min-height: 12rem;
 	overflow: auto;
 	/* The VT wraps at its own column count; letting CSS wrap as well
 	 * would put a second, disagreeing opinion on where a line ends. */

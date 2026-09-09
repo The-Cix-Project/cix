@@ -329,10 +329,15 @@
 					<label for="cd-console-pick" id="cd-console-pick-label" hidden>Console</label>
 					<select id="cd-console-pick" hidden></select>
 					<span id="cd-console-status" class="hint">&hellip;</span>
+					<button type="button" id="cd-console-popout" class="console-popout-btn"
+					        title="Open this console in its own window">Open in new window</button>
 				</div>
 				<div class="console-output" id="cd-console-output" tabindex="0"></div>
-				<p class="hint">A real terminal, built here (ADR-0243) -- a full VT with a cell grid, scroll regions and the alternate screen, so <code>vim</code>, <code>htop</code> and <code>top</code> render and resize with the pane. Mouse reporting and bracketed paste are supported when a program asks for them.</p>
-				<p class="hint">A container is reachable only through the consoles its recipe <strong>declares</strong>. ADR-0261 removed the free-text command box and the separate exec endpoint together -- so what the picker above offers is everything there is. To debug with something new, add it to the container's <code>consoles</code> and re-apply: the set is meant to be edited when the need changes.</p>
+				<details class="console-notes">
+					<summary class="hint">About this terminal</summary>
+					<p class="hint">A real terminal, built here (ADR-0243) -- a full VT with a cell grid, scroll regions and the alternate screen, so <code>vim</code>, <code>htop</code> and <code>top</code> render and resize with the pane. Mouse reporting and bracketed paste are supported when a program asks for them.</p>
+					<p class="hint">A container is reachable only through the consoles its recipe <strong>declares</strong>. ADR-0261 removed the free-text command box and the separate exec endpoint together -- so what the picker above offers is everything there is. To debug with something new, add it to the container's <code>consoles</code> and re-apply: the set is meant to be edited when the need changes.</p>
+				</details>
 			</div>
 		</section>
 
