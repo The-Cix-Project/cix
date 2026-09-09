@@ -42,6 +42,15 @@ on timeout. The third flake, `test_console_exec`, is a genuinely open
 question and stays with #331, with the session's two signatures recorded
 there.
 
+**A gate so the whole-second shape cannot come back.** `test_timebounds`
+refuses a `tv_sec` difference reaching a relational operator anywhere in
+`test/`, and is in `SELFTESTS`. Proven by reintroducing the exact
+original defect (caught, with its file and line) and a pointer-form
+variant (also caught), then confirming the fixed tree passes. It takes
+only the half of #309 that is mechanical; the silent-timeout wait has no
+reliable textual signature and stays a review matter, which the gate's
+own header says rather than leaving to be discovered.
+
 Excluding the flaky tests from `SELFTESTS` was considered and rejected:
 the Makefile holds a test out for a measured environmental reason, never
 for failing. Dropping a test to make builds green is the stop-gap.
