@@ -809,7 +809,23 @@ int procfuse_start(const char *state_dir)
 		return -1;
 	}
 
-	snprintf(opts, sizeof(opts), "fd=%d,rootmode=40000,user_id=0,group_id=0", fd);
+	/*
+	 * allow_other, because the readers are containers.
+	 *
+	 * A FUSE mount is by default reachable only by the uid that mounted
+	 * it -- root, here. Every container on this platform is idmapped by
+	 * default (ADR-0207), so its processes run as mapped uids and would
+	 * be refused with EACCES on a file bound in front of their /proc.
+	 * Since the whole point is that a container reads these, the mount
+	 * has to permit it.
+	 *
+	 * Safe to widen here in a way it would not be for a general
+	 * filesystem: this one is read-only, serves six synthetic files,
+	 * and every answer is computed from the READER's own cgroup -- so
+	 * "another user can open it" grants them their own numbers, which
+	 * is exactly what they would get anyway.
+	 */
+	snprintf(opts, sizeof(opts), "fd=%d,rootmode=40000,user_id=0,group_id=0,allow_other", fd);
 	if (mount("cix-procfuse", g_mount_path, "fuse", MS_NOSUID | MS_NODEV, opts) != 0) {
 		logstore_write("cixd", "error", "procfuse: mount %s failed: %s", g_mount_path,
 		                strerror(errno));
