@@ -72,16 +72,16 @@ Restoring does not take effect immediately or reboot for you — a typical disas
 
 ## Disk management
 
-`cixctl disks` lists every real host block device, live-enumerated on every call, including any partitions already on it, and flags which ones are protected — the OS disk itself and its first four structural partitions (the ESP, both root slots and `/config`), which are never given a role, formatted or unmounted.
+`cixctl storage` lists every real host block device, live-enumerated on every call, including any partitions already on it, and flags which ones are protected — the OS disk itself and its first four structural partitions (the ESP, both root slots and `/config`), which are never given a role, formatted or unmounted.
 
 Everything else about storage — the six disk roles and what each is for, when to add a disk at all, btrfs versus ext4 and what snapshots buy you, per-container quotas, splitting a disk into several role-assigned partitions, and moving a placement afterwards — has its own guide: **[`storage.md`](storage.md)**. It is the single place that describes them, so this section deliberately does not repeat it.
 
 The two-step shape is worth knowing here, because it is what stops an accident:
 
 ```sh
-cixctl diskrole create --disk=sdb --role=container-storage   # metadata only, reversible
-cixctl disks format sdb                                      # destructive, needs a role first
-cixctl disks format-status sdb                               # async: none/running/ready/failed
+cixctl storage-role create --disk=sdb --role=container-storage   # metadata only, reversible
+cixctl storage format sdb                                        # destructive, needs a role first
+cixctl storage format-status sdb                                 # async: none/running/ready/failed
 ```
 
 A disk is used in exactly one of two mutually-exclusive modes: role assigned directly to the whole disk, or partitioned with roles assigned to the individual partitions instead — `partition-table`/`add-partition` both refuse to touch a whole disk that already has a role of its own.

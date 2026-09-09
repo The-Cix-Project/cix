@@ -79,7 +79,7 @@ This replaced a workflow where the args were the literal placeholders `/dev/CHAN
   partitioning /dev/sda: 1907729 MiB total, 448 MiB system, 16384 MiB data, 1890897 MiB left unallocated for you to use
   ```
 
-  Grow that data partition into the free space whenever you want (`cixctl disks partition resize`, issue #94), or partition the remainder yourself and give it a role. The reason for the conservative default is that the reversible direction should be the one left open: growing into free space is safe, shrinking a filesystem that already holds the system's state is not.
+  Grow that data partition into the free space whenever you want (`cixctl storage partition resize`, issue #94), or partition the remainder yourself and give it a role. The reason for the conservative default is that the reversible direction should be the one left open: growing into free space is safe, shrinking a filesystem that already holds the system's state is not.
 - **`--skip-partition`**: the disk is already partitioned correctly by other means (e.g. scripted provisioning that ran `sfdisk` itself beforehand) — `cix-install` just reads the existing table back. It must carry all five partitions, named exactly `cix-esp`, `cix-root-a`, `cix-root-b`, `cix-config` and `cix-containers`, since that is how roles are identified.
 
 Omitting `--skip-partition` is the default: `cix-install` writes the layout itself.

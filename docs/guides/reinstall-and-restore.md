@@ -23,7 +23,7 @@ volume *definitions*, site config, and every recipe the host holds. Save it
 first, before anything else:
 
 ```sh
-cixctl --host=<host> system backup > backup.json
+cixctl --host=<host> backup > backup.json
 ```
 
 Recipes also live in git, so the bundle is a convenience for them rather than
@@ -84,7 +84,7 @@ workload's own export where one exists.
 ### 1. Back up, and verify the backup is real
 
 ```sh
-cixctl --host=<host> system backup > backup.json
+cixctl --host=<host> backup > backup.json
 python3 -c "import json;d=json.load(open('backup.json'));print({k:(len(v) if isinstance(v,(list,dict)) else 1) for k,v in d.items()})"
 ```
 
@@ -131,7 +131,7 @@ reports before letting it write.
 ### 4. Restore
 
 ```sh
-cixctl --host=<host> system restore < backup.json
+cixctl --host=<host> restore < backup.json
 ```
 
 Fields are independent and all optional, so a partial restore is legitimate —

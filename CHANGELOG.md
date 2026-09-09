@@ -6,6 +6,57 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Documentation audit, part 2: a documented endpoint that never existed (#335)
+
+`docs/api/README.md` carried a full section, *"Running a command in a container
+without a terminal"*, documenting:
+
+```
+POST /v1/containers/jump/exec   {"argv":["/usr/bin/ps","aux"],"timeout_seconds":20}
+GET  /v1/containers/jump/exec
+```
+
+with its design reasoning — no shell, no pty, asynchronous with a poll
+endpoint, SIGKILL on timeout, `truncated` on capped output — and the claim
+that `cixctl exec NAME -- cmd...` polls on your behalf.
+
+**None of it exists.** No such path in `openapi.yaml`, no handler in the
+daemon, no `exec` entry in the CLI tree, and on 192.168.15.95 the endpoint
+answers `{"error":"no such endpoint"}`.
+
+That is the worst shape a documentation defect can take, because it reads as
+available and fails only when someone needs it — which happened, in this same
+session. Diagnosing #355 (hostapd refusing `country_code=GB`) the obvious next
+step was `hostapd_cli status` inside the container; the documented endpoint was
+tried, returned "no such endpoint", and with `capture_output` also yielding 0
+bytes there was no way left to read a crash-looping service's stderr. That
+diagnosis is still blocked.
+
+The section is removed — `docs/api/README.md`'s stated job is to be a narrative
+index into `openapi.yaml`, so documenting something absent from the contract is
+the one thing it must not do — and the design is preserved on #335, which is
+the issue that owns the gap. Every one of the 174 endpoints the file now names
+resolves to a real path in the spec.
+
+**Six guides taught CLI commands that no longer exist.** ADR-0258 renamed
+`disks` → `storage` and `diskrole` → `storage-role`, and `ps`/`system backup`
+had likewise become `process`/`backup`. Twenty-three occurrences across
+`administration.md`, `installing.md`, `quickstart.md`,
+`reinstall-and-restore.md`, `remote-development.md` and `storage.md` still used
+the old names — every one of them a command that exits with an error today.
+
+ADRs and the ROADMAP were deliberately **not** touched: those are historical
+records, and an ADR describing the world as it was when the decision was made
+is correct. Guides are living documents, which is exactly the distinction the
+taxonomy in `docs/README.md` now states, and this is what it is for.
+
+**The architecture diagram had one stale label.** Container A read
+`restart/depends_on/readiness`; ADR-0260 removed the container-level
+`readiness` field as a second definition of something services already carry.
+It now reads `cix-init pid 1 → services[]`, which also puts the platform's own
+supervisor on the diagram for the first time. Verified by rendering, not by
+reading the SVG source.
+
 ### Documentation audit: one ADR format, an accurate CHANGELOG, and a gate for both
 
 A full pass over the documentation tree, prompted by the owner asking for one.

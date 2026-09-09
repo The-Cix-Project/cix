@@ -39,7 +39,7 @@ a protection.
 
 **The fifth is not protected**, and deliberately so. If you sized it
 smaller than the disk at install time, the remaining free space is
-ordinary space: `cixctl disks add-partition vda ...` appends into it
+ordinary space: `cixctl storage add-partition vda ...` appends into it
 without touching the four structural partitions
 ([#140](https://git.home.arpa/itdlabs/cix/issues/140)).
 
@@ -54,9 +54,9 @@ carries other mounts.
 ## 2. Two steps, always: assign a role, then format
 
 ```
-cixctl diskrole create --disk=sdb --role=container-storage
-cixctl disks format sdb
-cixctl disks format-status sdb
+cixctl storage-role create --disk=sdb --role=container-storage
+cixctl storage format sdb
+cixctl storage format-status sdb
 ```
 
 They are separate because they are not comparably dangerous.
@@ -205,8 +205,8 @@ placed on an ext4 disk cannot share extents with its image.
 which is what you want in almost every case:
 
 ```
-cixctl disks format sdb                  # btrfs
-cixctl disks format sdb --fs-type=ext4   # only if you have a reason
+cixctl storage format sdb                  # btrfs
+cixctl storage format sdb --fs-type=ext4   # only if you have a reason
 ```
 
 This default was ext4 until recently, which was simply a default that
@@ -267,13 +267,13 @@ A whole disk with no role and no partitions can be divided, and each
 partition is then an ordinary disk name everywhere in the API:
 
 ```
-cixctl disks partition-table sdc
-cixctl disks add-partition sdc --name=containers --size-mib=51200
-cixctl disks add-partition sdc --name=backups
-cixctl diskrole create --disk=sdc1 --role=container-storage
-cixctl diskrole create --disk=sdc2 --role=backup
-cixctl disks format sdc1
-cixctl disks format sdc2
+cixctl storage partition-table sdc
+cixctl storage add-partition sdc --name=containers --size-mib=51200
+cixctl storage add-partition sdc --name=backups
+cixctl storage-role create --disk=sdc1 --role=container-storage
+cixctl storage-role create --disk=sdc2 --role=backup
+cixctl storage format sdc1
+cixctl storage format sdc2
 ```
 
 `partition-table` writes a fresh, empty GPT and is destructive, with the
