@@ -6,6 +6,82 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### procfuse reported 100% CPU at any load, and dropped 42 of 50 meminfo fields (#359)
+
+`/proc/stat` and `/proc/uptime` were verified in #336 for the wrong
+property. They *advanced*, so they looked right. What `/proc/stat` never
+did was yield a believable percentage.
+
+cgroup v2 accounts only busy time — there is no idle counter — and the
+shipped renderer emitted `0` for it. Every CPU tool computes
+`100 × (total − idle) / total` over a delta, so an idle column pinned at
+zero makes the denominator the busy time itself. Measured on
+192.168.15.95: one CPU, one busy loop, 15 s.
+
+```
+before: cpu  0    0 0 0 0 0 0 0 0 0
+after:  cpu  1501 0 0 0 0 0 0 0 0 0
+```
+
+A container using **half** a CPU computes `100 × 750/750` = **100%**.
+That is worse than reporting the host's figures: confidently wrong
+rather than obviously foreign.
+
+Idle is now synthesised as `uptime × ncpus × HZ − busy`, from **one**
+time base shared with `/proc/uptime`'s second field — computed
+separately they would drift, and a tool cross-checking them would see a
+machine whose numbers do not add up.
+
+**`btime` stays the host's, which is counterintuitive.**
+`/proc/<pid>/stat`'s `starttime` is jiffies since *host* boot and is not
+namespaced; `ps` and `top` derive wall-clock start as
+`btime + starttime/HZ`. A container-relative `btime` would be wrong by
+the host's entire uptime, and the shipped `btime 0` put every process in
+1970.
+
+**`/proc/stat` and `/proc/meminfo` now pass the host's file through and
+write over what the cgroup knows**, the shape `render_cpuinfo` already
+used. That one move restores `btime`, per-CPU `cpuN` lines (`htop` draws
+no meters without them), `intr`/`ctxt`/`processes` — a true host number
+beats an invented zero — and the 42 `meminfo` fields that were simply
+absent. Passing the host's memory figures through *unmodified* would be
+its own bug, so everything `memory.stat` can answer is overridden:
+`Active`, `Dirty`, `AnonPages`, `Mapped`, `Slab`, `SReclaimable`,
+`PageTables` and the rest. Otherwise a 1 GiB container reports the
+host's `Active: 3 GB` — a field larger than its own `MemTotal`.
+
+**The uptime anchor changed too.** It was the cgroup directory's mtime,
+which moves whenever an entry is added — and `src/cgroup.c` records that
+a nested `cixd` creates cgroups under its own, so a container running
+containers would see its uptime jump to zero. It is now the oldest
+`starttime` in `cgroup.procs`, which is boot-relative and cannot be
+moved by an NTP step either. `cix-init` is pid 1 for the container's
+whole life, so it is always there to ask.
+
+`/proc/cpuinfo` now reports `siblings` and `cpu cores` matching the
+processor count; a container pinned to one CPU was emitting one
+processor block alongside the host's `siblings: 2`.
+
+`loadavg` deliberately stays the host's (an ADR-0262 decision, and the
+same default lxcfs has), and no new files were added — `diskstats` is
+not a broken file, it is an absent one.
+
+**`test_procfuse` gates the arithmetic, in `SELFTESTS`.** Every renderer
+takes a cgroup *directory*, so it runs against a crafted one in `/tmp`
+with no FUSE, no root and no container — which is what lets it run where
+the release is actually built (#224). It asserts sums rather than
+formatting, with the measured scenario baked in: 7.5 CPU-seconds over
+15 s on one CPU must derive 50%. Verified by reintroducing the exact
+defect (four assertions fire) and confirming the fix passes five runs
+running.
+
+Two bugs in the test's own setup are worth recording, because both were
+the #309 shape appearing in brand-new code: aging the fake cgroup with
+`utimes` zeroed the nanoseconds, leaving it 15.00–16.00 seconds old
+depending on where in the second the test ran, and the first assertion
+demanded exactly 50%. `utimensat` with matching nanoseconds fixed the
+cause; the assertion is a band, and says why.
+
 ### A container sees its own limits — verified end to end (#336, ADR-0262)
 
 Measured on 192.168.15.95 running `v2.57.22`, in a container declaring
