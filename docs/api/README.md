@@ -1962,6 +1962,24 @@ Three things it deliberately does **not** mean:
 
 Matched against the **resolved** id each grant recorded, never the text an operator wrote: a spec may say `backup-drive` where the device is `usb:0781:5583:...`, since a named mapping is resolved at creation time and a `vendor_model` mapping can expand to several devices at once. Derived fresh from live container state on every call, never persisted.
 
+**A second grant is now refused unless both sides ask to share it.**
+
+```json
+{"devices": [{"id": "disk:sr0", "shared": true}]}
+```
+
+Without `shared`, granting a device a running container already holds is `409`, and the message names the holder:
+
+```
+409 {"error":"device disk:sr0 is already held by container \"heldtest\" -- both grants must set \"shared\": true to share it"}
+```
+
+**Both** grants must set it — the newcomer *and* every existing holder. That symmetry is the whole protection: if only the newcomer had to opt in, a container that asked for a device without saying `shared` would silently lose exclusive use because someone else asked nicely. Default `false`, because silence should read as "I need this to myself".
+
+The same rule and the same field apply to the live attach, `POST /containers/{name}/devices`, checked before anything is attached so a grouped id whose second member is contended does not leave the first granted.
+
+Checked per **resolved** device rather than per entry, since one entry can expand into several — a `vendor_model` mapping matching two identical drives, or a `gpu:N` group. A GPU shared between two containers is now explicit rather than accidental: both say `shared`, and that is a sentence someone wrote down.
+
 ### Composite USB devices (ADR-0161 Phase A)
 
 The passthrough unit is always the whole device — never an individual USB interface, even for a composite device (a combo HID+storage device, say). `GET /v1/devices` still reports what such a device is actually made of, purely descriptively:

@@ -895,6 +895,34 @@ static int registry_name_is_live(const char *name)
 	return registry_find(name) != NULL;
 }
 
+int registry_device_grant_conflict(const char *device_id, int want_shared, char *out_holder,
+                                    size_t out_holder_size)
+{
+	int i, j;
+
+	if (out_holder != NULL && out_holder_size > 0)
+		out_holder[0] = '\0';
+	if (device_id == NULL || device_id[0] == '\0')
+		return 0;
+
+	for (i = 0; i < REGISTRY_MAX_CONTAINERS; i++) {
+		const struct registry_entry *e = &g_entries[i];
+
+		if (!e->in_use)
+			continue;
+		for (j = 0; j < e->device_count; j++) {
+			if (strcmp(e->devices[j].id, device_id) != 0)
+				continue;
+			if (want_shared && e->devices[j].shared)
+				continue; /* both sides agreed */
+			if (out_holder != NULL && out_holder_size > 0)
+				snprintf(out_holder, out_holder_size, "%s", e->name);
+			return 1;
+		}
+	}
+	return 0;
+}
+
 int registry_device_holders(const char *device_id, char out[][DEVICE_HOLDER_NAME_MAX], int max)
 {
 	int i, j;

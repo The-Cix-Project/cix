@@ -3987,7 +3987,8 @@ static void handle_kmsg_event(struct conn *cc)
  * attach/detach primitives those handlers use. */
 static int live_mknod_device(const struct registry_entry *e, const struct device_spec *dev);
 static int live_unlink_device(const struct registry_entry *e, const char *dev_path);
-static int live_attach_one_device(struct registry_entry *e, const struct discovered_device *dd);
+static int live_attach_one_device(struct registry_entry *e, const struct discovered_device *dd,
+                                   int shared);
 
 /*
  * ADR-0161 Phase C: a persistent NETLINK_KOBJECT_UEVENT multicast
@@ -4105,7 +4106,16 @@ static void reconcile_pending_device_attachments(void)
 		if (dd == NULL)
 			continue; /* raced with another unplug between resolve and here */
 
-		if (live_attach_one_device(claims[i].e, dd) == 0) {
+		/*
+		 * #356: a pending grant reconciled by a hotplug event is not
+		 * shared. The container named a device that did not resolve at
+		 * creation time and said nothing about sharing, and silence
+		 * reads as exclusive here exactly as it does on the create
+		 * path. The contention rule above already refuses to hand one
+		 * device to two claimants, so this is the same answer stated
+		 * once more where the grant is actually recorded.
+		 */
+		if (live_attach_one_device(claims[i].e, dd, 0) == 0) {
 			registry_clear_pending_device(claims[i].e, claims[i].ref);
 			logstore_write("cixd", "info",
 			                "container %s: hotplug live-attached device %s (matched \"%s\")",
@@ -11614,6 +11624,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 			const struct json_value *item = jdevices->u.array.items[i];
 			const char *id;
 			int optional = 0;
+			int shared = 0;
 			const struct discovered_device *matches[CONTAINER_MAX_DEVICES];
 			int n, j;
 
@@ -11629,6 +11640,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 				id = json_as_string(item);
 			} else if (item->type == JSON_OBJECT) {
 				const struct json_value *joptional = json_object_get(item, "optional");
+				const struct json_value *jshared = json_object_get(item, "shared");
 
 				id = json_as_string(json_object_get(item, "id"));
 				if (joptional != NULL) {
@@ -11639,6 +11651,14 @@ static int create_container_from_body(const char *body, size_t body_len,
 					}
 					optional = joptional->u.boolean;
 				}
+				if (jshared != NULL) {
+					if (jshared->type != JSON_BOOL) {
+						json_free(root);
+						snprintf(err_msg, err_msg_size, "devices[].shared must be a boolean");
+						return 400;
+					}
+					shared = jshared->u.boolean;
+				}
 			} else {
 				id = NULL;
 			}
@@ -11646,7 +11666,8 @@ static int create_container_from_body(const char *body, size_t body_len,
 			if (id == NULL) {
 				json_free(root);
 				snprintf(err_msg, err_msg_size,
-				         "devices entries must be a string, or {\"id\":..., \"optional\":...}");
+				         "devices entries must be a string, or {\"id\":..., \"optional\":..., "
+				         "\"shared\":...}");
 				return 400;
 			}
 			/*
@@ -11691,6 +11712,34 @@ static int create_container_from_body(const char *body, size_t body_len,
 			}
 			for (j = 0; j < n; j++) {
 				const struct discovered_device *dd = matches[j];
+				char holder[REGISTRY_NAME_MAX];
+
+				/*
+				 * #356: a device already held by a running container
+				 * is refused unless both sides said "shared".
+				 *
+				 * Checked per RESOLVED device rather than per requested
+				 * entry, because one entry can expand into several --
+				 * a vendor_model mapping matching two identical drives,
+				 * or a gpu:N group. One of those being contended must
+				 * refuse that device rather than the whole entry
+				 * silently granting the rest.
+				 *
+				 * Before this, nothing refused a second grant at all:
+				 * both containers got their own BPF_CGROUP_DEVICE rule
+				 * for the same major/minor, which is ordinary
+				 * multi-tenant compute for a GPU and data corruption
+				 * for a serial adapter or a raw disk. Now it is a
+				 * decision someone has to make in writing.
+				 */
+				if (registry_device_grant_conflict(dd->id, shared, holder, sizeof(holder))) {
+					json_free(root);
+					snprintf(err_msg, err_msg_size,
+					         "device %s is already held by container \"%s\" -- both grants must "
+					         "set \"shared\": true to share it",
+					         dd->id, holder);
+					return 409;
+				}
 
 				/* dev_path/major/minor always come from the daemon's
 				 * own current sysfs snapshot (dd), never trusted from
@@ -11712,6 +11761,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 				device_attachments[device_count].type = dd->type;
 				device_attachments[device_count].major = dd->major;
 				device_attachments[device_count].minor = dd->minor;
+				device_attachments[device_count].shared = shared;
 				/* .live stays 0 (memset above) -- a create-time grant,
 				 * never independently detachable (ADR-0161 Phase D). */
 				device_count++;
@@ -14804,7 +14854,8 @@ static int live_unlink_device(const struct registry_entry *e, const char *dev_pa
  * this daemon's own bookkeeping should silently carry forward).
  * Returns 0 on success, -1 (errno set) otherwise.
  */
-static int live_attach_one_device(struct registry_entry *e, const struct discovered_device *dd)
+static int live_attach_one_device(struct registry_entry *e, const struct discovered_device *dd,
+                                   int shared)
 {
 	struct device_spec dev;
 	struct registry_device_attachment att;
@@ -14822,6 +14873,7 @@ static int live_attach_one_device(struct registry_entry *e, const struct discove
 	att.major = dd->major;
 	att.minor = dd->minor;
 	att.live = 1;
+	att.shared = shared;
 
 	if (registry_device_live_attach(e, &dev, &att) != 0)
 		return -1;
@@ -14858,6 +14910,7 @@ static void handle_container_device_attach(int fd, const char *container_name, c
 	const char *id;
 	const struct discovered_device *matches[CONTAINER_MAX_DEVICES];
 	int n, j, attached;
+	int shared = 0;
 	struct json_writer w;
 
 	e = registry_find(container_name);
@@ -14877,6 +14930,18 @@ static void handle_container_device_attach(int fd, const char *container_name, c
 		respond_error(fd, 400, "Bad Request", "id is required");
 		return;
 	}
+	{
+		const struct json_value *jshared = json_object_get(root, "shared");
+
+		if (jshared != NULL) {
+			if (jshared->type != JSON_BOOL) {
+				json_free(root);
+				respond_error(fd, 400, "Bad Request", "shared must be a boolean");
+				return;
+			}
+			shared = jshared->u.boolean;
+		}
+	}
 
 	n = devicemap_resolve(id, CONTAINERS_DIR, matches, CONTAINER_MAX_DEVICES - e->device_count);
 	if (n < 0)
@@ -14894,16 +14959,35 @@ static void handle_container_device_attach(int fd, const char *container_name, c
 		return;
 	}
 	for (j = 0; j < n; j++) {
-		if (matches[j]->assignable)
-			continue;
-		json_free(root);
-		respond_error(fd, 400, "Bad Request", "device is not currently assignable");
-		return;
+		char holder[REGISTRY_NAME_MAX];
+
+		if (!matches[j]->assignable) {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request", "device is not currently assignable");
+			return;
+		}
+		/*
+		 * #356, the same rule the create path applies: already held by
+		 * a running container means refused unless both grants say so.
+		 * Checked before anything is attached, so a grouped id whose
+		 * second member is contended does not leave the first granted.
+		 */
+		if (registry_device_grant_conflict(matches[j]->id, shared, holder, sizeof(holder))) {
+			char msg[256];
+
+			snprintf(msg, sizeof(msg),
+			         "device %s is already held by container \"%s\" -- both grants must set "
+			         "\"shared\": true to share it",
+			         matches[j]->id, holder);
+			json_free(root);
+			respond_error(fd, 409, "Conflict", msg);
+			return;
+		}
 	}
 	json_free(root);
 
 	for (attached = 0; attached < n; attached++) {
-		if (live_attach_one_device(e, matches[attached]) != 0)
+		if (live_attach_one_device(e, matches[attached], shared) != 0)
 			break;
 	}
 	if (attached < n) {

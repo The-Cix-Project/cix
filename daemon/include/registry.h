@@ -144,6 +144,21 @@ struct registry_device_attachment {
 	 * registry_network_detach() already enforces for networks.
 	 */
 	int live;
+	/*
+	 * #356: this grant does not require exclusive use of the device.
+	 *
+	 * Recorded per grant rather than per device, because sharing is a
+	 * property of what each container asked for. A new grant of a
+	 * device someone already holds is refused unless BOTH sides
+	 * declared it -- the newcomer and every existing holder.
+	 *
+	 * The symmetry is the whole point. If only the newcomer had to opt
+	 * in, a container that asked for a device without saying "shared"
+	 * would silently lose exclusive use because someone else asked
+	 * nicely, which is a speed bump rather than a protection. Stored
+	 * here so a later grant can ask what the earlier one wanted.
+	 */
+	int shared;
 };
 
 /*
@@ -803,5 +818,26 @@ void registry_write_json_list(struct json_writer *w);
  * many of its grants expanded to the same id.
  */
 int registry_device_holders(const char *device_id, char out[][DEVICE_HOLDER_NAME_MAX], int max);
+
+/*
+ * #356: may a new grant of device_id be made, given what it asked for?
+ *
+ * Returns 0 if allowed, or 1 if it conflicts -- filling out_holder with
+ * the name of one running container whose grant it conflicts with, so
+ * the refusal can say who rather than only that.
+ *
+ * Conflicts when the device is already held by a running container and
+ * either side wants exclusivity: the caller did not pass want_shared,
+ * or an existing holder did not declare it. Both must agree, for the
+ * reason on registry_device_attachment.shared.
+ *
+ * Deliberately says nothing about defined-but-stopped containers. They
+ * hold no device (no cgroup, no BPF program), so refusing on their
+ * behalf would refuse a grant that is genuinely free right now. What
+ * happens when such a container later starts is a real question and a
+ * separate one -- see the endpoint's own documentation.
+ */
+int registry_device_grant_conflict(const char *device_id, int want_shared, char *out_holder,
+                                    size_t out_holder_size);
 
 #endif /* REGISTRY_H */

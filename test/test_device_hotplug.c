@@ -396,17 +396,76 @@ int main(void)
 			memset(&r, 0, sizeof(r));
 			if (cix_client_request(&client, "POST", "/v1/containers/devlive/devices", body, &r) !=
 			        0 ||
-			    r.status != 500) {
-				/* registry_device_live_attach() returns -1/EEXIST for a
-				 * dup -- surfaced as 500 by the generic "attach failed"
-				 * handler path, not a dedicated 409, since a dup here
-				 * can only happen via a deliberately-adversarial second
-				 * call, not a realistic operator mistake worth its own
-				 * status code. */
-				fprintf(stderr, "FAIL: duplicate live attach: expected 500, got %d\n", r.status);
+			    r.status != 409) {
+				/*
+				 * 409, and it used to be 500. #356's exclusivity check
+				 * runs before anything is attached and refuses this as
+				 * a conflict naming the holder, so the dup no longer
+				 * reaches registry_device_live_attach()'s EEXIST and
+				 * the generic "attach failed" 500. The old comment here
+				 * argued a dup was not "a realistic operator mistake
+				 * worth its own status code"; the same check that stops
+				 * two containers sharing a disk by accident gives it
+				 * one for free.
+				 */
+				fprintf(stderr, "FAIL: duplicate live attach: expected 409, got %d\n", r.status);
 				ok = 0;
 			}
 			cix_response_free(&r);
+		}
+
+		/*
+		 * #356: a SECOND container cannot take a device the first one
+		 * holds -- and can when both say shared. This is the actual
+		 * feature; the duplicate case above only proves a container
+		 * cannot take a device from itself.
+		 */
+		if (ok) {
+			char body[192];
+			int made_second = 0;
+
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/containers",
+			                       "{\"name\":\"devrival\",\"image\":\"hotplugtest\","
+			                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\","
+			                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}]}",
+			                       &r) != 0 ||
+			    r.status != 201) {
+				fprintf(stderr, "FAIL: POST devrival: expected 201, got %d\n", r.status);
+				ok = 0;
+			} else {
+				made_second = 1;
+			}
+			cix_response_free(&r);
+
+			if (made_second) {
+				/* Exclusive by default: devlive holds it and said
+				 * nothing about sharing, so this is refused however
+				 * politely devrival asks. */
+				snprintf(body, sizeof(body), "{\"id\":\"%s\",\"shared\":true}",
+				         first_assignable_id);
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "POST", "/v1/containers/devrival/devices", body,
+				                       &r) != 0 ||
+				    r.status != 409) {
+					fprintf(stderr, "FAIL: devrival attach of a device devlive holds "
+					                "exclusively: expected 409, got %d\n",
+					        r.status);
+					ok = 0;
+				}
+				cix_response_free(&r);
+
+				/* And it stayed devlive's -- a refused grant must not
+				 * half-apply. */
+				if (held_by_says(&client, first_assignable_id, "devrival") != 0) {
+					fprintf(stderr, "FAIL: held_by names devrival after a REFUSED attach\n");
+					ok = 0;
+				}
+
+				memset(&r, 0, sizeof(r));
+				cix_client_request(&client, "DELETE", "/v1/containers/devrival", NULL, &r);
+				cix_response_free(&r);
+			}
 		}
 
 		if (ok) {

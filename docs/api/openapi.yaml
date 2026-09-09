@@ -11661,6 +11661,17 @@ paths:
               properties:
                 id:
                   type: string
+                shared:
+                  type: boolean
+                  default: false
+                  description: >
+                    Issue #356, the same rule POST /containers applies:
+                    a device already held by a running container is
+                    refused with 409 unless this grant and every
+                    existing holder's both set it. Checked before
+                    anything is attached, so a grouped id whose second
+                    member is contended does not leave the first
+                    granted.
       responses:
         "200":
           description: The container's own full current state, device(s) included.
@@ -12412,6 +12423,45 @@ components:
                 properties:
                   id:
                     type: string
+                  shared:
+                    type: boolean
+                    default: false
+                    description: >
+                      Issue #356 -- this grant does not require exclusive
+                      use of the device. A device already held by a
+                      running container is refused with 409 unless BOTH
+                      grants set it: this one, and every existing
+                      holder's.
+
+
+                      The symmetry is the point. If only the newcomer had
+                      to opt in, a container that asked for a device
+                      without saying "shared" would silently lose
+                      exclusive use because someone else asked nicely,
+                      which is a speed bump rather than a protection.
+
+
+                      Default false, the safe reading of silence. Before
+                      this existed nothing refused a second grant at all
+                      -- both containers received their own
+                      BPF_CGROUP_DEVICE rule for the same major/minor,
+                      which is ordinary multi-tenant compute for a GPU
+                      and data corruption for a serial adapter or a raw
+                      disk. Sharing is now a decision made in writing.
+
+
+                      Checked per RESOLVED device rather than per entry:
+                      one entry can expand into several (a vendor_model
+                      mapping matching two identical drives, or a gpu:N
+                      group), and one contended member refuses that
+                      device rather than letting the rest through
+                      silently.
+
+
+                      Says nothing about defined-but-stopped containers.
+                      They hold nothing -- no cgroup, no BPF program --
+                      so refusing on their behalf would refuse a grant
+                      that is genuinely free right now.
                   optional:
                     type: boolean
                     default: false
