@@ -14732,7 +14732,7 @@ components:
 
     Device:
       type: object
-      required: [id, bus, vendor_id, product_id, class, description, driver, dev_path, type, major, minor, assignable, interfaces]
+      required: [id, bus, vendor_id, product_id, class, description, driver, dev_path, type, major, minor, assignable, interfaces, held_by]
       properties:
         id:
           type: string
@@ -14799,12 +14799,66 @@ components:
         assignable:
           type: boolean
           description: >
+            Whether the HOST considers this grantable -- never whether
+            anything already has it. See `held_by` for that; the two are
+            independent and a device can be `assignable: true` while a
+            container holds it.
+
+
             USB/PCI: true only if a driver is bound AND a real /dev node
-            was found. net: always true (if it's listed at all, it's in
-            this netns and free -- see bus's own description). A device
-            with assignable=false still appears (so an operator can see
-            it exists and why it isn't offered), but referencing its id
-            in a container's own devices/interfaces field is a 400.
+            was found. net: true unless the interface is currently
+            enslaved to a bridge, read from the kernel's own `master`
+            symlink (an interface moved into a container's netns is not
+            listed at all -- see bus's own description). A device with
+            assignable=false still appears (so an operator can see it
+            exists and why it isn't offered), but referencing its id in
+            a container's own devices/interfaces field is a 400.
+        held_by:
+          type: array
+          items:
+            type: string
+          description: >
+            Names of RUNNING containers whose device grants include this
+            device (issue #356). Empty for a device nothing holds, and
+            always present -- an absent key and an empty array would be
+            two different things for a client to distinguish, and only
+            one of them is ever meant.
+
+
+            This exists because `assignable` was the only signal
+            available and does not answer the question. Nothing refuses
+            a second grant of a USB, PCI or GPU device, so the same
+            device could be granted to any number of containers with no
+            way to notice. Reporting it is deliberately separate from
+            preventing it: a GPU granted to two containers is ordinary
+            multi-tenant compute (ADR-0028 expands `gpu:N` into a group
+            grant on purpose), while a serial adapter or raw block
+            device granted twice is data corruption, and this API cannot
+            tell those apart from the device alone.
+
+
+            Derived fresh from live container state on every call, never
+            persisted -- the same posture the rest of this endpoint
+            takes toward host hardware. Matched against the RESOLVED id
+            each grant recorded, not the text an operator wrote: a spec
+            may say `backup-drive` where the device is
+            `usb:0781:5583:...`, because a named mapping (ADR-0048) is
+            resolved at creation time and a `vendor_model` mapping can
+            expand to several devices at once.
+
+
+            LIVE containers only. A container that is defined but not
+            running has no cgroup and no BPF_CGROUP_DEVICE program, so it
+            holds nothing; that its definition would grant the device on
+            start is a real but different question. A device a container
+            is merely waiting for (ADR-0161 Phase B `pending_devices`) is
+            excluded for the same reason.
+
+
+            A `net` device never appears here with a holder, and that is
+            correct rather than missing: an interface moved into a
+            container's netns stops being enumerated at all, so
+            exclusivity there is the kernel's rather than a field.
         interfaces:
           type: array
           description: >

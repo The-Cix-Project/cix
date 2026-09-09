@@ -1940,6 +1940,28 @@ POST /v1/containers
   Note this exclusivity is a property of *moving* an interface. A `devices` grant is a cgroup rule rather than a move, and the same USB/PCI/GPU device can currently be granted to several containers with nothing reporting it — see issue #356.
 - `GET /v1/containers` echoes the real, expanded grants actually made, not an echo of what was requested.
 
+
+### Who is holding a device (#356)
+
+Every entry from `GET /v1/devices` carries `held_by` — the names of **running** containers whose grants include it:
+
+```json
+{"id": "usb:0781:5583:AA010203", "bus": "usb", "assignable": true,
+ "held_by": ["backup-worker"]}
+```
+
+`assignable` and `held_by` are independent, and conflating them is the mistake this field exists to stop. `assignable` answers *"does the host consider this grantable"* — a driver-bound check for USB, unconditional for PCI, a not-enslaved check for a netdev. It has never answered *"is anything already using it"*, so a device held by a container still reports `assignable: true`.
+
+That matters because **nothing refuses a second grant**. A `devices` grant is a `BPF_CGROUP_DEVICE` rule on one container's cgroup, not a move, so the same USB, PCI or GPU device can be granted to several containers and each gets its own allow rule for the same major/minor. Reporting that is deliberately separate from preventing it: a GPU granted to two containers is ordinary multi-tenant compute — ADR-0028 expands `gpu:N` into a group grant on purpose — while a serial adapter or a raw block device granted twice is data corruption, and this API cannot tell those apart from the device alone.
+
+Three things it deliberately does **not** mean:
+
+- **Live containers only.** A container that is defined but not running has no cgroup and no BPF program, so it holds nothing. That its definition would grant the device on start is a real question, and a different one.
+- **Not pending grants.** A device a container is waiting for (ADR-0161 Phase B) is by definition one it does not have.
+- **Not `net`.** An interface moved into a container's netns stops being enumerated at all, so it is never in this list to be annotated — exclusivity there is the kernel's rather than a field. See the `interfaces` bullet above.
+
+Matched against the **resolved** id each grant recorded, never the text an operator wrote: a spec may say `backup-drive` where the device is `usb:0781:5583:...`, since a named mapping is resolved at creation time and a `vendor_model` mapping can expand to several devices at once. Derived fresh from live container state on every call, never persisted.
+
 ### Composite USB devices (ADR-0161 Phase A)
 
 The passthrough unit is always the whole device — never an individual USB interface, even for a composite device (a combo HID+storage device, say). `GET /v1/devices` still reports what such a device is actually made of, purely descriptively:

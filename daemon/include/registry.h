@@ -2,6 +2,7 @@
 #define REGISTRY_H
 
 #include "container.h"
+#include "device.h"
 #include "cixinit.h"
 #include "diskrole.h"
 #include "json.h"
@@ -774,5 +775,33 @@ void registry_clear_pending_device(struct registry_entry *e, const char *ref);
 
 void registry_write_json_one(const struct registry_entry *entry, struct json_writer *w);
 void registry_write_json_list(struct json_writer *w);
+
+/*
+ * #356: the names of running containers whose device grants include
+ * device_id. Supplied to device_write_json_list() as its
+ * device_holders_fn, so GET /v1/devices can report `held_by` without
+ * device.c ever learning what a container is.
+ *
+ * LIVE entries only, and the word "held" is chosen for that: a
+ * container that is defined but not running has no cgroup and no
+ * BPF_CGROUP_DEVICE program, so it is not holding anything. Its
+ * definition still names the device and starting it would grant it,
+ * which is a real second question -- what would conflict on start --
+ * and deliberately not the one this answers.
+ *
+ * Matched against the RESOLVED id each grant recorded, never the text
+ * an operator wrote. A spec may say "backup-drive" where the device is
+ * "usb:0781:5583:...", because a named mapping (ADR-0048) is resolved
+ * at creation time, and a vendor_model mapping legitimately expands to
+ * several devices at once. Matching the spec string would miss every
+ * one of them.
+ *
+ * pending_devices (ADR-0161 Phase B) are excluded: a device a container
+ * is waiting for is by definition one it does not have.
+ *
+ * Duplicate-free per container, so a container appears once however
+ * many of its grants expanded to the same id.
+ */
+int registry_device_holders(const char *device_id, char out[][DEVICE_HOLDER_NAME_MAX], int max);
 
 #endif /* REGISTRY_H */

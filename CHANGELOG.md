@@ -2,6 +2,76 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### `GET /v1/devices` says who is holding a device (#356)
+
+Raised by the owner while reading how the WiFi adapter reaches `ar-1`:
+if a device is in use, shouldn't we see that — otherwise what stops us
+passing it to several containers at once?
+
+Nothing did. `GET /v1/devices` reported 37 devices on 192.168.15.95 and
+not one field among them meant "in use":
+
+```
+['assignable', 'bus', 'class', 'description', 'dev_path', 'driver',
+ 'id', 'interfaces', 'major', 'minor', 'product_id', 'type', 'vendor_id']
+```
+
+`assignable` looks like the answer and is not. It means *the host
+considers this grantable*, computed per bus with no reference to any
+grant — a driver-bound check for USB (`device.c:251`), unconditional for
+PCI (`:394`), a not-enslaved check for a netdev (`:587`). Nothing in
+`create_container_from_body()` checks whether another container already
+holds an id, so N containers can be granted the same device and each
+gets its own `BPF_CGROUP_DEVICE` allow rule for the same major/minor.
+
+**Two of the four buses already solved this, which is what makes it a
+coherency bug rather than a missing feature.** An interface passed with
+`interfaces[]` is *moved* out of the host netns and stops being
+enumerated at all; one enslaved to a bridge reports `assignable: false`
+from the kernel's own `master` symlink; a role-assigned disk is excluded
+by `disk_enumerate()`. USB, PCI and GPU had nothing. `device_enumerate()`
+already *takes* `os_containers_dir` and passed it only to
+`enumerate_disk()` — the machinery for "consult container state while
+enumerating" was in that file, written for disks, and never extended.
+
+`held_by` is the names of running containers whose grants include the
+device. Supplied to `device_write_json_list()` as a callback
+(`registry_device_holders`) rather than looked up inside `device.c`,
+which knows nothing about containers and does not learn here — the same
+dependency injection `registry_write_json_list()` already uses to ask
+`containerdef.c` a question without either module depending on the
+other.
+
+Matched against the **resolved** id each grant recorded, never the text
+an operator wrote: a spec may say `backup-drive` where the device is
+`usb:0781:5583:...`, since a named mapping (ADR-0048) is resolved at
+creation time and a `vendor_model` mapping can expand to several devices
+at once. String-matching specs would have missed every one.
+
+**Reporting is deliberately separate from preventing.** A GPU granted to
+two containers is ordinary multi-tenant compute — ADR-0028 expands
+`gpu:N` into a group grant on purpose — while a serial adapter or a raw
+block device granted twice is data corruption, and the API cannot tell
+those apart from the device alone. Whether a second grant is refused by
+default with an opt-in is a smaller, separate decision that this does
+not foreclose.
+
+Three things it deliberately does not mean: live containers only (a
+defined-but-stopped container has no cgroup and holds nothing); not
+`pending_devices` (a device being waited for is one you do not have);
+and never a `net` device, which cannot appear because a moved interface
+stops being enumerated at all.
+
+`assignable`'s own description was also wrong and is corrected: it said
+"net: always true", while `device.c:587` has computed it from the
+`master` symlink since bridge attachment shipped.
+
+Gated in `test_device_hotplug` (in `SELFTESTS`), which already attaches
+and detaches a real device: `held_by` is asserted empty **before** the
+attach — so a field that is always empty cannot pass the after-check by
+accident — then naming the container after it, then empty again after
+the detach.
+
 ### Setting a module parameter can now be confirmed (#354)
 
 `GET /v1/system/kmod/{name}` reported `params` — what the module

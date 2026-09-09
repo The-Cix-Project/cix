@@ -101,6 +101,68 @@ static int stop_daemon(pid_t pid)
 	return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
 }
 
+/*
+ * #356: does GET /v1/devices report `container` as holding `id`?
+ *
+ * Re-reads the endpoint on every call rather than caching, because the
+ * property under test is that this is derived from live container state
+ * each time rather than from a snapshot taken once.
+ *
+ * Returns 1 for yes, 0 for no, -1 if the endpoint could not be read or
+ * held_by was missing entirely -- an absent key is itself a failure,
+ * since an absent key and an empty array would be two different things
+ * for a client to distinguish.
+ */
+static int held_by_says(struct cix_client *client, const char *id, const char *container)
+{
+	struct cix_response r;
+	const struct json_value *devices;
+	size_t i;
+	int found = 0;
+
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(client, "GET", "/v1/devices", NULL, &r) != 0 || r.status != 200) {
+		cix_response_free(&r);
+		return -1;
+	}
+	devices = json_object_get(r.json, "devices");
+	if (devices == NULL || devices->type != JSON_ARRAY) {
+		cix_response_free(&r);
+		return -1;
+	}
+	for (i = 0; i < devices->u.array.count; i++) {
+		const struct json_value *d = devices->u.array.items[i];
+		const char *did = json_str_field(d, "id");
+		const struct json_value *held;
+		size_t j;
+
+		if (did == NULL || strcmp(did, id) != 0)
+			continue;
+		held = json_object_get(d, "held_by");
+		if (held == NULL || held->type != JSON_ARRAY) {
+			cix_response_free(&r);
+			return -1;
+		}
+		if (container == NULL) {
+			found = (held->u.array.count == 0);
+			break;
+		}
+		for (j = 0; j < held->u.array.count; j++) {
+			const struct json_value *n = held->u.array.items[j];
+
+			if (n != NULL && n->type == JSON_STRING &&
+			    strcmp(n->u.string, container) == 0) {
+				found = 1;
+				break;
+			}
+		}
+		break;
+	}
+	cix_response_free(&r);
+	return found;
+}
+
+
 int main(void)
 {
 	pid_t daemon_pid;
@@ -285,6 +347,15 @@ int main(void)
 		if (ok) {
 			char body[192];
 
+			/* #356: nothing holds it yet. Asserted BEFORE the attach so a
+			 * held_by that is always empty could not pass the after-check
+			 * by accident. */
+			if (held_by_says(&client, first_assignable_id, NULL) != 1) {
+				fprintf(stderr, "FAIL: held_by for %s is not empty before the attach\n",
+				        first_assignable_id);
+				ok = 0;
+			}
+
 			snprintf(body, sizeof(body), "{\"id\":\"%s\"}", first_assignable_id);
 			memset(&r, 0, sizeof(r));
 			if (cix_client_request(&client, "POST", "/v1/containers/devlive/devices", body, &r) !=
@@ -341,6 +412,16 @@ int main(void)
 		if (ok) {
 			char path[192];
 
+			/* #356: the live attach is visible on GET /v1/devices. That is
+			 * the whole point -- before this field a device granted to a
+			 * container still reported assignable:true and said nothing at
+			 * all about who had it. */
+			if (held_by_says(&client, first_assignable_id, "devlive") != 1) {
+				fprintf(stderr, "FAIL: held_by for %s does not name devlive after the attach\n",
+				        first_assignable_id);
+				ok = 0;
+			}
+
 			snprintf(path, sizeof(path), "/v1/containers/devlive/devices/%s", first_assignable_id);
 			memset(&r, 0, sizeof(r));
 			if (cix_client_request(&client, "DELETE", path, NULL, &r) != 0 || r.status != 200) {
@@ -350,6 +431,14 @@ int main(void)
 				ok = 0;
 			}
 			cix_response_free(&r);
+
+			/* #356: and the detach is visible too -- a holder list that
+			 * never empties would be as wrong as one that never fills. */
+			if (held_by_says(&client, first_assignable_id, NULL) != 1) {
+				fprintf(stderr, "FAIL: held_by for %s is not empty again after the detach\n",
+				        first_assignable_id);
+				ok = 0;
+			}
 
 			/* Second delete: no longer attached -> 404. */
 			memset(&r, 0, sizeof(r));

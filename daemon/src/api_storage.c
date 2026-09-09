@@ -29,7 +29,13 @@ void handle_device_list(int fd)
 	jw_init(&w);
 	jw_obj_open(&w);
 	jw_key(&w, "devices");
-	device_write_json_list(&w, CONTAINERS_DIR);
+	/*
+	 * registry_device_holders injected rather than called from device.c
+	 * (#356) -- device.c has no knowledge of containers and does not
+	 * gain any here, the same shape registry_write_json_list() already
+	 * uses to ask containerdef.c a question.
+	 */
+	device_write_json_list(&w, CONTAINERS_DIR, registry_device_holders);
 	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
