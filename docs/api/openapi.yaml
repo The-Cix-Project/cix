@@ -10418,9 +10418,21 @@ paths:
 
         The exec'd process joins the target container's own mount,
         UTS, network, and pid namespaces (its IPC namespace is never
-        isolated in the first place, so there's none to join) --
-        equivalent to `nsenter --mount --uts --net --pid --target
-        <container's pid>`, not a fresh container of its own. Command
+        isolated in the first place, so there's none to join) AND its
+        cgroup -- so `nsenter --mount --uts --net --pid --target
+        <container's pid>` plus the cgroup join, not a fresh container
+        of its own.
+
+
+        The cgroup half is not cosmetic. The virtualised /proc
+        (ADR-0262) answers every question from the READER's own
+        cgroup, so a session that joined only the namespaces saw the
+        container's bound /proc files and read the HOST's memory and
+        cpu count out of them -- `htop` in a console reporting 7.71
+        GiB against a 1 GiB limit. It also means a console session is
+        accounted against the container's own memory and pid limits,
+        which is the intended behaviour: it is workload, not control
+        plane. Command
         comes from the container's own declared `consoles` (issue
         #248), selected by the `console` query parameter -- or the
         FIRST declared console when that parameter is omitted.
@@ -13412,11 +13424,17 @@ components:
             when it was created -- neither is a fault.
         procfuse_bound:
           type: integer
+          nullable: true
           description: >
-            How many of those files actually landed in the container's
-            mount table, counted by the daemon from the child's own
-            /proc/<pid>/mountinfo right after creation rather than
-            assumed from the request.
+            How many of those files are in the container's mount table
+            right now, counted from its own /proc/<pid>/mountinfo each
+            time this is asked rather than remembered from creation --
+            the child is still building that mount table when the
+            create call returns, so a count taken then reads a
+            half-built namespace and would report a fault that is not
+            there. null means the table could not be read (the
+            container is not running), which is deliberately distinct
+            from 0.
 
 
             `procfuse_bound < procfuse_expected` means the container is
@@ -13426,6 +13444,13 @@ components:
             The bind is deliberately non-fatal, so this is the only
             place that difference is visible; a container in that state
             still reports `status: running`.
+
+
+            Note this describes the container's OWN processes. These
+            files are answered from the READER's cgroup, so a process
+            that entered the container's namespaces from outside
+            without joining its cgroup reads the host's numbers even
+            when all six files are bound.
         captured_output:
           type: string
           nullable: true

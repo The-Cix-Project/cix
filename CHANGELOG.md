@@ -41,8 +41,44 @@ reading of the tenets, but this host is shell-less: a procfuse fault at
 boot would start no containers at all, and an unreachable box is worse
 than a container reporting the wrong memory total loudly.
 
-The cause of the failed binds is not yet established and is not
-guessed at here. The instrument to find it is what shipped.
+**And then the instrument found something else.** The binds were never
+failing. Every container on the host, jump included, has all six --
+confirmed against its real mount table. These files are answered from
+the READER's own cgroup (ADR-0262's design), and the reader in the
+failing case was not a container process at all: `exec.c` joins a
+container's namespaces with `setns()` and never joins its cgroup, so a
+dashboard console session sees the bound files and gets the HOST's
+numbers out of them. That is why `htop` in the console reported 7.71
+GiB against a 1 GiB limit while the container's own processes read
+1048576 kB correctly, measured side by side in the same container.
+
+The first version of the counter also read the mount table right after
+`container_create()` returned, while the child was still building it,
+and then kept that number for the life of the container -- a container
+whose real table held all six reported 1 for as long as it ran. It is
+counted live from the kernel on every read now, and logged once at
+cix-init's own UP report, which is the first moment the mounts are
+certainly complete.
+
+### A console session joins the container's cgroup, not just its namespaces
+
+The fix for the above. `exec.c` entered a container with `setns()` on
+its mount, UTS, network and pid namespaces and never joined its
+cgroup, so a console session saw the container's bound `/proc` files
+and read the host's numbers out of them -- the namespaces decide which
+files are visible, the reader's cgroup decides what they say.
+
+The session now writes `0` into the container's own `cgroup.procs`
+before `execve`. The fd is opened by the daemon *before* any `setns()`,
+because the host's `/sys/fs/cgroup` is not reachable from inside the
+container's mount namespace, and an already-open fd does not care.
+Non-fatal if it cannot be opened: a console that reports the wrong
+memory total is still a console, and on a host with no other way in,
+refusing to open one is the worse failure.
+
+A console session is now accounted against the container's own memory
+and pid limits. That is intended -- it is workload, not control plane,
+which is the same reasoning #278 already applied to its OOM score.
 
 ### GET /containers/{name}/files can read /proc again
 

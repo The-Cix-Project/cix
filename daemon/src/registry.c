@@ -14,6 +14,41 @@
 #include <time.h>
 #include <unistd.h>
 
+/*
+ * How many of this container's procfuse binds are in its mount table
+ * right now, asked of the kernel rather than remembered.
+ *
+ * Counted from the child's own /proc/<pid>/mountinfo, where a bound
+ * file appears with "cix-procfuse" as its mount source -- verified
+ * against a real container's table rather than assumed:
+ *
+ *   157 152 0:27 /meminfo /proc/meminfo rw,nosuid,nodev,relatime \
+ *       - fuse cix-procfuse rw,user_id=0,group_id=0,allow_other
+ *
+ * Returns -1 when the table cannot be read at all, which is a
+ * different answer from 0 and must not be reported as "none bound".
+ */
+int registry_procfuse_bound(const struct registry_entry *entry)
+{
+	char path[64];
+	char line[4096];
+	FILE *f;
+	int bound = 0;
+
+	if (!entry->running || entry->handle.pid <= 0)
+		return -1;
+	snprintf(path, sizeof(path), "/proc/%d/mountinfo", (int)entry->handle.pid);
+	f = fopen(path, "r");
+	if (f == NULL)
+		return -1;
+	while (fgets(line, sizeof(line), f) != NULL) {
+		if (strstr(line, "cix-procfuse") != NULL)
+			bound++;
+	}
+	fclose(f);
+	return bound;
+}
+
 static struct registry_entry g_entries[REGISTRY_MAX_CONTAINERS];
 
 void registry_init(void)
@@ -97,43 +132,29 @@ enum registry_error registry_create(const char *name, const char *image,
 	 * One line either way, so the answer is in the log before anyone
 	 * has to ask.
 	 */
+	/*
+	 * ADR-0262: how many virtualised /proc files this container was
+	 * meant to get. Stored, because the request is a fact about the
+	 * container and does not change.
+	 *
+	 * How many actually LANDED is deliberately not stored here. The
+	 * binds happen in the child, which is still doing its mount setup
+	 * when clone3() has already returned to this parent -- counting
+	 * them at this instant reads a half-built mount table and then
+	 * freezes that number for the life of the container. Measured: a
+	 * container whose real table holds all six reported 1 for as long
+	 * as it ran. A wrong number that never corrects itself is worse
+	 * than no number, because it reads as a fault that is not there.
+	 *
+	 * So the count is taken live, from the kernel, whenever anyone
+	 * asks (registry_procfuse_bound() below) and once at cix-init's own
+	 * UP report, which is the first moment the mounts are certainly
+	 * complete.
+	 */
 	e->procfuse_expected = 0;
-	e->procfuse_bound = 0;
 	if (spec->mnt.procfuse_dir != NULL && spec->mnt.procfuse_dir[0] != '\0' &&
-	    spec->mnt.procfuse_file_count > 0) {
-		char path[64];
-		FILE *f;
-		int bound = 0;
-
+	    spec->mnt.procfuse_file_count > 0)
 		e->procfuse_expected = spec->mnt.procfuse_file_count;
-
-		snprintf(path, sizeof(path), "/proc/%d/mountinfo", (int)e->handle.pid);
-		f = fopen(path, "r");
-		if (f != NULL) {
-			char line[4096];
-
-			while (fgets(line, sizeof(line), f) != NULL) {
-				if (strstr(line, "cix-procfuse") != NULL)
-					bound++;
-			}
-			fclose(f);
-			e->procfuse_bound = bound;
-			if (bound == spec->mnt.procfuse_file_count) {
-				logstore_write("cixd", "info",
-				               "container %s: procfuse %d/%d files bound", name, bound,
-				               spec->mnt.procfuse_file_count);
-			} else {
-				logstore_write("cixd", "error",
-				               "container %s: procfuse bound only %d of %d files -- it reads "
-				               "the host's /proc for the rest",
-				               name, bound, spec->mnt.procfuse_file_count);
-			}
-		} else {
-			logstore_write("cixd", "error",
-			               "container %s: cannot read %s to confirm the procfuse binds: %s",
-			               name, path, strerror(errno));
-		}
-	}
 
 	memset(e->name, 0, sizeof(e->name));
 	strncpy(e->name, name, sizeof(e->name) - 1);
@@ -701,7 +722,14 @@ void registry_write_json_one(const struct registry_entry *entry, struct json_wri
 	jw_key(w, "procfuse_expected");
 	jw_int(w, entry->procfuse_expected);
 	jw_key(w, "procfuse_bound");
-	jw_int(w, entry->procfuse_bound);
+	{
+		int bound = registry_procfuse_bound(entry);
+
+		if (bound < 0)
+			jw_null(w);
+		else
+			jw_int(w, bound);
+	}
 	jw_key(w, "captured_output");
 	if (entry->capture_requested)
 		jw_str(w, entry->captured_output);

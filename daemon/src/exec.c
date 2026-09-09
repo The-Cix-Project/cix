@@ -217,7 +217,7 @@ int exec_resize_pty(int pty_master_fd, unsigned short cols, unsigned short rows)
 	return ioctl(pty_master_fd, TIOCSWINSZ, &wsz) == 0 ? 0 : -1;
 }
 
-int exec_into_container(pid_t target_pid, char *const cmd_argv[],
+int exec_into_container(pid_t target_pid, int cgroup_procs_fd, char *const cmd_argv[],
                          const struct exec_term *term,
                          int *out_pty_master_fd, pid_t *out_child_pid)
 {
@@ -475,6 +475,24 @@ int exec_into_container(pid_t target_pid, char *const cmd_argv[],
 			 * an ordinary OOM candidate, not inherit the control
 			 * plane's exemption. */
 			cix_oom_unprotect_self();
+			/*
+			 * Join the container's cgroup before running anything.
+			 *
+			 * "0" means "the process doing the write", so this works
+			 * without knowing our own host-side pid -- which we do not
+			 * have, being inside the container's pid namespace. The fd
+			 * was opened by the daemon before any setns(), because the
+			 * host's /sys/fs/cgroup is not reachable from in here.
+			 *
+			 * Non-fatal: a session that runs against the host's
+			 * resource accounting is wrong about /proc but still a
+			 * working session, and refusing to open a console is the
+			 * worse failure on a host with no other way in.
+			 */
+			if (cgroup_procs_fd >= 0 &&
+			    write(cgroup_procs_fd, "0\n", 2) != 2)
+				fprintf(stderr, "exec_into_container: joining the container cgroup: %s\n",
+				         strerror(errno));
 			setsid();
 			ioctl(slave_fd, TIOCSCTTY, 0);
 			dup2(slave_fd, STDIN_FILENO);
