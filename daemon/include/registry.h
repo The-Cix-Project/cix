@@ -249,6 +249,25 @@ struct registry_entry {
 	 * that produced it is long gone either way).
 	 */
 	char last_exit_reason[256];
+
+	/*
+	 * ADR-0262: how many of the virtualised /proc files this container
+	 * was meant to get, and how many actually landed in its mount table.
+	 *
+	 * Recorded because the bind is deliberately non-fatal, so a
+	 * container that got none of them still runs, still reports
+	 * "running", and -- until these two numbers existed -- reported the
+	 * HOST's memory and cpu count to anything inside it that asked, with
+	 * nothing anywhere saying so. A container quietly claiming 7.71 GiB
+	 * when its limit is 1 GiB is not a degraded feature, it is a wrong
+	 * answer, and an operator has to be able to see it.
+	 *
+	 * expected == 0 means the container declined procfuse (or the server
+	 * was not running when it was created), which is a different thing
+	 * from bound < expected and must not read as a fault.
+	 */
+	int procfuse_expected;
+	int procfuse_bound;
 	/*
 	 * 1 while frozen via the cgroup v2 freezer (POST .../pause,
 	 * ADR-0045) -- the process itself is still `running` (its pid is

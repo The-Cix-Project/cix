@@ -13403,6 +13403,29 @@ components:
             echoed back here -- the caller already has them, and v1
             doesn't support introspecting or modifying them after
             creation.
+        procfuse_expected:
+          type: integer
+          description: >
+            How many virtualised /proc files (ADR-0262) this container
+            was meant to receive. 0 means it declined them with
+            `procfuse: false`, or the procfuse server was not running
+            when it was created -- neither is a fault.
+        procfuse_bound:
+          type: integer
+          description: >
+            How many of those files actually landed in the container's
+            mount table, counted by the daemon from the child's own
+            /proc/<pid>/mountinfo right after creation rather than
+            assumed from the request.
+
+
+            `procfuse_bound < procfuse_expected` means the container is
+            running but reads the HOST's real /proc for the files that
+            are missing -- so anything inside it that asks about memory
+            or cpu count gets the host's numbers, not its own limits.
+            The bind is deliberately non-fatal, so this is the only
+            place that difference is visible; a container in that state
+            still reports `status: running`.
         captured_output:
           type: string
           nullable: true
