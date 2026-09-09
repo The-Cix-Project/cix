@@ -2,10 +2,24 @@
 
 ## Status
 
-Proposed
+Accepted
 
 Issue [#336](https://git.home.arpa/itdlabs/cix/issues/336). Kernel support (`CONFIG_FUSE_FS`) ships in
-`kernel@7.2.3-4`; nothing else here is built yet.
+`kernel@7.2.3-4`. Built and **verified end to end on 192.168.15.95** running `v2.57.22`, in a
+container declaring `memory_max: 1073741824` and `cpuset_cpus: "0"` on a 2-CPU, 7894 MB host:
+
+| file | container reads | host's own figure |
+|---|---|---|
+| `/proc/meminfo` | `MemTotal: 1048576 kB` — exactly the declared 1 GiB | 7894 MB |
+| `/proc/cpuinfo` | one `processor` block | two |
+| `/proc/uptime` | `0.00` → `20.00` → `40.00` → `60.00` over one minute — the container's own age | the host's uptime |
+| `/proc/stat` | `cpu 0 0 0` rising to `cpu 1 0 1` as the container used a tick | the host's totals |
+
+All six files appear in the container's own `/proc/self/mountinfo` as `fuse cix-procfuse`.
+
+`nproc` reporting 1 is a separate mechanism and worth not confusing with this one: it reads
+`sched_getaffinity`, which the cpuset constrains directly and which needed nothing from here. What
+this ADR delivers is every tool that sizes itself by *reading a file* — the case #278/#279 was.
 
 ## Context
 
