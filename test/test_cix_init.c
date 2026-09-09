@@ -228,6 +228,21 @@ static int read_report(struct init_run *r, struct cixinit_report *out, int timeo
 	return n == (ssize_t)sizeof(*out) ? 0 : -1;
 }
 
+/*
+ * #309: elapsed time in MILLISECONDS, never a difference of whole
+ * tv_sec fields. A bound written as `t1.tv_sec - t0.tv_sec > 2` does
+ * not mean "two seconds": it means anything from just over 2.0 s to
+ * just under 3.0 s, depending only on where the run happened to sit
+ * inside a second. That is a test whose pass/fail is decided by clock
+ * alignment rather than by the code under test, and case 12 really did
+ * fail twice on it in one session while nothing about cix-init had
+ * changed. One helper so a new bound cannot reintroduce the same shape.
+ */
+static long elapsed_ms(const struct timespec *t0, const struct timespec *t1)
+{
+	return (t1->tv_sec - t0->tv_sec) * 1000L + (t1->tv_nsec - t0->tv_nsec) / 1000000L;
+}
+
 static const char *ev_name(int ev)
 {
 	switch (ev) {
@@ -579,11 +594,12 @@ static int test_declared_restart(void)
 	if (wait_for(&r, 0, CIXINIT_EV_STARTED, &rep) < 0)
 		return -1;
 	clock_gettime(CLOCK_MONOTONIC, &t1);
-	if (t1.tv_sec - t0.tv_sec < 1) {
-		fprintf(stderr, "  FAIL: restarted after %lds, delay was 2\n", (long)(t1.tv_sec - t0.tv_sec));
+	if (elapsed_ms(&t0, &t1) < 1500) {
+		fprintf(stderr, "  FAIL: restarted after %ldms, declared delay was 2s\n",
+		        elapsed_ms(&t0, &t1));
 		return -1;
 	}
-	printf("  restarted after ~%lds (declared 2)\n", (long)(t1.tv_sec - t0.tv_sec));
+	printf("  restarted after %ldms (declared 2s)\n", elapsed_ms(&t0, &t1));
 	if (send_command(&r, CIXINIT_OP_SHUTDOWN, -1) != 0)
 		return -1;
 	if (wait_exit(&r, &status) != 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
@@ -755,12 +771,12 @@ static int test_sigterm_shutdown(void)
 	 * container delete into a multi-second wait, so this is a real
 	 * bound and not a formality.
 	 */
-	if (t1.tv_sec - t0.tv_sec > 2) {
-		fprintf(stderr, "  FAIL: SIGTERM shutdown took %lds -- far too slow for a delete\n",
-		        (long)(t1.tv_sec - t0.tv_sec));
+	if (elapsed_ms(&t0, &t1) > 2000) {
+		fprintf(stderr, "  FAIL: SIGTERM shutdown took %ldms -- far too slow for a delete\n",
+		        elapsed_ms(&t0, &t1));
 		return -1;
 	}
-	printf("  shut down and exited 0 in under %lds\n", (long)(t1.tv_sec - t0.tv_sec) + 1);
+	printf("  shut down and exited 0 in %ldms\n", elapsed_ms(&t0, &t1));
 	init_close(&r);
 	return 0;
 }
@@ -801,8 +817,8 @@ static int test_shutdown_before_start(void)
 		return -1;
 	}
 	clock_gettime(CLOCK_MONOTONIC, &t1);
-	if (t1.tv_sec - t0.tv_sec > 2) {
-		fprintf(stderr, "  FAIL: took %lds\n", (long)(t1.tv_sec - t0.tv_sec));
+	if (elapsed_ms(&t0, &t1) > 2000) {
+		fprintf(stderr, "  FAIL: took %ldms\n", elapsed_ms(&t0, &t1));
 		return -1;
 	}
 	printf("  honoured a shutdown it was told about before it existed\n");
