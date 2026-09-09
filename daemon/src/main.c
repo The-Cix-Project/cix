@@ -20221,6 +20221,90 @@ static void op_getSystemAssembly(const struct api_ctx *ctx)
 	jw_free(&w);
 }
 
+/*
+ * POST /v1/system/assembly -- #308.
+ *
+ * Assembling a control plane had status and no trigger. It happened
+ * only as a side effect of a hostbuild named "cix" completing, so
+ * re-assembling a root -- after building the image a staging argument
+ * reads from, say -- required inventing a new cix version whose code
+ * had not changed. `pkg hostbuild` answers an already-installed
+ * version with 409, so there was no other way to ask for one.
+ *
+ * That is not a hypothetical: staging kernel modules (#347) needs the
+ * assembly to run once under the daemon that knows how to stage them,
+ * and reaching it cost a version number that existed for no other
+ * reason.
+ *
+ * The same function the hostbuild path calls, with the same artifact
+ * directory it would have passed. Nothing about assembly changes; it
+ * simply becomes reachable.
+ */
+static void op_postSystemAssembly(const struct api_ctx *ctx)
+{
+	char artifact_dir[PATH_MAX];
+	char mkbootroot_bin[PATH_MAX];
+	char bootroot_image[PATH_MAX];
+	struct stat st;
+	struct json_writer w;
+
+	/*
+	 * Refused rather than queued. A second mkbootroot writing the same
+	 * output squashfs while the first is still writing it produces a
+	 * root that is neither, and this daemon tracks exactly one
+	 * assembly child.
+	 */
+	if (g_bootroot_assembly_running) {
+		respond_error(ctx->fd, 409, "Conflict",
+		              "an assembly is already running -- poll GET /v1/system/assembly");
+		return;
+	}
+
+	snprintf(artifact_dir, sizeof(artifact_dir), "%s/cix", ARTIFACTS_DIR);
+	/*
+	 * mkbootroot specifically, not the directory: ADR-0057 assembles
+	 * with THIS round's own freshly built binary, so an artifact
+	 * directory without one cannot be assembled from, and saying so
+	 * here is better than a fork that fails at execve() and reports
+	 * only through the log store.
+	 */
+	snprintf(mkbootroot_bin, sizeof(mkbootroot_bin), "%s/mkbootroot", artifact_dir);
+	if (stat(mkbootroot_bin, &st) != 0 || !S_ISREG(st.st_mode)) {
+		respond_error(ctx->fd, 404, "Not Found",
+		              "no cix artifact to assemble from -- this host has never completed a "
+		              "hostbuild of \"cix\"");
+		return;
+	}
+
+	spawn_cix_bootroot_assembly(artifact_dir);
+
+	/*
+	 * g_bootroot_assembly_running is the honest answer to "did it
+	 * start", because spawn_cix_bootroot_assembly() sets it only after
+	 * a fork that succeeded and logs the failure itself otherwise.
+	 */
+	if (!g_bootroot_assembly_running) {
+		respond_error(ctx->fd, 500, "Internal Server Error",
+		              "assembly could not be started -- see GET /v1/system/logs");
+		return;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "running");
+	jw_bool(&w, g_bootroot_assembly_running);
+	jw_key(&w, "started_generation");
+	jw_int(&w, g_bootroot_assembly_started);
+	jw_key(&w, "completed_generation");
+	jw_int(&w, g_bootroot_assembly_completed);
+	snprintf(bootroot_image, sizeof(bootroot_image), "%s/cixd-root.squashfs", BOOTROOT_DIR);
+	jw_key(&w, "image_path");
+	jw_str(&w, bootroot_image);
+	jw_obj_close(&w);
+	respond_json(ctx->fd, 202, "Accepted", &w);
+	jw_free(&w);
+}
+
 /* GET /v1/system/boot */
 static void op_getSystemBoot(const struct api_ctx *ctx)
 {
