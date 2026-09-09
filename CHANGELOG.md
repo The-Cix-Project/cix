@@ -6,6 +6,50 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A synthesised /proc/stat counter must still be monotonic (#359)
+
+Found in the output that confirmed the cap fix, on `v2.57.25`, a
+container pegged at a half-CPU cap over 20 s:
+
+```
+delta: [1001, 0, 1, -1, ...]   →  100.1%
+```
+
+The **idle column fell by a tick**. `/proc/stat` counters never decrease
+and every consumer computes deltas from them — several in unsigned
+arithmetic, where a one-tick decrease becomes a number near 2^64.
+
+The cause is real rather than rounding. Idle is capacity less busy, and
+CFS bandwidth lets a container overrun its nominal quota slightly within
+a period, so measured busy (1002 ticks) can exceed capacity computed
+from that quota (1001). Clamping idle at zero stops it going negative;
+it does not stop it falling from one to zero.
+
+The last value served for a cgroup is now remembered and never lowered —
+a fixed 128-entry table, since at most `REGISTRY_MAX_CONTAINERS` cgroups
+are ever live and one process serves them all.
+
+**Keyed on the path, the occupant, and the allowance**, each for a
+reason that bit during development:
+
+- **the path alone is not enough** — cgroup names are reused constantly,
+  build slots are literally named after the slot index, so a new
+  container on a recycled name would inherit its predecessor's floor and
+  report a pinned, far-too-high idle for its whole life. The oldest
+  `starttime` in `cgroup.procs` distinguishes occupants.
+- **the allowance belongs in the key too.** Changing a container's
+  `cpu.max` changes what capacity-so-far means, so the floor starts
+  over. That is the one moment the counter may legitimately step down,
+  and it is deliberate: pinning idle to a floor computed under a limit
+  that no longer applies is a permanently wrong number rather than a
+  momentarily surprising one. Caught by the test — with the allowance
+  out of the key, the quota case inherited the unlimited case's floor
+  and read 50% again.
+
+Two cases added to `test_procfuse`: idle never decreases when busy
+overruns the capacity it is subtracted from, and a recycled cgroup name
+does not inherit the previous occupant's floor.
+
 ### The CPU cap belongs in the idle denominator too (#359)
 
 Caught by the owner reviewing the fix above: the new idle column read

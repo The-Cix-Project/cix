@@ -727,6 +727,102 @@ static double container_cpu_allowance(const char *cg)
  * the two clocks are sampled independently and a busy container can
  * momentarily account for more than the window suggests.
  */
+/*
+ * A /proc/stat counter MUST NOT go backwards, and a synthesised one can.
+ *
+ * Measured on 192.168.15.95 (v2.57.25), a container pegged at a
+ * half-CPU cap over 20 s: `delta: [1001, 0, 1, -1, ...]` -- the idle
+ * column fell by one tick between samples. The cause is real rather
+ * than rounding: idle is capacity minus busy, and CFS bandwidth lets a
+ * container overrun its nominal quota slightly within a period, so
+ * measured busy (1002 ticks) can exceed capacity computed from the
+ * nominal quota (1001). Clamping idle at zero stops it going negative;
+ * it does not stop it FALLING from one to zero.
+ *
+ * That matters because every consumer of /proc/stat computes a delta,
+ * and several compute it in unsigned arithmetic, where a one-tick
+ * decrease becomes a number near 2^64 and the percentage derived from
+ * it is nonsense. The kernel's own counters are monotonic and a reader
+ * is entitled to rely on it.
+ *
+ * So the last value served for a cgroup is remembered and never
+ * lowered. The table is small and fixed: there are at most
+ * REGISTRY_MAX_CONTAINERS live cgroups and this process serves them
+ * all.
+ *
+ * KEYED ON THE PATH, THE CONTAINER'S START TIME, AND ITS ALLOWANCE.
+ *
+ * The start time, because cgroup names are reused constantly -- build
+ * slots are literally named after the slot index (src/cgroup.c says
+ * so). Without it, a new container inheriting a recycled name would
+ * inherit its predecessor's idle floor and report a pinned,
+ * far-too-high idle for its whole life.
+ *
+ * The allowance, because idle is capacity-so-far less busy-so-far, and
+ * changing a container's cpu.max or cpuset changes what capacity-so-far
+ * even means. That is an operator action recomputing the basis, not the
+ * jitter this floor exists to absorb, so the floor starts over. It is
+ * the one moment the served counter may legitimately step down, and it
+ * is deliberate: pinning idle to a floor computed under a limit that no
+ * longer applies would be a permanently wrong number rather than a
+ * momentarily surprising one.
+ */
+#define IDLE_CACHE_MAX 128
+
+struct idle_cache_entry {
+	char cg[PATH_MAX];
+	long long starttime_ticks;
+	double allowance;
+	long long idle;
+	unsigned long long used; /* for replacing the least recently seen */
+};
+
+static struct idle_cache_entry g_idle_cache[IDLE_CACHE_MAX];
+static unsigned long long g_idle_clock;
+
+static long long idle_monotonic(const char *cg, const struct cgroup_procs_info *procs,
+                                 double allowance, long long idle)
+{
+	struct idle_cache_entry *slot = NULL;
+	struct idle_cache_entry *oldest = &g_idle_cache[0];
+	int i;
+
+	if (cg == NULL)
+		return idle;
+
+	for (i = 0; i < IDLE_CACHE_MAX; i++) {
+		struct idle_cache_entry *e = &g_idle_cache[i];
+
+		if (e->cg[0] != '\0' && strcmp(e->cg, cg) == 0) {
+			slot = e;
+			break;
+		}
+		if (e->cg[0] == '\0') {
+			slot = e;
+			break;
+		}
+		if (e->used < oldest->used)
+			oldest = e;
+	}
+	if (slot == NULL)
+		slot = oldest;
+
+	/* A recycled name, a different occupant, or a changed limit all
+	 * mean the counter has a new basis and the floor starts over. */
+	if (slot->cg[0] == '\0' || strcmp(slot->cg, cg) != 0 ||
+	    slot->starttime_ticks != procs->oldest_starttime_ticks ||
+	    slot->allowance != allowance) {
+		snprintf(slot->cg, sizeof(slot->cg), "%s", cg);
+		slot->starttime_ticks = procs->oldest_starttime_ticks;
+		slot->allowance = allowance;
+		slot->idle = idle;
+	} else if (idle > slot->idle) {
+		slot->idle = idle;
+	}
+	slot->used = ++g_idle_clock;
+	return slot->idle;
+}
+
 struct cpu_times {
 	long long user;   /* ticks */
 	long long system; /* ticks */
@@ -742,6 +838,7 @@ static void cgroup_cpu_times(const char *cg, const struct cgroup_procs_info *pro
 	long long system_usec = cgroup_stat_key(cg, "cpu.stat", "system_usec", 0);
 	long ticks = sysconf(_SC_CLK_TCK);
 	long long capacity;
+	double allowance;
 
 	if (ticks <= 0)
 		ticks = 100;
@@ -765,10 +862,12 @@ static void cgroup_cpu_times(const char *cg, const struct cgroup_procs_info *pro
 	 * container held at half a CPU by cpu.max is at its ceiling, and
 	 * dividing by a whole CPU would report it half idle.
 	 */
-	capacity = (long long)(t->uptime * container_cpu_allowance(cg) * (double)ticks);
+	allowance = container_cpu_allowance(cg);
+	capacity = (long long)(t->uptime * allowance * (double)ticks);
 	t->idle = capacity - t->user - t->system;
 	if (t->idle < 0)
 		t->idle = 0;
+	t->idle = idle_monotonic(cg, procs, allowance, t->idle);
 }
 
 /*

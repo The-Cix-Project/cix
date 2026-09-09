@@ -280,6 +280,72 @@ int main(void)
 		put("cpu.max", "max 100000");
 	}
 
+	printf("1c. the idle counter never goes backwards\n");
+	{
+		/*
+		 * A /proc/stat counter must be monotonic: every consumer
+		 * computes a delta from it and several do so in unsigned
+		 * arithmetic, where a one-tick decrease becomes a number near
+		 * 2^64.
+		 *
+		 * Measured on 192.168.15.95 (v2.57.25) before this existed, a
+		 * container pegged at a half-CPU cap: delta [1001, 0, 1, -1].
+		 * The idle column FELL by a tick, because CFS bandwidth lets a
+		 * container overrun its nominal quota within a period, so
+		 * measured busy can exceed capacity computed from that quota.
+		 *
+		 * Reproduced here by making busy JUMP past capacity between
+		 * two reads, which is the same thing at larger scale.
+		 */
+		long long cc[10];
+		long long first_idle, second_idle;
+
+		n = procfuse_render_for_cgroup(2, g_dir, buf, sizeof(buf));
+		buf[n < sizeof(buf) ? n : sizeof(buf) - 1] = '\0';
+		cpu_line(buf, "cpu ", cc);
+		first_idle = cc[3];
+
+		/* Same 15 s of uptime, but now 14 CPU-seconds used: capacity
+		 * has not moved and busy has nearly caught it, so the raw
+		 * subtraction would drop idle from ~750 to ~100. */
+		put("cpu.stat", "usage_usec 14000000\nuser_usec 13000000\nsystem_usec 1000000\n");
+		n = procfuse_render_for_cgroup(2, g_dir, buf, sizeof(buf));
+		buf[n < sizeof(buf) ? n : sizeof(buf) - 1] = '\0';
+		cpu_line(buf, "cpu ", cc);
+		second_idle = cc[3];
+		CHECK(second_idle >= first_idle,
+		      "idle never decreases, even when busy overruns the capacity it is subtracted from");
+		printf("     (first=%lld second=%lld)\n", first_idle, second_idle);
+
+		/*
+		 * A RECYCLED cgroup name must not inherit that floor. Build
+		 * slots are named after the slot index and reused constantly
+		 * (src/cgroup.c), so without keying on the occupant a new
+		 * container would report its predecessor's idle for its whole
+		 * life. A different oldest-starttime in cgroup.procs is what
+		 * marks a different occupant; a live pid of our own supplies
+		 * one, where the empty file used everywhere else does not.
+		 */
+		{
+			char pidline[32];
+
+			snprintf(pidline, sizeof(pidline), "%ld\n", (long)getpid());
+			put("cgroup.procs", pidline);
+			put("cpu.stat", "usage_usec 1000000\nuser_usec 1000000\nsystem_usec 0\n");
+			n = procfuse_render_for_cgroup(2, g_dir, buf, sizeof(buf));
+			buf[n < sizeof(buf) ? n : sizeof(buf) - 1] = '\0';
+			cpu_line(buf, "cpu ", cc);
+			CHECK(cc[3] < second_idle,
+			      "a recycled cgroup name does not inherit the previous occupant's idle floor");
+			printf("     (new occupant idle=%lld, previous floor was %lld)\n", cc[3],
+			       second_idle);
+			put("cgroup.procs", "");
+		}
+
+		/* Restored, so the cases below see the scenario they describe. */
+		put("cpu.stat", "usage_usec 7500000\nuser_usec 7000000\nsystem_usec 500000\n");
+	}
+
 	printf("2. /proc/stat: the parts sum to the whole\n");
 	n = procfuse_render_for_cgroup(2, g_dir, buf, sizeof(buf));
 	buf[n < sizeof(buf) ? n : sizeof(buf) - 1] = '\0';
