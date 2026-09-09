@@ -60,7 +60,7 @@ static const struct budget g_budgets[] = {
 	 * zombie and returns at once. Most of the rest reap the short-lived
 	 * intermediate of a double fork, which exits immediately by design.
 	 */
-	{ "daemon/src/main.c", 27, "pidfd callbacks + double-fork intermediates" },
+	{ "daemon/src/main.c", 26, "pidfd callbacks + double-fork intermediates" },
 	{ "daemon/src/pkg.c", 10, "build helpers and fetch intermediates" },
 	{ "daemon/src/targz.c", 4, "tar/gzip pipeline, bounded by the archive" },
 	{ "daemon/src/diskpart.c", 4, "sfdisk/blkid, bounded external tools" },
@@ -79,7 +79,7 @@ static const struct budget g_budgets[] = {
 #define BUDGET_COUNT ((int)(sizeof(g_budgets) / sizeof(g_budgets[0])))
 
 /* The whole-daemon ceiling, so a new FILE cannot slip past the table. */
-#define TOTAL_ALLOWED 63
+#define TOTAL_ALLOWED 62
 
 static int is_comment(const char *line)
 {

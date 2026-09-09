@@ -48,6 +48,18 @@ present" is not an error for that curated list — but there is one
 implementation of "run modprobe" again, rather than two of which only
 one would be found by anyone changing it.
 
+That deletion took a `waitpid()` with it, and `test_blocking_waits`
+refused the build for going *under* budget without saying so:
+
+```
+FAIL: daemon/src/main.c has 26 blocking waits, budget is 27 -- fewer than expected.
+      That is progress, so lower the budget in this same commit to lock it in.
+      A budget nobody tightens is a ceiling that only ever rises.
+```
+
+Budget 27 -> 26, ceiling 63 -> 62, in the same commit as the removal,
+which is the whole point of a ratchet that fails in both directions.
+
 ### Control-plane assembly can be asked for, not only watched (#308)
 
 `GET /v1/system/assembly` has reported on assembly since ADR-0230. There
