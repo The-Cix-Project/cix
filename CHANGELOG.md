@@ -2,6 +2,67 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### A second grant of a device is refused unless both sides say `shared` (#356)
+
+`held_by` made the problem visible; this is the policy that follows from
+it. Measured on 192.168.15.95 before the change, with two throwaway
+containers and an empty QEMU DVD-ROM:
+
+```
+create heldtest                -> 201
+held_by                        -> ['heldtest']
+create heldtest2 (same device) -> 201  -- NOT refused
+held_by                        -> ['heldtest', 'heldtest2']
+```
+
+Two containers, two `BPF_CGROUP_DEVICE` allow rules, one major/minor,
+and nothing anywhere said so.
+
+Now a device already held by a running container is `409`, and the
+message names the holder rather than only the fact:
+
+```
+device disk:sr0 is already held by container "heldtest" --
+both grants must set "shared": true to share it
+```
+
+**Both.** The newcomer and every existing holder. That symmetry is the
+entire protection: if only the newcomer had to opt in, a container that
+asked for a device *without* saying `shared` would silently lose
+exclusive use because someone else asked nicely — a speed bump, not a
+protection. So `shared` is recorded per grant, and a later grant asks
+what the earlier one wanted. Default `false`, because silence should
+read as "I need this to myself".
+
+`shared` sits beside `optional` on the object form `devices[]` already
+accepts (`{"id": ..., "optional": ..., "shared": ...}`) rather than
+inventing a second shape, and the same field and rule apply to the live
+attach `POST /containers/{name}/devices`.
+
+**Checked per resolved device, not per entry.** One entry can expand
+into several — a `vendor_model` mapping matching two identical drives,
+or a `gpu:N` group — and one contended member must refuse that device
+rather than letting the rest through silently. On the live-attach path
+the check runs before anything is attached, so a grouped id whose second
+member is contended cannot leave the first granted.
+
+A GPU shared between two containers is still perfectly possible and is
+now explicit: both grants say `shared`, which is a sentence someone
+wrote down rather than a default nobody noticed.
+
+Deliberately unchanged: a defined-but-stopped container holds nothing —
+no cgroup, no BPF program — so it is not consulted. Refusing on its
+behalf would refuse a grant that is genuinely free right now. A pending
+grant reconciled by a hotplug event is treated as exclusive, because the
+container said nothing about sharing and silence reads the same there.
+
+One improvement fell out for free: a duplicate live attach of a device a
+container already holds is now `409` naming the holder, where it used to
+be a generic `500` from `registry_device_live_attach()`'s `EEXIST`. That
+test's own comment had argued a dup was not "a realistic operator
+mistake worth its own status code" — the exclusivity check gives it one
+anyway.
+
 ### `GET /v1/devices` says who is holding a device (#356)
 
 Raised by the owner while reading how the WiFi adapter reaches `ar-1`:
