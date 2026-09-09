@@ -18,10 +18,51 @@
  * reported as 404 uniformly across all three, rather than guessing at
  * a finer-grained status from output this project never parses for
  * that purpose.
+ *
+ * That reasoning holds for the STATUS and never held for the MESSAGE,
+ * which is a distinction this file did not make. A real `modprobe -r`
+ * refusal on 192.168.15.95 reported "modprobe -r could not unload this
+ * module", full stop: modprobe's own explanation was captured into a
+ * pipe and thrown away, so the one party that knew why could not say
+ * so. Quoting the tool verbatim is not parsing it for a status code,
+ * and the message now carries whatever modprobe said.
  */
+#define KMOD_TOOL_OUT_MAX 512
+
+/*
+ * One error body carrying both what this daemon was trying to do and
+ * what the tool said about it. modprobe writes its real reason to
+ * stderr -- "FATAL: Module usb_storage is in use.", "is builtin.",
+ * "not found in directory /lib/modules/..." -- each pointing at a
+ * different fix, and none of which survived being discarded.
+ *
+ * Newlines fold to spaces because this becomes a JSON string an
+ * operator reads on one line, and modprobe's output is usually one
+ * sentence with a trailing newline anyway.
+ */
+static void respond_kmod_tool_error(int fd, const char *what, char *tool_out)
+{
+	char msg[KMOD_TOOL_OUT_MAX + 128];
+	size_t i;
+
+	for (i = 0; tool_out[i] != '\0'; i++) {
+		if (tool_out[i] == '\n' || tool_out[i] == '\r' || tool_out[i] == '\t')
+			tool_out[i] = ' ';
+	}
+	while (i > 0 && tool_out[i - 1] == ' ')
+		tool_out[--i] = '\0';
+
+	if (tool_out[0] != '\0')
+		snprintf(msg, sizeof(msg), "%s: %s", what, tool_out);
+	else
+		snprintf(msg, sizeof(msg), "%s, and said nothing about why", what);
+	respond_error(fd, 404, "Not Found", msg);
+}
+
 void handle_kmod_post(int fd, const char *name, const char *body, size_t body_len)
 {
 	char options[KMOD_OPTIONS_MAX];
+	char tool_out[KMOD_TOOL_OUT_MAX];
 	struct json_value *root = NULL;
 	const struct json_value *joptions = NULL;
 
@@ -53,8 +94,29 @@ void handle_kmod_post(int fd, const char *name, const char *body, size_t body_le
 	}
 	json_free(root);
 
-	if (kmod_load(name, options) != 0) {
-		respond_error(fd, 404, "Not Found", "modprobe could not load this module");
+	/*
+	 * modprobe on an already-loaded module succeeds and does nothing.
+	 * With options that made this endpoint answer 200 and echo back
+	 * parameters the kernel had never seen -- a reported success for
+	 * work that did not happen, which is the failure mode this project
+	 * treats most seriously. Module parameters are set at insert time,
+	 * so changing them means unloading first, and only the operator can
+	 * decide whether unloading a live module is acceptable; this
+	 * refuses rather than deciding for them.
+	 *
+	 * A bare load of something already loaded stays a 200: that is
+	 * idempotent, claims nothing untrue, and is how every caller that
+	 * just wants the module present already uses it.
+	 */
+	if (options[0] != '\0' && kmod_is_loaded(name)) {
+		respond_error(fd, 409, "Conflict",
+		              "already loaded -- module parameters are set when a module is "
+		              "inserted, so unload it first (DELETE this path) to change them");
+		return;
+	}
+
+	if (kmod_load(name, options, tool_out, sizeof(tool_out)) != 0) {
+		respond_kmod_tool_error(fd, "modprobe could not load this module", tool_out);
 		return;
 	}
 
@@ -75,12 +137,14 @@ void handle_kmod_post(int fd, const char *name, const char *body, size_t body_le
 
 void handle_kmod_delete(int fd, const char *name)
 {
+	char tool_out[KMOD_TOOL_OUT_MAX];
+
 	if (!kmod_name_is_valid(name)) {
 		respond_error(fd, 400, "Bad Request", "invalid module name");
 		return;
 	}
-	if (kmod_unload(name) != 0) {
-		respond_error(fd, 404, "Not Found", "modprobe -r could not unload this module");
+	if (kmod_unload(name, tool_out, sizeof(tool_out)) != 0) {
+		respond_kmod_tool_error(fd, "modprobe -r could not unload this module", tool_out);
 		return;
 	}
 	http_set_blocking(fd);

@@ -1874,7 +1874,30 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "404":
-          description: modprobe could not load this module (not found/buildable, or not staged on this box)
+          description: >
+            modprobe could not load this module (not found/buildable, or
+            not staged on this box). The message carries modprobe's own
+            explanation verbatim -- "is builtin.", "not found in
+            directory /lib/modules/...", a rejected parameter -- each of
+            which points at a different fix. It used to be one fixed
+            sentence naming nothing, because the output was captured
+            into a pipe and discarded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >
+            Already loaded, and `options` were given. modprobe on a
+            loaded module succeeds and does nothing, so this used to
+            answer 200 and echo back parameters the kernel had never
+            seen -- a reported success for work that did not happen.
+            Module parameters are set when a module is inserted, so
+            changing them means unloading first, and whether unloading a
+            live module is acceptable is the operator's call rather than
+            this daemon's. A load with no `options` of something already
+            loaded is still 200: idempotent, and claiming nothing
+            untrue.
           content:
             application/json:
               schema:
@@ -1904,7 +1927,11 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "404":
-          description: modprobe -r could not unload this module (not loaded, in use, or not staged on this box)
+          description: >
+            modprobe -r could not unload this module. As with the load
+            above, the message carries modprobe's own reason verbatim
+            ("FATAL: Module X is in use.", "is builtin.") rather than a
+            fixed sentence. (not loaded, in use, or not staged on this box)
           content:
             application/json:
               schema:
