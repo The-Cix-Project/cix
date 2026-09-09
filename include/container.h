@@ -60,6 +60,28 @@ struct mount_spec {
 	 * granted CAP_SYS_ADMIN -- see its own comment for why both.
 	 */
 	int mount_cgroup2;
+	/*
+	 * ADR-0262/#336: files to bind over the container's own /proc, so a
+	 * process inside reads its OWN cgroup's limits.
+	 *
+	 * The runtime is told the directory and the names and nothing else
+	 * -- deliberately. What those files mean, how they are synthesised
+	 * and which server answers them is the daemon's business; this
+	 * layer only knows "bind these names from here over /proc/<name>",
+	 * which keeps src/ free of any dependency on daemon/.
+	 *
+	 * procfuse_dir is a HOST absolute path. mountns_pivot() runs after
+	 * pivot_root(), so it reaches it through put_old, in the one window
+	 * where both that path and the container's fresh /proc exist.
+	 *
+	 * NULL or empty means bind nothing, which is the correct state for
+	 * a container that opted out AND for a host whose server is not
+	 * running -- the container then reads the host's real /proc, which
+	 * is what every container read before this existed.
+	 */
+	const char *procfuse_dir;
+	const char *const *procfuse_files;
+	int procfuse_file_count;
 };
 
 /*

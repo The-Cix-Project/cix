@@ -12218,6 +12218,47 @@ components:
             container. Format only is validated (dest/via must be
             well-formed IPv4, prefix_len 0-32) -- whether via is
             actually reachable is the caller's responsibility.
+        procfuse:
+          type: boolean
+          default: true
+          description: >
+            Issue #336 / ADR-0262 -- whether this container's
+            /proc/meminfo, cpuinfo, stat, uptime, loadavg and swaps
+            report ITS OWN cgroup's limits rather than the host's.
+
+
+            Default true, and the default is the point: a virtualised
+            /proc a recipe has to remember to ask for is useless,
+            because nobody knows they need it until something has
+            already sized itself wrong. #278/#279 was exactly that -- a
+            build sizing itself by host memory against a 2 GiB ceiling
+            it could not see, surfacing as an unexplained OOM against a
+            machine reporting plenty free.
+
+
+            `false` declines it and the container reads the host's real
+            /proc, which is what every container did before this
+            existed.
+
+
+            Silently a no-op when the host's FUSE server is not running
+            (no /dev/fuse, a kernel without FUSE, a refused mount): the
+            container is created and reads the host's /proc. A missing
+            virtualisation is degraded, never a reason to refuse to
+            start a container.
+
+
+            cpuinfo follows `cpuset.cpus.effective`, NOT the CPU quota,
+            and that is measured rather than chosen: a build job's
+            cpu.max is one CPU while nproc reports 2, and nproc reads
+            sched_getaffinity, which a cpuset constrains and a quota
+            does not. A quota-derived cpuinfo would turn every
+            `make -j$(nproc)` on this platform into -j1.
+
+
+            Not a security boundary. A process can still reach the
+            host's real figures by other paths; this makes tools size
+            themselves correctly, it does not hide the host.
         userns:
           type: boolean
           description: >

@@ -288,6 +288,47 @@ int mountns_pivot(const struct mount_spec *mnt)
 	}
 
 	/*
+	 * ADR-0262/#336: the container's own /proc/meminfo and friends.
+	 *
+	 * This is the ONLY window in which it can be done. The source lives
+	 * on the host, reachable now only through put_old, and the target is
+	 * the fresh /proc mounted above -- so it must come after that mount
+	 * and before the detach immediately below. A bind attempted anywhere
+	 * else has either no source or no target.
+	 *
+	 * Every failure here is deliberately non-fatal and silent to the
+	 * caller. A container that does not get these files reads the host's
+	 * real /proc, which is exactly what every container read before this
+	 * feature existed -- degraded, not broken, and never a reason to
+	 * refuse to start a container. The reason still reaches an operator:
+	 * perror writes to the child's diag pipe, which container_create()
+	 * already surfaces.
+	 */
+	if (mnt != NULL && mnt->procfuse_dir != NULL && mnt->procfuse_dir[0] != '\0' &&
+	    mnt->procfuse_files != NULL) {
+		int i;
+
+		for (i = 0; i < mnt->procfuse_file_count; i++) {
+			char src[PATH_MAX];
+			char dst[PATH_MAX];
+
+			if (snprintf(src, sizeof(src), "/%s%s/%s", mnt->put_old_rel, mnt->procfuse_dir,
+			              mnt->procfuse_files[i]) >= (int)sizeof(src))
+				continue;
+			if (snprintf(dst, sizeof(dst), "/proc/%s", mnt->procfuse_files[i]) >=
+			    (int)sizeof(dst))
+				continue;
+			/*
+			 * MS_BIND only. A recursive bind would drag the whole FUSE
+			 * mount in, and the target is one file over one file.
+			 */
+			if (mount(src, dst, NULL, MS_BIND, NULL) != 0)
+				perror("mountns_pivot: bind procfuse file (container reads the host's /proc "
+				        "for it)");
+		}
+	}
+
+	/*
 	 * Now that the fresh proc/sysfs are mounted (satisfying the userns
 	 * visibility check while the inherited ones were still present), detach
 	 * the old root. MNT_DETACH lazily removes the whole put_old subtree as
