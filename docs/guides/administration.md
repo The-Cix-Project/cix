@@ -29,9 +29,18 @@ cixctl kmod ls
 cixctl kmod show e1000e
 cixctl kmod-config set e1000e --autoload
 cixctl kmod load e1000e
+cixctl kmod unload e1000e
 ```
 
 Wraps real `modprobe`/`modinfo` (ADR-0159 Phase A) -- `kmod ls` reads the kernel's own live `/proc/modules`; `kmod show NAME` is real `modinfo` output (description, module parameters, dependencies, in-tree vs. out-of-tree) for a module that's built and available, whether or not it's currently loaded. `kmod load NAME [--option=KEY=VALUE ...]` is real `modprobe`, with real dependency resolution -- omit `--option=` and it falls back to that module's own persisted `kmod-config` default, if one exists. `kmod-config set NAME --autoload` marks a module for automatic reload on every future boot (its own small, REST-managed list -- distinct from this platform's separate, fixed hardware-detection module list, which needs no configuration at all); `kmod-config set NAME --option=KEY=VALUE` sets the persisted default options a bare `kmod load NAME` falls back to. Building an *additional* module not already present in this platform's own curated kernel build -- rather than just loading one that's already there -- goes through the kernel rebuild + A/B cutover path in [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md), not this command.
+
+`kmod unload NAME` is real `modprobe -r` -- reverse-dependency-aware, not a bare `rmmod` that would leave now-unused dependencies loaded. **It needs a kernel built with `CONFIG_MODULE_UNLOAD`, which this platform's kernel did not have before 7.2.3-9** (issue #353): on an older kernel `delete_module(2)` is not compiled in at all, and the unload fails with `Function not implemented` no matter how idle the module is. If you see that, the kernel is the answer, not the module.
+
+A failed load or unload reports **modprobe's own words**, not a fixed sentence -- `is builtin.`, `not found in directory /lib/modules/...`, `FATAL: Module X is in use.` Each points at a different fix, and each used to be discarded before the message reached you.
+
+**Changing a loaded module's parameters means unloading it first.** Module parameters are set when a module is inserted, so `kmod load NAME --option=...` against a module that is already loaded is refused with `409` rather than reporting a success that changed nothing -- `modprobe` on a loaded module exits 0 and does nothing at all. Unload it, then load it with the options you want. A bare `kmod load NAME` of something already loaded is still fine and does nothing: it means "make sure this is loaded", and it is.
+
+Which drivers are modules at all is a deliberate split (#347): a driver for a *particular device* -- a GPU, a wireless chipset -- is a module, while everything needed to reach the root filesystem or the network is built in. That is not a stylistic preference. This platform's kernel is an EFI stub with **no initramfs**, so a storage controller or NIC driver that is not built in cannot be loaded from a disk the kernel cannot yet see.
 
 ## Device hotplug
 
