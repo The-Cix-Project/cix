@@ -199,25 +199,35 @@ static long long host_meminfo_kb(const char *key)
 /* ------------------------------------------------------------------ */
 
 /*
- * MemTotal is the cgroup's limit; MemFree and MemAvailable are that
- * limit minus what the cgroup is actually using.
+ * Every /proc/meminfo field cgroup v2 can actually answer, in one
+ * table, because the alternative is a chain of strcmp()s in the
+ * streaming loop and one of them silently not matching.
  *
- * ADR-0262 is explicit that these are never fractions of the limit. A
- * process deciding whether it can allocate reads exactly these fields,
- * and a fixed half is a lie in both directions -- it refuses work that
- * would fit and admits work that will not.
+ * `kb` is the value in kB. A key absent from this table is passed
+ * through from the host unchanged.
  *
- * Cached and Buffers come from memory.stat's `file` and `inactive_file`
- * rather than being invented: a tool subtracting Cached from used
- * memory gets an answer that means something.
+ * WHY NOT JUST PASS THE HOST'S THROUGH. A 1 GiB container would then
+ * report the host's `Active: 3 GB` -- a field larger than its own
+ * MemTotal, which is not merely imprecise but arithmetically impossible
+ * and will confuse any tool that cross-checks them.
+ *
+ * WHY NOT JUST EMIT THE FEW WE KNOW. That was the first version: eight
+ * fields where the host has fifty, so everything reading Active, Dirty,
+ * Slab, SReclaimable, AnonPages, Mapped or PageTables got nothing at
+ * all (#359).
+ *
+ * The fields deliberately left to the host are the ones no cgroup
+ * accounts: HugePages_*, Vmalloc*, DirectMap*, CommitLimit,
+ * HardwareCorrupted and friends. They describe the machine, not the
+ * cgroup, and are the same for every reader.
  */
-static size_t render_meminfo(const char *cg, char *out, size_t cap)
+static int meminfo_override(const char *cg, const char *key, size_t keylen, long long *kb)
 {
-	long long total_kb, cur_kb, avail_kb, file_kb, inactive_kb, swap_total_kb, swap_cur_kb;
 	long long limit = cgroup_ll(cg, "memory.max", -1);
+	long long total_kb, cur_kb;
+	long long swap_total_kb, swap_cur_kb;
 
 	if (limit < 0) {
-		/* Not confined: the host's own numbers are the true ones. */
 		total_kb = host_meminfo_kb("MemTotal");
 		cur_kb = total_kb - host_meminfo_kb("MemFree");
 	} else {
@@ -229,41 +239,117 @@ static size_t render_meminfo(const char *cg, char *out, size_t cap)
 	if (cur_kb > total_kb)
 		cur_kb = total_kb;
 
-	file_kb = cgroup_stat_key(cg, "memory.stat", "file", 0) / 1024;
-	inactive_kb = cgroup_stat_key(cg, "memory.stat", "inactive_file", 0) / 1024;
-	if (file_kb < 0)
-		file_kb = 0;
-	if (inactive_kb < 0)
-		inactive_kb = 0;
-
-	/*
-	 * Reclaimable page cache counts as available even though it is in
-	 * use, which is what MemAvailable means and why it is not MemFree.
-	 */
-	avail_kb = total_kb - cur_kb + inactive_kb;
-	if (avail_kb < 0)
-		avail_kb = 0;
-	if (avail_kb > total_kb)
-		avail_kb = total_kb;
-
 	swap_total_kb = cgroup_ll(cg, "memory.swap.max", -1);
 	swap_total_kb = swap_total_kb < 0 ? 0 : swap_total_kb / 1024;
 	swap_cur_kb = cgroup_ll(cg, "memory.swap.current", 0) / 1024;
 	if (swap_cur_kb < 0)
 		swap_cur_kb = 0;
 
-	return (size_t)snprintf(out, cap,
-	                         "MemTotal:       %8lld kB\n"
-	                         "MemFree:        %8lld kB\n"
-	                         "MemAvailable:   %8lld kB\n"
-	                         "Buffers:        %8lld kB\n"
-	                         "Cached:         %8lld kB\n"
-	                         "SwapTotal:      %8lld kB\n"
-	                         "SwapFree:       %8lld kB\n"
-	                         "Shmem:          %8lld kB\n",
-	                         total_kb, total_kb - cur_kb, avail_kb, 0LL, file_kb, swap_total_kb,
-	                         swap_total_kb - swap_cur_kb,
-	                         cgroup_stat_key(cg, "memory.stat", "shmem", 0) / 1024);
+#define MSTAT(k) (cgroup_stat_key(cg, "memory.stat", (k), 0) / 1024)
+#define MATCH(name) (keylen == sizeof(name) - 1 && strncmp(key, (name), keylen) == 0)
+
+	if (MATCH("MemTotal")) {
+		*kb = total_kb;
+	} else if (MATCH("MemFree")) {
+		*kb = total_kb - cur_kb;
+	} else if (MATCH("MemAvailable")) {
+		/* Reclaimable page cache counts as available even though it is
+		 * in use -- that is what MemAvailable means and why it is not
+		 * MemFree. */
+		long long avail = total_kb - cur_kb + MSTAT("inactive_file");
+
+		*kb = avail < 0 ? 0 : (avail > total_kb ? total_kb : avail);
+	} else if (MATCH("Buffers")) {
+		/* cgroup v2 does not separate buffer cache from page cache;
+		 * all of it is reported as Cached. Zero here is a real answer,
+		 * not a placeholder. */
+		*kb = 0;
+	} else if (MATCH("Cached")) {
+		*kb = MSTAT("file");
+	} else if (MATCH("SwapCached")) {
+		*kb = 0;
+	} else if (MATCH("SwapTotal")) {
+		*kb = swap_total_kb;
+	} else if (MATCH("SwapFree")) {
+		*kb = swap_total_kb - swap_cur_kb;
+	} else if (MATCH("Active")) {
+		*kb = MSTAT("active_anon") + MSTAT("active_file");
+	} else if (MATCH("Inactive")) {
+		*kb = MSTAT("inactive_anon") + MSTAT("inactive_file");
+	} else if (MATCH("Active(anon)")) {
+		*kb = MSTAT("active_anon");
+	} else if (MATCH("Inactive(anon)")) {
+		*kb = MSTAT("inactive_anon");
+	} else if (MATCH("Active(file)")) {
+		*kb = MSTAT("active_file");
+	} else if (MATCH("Inactive(file)")) {
+		*kb = MSTAT("inactive_file");
+	} else if (MATCH("Unevictable")) {
+		*kb = MSTAT("unevictable");
+	} else if (MATCH("Dirty")) {
+		*kb = MSTAT("file_dirty");
+	} else if (MATCH("Writeback")) {
+		*kb = MSTAT("file_writeback");
+	} else if (MATCH("AnonPages")) {
+		*kb = MSTAT("anon");
+	} else if (MATCH("Mapped")) {
+		*kb = MSTAT("file_mapped");
+	} else if (MATCH("Shmem")) {
+		*kb = MSTAT("shmem");
+	} else if (MATCH("KReclaimable") || MATCH("SReclaimable")) {
+		*kb = MSTAT("slab_reclaimable");
+	} else if (MATCH("SUnreclaim")) {
+		*kb = MSTAT("slab_unreclaimable");
+	} else if (MATCH("Slab")) {
+		*kb = MSTAT("slab");
+	} else if (MATCH("KernelStack")) {
+		*kb = MSTAT("kernel_stack");
+	} else if (MATCH("PageTables")) {
+		*kb = MSTAT("pagetables");
+	} else {
+		return 0;
+	}
+#undef MATCH
+#undef MSTAT
+	if (*kb < 0)
+		*kb = 0;
+	return 1;
+}
+
+/*
+ * The host's /proc/meminfo with every field this cgroup can answer
+ * written over it, and the rest passed through.
+ *
+ * ADR-0262 is explicit that these are never fractions of the limit. A
+ * process deciding whether it can allocate reads exactly these fields,
+ * and a fixed half is a lie in both directions -- it refuses work that
+ * would fit and admits work that will not.
+ */
+static size_t render_meminfo(const char *cg, char *out, size_t cap)
+{
+	FILE *f;
+	char line[512];
+	size_t len = 0;
+
+	f = fopen("/proc/meminfo", "r");
+	if (f == NULL)
+		return 0;
+	while (fgets(line, sizeof(line), f) != NULL) {
+		const char *colon = strchr(line, ':');
+		long long kb;
+
+		if (colon != NULL &&
+		    meminfo_override(cg, line, (size_t)(colon - line), &kb)) {
+			len += (size_t)snprintf(out + len, len < cap ? cap - len : 0,
+			                         "%.*s:%*lld kB\n", (int)(colon - line), line,
+			                         (int)(23 - (colon - line)), kb);
+			continue;
+		}
+		if (len < cap)
+			len += (size_t)snprintf(out + len, cap - len, "%s", line);
+	}
+	fclose(f);
+	return len < cap ? len : cap;
 }
 
 /*
@@ -357,6 +443,23 @@ static size_t render_cpuinfo(const char *cg, char *out, size_t cap)
 		}
 		if (skipping)
 			continue;
+		/*
+		 * Topology has to agree with the processor count, or a tool
+		 * reads one CPU and two siblings and believes whichever it
+		 * asked for second. Measured before this existed: a container
+		 * pinned to `cpuset_cpus: "0"` emitted one processor block
+		 * carrying the host's `siblings: 2` and `cpu cores: 2`.
+		 */
+		if (want > 0 && strncmp(line, "siblings", 8) == 0) {
+			len += (size_t)snprintf(out + len, len < cap ? cap - len : 0,
+			                         "siblings\t: %d\n", want);
+			continue;
+		}
+		if (want > 0 && strncmp(line, "cpu cores", 9) == 0) {
+			len += (size_t)snprintf(out + len, len < cap ? cap - len : 0,
+			                         "cpu cores\t: %d\n", want);
+			continue;
+		}
 		if (len < cap)
 			len += (size_t)snprintf(out + len, cap - len, "%s", line);
 	}
@@ -364,58 +467,351 @@ static size_t render_cpuinfo(const char *cg, char *out, size_t cap)
 	return len < cap ? len : cap;
 }
 
-/* Seconds since this cgroup's own directory was created, which is the
- * closest honest answer to "how long has this container been up". Falls
- * back to the host's uptime when unconfined. */
-static size_t render_uptime(const char *cg, char *out, size_t cap)
+/*
+ * ------------------------------------------------------------------
+ * One time base for every renderer that needs one (#359)
+ * ------------------------------------------------------------------
+ *
+ * /proc/stat's idle column and /proc/uptime's second field are the same
+ * quantity in different units, so they are computed once, here. When
+ * they were computed separately they were both simply zero; if they
+ * were computed separately and correctly they would still drift apart,
+ * and a tool that cross-checks them would see a machine whose numbers
+ * do not add up.
+ */
+
+/*
+ * Walks the cgroup's process list ONCE and answers everything that
+ * needs it: when the oldest process in this container started, and how
+ * many of its tasks are running or blocked right now.
+ *
+ * WHY THE OLDEST PROCESS AND NOT THE CGROUP DIRECTORY'S mtime. The
+ * first version anchored container uptime on the cgroup directory's
+ * mtime, which has two faults measured rather than supposed. A
+ * directory's mtime moves whenever an entry is added, and this
+ * platform's own src/cgroup.c records the case in as many words -- a
+ * nested cixd enables subtree_control on its own cgroup, so a container
+ * that runs containers gains child cgroups and its uptime would jump
+ * backwards to zero. And mtime is realtime, so an NTP step moves it;
+ * `starttime` is measured in ticks since boot and cannot be stepped.
+ *
+ * cix-init is pid 1 in every container for that container's whole life
+ * (ADR-0260), so the oldest process is always there to ask.
+ *
+ * Field 22 of /proc/<pid>/stat is parsed from the LAST ')' rather than
+ * by counting from the start: field 2 is the executable name, it is not
+ * escaped, and a process really can be called "foo) 1 2 3 (bar".
+ */
+struct cgroup_procs_info {
+	long long oldest_starttime_ticks; /* -1 when nothing was readable */
+	long long running;
+	long long blocked;
+};
+
+static void cgroup_procs_scan(const char *cg, struct cgroup_procs_info *out)
 {
-	struct stat st;
-	double up = 0.0, idle = 0.0;
+	char path[PATH_MAX];
+	char line[64];
+	FILE *f;
 
-	if (cg != NULL && stat(cg, &st) == 0) {
-		time_t now = time(NULL);
+	out->oldest_starttime_ticks = -1;
+	out->running = 0;
+	out->blocked = 0;
 
-		if (now > st.st_mtime)
-			up = (double)(now - st.st_mtime);
-	} else {
-		FILE *f = fopen("/proc/uptime", "r");
+	if (cg == NULL)
+		return;
+	if (snprintf(path, sizeof(path), "%s/cgroup.procs", cg) >= (int)sizeof(path))
+		return;
+	f = fopen(path, "r");
+	if (f == NULL)
+		return;
+	while (fgets(line, sizeof(line), f) != NULL) {
+		char statpath[64];
+		char buf[1024];
+		FILE *sf;
+		char *close_paren;
+		char *p;
+		size_t n;
+		long pid = strtol(line, NULL, 10);
+		int field;
+		char state = '\0';
 
-		if (f != NULL) {
-			if (fscanf(f, "%lf %lf", &up, &idle) != 2)
-				up = 0.0;
-			fclose(f);
+		if (pid <= 0)
+			continue;
+		snprintf(statpath, sizeof(statpath), "/proc/%ld/stat", pid);
+		sf = fopen(statpath, "r");
+		if (sf == NULL)
+			continue; /* exited between the list and the read */
+		n = fread(buf, 1, sizeof(buf) - 1, sf);
+		fclose(sf);
+		buf[n] = '\0';
+
+		close_paren = strrchr(buf, ')');
+		if (close_paren == NULL || close_paren[1] == '\0')
+			continue;
+		p = close_paren + 1;
+
+		/*
+		 * p now sits just before field 3. starttime is field 22, so it
+		 * is the 20th whitespace-separated token from here.
+		 */
+		for (field = 3; field <= 22; field++) {
+			while (*p == ' ')
+				p++;
+			if (*p == '\0')
+				break;
+			if (field == 3)
+				state = *p;
+			if (field == 22) {
+				long long st = strtoll(p, NULL, 10);
+
+				if (st >= 0 && (out->oldest_starttime_ticks < 0 ||
+				                st < out->oldest_starttime_ticks))
+					out->oldest_starttime_ticks = st;
+				break;
+			}
+			while (*p != '\0' && *p != ' ')
+				p++;
 		}
+		if (state == 'R')
+			out->running++;
+		else if (state == 'D')
+			out->blocked++;
 	}
-	return (size_t)snprintf(out, cap, "%.2f %.2f\n", up, idle);
+	fclose(f);
 }
 
-/* cpu.stat's usage_usec, expressed the way /proc/stat expresses it. The
- * fields nothing here can know are zero rather than invented. */
-static size_t render_stat(const char *cg, char *out, size_t cap)
+/* The host's own uptime in seconds, which every fallback here needs. */
+static double host_uptime_seconds(void)
 {
-	long long usage_usec = cgroup_stat_key(cg, "cpu.stat", "usage_usec", 0);
+	FILE *f = fopen("/proc/uptime", "r");
+	double up = 0.0;
+
+	if (f == NULL)
+		return 0.0;
+	if (fscanf(f, "%lf", &up) != 1)
+		up = 0.0;
+	fclose(f);
+	return up;
+}
+
+/*
+ * How long this container has been up, in seconds.
+ *
+ * Falls back to the cgroup directory's mtime when the process list
+ * cannot be read, and to the host's uptime when there is no cgroup at
+ * all -- an unconfined reader is genuinely looking at the host.
+ */
+static double container_uptime(const char *cg, const struct cgroup_procs_info *procs)
+{
+	long ticks = sysconf(_SC_CLK_TCK);
+	double host_up = host_uptime_seconds();
+	struct stat st;
+
+	if (cg == NULL)
+		return host_up;
+	if (ticks <= 0)
+		ticks = 100;
+	if (procs->oldest_starttime_ticks >= 0) {
+		double up = host_up - (double)procs->oldest_starttime_ticks / (double)ticks;
+
+		return up > 0.0 ? up : 0.0;
+	}
+	if (stat(cg, &st) == 0) {
+		struct timespec now;
+
+		if (clock_gettime(CLOCK_REALTIME, &now) == 0) {
+			double up = (double)(now.tv_sec - st.st_mtim.tv_sec) +
+			            ((double)now.tv_nsec - (double)st.st_mtim.tv_nsec) / 1e9;
+
+			return up > 0.0 ? up : 0.0;
+		}
+	}
+	return host_up;
+}
+
+/* The CPUs this container may actually use, never fewer than one. */
+static int container_ncpu(const char *cg)
+{
+	int n = cpuset_count(cg);
+	long host;
+
+	if (n > 0)
+		return n;
+	host = sysconf(_SC_NPROCESSORS_ONLN);
+	return host > 0 ? (int)host : 1;
+}
+
+/*
+ * The cgroup's CPU accounting in /proc/stat's own units, with the idle
+ * column SYNTHESISED rather than left at zero.
+ *
+ * This is the defect that made #359 worth doing. cgroup v2 accounts
+ * only busy time -- there is no idle counter -- and the first version
+ * emitted 0 for it. Every CPU-percentage tool computes
+ * 100 x (total - idle) / total over a delta, so an idle column pinned
+ * at zero makes the denominator the busy time itself and the answer
+ * 100% at any load above nothing. Measured on 192.168.15.95: a
+ * container given one CPU and one busy loop for 15 s went from
+ * `cpu 0 0 0 ...` to `cpu 1501 0 0 ...`, and a container using HALF a
+ * CPU would read 100% by the same arithmetic while truly using 50%.
+ * That is worse than reporting the host's figures, because it is
+ * confidently wrong rather than obviously foreign.
+ *
+ * Idle is what the container could have used and did not:
+ * uptime x ncpus x HZ, less what it did use. Clamped at zero because
+ * the two clocks are sampled independently and a busy container can
+ * momentarily account for more than the window suggests.
+ */
+struct cpu_times {
+	long long user;   /* ticks */
+	long long system; /* ticks */
+	long long idle;   /* ticks */
+	int ncpu;
+	double uptime; /* seconds */
+};
+
+static void cgroup_cpu_times(const char *cg, const struct cgroup_procs_info *procs,
+                              struct cpu_times *t)
+{
 	long long user_usec = cgroup_stat_key(cg, "cpu.stat", "user_usec", 0);
 	long long system_usec = cgroup_stat_key(cg, "cpu.stat", "system_usec", 0);
 	long ticks = sysconf(_SC_CLK_TCK);
+	long long capacity;
 
 	if (ticks <= 0)
 		ticks = 100;
-	if (usage_usec < 0)
-		usage_usec = 0;
 	if (user_usec < 0)
 		user_usec = 0;
 	if (system_usec < 0)
 		system_usec = 0;
 
-	return (size_t)snprintf(out, cap,
-	                         "cpu  %lld 0 %lld 0 0 0 0 0 0 0\n"
-	                         "intr 0\n"
-	                         "ctxt 0\n"
-	                         "btime 0\n"
-	                         "processes 0\n"
-	                         "procs_running 1\n"
-	                         "procs_blocked 0\n",
-	                         user_usec / (1000000 / ticks), system_usec / (1000000 / ticks));
+	/*
+	 * usec -> ticks as (usec * HZ) / 1000000, not usec / (1000000 / HZ):
+	 * the latter truncates the divisor first and is wrong for any HZ
+	 * that does not divide 1000000 exactly.
+	 */
+	t->user = user_usec * ticks / 1000000;
+	t->system = system_usec * ticks / 1000000;
+	t->ncpu = container_ncpu(cg);
+	t->uptime = container_uptime(cg, procs);
+
+	capacity = (long long)(t->uptime * (double)t->ncpu * (double)ticks);
+	t->idle = capacity - t->user - t->system;
+	if (t->idle < 0)
+		t->idle = 0;
+}
+
+/*
+ * /proc/uptime: this container's age, and the idle time that goes with
+ * it. Both from the one time base above, so the second field here and
+ * /proc/stat's idle column are always the same quantity.
+ */
+static size_t render_uptime(const char *cg, char *out, size_t cap)
+{
+	struct cgroup_procs_info procs;
+	struct cpu_times t;
+	long ticks = sysconf(_SC_CLK_TCK);
+
+	if (ticks <= 0)
+		ticks = 100;
+	if (cg == NULL)
+		return (size_t)snprintf(out, cap, "%.2f %.2f\n", host_uptime_seconds(), 0.0);
+
+	cgroup_procs_scan(cg, &procs);
+	cgroup_cpu_times(cg, &procs, &t);
+	return (size_t)snprintf(out, cap, "%.2f %.2f\n", t.uptime, (double)t.idle / (double)ticks);
+}
+
+/*
+ * /proc/stat: the host's file with what this cgroup knows written over
+ * it, rather than a short file of our own.
+ *
+ * PASSTHROUGH IS THE POINT, and it is the same shape render_cpuinfo
+ * already uses. The first version emitted seven lines of its own and
+ * every field it could not compute was a fabricated zero -- which is a
+ * different and worse thing than a host value. Two of those zeros were
+ * real breakage rather than mere absence:
+ *
+ *   btime 0    /proc/<pid>/stat's `starttime` is jiffies since HOST
+ *              boot and is not namespaced, and ps/top compute a
+ *              process's wall-clock start as btime + starttime/HZ. So
+ *              btime MUST stay the host's: a container-relative one
+ *              would be wrong by the host's whole uptime, and zero puts
+ *              every process in 1970.
+ *
+ *   no cpuN    htop draws no CPU meters at all without per-CPU lines.
+ *
+ * intr, ctxt, processes and softirq are passed through for the same
+ * reason: cgroup v2 does not account them, and the host's true number
+ * is a better answer than an invented zero.
+ *
+ * The per-CPU lines split the aggregate evenly. cgroup v2 has no
+ * per-CPU breakdown to draw on, and an even split is the one
+ * distribution that is guaranteed to sum back to the total a tool also
+ * reads on the `cpu` line.
+ */
+static size_t render_stat(const char *cg, char *out, size_t cap)
+{
+	struct cgroup_procs_info procs;
+	struct cpu_times t;
+	FILE *f;
+	char line[4096];
+	size_t len = 0;
+	int i;
+
+	cgroup_procs_scan(cg, &procs);
+	cgroup_cpu_times(cg, &procs, &t);
+
+	f = fopen("/proc/stat", "r");
+	if (f == NULL)
+		return 0;
+	while (fgets(line, sizeof(line), f) != NULL) {
+		if (strncmp(line, "cpu", 3) == 0 && (line[3] == ' ' || (line[3] >= '0' && line[3] <= '9'))) {
+			/*
+			 * Both the aggregate and every host per-CPU line are
+			 * dropped here; ours are emitted once, in their place,
+			 * when the aggregate comes past.
+			 */
+			if (line[3] != ' ')
+				continue;
+			len += (size_t)snprintf(out + len, len < cap ? cap - len : 0,
+			                         "cpu  %lld 0 %lld %lld 0 0 0 0 0 0\n", t.user, t.system,
+			                         t.idle);
+			for (i = 0; i < t.ncpu; i++) {
+				long long u = t.user / t.ncpu;
+				long long s = t.system / t.ncpu;
+				long long d = t.idle / t.ncpu;
+
+				/* The remainder lands on cpu0 so the parts sum to
+				 * the whole rather than quietly losing up to
+				 * ncpu-1 ticks per column. */
+				if (i == 0) {
+					u += t.user % t.ncpu;
+					s += t.system % t.ncpu;
+					d += t.idle % t.ncpu;
+				}
+				len += (size_t)snprintf(out + len, len < cap ? cap - len : 0,
+				                         "cpu%d %lld 0 %lld %lld 0 0 0 0 0 0\n", i, u, s, d);
+			}
+			continue;
+		}
+		if (strncmp(line, "procs_running", 13) == 0) {
+			len += (size_t)snprintf(out + len, len < cap ? cap - len : 0,
+			                         "procs_running %lld\n",
+			                         procs.running > 0 ? procs.running : 1);
+			continue;
+		}
+		if (strncmp(line, "procs_blocked", 13) == 0) {
+			len += (size_t)snprintf(out + len, len < cap ? cap - len : 0,
+			                         "procs_blocked %lld\n", procs.blocked);
+			continue;
+		}
+		if (len < cap)
+			len += (size_t)snprintf(out + len, cap - len, "%s", line);
+	}
+	fclose(f);
+	return len < cap ? len : cap;
 }
 
 /*
@@ -460,14 +856,8 @@ static size_t render_swaps(const char *cg, char *out, size_t cap)
  * One entry point so the opcode handler never grows a second copy of
  * the file table's ordering.
  */
-static size_t render_file(int index, uint32_t pid, char *out, size_t cap)
+size_t procfuse_render_for_cgroup(int index, const char *cg, char *out, size_t cap)
 {
-	char cgbuf[PATH_MAX];
-	const char *cg = NULL;
-
-	if (cgroup_dir_for_pid(pid, cgbuf, sizeof(cgbuf)) == 0)
-		cg = cgbuf;
-
 	switch (index) {
 	case 0:
 		return render_meminfo(cg, out, cap);
@@ -484,6 +874,24 @@ static size_t render_file(int index, uint32_t pid, char *out, size_t cap)
 	default:
 		return 0;
 	}
+}
+
+/*
+ * The FUSE path: resolve the asking process to its cgroup, then render
+ * through the one function above. Split from it so a test can drive
+ * every renderer against a crafted cgroup directory without FUSE, root,
+ * or a real container -- and so what the test exercises is the code
+ * that actually serves reads, not a second copy of the arithmetic
+ * (#359).
+ */
+static size_t render_file(int index, uint32_t pid, char *out, size_t cap)
+{
+	char cgbuf[PATH_MAX];
+	const char *cg = NULL;
+
+	if (cgroup_dir_for_pid(pid, cgbuf, sizeof(cgbuf)) == 0)
+		cg = cgbuf;
+	return procfuse_render_for_cgroup(index, cg, out, cap);
 }
 
 

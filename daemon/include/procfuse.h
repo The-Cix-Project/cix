@@ -1,6 +1,8 @@
 #ifndef PROCFUSE_H
 #define PROCFUSE_H
 
+#include <stddef.h>
+
 /*
  * ADR-0262, issue #336: one host-side FUSE server whose files the
  * runtime bind-mounts into every container, so a process inside one
@@ -87,5 +89,20 @@ const char *procfuse_mount_path(void);
 
 /* Unmounts and reaps, for daemon shutdown. Safe when never started. */
 void procfuse_stop(void);
+
+/*
+ * Renders one file of PROCFUSE_FILES (by index) as it would be served
+ * to a process in cgroup directory `cg`, or as the host's own when `cg`
+ * is NULL. Returns the number of bytes written.
+ *
+ * This is the seam the FUSE read path itself goes through, exposed so
+ * the arithmetic can be tested against a crafted cgroup directory with
+ * no FUSE, no root and no container -- a build container can run none
+ * of those (#224), and the defect that made this necessary was
+ * arithmetic: /proc/stat's idle column was zero, which makes every CPU
+ * tool report 100% at any load (#359). A test that drives this drives
+ * what really serves reads, rather than a second copy of the sums.
+ */
+size_t procfuse_render_for_cgroup(int index, const char *cg, char *out, size_t cap);
 
 #endif /* PROCFUSE_H */
