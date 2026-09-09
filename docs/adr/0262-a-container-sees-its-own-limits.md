@@ -17,6 +17,31 @@ container declaring `memory_max: 1073741824` and `cpuset_cpus: "0"` on a 2-CPU, 
 
 All six files appear in the container's own `/proc/self/mountinfo` as `fuse cix-procfuse`.
 
+**Those last two rows were verified for the wrong property, and [#359](https://git.home.arpa/itdlabs/cix/issues/359)
+is what that cost.** `/proc/stat` and `/proc/uptime` *advanced*, which is what the table above
+checked, so they looked right. Neither yielded a believable number. cgroup v2 accounts only busy
+time, the idle column was emitted as zero, and every CPU tool computes
+`100 × (total − idle) / total` over a delta — so the denominator was the busy time itself and the
+answer was 100% at any load above nothing. A container using half a CPU read 100%. Advancing is not
+the same as being right, and a verification table that only asks "did the number move" will pass a
+counter that is confidently wrong.
+
+Re-verified on `v2.57.27`, a container held to half a CPU by `cpu.max` and running flat out,
+sampled six times at five-second intervals:
+
+| | reads |
+|---|---|
+| a CPU tool, every interval | **100.0%** — true: it is at its cap and cannot go faster |
+| busy per interval | 253 ticks / 5 s = 50.6 ticks/s — exactly the half-CPU quota |
+| negative counter deltas | **0** across all six samples |
+| `/proc/meminfo` | 50 fields, matching the host's field set |
+| `btime` | the host's, so `ps` can derive a process's wall-clock start |
+
+Three defects were fixed to get there, each recorded in `CHANGELOG.md`: the zero idle column;
+a denominator that read only `cpuset.cpus.effective` and ignored `cpu.max`, so a container pegged at
+its quota reported itself half idle; and an idle counter that could fall by a tick between reads,
+because CFS bandwidth lets a container overrun its nominal quota within a period.
+
 `nproc` reporting 1 is a separate mechanism and worth not confusing with this one: it reads
 `sched_getaffinity`, which the cpuset constrains directly and which needed nothing from here. What
 this ADR delivers is every tool that sizes itself by *reading a file* — the case #278/#279 was.
