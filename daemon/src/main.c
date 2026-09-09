@@ -26104,6 +26104,30 @@ static int cixd_main(int argc, char **argv)
 	if (init_mode && slot != NULL && !simulate_unhealthy)
 		maybe_confirm_boot(slot);
 
+	/*
+	 * ADR-0262/#336: the host-side FUSE server behind a container's own
+	 * /proc/meminfo, started HERE because the very next line creates
+	 * containers and the runtime asks for this mount path at creation
+	 * time.
+	 *
+	 * The ordering is the whole point and it was wrong once. This call
+	 * sat 68 lines below containerdef_autostart_all(), with a comment
+	 * asserting it ran "before any container is created" -- so every
+	 * autostarted container on a real boot took the documented
+	 * degraded path and read the host's /proc, and the feature looked
+	 * like a broken bind mount rather than a startup order. Measured on
+	 * 192.168.15.95: twelve containers logged "procfuse dir=(server not
+	 * running)" at boot, and the server announced itself one second
+	 * after the last of them. Nothing failed; nothing was ever asked.
+	 *
+	 * Best-effort, exactly like start_uevent_watch() above: a kernel
+	 * without FUSE, an absent /dev/fuse or a refused mount leaves every
+	 * other capability untouched and containers reading the host's own
+	 * /proc, which is what they read before this existed. The reason is
+	 * logged with a real errno rather than left to be guessed at.
+	 */
+	procfuse_start(STATE_DIR);
+
 	containerdef_autostart_all();
 
 	/*
@@ -26159,20 +26183,6 @@ static int cixd_main(int argc, char **argv)
 	 * the production box left no trace anywhere.
 	 */
 	stallwatch_start(STALLWATCH_RECORDS_PATH);
-
-	/*
-	 * ADR-0262/#336: the host-side FUSE server behind a container's own
-	 * /proc/meminfo. Started after stallwatch and before any container
-	 * is created, because the runtime asks for its mount path at
-	 * creation time.
-	 *
-	 * Best-effort, exactly like start_uevent_watch() below: a kernel
-	 * without FUSE, an absent /dev/fuse or a refused mount leaves every
-	 * other capability untouched and containers reading the host's own
-	 * /proc, which is what they read before this existed. The reason is
-	 * logged with a real errno rather than left to be guessed at.
-	 */
-	procfuse_start(STATE_DIR);
 
 	/*
 	 * Responses are buffered against their connection and drained on
