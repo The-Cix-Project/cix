@@ -33,6 +33,22 @@
  * `make -j$(nproc)` on this platform into -j1 with nothing in the build
  * output saying why.
  *
+ * TWO LIMITS, AND EACH FILE ANSWERS THE ONE ITS READERS ACT ON.
+ * `cpuset.cpus.effective` bounds PARALLELISM -- how many CPUs may run
+ * this container's tasks at once -- and `cpu.max` bounds THROUGHPUT --
+ * how much CPU time it may consume per period. They are different
+ * numbers and a container commonly has both.
+ *
+ * cpuinfo answers the parallelism question, for the reason just given.
+ * /proc/stat's idle column and /proc/uptime's second field answer the
+ * throughput one, so their denominator is the smaller of the two, and
+ * getting that wrong was a real bug (#359): a container pinned to one
+ * CPU with a half-CPU quota, running flat out against that cap, had a
+ * whole CPU in its denominator and every tool reported 50% -- "half
+ * idle" for a workload that could not go one cycle faster. That is
+ * #278/#279's own shape, a number claiming headroom that does not
+ * exist, which is the failure this file was written to remove.
+ *
  * NOT A SECURITY BOUNDARY. A process can still reach the host's real
  * figures by other paths. This makes tools size themselves correctly;
  * it does not hide the host.

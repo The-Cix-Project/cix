@@ -630,7 +630,12 @@ static double container_uptime(const char *cg, const struct cgroup_procs_info *p
 	return host_up;
 }
 
-/* The CPUs this container may actually use, never fewer than one. */
+/*
+ * How many processors this container can run on AT ONCE. This is a
+ * parallelism bound and it deliberately ignores the quota -- see
+ * container_cpu_allowance() below for why the two are different
+ * questions, and procfuse.h for why cpuinfo must answer this one.
+ */
 static int container_ncpu(const char *cg)
 {
 	int n = cpuset_count(cg);
@@ -640,6 +645,65 @@ static int container_ncpu(const char *cg)
 		return n;
 	host = sysconf(_SC_NPROCESSORS_ONLN);
 	return host > 0 ? (int)host : 1;
+}
+
+/*
+ * How much CPU this container may consume over time, in CPUs -- which
+ * is a THROUGHPUT bound and can be fractional.
+ *
+ * TWO DIFFERENT LIMITS, AND ONLY ONE OF THEM IS THE CPU COUNT.
+ * `cpuset.cpus.effective` says how many CPUs may run this container's
+ * tasks simultaneously; `cpu.max` says how much CPU time it may use per
+ * period. A container can have one CPU in its cpuset and a quota of
+ * half a CPU, and its real ceiling is the smaller of the two.
+ *
+ * Using the cpuset alone here was a real bug and exactly the one this
+ * whole feature exists to prevent. A container pinned to one CPU with
+ * `cpu.max` of "50000 100000" cannot exceed half a CPU; running flat
+ * out against that cap, a capacity of uptime x 1 CPU makes the busy
+ * half of the total and every tool reports 50% -- "half idle" for a
+ * workload with no headroom whatsoever, which is #278/#279's own shape:
+ * a number that says there is room when there is none. With the quota
+ * in the denominator the same container reads ~100%, which is true and
+ * is what tells an operator it is throttled.
+ *
+ * NOT the same question as cpuinfo's processor count, and procfuse.h
+ * records why that one follows the cpuset instead: a quota-derived
+ * processor count would turn every `make -j$(nproc)` here into -j1.
+ * Parallelism and throughput are separate limits and each file answers
+ * the one its readers act on.
+ */
+static double container_cpu_allowance(const char *cg)
+{
+	double cpus = (double)container_ncpu(cg);
+	char path[PATH_MAX];
+	char buf[64];
+	FILE *f;
+	long long quota, period;
+	char *end;
+
+	if (cg == NULL)
+		return cpus;
+	if (snprintf(path, sizeof(path), "%s/cpu.max", cg) >= (int)sizeof(path))
+		return cpus;
+	f = fopen(path, "r");
+	if (f == NULL)
+		return cpus;
+	if (fgets(buf, sizeof(buf), f) == NULL) {
+		fclose(f);
+		return cpus;
+	}
+	fclose(f);
+	/* "max <period>" is the unlimited form: the cpuset alone decides. */
+	if (strncmp(buf, "max", 3) == 0)
+		return cpus;
+	quota = strtoll(buf, &end, 10);
+	period = strtoll(end, NULL, 10);
+	if (quota <= 0 || period <= 0)
+		return cpus;
+	if ((double)quota / (double)period < cpus)
+		cpus = (double)quota / (double)period;
+	return cpus;
 }
 
 /*
@@ -696,7 +760,12 @@ static void cgroup_cpu_times(const char *cg, const struct cgroup_procs_info *pro
 	t->ncpu = container_ncpu(cg);
 	t->uptime = container_uptime(cg, procs);
 
-	capacity = (long long)(t->uptime * (double)t->ncpu * (double)ticks);
+	/*
+	 * The denominator is the ALLOWANCE, not the processor count: a
+	 * container held at half a CPU by cpu.max is at its ceiling, and
+	 * dividing by a whole CPU would report it half idle.
+	 */
+	capacity = (long long)(t->uptime * container_cpu_allowance(cg) * (double)ticks);
 	t->idle = capacity - t->user - t->system;
 	if (t->idle < 0)
 		t->idle = 0;
