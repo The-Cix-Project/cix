@@ -6,6 +6,41 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### procfuse started after the containers that needed it (#336, ADR-0262)
+
+Part 2 shipped the bind mounts and no container had them. `jump` still
+reported the host's 7894 MB, `/proc/self/mountinfo` showed no per-file
+mounts, and nothing anywhere said why — the bind is non-fatal by design,
+and the child's `perror()` goes to stderr, which is never mirrored into
+the log store.
+
+The parent-side log added to find it answered in one line:
+
+```
+container jump: procfuse dir=(server not running)
+procfuse: serving 6 virtualised /proc files at /config/state/procfuse (pid 195)
+```
+
+Twelve containers autostarted, every one of them logging that the server
+was not running, and the server announcing itself **one second after the
+last of them**. `procfuse_start()` sat 68 lines below
+`containerdef_autostart_all()` in `main()` — under a comment asserting it
+ran "before any container is created".
+
+So nothing failed. Every autostarted container took the documented
+degraded path — `procfuse_mount_path()` returns NULL, the runtime skips
+the bind, the container reads the host's `/proc` — which is exactly
+correct behaviour for a server that is not running, and is why this
+looked like a broken bind rather than a startup order. The graceful
+degradation designed to keep a container starting when FUSE is
+unavailable also, silently, covered for calling the thing in the wrong
+place.
+
+Moved above `containerdef_autostart_all()`, where the comment always
+claimed it was. The comment now records what went wrong rather than
+restating the requirement, because a comment stating the requirement is
+precisely what was already there.
+
 ### Two "flaky" selftests were tests reporting the wrong failure (#309)
 
 Three daemon-linked tests failed in one session and each cost a build
