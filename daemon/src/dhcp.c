@@ -901,9 +901,39 @@ void dhcp_leases_write_json(struct json_writer *w)
 
 		if (entry == NULL || !entry->running)
 			continue;
-		/* A READ, but it must look where the writes go (#269). */
-		container_file_host_path(names[i], entry->disk_name, DHCP_LEASE_PATH,
-		                          path, sizeof(path));
+		/*
+		 * Through the container's own mount namespace, NOT
+		 * container_file_host_path() (#357).
+		 *
+		 * This used to use the host path, under a comment reading "a
+		 * READ, but it must look where the writes go (#269)" -- and
+		 * that reasoning is right for the two files above, which this
+		 * daemon writes into the container's writable layer. It is
+		 * wrong here, because dnsmasq writes this one and DHCP_LEASE_PATH
+		 * is under /run, which src/mountns.c mounts as a fresh tmpfs at
+		 * every container start. The writable layer underneath is
+		 * masked by that mount, so the file has no on-disk existence to
+		 * open: fopen() failed on every server, every call, and the
+		 * endpoint answered 200 with an empty array while a real client
+		 * held a real lease.
+		 *
+		 * create_container_from_body() already refuses a files[] entry
+		 * under /run for exactly this reason and says so at length. The
+		 * rule was known in one file and lost in this one.
+		 *
+		 * The distinction that matters is not read versus write, which
+		 * is what the old comment reached for: it is WHO writes the
+		 * file. Daemon-written files live in the writable layer;
+		 * container-written ones live in the container's namespace and
+		 * may be on a filesystem with no on-disk backing at all.
+		 *
+		 * No on-disk fallback, unlike handle_container_file_read():
+		 * a lease file exists only while the dnsmasq that owns it
+		 * does, and this loop has already skipped every server that is
+		 * not running.
+		 */
+		snprintf(path, sizeof(path), "/proc/%d/root%s", (int)entry->handle.pid,
+		          DHCP_LEASE_PATH);
 		f = fopen(path, "r");
 		if (f == NULL)
 			continue;
