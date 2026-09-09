@@ -1004,7 +1004,7 @@ int main(void)
 	{
 		int i, settled = 0;
 
-		for (i = 0; i < 50; i++) {
+		for (i = 0; i < TEST_SETTLE_ATTEMPTS; i++) {
 			if (container_exists(&client, "stopalways") == 0 &&
 			    container_exists(&client, "stopunless") == 0) {
 				settled = 1;

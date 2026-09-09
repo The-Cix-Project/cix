@@ -138,7 +138,7 @@ static void wait_rm_settled(const char *name)
 	char out[4096];
 	int rc, i;
 
-	for (i = 0; i < 200; i++) {
+	for (i = 0; i < TEST_SETTLE_ATTEMPTS; i++) {
 		if (run_cli(inspect_argv, out, sizeof(out), &rc) == 0 && rc != 0)
 			return;
 		usleep(100 * 1000);
@@ -285,14 +285,32 @@ int main(void)
 			ok = 0;
 		}
 
-		/* ADR-0180: rm of a running container is asynchronous --
-		 * settle-poll until the process is reaped and the name 404s
-		 * (bounded tight; >5s for a SIGKILLed child is a regression). */
+		/*
+		 * ADR-0180: rm of a running container is asynchronous --
+		 * settle-poll until the process is reaped and the name 404s.
+		 *
+		 * 200 x 100ms, matching wait_rm_settled() above rather than
+		 * contradicting it. This bound said ">5s for a SIGKILLed child
+		 * is a regression" while its neighbour in this same file
+		 * documented, correctly, that a container asked to stop within
+		 * milliseconds of being created can take the FULL 15-second
+		 * grace -- a signal to a pid-namespace init that has not yet
+		 * installed a handler is discarded rather than queued
+		 * (ADR-0260). Two waits on the same event, one asserting five
+		 * seconds and one twenty, and the five-second one failed a
+		 * release build (#309).
+		 *
+		 * This is not a timeout raised to quiet a race. It is a bound
+		 * that asserted something the platform deliberately does not
+		 * promise, corrected to what the design actually guarantees.
+		 * It still returns the instant the container is gone, so a
+		 * healthy run costs nothing.
+		 */
 		{
 			int i, torn_down = 0;
 
 			snprintf(proc_path, sizeof(proc_path), "/proc/%ld", pid);
-			for (i = 0; i < 50; i++) {
+			for (i = 0; i < TEST_SETTLE_ATTEMPTS; i++) {
 				if ((pid <= 0 || stat(proc_path, &st) != 0) &&
 				    (run_cli(inspect_argv, out, sizeof(out), &rc) == 0 && rc != 0)) {
 					torn_down = 1;
@@ -301,7 +319,9 @@ int main(void)
 				usleep(100 * 1000);
 			}
 			if (!torn_down) {
-				fprintf(stderr, "FAIL: c2 (pid %ld) never fully torn down after rm\n", pid);
+				fprintf(stderr, "FAIL: c2 (pid %ld) never fully torn down 20s after rm -- "
+				                "longer than the 15s SIGKILL grace, so this is a real stall\n",
+				        pid);
 				ok = 0;
 			}
 		}

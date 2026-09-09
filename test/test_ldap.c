@@ -1482,7 +1482,7 @@ int main(void)
 		{
 			int i;
 
-			for (i = 0; i < 50; i++) {
+			for (i = 0; i < TEST_SETTLE_ATTEMPTS; i++) {
 				memset(&r, 0, sizeof(r));
 				if (cix_client_request(&client, "GET", "/v1/containers/ldapfsrv", NULL, &r) == 0 &&
 				    r.status == 404) {
