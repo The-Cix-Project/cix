@@ -2,6 +2,63 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### A module could be loaded and never unloaded, and two drivers stopped being built in (#353, #347, #346)
+
+`CONFIG_MODULE_UNLOAD` was never set in this platform's kernel config,
+so `delete_module(2)` was not compiled in at all. Measured on
+192.168.15.95, not inferred — and only visible once v2.57.11 stopped
+discarding modprobe's own words:
+
+```
+DELETE /v1/system/kmod/usb-storage
+404 {"error":"modprobe -r could not unload this module:
+     modprobe: ERROR: could not remove 'usb_storage': Function not implemented"}
+```
+
+`Function not implemented` is `ENOSYS`, on a module `/proc/modules`
+reported with `used_by_count: 0` and `state: "Live"`. Half a module
+system: no swapping a driver without a reboot, no unload/reload cycle to
+change a module parameter (they are set at insert time), and no
+recovering from a bad load except by rebooting a machine that may have
+just lost its network to it.
+
+`CONFIG_MODULE_FORCE_UNLOAD` is deliberately **not** set beside it, and
+the gate now asserts it absent. That one removes a module the kernel
+believes is still in use, trading a clean refusal for memory
+corruption; ordinary unload is refcount-checked and is all this needs.
+
+**The tiering.** `DRM_AMDGPU` and the whole rtw88 family become `=m`, by
+the criterion that a driver for a particular device is an implementation
+specific while what is needed to reach root and the network is a
+platform dependency. For rtw88 that is also **#346's fix**: a built-in
+driver probes a USB device at an unpredictable point relative to the
+root mount and lost the race to its own firmware on three of six
+measured boots; a module loads after root is mounted, every time.
+
+**The line is drawn by the no-initramfs decision rather than by taste,
+and that makes it much narrower than "modularise every driver" sounds.**
+An EFI-stub kernel with no initramfs must already contain every driver
+needed to reach root — so `SATA_AHCI`, `MEGARAID_SAS`, `SCSI_MPT3SAS`,
+`SCSI_SMARTPQI`, `SCSI_HPSA`, `NVME`, the MD RAID set and every
+`VIRTIO_*` stay `=y` however implementation-specific a given HBA is.
+`DRM`, `DRM_KMS_HELPER`, `SYSFB_SIMPLEFB` and `DRM_SIMPLEDRM` stay `=y`
+too: they are what put an installer on a screen, which is the recovery
+path on a shell-less machine.
+
+`CFG80211`/`MAC80211`/`WIRELESS`/`WLAN` stay `=y` this revision. They are
+the wireless stack rather than a driver for any device, and keeping them
+built in leaves 7.2.3-8's `CONFIG_EXTRA_FIRMWARE` reasoning exactly true
+— cfg80211 requests `regulatory.db` during its own init, before any root
+filesystem exists — so a wireless regression after this rebuild has one
+suspect instead of three. Making them `=m` is a real candidate and would
+make that embedded database unnecessary.
+
+**The gate now asserts `=m` as carefully as `=y`.** The existing loop
+tests `^SYM=y$`, so a symbol that quietly became a module fails it. The
+other direction was untested, and a symbol quietly returning to `=y`
+would have passed the whole gate while bringing #346's firmware race
+back with no signal at all.
+
 ### A modprobe failure said nothing, and a load that did nothing said 200
 
 Both found by running the acceptance test for #347 on a real box the
