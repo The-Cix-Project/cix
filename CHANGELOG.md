@@ -2,6 +2,60 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### `GET /v1/dhcp/leases` always returned an empty list (#357)
+
+Found by the owner connecting a phone to the platform's own access point
+and seeing no leases. The endpoint existed and answered `200`, which is
+worse than not existing — an operator reads `{"leases":[]}` as "no
+clients", not as "this cannot work".
+
+The lease was real, and readable from the same container through a
+different endpoint:
+
+```
+GET /v1/dhcp/leases                                  -> {"leases":[]}
+GET /v1/containers/dns-1/files?path=/run/dnsmasq.leases
+   1788996557 b0:d5:fb:de:54:28 192.168.151.196 Pixon 01:b0:d5:fb:de:54:28
+```
+
+**Two readers of container files, two mechanisms, and the lease read
+used the one that cannot see this file.**
+`handle_container_file_read()` goes through `/proc/<pid>/root/...`;
+`dhcp_leases_write_json()` used `container_file_host_path()`, under a
+comment stating the reasoning exactly:
+
+```c
+/* A READ, but it must look where the writes go (#269). */
+```
+
+That is right for the two files above it — `dnsmasq-dhcp.conf` and the
+hosts file, which this daemon stages into the container's writable
+layer, and which is why DHCP *configuration* has always worked. It is
+wrong for a file the **container** writes, and `/run/dnsmasq.leases` is
+one: `src/mountns.c` mounts `/run` as a fresh tmpfs at every container
+start, so the writable layer underneath is masked and the file has no
+on-disk existence to open. `fopen()` failed on every server on every
+call, the loop `continue`d, and the array came back empty.
+
+**The platform already documents this trap, in another file.**
+`create_container_from_body()` refuses a `files[]` entry under `/run`
+and explains at length that a fresh tmpfs masks anything staged there
+"on every single start and can never be read by anything". One code path
+knew the rule and refused; another silently lost to it.
+
+The distinction that matters is not read versus write, which is what the
+old comment reached for. It is **who writes the file**: daemon-written
+files live in the writable layer, container-written ones live in the
+container's mount namespace and may sit on a filesystem with no on-disk
+backing at all. Any future daemon-side read of something a container
+produced has the same trap waiting.
+
+`DHCP_CONF_PATH` and `DHCP_HOSTS_PATH` deliberately keep the host path —
+they are daemon-written and reading them where the writes go is correct.
+No on-disk fallback was added for leases either: a lease file exists
+only while the dnsmasq that owns it does, and the loop already skips
+every server that is not running.
+
 ### A second grant of a device is refused unless both sides say `shared` (#356)
 
 `held_by` made the problem visible; this is the policy that follows from
