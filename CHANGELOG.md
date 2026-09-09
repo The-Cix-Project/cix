@@ -2,6 +2,78 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### The regulatory database is inside the kernel now, because of when cfg80211 asks for it (#342)
+
+Every boot of this platform carried these two lines:
+
+```
+faux_driver regulatory: Direct firmware load for regulatory.db failed with error -2
+cfg80211: failed to load regulatory.db
+```
+
+`-2` is `ENOENT`, and the file was genuinely there the whole time. The
+same boot loads rtw88's own blob from the same `/lib/firmware` seconds
+later — `rtw88_8822bu 1-1:1.0: Firmware version 27.2.0`. The only
+difference is **when** each is asked for: `cfg80211` is built in and
+requests the database during its own init, before any root filesystem is
+mounted, while a USB driver probes long after root is up. A file on disk
+cannot answer a request made before there is a disk, so this was never a
+staging bug and ADR-0263's firmware image was never at fault.
+
+**What it cost.** With no database, cfg80211 falls back to its built-in
+world domain. Setting any country code failed outright — hostapd reached
+`interface state UNINITIALIZED->COUNTRY_UPDATE`, then `Failed to set
+country code`, and refused to start. The world domain also marks every
+5 GHz band NO-IR, and initiating radiation is precisely what an access
+point does, so `ar-1` was confined to 2.4 GHz by a database that could
+never load.
+
+`CONFIG_EXTRA_FIRMWARE` copies the database and its detached signature
+into the kernel image at build time, where they are answerable with no
+filesystem involved. Both files, not just the database:
+`CFG80211_REQUIRE_SIGNED_REGDB` is `=y` and, as 7.2.3-7 established the
+hard way, cannot be turned off from `.config` at all — its prompt is
+conditional, so olddefconfig restores its default.
+
+`wireless-regdb` joins **kernel-builder 1.5.0** rather than the kernel
+recipe's `pkg_build_depends`, because a host build's sandbox is the
+build image's rootfs and `build_depends` composes nothing there
+(ADR-0199). That is the third package to arrive there for this reason,
+after openssl and perl, and all three were found the same way — by a
+kernel build failing on something absent.
+
+The recipe's gate gained two things the existing `^SYM=y$` loop cannot
+express: exact-line assertions for the two string symbols, and a
+presence check for the two files so a build image missing
+`wireless-regdb` says so instead of failing late in kbuild with "No rule
+to make target". Both fired correctly on the real build:
+
+```
+CONFIG_EXTRA_FIRMWARE="regulatory.db regulatory.db.p7s"  confirmed in .config
+CONFIG_EXTRA_FIRMWARE_DIR="/lib/firmware"                confirmed in .config
+/lib/firmware/regulatory.db      present (6348 bytes)
+/lib/firmware/regulatory.db.p7s  present (1085 bytes)
+```
+
+**Verified on 192.168.15.95.** The boot log now reads
+`cfg80211: Loading compiled-in X.509 certificates for regulatory
+database` and nothing after it — neither failure line appears. 63-minute
+build, deployed without a cix rebuild since the root squashfs was
+unchanged.
+
+5 GHz and a real country code are now *possible*; neither is *set*. The
+country is a legal question rather than a technical one and belongs to
+the operator, so `ar-1` stays on 2.4 GHz channel 6 with no country code
+until one is confirmed. What to restore, and why each line was removed,
+is written in the container's own hostapd.conf.
+
+One near-miss worth recording: `GET /v1/pkg/hostbuild/kernel` reports
+`"version"` as the **installed** kernel, not the build target, so it read
+`7.2.3-7` throughout a build of `7.2.3-8`. Acting on that would have
+cancelled a correct hour-long build and risked #339's slot leak. The
+build log's own filename (`kernel-7.2.3-8-....log`) is the field that
+actually answers the question.
+
 ### sysfs does not follow a namespace, so deleting a wireless container stranded the radio (#345)
 
 Deleting `ar-1` while it was running left the host with no `wlan0`, and
