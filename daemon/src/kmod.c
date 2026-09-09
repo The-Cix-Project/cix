@@ -1,8 +1,10 @@
 #include "kmod.h"
 
 #include <ctype.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -289,6 +291,75 @@ static char *trim(char *s)
  * at all has zero "parm:" lines, an out-of-tree module has no
  * "intree:" line, etc).
  */
+/*
+ * /sys/module/<name>/parameters/<key>, one file per parameter, each
+ * holding the value the kernel is running with right now.
+ *
+ * The directory is named the way the kernel spells a loaded module, so
+ * the caller's "usb-storage" has to become "usb_storage" first -- the
+ * same '-'/'_' equivalence kmod_name_eq() exists for. A module that is
+ * not loaded has no directory at all, and a module with no writable
+ * parameters has an empty one; both are reported as an empty object
+ * rather than an absent key, so a client never has to distinguish
+ * "no parameters" from "this daemon forgot to look".
+ *
+ * A value is reported as the kernel's own text, untouched. Types here
+ * are the module author's business (bool prints Y/N, int prints
+ * digits, charp prints a string), and re-typing them would be this
+ * daemon inventing a schema for data it does not own.
+ */
+static void kmod_write_json_current_params(const char *name, struct json_writer *w)
+{
+	char dirpath[PATH_MAX];
+	char sysname[KMOD_NAME_MAX];
+	DIR *dh;
+	struct dirent *de;
+	size_t i;
+
+	jw_key(w, "current_params");
+	jw_obj_open(w);
+
+	for (i = 0; name[i] != '\0' && i + 1 < sizeof(sysname); i++)
+		sysname[i] = name[i] == '-' ? '_' : name[i];
+	sysname[i] = '\0';
+
+	if (snprintf(dirpath, sizeof(dirpath), "/sys/module/%s/parameters", sysname) >=
+	    (int)sizeof(dirpath)) {
+		jw_obj_close(w);
+		return;
+	}
+
+	dh = opendir(dirpath);
+	if (dh == NULL) {
+		jw_obj_close(w);
+		return;
+	}
+	while ((de = readdir(dh)) != NULL) {
+		char path[PATH_MAX];
+		char value[256];
+		FILE *f;
+		size_t vlen;
+
+		if (de->d_name[0] == '.')
+			continue;
+		if (snprintf(path, sizeof(path), "%s/%s", dirpath, de->d_name) >= (int)sizeof(path))
+			continue;
+		f = fopen(path, "r");
+		if (f == NULL)
+			continue; /* write-only parameters exist; not an error */
+		if (fgets(value, sizeof(value), f) == NULL)
+			value[0] = '\0';
+		fclose(f);
+		vlen = strlen(value);
+		while (vlen > 0 && (value[vlen - 1] == '\n' || value[vlen - 1] == '\r'))
+			value[--vlen] = '\0';
+		jw_key(w, de->d_name);
+		jw_str(w, value);
+	}
+	closedir(dh);
+	jw_obj_close(w);
+}
+
 int kmod_write_json_info(const char *name, struct json_writer *w)
 {
 	char output[KMOD_MODINFO_OUT_MAX];
@@ -431,6 +502,21 @@ int kmod_write_json_info(const char *name, struct json_writer *w)
 	jw_key(w, "params");
 	jw_raw_text(w, params.buf, params.len);
 	jw_free(&params);
+
+	/*
+	 * What the kernel ACTUALLY has, as opposed to what the module
+	 * accepts. `params` above is modinfo: the parameters this module
+	 * declares, with their types and descriptions, and it reads
+	 * identically whether the module is loaded or not.
+	 *
+	 * That left an operator able to set a parameter and unable to
+	 * confirm the kernel took it (#354). Setting one is not
+	 * self-evidently effective: modprobe on an already-loaded module
+	 * exits 0 without applying anything, a parameter can be rejected,
+	 * and one declared read-only keeps its built-in default. "It
+	 * worked" was an inference from an exit status every time.
+	 */
+	kmod_write_json_current_params(name, w);
 
 	jw_obj_close(w);
 	return 0;

@@ -64,10 +64,21 @@ void kmod_write_json_loaded(struct json_writer *w);
  * only ever shows what's currently *loaded*, not what's available to
  * load. Writes {"name","filename","description","version","license",
  * "author","depends":[...],"in_tree":bool,"params":[{"name","type",
- * "description"},...]} (any field modinfo didn't report is simply
- * omitted, except depends/params which are always present, possibly
- * empty). Returns 0 on success, -1 if modinfo itself failed (module
- * not built/found, or modinfo isn't present at all). */
+ * "description"},...],"current_params":{key:value,...}} (any field
+ * modinfo didn't report is simply omitted, except depends/params/
+ * current_params which are always present, possibly empty). Returns 0
+ * on success, -1 if modinfo itself failed (module not built/found, or
+ * modinfo isn't present at all).
+ *
+ * "params" and "current_params" answer different questions and the
+ * difference matters: params is modinfo, the parameters this module
+ * ACCEPTS, and reads identically whether the module is loaded or not;
+ * current_params is /sys/module/<name>/parameters, the values the
+ * kernel is running with RIGHT NOW, and is empty when the module is
+ * not loaded. Without the second, an operator could set a parameter
+ * and had no way to confirm the kernel took it (#354) -- which is not
+ * self-evident, since modprobe on an already-loaded module exits 0
+ * without applying anything. */
 int kmod_write_json_info(const char *name, struct json_writer *w);
 
 /* Converts a JSON object of string values ({"key":"value",...}) into

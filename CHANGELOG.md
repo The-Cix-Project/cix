@@ -2,6 +2,38 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Setting a module parameter can now be confirmed (#354)
+
+`GET /v1/system/kmod/{name}` reported `params` — what the module
+*accepts*, from `modinfo`, which reads identically whether the module is
+loaded or not. Nothing reported what the kernel was actually *running
+with*, so an operator could set a parameter and had no way to check it
+took.
+
+That is not a formality. `modprobe` on an already-loaded module exits 0
+without applying anything (the bug fixed one entry above), a parameter
+can be rejected, and a read-only one quietly keeps its built-in default.
+"It worked" was an inference from an exit status, every time.
+
+`current_params` is `/sys/module/<name>/parameters` — one file per
+parameter, holding the live value — reported as an object beside
+`params`. Empty when the module is not loaded, and empty for a module
+that declares no writable parameters; an empty object either way rather
+than an absent key, so a client never has to tell "none" apart from
+"this daemon did not look". Values are the kernel's own text, untouched:
+a `bool` prints `Y`/`N`, an `int` prints digits, and re-typing them
+would be this API inventing a schema for data it does not own.
+
+The directory is named the way the kernel spells a loaded module, so
+`usb-storage` becomes `usb_storage` first — the same `-`/`_`
+equivalence the already-loaded check needs.
+
+This is what makes the acceptance test for #347 an actual test. It
+previously asserted the option was "readable back" by looking for it in
+`modinfo`, which lists `delay_use` whether or not the kernel ever saw
+it — an assertion that could not fail for the reason it was written to
+catch.
+
 ### A module could be loaded and never unloaded, and two drivers stopped being built in (#353, #347, #346)
 
 `CONFIG_MODULE_UNLOAD` was never set in this platform's kernel config,
