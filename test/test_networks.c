@@ -87,26 +87,47 @@ static int stop_daemon(pid_t pid)
 	return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
 }
 
-/* ADR-0180: container delete is asynchronous -- the not-yet-reaped
- * entry still holds its network attachment for a moment, so a network
- * delete straight after a container delete can transiently 409.
- * Settle-poll the container to 404 first (bounded tight). */
-static void wait_container_gone(const struct cix_client *c, const char *name)
+/*
+ * ADR-0180: container delete is asynchronous -- the entry keeps its
+ * registry slot, and with it its network attachment, until the SIGKILL
+ * lands and the pidfd event completes the teardown. A network delete
+ * before that legitimately 409s. Poll the container to 404, which is
+ * exactly the predicate registry_network_in_use() reads (both key on
+ * the slot's in_use flag), so this is a wait for the real condition and
+ * not an approximation of it.
+ *
+ * #309: this used to return void and give up SILENTLY after 5 s, so a
+ * teardown slower than the budget -- which is ordinary on a loaded
+ * build host running ten jobs -- surfaced one frame later as
+ * "DELETE neta (now unused) expected 204, got 409", naming the network
+ * delete rather than the wait that had already failed. A bounded wait
+ * that reports success on timeout is not a wait; it converts a slow
+ * machine into a false regression report. It now says what it saw, and
+ * the caller fails on the wait rather than on its consequence.
+ */
+static int wait_container_gone(const struct cix_client *c, const char *name)
 {
 	char path[128];
 	struct cix_response r;
+	int last_status = -1;
 	int i;
 
 	snprintf(path, sizeof(path), "/v1/containers/%s", name);
-	for (i = 0; i < 50; i++) {
+	for (i = 0; i < 300; i++) {
 		memset(&r, 0, sizeof(r));
-		if (cix_client_request(c, "GET", path, NULL, &r) == 0 && r.status == 404) {
-			cix_response_free(&r);
-			return;
+		if (cix_client_request(c, "GET", path, NULL, &r) == 0) {
+			last_status = r.status;
+			if (r.status == 404) {
+				cix_response_free(&r);
+				return 0;
+			}
 		}
 		cix_response_free(&r);
 		usleep(100 * 1000);
 	}
+	fprintf(stderr, "FAIL: %s did not finish tearing down in 30s (last GET status %d)\n", name,
+	        last_status);
+	return -1;
 }
 
 int main(void)
@@ -356,7 +377,8 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	cix_client_request(&client, "DELETE", "/v1/containers/c1", NULL, &r);
 	cix_response_free(&r);
-	wait_container_gone(&client, "c1");
+	if (wait_container_gone(&client, "c1") != 0)
+		ok = 0;
 
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "DELETE", "/v1/networks/neta", NULL, &r) != 0 ||
@@ -476,7 +498,8 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	cix_client_request(&client, "DELETE", "/v1/containers/c2", NULL, &r);
 	cix_response_free(&r);
-	wait_container_gone(&client, "c2");
+	if (wait_container_gone(&client, "c2") != 0)
+		ok = 0;
 
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "DELETE", "/v1/networks/netip", NULL, &r) != 0 ||
@@ -659,7 +682,8 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	cix_client_request(&client, "DELETE", "/v1/containers/awc1", NULL, &r);
 	cix_response_free(&r);
-	wait_container_gone(&client, "awc1");
+	if (wait_container_gone(&client, "awc1") != 0)
+		ok = 0;
 	memset(&r, 0, sizeof(r));
 	cix_client_request(&client, "DELETE", "/v1/networks/allocwin", NULL, &r);
 	cix_response_free(&r);
@@ -789,7 +813,8 @@ int main(void)
 				memset(&r, 0, sizeof(r));
 				cix_client_request(&client, "DELETE", "/v1/containers/c137b", NULL, &r);
 				cix_response_free(&r);
-				wait_container_gone(&client, "c137b");
+				if (wait_container_gone(&client, "c137b") != 0)
+					ok = 0;
 			}
 
 			/* 3. declaring a pool re-enables auto-allocation, inside it */
@@ -817,7 +842,8 @@ int main(void)
 				memset(&r, 0, sizeof(r));
 				cix_client_request(&client, "DELETE", "/v1/containers/c137c", NULL, &r);
 				cix_response_free(&r);
-				wait_container_gone(&client, "c137c");
+				if (wait_container_gone(&client, "c137c") != 0)
+					ok = 0;
 			}
 		}
 		/*

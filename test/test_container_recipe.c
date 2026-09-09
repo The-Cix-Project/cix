@@ -89,6 +89,43 @@ static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 	return -1;
 }
 
+/*
+ * ADR-0180: DELETE returns as soon as the intent is durable; the name
+ * is only free once the registry slot is released and a GET 404s. Wait
+ * for that before reusing the name.
+ *
+ * #309: three byte-identical copies of this loop lived inline here and
+ * each gave up SILENTLY after 5 s, so a teardown slower than the budget
+ * surfaced as the NEXT create returning 409 -- a failure naming the
+ * create, in a machine that was merely busy. One helper, a budget that
+ * suits a loaded build host, and a report from the step that actually
+ * failed.
+ */
+static int wait_container_gone(const struct cix_client *c, const char *name)
+{
+	char path[128];
+	struct cix_response r;
+	int last_status = -1;
+	int i;
+
+	snprintf(path, sizeof(path), "/v1/containers/%s", name);
+	for (i = 0; i < 300; i++) {
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(c, "GET", path, NULL, &r) == 0) {
+			last_status = r.status;
+			if (r.status == 404) {
+				cix_response_free(&r);
+				return 0;
+			}
+		}
+		cix_response_free(&r);
+		usleep(100 * 1000);
+	}
+	fprintf(stderr, "FAIL: %s did not finish tearing down in 30s (last GET status %d)\n", name,
+	        last_status);
+	return -1;
+}
+
 int main(void)
 {
 	pid_t daemon_pid;
@@ -294,29 +331,8 @@ int main(void)
 	CHECK(cix_client_request(&client, "DELETE", "/v1/containers/crtest", NULL, &r) == 0,
 	      "rm crtest to free the name for scenario 6");
 	cix_response_free(&r);
-	{
-		/*
-		 * ADR-0180: settle the async delete before reusing the name.
-		 * This one was missed when the suite was converted -- DELETE
-		 * returns as soon as the intent is durable, so the create below
-		 * could still hit the old container's name and 409. It only
-		 * showed under load (the whole suite running before it), which
-		 * is exactly how a race that is always present manages to look
-		 * like an unrelated regression.
-		 */
-		int i;
-
-		for (i = 0; i < 50; i++) {
-			memset(&r, 0, sizeof(r));
-			if (cix_client_request(&client, "GET", "/v1/containers/crtest", NULL, &r) == 0 &&
-			    r.status == 404) {
-				cix_response_free(&r);
-				break;
-			}
-			cix_response_free(&r);
-			usleep(100 * 1000);
-		}
-	}
+	CHECK(wait_container_gone(&client, "crtest") == 0,
+	      "the deleted crtest finishes tearing down, freeing its name");
 
 	/* --- scenario 6: apply with NO secret supplied leaves the token
 	 * untouched (never silently swallowed) --- */
@@ -344,21 +360,8 @@ int main(void)
 	CHECK(cix_client_request(&client, "DELETE", "/v1/containers/crtest", NULL, &r) == 0,
 	      "rm crtest to free the name for the LDAP-token scenario");
 	cix_response_free(&r);
-	{
-		int i;
-
-		/* ADR-0180: settle the async delete before reusing the name. */
-		for (i = 0; i < 50; i++) {
-			memset(&r, 0, sizeof(r));
-			if (cix_client_request(&client, "GET", "/v1/containers/crtest", NULL, &r) == 0 &&
-			    r.status == 404) {
-				cix_response_free(&r);
-				break;
-			}
-			cix_response_free(&r);
-			usleep(100 * 1000);
-		}
-	}
+	CHECK(wait_container_gone(&client, "crtest") == 0,
+	      "the deleted crtest finishes tearing down, freeing its name");
 	memset(&r, 0, sizeof(r));
 	CHECK(cix_client_request(&client, "PUT", "/v1/ldap/config",
 	                         "{\"client_uri\":\"ldap://10.9.9.9:3893/\","
@@ -425,21 +428,8 @@ int main(void)
 	CHECK(cix_client_request(&client, "DELETE", "/v1/containers/crtest", NULL, &r) == 0,
 	      "rm crtest to free the name for the derived-URI scenario");
 	cix_response_free(&r);
-	{
-		int i;
-
-		/* ADR-0180: settle the async delete before reusing the name. */
-		for (i = 0; i < 50; i++) {
-			memset(&r, 0, sizeof(r));
-			if (cix_client_request(&client, "GET", "/v1/containers/crtest", NULL, &r) == 0 &&
-			    r.status == 404) {
-				cix_response_free(&r);
-				break;
-			}
-			cix_response_free(&r);
-			usleep(100 * 1000);
-		}
-	}
+	CHECK(wait_container_gone(&client, "crtest") == 0,
+	      "the deleted crtest finishes tearing down, freeing its name");
 	memset(&r, 0, sizeof(r));
 	CHECK(cix_client_request(&client, "POST", "/v1/networks",
 	                         "{\"name\":\"crtnet\",\"subnet\":\"172.41.0.0\",\"prefix_len\":24}",

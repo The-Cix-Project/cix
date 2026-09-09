@@ -6,6 +6,46 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Two "flaky" selftests were tests reporting the wrong failure (#309)
+
+Three daemon-linked tests failed in one session and each cost a build
+round. Two are now root-caused to defects in the tests themselves. Both
+had the same shape: **the test reported a failure other than the one
+that actually happened.**
+
+**`test_cix_init` compared whole `tv_sec` fields.** `t1.tv_sec -
+t0.tv_sec > 2` is not a two-second bound — it passes anything from just
+over 2.0 s to just under 3.0 s, decided by where the run happened to sit
+inside a second. Case 12 failed twice with nothing about `cix-init`
+changed. One `elapsed_ms()` helper now serves all three timing sites, so
+a new bound cannot reintroduce the shape.
+
+**`test_networks`' `wait_container_gone()` returned success on timeout.**
+The visible failure was `DELETE neta (now unused) expected 204, got 409`,
+twice identically — which is exactly why it read as a regression rather
+than a flake. It was neither. `handle_get_one()` 404s precisely when the
+registry slot's `in_use` clears, and `registry_network_in_use()` reads
+that same flag, so the poll waited for the right condition; ADR-0180
+holds that slot until the SIGKILL lands and the pidfd event completes
+teardown. When teardown outran the 5 s budget — ordinary on a host
+running ten build jobs — the wait gave up in silence and the *next* call
+carried the blame. A bounded wait that reports success on timeout is not
+a wait; it converts a busy machine into a false regression report. It
+now returns `int`, waits 30 s, and names what it saw.
+
+**`test_container_recipe` carried three byte-identical copies** of that
+same silent loop, each surfacing as a 409 from the following create.
+Replaced with one loud helper — the duplication was its own defect.
+
+`test_cli` and `test_container_restart` were checked and already report
+on timeout. The third flake, `test_console_exec`, is a genuinely open
+question and stays with #331, with the session's two signatures recorded
+there.
+
+Excluding the flaky tests from `SELFTESTS` was considered and rejected:
+the Makefile holds a test out for a measured environmental reason, never
+for failing. Dropping a test to make builds green is the stop-gap.
+
 ### A container can see its own memory and CPU limits — part 2: the bind mounts (#336, ADR-0262)
 
 Part 1 built the server. This puts its files in front of a container's
