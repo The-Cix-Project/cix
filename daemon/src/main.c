@@ -1599,23 +1599,20 @@ static void load_boot_modules(void)
 	size_t i;
 
 	for (i = 0; i < sizeof(boot_modules) / sizeof(boot_modules[0]); i++) {
-		pid_t pid;
-		int status;
-		char *argv[] = { (char *)"modprobe", (char *)boot_modules[i], NULL };
-
-		pid = fork();
-		if (pid < 0) {
-			perror("fork (modprobe)");
-			continue;
-		}
-		if (pid == 0) {
-			execve("/usr/bin/modprobe", argv, environ);
-			_exit(127);
-		}
-		waitpid(pid, &status, 0);
-		/* Exit status deliberately unchecked/unlogged -- see the
-		 * function-level comment above for why "no such hardware
-		 * present" isn't a real error here. */
+		/*
+		 * kmod_load(), not a second hand-rolled fork+execve of
+		 * modprobe. This loop used to be one, which made two places
+		 * in this platform that know how to run modprobe and how to
+		 * spell its path -- and only one of them would have been
+		 * found by anyone changing that.
+		 *
+		 * Return value deliberately unchecked, and output deliberately
+		 * discarded: see the function-level comment above for why "no
+		 * such hardware present" is not an error here. That is a
+		 * choice about THIS list, not about kmod_load(), which now
+		 * reports its reason everywhere the answer matters.
+		 */
+		(void)kmod_load(boot_modules[i], NULL, NULL, 0);
 	}
 }
 
@@ -1659,9 +1656,25 @@ static void apply_configured_sysctls(void)
  */
 static void load_one_configured_module(const char *name, const char *options, void *ctx)
 {
+	char tool_out[256];
+
 	(void)ctx;
-	if (kmod_load(name, options) != 0)
-		fprintf(stderr, "load_configured_modules: %s failed\n", name);
+	/*
+	 * modprobe's own words, and to the log store rather than stderr.
+	 * This ran at boot, so stderr goes nowhere an operator can read
+	 * (#132) -- an autoload that silently did not happen was
+	 * indistinguishable from one never configured.
+	 */
+	if (kmod_load(name, options, tool_out, sizeof(tool_out)) != 0) {
+		size_t i;
+
+		for (i = 0; tool_out[i] != '\0'; i++) {
+			if (tool_out[i] == '\n' || tool_out[i] == '\r')
+				tool_out[i] = ' ';
+		}
+		logstore_write("cixd", "error", "kmod autoload: %s failed: %s", name,
+		               tool_out[0] != '\0' ? tool_out : "modprobe said nothing about why");
+	}
 }
 
 static void load_configured_modules(void)

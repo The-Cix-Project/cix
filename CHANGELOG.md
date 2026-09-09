@@ -2,6 +2,52 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### A modprobe failure said nothing, and a load that did nothing said 200
+
+Both found by running the acceptance test for #347 on a real box the
+moment modules could load at all.
+
+**The failure named nothing.** `DELETE /v1/system/kmod/usb-storage`
+answered:
+
+```
+404 {"error":"modprobe -r could not unload this module"}
+```
+
+That is the entire message. `kmod_load()` and `kmod_unload()` both
+called `run_kmod_tool(..., NULL, 0)`, which captures the child's merged
+stdout and stderr into a pipe and then reads it into a discard buffer —
+so modprobe wrote the answer (`FATAL: Module usb_storage is in use.`,
+`is builtin.`, `not found in directory /lib/modules/...`, a rejected
+parameter — each pointing at a different fix) and the one party that
+knew it could not say so.
+
+`api_kmod.c` explained the uniform `404` as not wanting to guess a
+finer-grained status from output the project never parses. That holds
+for the status and never held for the message, and the file did not
+make the distinction. Quoting a tool verbatim is not parsing it. Both
+messages now carry modprobe's own words, and the boot-time `autoload`
+path reports to the log store rather than stderr — boot-time stderr
+goes nowhere an operator can read (#132), so an autoload that silently
+did not happen was indistinguishable from one never configured.
+
+**The success was not one.** `modprobe` on an already-loaded module
+exits 0 and does nothing. `POST /v1/system/kmod/usb-storage
+{"options":{"delay_use":"5"}}` therefore answered `200` and echoed the
+options back, having never applied them — the kernel had not seen that
+parameter and never would. Module parameters are set when a module is
+inserted, so changing them means unloading first, and whether unloading
+a live module is acceptable is the operator's call rather than the
+daemon's. That case is `409` now. A load with no `options` of something
+already loaded is still `200`: idempotent, and claiming nothing untrue.
+
+`load_boot_modules()` also stops being a second hand-rolled
+`fork`/`execve` of modprobe and calls `kmod_load()` like everything
+else. Its own silence is deliberate and unchanged — "no such hardware
+present" is not an error for that curated list — but there is one
+implementation of "run modprobe" again, rather than two of which only
+one would be found by anyone changing it.
+
 ### Control-plane assembly can be asked for, not only watched (#308)
 
 `GET /v1/system/assembly` has reported on assembly since ADR-0230. There

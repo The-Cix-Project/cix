@@ -114,7 +114,7 @@ static int split_options(char *buf, char *tokens[], int max_tokens)
 	return count;
 }
 
-int kmod_load(const char *name, const char *options)
+int kmod_load(const char *name, const char *options, char *out, size_t out_size)
 {
 	char buf[KMOD_OPTIONS_MAX];
 	char *tokens[KMOD_MAX_OPTION_TOKENS];
@@ -137,10 +137,10 @@ int kmod_load(const char *name, const char *options)
 		argv[2 + i] = tokens[i];
 	argv[2 + token_count] = NULL;
 
-	return run_kmod_tool(KMOD_MODPROBE_BIN, argv, NULL, 0);
+	return run_kmod_tool(KMOD_MODPROBE_BIN, argv, out, out_size);
 }
 
-int kmod_unload(const char *name)
+int kmod_unload(const char *name, char *out, size_t out_size)
 {
 	char *argv[4];
 
@@ -152,7 +152,55 @@ int kmod_unload(const char *name)
 	argv[2] = (char *)name;
 	argv[3] = NULL;
 
-	return run_kmod_tool(KMOD_MODPROBE_BIN, argv, NULL, 0);
+	return run_kmod_tool(KMOD_MODPROBE_BIN, argv, out, out_size);
+}
+
+/*
+ * '-' and '_' are the same character to modprobe, and the kernel
+ * always reports the underscore form: usb-storage.ko is usb_storage in
+ * /proc/modules. Comparing literally answers "not loaded" about a
+ * module that is plainly loaded, which is worse than not asking.
+ */
+static int kmod_name_eq(const char *a, const char *b)
+{
+	size_t i;
+
+	for (i = 0;; i++) {
+		char ca = a[i] == '-' ? '_' : a[i];
+		char cb = b[i] == '-' ? '_' : b[i];
+
+		if (ca != cb)
+			return 0;
+		if (ca == '\0')
+			return 1;
+	}
+}
+
+int kmod_is_loaded(const char *name)
+{
+	FILE *f;
+	char line[KMOD_PROC_MODULES_LINE_MAX];
+	int found = 0;
+
+	if (!kmod_name_is_valid(name))
+		return 0;
+
+	f = fopen("/proc/modules", "r");
+	if (f == NULL)
+		return 0;
+	while (fgets(line, sizeof(line), f) != NULL) {
+		char *save = NULL;
+		const char *mod;
+
+		line[strcspn(line, "\n")] = '\0';
+		mod = strtok_r(line, " \t", &save);
+		if (mod != NULL && kmod_name_eq(mod, name)) {
+			found = 1;
+			break;
+		}
+	}
+	fclose(f);
+	return found;
 }
 
 void kmod_write_json_loaded(struct json_writer *w)
