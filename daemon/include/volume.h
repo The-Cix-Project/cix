@@ -227,6 +227,23 @@ enum volume_error volume_set_backup_policy(const char *name, int enabled, int re
 
 /* Parses the API's own spelling; anything unrecognised is REFUSE, the
  * safe reading of a value this daemon does not understand. */
+/*
+ * #364: convert an existing volume's plain directory into a btrfs
+ * subvolume in place, preserving contents, so a qgroup size limit can
+ * attach to it. Volumes created since #364 are born as subvolumes and
+ * never need this.
+ *
+ * Idempotent and persists nothing: a volume already a subvolume, or not
+ * on btrfs at all, returns VOLUME_OK having done nothing. A failure at
+ * any step leaves the volume complete and readable at its own path.
+ *
+ * THE CALLER MUST HAVE ESTABLISHED THAT NO CONTAINER MOUNTING THIS
+ * VOLUME IS RUNNING -- a bind mount pins the directory's inode
+ * (ADR-0183), so a rename underneath a live container leaves it writing
+ * into the tree this replaces. Same guard handle_volume_migrate() uses.
+ */
+enum volume_error volume_convert_to_subvolume(const char *name);
+
 enum volume_running_mode volume_running_mode_parse(const char *s);
 const char *volume_running_mode_name(enum volume_running_mode m);
 

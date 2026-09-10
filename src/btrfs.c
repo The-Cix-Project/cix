@@ -190,7 +190,7 @@ static int copy_tree(const char *src, const char *dst)
  * migration copies content faithfully, which turns subvolumes into
  * plain directories, and nothing notices until the next snapshot.
  */
-static int is_subvolume(const char *path)
+int cix_btrfs_is_subvolume(const char *path)
 {
 	struct stat st;
 
@@ -223,7 +223,7 @@ int cix_btrfs_snapshot_or_copy(const char *src, const char *dst)
 	 * and delete both go through this same call, one that can never be
 	 * repaired or removed either.
 	 */
-	if (!is_subvolume(src)) {
+	if (!cix_btrfs_is_subvolume(src)) {
 		if (cix_btrfs_subvol_create_or_dir(dst) != 0)
 			return -1;
 		return copy_tree(src, dst);

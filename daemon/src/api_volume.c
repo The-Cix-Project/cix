@@ -7,6 +7,7 @@
 #include "logstore.h"
 #include "volume.h"
 #include "volumebackup.h"
+#include "btrfs.h"
 #include "quotamap.h"
 #include "registry.h"
 #include "containerdef.h"
@@ -290,12 +291,18 @@ static int volume_has_running_container(const char *volume_name)
  * getting it subtly wrong yields a quota that reports as applied and is
  * not.
  *
- * btrfs is refused rather than silently unenforced. There the limit
- * lives on a qgroup attached to a subvolume, and a volume directory is
- * not a subvolume -- making it one is a real change to how volumes are
- * created, not another call. Accepting the request and quietly not
- * enforcing it would be exactly the "false promise" overlay.c's own
- * comment warns about.
+ * On btrfs the mechanism is different and so is the call: the limit
+ * lives on a QGROUP attached to a subvolume, set with the same
+ * cix_btrfs_qgroup_limit_excl() a container's own rootfs quota already
+ * uses. Volumes are created as subvolumes (#364), and one predating
+ * that is converted by the caller before reaching here.
+ *
+ * This used to refuse btrfs outright, which was right at the time --
+ * accepting a limit and not enforcing it is the "false promise"
+ * overlay.c's own comment warns about -- but it meant no volume on this
+ * platform's DEFAULT substrate could be bounded at all. A plain
+ * directory is still refused rather than silently unenforced, because
+ * that failure has not stopped being a false promise.
  *
  * quota_bytes of 0 clears the limit.
  */
@@ -305,11 +312,23 @@ static int volume_apply_quota(const char *volume_name, const char *dir, long lon
 	uint32_t projid;
 
 	if (overlay_backing_is_btrfs(dir)) {
-		snprintf(err, err_size,
-		         "this volume is on a btrfs filesystem, where a size limit needs the volume to be "
-		         "its own subvolume -- not supported yet, and refused rather than accepted and "
-		         "not enforced");
-		return -1;
+		if (!cix_btrfs_is_subvolume(dir)) {
+			snprintf(err, err_size,
+			         "this volume is a plain directory on btrfs, where a size limit needs a "
+			         "subvolume -- it could not be converted, so the limit is refused rather "
+			         "than accepted and not enforced");
+			return -1;
+		}
+		/* Bytes, and 0 legitimately means "no limit" -- the same
+		 * clearing convention the project-quota path below uses. */
+		if (cix_btrfs_qgroup_limit_excl(dir, (unsigned long long)quota_bytes) != 0) {
+			snprintf(err, err_size,
+			         "could not set the qgroup limit (%s) -- the filesystem may not have quotas "
+			         "enabled (btrfs quota enable)",
+			         strerror(errno));
+			return -1;
+		}
+		return 0;
 	}
 	/* A distinct project id per volume, from the same allocator
 	 * containers use -- ids are never reused, so a deleted volume's id
@@ -544,6 +563,48 @@ void handle_volume_quota_put(int fd, const char *name, const char *body, size_t 
 		respond_error(fd, 500, "Internal Server Error", "could not resolve the volume's own path");
 		return;
 	}
+
+	/*
+	 * #364: a btrfs qgroup attaches to a SUBVOLUME, and a volume created
+	 * before that was an ordinary directory. Converting it is what makes
+	 * the operator's request satisfiable at all, so it happens here
+	 * rather than being reported back as homework -- volumes created
+	 * since are already subvolumes and this is a no-op for them.
+	 *
+	 * Refused while a container mounting the volume is RUNNING, and the
+	 * test is the one handle_volume_migrate() already uses, for the same
+	 * reason: a bind mount resolves once at container start (ADR-0183)
+	 * and pins that directory's inode, so a live container would go on
+	 * writing into the tree the conversion replaces -- a silent
+	 * split-brain rather than an error. registry_find() alone is not the
+	 * test, because since ADR-0181 the registry also holds exited
+	 * containers; only a live process has a bind mount already resolved.
+	 *
+	 * Clearing a limit (0) needs no subvolume, so it is never blocked by
+	 * this -- an operator must always be able to remove a limit.
+	 */
+	if (bytes > 0 && cix_btrfs_is_backing(path) && !cix_btrfs_is_subvolume(path)) {
+		struct registry_entry *e = NULL;
+		char user[REGISTRY_NAME_MAX];
+		enum volume_error cerr;
+
+		if (volume_referenced_by_container(name, user, sizeof(user)))
+			e = registry_find(user);
+		if (e != NULL && e->running) {
+			respond_volume_error(fd, VOLUME_ERR_IN_USE_RUNNING);
+			return;
+		}
+		cerr = volume_convert_to_subvolume(name);
+		if (cerr != VOLUME_OK) {
+			respond_volume_error(fd, cerr);
+			return;
+		}
+		logstore_write("volume", "info",
+		               "volume %s converted from a directory to a btrfs subvolume so a size limit "
+		               "can attach to it (#364)",
+		               name);
+	}
+
 	if (volume_apply_quota(name, path, bytes, err, sizeof(err)) != 0) {
 		respond_error(fd, 409, "Conflict", err);
 		return;

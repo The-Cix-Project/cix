@@ -6,6 +6,62 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A volume on btrfs can have a size limit (#364)
+
+`PUT /v1/volumes/{name}/quota` refused every volume on this platform's
+own default filesystem:
+
+```
+409 this volume is on a btrfs filesystem, where a size limit needs the
+    volume to be its own subvolume -- not supported yet, and refused
+    rather than accepted and not enforced
+```
+
+The refusal was right -- storing a limit nothing enforces is the false
+promise `overlay.c` warns about -- but since ADR-0207 made btrfs the
+default, the consequence was that **no volume on the host could be
+bounded at all**, which is exactly the unbounded-way-to-fill-a-disk
+`volume.h` describes as the reason #93 mattered.
+
+Two changes. `volume_create()` now makes the directory with
+`cix_btrfs_subvol_create_or_dir()` instead of `persist_mkdir_p()`, so a
+volume is a subvolume on btrfs and a plain directory anywhere else --
+the same call container rootfs and the image store already use. A
+volume born this way never needs converting.
+
+For volumes that predate it, `volume_convert_to_subvolume()` turns the
+directory into a subvolume in place, preserving contents. A directory
+cannot become a subvolume in place, so it is the copy-and-swap
+`volume_migrate()` already performs between disks, with the same
+failure ordering: build the replacement completely, put it in place
+with a rename, remove what it replaced only afterwards. Two properties
+make it cheaper than the migration it copies -- it **persists nothing**
+(a volume's path derives from its name, identical before and after, so
+there is no field to unwind), and it is therefore **idempotent**, so a
+caller can ask without checking and an interrupted run leaves only a
+staging directory the next attempt replaces.
+
+Setting a limit performs the conversion, because that is what makes the
+request satisfiable rather than homework for the operator. It is
+refused while a container mounting the volume is RUNNING, using the
+guard `handle_volume_migrate()` already applies: a bind mount resolves
+once at container start (ADR-0183) and pins that directory's inode, so
+a live container would go on writing into the tree being replaced --
+silent split-brain rather than an error. Clearing a limit needs no
+subvolume and is never blocked.
+
+`cix_btrfs_is_subvolume()` is exported for this (it was static), and
+`test_btrfs` gates its fallback answers: 0 for a plain directory, 0 for
+a missing path. The btrfs path itself cannot be gated where the gates
+run -- `test_btrfs`'s own header records that the sandbox is ext4 with
+no loop devices -- so it is verified on a real host instead.
+
+**This does not change what `df` reports**, and should not be sold as
+if it did. Measured in a container whose rootfs already carries a real
+512 MiB qgroup: `df /` reports the whole 16G of `/dev/vda5`, because
+btrfs does not reflect qgroup limits in `statfs(2)`. Volume usage
+reporting is #365.
+
 ### A container's CPU count in /sys, and a DELETE for container files
 
 Two changes that came out of looking at `htop` in a console.

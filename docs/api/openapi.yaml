@@ -11094,12 +11094,30 @@ paths:
         makes it an unbounded thing to copy when scheduled backups run
         -- an unbounded source is an unbounded destination.
 
-        On a btrfs-backed volume this is REFUSED rather than accepted
-        and left unenforced: there the limit lives on a qgroup attached
-        to a subvolume, and a volume directory is not one. Making it one
-        is a change to how volumes are created, not another call, and
-        accepting a limit that is not in force is worse than refusing --
-        the operator would believe it exists.
+        On a btrfs-backed volume the mechanism is a QGROUP instead --
+        the same `cix_btrfs_qgroup_limit_excl()` a container's own
+        rootfs quota uses. A qgroup attaches to a subvolume, so volumes
+        are created as subvolumes (#364); one created before that is an
+        ordinary directory, and setting a limit CONVERTS IT IN PLACE
+        first, preserving its contents.
+
+
+        That conversion is refused with 409 while any container mounting
+        the volume is RUNNING, because a bind mount resolves to a host
+        path once at container start (ADR-0183) and pins that
+        directory's inode -- a live container would go on writing into
+        the tree the conversion replaces. Stop it, set the limit, start
+        it again. Clearing a limit (`quota_bytes: 0`) never needs a
+        subvolume and is never blocked by this: an operator must always
+        be able to remove a limit.
+
+
+        Until #364 this was refused outright on btrfs, which was correct
+        at the time -- accepting a limit that is not in force is worse
+        than refusing -- but it meant no volume on this platform's
+        DEFAULT substrate could be bounded at all. A volume that is
+        still a plain directory and could not be converted is refused,
+        for that same original reason.
 
         Re-applied automatically after a migrate: a project-quota tag
         lives on the directory, so a volume that moved to another
