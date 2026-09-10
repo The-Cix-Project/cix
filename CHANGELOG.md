@@ -6,6 +6,56 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### ADR-0275 amended: the phase plan, a closed vocabulary, two honest mechanisms (#388)
+
+The entry below says "two homes, both already existing". There are three, and
+the third was missing. ADR-0275 promised that a recipe declaring no `check`
+reports that phase `not-implemented` -- which requires knowing **which phases
+this recipe has**, a fact the ADR located nowhere. #388 could not have been
+implemented without inventing a home for it, which is the second pass this
+amendment exists to avoid. Amended in place and dated, per
+`docs/adr/0000-adr-process.md`: nothing is reversed, so this completes a decision
+rather than superseding one.
+
+**The plan** is captured when a build starts, carried on the chain while in
+flight, and written to the run record (ADR-0272) when it ends -- the same shape
+and the same reasoning as `run_trigger`, since a chain is one build of one thing
+and therefore has exactly one plan. A package that has never been built has no
+plan, so its phases are **absent** rather than `not-implemented`: absence of a
+run is not a fact about the recipe. Deriving the plan at read time would be
+closer to ADR-0256, and is rejected because reading a CPDL recipe's phases means
+running `cbs`, which would turn one `GET /v1/pipeline` into a fork per package.
+
+**The vocabulary is closed**, at six: `prepare configure build check install
+finalize`. `not-implemented` is meaningless against an open set -- a recipe
+cannot be not-implemented for a phase nobody named -- so this is what makes the
+status axis work one level down. Five of the six are measured rather than chosen:
+`phase_word()` in `cbs/src/parser.c` accepts exactly those words, so an
+unrecognised phase is a *parse error* in a `.cbs` recipe, not a runtime string.
+The sixth, `finalize`, is ADR-0251's platform-policy step -- ours rather than a
+recipe's, which is why it is named here (`itdlabs/cix-build-system` #129 asks CBS
+for an embedder-supplied policy step; until it exists, Cix runs `finalize`
+itself).
+
+**The mechanism becomes a requirement plus two cases**, replacing the claim that
+markers "generalise unchanged to CBS". They do not. The requirement is that the
+daemon learn plan and position without parsing package-specific build output.
+*Shell*: the plan is the `PKG_BUILD_CMD` constant (`build`/`install`/`finalize`
+implemented, the other three `not-implemented`) and the position comes from
+markers **cixd itself injects** between the steps it already runs -- whole today,
+waiting on nothing. *CPDL*: the plan comes from `cbs explain RECIPE.cbs --json`,
+which exists and emits `{"phases":[{"name":...,"operations":N}]}` -- the declared
+plan before execution, which is better than a marker. The position has no
+mechanism at all: cixd cannot inject a marker between phases `cbs` runs
+internally, and CBS emits no phase event. That is
+`itdlabs/cix-build-system` #131, which does not exist yet, so a CPDL build
+reports its plan and its outcome and no live cursor until it lands. A smaller
+answer, written down now rather than discovered during implementation.
+
+Also fixed: ADR-0274 and ADR-0275 both used `# ADR-NNNN: Title`, the H1 shape
+this corpus drifted into once and no longer accepts. `test_docindex` is in
+`SELFTESTS`, so both would have failed the next release gate.
+
 ### A stage has phases (#388, ADR-0275)
 
 Building a package runs one fixed command, defined once in `pkg.c` and identical
