@@ -273,3 +273,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0266](0266-the-module-tools-are-an-image-the-module-tree-is-the-kernels.md) | The module tools are an image and the module tree is the kernel's own artifact, so a kernel module can load at all | Accepted |
 | [0267](0267-a-volumes-size-comes-from-the-kernel-when-the-kernel-is-counting.md) | A volume's size comes from the kernel when the kernel is already counting, and the answer says which source it came from | Accepted |
 | [0268](0268-gating-is-visible-and-its-preconditions-are-protected.md) | Write authentication is visible, and the five operations that could silently turn it off are refused | Accepted |
+| [0269](0269-one-pipeline-model-for-four-kinds.md) | One pipeline model for packages, images, deployments and the host -- four kinds walking subsets of one stage vocabulary | Accepted |

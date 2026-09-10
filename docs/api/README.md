@@ -255,7 +255,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/pkg/policies` | Per-package rolling policy — which version an omitted version resolves to (issue #64) |
 | PUT | `/pkg/policies/{name}` | Set it: `highest` (default), `newest`, or `pinned` with a version |
 | DELETE | `/pkg/policies/{name}` | Back to the default |
-| GET | `/pipeline` | Where every package stands in the eleven-stage pipeline, and what is stopping it (ADR-0256) |
+| GET | `/pipeline` | The delivery graph: where every package, image, deployment and the host stands, and what is stopping it (ADR-0256, ADR-0269) |
 | GET | `/schedules` | Everything this host does on a clock, in one place (ADR-0257) |
 | PUT | `/schedules/{name}` | Create or replace one |
 | DELETE | `/schedules/{name}` | Remove one |
@@ -1080,7 +1080,28 @@ Getting a package from an upstream release onto a running host takes eleven step
 | `roll` | Do the images that use it rebuild? | could not rebuild dependents |
 | `deploy` | Does the new root boot and serve? | could not deploy |
 
-The list is ordered and total. Adding a twelfth is a deliberate act with an ADR, and `test_pipeline` asserts the count so it cannot happen quietly.
+The list is ordered and total. Adding one is a deliberate act with an ADR, and `test_pipeline` asserts the count so it cannot happen quietly — it duly **failed** when [ADR-0269](../adr/0269-one-pipeline-model-for-four-kinds.md) took the list from eleven to fifteen, which is the gate working rather than an obstacle to it.
+
+### Four kinds, one vocabulary (#371)
+
+A package is not the only thing this platform delivers. An image is composed of packages, a deployment runs an image, and the host boots a root built from all of it. Each is a pipeline, and each walks a **subset of the same stage enum** — never a private list, which is the several-vocabularies failure ADR-0256 exists to end.
+
+| Kind | Stages |
+|---|---|
+| `package` | `discover resolve authenticate author fetch unpack build install publish roll` |
+| `image` | `author resolve acquire install publish roll` |
+| `deployment` | `author resolve acquire deploy verify` |
+| `host` | `build assemble stage deploy` |
+
+Four stages are new. **`acquire`** is where a pipeline waits for what it depends on, and is where forking will attach. **`assemble`** and **`stage`** are host-only and fail independently of each other (`GET /system/assembly` has its own generation counter; `POST /system/update` answers `{"status":"staged","slot":...}`). **`verify`** is deployment-only and is the ready probe — a container that started and is not ready is neither ok nor failed, which is exactly how a crash-looping dnsmasq reported `"status":"running"` and told nobody anything.
+
+`deploy` moved out of the package pipeline into the host's, making structural what ADR-0256 already did by special case (it reported deploy *once*, beside the package list).
+
+**`edges` are structural, not failure-driven.** An edge exists because a deployment *names* an image and a manifest *names* packages — present when everything is healthy. Status colours an edge; `blocked_on` names the live one among them; neither creates one. `relation` is `manifest`, `image`, or `follow-rolling` — and `follow-rolling` is emitted **only where it is live**, since the flag is stored but inert on a `restart:"no"` deployment.
+
+**`kinds`** publishes each kind's ordered stage list, so a renderer draws its lanes from the daemon's own answer rather than a copy of the table that would drift.
+
+`packages`, `stages` and `deploy` are unchanged by all of this — the new keys are additive, so a client written against ADR-0256 keeps working.
 
 ### Status is a second axis
 

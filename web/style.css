@@ -2764,3 +2764,104 @@ pre {
 	line-height: 1.5;
 }
 .auth-gating-banner strong { color: var(--error); }
+
+/*
+ * #371: the delivery graph. Lanes are kinds in dependency order, boxes
+ * are things at a stage, colour is the status axis, chips are the edges.
+ *
+ * Every colour comes from an existing token -- a graph that invented its
+ * own palette would be a second theme to keep in sync with the first,
+ * and would be wrong in dark mode the moment anyone stopped looking.
+ */
+.delivery-graph {
+	display: flex;
+	gap: 12px;
+	align-items: flex-start;
+	overflow-x: auto;
+	padding: 4px 0 10px 0;
+}
+.dg-lane {
+	flex: 1 1 0;
+	min-width: 190px;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+.dg-lane-host { flex: 0 0 auto; }
+.dg-lane-head {
+	font-size: 11px;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--muted);
+	border-bottom: 1px solid var(--border);
+	padding-bottom: 4px;
+}
+.dg-none {
+	font-size: 12px;
+	color: var(--muted);
+	padding: 6px 2px;
+}
+.dg-box {
+	border: 1px solid var(--border);
+	border-left: 4px solid var(--muted);
+	border-radius: 4px;
+	background: var(--panel);
+	padding: 8px 10px;
+}
+.dg-name { font-weight: 600; font-size: 13px; }
+.dg-stage {
+	font-size: 11px;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	color: var(--muted);
+	margin-top: 2px;
+}
+.dg-reason {
+	font-size: 12px;
+	margin-top: 5px;
+	line-height: 1.4;
+}
+.dg-dep { margin-top: 7px; display: flex; flex-wrap: wrap; gap: 4px; }
+.dg-chip {
+	font-size: 11px;
+	border: 1px solid var(--border);
+	border-radius: 10px;
+	padding: 1px 7px;
+	color: var(--muted);
+	white-space: nowrap;
+}
+/* The one edge actually being waited on, among the many that exist. */
+.dg-chip-live { border-color: var(--error); color: var(--error); font-weight: 600; }
+/* A permanent rule, not a transient wait -- drawn only where it is live. */
+.dg-chip-rolling { border-style: dashed; }
+
+.dg-ok { border-left-color: var(--ok); }
+.dg-blocked { border-left-color: var(--paused); }
+.dg-failed { border-left-color: var(--error); }
+.dg-cancelled { border-left-color: var(--muted); }
+.dg-not-implemented { border-left-color: var(--accent); }
+
+.dg-h {
+	font-size: 12px;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--muted);
+	margin: 18px 0 8px 0;
+	font-weight: 600;
+}
+.dg-key {
+	display: inline-block;
+	margin-right: 14px;
+	padding-left: 10px;
+	border-left: 4px solid var(--muted);
+}
+.dg-key.dg-ok { border-left-color: var(--ok); }
+.dg-key.dg-blocked { border-left-color: var(--paused); }
+.dg-key.dg-failed { border-left-color: var(--error); }
+.dg-key.dg-cancelled { border-left-color: var(--muted); }
+.dg-key.dg-not-implemented { border-left-color: var(--accent); }
+
+@media (max-width: 720px) {
+	.delivery-graph { flex-direction: column; }
+	.dg-lane { min-width: 0; }
+}

@@ -1888,11 +1888,30 @@
 				
 			</div>
 <div class="tab-panel" data-tab="pipeline">
-			
+
 			<p class="hint">
-				The eleven steps between "upstream released something" and "this host is
-				running it" (ADR-0256). Every package stands at exactly one of them.
+				Everything moving between "upstream released something" and "this host is
+				running it" (ADR-0256, #371). Four kinds, one vocabulary: a
+				<strong>package</strong> is built, an <strong>image</strong> is composed of
+				packages, a <strong>deployment</strong> runs an image, and the
+				<strong>host</strong> boots a root built from all of it. Arrows are real
+				dependencies and are drawn whether or not anything is wrong.
 			</p>
+
+			<!-- #371: the delivery graph. Lanes are kinds, boxes are things at a
+			     stage, colour is the status axis, arrows are the edges[] the
+			     daemon derives. -->
+			<div id="delivery-graph" class="delivery-graph"></div>
+
+			<p class="hint" id="delivery-legend">
+				<span class="dg-key dg-ok">ok</span>
+				<span class="dg-key dg-blocked">blocked &mdash; waiting on something</span>
+				<span class="dg-key dg-failed">failed</span>
+				<span class="dg-key dg-cancelled">cancelled</span>
+				<span class="dg-key dg-not-implemented">done by hand today</span>
+			</p>
+
+			<h3 class="dg-h">Where packages stand</h3>
 			<div id="pipeline-flow" class="pipeline-flow"></div>
 			<div id="pipeline-deploy" class="pipeline-deploy"></div>
 			<p id="pipeline-summary" class="hint"></p>

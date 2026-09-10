@@ -6,6 +6,57 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### One pipeline model for four kinds, and a page that draws it (#371)
+
+ADR-0256 built the right machine -- one stage vocabulary, status as a second
+axis, a read-time join that stores nothing -- and covered packages only, because
+that is what the drift incident was about. But an image is composed of packages,
+a deployment runs an image, and the host boots a root built from all of it. Each
+can be stuck, each fails its own way, and none of them had a vocabulary at all:
+the exact state ADR-0256 found packages in.
+
+Four kinds now walk **subsets of one stage enum** -- never a private list, which
+would be the several-vocabularies failure recreated one ADR after fixing it.
+Four stages are added: `acquire` (where a pipeline waits for what it depends on,
+and where forking will attach), `assemble` and `stage` (host-only, and they fail
+independently -- assembly has its own generation counter, staging answers
+`{"status":"staged","slot":...}`), and `verify` (deployment-only, the ready
+probe: a container that started and is not ready is neither ok nor failed, which
+is how a crash-looping dnsmasq reported `"status":"running"` and told nobody
+anything). `deploy` moved out of the package pipeline into the host's, making
+structural what ADR-0256 already did by special case.
+
+`test_pipeline` asserts the stage count and **failed when this landed** -- ADR-0256's
+"a deliberate act with an ADR, not a quiet enum append", working as designed.
+
+**Two candidate stages were rejected after measuring**, which is the part worth
+keeping: `compose` for images, because composing an image *is* installing its
+packages and `install` already says so; and `verify` for packages, because it
+cannot be derived at all -- a recipe's self-tests run *inside* `pkg_build()`, so
+"it did not compile" and "its tests failed" are one event to the daemon. The
+justification first written for that split was also wrong: elfcheck is called
+from the merge path and already reports as `install`, not `build`.
+
+**Edges are structural.** An edge exists because a deployment names an image and
+a manifest names packages -- drawn when everything is healthy. A first design
+drew them only where something was blocked, which gives a working host a picture
+of disconnected boxes; it would have shipped if it had not been questioned.
+`follow-rolling` is its own relation and is emitted only where it is LIVE, since
+the flag is stored but inert on a `restart:"no"` deployment.
+
+The Pipeline page gains the graph: lanes per kind in dependency order, boxes
+coloured by the status axis, dependency chips with the live one highlighted. It
+renders lanes from the daemon's `kinds` rather than a copy of the stage table,
+and shows only rows that are not ok plus whatever they depend on -- a wall of
+green is a thing nobody reads.
+
+`packages`, `stages` and `deploy` are byte-identical; the new keys are additive,
+so a client written against ADR-0256 keeps working across the deploy that
+introduces this. See
+[ADR-0269](docs/adr/0269-one-pipeline-model-for-four-kinds.md). Nothing forks
+anything yet -- `acquire` reports `blocked`; making a deployment actually start
+an image build is separate, riskier, and gets its own ADR.
+
 ### An open control plane is no longer silent, and cannot be created by accident (#370)
 
 192.168.15.95 accepted unauthenticated writes for four days, and a full day of
