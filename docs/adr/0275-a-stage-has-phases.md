@@ -1,4 +1,4 @@
-# ADR-0275: A stage has phases
+# 0275 — A stage has phases
 
 ## Status
 
@@ -8,6 +8,16 @@ Issue [#388](https://git.home.arpa/itdlabs/cix/issues/388). Extends
 [ADR-0256](0256-the-pipeline-is-the-model.md)'s model and
 [ADR-0269](0269-one-pipeline-model-for-four-kinds.md)'s stage vocabulary
 one level down. Does not change either.
+
+**Amended 2026-09-11, before implementation.** Nothing here is reversed —
+a stage has phases, phases carry the status axis, a phase is never
+reported without its stage, and a phase is never a gate, all stand. Three
+things were incomplete and are now written down: the decision promised a
+`not-implemented` phase without saying **where the set of phases comes
+from**, or **what set it is measured against**; and the mechanism section
+claimed markers "generalise unchanged to CBS", which measurement since
+shows they do not. See *Which phases a recipe has*, *The phase
+vocabulary*, and the rewritten *How the daemon learns the phase*.
 
 ## Context
 
@@ -61,6 +71,29 @@ recipe that declares no `check` reports that phase as
 for a stage a thing does not walk, and the same device the dashboard
 already draws as a dotted cell. No new vocabulary at either level.
 
+**The phase vocabulary is fixed and closed**, exactly as the stage
+vocabulary is. `not-implemented` is only meaningful against a known set:
+a recipe cannot be *not-implemented* for a phase nobody has named, so a
+free-form phase string would make the status axis mean nothing at this
+level. The set is six:
+
+    prepare  configure  build  check  install  finalize
+
+The first five are CPDL's, and they are already closed there rather than
+by our choosing — `phase_word()` in `cbs/src/parser.c` accepts those five
+words and nothing else, so an unrecognised phase name is a *parse error*
+in a `.cbs` recipe, not an unknown string handed to us at runtime. The
+sixth is `finalize`: the platform-policy step ADR-0251 already runs as
+the third piece of `PKG_BUILD_CMD` (`. /build/finalize.sh`). It is a real
+step that can fail on its own and it is ours rather than the recipe's,
+which is why it is named here and not left to CBS
+(`itdlabs/cix-build-system` #129 is the request that CBS gain an
+embedder-supplied policy step; until it does, `finalize` is a phase Cix
+runs itself).
+
+A seventh phase is a change to this list, made deliberately, the way a
+new stage would be.
+
 **A phase is never reported without its stage.** This is the mitigation
 for a real hazard rather than a style rule: CPDL's phase names include
 `build` and `install`, so `phase: install` alone is ambiguous with the
@@ -73,7 +106,8 @@ which is ADR-0269's own rule about kinds, applied one level down.
 
 ### Where a phase lives
 
-Two different questions, two existing homes, no new principle:
+Three questions, not two. The first two have existing homes and need no
+new principle; the third is the one the original text left out.
 
 **Which phase failed** goes beside `stage` and `status` on the package
 entry and on the run record (ADR-0272). It follows the rule already
@@ -89,15 +123,56 @@ does not contain it, and cannot. It is the same shape as
 already documented as "null unless a build is in flight" — so the
 precedent exists and this needs no new category.
 
+**Which phases this recipe has** — the plan — is captured once, when a
+build starts, and carried on the chain for as long as it is in flight;
+when the build ends it is written to the run record (ADR-0272) alongside
+which phase failed. This is the same shape and the same reasoning as
+`run_trigger`, which the chain already carries: a chain is one build of
+one thing, so it has exactly one plan, and the fact is known at the
+moment the build begins.
+
+A package that has never been built has **no plan**, and its phases are
+therefore *absent* — not `not-implemented`, which is a positive claim
+that this recipe does not do that step. This is ADR-0272's own rule
+applied one level down: absence of a run is not a fact about the recipe.
+
+Deriving the plan at read time instead would be closer to ADR-0256's
+read-time join, and was considered. It is rejected because it does not
+work: reading a CPDL recipe's phases requires running `cbs` on the host,
+which turns a `GET /v1/pipeline` into a fork per package. The run record
+is the honest home — a plan is a fact about a build that happened, which
+is precisely what a run record is for.
+
 ### How the daemon learns the phase
 
-The build child emits a marker line before each phase, and the daemon
-recognises it in the build output it already captures (ADR-0087/0112).
+**The requirement** is that the daemon learns the plan and the position
+without parsing package-specific build output. What a recipe's own
+compiler prints is not an interface. The two build systems satisfy that
+requirement differently, and saying so plainly is the point of this
+section — the original text asserted one mechanism for both, and that was
+wrong.
 
-This works for the shell recipes **today**, by making `PKG_BUILD_CMD`
-announce the steps it already has, and it generalises unchanged to CBS
-emitting the same markers for a declared plan. That ordering is
-deliberate: this must not be a feature that only arrives when CBS does.
+**Shell recipes — complete today.** The plan is the constant above:
+`build`, `install` and `finalize` implemented, `prepare`, `configure` and
+`check` `not-implemented`. There is no per-recipe variation, because
+`PKG_BUILD_CMD` is one fixed string. Position comes from marker lines
+that **cixd itself injects** into that string, between the steps it
+already runs, and recognises in the output it already captures
+(ADR-0087/0112). Nothing waits on anything.
+
+**CPDL recipes — the plan today, the position not yet.** The plan comes
+from `cbs explain RECIPE.cbs --json`, which exists and emits
+`{"phases":[{"name":…,"operations":N}]}` — the declared plan, before
+execution, which is exactly what is wanted and is why deriving it does
+not need markers at all. The **position** has no mechanism: cixd cannot
+inject a marker between phases that `cbs` runs internally, and CBS emits
+no phase event. That is `itdlabs/cix-build-system` #131, and it does not
+exist yet. Until it lands, a CPDL build reports its plan and its final
+outcome — which phase failed, from the exit — and reports no live
+position. That is a smaller answer, not a wrong one.
+
+That ordering is deliberate: this must not be a feature that only arrives
+when CBS does, and it does not — the shell case ships whole on its own.
 
 A marker in an output stream can be spoofed by a recipe that prints the
 same line. That is acceptable **because a phase is never load-bearing**:
@@ -153,9 +228,10 @@ without touching any kind's stage walk.
 The fixed shell oneshot becomes visible as what it is: a three-step
 plan, identical for every package, that nothing could see. Making it
 visible is also what makes its replacement legible — a CPDL recipe
-declaring `prepare/configure/build/check/install` reports more phases
-than a shell recipe can, and the difference shows up in the same field
-rather than in a migration note.
+declaring `prepare/configure/build/check/install` lights up cells a shell
+recipe reports as `not-implemented`, and the difference shows up in the
+same field rather than in a migration note. That is the migration story
+told by the data itself: the dotted cells are the work remaining.
 
 `phase` is additive. A client written against ADR-0256 or ADR-0269 keeps
 working, in the same way ADR-0269's new keys did.
