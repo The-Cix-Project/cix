@@ -177,6 +177,50 @@ int main(void)
 	snprintf(path, sizeof(path), "%s/img", base);
 	CHECK(cix_btrfs_subvol_delete_or_rmtree(path) == 0, "delete_or_rmtree img");
 
+	/*
+	 * cix_btrfs_qgroup_query (#369). This sandbox has no loop devices,
+	 * so no btrfs can be mounted here and the SUCCESS path belongs on a
+	 * real host -- what is gated here is the refusal contract, which is
+	 * where the dangerous failure lives: INO_LOOKUP on a plain
+	 * directory succeeds and answers with the PARENT subvolume's
+	 * accounting, so a query that did not refuse one would return a
+	 * confident wrong number rather than an error.
+	 *
+	 * errno is seeded with a sentinel first, the pattern
+	 * test_rtnetlink established: a helper that returns -1 without
+	 * setting errno makes its caller report whatever unrelated syscall
+	 * failed last, which cost this project two rounds of work in #341.
+	 */
+	snprintf(path, sizeof(path), "%s/plaindir", base);
+	CHECK(mkdir(path, 0755) == 0, "create a plain directory to query");
+	errno = 0x5a5a;
+	CHECK(cix_btrfs_qgroup_query(path, NULL, NULL, NULL) == -1,
+	      "qgroup_query must refuse a plain directory, not answer with its parent's numbers");
+	CHECK(errno == EINVAL, "refusing a plain directory should be EINVAL, got %d (%s)", errno,
+	      strerror(errno));
+
+	/* An absent path is also a refusal, and also not the sentinel. */
+	snprintf(path, sizeof(path), "%s/nothing-here", base);
+	errno = 0x5a5a;
+	CHECK(cix_btrfs_qgroup_query(path, NULL, NULL, NULL) == -1, "qgroup_query on an absent path");
+	CHECK(errno != 0x5a5a, "a failed qgroup_query must set errno, it was left at the sentinel");
+
+	/* Out-params are cleared before any failure can return, so a caller
+	 * that ignores the return value cannot read a stale stack value as
+	 * a real measurement. */
+	{
+		unsigned long long u = 12345, l = 67890;
+		enum cix_btrfs_qgroup_state st = CIX_BTRFS_QGROUP_SIMPLE;
+
+		snprintf(path, sizeof(path), "%s/plaindir", base);
+		CHECK(cix_btrfs_qgroup_query(path, &u, &l, &st) == -1, "refusal with out-params");
+		CHECK(u == 0 && l == 0 && st == CIX_BTRFS_QGROUP_OK,
+		      "out-params must be zeroed even on refusal, got used=%llu limit=%llu state=%d", u,
+		      l, (int)st);
+	}
+	snprintf(path, sizeof(path), "%s/plaindir", base);
+	rmdir(path);
+
 	/* Clean up the temp root itself. */
 	rmdir(base);
 

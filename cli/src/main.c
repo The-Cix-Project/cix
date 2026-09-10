@@ -5400,10 +5400,14 @@ static int cmd_volume_usage(const struct cix_client *c, int json_mode, int argc,
 	struct cix_response r;
 
 	if (argc < 2) {
-		fprintf(stderr, "usage: cixctl volume usage NAME\n"
-		                "  Measured on demand -- a tree walk, not a stored figure. df inside a\n"
-		                "  container cannot answer this: a volume is a bind of a directory, so\n"
-		                "  df reports the whole backing filesystem.\n");
+		fprintf(stderr,
+		        "usage: cixctl volume usage NAME\n"
+		        "  Measured on demand, never a stored figure. 'source' says how: 'qgroup'\n"
+		        "  reads btrfs's own counter (exclusive allocated extents, settles at the\n"
+		        "  next commit, and is what a limit is enforced against), 'walk' walks the\n"
+		        "  tree (apparent file content, instant). df inside a container cannot\n"
+		        "  answer this at all: a volume is a bind of a directory, so df reports the\n"
+		        "  whole backing filesystem.\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), CIX_API_getVolumeUsage, argv[1]);

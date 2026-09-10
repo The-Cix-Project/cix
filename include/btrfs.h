@@ -107,4 +107,64 @@ int cix_btrfs_subvol_delete_or_rmtree(const char *path);
  */
 int cix_btrfs_qgroup_limit_excl(const char *path, unsigned long long bytes);
 
+/*
+ * Quota accounting state reported alongside a qgroup read, because a
+ * number that is merely stale reads exactly like a number that is
+ * correct.
+ */
+enum cix_btrfs_qgroup_state {
+	CIX_BTRFS_QGROUP_OK = 0,
+	/* Accounting is mid-rescan or flagged inconsistent: `used` is a
+	 * real figure but may be low for data that predates the rescan. */
+	CIX_BTRFS_QGROUP_STALE = 1,
+	/* Simple quotas (squota). Extents are attributed on a different
+	 * rule, so `used` does not mean what it means here. */
+	CIX_BTRFS_QGROUP_SIMPLE = 2
+};
+
+/*
+ * Read back the qgroup of the SUBVOLUME at `path`: its exclusive bytes
+ * in use and its MAX_EXCL hard limit, the two numbers
+ * cix_btrfs_qgroup_limit_excl() writes the second of.
+ *
+ * btrfs has no "describe this qgroup" ioctl, so this searches the
+ * filesystem's quota tree directly -- the same tree `btrfs qgroup show`
+ * walks. Two point lookups, each with min == max, rather than one range
+ * search: a tree key is a 136-bit (objectid, type, offset) value
+ * compared as a whole, so a range spanning the INFO and LIMIT types
+ * also spans every OTHER subvolume's qgroup id between them, and on a
+ * host whose containers are all subvolumes the item wanted need not be
+ * in the first page at all. Two exact lookups return 0 or 1 item each
+ * and cannot paginate.
+ *
+ * WHY IT REFUSES A PLAIN DIRECTORY. Resolving the subvolume id uses
+ * BTRFS_IOC_INO_LOOKUP, which on an ordinary directory succeeds and
+ * returns the id of the subvolume CONTAINING it -- so a volume that
+ * predates ADR-0207's subvolume conversion would silently be answered
+ * with the whole parent's accounting. A wrong answer, not an error,
+ * which is the failure mode this project has been bitten by before, so
+ * the subvolume test comes first and a plain directory is EINVAL.
+ *
+ * `used` is EXCLUSIVE bytes -- extents this subvolume alone references,
+ * which is what a MAX_EXCL limit is enforced against. It is allocated
+ * space, not apparent size, so sparse, compressed and reflinked data
+ * all read smaller than a directory walk would report. It is also only
+ * as fresh as the last transaction commit (~30 s), because that is when
+ * btrfs settles qgroup accounting.
+ *
+ * `limit` is 0 when no MAX_EXCL limit is set -- checked via the item's
+ * own flag bit, since max_excl is undefined when the bit is clear and
+ * max_rfer is a different limit entirely.
+ *
+ * Any of the three out-params may be NULL. Returns 0 on success; -1
+ * with errno set on failure -- ENOTTY/ENOTSUP if `path` is not on
+ * btrfs, EINVAL if it is not a subvolume, ENOENT if quotas were never
+ * enabled on the filesystem (there is no quota tree to search), and
+ * ENODATA if quotas are on but this subvolume has no accounting record
+ * yet.
+ */
+int cix_btrfs_qgroup_query(const char *path, unsigned long long *used,
+                           unsigned long long *limit,
+                           enum cix_btrfs_qgroup_state *state);
+
 #endif /* CIX_BTRFS_H */
