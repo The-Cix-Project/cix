@@ -3,6 +3,9 @@
 
 #include <stddef.h>
 
+/* struct procfuse_file: the name/bind-target pair PROCFUSE_FILES is made of. */
+#include "container.h"
+
 /*
  * ADR-0262, issue #336: one host-side FUSE server whose files the
  * runtime bind-mounts into every container, so a process inside one
@@ -63,11 +66,41 @@
  * Inode numbers are the index into this table plus PROCFUSE_INO_FIRST;
  * FUSE_ROOT_ID (1) is the directory itself.
  */
+/*
+ * Two namespaces, one table. The first six are /proc; the last three
+ * are sysfs, and they are here because a container's CPU count has two
+ * independent answers and fixing only one of them fixed nothing that
+ * mattered.
+ *
+ * `sysconf(_SC_NPROCESSORS_ONLN)` -- how a great many libraries size a
+ * thread pool -- reads /sys/devices/system/cpu/online, not /proc. A
+ * container pinned to one CPU measured CONF=2 ONLN=2 NPROC=1 on a
+ * two-CPU host: nproc was right (it uses sched_getaffinity, which a
+ * cpuset constrains) and every ONLN-based sizing decision was wrong by
+ * a factor of two, in the same "claims headroom it does not have"
+ * direction as #278/#279.
+ *
+ * All three report the container's own cpuset verbatim, which is
+ * already a kernel range list and is the same set /proc/stat's per-cpu
+ * lines are filtered to -- so the two views cannot disagree.
+ *
+ * What this deliberately does NOT fix: `_SC_NPROCESSORS_CONF` counts
+ * cpuN DIRECTORIES under /sys/devices/system/cpu, and no file bind can
+ * remove a directory. htop takes its meter count from that, which is
+ * why it draws a meter for a CPU the container cannot use and marks it
+ * offline. Fixing that means serving a synthetic directory in place of
+ * the real one, which is a different and much larger job -- see #363.
+ */
 #define PROCFUSE_FILES                                                         \
 	{                                                                          \
-		"meminfo", "cpuinfo", "stat", "uptime", "loadavg", "swaps"              \
+		{ "meminfo", "/proc/meminfo" }, { "cpuinfo", "/proc/cpuinfo" },         \
+		{ "stat", "/proc/stat" }, { "uptime", "/proc/uptime" },                 \
+		{ "loadavg", "/proc/loadavg" }, { "swaps", "/proc/swaps" },             \
+		{ "cpu_online", "/sys/devices/system/cpu/online" },                     \
+		{ "cpu_present", "/sys/devices/system/cpu/present" },                   \
+		{ "cpu_possible", "/sys/devices/system/cpu/possible" }                  \
 	}
-#define PROCFUSE_FILE_COUNT 6
+#define PROCFUSE_FILE_COUNT 9
 #define PROCFUSE_INO_FIRST 2
 
 /*

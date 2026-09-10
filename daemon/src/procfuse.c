@@ -54,7 +54,7 @@
  * above anything a stanza-per-CPU listing reaches on real hardware. */
 #define PROCFUSE_CONTENT_MAX 65536
 
-static const char *const g_files[] = PROCFUSE_FILES;
+static const struct procfuse_file g_files[] = PROCFUSE_FILES;
 
 static pid_t g_server_pid = -1;
 static char g_mount_path[PATH_MAX];
@@ -1021,6 +1021,57 @@ static size_t render_swaps(const char *cg, char *out, size_t cap)
 }
 
 /*
+ * /sys/devices/system/cpu/{online,present,possible} for this container.
+ *
+ * All three get the same answer -- the container's own cpuset -- because
+ * from inside, a CPU it may never be scheduled on is not present in any
+ * sense the reader can act on, and a container's set does not change
+ * under it the way a host's can with real hotplug.
+ *
+ * cpuset.cpus.effective is already a kernel range list ("0", "0-1",
+ * "0,2-3"), which is exactly this file's format, so it is emitted
+ * verbatim rather than re-rendered from a parsed count -- re-rendering
+ * would turn "0,2-3" into something that no longer names the same CPUs
+ * as /proc/stat's filtered per-cpu lines.
+ *
+ * An unconfined container falls back to the host's own file, which is
+ * the truthful answer for a container that really may use every CPU.
+ */
+static size_t render_cpu_range(const char *cg, char *out, size_t cap)
+{
+	char path[PATH_MAX];
+	char buf[512];
+	FILE *f;
+	size_t n;
+
+	buf[0] = '\0';
+	if (cg != NULL && snprintf(path, sizeof(path), "%s/cpuset.cpus.effective", cg) <
+	                       (int)sizeof(path)) {
+		f = fopen(path, "r");
+		if (f != NULL) {
+			if (fgets(buf, sizeof(buf), f) == NULL)
+				buf[0] = '\0';
+			fclose(f);
+		}
+	}
+	if (buf[0] == '\0' || buf[0] == '\n') {
+		f = fopen("/sys/devices/system/cpu/online", "r");
+		if (f != NULL) {
+			if (fgets(buf, sizeof(buf), f) == NULL)
+				buf[0] = '\0';
+			fclose(f);
+		}
+	}
+	if (buf[0] == '\0')
+		snprintf(buf, sizeof(buf), "0\n");
+	n = strlen(buf);
+	while (n > 0 && (buf[n - 1] == '\n' || buf[n - 1] == ' '))
+		n--;
+	buf[n] = '\0';
+	return (size_t)snprintf(out, cap, "%s\n", buf);
+}
+
+/*
  * One entry point so the opcode handler never grows a second copy of
  * the file table's ordering.
  */
@@ -1039,6 +1090,10 @@ size_t procfuse_render_for_cgroup(int index, const char *cg, char *out, size_t c
 		return render_loadavg(cg, out, cap);
 	case 5:
 		return render_swaps(cg, out, cap);
+	case 6:
+	case 7:
+	case 8:
+		return render_cpu_range(cg, out, cap);
 	default:
 		return 0;
 	}
@@ -1131,7 +1186,7 @@ static void handle_lookup(int fd, const struct fuse_in_header *hdr, const char *
 	int i;
 
 	for (i = 0; i < PROCFUSE_FILE_COUNT; i++) {
-		if (strcmp(name, g_files[i]) != 0)
+		if (strcmp(name, g_files[i].name) != 0)
 			continue;
 		memset(&out, 0, sizeof(out));
 		out.nodeid = PROCFUSE_INO_FIRST + i;
@@ -1218,7 +1273,7 @@ static void handle_readdir(int fd, const struct fuse_in_header *hdr, const struc
 	}
 	for (i = 0; i < PROCFUSE_FILE_COUNT; i++) {
 		struct fuse_dirent *d = (struct fuse_dirent *)(buf + used);
-		size_t namelen = strlen(g_files[i]);
+		size_t namelen = strlen(g_files[i].name);
 		size_t entlen = FUSE_DIRENT_ALIGN(FUSE_NAME_OFFSET + namelen);
 
 		/* offset is the index of the NEXT entry, so a resumed readdir
@@ -1232,7 +1287,7 @@ static void handle_readdir(int fd, const struct fuse_in_header *hdr, const struc
 		d->off = i + 1;
 		d->namelen = (uint32_t)namelen;
 		d->type = DT_REG;
-		memcpy(d->name, g_files[i], namelen);
+		memcpy(d->name, g_files[i].name, namelen);
 		used += entlen;
 	}
 	reply(fd, hdr->unique, 0, buf, used);

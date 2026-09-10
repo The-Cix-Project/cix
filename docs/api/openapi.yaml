@@ -10774,6 +10774,71 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+    delete:
+      summary: >
+        Remove one file from inside an already-existing container, live,
+        without a recreate.
+      description: >
+        The third side of the same primitive `GET` and `PUT` above already
+        implement, resolving the path exactly as they do (running:
+        `/proc/<pid>/root<path>`, resolved by the kernel through the
+        container's own mount namespace; otherwise the container's own
+        writable layer).
+
+
+        It exists because the pair without it is not a primitive an operator
+        can keep a container tidy with: a file could be created and rewritten
+        but never removed, so anything staged once was staged forever. That
+        surfaced the first time a staged path CHANGED -- `cix-init` moved to
+        `/sbin/cix-init`, and every container built before that kept an inert
+        copy at the old root-level path with no way to remove it short of
+        destroying and rebuilding the container.
+
+
+        Like `PUT`, deliberately LIVE and EPHEMERAL: it is not folded into the
+        container's persisted definition, so a recreate replays the original
+        create body unchanged. The durable path for "this should stay gone" is
+        the container recipe (ADR-0151).
+
+
+        Refuses a directory. Removing a tree is a different and more dangerous
+        operation than removing a file, and this endpoint has only ever dealt
+        in single files.
+      operationId: deleteContainerFile
+      tags: [containers]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: path
+          in: query
+          required: true
+          description: Absolute path of the file inside the container.
+          schema:
+            type: string
+      responses:
+        "204":
+          description: The file was removed.
+        "400":
+          description: Missing/invalid path, or the path is a directory.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No such container, or no such file.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: unlink(2) failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /software:
     get:
       summary: What is declared against what is actually installed (issue #97)

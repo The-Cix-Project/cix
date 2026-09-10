@@ -356,9 +356,15 @@ int mountns_pivot(const struct mount_spec *mnt)
 			char dst[PATH_MAX];
 
 			if (snprintf(src, sizeof(src), "/%s%s/%s", mnt->put_old_rel, mnt->procfuse_dir,
-			              mnt->procfuse_files[i]) >= (int)sizeof(src))
+			              mnt->procfuse_files[i].name) >= (int)sizeof(src))
 				continue;
-			if (snprintf(dst, sizeof(dst), "/proc/%s", mnt->procfuse_files[i]) >=
+			/*
+			 * The target is in the table, not derived from the name:
+			 * these files are bound over two different trees (/proc
+			 * and /sys/devices/system/cpu), and a "/proc/%s" here was
+			 * the second place the mapping lived.
+			 */
+			if (snprintf(dst, sizeof(dst), "%s", mnt->procfuse_files[i].target) >=
 			    (int)sizeof(dst))
 				continue;
 			/*

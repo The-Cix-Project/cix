@@ -37,6 +37,22 @@ struct cgroup_limits {
 	const char *cpuset_cpus;
 };
 
+/*
+ * One virtualised /proc-or-/sys file: the name the procfuse server
+ * serves it under, and the absolute path the runtime binds it over
+ * inside a container.
+ *
+ * Defined here rather than in daemon/include/procfuse.h because the
+ * runtime library does the binding and is not built with the daemon's
+ * include path. The TABLE stays in procfuse.h, next to the server that
+ * renders each entry -- this is only its shape.
+ */
+struct procfuse_file {
+	const char *name;
+	const char *target;
+};
+
+
 struct mount_spec {
 	const char *put_old_rel;
 	/*
@@ -80,7 +96,7 @@ struct mount_spec {
 	 * is what every container read before this existed.
 	 */
 	const char *procfuse_dir;
-	const char *const *procfuse_files;
+	const struct procfuse_file *procfuse_files;
 	int procfuse_file_count;
 };
 
