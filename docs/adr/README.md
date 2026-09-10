@@ -279,3 +279,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0272](0272-a-pipeline-run-is-a-log-entry-not-join-state.md) | A pipeline run is an append-only event with its own retention, never read to compute a position | Accepted |
 | [0273](0273-a-gate-holds-automation-where-a-change-escapes-its-blast-radius.md) | Three gates hold automation where a change escapes its blast radius; a held item is `blocked`, not a new status | Accepted |
 | [0274](0274-the-platform-says-what-it-is.md) | The platform ships `/etc/os-release` with `ID=cix`, rendered once and staged into both the host root and every image | Accepted |
+| [0275](0275-a-stage-has-phases.md) | A stage may have phases — steps inside one stage, same status axis, never reported without their stage | Accepted |

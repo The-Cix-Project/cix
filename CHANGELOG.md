@@ -6,6 +6,62 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A stage has phases (#388, ADR-0275)
+
+Building a package runs one fixed command, defined once in `pkg.c` and identical
+for every package this platform has ever built:
+
+```c
+#define PKG_BUILD_CMD \
+	"set -e; . /build/recipe.sh; cd /build/src; pkg_build; pkg_install; " \
+	". /build/finalize.sh"
+```
+
+That string is a pipeline -- ordered steps, independently able to fail, and
+which one failed is the first thing anyone asks. It appears **zero times** in
+`docs/api/openapi.yaml`, so a package build is one opaque atom: `build/ok` or
+`build/failed`, plus a log truncated at ~4000 characters. Hit directly while
+bootstrapping cmake, where "building" for many minutes carried no indication of
+what it was doing.
+
+Two things were already true and unsaid. `pkg_install` runs *inside* the stage
+called `build`, while the pipeline also has a stage called `install` that merges
+an artifact into an image -- one word, two levels, nothing in the model saying
+so. And ADR-0269 rejected a `verify` stage for packages because "it cannot be
+derived -- a recipe's self-tests run inside `pkg_build()`"; CPDL declares a
+`check` block, so that reason expires the moment CBS runs phases.
+
+ADR-0275 records the model. `phase` is CBS's own word (`CBS_NODE_PHASE`,
+`CbsBuildPlan`) and appears zero times in `pipeline.c`, so nothing had to move.
+Phases carry the **same status axis** as stages, so a recipe with no `check`
+reports `not-implemented` and the page draws the dotted cell it already draws --
+no new vocabulary at either level. A phase is never reported without its stage,
+which is a hazard mitigation rather than a style rule: CPDL's phase names include
+`build` and `install`, so `phase: install` alone collides with the stage of the
+same name.
+
+Two homes, both already existing. **Which phase failed** sits beside
+`stage`/`status`, null when nothing is wrong, following the rule written there
+that "absence of a failure is not a position in the pipeline". **Which phase is
+running** is a live cursor in the same shape as `last_output_seconds_ago`, which
+the entry already carries and which is already documented as "null unless a build
+is in flight" -- so ADR-0256's read-time join is untouched and no new category
+was needed.
+
+The daemon learns the phase from a marker in the build output it already
+captures, which works for the **shell recipes today** rather than only once CBS
+lands. A marker can be spoofed by a recipe printing the same line, and that is
+acceptable precisely because a phase is a diagnostic and never a gate -- stated
+in the ADR along with the condition that would invalidate it.
+
+`verify` is still not added as a stage, so ADR-0269's decision stands on a new
+basis rather than being reversed: `stage: build, phase: check, status: failed`
+is more precise than a stage could be, and needs no change to any kind's stage
+walk.
+
+Model only. Implementation -- the marker, the reader, the fields, the contract,
+the dashboard -- is #388.
+
 ### The platform says what it is (#387, ADR-0274)
 
 Cix shipped no `/etc/os-release` -- not on the host, not in any container image.
