@@ -6453,13 +6453,13 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
-  /containers/recipes:
+  /deployments:
     get:
       summary: >
         List container recipes found on disk (ADR-0151) -- metadata only,
         one entry per recipe name (a recipe's own name is always the
         container name it creates when applied).
-      operationId: listContainerRecipes
+      operationId: listDeployments
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -6473,7 +6473,7 @@ paths:
                   recipes:
                     type: array
                     items:
-                      $ref: "#/components/schemas/ContainerRecipe"
+                      $ref: "#/components/schemas/Deployment"
     post:
       summary: >
         Adds or replaces the container recipe for name. content must parse
@@ -6481,7 +6481,7 @@ paths:
         is rejected, 400) -- content is stored and applied as-is, never
         interpreted beyond that one check; validity as a real container
         body is only checked when the recipe is actually applied.
-      operationId: addContainerRecipe
+      operationId: addDeployment
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -6513,10 +6513,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
-  /containers/recipes/{name}:
+  /deployments/{name}:
     get:
       summary: One container recipe's own {name,content} -- the raw, unsubstituted recipe text.
-      operationId: getContainerRecipe
+      operationId: getDeployment
       x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/ContainerName"
@@ -6526,7 +6526,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ContainerRecipeDetail"
+                $ref: "#/components/schemas/DeploymentDetail"
         "404":
           description: No recipe with this name
           content:
@@ -6535,7 +6535,7 @@ paths:
                 $ref: "#/components/schemas/Error"
     delete:
       summary: Removes name's own container recipe. Does not affect any container already created from it.
-      operationId: deleteContainerRecipe
+      operationId: deleteDeployment
       x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/ContainerName"
@@ -6549,7 +6549,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
-  /containers/recipes/{name}/apply:
+  /deployments/{name}/apply:
     post:
       summary: >
         Renders name's own already-stored recipe -- substituting every
@@ -6564,7 +6564,7 @@ paths:
         path has, since a container always creates synchronously. An
         unmatched {{SECRET:KEY}} token (no such key in secrets) is left
         completely untouched -- never silently swallowed or blanked.
-      operationId: applyContainerRecipe
+      operationId: applyDeployment
       x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/ContainerName"
@@ -10751,7 +10751,7 @@ paths:
         restart or recreate replays the original definition unchanged with
         no memory of this write. The durable "this change should survive a
         recreate" path is a container recipe (ADR-0151, POST
-        /containers/recipes/{name}/apply) instead -- edit the recipe,
+        /deployments/{name}/apply) instead -- edit the recipe,
         re-apply it.
 
 
@@ -16933,7 +16933,7 @@ components:
           nullable: true
           description: Null unless measure was requested.
 
-    ContainerRecipe:
+    Deployment:
       type: object
       required: [name]
       properties:
@@ -16941,9 +16941,9 @@ components:
           type: string
           description: Also the container's own name this recipe creates when applied (ADR-0151).
 
-    ContainerRecipeDetail:
+    DeploymentDetail:
       allOf:
-        - $ref: "#/components/schemas/ContainerRecipe"
+        - $ref: "#/components/schemas/Deployment"
         - type: object
           required: [content]
           properties:

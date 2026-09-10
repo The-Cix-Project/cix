@@ -4681,10 +4681,6 @@ static int cmd_container_edit(const struct cix_client *c, int json_mode, int arg
 
 static int cmd_container(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
-	if (argc >= 1 && strcmp(argv[0], "recipe") == 0)
-		return cmd_container_recipe(c, json_mode, argc - 1, argv + 1);
-	if (argc >= 1 && strcmp(argv[0], "apply-recipe") == 0)
-		return cmd_container_apply_recipe(c, json_mode, argc - 1, argv + 1);
 	if (argc >= 1 && strcmp(argv[0], "volume") == 0)
 		return cmd_container_volume(c, json_mode, argc - 1, argv + 1);
 	if (argc >= 1 && strcmp(argv[0], "network") == 0)
@@ -4735,9 +4731,9 @@ static int cmd_container(const struct cix_client *c, int json_mode, int argc, ch
 	        "         unpause NAME | rm NAME | inspect NAME | stats NAME |\n"
 	        "         console NAME [--console=NAME] |\n"
 	        "         files NAME --path=PATH | migrate-storage NAME --disk=ID | migrate-storage-status NAME\n"
-	        "       cixctl container recipe add --name=NAME --file=PATH\n"
-	        "       cixctl container recipe show|rm NAME / container recipe ls\n"
-	        "       cixctl container apply-recipe NAME [--secret=KEY=VALUE ...]\n"
+	        "       cixctl deployment add --name=NAME --file=PATH\n"
+	        "       cixctl deployment show|rm NAME / deployment ls\n"
+	        "       cixctl deployment apply NAME [--secret=KEY=VALUE ...]\n"
 	        "       cixctl container network attach NAME --network=NETWORK [--ip=A.B.C.D]\n"
 	        "       cixctl container network detach NAME NETWORK\n"
 	        "       cixctl container device attach NAME ID / device detach NAME ID\n");
@@ -6194,7 +6190,7 @@ static int ready_spec_ok(const char *v)
  * Name up to the first '=', then the command split on spaces. Spaces
  * because that is how an operator types a command and how it reads back
  * in help; an argument containing a literal space cannot be expressed
- * this way, which is a real limit and the reason a container recipe --
+ * this way, which is a real limit and the reason a deployment --
  * a real JSON array, no quoting to lose -- is the better place to
  * declare anything non-trivial.
  */
@@ -6904,8 +6900,8 @@ static int cmd_files_get(const struct cix_client *c, int argc, char **argv)
  * container's own definition (a future restart replays the original
  * persisted body unchanged). See the daemon's own doc comment on
  * handle_container_file_write() for why: the durable "this should
- * survive a recreate" path is a container recipe (`container recipe
- * add`/`container apply-recipe`), not this command.
+ * survive a recreate" path is a deployment (`deployment
+ * add`/`deployment apply`), not this command.
  */
 static int cmd_files_put(const struct cix_client *c, int argc, char **argv)
 {
@@ -10400,7 +10396,7 @@ static int cmd_image_apply_recipe(const struct cix_client *c, int json_mode, int
 	return 0;
 }
 
-/* ---- ADR-0151: container recipes ---- */
+/* ---- ADR-0151: deployments (#371 -- were "container recipes") ---- */
 
 static void fmt_container_recipe_line(const struct json_value *v)
 {
@@ -10424,7 +10420,7 @@ static int cmd_container_recipe_ls(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
-	if (cix_client_request(c, CIX_API_listContainerRecipes_METHOD, CIX_API_listContainerRecipes, NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_listDeployments_METHOD, CIX_API_listDeployments, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -10434,7 +10430,7 @@ static int cmd_container_recipe_ls(const struct cix_client *c, int json_mode)
 /* --name= is the recipe's own name AND must match the "name" field
  * already inside --file='s own content (ADR-0151, mirroring
  * pkg_recipe_add()'s pkg_name= contract) -- unlike an image recipe,
- * a container recipe's content is a real POST /v1/containers body, so
+ * a deployment's content is a real POST /v1/containers body, so
  * it necessarily already carries its own name. */
 static int cmd_container_recipe_add(const struct cix_client *c, int json_mode, int argc,
                                      char **argv)
@@ -10453,12 +10449,12 @@ static int cmd_container_recipe_add(const struct cix_client *c, int json_mode, i
 		else if (strncmp(argv[i], "--file=", 7) == 0)
 			file = argv[i] + 7;
 		else {
-			fprintf(stderr, "cixctl: unknown container recipe add option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown deployment add option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (name == NULL || file == NULL) {
-		fprintf(stderr, "usage: cixctl container recipe add --name=NAME --file=PATH\n");
+		fprintf(stderr, "usage: cixctl deployment add --name=NAME --file=PATH\n");
 		return 2;
 	}
 	if (read_local_file(file, &content, &content_len) != 0) {
@@ -10476,7 +10472,7 @@ static int cmd_container_recipe_add(const struct cix_client *c, int json_mode, i
 	w.buf[w.len] = '\0';
 	free(content);
 
-	if (cix_client_request(c, CIX_API_addContainerRecipe_METHOD, CIX_API_addContainerRecipe, w.buf, &r) != 0) {
+	if (cix_client_request(c, CIX_API_addDeployment_METHOD, CIX_API_addDeployment, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -10491,7 +10487,7 @@ static int cmd_container_recipe_add(const struct cix_client *c, int json_mode, i
 		cix_response_free(&r);
 		return 1;
 	}
-	printf("container recipe '%s' added\n", name);
+	printf("deployment '%s' added\n", name);
 	cix_response_free(&r);
 	return 0;
 }
@@ -10515,15 +10511,15 @@ static int cmd_container_recipe_show(const struct cix_client *c, int json_mode, 
 		if (name == NULL)
 			name = argv[i];
 		else {
-			fprintf(stderr, "cixctl: unknown container recipe show option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown deployment show option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (name == NULL) {
-		fprintf(stderr, "usage: cixctl container recipe show NAME\n");
+		fprintf(stderr, "usage: cixctl deployment show NAME\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), CIX_API_getContainerRecipe, name);
+	snprintf(path, sizeof(path), CIX_API_getDeployment, name);
 	if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -10543,15 +10539,15 @@ static int cmd_container_recipe_rm(const struct cix_client *c, int json_mode, in
 		if (name == NULL)
 			name = argv[i];
 		else {
-			fprintf(stderr, "cixctl: unknown container recipe rm option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown deployment rm option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (name == NULL) {
-		fprintf(stderr, "usage: cixctl container recipe rm NAME\n");
+		fprintf(stderr, "usage: cixctl deployment rm NAME\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), CIX_API_deleteContainerRecipe, name);
+	snprintf(path, sizeof(path), CIX_API_deleteDeployment, name);
 	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -10564,10 +10560,10 @@ static int cmd_container_recipe(const struct cix_client *c, int json_mode, int a
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: cixctl container recipe add --name=NAME --file=PATH\n"
-		                "       cixctl container recipe show NAME\n"
-		                "       cixctl container recipe rm NAME\n"
-		                "       cixctl container recipe ls\n");
+		fprintf(stderr, "usage: cixctl deployment add --name=NAME --file=PATH\n"
+		                "       cixctl deployment show NAME\n"
+		                "       cixctl deployment rm NAME\n"
+		                "       cixctl deployment ls\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -10580,7 +10576,7 @@ static int cmd_container_recipe(const struct cix_client *c, int json_mode, int a
 	if (strcmp(sub, "ls") == 0)
 		return cmd_container_recipe_ls(c, json_mode);
 
-	fprintf(stderr, "cixctl: unknown container recipe subcommand '%s'\n", sub);
+	fprintf(stderr, "cixctl: unknown deployment subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -10623,7 +10619,7 @@ static int cmd_container_apply_recipe(const struct cix_client *c, int json_mode,
 		} else if (name == NULL) {
 			name = argv[i];
 		} else {
-			fprintf(stderr, "cixctl: unknown container apply-recipe option '%s'\n", argv[i]);
+			fprintf(stderr, "cixctl: unknown deployment apply option '%s'\n", argv[i]);
 			jw_free(&w);
 			return 2;
 		}
@@ -10634,12 +10630,12 @@ static int cmd_container_apply_recipe(const struct cix_client *c, int json_mode,
 
 	if (name == NULL) {
 		fprintf(stderr,
-		        "usage: cixctl container apply-recipe NAME [--secret=KEY=VALUE ...]\n");
+		        "usage: cixctl deployment apply NAME [--secret=KEY=VALUE ...]\n");
 		jw_free(&w);
 		return 2;
 	}
 
-	snprintf(path, sizeof(path), CIX_API_applyContainerRecipe, name);
+	snprintf(path, sizeof(path), CIX_API_applyDeployment, name);
 	if (cix_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "cixctl: could not reach daemon\n");
@@ -11509,8 +11505,8 @@ static int cmd_dns_forwarders(const struct cix_client *c, int json_mode, int arg
  * an operator to know all of that -- or to copy it correctly out of
  * prose documentation -- is not a product.
  *
- * The knowledge belongs in the container recipes, which already carry
- * it (recipes/container/dns-1, dns-2), pinned addresses included. This
+ * The knowledge belongs in the deployments, which already carry
+ * it (recipes/deployment/dns-1, dns-2), pinned addresses included. This
  * command is the missing ACTION that applies them: it does not
  * reimplement any of it, it drives the recipes and then registers the
  * result, reporting each step as it goes.
@@ -16245,6 +16241,19 @@ static int dispatch_command(const struct cix_client *client, int json_mode, cons
 	 */
 	if (strcmp(cmd, "container") == 0)
 		return cmd_container(client, json_mode, argc, argv);
+	/*
+	 * #371: a deployment is what used to be called a "container
+	 * recipe". The name was wrong -- it describes what to RUN and
+	 * where, not how to build anything -- and it sat under `container`
+	 * as a sub-verb, which hid that it is a resource in its own right
+	 * with its own pipeline. Clean cut-over, no alias: `container
+	 * recipe` is gone rather than deprecated.
+	 */
+	if (strcmp(cmd, "deployment") == 0) {
+		if (argc >= 1 && strcmp(argv[0], "apply") == 0)
+			return cmd_container_apply_recipe(client, json_mode, argc - 1, argv + 1);
+		return cmd_container_recipe(client, json_mode, argc, argv);
+	}
 	if (strcmp(cmd, "network") == 0)
 		return cmd_network(client, json_mode, argc, argv);
 	if (strcmp(cmd, "image") == 0)

@@ -1249,7 +1249,7 @@ enum pkg_error pkg_sync_start(pid_t *out_pid, int *out_pidfd);
  * silently skipped (merge semantics: sync only ever adds, never
  * deletes or overwrites, so a locally-added-only recipe is always
  * safe). Also walks recipes/image/<name>/<version>/build.sh (ADR-0149)
- * and recipes/container/<name>/<version>/container.json (ADR-0151),
+ * and recipes/deployment/<name>/<version>/container.json (ADR-0151),
  * each picking the highest version per name and add()ing it via its
  * own image_recipe_add()/container_recipe_add() -- both always
  * overwrite (no version-keying at the daemon layer, ADR-0123/ADR-0151),

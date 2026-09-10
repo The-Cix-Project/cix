@@ -195,9 +195,9 @@ int main(void)
 
 	/* --- scenario 1: fresh recipe list is empty --- */
 	memset(&r, 0, sizeof(r));
-	CHECK(cix_client_request(&client, "GET", "/v1/containers/recipes", NULL, &r) == 0 &&
+	CHECK(cix_client_request(&client, "GET", "/v1/deployments", NULL, &r) == 0 &&
 	          r.status == 200,
-	      "GET /v1/containers/recipes (fresh)");
+	      "GET /v1/deployments (fresh)");
 	if (r.json != NULL) {
 		const struct json_value *recipes = json_object_get(r.json, "recipes");
 
@@ -210,7 +210,7 @@ int main(void)
 	 * content's own "name" field is rejected (mirrors pkg_recipe_add()'s
 	 * pkg_name= contract). --- */
 	memset(&r, 0, sizeof(r));
-	CHECK(cix_client_request(&client, "POST", "/v1/containers/recipes",
+	CHECK(cix_client_request(&client, "POST", "/v1/deployments",
 	                         "{\"name\":\"crtest\",\"content\":\"{\\\"name\\\":\\\"different\\\"}\"}",
 	                         &r) == 0 &&
 	          r.status == 400,
@@ -219,7 +219,7 @@ int main(void)
 
 	/* --- scenario 3: malformed JSON content is rejected --- */
 	memset(&r, 0, sizeof(r));
-	CHECK(cix_client_request(&client, "POST", "/v1/containers/recipes",
+	CHECK(cix_client_request(&client, "POST", "/v1/deployments",
 	                         "{\"name\":\"crtest\",\"content\":\"not json at all\"}", &r) == 0 &&
 	          r.status == 400,
 	      "non-JSON content is rejected");
@@ -248,7 +248,7 @@ int main(void)
 	 * same statement as accepting it on a create.
 	 */
 	memset(&r, 0, sizeof(r));
-	CHECK(cix_client_request(&client, "POST", "/v1/containers/recipes",
+	CHECK(cix_client_request(&client, "POST", "/v1/deployments",
 	                         "{\"name\":\"crroles\",\"content\":\"{\\\"name\\\":\\\"crroles\\\","
 	                         "\\\"image\\\":\\\"base\\\",\\\"services\\\":[{\\\"name\\\":\\\"main\\\",\\\"on_exit\\\":\\\"fail-container\\\",\\\"cmd\\\":[\\\"/bin/true\\\"]}],"
 	                         "\\\"dns_server\\\":{\\\"hosts_path\\\":\\\"/etc/hosts\\\"},"
@@ -259,7 +259,7 @@ int main(void)
 	      "#301 a recipe may declare dns_server/ntp_server/syslog_target/ldap_server");
 	cix_response_free(&r);
 	memset(&r, 0, sizeof(r));
-	cix_client_request(&client, "DELETE", "/v1/containers/recipes/crroles", NULL, &r);
+	cix_client_request(&client, "DELETE", "/v1/deployments/crroles", NULL, &r);
 	cix_response_free(&r);
 
 	/* --- scenario 4: real add, with a {{SECRET:PW}} token embedded in
@@ -278,17 +278,17 @@ int main(void)
 		jw_str(&w, content);
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
-		CHECK(cix_client_request(&client, "POST", "/v1/containers/recipes", w.buf, &r) == 0 &&
+		CHECK(cix_client_request(&client, "POST", "/v1/deployments", w.buf, &r) == 0 &&
 		          r.status == 204,
-		      "POST /v1/containers/recipes (crtest)");
+		      "POST /v1/deployments (crtest)");
 		jw_free(&w);
 		cix_response_free(&r);
 	}
 
 	memset(&r, 0, sizeof(r));
-	CHECK(cix_client_request(&client, "GET", "/v1/containers/recipes", NULL, &r) == 0 &&
+	CHECK(cix_client_request(&client, "GET", "/v1/deployments", NULL, &r) == 0 &&
 	          r.status == 200,
-	      "GET /v1/containers/recipes (one entry)");
+	      "GET /v1/deployments (one entry)");
 	if (r.json != NULL) {
 		const struct json_value *recipes = json_object_get(r.json, "recipes");
 
@@ -298,9 +298,9 @@ int main(void)
 	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	CHECK(cix_client_request(&client, "GET", "/v1/containers/recipes/crtest", NULL, &r) == 0 &&
+	CHECK(cix_client_request(&client, "GET", "/v1/deployments/crtest", NULL, &r) == 0 &&
 	          r.status == 200,
-	      "GET /v1/containers/recipes/crtest");
+	      "GET /v1/deployments/crtest");
 	if (r.json != NULL) {
 		const char *c = json_str_field(r.json, "content");
 
@@ -313,7 +313,7 @@ int main(void)
 	 * created, real substitution, correctly JSON-escaped (the value
 	 * deliberately contains a double quote). --- */
 	memset(&r, 0, sizeof(r));
-	CHECK(cix_client_request(&client, "POST", "/v1/containers/recipes/crtest/apply",
+	CHECK(cix_client_request(&client, "POST", "/v1/deployments/crtest/apply",
 	                         "{\"secrets\":{\"PW\":\"hunter\\\"2\"}}", &r) == 0 &&
 	          r.status == 201,
 	      "apply-recipe with the secret supplied creates a real container (201)");
@@ -337,7 +337,7 @@ int main(void)
 	/* --- scenario 6: apply with NO secret supplied leaves the token
 	 * untouched (never silently swallowed) --- */
 	memset(&r, 0, sizeof(r));
-	CHECK(cix_client_request(&client, "POST", "/v1/containers/recipes/crtest/apply", "{}", &r) ==
+	CHECK(cix_client_request(&client, "POST", "/v1/deployments/crtest/apply", "{}", &r) ==
 	              0 &&
 	          r.status == 201,
 	      "apply-recipe with no secrets still creates the container (201)");
@@ -381,14 +381,14 @@ int main(void)
 		    "binddn {{LDAP:BIND_DN}}\\\\nbindpw {{LDAP:BIND_PASSWORD}}\\\\n\\\"}]}\"}";
 
 		memset(&r, 0, sizeof(r));
-		CHECK(cix_client_request(&client, "POST", "/v1/containers/recipes", ldap_recipe_body,
+		CHECK(cix_client_request(&client, "POST", "/v1/deployments", ldap_recipe_body,
 		                         &r) == 0 &&
 		          (r.status == 204 || r.status == 201),
 		      "add recipe carrying {{LDAP:*}} tokens");
 		cix_response_free(&r);
 	}
 	memset(&r, 0, sizeof(r));
-	CHECK(cix_client_request(&client, "POST", "/v1/containers/recipes/crtest/apply", "{}", &r) ==
+	CHECK(cix_client_request(&client, "POST", "/v1/deployments/crtest/apply", "{}", &r) ==
 	              0 &&
 	          r.status == 201,
 	      "apply the LDAP-token recipe with NO secrets at all (201)");
@@ -460,7 +460,7 @@ int main(void)
 	      "clear client_uri -- the registered server is now the only thing naming the URI");
 	cix_response_free(&r);
 	memset(&r, 0, sizeof(r));
-	CHECK(cix_client_request(&client, "POST", "/v1/containers/recipes/crtest/apply", "{}", &r) ==
+	CHECK(cix_client_request(&client, "POST", "/v1/deployments/crtest/apply", "{}", &r) ==
 	              0 &&
 	          r.status == 201,
 	      "re-apply the LDAP-token recipe with no explicit client_uri");
@@ -481,7 +481,7 @@ int main(void)
 
 	/* --- scenario 7: apply on a name with no stored recipe is 404 --- */
 	memset(&r, 0, sizeof(r));
-	CHECK(cix_client_request(&client, "POST", "/v1/containers/recipes/noexist/apply", "{}", &r) ==
+	CHECK(cix_client_request(&client, "POST", "/v1/deployments/noexist/apply", "{}", &r) ==
 	              0 &&
 	          r.status == 404,
 	      "apply-recipe on an unknown recipe name is 404");
@@ -489,12 +489,12 @@ int main(void)
 
 	/* --- scenario 8: recipe rm --- */
 	memset(&r, 0, sizeof(r));
-	CHECK(cix_client_request(&client, "DELETE", "/v1/containers/recipes/crtest", NULL, &r) == 0 &&
+	CHECK(cix_client_request(&client, "DELETE", "/v1/deployments/crtest", NULL, &r) == 0 &&
 	          r.status == 204,
-	      "DELETE /v1/containers/recipes/crtest");
+	      "DELETE /v1/deployments/crtest");
 	cix_response_free(&r);
 	memset(&r, 0, sizeof(r));
-	CHECK(cix_client_request(&client, "GET", "/v1/containers/recipes/crtest", NULL, &r) == 0 &&
+	CHECK(cix_client_request(&client, "GET", "/v1/deployments/crtest", NULL, &r) == 0 &&
 	          r.status == 404,
 	      "GET removed recipe is 404");
 	cix_response_free(&r);

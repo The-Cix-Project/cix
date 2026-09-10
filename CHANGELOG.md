@@ -6,6 +6,39 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A "container recipe" is a deployment (#371)
+
+The name was wrong and the owner flagged it. It describes what to RUN and where
+-- an image, an address, a restart policy, the files to stage -- not how to build
+anything. It also sat under `container` as a sub-verb, which hid that it is a
+resource in its own right with a pipeline of its own.
+
+Clean cut-over, no alias: `/v1/containers/recipes*` becomes `/v1/deployments*`,
+`cixctl container recipe|apply-recipe` becomes a top-level `cixctl deployment
+add|show|ls|rm|apply`, and `recipes/container/` becomes `recipes/deployment/`.
+
+**The git rename had a real hazard, measured before doing it.** `pkg sync` reads
+`recipes/container` out of the synced tarball every six hours, so a daemon still
+running the old build looks for a directory that no longer exists in the window
+between the push and the deploy. Read rather than assumed:
+`sync_walk_container_recipes()` returns silently when `opendir()` fails, and the
+sync never prunes -- so that window costs one no-op cycle and cannot lose a
+published deployment. Had either been otherwise, the git move would have had to
+wait for the deploy.
+
+**The on-disk state directory is deliberately NOT renamed.** It is
+`<pkg_dir>/container-recipes`, it is internal, no client can see it, and renaming
+it on a live host means a migration that can lose published deployments in
+exchange for tidiness nobody observes. The name is inconsistent with the concept
+and that is the cheaper of the two wrongs.
+
+Three gates caught real gaps rather than needing to be silenced: `test_clitree`
+refused a routed `deployment` missing from the completion tree, `test_api_surfaces`
+caught the dashboard still calling the old operations, and `test_web_vt` caught
+its own assertion naming the old one. CHANGELOG and ROADMAP entries are left as
+written -- they are chronological records of what happened at the time, and
+rewriting them to say "deployment" would make them less true, not more current.
+
 ### One pipeline model for four kinds, and a page that draws it (#371)
 
 ADR-0256 built the right machine -- one stage vocabulary, status as a second
