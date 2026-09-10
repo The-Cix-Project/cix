@@ -9154,6 +9154,12 @@ paths:
         `blocked_on: {kind: "approval", name: "<gate>"}`. There is no
         separate status for it -- `blocked` already means "waiting on
         something outside this stage, or a person".
+
+
+        Deleting an image drops both its queue entry and any approval
+        held against it (#382). A grant outlives its target otherwise,
+        and this endpoint went on naming a deleted image as approved
+        with nothing able to clear it.
       operationId: getPipelineApprovals
       x-cix-expose: [cli]
       responses:

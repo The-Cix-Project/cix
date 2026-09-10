@@ -396,6 +396,7 @@ void handle_image_delete(int fd, const char *name)
 		respond_image_error(fd, ierr);
 		return;
 	}
+	pkg_image_forgotten(name); /* #382: the queue and any grant go with it */
 	http_set_blocking(fd);
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
 }

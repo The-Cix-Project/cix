@@ -1066,6 +1066,15 @@ int pkg_rebuild_queue_depth(void);
  */
 void pkg_rebuild_queue_add(const char *image);
 
+/*
+ * An image no longer exists: drop anything the package layer still
+ * holds for it (#382). Today that is its place in the rebuild queue
+ * and any approval granted against it -- a grant outlives its target
+ * otherwise, and GET /v1/pipeline/approvals goes on reporting a
+ * deleted image as approved forever.
+ */
+void pkg_image_forgotten(const char *image);
+
 int pkg_try_start_queued_rebuild(pid_t *out_pid, int *out_pidfd, int *out_chain_idx);
 
 /*

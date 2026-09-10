@@ -56,6 +56,43 @@ extern char **environ;
 
 static char g_data_dir[PATH_MAX];
 
+/*
+ * How many entries of GET /v1/pipeline/approvals name `target`, across
+ * both pending and granted (#382). Returns -1 if the request itself
+ * failed, so "the endpoint broke" can never be read as "nothing is
+ * waiting".
+ */
+static int approvals_mention(const struct cix_client *c, const char *target)
+{
+	struct cix_response r;
+	int count = 0;
+	size_t i;
+	static const char *const arrays[] = { "pending", "granted" };
+	size_t a;
+
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(c, "GET", "/v1/pipeline/approvals", NULL, &r) != 0 || r.status != 200 ||
+	    r.json == NULL) {
+		fprintf(stderr, "FAIL: GET /v1/pipeline/approvals, status=%d\n", r.status);
+		cix_response_free(&r);
+		return -1;
+	}
+	for (a = 0; a < sizeof(arrays) / sizeof(arrays[0]); a++) {
+		const struct json_value *arr = json_object_get(r.json, arrays[a]);
+
+		if (arr == NULL || arr->type != JSON_ARRAY)
+			continue;
+		for (i = 0; i < arr->u.array.count; i++) {
+			const char *t = json_as_string(json_object_get(arr->u.array.items[i], "target"));
+
+			if (t != NULL && strcmp(t, target) == 0)
+				count++;
+		}
+	}
+	cix_response_free(&r);
+	return count;
+}
+
 static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 {
 	int i;
@@ -605,6 +642,133 @@ int main(void)
 			ok = 0;
 		}
 		cix_response_free(&r);
+	}
+
+	/*
+	 * #382: deleting an image takes its queue entry and its approval
+	 * with it.
+	 *
+	 * The leak this gates was seen on a real host: an image deleted
+	 * while it held a roll grant left the grant in
+	 * GET /v1/pipeline/approvals forever, naming a target that no
+	 * longer existed, with nothing able to clear it.
+	 *
+	 * The roll gate is what makes this runnable here. A queued image
+	 * that has not been approved is HELD, so the drain skips it and no
+	 * build, and therefore no container, is ever created -- which is
+	 * the whole reason this assertion can live in a SELFTESTS member
+	 * (see #224) rather than only on the box.
+	 *
+	 * What this does NOT cover, stated rather than implied: the other
+	 * half of #382, where the drain started the same image once per
+	 * free chain slot and filled all ten with one job. Reproducing
+	 * that needs a build that really stays in flight across drain
+	 * passes, which needs a build container. It is verified on a real
+	 * host instead, by watching active_jobs while a rolling rebuild
+	 * converges.
+	 */
+	{
+		struct json_writer w;
+		/* Modelled on test_pkg_recipe_approval.c's own template --
+		 * a real, publishable recipe. It is never built here: the
+		 * roll gate holds its image before any build starts. */
+		char recipe[1024];
+		int pending_before = 0, pending_after = 0;
+
+		snprintf(recipe, sizeof(recipe),
+		         "pkg_name=\"forgetpkg\"\n"
+		         "pkg_version=\"1.0-1\"\n"
+		         "pkg_source=\"https://example.invalid/forgetpkg-1.0.tar.gz\"\n"
+		         "pkg_sha256=\"%064d\"\n"
+		         "pkg_build_depends=\"bash coreutils\"\n"
+		         "pkg_build() {\n"
+		         "\t:\n"
+		         "}\n"
+		         "pkg_install() {\n"
+		         "\t:\n"
+		         "}\n",
+		         0);
+
+		/* The gate is still on from the block above -- assert that
+		 * rather than assume it, since a reordering of this file
+		 * would otherwise turn this into a test of nothing. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "GET", "/v1/system/pipeline-config", NULL, &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: #382 setup: GET pipeline-config, status=%d\n", r.status);
+			ok = 0;
+		} else {
+			const struct json_value *gr = json_object_get(r.json, "gate_roll");
+
+			if (gr == NULL || gr->type != JSON_BOOL || !gr->u.boolean) {
+				fprintf(stderr, "FAIL: #382 setup needs gate_roll on, and it is not\n");
+				ok = 0;
+			}
+		}
+		cix_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/images", "{\"name\":\"forgetimg\"}", &r) !=
+		        0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: POST forgetimg image, status=%d\n", r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/images/forgetimg/manifest",
+		                        "{\"package\":\"forgetpkg\",\"mode\":\"rolling\",\"version\":\"1.0-1\"}",
+		                        &r) != 0 ||
+		    r.status != 204) {
+			fprintf(stderr, "FAIL: POST forgetimg manifest, status=%d\n", r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		/* Publishing is what queues every image tracking the package
+		 * rolling (ADR-0107), so the manifest has to exist first. */
+		jw_init(&w);
+		jw_obj_open(&w);
+		jw_key(&w, "name");
+		jw_str(&w, "forgetpkg");
+		jw_key(&w, "content");
+		jw_str(&w, recipe);
+		jw_obj_close(&w);
+		w.buf[w.len] = '\0';
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/pkg/recipes", w.buf, &r) != 0 ||
+		    (r.status != 201 && r.status != 204)) {
+			fprintf(stderr, "FAIL: POST forgetpkg recipe, status=%d\n", r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+		jw_free(&w);
+
+		pending_before = approvals_mention(&client, "forgetimg");
+		if (pending_before != 1) {
+			fprintf(stderr,
+			        "FAIL: a queued, unapproved image should be pending on the roll gate, "
+			        "got %d\n",
+			        pending_before);
+			ok = 0;
+		}
+
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "DELETE", "/v1/images/forgetimg", NULL, &r) != 0 ||
+		    r.status != 204) {
+			fprintf(stderr, "FAIL: DELETE forgetimg, status=%d\n", r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		pending_after = approvals_mention(&client, "forgetimg");
+		if (pending_after != 0) {
+			fprintf(stderr,
+			        "FAIL: #382 -- a deleted image is still named by "
+			        "/v1/pipeline/approvals\n");
+			ok = 0;
+		}
 	}
 
 	stop_daemon(daemon_pid);

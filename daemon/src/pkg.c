@@ -734,6 +734,31 @@ static int pkg_any_job_busy(void)
 }
 
 /*
+ * True when a chain slot is already running a job for `image` (#382).
+ *
+ * A chain's image is valid exactly while its name is non-empty (see
+ * struct pkg_chain), and chain_reap_stale() is what releases a slot
+ * once its entry stops fetching or building -- so this answers "is
+ * this image converging right now" from the slots themselves, without
+ * consulting any entry. Both sides are normalized, never-empty image
+ * names (normalize_image() for a chain, pkg_rebuild_queue_add()'s own
+ * empty check for the queue), so a plain compare is the whole test.
+ */
+static int image_has_job_in_flight(const char *image)
+{
+	int i;
+
+	chain_reap_stale();
+	for (i = 0; i < PKG_MAX_CONCURRENT_JOBS; i++) {
+		if (g_chains[i].name[0] == '\0')
+			continue;
+		if (strcmp(g_chains[i].image, image) == 0)
+			return 1;
+	}
+	return 0;
+}
+
+/*
  * ADR-0157 Phase 1/2: which pkg_entry currently owns the open build-
  * output capture pipe (ADR-0087), one slot per concurrent chain --
  * deliberately a separate pointer, not derived from g_chains[idx].
@@ -4915,6 +4940,25 @@ static void rebuild_queue_pop_front(void)
 	rebuild_queue_remove_at(0);
 }
 
+/* An image was deleted -- see pkg.h. Silent, unlike
+ * rebuild_queue_remove(): nothing failed here, the target simply went
+ * away, and rebuild_queue_remove_at() forgets its approval on the way
+ * out. Safe to call for an image that was never queued. */
+void pkg_image_forgotten(const char *image)
+{
+	int i;
+
+	if (image == NULL || image[0] == '\0')
+		return;
+	for (i = 0; i < g_rebuild_queue_count; i++) {
+		if (strcmp(g_rebuild_queue[i], image) == 0) {
+			rebuild_queue_remove_at(i);
+			return;
+		}
+	}
+	approval_forget(PKG_GATE_ROLL, image);
+}
+
 /*
  * ADR-0107: the moment pkg_name@pkg_version is published, every image
  * whose own manifest tracks pkg_name as "rolling" with a floor at or
@@ -5034,6 +5078,29 @@ int pkg_try_start_queued_rebuild(pid_t *out_pid, int *out_pidfd, int *out_chain_
 		int started = 0;
 
 		if (gate_holds(PKG_GATE_ROLL, image)) {
+			qi++;
+			continue;
+		}
+		/*
+		 * #382: this image is already converging -- leave it queued
+		 * and move on, exactly as a held one is.
+		 *
+		 * Before ADR-0273 the drain popped an image the moment it
+		 * started a build for it, so it could not be started twice.
+		 * ADR-0273 deliberately keeps it queued until it has fully
+		 * converged (an image may need several packages installed in
+		 * turn, and spending the approval grant on the first would
+		 * strand the rest) -- which removed the only thing that had
+		 * been preventing a second start. Nothing else covered it:
+		 * pkg_any_job_busy() asks whether ANY chain slot is free, not
+		 * whether THIS image is already building, and a
+		 * PKG_STATE_BUILDING entry never satisfies the manifest check
+		 * below. So every pass reached the same image and started the
+		 * same package again. On a real host that put ten copies of
+		 * one job into all ten slots, after which no build of
+		 * anything could start until cixd restarted.
+		 */
+		if (image_has_job_in_flight(image)) {
 			qi++;
 			continue;
 		}
