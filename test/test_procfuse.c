@@ -428,6 +428,38 @@ int main(void)
 	buf[n < sizeof(buf) ? n : sizeof(buf) - 1] = '\0';
 	CHECK(cpu_line(buf, "cpu ", c) == 0, "the host's own /proc/stat shape is returned");
 
+	printf("7. /sys/devices/system/cpu/{online,present,possible} follow the cpuset\n");
+	{
+		/*
+		 * Index 6, 7 and 8 are the sysfs trio. They exist because
+		 * sysconf(_SC_NPROCESSORS_ONLN) reads /sys, not /proc: a
+		 * container pinned to one CPU on a two-CPU host measured
+		 * ONLN=2 while nproc said 1, so anything sizing a thread pool
+		 * that way was wrong by a factor of two.
+		 *
+		 * The cpuset is emitted VERBATIM rather than re-rendered from
+		 * a count, so a sparse set stays the same set /proc/stat's
+		 * per-cpu lines are filtered to.
+		 */
+		int idx;
+
+		put("cpuset.cpus.effective", "0\n");
+		for (idx = 6; idx <= 8; idx++) {
+			n = procfuse_render_for_cgroup(idx, g_dir, buf, sizeof(buf));
+			buf[n < sizeof(buf) ? n : sizeof(buf) - 1] = '\0';
+			CHECK(strcmp(buf, "0\n") == 0, "a one-CPU cpuset reports exactly \"0\"");
+		}
+
+		put("cpuset.cpus.effective", "0,2-3\n");
+		n = procfuse_render_for_cgroup(6, g_dir, buf, sizeof(buf));
+		buf[n < sizeof(buf) ? n : sizeof(buf) - 1] = '\0';
+		CHECK(strcmp(buf, "0,2-3\n") == 0,
+		      "a sparse cpuset is passed through, not re-rendered as a count");
+
+		/* Restore, so nothing after this sees the sparse set. */
+		put("cpuset.cpus.effective", "0\n");
+	}
+
 	{
 		char cmd[512];
 

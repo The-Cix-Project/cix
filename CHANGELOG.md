@@ -6,6 +6,53 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A container's CPU count in /sys, and a DELETE for container files
+
+Two changes that came out of looking at `htop` in a console.
+
+**`sysconf(_SC_NPROCESSORS_ONLN)` was answering with the host.** procfuse
+virtualised six `/proc` files; the CPU count also lives in
+`/sys/devices/system/cpu/online`, which is what ONLN actually reads.
+Measured in a container pinned to one CPU on a two-CPU host:
+
+```
+CONF=2   ONLN=2   NPROC=1
+```
+
+`nproc` was right -- it uses `sched_getaffinity`, which a cpuset
+genuinely constrains -- and anything sizing a thread pool from ONLN was
+wrong by a factor of two, in the same "claims headroom it does not
+have" direction as #278/#279. `online`, `present` and `possible` now
+report the container's cpuset verbatim: it is already a kernel range
+list, and emitting it unchanged keeps it the same set `/proc/stat`'s
+per-cpu lines are filtered to, which re-rendering from a count would
+not for a sparse set like `0,2-3`.
+
+The file table now carries a bind target per entry rather than deriving
+`/proc/<name>`, because the entries no longer all live in one tree --
+the derived path was the second place that mapping lived.
+
+**What this deliberately does not fix**, so nobody re-derives it: the
+second CPU still appears in `htop`, marked offline.
+`_SC_NPROCESSORS_CONF` counts `cpuN` *directories*, and no file bind
+removes a directory. Making that right means serving a synthetic
+directory in place of the real one -- a different and much larger job,
+tracked as #363. A private sysfs mount is not the answer either: every
+container already gets one (`src/mountns.c` mounts a fresh sysfs), and
+CPU topology is not scoped by any Linux namespace, which is exactly why
+lxcfs exists upstream.
+
+**`DELETE /v1/containers/{name}/files`.** The endpoint had `GET` and
+`PUT` but no `DELETE`, so a file could be created and rewritten but
+never removed -- anything staged once was staged forever. That surfaced
+the first time a staged path changed: `cix-init` moved to
+`/sbin/cix-init` and every container built before that kept an inert
+copy at the old root-level path, with no way to remove it short of
+destroying and rebuilding the container. Same path resolution as its
+two siblings. Refuses a directory: removing a tree is a different and
+more dangerous operation, and this endpoint has only ever dealt in
+single files.
+
 ### A container's virtualised /proc, reported instead of assumed
 
 `jump` reported 7.71 GiB of memory and two CPUs to `htop` while its

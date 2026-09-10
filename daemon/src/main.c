@@ -12970,7 +12970,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	 * did before this existed.
 	 */
 	if (!no_procfuse) {
-		static const char *const procfuse_names[] = PROCFUSE_FILES;
+		static const struct procfuse_file procfuse_names[] = PROCFUSE_FILES;
 
 		spec.mnt.procfuse_dir = procfuse_mount_path();
 		spec.mnt.procfuse_files = procfuse_names;
@@ -15579,6 +15579,87 @@ static void handle_container_file_read(int fd, const char *name, const char *rel
  * install` (live, immediate) and an image recipe's own package list
  * (declared intent for a future build) already relate.
  */
+/*
+ * DELETE /v1/containers/{name}/files?path=... -- the third side of the
+ * same primitive GET and PUT already implement, resolving the path
+ * exactly as they do (running: /proc/<pid>/root<path>, resolved by the
+ * kernel through the container's own mount namespace; otherwise the
+ * container's own writable layer).
+ *
+ * It exists because the pair without it is not a primitive an operator
+ * can actually keep a container tidy with: a file could be created and
+ * rewritten but never removed, so anything staged once was staged
+ * forever. That surfaced the first time a staged path CHANGED --
+ * cix-init moved to /sbin and every container built before that kept
+ * an inert copy at the old path, with no way to remove it short of
+ * destroying and rebuilding the container.
+ *
+ * Refuses a directory. Removing a tree is a different, more dangerous
+ * operation than removing a file, and this endpoint has only ever
+ * dealt in single files; rmdir(2) on an empty directory is a
+ * reasonable thing to add later, deliberately, rather than to fall out
+ * of unlink()'s error handling by accident.
+ */
+static void handle_container_file_delete(int fd, const char *name, const char *rel_path)
+{
+	struct registry_entry *e = registry_find(name);
+	char container_root[PATH_MAX];
+	char full_path[PATH_MAX];
+	struct stat st;
+	int stopped = 0;
+
+	if (e == NULL) {
+		if (container_root_from_def(name, container_root, sizeof(container_root)) != 0) {
+			respond_error(fd, 404, "Not Found", "no such container");
+			return;
+		}
+		stopped = 1;
+	}
+	if (rel_path == NULL || rel_path[0] != '/' || strlen(rel_path) >= CONTAINER_FILE_PATH_MAX ||
+	    !file_path_is_safe(rel_path)) {
+		respond_error(fd, 400, "Bad Request", "invalid or missing path");
+		return;
+	}
+	{
+		int use_proc = 0;
+
+		if (!stopped && e->running) {
+			char proc_root[64];
+
+			snprintf(proc_root, sizeof(proc_root), "/proc/%d/root", (int)e->handle.pid);
+			use_proc = (access(proc_root, F_OK) == 0);
+		}
+		if (use_proc) {
+			snprintf(full_path, sizeof(full_path), "/proc/%d/root%s", (int)e->handle.pid,
+			          rel_path);
+		} else {
+			if (!stopped)
+				container_root_for(e->disk_name, container_root, sizeof(container_root));
+			container_writable_path(container_root, name, rel_path, full_path,
+			                         sizeof(full_path));
+		}
+	}
+
+	if (lstat(full_path, &st) != 0) {
+		respond_error(fd, 404, "Not Found", "no such file");
+		return;
+	}
+	if (S_ISDIR(st.st_mode)) {
+		respond_error(fd, 400, "Bad Request", "path is a directory, not a file");
+		return;
+	}
+	if (unlink(full_path) != 0) {
+		char errmsg[256];
+
+		snprintf(errmsg, sizeof(errmsg), "unlink(%s) failed: %s", rel_path, strerror(errno));
+		logstore_write_container(name, "error", "DELETE files: %s", errmsg);
+		respond_error(fd, 500, "Internal Server Error", errmsg);
+		return;
+	}
+	logstore_write_container(name, "info", "DELETE files: removed %s", rel_path);
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}
+
 static void handle_container_file_write(int fd, const char *name, const char *rel_path,
                                          const char *body, size_t body_len)
 {
@@ -21977,6 +22058,17 @@ static void op_putContainerFile(const struct api_ctx *ctx)
 	}
 	handle_container_file_write(ctx->fd, ctx->p[0], rel_path, ctx->req->body,
 	                             ctx->req->body_len);
+}
+
+static void op_deleteContainerFile(const struct api_ctx *ctx)
+{
+	char rel_path[CONTAINER_FILE_PATH_MAX];
+
+	if (url_query_param(ctx->req->path, "path", rel_path, sizeof(rel_path)) != 0) {
+		respond_error(ctx->fd, 400, "Bad Request", "missing path query parameter");
+		return;
+	}
+	handle_container_file_delete(ctx->fd, ctx->p[0], rel_path);
 }
 
 static void op_attachContainerNetwork(const struct api_ctx *ctx)
