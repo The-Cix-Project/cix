@@ -2780,86 +2780,174 @@ pre {
 	overflow-x: auto;
 	padding: 4px 0 10px 0;
 }
-.dg-lane {
-	flex: 1 1 0;
-	min-width: 190px;
+/* #371: the delivery graph is rows, not lanes of boxes. A row is one
+   thing; the columns are its pipeline's stages, filled to where it is. */
+.dg-toolbar {
 	display: flex;
-	flex-direction: column;
-	gap: 8px;
+	align-items: center;
+	gap: var(--s3);
+	margin: var(--s2) 0;
+	flex-wrap: wrap;
 }
-.dg-lane-host { flex: 0 0 auto; }
-.dg-lane-head {
+.dg-search {
+	flex: 1 1 260px;
+	min-width: 180px;
+	padding: var(--s1) var(--s2);
+	font: inherit;
+	color: var(--text);
+	background: var(--bg);
+	border: 1px solid var(--border);
+	border-radius: var(--r-control);
+}
+.dg-toggle { display: flex; align-items: center; gap: var(--s1); font-size: 12px; color: var(--muted); }
+.dg-count { font-size: 12px; color: var(--muted); margin-left: auto; }
+.dg-count-bad { color: var(--error); font-weight: 600; }
+
+.delivery-graph { display: block; overflow-x: auto; }
+.dg-section { margin-bottom: var(--s5); }
+.dg-section-head {
 	font-size: 11px;
-	letter-spacing: 0.08em;
 	text-transform: uppercase;
+	letter-spacing: 0.08em;
+	color: var(--muted);
+	margin-bottom: var(--s1);
+}
+.dg-row {
+	display: grid;
+	grid-template-columns: minmax(140px, 1.4fr) minmax(60px, 0.6fr) minmax(180px, 2fr) minmax(0, 3fr);
+	align-items: center;
+	gap: var(--s2);
+	padding: var(--s1) var(--s2);
+	border-radius: var(--r-control);
+	cursor: pointer;
+}
+.dg-row:hover, .dg-row:focus-visible { background: var(--panel); outline: none; }
+.dg-row-header {
+	cursor: default;
+	font-size: 10px;
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
 	color: var(--muted);
 	border-bottom: 1px solid var(--border);
-	padding-bottom: 4px;
+	padding-bottom: var(--s1);
+	margin-bottom: var(--s1);
 }
-.dg-none {
-	font-size: 12px;
-	color: var(--muted);
-	padding: 6px 2px;
-}
-.dg-box {
-	border: 1px solid var(--border);
-	border-left: 4px solid var(--muted);
-	border-radius: 4px;
-	background: var(--panel);
-	padding: 8px 10px;
-}
-.dg-name { font-weight: 600; font-size: 13px; }
-.dg-stage {
-	font-size: 11px;
-	letter-spacing: 0.06em;
-	text-transform: uppercase;
-	color: var(--muted);
-	margin-top: 2px;
-}
-.dg-reason {
-	font-size: 12px;
-	margin-top: 5px;
-	line-height: 1.4;
-}
-.dg-dep { margin-top: 7px; display: flex; flex-wrap: wrap; gap: 4px; }
-.dg-chip {
-	font-size: 11px;
-	border: 1px solid var(--border);
-	border-radius: 10px;
-	padding: 1px 7px;
-	color: var(--muted);
+.dg-row-header:hover { background: none; }
+.dg-row-sub { cursor: default; opacity: 0.75; font-size: 12px; }
+.dg-row-sub:hover { background: none; }
+.dg-row-name { font-weight: 600; font-size: 13px; overflow-wrap: anywhere; }
+.dg-row-sub .dg-row-name { font-weight: 400; padding-left: var(--s2); }
+.dg-row-ver { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.dg-row-why { font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+
+/* The pipeline itself. Equal columns so a stage lines up down the whole
+   section -- scanning a column answers "what is in build right now". */
+.dg-cells { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 2px; }
+.dg-colhead {
+	font-size: 9px;
+	text-align: center;
+	overflow: hidden;
+	text-overflow: ellipsis;
 	white-space: nowrap;
 }
-/* The one edge actually being waited on, among the many that exist. */
-.dg-chip-live { border-color: var(--error); color: var(--error); font-weight: 600; }
-/* A permanent rule, not a transient wait -- drawn only where it is live. */
-.dg-chip-rolling { border-style: dashed; }
+.dg-cell { height: 12px; border-radius: 2px; background: var(--border); }
+.dg-cell-done { background: var(--ok); opacity: 0.55; }
+.dg-cell-todo { background: transparent; border: 1px solid var(--border); }
+/* Does not apply -- not a step this thing has, so it is not drawn as one.
+   Recessive rather than absent: the column grid still has to line up, and
+   an empty cell would read as "not reached yet", which is a different and
+   equally wrong statement. */
+.dg-cell-na { background: transparent; border: 1px dotted var(--border); opacity: 0.4; }
+.dg-cell-here { box-shadow: 0 0 0 1px var(--text); }
+.dg-cell-ok { background: var(--ok); }
+.dg-cell-blocked { background: var(--paused); }
+.dg-cell-failed { background: var(--error); }
+.dg-cell-cancelled { background: var(--muted); }
+.dg-cell-not-implemented { background: transparent; border: 1px dotted var(--border); }
 
-.dg-ok { border-left-color: var(--ok); }
-.dg-blocked { border-left-color: var(--paused); }
-.dg-failed { border-left-color: var(--error); }
-.dg-cancelled { border-left-color: var(--muted); }
-.dg-not-implemented { border-left-color: var(--accent); }
+.dg-chip {
+	display: inline-block;
+	padding: 0 var(--s2);
+	border: 1px solid var(--border);
+	border-radius: var(--r-pill);
+	font-size: 11px;
+	color: var(--muted);
+	font-variant-numeric: tabular-nums;
+}
+
+.dg-drift { margin-bottom: var(--s4); font-size: 12px; }
+.dg-drift-row {
+	padding: var(--s2) var(--s3);
+	border: 1px solid var(--border);
+	border-left: 3px solid var(--paused);
+	border-radius: var(--r-control);
+	margin-bottom: var(--s2);
+}
+.dg-drift-name { font-weight: 600; margin-bottom: var(--s1); }
+.dg-drift-line { color: var(--muted); margin-top: 2px; }
+
+.dg-drawer {
+	margin-top: var(--s4);
+	border: 1px solid var(--border);
+	border-radius: var(--r-panel);
+	background: var(--panel);
+}
+.dg-drawer-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--s2);
+	padding: var(--s2) var(--s3);
+	border-bottom: 1px solid var(--border);
+}
+.dg-drawer-body { padding: var(--s3); font-size: 12px; display: flex; flex-direction: column; gap: var(--s1); }
+.dg-drawer-h {
+	margin-top: var(--s3);
+	font-size: 10px;
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+	color: var(--muted);
+}
+.dg-drawer-actions { margin-top: var(--s3); }
+.dg-log {
+	max-height: 320px;
+	overflow: auto;
+	margin: 0;
+	padding: var(--s2);
+	background: var(--bg);
+	border: 1px solid var(--border);
+	border-radius: var(--r-control);
+	font-size: 11px;
+	line-height: 1.45;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
 
 .dg-h {
 	font-size: 12px;
-	letter-spacing: 0.08em;
 	text-transform: uppercase;
+	letter-spacing: 0.06em;
 	color: var(--muted);
-	margin: 18px 0 8px 0;
-	font-weight: 600;
+	margin: var(--s4) 0 var(--s2);
 }
 .dg-key {
 	display: inline-block;
-	margin-right: 14px;
-	padding-left: 10px;
-	border-left: 4px solid var(--muted);
+	padding: 0 var(--s2);
+	margin-right: var(--s2);
+	border-left: 3px solid var(--border);
+	font-size: 11px;
 }
-.dg-key.dg-ok { border-left-color: var(--ok); }
-.dg-key.dg-blocked { border-left-color: var(--paused); }
-.dg-key.dg-failed { border-left-color: var(--error); }
-.dg-key.dg-cancelled { border-left-color: var(--muted); }
-.dg-key.dg-not-implemented { border-left-color: var(--accent); }
+.dg-key.dg-k-done { border-left-color: var(--ok); }
+.dg-key.dg-k-here { border-left-color: var(--text); }
+.dg-key.dg-k-blocked { border-left-color: var(--paused); }
+.dg-key.dg-k-failed { border-left-color: var(--error); }
+.dg-key.dg-k-todo { border-left-color: var(--border); }
+.dg-key.dg-k-na { border-left-color: var(--muted); border-left-style: dotted; }
+
+@media (max-width: 720px) {
+	.dg-row { grid-template-columns: 1fr; gap: var(--s1); }
+	.dg-row-header { display: none; }
+}
 
 @media (max-width: 720px) {
 	.delivery-graph { flex-direction: column; }

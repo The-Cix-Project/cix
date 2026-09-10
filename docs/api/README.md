@@ -1097,6 +1097,12 @@ Four stages are new. **`acquire`** is where a pipeline waits for what it depends
 
 `deploy` moved out of the package pipeline into the host's, making structural what ADR-0256 already did by special case (it reported deploy *once*, beside the package list).
 
+**A package row is a summary of its images, and `drift[]` is what the summary hides.** A package is not installed once — it is installed into N images, each with its own position, so the row folds them: a real problem always wins over good news elsewhere; between two problems the earliest stage wins (a pipeline stops at its first problem, so a package that could not be downloaded reads "could not download", not "could not compile"); and with nothing wrong, the furthest place it actually reached wins. `not-implemented` is never such a place — it means the stage does not apply.
+
+That last rule is a fix (#371), and the bug it closes is worth knowing because the symptom looked like a rendering problem: an ok position could not displace the starting one, and the starting position is `discover/not-implemented` for every package with no `pkg_upstream=`. On a live host, `glibc` — installed and healthy in **eleven** images — reported `discover / not-implemented`, and so did 121 of 122 packages. The dashboard drew 124 boxes where 3 were the answer.
+
+The fold is correct now and it still hides something real, which is why **`drift[]`** exists: `glibc` on that same host is at `2.44-12`, `2.44-14` and `2.44-16` across those eleven images. The row says `install/ok` — true, and silent about the only thing an operator would want to act on. `drift[]` lists every package sitting at more than one version, with the image and version of each install. Derived on every read like everything else here; empty when every package is at one version everywhere.
+
 **`edges` are structural, not failure-driven.** An edge exists because a deployment *names* an image and a manifest *names* packages — present when everything is healthy. Status colours an edge; `blocked_on` names the live one among them; neither creates one. `relation` is `manifest`, `image`, or `follow-rolling` — and `follow-rolling` is emitted **only where it is live**, since the flag is stored but inert on a `restart:"no"` deployment.
 
 **`kinds`** publishes each kind's ordered stage list, so a renderer draws its lanes from the daemon's own answer rather than a copy of the table that would drift.

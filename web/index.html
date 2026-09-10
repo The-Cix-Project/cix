@@ -1898,23 +1898,52 @@
 				dependencies and are drawn whether or not anything is wrong.
 			</p>
 
-			<!-- #371: the delivery graph. Lanes are kinds, boxes are things at a
-			     stage, colour is the status axis, arrows are the edges[] the
-			     daemon derives. -->
+			<!-- #371: one row per thing, stages as columns, filled to where it
+			     stands. The row IS the pipeline; reading a line answers "where is
+			     this". Replaces lanes-of-boxes, which drew kinds as columns and
+			     left the pipeline as a word inside a box. -->
+			<div class="dg-toolbar">
+				<input type="search" id="dg-search" class="dg-search"
+				       placeholder="Find a package, image or deployment&hellip;"
+				       aria-label="Filter rows by name">
+				<label class="dg-toggle">
+					<input type="checkbox" id="dg-problems-only">
+					Problems only
+				</label>
+				<span id="dg-count" class="dg-count"></span>
+			</div>
+
 			<div id="delivery-graph" class="delivery-graph"></div>
 
 			<p class="hint" id="delivery-legend">
-				<span class="dg-key dg-ok">ok</span>
-				<span class="dg-key dg-blocked">blocked &mdash; waiting on something</span>
-				<span class="dg-key dg-failed">failed</span>
-				<span class="dg-key dg-cancelled">cancelled</span>
-				<span class="dg-key dg-not-implemented">done by hand today</span>
+				<span class="dg-key dg-k-done">done</span>
+				<span class="dg-key dg-k-here">where it is now</span>
+				<span class="dg-key dg-k-blocked">blocked</span>
+				<span class="dg-key dg-k-failed">failed</span>
+				<span class="dg-key dg-k-todo">not reached</span>
+				<span class="dg-key dg-k-na">does not apply</span>
 			</p>
+
+			<!-- Derived, not stored: packages sitting at more than one version
+			     across images. The per-package row folds its images and so cannot
+			     show this, and it is the thing an operator can act on. -->
+			<h3 class="dg-h">Version drift across images</h3>
+			<div id="dg-drift" class="dg-drift"></div>
 
 			<h3 class="dg-h">Where packages stand</h3>
 			<div id="pipeline-flow" class="pipeline-flow"></div>
 			<div id="pipeline-deploy" class="pipeline-deploy"></div>
 			<p id="pipeline-summary" class="hint"></p>
+
+			<!-- Detail for one row: why it is where it is, every image it is
+			     installed into, and the real build log. -->
+			<div id="dg-drawer" class="dg-drawer" hidden>
+				<div class="dg-drawer-head">
+					<strong id="dg-drawer-title"></strong>
+					<button type="button" id="dg-drawer-close" class="btn-small">Close</button>
+				</div>
+				<div id="dg-drawer-body" class="dg-drawer-body"></div>
+			</div>
 			</div>
 <div class="tab-panel" data-tab="pipeline-errors" hidden>
 			<p class="hint">
