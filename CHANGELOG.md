@@ -6,6 +6,40 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The roadmap catches up on eight ADRs it had stopped recording
+
+`docs/roadmap/ROADMAP.md`'s job is *what* shipped and how it was verified, updated as
+each part lands. It had stopped: its newest entry was Part 229 (#359), and eight ADRs
+had **zero** mentions anywhere in the file --
+
+```
+ADR-0261  there is one way into a container      ADR-0270  a deployment waits for its image
+ADR-0267  a volume's size comes from the kernel  ADR-0271  an action is attributable to a person
+ADR-0268  gating is visible                      ADR-0272  a pipeline run is a log entry
+ADR-0269  one pipeline model for four kinds      ADR-0273  a gate holds automation
+```
+
+along with #364, #365, #369, #370, #371, #374 and #382. The ADRs and this file were
+current throughout; it was specifically the shipped-and-verified record that was behind,
+which is the one doc an operator reads to find out what a release actually contains.
+
+Four new parts (230-233) cover volumes, the host-auth visibility work, the pipeline model
+and page, and the attribution/runs/gates arc including the #382 regression it introduced.
+ADR-0261 gets **Part 225 follow-up** rather than a number at the top, because it shipped
+between Parts 225 and 226 and putting it newest would misdate it -- it is labelled as
+recorded late rather than quietly slotted in. A first pass nearly filed it as the newest
+part on the strength of the ADR number alone; its CHANGELOG entry sits below #359's,
+which is what caught it.
+
+One earlier claim corrected while measuring this: the single pre-existing `#335` mention
+in the roadmap is inside Part 226's "what is not done" note, citing the *absence* of an
+exec endpoint as a reason #355 could not be diagnosed. It was not a record of ADR-0261
+shipping, and reading it as one would have left that part unwritten.
+
+Nothing already in the file was rewritten. Part 232's own entry records the precedent:
+existing entries are chronological records of what happened at the time, and editing them
+to match later naming makes them less true, not more current.
+
 ### The rebuild drain started the same image once per free chain slot (#382)
 
 Measured on 192.168.15.95 running v2.57.53: all ten chain slots held the same
