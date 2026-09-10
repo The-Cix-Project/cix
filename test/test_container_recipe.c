@@ -499,6 +499,158 @@ int main(void)
 	      "GET removed recipe is 404");
 	cix_response_free(&r);
 
+	/*
+	 * --- scenario 9 (ADR-0270): a deployment whose image is not built
+	 * waits for it, and the wait survives a daemon restart ---
+	 *
+	 * The restart is the whole point of this scenario, not decoration.
+	 * A pending deployment is an INTENT, and an intent that evaporates
+	 * on a daemon restart is worse than a refusal: the operator was
+	 * told 202 and nothing will ever happen. The in-memory rebuild
+	 * queue this leans on (#373) is genuinely lost across a restart,
+	 * so the definition has to re-enqueue its own image on the way
+	 * back up -- which is only observable by actually restarting.
+	 */
+	{
+		const char *pend_recipe =
+		    "{\"name\":\"pendtest\",\"image\":\"pendimg\",\"services\":[{\"name\":\"s\","
+		    "\"command\":\"/bin/true\"}]}";
+
+		/* A freshly created image is UNREALIZED but has a perfectly
+		 * valid current version -- the hash of its own empty manifest
+		 * (#109). That is exactly the trap this feature had to avoid,
+		 * so it is exactly what the test deploys against. */
+		memset(&r, 0, sizeof(r));
+		CHECK(cix_client_request(&client, "POST", "/v1/images", "{\"name\":\"pendimg\"}", &r) == 0 &&
+		          r.status == 201,
+		      "POST /v1/images pendimg (empty, unrealized)");
+		cix_response_free(&r);
+
+		/* An empty manifest with no image recipe has nothing to
+		 * converge toward, so it is refused rather than left waiting
+		 * on something that can never arrive. */
+		memset(&r, 0, sizeof(r));
+		CHECK(cix_client_request(&client, "POST", "/v1/deployments", pend_recipe, &r) == 0 &&
+		          r.status == 201,
+		      "POST /v1/deployments pendtest");
+		cix_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		CHECK(cix_client_request(&client, "POST", "/v1/deployments/pendtest/apply", "", &r) == 0 &&
+		          r.status == 400,
+		      "apply against an empty image with no recipe is 400, not a wait");
+		cix_response_free(&r);
+
+		/* Declare something into the manifest. Now there IS a target
+		 * to converge toward, so the same apply waits instead. */
+		memset(&r, 0, sizeof(r));
+		CHECK(cix_client_request(&client, "PUT", "/v1/images/pendimg/manifest",
+		                          "{\"package\":\"nosuchpkg\",\"mode\":\"pinned\","
+		                          "\"version\":\"1.0-1\"}", &r) == 0 &&
+		          r.status == 204,
+		      "PUT pendimg manifest declares a package");
+		cix_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		CHECK(cix_client_request(&client, "POST", "/v1/deployments/pendtest/apply", "", &r) == 0 &&
+		          r.status == 202,
+		      "apply against an unrealized image is 202, not 400");
+		if (r.json != NULL) {
+			CHECK(json_str_field(r.json, "state") != NULL &&
+			          strcmp(json_str_field(r.json, "state"), "awaiting-image") == 0,
+			      "202 body says awaiting-image");
+			CHECK(json_str_field(r.json, "awaiting_image") != NULL &&
+			          strcmp(json_str_field(r.json, "awaiting_image"), "pendimg") == 0,
+			      "202 body names the image it is waiting for");
+		}
+		cix_response_free(&r);
+
+		/* No container was created -- waiting is not a half-create. */
+		memset(&r, 0, sizeof(r));
+		CHECK(cix_client_request(&client, "GET", "/v1/containers/pendtest", NULL, &r) == 0 &&
+		          r.status == 404,
+		      "a waiting deployment has created no container");
+		cix_response_free(&r);
+
+		/* The pipeline reports it at acquire/blocked, naming the image
+		 * -- this read-time join IS the failure propagation path
+		 * (ADR-0256: status is derived, never stored). */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "GET", "/v1/pipeline", NULL, &r) == 0 && r.status == 200 &&
+		    r.json != NULL) {
+			const struct json_value *deps = json_object_get(r.json, "deployments");
+			int found = 0;
+			size_t k;
+
+			for (k = 0; deps != NULL && deps->type == JSON_ARRAY && k < deps->u.array.count; k++) {
+				const struct json_value *d = deps->u.array.items[k];
+				const char *dn = json_str_field(d, "name");
+				const struct json_value *bo;
+
+				if (dn == NULL || strcmp(dn, "pendtest") != 0)
+					continue;
+				found = 1;
+				CHECK(json_str_field(d, "stage") != NULL &&
+				          strcmp(json_str_field(d, "stage"), "acquire") == 0,
+				      "pipeline puts the waiting deployment at acquire");
+				CHECK(json_str_field(d, "status") != NULL &&
+				          strcmp(json_str_field(d, "status"), "blocked") == 0,
+				      "pipeline reports it blocked");
+				bo = json_object_get(d, "blocked_on");
+				CHECK(bo != NULL && json_str_field(bo, "kind") != NULL &&
+				          strcmp(json_str_field(bo, "kind"), "image") == 0 &&
+				          json_str_field(bo, "name") != NULL &&
+				          strcmp(json_str_field(bo, "name"), "pendimg") == 0,
+				      "pipeline names the image it is blocked on");
+			}
+			CHECK(found, "the waiting deployment appears in the pipeline");
+		} else {
+			CHECK(0, "GET /v1/pipeline while a deployment waits");
+		}
+		cix_response_free(&r);
+
+		/* The restart. */
+		CHECK(stop_daemon(daemon_pid) == 0, "daemon stopped for the pending-survives-restart check");
+		daemon_pid = start_daemon();
+		CHECK(daemon_pid > 0, "daemon restarted");
+		CHECK(wait_for_daemon(&client, 100) == 0, "restarted daemon is serving");
+
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "GET", "/v1/pipeline", NULL, &r) == 0 && r.status == 200 &&
+		    r.json != NULL) {
+			const struct json_value *deps = json_object_get(r.json, "deployments");
+			int still_waiting = 0;
+			size_t k;
+
+			for (k = 0; deps != NULL && deps->type == JSON_ARRAY && k < deps->u.array.count; k++) {
+				const struct json_value *d = deps->u.array.items[k];
+				const char *dn = json_str_field(d, "name");
+				const char *st = json_str_field(d, "status");
+				const char *sg = json_str_field(d, "stage");
+
+				if (dn != NULL && strcmp(dn, "pendtest") == 0 && st != NULL && sg != NULL &&
+				    strcmp(st, "blocked") == 0 && strcmp(sg, "acquire") == 0)
+					still_waiting = 1;
+			}
+			CHECK(still_waiting, "the deployment is STILL waiting after a daemon restart");
+		} else {
+			CHECK(0, "GET /v1/pipeline after the restart");
+		}
+		cix_response_free(&r);
+
+		/* Still no container, and the definition did not quietly become
+		 * an ordinary stopped one. */
+		memset(&r, 0, sizeof(r));
+		CHECK(cix_client_request(&client, "GET", "/v1/containers/pendtest", NULL, &r) == 0 &&
+		          r.status == 404,
+		      "still no container after the restart");
+		cix_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		cix_client_request(&client, "DELETE", "/v1/deployments/pendtest", NULL, &r);
+		cix_response_free(&r);
+	}
+
 	/* Enumerated cleanup, never a hand-kept list: a leaked bridge makes
 	 * the NEXT run's network create fail with a 500 that reads exactly
 	 * like a code regression (test_cleanup.h). */

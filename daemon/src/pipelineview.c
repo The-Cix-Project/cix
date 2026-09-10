@@ -208,8 +208,36 @@ static void write_deployments(struct json_writer *w, int *stage_counts)
 		enum pipeline_status status = PIPELINE_BLOCKED;
 		const char *reason = "declared, never applied on this host";
 		const struct registry_entry *e = registry_find(names[i]);
+		const struct container_def *def = containerdef_find(names[i]);
+		char waiting_reason[320];
+		const char *blocked_on_image = NULL;
 
-		if (e != NULL) {
+		/*
+		 * ADR-0270: applied, and waiting for its image to be realized.
+		 *
+		 * This is where image failure REACHES the deployment -- there is
+		 * no callback and nothing stored, exactly as ADR-0256 requires:
+		 * the status is computed here, at read time, from the image the
+		 * definition says it is waiting on. A replay that failed for a
+		 * reason that was not the image reports that instead, because
+		 * "blocked on an image" would be untrue and would send an
+		 * operator to look at the wrong thing.
+		 */
+		if (def != NULL && def->awaiting_image[0] != '\0') {
+			stage = PIPELINE_ACQUIRE;
+			blocked_on_image = def->awaiting_image;
+			if (def->last_replay_error[0] != '\0') {
+				status = PIPELINE_FAILED;
+				snprintf(waiting_reason, sizeof(waiting_reason),
+				          "image %s is ready, but creating this deployment failed: %s",
+				          def->awaiting_image, def->last_replay_error);
+			} else {
+				status = PIPELINE_BLOCKED;
+				snprintf(waiting_reason, sizeof(waiting_reason),
+				          "waiting for image %s to be built", def->awaiting_image);
+			}
+			reason = waiting_reason;
+		} else if (e != NULL) {
 			if (!e->running) {
 				stage = PIPELINE_DEPLOY;
 				status = PIPELINE_FAILED;
@@ -230,10 +258,23 @@ static void write_deployments(struct json_writer *w, int *stage_counts)
 		jw_key(w, "name");
 		jw_str(w, names[i]);
 		jw_key(w, "image");
-		if (e != NULL && e->image[0] != '\0')
+		if (blocked_on_image != NULL)
+			jw_str(w, blocked_on_image);
+		else if (e != NULL && e->image[0] != '\0')
 			jw_str(w, e->image);
 		else
 			jw_null(w);
+		/* ADR-0270: name what is holding this one up, in the shape
+		 * ADR-0269 gave every other blocked edge. */
+		if (blocked_on_image != NULL) {
+			jw_key(w, "blocked_on");
+			jw_obj_open(w);
+			jw_key(w, "kind");
+			jw_str(w, "image");
+			jw_key(w, "name");
+			jw_str(w, blocked_on_image);
+			jw_obj_close(w);
+		}
 		write_position(w, stage, status, reason);
 		jw_obj_close(w);
 		stage_counts[stage]++;

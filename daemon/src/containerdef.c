@@ -55,6 +55,11 @@ static int save_state(void)
 			jw_int(&w, d->follow_rolling_jitter_seconds);
 		else
 			jw_null(&w);
+		/* ADR-0270. Written unconditionally, empty when not waiting --
+		 * an absent key reads back as "not waiting" either way, so a
+		 * state file from an older daemon needs no migration. */
+		jw_key(&w, "awaiting_image");
+		jw_str(&w, d->awaiting_image);
 		jw_key(&w, "body");
 		jw_str(&w, d->body);
 		jw_obj_close(&w);
@@ -109,12 +114,102 @@ int containerdef_add(const char *name, const char *body, size_t body_len,
 	d->restart_delay_seconds = restart_delay_seconds;
 	d->stopped = 0;              /* a fresh create/redefine is definitionally not stopped */
 	d->consecutive_failures = 0; /* ...and not backed off either */
+	/* ADR-0270: ...and not waiting for an image either. This function is
+	 * called on a container that has just been CREATED, so whatever it
+	 * was waiting for has arrived. The apply path marks a definition as
+	 * waiting through containerdef_set_awaiting_image() after this, on
+	 * the branch where no create happened at all. */
+	d->awaiting_image[0] = '\0';
+	d->last_replay_error[0] = '\0';
 	d->follow_rolling = follow_rolling;
 	d->has_follow_rolling_jitter = has_follow_rolling_jitter;
 	d->follow_rolling_jitter_seconds = follow_rolling_jitter_seconds;
 
 	d->in_use = 1;
 
+	return save_state();
+}
+
+/*
+ * ADR-0270. image == NULL or "" clears the wait; any other value marks
+ * this definition as waiting for that image to be realized.
+ *
+ * Persisted (an intent must survive a restart), so it saves state --
+ * unlike containerdef_set_replay_error() below, which deliberately does
+ * not.
+ */
+int containerdef_set_awaiting_image(const char *name, const char *image)
+{
+	struct container_def *d = containerdef_find(name);
+
+	if (d == NULL)
+		return -1;
+	if (image != NULL && strlen(image) >= sizeof(d->awaiting_image))
+		return -1;
+	snprintf(d->awaiting_image, sizeof(d->awaiting_image), "%s", image != NULL ? image : "");
+	if (d->awaiting_image[0] == '\0')
+		d->last_replay_error[0] = '\0';
+	return save_state();
+}
+
+/*
+ * ADR-0270. Why the last replay of a waiting definition failed for a
+ * reason that was not the image. In memory only, never saved: the same
+ * reasoning consecutive_failures already carries -- a failure recorded
+ * before a restart describes a world that no longer exists.
+ */
+void containerdef_set_replay_error(const char *name, const char *err)
+{
+	struct container_def *d = containerdef_find(name);
+
+	if (d == NULL)
+		return;
+	snprintf(d->last_replay_error, sizeof(d->last_replay_error), "%s", err != NULL ? err : "");
+}
+
+/*
+ * ADR-0270: a waiting definition has just been created for real.
+ *
+ * Clears the wait and writes the policy fields deployment_mark_pending()
+ * could only store at their defaults, from the values
+ * create_container_from_body() actually parsed out of this definition's
+ * own body -- so there is still exactly one thing deciding what
+ * `restart` means, and this only carries its answer across.
+ *
+ * Deliberately NOT containerdef_add(): that one frees d->body before
+ * copying the new one, and every caller here is replaying a definition
+ * whose body is the thing it would be handed -- a use-after-free.
+ * Nothing about the body changes on promotion anyway; only the fields
+ * around it do.
+ */
+int containerdef_promote_pending(const char *name, const char *restart_policy,
+                                  int restart_delay_seconds,
+                                  const char depends_on[][REGISTRY_NAME_MAX], int depends_on_count,
+                                  int follow_rolling, int has_follow_rolling_jitter,
+                                  int follow_rolling_jitter_seconds)
+{
+	struct container_def *d = containerdef_find(name);
+	int i;
+
+	if (d == NULL)
+		return -1;
+	if (depends_on_count < 0 || depends_on_count > CONTAINERDEF_MAX_DEPENDS)
+		return -1;
+
+	d->depends_on_count = depends_on_count;
+	for (i = 0; i < depends_on_count; i++) {
+		memset(d->depends_on[i], 0, sizeof(d->depends_on[i]));
+		strncpy(d->depends_on[i], depends_on[i], sizeof(d->depends_on[i]) - 1);
+	}
+	snprintf(d->restart_policy, sizeof(d->restart_policy), "%s", restart_policy);
+	d->restart_delay_seconds = restart_delay_seconds;
+	d->follow_rolling = follow_rolling;
+	d->has_follow_rolling_jitter = has_follow_rolling_jitter;
+	d->follow_rolling_jitter_seconds = follow_rolling_jitter_seconds;
+	d->awaiting_image[0] = '\0';
+	d->last_replay_error[0] = '\0';
+	d->stopped = 0;
+	d->consecutive_failures = 0;
 	return save_state();
 }
 
@@ -421,6 +516,7 @@ static int parse_persisted_entry(const struct json_value *item, struct container
 	const struct json_value *jfollow_rolling = json_object_get(item, "follow_rolling");
 	const struct json_value *jfollow_rolling_jitter =
 	    json_object_get(item, "follow_rolling_jitter_seconds");
+	const char *awaiting = json_as_string(json_object_get(item, "awaiting_image"));
 	size_t i;
 
 	if (name == NULL || name[0] == '\0' || strlen(name) >= REGISTRY_NAME_MAX || body == NULL)
@@ -428,6 +524,15 @@ static int parse_persisted_entry(const struct json_value *item, struct container
 
 	memset(slot, 0, sizeof(*slot));
 	strncpy(slot->name, name, sizeof(slot->name) - 1);
+	/* ADR-0270. Absent (an older daemon's state file) or empty both
+	 * mean "not waiting", which is what the memset above already left
+	 * behind -- so only a real name needs copying, and an oversized one
+	 * is corruption in a field we ourselves wrote. */
+	if (awaiting != NULL && awaiting[0] != '\0') {
+		if (strlen(awaiting) >= sizeof(slot->awaiting_image))
+			return -1;
+		strncpy(slot->awaiting_image, awaiting, sizeof(slot->awaiting_image) - 1);
+	}
 
 	slot->body_len = strlen(body);
 	slot->body = malloc(slot->body_len + 1);

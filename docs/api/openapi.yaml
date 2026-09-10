@@ -6557,13 +6557,32 @@ paths:
         (JSON-escaped correctly, since a secret value is spliced into the
         middle of an already-open JSON string literal) -- and creates the
         container from the result, via the identical code path a real
-        POST /containers would use. Always synchronous: 201 with the new
-        container, or whatever error a real container create would give
-        (a name collision, a missing image, invalid cmd, ...); there is no
-        async path here the way image recipes' own artifact-fetch fast
-        path has, since a container always creates synchronously. An
-        unmatched {{SECRET:KEY}} token (no such key in secrets) is left
-        completely untouched -- never silently swallowed or blanked.
+        POST /containers would use. 201 with the new container, or
+        whatever error a real container create would give (a name
+        collision, invalid cmd, ...). An unmatched {{SECRET:KEY}} token
+        (no such key in secrets) is left completely untouched -- never
+        silently swallowed or blanked.
+
+
+        ADR-0270: if the image this deployment names exists but has not
+        been built yet, the apply does NOT fail. It declares that image's
+        own recipe into its manifest when the manifest is still empty,
+        queues the image for a build, persists the deployment as waiting,
+        and returns 202 immediately -- it never blocks on the build. The
+        deployment is created automatically once the image is realized,
+        including across a daemon restart. Note this is specific to
+        applying a deployment: a direct POST /containers naming an unbuilt
+        image still fails fast with 400, because that path is also the
+        boot-time and crash-restart replay and must not wait.
+
+
+        An image with no manifest entries AND no image recipe is still a
+        400 -- there is nothing to build toward, so there is no honest
+        way to wait. Beware that an image existing is not the same
+        question as an image having content: every image is born with a
+        valid current version (the hash of its own empty manifest), which
+        is why the readiness test compares against that version rather
+        than merely checking one exists.
       operationId: applyDeployment
       x-cix-expose: [cli, web]
       parameters:
@@ -6587,8 +6606,35 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Container"
+        "202":
+          description: >
+            ADR-0270. The image this deployment names is not built yet.
+            It has been queued for a build and the deployment has been
+            persisted as waiting; it will be created automatically once
+            the image is realized. Its progress is visible at
+            GET /pipeline, where it reports stage "acquire", status
+            "blocked", and blocked_on {kind: "image", name}.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name:
+                    type: string
+                    description: The deployment now waiting.
+                  state:
+                    type: string
+                    enum: ["awaiting-image"]
+                  awaiting_image:
+                    type: string
+                    description: The image being waited on and queued for a build.
         "400":
-          description: Invalid secrets JSON, or the rendered body failed real container-create validation
+          description: >
+            Invalid secrets JSON, the rendered body failed real
+            container-create validation, or the image this deployment
+            names cannot be built toward -- it does not exist at all, or
+            it is empty with neither a manifest nor an image recipe to
+            declare one from (ADR-0270).
           content:
             application/json:
               schema:
