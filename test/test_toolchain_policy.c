@@ -1,15 +1,26 @@
 /*
  * ADR-0224, the Toolchain Tenet: TCC by right, gcc by evidence.
  *
- * The rule is that Cix's own code is always TCC, third-party packages
- * are TCC by default, and a package moves to gcc only by clearing a
- * four-part bar. The rule is not the interesting part -- an informal
- * version of it already existed, as prose in CLAUDE.md, and did not
- * stop gcc reaching 21 recipes without anyone counting.
+ * The rule is that Cix's own code is always TCC -- no bar, no
+ * exception -- and third-party packages are TCC by default and gcc
+ * when TCC is difficult. ADR-0226 amended ADR-0224 here: the original
+ * four-part bar and its required tracking issue NO LONGER APPLY to
+ * third-party packages, because the owner's instruction is that moving
+ * a package this project neither owns nor wrote should be the natural
+ * change rather than a battle. What is still required is
+ * pkg_toolchain= and pkg_toolchain_reason=, for auditability rather
+ * than permission -- a reason may be as ordinary as "the language has
+ * no TCC front end".
+ *
+ * The rule is not the interesting part -- an informal version of it
+ * already existed, as prose in CLAUDE.md, and did not stop gcc
+ * reaching 21 recipes without anyone counting.
  *
  * This is the part that makes it real: a NUMBER that changes visibly.
- * Adding a gcc exception means editing the count below, in a diff,
- * deliberately -- the same device test_apigen uses to keep the REST
+ * Adding a gcc package means editing the list below, in a diff,
+ * deliberately. Since ADR-0226 this is a VISIBILITY device rather than
+ * a debt ceiling -- the set is expected to GROW, and that is fine; what
+ * must not happen is it growing without anyone seeing it -- the same device test_apigen uses to keep the REST
  * surface honest. A rule nobody can count is a rule that has already
  * been broken, and this project has the evidence: 34 of 139 installed
  * packages had drifted behind their recipes because nothing counted
@@ -41,8 +52,8 @@
  * stop the set GROWING unnoticed, which is the failure that mattered.
  */
 static const char *const g_gcc_recipes[] = {
-	"btop", "binutils", "binutils-dev", "bird", "btrfs-progs", "efivar", "elfutils",
-	"gcc", "gitea", "glauth", "glibc", "gnu-efi", "go", "go-bootstrap",
+	"btop", "binutils", "binutils-dev", "bird", "btrfs-progs", "cmake", "efivar", "elfutils",
+	"fastfetch", "gcc", "gitea", "glauth", "glibc", "gnu-efi", "go", "go-bootstrap",
 	"grub", "kernel", "keyutils", "kmod", "libblkid", "libxcrypt",
 	"linux-headers", "perl", "probe-gcc-headers", "probe-gcc-postglibc",
 	/*
@@ -204,11 +215,11 @@ int main(void)
 		found++;
 		if (!known_gcc_recipe(ent->d_name)) {
 			fail("%s@%s builds with gcc and is not in this test's list.\n"
-			     "       ADR-0224: a package moves to gcc only by clearing the bar --\n"
-			     "       a measured failure, not fixable at recipe level, in a recognised\n"
-			     "       class, with an issue tracking the TCC gap. If it clears all four,\n"
-			     "       add it to g_gcc_recipes[] here. That edit is the point: it makes\n"
-			     "       the exception visible in a diff instead of arriving unnoticed.",
+			     "       ADR-0226: gcc is an ordinary choice for a third-party package,\n"
+			     "       so this is not a refusal -- it is a request to make the change\n"
+			     "       visible. Record pkg_toolchain=\"gcc\" and a pkg_toolchain_reason\n"
+			     "       naming what was measured, then add it to g_gcc_recipes[] here.\n"
+			     "       That edit is the point: the set may grow, but never unnoticed.",
 			     ent->d_name, latest);
 		}
 	}
