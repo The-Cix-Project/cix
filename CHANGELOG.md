@@ -6,6 +6,51 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### An action is attributable to a person (#371, ADR-0271)
+
+The audit trail recorded what happened and never who did it:
+
+```c
+logstore_write("audit", "info", "%s %s", req->method, req->path);
+```
+
+A real line on a live host read `POST /v1/pkg/recipes` -- an action with no
+actor. `struct api_ctx`, which every handler receives, carried no identity at
+all, so no handler could name its caller even if it wanted to.
+
+Tolerable while the dashboard could only look. Not once it has buttons: an
+approval gate whose whole purpose is "a human decided this" and which cannot
+say WHICH human is theatre. And the information was already there and being
+thrown away -- `hostauth_authorize_write()` resolves the username into a local
+to check group membership, then returns a bare int.
+
+Resolved once at dispatch, carried on `api_ctx`, named in the trail. Three
+details that were real choices:
+
+**Before the audit line, not after the gate.** A rejected request is the one
+most worth attributing, so a refused write now logs its own line at `warn`.
+Auditing only what got past authorization loses exactly the attempts an
+operator wants to see.
+
+**`hostauth_peek_token()`, not `hostauth_check_token()`.** The two differ
+deliberately: the check refreshes idle expiry and CONSUMES a single-use token.
+The gate still makes its own real check, so peeking first is one consume in the
+right place; checking twice would spend a session on a log line.
+
+**`-` when nobody is authenticated**, so every line has a subject in the same
+column. A login is the one request with no token yet, so the login handler
+audits by name on both outcomes instead -- never the password, never which half
+was wrong.
+
+The line's shape changed from `<method> <path>` to `<who> <method> <path>`.
+Anything parsing it positionally sees a new first field; a second parallel line
+would have been two records of one event.
+
+`test_hostauth` (in `SELFTESTS`) asserts an attributed write, an attributed
+login and an audited refusal end to end against the real log store -- not
+against a format string, since the value only exists if it survives dispatch,
+the gate and the store.
+
 ### The pipeline page draws pipelines (#371, #374)
 
 The owner said it plainly: "I don't understand the UI you made for the pipeline

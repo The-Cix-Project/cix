@@ -61,6 +61,25 @@ struct api_ctx {
 	int fd;
 	const struct http_request *req;
 	const char *p[APIROUTE_MAX_PARAMS];
+	/*
+	 * Who is making this request, or "" when nobody is authenticated
+	 * (host auth gating not switched on yet, or a plain GET, which
+	 * never carries a token).
+	 *
+	 * Never NULL, so a handler can print it without a guard. Resolved
+	 * once at dispatch from the request's own bearer token and handed
+	 * down, rather than each handler re-deriving it -- a second lookup
+	 * would also risk consuming a single-use token twice
+	 * (hostauth_check_token() is deliberately mutating; the resolve
+	 * uses hostauth_peek_token(), which is not).
+	 *
+	 * Exists because an action a person took has to be attributable to
+	 * that person. Until this, the audit trail recorded the method and
+	 * the path and nothing else, which answers "what happened" and
+	 * never "who did it" -- tolerable for a read-only dashboard, not
+	 * for one that can change the box.
+	 */
+	const char *user;
 };
 
 typedef void (*api_op_fn)(const struct api_ctx *ctx);
