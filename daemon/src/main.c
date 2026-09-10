@@ -22071,6 +22071,11 @@ static void op_deleteContainerFile(const struct api_ctx *ctx)
 	handle_container_file_delete(ctx->fd, ctx->p[0], rel_path);
 }
 
+static void op_getVolumeUsage(const struct api_ctx *ctx)
+{
+	handle_volume_usage(ctx->fd, ctx->p[0]);
+}
+
 static void op_attachContainerNetwork(const struct api_ctx *ctx)
 {
 	handle_container_network_attach(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);

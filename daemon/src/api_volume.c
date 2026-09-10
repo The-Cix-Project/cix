@@ -8,6 +8,7 @@
 #include "volume.h"
 #include "volumebackup.h"
 #include "btrfs.h"
+#include "container.h"
 #include "quotamap.h"
 #include "registry.h"
 #include "containerdef.h"
@@ -530,6 +531,67 @@ void handle_volume_owner_put(int fd, const char *name, const char *body, size_t 
 /*
  * PUT /v1/volumes/{name}/quota -- set or clear a volume's size limit.
  */
+/*
+ * GET /v1/volumes/{name}/usage (#365) -- how much the volume holds.
+ *
+ * The one question a volume's record could not answer: it describes how
+ * the volume is CONFIGURED and says nothing about its contents, and
+ * `df` inside a container cannot fill the gap because a volume is a
+ * bind of a directory and statfs(2) reports the superblock -- so `df`
+ * shows the whole backing filesystem, as it does for a container rootfs
+ * that carries a real qgroup limit. This is the only place the number
+ * exists.
+ *
+ * overlay_upperdir_size() rather than a second walker: a container's
+ * own disk.upper_bytes is measured with it, and two implementations of
+ * "how big is this tree" would be two definitions of what counts. It
+ * sums file content and excludes directory-tree overhead, so the two
+ * figures mean the same thing.
+ *
+ * Its own comment notes the walk is synchronous and non-reentrant,
+ * which is why this is a SEPARATE endpoint and not a field on GET
+ * /volumes: the list is what the dashboard renders, and a field there
+ * would walk every volume on every render.
+ */
+void handle_volume_usage(int fd, const char *name)
+{
+	struct volume *v = volume_find(name);
+	char path[PATH_MAX];
+	long long bytes = 0;
+	struct json_writer w;
+
+	if (v == NULL) {
+		respond_error(fd, 404, "Not Found", "no such volume");
+		return;
+	}
+	if (volume_host_path(v, path, sizeof(path)) != 0) {
+		respond_error(fd, 500, "Internal Server Error", "could not resolve the volume's own path");
+		return;
+	}
+	if (overlay_upperdir_size(path, &bytes) != 0) {
+		char err[256];
+
+		snprintf(err, sizeof(err), "could not measure %s: %s", path, strerror(errno));
+		respond_error(fd, 500, "Internal Server Error", err);
+		return;
+	}
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "name");
+	jw_str(&w, v->name);
+	jw_key(&w, "bytes");
+	jw_int(&w, bytes);
+	/* Echoed so a caller has both halves of "how full is this" without
+	 * a second request for the volume's own record. */
+	jw_key(&w, "quota_bytes");
+	jw_int(&w, v->quota_bytes);
+	jw_key(&w, "measured_at");
+	jw_int(&w, (long long)time(NULL));
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
 void handle_volume_quota_put(int fd, const char *name, const char *body, size_t body_len)
 {
 	struct volume *v = volume_find(name);

@@ -880,7 +880,7 @@
 				<p class="hint">Persistent storage whose lifetime is <strong>independent of any container</strong>. Everything else a container writes lives in its overlay upper layer, which is destroyed when the container is deleted &mdash; and a container gets recreated by any recipe change, package install or rolling image update. Mount a volume into a container (<code>volumes: [{"name": "home", "path": "/home"}]</code>) and that path survives. Deleting a container never touches its volumes; deleting a <em>volume</em> destroys its data and is refused while any container definition still references it.</p>
 				<table>
 					<thead>
-						<tr><th>Name</th><th>Mounted by</th><th>Disk</th><th>Host path</th><th>Created</th><th></th></tr>
+						<tr><th>Name</th><th>Size</th><th>Mounted by</th><th>Disk</th><th>Host path</th><th>Created</th><th></th></tr>
 					</thead>
 					<tbody id="volumes-body"></tbody>
 				</table>
