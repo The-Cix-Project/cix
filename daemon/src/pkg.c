@@ -4878,7 +4878,7 @@ static void rebuild_queue_enqueue(const char *image)
  */
 static void rebuild_queue_remove(const char *image)
 {
-	int i, j;
+	int i;
 
 	for (i = 0; i < g_rebuild_queue_count; i++) {
 		if (strcmp(g_rebuild_queue[i], image) != 0)
