@@ -717,8 +717,10 @@ static const char *const n_container_recipe_add_flags[] = {
 	NULL
 };
 
-static const struct cli_node n_container_recipe_subs[] = {
+/* #371: was n_container_recipe_subs, promoted to a top-level noun. */
+static const struct cli_node n_deployment_subs[] = {
 	{ "add", n_container_recipe_add_flags, NULL },
+	{ "apply", n_container_apply_recipe_flags, NULL },
 	{ "ls", NULL, NULL },
 	{ "rm", NULL, NULL },
 	{ "show", NULL, NULL },
@@ -796,7 +798,6 @@ static const struct cli_node n_container_volume_subs[] = {
 };
 
 static const struct cli_node n_container_subs[] = {
-	{ "apply-recipe", n_container_apply_recipe_flags, NULL },
 	{ "console", n_container_console_flags, NULL },
 	{ "device", NULL, n_container_device_subs },
 	{ "edit", n_container_edit_flags, NULL },
@@ -807,7 +808,6 @@ static const struct cli_node n_container_subs[] = {
 	{ "migrate-storage-status", NULL, NULL },
 	{ "network", NULL, n_container_network_subs },
 	{ "pause", NULL, NULL },
-	{ "recipe", NULL, n_container_recipe_subs },
 	{ "rm", NULL, NULL },
 	{ "run", n_container_run_flags, NULL },
 	{ "service", NULL, n_container_service_subs },
@@ -1383,6 +1383,7 @@ static const struct cli_node CLI_TREE[] = {
 	{ "syslog", NULL, n_syslog_subs },
 	{ "time", NULL, n_time_subs },
 	{ "container", NULL, n_container_subs },
+	{ "deployment", NULL, n_deployment_subs },
 	{ "network", NULL, n_network_subs },
 	{ "image", NULL, n_image_subs },
 	{ "device", NULL, n_device_subs },

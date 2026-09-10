@@ -123,7 +123,7 @@ int main(void)
 	 * the wrong line.
 	 */
 	want(app, "loadContainerRecipe", "app.js does not load a container's recipe (#289 Configuration tab)");
-	want(app, "getContainerRecipe", "app.js builds the recipe path by hand instead of using the generated constant");
+	want(app, "getDeployment", "app.js builds the deployment path by hand instead of using the generated constant");
 	/*
 	 * The positive form, not a blanket ban on innerHTML in app.js. That
 	 * was written first and is wrong: app.js assigns innerHTML in ten

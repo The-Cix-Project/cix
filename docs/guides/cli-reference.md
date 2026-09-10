@@ -347,7 +347,7 @@ The web dashboard's console runs these too, since [ADR-0243](../adr/0243-the-das
 
 Declaring nothing is a real and often correct answer: an image holding one static binary and no shell has nothing for a console to run, and both the CLI and the dashboard then say so rather than offering a control that cannot work.
 
-The value splits on spaces, so an argument containing a literal space cannot be written this way. That is a real limit of the flag, not of the feature — a container recipe (`recipes/container/<name>/*/container.json`) declares consoles as a real JSON array with nothing to lose in quoting, and is the better place for anything non-trivial.
+The value splits on spaces, so an argument containing a literal space cannot be written this way. That is a real limit of the flag, not of the feature — a deployment (`recipes/deployment/<name>/*/container.json`) declares consoles as a real JSON array with nothing to lose in quoting, and is the better place for anything non-trivial.
 
 ## Images
 

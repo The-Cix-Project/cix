@@ -1090,7 +1090,10 @@ static char CONTAINERS_DEVICE[64]; /* cix-containers -- resolved by label, #305 
 
 #define MAX_EVENTS 64
 #define CONTAINERS_PREFIX "/v1/containers/"
-#define CONTAINER_RECIPES_PREFIX "/v1/containers/recipes/"
+/* #371: the path a deployment lives at. The concept was renamed from
+ * "container recipe" because it describes what to RUN and where, not
+ * how to build anything. Clean cut-over, no alias. */
+#define CONTAINER_RECIPES_PREFIX "/v1/deployments/"
 #define NETWORKS_PREFIX "/v1/networks/"
 #define DNS_RECORDS_PREFIX "/v1/dns/records/"
 #define DNS_SERVERS_PREFIX "/v1/dns/servers/"
@@ -21423,13 +21426,13 @@ static void op_addImageRecipe(const struct api_ctx *ctx)
 }
 
 /* GET /v1/containers/recipes */
-static void op_listContainerRecipes(const struct api_ctx *ctx)
+static void op_listDeployments(const struct api_ctx *ctx)
 {
 	handle_container_recipe_list(ctx->fd);
 }
 
 /* POST /v1/containers/recipes */
-static void op_addContainerRecipe(const struct api_ctx *ctx)
+static void op_addDeployment(const struct api_ctx *ctx)
 {
 	handle_container_recipe_add(ctx->fd, ctx->req->body, ctx->req->body_len);
 }
@@ -21893,17 +21896,17 @@ static void op_setVolumeBackupConfig(const struct api_ctx *ctx)
 
 /* -- containers ------------------------------------------------- */
 
-static void op_getContainerRecipe(const struct api_ctx *ctx)
+static void op_getDeployment(const struct api_ctx *ctx)
 {
 	handle_container_recipe_get(ctx->fd, ctx->p[0]);
 }
 
-static void op_deleteContainerRecipe(const struct api_ctx *ctx)
+static void op_deleteDeployment(const struct api_ctx *ctx)
 {
 	handle_container_recipe_delete(ctx->fd, ctx->p[0]);
 }
 
-static void op_applyContainerRecipe(const struct api_ctx *ctx)
+static void op_applyDeployment(const struct api_ctx *ctx)
 {
 	handle_container_recipe_apply(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);
 }

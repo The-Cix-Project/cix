@@ -9752,7 +9752,7 @@ async function refreshImageRecipesList() {
 }
 
 async function refreshContainerRecipesList() {
-	const data = await apiRequest("GET", CIX_API.listContainerRecipes());
+	const data = await apiRequest("GET", CIX_API.listDeployments());
 
 	cache.containerRecipes = data.recipes;
 	if (onPageOf("recipes"))
@@ -9847,7 +9847,7 @@ let containerRecipeContentCache = { name: null, content: null };
 async function loadContainerRecipeContent(name) {
 	if (containerRecipeContentCache.name === name)
 		return containerRecipeContentCache.content;
-	const data = await apiRequest("GET", CIX_API.getContainerRecipe(name));
+	const data = await apiRequest("GET", CIX_API.getDeployment(name));
 
 	containerRecipeContentCache = { name: name, content: data.content };
 	return containerRecipeContentCache.content;
@@ -9910,7 +9910,7 @@ function renderContainerRecipesTable() {
 		rmButton.className = "button-danger";
 		rmButton.addEventListener("click", async () => {
 			try {
-				await apiRequest("DELETE", CIX_API.deleteContainerRecipe(r.name));
+				await apiRequest("DELETE", CIX_API.deleteDeployment(r.name));
 				clearStatus();
 				containerRecipeContentCache = { name: null, content: null };
 				await refreshContainerRecipesList();
@@ -9949,7 +9949,7 @@ document.getElementById("container-recipe-form").addEventListener("submit", asyn
 	try {
 		const content = fileInput.files.length > 0 ? await readFileAsText(fileInput.files[0]) : contentField.value;
 
-		await apiRequest("POST", CIX_API.addContainerRecipe(), { name: name, content: content });
+		await apiRequest("POST", CIX_API.addDeployment(), { name: name, content: content });
 		clearStatus();
 		document.getElementById("container-recipe-form").reset();
 		closeModal();
@@ -9977,7 +9977,7 @@ document.getElementById("container-recipe-apply-form").addEventListener("submit"
 	}
 
 	try {
-		await apiRequest("POST", CIX_API.applyContainerRecipe(name), { secrets: secrets });
+		await apiRequest("POST", CIX_API.applyDeployment(name), { secrets: secrets });
 		clearStatus();
 		showStatus("Container " + name + " created from recipe.", false);
 		document.getElementById("container-recipe-apply-form").reset();

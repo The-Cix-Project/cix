@@ -9265,7 +9265,16 @@ void pkg_sync_completed(int exit_status)
 	snprintf(images_root, sizeof(images_root), "%s/recipes/image", extract_dir);
 	sync_walk_image_recipes(images_root, &added, &skipped, &failed);
 
-	snprintf(containers_root, sizeof(containers_root), "%s/recipes/container", extract_dir);
+	/*
+	 * #371: deployments were "container recipes". A daemon still
+	 * running the old build looks for recipes/container in the synced
+	 * tarball, finds nothing, and adds nothing -- sync_walk_container_
+	 * recipes() returns silently on opendir() failure and this sync
+	 * never prunes, so the window between the git rename and the
+	 * deploy that understands it costs one no-op cycle and cannot lose
+	 * a published recipe. Measured before renaming rather than hoped.
+	 */
+	snprintf(containers_root, sizeof(containers_root), "%s/recipes/deployment", extract_dir);
 	sync_walk_container_recipes(containers_root, &added, &skipped, &failed);
 
 	{
