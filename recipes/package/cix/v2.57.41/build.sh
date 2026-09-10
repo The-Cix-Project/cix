@@ -1,5 +1,5 @@
 #
-# v2.57.40: a deployment waits for its image (#371, ADR-0270)
+# v2.57.41: a deployment waits for its image (#371, ADR-0270)
 #
 # ADR-0256 built the right pipeline machine and covered packages only.
 # An image is composed of packages, a deployment runs an image, and the
@@ -26,9 +26,9 @@
 # ADR-0269. Nothing forks yet; acquire reports blocked.
 #
 pkg_name="cix"
-pkg_version="v2.57.40"
-pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/v2.57.40.tar.gz"
-pkg_sha256="eed9a2f172e4f312972473a892659fc72b33814457d717660a08e62237301c94"
+pkg_version="v2.57.41"
+pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/v2.57.41.tar.gz"
+pkg_sha256="ce12f43abd785299f89ce6e13f7afc9aa65fb14941c8fb4d063d94494e81c9ae"
 pkg_build_depends="bash coreutils make tcc linux-headers openssl gcc binutils"
 pkg_build_caps="CAP_SYS_ADMIN"
 # ADR-0208: cix-builder's one job is building Cix. This said
