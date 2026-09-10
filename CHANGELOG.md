@@ -6,6 +6,46 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The rebuild drain started the same image once per free chain slot (#382)
+
+Measured on 192.168.15.95 running v2.57.53: all ten chain slots held the same
+job, `probe-run-trigger-dep@gateprobe1`, ten times over. `max_concurrent_jobs`
+is ten, so the build subsystem was saturated and no build of anything could
+start until `cixd` restarted. The daemon itself was fine throughout --
+`GET /v1/health` answered in 9 ms.
+
+A regression from the entry directly below this one. ADR-0273 deliberately
+stopped popping an image from the rebuild queue when a build for it started,
+because an image may need several packages converged in turn and spending the
+approval grant on the first would strand the rest. That reasoning is right for
+the grant and it removed the only thing that had been preventing a second start.
+Nothing else covered it: the drain's admission guard, `pkg_any_job_busy()`, asks
+whether *any* chain slot is free rather than whether *this* image is already
+building, and a `PKG_STATE_BUILDING` entry never satisfies the manifest check --
+so every pass reached the same image and started the same package again, once
+per free slot.
+
+`image_has_job_in_flight()` now skips such an image exactly as a gated one is
+skipped: left in the queue, moved past, one string compare per pass. Skipping
+rather than stopping is the same non-starvation property ADR-0273 chose the
+index walk for.
+
+Deleting an image now also drops its queue entry and any approval held against
+it (`pkg_image_forgotten()`), found while clearing the box afterwards: a grant
+outlived its target, and `GET /v1/pipeline/approvals` went on naming a deleted
+image as approved with nothing able to clear it.
+
+The gate is in `test_stallwatch`, which is in `SELFTESTS`. It covers the deletion
+half only, and says so in the file: reproducing the duplicate-start half needs a
+build that really stays in flight across drain passes, which needs a build
+container, which is exactly what a build container cannot do (#224). That half is
+verified on a real host by watching `active_jobs` while a rolling rebuild
+converges.
+
+Also recorded and not explained: `POST /v1/pkg/cancel` returned 200 for the
+wedged build with the entry unchanged, still `building` thirty minutes later. The
+cause is not established and is not written down as though it were.
+
 ### A gate holds automation where a change escapes its blast radius (#371, ADR-0273)
 
 Three things happened on this platform without anyone asking, and each is a
