@@ -1,4 +1,4 @@
-# ADR-0274: The platform says what it is
+# 0274 — The platform says what it is
 
 ## Status
 
