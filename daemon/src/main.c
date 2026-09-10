@@ -22205,7 +22205,7 @@ static void op_approvePipeline(const struct api_ctx *ctx)
 	json_free(root);
 	switch (rc) {
 	case PKG_APPROVE_OK:
-		respond_no_content(ctx->fd);
+		http_write_response(ctx->fd, 204, "No Content", "application/json", "", 0);
 		return;
 	case PKG_APPROVE_UNKNOWN_GATE:
 		respond_error(ctx->fd, 400, "Bad Request",
