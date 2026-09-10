@@ -22869,6 +22869,28 @@ static void op_createStoragePartitionTable(const struct api_ctx *ctx)
 	handle_disk_partition_table_post(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);
 }
 
+/*
+ * Who is making the request currently being dispatched, "" when nobody
+ * is authenticated.
+ *
+ * File-scope rather than threaded as a parameter because this daemon
+ * dispatches exactly one request at a time on a single epoll loop --
+ * the same shape g_slot and g_bind_addr already use, for the same
+ * reason. Reset at the top of every dispatch, so a value can never
+ * leak from the previous request onto this one.
+ */
+static char g_req_user[HOSTAUTH_USERNAME_MAX];
+
+/*
+ * "-" rather than an empty field when nobody is authenticated, so every
+ * audit line has a subject in the same column and the trail stays
+ * greppable by a fixed shape.
+ */
+static const char *audit_who(void)
+{
+	return g_req_user[0] != '\0' ? g_req_user : "-";
+}
+
 static void op_addStoragePartition(const struct api_ctx *ctx)
 {
 	handle_disk_partitions_post(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);
@@ -22920,8 +22942,33 @@ static void dispatch(int fd, const struct http_request *req)
 	 * original exclusion's own stated rationale already covered this
 	 * case, it just hadn't been generalized yet. POST/PUT/DELETE (the
 	 * real mutations) are completely unaffected. */
+	/*
+	 * WHO, resolved before the audit line rather than after the gate,
+	 * because a REJECTED request is the one most worth attributing --
+	 * auditing only what got past authorization would lose exactly the
+	 * attempts an operator wants to see.
+	 *
+	 * hostauth_peek_token() and not hostauth_check_token(): the latter
+	 * refreshes idle expiry and consumes a single-use token, and the
+	 * write gate below still has to do its own real check. Peeking
+	 * first and checking after is one consume, in the right place;
+	 * checking twice would burn a single-use token on a log line.
+	 */
+	{
+		char hdr[HOSTAUTH_TOKEN_LEN + 32];
+
+		g_req_user[0] = '\0';
+		if (http_find_header(req->headers, req->headers_len, "Authorization", hdr, sizeof(hdr)) >=
+		    0) {
+			const char *bearer = strncmp(hdr, "Bearer ", 7) == 0 ? hdr + 7 : hdr;
+
+			if (!hostauth_peek_token(bearer, g_req_user, sizeof(g_req_user)))
+				g_req_user[0] = '\0';
+		}
+	}
+
 	if (strcmp(req->method, "GET") != 0)
-		logstore_write("audit", "info", "%s %s", req->method, req->path);
+		logstore_write("audit", "info", "%s %s %s", audit_who(), req->method, req->path);
 
 	/*
 	 * ADR-0144: write-gating -- the one authorization check every
@@ -22963,6 +23010,11 @@ static void dispatch(int fd, const struct http_request *req)
 				bearer = strncmp(token_hdr, "Bearer ", 7) == 0 ? token_hdr + 7 : token_hdr;
 			}
 			if (!hostauth_authorize_write(bearer)) {
+				/* Audited too. A refused write is a real event --
+				 * more interesting than most that succeed -- and it
+				 * used to leave no trace beyond the caller's own 401. */
+				logstore_write("audit", "warn", "%s %s %s REFUSED (not authorized)", audit_who(),
+				                req->method, req->path);
 				respond_error(fd, 401, "Unauthorized",
 				              "authentication required -- POST /v1/login first");
 				return;
@@ -23012,6 +23064,7 @@ static void dispatch(int fd, const struct http_request *req)
 			}
 			ctx.fd = fd;
 			ctx.req = req;
+			ctx.user = g_req_user;
 			ctx.p[0] = params[0];
 			ctx.p[1] = params[1];
 			g_api_routes[idx].fn(&ctx);

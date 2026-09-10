@@ -925,6 +925,63 @@ int main(void)
 		cix_response_free(&r);
 	}
 
+	/*
+	 * The audit trail names WHO, not just what.
+	 *
+	 * Until this it recorded the method and the path and nothing else,
+	 * which answers "what happened" and never "who did it" -- tolerable
+	 * while the dashboard could only look, and not once it can change
+	 * the box. Asserted end to end against the real log store rather
+	 * than by reading the format string, because the value only exists
+	 * if it survives dispatch, the write gate and the store.
+	 */
+	{
+		int saw_actor = 0;
+		int saw_login = 0;
+		int saw_refusal = 0;
+
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "GET", "/v1/system/logs?source=audit&tail=200", NULL, &r) !=
+		        0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: GET the audit log, status=%d\n", r.status);
+			ok = 0;
+		} else if (r.json != NULL && r.json->type == JSON_ARRAY) {
+			size_t k;
+
+			for (k = 0; k < r.json->u.array.count; k++) {
+				const char *m = json_str_field(r.json->u.array.items[k], "msg");
+
+				if (m == NULL)
+					continue;
+				/* A write this test really made, attributed. */
+				if (strstr(m, "root_admin POST /v1/ldap/groups") != NULL)
+					saw_actor = 1;
+				if (strstr(m, "root_admin logged in") != NULL)
+					saw_login = 1;
+				/* A write it made WITHOUT a token, which must be
+				 * recorded too -- auditing only what got past
+				 * authorization would lose exactly the attempts an
+				 * operator wants to see. */
+				if (strstr(m, "REFUSED") != NULL)
+					saw_refusal = 1;
+			}
+		}
+		if (!saw_actor) {
+			fprintf(stderr, "FAIL: the audit trail does not name who made a write\n");
+			ok = 0;
+		}
+		if (!saw_login) {
+			fprintf(stderr, "FAIL: a successful login is not audited by name\n");
+			ok = 0;
+		}
+		if (!saw_refusal) {
+			fprintf(stderr, "FAIL: a refused write leaves no audit trace\n");
+			ok = 0;
+		}
+		cix_response_free(&r);
+	}
+
 	if (stop_daemon(daemon_pid) != 0) {
 		fprintf(stderr, "FAIL: daemon did not exit cleanly on SIGTERM\n");
 		ok = 0;

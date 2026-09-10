@@ -1,3 +1,4 @@
+#include "logstore.h"
 #include "api_hostauth.h"
 
 #include "apiresp.h"
@@ -42,6 +43,16 @@ void handle_login(int fd, const char *body, size_t body_len)
 	lerr = hostauth_login(username, password, token, &expires_in_seconds);
 	json_free(root);
 	if (lerr == HOSTAUTH_LOGIN_INVALID_CREDENTIALS) {
+		/*
+		 * Audited by NAME, which the generic audit line at dispatch
+		 * cannot do: a login is the one request that has no token yet,
+		 * so it records itself as "-" there. A failed login attempt
+		 * naming the account it was made against is among the more
+		 * useful lines this trail can carry -- never the password, and
+		 * never a hint about which half was wrong.
+		 */
+		logstore_write("audit", "warn", "%s login REFUSED (invalid username or password)",
+		                username);
 		respond_error(fd, 401, "Unauthorized", "invalid username or password");
 		return;
 	}
@@ -50,6 +61,8 @@ void handle_login(int fd, const char *body, size_t body_len)
 		              "too many active sessions -- try again shortly");
 		return;
 	}
+
+	logstore_write("audit", "info", "%s logged in", username);
 
 	{
 		struct json_writer w;
