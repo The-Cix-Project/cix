@@ -6,6 +6,60 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A pipeline run is a log entry, not join state (#371, ADR-0272)
+
+`GET /pipeline` answers where a package stands now. Nothing answered what had
+happened to it. The only record of a past build was its log, and those are
+capped at forty files -- measured on 192.168.15.95 on 2026-09-10, the whole
+build-log directory held 41 files spanning **two days**, 1.4 MB, mean 34 KB
+each. A build log on this platform lives under two days.
+
+That measurement decided the design rather than being a footnote to it. The
+instinct is to keep more logs; the right answer is the opposite. A log is 34 KB
+of build output and what an operator needs from last week is forty bytes of it.
+So runs and logs now have separate lifetimes: `GET /pipeline/runs` keeps 1000
+records for roughly 400 KB, each naming the log it wrote *and* whether that log
+still exists, so the view says "pruned" instead of offering a link that 404s.
+
+This is not a reversal of ADR-0256. A stored *position* is a second copy of the
+present that drifts; a run is an event, in the same class as a line in the audit
+trail. The pipeline view still derives every position live and never reads a run
+to compute one.
+
+Three details that are the whole correctness of it:
+
+- A run closes at its **final** outcome. The daemon marks a package installed
+  provisionally, ahead of steps that may still revert it -- its own comment says
+  so -- so the close is hooked to the common success tail and to
+  `pkg_record_outcome()`, the one funnel every failure and cancellation reaches.
+  A package marked installed that then fails to produce a new image version
+  records the failure it actually had.
+- An **in-flight run is not in the store at all**. While a build runs it is live
+  state that `GET /pkg/hostbuild/{name}` already reports; a half-record amended
+  later would be the mutable second copy this design exists to avoid.
+- `trigger` is `request` or `rolling`, and deliberately **not** an actor. Who
+  made a request is already recorded by name in the audit trail (ADR-0271), and
+  the runs that most need explaining are the rolling ones -- nobody asked for
+  those, a publish caused them, and there is no audit line to carry a name.
+
+Retention is a count rather than a duration, in a new `/system/pipeline-config`
+resource rather than a `#define`, and is stored with the runs so it survives a
+restart -- a setting that silently reverts on the next boot is worse than one
+that cannot be changed, because nothing reports the reversion.
+
+`cixctl pipeline runs [--name=] [--image=] [--limit=]`, and the dashboard's
+pipeline drawer gains a History section above the build log: the log is one run's
+output and is usually gone, the history is every run and survives.
+
+Gated where it will actually run. `test_stallwatch` (in `SELFTESTS`) asserts the
+empty-store shape, that an out-of-range retention changes nothing -- read back,
+not inferred from the 400 -- and that a real one survives a daemon restart;
+`test_pipeline` (also in `SELFTESTS`) asserts every status round-trips through
+its own name, because the store writes statuses as text and a parsing gap would
+silently re-read historical failures as successes. The end-to-end "an install
+leaves a run" assertion is in `test_pkg`, which is **not** in `SELFTESTS`, and is
+verified on a real host instead.
+
 ### An action is attributable to a person (#371, ADR-0271)
 
 The audit trail recorded what happened and never who did it:

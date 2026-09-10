@@ -22000,6 +22000,85 @@ static void op_getPipeline(const struct api_ctx *ctx)
 	jw_free(&w);
 }
 
+/*
+ * GET /v1/pipeline/runs (ADR-0272) -- the same atoms, along the time
+ * axis. Reads the run store and nothing else; the position an operator
+ * sees in op_getPipeline() above is still derived live and is never
+ * informed by this.
+ */
+static void op_getPipelineRuns(const struct api_ctx *ctx)
+{
+	struct json_writer w;
+	char name[PKG_NAME_MAX] = "";
+	char image[PKG_IMAGE_NAME_MAX] = "";
+	char limit_s[16] = "";
+	int limit = 0;
+
+	(void)url_query_param(ctx->req->path, "name", name, sizeof(name));
+	(void)url_query_param(ctx->req->path, "image", image, sizeof(image));
+	if (url_query_param(ctx->req->path, "limit", limit_s, sizeof(limit_s)) == 0)
+		limit = atoi(limit_s);
+
+	jw_init(&w);
+	pkg_runs_write_json(&w, name, image, limit);
+	respond_json(ctx->fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void pipeline_config_respond(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "run_retention");
+	jw_int(&w, pkg_run_retention_get());
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/* GET /v1/system/pipeline-config (ADR-0272) */
+static void op_getPipelineConfig(const struct api_ctx *ctx)
+{
+	pipeline_config_respond(ctx->fd);
+}
+
+/*
+ * PUT /v1/system/pipeline-config (ADR-0272).
+ *
+ * Only the fields present are changed, and a value out of range changes
+ * nothing at all -- a partial apply on a multi-field body would leave
+ * the caller unable to say what the config now is without reading it
+ * back, which is the kind of ambiguity this platform's own settings
+ * endpoints avoid.
+ */
+static void op_setPipelineConfig(const struct api_ctx *ctx)
+{
+	struct json_value *root;
+	const struct json_value *v;
+
+	root = json_parse(ctx->req->body, ctx->req->body_len);
+	if (root == NULL || root->type != JSON_OBJECT) {
+		json_free(root);
+		respond_error(ctx->fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	v = json_object_get(root, "run_retention");
+	if (v != NULL) {
+		int keep = (int)json_as_number(v);
+
+		if (v->type != JSON_NUMBER || pkg_run_retention_set(keep) != 0) {
+			json_free(root);
+			respond_error(ctx->fd, 400, "Bad Request",
+			              "run_retention must be a whole number from 1 to 2000");
+			return;
+		}
+	}
+	json_free(root);
+	pipeline_config_respond(ctx->fd);
+}
+
 /* GET /v1/pkg/source-catalogue (ADR-0255) */
 static void op_getSourceCatalogue(const struct api_ctx *ctx)
 {

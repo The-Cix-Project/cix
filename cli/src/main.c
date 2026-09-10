@@ -14897,6 +14897,56 @@ static int cmd_pkg_source_policy(const struct cix_client *c, int json_mode, int 
  */
 static int g_pipeline_show_all;
 
+/*
+ * ADR-0272: what has happened to an atom, newest first.
+ *
+ * The log column says the truth about the file rather than its name
+ * alone: build logs are pruned at forty and runs are kept for a
+ * thousand, so "(pruned)" is the ordinary answer for anything but the
+ * last day or so, and printing a filename that is not there would send
+ * an operator looking for it.
+ */
+static void fmt_pipeline_runs(const struct json_value *root)
+{
+	const struct json_value *runs = json_object_get(root, "runs");
+	size_t i;
+
+	if (runs == NULL || runs->type != JSON_ARRAY || runs->u.array.count == 0) {
+		printf("no runs recorded\n");
+		return;
+	}
+	printf("%-20s %-16s %-10s %-8s %5s  %s\n", "PACKAGE", "IMAGE", "STATUS", "TRIGGER", "SECS",
+	        "LOG");
+	for (i = 0; i < runs->u.array.count; i++) {
+		const struct json_value *r = runs->u.array.items[i];
+		const char *status = json_str_field(r, "status");
+		const char *stage = json_str_field(r, "stage");
+		const char *log = json_str_field(r, "log");
+		const struct json_value *avail = json_object_get(r, "log_available");
+		const char *err = json_str_field(r, "error");
+		char what[24];
+
+		/* A failure is reported as the stage it failed at: "failed"
+		 * alone is the thing ADR-0256 exists to stop saying. */
+		if (status != NULL && strcmp(status, "ok") != 0 && stage != NULL)
+			snprintf(what, sizeof(what), "%s/%s", stage, status);
+		else
+			snprintf(what, sizeof(what), "%s", status != NULL ? status : "-");
+
+		printf("%-20s %-16s %-10s %-8s %5ld  %s\n", json_str_field(r, "name"),
+		        json_str_field(r, "image"), what, json_str_field(r, "trigger"),
+		        (long)json_as_number(json_object_get(r, "duration_seconds")),
+		        log == NULL || log[0] == '\0'
+		            ? "(none)"
+		            : (avail != NULL && avail->type == JSON_BOOL && avail->u.boolean ? log : "(pruned)"));
+		if (err != NULL && err[0] != '\0')
+			printf("    %s\n", err);
+	}
+	printf("\n%ld run(s) held, retention %ld\n",
+	        (long)json_as_number(json_object_get(root, "total")),
+	        (long)json_as_number(json_object_get(root, "retention")));
+}
+
 static void fmt_pipeline(const struct json_value *root)
 {
 	const struct json_value *stages = json_object_get(root, "stages");
@@ -15221,11 +15271,52 @@ static int cmd_pipeline(const struct cix_client *c, int json_mode, int argc, cha
 	/* argv[0] is the first argument AFTER the command name -- see
 	 * dispatch_command(), which passes the command separately. */
 	g_pipeline_show_all = 0;
+
+	/* ADR-0272: `pipeline` is where it stands now, `pipeline runs` is
+	 * what has happened to it. */
+	if (argc > 0 && strcmp(argv[0], "runs") == 0) {
+		char path[512];
+		char qname[128] = "";
+		char qimage[128] = "";
+		char qlimit[32] = "";
+		int n = 0;
+
+		for (i = 1; i < argc; i++) {
+			if (strncmp(argv[i], "--name=", 7) == 0)
+				snprintf(qname, sizeof(qname), "%s", argv[i] + 7);
+			else if (strncmp(argv[i], "--image=", 8) == 0)
+				snprintf(qimage, sizeof(qimage), "%s", argv[i] + 8);
+			else if (strncmp(argv[i], "--limit=", 8) == 0)
+				snprintf(qlimit, sizeof(qlimit), "%s", argv[i] + 8);
+			else {
+				fprintf(stderr,
+				        "usage: cixctl pipeline runs [--name=NAME] [--image=IMAGE] "
+				        "[--limit=N]\n");
+				return 2;
+			}
+		}
+		n = snprintf(path, sizeof(path), "%s", CIX_API_getPipelineRuns);
+		if (qname[0] != '\0')
+			n += snprintf(path + n, sizeof(path) - (size_t)n, "%cname=%s",
+			              n > (int)strlen(CIX_API_getPipelineRuns) ? '&' : '?', qname);
+		if (qimage[0] != '\0')
+			n += snprintf(path + n, sizeof(path) - (size_t)n, "%cimage=%s",
+			              n > (int)strlen(CIX_API_getPipelineRuns) ? '&' : '?', qimage);
+		if (qlimit[0] != '\0')
+			n += snprintf(path + n, sizeof(path) - (size_t)n, "%climit=%s",
+			              n > (int)strlen(CIX_API_getPipelineRuns) ? '&' : '?', qlimit);
+		if (cix_client_request(c, CIX_API_getPipelineRuns_METHOD, path, NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_pipeline_runs);
+	}
+
 	for (i = 0; i < argc; i++) {
 		if (strcmp(argv[i], "--all") == 0) {
 			g_pipeline_show_all = 1;
 		} else {
-			fprintf(stderr, "usage: cixctl pipeline [--all]\n");
+			fprintf(stderr, "usage: cixctl pipeline [--all] | cixctl pipeline runs\n");
 			return 2;
 		}
 	}

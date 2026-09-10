@@ -552,6 +552,27 @@ enum pkg_error pkg_seed_stage(const char *dest_dir, char *err, size_t err_size);
  * rather than resuming a stale intention.
  */
 void pkg_rebuild_queue_write_json(struct json_writer *w);
+
+/*
+ * ADR-0272: the pipeline run store -- what has HAPPENED to an atom, as
+ * opposed to where it stands now (which GET /v1/pipeline still derives
+ * at read time and stores nothing for).
+ *
+ * pkg_runs_write_json() renders the whole object for
+ * GET /v1/pipeline/runs: newest first, optionally narrowed to one
+ * package and/or one image, capped at `limit` (<= 0 means the store's
+ * own ceiling). Each run reports both the build log it wrote and
+ * whether that log still exists -- build logs are pruned at
+ * PKG_BUILD_LOG_KEEP and runs outlive them by design, so naming a
+ * pruned file is the normal case and is said rather than hidden.
+ *
+ * Retention is a count and is settable at runtime through
+ * /v1/system/pipeline-config. pkg_run_retention_set() returns -1 and
+ * changes nothing for a value outside 1..2000.
+ */
+void pkg_runs_write_json(struct json_writer *w, const char *name, const char *image, int limit);
+int pkg_run_retention_get(void);
+int pkg_run_retention_set(int keep);
 enum pkg_error pkg_artifact_publish_resolve(const char *name, char *out_version,
                                              size_t out_version_size, int *out_is_hostbuild);
 

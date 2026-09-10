@@ -67,6 +67,18 @@ static const char *const n_pipeline_flags[] = {
 	NULL
 };
 
+static const char *const n_pipeline_runs_flags[] = {
+	"--name=",
+	"--image=",
+	"--limit=",
+	NULL
+};
+
+static const struct cli_node n_pipeline_subs[] = {
+	{ "runs", n_pipeline_runs_flags, NULL },
+	{ NULL, NULL, NULL },
+};
+
 static const char *const n_logout_flags[] = {
 	"--host=",
 	NULL
@@ -1391,7 +1403,7 @@ static const struct cli_node CLI_TREE[] = {
 	{ "dns", NULL, n_dns_subs },
 	{ "ldap", NULL, n_ldap_subs },
 	{ "pki", NULL, n_pki_subs },
-	{ "pipeline", n_pipeline_flags, NULL },
+	{ "pipeline", n_pipeline_flags, n_pipeline_subs },
 	{ "schedule", NULL, n_schedule_subs },
 	{ "pkg", NULL, n_pkg_subs },
 	{ "show", NULL, n_show_subs },

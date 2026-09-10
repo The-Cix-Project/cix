@@ -157,6 +157,30 @@ int main(void)
 	if (pipeline_stage_from_name("compile", NULL) == 0)
 		bad("a name that is not a stage was accepted%s", "");
 
+	/*
+	 * ADR-0272: a status survives a round trip through its own name.
+	 *
+	 * The run store writes a status as text and reads it back on the
+	 * next start, so a name-to-value gap does not fail loudly -- it
+	 * silently re-reads every historical run as whatever the fallback
+	 * is, which for a status means a page full of failures reported as
+	 * successes. Asserted in both directions rather than by reading the
+	 * table, which is the thing being checked.
+	 */
+	for (i = 0; i < (int)(sizeof(statuses) / sizeof(statuses[0])); i++) {
+		enum pipeline_status back;
+
+		if (pipeline_status_from_name(statuses[i], &back) != 0) {
+			bad("status name %s is not recognised by its own parser", statuses[i]);
+			continue;
+		}
+		if ((int)back != i)
+			bad("status %s round-trips to a different status", statuses[i]);
+	}
+	if (pipeline_status_from_name("succeeded", NULL) == 0 ||
+	    pipeline_status_from_name(NULL, NULL) == 0)
+		bad("a name that is not a status was accepted%s", "");
+
 	if (g_failures > 0) {
 		printf("test_pipeline: %d failure(s)\n", g_failures);
 		return 1;

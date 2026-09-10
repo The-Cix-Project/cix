@@ -276,3 +276,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0269](0269-one-pipeline-model-for-four-kinds.md) | One pipeline model for packages, images, deployments and the host -- four kinds walking subsets of one stage vocabulary | Accepted |
 | [0270](0270-a-deployment-waits-for-its-image-rather-than-being-refused.md) | A deployment whose image is not built waits for it and is created when it lands, rather than being refused | Accepted |
 | [0271](0271-an-action-is-attributable-to-a-person.md) | The caller's username is resolved once at dispatch and named in the audit trail, refusals included | Accepted |
+| [0272](0272-a-pipeline-run-is-a-log-entry-not-join-state.md) | A pipeline run is an append-only event with its own retention, never read to compute a position | Accepted |

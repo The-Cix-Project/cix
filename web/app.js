@@ -13513,6 +13513,51 @@ async function openPipelineDrawer(kind, row) {
 	if (kind !== "package")
 		return;
 
+	/*
+	 * History (ADR-0272). Above the log deliberately: the log is one
+	 * run's output and is usually gone, while this is every run and
+	 * survives. An operator asking "has this been failing?" is answered
+	 * here; the log only answers "why did the last one fail".
+	 */
+	const hh = document.createElement("div");
+	hh.className = "dg-drawer-h";
+	hh.textContent = "History";
+	body.appendChild(hh);
+	const runsBox = document.createElement("div");
+	runsBox.className = "dg-runs";
+	runsBox.textContent = "loading…";
+	body.appendChild(runsBox);
+
+	try {
+		const rr = await apiRequest("GET",
+			CIX_API.getPipelineRuns() + "?name=" + encodeURIComponent(row.name) + "&limit=20");
+		const runs = (rr && rr.runs) || [];
+
+		runsBox.textContent = "";
+		if (runs.length === 0) {
+			runsBox.textContent = "Nothing has run for this package on this host yet.";
+		} else {
+			for (const run of runs) {
+				const el = document.createElement("div");
+				const bad = run.status && run.status !== "ok";
+				const when = run.ended_at ? new Date(run.ended_at * 1000).toLocaleString() : "";
+				const secs = run.duration_seconds || 0;
+
+				el.className = "dg-run" + (bad ? " dg-run-bad" : "");
+				/* The image is named on every line: a run is a
+				 * (package, image) pair, and a history that omits the
+				 * image reads as one stream of contradictory outcomes. */
+				el.textContent = when + " · " + (run.image || "-") + " · " +
+					(bad ? run.stage + "/" + run.status : "ok") +
+					" · " + secs + "s · " + (run.trigger || "-") +
+					(run.error ? " — " + run.error : "");
+				runsBox.appendChild(el);
+			}
+		}
+	} catch (e) {
+		runsBox.textContent = "Could not read the run history: " + (e && e.message ? e.message : e);
+	}
+
 	const h = document.createElement("div");
 	h.className = "dg-drawer-h";
 	h.textContent = "Build log";
