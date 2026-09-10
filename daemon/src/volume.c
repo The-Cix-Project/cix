@@ -1,4 +1,5 @@
 #include "volume.h"
+#include "btrfs.h"
 #include "disk.h"
 #include "persist.h"
 #include "treecopy.h"
@@ -215,7 +216,40 @@ enum volume_error volume_create(const char *name, const char *disk, struct volum
 	v->created_at = time(NULL);
 	v->in_use = 1;
 
-	if (volume_host_path(v, path, sizeof(path)) != 0 || persist_mkdir_p(path) != 0) {
+	/*
+	 * A SUBVOLUME on btrfs, a plain directory anywhere else -- which is
+	 * what cix_btrfs_subvol_create_or_dir() already means, and is how
+	 * container rootfs and the image store are created.
+	 *
+	 * #364: this used to be persist_mkdir_p() unconditionally, so every
+	 * volume on the default substrate was an ordinary directory. A
+	 * qgroup attaches to a subvolume and not to a directory, so a size
+	 * limit could not be applied to any of them, and PUT .../quota
+	 * refused every volume on this platform's own filesystem. Born as a
+	 * subvolume, a volume needs no conversion later.
+	 *
+	 * persist_mkdir_p() still runs first, for the PARENT: the helper
+	 * creates one leaf and needs somewhere to create it.
+	 */
+	if (volume_host_path(v, path, sizeof(path)) != 0) {
+		memset(v, 0, sizeof(*v));
+		return VOLUME_ERR_IO;
+	}
+	{
+		char parent[PATH_MAX];
+		char *slash;
+
+		snprintf(parent, sizeof(parent), "%s", path);
+		slash = strrchr(parent, '/');
+		if (slash != NULL && slash != parent) {
+			*slash = '\0';
+			if (persist_mkdir_p(parent) != 0) {
+				memset(v, 0, sizeof(*v));
+				return VOLUME_ERR_IO;
+			}
+		}
+	}
+	if (cix_btrfs_subvol_create_or_dir(path) != 0) {
 		memset(v, 0, sizeof(*v));
 		return VOLUME_ERR_IO;
 	}
@@ -494,6 +528,96 @@ enum volume_error volume_migrate(const char *name, const char *disk_name)
 	 * that is gone.
 	 */
 	persist_remove_tree(old_path);
+	return VOLUME_OK;
+}
+
+/*
+ * #364: turn an existing volume's plain DIRECTORY into a btrfs
+ * SUBVOLUME, in place, preserving its contents.
+ *
+ * Volumes created before this were ordinary directories (see
+ * volume_create()), and a qgroup cannot attach to one -- so a size
+ * limit was refused on the whole of this platform's default substrate.
+ * New volumes are born as subvolumes and never reach here; this is only
+ * for the ones that predate that.
+ *
+ * A directory cannot become a subvolume in place, so this is the same
+ * copy-and-swap volume_migrate() performs between disks, with the same
+ * failure ordering and for the same reason: build the replacement
+ * completely, put it in place with a rename, and only then remove what
+ * it replaced. A failure at any earlier step leaves the volume exactly
+ * as it was, complete and readable at its own path.
+ *
+ * Two things make this cheaper and safer than the disk migration it is
+ * modelled on. It PERSISTS NOTHING -- a volume's path is derived from
+ * its name, so it is identical before and after, and there is no field
+ * to unwind. And it is therefore IDEMPOTENT: a volume that is already a
+ * subvolume returns VOLUME_OK having done nothing, so a caller may ask
+ * without checking first, and a run interrupted before the swap simply
+ * leaves a stale staging directory that the next attempt replaces.
+ *
+ * THE CALLER MUST HAVE ESTABLISHED THAT NO CONTAINER MOUNTING THIS
+ * VOLUME IS RUNNING. A bind mount resolves to a host path once, when
+ * the container starts (ADR-0183), and pins that directory's inode --
+ * so renaming underneath a live container leaves it writing into the
+ * tree this function is about to delete, which is a silent split-brain
+ * rather than an error. handle_volume_quota_put() is the one caller and
+ * applies exactly the guard handle_volume_migrate() already uses.
+ */
+enum volume_error volume_convert_to_subvolume(const char *name)
+{
+	struct volume *v = volume_find(name);
+	char path[PATH_MAX];
+	char staging[PATH_MAX];
+	char displaced[PATH_MAX];
+
+	if (v == NULL)
+		return VOLUME_ERR_NOT_FOUND;
+	if (volume_host_path(v, path, sizeof(path)) != 0)
+		return VOLUME_ERR_IO;
+	/* Not on btrfs, or already a subvolume: nothing to do, and saying
+	 * so is not an error -- the caller's precondition is met. */
+	if (!cix_btrfs_is_backing(path) || cix_btrfs_is_subvolume(path))
+		return VOLUME_OK;
+
+	if (snprintf(staging, sizeof(staging), "%s.converting", path) >= (int)sizeof(staging) ||
+	    snprintf(displaced, sizeof(displaced), "%s.replaced", path) >= (int)sizeof(displaced))
+		return VOLUME_ERR_IO;
+
+	/* A staging tree left by an interrupted earlier attempt is debris,
+	 * not state: remove it rather than copying into it, or its contents
+	 * would survive into the result. */
+	persist_remove_tree(staging);
+	if (cix_btrfs_subvol_create_or_dir(staging) != 0)
+		return VOLUME_ERR_IO;
+	if (treecopy_recursive(path, staging) != 0) {
+		cix_btrfs_subvol_delete_or_rmtree(staging);
+		return VOLUME_ERR_COPY_FAILED;
+	}
+
+	/*
+	 * The swap. Two renames rather than one, so the volume's own path
+	 * never names nothing: if the second fails the first is put back,
+	 * and the volume is still exactly where it was.
+	 */
+	if (rename(path, displaced) != 0) {
+		cix_btrfs_subvol_delete_or_rmtree(staging);
+		return VOLUME_ERR_IO;
+	}
+	if (rename(staging, path) != 0) {
+		rename(displaced, path);
+		cix_btrfs_subvol_delete_or_rmtree(staging);
+		return VOLUME_ERR_IO;
+	}
+
+	/*
+	 * Only now is the old copy removable, and its removal is not
+	 * allowed to fail the operation: the volume is already correct and
+	 * complete at its own path. The cost of a failure here is disk
+	 * space left behind, which is a far better failure than data that
+	 * is gone -- the same trade volume_migrate() makes.
+	 */
+	persist_remove_tree(displaced);
 	return VOLUME_OK;
 }
 

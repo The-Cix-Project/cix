@@ -43,6 +43,18 @@ int cix_btrfs_is_backing(const char *path);
 int cix_btrfs_subvol_create_or_dir(const char *path);
 
 /*
+ * Is `path` a btrfs SUBVOLUME, as opposed to an ordinary directory that
+ * merely lives on btrfs? 0 for both "a plain directory" and "not on
+ * btrfs at all", so a caller on ext4 gets a truthful no.
+ *
+ * The distinction decides what a caller may do with the path: a qgroup
+ * attaches to a subvolume and BTRFS_IOC_SNAP_CREATE_V2 refuses a plain
+ * directory with EINVAL, so code that needs either has to ask first
+ * rather than assume the layout it expected.
+ */
+int cix_btrfs_is_subvolume(const char *path);
+
+/*
  * Create `dst` as a WRITABLE snapshot of `src` if both live on btrfs
  * (BTRFS_IOC_SNAP_CREATE_V2 -- O(1), copy-on-write, sharing every
  * unchanged extent with `src`); otherwise recursively copy `src` to a

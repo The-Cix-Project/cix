@@ -107,6 +107,29 @@ int main(void)
 	/* Idempotent: a second create over the same path is success. */
 	CHECK(cix_btrfs_subvol_create_or_dir(path) == 0, "create_or_dir should be idempotent");
 
+	/*
+	 * #364: is_subvolume must say NO for a plain directory, and must
+	 * say it without needing btrfs to be present at all.
+	 *
+	 * The volume quota path branches on this to decide whether a qgroup
+	 * can attach, so a false positive here would apply a limit to
+	 * something that cannot carry one and report success, and a false
+	 * negative on real btrfs would refuse every volume. On ext4 the
+	 * only correct answer is 0, for a directory that exists and for one
+	 * that does not -- the inode-256 test must not mistake an ordinary
+	 * ext4 inode that happens to be 256 for a subvolume either, which
+	 * is why is_backing gates it rather than the inode number alone.
+	 */
+	CHECK(cix_btrfs_is_subvolume(path) == 0,
+	      "a plain ext4 directory is not a subvolume");
+	{
+		char missing[512];
+
+		snprintf(missing, sizeof(missing), "%s/does-not-exist", base);
+		CHECK(cix_btrfs_is_subvolume(missing) == 0,
+		      "is_subvolume on a missing path should be 0, not a crash");
+	}
+
 	/* Populate it so the copy fallback has real content, including a
 	 * subdirectory and a symlink -- a seeded rootfs has both. */
 	snprintf(path, sizeof(path), "%s/img/etc", base);
