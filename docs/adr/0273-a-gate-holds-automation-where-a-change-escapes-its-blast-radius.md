@@ -101,6 +101,20 @@ image freezes every other image's convergence — a gate on one thing becoming a
 for everything. Both drains therefore **skip** a held entry and continue the walk, and a
 held entry costs one string comparison per pass rather than a rebuild attempt.
 
+**Correction, added after the fact ([#382](https://git.home.arpa/itdlabs/cix/issues/382)):
+"skip a held entry" needed a matching "skip an entry already in flight", and the first
+implementation had only the first half.** Popping on *satisfied* rather than on *started*
+is deliberate and stays — an image may need several packages converged in turn, and
+spending the grant on the first would strand the rest. But it means a started image is
+still in the queue on the next pass, still unsatisfied (a building entry is not
+`INSTALLED`), and the drain's admission guard `pkg_any_job_busy()` asks whether *any*
+chain slot is free rather than whether *this* image is already building. So the walk
+reached the same image again and started the same package again, once per free slot. On
+a real host that put ten copies of one job into all ten slots, after which no build of
+anything could start until `cixd` restarted. `image_has_job_in_flight()` now skips such
+an entry exactly as a held one is skipped. The section above was not wrong about
+starvation; it was incomplete about what else the walk must step over.
+
 ### Approving is an action with a name on it
 
 Every approval writes an audit line naming the user (ADR-0271), the gate and the target.
