@@ -7180,11 +7180,12 @@ paths:
         "409":
           description: >
             gidnumber already used by a different group, or new name already taken --
-            OR the group is named in admin_groups and the request renames it or changes
-            its gidnumber. The config names the group by NAME and its members join by
-            GID, so either change orphans the invariant and turns off write
-            authentication for the whole API (#370). Every other field of such a group
-            stays editable.
+            OR the group is named in admin_groups and the request changes its
+            gidnumber, which would orphan every member (users carry gids and nothing
+            rewrites theirs when the group's own gid moves) and turn off write
+            authentication for the whole API (#370). RENAMING an admin group is
+            explicitly allowed and is not refused: ADR-0147 rewrites admin_groups in
+            place so a renamed admin group never drops out of gating.
           content:
             application/json:
               schema:

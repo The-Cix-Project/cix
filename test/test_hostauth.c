@@ -274,21 +274,16 @@ int main(void)
 	 *
 	 * Group "admins" (gid 7002) is the configured admin group and
 	 * "root_admin" is its only member at this point.
+	 *
+	 * RENAMING an admin group is deliberately NOT among them: ADR-0147
+	 * already rewrites admin_groups in place when one is renamed, and
+	 * a guard here refused that working feature -- the existing
+	 * "admin_groups did not follow the rename" case below caught it.
 	 */
 	memset(&r, 0, sizeof(r));
 	if (request_with_token(&client, "DELETE", "/v1/ldap/groups/admins", token, NULL, &r) != 0 ||
 	    r.status != 409) {
 		fprintf(stderr, "FAIL: deleting the configured admin group expected 409, got %d\n",
-		        r.status);
-		ok = 0;
-	}
-	cix_response_free(&r);
-
-	memset(&r, 0, sizeof(r));
-	if (request_with_token(&client, "PUT", "/v1/ldap/groups/admins", token,
-	                        "{\"name\":\"admins-renamed\",\"gidnumber\":7002}", &r) != 0 ||
-	    r.status != 409) {
-		fprintf(stderr, "FAIL: renaming the configured admin group expected 409, got %d\n",
 		        r.status);
 		ok = 0;
 	}

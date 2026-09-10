@@ -21,11 +21,19 @@ real defects, and both are fixed here.
 **Gating had a precondition nobody protected.** It requires an admin group
 configured AND an enabled user in it, and five ordinary operations could break the
 second half while the first still read correctly: deleting the admin group,
-renaming it or changing its gidnumber (the config names it by NAME, its members
-join by GID -- either orphans the invariant), deleting the last admin, disabling
+changing its gidnumber (members carry gids and nothing rewrites theirs when the
+group's own gid moves, so the group empties), deleting the last admin, disabling
 or de-admining them, and pointing `admin_groups` at an empty group. None looks
 like "turn authentication off"; all five did. Each is now refused with `409` and a
 message naming the fix.
+
+**Renaming an admin group is deliberately NOT guarded**, and a first cut of this
+change got that wrong: [ADR-0147](docs/adr/0147-ldap-user-group-rename.md) already
+rewrites `admin_groups` in place before a rename commits, for exactly this reason,
+so guarding it refused a working, tested feature. `test_hostauth`'s own
+"admin_groups did not follow the rename" case caught it on the box -- which is
+both what that test is for, and why the suite runs against a real host rather than
+being trusted from a sandbox.
 
 Two guards are deliberately narrower than they look. **Only the last admin is
 protected** -- while another remains, removing one is an ordinary act. And **only

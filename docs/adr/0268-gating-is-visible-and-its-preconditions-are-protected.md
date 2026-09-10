@@ -31,11 +31,19 @@ The second half is the trap. Gating requires an admin group to be configured
 second half while leaving the first looking perfectly correct:
 
 1. deleting the group named in `admin_groups`
-2. renaming it, or changing its `gidnumber` — the config names it by NAME and its
-   members join by GID, so either orphans the invariant
+2. changing its `gidnumber` — members carry gids and nothing rewrites theirs when
+   the group's own gid moves, so the group empties
 3. deleting the last admin user
 4. disabling that user, or removing them from every admin group
 5. pointing `admin_groups` at a group nobody is in
+
+**Renaming is deliberately absent from that list.**
+[ADR-0147](0147-ldap-user-group-rename.md) already solved it:
+`hostauth_rename_admin_group()` rewrites `admin_groups` in place before
+`ldap_group_update()` commits, precisely so a renamed admin group never drops out
+of gating. A first cut of this change guarded renames too and thereby refused a
+working, tested feature — caught by `test_hostauth`'s own "admin_groups did not
+follow the rename" case, on the box, which is exactly what that test exists for.
 
 None of them looks like "turn authentication off". Every one of them does.
 
