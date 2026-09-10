@@ -13623,7 +13623,18 @@ components:
           description: The image this container's rootfs was built from (see GET /images).
         status:
           type: string
-          enum: [running, paused, exited]
+          enum: [running, paused, exited, stopped]
+        awaiting_image:
+          type: string
+          description: >
+            ADR-0270. Set only on a deployment that was applied against an
+            image that cannot run anything yet: it names the image being
+            waited on and queued for a build, and the container is created
+            automatically once that image is realized. Empty on every
+            ordinary container. Such a deployment reports status "stopped",
+            because it is a defined container that is not running -- this
+            field is what distinguishes "has never started, waiting for its
+            image" from "was running and someone stopped it".
         paused:
           type: boolean
           description: >
