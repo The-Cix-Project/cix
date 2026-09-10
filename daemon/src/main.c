@@ -16773,22 +16773,47 @@ static void handle_container_recipe_delete(int fd, const char *name)
  * body() surfaces) -- nothing left to do here afterward.
  */
 /*
- * ADR-0270: is the image this deployment names ready to run a container
- * from, and if not, can the platform get it there?
+ * ADR-0270: can a container actually be run out of this image right now?
  *
- * "Not ready" is four conditions and only two of them fork -- see the
- * ADR's own table. The one worth restating here is that
- * image_current_version() succeeding proves nothing: every image is
- * BORN with a valid current version and a real, empty rootfs directory
- * (the hash of its own empty manifest), so the question "does this
- * image exist" and the question "has anything been put in it" have
- * different answers and different tests. Conflating them is issue #109,
- * and image_empty_manifest_version() exists precisely to tell them
- * apart.
+ * The SAME test handle_create() itself makes -- the loader's presence
+ * (ADR-0209's glibc floor) -- deliberately, and not a second notion of
+ * readiness written here. That matters more than it looks: if this
+ * function is stricter than the create it guards, the apply refuses or
+ * waits for images the create would have accepted, which is exactly the
+ * regression a first version of it shipped.
+ *
+ * That first version compared the image's current version against
+ * image_empty_manifest_version(), reasoning that every image is BORN
+ * with a valid version and an empty rootfs, so "has a version" is not
+ * "has content" (issue #109). The premise is true and the test drawn
+ * from it was still wrong: an image's rootfs can be filled without its
+ * manifest hash ever moving -- ADR-0155 is the same observation from
+ * the other side -- so a perfectly runnable image sat at the empty
+ * version and every apply against it was refused. Ask whether the image
+ * can run something, which is the question, rather than asking whether
+ * packages were installed, which is one way to reach the answer.
+ */
+static int deployment_image_can_run(const char *image)
+{
+	char current[IMAGE_VERSION_MAX];
+	char lowerdir[PATH_MAX];
+	char loader[PATH_MAX];
+	struct stat st;
+
+	if (image_current_version(image, current, sizeof(current)) != IMAGE_OK)
+		return 0;
+	image_version_rootfs_path(image, current, lowerdir, sizeof(lowerdir));
+	snprintf(loader, sizeof(loader), "%s/%s", lowerdir, PKG_IMAGE_LOADER_REL);
+	return stat(loader, &st) == 0;
+}
+
+/*
+ * ADR-0270: is the image this deployment names ready, and if not, can
+ * the platform get it there? See the ADR's own table.
  */
 enum deploy_image_state {
-	DEPLOY_IMAGE_READY,      /* realized -- create now, exactly as before */
-	DEPLOY_IMAGE_FORKED,     /* unrealized -- declared if needed, and queued */
+	DEPLOY_IMAGE_READY,      /* runnable -- create now, exactly as before */
+	DEPLOY_IMAGE_FORKED,     /* not runnable -- declared if needed, and queued */
 	DEPLOY_IMAGE_UNBUILDABLE /* nothing to build toward -- the caller refuses */
 };
 
@@ -16796,8 +16821,6 @@ static enum deploy_image_state deployment_image_prepare(const char *image, char 
 {
 	struct image_manifest_entry entries[IMAGE_MANIFEST_MAX_PACKAGES];
 	int entry_count = 0;
-	char current[IMAGE_VERSION_MAX];
-	char empty[IMAGE_VERSION_MAX];
 
 	if (image_manifest_read(image, entries, &entry_count, IMAGE_MANIFEST_MAX_PACKAGES) != IMAGE_OK) {
 		snprintf(err, err_size,
@@ -16806,31 +16829,26 @@ static enum deploy_image_state deployment_image_prepare(const char *image, char 
 		         image);
 		return DEPLOY_IMAGE_UNBUILDABLE;
 	}
-	if (image_current_version(image, current, sizeof(current)) != IMAGE_OK ||
-	    image_empty_manifest_version(empty, sizeof(empty)) != 0) {
-		snprintf(err, err_size, "image \"%s\" has a manifest but no readable current version",
-		         image);
-		return DEPLOY_IMAGE_UNBUILDABLE;
-	}
-	if (strcmp(current, empty) != 0)
+	if (deployment_image_can_run(image))
 		return DEPLOY_IMAGE_READY;
 
 	/*
-	 * Unrealized. An empty manifest has nothing to converge toward --
-	 * the queue's drain would see it as trivially satisfied, drop it
-	 * without starting a job, and leave the deployment waiting on
-	 * something that is never going to happen. So declare the image's
-	 * own recipe into the manifest first, which is all that recipe
-	 * apply has done since ADR-0209.
+	 * Not runnable. An empty manifest has nothing to converge toward --
+	 * the rebuild queue's drain would see it as trivially satisfied,
+	 * drop it without starting a job, and leave the deployment waiting
+	 * on something that is never going to happen. So declare the
+	 * image's own recipe into the manifest first, which is all that
+	 * recipe apply has done since ADR-0209.
 	 */
 	if (entry_count == 0) {
 		enum pkg_error perr = pkg_image_recipe_apply_start(image);
 
 		if (perr != PKG_OK) {
 			snprintf(err, err_size,
-			         "image \"%s\" is empty, declares no packages, and has no image recipe to "
-			         "declare any -- give it a manifest (PUT /v1/images/%s/manifest) or an image "
-			         "recipe before deploying against it",
+			         "image \"%s\" cannot run anything yet, declares no packages, and has no "
+			         "image recipe to declare any -- give it a manifest "
+			         "(POST /v1/images/%s/manifest) or an image recipe before deploying against "
+			         "it",
 			         image, image);
 			return DEPLOY_IMAGE_UNBUILDABLE;
 		}
@@ -24779,25 +24797,15 @@ static void apply_pending_deployments(void)
 		int depends_on_count;
 		int follow_rolling;
 		int has_follow_rolling_jitter, follow_rolling_jitter_seconds;
-		char current_version[IMAGE_VERSION_MAX];
-		char empty_version[IMAGE_VERSION_MAX];
 		char err_msg[256];
 		int status;
 
 		if (def == NULL || def->awaiting_image[0] == '\0')
 			continue;
 
-		/*
-		 * Still unrealized. An image is BORN with a current version
-		 * (the hash of its own empty manifest) and an empty rootfs, so
-		 * "has a version" is not "has content" -- issue #109, and the
-		 * same test deployment_image_prepare() makes.
-		 */
-		if (image_current_version(def->awaiting_image, current_version,
-		                           sizeof(current_version)) != IMAGE_OK ||
-		    image_empty_manifest_version(empty_version, sizeof(empty_version)) != 0)
-			continue;
-		if (strcmp(current_version, empty_version) == 0)
+		/* Still not runnable -- the same single test the apply made, so
+		 * the two can never disagree about what "ready" means. */
+		if (!deployment_image_can_run(def->awaiting_image))
 			continue;
 
 		status = create_container_from_body(def->body, def->body_len, &entry, restart_policy,
@@ -25860,13 +25868,7 @@ static void containerdef_autostart_all(void)
 		 * the definition up once that build lands.
 		 */
 		if (def->awaiting_image[0] != '\0') {
-			char cur[IMAGE_VERSION_MAX];
-			char empty[IMAGE_VERSION_MAX];
-			int realized = image_current_version(def->awaiting_image, cur, sizeof(cur)) == IMAGE_OK &&
-			               image_empty_manifest_version(empty, sizeof(empty)) == 0 &&
-			               strcmp(cur, empty) != 0;
-
-			if (!realized) {
+			if (!deployment_image_can_run(def->awaiting_image)) {
 				pkg_rebuild_queue_add(def->awaiting_image);
 				fprintf(stderr, "%s: waiting for image %s -- re-queued it for a build\n", order[i],
 				        def->awaiting_image);

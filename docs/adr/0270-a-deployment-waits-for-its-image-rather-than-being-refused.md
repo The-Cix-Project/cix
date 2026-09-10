@@ -1,13 +1,17 @@
-# ADR-0270: A deployment waits for its image rather than being refused
+# 0270 — A deployment waits for its image rather than being refused
 
-- Status: Accepted
-- Date: 2026-09-10
-- Issue: [#371](https://git.home.arpa/itdlabs/cix/issues/371) (Stage 3, "Deploy B")
-- Supersedes nothing. Builds on [ADR-0256](0256-the-pipeline-is-the-model.md) (the stage/status model),
-  [ADR-0269](0269-one-pipeline-model-for-four-kinds.md) (that model generalised to four kinds),
-  [ADR-0151](0151-container-recipes.md) (what a deployment is),
-  [ADR-0124](0124-pkg-redesign-part5-rolling-containers-and-restart-jitter.md) (`follow_rolling`),
-  and [ADR-0181](0181-persist-all-containers-restart-decoupled-from-existence.md) (every container has a persisted definition).
+## Status
+
+Accepted
+
+Issue [#371](https://git.home.arpa/itdlabs/cix/issues/371) (Stage 3, "Deploy B").
+Supersedes nothing. Builds on [ADR-0256](0256-the-pipeline-is-the-model.md) (the
+stage/status model), [ADR-0269](0269-one-pipeline-model-for-four-kinds.md) (that model
+generalised to four kinds), [ADR-0151](0151-container-recipes.md) (what a deployment
+is), [ADR-0124](0124-pkg-redesign-part5-rolling-containers-and-restart-jitter.md)
+(`follow_rolling`), and
+[ADR-0181](0181-persist-all-containers-restart-decoupled-from-existence.md) (every
+container has a persisted definition).
 
 ## Context
 
@@ -39,7 +43,7 @@ The obvious reading — "start the image build job" — describes something that
 
 > Applying a recipe (`pkg_image_recipe_apply_start()`) is synchronous bulk-declare:
 > `image_manifest_set()` for every entry, exactly what N manual
-> `PUT /v1/images/{name}/manifest` calls would do. Packages still need real `pkg_install()`
+> `POST /v1/images/{name}/manifest` calls would do. Packages still need real `pkg_install()`
 > calls afterward to actually build, same as any other manifest edit.
 
 `daemon/include/pkg.h:1430`. Applying an image recipe writes a *declaration*. What converges a
@@ -66,57 +70,66 @@ never asked for one.
 `POST /v1/deployments/{name}/apply` is the declarative surface — the place where "this is what I
 want to exist" is the whole meaning of the call. Waiting belongs there and only there.
 
-### 2. "The image is missing" is four different conditions, and only two fork
+### 2. Readiness is "can a container run out of this image", asked exactly as the create asks it
 
 | Condition | Test | Answer |
 |---|---|---|
-| No `manifest.json` at all | `image_manifest_read()` → `IMAGE_ERR_NOT_FOUND` | 400, naming both absences |
-| Unrealized, manifest has entries | current version == `image_empty_manifest_version()` | **fork**: enqueue |
-| Unrealized, manifest empty, image recipe exists | above, plus `entry_count == 0` | **fork**: apply the recipe, then enqueue |
-| Unrealized, manifest empty, no image recipe | above, no recipe | 400, naming both absences |
-| Version directory named but absent on disk | `stat(lowerdir)` fails | 400 — corruption, not an unbuilt image |
+| No `manifest.json` at all | `image_manifest_read()` → `IMAGE_ERR_NOT_FOUND` | 400, naming the absence |
+| The image can run something | the loader is present under its current version's rootfs | **ready** — create now |
+| Cannot run, manifest has entries | above, `entry_count > 0` | **fork**: enqueue |
+| Cannot run, manifest empty, image recipe exists | above, `entry_count == 0` | **fork**: apply the recipe, then enqueue |
+| Cannot run, manifest empty, no image recipe | above, no recipe | 400, naming both absences |
 
-Two things in this table were nearly got wrong, and both would have shipped.
+**The readiness test is the same one `handle_create()` makes, and that is the whole design of this
+section rather than an implementation note.** If the check guarding a create is stricter than the
+create itself, the apply refuses or waits for images the create would have accepted — which is not a
+hypothetical: it is what the first version of this shipped, and the selftest caught it.
 
-**The wait condition is `empty-manifest version`, and nothing else.** The first draft also forked when
-the manifest had unsatisfied entries. That is the *drain* criterion — what
-`pkg_try_start_queued_rebuild()` uses to decide whether an image needs a job — and borrowing it here
-would have made waiting the common case: every deployment naming a perfectly working image with a
-rolling entry that has a newer recipe available would have returned 202 and waited, instead of
-creating against the version that exists. Upgrading an already-created container is what
-`follow_rolling` (ADR-0124) is for. The apply asks one question — *is there anything here yet* — and
-`image_empty_manifest_version()` is exactly that question:
+That first version compared the image's current version against `image_empty_manifest_version()`,
+reasoning from the header of that function:
 
-> The version every image is born with: the hash of its own empty manifest, written by
-> `image_create()` before anything has been put in it. Callers that need to tell "this image exists"
-> apart from "this image has been filled" compare against this rather than against a hardcoded
-> digest — the two questions are genuinely different, and conflating them is how a failed
-> build-environment composition once left behind an empty image that every later build accepted as
-> ready (issue #109).
+> The version every image is born with: the hash of its own empty manifest... Callers that need to
+> tell "this image exists" apart from "this image has been filled" compare against this rather than
+> against a hardcoded digest — the two questions are genuinely different, and conflating them is how
+> a failed build-environment composition once left behind an empty image that every later build
+> accepted as ready (issue #109).
 
-**`image_current_version()` returning `IMAGE_OK` does not mean the image is realized.** Every image is
-born with a valid current version and a real rootfs directory containing nothing. Had the fork
-condition been "no current version", a deployment naming a freshly created empty image would have
-sailed past the check and created a container against an empty rootfs — #109 again, one layer up.
+The premise is correct and the test drawn from it was still wrong, which is the part worth recording.
+An image's rootfs can be filled **without its manifest hash ever moving** — ADR-0155 is that same
+observation from the other side, where a reinstall at an unchanged version reproduces an identical
+hash and the freshly built tree is discarded. So a perfectly runnable image sits at the empty-manifest
+version, and every apply against it was refused with "cannot be built toward". Every deployment
+scenario in `test_container_recipe` failed at once, against an image whose runtime had been staged
+directly into its rootfs.
 
-**An empty manifest needs the recipe declared first, or it waits forever.** Image at the empty
-version with zero manifest entries is the *most common* fresh-image shape: image created, recipes
-synced from git, nothing declared yet. Enqueuing it alone deadlocks quietly — the drain sees a
-manifest that is trivially satisfied, drops the image without starting a job, and the pending
-deployment sits at `acquire`/`blocked` with nothing that will ever unblock it. So for that shape the
-apply declares the image's own recipe into the manifest first (`pkg_image_recipe_apply_start()`,
-which is precisely bulk-declare and nothing more) and enqueues after. With no recipe there is nothing
-to declare toward and no honest way to wait, so it is a 400 that names both absences.
+The correction is to ask the question actually being asked. "Has anything been installed into this
+image" is one route to "can a container run out of it", and it is not the only one; the second is
+what `handle_create()` already tests, by looking for the loader itself:
 
-Convergence is still driven from the **manifest**, not the recipe: a manually authored manifest with
-no recipe behind it is a legitimate image, and the queue already converges exactly that. The recipe,
+> Checked by looking for the loader itself, not for a package called glibc: the requirement is a
+> working runtime, and whichever package provides it is the catalogue's business.
+
+`deployment_image_can_run()` is that check, and all three sites that need it — the apply, the
+convergence pass and the boot pass — call it, so they cannot come to disagree about what ready means.
+
+**An empty manifest needs the recipe declared first, or the wait deadlocks.** An image that cannot
+run anything and declares no packages is the most common fresh-image shape: created, recipes synced,
+nothing declared yet. Enqueuing it alone deadlocks quietly — the drain sees a manifest that is
+trivially satisfied, drops the image without starting a job, and the deployment waits on something
+that will never happen. So the apply declares the image's own recipe into the manifest first
+(`pkg_image_recipe_apply_start()`, which is bulk-declare and nothing more) and enqueues after. With
+no recipe there is nothing to declare toward and no honest way to wait, so it is a 400 naming both
+absences.
+
+Convergence is driven from the **manifest**, not the recipe: a manually authored manifest with no
+recipe behind it is a legitimate image, and the queue already converges exactly that. The recipe,
 where one exists, only populates the manifest.
 
 **A name already in use is a 409, not a wait.** `handle_create()`'s duplicate-name check sits at
-`main.c:12299`, *after* the image check at 12252, so a re-apply of an already-running deployment
-would go pending rather than conflict if the fork branch ran first. The apply handler therefore
-consults `registry_find()` before deciding to fork: an existing container falls through to today's
-path and gets its 409.
+`main.c:12299`, *after* its image check, so a re-apply of an already-running deployment would go
+pending rather than conflict if the fork branch ran first. The apply handler therefore consults
+`registry_find()` before deciding to fork: an existing container falls through to today's path and
+gets its 409.
 
 ### 3. The pending record is a `container_def`, not a new registry
 
@@ -233,7 +246,7 @@ rollback.
   publish is silently lost across a restart today, with nothing to notice — and is filed as [#373](https://git.home.arpa/itdlabs/cix/issues/373)
   rather than fixed here.
 - **The vestigial `pkg_any_job_busy()` check in `pkg_image_recipe_apply_start()` is removed as part of
-  this change** (`daemon/src/pkg.c:11663`). Measured: the manual `PUT /v1/images/{name}/manifest`
+  this change** (`daemon/src/pkg.c:11663`). Measured: the manual `POST /v1/images/{name}/manifest`
   path calls `image_manifest_set()` with no busy check at all (`handle_image_manifest_set()`,
   `daemon/src/api_image.c:409`), and the two do exactly the same thing — declare entries into a
   manifest. The check is a leftover from the whole-rootfs artifact fetch ADR-0209 removed, back when

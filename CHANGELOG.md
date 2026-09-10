@@ -44,16 +44,22 @@ start, so the pending state costs one persisted field (`awaiting_image`, the ima
 name) and inherits persistence, restart replay and pipeline visibility instead of
 reimplementing all three.
 
-**What nearly shipped a bug.** The first draft tested readiness with
-`image_current_version() != IMAGE_OK`. Every image is *born* with a valid current
-version -- the hash of its own empty manifest -- and a real, empty rootfs directory,
-so a deployment naming a freshly created image would have sailed past that check and
-created a container against nothing. That is issue #109 one layer up, and
-`image_empty_manifest_version()` exists precisely to tell "this image exists" apart
-from "this image has been filled". A second draft also forked when the manifest had
-*unsatisfied* entries -- which is the queue's drain criterion, not the apply's wait
-criterion, and would have made every deployment naming a working image with an
-available newer recipe wait instead of run.
+**Readiness took three tries, and the selftest caught the third.** Draft one tested
+`image_current_version() != IMAGE_OK`, which every image passes from birth. Draft two
+also forked when the manifest had *unsatisfied* entries -- the queue's drain criterion,
+not the apply's wait criterion, which would have made a deployment naming a working
+image wait whenever a newer recipe existed. Draft three compared the current version
+against `image_empty_manifest_version()`, reasoning correctly that "has a version" is
+not "has content" (#109) -- and was still wrong, because a rootfs can be filled without
+the manifest hash ever moving (ADR-0155 is that same fact from the other side). Every
+deployment scenario in `test_container_recipe` failed at once, against an image whose
+runtime had been staged straight into its rootfs.
+
+What works is asking the question actually being asked -- can a container run out of
+this image -- with the same test `handle_create()` already makes: is the loader there.
+`deployment_image_can_run()` is that check and all three sites call it, so a guard can
+never be stricter than the create it guards, which is what every earlier draft got
+wrong in a different way.
 
 Failure reaches the deployment at read time, never through a callback: a waiting
 deployment reports stage `acquire`, status `blocked`, `blocked_on {kind:"image"}` from
