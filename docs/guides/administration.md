@@ -14,6 +14,16 @@ Day-2 operations for an already-installed box: watching it, backing it up, and m
 
 Reach for it before the build log, not after. Build logs are capped at forty files — on a real host that was two days' worth — while runs are kept for a thousand, so a run whose log has been pruned still tells you it happened and how it ended, and the CLI prints `(pruned)` rather than a filename that is not there. Retention is a count and is yours to set: `cixctl pipeline config --run-retention=N` (`PUT /system/pipeline-config`), 1 to 2000, stored with the runs so it survives a restart. `cixctl pipeline config` alone shows the current value.
 
+**Holding automation for a decision** — three gates (`cixctl pipeline config`, ADR-0273), each holding a point where a change escapes its blast radius: `publish` (an artifact reaching the shared cache), `roll` (an image moving to a version nobody asked for), `deploy` (a boot slot being written). All default off, and off means off — the platform behaves exactly as it did before they existed.
+
+```
+cixctl pipeline config --gate-roll=on
+cixctl pipeline approvals            # what is waiting for you
+cixctl pipeline approve roll base    # let that one through
+```
+
+An approval covers one `(gate, target)` and is consumed when that change goes through, so approving is not the same as switching the gate off. A target nothing is holding is refused — you cannot approve in advance. Held items also show up in `cixctl pipeline` as `blocked`, naming `approval` as what they wait on. Note the same person may request and approve; a gate holds automation, not a person (roles are #304).
+
 **Optional external syslog forwarding** — if you already run syslog tooling and want this platform's container logs to also reach it, register a running syslog-server container (e.g. `syslog-1` running `sysklogd`) as a forward target: `cixctl syslog target register --container=NAME` (ADR-0127). Every container-sourced log line is then also sent as a real RFC 3164 UDP datagram — alongside, never instead of, the consolidated log store above, which stays the one source of truth this API and the web UI ever read from.
 
 ## Host sysctl tuning

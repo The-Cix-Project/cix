@@ -76,10 +76,15 @@ static const char *const n_pipeline_runs_flags[] = {
 
 static const char *const n_pipeline_config_flags[] = {
 	"--run-retention=",
+	"--gate-publish=",
+	"--gate-roll=",
+	"--gate-deploy=",
 	NULL
 };
 
 static const struct cli_node n_pipeline_subs[] = {
+	{ "approvals", NULL, NULL },
+	{ "approve", NULL, NULL },
 	{ "config", n_pipeline_config_flags, NULL },
 	{ "runs", n_pipeline_runs_flags, NULL },
 	{ NULL, NULL, NULL },

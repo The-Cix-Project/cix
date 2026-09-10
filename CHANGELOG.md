@@ -6,6 +6,64 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A gate holds automation where a change escapes its blast radius (#371, ADR-0273)
+
+Three things happened on this platform without anyone asking, and each is a
+point where a change stops being local: `pkg_artifact_push_enqueue()` puts bytes
+in a cache every host trusts, `pkg_try_start_queued_rebuild()` moves an image to
+a version nobody asked for, and `handle_system_update()` writes a boot slot.
+Each is correct. None had a place for a person to stand -- a recipe published at
+02:00 rolled out to every image tracking it, and the first chance to disagree
+was afterwards.
+
+Three gates now, named for what they hold: `publish`, `roll`, `deploy`. Three
+because there are three escape points, not because three is tidy -- ten of the
+eleven stages hold a change inside the blast radius it already has, where there
+is nobody to ask.
+
+**All default off, and off means unchanged** -- one test at the head of each
+drain and one refusal in the update handler. `test_stallwatch`'s first assertion
+is exactly that, because a gate defaulting on would stop every existing caller
+including this project's own deploy path.
+
+Three decisions worth recording:
+
+- **No sixth status.** The first sketch added `awaiting-approval` to
+  `pipeline_status`. That was wrong and the reason was already written on the
+  enum: `PIPELINE_BLOCKED` means "waiting on something outside this stage, **or
+  a person**", and `blocked_on` already exists to say which. A held item is
+  `blocked` with `blocked_on {kind: "approval", name: <gate>}`. A sixth member
+  would have been a parallel implementation inside the one closed vocabulary
+  ADR-0256 exists to keep closed.
+- **`pending` is derived, `granted` is stored.** What is waiting is computed
+  from the live queues and the gate flags at read time and stored nowhere; only
+  what a person allowed is kept, and it is consumed when that change goes
+  through. An approval is an *input*, like the gate flags themselves -- ADR-0256
+  forbids storing a *position*, and this is not one.
+- **A held item must not starve what is behind it.** The rebuild drain now walks
+  by index and skips a held image instead of stopping at the front; the push
+  queue, which removes an entry as it takes it, steps over held ones while
+  choosing. A gate on one thing becoming an outage for everything would have
+  been the obvious way to write this and is the reason `rebuild_queue_remove_at()`
+  exists (with `pop_front()` expressed through it, so there is one implementation
+  of "take this out of the queue").
+
+You cannot approve what nothing is holding -- 409. Pre-approving is a standing
+permission dressed as a decision, and it would make the audit line claim someone
+approved a change they never saw. `deploy` is the one exception and the
+asymmetry is stated rather than hidden: an update is one synchronous request
+with no queue to be in, so its target is accepted as given and the refusal names
+it exactly.
+
+Not four-eyes: the same identity may request and approve, so a gate constrains
+automation rather than a person. The caller being held today is a token-bearing
+script, and making it stop for a deliberate second call is the pause being
+bought. Approver != requester needs roles (#304) and is deliberately not built.
+
+`cixctl pipeline config --gate-roll=on`, `cixctl pipeline approvals`,
+`cixctl pipeline approve roll <image>`. Every approval writes an audit line
+naming the user, the gate and the target (ADR-0271).
+
 ### A pipeline run is a log entry, not join state (#371, ADR-0272)
 
 `GET /pipeline` answers where a package stands now. Nothing answered what had

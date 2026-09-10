@@ -14897,10 +14897,48 @@ static int cmd_pkg_source_policy(const struct cix_client *c, int json_mode, int 
  */
 static int g_pipeline_show_all;
 
+static const char *onoff(const struct json_value *root, const char *key)
+{
+	const struct json_value *v = json_object_get(root, key);
+
+	return (v != NULL && v->type == JSON_BOOL && v->u.boolean) ? "on" : "off";
+}
+
 static void fmt_pipeline_config(const struct json_value *root)
 {
 	printf("run retention   %ld runs\n",
 	        (long)json_as_number(json_object_get(root, "run_retention")));
+	/* ADR-0273: named for what each holds, not for where it sits. */
+	printf("gate publish    %-3s  (an artifact reaching the shared cache)\n",
+	        onoff(root, "gate_publish"));
+	printf("gate roll       %-3s  (an image moving to a version nobody asked for)\n",
+	        onoff(root, "gate_roll"));
+	printf("gate deploy     %-3s  (a boot slot being written)\n", onoff(root, "gate_deploy"));
+}
+
+/* ADR-0273. Two lists with different natures: pending is derived from
+ * the live queues and stored nowhere, granted is the stored half. */
+static void fmt_pipeline_approvals(const struct json_value *root)
+{
+	const struct json_value *pend = json_object_get(root, "pending");
+	const struct json_value *gr = json_object_get(root, "granted");
+	size_t i;
+
+	if (pend == NULL || pend->type != JSON_ARRAY || pend->u.array.count == 0) {
+		printf("nothing is waiting for approval\n");
+	} else {
+		printf("%-10s %s\n", "GATE", "WAITING FOR APPROVAL");
+		for (i = 0; i < pend->u.array.count; i++)
+			printf("%-10s %s\n", json_str_field(pend->u.array.items[i], "gate"),
+			        json_str_field(pend->u.array.items[i], "target"));
+	}
+	if (gr != NULL && gr->type == JSON_ARRAY && gr->u.array.count > 0) {
+		printf("\n%-10s %-40s %s\n", "GATE", "APPROVED, NOT YET THROUGH", "BY");
+		for (i = 0; i < gr->u.array.count; i++)
+			printf("%-10s %-40s %s\n", json_str_field(gr->u.array.items[i], "gate"),
+			        json_str_field(gr->u.array.items[i], "target"),
+			        json_str_field(gr->u.array.items[i], "who"));
+	}
 }
 
 /*
@@ -15278,6 +15316,42 @@ static int cmd_pipeline(const struct cix_client *c, int json_mode, int argc, cha
 	 * dispatch_command(), which passes the command separately. */
 	g_pipeline_show_all = 0;
 
+	/* ADR-0273: what is waiting for a person, and what has been let through. */
+	if (argc > 0 && strcmp(argv[0], "approvals") == 0) {
+		if (cix_client_request(c, CIX_API_getPipelineApprovals_METHOD,
+		                        CIX_API_getPipelineApprovals, NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_pipeline_approvals);
+	}
+
+	/* ADR-0273: let one held change through. */
+	if (argc > 0 && strcmp(argv[0], "approve") == 0) {
+		char body[512];
+		struct json_writer bw;
+
+		if (argc != 3) {
+			fprintf(stderr, "usage: cixctl pipeline approve <publish|roll|deploy> <target>\n");
+			return 2;
+		}
+		jw_init(&bw);
+		jw_obj_open(&bw);
+		jw_key(&bw, "gate");
+		jw_str(&bw, argv[1]);
+		jw_key(&bw, "target");
+		jw_str(&bw, argv[2]);
+		jw_obj_close(&bw);
+		snprintf(body, sizeof(body), "%s", bw.buf != NULL ? bw.buf : "{}");
+		jw_free(&bw);
+		if (cix_client_request(c, CIX_API_approvePipeline_METHOD, CIX_API_approvePipeline, body,
+		                        &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, NULL);
+	}
+
 	/*
 	 * ADR-0272: how many runs to keep. A count rather than a duration,
 	 * because what an operator wants is "the last N things that
@@ -15286,19 +15360,50 @@ static int cmd_pipeline(const struct cix_client *c, int json_mode, int argc, cha
 	 */
 	if (argc > 0 && strcmp(argv[0], "config") == 0) {
 		const char *keep = NULL;
+		const char *gp = NULL, *grl = NULL, *gd = NULL;
 
 		for (i = 1; i < argc; i++) {
 			if (strncmp(argv[i], "--run-retention=", 16) == 0)
 				keep = argv[i] + 16;
+			else if (strncmp(argv[i], "--gate-publish=", 15) == 0)
+				gp = argv[i] + 15;
+			else if (strncmp(argv[i], "--gate-roll=", 12) == 0)
+				grl = argv[i] + 12;
+			else if (strncmp(argv[i], "--gate-deploy=", 14) == 0)
+				gd = argv[i] + 14;
 			else {
-				fprintf(stderr, "usage: cixctl pipeline config [--run-retention=N]\n");
+				fprintf(stderr,
+				        "usage: cixctl pipeline config [--run-retention=N] "
+				        "[--gate-publish=on|off] [--gate-roll=on|off] "
+				        "[--gate-deploy=on|off]\n");
 				return 2;
 			}
 		}
-		if (keep != NULL) {
-			char body[64];
+		if (keep != NULL || gp != NULL || grl != NULL || gd != NULL) {
+			char body[256];
+			struct json_writer bw;
 
-			snprintf(body, sizeof(body), "{\"run_retention\":%d}", atoi(keep));
+			jw_init(&bw);
+			jw_obj_open(&bw);
+			if (keep != NULL) {
+				jw_key(&bw, "run_retention");
+				jw_int(&bw, atoi(keep));
+			}
+			if (gp != NULL) {
+				jw_key(&bw, "gate_publish");
+				jw_bool(&bw, strcmp(gp, "on") == 0);
+			}
+			if (grl != NULL) {
+				jw_key(&bw, "gate_roll");
+				jw_bool(&bw, strcmp(grl, "on") == 0);
+			}
+			if (gd != NULL) {
+				jw_key(&bw, "gate_deploy");
+				jw_bool(&bw, strcmp(gd, "on") == 0);
+			}
+			jw_obj_close(&bw);
+			snprintf(body, sizeof(body), "%s", bw.buf != NULL ? bw.buf : "{}");
+			jw_free(&bw);
 			if (cix_client_request(c, CIX_API_setPipelineConfig_METHOD,
 			                        CIX_API_setPipelineConfig, body, &r) != 0) {
 				fprintf(stderr, "cixctl: could not reach daemon\n");
