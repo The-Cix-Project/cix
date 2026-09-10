@@ -14664,6 +14664,75 @@ components:
                       version:
                         type: string
 
+    PipelineEdge:
+      type: object
+      required: [from_kind, from, to_kind, to, relation]
+      description: >
+        One dependency in the delivery graph (#371). STRUCTURAL: an edge
+        exists because a deployment names an image and an image manifest
+        names packages -- it is present when everything is healthy, not
+        only when something is stuck. Status colours an edge and
+        `blocked_on` annotates one; neither creates one. Edges drawn only
+        where something is broken give a working host a picture of
+        disconnected boxes.
+      properties:
+        from_kind:
+          type: string
+          enum: [package, image, deployment, host]
+        from:
+          type: string
+        to_kind:
+          type: string
+          enum: [package, image, deployment, host]
+        to:
+          type: string
+        relation:
+          type: string
+          enum: [manifest, image, follow-rolling]
+          description: >
+            `manifest` = this image is composed of that package.
+            `image` = this deployment runs that image.
+            `follow-rolling` = and it chases that image's current_version
+            permanently. Emitted only where the rule is LIVE: the flag is
+            stored but inert on a restart:"no" deployment, and drawing an
+            arrow for a rule that never fires would be a lie in the most
+            load-bearing place on the page.
+
+    PipelineImage:
+      allOf:
+        - $ref: "#/components/schemas/PipelinePosition"
+        - type: object
+          required: [name]
+          properties:
+            name:
+              type: string
+            version:
+              type: [string, "null"]
+              description: The image's current version, or null when it has none yet.
+            blocked_on:
+              type: [object, "null"]
+              description: >
+                Which package this image is waiting for, when it is
+                waiting for one. Names the live edge among the many that
+                already exist, so a renderer highlights rather than
+                invents.
+              properties:
+                kind:
+                  type: string
+                name:
+                  type: string
+
+    PipelineDeployment:
+      allOf:
+        - $ref: "#/components/schemas/PipelinePosition"
+        - type: object
+          required: [name]
+          properties:
+            name:
+              type: string
+            image:
+              type: [string, "null"]
+
     Pipeline:
       type: object
       required: [packages, stages, deploy, total]
@@ -14709,6 +14778,43 @@ components:
           type: integer
         not_implemented:
           type: integer
+        images:
+          type: array
+          description: >
+            One row per image (#371). An image's position is derived from
+            the packages in its manifest -- it cannot be further along
+            than the package it waits for.
+          items:
+            $ref: "#/components/schemas/PipelineImage"
+        deployments:
+          type: array
+          description: >
+            One row per deployment -- what this platform used to call a
+            "container recipe" (#371). Ends at `verify` rather than
+            `deploy`, because a container that started is not yet a
+            container that works.
+          items:
+            $ref: "#/components/schemas/PipelineDeployment"
+        edges:
+          type: array
+          items:
+            $ref: "#/components/schemas/PipelineEdge"
+        kinds:
+          type: array
+          description: >
+            The ordered stages each kind passes through, so a renderer
+            draws each lane from the daemon's own answer rather than from
+            a copy of the table that will drift.
+          items:
+            type: object
+            properties:
+              kind:
+                type: string
+                enum: [package, image, deployment, host]
+              stages:
+                type: array
+                items:
+                  type: string
 
     SourceCatalogueEntry:
       type: object

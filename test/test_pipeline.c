@@ -27,10 +27,41 @@ static void bad(const char *fmt, const char *a)
 	g_failures++;
 }
 
-/* The list ADR-0256 fixes, in its order. */
+/*
+ * The list ADR-0256 fixes, in its order, plus the four ADR-0269 adds so
+ * the same vocabulary covers images, deployments and the host (#371).
+ *
+ * This assertion is the whole point of the file: it fired when #371
+ * added four stages, which is exactly ADR-0256's "a deliberate act with
+ * an ADR, not a quiet enum append" working as designed. Updating it is
+ * the deliberate act; the ADR is the record of why.
+ */
 static const char *const EXPECTED[] = {
 	"discover", "resolve", "authenticate", "author", "fetch",
-	"unpack", "build", "install", "publish", "roll", "deploy"
+	"unpack", "build", "install", "publish", "roll", "deploy",
+	"acquire", "assemble", "stage", "verify"
+};
+
+/*
+ * Each kind's path, asserted whole. A kind's stage list is a contract
+ * the API publishes and a renderer draws lanes from, so a stage
+ * quietly appearing in or leaving one is a contract change.
+ */
+struct kind_row {
+	enum pipeline_kind kind;
+	const char *name;
+	const char *stages[16];
+};
+
+static const struct kind_row KINDS[] = {
+	{ PIPELINE_KIND_PACKAGE, "package",
+	  { "discover", "resolve", "authenticate", "author", "fetch", "unpack", "build", "install",
+	    "publish", "roll", NULL } },
+	{ PIPELINE_KIND_IMAGE, "image",
+	  { "author", "resolve", "acquire", "install", "publish", "roll", NULL } },
+	{ PIPELINE_KIND_DEPLOYMENT, "deployment",
+	  { "author", "resolve", "acquire", "deploy", "verify", NULL } },
+	{ PIPELINE_KIND_HOST, "host", { "build", "assemble", "stage", "deploy", NULL } },
 };
 
 int main(void)
@@ -45,6 +76,38 @@ int main(void)
 		                "deliberate act with an ADR, not a quiet enum append\n",
 		        PIPELINE_STAGE_COUNT, (int)(sizeof(EXPECTED) / sizeof(EXPECTED[0])));
 		return 1;
+	}
+
+	/*
+	 * Every kind's stages, in order, and each one a real member of the
+	 * single stage enum -- the failure to catch is a kind growing a
+	 * private vocabulary, which is the thing ADR-0256 exists to prevent
+	 * and the thing generalising it could most easily reintroduce.
+	 */
+	if ((int)(sizeof(KINDS) / sizeof(KINDS[0])) != PIPELINE_KIND_COUNT) {
+		fprintf(stderr, "  FAIL: %d kinds declared, %d expected\n", PIPELINE_KIND_COUNT,
+		        (int)(sizeof(KINDS) / sizeof(KINDS[0])));
+		return 1;
+	}
+	for (i = 0; i < PIPELINE_KIND_COUNT; i++) {
+		enum pipeline_stage got[PIPELINE_STAGE_COUNT];
+		int n = pipeline_kind_stages(KINDS[i].kind, got);
+		int want;
+
+		if (strcmp(pipeline_kind_name(KINDS[i].kind), KINDS[i].name) != 0)
+			bad("kind name is not %s", KINDS[i].name);
+		for (want = 0; KINDS[i].stages[want] != NULL; want++)
+			;
+		if (n != want) {
+			bad("kind %s does not have the stage count its contract declares", KINDS[i].name);
+			continue;
+		}
+		for (j = 0; j < n; j++) {
+			if (strcmp(pipeline_stage_name(got[j]), KINDS[i].stages[j]) != 0) {
+				bad("kind %s has a stage where its contract says otherwise", KINDS[i].name);
+				break;
+			}
+		}
 	}
 
 	for (i = 0; i < PIPELINE_STAGE_COUNT; i++) {

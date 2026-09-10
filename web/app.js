@@ -13148,6 +13148,164 @@ const CORE_REFRESHERS = [
  * occupied stages is a filtered list, and the empty stages are exactly
  * the ones an operator wants to see are empty.
  */
+/*
+ * #371: the delivery graph.
+ *
+ * Three lanes -- deployments, images, packages -- laid left to right in
+ * dependency order, with the host on its own. A box is a thing at a
+ * stage; its colour is the status axis; an arrow is an edge the daemon
+ * derived.
+ *
+ * DRAWN FROM THE DAEMON'S ANSWER, NOT FROM A COPY OF THE MODEL. The
+ * lane order and each lane's stages come from data.kinds, so adding a
+ * stage server-side changes this picture with no edit here. A second
+ * copy of the stage table living in the browser is exactly the drift
+ * ADR-0256 was written to end.
+ *
+ * Only rows that are NOT ok get a box by default: a host with 200 clean
+ * packages is a wall of green nobody reads. Edges are still computed
+ * over everything, so an unhealthy box always shows what it depends on.
+ */
+function renderDeliveryGraph(data) {
+	const root = document.getElementById("delivery-graph");
+
+	if (!root)
+		return;
+	root.textContent = "";
+	if (!data || !Array.isArray(data.kinds)) {
+		root.textContent = "This daemon does not report the delivery graph.";
+		return;
+	}
+
+	const rows = {
+		deployment: Array.isArray(data.deployments) ? data.deployments : [],
+		image: Array.isArray(data.images) ? data.images : [],
+		package: Array.isArray(data.packages) ? data.packages : [],
+	};
+	const edges = Array.isArray(data.edges) ? data.edges : [];
+
+	/* A row is interesting if it is not ok, or something not-ok points at
+	 * it -- so the cause of a problem is always on screen beside it. */
+	const notOk = new Set();
+	for (const kind of Object.keys(rows))
+		for (const r of rows[kind])
+			if (r.status && r.status !== "ok")
+				notOk.add(kind + "/" + r.name);
+	const keep = new Set(notOk);
+	for (const e of edges)
+		if (notOk.has(e.from_kind + "/" + e.from))
+			keep.add(e.to_kind + "/" + e.to);
+
+	const lanes = [
+		["deployment", "Deployments"],
+		["image", "Images"],
+		["package", "Packages"],
+	];
+	let drew = 0;
+
+	for (const [kind, label] of lanes) {
+		const lane = document.createElement("div");
+		lane.className = "dg-lane";
+		const h = document.createElement("div");
+		h.className = "dg-lane-head";
+		h.textContent = label;
+		lane.appendChild(h);
+
+		const shown = rows[kind].filter((r) => keep.has(kind + "/" + r.name));
+
+		if (shown.length === 0) {
+			const none = document.createElement("div");
+			none.className = "dg-none";
+			none.textContent = rows[kind].length
+				? "all " + rows[kind].length + " clean"
+				: "none";
+			lane.appendChild(none);
+		}
+		for (const r of shown) {
+			const box = document.createElement("div");
+			box.className = "dg-box dg-" + (r.status || "ok");
+
+			const name = document.createElement("div");
+			name.className = "dg-name";
+			name.textContent = r.name;
+			box.appendChild(name);
+
+			const stage = document.createElement("div");
+			stage.className = "dg-stage";
+			stage.textContent = r.stage || "";
+			box.appendChild(stage);
+
+			if (r.reason) {
+				const why = document.createElement("div");
+				why.className = "dg-reason";
+				why.textContent = r.reason;
+				box.appendChild(why);
+			}
+
+			/* What this is waiting for, and the arrow to it. blocked_on
+			 * names the LIVE edge among the many that already exist. */
+			const out = edges.filter((e) => e.from_kind === kind && e.from === r.name);
+			if (out.length) {
+				const dep = document.createElement("div");
+				dep.className = "dg-dep";
+				const live = r.blocked_on ? r.blocked_on.name : null;
+				for (const e of out) {
+					const chip = document.createElement("span");
+					chip.className =
+						"dg-chip" +
+						(e.to === live ? " dg-chip-live" : "") +
+						(e.relation === "follow-rolling" ? " dg-chip-rolling" : "");
+					chip.textContent = (e.relation === "follow-rolling" ? "↻ " : "→ ") + e.to;
+					chip.title =
+						e.relation === "follow-rolling"
+							? "follows this image's current version"
+							: e.relation === "manifest"
+							? "composed of this package"
+							: "runs this image";
+					dep.appendChild(chip);
+				}
+				box.appendChild(dep);
+			}
+			lane.appendChild(box);
+			drew++;
+		}
+		root.appendChild(lane);
+	}
+
+	/* The host lane last: one box, always drawn, because "is this host
+	 * running what we think" is the question the whole page exists for. */
+	if (data.deploy) {
+		const lane = document.createElement("div");
+		lane.className = "dg-lane dg-lane-host";
+		const h = document.createElement("div");
+		h.className = "dg-lane-head";
+		h.textContent = "Host";
+		lane.appendChild(h);
+		const box = document.createElement("div");
+		box.className = "dg-box dg-" + (data.deploy.status || "ok");
+		const name = document.createElement("div");
+		name.className = "dg-name";
+		name.textContent = data.deploy.entry || "this host";
+		box.appendChild(name);
+		const stage = document.createElement("div");
+		stage.className = "dg-stage";
+		stage.textContent = data.deploy.stage || "deploy";
+		box.appendChild(stage);
+		if (data.deploy.reason) {
+			const why = document.createElement("div");
+			why.className = "dg-reason";
+			why.textContent = data.deploy.reason;
+			box.appendChild(why);
+		}
+		lane.appendChild(box);
+		root.appendChild(lane);
+		drew++;
+	}
+
+	if (drew === 0)
+		root.textContent = "Nothing in flight, nothing blocked.";
+}
+
 async function refreshPipeline() {
 	let data;
 
@@ -13157,6 +13315,7 @@ async function refreshPipeline() {
 		return; /* best-effort, same as every other refresher here */
 	}
 	cache.pipeline = data;
+	renderDeliveryGraph(data);
 
 	const flow = document.getElementById("pipeline-flow");
 	const stages = data.stages || [];

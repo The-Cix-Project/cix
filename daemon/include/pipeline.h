@@ -56,8 +56,83 @@ enum pipeline_stage {
 	/* Does the new root boot AND serve on its configured address? */
 	PIPELINE_DEPLOY,
 
+	/*
+	 * #371 adds the four below, so the same vocabulary covers images,
+	 * deployments and the host itself rather than packages alone.
+	 * ADR-0256 says adding a stage is "a deliberate act with an ADR",
+	 * and these are deliberate: each is a position something can
+	 * genuinely be stuck at, separately observable, that no existing
+	 * stage describes.
+	 *
+	 * Four rather than the six a first sketch had. `compose` was
+	 * dropped because composing an image IS installing its packages --
+	 * PIPELINE_INSTALL already says that, and a second name for it
+	 * would be the two-vocabularies problem ADR-0256 exists to end.
+	 * A package-side `verify` was dropped because it cannot be
+	 * derived: a recipe's own self-tests run INSIDE pkg_build(), so a
+	 * compile failure and a self-test failure are one event to this
+	 * daemon.
+	 */
+
+	/*
+	 * Can the thing this depends on be had? An image acquiring a
+	 * package artifact, a deployment acquiring an image version.
+	 *
+	 * THIS IS WHERE FORKS LIVE. Acquiring may mean taking a cached
+	 * artifact, or it may mean starting the pipeline that produces it
+	 * -- and while that runs, this pipeline is BLOCKED here with
+	 * blocked_on naming what it waits for. That pairing is the whole
+	 * graph: an edge is a dependency, and a blocked acquire is an edge
+	 * currently being traversed.
+	 */
+	PIPELINE_ACQUIRE,
+	/* Host only: does mkbootroot produce a control-plane root?
+	 * Separately observable -- GET /system/assembly has its own
+	 * generation counter precisely because this fails on its own. */
+	PIPELINE_ASSEMBLE,
+	/* Host only: does that root reach an A/B slot? POST /system/update
+	 * answers {"status":"staged","slot":...}, a distinct outcome from
+	 * both assembling it and booting it. */
+	PIPELINE_STAGE,
+	/*
+	 * Deployment only: is the container actually READY, not merely
+	 * started? A container that execve()'d successfully and then died
+	 * on its first file I/O reports running for a moment and ready
+	 * never -- the exact shape of the dnsmasq pidfile crash-loop, where
+	 * "status: running" was true and useless.
+	 */
+	PIPELINE_VERIFY,
+
 	PIPELINE_STAGE_COUNT
 };
+
+/*
+ * WHAT is moving through a pipeline (#371). Four kinds, ONE stage
+ * vocabulary above and ONE status axis below -- not three private
+ * vocabularies, which is the failure ADR-0256 was written to end and
+ * which generalising it carelessly would reintroduce immediately.
+ */
+enum pipeline_kind {
+	PIPELINE_KIND_PACKAGE = 0,
+	PIPELINE_KIND_IMAGE,
+	PIPELINE_KIND_DEPLOYMENT,
+	PIPELINE_KIND_HOST,
+
+	PIPELINE_KIND_COUNT
+};
+
+const char *pipeline_kind_name(enum pipeline_kind k);
+
+/*
+ * The ordered stages this kind actually passes through, written into
+ * `out` (at most PIPELINE_STAGE_COUNT), returning how many.
+ *
+ * Every kind uses a SUBSET of the one enum, never a private list. The
+ * subsets overlap heavily and that is the point: `author` means the
+ * same thing for a package recipe and an image recipe, so an operator
+ * learns it once and a renderer draws it once.
+ */
+int pipeline_kind_stages(enum pipeline_kind k, enum pipeline_stage *out);
 
 enum pipeline_status {
 	PIPELINE_OK = 0,
