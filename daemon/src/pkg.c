@@ -988,12 +988,14 @@ static void fetch_note_sidecar_path(const char *name, char *out, size_t out_size
  * and here is why" survives.
  */
 static void rebuild_queue_remove(const char *image);
+static void rebuild_queue_remove_at(int idx); /* ADR-0273 */
 
 static void pkg_run_close(struct pkg_entry *e); /* ADR-0272 */
 static void pkg_runs_save(void);                /* ADR-0272 */
 /* ADR-0273: both drains sit above these in this file. */
 static int gate_holds(const char *gate, const char *target);
 static void approval_consume(const char *gate, const char *target);
+static void approval_forget(const char *gate, const char *target);
 static void pkg_runs_load(void);           /* ADR-0272 */
 
 static void pkg_record_outcome(struct pkg_entry *e, int keep_installed,
@@ -4885,9 +4887,7 @@ static void rebuild_queue_remove(const char *image)
 		               "pkg: dropped image %s from the rebuild queue -- a package in it failed, "
 		               "so retrying now would only repeat it; publish again to re-queue",
 		               image);
-		for (j = i + 1; j < g_rebuild_queue_count; j++)
-			snprintf(g_rebuild_queue[j - 1], PKG_IMAGE_NAME_MAX, "%s", g_rebuild_queue[j]);
-		g_rebuild_queue_count--;
+		rebuild_queue_remove_at(i);
 		return;
 	}
 }
@@ -4904,6 +4904,7 @@ static void rebuild_queue_remove_at(int idx)
 
 	if (idx < 0 || idx >= g_rebuild_queue_count)
 		return;
+	approval_forget(PKG_GATE_ROLL, g_rebuild_queue[idx]);
 	for (i = idx + 1; i < g_rebuild_queue_count; i++)
 		snprintf(g_rebuild_queue[i - 1], PKG_IMAGE_NAME_MAX, "%s", g_rebuild_queue[i]);
 	g_rebuild_queue_count--;
@@ -5112,11 +5113,19 @@ int pkg_try_start_queued_rebuild(pid_t *out_pid, int *out_pidfd, int *out_chain_
 		}
 
 		if (started) {
-			/* ADR-0273: the grant is spent at the moment the thing
-			 * actually goes through, never when it is merely looked
-			 * at -- this drain sees the same entry on every pass
-			 * until a slot frees. */
-			approval_consume(PKG_GATE_ROLL, image);
+			/*
+			 * ADR-0273: deliberately NOT consumed here.
+			 *
+			 * The image stays queued while its rebuild runs, and an
+			 * image may need several packages converged in turn. If
+			 * the grant were spent at the start of the first one, the
+			 * gate would hold this image again on the very next pass
+			 * -- with no grant left, so it would be skipped forever:
+			 * converged, never popped, and reported pending for good.
+			 * The grant covers converging this image, and is spent
+			 * when that is done. (Found by reading this loop, not by
+			 * observing it -- it would have shipped looking correct.)
+			 */
 			return 1;
 		}
 
@@ -7221,6 +7230,14 @@ int pkg_gate_set(const char *gate, int on)
 	if (f == NULL)
 		return -1;
 	*f = on ? 1 : 0;
+	/*
+	 * Persisted here, not merely rendered. pkg_runs_render() has always
+	 * written the gates; nothing called this. So a gate turned on stayed
+	 * on until the next restart and then silently reverted, releasing
+	 * exactly the change someone had decided to stop -- and reporting
+	 * nothing. test_stallwatch's restart assertion caught it.
+	 */
+	pkg_runs_save();
 	return 0;
 }
 
@@ -7266,6 +7283,24 @@ static int gate_holds(const char *gate, const char *target)
  * an operator approved something that then silently needed approving
  * again.
  */
+/*
+ * Drops a grant for something that is no longer queued, without an
+ * audit line: nothing went through, so there is nothing to attribute.
+ * Called from rebuild_queue_remove_at(), so every path that takes an
+ * image out of the queue also forgets its approval -- otherwise grants
+ * for abandoned work accumulate until PKG_APPROVAL_MAX and start
+ * refusing real ones.
+ */
+static void approval_forget(const char *gate, const char *target)
+{
+	int i = approval_index(gate, target);
+
+	if (i < 0)
+		return;
+	approval_drop_at(i);
+	pkg_runs_save();
+}
+
 static void approval_consume(const char *gate, const char *target)
 {
 	int i = approval_index(gate, target);
