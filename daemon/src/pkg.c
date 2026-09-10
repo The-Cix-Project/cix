@@ -8248,6 +8248,201 @@ struct sandbox_merge_ctx {
 	const char *dest_dir;
 };
 
+/*
+ * Issue #389: the undeclared-link gate.
+ *
+ * Everything below assembles the one input elfcheck_undeclared_links()
+ * cannot work out for itself -- which sonames this package's DECLARED
+ * dependencies provide. The declaration is the subject: what happens
+ * to be installed in the target image is deliberately NOT consulted,
+ * because that is precisely the check that would have let
+ * cmake@4.4.3-2 through (openssl was installed in cix-builder, and
+ * cmake's `depends` was still a lie that the next composed build
+ * environment would believe).
+ */
+#define PKG_DEPCLOSURE_MAX 256
+
+struct depclosure {
+	const struct pkg_entry *entries[PKG_DEPCLOSURE_MAX];
+	int count;
+};
+
+/*
+ * Adds one declared dependency and everything it in turn declares.
+ *
+ * Resolution mirrors buildenv_add_tool(): the recorded `depends` of the
+ * INSTALLED copy, not what a recipe now says, because the installed
+ * copy is what will actually be present. `name` may carry an `@version`
+ * pin, which is stripped -- this asks what a package provides, and
+ * every version of it provides the same sonames or it would not be the
+ * same package.
+ */
+static int depclosure_add(const char *name, const char *image, struct depclosure *c,
+                           char *err, size_t err_size, int depth)
+{
+	char bare[PKG_NAME_MAX];
+	char deps_copy[PKG_DEPENDS_MAX];
+	const struct pkg_entry *found;
+	const char *at;
+	char *tok, *save = NULL;
+	int i;
+
+	at = strchr(name, '@');
+	if (at != NULL) {
+		size_t bl = (size_t)(at - name);
+
+		if (bl >= sizeof(bare))
+			bl = sizeof(bare) - 1;
+		memcpy(bare, name, bl);
+		bare[bl] = '\0';
+	} else {
+		snprintf(bare, sizeof(bare), "%s", name);
+	}
+	if (bare[0] == '\0')
+		return 0;
+
+	for (i = 0; i < c->count; i++)
+		if (strcmp(c->entries[i]->name, bare) == 0)
+			return 0;
+	if (depth > PKG_DEPCLOSURE_MAX || c->count >= PKG_DEPCLOSURE_MAX) {
+		snprintf(err, err_size, "the declared dependency closure is too large to resolve");
+		return -1;
+	}
+
+	found = pkg_find(bare, image);
+	if (found == NULL || found->state != PKG_STATE_INSTALLED) {
+		/*
+		 * Not a violation -- an unanswerable question. Dependencies
+		 * are installed ahead of the package that declares them, so
+		 * this is unexpected; but "I could not find what this
+		 * provides" must never be reported as "this links something
+		 * undeclared". The caller skips the gate and says why.
+		 */
+		snprintf(err, err_size, "declared dependency \"%s\" is not installed in image \"%s\"",
+		         bare, image);
+		return -1;
+	}
+
+	c->entries[c->count++] = found;
+
+	snprintf(deps_copy, sizeof(deps_copy), "%s", found->depends);
+	for (tok = strtok_r(deps_copy, " \t", &save); tok != NULL; tok = strtok_r(NULL, " \t", &save)) {
+		if (depclosure_add(tok, image, c, err, err_size, depth + 1) != 0)
+			return -1;
+	}
+	return 0;
+}
+
+/*
+ * The sonames provided by a package's declared runtime dependencies,
+ * plus the C library -- which is implicit here for the same reason
+ * buildenv_resolve_tools() adds it implicitly: no recipe declares it,
+ * every binary needs it, and requiring the declaration would be a rule
+ * that every package in this platform violates.
+ *
+ * Returns 0 and fills *out (caller frees) / *out_count, or -1 with a
+ * reason in err.
+ */
+static int declared_provided_sonames(const struct pkg_entry *e, const char *image,
+                                      char (**out)[ELFCHECK_SONAME_MAX], int *out_count,
+                                      char *err, size_t err_size)
+{
+	struct depclosure c;
+	char deps_copy[PKG_DEPENDS_MAX];
+	char (*names)[ELFCHECK_SONAME_MAX];
+	char *tok, *save = NULL;
+	long total = 0;
+	int n = 0;
+	int i, f;
+
+	c.count = 0;
+	snprintf(deps_copy, sizeof(deps_copy), "%s", e->depends);
+	for (tok = strtok_r(deps_copy, " \t", &save); tok != NULL; tok = strtok_r(NULL, " \t", &save)) {
+		if (depclosure_add(tok, image, &c, err, err_size, 0) != 0)
+			return -1;
+	}
+	if (depclosure_add(PKG_BASE_LIBC, image, &c, err, err_size, 0) != 0)
+		return -1;
+
+	for (i = 0; i < c.count; i++)
+		total += c.entries[i]->file_count;
+	if (total <= 0) {
+		*out = NULL;
+		*out_count = 0;
+		return 0;
+	}
+	names = malloc((size_t)total * ELFCHECK_SONAME_MAX);
+	if (names == NULL) {
+		snprintf(err, err_size, "out of memory assembling the provided-soname list");
+		return -1;
+	}
+
+	for (i = 0; i < c.count; i++) {
+		for (f = 0; f < c.entries[i]->file_count; f++) {
+			const char *rel = c.entries[i]->files[f];
+			const char *base = strrchr(rel, '/');
+
+			base = base != NULL ? base + 1 : rel;
+			if (!elfcheck_is_soname(base))
+				continue;
+			snprintf(names[n], ELFCHECK_SONAME_MAX, "%s", base);
+			n++;
+		}
+	}
+	*out = names;
+	*out_count = n;
+	return 0;
+}
+
+/*
+ * Refuses an install whose staged tree links a soname nothing it
+ * declares provides. Returns 0 to proceed, -1 to refuse (with the
+ * reason in err).
+ *
+ * A question this cannot answer is not a refusal. That is the whole
+ * discipline of a gate that fails an install: it must fire on
+ * evidence, and an unresolvable dependency or an unreadable tree is
+ * the absence of evidence, not its presence.
+ */
+static int undeclared_link_gate(const struct pkg_entry *e, const char *image,
+                                 const char *staged_dir, char *err, size_t err_size)
+{
+	char (*provided)[ELFCHECK_SONAME_MAX] = NULL;
+	char bad_file[PATH_MAX], bad_soname[ELFCHECK_SONAME_MAX];
+	char why[256];
+	int provided_count = 0;
+	int r;
+
+	if (declared_provided_sonames(e, image, &provided, &provided_count, why, sizeof(why)) != 0) {
+		logstore_write("cixd", "warn",
+		               "pkg install: %s: skipping the undeclared-link check -- %s (#389)",
+		               e->name, why);
+		return 0;
+	}
+
+	r = elfcheck_undeclared_links(staged_dir, (const char (*)[ELFCHECK_SONAME_MAX])provided,
+	                              provided_count, bad_file, sizeof(bad_file), bad_soname,
+	                              sizeof(bad_soname));
+	free(provided);
+	if (r < 0) {
+		logstore_write("cixd", "warn",
+		               "pkg install: %s: the undeclared-link check could not read the staged "
+		               "tree, so it did not run (#389)",
+		               e->name);
+		return 0;
+	}
+	if (r == 0)
+		return 0;
+
+	snprintf(err, err_size,
+	         "%s links \"%s\", which nothing it declares provides -- add the package "
+	         "supplying it to pkg_depends= (having it in pkg_build_depends= only puts it in "
+	         "the build sandbox, so the link is recorded and the dependency is not)",
+	         bad_file, bad_soname);
+	logstore_write("cixd", "error", "pkg install: %s: %s (#389)", e->name, err);
+	return -1;
+}
+
 static int install_mutate(const char *staging_rootfs, void *ctx_v)
 {
 	struct install_mutate_ctx *ctx = ctx_v;
@@ -8904,6 +9099,28 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 			pkg_artifact_push_enqueue(e->name, e->version);
 	} else {
 		struct install_mutate_ctx ctx;
+		char undeclared[512];
+
+		/*
+		 * Issue #389, before a single byte is staged -- same
+		 * discipline as the #176 builtin check inside merge_tree(): a
+		 * refused build leaves nothing of itself behind.
+		 *
+		 * Here rather than inside install_mutate() so the refusal
+		 * costs no copy-forward of the image, and so the message
+		 * names THIS package. A failure raised from inside the mutate
+		 * callback surfaces as "image X could not produce a new
+		 * version", which is the right message for the failures that
+		 * are the image's fault and exactly the wrong one for this,
+		 * where the package is at fault and is the thing to fix.
+		 */
+		if (undeclared_link_gate(e, g_chains[chain_idx].image, dest_dir, undeclared,
+		                          sizeof(undeclared)) != 0) {
+			pkg_fail(e, 0, PIPELINE_INSTALL, undeclared);
+			g_chains[chain_idx].name[0] = '\0';
+			g_chains[chain_idx].dep_queue_count = 0;
+			return 0;
+		}
 
 		ctx.dest_dir = dest_dir;
 		ctx.e = e;

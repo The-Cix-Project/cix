@@ -14,6 +14,7 @@
  * bug was hiding behind, and reading explicit little-endian fields
  * costs nothing here.
  */
+#include <dirent.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,6 +23,11 @@
 #include <unistd.h>
 
 #include "elfcheck.h"
+
+/* Self-contained, in the same spirit as the ELF constants below: this
+ * file deliberately does not take its layout facts from system
+ * headers. */
+#define PATH_MAX_LOCAL 4096
 
 #define EI_NIDENT_LOCAL 16
 #define ELFCLASS64_LOCAL 2
@@ -469,4 +475,203 @@ int elfcheck_undefined_builtin(const char *path, char *out_sym, size_t sym_size)
 
 	close(fd);
 	return found;
+}
+
+/*
+ * Issue #389: a package that links a library it never declares.
+ *
+ * See elfcheck.h for the failure this catches. Everything below is
+ * deliberately free of daemon state: it answers "does this tree need a
+ * soname that neither it nor this list provides", and the caller is
+ * what decides which list to hand it. That split is what makes the
+ * check testable at all -- resolving a dependency closure needs the
+ * package database, walking a tree and reading DT_NEEDED does not.
+ */
+
+/*
+ * A set of sonames, grown on demand.
+ *
+ * Heap rather than a fixed array on the stack: a staged glibc or gcc
+ * tree carries hundreds of `.so` files, and the tempting fixed cap is
+ * one whose overflow behaviour would have to be either a false refusal
+ * or a silent miss. Neither is acceptable for a gate, so it simply
+ * grows.
+ */
+struct soname_set {
+	char (*names)[ELFCHECK_SONAME_MAX];
+	int count;
+	int cap;
+};
+
+static void soname_set_free(struct soname_set *s)
+{
+	free(s->names);
+	s->names = NULL;
+	s->count = 0;
+	s->cap = 0;
+}
+
+static int soname_set_has(const struct soname_set *s, const char *name)
+{
+	int i;
+
+	for (i = 0; i < s->count; i++)
+		if (strcmp(s->names[i], name) == 0)
+			return 1;
+	return 0;
+}
+
+/* 0 on success (including "already present"), -1 only on allocation
+ * failure -- which the caller must treat as "cannot answer", never as
+ * "no violation". */
+static int soname_set_add(struct soname_set *s, const char *name)
+{
+	if (name == NULL || name[0] == '\0')
+		return 0;
+	if (soname_set_has(s, name))
+		return 0;
+	if (s->count >= s->cap) {
+		int cap = s->cap == 0 ? 64 : s->cap * 2;
+		char (*grown)[ELFCHECK_SONAME_MAX];
+
+		grown = realloc(s->names, (size_t)cap * ELFCHECK_SONAME_MAX);
+		if (grown == NULL)
+			return -1;
+		s->names = grown;
+		s->cap = cap;
+	}
+	snprintf(s->names[s->count], ELFCHECK_SONAME_MAX, "%s", name);
+	s->count++;
+	return 0;
+}
+
+/*
+ * Whether a filename is the sort of name a DT_NEEDED entry holds.
+ *
+ * Matched on the name rather than by opening the file, because the
+ * thing that satisfies a DT_NEEDED is usually a SYMLINK -- a tree
+ * ships `libssl.so.3.0.20` with `libssl.so.3` pointing at it, and it
+ * is the link's name the loader looks for. Opening would answer a
+ * different question than the one being asked.
+ */
+int elfcheck_is_soname(const char *base)
+{
+	const char *p = strstr(base, ".so");
+
+	if (p == NULL)
+		return 0;
+	/* ".so" must end the name or be followed by a version suffix --
+	 * so `libfoo.so` and `libfoo.so.3.0.20` match, and a source file
+	 * called `parse.sock.c` does not. */
+	return p[3] == '\0' || p[3] == '.';
+}
+
+/* Recursive half of both passes. `provided` is filled when collecting;
+ * when checking it is read and `out_*` filled on the first hit. */
+static int undeclared_walk(const char *root, const char *rel, int collecting,
+                            struct soname_set *provided, const struct soname_set *known,
+                            char *out_file, size_t out_file_size, char *out_soname,
+                            size_t out_soname_size)
+{
+	char dir[PATH_MAX_LOCAL];
+	DIR *d;
+	struct dirent *de;
+	int rc = 0;
+
+	snprintf(dir, sizeof(dir), "%s%s%s", root, rel[0] != '\0' ? "/" : "", rel);
+	d = opendir(dir);
+	if (d == NULL) {
+		/* A missing tree root is "nothing to check", matching
+		 * merge_tree()'s own reading of the same situation: a package
+		 * that stages no files at all is legitimate. */
+		return rel[0] == '\0' ? 0 : -1;
+	}
+
+	while ((de = readdir(d)) != NULL) {
+		char child[PATH_MAX_LOCAL], path[PATH_MAX_LOCAL];
+		struct stat st;
+
+		if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
+			continue;
+		snprintf(child, sizeof(child), "%s%s%s", rel, rel[0] != '\0' ? "/" : "", de->d_name);
+		snprintf(path, sizeof(path), "%s/%s", root, child);
+		if (lstat(path, &st) != 0)
+			continue;
+
+		if (S_ISDIR(st.st_mode)) {
+			rc = undeclared_walk(root, child, collecting, provided, known, out_file,
+			                      out_file_size, out_soname, out_soname_size);
+			if (rc != 0)
+				break;
+			continue;
+		}
+
+		if (collecting) {
+			/* Symlinks count, and are usually the ones that matter. */
+			if (elfcheck_is_soname(de->d_name) && soname_set_add(provided, de->d_name) != 0) {
+				rc = -1;
+				break;
+			}
+			continue;
+		}
+
+		if (S_ISREG(st.st_mode)) {
+			char needed[ELFCHECK_MAX_NEEDED][ELFCHECK_SONAME_MAX];
+			int n, i;
+
+			n = elfcheck_needed_libs(path, needed, ELFCHECK_MAX_NEEDED);
+			if (n < 0)
+				continue; /* not an ELF64 object -- the common case */
+			for (i = 0; i < n; i++) {
+				if (soname_set_has(known, needed[i]))
+					continue;
+				snprintf(out_file, out_file_size, "%s", child);
+				snprintf(out_soname, out_soname_size, "%s", needed[i]);
+				rc = 1;
+				break;
+			}
+			if (rc != 0)
+				break;
+		}
+	}
+	closedir(d);
+	return rc;
+}
+
+int elfcheck_undeclared_links(const char *root, const char provided[][ELFCHECK_SONAME_MAX],
+                               int provided_count, char *out_file, size_t out_file_size,
+                               char *out_soname, size_t out_soname_size)
+{
+	struct soname_set known;
+	int rc;
+	int i;
+
+	if (root == NULL || out_file == NULL || out_soname == NULL)
+		return -1;
+	out_file[0] = '\0';
+	out_soname[0] = '\0';
+	known.names = NULL;
+	known.count = 0;
+	known.cap = 0;
+
+	for (i = 0; i < provided_count; i++) {
+		if (soname_set_add(&known, provided[i]) != 0) {
+			soname_set_free(&known);
+			return -1;
+		}
+	}
+
+	/* Pass one: what the tree provides for itself. A package whose own
+	 * binary links its own library declares nothing, and is right not
+	 * to -- the dependency is internal. */
+	if (undeclared_walk(root, "", 1, &known, NULL, NULL, 0, NULL, 0) != 0) {
+		soname_set_free(&known);
+		return -1;
+	}
+
+	/* Pass two: what it needs. */
+	rc = undeclared_walk(root, "", 0, NULL, &known, out_file, out_file_size, out_soname,
+	                      out_soname_size);
+	soname_set_free(&known);
+	return rc;
 }

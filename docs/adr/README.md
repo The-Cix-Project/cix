@@ -280,3 +280,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0273](0273-a-gate-holds-automation-where-a-change-escapes-its-blast-radius.md) | Three gates hold automation where a change escapes its blast radius; a held item is `blocked`, not a new status | Accepted |
 | [0274](0274-the-platform-says-what-it-is.md) | The platform ships `/etc/os-release` with `ID=cix`, rendered once and staged into both the host root and every image | Accepted |
 | [0275](0275-a-stage-has-phases.md) | A stage may have phases — steps inside one stage, same status axis, never reported without their stage | Accepted |
+| [0276](0276-a-link-is-a-declaration.md) | A package must declare every shared library it links, checked at install against the declared dependency closure rather than against what happens to be present in the target image — the presence check is the one that would have passed the package that caused this | Accepted |
