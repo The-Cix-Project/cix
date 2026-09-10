@@ -7287,6 +7287,7 @@ static void register_pkg_buildenv_pidfd(pid_t pid, int pidfd, int chain_idx)
  * called from try_start_queued_pkg_rebuild() below, which several
  * earlier call sites already depend on. */
 static void apply_rolling_container_restarts(void);
+static void apply_pending_deployments(void); /* ADR-0270 */
 
 /*
  * ADR-0107: called at every point a completed/failed pkg job might
@@ -7316,6 +7317,7 @@ static void try_start_queued_pkg_rebuild(void)
 		register_pkg_fetch_pidfd(pkg_pid, pkg_pidfd, pkg_chain_idx);
 	report_default_image_seed_result(); /* #189 -- says once when the default image became runnable */
 	apply_rolling_container_restarts();
+	apply_pending_deployments(); /* ADR-0270 -- same moment, same reason */
 }
 
 /*
@@ -16770,6 +16772,133 @@ static void handle_container_recipe_delete(int fd, const char *name)
  * (201 + the new container, or whatever error create_container_from_
  * body() surfaces) -- nothing left to do here afterward.
  */
+/*
+ * ADR-0270: is the image this deployment names ready to run a container
+ * from, and if not, can the platform get it there?
+ *
+ * "Not ready" is four conditions and only two of them fork -- see the
+ * ADR's own table. The one worth restating here is that
+ * image_current_version() succeeding proves nothing: every image is
+ * BORN with a valid current version and a real, empty rootfs directory
+ * (the hash of its own empty manifest), so the question "does this
+ * image exist" and the question "has anything been put in it" have
+ * different answers and different tests. Conflating them is issue #109,
+ * and image_empty_manifest_version() exists precisely to tell them
+ * apart.
+ */
+enum deploy_image_state {
+	DEPLOY_IMAGE_READY,      /* realized -- create now, exactly as before */
+	DEPLOY_IMAGE_FORKED,     /* unrealized -- declared if needed, and queued */
+	DEPLOY_IMAGE_UNBUILDABLE /* nothing to build toward -- the caller refuses */
+};
+
+static enum deploy_image_state deployment_image_prepare(const char *image, char *err, size_t err_size)
+{
+	struct image_manifest_entry entries[IMAGE_MANIFEST_MAX_PACKAGES];
+	int entry_count = 0;
+	char current[IMAGE_VERSION_MAX];
+	char empty[IMAGE_VERSION_MAX];
+
+	if (image_manifest_read(image, entries, &entry_count, IMAGE_MANIFEST_MAX_PACKAGES) != IMAGE_OK) {
+		snprintf(err, err_size,
+		         "no image named \"%s\" exists -- create it (POST /v1/images), or correct the "
+		         "image this deployment names",
+		         image);
+		return DEPLOY_IMAGE_UNBUILDABLE;
+	}
+	if (image_current_version(image, current, sizeof(current)) != IMAGE_OK ||
+	    image_empty_manifest_version(empty, sizeof(empty)) != 0) {
+		snprintf(err, err_size, "image \"%s\" has a manifest but no readable current version",
+		         image);
+		return DEPLOY_IMAGE_UNBUILDABLE;
+	}
+	if (strcmp(current, empty) != 0)
+		return DEPLOY_IMAGE_READY;
+
+	/*
+	 * Unrealized. An empty manifest has nothing to converge toward --
+	 * the queue's drain would see it as trivially satisfied, drop it
+	 * without starting a job, and leave the deployment waiting on
+	 * something that is never going to happen. So declare the image's
+	 * own recipe into the manifest first, which is all that recipe
+	 * apply has done since ADR-0209.
+	 */
+	if (entry_count == 0) {
+		enum pkg_error perr = pkg_image_recipe_apply_start(image);
+
+		if (perr != PKG_OK) {
+			snprintf(err, err_size,
+			         "image \"%s\" is empty, declares no packages, and has no image recipe to "
+			         "declare any -- give it a manifest (PUT /v1/images/%s/manifest) or an image "
+			         "recipe before deploying against it",
+			         image, image);
+			return DEPLOY_IMAGE_UNBUILDABLE;
+		}
+	}
+	pkg_rebuild_queue_add(image);
+	return DEPLOY_IMAGE_FORKED;
+}
+
+/*
+ * ADR-0270: persist a deployment that is waiting for its image, and say
+ * so with a 202.
+ *
+ * The definition is the pending record -- struct container_def already
+ * holds the verbatim create body, is persisted, and is already replayed
+ * at every daemon start, so a second registry for "deployments that are
+ * waiting" would be a parallel implementation of a list that exists.
+ *
+ * The policy fields are written at their defaults here and are NOT
+ * parsed out of the rendered body first. That is deliberate rather than
+ * lazy: the values that matter are written authoritatively by
+ * containerdef_add() on the create that eventually succeeds (the create
+ * path parses them from this same body), and nothing reads them while
+ * the definition is waiting -- the boot pass and the convergence pass
+ * both test awaiting_image before they reach policy, and pipelineview
+ * reports the waiting state rather than the policy. Parsing them a
+ * second time here would mean two places deciding what `restart` means,
+ * which is how the two come to disagree.
+ */
+static void deployment_mark_pending(int fd, const char *name, const char *image, const char *rendered)
+{
+	struct json_writer w;
+	char no_depends[1][REGISTRY_NAME_MAX];
+
+	if (containerdef_add(name, rendered, strlen(rendered), no_depends, 0, "no",
+	                      CONTAINERDEF_DEFAULT_RESTART_DELAY_SECONDS, 0, 0, 0) != 0) {
+		respond_error(fd, 500, "Internal Server Error",
+		               "could not persist this deployment while it waits for its image");
+		return;
+	}
+	if (containerdef_set_awaiting_image(name, image) != 0) {
+		/* The definition exists but is not marked as waiting, so nothing
+		 * would ever replay it -- worse than not having persisted it at
+		 * all, because it would look like an ordinary stopped deployment.
+		 * Take it back out rather than leave that behind. */
+		containerdef_remove(name);
+		respond_error(fd, 500, "Internal Server Error",
+		               "could not record which image this deployment is waiting for");
+		return;
+	}
+	logstore_write("cixd", "info",
+	                "deployment %s is waiting for image %s to be realized -- queued it for a build "
+	                "(ADR-0270)",
+	                name, image);
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "name");
+	jw_str(&w, name);
+	jw_key(&w, "state");
+	jw_str(&w, "awaiting-image");
+	jw_key(&w, "awaiting_image");
+	jw_str(&w, image);
+	jw_obj_close(&w);
+	http_set_blocking(fd);
+	http_write_response(fd, 202, "Accepted", "application/json", w.buf, w.len);
+	jw_free(&w);
+}
+
 static void handle_container_recipe_apply(int fd, const char *name, const char *body,
                                            size_t body_len)
 {
@@ -16793,6 +16922,57 @@ static void handle_container_recipe_apply(int fd, const char *name, const char *
 	if (rendered == NULL) {
 		respond_container_recipe_error(fd, perr);
 		return;
+	}
+
+	/*
+	 * ADR-0270: a deployment whose image is not built yet waits for it.
+	 *
+	 * This branch lives HERE and deliberately not in handle_create().
+	 * That path is a primitive -- containerdef_autostart_all() replays
+	 * it at boot, handle_restart_timer_event() drives it on a crash,
+	 * and every direct POST /v1/containers goes through it -- and making
+	 * a primitive wait would turn a fast, honest failure into a silent
+	 * hang in callers that never asked for one. Applying a deployment is
+	 * the declarative surface, where "this is what I want to exist" is
+	 * the whole meaning of the call, so waiting belongs to it alone.
+	 *
+	 * A name already in use is still a conflict, never a wait:
+	 * handle_create()'s own duplicate check sits AFTER its image check,
+	 * so re-applying an already-running deployment would go pending
+	 * rather than 409 if this branch ran first.
+	 */
+	if (registry_find(name) == NULL) {
+		struct json_value *rroot = json_parse(rendered, strlen(rendered));
+		const char *image = rroot != NULL ? json_as_string(json_object_get(rroot, "image")) : NULL;
+		char image_name[REGISTRY_NAME_MAX];
+		char err[384];
+		enum deploy_image_state st;
+
+		if (image == NULL || strlen(image) >= sizeof(image_name)) {
+			/* No image field, or an unusable one. Not this branch's
+			 * problem to diagnose -- handle_create() already reports
+			 * exactly what is wrong with a body, and reporting it
+			 * twice in two wordings is how the two drift apart. */
+			if (rroot != NULL)
+				json_free(rroot);
+			handle_create(fd, rendered, strlen(rendered));
+			free(rendered);
+			return;
+		}
+		snprintf(image_name, sizeof(image_name), "%s", image);
+		json_free(rroot);
+
+		st = deployment_image_prepare(image_name, err, sizeof(err));
+		if (st == DEPLOY_IMAGE_UNBUILDABLE) {
+			respond_error(fd, 400, "Bad Request", err);
+			free(rendered);
+			return;
+		}
+		if (st == DEPLOY_IMAGE_FORKED) {
+			deployment_mark_pending(fd, name, image_name, rendered);
+			free(rendered);
+			return;
+		}
 	}
 
 	handle_create(fd, rendered, strlen(rendered));
@@ -24560,6 +24740,97 @@ static int rolling_jitter_seconds(int window)
  * enumeration, and inventing a second one just for this would violate
  * One Source of Truth for no benefit.
  */
+/*
+ * ADR-0270: create any deployment whose image has now been realized.
+ *
+ * Joins apply_rolling_container_restarts() at the one hook that already
+ * runs whenever an image's current_version might have moved, for the
+ * reason that hook's own comment gives -- one call site, not two
+ * independently-triggered mechanisms. A rolling rebuild completing is
+ * itself a package job, so "a package job just finished" is exactly the
+ * moment a waiting deployment might have become buildable.
+ *
+ * A replay that fails for a reason that is not the image (a name taken
+ * since, a network deleted, a rendered field validation rejects) leaves
+ * the definition waiting with its error recorded, rather than being
+ * retried on every pass forever: nothing is attempted again until that
+ * image's version actually moves, so a permanently broken definition
+ * costs one attempt per image change and stays visible in the pipeline
+ * instead of spinning.
+ */
+static void apply_pending_deployments(void)
+{
+	char order[CONTAINERDEF_MAX][REGISTRY_NAME_MAX];
+	int count = containerdef_resolve_order(order);
+	int i;
+
+	for (i = 0; i < count; i++) {
+		struct container_def *def = containerdef_find(order[i]);
+		struct registry_entry *entry;
+		char restart_policy[16];
+		int restart_delay_seconds;
+		char depends_on[CONTAINERDEF_MAX_DEPENDS][REGISTRY_NAME_MAX];
+		int depends_on_count;
+		int follow_rolling;
+		int has_follow_rolling_jitter, follow_rolling_jitter_seconds;
+		char current_version[IMAGE_VERSION_MAX];
+		char empty_version[IMAGE_VERSION_MAX];
+		char err_msg[256];
+		int status;
+
+		if (def == NULL || def->awaiting_image[0] == '\0')
+			continue;
+
+		/*
+		 * Still unrealized. An image is BORN with a current version
+		 * (the hash of its own empty manifest) and an empty rootfs, so
+		 * "has a version" is not "has content" -- issue #109, and the
+		 * same test deployment_image_prepare() makes.
+		 */
+		if (image_current_version(def->awaiting_image, current_version,
+		                           sizeof(current_version)) != IMAGE_OK ||
+		    image_empty_manifest_version(empty_version, sizeof(empty_version)) != 0)
+			continue;
+		if (strcmp(current_version, empty_version) == 0)
+			continue;
+
+		status = create_container_from_body(def->body, def->body_len, &entry, restart_policy,
+		                                     &restart_delay_seconds, depends_on, &depends_on_count,
+		                                     &follow_rolling, &has_follow_rolling_jitter,
+		                                     &follow_rolling_jitter_seconds, err_msg, sizeof(err_msg));
+		if (status != 0) {
+			containerdef_set_replay_error(order[i], err_msg);
+			logstore_write("cixd", "error",
+			                "deployment %s: image %s is ready but creating it failed: %s -- it stays "
+			                "pending and is retried when that image next changes (ADR-0270)",
+			                order[i], def->awaiting_image, err_msg);
+			continue;
+		}
+
+		/*
+		 * Created -- so promote it explicitly. create_container_from_body()
+		 * does NOT persist the definition (containerdef_add() lives in
+		 * handle_create(), one level up, which this path does not go
+		 * through), so nothing else here would clear awaiting_image or
+		 * replace the placeholder policy deployment_mark_pending() stored.
+		 * Left out, the deployment would run while still reporting itself
+		 * blocked on an image that had already arrived.
+		 */
+		logstore_write("cixd", "info",
+		                "deployment %s: image %s is ready -- created it (ADR-0270)", order[i],
+		                def->awaiting_image);
+		if (containerdef_promote_pending(order[i], restart_policy, restart_delay_seconds, depends_on,
+		                                  depends_on_count, follow_rolling, has_follow_rolling_jitter,
+		                                  follow_rolling_jitter_seconds) != 0)
+			logstore_write("cixd", "error",
+			                "deployment %s was created but its definition could not be updated -- it "
+			                "will still report as waiting for %s",
+			                order[i], def->awaiting_image);
+		if (entry != NULL && entry->image_version[0] != '\0')
+			containerdef_patch_image_version(order[i], entry->image_version);
+	}
+}
+
 static void apply_rolling_container_restarts(void)
 {
 	char order[CONTAINERDEF_MAX][REGISTRY_NAME_MAX];
@@ -25565,7 +25836,42 @@ static void containerdef_autostart_all(void)
 		if (def == NULL)
 			continue; /* can't happen -- resolve_order() only ever names known defs */
 
-		if (strcmp(def->restart_policy, "no") == 0) {
+		/*
+		 * ADR-0270: a deployment still waiting for its image, tested
+		 * BEFORE restart_policy and before any attempt to create.
+		 *
+		 * Both orderings matter. Policy first would skip every waiting
+		 * restart:"no" definition forever, and a first create is not a
+		 * restart -- "never auto-restart" cannot be the thing that
+		 * suppresses a container that has never run at all. Attempting
+		 * the create first would mean learning from a 400 what
+		 * awaiting_image already says, and logging a failure for a
+		 * situation that is proceeding exactly as designed.
+		 *
+		 * Re-enqueueing is the whole point of doing anything here: the
+		 * rebuild queue is in-memory (#373), so this daemon has no idea
+		 * an image was ever queued. apply_pending_deployments() picks
+		 * the definition up once that build lands.
+		 */
+		if (def->awaiting_image[0] != '\0') {
+			char cur[IMAGE_VERSION_MAX];
+			char empty[IMAGE_VERSION_MAX];
+			int realized = image_current_version(def->awaiting_image, cur, sizeof(cur)) == IMAGE_OK &&
+			               image_empty_manifest_version(empty, sizeof(empty)) == 0 &&
+			               strcmp(cur, empty) != 0;
+
+			if (!realized) {
+				pkg_rebuild_queue_add(def->awaiting_image);
+				fprintf(stderr, "%s: waiting for image %s -- re-queued it for a build\n", order[i],
+				        def->awaiting_image);
+				continue;
+			}
+			/* Realized while this daemon was down. Fall through and
+			 * create it, exactly as apply_pending_deployments() would
+			 * have done had the image landed while we were running. */
+		}
+
+		else if (strcmp(def->restart_policy, "no") == 0) {
 			/*
 			 * ADR-0181 (#73): restart:"no" is now a persisted policy
 			 * meaning "never auto-restart", boot included. It stays a
@@ -25593,6 +25899,26 @@ static void containerdef_autostart_all(void)
 		/* create_container_from_body() already registered entry's own
 		 * pidfd with epoll -- exactly the same shape POST /v1/containers'
 		 * own success path relies on, no separate call needed here. */
+
+		/*
+		 * ADR-0270: this may have been a deployment that was waiting for
+		 * its image, whose image was realized while this daemon was down
+		 * -- the check above falls through to here rather than skipping,
+		 * because a first create is not a restart. Promote it for the same
+		 * reason apply_pending_deployments() does: nothing on this path
+		 * persists the definition (containerdef_add() lives in
+		 * handle_create(), which autostart does not go through), so
+		 * without this it would run while still reporting itself blocked
+		 * on an image it already has. A no-op for every ordinary
+		 * definition, which is what awaiting_image being empty means.
+		 */
+		if (def->awaiting_image[0] != '\0') {
+			containerdef_promote_pending(order[i], restart_policy, restart_delay_seconds, depends_on,
+			                              depends_on_count, follow_rolling, has_follow_rolling_jitter,
+			                              follow_rolling_jitter_seconds);
+			if (entry != NULL && entry->image_version[0] != '\0')
+				containerdef_patch_image_version(order[i], entry->image_version);
+		}
 
 		/*
 		 * A def whose restart_policy is "always"/"on-failure" and was

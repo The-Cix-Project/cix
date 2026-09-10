@@ -4830,6 +4830,24 @@ int pkg_rebuild_queue_depth(void)
 	return g_rebuild_queue_count;
 }
 
+/*
+ * ADR-0270: put an image on the same queue a rolling recipe publish
+ * uses, from outside pkg.c.
+ *
+ * The deployment auto-fork needs exactly what queue_rolling_rebuilds_
+ * for() already does per image -- "this image's manifest wants
+ * realizing, converge it when a slot frees" -- and building a second
+ * path to the same queue would be two mechanisms for one thing. Idempotent
+ * (rebuild_queue_enqueue() ignores an image already queued), so a repeated
+ * apply of a still-waiting deployment costs nothing.
+ */
+void pkg_rebuild_queue_add(const char *image)
+{
+	if (image == NULL || image[0] == '\0')
+		return;
+	rebuild_queue_enqueue(image);
+}
+
 int pkg_try_start_queued_rebuild(pid_t *out_pid, int *out_pidfd, int *out_chain_idx)
 {
 	if (pkg_any_job_busy())
@@ -11660,8 +11678,18 @@ enum pkg_error pkg_image_recipe_apply_start(const char *image)
 
 	if (!pkg_image_is_valid(image))
 		return PKG_ERR_INVALID_NAME;
-	if (pkg_any_job_busy())
-		return PKG_ERR_BUSY;
+	/*
+	 * ADR-0270 removed a pkg_any_job_busy() check here.
+	 *
+	 * It was a leftover from the whole-rootfs artifact fetch ADR-0209
+	 * deleted: back then apply really did fetch and extract, which
+	 * needed a job slot. What remains is bulk-declare -- N
+	 * image_manifest_set() calls -- and the manual path for exactly
+	 * that, handle_image_manifest_set() in api_image.c, has never
+	 * checked busy at all. Two callers, the same work, one of them
+	 * refusing whenever any unrelated package build happened to be
+	 * running.
+	 */
 
 	image_recipe_path(image, path, sizeof(path));
 	if (persist_read_file(path, &buf, &len) != 0 || buf == NULL)

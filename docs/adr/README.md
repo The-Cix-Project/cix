@@ -274,3 +274,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0267](0267-a-volumes-size-comes-from-the-kernel-when-the-kernel-is-counting.md) | A volume's size comes from the kernel when the kernel is already counting, and the answer says which source it came from | Accepted |
 | [0268](0268-gating-is-visible-and-its-preconditions-are-protected.md) | Write authentication is visible, and the five operations that could silently turn it off are refused | Accepted |
 | [0269](0269-one-pipeline-model-for-four-kinds.md) | One pipeline model for packages, images, deployments and the host -- four kinds walking subsets of one stage vocabulary | Accepted |
+| [0270](0270-a-deployment-waits-for-its-image-rather-than-being-refused.md) | A deployment whose image is not built waits for it and is created when it lands, rather than being refused | Accepted |

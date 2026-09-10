@@ -6,6 +6,78 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A deployment whose image is not built waits for it, rather than being refused (#371, ADR-0270)
+
+Installing a package into an image already builds it from its recipe when there is
+no artifact -- the composition edge from image down to package forks by itself.
+The edge from deployment down to image did not:
+
+```c
+} else if (image_current_version(image, resolved_image_version, ...) != IMAGE_OK) {
+        snprintf(err_msg, err_msg_size, "image rootfs does not exist");
+        return 400;
+}
+```
+
+So the operator's next move was always the same manual round trip -- go realize the
+image, come back, apply again -- for something the platform knew how to do. Two of
+the three recipe kinds composed automatically and the third did not, for no reason
+anyone had chosen.
+
+`POST /v1/deployments/{name}/apply` now returns `202 Accepted` with
+`{"state": "awaiting-image", "awaiting_image": "..."}`, queues the image, and creates
+the container itself once the image is realized. It never blocks on the build.
+
+**"Fork the image build" turned out not to name anything that existed.**
+`pkg_image_recipe_apply_start()` builds nothing -- its own contract says it is
+"synchronous bulk-declare: `image_manifest_set()` for every entry", and "packages
+still need real `pkg_install()` calls afterward". What actually converges a
+declaration into a rootfs is the rolling-rebuild queue, which already respects the
+job-slot budget, already drops an image whose manifest is satisfied without starting
+anything, and is already drained from every job-completion path. So this change
+records the intent, enqueues, and lets that queue do the build -- rather than writing
+a second converge loop beside it.
+
+**The wait is a `container_def`, not a new registry.** That struct already holds the
+verbatim create body, is already persisted, and is already replayed at every daemon
+start, so the pending state costs one persisted field (`awaiting_image`, the image's
+name) and inherits persistence, restart replay and pipeline visibility instead of
+reimplementing all three.
+
+**What nearly shipped a bug.** The first draft tested readiness with
+`image_current_version() != IMAGE_OK`. Every image is *born* with a valid current
+version -- the hash of its own empty manifest -- and a real, empty rootfs directory,
+so a deployment naming a freshly created image would have sailed past that check and
+created a container against nothing. That is issue #109 one layer up, and
+`image_empty_manifest_version()` exists precisely to tell "this image exists" apart
+from "this image has been filled". A second draft also forked when the manifest had
+*unsatisfied* entries -- which is the queue's drain criterion, not the apply's wait
+criterion, and would have made every deployment naming a working image with an
+available newer recipe wait instead of run.
+
+Failure reaches the deployment at read time, never through a callback: a waiting
+deployment reports stage `acquire`, status `blocked`, `blocked_on {kind:"image"}` from
+`GET /v1/pipeline`, computed by the same join ADR-0256 established. A replay that
+fails for a reason that is *not* the image reports that instead, and is retried when
+the image next changes rather than spinning every event-loop pass.
+
+Deliberately not covered: a direct `POST /v1/containers` naming an unbuilt image still
+fails fast with 400 -- that path is also the boot autostart and crash-restart replay,
+and a wait there would stall a reboot. An empty image with neither a manifest nor an
+image recipe is still a 400, because there is nothing to converge toward.
+
+Also removed a vestigial `pkg_any_job_busy()` check from
+`pkg_image_recipe_apply_start()`. Measured: the manual `PUT /v1/images/{name}/manifest`
+path does the same work with no busy check at all, and the check was left over from the
+whole-rootfs artifact fetch ADR-0209 deleted. Leaving it would have forced a choice
+between refusing an apply whenever any unrelated build happened to be running, and
+hand-rolling the same `image_manifest_set()` loop in a second place.
+
+Found while measuring, filed rather than fixed here: the rolling-rebuild queue is
+in-memory only, so a daemon restart silently loses queued rebuilds (#373). This change
+handles its own case -- a pending deployment re-enqueues its image on the way back up
+-- which is a fix for one caller, not for the queue.
+
 ### A "container recipe" is a deployment (#371)
 
 The name was wrong and the owner flagged it. It describes what to RUN and where

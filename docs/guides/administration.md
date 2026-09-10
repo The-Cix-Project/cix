@@ -98,6 +98,25 @@ Two ways to actually get a running container onto new content, neither automatic
 
 For patching a single file into an already-running container without a full recreate — a live config tweak, not a package install — see [`PUT /containers/{name}/files`](../api/README.md#writing-a-file-into-an-existing-container-live-without-a-recreate) ([ADR-0153](../adr/0153-container-file-live-update.md)); it's live and ephemeral, not a substitute for either option above.
 
+## Deploying against an image that has not been built yet
+
+Applying a deployment whose image exists but is still empty does not fail. It returns **`202 Accepted`**, queues the image for a build, and creates the container by itself once the image is realized:
+
+```
+$ cixctl deployment apply dns-1
+{"name": "dns-1", "state": "awaiting-image", "awaiting_image": "dnsimg"}
+```
+
+This closes an asymmetry rather than adding a feature ([ADR-0270](../adr/0270-a-deployment-waits-for-its-image-rather-than-being-refused.md)). Installing a package into an image has always built it from its recipe when no artifact existed — the composition edge from image down to package forks on its own. The edge from deployment down to image did not, so the operator's next move was always the same manual round trip: go realize the image, come back, apply again.
+
+Watch it with `cixctl pipeline` or `GET /v1/pipeline` — a waiting deployment reports stage `acquire`, status `blocked`, and names the image it is blocked on. It does not block your terminal, and it does not forget across a reboot: the wait is persisted, and the daemon re-queues the image on its way back up.
+
+Three limits worth knowing before you rely on it:
+
+- **`cixctl container run` against an unbuilt image still fails immediately.** That is the same code path the daemon replays at boot and after a crash, and a wait there would stall a reboot rather than help anyone. Waiting is a property of *applying a deployment*, which is a declaration of intent, not of creating a container, which is an instruction.
+- **An empty image with neither a manifest nor an image recipe is refused.** Nothing declares what belongs in it, so there is nothing to wait for. Give it a manifest (`cixctl image manifest set`) or an image recipe first.
+- **If the image builds and the container then fails to create for some other reason** — a name taken in the meantime, a network deleted — the deployment stays pending and reports `failed` at the same stage with that error. It is retried when that image next changes, or immediately if you apply again.
+
 ## Keeping the box current
 
 Backups and disk management are day-2 operations that don't change what's running on the box; updating the control plane or installed packages does — see [`staying-updated.md`](staying-updated.md) for that, and [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md) for kernel updates specifically.

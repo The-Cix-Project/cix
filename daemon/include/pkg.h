@@ -1004,6 +1004,13 @@ int pkg_active_chain_indices(int *out_indices);
  * whether there is work before calling the expensive drain (#236). */
 int pkg_rebuild_queue_depth(void);
 
+/*
+ * ADR-0270: enqueue an image for convergence from outside pkg.c, which
+ * is what a deployment applied against an unrealized image needs.
+ * Idempotent -- an image already queued is left alone.
+ */
+void pkg_rebuild_queue_add(const char *image);
+
 int pkg_try_start_queued_rebuild(pid_t *out_pid, int *out_pidfd, int *out_chain_idx);
 
 /*
@@ -1467,9 +1474,13 @@ void image_recipe_write_json_list(struct json_writer *w);
 
 /*
  * Applies image's own stored recipe (PKG_ERR_NOT_FOUND if none).
- * PKG_ERR_BUSY if a package install/hostbuild is already in flight.
  * Fully synchronous: it has completed (or failed) by the time it
  * returns, so there is no job to register and no status to poll.
+ *
+ * Never returns PKG_ERR_BUSY. It used to, and ADR-0270 removed that
+ * check as vestigial -- see the note at the call site. Declaring a
+ * manifest needs no job slot, and the manual PUT .../manifest path has
+ * never taken one.
  */
 enum pkg_error pkg_image_recipe_apply_start(const char *image);
 

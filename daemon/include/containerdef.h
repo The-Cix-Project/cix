@@ -107,6 +107,32 @@ struct container_def {
 	 */
 	int has_follow_rolling_jitter;
 	int follow_rolling_jitter_seconds;
+	/*
+	 * ADR-0270: the image this definition is WAITING to be realized,
+	 * or "" when it is not waiting for anything (the normal case).
+	 *
+	 * Persisted, because a deployment applied against an unbuilt image
+	 * is an intent that must survive a daemon restart -- and because the
+	 * rolling-rebuild queue it depends on is in-memory only (#373), the
+	 * boot pass re-enqueues this image rather than assuming the queue
+	 * still knows about it.
+	 *
+	 * The image NAME rather than a flag: convergence has to know which
+	 * image each waiting definition is watching, and pipelineview.c's
+	 * write_deployments() has to report blocked_on {kind:"image",name}.
+	 * Storing it means neither has to re-parse the create body to find
+	 * out something the apply already knew.
+	 */
+	char awaiting_image[REGISTRY_NAME_MAX];
+	/*
+	 * Why the LAST replay of a waiting definition failed for a reason
+	 * that was not the image (a name taken since, a network deleted, a
+	 * rendered field validation rejects). NOT persisted -- deliberately,
+	 * exactly like consecutive_failures directly above: a failure from
+	 * before a restart describes a world that no longer exists, and the
+	 * next replay re-establishes it in one attempt if it is still true.
+	 */
+	char last_replay_error[192];
 	int in_use;
 };
 
@@ -166,6 +192,38 @@ int containerdef_add(const char *name, const char *body, size_t body_len,
  *
  * Returns -1 if no definition exists for name, or on a persist failure.
  */
+/*
+ * ADR-0270: mark (or, with NULL/"", unmark) this definition as waiting
+ * for image to be realized. Persisted -- a deployment applied against
+ * an unbuilt image is an intent that must survive a daemon restart.
+ * Clearing the wait also clears any recorded replay error.
+ * -1 if no such definition, or if image does not fit.
+ */
+int containerdef_set_awaiting_image(const char *name, const char *image);
+
+/*
+ * ADR-0270: record why the last replay of a waiting definition failed
+ * for a reason other than its image. In memory only -- never persisted,
+ * the same deliberate choice consecutive_failures already makes.
+ */
+void containerdef_set_replay_error(const char *name, const char *err);
+
+/*
+ * ADR-0270: a definition that was waiting for its image has now been
+ * created. Clears the wait and writes the policy fields the apply could
+ * only default, taking them from create_container_from_body()'s own
+ * out-params rather than parsing the body a second time.
+ *
+ * Not containerdef_add(): that frees the stored body before copying the
+ * one it is given, and every caller here passes that same body back.
+ * -1 if no such definition, or depends_on_count is out of range.
+ */
+int containerdef_promote_pending(const char *name, const char *restart_policy,
+                                  int restart_delay_seconds,
+                                  const char depends_on[][REGISTRY_NAME_MAX], int depends_on_count,
+                                  int follow_rolling, int has_follow_rolling_jitter,
+                                  int follow_rolling_jitter_seconds);
+
 int containerdef_set_body(const char *name, const char *body, size_t body_len);
 
 /* Removes name's definition, if any. A no-op (returns 0) if none exists. */
