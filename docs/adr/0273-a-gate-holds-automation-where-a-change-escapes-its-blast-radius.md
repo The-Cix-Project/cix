@@ -121,6 +121,16 @@ bought. Requiring approver ≠ requester needs roles, which is
 [#304](https://git.home.arpa/itdlabs/cix/issues/304)'s RBAC, and is deliberately not
 built here.
 
+**An approval cannot be revoked**
+([#381](https://git.home.arpa/itdlabs/cix/issues/381)). For `roll` and `publish` this
+mostly self-corrects — every path that takes an image out of the rebuild queue forgets
+its grant, so approvals for abandoned work do not accumulate. `deploy` has no queue and
+therefore no such path: its grant is cleared only by an update that uses it. An approval
+typed against the wrong path stays, and a later update against that same path goes
+straight through while the gate looks on. Recorded rather than quietly shipped as a
+one-way door; the shape of the fix is a `revoke` taking the same `{gate, target}` and
+writing an audit line the way granting does.
+
 **A held item still lives in an in-memory queue.**
 [#373](https://git.home.arpa/itdlabs/cix/issues/373) already records that the rebuild
 queue does not survive a restart. Gates do not cause that and do not fix it; they make
