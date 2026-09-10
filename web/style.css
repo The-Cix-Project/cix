@@ -2814,7 +2814,7 @@ pre {
 }
 .dg-row {
 	display: grid;
-	grid-template-columns: minmax(140px, 1.4fr) minmax(60px, 0.6fr) minmax(180px, 2fr) minmax(0, 3fr);
+	grid-template-columns: minmax(120px, 1.1fr) minmax(52px, 0.5fr) minmax(230px, 2.8fr) minmax(0, 2.2fr);
 	align-items: center;
 	gap: var(--s2);
 	padding: var(--s1) var(--s2);
@@ -2835,20 +2835,48 @@ pre {
 .dg-row-header:hover { background: none; }
 .dg-row-sub { cursor: default; opacity: 0.75; font-size: 12px; }
 .dg-row-sub:hover { background: none; }
-.dg-row-name { font-weight: 600; font-size: 13px; overflow-wrap: anywhere; }
+/* min-width:0 on every grid child: a grid track's default `min-width:auto`
+   refuses to shrink below its content, so a long value does not ellipsize
+   -- it overflows its own column and draws on top of the next one. An
+   image's "version" is a 64-character manifest hash (ADR-0108), which
+   painted straight across the stage cells and made the row look broken. */
+.dg-row > * { min-width: 0; }
+.dg-row-name {
+	font-weight: 600;
+	font-size: 13px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
 .dg-row-sub .dg-row-name { font-weight: 400; padding-left: var(--s2); }
-.dg-row-ver { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
-.dg-row-why { font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+.dg-row-ver {
+	font-size: 11px;
+	color: var(--muted);
+	font-variant-numeric: tabular-nums;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.dg-row-why {
+	font-size: 11px;
+	color: var(--muted);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
 
 /* The pipeline itself. Equal columns so a stage lines up down the whole
    section -- scanning a column answers "what is in build right now". */
 .dg-cells { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 2px; }
+/* Wraps rather than truncating. Ten stages in a row leaves ~6 characters
+   per header, which turned `authenticate` and `author` into two columns
+   both reading "AUT..." -- adjacent, and different stages. */
 .dg-colhead {
 	font-size: 9px;
 	text-align: center;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
+	line-height: 1.1;
+	overflow-wrap: anywhere;
+	align-self: end;
 }
 .dg-cell { height: 12px; border-radius: 2px; background: var(--border); }
 .dg-cell-done { background: var(--ok); opacity: 0.55; }
@@ -2875,16 +2903,24 @@ pre {
 	font-variant-numeric: tabular-nums;
 }
 
-.dg-drift { margin-bottom: var(--s4); font-size: 12px; }
+/* Denser than the rows above it, and BELOW them: "where is this" is the
+   question the page exists for, and 21 drift entries at four lines each
+   pushed every pipeline row under the fold. */
+.dg-drift {
+	margin-bottom: var(--s4);
+	font-size: 12px;
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+	gap: var(--s2);
+}
 .dg-drift-row {
-	padding: var(--s2) var(--s3);
+	padding: var(--s1) var(--s2);
 	border: 1px solid var(--border);
 	border-left: 3px solid var(--paused);
 	border-radius: var(--r-control);
-	margin-bottom: var(--s2);
 }
-.dg-drift-name { font-weight: 600; margin-bottom: var(--s1); }
-.dg-drift-line { color: var(--muted); margin-top: 2px; }
+.dg-drift-name { font-weight: 600; }
+.dg-drift-line { color: var(--muted); overflow-wrap: anywhere; }
 
 .dg-drawer {
 	margin-top: var(--s4);
