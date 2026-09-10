@@ -345,25 +345,30 @@ void handle_ldap_group_update(int fd, const char *name, const char *body, size_t
 	new_name = jname != NULL ? json_as_string(jname) : NULL;
 
 	/*
-	 * #370: an admin group is named by NAME in hostauth-config and
-	 * joined by GID by its members, so a rename orphans the config and
-	 * a renumber orphans every member -- either one turns write
-	 * authentication off for the whole API while the configuration
-	 * still reads correctly. Both refused on a configured admin group.
-	 * Everything else about such a group stays editable; only the two
-	 * identity fields the invariant is built on are frozen.
+	 * #370: changing a configured admin group's GIDNUMBER orphans every
+	 * one of its members -- users carry gids, and nothing rewrites
+	 * theirs when the group's own gid moves -- so the group empties,
+	 * gating deactivates, and write authentication is off for the whole
+	 * API while hostauth-config still names the group and the group
+	 * still exists.
+	 *
+	 * RENAMING IS NOT GUARDED, because it is already solved: ADR-0147's
+	 * hostauth_rename_admin_group() rewrites admin_groups in place
+	 * before ldap_group_update() commits, precisely so a renamed admin
+	 * group never drops out of gating. Guarding it here refused a
+	 * working, tested feature -- caught by test_hostauth's own
+	 * "admin_groups did not follow the rename" case, which is what a
+	 * regression test is for.
 	 */
 	if (hostauth_group_is_admin_group(name)) {
 		struct ldap_group *cur = ldap_group_find(name);
-		int renaming = new_name != NULL && new_name[0] != '\0' && strcmp(new_name, name) != 0;
-		int renumbering = gidnumber != 0 && cur != NULL && gidnumber != cur->gidnumber;
 
-		if (renaming || renumbering) {
+		if (gidnumber != 0 && cur != NULL && gidnumber != cur->gidnumber) {
 			json_free(root);
 			respond_error(fd, 409, "Conflict",
-			              "this group is named in admin_groups -- renaming it or changing "
-			              "its gidnumber would turn off write authentication for the whole "
-			              "API; change PUT /v1/system/hostauth-config first");
+			              "this group is named in admin_groups -- changing its gidnumber "
+			              "would orphan every member and turn off write authentication for "
+			              "the whole API; move the members first");
 			return;
 		}
 	}
