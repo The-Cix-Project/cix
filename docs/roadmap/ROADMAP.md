@@ -2639,7 +2639,7 @@ Header trimmed 56px -> 42px with the triggers' padding cut to match; dropdown pa
 
 Verified: all sandbox-runnable selftests pass; `index.html` parses clean under a real HTML parser; every one of the 56 routes lands on the right section with the right tab active, checked headlessly.
 
-## Part 221 (done): the resource is Storage, not disks (ADR-0258)
+## Part 221 (done): the resource is Storage, not disks (ADR-0231, ADR-0258)
 
 Twelve endpoints renamed (`/v1/disks` -> `/v1/storage`, `/v1/diskroles` -> `/v1/storage-roles`), with their operationIds, schemas, response keys, CLI commands and dashboard labels. A clean cut with no aliases.
 
@@ -2673,7 +2673,7 @@ Shipped additively: `/v1/schedules` CRUD, `/v1/schedule-actions`, `POST /v1/sche
 
 Verified: `cixd` clean under TCC `-Wall -Werror`; all 31 sandbox-runnable selftests pass, including new `test_scheduler`. Route count 283 -> 289. No `architecture.svg` change — the diagram maps subsystems, and this replaces a pattern inside one rather than adding a box.
 
-## Part 218 (done): the pipeline is the model — one vocabulary, one join, one honest boot confirm (ADR-0256)
+## Part 218 (done): the pipeline is the model — one vocabulary, one join, one honest boot confirm (ADR-0254, ADR-0256)
 
 Part 217 produced stages 1–4 of a sequence nobody had named. **ADR-0256** names all eleven and replaces the four unrelated vocabularies that described them with one `(stage, status)` pair, spoken verbatim by the API, the CLI and the dashboard.
 
@@ -2748,7 +2748,7 @@ That last one produced the session's one permanent mechanism: **a published arti
 
 Deployed as v2.53.77 (slot b), carrying v2.53.74's `#305` device-resolution work alongside. Open and filed rather than left in prose: #308 (assembly has status but no trigger), #309 (`test_daemon_net` 409 flake), #310 (`DELETE /v1/pkg/{name}` cannot name `__hostbuild`), #311 (ADR-0252 decided but not enforced -- and violated once by this very session), #312 (a versioned archive name escapes stem matching).
 
-## Part 214 (done): the reactor does not block, and a supervisor that was built, deployed and rolled back (ADR-0246, ADR-0247, #283)
+## Part 214 (done): the reactor does not block, and a supervisor that was built, deployed and rolled back (ADR-0227, ADR-0246, ADR-0247, #283)
 
 The control plane stopped answering on 2026-09-05 and could only be recovered by hand. ADR-0246's answer was to split `cixd` into a supervisor and a disposable worker. That was built in full, deployed to 192.168.15.95, and measured — and the measurements reversed most of the ADR's own reasoning, which is why it is superseded by ADR-0247 rather than edited.
 
@@ -2826,7 +2826,7 @@ Refusal paths were exercised against a live daemon first (no ISO built → 400 n
 
 One gap found by doing this rather than by reasoning about it: `g_iso_build_state` is in-memory, so the reboot into v2.5.0 left a finished, signed ISO on disk that the daemon reported as `state: none` and refused to publish. Harmless here (an ISO should carry the cixd version being released, so rebuilding was correct anyway) but real whenever anything restarts cixd between build and publish — filed as #205.
 
-## Part 209 (done): a separate release-signing key, and ISOs that sign themselves
+## Part 209 (done): a separate release-signing key, and ISOs that sign themselves (ADR-0212)
 
 Issue #197, [ADR-0220](../adr/0220-a-separate-release-signing-key.md). The issue could not be built as written: it asked for the **existing platform key** *and* **Ed25519** signatures, but that key is the Secure Boot key handed to `sbsign` and UEFI mandates RSA, while minisign is Ed25519-only. A different algorithm, not a different encoding — it would have failed at the first signing call. A separate Ed25519 release key resolves it, and is better independently: sharing one key means whoever can sign a download can also sign a bootloader, and the recovery costs are nothing alike (republish a public key, versus re-enrol firmware on every host).
 
@@ -2836,7 +2836,7 @@ Issue #197, [ADR-0220](../adr/0220-a-separate-release-signing-key.md). The issue
 
 A missing key does **not** fail an ISO build — an unsigned ISO still installs, and most hosts able to build one should hold no signing material at all — so the absence is reported (`signature_path` null) rather than inferred from success. A signing failure *with* a key present is logged as an error, since that is the case an operator must not ship past.
 
-## Part 208 (done): the glibc floor is closed -- nothing in any image comes off the build host
+## Part 208 (done): the glibc floor is closed -- nothing in any image comes off the build host (ADR-0210)
 
 Issue #186, [ADR-0216](../adr/0216-the-glibc-floor-is-closed.md). `pkg_seed_image_baseline()` copied four files into every image by absolute path off whatever machine happened to be running `cixd` -- the dynamic loader (twice, `lib64/` and `lib/x86_64-linux-gnu/`), `libc.so.6`, `libm.so.6` and `libnss_files.so.2`. Everything else that function does it *creates*; these four it *borrowed*, and on the first real host they were Debian's. ADR-0209 named them plainly as the only files in any image this project had not built, and named the condition for closing it: build glibc from source on a Cix host.
 
@@ -2890,7 +2890,7 @@ Issue #129, [ADR-0201](../adr/0201-artifacts-are-retrievable-and-self-publishing
 
 **Left open deliberately, not silently.** `pkg_artifact_sha256` values recorded before this change describe non-canonical tarballs — existing pulls are unaffected, but a checksum regenerated from a daemon-built tarball will differ. And whether `artifacts` should remain in the REBUILDABLE class now that its contents are retrievable is a real question. Both are filed rather than settled as a side effect of this work.
 
-## Part 204 (done): the project is renamed to Cix
+## Part 204 (done): the project is renamed to Cix (ADR-0192)
 
 Full rebrand to **Cix** (ADR-0200, issue #121) — "C" for the C language and for containers, "ix" for POSIX and UNIX, pronounced *six*. The owner's brand system landed first (`docs/brand/`), so the rename had a defined target: guidelines, logo reference sheet, the canonical SVG mark, and a 102-icon UI set.
 
