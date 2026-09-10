@@ -458,6 +458,22 @@ static char g_artifacts_dir[PATH_MAX];
 struct pkg_chain {
 	/* Was g_chains[chain_idx].name -- "" means this chain slot is idle. */
 	char name[PKG_NAME_MAX];
+	/*
+	 * ADR-0272: what caused this job, carried for the whole chain.
+	 *
+	 * It lives here and not in a module static consumed at the
+	 * run-open site, because that consumption was wrong in two ways
+	 * that a single-package test could not show. pkg_install_start()
+	 * has four early returns BEFORE any run opens (bad name, busy, no
+	 * recipe, already installed), so a rolling rebuild that failed to
+	 * start left "rolling" behind for the next operator-requested
+	 * install to pick up. And resolve_chain() means the ambient value
+	 * is consumed by dep_queue[0] alone, so in a rolling rebuild that
+	 * pulled dependencies -- most of them -- every atom after the
+	 * first recorded itself as "request". A chain has one cause, so
+	 * the chain is where it belongs.
+	 */
+	char run_trigger[16];
 	/* The target image the in-flight job (name above, plus every
 	 * dependency it pulls in) merges into -- always normalized (never
 	 * empty; see normalize_image()), valid exactly when name is
@@ -659,8 +675,14 @@ static int chain_alloc(void)
 
 	chain_reap_stale();
 	for (i = 0; i < max_jobs; i++) {
-		if (g_chains[i].name[0] == '\0')
+		if (g_chains[i].name[0] == '\0') {
+			/* ADR-0272: requested unless a caller says otherwise, so
+			 * a hostbuild and every other direct entry point are
+			 * right without having to remember to say so. */
+			snprintf(g_chains[i].run_trigger, sizeof(g_chains[i].run_trigger), "%s",
+			         PKG_RUN_TRIGGER_REQUEST);
 			return i;
+		}
 	}
 	return -1;
 }
@@ -5003,10 +5025,10 @@ int pkg_try_start_queued_rebuild(pid_t *out_pid, int *out_pidfd, int *out_chain_
 				 * handle_pkg_update_all()'s own rebuild, never worth
 				 * preserving a build container for (ADR-0175). */
 				/* ADR-0272: nobody requested this one -- a publish
-				 * caused it. Consumed by the run-open site inside
-				 * pkg_install_start(), which resets it, so a failure
-				 * to start cannot leave the next operator-requested
-				 * install mislabelled. */
+				 * caused it. pkg_install_start() consumes this before
+				 * its own first early return and puts it on the chain,
+				 * so a refused start cannot leave it behind and every
+				 * dependency the rebuild pulls carries it too. */
 				snprintf(g_next_run_trigger, sizeof(g_next_run_trigger), "%s",
 				         PKG_RUN_TRIGGER_ROLLING);
 				if (pkg_install_start(entries[i].package, image, want_version, e != NULL, 0,
@@ -5436,14 +5458,14 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 	}
 	e->state = PKG_STATE_FETCHING;
 	/*
-	 * ADR-0272: a run opens here, at the single place a job begins.
-	 * g_next_run_trigger names what caused it and is consumed rather
-	 * than read, so a trigger set by the rolling-rebuild drain cannot
-	 * leak onto the next operator-requested install.
+	 * ADR-0272: a run opens here, at the single place a job begins --
+	 * so every atom of a chain gets one, not just the package that was
+	 * asked for. What caused it is the CHAIN's, read rather than
+	 * consumed: see struct pkg_chain's own run_trigger for the two
+	 * ways consuming a module static here got it wrong.
 	 */
 	e->run_started_at = time(NULL);
-	snprintf(e->run_trigger, sizeof(e->run_trigger), "%s", g_next_run_trigger);
-	snprintf(g_next_run_trigger, sizeof(g_next_run_trigger), "%s", PKG_RUN_TRIGGER_REQUEST);
+	snprintf(e->run_trigger, sizeof(e->run_trigger), "%s", g_chains[chain_idx].run_trigger);
 	e->error[0] = '\0';
 	e->status = PIPELINE_OK; /* the previous attempt's outcome is not this
 	                          * attempt's story; cleared alongside error[]
@@ -5778,6 +5800,15 @@ enum pkg_error pkg_install_start(const char *name, const char *image, const char
 	char err[PKG_ERROR_MAX];
 	enum pkg_error perr;
 	int chain_idx;
+	char trigger[16];
+
+	/*
+	 * ADR-0272: consumed HERE, before any early return, so a caller's
+	 * "rolling" cannot survive a refused start and mislabel the next
+	 * install. Held in a local until there is a chain to put it on.
+	 */
+	snprintf(trigger, sizeof(trigger), "%s", g_next_run_trigger);
+	snprintf(g_next_run_trigger, sizeof(g_next_run_trigger), "%s", PKG_RUN_TRIGGER_REQUEST);
 
 	if (!pkg_name_is_valid(name))
 		return PKG_ERR_INVALID_NAME;
@@ -5786,6 +5817,9 @@ enum pkg_error pkg_install_start(const char *name, const char *image, const char
 	if (pkg_any_job_busy())
 		return PKG_ERR_BUSY;
 	chain_idx = chain_alloc();
+	if (chain_idx >= 0)
+		snprintf(g_chains[chain_idx].run_trigger, sizeof(g_chains[chain_idx].run_trigger), "%s",
+		         trigger);
 
 	if (find_recipe_path(name, version, recipe_path, sizeof(recipe_path)) != 0 ||
 	    parse_recipe(recipe_path, &recipe) != 0 || strcmp(recipe.name, name) != 0)
@@ -7165,6 +7199,12 @@ static void pkg_runs_save(void)
 	 */
 	if (g_pkg_dir[0] == '\0')
 		return;
+	/* Same defensiveness as pkg_build_log_open()'s own mkdir, and for
+	 * the same reason: persist_atomic_write() into a directory that is
+	 * not there fails silently, and the symptom would surface much
+	 * later as "the retention did not survive a restart" -- pointing at
+	 * the load path, which would be innocent. */
+	(void)persist_mkdir_p(g_pkg_dir);
 	pkg_runs_path(path, sizeof(path));
 	jw_init(&w);
 	pkg_runs_render(&w);

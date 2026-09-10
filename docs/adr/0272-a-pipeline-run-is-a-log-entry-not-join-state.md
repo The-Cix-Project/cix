@@ -129,6 +129,17 @@ and a build's start really is in there. But the audit trail records *requests*, 
 rolling rebuild is not a request — nobody asked for it, a publish caused it. The runs
 that most need explaining are exactly the ones the audit trail cannot see.
 
+The cause is carried on the **chain**, not on an ambient value consumed when a
+run opens. That distinction is not cosmetic: `pkg_install_start()` has four early
+returns before any run exists, so a consumed-at-open value survived a refused
+rolling rebuild and mislabelled the next operator-requested install; and a chain
+resolves its dependencies first, so only the first atom would have consumed it
+and every dependency a rolling rebuild pulled would have recorded itself as
+requested. A chain has one cause, and that is where it lives. Issue
+[#375](https://git.home.arpa/itdlabs/cix/issues/375) records the remaining gap:
+an open run is in memory only, so a daemon restarted mid-build records nothing
+for the run it was in the middle of.
+
 This is also why a run records a `trigger` and not an actor. "Requested" versus
 "rolling" is the distinction that changes what an operator does next, and it is knowable
 at the one place a job begins. *Which person* requested it is already recorded, by name,
