@@ -1090,12 +1090,6 @@ static char CONTAINERS_DEVICE[64]; /* cix-containers -- resolved by label, #305 
 
 #define MAX_EVENTS 64
 #define CONTAINERS_PREFIX "/v1/containers/"
-/* #371: the path a deployment lives at. The concept was renamed from
- * "container recipe" because it describes what to RUN and where, not
- * how to build anything. Clean cut-over, no alias. */
-#define CONTAINER_RECIPES_PREFIX "/v1/deployments/"
-#define NETWORKS_PREFIX "/v1/networks/"
-#define DNS_RECORDS_PREFIX "/v1/dns/records/"
 #define DNS_SERVERS_PREFIX "/v1/dns/servers/"
 #define LDAP_SERVERS_PREFIX "/v1/ldap/servers/"
 #define LDAP_GROUPS_PREFIX "/v1/ldap/groups/"
