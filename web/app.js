@@ -13230,6 +13230,7 @@ function dgRow(kind, stages, row, opts) {
 	const ver = document.createElement("div");
 	ver.className = "dg-row-ver";
 	ver.textContent = row.version || row.resolved_version || "";
+	ver.title = ver.textContent;
 	el.appendChild(ver);
 
 	el.appendChild(dgCells(kind, stages, row));
@@ -13274,6 +13275,9 @@ function dgSection(kind, label, stages, rows, frag) {
 		const c = document.createElement("div");
 		c.className = "dg-colhead";
 		c.textContent = st;
+		/* Ten stages in one row means the header text is truncated; the
+		 * full name has to stay reachable somewhere. */
+		c.title = st;
 		hc.appendChild(c);
 	}
 	hdr.appendChild(hc);
