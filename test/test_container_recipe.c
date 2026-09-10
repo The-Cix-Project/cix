@@ -575,11 +575,28 @@ int main(void)
 		}
 		cix_response_free(&r);
 
-		/* No container was created -- waiting is not a half-create. */
+		/*
+		 * No container is RUNNING -- waiting is not a half-create.
+		 *
+		 * Not a 404: since ADR-0181 every definition is persisted and
+		 * GET /v1/containers/{name} answers from it, so a waiting
+		 * deployment reports as a defined, not-running container. What
+		 * it must not do is report as "stopped" with no reason, which
+		 * for something that has never started once would be true and
+		 * useless -- so awaiting_image is what is actually asserted.
+		 */
 		memset(&r, 0, sizeof(r));
 		CHECK(cix_client_request(&client, "GET", "/v1/containers/pendtest", NULL, &r) == 0 &&
-		          r.status == 404,
-		      "a waiting deployment has created no container");
+		          r.status == 200,
+		      "a waiting deployment is visible as a defined container");
+		if (r.json != NULL) {
+			CHECK(json_str_field(r.json, "status") != NULL &&
+			          strcmp(json_str_field(r.json, "status"), "stopped") == 0,
+			      "it is not running");
+			CHECK(json_str_field(r.json, "awaiting_image") != NULL &&
+			          strcmp(json_str_field(r.json, "awaiting_image"), "pendimg") == 0,
+			      "and it says WHICH image it is waiting for, not just that it is stopped");
+		}
 		cix_response_free(&r);
 
 		/* The pipeline reports it at acquire/blocked, naming the image
@@ -651,9 +668,14 @@ int main(void)
 		/* Still no container, and the definition did not quietly become
 		 * an ordinary stopped one. */
 		memset(&r, 0, sizeof(r));
-		CHECK(cix_client_request(&client, "GET", "/v1/containers/pendtest", NULL, &r) == 0 &&
-		          r.status == 404,
-		      "still no container after the restart");
+		if (cix_client_request(&client, "GET", "/v1/containers/pendtest", NULL, &r) == 0 &&
+		    r.status == 200 && r.json != NULL) {
+			CHECK(json_str_field(r.json, "awaiting_image") != NULL &&
+			          strcmp(json_str_field(r.json, "awaiting_image"), "pendimg") == 0,
+			      "the persisted definition still names its image after the restart");
+		} else {
+			CHECK(0, "GET the waiting deployment after the restart");
+		}
 		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));

@@ -396,6 +396,20 @@ static void write_stopped_def_json_one(struct container_def *d, struct json_writ
 	jw_str(w, image != NULL ? image : "");
 	jw_key(w, "status");
 	jw_str(w, "stopped");
+	/*
+	 * ADR-0270: WHY it is not running, when the reason is that its image
+	 * has never been built.
+	 *
+	 * The status stays "stopped" because that is what ADR-0181 defines it
+	 * as -- a defined container that is not running -- and a new enum
+	 * value would change a contract every client already switches on. But
+	 * "stopped" alone reads as "somebody stopped it", which for a
+	 * deployment that has never started once is exactly the kind of state
+	 * that is true and tells nobody anything. Empty for every ordinary
+	 * definition.
+	 */
+	jw_key(w, "awaiting_image");
+	jw_str(w, d->awaiting_image);
 	jw_key(w, "paused");
 	jw_bool(w, 0);
 	jw_key(w, "pid");
