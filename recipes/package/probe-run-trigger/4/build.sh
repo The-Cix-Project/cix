@@ -1,10 +1,10 @@
 #
-# probe-run-trigger-dep 2 -- proves ADR-0272's `trigger` field for BOTH values,
+# probe-run-trigger 3 -- proves ADR-0272's `trigger` field for BOTH values,
 # which no test in SELFTESTS can do (a run needs a real build, and
 # test_pkg is excluded -- see probe-missing-tool/1 for the same
 # reasoning about #224).
 #
-# The dependency half. Deliberately trivial: this is about the run RECORD, not about building anything.
+# The dependent half. probe-run-trigger DEPENDS on probe-run-trigger-dep.
 #
 # Two corrections to the earlier revisions, both found by running them
 # on 192.168.15.95 on 2026-09-10:
@@ -34,20 +34,20 @@
 #      "rolling". Before the chain fix only dep_queue[0] saw "rolling"
 #      and everything after it recorded "request".
 #
-pkg_name="probe-run-trigger-dep"
-pkg_version="2"
+pkg_name="probe-run-trigger"
+pkg_version="4"
 pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/v2.57.49.tar.gz"
 pkg_sha256="6042eeebf80880a82e06eefbb15c4ecc7272b759258e72b617dd6198f734e11e"
-pkg_depends=""
+pkg_depends="probe-run-trigger-dep"
 pkg_build_depends="bash coreutils"
-pkg_changelog="2: source moved to git.home.arpa (ftp.gnu.org does not resolve from a build container on this host, and revision 1's apparent success was a cache hit); records that resolve_chain() skips an already-installed dependency regardless of version, so the probe uninstalls it first."
+pkg_changelog="4: source moved to git.home.arpa (ftp.gnu.org does not resolve from a build container on this host, and revision 1's apparent success was a cache hit); records that resolve_chain() skips an already-installed dependency regardless of version, so the probe uninstalls it first."
 
 pkg_build() {
-	echo "probe: probe-run-trigger-dep revision 2, nothing to build"
+	echo "probe: probe-run-trigger revision 4, nothing to build"
 	true
 }
 
 pkg_install() {
-	mkdir -p "$PKG_DESTDIR/usr/share/probe-run-trigger-dep"
-	echo "probe-run-trigger-dep revision 2" > "$PKG_DESTDIR/usr/share/probe-run-trigger-dep/REVISION"
+	mkdir -p "$PKG_DESTDIR/usr/share/probe-run-trigger"
+	echo "probe-run-trigger revision 4" > "$PKG_DESTDIR/usr/share/probe-run-trigger/REVISION"
 }
