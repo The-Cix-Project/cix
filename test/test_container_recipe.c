@@ -554,11 +554,11 @@ int main(void)
 		/* Declare something into the manifest. Now there IS a target
 		 * to converge toward, so the same apply waits instead. */
 		memset(&r, 0, sizeof(r));
-		CHECK(cix_client_request(&client, "PUT", "/v1/images/pendimg/manifest",
+		CHECK(cix_client_request(&client, "POST", "/v1/images/pendimg/manifest",
 		                          "{\"package\":\"nosuchpkg\",\"mode\":\"pinned\","
 		                          "\"version\":\"1.0-1\"}", &r) == 0 &&
 		          r.status == 204,
-		      "PUT pendimg manifest declares a package");
+		      "POST pendimg manifest declares a package");
 		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));

@@ -1479,7 +1479,7 @@ void image_recipe_write_json_list(struct json_writer *w);
  *
  * Never returns PKG_ERR_BUSY. It used to, and ADR-0270 removed that
  * check as vestigial -- see the note at the call site. Declaring a
- * manifest needs no job slot, and the manual PUT .../manifest path has
+ * manifest needs no job slot, and the manual POST .../manifest path has
  * never taken one.
  */
 enum pkg_error pkg_image_recipe_apply_start(const char *image);
