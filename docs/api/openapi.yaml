@@ -9013,13 +9013,31 @@ paths:
         "what is broken" is worse than no copy.
 
         One row per package, because that is the grain recipes have.
-        Builds are per (package, image), so a row reports the EARLIEST
-        stage that is not ok across that package's images, with the
-        per-image detail under `images`. Earliest rather than most
-        severe: a pipeline stops at its first problem and everything
-        after it is consequence, so a package that could not be
-        downloaded reads "could not download" and not "could not
-        compile".
+        Builds are per (package, image), so a row SUMMARISES that
+        package's images, with the per-image detail under `images`.
+        Three rules pick the summary, in order: a real problem always
+        wins over good news elsewhere; between two problems the EARLIEST
+        stage wins, because a pipeline stops at its first problem and
+        everything after it is consequence (so a package that could not
+        be downloaded reads "could not download", not "could not
+        compile"); and with no problem anywhere, the FURTHEST place it
+        actually reached wins.
+
+
+        `not-implemented` is not such a place -- it means the stage does
+        not apply to this package at all, and it never outranks a real
+        position. That last rule is a fix (#371): before it, an ok
+        position could not displace the starting one, and the starting
+        one is `discover/not-implemented` for every package with no
+        `pkg_upstream=`. Measured on a live host, glibc -- installed and
+        healthy in eleven images -- reported `discover/not-implemented`,
+        as did 121 of 122 packages.
+
+
+        A package installed nowhere, with nothing wrong, reports
+        `author/ok`: the recipe is written and nothing has been built
+        from it yet. Which stages actually apply is still answerable per
+        package from `upstream`.
 
         `deploy` is reported ONCE, beside the package list, not on every
         row -- it is a single fact about this host (did the root that
@@ -14794,6 +14812,38 @@ components:
       type: object
       required: [packages, stages, deploy, total]
       properties:
+        drift:
+          type: array
+          description: >
+            Packages installed at MORE THAN ONE version across this
+            host's images (#371). Derived on every read like everything
+            else here, never stored.
+
+
+            It is reported separately because the per-package row above
+            deliberately hides it: a package that is healthy at three
+            different versions in eleven images reports install/ok,
+            which is true and says nothing. Measured on a live host,
+            glibc sat at 2.44-12, 2.44-14 and 2.44-16 across eleven
+            images with nothing anywhere reporting it. Empty when every
+            package is at one version everywhere.
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              versions:
+                type: integer
+                description: How many distinct versions are installed across images.
+              installs:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    image:
+                      type: string
+                    version:
+                      type: string
         packages:
           type: array
           items:

@@ -22,23 +22,55 @@
 #define PIPELINEVIEW_MAX_MANIFEST 256
 #define PIPELINEVIEW_MAX_DEPLOYMENTS 256
 
-/*
- * Which of two positions is the one to report for a package.
- *
- * "Worst" is not a severity ranking -- it is the EARLIEST stage that is
- * not ok, because a pipeline stops at its first problem and everything
- * after it is consequence rather than cause. A package that could not
- * be downloaded and therefore also could not be built should read
- * "could not download"; ranking by severity would report the build.
- */
-static int position_is_worse(enum pipeline_stage a_stage, enum pipeline_status a_status,
-                              enum pipeline_stage b_stage, enum pipeline_status b_status)
+/* A status that means something actually went wrong, as opposed to one
+ * that means the stage does not apply or the work is simply done. */
+static int status_is_problem(enum pipeline_status s)
 {
-	if (a_status == PIPELINE_OK)
-		return 0;
-	if (b_status == PIPELINE_OK)
-		return 1;
-	return a_stage < b_stage;
+	return s == PIPELINE_BLOCKED || s == PIPELINE_FAILED || s == PIPELINE_CANCELLED;
+}
+
+/*
+ * Which of two positions is the one to report for a package, given that
+ * a package is not in one place: it is installed into N images, each
+ * with its own position, and the row above them is a summary.
+ *
+ * Three rules, in order.
+ *
+ * A REAL PROBLEM always wins, because a summary whose job is to say
+ * "look here" must not be outranked by good news elsewhere.
+ *
+ * Between two problems the EARLIEST stage wins -- not the most severe.
+ * A pipeline stops at its first problem and everything after it is
+ * consequence rather than cause, so a package that could not be
+ * downloaded and therefore also could not be built should read "could
+ * not download".
+ *
+ * With no problem anywhere, the FURTHEST place it actually reached
+ * wins, and `not-implemented` is not such a place: it means the stage
+ * does not apply to this package at all. That last clause is the fix
+ * for a real bug. The previous version returned "not worse" for any ok
+ * position, so an ok position could never displace the starting one --
+ * and the starting one comes from srcresolve, which reports
+ * `discover/not-implemented` for every package with no pkg_upstream=.
+ * Measured on a live host: glibc, installed and healthy in ELEVEN
+ * images, was headlined `discover / not-implemented`, and 121 of 122
+ * packages reported the same. The page was a wall of identical grey
+ * boxes describing a state that was not a problem and not where any of
+ * them were.
+ */
+static int position_beats(enum pipeline_stage a_stage, enum pipeline_status a_status,
+                           enum pipeline_stage b_stage, enum pipeline_status b_status)
+{
+	int a_bad = status_is_problem(a_status);
+	int b_bad = status_is_problem(b_status);
+
+	if (a_bad != b_bad)
+		return a_bad;
+	if (a_bad)
+		return a_stage < b_stage;
+	if ((a_status == PIPELINE_NOT_IMPLEMENTED) != (b_status == PIPELINE_NOT_IMPLEMENTED))
+		return b_status == PIPELINE_NOT_IMPLEMENTED;
+	return a_stage > b_stage;
 }
 
 static void write_position(struct json_writer *w, enum pipeline_stage stage,
@@ -141,10 +173,15 @@ static void write_images(struct json_writer *w, int *stage_counts)
 			for (p = 0; p < np; p++) {
 				if (strcmp(positions[p].image, names[i]) != 0)
 					continue;
-				if (positions[p].status == PIPELINE_OK)
+				/* Only a real problem holds an image back. Skipping
+				 * merely "not ok" would let a stage that does not
+				 * apply to a package mark the whole image blocked --
+				 * the same bug position_beats() above exists to fix,
+				 * one level up. */
+				if (!status_is_problem(positions[p].status))
 					continue;
-				if (status == PIPELINE_OK ||
-				    position_is_worse(positions[p].stage, positions[p].status, stage, status)) {
+				if (!status_is_problem(status) ||
+				    position_beats(positions[p].stage, positions[p].status, stage, status)) {
 					stage = positions[p].stage;
 					status = positions[p].status;
 					reason = positions[p].error;
@@ -388,6 +425,67 @@ static void write_edges(struct json_writer *w)
 	jw_arr_close(w);
 }
 
+/*
+ * Packages installed at more than one version across this host's images.
+ *
+ * Derived, never stored -- it is a fact about the manifest set the join
+ * already reads, so it costs one more walk and no state. That matters:
+ * ADR-0256's whole design is that a position is computed from what is
+ * really on disk, and drift is the same kind of answer.
+ *
+ * It earns its own key because it is the one thing on this page an
+ * operator can act on immediately, and because the per-package fold
+ * above deliberately hides it: a package healthy at three different
+ * versions in eleven images is `install/ok`, which is true and says
+ * nothing. Measured on a live host, glibc sits at 2.44-12, 2.44-14 and
+ * 2.44-16 across eleven images, with nothing anywhere reporting it.
+ */
+static void write_drift(struct json_writer *w, char names[][PKG_IMAGE_NAME_MAX], int n)
+{
+	static struct pkg_position positions[PIPELINEVIEW_MAX_IMAGES];
+	int i, p, q, np;
+
+	jw_key(w, "drift");
+	jw_arr_open(w);
+	for (i = 0; i < n; i++) {
+		int distinct = 0;
+
+		np = pkg_positions(names[i], positions, PIPELINEVIEW_MAX_IMAGES);
+		for (p = 0; p < np; p++) {
+			int seen = 0;
+
+			for (q = 0; q < p; q++)
+				if (strcmp(positions[q].version, positions[p].version) == 0) {
+					seen = 1;
+					break;
+				}
+			if (!seen)
+				distinct++;
+		}
+		if (distinct < 2)
+			continue;
+
+		jw_obj_open(w);
+		jw_key(w, "name");
+		jw_str(w, names[i]);
+		jw_key(w, "versions");
+		jw_int(w, distinct);
+		jw_key(w, "installs");
+		jw_arr_open(w);
+		for (p = 0; p < np; p++) {
+			jw_obj_open(w);
+			jw_key(w, "image");
+			jw_str(w, positions[p].image);
+			jw_key(w, "version");
+			jw_str(w, positions[p].version);
+			jw_obj_close(w);
+		}
+		jw_arr_close(w);
+		jw_obj_close(w);
+	}
+	jw_arr_close(w);
+}
+
 void pipelineview_write_json(struct json_writer *w)
 {
 	static char names[PIPELINEVIEW_MAX_PACKAGES][PKG_IMAGE_NAME_MAX];
@@ -424,20 +522,27 @@ void pipelineview_write_json(struct json_writer *w)
 
 		np = pkg_positions(names[i], positions, PIPELINEVIEW_MAX_IMAGES);
 		for (p = 0; p < np; p++) {
-			if (position_is_worse(positions[p].stage, positions[p].status, stage, status)) {
+			if (position_beats(positions[p].stage, positions[p].status, stage, status)) {
 				stage = positions[p].stage;
 				status = positions[p].status;
 				reason = positions[p].error;
 			}
 		}
 		/*
-		 * A package that is fine everywhere reports the furthest stage
-		 * it actually reached, not a stage it is stuck at. `install`
-		 * when something has installed it; `author` when a recipe
-		 * exists and nothing has been built from it yet.
+		 * Installed nowhere and nothing wrong: the recipe is written
+		 * and nothing has been built from it yet, which is `author`.
+		 * Reported as ok rather than not-implemented -- having no
+		 * upstream to poll is a deliberate, healthy state for a pinned
+		 * package, not a defect, and 120 of this host's 122 packages
+		 * are in it. Which stages actually apply is still answerable
+		 * from `upstream` below, per package, without every row
+		 * claiming to be stuck at the first of them.
 		 */
-		if (status == PIPELINE_OK && np == 0)
+		if (np == 0 && !status_is_problem(status)) {
 			stage = PIPELINE_AUTHOR;
+			status = PIPELINE_OK;
+			reason = "";
+		}
 
 		stage_counts[stage]++;
 		status_counts[status]++;
@@ -518,6 +623,8 @@ void pipelineview_write_json(struct json_writer *w)
 	write_images(w, stage_counts);
 	write_deployments(w, stage_counts);
 	write_edges(w);
+	/* Additive, like the four above it -- see that comment. */
+	write_drift(w, names, n);
 
 	/*
 	 * The stage list per kind, so a renderer draws each lane from the

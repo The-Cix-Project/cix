@@ -6,6 +6,55 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The pipeline page draws pipelines (#371, #374)
+
+The owner said it plainly: "I don't understand the UI you made for the pipeline
+mechanism? it's four columns, each representing a pipeline?" They were not
+misreading it. The page drew four lanes of **kinds** -- Deployments, Images,
+Packages, Host -- with the pipeline reduced to a single word inside each box.
+It never drew a pipeline anywhere.
+
+**Rows now, not lanes.** One row per thing, that thing's stages as columns,
+filled left-to-right to where it stands. Reading a line answers "where is
+this". Four sections because the four kinds walk different stage lists. Solid
+behind, outlined at the current position and coloured by status, hollow ahead,
+and **dotted for a stage that does not apply** -- which is not decoration: a
+package with no `pkg_upstream=` is pinned on purpose, so `discover`/`resolve`
+are not steps it has, and that is 120 of 122 packages on a real host.
+
+**#374, and it was live the whole time.** `position_is_worse()` returned 0 for
+any ok position, so an ok position could never displace the starting one -- and
+the starting one is `discover/not-implemented` for every package with no
+upstream. `glibc`, installed and healthy in ELEVEN images, reported
+`discover / not-implemented`. So did 121 of 122 packages. The page filtered on
+`status !== "ok"`, kept all of them, and drew **124 boxes where 3 were the
+answer**. The same shape existed one level up, where a not-implemented package
+would have marked its whole image blocked.
+
+The fold is three rules now: a real problem always wins over good news
+elsewhere; between two problems the earliest stage wins, because a pipeline
+stops at its first problem and everything after is consequence; with nothing
+wrong, the furthest place actually reached wins -- and `not-implemented` is
+never such a place.
+
+**A package row is a summary of its images, and the page now says so.** Where a
+package is installed into more than one, its images appear beneath it as
+sub-rows. A fold that quietly stands in for eleven different answers is exactly
+how the glibc case survived.
+
+**`drift[]`, new and derived.** The fold is correct now and still hides
+something real: glibc on that host sits at 2.44-12, 2.44-14 and 2.44-16 across
+its eleven images, and the row says `install/ok` -- true, and silent about the
+only thing an operator could act on. Its own panel, computed on every read like
+everything else, stored nowhere.
+
+Also: search, a problems-only filter that correctly excludes `not-implemented`,
+and a detail drawer carrying the reason, what it is blocked on, every image, a
+Cancel wired to the endpoint that already existed, and **the build log** --
+which has existed at `GET /v1/pkg/build-logs` all along, and which the page had
+simply never asked for. A red row with no route to why is the true-but-useless
+diagnostic this platform keeps having to fix elsewhere.
+
 ### A deployment whose image is not built waits for it, rather than being refused (#371, ADR-0270)
 
 Installing a package into an image already builds it from its recipe when there is

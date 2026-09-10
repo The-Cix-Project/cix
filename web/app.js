@@ -13166,6 +13166,141 @@ const CORE_REFRESHERS = [
  * packages is a wall of green nobody reads. Edges are still computed
  * over everything, so an unhealthy box always shows what it depends on.
  */
+/*
+ * #371: one row per thing, stages as columns, filled to where it stands.
+ *
+ * The previous version drew four lanes of boxes, one lane per KIND, with
+ * the stage as a word inside each box -- so the page never drew a
+ * pipeline at all, and reading it as "four columns, four pipelines" was
+ * the natural and wrong conclusion. A row is a pipeline; reading a line
+ * answers "where is this", which is the question the page exists for.
+ */
+
+/* Which stages actually apply to a row.
+ *
+ * One case is derivable today: a package with no pkg_upstream= is pinned
+ * on purpose, so `discover` and `resolve` -- the two stages that poll an
+ * upstream -- do not apply to it. That is 120 of 122 packages on a real
+ * host, so drawing them as "not reached" would paint almost every row as
+ * though it had stalled at the first step.
+ *
+ * Derived here rather than sent by the daemon because it is the only
+ * case. If a second appears, this belongs in the payload instead -- one
+ * place deciding which stages apply, not two. */
+function stageApplies(kind, stage, row) {
+	if (kind === "package" && !row.upstream)
+		return stage !== "discover" && stage !== "resolve";
+	return true;
+}
+
+function dgCells(kind, stages, row) {
+	const wrap = document.createElement("div");
+	const at = stages.indexOf(row.stage);
+
+	wrap.className = "dg-cells";
+	stages.forEach((st, i) => {
+		const c = document.createElement("div");
+
+		c.className = "dg-cell";
+		if (!stageApplies(kind, st, row))
+			c.classList.add("dg-cell-na");
+		else if (i < at)
+			c.classList.add("dg-cell-done");
+		else if (i === at)
+			c.classList.add("dg-cell-here", "dg-cell-" + (row.status || "ok"));
+		else
+			c.classList.add("dg-cell-todo");
+		c.title = st + (i === at ? " ← " + (row.status || "ok") : "");
+		wrap.appendChild(c);
+	});
+	return wrap;
+}
+
+function dgRow(kind, stages, row, opts) {
+	const el = document.createElement("div");
+
+	el.className = "dg-row" + (opts && opts.sub ? " dg-row-sub" : "");
+	el.tabIndex = 0;
+
+	const name = document.createElement("div");
+	name.className = "dg-row-name";
+	name.textContent = (opts && opts.label) || row.name;
+	el.appendChild(name);
+
+	const ver = document.createElement("div");
+	ver.className = "dg-row-ver";
+	ver.textContent = row.version || row.resolved_version || "";
+	el.appendChild(ver);
+
+	el.appendChild(dgCells(kind, stages, row));
+
+	const why = document.createElement("div");
+	why.className = "dg-row-why";
+	/* The reason belongs on the row, not behind a click: a page that
+	 * makes you open something to find out what is wrong has only moved
+	 * the problem. */
+	why.textContent = row.reason || "";
+	el.appendChild(why);
+
+	if (!(opts && opts.sub)) {
+		const open = () => openPipelineDrawer(kind, row);
+		el.addEventListener("click", open);
+		el.addEventListener("keydown", (e) => {
+			if (e.key === "Enter" || e.key === " ") {
+				e.preventDefault();
+				open();
+			}
+		});
+	}
+	return el;
+}
+
+function dgSection(kind, label, stages, rows, frag) {
+	const sec = document.createElement("div");
+	sec.className = "dg-section";
+
+	const head = document.createElement("div");
+	head.className = "dg-section-head";
+	head.textContent = label + " (" + rows.length + ")";
+	sec.appendChild(head);
+
+	const hdr = document.createElement("div");
+	hdr.className = "dg-row dg-row-header";
+	hdr.appendChild(document.createElement("div")).className = "dg-row-name";
+	hdr.appendChild(document.createElement("div")).className = "dg-row-ver";
+	const hc = document.createElement("div");
+	hc.className = "dg-cells";
+	for (const st of stages) {
+		const c = document.createElement("div");
+		c.className = "dg-colhead";
+		c.textContent = st;
+		hc.appendChild(c);
+	}
+	hdr.appendChild(hc);
+	hdr.appendChild(document.createElement("div")).className = "dg-row-why";
+	sec.appendChild(hdr);
+
+	for (const r of rows) {
+		sec.appendChild(dgRow(kind, stages, r, null));
+		/*
+		 * A package is not in one place -- it is installed into N
+		 * images, each with its own position, and the row above is a
+		 * fold of them. Showing the images it is really in is what
+		 * makes the fold honest rather than a summary that quietly
+		 * stands in for eleven different answers.
+		 */
+		if (kind === "package" && Array.isArray(r.images) && r.images.length > 1)
+			for (const im of r.images)
+				sec.appendChild(
+					dgRow(kind, stages, Object.assign({}, im, { upstream: r.upstream }), {
+						sub: true,
+						label: "↳ in " + im.image,
+					})
+				);
+	}
+	frag.appendChild(sec);
+}
+
 function renderDeliveryGraph(data) {
 	const root = document.getElementById("delivery-graph");
 
@@ -13177,133 +13312,266 @@ function renderDeliveryGraph(data) {
 		return;
 	}
 
-	const rows = {
-		deployment: Array.isArray(data.deployments) ? data.deployments : [],
-		image: Array.isArray(data.images) ? data.images : [],
-		package: Array.isArray(data.packages) ? data.packages : [],
-	};
-	const edges = Array.isArray(data.edges) ? data.edges : [];
+	const q = (document.getElementById("dg-search") || {}).value || "";
+	const problemsOnly = !!(document.getElementById("dg-problems-only") || {}).checked;
+	const needle = q.trim().toLowerCase();
+	const stagesFor = {};
+	for (const k of data.kinds)
+		stagesFor[k.kind] = k.stages || [];
 
-	/* A row is interesting if it is not ok, or something not-ok points at
-	 * it -- so the cause of a problem is always on screen beside it. */
-	const notOk = new Set();
-	for (const kind of Object.keys(rows))
-		for (const r of rows[kind])
-			if (r.status && r.status !== "ok")
-				notOk.add(kind + "/" + r.name);
-	const keep = new Set(notOk);
-	for (const e of edges)
-		if (notOk.has(e.from_kind + "/" + e.from))
-			keep.add(e.to_kind + "/" + e.to);
+	/* A problem is blocked/failed/cancelled. `not-implemented` is NOT one
+	 * -- it means the stage does not apply, which is an ordinary healthy
+	 * state, and treating it as interesting is what drew 121 of 122
+	 * packages as identical grey boxes. */
+	const isProblem = (r) =>
+		r.status === "blocked" || r.status === "failed" || r.status === "cancelled";
 
-	const lanes = [
-		["deployment", "Deployments"],
-		["image", "Images"],
-		["package", "Packages"],
+	const sections = [
+		["deployment", "Deployments", data.deployments],
+		["image", "Images", data.images],
+		["package", "Packages", data.packages],
 	];
-	let drew = 0;
+	const frag = document.createDocumentFragment();
+	let shown = 0;
 
-	for (const [kind, label] of lanes) {
-		const lane = document.createElement("div");
-		lane.className = "dg-lane";
-		const h = document.createElement("div");
-		h.className = "dg-lane-head";
-		h.textContent = label;
-		lane.appendChild(h);
-
-		const shown = rows[kind].filter((r) => keep.has(kind + "/" + r.name));
-
-		if (shown.length === 0) {
-			const none = document.createElement("div");
-			none.className = "dg-none";
-			none.textContent = rows[kind].length
-				? "all " + rows[kind].length + " clean"
-				: "none";
-			lane.appendChild(none);
-		}
-		for (const r of shown) {
-			const box = document.createElement("div");
-			box.className = "dg-box dg-" + (r.status || "ok");
-
-			const name = document.createElement("div");
-			name.className = "dg-name";
-			name.textContent = r.name;
-			box.appendChild(name);
-
-			const stage = document.createElement("div");
-			stage.className = "dg-stage";
-			stage.textContent = r.stage || "";
-			box.appendChild(stage);
-
-			if (r.reason) {
-				const why = document.createElement("div");
-				why.className = "dg-reason";
-				why.textContent = r.reason;
-				box.appendChild(why);
-			}
-
-			/* What this is waiting for, and the arrow to it. blocked_on
-			 * names the LIVE edge among the many that already exist. */
-			const out = edges.filter((e) => e.from_kind === kind && e.from === r.name);
-			if (out.length) {
-				const dep = document.createElement("div");
-				dep.className = "dg-dep";
-				const live = r.blocked_on ? r.blocked_on.name : null;
-				for (const e of out) {
-					const chip = document.createElement("span");
-					chip.className =
-						"dg-chip" +
-						(e.to === live ? " dg-chip-live" : "") +
-						(e.relation === "follow-rolling" ? " dg-chip-rolling" : "");
-					chip.textContent = (e.relation === "follow-rolling" ? "↻ " : "→ ") + e.to;
-					chip.title =
-						e.relation === "follow-rolling"
-							? "follows this image's current version"
-							: e.relation === "manifest"
-							? "composed of this package"
-							: "runs this image";
-					dep.appendChild(chip);
-				}
-				box.appendChild(dep);
-			}
-			lane.appendChild(box);
-			drew++;
-		}
-		root.appendChild(lane);
-	}
-
-	/* The host lane last: one box, always drawn, because "is this host
-	 * running what we think" is the question the whole page exists for. */
 	if (data.deploy) {
-		const lane = document.createElement("div");
-		lane.className = "dg-lane dg-lane-host";
-		const h = document.createElement("div");
-		h.className = "dg-lane-head";
-		h.textContent = "Host";
-		lane.appendChild(h);
-		const box = document.createElement("div");
-		box.className = "dg-box dg-" + (data.deploy.status || "ok");
-		const name = document.createElement("div");
-		name.className = "dg-name";
-		name.textContent = data.deploy.entry || "this host";
-		box.appendChild(name);
-		const stage = document.createElement("div");
-		stage.className = "dg-stage";
-		stage.textContent = data.deploy.stage || "deploy";
-		box.appendChild(stage);
-		if (data.deploy.reason) {
-			const why = document.createElement("div");
-			why.className = "dg-reason";
-			why.textContent = data.deploy.reason;
-			box.appendChild(why);
-		}
-		lane.appendChild(box);
-		root.appendChild(lane);
-		drew++;
+		const hostRow = Object.assign({ name: data.deploy.entry || "this host" }, data.deploy);
+		if (!needle || hostRow.name.toLowerCase().includes(needle))
+			if (!problemsOnly || isProblem(hostRow)) {
+				dgSection("host", "Host", stagesFor.host || [], [hostRow], frag);
+				shown++;
+			}
+	}
+	for (const [kind, label, rowsIn] of sections) {
+		let rows = Array.isArray(rowsIn) ? rowsIn : [];
+
+		if (needle)
+			rows = rows.filter((r) => r.name.toLowerCase().includes(needle));
+		if (problemsOnly)
+			rows = rows.filter(isProblem);
+		if (rows.length === 0)
+			continue;
+		/* Problems first, then alphabetical: the page is read top-down
+		 * and what needs attention should not be somewhere in the middle
+		 * of 122 healthy rows. */
+		rows = rows.slice().sort((a, b) => {
+			const pa = isProblem(a) ? 0 : 1;
+			const pb = isProblem(b) ? 0 : 1;
+			return pa !== pb ? pa - pb : a.name.localeCompare(b.name);
+		});
+		dgSection(kind, label, stagesFor[kind] || [], rows, frag);
+		shown += rows.length;
 	}
 
-	if (drew === 0)
-		root.textContent = "Nothing in flight, nothing blocked.";
+	if (shown === 0) {
+		root.textContent = needle
+			? "Nothing matches “" + q + "”."
+			: problemsOnly
+			? "Nothing is blocked, failed or cancelled."
+			: "Nothing to show.";
+	} else {
+		root.appendChild(frag);
+	}
+
+	const count = document.getElementById("dg-count");
+	if (count) {
+		const probs =
+			(data.blocked || 0) + (data.failed || 0) + (data.cancelled || 0);
+		count.textContent = probs
+			? probs + " need attention"
+			: "nothing blocked, failed or cancelled";
+		count.className = "dg-count" + (probs ? " dg-count-bad" : "");
+	}
+	renderDrift(data.drift);
+}
+
+/*
+ * Packages at more than one version across images.
+ *
+ * Its own panel because the package row above folds its images away, so
+ * a package healthy at three different versions in eleven images reads
+ * `install/ok` -- true, and silent about the one thing here that an
+ * operator can act on.
+ */
+function renderDrift(drift) {
+	const root = document.getElementById("dg-drift");
+
+	if (!root)
+		return;
+	root.textContent = "";
+	if (!Array.isArray(drift) || drift.length === 0) {
+		root.textContent = "Every package is at one version everywhere.";
+		return;
+	}
+	for (const d of drift) {
+		const box = document.createElement("div");
+		box.className = "dg-drift-row";
+
+		const name = document.createElement("div");
+		name.className = "dg-drift-name";
+		name.textContent = d.name + " — " + d.versions + " versions";
+		box.appendChild(name);
+
+		const byVersion = new Map();
+		for (const i of d.installs || []) {
+			if (!byVersion.has(i.version))
+				byVersion.set(i.version, []);
+			byVersion.get(i.version).push(i.image);
+		}
+		for (const [v, images] of byVersion) {
+			const line = document.createElement("div");
+			line.className = "dg-drift-line";
+			const chip = document.createElement("span");
+			chip.className = "dg-chip";
+			chip.textContent = v;
+			line.appendChild(chip);
+			line.appendChild(document.createTextNode(" " + images.join(", ")));
+			box.appendChild(line);
+		}
+		root.appendChild(box);
+	}
+}
+
+/*
+ * Detail for one row: why it is where it is, every image it is really
+ * installed into, and the actual build log.
+ *
+ * The log is the point. A red row with no route to WHY is the
+ * true-but-useless diagnostic this platform keeps having to fix
+ * elsewhere; the logs already exist (GET /pkg/build-logs) and the page
+ * simply never asked for them.
+ */
+async function openPipelineDrawer(kind, row) {
+	const drawer = document.getElementById("dg-drawer");
+	const title = document.getElementById("dg-drawer-title");
+	const body = document.getElementById("dg-drawer-body");
+
+	if (!drawer || !body)
+		return;
+	drawer.hidden = false;
+	title.textContent = kind + " · " + row.name;
+	body.textContent = "";
+
+	const line = (k, v) => {
+		if (v === undefined || v === null || v === "")
+			return;
+		const d = document.createElement("div");
+		const b = document.createElement("strong");
+		b.textContent = k + ": ";
+		d.appendChild(b);
+		d.appendChild(document.createTextNode(String(v)));
+		body.appendChild(d);
+	};
+
+	line("stage", row.stage);
+	line("status", row.status);
+	line("why", row.reason);
+	if (row.blocked_on)
+		line("blocked on", row.blocked_on.kind + " " + row.blocked_on.name);
+	line("upstream", row.upstream);
+	line("newest recipe", row.newest_recipe_version);
+	line("resolves to", row.resolved_version);
+
+	if (Array.isArray(row.images) && row.images.length) {
+		const h = document.createElement("div");
+		h.className = "dg-drawer-h";
+		h.textContent = "Installed into";
+		body.appendChild(h);
+		for (const im of row.images)
+			line(im.image, im.version + " — " + im.stage + "/" + im.status +
+			     (im.reason ? " — " + im.reason : ""));
+	}
+
+	/* Actions. Cancel is the one control that already exists as an
+	 * endpoint (POST /pkg/cancel); nothing else here acts yet. */
+	if (kind === "package" && (row.status === "blocked" || row.status === "failed")) {
+		const bar = document.createElement("div");
+		const cancel = document.createElement("button");
+
+		bar.className = "dg-drawer-actions";
+		cancel.type = "button";
+		cancel.className = "btn-small";
+		cancel.textContent = "Cancel the in-flight build";
+		cancel.addEventListener("click", async () => {
+			cancel.disabled = true;
+			try {
+				await apiRequest("POST", CIX_API.pkgCancel(), {});
+				cancel.textContent = "Cancelled";
+				refreshPipeline();
+			} catch (e) {
+				cancel.textContent = "Could not cancel: " + (e && e.message ? e.message : e);
+			}
+		});
+		bar.appendChild(cancel);
+		body.appendChild(bar);
+	}
+
+	if (kind !== "package")
+		return;
+
+	const h = document.createElement("div");
+	h.className = "dg-drawer-h";
+	h.textContent = "Build log";
+	body.appendChild(h);
+	const pre = document.createElement("pre");
+	pre.className = "dg-log";
+	pre.textContent = "loading…";
+	body.appendChild(pre);
+
+	try {
+		const list = await apiRequest("GET", CIX_API.listBuildLogs());
+		const mine = (list.logs || [])
+			.filter((l) => l.file.startsWith(row.name + "-"))
+			.sort((x, y) => y.modified_at - x.modified_at);
+
+		if (mine.length === 0) {
+			pre.textContent = "No build log for this package on this host.";
+			return;
+		}
+		/* apiRequestRaw(), not apiRequest(): a build log is plain text,
+		 * and apiRequest() parses every non-204 body as JSON. Its own
+		 * fourth argument is a timeout in ms, not options. */
+		const text = await apiRequestRaw("GET", CIX_API.getBuildLog(mine[0].file));
+		/* The tail, not the head: a build failure's cause is the last
+		 * thing printed, which is the same reason the log store keeps
+		 * the tail of captured output. */
+		const s = typeof text === "string" ? text : JSON.stringify(text);
+		const lines = s.split("\n");
+		pre.textContent = lines.slice(Math.max(0, lines.length - 200)).join("\n");
+		pre.scrollTop = pre.scrollHeight;
+	} catch (e) {
+		pre.textContent = "Could not read the build log: " + (e && e.message ? e.message : e);
+	}
+}
+
+/*
+ * The toolbar. Re-renders from the cached payload rather than re-fetching
+ * -- filtering is a question about data already on screen, and a network
+ * round trip per keystroke would make typing feel broken.
+ */
+function wirePipelineControls() {
+	const search = document.getElementById("dg-search");
+	const only = document.getElementById("dg-problems-only");
+	const close = document.getElementById("dg-drawer-close");
+	const rerender = () => {
+		if (cache.pipeline)
+			renderDeliveryGraph(cache.pipeline);
+	};
+
+	if (search && !search.dataset.wired) {
+		search.dataset.wired = "1";
+		search.addEventListener("input", rerender);
+	}
+	if (only && !only.dataset.wired) {
+		only.dataset.wired = "1";
+		only.addEventListener("change", rerender);
+	}
+	if (close && !close.dataset.wired) {
+		close.dataset.wired = "1";
+		close.addEventListener("click", () => {
+			document.getElementById("dg-drawer").hidden = true;
+		});
+	}
 }
 
 async function refreshPipeline() {
@@ -13315,6 +13583,7 @@ async function refreshPipeline() {
 		return; /* best-effort, same as every other refresher here */
 	}
 	cache.pipeline = data;
+	wirePipelineControls();
 	renderDeliveryGraph(data);
 
 	const flow = document.getElementById("pipeline-flow");
