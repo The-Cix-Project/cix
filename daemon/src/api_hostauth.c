@@ -24,6 +24,7 @@ void handle_login(int fd, const char *body, size_t body_len)
 	struct json_value *root;
 	const char *username, *password;
 	char token[HOSTAUTH_TOKEN_LEN + 1];
+	char who[HOSTAUTH_USERNAME_MAX];
 	int expires_in_seconds;
 	enum hostauth_login_result lerr;
 
@@ -40,6 +41,17 @@ void handle_login(int fd, const char *body, size_t body_len)
 		return;
 	}
 
+	/*
+	 * The audit lines below outlive the parse tree, and json_as_string()
+	 * hands back a pointer INTO it -- so the name is copied out before
+	 * json_free() rather than read from freed memory afterwards. That
+	 * really happened: the refusal line survived it (the test matches on
+	 * "REFUSED", not on the name) while the success line printed garbage
+	 * and test_hostauth failed on "a successful login is not audited by
+	 * name" with no hint that the cause was a use-after-free.
+	 */
+	snprintf(who, sizeof(who), "%s", username);
+
 	lerr = hostauth_login(username, password, token, &expires_in_seconds);
 	json_free(root);
 	if (lerr == HOSTAUTH_LOGIN_INVALID_CREDENTIALS) {
@@ -52,7 +64,7 @@ void handle_login(int fd, const char *body, size_t body_len)
 		 * never a hint about which half was wrong.
 		 */
 		logstore_write("audit", "warn", "%s login REFUSED (invalid username or password)",
-		                username);
+		                who);
 		respond_error(fd, 401, "Unauthorized", "invalid username or password");
 		return;
 	}
@@ -62,7 +74,7 @@ void handle_login(int fd, const char *body, size_t body_len)
 		return;
 	}
 
-	logstore_write("audit", "info", "%s logged in", username);
+	logstore_write("audit", "info", "%s logged in", who);
 
 	{
 		struct json_writer w;
