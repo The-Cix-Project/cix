@@ -512,9 +512,10 @@ int main(void)
 	 * back up -- which is only observable by actually restarting.
 	 */
 	{
-		const char *pend_recipe =
-		    "{\"name\":\"pendtest\",\"image\":\"pendimg\",\"services\":[{\"name\":\"s\","
-		    "\"command\":\"/bin/true\"}]}";
+		const char *pend_content =
+		    "{\"name\":\"pendtest\",\"image\":\"pendimg\",\"services\":[{\"name\":\"main\","
+		    "\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/true\"]}],\"restart\":\"no\"}";
+		struct json_writer pw;
 
 		/* A freshly created image is UNREALIZED but has a perfectly
 		 * valid current version -- the hash of its own empty manifest
@@ -530,9 +531,18 @@ int main(void)
 		 * converge toward, so it is refused rather than left waiting
 		 * on something that can never arrive. */
 		memset(&r, 0, sizeof(r));
-		CHECK(cix_client_request(&client, "POST", "/v1/deployments", pend_recipe, &r) == 0 &&
-		          r.status == 201,
+		jw_init(&pw);
+		jw_obj_open(&pw);
+		jw_key(&pw, "name");
+		jw_str(&pw, "pendtest");
+		jw_key(&pw, "content");
+		jw_str(&pw, pend_content);
+		jw_obj_close(&pw);
+		pw.buf[pw.len] = '\0';
+		CHECK(cix_client_request(&client, "POST", "/v1/deployments", pw.buf, &r) == 0 &&
+		          r.status == 204,
 		      "POST /v1/deployments pendtest");
+		jw_free(&pw);
 		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));

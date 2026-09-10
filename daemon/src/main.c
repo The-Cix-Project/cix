@@ -16835,7 +16835,10 @@ static enum deploy_image_state deployment_image_prepare(const char *image, char 
 			return DEPLOY_IMAGE_UNBUILDABLE;
 		}
 	}
-	pkg_rebuild_queue_add(image);
+	/* Deliberately NOT enqueued here. The caller enqueues once the
+	 * deployment has actually been persisted as waiting -- a queued build
+	 * that nobody is recorded as waiting for is work done for no reason,
+	 * and persisting can fail. */
 	return DEPLOY_IMAGE_FORKED;
 }
 
@@ -16880,6 +16883,9 @@ static void deployment_mark_pending(int fd, const char *name, const char *image,
 		               "could not record which image this deployment is waiting for");
 		return;
 	}
+	/* Persisted, so there is now something recorded as waiting for this
+	 * build. Only now is queueing it meaningful. */
+	pkg_rebuild_queue_add(image);
 	logstore_write("cixd", "info",
 	                "deployment %s is waiting for image %s to be realized -- queued it for a build "
 	                "(ADR-0270)",

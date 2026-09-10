@@ -334,8 +334,25 @@ static void write_edges(struct json_writer *w)
 	n = container_recipe_list_names(dnames, PIPELINEVIEW_MAX_DEPLOYMENTS);
 	for (i = 0; i < n; i++) {
 		const struct registry_entry *e = registry_find(dnames[i]);
+		const struct container_def *pd = containerdef_find(dnames[i]);
+		const char *to_image = NULL;
 
-		if (e == NULL || e->image[0] == '\0')
+		/*
+		 * ADR-0270: a deployment WAITING for its image has no registry
+		 * entry yet -- it has not been created. Its edge comes from the
+		 * definition instead.
+		 *
+		 * Without this it would be the one thing the structural-edge
+		 * decision exists to prevent: a box on the graph with no arrow
+		 * leaving it, at precisely the moment the arrow carries the
+		 * most information, since the image at the other end is the
+		 * thing holding it up.
+		 */
+		if (e != NULL && e->image[0] != '\0')
+			to_image = e->image;
+		else if (pd != NULL && pd->awaiting_image[0] != '\0')
+			to_image = pd->awaiting_image;
+		if (to_image == NULL)
 			continue;
 		jw_obj_open(w);
 		jw_key(w, "from_kind");
@@ -345,7 +362,7 @@ static void write_edges(struct json_writer *w)
 		jw_key(w, "to_kind");
 		jw_str(w, pipeline_kind_name(PIPELINE_KIND_IMAGE));
 		jw_key(w, "to");
-		jw_str(w, e->image);
+		jw_str(w, to_image);
 		jw_key(w, "relation");
 		{
 			/*
@@ -355,10 +372,14 @@ static void write_edges(struct json_writer *w)
 			 * entirely. So both conditions are required before drawing
 			 * the arrow: a rule that never fires must not be rendered as
 			 * one that does.
+			 *
+			 * A still-waiting deployment is never drawn as
+			 * follow-rolling either (ADR-0270): its policy fields are
+			 * placeholders until it is promoted, so they describe
+			 * nothing yet.
 			 */
-			const struct container_def *d = containerdef_find(dnames[i]);
-			int live_rolling = d != NULL && d->follow_rolling &&
-			                    strcmp(d->restart_policy, "no") != 0;
+			int live_rolling = pd != NULL && pd->awaiting_image[0] == '\0' && pd->follow_rolling &&
+			                    strcmp(pd->restart_policy, "no") != 0;
 
 			jw_str(w, live_rolling ? "follow-rolling" : "image");
 		}
