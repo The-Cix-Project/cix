@@ -378,6 +378,43 @@ static struct pkg_run *g_runs;
 static int g_run_count;
 static int g_run_keep = PKG_RUN_KEEP_DEFAULT;
 static char g_next_run_trigger[16] = PKG_RUN_TRIGGER_REQUEST;
+
+/*
+ * ADR-0273: the three gates, and the approvals that let one held change
+ * through.
+ *
+ * Three because there are three points where a change escapes its own
+ * blast radius -- an artifact reaching the shared cache, an image
+ * rolling to a version nobody asked for, and a boot slot being written.
+ * Not one per stage: ten of the eleven stages hold a change inside the
+ * blast radius it already has, where there is nobody to ask.
+ *
+ * All default OFF. A host that has not turned one on behaves exactly as
+ * it did before this ADR -- the hold is one test at the head of each
+ * drain and one refusal in the update handler, and nothing else.
+ *
+ * An approval is an INPUT, in the same class as g_run_keep above, not a
+ * stored position: what is WAITING is derived from these queues at read
+ * time and stored nowhere, and only what has been ALLOWED is kept.
+ */
+#define PKG_APPROVAL_MAX 32
+#define PKG_APPROVAL_TARGET_MAX 192
+#define PKG_GATE_PUBLISH "publish"
+#define PKG_GATE_ROLL "roll"
+#define PKG_GATE_DEPLOY "deploy"
+
+struct pkg_approval {
+	char gate[10];
+	char target[PKG_APPROVAL_TARGET_MAX];
+	char who[40];
+	time_t at;
+};
+
+static int g_gate_publish;
+static int g_gate_roll;
+static int g_gate_deploy;
+static struct pkg_approval g_approvals[PKG_APPROVAL_MAX];
+static int g_approval_count;
 static char g_recipes_dir[PATH_MAX];
 static char g_sources_dir[PATH_MAX];
 static char g_installed_state_path[PATH_MAX];
@@ -953,6 +990,10 @@ static void fetch_note_sidecar_path(const char *name, char *out, size_t out_size
 static void rebuild_queue_remove(const char *image);
 
 static void pkg_run_close(struct pkg_entry *e); /* ADR-0272 */
+static void pkg_runs_save(void);                /* ADR-0272 */
+/* ADR-0273: both drains sit above these in this file. */
+static int gate_holds(const char *gate, const char *target);
+static void approval_consume(const char *gate, const char *target);
 static void pkg_runs_load(void);           /* ADR-0272 */
 
 static void pkg_record_outcome(struct pkg_entry *e, int keep_installed,
@@ -4851,15 +4892,26 @@ static void rebuild_queue_remove(const char *image)
 	}
 }
 
-static void rebuild_queue_pop_front(void)
+/*
+ * ADR-0273: removal by INDEX, because a gate means the drain no longer
+ * always acts on the front. Everything that used to pop the front now
+ * goes through here, so there is one implementation of "take this image
+ * out of the queue" rather than two that can drift.
+ */
+static void rebuild_queue_remove_at(int idx)
 {
 	int i;
 
-	if (g_rebuild_queue_count == 0)
+	if (idx < 0 || idx >= g_rebuild_queue_count)
 		return;
-	for (i = 1; i < g_rebuild_queue_count; i++)
+	for (i = idx + 1; i < g_rebuild_queue_count; i++)
 		snprintf(g_rebuild_queue[i - 1], PKG_IMAGE_NAME_MAX, "%s", g_rebuild_queue[i]);
 	g_rebuild_queue_count--;
+}
+
+static void rebuild_queue_pop_front(void)
+{
+	rebuild_queue_remove_at(0);
 }
 
 /*
@@ -4960,18 +5012,33 @@ void pkg_rebuild_queue_add(const char *image)
 
 int pkg_try_start_queued_rebuild(pid_t *out_pid, int *out_pidfd, int *out_chain_idx)
 {
+	int qi = 0;
+
 	if (pkg_any_job_busy())
 		return 0;
 
-	while (g_rebuild_queue_count > 0) {
-		const char *image = g_rebuild_queue[0];
+	/*
+	 * ADR-0273: an INDEX walk, not "always the front".
+	 *
+	 * A hold implemented as "stop at the front" would let one image
+	 * awaiting a person freeze every other image's convergence -- a
+	 * gate on one thing becoming an outage for everything. A held entry
+	 * is skipped and left in place, costing one string compare per
+	 * pass rather than a rebuild attempt.
+	 */
+	while (qi < g_rebuild_queue_count) {
+		const char *image = g_rebuild_queue[qi];
 		struct image_manifest_entry entries[IMAGE_MANIFEST_MAX_PACKAGES];
 		int entry_count, i;
 		int started = 0;
 
+		if (gate_holds(PKG_GATE_ROLL, image)) {
+			qi++;
+			continue;
+		}
 		if (image_manifest_read(image, entries, &entry_count, IMAGE_MANIFEST_MAX_PACKAGES) !=
 		    IMAGE_OK) {
-			rebuild_queue_pop_front();
+			rebuild_queue_remove_at(qi);
 			continue;
 		}
 
@@ -5044,12 +5111,19 @@ int pkg_try_start_queued_rebuild(pid_t *out_pid, int *out_pidfd, int *out_chain_
 			}
 		}
 
-		if (started)
+		if (started) {
+			/* ADR-0273: the grant is spent at the moment the thing
+			 * actually goes through, never when it is merely looked
+			 * at -- this drain sees the same entry on every pass
+			 * until a slot frees. */
+			approval_consume(PKG_GATE_ROLL, image);
 			return 1;
+		}
 
 		/* Every manifest entry already satisfied -- this image is
 		 * caught up, drop it and try whatever's queued next. */
-		rebuild_queue_pop_front();
+		approval_consume(PKG_GATE_ROLL, image);
+		rebuild_queue_remove_at(qi);
 	}
 	return 0;
 }
@@ -7118,6 +7192,92 @@ static void pkg_build_log_dir(char *out, size_t out_size)
 	snprintf(out, out_size, "%s/build-logs", g_pkg_dir);
 }
 
+/* ---- ADR-0273: gates and approvals -------------------------------- */
+
+static int *gate_flag(const char *gate)
+{
+	if (gate == NULL)
+		return NULL;
+	if (strcmp(gate, PKG_GATE_PUBLISH) == 0)
+		return &g_gate_publish;
+	if (strcmp(gate, PKG_GATE_ROLL) == 0)
+		return &g_gate_roll;
+	if (strcmp(gate, PKG_GATE_DEPLOY) == 0)
+		return &g_gate_deploy;
+	return NULL;
+}
+
+int pkg_gate_enabled(const char *gate)
+{
+	const int *f = gate_flag(gate);
+
+	return f != NULL && *f;
+}
+
+int pkg_gate_set(const char *gate, int on)
+{
+	int *f = gate_flag(gate);
+
+	if (f == NULL)
+		return -1;
+	*f = on ? 1 : 0;
+	return 0;
+}
+
+static int approval_index(const char *gate, const char *target)
+{
+	int i;
+
+	for (i = 0; i < g_approval_count; i++) {
+		if (strcmp(g_approvals[i].gate, gate) == 0 &&
+		    strcmp(g_approvals[i].target, target) == 0)
+			return i;
+	}
+	return -1;
+}
+
+static void approval_drop_at(int idx)
+{
+	int i;
+
+	if (idx < 0 || idx >= g_approval_count)
+		return;
+	for (i = idx + 1; i < g_approval_count; i++)
+		g_approvals[i - 1] = g_approvals[i];
+	g_approval_count--;
+}
+
+/*
+ * True when this gate is on AND nothing has approved this target yet --
+ * i.e. the drain must leave it alone. A gate that is off holds nothing,
+ * which is what makes "default off" a genuine no-op rather than a
+ * cheaper code path.
+ */
+static int gate_holds(const char *gate, const char *target)
+{
+	return pkg_gate_enabled(gate) && approval_index(gate, target) < 0;
+}
+
+/*
+ * Consumes the approval for a target the drain is about to act on.
+ * Called at the moment the thing actually goes through, never at the
+ * moment it is checked -- a drain may look at the same queue entry many
+ * times before a slot frees, and burning the grant on a look would mean
+ * an operator approved something that then silently needed approving
+ * again.
+ */
+static void approval_consume(const char *gate, const char *target)
+{
+	int i = approval_index(gate, target);
+
+	if (i < 0)
+		return;
+	logstore_write("audit", "info", "gate %s: %s went through, approved by %s", gate, target,
+	                g_approvals[i].who);
+	approval_drop_at(i);
+	pkg_runs_save();
+}
+
 /* ---- ADR-0272: the run store ------------------------------------- */
 
 static void pkg_runs_path(char *out, size_t out_size)
@@ -7156,6 +7316,36 @@ static void pkg_runs_render(struct json_writer *w)
 	jw_obj_open(w);
 	jw_key(w, "retention");
 	jw_int(w, g_run_keep);
+	/*
+	 * ADR-0273: the gates and the approvals live here too, so an item
+	 * held for a person survives a restart. A gate that reverted to off
+	 * on the next boot would quietly release exactly the change someone
+	 * had decided to stop.
+	 */
+	jw_key(w, "gates");
+	jw_obj_open(w);
+	jw_key(w, "publish");
+	jw_bool(w, g_gate_publish);
+	jw_key(w, "roll");
+	jw_bool(w, g_gate_roll);
+	jw_key(w, "deploy");
+	jw_bool(w, g_gate_deploy);
+	jw_obj_close(w);
+	jw_key(w, "approvals");
+	jw_arr_open(w);
+	for (i = 0; i < g_approval_count; i++) {
+		jw_obj_open(w);
+		jw_key(w, "gate");
+		jw_str(w, g_approvals[i].gate);
+		jw_key(w, "target");
+		jw_str(w, g_approvals[i].target);
+		jw_key(w, "who");
+		jw_str(w, g_approvals[i].who);
+		jw_key(w, "at");
+		jw_int(w, (long long)g_approvals[i].at);
+		jw_obj_close(w);
+	}
+	jw_arr_close(w);
 	jw_key(w, "runs");
 	jw_arr_open(w);
 	for (i = 0; i < g_run_count; i++) {
@@ -7301,6 +7491,48 @@ static void pkg_runs_load(void)
 
 		if (k >= 1 && k <= PKG_RUN_MAX)
 			g_run_keep = k;
+	}
+	/* ADR-0273. Absent keys mean "off" and "none", which is what an
+	 * older file legitimately says. */
+	{
+		const struct json_value *g = json_object_get(root, "gates");
+		const struct json_value *ap = json_object_get(root, "approvals");
+		size_t k2;
+
+		if (g != NULL && g->type == JSON_OBJECT) {
+			const struct json_value *v2;
+
+			v2 = json_object_get(g, "publish");
+			g_gate_publish = v2 != NULL && v2->type == JSON_BOOL && v2->u.boolean;
+			v2 = json_object_get(g, "roll");
+			g_gate_roll = v2 != NULL && v2->type == JSON_BOOL && v2->u.boolean;
+			v2 = json_object_get(g, "deploy");
+			g_gate_deploy = v2 != NULL && v2->type == JSON_BOOL && v2->u.boolean;
+		}
+		g_approval_count = 0;
+		if (ap != NULL && ap->type == JSON_ARRAY) {
+			for (k2 = 0; k2 < ap->u.array.count && g_approval_count < PKG_APPROVAL_MAX; k2++) {
+				const struct json_value *o2 = ap->u.array.items[k2];
+				struct pkg_approval *a = &g_approvals[g_approval_count];
+				const char *sv2;
+
+				if (o2 == NULL || o2->type != JSON_OBJECT)
+					continue;
+				memset(a, 0, sizeof(*a));
+				sv2 = json_as_string(json_object_get(o2, "gate"));
+				if (sv2 == NULL || sv2[0] == '\0')
+					continue;
+				snprintf(a->gate, sizeof(a->gate), "%s", sv2);
+				sv2 = json_as_string(json_object_get(o2, "target"));
+				if (sv2 == NULL || sv2[0] == '\0')
+					continue;
+				snprintf(a->target, sizeof(a->target), "%s", sv2);
+				sv2 = json_as_string(json_object_get(o2, "who"));
+				snprintf(a->who, sizeof(a->who), "%s", sv2 != NULL ? sv2 : "-");
+				a->at = (time_t)json_as_number(json_object_get(o2, "at"));
+				g_approval_count++;
+			}
+		}
 	}
 	runs = json_object_get(root, "runs");
 	if (runs == NULL || runs->type != JSON_ARRAY) {
@@ -10603,6 +10835,150 @@ struct pkg_push_job {
 
 static struct pkg_push_job g_push_queue[PKG_PUSH_QUEUE_MAX];
 static int g_push_queue_count;
+
+/*
+ * Is this target actually held right now? Answered from the live queues
+ * rather than from anything stored, which is what lets "what is
+ * pending" have no persistent state at all.
+ *
+ * `deploy` is the exception and the asymmetry is deliberate (ADR-0273):
+ * publish and roll hold items that sit in a queue, so being held is a
+ * readable fact; an update is one synchronous request with no queue
+ * behind it, so any target is accepted while the gate is on.
+ */
+int pkg_target_is_queued(const char *gate, const char *target)
+{
+	int i;
+
+	if (gate == NULL || target == NULL)
+		return 0;
+	if (strcmp(gate, PKG_GATE_DEPLOY) == 0)
+		return 1;
+	if (strcmp(gate, PKG_GATE_ROLL) == 0) {
+		for (i = 0; i < g_rebuild_queue_count; i++) {
+			if (strcmp(g_rebuild_queue[i], target) == 0)
+				return 1;
+		}
+		return 0;
+	}
+	if (strcmp(gate, PKG_GATE_PUBLISH) == 0) {
+		for (i = 0; i < g_push_queue_count; i++) {
+			char t[PKG_APPROVAL_TARGET_MAX];
+
+			snprintf(t, sizeof(t), "%s@%s", g_push_queue[i].name, g_push_queue[i].version);
+			if (strcmp(t, target) == 0)
+				return 1;
+		}
+		return 0;
+	}
+	return 0;
+}
+
+/*
+ * ADR-0273: what is waiting for a person, and what a person has already
+ * allowed. The first list is computed here and stored nowhere; the
+ * second is the stored one.
+ */
+void pkg_approvals_write_json(struct json_writer *w)
+{
+	int i;
+
+	jw_obj_open(w);
+	jw_key(w, "pending");
+	jw_arr_open(w);
+	if (g_gate_roll) {
+		for (i = 0; i < g_rebuild_queue_count; i++) {
+			if (approval_index(PKG_GATE_ROLL, g_rebuild_queue[i]) >= 0)
+				continue;
+			jw_obj_open(w);
+			jw_key(w, "gate");
+			jw_str(w, PKG_GATE_ROLL);
+			jw_key(w, "target");
+			jw_str(w, g_rebuild_queue[i]);
+			jw_obj_close(w);
+		}
+	}
+	if (g_gate_publish) {
+		for (i = 0; i < g_push_queue_count; i++) {
+			char t[PKG_APPROVAL_TARGET_MAX];
+
+			snprintf(t, sizeof(t), "%s@%s", g_push_queue[i].name, g_push_queue[i].version);
+			if (approval_index(PKG_GATE_PUBLISH, t) >= 0)
+				continue;
+			jw_obj_open(w);
+			jw_key(w, "gate");
+			jw_str(w, PKG_GATE_PUBLISH);
+			jw_key(w, "target");
+			jw_str(w, t);
+			jw_obj_close(w);
+		}
+	}
+	jw_arr_close(w);
+	jw_key(w, "granted");
+	jw_arr_open(w);
+	for (i = 0; i < g_approval_count; i++) {
+		jw_obj_open(w);
+		jw_key(w, "gate");
+		jw_str(w, g_approvals[i].gate);
+		jw_key(w, "target");
+		jw_str(w, g_approvals[i].target);
+		jw_key(w, "who");
+		jw_str(w, g_approvals[i].who);
+		jw_key(w, "at");
+		jw_int(w, (long long)g_approvals[i].at);
+		jw_obj_close(w);
+	}
+	jw_arr_close(w);
+	jw_obj_close(w);
+}
+
+/*
+ * ADR-0273: consumes the deploy grant for this exact target, if there
+ * is one. Deploy is the gate with no queue behind it, so unlike roll
+ * and publish -- whose grants are spent by their own drains -- this one
+ * is spent by the request it lets through.
+ */
+int pkg_approval_take_deploy(const char *target)
+{
+	int i;
+
+	if (target == NULL || target[0] == '\0')
+		return 0;
+	i = approval_index(PKG_GATE_DEPLOY, target);
+	if (i < 0)
+		return 0;
+	logstore_write("audit", "info", "gate deploy: %s went through, approved by %s", target,
+	                g_approvals[i].who);
+	approval_drop_at(i);
+	pkg_runs_save();
+	return 1;
+}
+
+int pkg_approval_grant(const char *gate, const char *target, const char *who)
+{
+	if (gate_flag(gate) == NULL)
+		return PKG_APPROVE_UNKNOWN_GATE;
+	if (target == NULL || target[0] == '\0')
+		return PKG_APPROVE_UNKNOWN_GATE;
+	if (!pkg_gate_enabled(gate))
+		return PKG_APPROVE_NOT_HELD; /* nothing is being held by an off gate */
+	if (approval_index(gate, target) >= 0)
+		return PKG_APPROVE_ALREADY;
+	if (!pkg_target_is_queued(gate, target))
+		return PKG_APPROVE_NOT_HELD;
+	if (g_approval_count >= PKG_APPROVAL_MAX)
+		return PKG_APPROVE_FULL;
+	memset(&g_approvals[g_approval_count], 0, sizeof(g_approvals[0]));
+	snprintf(g_approvals[g_approval_count].gate, sizeof(g_approvals[0].gate), "%s", gate);
+	snprintf(g_approvals[g_approval_count].target, sizeof(g_approvals[0].target), "%s", target);
+	snprintf(g_approvals[g_approval_count].who, sizeof(g_approvals[0].who), "%s",
+	         who != NULL && who[0] != '\0' ? who : "-");
+	g_approvals[g_approval_count].at = time(NULL);
+	g_approval_count++;
+	pkg_runs_save();
+	return PKG_APPROVE_OK;
+}
+
 static int g_push_in_flight;
 static struct pkg_push_job g_push_current;
 
@@ -11120,13 +11496,40 @@ int pkg_artifact_push_try_start(pid_t *out_pid, int *out_pidfd, char *out_desc, 
 	 * entries until one is genuinely startable.
 	 */
 	for (;;) {
+		int pick = -1;
+
 		if (g_push_queue_count == 0)
 			return 0;
 
-		g_push_current = g_push_queue[0];
-		for (i = 1; i < g_push_queue_count; i++)
+		/*
+		 * ADR-0273: take the first entry NOT held for approval. This
+		 * queue is destructive-take (the entry is removed as it is
+		 * picked), so a held one cannot be skipped by continuing --
+		 * it has to be stepped over while choosing. Everything held
+		 * stays queued, in order, waiting for a person.
+		 */
+		for (i = 0; i < g_push_queue_count; i++) {
+			char t[PKG_APPROVAL_TARGET_MAX];
+
+			snprintf(t, sizeof(t), "%s@%s", g_push_queue[i].name, g_push_queue[i].version);
+			if (!gate_holds(PKG_GATE_PUBLISH, t)) {
+				pick = i;
+				break;
+			}
+		}
+		if (pick < 0)
+			return 0; /* everything queued is waiting for a person */
+
+		g_push_current = g_push_queue[pick];
+		for (i = pick + 1; i < g_push_queue_count; i++)
 			g_push_queue[i - 1] = g_push_queue[i];
 		g_push_queue_count--;
+		{
+			char t[PKG_APPROVAL_TARGET_MAX];
+
+			snprintf(t, sizeof(t), "%s@%s", g_push_current.name, g_push_current.version);
+			approval_consume(PKG_GATE_PUBLISH, t);
+		}
 
 		cache_tarball_path(g_push_current.name, g_push_current.version, tarball,
 		                   sizeof(tarball));

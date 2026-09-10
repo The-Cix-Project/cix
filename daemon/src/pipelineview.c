@@ -156,6 +156,7 @@ static void write_images(struct json_writer *w, int *stage_counts)
 		enum pipeline_status status = PIPELINE_OK;
 		const char *reason = "";
 		const char *blocked_on = NULL;
+		int held_for_approval = 0; /* ADR-0273 */
 		int have_version = image_current_version(names[i], version, sizeof(version)) == IMAGE_OK;
 
 		if (!have_version) {
@@ -198,6 +199,24 @@ static void write_images(struct json_writer *w, int *stage_counts)
 			jw_null(w);
 		else
 			jw_str(w, version);
+		/*
+		 * ADR-0273: held for a person outranks anything derived from
+		 * the manifest. An image queued to roll and not yet approved
+		 * is not "waiting for a package" -- the package is ready and
+		 * a person is the thing missing, which is a different sentence
+		 * and a different action.
+		 *
+		 * Reported as BLOCKED rather than as a status of its own:
+		 * blocked already means "waiting on something outside this
+		 * stage, or a person", and blocked_on already exists to say
+		 * which.
+		 */
+		if (pkg_gate_enabled("roll") && pkg_target_is_queued("roll", names[i])) {
+			stage = PIPELINE_INSTALL;
+			status = PIPELINE_BLOCKED;
+			reason = "held by the roll gate -- waiting for someone to approve it";
+			held_for_approval = 1;
+		}
 		write_position(w, stage, status, reason);
 		/*
 		 * The package this image is waiting on, when it is waiting on
@@ -207,7 +226,14 @@ static void write_images(struct json_writer *w, int *stage_counts)
 		 * invent.
 		 */
 		jw_key(w, "blocked_on");
-		if (blocked_on == NULL) {
+		if (held_for_approval) {
+			jw_obj_open(w);
+			jw_key(w, "kind");
+			jw_str(w, "approval");
+			jw_key(w, "name");
+			jw_str(w, "roll");
+			jw_obj_close(w);
+		} else if (blocked_on == NULL) {
 			jw_null(w);
 		} else {
 			jw_obj_open(w);

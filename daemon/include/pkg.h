@@ -573,6 +573,40 @@ void pkg_rebuild_queue_write_json(struct json_writer *w);
 void pkg_runs_write_json(struct json_writer *w, const char *name, const char *image, int limit);
 int pkg_run_retention_get(void);
 int pkg_run_retention_set(int keep);
+
+/*
+ * ADR-0273: the three gates, and the approvals that let one held change
+ * through.
+ *
+ * A gate holds automation at a point where a change escapes its own
+ * blast radius -- an artifact reaching the shared cache ("publish"), an
+ * image rolling to a version nobody asked for ("roll"), a boot slot
+ * being written ("deploy"). All three default OFF, and a host with them
+ * off behaves exactly as it did before: the hold is one test at the
+ * head of each drain and one refusal in the update handler.
+ *
+ * A held item is reported as PIPELINE_BLOCKED with blocked_on
+ * {kind:"approval", name:<gate>}. There is deliberately no sixth
+ * pipeline_status -- "blocked" already means "waiting on something
+ * outside this stage, or a person".
+ *
+ * pkg_target_is_queued() answers "is this actually held" from the live
+ * queues and nothing stored, which is what lets the pending list have
+ * no persistent state. "deploy" always answers 1 while its gate is on:
+ * an update is one synchronous request with no queue to be in.
+ */
+#define PKG_APPROVE_OK 0
+#define PKG_APPROVE_UNKNOWN_GATE (-1)
+#define PKG_APPROVE_NOT_HELD (-2)
+#define PKG_APPROVE_ALREADY (-3)
+#define PKG_APPROVE_FULL (-4)
+
+int pkg_gate_enabled(const char *gate);
+int pkg_gate_set(const char *gate, int on);
+int pkg_target_is_queued(const char *gate, const char *target);
+int pkg_approval_grant(const char *gate, const char *target, const char *who);
+int pkg_approval_take_deploy(const char *target);
+void pkg_approvals_write_json(struct json_writer *w);
 enum pkg_error pkg_artifact_publish_resolve(const char *name, char *out_version,
                                              size_t out_version_size, int *out_is_hostbuild);
 

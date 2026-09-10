@@ -512,6 +512,101 @@ int main(void)
 		cix_response_free(&r);
 	}
 
+	/*
+	 * ADR-0273: the gates.
+	 *
+	 * The load-bearing assertion is the FIRST one -- all three off by
+	 * default. Everything this platform does today runs through those
+	 * three chokepoints, so a gate that defaulted on would stop every
+	 * existing caller, including this project's own deploy path.
+	 */
+	{
+		const struct json_value *v;
+		int i;
+		static const char *const keys[] = { "gate_publish", "gate_roll", "gate_deploy" };
+
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "GET", "/v1/system/pipeline-config", NULL, &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: GET pipeline-config for gates, status=%d\n", r.status);
+			ok = 0;
+		} else {
+			for (i = 0; i < 3; i++) {
+				v = json_object_get(r.json, keys[i]);
+				if (v == NULL || v->type != JSON_BOOL || v->u.boolean) {
+					fprintf(stderr, "FAIL: %s is not false by default\n", keys[i]);
+					ok = 0;
+				}
+			}
+		}
+		cix_response_free(&r);
+
+		/* Nothing is waiting when every gate is off -- pending is
+		 * derived from the gates and the queues, so an off gate holds
+		 * nothing by construction rather than by filtering. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "GET", "/v1/pipeline/approvals", NULL, &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: GET /v1/pipeline/approvals, status=%d\n", r.status);
+			ok = 0;
+		} else {
+			const struct json_value *p = json_object_get(r.json, "pending");
+			const struct json_value *g2 = json_object_get(r.json, "granted");
+
+			if (p == NULL || p->type != JSON_ARRAY || p->u.array.count != 0 ||
+			    g2 == NULL || g2->type != JSON_ARRAY) {
+				fprintf(stderr, "FAIL: something is pending with every gate off\n");
+				ok = 0;
+			}
+		}
+		cix_response_free(&r);
+
+		/* You cannot approve what nothing is holding. Asserted with the
+		 * gate OFF and again with it ON but nothing queued, because
+		 * those are two different refusals and only the second one
+		 * proves the queue is actually consulted. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/pipeline/approve",
+		                        "{\"gate\":\"roll\",\"target\":\"nosuchimage\"}", &r) != 0 ||
+		    r.status != 409) {
+			fprintf(stderr, "FAIL: approve with the gate off expected 409, got %d\n", r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "PUT", "/v1/system/pipeline-config",
+		                        "{\"gate_roll\":true}", &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: PUT gate_roll true, status=%d\n", r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/pipeline/approve",
+		                        "{\"gate\":\"roll\",\"target\":\"nosuchimage\"}", &r) != 0 ||
+		    r.status != 409) {
+			fprintf(stderr,
+			        "FAIL: approve of an unqueued image expected 409, got %d -- the queue is "
+			        "not being consulted\n",
+			        r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		/* An unknown gate is a 400, not a 409: the request is
+		 * malformed rather than untimely. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/pipeline/approve",
+		                        "{\"gate\":\"nosuchgate\",\"target\":\"x\"}", &r) != 0 ||
+		    r.status != 400) {
+			fprintf(stderr, "FAIL: an unknown gate expected 400, got %d\n", r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+	}
+
 	stop_daemon(daemon_pid);
 
 	/*
@@ -534,9 +629,17 @@ int main(void)
 		ok = 0;
 	} else {
 		const struct json_value *ret = json_object_get(r.json, "run_retention");
+		const struct json_value *gr = json_object_get(r.json, "gate_roll");
 
 		if (ret == NULL || ret->type != JSON_NUMBER || (int)ret->u.number != 50) {
 			fprintf(stderr, "FAIL: run retention did not survive a restart\n");
+			ok = 0;
+		}
+		/* ADR-0273: a gate that reverted to off on the next boot would
+		 * quietly release exactly the change someone decided to stop,
+		 * and nothing would report it. */
+		if (gr == NULL || gr->type != JSON_BOOL || !gr->u.boolean) {
+			fprintf(stderr, "FAIL: gate_roll did not survive a restart\n");
 			ok = 0;
 		}
 	}

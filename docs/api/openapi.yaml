@@ -9132,6 +9132,106 @@ paths:
               schema:
                 $ref: "#/components/schemas/PipelineRuns"
 
+  /pipeline/approvals:
+    get:
+      summary: What is held waiting for a person, and what has been approved (ADR-0273)
+      description: >
+        Two lists with different natures, deliberately.
+
+
+        `pending` is **derived** at read time from the live queues and
+        the gate flags, and is stored nowhere -- turn a gate off and
+        nothing is pending any more, with no state to reconcile. It is
+        the same discipline `GET /pipeline` follows.
+
+
+        `granted` is **stored**: an approval is an input to a decision,
+        in the same class as the gate flags themselves, and is consumed
+        when the thing it approved goes through.
+
+
+        A held item also appears in `GET /pipeline` as `blocked` with
+        `blocked_on: {kind: "approval", name: "<gate>"}`. There is no
+        separate status for it -- `blocked` already means "waiting on
+        something outside this stage, or a person".
+      operationId: getPipelineApprovals
+      x-cix-expose: [cli]
+      responses:
+        "200":
+          description: What is waiting and what has been allowed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PipelineApprovals"
+
+  /pipeline/approve:
+    post:
+      summary: Let one held change through (ADR-0273)
+      description: >
+        Grants permission for one `(gate, target)` pair. The grant is
+        consumed when that change goes through, so approving does not
+        turn the gate off.
+
+
+        **A target that is not currently held is refused with 409.**
+        Pre-approving something that has not arrived is a standing
+        permission dressed as a decision, and it would make the audit
+        line say a person approved a specific change they never saw.
+
+
+        `deploy` is the one exception, and the asymmetry is real:
+        `publish` and `roll` hold items that sit in a queue, so "held"
+        is a fact that can be read, while an update is a single
+        synchronous request with no queue behind it. A deploy target is
+        therefore accepted as given, and the refusal from
+        `POST /system/update` names the exact target to approve.
+
+
+        Every approval writes an audit line naming the user, the gate
+        and the target (ADR-0271). That record is the point of the
+        pause.
+
+
+        Note this is not four-eyes: the same identity may request a
+        change and approve it. A gate constrains automation, not a
+        person. Requiring approver != requester needs roles -- see
+        issue #304.
+      operationId: approvePipeline
+      x-cix-expose: [cli]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [gate, target]
+              properties:
+                gate:
+                  type: string
+                  enum: [publish, roll, deploy]
+                target:
+                  type: string
+                  description: >
+                    The image name for `roll`, `name@version` for
+                    `publish`, the image path for `deploy`.
+      responses:
+        "204":
+          description: Approved
+        "400":
+          description: Unknown gate, or a missing field
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >
+            Nothing is holding that target, or it is already approved.
+            Nothing is changed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /system/pipeline-config:
     get:
       summary: Pipeline settings that are an operator's to choose (ADR-0272)
@@ -14982,12 +15082,62 @@ components:
           type: integer
           description: How many runs are kept. See PUT /system/pipeline-config.
 
+    PipelineApprovals:
+      type: object
+      required: [pending, granted]
+      properties:
+        pending:
+          type: array
+          description: Derived from the live queues and the gate flags. Never stored.
+          items:
+            type: object
+            properties:
+              gate:
+                type: string
+                enum: [publish, roll, deploy]
+              target:
+                type: string
+              since:
+                type: integer
+                description: Unix time this item entered the queue, when known.
+        granted:
+          type: array
+          description: Approvals allowed and not yet consumed.
+          items:
+            type: object
+            properties:
+              gate:
+                type: string
+              target:
+                type: string
+              who:
+                type: string
+                description: The username that approved it (ADR-0271).
+              at:
+                type: integer
+
     PipelineConfig:
       type: object
       properties:
         run_retention:
           type: integer
           description: How many pipeline runs to keep, 1 to 2000. Default 1000.
+        gate_publish:
+          type: boolean
+          description: >
+            Hold a built artifact before it is uploaded to the shared
+            cache, where every host that installs it inherits those
+            bytes. Default false.
+        gate_roll:
+          type: boolean
+          description: >
+            Hold a rolling rebuild before an image moves to a package
+            version nobody asked for. Default false.
+        gate_deploy:
+          type: boolean
+          description: >
+            Hold POST /system/update before it writes a control-plane
+            root or kernel onto a boot slot. Default false.
 
     Pipeline:
       type: object

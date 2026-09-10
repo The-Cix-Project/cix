@@ -3045,6 +3045,10 @@ static int fetch_update_image(const char *url, const char *sha256, char *out_pat
 	return 0;
 }
 
+/* Defined with the dispatch code below; the deploy gate here needs to
+ * name who was refused (ADR-0271/ADR-0273). */
+static const char *audit_who(void);
+
 static void handle_system_update(int fd, const char *body, size_t body_len)
 {
 	char slot[8];
@@ -3091,6 +3095,47 @@ static void handle_system_update(int fd, const char *body, size_t body_len)
 				                "system update: fetched and verified an image from %s", url);
 			}
 			json_free(root);
+		}
+	}
+
+	/*
+	 * ADR-0273: the deploy gate.
+	 *
+	 * Checked here, after image_url has been rewritten into an
+	 * image_path, so the target an operator is asked to approve is the
+	 * one that would actually be written -- approving a URL and
+	 * staging a file would be two different things wearing one name.
+	 *
+	 * Refused rather than queued: this is one synchronous request with
+	 * nothing behind it, so there is no queue to wait in. The refusal
+	 * names the exact target, because an operator cannot approve what
+	 * the error does not tell them.
+	 */
+	if (pkg_gate_enabled("deploy")) {
+		struct json_value *gr = json_parse(use_body, use_body_len);
+		const char *ipath = gr != NULL ? json_as_string(json_object_get(gr, "image_path")) : NULL;
+		char target[256];
+
+		snprintf(target, sizeof(target), "%s", ipath != NULL ? ipath : "");
+		json_free(gr);
+		if (target[0] == '\0') {
+			respond_error(fd, 400, "Bad Request",
+			              "the deploy gate is on and this request names no image_path to "
+			              "approve");
+			return;
+		}
+		if (!pkg_approval_take_deploy(target)) {
+			char msg[512];
+
+			snprintf(msg, sizeof(msg),
+			         "the deploy gate is on and \"%s\" is not approved -- "
+			         "POST /v1/pipeline/approve {\"gate\":\"deploy\",\"target\":\"%s\"} "
+			         "first. Nothing has been written to a boot slot",
+			         target, target);
+			logstore_write("audit", "warn", "%s system update HELD by the deploy gate: %s",
+			                audit_who(), target);
+			respond_error(fd, 409, "Conflict", msg);
+			return;
 		}
 	}
 
@@ -22033,6 +22078,14 @@ static void pipeline_config_respond(int fd)
 	jw_obj_open(&w);
 	jw_key(&w, "run_retention");
 	jw_int(&w, pkg_run_retention_get());
+	/* ADR-0273. All three default false, and a host with them false
+	 * behaves exactly as it did before they existed. */
+	jw_key(&w, "gate_publish");
+	jw_bool(&w, pkg_gate_enabled("publish"));
+	jw_key(&w, "gate_roll");
+	jw_bool(&w, pkg_gate_enabled("roll"));
+	jw_key(&w, "gate_deploy");
+	jw_bool(&w, pkg_gate_enabled("deploy"));
 	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
@@ -22075,8 +22128,103 @@ static void op_setPipelineConfig(const struct api_ctx *ctx)
 			return;
 		}
 	}
+	/* ADR-0273. Validated before any is applied, same rule as above:
+	 * a partial apply leaves the caller unable to say what the config
+	 * now is without reading it back. */
+	{
+		static const char *const keys[] = { "gate_publish", "gate_roll", "gate_deploy" };
+		static const char *const gates[] = { "publish", "roll", "deploy" };
+		size_t k;
+
+		for (k = 0; k < sizeof(keys) / sizeof(keys[0]); k++) {
+			const struct json_value *gv = json_object_get(root, keys[k]);
+
+			if (gv != NULL && gv->type != JSON_BOOL) {
+				json_free(root);
+				respond_error(ctx->fd, 400, "Bad Request",
+				              "gate_publish, gate_roll and gate_deploy are booleans");
+				return;
+			}
+		}
+		for (k = 0; k < sizeof(keys) / sizeof(keys[0]); k++) {
+			const struct json_value *gv = json_object_get(root, keys[k]);
+
+			if (gv != NULL)
+				(void)pkg_gate_set(gates[k], gv->u.boolean);
+		}
+	}
 	json_free(root);
 	pipeline_config_respond(ctx->fd);
+}
+
+/* GET /v1/pipeline/approvals (ADR-0273) */
+static void op_getPipelineApprovals(const struct api_ctx *ctx)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	pkg_approvals_write_json(&w);
+	respond_json(ctx->fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/*
+ * POST /v1/pipeline/approve (ADR-0273) -- let one held change through.
+ *
+ * The grant is consumed when that change actually goes through, so
+ * approving does not turn the gate off. A target nothing is holding is
+ * refused rather than remembered: a pre-approval is a standing
+ * permission wearing the costume of a decision, and it would make the
+ * audit line claim a person approved a specific change they never saw.
+ */
+static void op_approvePipeline(const struct api_ctx *ctx)
+{
+	struct json_value *root;
+	const char *gate, *target;
+	int rc;
+
+	root = json_parse(ctx->req->body, ctx->req->body_len);
+	if (root == NULL || root->type != JSON_OBJECT) {
+		json_free(root);
+		respond_error(ctx->fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	gate = json_as_string(json_object_get(root, "gate"));
+	target = json_as_string(json_object_get(root, "target"));
+	if (gate == NULL || target == NULL) {
+		json_free(root);
+		respond_error(ctx->fd, 400, "Bad Request", "gate and target are both required");
+		return;
+	}
+	rc = pkg_approval_grant(gate, target, ctx->user);
+	if (rc == PKG_APPROVE_OK) {
+		/* ADR-0271: the record of WHO allowed a specific change out is
+		 * the whole point of the pause. */
+		logstore_write("audit", "info", "%s APPROVED gate %s for %s", audit_who(), gate, target);
+	}
+	json_free(root);
+	switch (rc) {
+	case PKG_APPROVE_OK:
+		respond_no_content(ctx->fd);
+		return;
+	case PKG_APPROVE_UNKNOWN_GATE:
+		respond_error(ctx->fd, 400, "Bad Request",
+		              "gate must be one of \"publish\", \"roll\" or \"deploy\", and target "
+		              "must not be empty");
+		return;
+	case PKG_APPROVE_ALREADY:
+		respond_error(ctx->fd, 409, "Conflict",
+		              "that target is already approved and is waiting to go through");
+		return;
+	case PKG_APPROVE_FULL:
+		respond_error(ctx->fd, 409, "Conflict", "too many approvals are outstanding");
+		return;
+	default:
+		respond_error(ctx->fd, 409, "Conflict",
+		              "nothing is holding that target -- either the gate is off, or it is not "
+		              "queued. GET /v1/pipeline/approvals lists what is actually waiting");
+		return;
+	}
 }
 
 /* GET /v1/pkg/source-catalogue (ADR-0255) */
