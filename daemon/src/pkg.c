@@ -1,5 +1,7 @@
 #include "libdirs.h"
 #include "pkg.h"
+#include "osrelease.h"
+#include "version.h"
 #include "targz.h"
 #include "pkgpolicy.h"
 #include "hostproc.h"
@@ -4786,6 +4788,47 @@ enum pkg_error pkg_seed_image_baseline(const char *rootfs_path)
 				return PKG_ERR_PERSIST_FAILED;
 			if (persist_atomic_write(nsswitch_dst, nsswitch_content,
 			                          sizeof(nsswitch_content) - 1) != 0)
+				return PKG_ERR_PERSIST_FAILED;
+		}
+	}
+
+	/*
+	 * /etc/os-release, so a container can say what platform it is on.
+	 *
+	 * Without it every reader falls back to "linux" -- the freedesktop
+	 * spec's own documented default when ID is absent -- so a Cix
+	 * container reported itself as generic Linux to anything that
+	 * asked. Found while packaging fastfetch, which reads exactly this
+	 * file and had no way to identify the platform it was running on.
+	 *
+	 * The content comes from osrelease_render() rather than a literal
+	 * here, because mkbootroot stages the same file into the
+	 * control-plane root and two copies would drift -- leaving a host
+	 * and the containers running on it disagreeing about what they
+	 * are.
+	 *
+	 * BUILD_ID is the DAEMON's build, which is the honest answer: an
+	 * image has no version of its own that means anything to a reader
+	 * (ADR-0155's image version is a hash of a package manifest), and
+	 * what actually produced this rootfs is this daemon. Same
+	 * already-present check as nsswitch above: a package that ships its
+	 * own os-release wins, and re-seeding never overwrites it.
+	 */
+	{
+		char osr_dst[PATH_MAX];
+		struct stat dst_st;
+
+		snprintf(osr_dst, sizeof(osr_dst), "%s/etc/os-release", target_rootfs);
+		if (stat(osr_dst, &dst_st) != 0) {
+			char osr[OSRELEASE_MAX];
+			char etc_dir[PATH_MAX];
+
+			if (osrelease_render(osr, sizeof(osr), CIX_BUILD_VERSION) != 0)
+				return PKG_ERR_PERSIST_FAILED;
+			snprintf(etc_dir, sizeof(etc_dir), "%s/etc", target_rootfs);
+			if (persist_mkdir_p(etc_dir) != 0)
+				return PKG_ERR_PERSIST_FAILED;
+			if (persist_atomic_write(osr_dst, osr, strlen(osr)) != 0)
 				return PKG_ERR_PERSIST_FAILED;
 		}
 	}

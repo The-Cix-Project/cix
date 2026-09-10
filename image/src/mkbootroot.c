@@ -24,7 +24,9 @@
  * a real Cix-built image's own lib/firmware, e.g. the cix-firmware
  * image carrying rtw88-firmware and wireless-regdb).
  */
+#include "osrelease.h"
 #include "persist.h"
+#include "version.h"
 #include "libdirs.h"
 #include "test_image_fixture.h"
 
@@ -1298,6 +1300,49 @@ int main(int argc, char **argv)
 			return 1;
 		}
 		fclose(f);
+	}
+
+	/*
+	 * /etc/os-release, so the host can say what it is.
+	 *
+	 * The freedesktop spec's documented default when ID is absent is
+	 * "linux", so without this file every reader identified a Cix host
+	 * as generic Linux -- which is the one answer a platform built from
+	 * source specifically to not be somebody else's distribution should
+	 * never give. Found while packaging fastfetch, which reads exactly
+	 * this file.
+	 *
+	 * osrelease_render() rather than a literal, because
+	 * pkg_seed_image_baseline() stages the same file into every
+	 * container image. Two copies of this text would drift, and the
+	 * shape of that drift is a host and the containers running on it
+	 * disagreeing about what they are.
+	 *
+	 * BUILD_ID carries CIX_BUILD_VERSION, which is the version this
+	 * root is being assembled AS -- the same string GET /v1/system/boot
+	 * reports, so an operator reading os-release and an operator
+	 * reading the API get the same answer rather than two that have to
+	 * be reconciled.
+	 */
+	{
+		char dst[PATH_MAX];
+		char osr[OSRELEASE_MAX];
+		FILE *f;
+
+		if (osrelease_render(osr, sizeof(osr), CIX_BUILD_VERSION) != 0) {
+			fprintf(stderr, "could not render /etc/os-release\n");
+			return 1;
+		}
+		snprintf(dst, sizeof(dst), "%s/etc/os-release", image_root);
+		f = fopen(dst, "w");
+		if (f == NULL) {
+			perror(dst);
+			return 1;
+		}
+		if (fputs(osr, f) == EOF || fclose(f) != 0) {
+			perror(dst);
+			return 1;
+		}
 	}
 
 	/* cixd's DEFAULT_WEB_ROOT is "web", resolved relative to its own

@@ -6,6 +6,50 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The platform says what it is (#387, ADR-0274)
+
+Cix shipped no `/etc/os-release` -- not on the host, not in any container image.
+Confirmed against the running `jump` container, which answered
+`{"error":"no such file"}`.
+
+The freedesktop spec is explicit that a reader finding no `ID` falls back to
+`linux`, so every tool that asked what this platform is got the one answer a
+system built from source specifically so that it is *not* somebody else's
+distribution should never give. Silently, with nothing indicating the question
+had failed.
+
+`osrelease_render()` is one definition called from both places a Cix filesystem
+is assembled -- `mkbootroot` for the control-plane root, and
+`pkg_seed_image_baseline()` for every container image. Two literals would drift,
+and the shape of that drift is a host and the containers running on it
+disagreeing about what they are.
+
+`ID=cix`, and that string is now a **compatibility surface**: the moment
+anything keys on it, changing it breaks all of them silently. Which is why it
+went through an ADR rather than a commit.
+
+**No `VERSION_ID`, deliberately, and the test enforces the absence.** Cix is
+rolling-release, so there is no release version to put in one, and the field is
+optional for exactly that case. The plausible mistake here is setting it to the
+daemon build: `VERSION_ID` means "which release of this distribution", and
+readers compare it between hosts to decide whether they are running the same
+thing -- two Cix hosts on different builds are not on different *releases*,
+because there are no releases, so that comparison would answer confidently and
+wrongly. `BUILD_ID` is the field for a build, and it carries the same string
+`GET /v1/system/boot` reports so the two surfaces agree. No URL fields either:
+everything that exists points at `git.home.arpa`, and a URL that fails for every
+reader outside this LAN looks like an answer.
+
+`test_osrelease` is in `SELFTESTS` -- pure string rendering, no daemon, no
+container, so it runs anywhere (#224). It gates the omissions as well as the
+fields, because a test that only checks what exists cannot protect a decision
+not to write something: adding `VERSION_ID` later is an easy, well-meant change,
+and it has to fail this test first and read why.
+
+Found while packaging fastfetch, which reads exactly this file. fastfetch is the
+messenger rather than the reason -- anything branching on the host distribution
+had the same problem.
+
 ### The roadmap catches up on eight ADRs it had stopped recording
 
 `docs/roadmap/ROADMAP.md`'s job is *what* shipped and how it was verified, updated as
