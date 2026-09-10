@@ -12017,6 +12017,44 @@ function fillVolumeBackupCell(volumeName, cell) {
 		});
 }
 
+/*
+ * A volume's real size, filled in after the row is on screen (#365).
+ *
+ * Measuring is a full tree walk on the daemon side, so it is a separate
+ * endpoint rather than a field on the volume list, and this cell asks
+ * for it per row instead of the list carrying it. Cached with the same
+ * max-age the backup summary above uses, so re-rendering the table
+ * while someone is looking at it does not re-walk every volume.
+ *
+ * The limit comes back in the same response, so "used of limit" needs
+ * no second request.
+ */
+const volumeUsageSummaries = new Map();
+
+function fillVolumeUsageCell(volumeName, cell) {
+	const known = volumeUsageSummaries.get(volumeName);
+
+	cell.textContent = known !== undefined ? known.text : "\u2026";
+	if (known !== undefined && Date.now() - known.fetchedAt < VOLUME_BACKUP_SUMMARY_MAX_AGE_MS)
+		return;
+	apiRequest("GET", CIX_API.getVolumeUsage(volumeName))
+		.then((u) => {
+			const used = formatBytes(u.bytes || 0);
+			const text = u.quota_bytes > 0
+			                 ? used + " of " + formatBytes(u.quota_bytes)
+			                 : used + " (no limit)";
+
+			volumeUsageSummaries.set(volumeName, { text: text, fetchedAt: Date.now() });
+			cell.textContent = text;
+		})
+		.catch(() => {
+			/* Keep the last true thing we were told rather than
+			 * replacing it with a dash on one failed poll. */
+			if (!volumeUsageSummaries.has(volumeName))
+				cell.textContent = "-";
+		});
+}
+
 function rememberVolumeBackupSummary(volumeName, data) {
 	const text = volumeBackupSummaryText(data);
 
@@ -12409,7 +12447,7 @@ async function refreshVolumes() {
 		const row = document.createElement("tr");
 		const cell = document.createElement("td");
 
-		cell.colSpan = 6;
+		cell.colSpan = 7;
 		cell.className = "empty";
 		cell.textContent = "No volumes";
 		row.appendChild(cell);
@@ -12426,6 +12464,15 @@ async function refreshVolumes() {
 			const td = document.createElement("td");
 
 			td.appendChild(treeLink("#volumes/" + encodeURIComponent(v.name), v.name, ""));
+			row.appendChild(td);
+		}
+		{
+			/* Filled after the row is on screen: measuring is a tree
+			 * walk, so it is asked for per row rather than carried by
+			 * the volume list every render. */
+			const td = document.createElement("td");
+
+			fillVolumeUsageCell(v.name, td);
 			row.appendChild(td);
 		}
 		for (const text of [

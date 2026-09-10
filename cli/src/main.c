@@ -5387,6 +5387,33 @@ static int cmd_volume_quota(const struct cix_client *c, int json_mode, int argc,
 	return emit(&r, json_mode, fmt_volume_one);
 }
 
+/*
+ * #365: how much a volume actually holds.
+ *
+ * Its own command rather than a column in `volume ls`, because the
+ * daemon measures it with a full tree walk -- listing volumes must not
+ * cost a walk of every one of them.
+ */
+static int cmd_volume_usage(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	char path[300];
+	struct cix_response r;
+
+	if (argc < 2) {
+		fprintf(stderr, "usage: cixctl volume usage NAME\n"
+		                "  Measured on demand -- a tree walk, not a stored figure. df inside a\n"
+		                "  container cannot answer this: a volume is a bind of a directory, so\n"
+		                "  df reports the whole backing filesystem.\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), CIX_API_getVolumeUsage, argv[1]);
+	if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, NULL);
+}
+
 static int cmd_volume_backups(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	char path[300];
@@ -5635,6 +5662,8 @@ static int cmd_volume(const struct cix_client *c, int json_mode, int argc, char 
 	}
 	if (strcmp(argv[0], "quota") == 0)
 		return cmd_volume_quota(c, json_mode, argc, argv);
+	if (strcmp(argv[0], "usage") == 0)
+		return cmd_volume_usage(c, json_mode, argc, argv);
 	if (strcmp(argv[0], "backups") == 0)
 		return cmd_volume_backups(c, json_mode, argc, argv);
 	if (strcmp(argv[0], "backup") == 0)
@@ -5680,6 +5709,7 @@ static int cmd_volume(const struct cix_client *c, int json_mode, int argc, char 
 	                "       cixctl volume rm NAME\n"
 	                "       cixctl volume migrate NAME [--disk=DISK]\n"
 	                "       cixctl volume quota NAME BYTES   (0 removes the limit)\n"
+	                "       cixctl volume usage NAME         (measured now, not stored)\n"
 	                "       cixctl volume backups NAME [--enable|--disable] [--retain=N]\n"
 	                "       cixctl volume backup NAME\n"
 	                "       cixctl volume restore NAME SNAPSHOT\n"

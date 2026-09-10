@@ -11171,6 +11171,78 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /volumes/{volume_name}/usage:
+    get:
+      summary: How much a volume actually holds (issue #365)
+      description: >
+        The one question a volume's record could not answer. It says how
+        the volume is configured -- disk, owner, limit, backup policy --
+        and nothing about what is in it, so "is this nearly full" had
+        nowhere to look.
+
+
+        `df` inside the container cannot answer it either, and this is
+        not a substitute for something that could: a volume is a bind of
+        a directory, `statfs(2)` reports the SUPERBLOCK, so `df` shows
+        the whole backing filesystem. That is true of a container's own
+        rootfs as well, even one carrying a real qgroup limit -- btrfs
+        does not reflect qgroups in `statfs`. So this endpoint is the
+        only place the number exists.
+
+
+        DELIBERATELY NOT A FIELD ON `GET /volumes`. The measurement is a
+        full tree walk, O(files), and the list endpoint is what the
+        dashboard renders -- putting it there would make listing volumes
+        cost a walk of every one of them. Paid only when asked.
+
+
+        `bytes` counts file content, not the directory-tree overhead the
+        filesystem charges to hold it -- the same accounting a
+        container's own `disk.upper_bytes` uses, via the same walker, so
+        the two numbers mean the same thing. Compare against the
+        volume's `quota_bytes` (0 = unlimited) from its own record.
+      operationId: getVolumeUsage
+      x-cix-expose: [cli, web]
+      parameters:
+        - name: volume_name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: What the volume holds, measured now.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  bytes:
+                    type: integer
+                    description: File content, excluding directory-tree overhead.
+                  quota_bytes:
+                    type: integer
+                    description: >
+                      The volume's own limit, echoed so a caller has both
+                      halves of "how full" without a second request. 0
+                      means unlimited.
+                  measured_at:
+                    type: integer
+                    description: Unix time the walk completed. The number is a snapshot, not a live figure.
+        "404":
+          description: No such volume.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: The volume's directory could not be walked.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /volumes/{volume_name}/backups:
     get:
       summary: A volume's backup policy, snapshots and last attempt (issue #96)

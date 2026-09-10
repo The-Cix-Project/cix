@@ -6,6 +6,39 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### How full is this volume? (#365)
+
+A volume's record said how it was configured -- disk, owner, limit,
+backup policy -- and nothing about what was in it, so "is this nearly
+full" had nowhere to look. `df` inside the container could not answer
+it either and never will: a volume is a bind of a directory, so
+`statfs(2)` reports the SUPERBLOCK and `df` shows the whole backing
+filesystem. That is true of a container's own rootfs as well, even one
+carrying a real qgroup limit, because btrfs does not reflect qgroups in
+`statfs` -- measured.
+
+`GET /v1/volumes/{name}/usage` returns `{name, bytes, quota_bytes,
+measured_at}`. The limit is echoed so a caller has both halves of "how
+full" without a second request.
+
+Measured with `overlay_upperdir_size()`, the walker a container's own
+`disk.upper_bytes` already uses, rather than a second one -- two
+implementations of "how big is this tree" would be two definitions of
+what counts. It sums file content and excludes directory-tree overhead,
+so the two figures mean the same thing.
+
+**A separate endpoint on purpose.** The walk is O(files) and
+synchronous (that function's own comment says so), and `GET /volumes`
+is what the dashboard renders -- a field there would walk every volume
+on every render. Paid only when asked.
+
+`cixctl volume usage NAME`, and a **Size** column in the dashboard's
+volume table filled after the row is on screen and cached, following
+the same lazy-cell pattern the backup-summary column already uses.
+`test_api_surfaces` caught the first attempt: an operation declared
+`x-cix-expose: [cli]` whose CLI never calls it is a contract that lies,
+and it failed until the command existed.
+
 ### A volume on btrfs can have a size limit (#364)
 
 `PUT /v1/volumes/{name}/quota` refused every volume on this platform's

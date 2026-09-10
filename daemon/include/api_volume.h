@@ -28,6 +28,7 @@ void handle_volume_get(int fd, const char *name);
 void handle_volume_list(int fd);
 void handle_volume_migrate(int fd, const char *name, const char *body, size_t body_len);
 void handle_volume_owner_put(int fd, const char *name, const char *body, size_t body_len);
+void handle_volume_usage(int fd, const char *name);
 void handle_volume_quota_put(int fd, const char *name, const char *body, size_t body_len);
 void handle_volume_restore(int fd, const char *name, const char *body, size_t body_len);
 
