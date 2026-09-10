@@ -542,22 +542,45 @@ void handle_volume_owner_put(int fd, const char *name, const char *body, size_t 
  * that carries a real qgroup limit. This is the only place the number
  * exists.
  *
- * overlay_upperdir_size() rather than a second walker: a container's
- * own disk.upper_bytes is measured with it, and two implementations of
- * "how big is this tree" would be two definitions of what counts. It
- * sums file content and excludes directory-tree overhead, so the two
- * figures mean the same thing.
+ * TWO SOURCES, AND THE ANSWER SAYS WHICH ONE IT CAME FROM. A btrfs
+ * subvolume with quotas enabled already has its size counted by the
+ * kernel, so cix_btrfs_qgroup_query() reads it for the price of two
+ * tree lookups and `source` reports "qgroup". Anything else -- a plain
+ * directory, a non-btrfs volume, or a subvolume on a filesystem where
+ * quotas were never enabled -- falls back to walking the tree, and
+ * `source` reports "walk". This is the same dispatch-on-filesystem this
+ * file already does for quotas, not a second implementation: each
+ * branch is the one way to get the number on that filesystem.
+ *
+ * The two numbers do NOT mean the same thing, which is why the caller
+ * is told. The walk sums apparent file content; the qgroup counts
+ * EXCLUSIVE ALLOCATED extents, so sparse, compressed and reflinked data
+ * read smaller, and it settles at transaction commit (~30 s) where the
+ * walk is instant. The qgroup figure is nonetheless the better one for
+ * a volume carrying a limit, because it is exactly what that limit is
+ * enforced against -- a walk can report a volume comfortably under a
+ * quota the kernel is about to refuse a write on.
+ *
+ * overlay_upperdir_size() rather than a second walker on the fallback
+ * path: a container's own disk.upper_bytes is measured with it, and two
+ * implementations of "how big is this tree" would be two definitions of
+ * what counts.
  *
  * Its own comment notes the walk is synchronous and non-reentrant,
  * which is why this is a SEPARATE endpoint and not a field on GET
  * /volumes: the list is what the dashboard renders, and a field there
- * would walk every volume on every render.
+ * would walk every volume on every render. The qgroup path has no such
+ * cost, but the endpoint stays separate rather than becoming fast for
+ * some volumes and slow for others in a way a caller cannot predict.
  */
 void handle_volume_usage(int fd, const char *name)
 {
 	struct volume *v = volume_find(name);
 	char path[PATH_MAX];
 	long long bytes = 0;
+	unsigned long long used = 0, kernel_limit = 0;
+	enum cix_btrfs_qgroup_state qstate = CIX_BTRFS_QGROUP_OK;
+	const char *source = "walk";
 	struct json_writer w;
 
 	if (v == NULL) {
@@ -568,7 +591,13 @@ void handle_volume_usage(int fd, const char *name)
 		respond_error(fd, 500, "Internal Server Error", "could not resolve the volume's own path");
 		return;
 	}
-	if (overlay_upperdir_size(path, &bytes) != 0) {
+	/* ENODATA (quotas on, this subvolume not yet accounted) and ENOENT
+	 * (quotas never enabled) are ordinary states, not failures: the
+	 * volume still has a real size and the walk still knows it. */
+	if (cix_btrfs_qgroup_query(path, &used, &kernel_limit, &qstate) == 0) {
+		source = "qgroup";
+		bytes = (long long)used;
+	} else if (overlay_upperdir_size(path, &bytes) != 0) {
 		char err[256];
 
 		snprintf(err, sizeof(err), "could not measure %s: %s", path, strerror(errno));
@@ -581,10 +610,26 @@ void handle_volume_usage(int fd, const char *name)
 	jw_str(&w, v->name);
 	jw_key(&w, "bytes");
 	jw_int(&w, bytes);
+	jw_key(&w, "source");
+	jw_str(&w, source);
 	/* Echoed so a caller has both halves of "how full is this" without
 	 * a second request for the volume's own record. */
 	jw_key(&w, "quota_bytes");
 	jw_int(&w, v->quota_bytes);
+	if (strcmp(source, "qgroup") == 0) {
+		/* The limit the KERNEL is actually enforcing, which is not
+		 * necessarily quota_bytes above: that one is this daemon's own
+		 * record of what was asked for. They should agree, and a
+		 * caller that can see both can notice when they do not. */
+		jw_key(&w, "limit_bytes");
+		jw_int(&w, (long long)kernel_limit);
+		/* "stale" means accounting is mid-rescan or flagged
+		 * inconsistent, so `bytes` may read low; "simple" means squota,
+		 * where exclusive bytes are attributed on a different rule. */
+		jw_key(&w, "accounting");
+		jw_str(&w, qstate == CIX_BTRFS_QGROUP_SIMPLE ? "simple"
+		            : qstate == CIX_BTRFS_QGROUP_STALE ? "stale" : "ok");
+	}
 	jw_key(&w, "measured_at");
 	jw_int(&w, (long long)time(NULL));
 	jw_obj_close(&w);

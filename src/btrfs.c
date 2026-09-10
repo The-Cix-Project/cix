@@ -409,3 +409,148 @@ int cix_btrfs_qgroup_limit_excl(const char *path, unsigned long long bytes)
 	close(fd);
 	return 0;
 }
+
+/*
+ * One point lookup in the quota tree of the filesystem `fd` belongs to.
+ * Returns 1 and copies min(hdr.len, cap) bytes of the item into `out`
+ * when the key exists, 0 when it does not, -1 with errno set on error.
+ *
+ * min == max on every field, so the 136-bit key interval the kernel
+ * compares against collapses to exactly one key; see the header for why
+ * a range would be wrong rather than merely wasteful.
+ */
+static int quota_tree_lookup(int fd, uint32_t type, uint64_t offset, void *out, size_t cap,
+                             uint32_t *item_len)
+{
+	struct cix_btrfs_ioctl_search_args sa;
+	struct cix_btrfs_ioctl_search_header hdr;
+	size_t n;
+
+	memset(&sa, 0, sizeof(sa));
+	sa.key.tree_id = CIX_BTRFS_QUOTA_TREE_OBJECTID;
+	sa.key.min_objectid = 0;
+	sa.key.max_objectid = 0;
+	sa.key.min_type = type;
+	sa.key.max_type = type;
+	sa.key.min_offset = offset;
+	sa.key.max_offset = offset;
+	sa.key.min_transid = 0;
+	sa.key.max_transid = (uint64_t)-1;
+	sa.key.nr_items = 1;
+
+	if (ioctl(fd, CIX_BTRFS_IOC_TREE_SEARCH, &sa) != 0)
+		return -1;
+	if (sa.key.nr_items == 0)
+		return 0;
+
+	/* The buffer is a search_header followed by the item's bytes. Copy
+	 * through a local header rather than casting into the buffer: the
+	 * kernel makes no alignment promise about buf, and the item's own
+	 * length is what bounds the read, not the size of the struct this
+	 * code happens to expect (these items have grown across kernel
+	 * versions, and a shorter one must not read past its end). */
+	memcpy(&hdr, sa.buf, sizeof(hdr));
+	n = hdr.len < cap ? hdr.len : cap;
+	memset(out, 0, cap);
+	memcpy(out, sa.buf + sizeof(hdr), n);
+	if (item_len != NULL)
+		*item_len = hdr.len;
+	return 1;
+}
+
+int cix_btrfs_qgroup_query(const char *path, unsigned long long *used,
+                           unsigned long long *limit,
+                           enum cix_btrfs_qgroup_state *state)
+{
+	int fd, found, saved;
+	uint64_t subvolid;
+	uint32_t len;
+	struct cix_btrfs_ioctl_ino_lookup_args il;
+	struct cix_btrfs_qgroup_info_item info;
+	struct cix_btrfs_qgroup_limit_item lim;
+	struct cix_btrfs_qgroup_status_item status;
+
+	if (used != NULL)
+		*used = 0;
+	if (limit != NULL)
+		*limit = 0;
+	if (state != NULL)
+		*state = CIX_BTRFS_QGROUP_OK;
+
+	/* A plain directory would be answered with its PARENT subvolume's
+	 * accounting -- see the header. Refuse before opening anything. */
+	if (!cix_btrfs_is_subvolume(path)) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	fd = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	if (fd < 0)
+		return -1;
+
+	/* objectid 256 (the first free inode) with treeid 0 asks "which
+	 * subvolume tree is this fd's own?" -- the kernel fills treeid in,
+	 * and for a level-0 qgroup that tree id IS the qgroup id. */
+	memset(&il, 0, sizeof(il));
+	il.treeid = 0;
+	il.objectid = CIX_BTRFS_FIRST_FREE_OBJECTID;
+	if (ioctl(fd, CIX_BTRFS_IOC_INO_LOOKUP, &il) != 0) {
+		saved = errno;
+		close(fd);
+		errno = saved;
+		return -1;
+	}
+	subvolid = il.treeid;
+
+	/* Accounting state first: it decides whether the numbers below can
+	 * be believed, and a caller told "stale" can say so rather than
+	 * publishing a figure that is quietly low. A missing status item
+	 * is not an error -- it just means nothing to report. */
+	found = quota_tree_lookup(fd, CIX_BTRFS_QGROUP_STATUS_KEY, 0, &status, sizeof(status), &len);
+	if (found < 0) {
+		saved = errno;
+		close(fd);
+		errno = saved;
+		return -1;
+	}
+	if (found == 1 && state != NULL && len >= 24) {
+		if (status.flags & CIX_BTRFS_QGROUP_STATUS_FLAG_SIMPLE_MODE)
+			*state = CIX_BTRFS_QGROUP_SIMPLE;
+		else if (status.flags & (CIX_BTRFS_QGROUP_STATUS_FLAG_RESCAN |
+		                          CIX_BTRFS_QGROUP_STATUS_FLAG_INCONSISTENT))
+			*state = CIX_BTRFS_QGROUP_STALE;
+	}
+
+	found = quota_tree_lookup(fd, CIX_BTRFS_QGROUP_INFO_KEY, subvolid, &info, sizeof(info), NULL);
+	if (found < 0) {
+		saved = errno;
+		close(fd);
+		errno = saved;
+		return -1;
+	}
+	if (found == 0) {
+		/* Quotas are on (the tree exists, or the search would have
+		 * failed) but this subvolume has no record yet. */
+		close(fd);
+		errno = ENODATA;
+		return -1;
+	}
+	if (used != NULL)
+		*used = info.excl;
+
+	/* No limit set is the ordinary case, not a failure: a volume with
+	 * no quota reports 0 and succeeds. max_excl is only meaningful when
+	 * its own flag bit is set -- max_rfer is a different limit. */
+	found = quota_tree_lookup(fd, CIX_BTRFS_QGROUP_LIMIT_KEY, subvolid, &lim, sizeof(lim), NULL);
+	if (found < 0) {
+		saved = errno;
+		close(fd);
+		errno = saved;
+		return -1;
+	}
+	if (found == 1 && limit != NULL && (lim.flags & CIX_BTRFS_QGROUP_LIMIT_MAX_EXCL))
+		*limit = lim.max_excl;
+
+	close(fd);
+	return 0;
+}

@@ -11190,17 +11190,40 @@ paths:
         only place the number exists.
 
 
-        DELIBERATELY NOT A FIELD ON `GET /volumes`. The measurement is a
-        full tree walk, O(files), and the list endpoint is what the
-        dashboard renders -- putting it there would make listing volumes
-        cost a walk of every one of them. Paid only when asked.
+        DELIBERATELY NOT A FIELD ON `GET /volumes`. The list endpoint is
+        what the dashboard renders, and one of the two ways this number
+        is obtained is a full tree walk, O(files) -- putting it there
+        would make listing volumes cost a walk of every one of them.
+        Paid only when asked.
 
 
-        `bytes` counts file content, not the directory-tree overhead the
-        filesystem charges to hold it -- the same accounting a
-        container's own `disk.upper_bytes` uses, via the same walker, so
-        the two numbers mean the same thing. Compare against the
-        volume's `quota_bytes` (0 = unlimited) from its own record.
+        TWO SOURCES, AND `source` SAYS WHICH ONE ANSWERED (issue #369).
+        A btrfs subvolume with quotas enabled already has its size
+        counted by the kernel, so it is read from the qgroup for the
+        price of two tree lookups and `source` is `qgroup`. Anything
+        else -- a plain directory, a non-btrfs volume, or a subvolume on
+        a filesystem where quotas were never enabled -- is measured by
+        walking the tree, and `source` is `walk`.
+
+
+        THE TWO NUMBERS DO NOT MEAN THE SAME THING, which is why you are
+        told which you got. A `walk` sums apparent file content, the
+        same accounting a container's own `disk.upper_bytes` uses. A
+        `qgroup` counts EXCLUSIVE ALLOCATED extents, so sparse,
+        compressed and reflinked data all read smaller, and it settles
+        at the next transaction commit (roughly 30 s) where a walk is
+        instant. The qgroup figure is the better one wherever it is
+        available, because it is exactly what a `MAX_EXCL` limit is
+        enforced against -- a walk can report a volume comfortably under
+        a quota the kernel is about to refuse the next write on.
+
+
+        Compare against `quota_bytes` (0 = unlimited), echoed from the
+        volume's own record. On the `qgroup` path `limit_bytes` is also
+        returned: that is the limit the KERNEL is enforcing, read from
+        the same qgroup, and it is a separate number from `quota_bytes`
+        precisely so a caller can notice when this daemon's record and
+        the filesystem have drifted apart.
       operationId: getVolumeUsage
       x-cix-expose: [cli, web]
       parameters:
@@ -11221,16 +11244,45 @@ paths:
                     type: string
                   bytes:
                     type: integer
-                    description: File content, excluding directory-tree overhead.
+                    description: >
+                      What the volume holds. Its meaning depends on
+                      `source`: for `walk`, apparent file content
+                      excluding directory-tree overhead; for `qgroup`,
+                      exclusive allocated extents.
+                  source:
+                    type: string
+                    enum: [qgroup, walk]
+                    description: >
+                      Which mechanism produced `bytes`. `qgroup` is the
+                      kernel's own counter for a btrfs subvolume with
+                      quotas enabled; `walk` is a tree walk.
                   quota_bytes:
                     type: integer
                     description: >
-                      The volume's own limit, echoed so a caller has both
-                      halves of "how full" without a second request. 0
-                      means unlimited.
+                      The volume's own limit as this daemon recorded it,
+                      echoed so a caller has both halves of "how full"
+                      without a second request. 0 means unlimited.
+                  limit_bytes:
+                    type: integer
+                    description: >
+                      Present only when `source` is `qgroup`. The
+                      `MAX_EXCL` limit the kernel is actually enforcing,
+                      read from the qgroup itself. 0 means no limit is
+                      set. Should agree with `quota_bytes`; a
+                      disagreement means the daemon's record and the
+                      filesystem have drifted.
+                  accounting:
+                    type: string
+                    enum: [ok, stale, simple]
+                    description: >
+                      Present only when `source` is `qgroup`. `stale`
+                      means btrfs has flagged accounting inconsistent or
+                      is mid-rescan, so `bytes` may read low for data
+                      predating the rescan. `simple` means squota, where
+                      exclusive bytes are attributed on a different rule.
                   measured_at:
                     type: integer
-                    description: Unix time the walk completed. The number is a snapshot, not a live figure.
+                    description: Unix time the measurement completed. The number is a snapshot, not a live figure.
         "404":
           description: No such volume.
           content:

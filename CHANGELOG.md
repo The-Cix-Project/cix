@@ -6,6 +6,62 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A volume's size comes from the kernel, and the answer says so (#369)
+
+`GET /volumes/{name}/usage` walked the tree to produce its number. On a
+btrfs subvolume with quotas enabled, the kernel was already counting --
+and counting something different: a walk sums apparent file content, a
+qgroup counts exclusive allocated extents, and the qgroup is what a
+`MAX_EXCL` limit is enforced against. So the walk could report a volume
+comfortably under a quota the kernel was about to refuse the next write
+on, which is the same shape as #278/#279: a number claiming headroom
+that does not exist.
+
+`cix_btrfs_qgroup_query()` reads a subvolume's qgroup -- exclusive bytes
+used, the enforced limit, and the accounting state. There was no read
+side at all before this: `cix_btrfs_qgroup_limit_excl()` could set a
+limit and nothing could ask what limit was set, so `quota_bytes` was a
+record of what had been asked for with no way to confirm the filesystem
+agreed. The endpoint now prefers the qgroup and reports `source`
+(`"qgroup"` or `"walk"`), plus `limit_bytes` (what the KERNEL enforces,
+deliberately separate from `quota_bytes` so drift between them is
+visible) and `accounting` (`"stale"` during a rescan, when `excl` reads
+low for pre-existing data; `"simple"` under squota, where exclusive
+bytes are attributed on a different rule). See
+[ADR-0267](docs/adr/0267-a-volumes-size-comes-from-the-kernel-when-the-kernel-is-counting.md)
+for why the source is named rather than the number silently swapped.
+
+btrfs exposes no ioctl for reading a qgroup, so this searches the quota
+tree the way `btrfs qgroup show` does. Two details cost real thought.
+The lookups are **two point searches with `min == max`**, never one
+range: a tree key is a 136-bit `(objectid, type, offset)` value compared
+as a whole, so a range spanning the INFO and LIMIT types also spans
+every other subvolume's qgroup id between them, and on a host whose
+containers are all subvolumes the wanted item need not be in the first
+page. And a **plain directory is refused with `EINVAL`** rather than
+answered: `BTRFS_IOC_INO_LOOKUP` on an ordinary directory succeeds and
+returns the id of the subvolume *containing* it, so a query without that
+guard would answer a pre-ADR-0207 volume with its whole parent's
+accounting -- a confident wrong number, not an error. `test_btrfs` gates
+the refusal, and removing the guard was confirmed to fail it.
+
+The struct and ioctl declarations are transcribed into
+`include/linux_compat.h` for the reason the rest of the btrfs block
+already gives, cross-checked the same way: a probe compiled against the
+real headers reported `sizeof(search_key)=104`, `search_args=4096`,
+`search_header=32`, `ino_lookup_args=4096` and both qgroup items at 40,
+and hand-derivation from `_IOC(dir,type,nr,size)` independently
+reproduced `0xd0009411`/`0xd0009412`. Both qgroup items are five
+`__le64` and nothing else, so `__attribute__((packed))` is a no-op on
+them -- which matters, because TCC ignores it entirely (ADR-0008). That
+is a coincidence of these two structs, noted in the header so a future
+btrfs item added there gets re-measured rather than assumed.
+
+The dev sandbox has no loop devices, so no btrfs can be mounted there
+and the success path is verified on a real host; what `test_btrfs` gates
+is the refusal contract, which is where the silent-wrong-answer failure
+lives.
+
 ### How full is this volume? (#365)
 
 A volume's record said how it was configured -- disk, owner, limit,

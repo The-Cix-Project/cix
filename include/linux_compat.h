@@ -415,6 +415,124 @@ struct cix_btrfs_ioctl_quota_ctl_args {
 /* _IOR(0x94, 43, struct cix_btrfs_ioctl_qgroup_limit_args) -- sizeof() 48 */
 #define CIX_BTRFS_IOC_QGROUP_LIMIT 0x8030942b
 
+/*
+ * Reading a qgroup back (issue #369). Setting one needs a single
+ * ioctl; reading one means searching the filesystem's quota tree,
+ * because btrfs exposes no "tell me about this qgroup" call at all --
+ * btrfs-progs' own `qgroup show` walks the same tree these structures
+ * describe.
+ *
+ * Transcribed verbatim from <linux/btrfs.h> and <linux/btrfs_tree.h>
+ * for the reason the block above gives, and cross-checked the same
+ * way: a probe compiled against the real headers reported
+ * sizeof(search_key)=104, sizeof(search_args)=4096,
+ * sizeof(search_header)=32, sizeof(ino_lookup_args)=4096 and both
+ * qgroup items at 40, and hand-derivation from _IOC(dir,type,nr,size)
+ * reproduced 0xd0009411/0xd0009412 independently.
+ *
+ * WHY THE PACKED ITEMS ARE SAFE HERE, given TCC ignores
+ * __attribute__((packed)) entirely (ADR-0008): both qgroup items are
+ * five __le64 and nothing else, so natural alignment and packed
+ * alignment are the same layout -- the probe measured 40 bytes, which
+ * is 5*8 with no padding either way. This is a coincidence of these
+ * two structs rather than a general rule, so any FUTURE btrfs item
+ * added here must be re-measured rather than assumed. __le64 is read
+ * directly because this platform is x86_64; a big-endian port would
+ * have to byte-swap.
+ */
+#define CIX_BTRFS_QUOTA_TREE_OBJECTID 8ULL
+#define CIX_BTRFS_FIRST_FREE_OBJECTID 256ULL
+#define CIX_BTRFS_QGROUP_STATUS_KEY 240
+#define CIX_BTRFS_QGROUP_INFO_KEY 242
+#define CIX_BTRFS_QGROUP_LIMIT_KEY 244
+
+/*
+ * Quota accounting state, from the status item at (0, 240, 0). It
+ * matters to a reader: after quotas are first enabled the kernel marks
+ * accounting inconsistent and rescans, and until that finishes `excl`
+ * for pre-existing data reads low. Reporting that number as a usage
+ * figure would be the "claims headroom it does not have" failure this
+ * project already has scars from, so a caller is told instead.
+ *
+ * SIMPLE_MODE is squota, where extents are attributed on a different
+ * rule and `excl` does not mean what it means here.
+ */
+#define CIX_BTRFS_QGROUP_STATUS_FLAG_RESCAN (1ULL << 1)
+#define CIX_BTRFS_QGROUP_STATUS_FLAG_INCONSISTENT (1ULL << 2)
+#define CIX_BTRFS_QGROUP_STATUS_FLAG_SIMPLE_MODE (1ULL << 3)
+
+#define CIX_BTRFS_INO_LOOKUP_PATH_MAX 4080
+struct cix_btrfs_ioctl_ino_lookup_args {
+	uint64_t treeid;
+	uint64_t objectid;
+	char name[CIX_BTRFS_INO_LOOKUP_PATH_MAX];
+};
+
+struct cix_btrfs_ioctl_search_key {
+	uint64_t tree_id;
+	uint64_t min_objectid;
+	uint64_t max_objectid;
+	uint64_t min_offset;
+	uint64_t max_offset;
+	uint64_t min_transid;
+	uint64_t max_transid;
+	uint32_t min_type;
+	uint32_t max_type;
+	uint32_t nr_items;
+	uint32_t unused;
+	uint64_t unused1;
+	uint64_t unused2;
+	uint64_t unused3;
+	uint64_t unused4;
+};
+
+struct cix_btrfs_ioctl_search_header {
+	uint64_t transid;
+	uint64_t objectid;
+	uint64_t offset;
+	uint32_t type;
+	uint32_t len;
+};
+
+#define CIX_BTRFS_SEARCH_ARGS_BUFSIZE (4096 - sizeof(struct cix_btrfs_ioctl_search_key))
+struct cix_btrfs_ioctl_search_args {
+	struct cix_btrfs_ioctl_search_key key;
+	char buf[CIX_BTRFS_SEARCH_ARGS_BUFSIZE];
+};
+
+struct cix_btrfs_qgroup_info_item {
+	uint64_t generation;
+	uint64_t rfer;
+	uint64_t rfer_cmpr;
+	uint64_t excl;
+	uint64_t excl_cmpr;
+};
+
+struct cix_btrfs_qgroup_limit_item {
+	uint64_t flags;
+	uint64_t max_rfer;
+	uint64_t max_excl;
+	uint64_t rsv_rfer;
+	uint64_t rsv_excl;
+};
+
+/*
+ * Only `flags` is read, and only when the item is long enough to carry
+ * it -- the status item grew across kernel versions, so its length is
+ * checked against the offset actually read rather than assumed.
+ */
+struct cix_btrfs_qgroup_status_item {
+	uint64_t version;
+	uint64_t generation;
+	uint64_t flags;
+	uint64_t rescan;
+};
+
+/* _IOWR(0x94, 17, struct btrfs_ioctl_search_args) -- sizeof() 4096 */
+#define CIX_BTRFS_IOC_TREE_SEARCH 0xd0009411
+/* _IOWR(0x94, 18, struct btrfs_ioctl_ino_lookup_args) -- sizeof() 4096 */
+#define CIX_BTRFS_IOC_INO_LOOKUP 0xd0009412
+
 /* statfs(2) f_type value for a btrfs filesystem (statfs.h's own
  * BTRFS_SUPER_MAGIC) -- no header clash risk for this one (it's a
  * bare integer constant, not a struct/ioctl-number pair), but kept
