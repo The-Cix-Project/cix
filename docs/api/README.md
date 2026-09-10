@@ -256,6 +256,9 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | PUT | `/pkg/policies/{name}` | Set it: `highest` (default), `newest`, or `pinned` with a version |
 | DELETE | `/pkg/policies/{name}` | Back to the default |
 | GET | `/pipeline` | The delivery graph: where every package, image, deployment and the host stands, and what is stopping it (ADR-0256, ADR-0269) |
+| GET | `/pipeline/runs` | What has *happened* to an atom, newest first — one record per run, with retention of its own (ADR-0272) |
+| GET | `/system/pipeline-config` | Pipeline settings that are an operator's to choose |
+| PUT | `/system/pipeline-config` | Change one — currently `run_retention` |
 | GET | `/schedules` | Everything this host does on a clock, in one place (ADR-0257) |
 | PUT | `/schedules/{name}` | Create or replace one |
 | DELETE | `/schedules/{name}` | Remove one |
@@ -1143,6 +1146,42 @@ cixctl pipeline --all    # every row, including ok and not-implemented
 The deploy stage is only `ok` when the host is actually reachable at the address an operator uses. `confirm_boot()` used to run once cixd was "about to serve traffic" — which a box whose configured uplink NIC could not be attached satisfies: the management bridge and its address exist, cixd binds, boot confirmed. The result was a host that was up, permanently confirmed, and unreachable, having spent its A/B fallback on a slot that cannot serve anyone.
 
 Now such a boot is not confirmed. It retries the attach for two minutes (a late-loading NIC driver is the benign case) and then **reboots**, spending a try so the loader falls back to the other slot. The guard is the whole safety of it: this applies only while the boot is unconfirmed. A confirmed slot whose NIC fails at runtime never reboots itself — otherwise a pulled cable becomes a reboot loop.
+
+## Runs — what has happened, as opposed to where things stand (ADR-0272)
+
+`GET /pipeline` answers *where is this now*. `GET /pipeline/runs` (`cixctl pipeline runs`) answers *what has happened to it*: one record per run, appended when the daemon stops working on a `(package, image)` pair and never touched again.
+
+**This does not weaken the read-time join.** ADR-0256's rule is that a *position* is never stored, because a stored position is a second copy of the present that drifts from the first with no event to invalidate it. A run is not a position — it is a record that something happened, in the same class as a line in the audit trail. The pipeline view still derives every position live and never reads a run to compute one. If the two ever disagree, that is a finding, not something to reconcile.
+
+**Why this exists at all is a measurement.** Build logs are capped:
+
+```c
+#define PKG_BUILD_LOG_KEEP 40
+```
+
+On a live host on 2026-09-10 that directory held 41 files spanning **two days** — 1.4 MB, mean 34 KB each. A build log on this platform lives under two days. What an operator wants from last week is not 34 KB of compiler output; it is forty bytes saying it ran, when, for how long, and how it ended. Those are two different things with two different lifetimes, and keeping only the expensive one is why the cheap one was being thrown away.
+
+So a run carries `log` — the file it wrote — **and** `log_available`, whether that file is still there. Most historical runs name a pruned log, and both facts are reported so a caller can say *"the log has been pruned"* rather than offer a link that 404s.
+
+**A run is closed at its final outcome, and never before.** The daemon marks a package installed *provisionally*, ahead of steps that may still revert it, so a package that is marked installed and then fails to produce a new image version records the failure it actually had. And a run in flight is not in the store at all: while a build is running it is live state, already reported by `GET /pkg/hostbuild/{name}` and by the pipeline view. A half-written record amended later would be exactly the mutable second copy this design avoids — which is also why the store never contains a run whose outcome is unknown.
+
+**`trigger` is `request` or `rolling`, and it is not an actor.** *Who* made a request is already recorded, by name, in the audit trail ([ADR-0271](../adr/0271-an-action-is-attributable-to-a-person.md)). The runs that most need explaining are the rolling ones — nobody asked for those, a recipe publish caused them, and no audit line exists for them to carry a name.
+
+The atom is the same atom the pipeline uses: `(package, image)`. A chain that installs `openssh` and pulls `openssl` and `zlib` with it produces **three** records, because three atoms moved — one per outcome, so a chain that succeeds on one dependency and fails on the next says so.
+
+```
+cixctl pipeline runs                      # everything, newest first
+cixctl pipeline runs --name=glibc         # one package, across every image
+cixctl pipeline runs --image=base --limit=20
+```
+
+Retention is a **count**, not a duration, and it lives in `/system/pipeline-config` rather than a `#define`:
+
+```
+PUT /system/pipeline-config  {"run_retention": 1000}
+```
+
+A count because what an operator wants is "the last N things that happened"; a duration would make the store's size depend on how busy the host has been. 1 to 2000, default 1000 — at this platform's measured shape (13 packages tracked rolling across 15 images, maximum fan-out 6, median 1, against 84 pinned manifest entries) a publish causes at most a handful of rebuilds, so 1000 runs is a season of history for roughly 400 KB. Lowering it trims immediately, oldest first. A value outside the range changes nothing and answers 400. The setting is stored with the runs themselves, so it survives a restart — a setting that silently reverts on the next boot is worse than one that cannot be changed, because nothing reports the reversion.
 
 ## The source catalogue — what upstream has that we do not
 

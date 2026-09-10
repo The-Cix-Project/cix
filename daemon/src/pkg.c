@@ -190,6 +190,19 @@ struct pkg_entry {
 	 * real wedge going unnoticed). 0 until the first byte. */
 	time_t last_output_at;
 	time_t build_started_at;
+	/*
+	 * ADR-0272: when this entry's current run began, and what caused
+	 * it. Set once at the single point a job starts (state ->
+	 * FETCHING) and cleared when the run is closed, so a non-zero
+	 * run_started_at is exactly "this entry has an open run" -- which
+	 * is what stops an outcome being recorded twice for one job.
+	 *
+	 * Distinct from build_started_at above, which is the BUILD's own
+	 * clock: a run that never got past fetching has no build start at
+	 * all, and those are among the runs most worth keeping.
+	 */
+	time_t run_started_at;
+	char run_trigger[16];
 	int stall_reported;   /* so a stall is reported once, not every tick */
 	/* ADR-0175/issue #35: non-empty exactly when the most recent build
 	 * attempt failed with keep_on_failure requested and its build
@@ -308,6 +321,63 @@ struct pkg_recipe {
 
 static struct pkg_entry g_packages[PKG_MAX_PACKAGES];
 static char g_pkg_dir[PATH_MAX];
+
+/*
+ * ADR-0272: pipeline runs -- what has happened to an atom, as opposed
+ * to where it stands now.
+ *
+ * A record is appended when the daemon stops working on a
+ * (package, image) pair and is never touched again. Nothing reads
+ * these to compute a position: GET /v1/pipeline still derives every
+ * position from live state at read time and stores nothing, which is
+ * ADR-0256's whole point and is not weakened by keeping a log beside
+ * it any more than the audit trail weakens it.
+ *
+ * Sized from measurement rather than taste. On 192.168.15.95 on
+ * 2026-09-10 the build-log directory held 41 files across two days,
+ * 1.4 MB, mean 34 KB each -- because PKG_BUILD_LOG_KEEP caps it at 40
+ * and a busy day evicts the rest. A run record is a few hundred bytes,
+ * so the history this keeps outlives the logs it points at by a factor
+ * of roughly thirty for a fraction of the space. That asymmetry is the
+ * reason the two have separate retentions.
+ */
+#define PKG_RUN_MAX 2000            /* hard ceiling; retention is configurable below it */
+#define PKG_RUN_KEEP_DEFAULT 1000
+#define PKG_RUN_ERROR_MAX 192       /* a summary, not the build output -- that is the log */
+#define PKG_RUN_LOG_MAX 96
+#define PKG_RUN_TRIGGER_REQUEST "request"
+#define PKG_RUN_TRIGGER_ROLLING "rolling"
+
+struct pkg_run {
+	char name[PKG_NAME_MAX];
+	char image[PKG_IMAGE_NAME_MAX];
+	char version[PKG_VERSION_MAX];
+	char trigger[16];
+	/*
+	 * The build log's basename, or "" for a run that never opened one
+	 * (a fetch that failed before any build started). Allowed to name a
+	 * file that has since been pruned -- see pkg_runs_write_json(),
+	 * which reports that rather than hiding the run.
+	 */
+	char log[PKG_RUN_LOG_MAX];
+	char error[PKG_RUN_ERROR_MAX];   /* "" on success */
+	time_t started_at;
+	time_t ended_at;
+	enum pipeline_stage stage;
+	enum pipeline_status status;
+};
+
+/*
+ * Heap, not BSS: 2000 records is a megabyte, and a control-plane daemon
+ * should not carry that unconditionally for a feature a host may never
+ * exercise. Allocated on the first close and on load; if the allocation
+ * fails, runs are simply not recorded -- best-effort exactly like the
+ * build logs they accompany, and never a reason for an install to fail.
+ */
+static struct pkg_run *g_runs;
+static int g_run_count;
+static int g_run_keep = PKG_RUN_KEEP_DEFAULT;
+static char g_next_run_trigger[16] = PKG_RUN_TRIGGER_REQUEST;
 static char g_recipes_dir[PATH_MAX];
 static char g_sources_dir[PATH_MAX];
 static char g_installed_state_path[PATH_MAX];
@@ -860,6 +930,9 @@ static void fetch_note_sidecar_path(const char *name, char *out, size_t out_size
  */
 static void rebuild_queue_remove(const char *image);
 
+static void pkg_run_close(struct pkg_entry *e); /* ADR-0272 */
+static void pkg_runs_load(void);           /* ADR-0272 */
+
 static void pkg_record_outcome(struct pkg_entry *e, int keep_installed,
                                 enum pipeline_stage stage, enum pipeline_status status,
                                 const char *fmt, va_list ap)
@@ -868,6 +941,13 @@ static void pkg_record_outcome(struct pkg_entry *e, int keep_installed,
 	e->stage = stage;
 	e->status = status;
 	vsnprintf(e->error, sizeof(e->error), fmt, ap);
+	/*
+	 * ADR-0272: the one funnel every failure and cancellation reaches,
+	 * so the run is closed here rather than at each of the two dozen
+	 * call sites that reach it -- none of which can be forgotten if
+	 * the only way to fail is through this function.
+	 */
+	pkg_run_close(e);
 }
 
 /*
@@ -3346,6 +3426,14 @@ int pkg_init(const char *pkg_dir, const char *installed_state_path, const char *
 	memset(g_build_output_entries, 0, sizeof(g_build_output_entries));
 	image_recipe_init(pkg_dir);
 	container_recipe_init(pkg_dir);
+	/*
+	 * ADR-0272: before load_state(), and deliberately not inside it.
+	 * load_state() returns early when the installed-state file is not
+	 * there, which is every fresh install -- a run history hooked in
+	 * after that would silently never load on exactly the hosts whose
+	 * first runs are most worth keeping.
+	 */
+	pkg_runs_load();
 	return load_state();
 }
 
@@ -4914,6 +5002,13 @@ int pkg_try_start_queued_rebuild(pid_t *out_pid, int *out_pidfd, int *out_chain_
 				/* Manifest-driven, automatic install -- like
 				 * handle_pkg_update_all()'s own rebuild, never worth
 				 * preserving a build container for (ADR-0175). */
+				/* ADR-0272: nobody requested this one -- a publish
+				 * caused it. Consumed by the run-open site inside
+				 * pkg_install_start(), which resets it, so a failure
+				 * to start cannot leave the next operator-requested
+				 * install mislabelled. */
+				snprintf(g_next_run_trigger, sizeof(g_next_run_trigger), "%s",
+				         PKG_RUN_TRIGGER_ROLLING);
 				if (pkg_install_start(entries[i].package, image, want_version, e != NULL, 0,
 				                       started_name, sizeof(started_name), out_pid,
 				                       out_pidfd, out_chain_idx) == PKG_OK) {
@@ -5340,6 +5435,15 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 		strncpy(e->image, g_chains[chain_idx].image, sizeof(e->image) - 1);
 	}
 	e->state = PKG_STATE_FETCHING;
+	/*
+	 * ADR-0272: a run opens here, at the single place a job begins.
+	 * g_next_run_trigger names what caused it and is consumed rather
+	 * than read, so a trigger set by the rolling-rebuild drain cannot
+	 * leak onto the next operator-requested install.
+	 */
+	e->run_started_at = time(NULL);
+	snprintf(e->run_trigger, sizeof(e->run_trigger), "%s", g_next_run_trigger);
+	snprintf(g_next_run_trigger, sizeof(g_next_run_trigger), "%s", PKG_RUN_TRIGGER_REQUEST);
 	e->error[0] = '\0';
 	e->status = PIPELINE_OK; /* the previous attempt's outcome is not this
 	                          * attempt's story; cleared alongside error[]
@@ -6980,6 +7084,321 @@ static void pkg_build_log_dir(char *out, size_t out_size)
 	snprintf(out, out_size, "%s/build-logs", g_pkg_dir);
 }
 
+/* ---- ADR-0272: the run store ------------------------------------- */
+
+static void pkg_runs_path(char *out, size_t out_size)
+{
+	snprintf(out, out_size, "%s/runs.json", g_pkg_dir);
+}
+
+/*
+ * Trims to the configured retention, oldest-first. Called after every
+ * append, so the cap is enforced at the moment it would be exceeded
+ * rather than by a sweep nobody scheduled -- the same discipline
+ * pkg_build_log_prune() already follows for the logs.
+ */
+static void pkg_runs_trim(void)
+{
+	int drop;
+
+	if (g_runs == NULL || g_run_count <= g_run_keep)
+		return;
+	drop = g_run_count - g_run_keep;
+	memmove(&g_runs[0], &g_runs[drop], (size_t)(g_run_count - drop) * sizeof(g_runs[0]));
+	g_run_count -= drop;
+}
+
+/*
+ * The on-disk form is an object, not a bare array, so the retention an
+ * operator chose survives a restart alongside the runs it governs. A
+ * setting that silently reverts on the next boot is worse than one that
+ * cannot be changed at all: nothing reports the reversion, and the
+ * store quietly grows or shrinks back to a default nobody asked for.
+ */
+static void pkg_runs_render(struct json_writer *w)
+{
+	int i;
+
+	jw_obj_open(w);
+	jw_key(w, "retention");
+	jw_int(w, g_run_keep);
+	jw_key(w, "runs");
+	jw_arr_open(w);
+	for (i = 0; i < g_run_count; i++) {
+		jw_obj_open(w);
+		jw_key(w, "name");
+		jw_str(w, g_runs[i].name);
+		jw_key(w, "image");
+		jw_str(w, g_runs[i].image);
+		jw_key(w, "version");
+		jw_str(w, g_runs[i].version);
+		jw_key(w, "trigger");
+		jw_str(w, g_runs[i].trigger);
+		jw_key(w, "started_at");
+		jw_int(w, (long long)g_runs[i].started_at);
+		jw_key(w, "ended_at");
+		jw_int(w, (long long)g_runs[i].ended_at);
+		jw_key(w, "stage");
+		jw_str(w, pipeline_stage_name(g_runs[i].stage));
+		jw_key(w, "status");
+		jw_str(w, pipeline_status_name(g_runs[i].status));
+		jw_key(w, "log");
+		jw_str(w, g_runs[i].log);
+		jw_key(w, "error");
+		jw_str(w, g_runs[i].error);
+		jw_obj_close(w);
+	}
+	jw_arr_close(w);
+	jw_obj_close(w);
+}
+
+static void pkg_runs_save(void)
+{
+	struct json_writer w;
+	char path[PATH_MAX];
+
+	/*
+	 * Deliberately NOT guarded on g_runs: a host that has set a
+	 * retention and not yet finished a single run still has something
+	 * worth writing, and the render loop below is bounded by
+	 * g_run_count, which is zero in exactly that case.
+	 */
+	if (g_pkg_dir[0] == '\0')
+		return;
+	pkg_runs_path(path, sizeof(path));
+	jw_init(&w);
+	pkg_runs_render(&w);
+	if (w.buf != NULL)
+		(void)persist_atomic_write(path, w.buf, w.len);
+	jw_free(&w);
+}
+
+static int pkg_runs_alloc(void)
+{
+	if (g_runs != NULL)
+		return 0;
+	g_runs = calloc(PKG_RUN_MAX, sizeof(*g_runs));
+	return g_runs != NULL ? 0 : -1;
+}
+
+/*
+ * Closes the open run on this entry, if it has one.
+ *
+ * The run_started_at guard is what makes this callable from both the
+ * failure funnel and the success tail without a job ever being recorded
+ * twice: a provisional success that is then reverted by pkg_fail()
+ * reaches pkg_record_outcome() with the run already closed, and the
+ * record that survives is the one made by whichever of them ran first
+ * -- which is the success tail only when nothing reverted it.
+ */
+static void pkg_run_close(struct pkg_entry *e)
+{
+	struct pkg_run *r;
+	const char *base;
+
+	if (e == NULL || e->run_started_at == 0)
+		return;
+	if (pkg_runs_alloc() != 0) {
+		e->run_started_at = 0;
+		return;
+	}
+	if (g_run_count >= PKG_RUN_MAX) {
+		memmove(&g_runs[0], &g_runs[1], (size_t)(PKG_RUN_MAX - 1) * sizeof(g_runs[0]));
+		g_run_count = PKG_RUN_MAX - 1;
+	}
+	r = &g_runs[g_run_count++];
+	memset(r, 0, sizeof(*r));
+	snprintf(r->name, sizeof(r->name), "%s", e->name);
+	snprintf(r->image, sizeof(r->image), "%s", e->image);
+	snprintf(r->version, sizeof(r->version), "%s", e->version);
+	snprintf(r->trigger, sizeof(r->trigger), "%s",
+	         e->run_trigger[0] != '\0' ? e->run_trigger : PKG_RUN_TRIGGER_REQUEST);
+	base = strrchr(e->build_log_path, '/');
+	snprintf(r->log, sizeof(r->log), "%s",
+	         base != NULL ? base + 1 : e->build_log_path);
+	snprintf(r->error, sizeof(r->error), "%s", e->error);
+	r->started_at = e->run_started_at;
+	r->ended_at = time(NULL);
+	r->stage = e->stage;
+	/*
+	 * A run's status is the entry's, with one substitution: an entry
+	 * whose status is PIPELINE_OK but whose state is FAILED cannot
+	 * happen through pkg_record_outcome(), and if it ever does the run
+	 * should say failed rather than quietly reporting a failure as a
+	 * success it can no longer distinguish.
+	 */
+	r->status = (e->state == PKG_STATE_FAILED && e->status == PIPELINE_OK) ? PIPELINE_FAILED
+	                                                                       : e->status;
+	e->run_started_at = 0;
+	e->run_trigger[0] = '\0';
+	pkg_runs_trim();
+	pkg_runs_save();
+}
+
+static void pkg_runs_load(void)
+{
+	char path[PATH_MAX];
+	char *buf = NULL;
+	size_t len = 0;
+	struct json_value *root;
+	const struct json_value *runs, *keep;
+	size_t i;
+
+	if (g_pkg_dir[0] == '\0')
+		return;
+	pkg_runs_path(path, sizeof(path));
+	if (persist_read_file(path, &buf, &len) != 0 || buf == NULL)
+		return;
+	root = json_parse(buf, len);
+	free(buf);
+	if (root == NULL || root->type != JSON_OBJECT) {
+		json_free(root);
+		return;
+	}
+	keep = json_object_get(root, "retention");
+	if (keep != NULL && keep->type == JSON_NUMBER) {
+		int k = (int)json_as_number(keep);
+
+		if (k >= 1 && k <= PKG_RUN_MAX)
+			g_run_keep = k;
+	}
+	runs = json_object_get(root, "runs");
+	if (runs == NULL || runs->type != JSON_ARRAY) {
+		json_free(root);
+		return;
+	}
+	if (pkg_runs_alloc() != 0) {
+		json_free(root);
+		return;
+	}
+	g_run_count = 0;
+	for (i = 0; i < runs->u.array.count && g_run_count < PKG_RUN_MAX; i++) {
+		const struct json_value *o = runs->u.array.items[i];
+		struct pkg_run *r = &g_runs[g_run_count];
+		const char *sv;
+
+		if (o == NULL || o->type != JSON_OBJECT)
+			continue;
+		memset(r, 0, sizeof(*r));
+		sv = json_as_string(json_object_get(o, "name"));
+		if (sv == NULL || sv[0] == '\0')
+			continue; /* a record with no atom names nothing and is dropped */
+		snprintf(r->name, sizeof(r->name), "%s", sv);
+		sv = json_as_string(json_object_get(o, "image"));
+		snprintf(r->image, sizeof(r->image), "%s", sv != NULL ? sv : "");
+		sv = json_as_string(json_object_get(o, "version"));
+		snprintf(r->version, sizeof(r->version), "%s", sv != NULL ? sv : "");
+		sv = json_as_string(json_object_get(o, "trigger"));
+		snprintf(r->trigger, sizeof(r->trigger), "%s",
+		         sv != NULL ? sv : PKG_RUN_TRIGGER_REQUEST);
+		sv = json_as_string(json_object_get(o, "log"));
+		snprintf(r->log, sizeof(r->log), "%s", sv != NULL ? sv : "");
+		sv = json_as_string(json_object_get(o, "error"));
+		snprintf(r->error, sizeof(r->error), "%s", sv != NULL ? sv : "");
+		r->started_at = (time_t)json_as_number(json_object_get(o, "started_at"));
+		r->ended_at = (time_t)json_as_number(json_object_get(o, "ended_at"));
+		if (pipeline_stage_from_name(json_as_string(json_object_get(o, "stage")), &r->stage) != 0)
+			r->stage = PIPELINE_DISCOVER;
+		if (pipeline_status_from_name(json_as_string(json_object_get(o, "status")),
+		                               &r->status) != 0)
+			r->status = PIPELINE_OK;
+		g_run_count++;
+	}
+	json_free(root);
+	pkg_runs_trim();
+}
+
+int pkg_run_retention_get(void)
+{
+	return g_run_keep;
+}
+
+int pkg_run_retention_set(int keep)
+{
+	if (keep < 1 || keep > PKG_RUN_MAX)
+		return -1;
+	g_run_keep = keep;
+	pkg_runs_trim();
+	pkg_runs_save();
+	return 0;
+}
+
+void pkg_runs_write_json(struct json_writer *w, const char *name, const char *image, int limit)
+{
+	char dir[PATH_MAX];
+	int i, emitted = 0;
+
+	pkg_build_log_dir(dir, sizeof(dir));
+	if (limit <= 0 || limit > PKG_RUN_MAX)
+		limit = PKG_RUN_MAX;
+
+	jw_obj_open(w);
+	jw_key(w, "runs");
+	jw_arr_open(w);
+	/* Newest first: the question an operator asks of a history is
+	 * almost always about its most recent end. */
+	for (i = g_run_count - 1; i >= 0 && emitted < limit; i--) {
+		const struct pkg_run *r = &g_runs[i];
+		char log_path[PATH_MAX];
+		struct stat st;
+		int have_log;
+
+		if (name != NULL && name[0] != '\0' && strcmp(r->name, name) != 0)
+			continue;
+		if (image != NULL && image[0] != '\0' && strcmp(r->image, image) != 0)
+			continue;
+		emitted++;
+
+		have_log = 0;
+		if (r->log[0] != '\0') {
+			snprintf(log_path, sizeof(log_path), "%s/%s", dir, r->log);
+			have_log = stat(log_path, &st) == 0;
+		}
+
+		jw_obj_open(w);
+		jw_key(w, "name");
+		jw_str(w, r->name);
+		jw_key(w, "image");
+		jw_str(w, r->image);
+		jw_key(w, "version");
+		jw_str(w, r->version);
+		jw_key(w, "trigger");
+		jw_str(w, r->trigger);
+		jw_key(w, "started_at");
+		jw_int(w, (long long)r->started_at);
+		jw_key(w, "ended_at");
+		jw_int(w, (long long)r->ended_at);
+		jw_key(w, "duration_seconds");
+		jw_int(w, (long long)(r->ended_at > r->started_at ? r->ended_at - r->started_at : 0));
+		jw_key(w, "stage");
+		jw_str(w, pipeline_stage_name(r->stage));
+		jw_key(w, "status");
+		jw_str(w, pipeline_status_name(r->status));
+		jw_key(w, "error");
+		jw_str(w, r->error);
+		/*
+		 * Both facts, deliberately. `log` is what this run wrote;
+		 * `log_available` is whether it is still on disk. Build logs
+		 * are capped at PKG_BUILD_LOG_KEEP and runs are kept far
+		 * longer, so most historical runs name a pruned file -- and a
+		 * caller that can tell "pruned" from "never had one" can say
+		 * so, where one given only a filename would offer a link that
+		 * 404s.
+		 */
+		jw_key(w, "log");
+		jw_str(w, r->log);
+		jw_key(w, "log_available");
+		jw_bool(w, have_log);
+		jw_obj_close(w);
+	}
+	jw_arr_close(w);
+	jw_key(w, "total");
+	jw_int(w, g_run_count);
+	jw_key(w, "retention");
+	jw_int(w, g_run_keep);
+	jw_obj_close(w);
+}
+
 /* Deletes oldest-first until at most PKG_BUILD_LOG_KEEP remain. Called
  * before opening a new one, so the cap is enforced at the moment it
  * would otherwise be exceeded rather than by a sweep nobody scheduled. */
@@ -8187,6 +8606,15 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		 * only source of truth a recipe should have.
 		 */
 	}
+
+	/*
+	 * ADR-0272: the run closes HERE and not at the provisional
+	 * `e->state = PKG_STATE_INSTALLED` further up, whose own comment
+	 * says both branches above may revert it. Every failure between
+	 * the two returns early through pkg_fail(), so reaching this line
+	 * is what makes the success final.
+	 */
+	pkg_run_close(e);
 
 	save_state();
 

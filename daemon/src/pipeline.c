@@ -118,6 +118,29 @@ const char *pipeline_status_name(enum pipeline_status s)
 	return STATUSES[s];
 }
 
+/*
+ * The sibling of pipeline_stage_from_name(), and here for the same
+ * reason: STATUSES is the one table that knows these spellings, so
+ * anything reading a status back from JSON asks it rather than
+ * carrying a second copy of the list (ADR-0272's run store was the
+ * first caller to need one).
+ */
+int pipeline_status_from_name(const char *name, enum pipeline_status *out)
+{
+	size_t i;
+
+	if (name == NULL)
+		return -1;
+	for (i = 0; i < sizeof(STATUSES) / sizeof(STATUSES[0]); i++) {
+		if (strcmp(STATUSES[i], name) == 0) {
+			if (out != NULL)
+				*out = (enum pipeline_status)i;
+			return 0;
+		}
+	}
+	return -1;
+}
+
 int pipeline_stage_from_name(const char *name, enum pipeline_stage *out)
 {
 	int i;

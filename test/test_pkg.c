@@ -1019,6 +1019,46 @@ int main(void)
 			cix_response_free(&r);
 		}
 	}
+	/*
+	 * ADR-0272: a completed install leaves a run behind.
+	 *
+	 * The contract of GET /pipeline/runs is gated in test_stallwatch,
+	 * which is in SELFTESTS; this is the half that cannot be asserted
+	 * there because it needs a package to have actually been built. A
+	 * run is closed at the FINAL outcome, so a greeter that reports
+	 * installed and leaves no successful run means the close is hooked
+	 * to the provisional assignment instead.
+	 */
+	if (strcmp(state, "installed") == 0) {
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "GET", "/v1/pipeline/runs?name=greeter", NULL, &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: GET /v1/pipeline/runs?name=greeter, status=%d\n", r.status);
+			ok = 0;
+		} else {
+			const struct json_value *runs = json_object_get(r.json, "runs");
+			int saw_ok = 0;
+			size_t k;
+
+			if (runs != NULL && runs->type == JSON_ARRAY) {
+				for (k = 0; k < runs->u.array.count; k++) {
+					const char *st = json_str_field(runs->u.array.items[k], "status");
+					const char *nm = json_str_field(runs->u.array.items[k], "name");
+
+					if (st != NULL && strcmp(st, "ok") == 0 && nm != NULL &&
+					    strcmp(nm, "greeter") == 0)
+						saw_ok = 1;
+				}
+			}
+			if (!saw_ok) {
+				fprintf(stderr,
+				        "FAIL: greeter installed but left no successful run in the store\n");
+				ok = 0;
+			}
+		}
+		cix_response_free(&r);
+	}
+
 	if (strcmp(state, "installed") == 0) {
 		char run_out[256] = { 0 };
 		FILE *fp = popen(base_path("/usr/bin/greeter"), "r");

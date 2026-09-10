@@ -2959,6 +2959,25 @@ pre {
 	overflow-wrap: anywhere;
 }
 
+/* ADR-0272: the run history. Scrolls on its own so a package with a
+ * hundred runs cannot push the build log off the drawer. */
+.dg-runs {
+	max-height: 220px;
+	overflow: auto;
+	margin-top: var(--s1);
+	border: 1px solid var(--border);
+	border-radius: var(--r-control);
+}
+.dg-run {
+	padding: var(--s1) var(--s2);
+	font-size: 11px;
+	line-height: 1.45;
+	border-bottom: 1px solid var(--border);
+	overflow-wrap: anywhere;
+}
+.dg-run:last-child { border-bottom: 0; }
+.dg-run-bad { color: var(--error); }
+
 .dg-h {
 	font-size: 12px;
 	text-transform: uppercase;

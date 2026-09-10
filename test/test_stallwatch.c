@@ -432,6 +432,116 @@ int main(void)
 	}
 	cix_response_free(&r);
 
+	/*
+	 * ADR-0272: the pipeline run store's contract.
+	 *
+	 * Here rather than in test_pkg, which exercises real installs and
+	 * is not in SELFTESTS -- a gate in a binary the release never runs
+	 * is not a gate. This asserts the shape and the retention setting,
+	 * which need no package; that a real install actually APPENDS a run
+	 * is exercised by test_pkg and verified on a real host, since
+	 * producing one here would mean building a package.
+	 */
+	{
+		const struct json_value *runs, *ret;
+
+		/* An empty store answers with an empty list and its default,
+		 * not with an error and not with a null -- a caller rendering
+		 * a history must not have to special-case "never ran". */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "GET", "/v1/pipeline/runs", NULL, &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: GET /v1/pipeline/runs, status=%d\n", r.status);
+			ok = 0;
+		} else {
+			runs = json_object_get(r.json, "runs");
+			ret = json_object_get(r.json, "retention");
+			if (runs == NULL || runs->type != JSON_ARRAY) {
+				fprintf(stderr, "FAIL: runs is not an array on an empty store\n");
+				ok = 0;
+			}
+			if (ret == NULL || ret->type != JSON_NUMBER || (int)ret->u.number != 1000) {
+				fprintf(stderr, "FAIL: default run retention is not 1000\n");
+				ok = 0;
+			}
+		}
+		cix_response_free(&r);
+
+		/* Out of range changes NOTHING. Asserted by reading the value
+		 * back rather than by trusting the 400: a handler that
+		 * validates after applying returns the same 400 and has
+		 * already done the damage. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "PUT", "/v1/system/pipeline-config",
+		                        "{\"run_retention\":0}", &r) != 0 ||
+		    r.status != 400) {
+			fprintf(stderr, "FAIL: run_retention 0 expected 400, got %d\n", r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "GET", "/v1/system/pipeline-config", NULL, &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: GET /v1/system/pipeline-config, status=%d\n", r.status);
+			ok = 0;
+		} else {
+			ret = json_object_get(r.json, "run_retention");
+			if (ret == NULL || ret->type != JSON_NUMBER || (int)ret->u.number != 1000) {
+				fprintf(stderr, "FAIL: a refused retention was applied anyway\n");
+				ok = 0;
+			}
+		}
+		cix_response_free(&r);
+
+		/* A real change is accepted and reported back in the same
+		 * response, so a caller never has to read it again to know
+		 * what it now is. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "PUT", "/v1/system/pipeline-config",
+		                        "{\"run_retention\":50}", &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: PUT run_retention 50, status=%d\n", r.status);
+			ok = 0;
+		} else {
+			ret = json_object_get(r.json, "run_retention");
+			if (ret == NULL || ret->type != JSON_NUMBER || (int)ret->u.number != 50) {
+				fprintf(stderr, "FAIL: the change was not reported back\n");
+				ok = 0;
+			}
+		}
+		cix_response_free(&r);
+	}
+
+	stop_daemon(daemon_pid);
+
+	/*
+	 * And it survives the restart. A setting that silently reverts on
+	 * the next boot is worse than one that cannot be changed: nothing
+	 * reports the reversion, so the store quietly returns to a default
+	 * nobody chose. This is why the runs file is an object carrying its
+	 * own retention rather than a bare array of runs.
+	 */
+	daemon_pid = start_daemon();
+	if (daemon_pid < 0 || wait_for_daemon(&client, 50) != 0) {
+		fprintf(stderr, "FAIL: daemon did not come back for the run-store check\n");
+		test_data_dir_cleanup(g_data_dir);
+		return 1;
+	}
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "GET", "/v1/system/pipeline-config", NULL, &r) != 0 ||
+	    r.status != 200) {
+		fprintf(stderr, "FAIL: GET pipeline-config after restart, status=%d\n", r.status);
+		ok = 0;
+	} else {
+		const struct json_value *ret = json_object_get(r.json, "run_retention");
+
+		if (ret == NULL || ret->type != JSON_NUMBER || (int)ret->u.number != 50) {
+			fprintf(stderr, "FAIL: run retention did not survive a restart\n");
+			ok = 0;
+		}
+	}
+	cix_response_free(&r);
+
 	stop_daemon(daemon_pid);
 	test_data_dir_cleanup(g_data_dir);
 

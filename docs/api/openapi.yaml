@@ -9058,6 +9058,127 @@ paths:
               schema:
                 $ref: "#/components/schemas/Pipeline"
 
+  /pipeline/runs:
+    get:
+      summary: What has HAPPENED to an atom, as opposed to where it stands now (ADR-0272)
+      description: >
+        `GET /pipeline` answers "where is this now". This answers "what
+        has happened to it": one record per run, appended when the
+        daemon stops working on a (package, image) pair and never
+        touched again.
+
+
+        Nothing here is read to compute a position. The pipeline view
+        still derives every position from live state at read time and
+        stores nothing, which is ADR-0256's rule and is not weakened by
+        keeping a log beside it -- a run is an event, in the same class
+        as a line in the audit trail.
+
+
+        A run is closed at its FINAL outcome. The daemon marks a package
+        installed provisionally, before the steps that may still revert
+        it, so a package that is marked installed and then fails to
+        produce a new image version records the failure it actually had.
+        A run in flight is not here at all: while a build is running it
+        is live state, already reported by `GET /pkg/hostbuild/{name}`
+        and by the pipeline view, and a half-written record amended
+        later would be exactly the mutable second copy this design
+        avoids.
+
+
+        `log` names the build log this run wrote; `log_available` says
+        whether that file still exists. Build logs are capped at forty
+        and runs are kept for a thousand, so most historical runs name a
+        pruned file -- measured on a live host, the whole build-log
+        directory spanned two days. Both facts are reported so a caller
+        can say "the log has been pruned" instead of offering a link
+        that 404s.
+
+
+        `trigger` is `request` for a run someone asked for and `rolling`
+        for one a recipe publish caused. It is not an actor: WHO made a
+        request is already recorded, by name, in the audit trail
+        (ADR-0271), and the runs that most need explaining are the
+        rolling ones, which nobody requested at all.
+
+
+        Newest first.
+      operationId: getPipelineRuns
+      x-cix-expose: [cli, web]
+      parameters:
+        - name: name
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Only runs of this package. Omit for every package.
+        - name: image
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Only runs against this image. Omit for every image.
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+          description: At most this many runs. Omitted or <= 0 means the store's own ceiling.
+      responses:
+        "200":
+          description: The run history
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PipelineRuns"
+
+  /system/pipeline-config:
+    get:
+      summary: Pipeline settings that are an operator's to choose (ADR-0272)
+      operationId: getPipelineConfig
+      x-cix-expose: [cli, web]
+      responses:
+        "200":
+          description: The current settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PipelineConfig"
+    put:
+      summary: Change a pipeline setting (ADR-0272)
+      description: >
+        Only the fields present in the body are changed.
+
+
+        `run_retention` is how many pipeline runs are kept, as a count
+        rather than a duration: what an operator wants is "the last N
+        things that happened", and a duration makes the store's size
+        depend on how busy the host has been. 1 to 2000; the default is
+        1000, which at this platform's measured shape is roughly a
+        season of history for about 400 KB. Lowering it trims
+        immediately, oldest first.
+      operationId: setPipelineConfig
+      x-cix-expose: [cli, web]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PipelineConfig"
+      responses:
+        "200":
+          description: The settings after the change
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PipelineConfig"
+        "400":
+          description: A value outside its allowed range -- nothing is changed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /pkg/source-catalogue:
     get:
       summary: What upstream has published, against what this platform has recipes for (ADR-0255)
@@ -14807,6 +14928,66 @@ components:
               type: string
             image:
               type: [string, "null"]
+
+    PipelineRuns:
+      type: object
+      required: [runs, total, retention]
+      properties:
+        runs:
+          type: array
+          items:
+            type: object
+            required: [name, image, started_at, ended_at, status]
+            properties:
+              name:
+                type: string
+              image:
+                type: string
+              version:
+                type: string
+                description: The version this run installed, or was trying to.
+              trigger:
+                type: string
+                enum: [request, rolling]
+              started_at:
+                type: integer
+                description: Unix time the run opened -- when the job began, not when its build did.
+              ended_at:
+                type: integer
+                description: Unix time the outcome became final.
+              duration_seconds:
+                type: integer
+              stage:
+                type: string
+                description: The stage the run ended at. Meaningful only when status is not ok.
+              status:
+                type: string
+                enum: [ok, blocked, failed, cancelled, not-implemented]
+              error:
+                type: string
+                description: A summary, empty on success. The build output is in the log, not here.
+              log:
+                type: string
+                description: Basename of the build log this run wrote, or empty if it never opened one.
+              log_available:
+                type: boolean
+                description: >
+                  Whether that log is still on disk. False is the normal
+                  case for an older run: logs are pruned at forty and
+                  runs are kept for a thousand.
+        total:
+          type: integer
+          description: Runs held in the store, before any name/image filter.
+        retention:
+          type: integer
+          description: How many runs are kept. See PUT /system/pipeline-config.
+
+    PipelineConfig:
+      type: object
+      properties:
+        run_retention:
+          type: integer
+          description: How many pipeline runs to keep, 1 to 2000. Default 1000.
 
     Pipeline:
       type: object

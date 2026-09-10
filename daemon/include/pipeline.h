@@ -173,5 +173,6 @@ const char *pipeline_stage_verb(enum pipeline_stage s);
 
 /* -1 when the name is not one of the eleven. */
 int pipeline_stage_from_name(const char *name, enum pipeline_stage *out);
+int pipeline_status_from_name(const char *name, enum pipeline_status *out);
 
 #endif /* PIPELINE_H */
