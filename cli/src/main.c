@@ -14897,6 +14897,12 @@ static int cmd_pkg_source_policy(const struct cix_client *c, int json_mode, int 
  */
 static int g_pipeline_show_all;
 
+static void fmt_pipeline_config(const struct json_value *root)
+{
+	printf("run retention   %ld runs\n",
+	        (long)json_as_number(json_object_get(root, "run_retention")));
+}
+
 /*
  * ADR-0272: what has happened to an atom, newest first.
  *
@@ -15271,6 +15277,40 @@ static int cmd_pipeline(const struct cix_client *c, int json_mode, int argc, cha
 	/* argv[0] is the first argument AFTER the command name -- see
 	 * dispatch_command(), which passes the command separately. */
 	g_pipeline_show_all = 0;
+
+	/*
+	 * ADR-0272: how many runs to keep. A count rather than a duration,
+	 * because what an operator wants is "the last N things that
+	 * happened" and a duration makes the store's size depend on how
+	 * busy the host has been.
+	 */
+	if (argc > 0 && strcmp(argv[0], "config") == 0) {
+		const char *keep = NULL;
+
+		for (i = 1; i < argc; i++) {
+			if (strncmp(argv[i], "--run-retention=", 16) == 0)
+				keep = argv[i] + 16;
+			else {
+				fprintf(stderr, "usage: cixctl pipeline config [--run-retention=N]\n");
+				return 2;
+			}
+		}
+		if (keep != NULL) {
+			char body[64];
+
+			snprintf(body, sizeof(body), "{\"run_retention\":%d}", atoi(keep));
+			if (cix_client_request(c, CIX_API_setPipelineConfig_METHOD,
+			                        CIX_API_setPipelineConfig, body, &r) != 0) {
+				fprintf(stderr, "cixctl: could not reach daemon\n");
+				return 1;
+			}
+		} else if (cix_client_request(c, CIX_API_getPipelineConfig_METHOD,
+		                               CIX_API_getPipelineConfig, NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_pipeline_config);
+	}
 
 	/* ADR-0272: `pipeline` is where it stands now, `pipeline runs` is
 	 * what has happened to it. */

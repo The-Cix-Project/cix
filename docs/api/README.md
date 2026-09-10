@@ -1178,8 +1178,12 @@ cixctl pipeline runs --image=base --limit=20
 Retention is a **count**, not a duration, and it lives in `/system/pipeline-config` rather than a `#define`:
 
 ```
+cixctl pipeline config                        # show it
+cixctl pipeline config --run-retention=1000   # set it
 PUT /system/pipeline-config  {"run_retention": 1000}
 ```
+
+CLI only, deliberately: the dashboard renders runs, and every setting does not need a control. `test_api_surfaces` holds that honest — declaring `x-cix-expose: [web]` for an operation the dashboard never calls fails the build, which is how the first attempt at this endpoint was caught.
 
 A count because what an operator wants is "the last N things that happened"; a duration would make the store's size depend on how busy the host has been. 1 to 2000, default 1000 — at this platform's measured shape (13 packages tracked rolling across 15 images, maximum fan-out 6, median 1, against 84 pinned manifest entries) a publish causes at most a handful of rebuilds, so 1000 runs is a season of history for roughly 400 KB. Lowering it trims immediately, oldest first. A value outside the range changes nothing and answers 400. The setting is stored with the runs themselves, so it survives a restart — a setting that silently reverts on the next boot is worse than one that cannot be changed, because nothing reports the reversion.
 
