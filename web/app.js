@@ -642,6 +642,23 @@ let authUsername = localStorage.getItem("cix-auth-username") || null;
 const authStatusEl = document.getElementById("auth-status");
 const authActionBtn = document.getElementById("menu-auth-action");
 
+/*
+ * #370: the dashboard showed "logged in: <user>" once you logged in and
+ * showed NOTHING when write authentication was off entirely -- so a host
+ * that would accept a mutating request from anyone rendered exactly like
+ * a secured one. This is the missing state.
+ *
+ * Undefined means an older daemon that does not report the field; the
+ * banner stays hidden rather than accusing a host it cannot ask.
+ */
+function updateAuthGatingBanner(active) {
+	const el = document.getElementById("auth-gating-banner");
+
+	if (!el)
+		return;
+	el.hidden = active !== false;
+}
+
 function updateAuthUi() {
 	if (authToken) {
 		authStatusEl.hidden = false;
@@ -1225,8 +1242,16 @@ async function refreshHealth() {
 	const start = performance.now();
 
 	try {
-		await apiRequest("GET", CIX_API.getHealth(), undefined, HEALTH_TIMEOUT_MS);
+		const health = await apiRequest("GET", CIX_API.getHealth(), undefined, HEALTH_TIMEOUT_MS);
 		const ms = Math.round(performance.now() - start);
+
+		/*
+		 * #370: an open control plane must never look like a secured
+		 * one. health carries auth_gating_active, so the banner rides
+		 * the poll that already runs -- no extra request, and it
+		 * clears by itself the moment gating is configured.
+		 */
+		updateAuthGatingBanner(health && health.auth_gating_active);
 
 		/* Back after an absence: the daemon may have restarted into a
 		 * different build, so re-ask rather than keep showing the one

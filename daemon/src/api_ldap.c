@@ -6,6 +6,7 @@
 #include "http.h"
 #include "json.h"
 #include "ldap.h"
+#include "hostauth.h"
 #include "registry.h"
 #include "namecheck.h"
 #include "subid.h"
@@ -343,6 +344,30 @@ void handle_ldap_group_update(int fd, const char *name, const char *body, size_t
 	jname = json_object_get(root, "name");
 	new_name = jname != NULL ? json_as_string(jname) : NULL;
 
+	/*
+	 * #370: an admin group is named by NAME in hostauth-config and
+	 * joined by GID by its members, so a rename orphans the config and
+	 * a renumber orphans every member -- either one turns write
+	 * authentication off for the whole API while the configuration
+	 * still reads correctly. Both refused on a configured admin group.
+	 * Everything else about such a group stays editable; only the two
+	 * identity fields the invariant is built on are frozen.
+	 */
+	if (hostauth_group_is_admin_group(name)) {
+		struct ldap_group *cur = ldap_group_find(name);
+		int renaming = new_name != NULL && new_name[0] != '\0' && strcmp(new_name, name) != 0;
+		int renumbering = gidnumber != 0 && cur != NULL && gidnumber != cur->gidnumber;
+
+		if (renaming || renumbering) {
+			json_free(root);
+			respond_error(fd, 409, "Conflict",
+			              "this group is named in admin_groups -- renaming it or changing "
+			              "its gidnumber would turn off write authentication for the whole "
+			              "API; change PUT /v1/system/hostauth-config first");
+			return;
+		}
+	}
+
 	rerr = ldap_group_update(name, new_name, gidnumber, &g);
 	json_free(root);
 	if (rerr != LDAP_RECORD_OK) {
@@ -358,7 +383,24 @@ void handle_ldap_group_update(int fd, const char *name, const char *body, size_t
 
 void handle_ldap_group_delete(int fd, const char *name)
 {
-	enum ldap_record_error rerr = ldap_group_delete(name);
+	enum ldap_record_error rerr;
+
+	/*
+	 * #370: deleting a group named in admin_groups turns write-gating
+	 * off for the whole API, silently, leaving hostauth-config still
+	 * naming it. Refused outright rather than only when it holds the
+	 * last admin -- a configured admin group that does not exist is a
+	 * broken configuration either way, and "you may delete it while
+	 * someone else is also an admin" is a rule nobody would predict.
+	 */
+	if (hostauth_group_is_admin_group(name)) {
+		respond_error(fd, 409, "Conflict",
+		              "this group is named in admin_groups -- deleting it would turn off "
+		              "write authentication for the whole API; change "
+		              "PUT /v1/system/hostauth-config first");
+		return;
+	}
+	rerr = ldap_group_delete(name);
 
 	if (rerr != LDAP_RECORD_OK) {
 		respond_ldap_record_error(fd, rerr);
@@ -499,6 +541,26 @@ void handle_ldap_user_update(int fd, const char *name, const char *body, size_t 
 	                       * (e.g. givenname/sn) resetting to empty; auto-allocation is only
 	                       * for create, where "I don't have an opinion" is a real, common case. */
 
+	/*
+	 * #370: a PUT is a full-record replacement, so it can disable this
+	 * user or drop every admin gid from them. Doing that to the LAST
+	 * admin turns write authentication off for the whole API. Judged
+	 * against the record the request PROPOSES -- the stored one cannot
+	 * answer this, since the question is exactly what the change does.
+	 * Only the last admin is protected: while another admin remains,
+	 * removing this one is an ordinary, safe administrative act.
+	 */
+	if (hostauth_user_is_admin(name) &&
+	    !hostauth_gids_are_admin(primarygroup, secondary_groups, secondary_group_count, disabled) &&
+	    hostauth_admin_user_count() <= 1) {
+		json_free(root);
+		respond_error(fd, 409, "Conflict",
+		              "this is the only remaining admin user -- disabling it or removing it "
+		              "from every admin group would turn off write authentication for the "
+		              "whole API; add another admin first");
+		return;
+	}
+
 	rerr = ldap_user_update(name, body_name, uidnumber, primarygroup, secondary_groups,
 	                         secondary_group_count, givenname, sn, mail, loginshell, homedirectory,
 	                         password, disabled, ssh_public_key, can_search, &u);
@@ -544,7 +606,22 @@ void handle_ldap_user_get_one(int fd, const char *name)
 
 void handle_ldap_user_delete(int fd, const char *name)
 {
-	enum ldap_record_error rerr = ldap_user_delete(name);
+	enum ldap_record_error rerr;
+
+	/*
+	 * #370: deleting the last admin turns write authentication off for
+	 * the whole API, leaving admin_groups still naming a group that
+	 * now has nobody in it. Guarded the same way the PUT above is, and
+	 * for the same reason -- while another admin remains this is an
+	 * ordinary operation and stays allowed.
+	 */
+	if (hostauth_user_is_admin(name) && hostauth_admin_user_count() <= 1) {
+		respond_error(fd, 409, "Conflict",
+		              "this is the only remaining admin user -- deleting it would turn off "
+		              "write authentication for the whole API; add another admin first");
+		return;
+	}
+	rerr = ldap_user_delete(name);
 
 	if (rerr != LDAP_RECORD_OK) {
 		respond_ldap_record_error(fd, rerr);

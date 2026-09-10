@@ -2744,3 +2744,23 @@ pre {
 .tab-bar {
 	flex-wrap: wrap;
 }
+
+/*
+ * #370: the "this host has no write authentication" banner. Deliberately
+ * loud -- it marks a control plane that will accept a mutating request
+ * from anyone who can reach it, which is the one condition on this page
+ * that a person must not scroll past. Uses the existing error token
+ * rather than a new colour.
+ */
+.auth-gating-banner {
+	margin: 0 0 12px 0;
+	padding: 10px 14px;
+	border: 1px solid var(--error);
+	border-left: 4px solid var(--error);
+	border-radius: 4px;
+	background: var(--error-bg);
+	color: var(--text);
+	font-size: 13px;
+	line-height: 1.5;
+}
+.auth-gating-banner strong { color: var(--error); }

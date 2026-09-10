@@ -186,6 +186,14 @@
 
 	<main>
 	<div id="content-scroll">
+		<!-- #370: shown whenever the daemon reports write authentication
+		     is not in force. An open control plane used to render exactly
+		     like a secured one. -->
+		<div id="auth-gating-banner" class="auth-gating-banner" hidden>
+			<strong>No write authentication.</strong>
+			This host accepts every create, change and delete from anyone who can reach it.
+			Configure an admin group under <em>System &rarr; Host Auth</em> and put an enabled user in it.
+		</div>
 		<section id="status" class="status" hidden></section>
 
 		<!-- Containers -->

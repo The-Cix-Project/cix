@@ -8,7 +8,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/health` | Liveness check -- minimal, low-latency, no build/slot identity |
+| GET | `/health` | Liveness check -- minimal, low-latency, no build/slot identity; carries `auth_gating_active` (#370) |
 | GET | `/config` | The whole running configuration as one ordered, redacted document (ADR-0206) |
 | POST | `/login` | Authenticate, get a session token (ADR-0144) -- always open, exempt from write-gating |
 | POST | `/logout` | Invalidate the current session (idempotent) |
@@ -535,6 +535,13 @@ Authorization: Bearer 6245f4...
 ```
 
 **Gating only ever activates once someone exists to gate for.** `GET /system/hostauth-config` reports the current `admin_groups` list; as long as it's empty, or none of its groups has a member yet, every write stays open — a fresh install, or one where an operator hasn't gotten around to configuring this yet, can never lock itself out of its own API. The moment a real LDAP user (`POST /ldap/users`, below) becomes a member of a configured admin group, gating activates for every subsequent request. There is no in-band break-glass credential (nothing reachable over this API can bypass write-gating once it's active, by design) — the recovery path for a genuine lockout requires physical/hypervisor console access instead: `cix-recover`, a second boot option on the installer media, resets only `admin_groups` on an already-installed system after a real typed confirmation. See [`docs/guides/security.md`'s break-glass recovery section](../guides/security.md#break-glass-recovery-adr-0146) and [ADR-0146](../adr/0146-ldap-startup-resync-and-break-glass-recovery.md).
+
+**Whether gating is actually in force is now reported, and its preconditions are protected (#370).** This host answered unauthenticated writes for four days and nothing anywhere said so — `/health` returned `{"status":"ok"}`, nothing was logged at boot, and the dashboard rendered an open box exactly like a secured one. Two changes:
+
+- **It is visible.** `GET /system/hostauth-config` carries a computed `gating_active`, `GET /health` carries `auth_gating_active`, the log store gets a `warning` at every boot where gating is inactive, and the dashboard shows a banner. `status` in `/health` deliberately stays `"ok"` — a fresh install has no admin by design and would otherwise report unhealthy forever, and liveness and authentication are different questions. The field is served to unauthenticated callers on purpose: one unauthenticated POST already reveals it, so withholding it would protect nobody while keeping it from the operator who needs it.
+- **Five operations that used to turn it off silently are refused with `409`:** deleting the group named in `admin_groups`; renaming that group or changing its `gidnumber` (the config names it by NAME and its members join by GID, so either orphans the invariant); deleting the last admin user; disabling or de-admining them; and pointing `admin_groups` at a group nobody is in. Two are narrower than they sound — **only the last admin is protected** (while another remains, removing one is ordinary), and **only turning ACTIVE gating off is refused**, so setting `admin_groups` before the admin users exist still works and remains the normal way to enable gating for the first time.
+
+Deliberately *not* done: making gating fail closed when its precondition is broken. That would turn an orphaned config into an API lockout recoverable only via `cix-recover` on a shell-less host. State arriving from outside the API — a restored config, or a reinstall — still cannot be refused, which is what the visibility half is for. See [ADR-0268](../adr/0268-gating-is-visible-and-its-preconditions-are-protected.md).
 
 **Sessions are a sliding idle window, in memory only** — wiped on every daemon restart, same as the container registry itself. `idle_timeout_seconds` (`PUT /system/hostauth-config`) refreshes on every authenticated request that presents a still-valid token; `0` means something deliberately stronger — no session reuse at all, a token is consumed the instant it's used once, and every subsequent write needs a fresh `POST /login`.
 

@@ -246,17 +246,154 @@ void hostauth_write_config_json(struct json_writer *w)
 	jw_int(w, g_config.ldap_port);
 	jw_key(w, "ldap_base_dn");
 	jw_str(w, g_config.ldap_base_dn);
+	/*
+	 * #370: the computed answer, not just the configuration. An admin
+	 * group can be configured and still hold nobody, in which case
+	 * every mutating request is permitted -- and the four fields above
+	 * look entirely correct while that is true. This is the field that
+	 * says whether authentication is actually in force.
+	 */
+	jw_key(w, "gating_active");
+	jw_bool(w, hostauth_gating_active());
 	jw_obj_close(w);
 }
 
-static int check_one_user(const char *username, void *ctx)
+/*
+ * The invariant this file protects, in one place (#370).
+ *
+ * "Gating is active" means: an admin group is configured AND at least
+ * one enabled user is in one of them. Both halves matter, and the
+ * second is what made this dangerous -- with an admin group configured
+ * and nobody in it, every mutating request on the API is permitted,
+ * silently, with the configuration still looking correct.
+ *
+ * Five ordinary operations could reach that state: deleting the admin
+ * group, renaming it or changing its gidnumber (membership is by gid
+ * and the config names it by name, so either orphans it), deleting the
+ * last admin user, disabling or de-admining them, and pointing
+ * admin_groups at a group with no members. None of them looks like
+ * "turn authentication off", and all five did exactly that.
+ *
+ * These three are the predicates the guards ask. They exist so the
+ * guards do not each grow their own copy of the rule -- and
+ * hostauth_gating_active() below is now written in terms of the first
+ * of them, so there is one definition of "an admin user" rather than
+ * two that can drift.
+ */
+static int count_one_admin(const char *username, void *ctx)
+{
+	if (hostauth_user_is_admin(username))
+		(*(int *)ctx)++;
+	/*
+	 * Always 0: ldap_user_for_each() stops at the first callback that
+	 * returns true, and a count needs the whole walk. Reused rather
+	 * than open-coding a second loop over the user table.
+	 */
+	return 0;
+}
+
+int hostauth_admin_user_count(void)
+{
+	int n = 0;
+
+	ldap_user_for_each(count_one_admin, &n);
+	return n;
+}
+
+/*
+ * Would gating be active if admin_groups were exactly this list?
+ *
+ * Asked by the hostauth-config PUT guard, which must judge the config
+ * a request PROPOSES. Deliberately NOT "refuse any config with no
+ * members": setting admin_groups before the admin users exist is the
+ * ordinary way an operator turns gating on for the first time, and
+ * refusing it would obstruct enabling authentication in order to
+ * protect authentication. The guard only refuses a change that would
+ * turn ACTIVE gating off -- see its call site.
+ */
+struct proposed_groups {
+	const char *const *names;
+	int count;
+};
+
+static int user_in_proposed(const char *username, void *ctx)
+{
+	const struct proposed_groups *p = ctx;
+	int j;
+
+	for (j = 0; j < p->count; j++) {
+		if (ldap_user_is_in_group(username, p->names[j]))
+			return 1; /* short-circuits the walk: one is enough */
+	}
+	return 0;
+}
+
+int hostauth_would_gate(const char *const *admin_groups, int admin_group_count)
+{
+	struct proposed_groups p;
+
+	if (admin_groups == NULL || admin_group_count == 0)
+		return 0;
+	p.names = admin_groups;
+	p.count = admin_group_count;
+	return ldap_user_for_each(user_in_proposed, &p);
+}
+
+int hostauth_group_is_admin_group(const char *group_name)
 {
 	int i;
-	(void)ctx;
 
+	if (group_name == NULL)
+		return 0;
+	for (i = 0; i < g_config.admin_group_count; i++) {
+		if (strcmp(g_config.admin_groups[i], group_name) == 0)
+			return 1;
+	}
+	return 0;
+}
+
+int hostauth_user_is_admin(const char *username)
+{
+	int i;
+
+	if (username == NULL)
+		return 0;
 	for (i = 0; i < g_config.admin_group_count; i++) {
 		if (ldap_user_is_in_group(username, g_config.admin_groups[i]))
 			return 1;
+	}
+	return 0;
+}
+
+/*
+ * Would a user carrying exactly these gids be an admin? Asked by the
+ * user-PUT guard, which has to judge the record the request PROPOSES,
+ * before it is applied -- the existing record is no help there, since
+ * the whole question is whether the change removes the last admin.
+ *
+ * Resolves each configured admin group NAME to its gid rather than the
+ * other way round: the config names groups by name, a user carries
+ * gids, and going name -> gid needs no reverse lookup and no second
+ * copy of the membership rule.
+ */
+int hostauth_gids_are_admin(int primarygroup, const int *secondary_groups, int secondary_count,
+                             int disabled)
+{
+	int i, j;
+
+	if (disabled)
+		return 0;
+	for (i = 0; i < g_config.admin_group_count; i++) {
+		const struct ldap_group *g = ldap_group_find(g_config.admin_groups[i]);
+
+		if (g == NULL)
+			continue;
+		if (primarygroup == g->gidnumber)
+			return 1;
+		for (j = 0; j < secondary_count; j++) {
+			if (secondary_groups[j] == g->gidnumber)
+				return 1;
+		}
 	}
 	return 0;
 }
@@ -274,10 +411,16 @@ int hostauth_gating_active(void)
 	 * ldap_user_for_each() is the one real enumeration primitive this
 	 * needs (daemon/src/ldap.c, added alongside it) -- reused as-is,
 	 * not a second "walk every user" loop invented here.
+	 *
+	 * #370: the walk now goes through hostauth_admin_user_count(), so
+	 * "is there an admin" and "how many admins are there" cannot give
+	 * different answers -- the guards that protect this invariant need
+	 * the count, and two loops meaning the same thing is how they
+	 * would drift.
 	 */
 	if (g_config.admin_group_count == 0)
 		return 0;
-	return ldap_user_for_each(check_one_user, NULL);
+	return hostauth_admin_user_count() > 0;
 }
 
 static void generate_token(char out[HOSTAUTH_TOKEN_LEN + 1])
