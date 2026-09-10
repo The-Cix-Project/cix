@@ -272,3 +272,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0265](0265-a-radio-moves-as-a-phy-not-as-an-interface.md) | A radio moves as a whole PHY over nl80211, not as an interface over rtnetlink, so it can enter a container | Accepted |
 | [0266](0266-the-module-tools-are-an-image-the-module-tree-is-the-kernels.md) | The module tools are an image and the module tree is the kernel's own artifact, so a kernel module can load at all | Accepted |
 | [0267](0267-a-volumes-size-comes-from-the-kernel-when-the-kernel-is-counting.md) | A volume's size comes from the kernel when the kernel is already counting, and the answer says which source it came from | Accepted |
+| [0268](0268-gating-is-visible-and-its-preconditions-are-protected.md) | Write authentication is visible, and the five operations that could silently turn it off are refused | Accepted |

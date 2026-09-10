@@ -114,6 +114,53 @@ int hostauth_rename_admin_group(const char *old_name, const char *new_name);
  * -- the bootstrap-safety check every write-gating decision starts
  * from. False (writes stay open) if no admin group is configured, or
  * none has a member yet. */
+/*
+ * The predicates that protect gating's own preconditions (#370).
+ *
+ * Gating is active only while an admin group is configured AND an
+ * enabled user is in one. Five ordinary operations could quietly break
+ * the second half -- deleting the admin group, renaming it or changing
+ * its gidnumber, deleting the last admin, disabling or de-admining
+ * them, and pointing admin_groups at an empty group. Each one turns
+ * authentication off for the whole API while leaving the configuration
+ * looking correct, which is exactly what nobody would look for.
+ *
+ * The chosen fix is to make those transitions UNREACHABLE through the
+ * API rather than to make hostauth_gating_active() fail closed. Failing
+ * closed would turn an orphaned config into an API lockout whose only
+ * recovery is ADR-0146's cix-recover boot entry, on a host with no
+ * shell -- trading a silent hole for a new way to brick the box. So the
+ * guards refuse the operation, with 409 and a message naming the fix,
+ * and gating's own definition is left alone.
+ *
+ * That leaves one residual case this cannot guard: state arriving from
+ * outside the API, such as a restored or hand-edited config file. That
+ * is what the visibility half of #370 is for -- gating_active is
+ * reported by GET /system/hostauth-config and GET /health, logged at
+ * boot when inactive, and banner-ed in the dashboard, so an open
+ * control plane is never silent even when it was not reached through a
+ * guarded path.
+ */
+int hostauth_admin_user_count(void);
+int hostauth_group_is_admin_group(const char *group_name);
+int hostauth_user_is_admin(const char *username);
+
+/*
+ * Would a user carrying exactly these gids be an admin? The user-PUT
+ * guard needs to judge the record a request PROPOSES, before it is
+ * applied -- the stored record cannot answer that, since the question
+ * is precisely whether the change removes the last admin.
+ */
+int hostauth_gids_are_admin(int primarygroup, const int *secondary_groups, int secondary_count,
+                             int disabled);
+
+/*
+ * Would gating be active if admin_groups were exactly this list? The
+ * hostauth-config PUT guard's own predicate -- it must judge the config
+ * a request PROPOSES rather than the one in force.
+ */
+int hostauth_would_gate(const char *const *admin_groups, int admin_group_count);
+
 int hostauth_gating_active(void);
 
 enum hostauth_login_result {

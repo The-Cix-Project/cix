@@ -34,6 +34,15 @@ paths:
                   status:
                     type: string
                     enum: [ok]
+                  auth_gating_active:
+                    type: boolean
+                    description: >
+                      Whether write authentication is actually in force -- an admin
+                      group is configured AND an enabled user is in one. False means
+                      every mutating request on this host is accepted with no
+                      credential. `status` stays "ok" either way: a fresh install has
+                      no admin by design, and liveness and authentication are
+                      different questions (#370).
 
   /config:
     get:
@@ -274,6 +283,16 @@ paths:
                 $ref: "#/components/schemas/HostauthConfig"
         "400":
           description: Invalid JSON body, or a field outside its documented bounds
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >
+            Refused: write-gating is active now and this config would turn it off,
+            because no enabled user is in any of the admin_groups given (#370).
+            Setting admin_groups BEFORE the admin users exist is allowed -- gating is
+            inactive throughout that, and only turning ACTIVE gating off is refused.
           content:
             application/json:
               schema:
@@ -7159,7 +7178,13 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "409":
-          description: gidnumber already used by a different group, or new name already taken
+          description: >
+            gidnumber already used by a different group, or new name already taken --
+            OR the group is named in admin_groups and the request renames it or changes
+            its gidnumber. The config names the group by NAME and its members join by
+            GID, so either change orphans the invariant and turns off write
+            authentication for the whole API (#370). Every other field of such a group
+            stays editable.
           content:
             application/json:
               schema:
@@ -7171,6 +7196,15 @@ paths:
       parameters:
         - $ref: "#/components/parameters/LdapGroupName"
       responses:
+        "409":
+          description: >
+            Refused: this group is named in admin_groups.
+            Deleting it would turn off write authentication for the whole API, leaving hostauth-config naming a group that no longer exists (#370).
+            Change PUT /system/hostauth-config first.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "204":
           description: Deleted
         "404":
@@ -7297,7 +7331,11 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "409":
-          description: New name already taken by a different user
+          description: >
+            New name already taken by a different user -- OR this is the only remaining
+            admin user and the request would disable it or remove it from every admin
+            group, turning off write authentication for the whole API (#370). Add
+            another admin first.
           content:
             application/json:
               schema:
@@ -7309,6 +7347,15 @@ paths:
       parameters:
         - $ref: "#/components/parameters/LdapUserName"
       responses:
+        "409":
+          description: >
+            Refused: this is the only remaining admin user.
+            Deleting it would turn off write authentication for the whole API (#370).
+            Add another admin first.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "204":
           description: Deleted
         "404":
@@ -13885,6 +13932,15 @@ components:
           type: integer
         ldap_base_dn:
           type: string
+        gating_active:
+          type: boolean
+          description: >
+            Computed, not stored: whether write authentication is
+            actually in force. True requires an admin group configured
+            AND an enabled user in one of them. The four fields above can
+            all look correct while this is false -- an admin group that
+            exists but holds nobody accepts every mutating request from
+            anyone (#370).
     HostauthSession:
       type: object
       required: [username, expires_in_seconds]

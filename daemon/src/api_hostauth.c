@@ -247,6 +247,28 @@ void handle_hostauth_config_put(int fd, const char *body, size_t body_len)
 		}
 	}
 
+	/*
+	 * #370: refuse a config change that would turn ACTIVE gating off --
+	 * pointing admin_groups at a group nobody is in, or clearing it
+	 * entirely, opens every mutating request on the API while the
+	 * response still looks like an ordinary successful update.
+	 *
+	 * Only that direction is refused. Setting admin_groups BEFORE the
+	 * admin users exist is the ordinary way gating gets turned on for
+	 * the first time, and gating is inactive throughout that, so a
+	 * blanket "admin_groups must have a member" rule would obstruct
+	 * enabling authentication in order to protect it. The test is
+	 * therefore active-now-and-inactive-after, not merely inactive-after.
+	 */
+	if (hostauth_gating_active() && !hostauth_would_gate(admin_groups, admin_group_count)) {
+		json_free(root);
+		respond_error(fd, 409, "Conflict",
+		              "this would turn off write authentication for the whole API: no enabled "
+		              "user is in any of the admin_groups given. Add an admin to the new group "
+		              "first, or remove the last admin deliberately via /v1/ldap");
+		return;
+	}
+
 	err = hostauth_set_config(admin_groups, admin_group_count, idle_timeout_seconds, ldap_enabled,
 	                           ldap_servers, ldap_server_count, ldap_port, ldap_base_dn);
 	json_free(root);

@@ -2222,6 +2222,26 @@ static void handle_health(int fd)
 	jw_obj_open(&w);
 	jw_key(&w, "status");
 	jw_str(&w, "ok");
+	/*
+	 * #370: whether write authentication is actually in force. Here,
+	 * on the one endpoint every client and monitor already polls,
+	 * because the failure this closes is that an OPEN control plane
+	 * and a secured one were indistinguishable -- this host answered
+	 * unauthenticated writes for four days and nothing anywhere said so.
+	 *
+	 * `status` deliberately stays "ok". A fresh install has no admin
+	 * user by design and would otherwise report unhealthy forever,
+	 * which teaches operators to ignore the field; and this project's
+	 * own deploy tooling polls health for liveness, where "is the
+	 * daemon up" and "is it authenticating" are different questions.
+	 * So: a separate field, always present, never a status change.
+	 *
+	 * Not withheld from unauthenticated callers, deliberately. One
+	 * unauthenticated POST already reveals it, so hiding it would
+	 * protect nobody while keeping it from the operator who needs it.
+	 */
+	jw_key(&w, "auth_gating_active");
+	jw_bool(&w, hostauth_gating_active());
 	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
@@ -26138,6 +26158,25 @@ static int cixd_main(int argc, char **argv)
 		return 1;
 	if (boot_subsystem_init(init_mode, "hostauth", hostauth_init(HOSTAUTH_CONFIG_PATH)) != 0)
 		return 1;
+	/*
+	 * #370: say so, every boot, when this host will answer a mutating
+	 * request from anyone who can reach it. Placed after BOTH ldap_init()
+	 * and hostauth_init(): gating is "an admin group is configured AND
+	 * an enabled user is in it", and the user table is ldap's -- asking
+	 * before ldap_init() would read an empty table and report the
+	 * control plane open on every boot regardless of the truth.
+	 *
+	 * A warning rather than an error because it is a legitimate state:
+	 * a fresh install has no admin user and must not be locked out of
+	 * its own API. What is not legitimate is it being SILENT, which is
+	 * how 192.168.15.95 spent four days open after a reinstall wiped
+	 * its config, with a full day of deploys going through it.
+	 */
+	if (!hostauth_gating_active())
+		logstore_write("cixd", "warning",
+		               "write authentication is NOT active: every mutating API request will be "
+		               "accepted without a credential. Configure admin_groups via "
+		               "PUT /v1/system/hostauth-config and put an enabled user in one.");
 	if (boot_subsystem_init(init_mode, "devicemap", devicemap_init(DEVICEMAP_STATE_PATH)) != 0)
 		return 1;
 	/* diskrole_init()/diskformat_remount_present_role_disks() now run

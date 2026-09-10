@@ -6,6 +6,61 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### An open control plane is no longer silent, and cannot be created by accident (#370)
+
+192.168.15.95 accepted unauthenticated writes for four days, and a full day of
+deploys went through it before anyone noticed. It was found by accident, when a
+deploy script failed on a missing token file that nothing had actually needed --
+every call had been sending an empty bearer and succeeding.
+
+The cause on that host was mundane: the 2026-09-06 reinstall wiped
+`STATE_DIR/hostauth_config.json` and the `cix-admins` group, and nobody re-enabled
+it. A reinstall doing that is a reinstall doing its job. Two other things are
+real defects, and both are fixed here.
+
+**Gating had a precondition nobody protected.** It requires an admin group
+configured AND an enabled user in it, and five ordinary operations could break the
+second half while the first still read correctly: deleting the admin group,
+renaming it or changing its gidnumber (the config names it by NAME, its members
+join by GID -- either orphans the invariant), deleting the last admin, disabling
+or de-admining them, and pointing `admin_groups` at an empty group. None looks
+like "turn authentication off"; all five did. Each is now refused with `409` and a
+message naming the fix.
+
+Two guards are deliberately narrower than they look. **Only the last admin is
+protected** -- while another remains, removing one is an ordinary act. And **only
+turning ACTIVE gating off is refused** -- setting `admin_groups` before the admin
+users exist is how gating gets enabled in the first place, so the test is
+*active-now-and-inactive-after*, not merely *inactive-after*; a blanket rule would
+obstruct enabling authentication in order to protect it.
+
+**And the state was invisible.** `/v1/health` said `{"status":"ok"}`, nothing
+logged gating at boot, and the dashboard rendered "logged in: X" once you logged
+in and nothing at all when gating was off entirely -- an open box and a secured
+box looked identical from every surface. Now: `gating_active` on
+`GET /system/hostauth-config`, `auth_gating_active` on `GET /health`, a `warning`
+in the log store at every boot where gating is inactive, and a banner in the
+dashboard. `status` deliberately stays `"ok"` -- a fresh install has no admin by
+design and would otherwise report unhealthy forever, and the deploy tooling polls
+health for liveness, which is a different question.
+
+Deliberately NOT done: making `hostauth_gating_active()` fail closed. That turns
+an orphaned config into an API lockout whose only recovery is ADR-0146's
+`cix-recover` boot entry on a shell-less host -- trading a silent hole for a new
+way to brick the box. See
+[ADR-0268](docs/adr/0268-gating-is-visible-and-its-preconditions-are-protected.md)
+for that reasoning and the three other alternatives weighed.
+
+One residual case remains by construction: state arriving from outside the API --
+a restored or hand-edited config, or a reinstall -- has no request to refuse. That
+is exactly the case that happened, and exactly what the visibility half is for.
+
+`hostauth_gating_active()` is now written in terms of
+`hostauth_admin_user_count()`, so "is there an admin" and "how many admins" cannot
+give different answers. `test_hostauth` (in `SELFTESTS`) gains all five refusals,
+a check that gating is still active after each, and assertions that both new
+fields report true.
+
 ### A volume's size comes from the kernel, and the answer says so (#369)
 
 `GET /volumes/{name}/usage` walked the tree to produce its number. On a

@@ -45,6 +45,20 @@ static const char *json_str_field(const struct json_value *obj, const char *key)
 	return json_as_string(json_object_get(obj, key));
 }
 
+/*
+ * #370: -1 when the key is absent or is not a boolean at all, so a
+ * missing field fails loudly instead of reading as false -- the whole
+ * point of these two fields is that their ABSENCE was the bug.
+ */
+static int json_bool_field(const struct json_value *obj, const char *key)
+{
+	const struct json_value *v = json_object_get(obj, key);
+
+	if (v == NULL || v->type != JSON_BOOL)
+		return -1;
+	return v->u.boolean ? 1 : 0;
+}
+
 static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 {
 	int i;
@@ -246,6 +260,124 @@ int main(void)
 	                        "{\"name\":\"unrelated\",\"gidnumber\":7003}", &r) != 0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: authenticated write expected 201, got %d\n", r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+	/*
+	 * 8b. #370: the five ordinary operations that used to turn write
+	 * authentication OFF for the whole API, silently, while leaving
+	 * hostauth-config still naming an admin group. Each is refused
+	 * with 409, and gating is confirmed still active afterwards --
+	 * because the bug was never a wrong status code, it was an open
+	 * control plane that looked exactly like a closed one.
+	 *
+	 * Group "admins" (gid 7002) is the configured admin group and
+	 * "root_admin" is its only member at this point.
+	 */
+	memset(&r, 0, sizeof(r));
+	if (request_with_token(&client, "DELETE", "/v1/ldap/groups/admins", token, NULL, &r) != 0 ||
+	    r.status != 409) {
+		fprintf(stderr, "FAIL: deleting the configured admin group expected 409, got %d\n",
+		        r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (request_with_token(&client, "PUT", "/v1/ldap/groups/admins", token,
+	                        "{\"name\":\"admins-renamed\",\"gidnumber\":7002}", &r) != 0 ||
+	    r.status != 409) {
+		fprintf(stderr, "FAIL: renaming the configured admin group expected 409, got %d\n",
+		        r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (request_with_token(&client, "PUT", "/v1/ldap/groups/admins", token,
+	                        "{\"name\":\"admins\",\"gidnumber\":7099}", &r) != 0 ||
+	    r.status != 409) {
+		fprintf(stderr, "FAIL: renumbering the configured admin group expected 409, got %d\n",
+		        r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (request_with_token(&client, "DELETE", "/v1/ldap/users/root_admin", token, NULL, &r) != 0 ||
+	    r.status != 409) {
+		fprintf(stderr, "FAIL: deleting the only admin user expected 409, got %d\n", r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+	/* A PUT that drops the admin gid: the proposed record is judged,
+	 * not the stored one, since the stored one is still an admin. */
+	memset(&r, 0, sizeof(r));
+	if (request_with_token(&client, "PUT", "/v1/ldap/users/root_admin", token,
+	                        "{\"name\":\"root_admin\",\"uidnumber\":7100,\"primarygroup\":7001}",
+	                        &r) != 0 ||
+	    r.status != 409) {
+		fprintf(stderr, "FAIL: de-admining the only admin expected 409, got %d\n", r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+	/* Disabling the only admin is the same hole by another route. */
+	memset(&r, 0, sizeof(r));
+	if (request_with_token(&client, "PUT", "/v1/ldap/users/root_admin", token,
+	                        "{\"name\":\"root_admin\",\"uidnumber\":7100,\"primarygroup\":7002,"
+	                        "\"disabled\":true}",
+	                        &r) != 0 ||
+	    r.status != 409) {
+		fprintf(stderr, "FAIL: disabling the only admin expected 409, got %d\n", r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+	/* Pointing admin_groups at a group nobody is in. */
+	memset(&r, 0, sizeof(r));
+	if (request_with_token(&client, "PUT", "/v1/system/hostauth-config", token,
+	                        "{\"admin_groups\":[\"unrelated\"],\"idle_timeout_seconds\":900}", &r) !=
+	        0 ||
+	    r.status != 409) {
+		fprintf(stderr, "FAIL: repointing admin_groups at an empty group expected 409, got %d\n",
+		        r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+	/*
+	 * The point of all seven: gating is still on. A 409 that left the
+	 * API open would be a worse bug than the one being fixed.
+	 */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "POST", "/v1/ldap/groups", "{\"name\":\"sneak\",\"gidnumber\":7005}",
+	                       &r) != 0 ||
+	    r.status != 401) {
+		fprintf(stderr, "FAIL: gating must still be active after the refusals, got %d\n", r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+	/* 8c. #370 visibility: health and hostauth-config both report that
+	 * gating is in force. An open control plane used to be reported
+	 * nowhere at all, which is why it went unnoticed for four days. */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "GET", "/v1/health", NULL, &r) != 0 || r.status != 200 ||
+	    r.json == NULL || json_bool_field(r.json, "auth_gating_active") != 1) {
+		fprintf(stderr, "FAIL: GET /v1/health must report auth_gating_active true, status=%d\n",
+		        r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "GET", "/v1/system/hostauth-config", NULL, &r) != 0 ||
+	    r.status != 200 || r.json == NULL || json_bool_field(r.json, "gating_active") != 1) {
+		fprintf(stderr, "FAIL: hostauth-config must report gating_active true, status=%d\n",
+		        r.status);
 		ok = 0;
 	}
 	cix_response_free(&r);
