@@ -9136,7 +9136,7 @@ paths:
     get:
       summary: Pipeline settings that are an operator's to choose (ADR-0272)
       operationId: getPipelineConfig
-      x-cix-expose: [cli, web]
+      x-cix-expose: [cli]
       responses:
         "200":
           description: The current settings
@@ -9158,7 +9158,7 @@ paths:
         season of history for about 400 KB. Lowering it trims
         immediately, oldest first.
       operationId: setPipelineConfig
-      x-cix-expose: [cli, web]
+      x-cix-expose: [cli]
       requestBody:
         required: true
         content:

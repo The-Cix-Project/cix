@@ -74,7 +74,13 @@ static const char *const n_pipeline_runs_flags[] = {
 	NULL
 };
 
+static const char *const n_pipeline_config_flags[] = {
+	"--run-retention=",
+	NULL
+};
+
 static const struct cli_node n_pipeline_subs[] = {
+	{ "config", n_pipeline_config_flags, NULL },
 	{ "runs", n_pipeline_runs_flags, NULL },
 	{ NULL, NULL, NULL },
 };
