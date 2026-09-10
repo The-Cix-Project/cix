@@ -244,6 +244,29 @@ rollback.
   more honest change, and it makes the recipe path and the manual path agree, which they should have
   all along.
 
+- **A queued image whose manifest cannot be satisfied is dropped from the queue, and the deployment
+  then waits until something else moves.** Measured in `pkg_try_start_queued_rebuild()`: when
+  `pkg_install_start()` fails for an entry (a recipe removed out from under the manifest, say) it
+  tries the remaining entries, and if nothing starts it calls `rebuild_queue_pop_front()` and moves
+  on. That is the right behaviour — it means no hot loop, which was the first thing checked, since
+  the event loop drains this queue every pass while its depth is non-zero.
+
+  The consequence for a waiting deployment is worth stating plainly rather than discovering: it stays
+  blocked, visibly, and nothing retries on its own. For a `rolling` manifest entry the natural repair
+  re-queues the image by itself (publishing the recipe calls `queue_rolling_rebuilds_for()`); for a
+  `pinned` entry it does not, so the operator's `pkg install` is what realizes the image — and that
+  completing is itself the moment `apply_pending_deployments()` runs, so the deployment is created
+  then. A daemon restart also re-queues it, by the boot pass above. The failure mode this leaves is a
+  deployment that waits rather than one that lies, and `GET /pipeline` names the image it is waiting
+  on throughout.
+
+- **The edge is drawn from the definition when there is no container yet.** `write_edges()` derived
+  the deployment → image edge from the registry entry, which a waiting deployment does not have —
+  so it would have rendered as a box with no arrow leaving it, at exactly the moment the arrow
+  carries the most information. It falls back to `awaiting_image`. A waiting deployment is never
+  drawn as `follow-rolling`, because its policy fields are placeholders until promotion and describe
+  nothing yet.
+
 ## Alternatives considered
 
 **Refuse, as today.** Rejected by the owner's decision. It also leaves the platform in the odd
