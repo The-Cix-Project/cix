@@ -6,6 +6,59 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A package must declare every library it links (#389, ADR-0276)
+
+`cmake@4.4.3-2` declared `pkg_depends=""` and built against openssl. openssl was
+there while it compiled, so cmake linked `DT_NEEDED libssl.so.3` and was
+installed **recording no runtime dependency**. It ran fine in `cix-builder`,
+where openssl happened to be installed for unrelated reasons.
+
+An hour later `fastfetch` failed. Its recipe is correct -- it declares
+`pkg_build_depends="cmake gcc make ..."` and does not use openssl. Its entire
+build log was 148 bytes:
+
+```
+cmake: error while loading shared libraries: libssl.so.3: cannot open shared object file: No such file or directory
+cix-init: oneshot failed: build
+```
+
+`buildenv_add_tool()` composes a build environment from each declared tool's
+runtime dependencies **as recorded when it was installed** -- correct recursion,
+fed a lie -- so cmake arrived without openssl and died before fastfetch's source
+was touched. Blame landed on the wrong package; whether it reproduced depended on
+which image you looked at; and correcting the recorded field cost a full C++
+bootstrap rebuild, because only a reinstall rewrites it.
+
+**The gate.** At install, before a byte is staged, every `DT_NEEDED` soname of
+every staged ELF must be provided by the staged tree itself (an internal library
+needs no declaration), by the transitive closure of the declared `pkg_depends`
+resolved from installed copies, or by the C library, which is implicit exactly as
+`buildenv_resolve_tools()` already makes it implicit. Anything else refuses the
+install naming the file, the soname and the fix.
+
+**Presence is deliberately not the question.** Asking whether `libssl.so.3`
+exists in the target image would have *passed* `cmake@4.4.3-2` -- openssl was
+sitting right there -- and the false record would still have been written for the
+next environment to believe. Presence is a property of one image at one moment;
+a declaration is a property of the package, and the declaration is what travels.
+
+**A question the gate cannot answer is not a refusal.** An unresolvable
+dependency or an unreadable tree logs why it did not run and lets the install
+proceed; `elfcheck_undeclared_links()` returns three values for that reason and
+its header says a caller must never read `-1` as clean.
+
+`elfcheck_needed_libs()` gains its first caller -- written for #224, correct and
+unused since, unchanged. The ELF and tree-walking half sits in `elfcheck.c` where
+`test_elfcheck` (a `SELFTESTS` member) can reach it; only the dependency-closure
+resolution needs the package database. The test derives the soname it expects by
+reading it back out of the fixture rather than assuming what a linker records.
+
+Expect it to fire on existing recipes. Nothing re-checks what is already
+installed, so no running host changes, but an under-declaring package is refused
+on its next build or install -- cached artifacts included, since they stage into
+the same tree. A `dlopen()`-only dependency stays invisible, because it is
+invisible in the ELF.
+
 ### ADR-0275 amended: the phase plan, a closed vocabulary, two honest mechanisms (#388)
 
 The entry below says "two homes, both already existing". There are three, and

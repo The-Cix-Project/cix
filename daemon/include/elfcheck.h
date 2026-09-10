@@ -55,6 +55,61 @@
  */
 int elfcheck_needed_libs(const char *path, char out[][ELFCHECK_SONAME_MAX], int max);
 
+/*
+ * Issue #389: the most DT_NEEDED entries one object is expected to
+ * carry. Sixty-four is far above anything this platform produces (the
+ * largest measured here needs single digits); an object exceeding it
+ * has its remaining entries unread, which can only make this check
+ * miss a violation, never invent one.
+ */
+#define ELFCHECK_MAX_NEEDED 64
+
+/*
+ * Whether a filename is the sort of name a DT_NEEDED entry holds --
+ * `libssl.so.3`, `libfoo.so`, `libbar.so.1.2.3`, but not `parse.sock.c`.
+ *
+ * Public so that a caller assembling a provided-soname list from a
+ * package's recorded file list applies the SAME rule this file's own
+ * tree walk does. Two copies of that rule that disagreed would make
+ * the gate refuse an install for a library it had itself decided not
+ * to count.
+ */
+int elfcheck_is_soname(const char *name);
+
+/*
+ * Issue #389: a package that links a shared library it never declares.
+ *
+ * `cmake@4.4.3-2` declared `pkg_depends=""` while building against
+ * openssl, so it linked `DT_NEEDED libssl.so.3` and was installed
+ * recording no runtime dependency. It worked in the one image that
+ * happened to have openssl installed for other reasons, and the
+ * failure surfaced an hour later in an unrelated package -- fastfetch,
+ * whose own recipe was correct -- as a 148-byte build log naming
+ * neither cmake nor the missing declaration:
+ *
+ *     cmake: error while loading shared libraries: libssl.so.3
+ *
+ * The question asked here is about DECLARATION, not presence. Checking
+ * whether the library exists in the target image would have passed
+ * `cmake@4.4.3-2`, because openssl was sitting right there -- and the
+ * lie would still have been recorded, to be told again by the next
+ * environment composed from it.
+ *
+ * Walks the tree at `root` and reports the first DT_NEEDED soname that
+ * is provided by neither the tree itself nor `provided`. A tree
+ * satisfies its own internal libraries: a package whose binary links
+ * its own `.so` declares nothing and is right not to.
+ *
+ * Returns 1 and fills out_file (relative to root) and out_soname on a
+ * hit, 0 when every needed soname is accounted for, and -1 when the
+ * question could not be answered -- an unreadable tree or an
+ * allocation failure. A caller must never read -1 as "no violation":
+ * this check refuses on evidence, never on ignorance.
+ */
+int elfcheck_undeclared_links(const char *root, const char provided[][ELFCHECK_SONAME_MAX],
+                               int provided_count, char *out_file, size_t out_file_size,
+                               char *out_soname, size_t out_soname_size);
+
 int elfcheck_undefined_builtin(const char *path, char *out_sym, size_t sym_size);
 
 /*

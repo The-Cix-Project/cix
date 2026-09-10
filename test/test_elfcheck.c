@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "elfcheck.h"
@@ -131,6 +132,109 @@ int main(void)
 		} else {
 			printf("  (could not build the freestanding object fixture -- that half is skipped)\n");
 		}
+	}
+
+	/*
+	 * Issue #389: the undeclared-link gate.
+	 *
+	 * The soname this fixture is expected to need is READ BACK from
+	 * the binary rather than assumed. What a linker records in
+	 * DT_NEEDED for a library given by path is its business, and a
+	 * test that hardcoded a guess would be asserting its own
+	 * assumption instead of the behaviour under test.
+	 */
+	{
+		char tree[512], libsrc[512], appsrc[512], libpath[512], apppath[512];
+		char needed[ELFCHECK_MAX_NEEDED][ELFCHECK_SONAME_MAX];
+		char bad_file[512], bad_soname[ELFCHECK_SONAME_MAX];
+		char provided[1][ELFCHECK_SONAME_MAX];
+		int n;
+
+		check(elfcheck_is_soname("libssl.so.3") == 1, "libssl.so.3 is a soname");
+		check(elfcheck_is_soname("libfoo.so") == 1, "libfoo.so is a soname");
+		check(elfcheck_is_soname("libbar.so.1.2.3") == 1, "a fully versioned soname is one");
+		check(elfcheck_is_soname("parse.sock.c") == 0, "a .sock source file is not a soname");
+		check(elfcheck_is_soname("README") == 0, "a plain file is not a soname");
+
+		snprintf(tree, sizeof(tree), "%s/tree", dir);
+		snprintf(libsrc, sizeof(libsrc), "%s/dep.c", dir);
+		snprintf(appsrc, sizeof(appsrc), "%s/app.c", dir);
+		snprintf(libpath, sizeof(libpath), "%s/libcixdep.so.1", tree);
+		snprintf(apppath, sizeof(apppath), "%s/app", tree);
+		mkdir(tree, 0755);
+
+		f = fopen(libsrc, "w");
+		if (f != NULL) {
+			fprintf(f, "int cix_dep_answer(void) { return 42; }\n");
+			fclose(f);
+		}
+		f = fopen(appsrc, "w");
+		if (f != NULL) {
+			fprintf(f, "int cix_dep_answer(void);\nint main(void) { return cix_dep_answer() == 42 ? 0 : 1; }\n");
+			fclose(f);
+		}
+		snprintf(cmd, sizeof(cmd), "tcc -shared -o %s %s 2>/dev/null", libpath, libsrc);
+		r = system(cmd);
+		if (r == 0 && access(libpath, R_OK) == 0) {
+			snprintf(cmd, sizeof(cmd), "tcc -o %s %s %s 2>/dev/null", apppath, appsrc, libpath);
+			r = system(cmd);
+		} else {
+			r = -1;
+		}
+
+		n = (r == 0 && access(apppath, R_OK) == 0)
+		            ? elfcheck_needed_libs(apppath, needed, ELFCHECK_MAX_NEEDED)
+		            : -1;
+		if (n <= 0) {
+			printf("  (could not build a fixture that records a DT_NEEDED -- #389 half skipped)\n");
+		} else {
+			int i, dep_slot = -1;
+
+			for (i = 0; i < n; i++)
+				if (strstr(needed[i], "libcixdep") != NULL)
+					dep_slot = i;
+			check(dep_slot >= 0, "the fixture records its own dependency in DT_NEEDED");
+			if (dep_slot >= 0) {
+				/* The library is IN the tree, so the tree satisfies
+				 * itself and nothing is undeclared -- even though
+				 * `provided` is empty. */
+				r = elfcheck_undeclared_links(tree, NULL, 0, bad_file, sizeof(bad_file),
+				                               bad_soname, sizeof(bad_soname));
+				check(r == 0, "a tree providing its own library declares nothing and is clean");
+
+				/* Remove it: now the need is real and unaccounted for. */
+				unlink(libpath);
+				r = elfcheck_undeclared_links(tree, NULL, 0, bad_file, sizeof(bad_file),
+				                               bad_soname, sizeof(bad_soname));
+				check(r == 1, "a needed soname nothing provides is caught");
+				check(strcmp(bad_soname, needed[dep_slot]) == 0,
+				      "and the missing soname is named");
+				check(strcmp(bad_file, "app") == 0,
+				      "and the file needing it is named, relative to the tree");
+
+				/* Declared: the same tree, now accounted for. This is
+				 * the cmake@4.4.3-3 case -- nothing about the binary
+				 * changed, only what it declares. */
+				snprintf(provided[0], sizeof(provided[0]), "%s", needed[dep_slot]);
+				r = elfcheck_undeclared_links(tree, (const char (*)[ELFCHECK_SONAME_MAX])provided,
+				                               1, bad_file, sizeof(bad_file), bad_soname,
+				                               sizeof(bad_soname));
+				check(r == 0, "declaring the provider clears it");
+
+				/* An unrelated declaration does not: the gate is
+				 * about the soname, not about declaring something. */
+				snprintf(provided[0], sizeof(provided[0]), "libsomethingelse.so.9");
+				r = elfcheck_undeclared_links(tree, (const char (*)[ELFCHECK_SONAME_MAX])provided,
+				                               1, bad_file, sizeof(bad_file), bad_soname,
+				                               sizeof(bad_soname));
+				check(r == 1, "declaring an unrelated library does not clear it");
+			}
+			unlink(apppath);
+		}
+		unlink(libpath);
+		unlink(libsrc);
+		unlink(appsrc);
+		rmdir(tree);
 	}
 
 	unlink(src);
