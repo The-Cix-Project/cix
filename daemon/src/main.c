@@ -13043,11 +13043,23 @@ static int create_container_from_body(const char *body, size_t body_len,
 	 * mechanism that looks like it keeps the file current is the one
 	 * that would freeze it.
 	 *
-	 * So this writes the file and stops. A container reports the build
-	 * it was created under, which is accurate at creation and can go
-	 * stale if the host upgrades beneath a long-lived container --
-	 * a real limit, stated rather than papered over, and smaller than
-	 * the image-level freeze it replaces (#393).
+	 * So this writes the file and stops -- and that is enough, because
+	 * this block is on the START path, not just the create path. A
+	 * restart replays the stored definition through here, so the file
+	 * is re-rendered from the RUNNING daemon's CIX_BUILD_VERSION every
+	 * time the container comes up, over whatever rootfs it already has.
+	 *
+	 * This paragraph used to claim the opposite -- that a container
+	 * reports the build it was created under and goes stale if the host
+	 * upgrades beneath it (#393) -- while the top of this same comment
+	 * said "re-staged on every restart". One comment, two contradictory
+	 * claims, and the pessimistic one was the one that got filed as an
+	 * issue. Measured on 192.168.15.95: `jump` was created under
+	 * v2.57.61, the host was upgraded to v2.57.63 and rebooted, the
+	 * container's rootfs was ADOPTED rather than rebuilt (ADR-0277
+	 * logs it by name), and its /etc/os-release then read
+	 * BUILD_ID="v2.57.63". The re-render survives a reused rootfs,
+	 * which is the whole question.
 	 */
 	{
 		char osr[OSRELEASE_MAX];
