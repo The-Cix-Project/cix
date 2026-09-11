@@ -245,19 +245,38 @@ static void report_container_processes(struct cix_client *c, const char *contain
 		const char *cmdl = proc_str(p, "command_line");
 		const struct json_value *pid = json_object_get(p, "pid");
 
-		if (cn == NULL || strcmp(cn, container) != 0)
-			continue;
-		fprintf(stderr, "  procs: pid=%ld comm=%s state=%s wchan=%s cmd=%.60s\n",
+		/*
+		 * #331: the container filter used to be applied HERE, and it
+		 * made this report unable to answer the one question it was
+		 * added for.
+		 *
+		 * `container` is populated by walking a process's real host
+		 * ppid chain against each running container's root pid. An
+		 * exec'd console session is a child of CIXD, not of the
+		 * container's init -- it joined the namespaces with setns()
+		 * rather than being cloned into them -- so its `container` is
+		 * empty and the filter dropped it. Whether it is alive or
+		 * dead. A report that shows "no process in this container"
+		 * either way cannot distinguish them, and a comment on #331
+		 * asserted the process was gone on exactly that evidence.
+		 *
+		 * So print everything and label it instead. In a build
+		 * container the list is short, and the unattributed entries
+		 * are precisely where the session would be.
+		 */
+		fprintf(stderr, "  procs: [%s] pid=%ld comm=%s state=%s wchan=%s cmd=%.60s\n",
+		        (cn != NULL && cn[0] != '\0') ? cn : "host/unattributed",
 		        pid != NULL && pid->type == JSON_NUMBER ? (long)pid->u.number : -1L,
 		        comm != NULL ? comm : "?", state != NULL ? state : "?",
 		        (wchan != NULL && wchan[0] != '\0') ? wchan : "(none)",
 		        cmdl != NULL ? cmdl : "?");
-		shown++;
+		if (cn != NULL && strcmp(cn, container) == 0)
+			shown++;
 	}
 	if (shown == 0)
 		fprintf(stderr,
-		        "  procs: NO process in container %s -- the session was reported healthy and "
-		        "there is nothing behind it\n",
+		        "  procs: nothing is attributed to container %s -- note an exec'd session "
+		        "never is, so read the host/unattributed lines above\n",
 		        container);
 	cix_response_free(&pr);
 }
