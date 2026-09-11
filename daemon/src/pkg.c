@@ -3475,6 +3475,32 @@ static void write_pkg_json(const struct pkg_entry *e, struct json_writer *w)
 		jw_int(w, (long long)(time(NULL) - e->last_output_at));
 	else
 		jw_null(w);
+	/*
+	 * Issue #407: the container this build is running in RIGHT NOW, so
+	 * an operator watching one of up to max_concurrent_jobs builds can
+	 * reach it through the container API -- stats, processes, console --
+	 * instead of guessing which chain slot it took. The name has always
+	 * existed on the entry (build_container_name, ADR-0157 Phase 2);
+	 * only kept_build_container below was ever reported, which is the
+	 * failure case.
+	 *
+	 * Gated on PKG_STATE_BUILDING, and that gate is the whole
+	 * correctness of the field rather than a convenience. Nothing
+	 * clears build_container_name when a build ENDS -- it is cleared at
+	 * line ~7394 only when a later entry claims the same chain slot --
+	 * so emitting it unconditionally would name a torn-down container
+	 * for an installed package, and after slot reuse would name a
+	 * container running somebody else's build. Same gate
+	 * last_output_seconds_ago uses, for the same reason.
+	 *
+	 * Null during PKG_STATE_FETCHING too: the container does not exist
+	 * until pkg_fetch_completed() creates it.
+	 */
+	jw_key(w, "build_container");
+	if (e->state == PKG_STATE_BUILDING && e->build_container_name[0] != '\0')
+		jw_str(w, e->build_container_name);
+	else
+		jw_null(w);
 	/* ADR-0175/issue #35: the exited, still-registered build
 	 * container's name, exactly when keep_on_failure preserved one for
 	 * this entry's most recent failed attempt -- null otherwise. */
