@@ -6,6 +6,50 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Bytes that arrive with the 101 are frame bytes, not rubbish (#331)
+
+Every WebSocket client here read the handshake response into a buffer until it saw `\r\n\r\n`,
+then stopped looking — and discarded everything past it along with the buffer. One `read()`
+routinely returns the `101` **and the first frame together**, because the daemon writes the
+handshake and then relays whatever the exec'd process has already produced, and a process that
+reports at startup produces it immediately. The frame reader then read from a socket those bytes
+had already left.
+
+It fails as a **hang**, not as corruption, which is why it read as daemon flakiness for months:
+the reader waits for a frame that was already delivered and thrown away, while the process that
+sent it sits in `pause()` having written it.
+
+Measured on 192.168.15.95: **5 of the last 10 `cix` builds failed `test_console_exec`**, in
+clusters of three and two. The capture that settled it showed `console_term_child` alive in
+`__do_sys_pause` — so past its `report()`, meaning it had written — with 0 bytes in 0 frames
+reaching the test over 30.4 s and the daemon loop at `worst_pass_ms=19`, `slow_passes=0`. Nothing
+was ever wrong with the daemon.
+
+**This was a product bug, not only a test one.** `do_ws_handshake()` is shared, so `cixctl
+console` lost the shell prompt and `cixctl pkg build-log` lost its first log lines, whenever the
+timing landed that way — silent, intermittent, and indistinguishable from a slow start.
+
+The handshake hands the leftover back and the caller seeds its frame buffer with it. Draining
+that seed **before the first poll** is the other half of the fix and not an optimisation: a
+seeded buffer parsed only after the next read is the same hang by another route, because when the
+first frame was the only one coming, that read never returns.
+
+`relay()` and `cix_pkg_build_log_run()` carried identical frame-parsing loops and the fix needed a
+third copy in the pre-drain, so there is now one `drain_frames()` — a third transcription is how
+one of them ends up missing a case. The test gets the same fix shaped for six call sites: a
+pushback buffer consumed by `read_full()` before it touches the socket, filled at each of the four
+upgrade sites and **reset** at every upgrade, because a scenario leaving bytes behind would feed
+them to the next scenario's parser.
+
+Two wrong turns are recorded in #331 rather than repeated here: the receive-timeout theory, which
+this capture excludes outright, and `dlog: the daemon logged nothing about any console session`,
+which I cited as evidence before establishing that the daemon only writes that line when it
+**reaps** the process — so silence is the expected state while it lives, and proves nothing.
+
+Verified in v2.57.91's own selftest on the box: `test_console_exec PASS`, `SELFTEST: PASS`, 86
+tests passing and none failing. One pass is not proof against a fault that clustered, but the fix
+is at the cause rather than at a timeout.
+
 ### An artifact is published with its own signature beside it (#403)
 
 ADR-0279's publishing half. When an artifact push succeeds — the same `201`/`200`/`204` moment
