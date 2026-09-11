@@ -122,6 +122,14 @@ control plane on a host with no other way in.
 Budget 59 → 61, for the completion handler's pidfd wait and one `WNOHANG` that by
 definition does not wait.
 
+Then the budget itself was wrong, and the gate caught that too — in the other direction.
+`count_blocking_waits()` **skips any line containing `WNOHANG`**, because a wait that does
+not wait is not what it measures, so counting `abandon_unwatchable_helper()`'s was an
+arithmetic error: the real addition is one, not two. The build failed with *"has 24 blocking
+waits, budget is 25 — fewer than expected"*, which is exactly why this gate checks equality
+rather than a ceiling. A stale allowance is room for a future blocking wait to arrive
+unnoticed. 59 → **60**.
+
 ### A file read now says which tree answered (#394)
 
 `GET /v1/containers/{name}/files` answered `200` with 2 MB of valid ELF for
