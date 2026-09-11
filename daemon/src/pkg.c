@@ -5052,6 +5052,66 @@ void pkg_image_forgotten(const char *image)
 }
 
 /*
+ * Rebuild the queue from what is actually behind, at startup (#373).
+ *
+ * The queue was in-memory only and nothing wrote it down, so a daemon
+ * restart between a publish and the drain lost every queued rebuild
+ * with no record that they had been queued at all. The images then sat
+ * behind their manifests indefinitely, and the only thing that would
+ * ever queue them again was another publish of the same package.
+ *
+ * Deliberately DERIVED rather than persisted, which is what #373 itself
+ * argued for and is the better answer: an image that is behind is
+ * discoverable, so the queue is recoverable state, not durable state.
+ * Persisting it would have written down an intent that can be computed,
+ * added a state file to keep in step with the images it describes, and
+ * still have lost a queue to a crash rather than a clean restart. This
+ * repairs both, and repairs a queue that was lost before this shipped.
+ *
+ * The "is it behind" test is pkg_entry_drift(), the same primitive
+ * GET /pkg/drift and the available-version column already use -- ADR-0031
+ * extracted it precisely so a third caller would not carry its own copy,
+ * which is exactly what this would otherwise have become.
+ *
+ * A pinned manifest entry is never queued: pinning means "never move",
+ * so being behind the latest recipe is the intended state, not drift to
+ * repair. Same rule queue_rolling_rebuilds_for() applies on publish.
+ */
+void pkg_rebuild_queue_rederive(void)
+{
+	char image_names[IMAGE_LIST_MAX][PKG_IMAGE_NAME_MAX];
+	int image_count = image_list_names(image_names, IMAGE_LIST_MAX);
+	int queued_count = 0;
+	int i;
+
+	for (i = 0; i < image_count; i++) {
+		struct image_manifest_entry entries[IMAGE_MANIFEST_MAX_PACKAGES];
+		int entry_count, j;
+
+		if (image_manifest_read(image_names[i], entries, &entry_count,
+		                         IMAGE_MANIFEST_MAX_PACKAGES) != IMAGE_OK)
+			continue;
+		for (j = 0; j < entry_count; j++) {
+			const struct pkg_entry *e;
+
+			if (entries[j].mode != IMAGE_PKG_ROLLING)
+				continue;
+			e = pkg_find(entries[j].package, image_names[i]);
+			if (e == NULL || !pkg_entry_drift(e, NULL, 0))
+				continue;
+			rebuild_queue_enqueue(image_names[i]);
+			queued_count++;
+			break;
+		}
+	}
+	if (queued_count > 0)
+		logstore_write("cixd", "info",
+		                "pkg: re-derived %d image(s) behind a rolling package into the rebuild "
+		                "queue at startup (#373)",
+		                queued_count);
+}
+
+/*
  * ADR-0107: the moment pkg_name@pkg_version is published, every image
  * whose own manifest tracks pkg_name as "rolling" with a floor at or
  * below pkg_version needs a rebuild to actually pick it up -- queued

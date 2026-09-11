@@ -6,6 +6,51 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The rolling-rebuild queue is re-derived at startup instead of being lost (#373)
+
+The queue of images waiting for a rolling rebuild was in-memory only. A daemon restart
+between a publish and the drain lost every queued rebuild, with nothing recording they had
+ever been queued — and the only thing that would queue them again was another publish of
+the same package. The images sat behind their manifests indefinitely while `GET /v1/pipeline`
+reported them as satisfied-looking, because their manifests were still whatever they were.
+The *intent* to rebuild is what was lost, and intent is exactly what a queue is.
+
+**Derived, not persisted** — which is what #373 itself argued for and is the better answer.
+An image that is behind is discoverable, so this is recoverable state rather than durable
+state. Persisting it would have written down something computable, added a state file to
+keep in step with the images it describes, and still lost the queue to a crash rather than
+a clean restart. Deriving repairs both, and repairs a queue that was already lost before
+this shipped.
+
+The "is it behind" test is `pkg_entry_drift()` — the same primitive `GET /pkg/drift` and the
+available-version column already use. ADR-0031 extracted it precisely so a third caller
+would not carry its own copy, which is what this would otherwise have become. A `pinned`
+manifest entry is never queued: pinning means "never move", so being behind the latest
+recipe is the intended state, not drift to repair.
+
+### A probe recipe for the dependency-blame fix (#318)
+
+`test_pkg` is not in `SELFTESTS` — that list is the measured set of tests a build container
+can actually run, and `test_pkg` needs to create real build environments, which a build
+container cannot (#224). So `recipes/package/probe-dep-unresolvable/1` follows the
+convention `probe-missing-tool` established for exactly this: a recipe that parses
+perfectly and names a dependency that does not exist, so the behaviour is exercised against
+a real daemon.
+
+Verified on 192.168.15.95 running v2.57.65:
+
+```
+POST /v1/pkg/install {"name":"probe-dep-unresolvable","image":"base"}
+400 {"error":"a dependency of this package could not be resolved -- the package and its
+     own recipe are fine; the daemon log names the dependency and why"}
+
+log: pkg install probe-dep-unresolvable@base: unknown dependency 'no-such-dependency-xyz' (no recipe)
+```
+
+#317 verified in the same session, against `isotools` (which declares no build image, so a
+bad one reaches the new path rather than the earlier wrong-build-image check):
+`404 the build image this hostbuild needs does not exist`.
+
 ### A stop now says whether it will survive a reboot (#348)
 
 An operator stopped `ar-1` precisely so it could not claim the radio during a boot-race

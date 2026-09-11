@@ -27489,6 +27489,19 @@ static int cixd_main(int argc, char **argv)
 	containerdef_autostart_all();
 
 	/*
+	 * #373: rebuild the rolling-rebuild queue from what is actually
+	 * behind. The queue is in-memory, so a restart between a publish
+	 * and the drain used to lose every queued rebuild with nothing
+	 * recording they had been queued -- and the only thing that would
+	 * ever queue them again was another publish of the same package.
+	 *
+	 * After autostart rather than before, because it walks the images
+	 * and the package state rather than anything containers own, and
+	 * doing it here keeps boot's own critical path unchanged.
+	 */
+	pkg_rebuild_queue_rederive();
+
+	/*
 	 * Push the current record set to every dns_server_register()
 	 * binding dns_init() loaded from disk -- at load time no container
 	 * had started yet, so any binding whose container just came back
