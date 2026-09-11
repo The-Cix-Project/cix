@@ -241,3 +241,4 @@ pkg_install() {
 		;;
 	esac
 }
+pkg_artifact_sha256="59d8dba4d627c137154a75b104147cb35c13b474f92839fc8a0b06c29a0a207c"

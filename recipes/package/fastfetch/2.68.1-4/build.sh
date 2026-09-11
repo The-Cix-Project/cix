@@ -292,3 +292,4 @@ $1  ▀███▄▄▄▄███▀      ▀████
 $1     ▀▀▀▀▀▀
 LOGO
 }
+pkg_artifact_sha256="127fb8ce104d5f2da62be0e04a419df7295f964bf9f5f4e229b36ff934d1673f"

@@ -157,3 +157,4 @@ pkg_install() {
 		exit 1
 	fi
 }
+pkg_artifact_sha256="00e7e6fe5a644ba3192afeb4aea85c35256a14e9e398a31fe836793591758be6"

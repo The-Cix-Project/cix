@@ -180,3 +180,4 @@ pkg_install() {
 	chmod 0644 "$dir/regulatory.db.p7s"
 	echo "installed $(wc -c < "$dir/regulatory.db.p7s") bytes to /lib/firmware/regulatory.db.p7s"
 }
+pkg_artifact_sha256="62ae855017a12bf9f9888c8f68b5bfc9a5eec408f4682e028a969f1e13cf4321"

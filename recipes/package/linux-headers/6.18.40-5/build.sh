@@ -98,3 +98,4 @@ pkg_install() {
 	echo "installed kernel headers: $(find "$PKG_DESTDIR/usr/include" -name '*.h' | wc -l) files"
 	grep -m1 LINUX_VERSION_CODE "$PKG_DESTDIR/usr/include/linux/version.h"
 }
+pkg_artifact_sha256="5cd03e3376c4640bd7a05b578855935ca6ae880a6c6cfe6e516e914ea880e315"

@@ -97,3 +97,4 @@ pkg_install() {
 	       "$PKG_DESTDIR/usr/share/zsh" "$PKG_DESTDIR/usr/share/pkgconfig" \
 	       "$PKG_DESTDIR/usr/include" "$PKG_DESTDIR/usr/lib"
 }
+pkg_artifact_sha256="f4a7deb61471ba981aa5f58765fab1d841b3b505d867febd2725299a4d0a0f1b"

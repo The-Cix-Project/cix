@@ -134,3 +134,4 @@ pkg_install() {
 	cp mkfs.btrfs "$PKG_DESTDIR/usr/sbin/mkfs.btrfs"
 	cp btrfs "$PKG_DESTDIR/usr/sbin/btrfs"
 }
+pkg_artifact_sha256="a2e765c4002c60a33903f6e3925058094afc393367f553787350aacb55d71882"
