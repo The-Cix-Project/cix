@@ -6,6 +6,39 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A file read now says which tree answered (#394)
+
+`GET /v1/containers/{name}/files` answered `200` with 2 MB of valid ELF for
+`/usr/bin/fastfetch` while a shell inside that same container reported
+`No such file or directory`. The API was believed over the shell **twice**, because a 200
+carrying a real binary looks like proof.
+
+The fallback chain is deliberate and well-reasoned: the running container's own view
+(`/proc/<pid>/root`), then the container's writable tree, then its pinned image. The middle
+step exists because `running == 1` means "this daemon has not processed the exit yet", not
+"the process is alive" — a container that dies instantly is genuinely gone while its pidfd
+event sits unread. **What was missing is that the response never said which one answered.**
+A 200 meant "some tree the daemon can reach has these bytes", and the caller could not tell
+whether that was the tree the container is running from — which is the only question anyone
+asks this endpoint.
+
+`X-Cix-Source` now says: `container`, `writable`, or `image`. Body bytes are unchanged, so
+no existing consumer is affected.
+
+**A false comment is what hid this when reading the code.** The fallback ended with "an
+empty lowerdir (userns containers, which have no overlay) correctly reads as no fallback" —
+so a reader concluded the image fallback could not fire for a userns container, which is the
+default. `spec.ov.lowerdir` is assigned unconditionally at creation and recorded by
+`registry.c`; a userns container has a perfectly good lowerdir and does fall through to it.
+Corrected in place, per the rule added to `CLAUDE.md` in this same batch.
+
+While documenting it: `X-Cix-Mode`, `X-Cix-Uid`, `X-Cix-Gid` and `X-Cix-Size` were never in
+`openapi.yaml` at all, having been added for #139 without the contract following. The whole
+set is documented now.
+
+The deeper cause behind the original observation — a container running a tree its image had
+moved past — was #395, fixed by ADR-0277.
+
 ### Four silent failures in the exec child now say what happened (#372)
 
 `exec_into_container()`'s intermediate child has five ways to die and only one of them

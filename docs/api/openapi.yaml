@@ -11077,7 +11077,57 @@ paths:
             refused rather than silently ignored (#282).
       responses:
         "200":
-          description: The file's raw content.
+          description: >
+            The file's raw content. The body is exactly the bytes on disk; everything
+            else the endpoint knows travels in headers, so no existing consumer is
+            affected by them.
+          headers:
+            X-Cix-Source:
+              schema:
+                type: string
+                enum: [container, writable, image]
+              description: >
+                WHICH tree answered (#394), and reading it is not optional for any caller
+                asking "what does this container see".
+
+
+                "container" is the running container's own view
+                (`/proc/<pid>/root<path>`) and is the only value that answers that
+                question. "writable" is the container's own writable tree, read when the
+                /proc path did not produce the file -- which happens for a stopped
+                container, and also for one that is genuinely dead while `running` is
+                still 1 because its pidfd event has not been processed yet. "image" is
+                the container's pinned image version, the last fallback.
+
+
+                Before this header existed a 200 meant only "some tree the daemon can
+                reach has these bytes". The endpoint answered 200 with 2 MB of valid ELF
+                for a binary a shell inside that same container could not find, and the
+                API was believed over the shell twice.
+            X-Cix-Mode:
+              schema:
+                type: string
+              description: >
+                The file's permission bits, octal with a leading 0 (#139). Content alone
+                is not enough to reproduce a file: a tool that copied an installed tree
+                through this endpoint wrote every binary 0644, and the resulting package
+                artifacts verified their checksums perfectly and failed far away at
+                execve with an error naming permissions rather than the artifact.
+            X-Cix-Uid:
+              schema:
+                type: integer
+              description: Owning user id.
+            X-Cix-Gid:
+              schema:
+                type: integer
+              description: Owning group id.
+            X-Cix-Size:
+              schema:
+                type: integer
+              description: >
+                The bytes actually served. For an ordinary file that is `st_size`; for a
+                procfs or sysfs file `st_size` is 0 and the only true size is what the
+                read produced.
           content:
             application/octet-stream:
               schema:

@@ -15659,6 +15659,7 @@ static void handle_container_file_read(int fd, const char *name, const char *rel
 	struct registry_entry *e = registry_find(name);
 	char container_root[PATH_MAX];
 	int stopped = 0;
+	const char *source; /* #394: which tree actually answered */
 	char full_path[PATH_MAX];
 	int file_fd;
 	struct stat st;
@@ -15680,9 +15681,21 @@ static void handle_container_file_read(int fd, const char *name, const char *rel
 	}
 
 	file_fd = -1;
+	/*
+	 * #394: WHICH tree answered. A 200 used to mean only "some tree the
+	 * daemon can reach has these bytes", and the caller could not tell
+	 * whether that was the tree the container is actually running from.
+	 * That made the endpoint unusable for the question everyone asks it
+	 * -- what does this container see -- and it was believed over a
+	 * shell inside the container twice, because 2 MB of valid ELF looks
+	 * like proof.
+	 */
+	source = "none";
 	if (!stopped && e->running) {
 		snprintf(full_path, sizeof(full_path), "/proc/%d/root%s", (int)e->handle.pid, rel_path);
 		file_fd = open(full_path, O_RDONLY);
+		if (file_fd >= 0)
+			source = "container";
 	}
 	/*
 	 * Fall through to the on-disk layers whenever the /proc path didn't
@@ -15703,6 +15716,8 @@ static void handle_container_file_read(int fd, const char *name, const char *rel
 			container_root_for(e->disk_name, container_root, sizeof(container_root));
 		container_writable_path(container_root, name, rel_path, full_path, sizeof(full_path));
 		file_fd = open(full_path, O_RDONLY);
+		if (file_fd >= 0)
+			source = "writable";
 		if (file_fd < 0 && !stopped) {
 			/*
 			 * Not in the upper layer -- fall back to the container's
@@ -15724,12 +15739,23 @@ static void handle_container_file_read(int fd, const char *name, const char *rel
 			 * guarantee intact -- for an ordinary container this IS the
 			 * pinned image-version rootfs, byte-for-byte the same path
 			 * the reconstruction produced, never the image's current
-			 * version. An empty lowerdir (userns containers, which have
-			 * no overlay) correctly reads as "no fallback".
+			 * version.
+			 *
+			 * This comment used to end "an empty lowerdir (userns
+			 * containers, which have no overlay) correctly reads as no
+			 * fallback". That is FALSE and it is what made this
+			 * fallback invisible when reading the code: spec.ov.lowerdir
+			 * is assigned unconditionally at container creation and
+			 * recorded by registry.c, so a userns container has a
+			 * perfectly good lowerdir and DOES fall through to it. That
+			 * is the whole of #394 -- the endpoint answered 200 with the
+			 * image's copy of a file the container did not have.
 			 */
 			if (e->lowerdir[0] != '\0') {
 				snprintf(full_path, sizeof(full_path), "%s%s", e->lowerdir, rel_path);
 				file_fd = open(full_path, O_RDONLY);
+				if (file_fd >= 0)
+					source = "image";
 			}
 		}
 	}
@@ -15843,8 +15869,10 @@ static void handle_container_file_read(int fd, const char *name, const char *rel
 		         "X-Cix-Mode: 0%o\r\n"
 		         "X-Cix-Uid: %u\r\n"
 		         "X-Cix-Gid: %u\r\n"
+		         "X-Cix-Source: %s\r\n"
 		         "X-Cix-Size: %lld\r\n",
 		         (unsigned)(st.st_mode & 07777), (unsigned)st.st_uid, (unsigned)st.st_gid,
+		         source, /* #394: container | writable | image */
 		         /*
 		          * The bytes actually served. For an ordinary file that
 		          * is st_size; for a procfs file st_size is 0 and the

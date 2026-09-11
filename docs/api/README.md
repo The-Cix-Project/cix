@@ -125,7 +125,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/containers/{name}/stats` | Real, host-side CPU/memory/disk/network usage, a point-in-time snapshot |
 | GET | `/containers/{name}/migrate-storage` | Status of the most recent (or running) container-storage migration |
 | POST | `/containers/{name}/migrate-storage` | Move this container's own storage to a new disk, or back to the default |
-| GET | `/containers/{name}/files` | Read one file's raw bytes back out of a container's rootfs |
+| GET | `/containers/{name}/files` | Read one file's raw bytes back out of a container's rootfs | **Read `X-Cix-Source` (#394)** — `container`, `writable` or `image`: a 200 means "some tree the daemon can reach has these bytes", and only `container` answers "what does this container see". The endpoint once returned 2 MB of valid ELF for a binary a shell inside that same container could not find, and was believed over the shell twice. `X-Cix-Mode`/`Uid`/`Gid`/`Size` carry the metadata the body cannot (#139).
 | PUT | `/containers/{name}/files` | Write/overwrite one file inside an already-existing container, live, without a recreate (ADR-0153) |
 | POST | `/containers/{name}/networks` | Attach a network to an already-running container, live, without a recreate (ADR-0156) |
 | DELETE | `/containers/{name}/networks/{network}` | Detach a live-attached network; refuses a create-time attachment (409) |
