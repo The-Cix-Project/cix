@@ -16318,6 +16318,28 @@ static void handle_container_stats(int fd, const char *name)
  * build's exit_status is never 0, so pkg_build_completed()'s own
  * success-only chaining logic correctly never triggers here.
  */
+/*
+ * Does an operator stop of this container survive a host reboot?
+ *
+ * Only "unless-stopped" carries the stopped flag through
+ * containerdef_autostart_all(); "always" and "on-failure" are brought
+ * back up unconditionally, and "no" never autostarts at all so the
+ * question does not arise -- it stays down either way.
+ *
+ * Reported in the stop response (#348) because the answer is the one
+ * thing an operator needs at that moment and could previously only
+ * learn by rebooting and finding the container running.
+ */
+static int stop_survives_reboot(const char *name)
+{
+	struct container_def *d = containerdef_find(name);
+
+	if (d == NULL)
+		return 0;
+	return strcmp(d->restart_policy, "unless-stopped") == 0 ||
+	       strcmp(d->restart_policy, "no") == 0;
+}
+
 static void handle_stop(int fd, const char *name)
 {
 	struct registry_entry *e = registry_find(name);
@@ -16343,9 +16365,32 @@ static void handle_stop(int fd, const char *name)
 	 * process actually dies. Idempotent for a stop already in flight;
 	 * a stop during a DELETE teardown changes nothing (delete's intent
 	 * strictly supersedes).
+	 *
+	 * #348: this comment used to say the stopped flag "keeps a
+	 * restart:\"always\" definition down across daemon restarts". It
+	 * does not, and never did. containerdef_autostart_all() honours the
+	 * flag only for restart:"unless-stopped" -- which is the documented
+	 * contract and matches the convention the policy names are borrowed
+	 * from, but is the opposite of what this comment promised. An
+	 * operator stopped ar-1 precisely so it could not claim a radio
+	 * during a boot-race test, the host rebooted, it came back up, took
+	 * wlan0, and the experiment recorded a failure that never happened.
+	 *
+	 * The behaviour is right and stays. What was missing is that the
+	 * consequence was invisible at the moment of acting: the response
+	 * now says whether this stop survives a reboot, and says what to
+	 * use if you wanted it to.
 	 */
 	if (e != NULL && e->running) {
 		containerdef_set_stopped(name, 1);
+		if (!stop_survives_reboot(name))
+			logstore_write("cixd", "warn",
+			                "%s: stopped, but restart policy is \"%s\" -- this stop lasts "
+			                "only while this daemon runs; a reboot starts it again. Use "
+			                "restart \"unless-stopped\" for a stop that persists (#348)",
+			                name, containerdef_find(name) != NULL
+			                          ? containerdef_find(name)->restart_policy
+			                          : "?");
 		if (e->teardown_kind == REGISTRY_TEARDOWN_NONE)
 			begin_container_stop(e, REGISTRY_TEARDOWN_STOP);
 
@@ -16355,6 +16400,10 @@ static void handle_stop(int fd, const char *name)
 		jw_str(&w, name);
 		jw_key(&w, "status");
 		jw_str(&w, "stopping");
+		/* #348: whether this stop outlives a reboot, answered where the
+		 * operator can act on it rather than discovered afterwards. */
+		jw_key(&w, "survives_reboot");
+		jw_bool(&w, stop_survives_reboot(name));
 		jw_obj_close(&w);
 		respond_json(fd, 200, "OK", &w);
 		jw_free(&w);
@@ -16401,6 +16450,8 @@ static void handle_stop(int fd, const char *name)
 	jw_str(&w, name);
 	jw_key(&w, "status");
 	jw_str(&w, "stopped");
+	jw_key(&w, "survives_reboot"); /* #348, see the running branch above */
+	jw_bool(&w, stop_survives_reboot(name));
 	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);

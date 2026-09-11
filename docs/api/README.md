@@ -116,7 +116,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | PATCH | `/containers/{name}` | Edit the stored definition in place — services, env, files, limits, volumes (issue #11). Applies at next start |
 | DELETE | `/containers/{name}` | Stop (if running), remove it, and forget any persisted definition |
 | POST | `/containers/{name}/start` | Bring a stopped or exited container back to life |
-| POST | `/containers/{name}/stop` | Stop it now — SIGTERM to its cix-init, which stops the services in reverse dependency order, SIGKILL after the declared grace — always keeping its persisted definition (only `DELETE` removes a container) |
+| POST | `/containers/{name}/stop` | Stop it now — SIGTERM to its cix-init, which stops the services in reverse dependency order, SIGKILL after the declared grace — always keeping its persisted definition (only `DELETE` removes a container) | The response says `survives_reboot` (#348): a stop persists across a host reboot only for `unless-stopped` (the flag is carried through boot autostart) and `no`; for `always`/`on-failure` the container is brought back up unconditionally on the next daemon start, which is documented behaviour that was previously discoverable only by rebooting and finding it running.
 | POST | `/containers/{name}/services/{service}/start` | Start one declared service (lifts an operator stop) — ADR-0260 |
 | POST | `/containers/{name}/services/{service}/stop` | Stop one declared service and hold it stopped until the next container start |
 | POST | `/containers/{name}/services/{service}/restart` | Stop then start one service, the rest of the container untouched |
