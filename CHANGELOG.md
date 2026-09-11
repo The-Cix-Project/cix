@@ -376,13 +376,21 @@ is called from the one place that knows a real request is being served. No-op un
 `idle_timeout_seconds == 0`, where sessions are single-use and the expiry is meaningless by
 contract.
 
-### Dashboard: Materializer, Build, Log (#323)
+### Dashboard: Software, Build, Log (#323)
 
-Three renames from the owner. The Pipeline group is named for what it **does** — turn
-declarations into artifacts — rather than for the abstraction it belongs to, so it is
-**Materializer**. Its Integration page becomes **Build**, named for the thing rather than
-the category. And that page's first tab, which was also called Build, becomes **Log**, named
-for its own content rather than for the page it sits in.
+Three renames from the owner. The Pipeline group becomes **Software** — the name its own
+icon has carried since before either label existed. Its Integration page becomes **Build**,
+named for the thing rather than the category. And that page's first tab, which was also
+called Build, becomes **Log**, named for its own content rather than for the page it sits
+in.
+
+The group was briefly **Materializer**, shipped that way, and the reasoning recorded here
+for it — "named for what it *does*, turn declarations into artifacts" — is withdrawn. Every
+other entry in this tree is a noun for a thing you manage (Containers, Networks, Storage);
+an agent-noun was the only one that read as a tool you launch rather than a place you go.
+The children stay **Catalogue**/**Build**/**Deployment** for the same reason, and a
+"Deployer" would additionally collide with the `/deployments` API resource, which is
+container recipes (ADR-0151) and a different thing entirely.
 
 Labels only. The `pipeline` hash, the routes and the pipeline model underneath all keep
 their names — this is what the tree calls things, not what the system is.

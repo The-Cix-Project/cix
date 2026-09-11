@@ -2425,16 +2425,28 @@ function renderTree() {
 			 * asking "where did this stop?" is asking about the stage,
 			 * so the stages are what the tree should offer.
 			 *
-			 * Selectable like every other group: clicking Materializer
+			 * Selectable like every other group: clicking Software
 			 * opens its own overview.
 			 *
-			 * #323, from the owner: named for what it DOES -- turn
-			 * declarations into artifacts -- rather than for the
-			 * abstraction it belongs to. The hash stays "pipeline";
-			 * this is a label change, not a route change, and the
-			 * pipeline model underneath keeps its name.
+			 * #323, from the owner. It was briefly "Materializer",
+			 * named for what it DOES rather than for what it holds,
+			 * and the owner rejected that: every other entry in this
+			 * tree is a noun for a thing you manage (Containers,
+			 * Networks, Storage), and an agent-noun was the only one
+			 * that read as a tool you launch. "Software" is what the
+			 * icon has said since before either label existed.
+			 *
+			 * The children stay Catalogue/Build/Deployment rather
+			 * than becoming agent-nouns for the same reason, and
+			 * "Deployer" would additionally collide with the
+			 * /deployments API resource, which is container recipes
+			 * (ADR-0151) -- a different thing entirely.
+			 *
+			 * The hash stays "pipeline"; this is a label change, not
+			 * a route change, and the pipeline model underneath keeps
+			 * its name.
 			 */
-			label: "Materializer",
+			label: "Software",
 			group: true,
 			hash: "pipeline",
 			icon: "software",
