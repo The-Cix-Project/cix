@@ -11208,10 +11208,16 @@ paths:
                   description: Octal file mode string, e.g. "0644". Defaults to "0644".
                 owner:
                   type: integer
-                  description: Numeric uid. Defaults to unchanged (root-owned on a freshly created file).
+                  description: >-
+                    Numeric uid, as the HOST sees it. Omitted means the file inherits the
+                    ownership of the container's own rootfs, which is what makes it appear
+                    as root inside the container under either userns presentation -- a
+                    tree owned by host uid 0 is id-mapped, and one owned by a subordinate
+                    base is a chowned copy. On a container with no host-side rootfs
+                    (overlay-backed) the file is simply created root-owned.
                 group:
                   type: integer
-                  description: Numeric gid. Defaults to unchanged (root-owned on a freshly created file).
+                  description: Numeric gid, same rule as owner above.
       responses:
         "204":
           description: File written successfully.

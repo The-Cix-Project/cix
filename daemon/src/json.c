@@ -26,11 +26,101 @@ static void skip_ws(struct parser *ps)
 		ps->p++;
 }
 
+/*
+ * The three pieces parse_string_raw()'s \uXXXX case is built from.
+ *
+ * #386: this parser used to decode \uXXXX to a SINGLE BYTE and reject
+ * anything above 0xFF outright, which failed the entire surrounding
+ * parse (json_parse() has no partial-success mode) for any body
+ * carrying a non-ASCII escape. That was deliberate and correctly
+ * scoped when written -- the writer half of this file emits \u00XX
+ * only for control characters below 0x20, and nothing else here ever
+ * produced one -- but the parser also faces bodies written by OTHER
+ * clients, and ensure_ascii=True is the DEFAULT for Python's
+ * json.dumps. So the natural way to write a client in the language
+ * this project's own probe and deploy scripts use produced bodies the
+ * API rejected, with a 400 naming the wrong thing.
+ *
+ * Nothing about the old behaviour is lost: every codepoint below 0x80
+ * encodes to the identical single byte, so the whole range the writer
+ * emits round-trips exactly as before. What is added is the rest of
+ * RFC 8259's escape: UTF-8 output and UTF-16 surrogate pairs.
+ */
+static int str_append(char **buf, size_t *cap, size_t *len, char c)
+{
+	if (*len + 1 >= *cap) {
+		char *nb;
+		size_t ncap = *cap * 2;
+
+		nb = realloc(*buf, ncap);
+		if (nb == NULL)
+			return -1;
+		*buf = nb;
+		*cap = ncap;
+	}
+	(*buf)[(*len)++] = c;
+	return 0;
+}
+
+/*
+ * Reads the four hex digits at ps->p[1..4] -- ps->p itself is the 'u'
+ * -- and leaves ps->p where it found it, so the caller decides how far
+ * to advance. Anything that is not exactly four hex digits is a parse
+ * failure, per RFC 8259.
+ */
+static int parse_hex4(struct parser *ps, unsigned int *out)
+{
+	unsigned int cp = 0;
+	int i;
+
+	if (ps->end - ps->p < 5)
+		return -1;
+	for (i = 1; i <= 4; i++) {
+		char h = ps->p[i];
+
+		cp <<= 4;
+		if (h >= '0' && h <= '9')
+			cp |= (unsigned int)(h - '0');
+		else if (h >= 'a' && h <= 'f')
+			cp |= (unsigned int)(h - 'a' + 10);
+		else if (h >= 'A' && h <= 'F')
+			cp |= (unsigned int)(h - 'A' + 10);
+		else
+			return -1;
+	}
+	*out = cp;
+	return 0;
+}
+
+/* Writes cp as UTF-8 into out[4] and returns how many bytes it used. */
+static int utf8_encode(unsigned int cp, char *out)
+{
+	if (cp < 0x80) {
+		out[0] = (char)cp;
+		return 1;
+	}
+	if (cp < 0x800) {
+		out[0] = (char)(0xc0 | (cp >> 6));
+		out[1] = (char)(0x80 | (cp & 0x3f));
+		return 2;
+	}
+	if (cp < 0x10000) {
+		out[0] = (char)(0xe0 | (cp >> 12));
+		out[1] = (char)(0x80 | ((cp >> 6) & 0x3f));
+		out[2] = (char)(0x80 | (cp & 0x3f));
+		return 3;
+	}
+	out[0] = (char)(0xf0 | (cp >> 18));
+	out[1] = (char)(0x80 | ((cp >> 12) & 0x3f));
+	out[2] = (char)(0x80 | ((cp >> 6) & 0x3f));
+	out[3] = (char)(0x80 | (cp & 0x3f));
+	return 4;
+}
+
 static char *parse_string_raw(struct parser *ps)
 {
 	size_t cap = 32, len = 0;
 	char *buf;
-	char *nb;
 
 	if (ps->p >= ps->end || *ps->p != '"')
 		return NULL;
@@ -60,63 +150,63 @@ static char *parse_string_raw(struct parser *ps)
 			case 'f': out = '\f'; break;
 			case 'u': {
 				/*
-				 * task #760: jw_escaped_string() (below, the writer
-				 * half of this same file) has always emitted \u00XX
-				 * for any control character < 0x20 -- the only
-				 * \uXXXX shape this codebase's own writer ever
-				 * produces, confirmed by inspection -- but this
-				 * parser rejected every \u escape outright,
-				 * silently failing the ENTIRE surrounding parse
-				 * (json_parse() has no partial-success mode) the
-				 * moment any string field contained one. Never hit
-				 * before capture_output (ADR-0112) started
-				 * capturing real stdout/stderr content: any
-				 * program that colorizes its own terminal output
-				 * (glauth's zerolog does) writes raw ANSI escape
-				 * bytes (ESC = 0x1b) into what capture_output
-				 * relays verbatim, which jw_escaped_string() then
-				 * has to \u-escape to stay valid JSON at all --
-				 * found live via `cixctl ps` silently returning
-				 * nothing against a real box with LDAP containers
-				 * running. json.h's own "no field needs \uXXXX"
-				 * scope note was accurate when written, before
-				 * this field existed; it no longer is. Scoped
-				 * deliberately narrow, matching what the writer
-				 * side actually needs (still not full RFC 8259):
-				 * exactly 4 hex digits, decoded as a single byte
-				 * (0x00-0xFF) -- no UTF-16 surrogate-pair handling,
-				 * since nothing in this codebase's own writer ever
-				 * emits or needs one.
+				 * The one escape that can produce more than one
+				 * byte, so it appends its own output and
+				 * continues rather than falling through to the
+				 * single-byte append at the bottom of the loop.
+				 * That also means it owns its own advance: at
+				 * entry ps->p is the 'u', and each += 4 leaves
+				 * it on the last hex digit, which the ps->p++
+				 * below steps past.
 				 */
-				unsigned int cp = 0;
-				int i;
+				unsigned int cp;
+				char enc[4];
+				int n, k;
 
-				if (ps->end - ps->p < 5) {
+				if (parse_hex4(ps, &cp) != 0) {
 					free(buf);
 					return NULL;
 				}
-				for (i = 1; i <= 4; i++) {
-					char h = ps->p[i];
+				ps->p += 4;
+				if (cp >= 0xd800 && cp <= 0xdbff) {
+					/*
+					 * A high surrogate is only half a
+					 * codepoint; RFC 8259 requires the
+					 * matching low half to follow
+					 * immediately as its own \uXXXX.
+					 */
+					unsigned int lo;
 
-					cp <<= 4;
-					if (h >= '0' && h <= '9')
-						cp |= (unsigned int)(h - '0');
-					else if (h >= 'a' && h <= 'f')
-						cp |= (unsigned int)(h - 'a' + 10);
-					else if (h >= 'A' && h <= 'F')
-						cp |= (unsigned int)(h - 'A' + 10);
-					else {
+					if (ps->end - ps->p < 3 || ps->p[1] != '\\' ||
+					    ps->p[2] != 'u') {
+						free(buf);
+						return NULL;
+					}
+					ps->p += 2;
+					if (parse_hex4(ps, &lo) != 0) {
+						free(buf);
+						return NULL;
+					}
+					if (lo < 0xdc00 || lo > 0xdfff) {
+						free(buf);
+						return NULL;
+					}
+					ps->p += 4;
+					cp = 0x10000 + ((cp - 0xd800) << 10) + (lo - 0xdc00);
+				} else if (cp >= 0xdc00 && cp <= 0xdfff) {
+					/* A low surrogate with no high half before it. */
+					free(buf);
+					return NULL;
+				}
+				n = utf8_encode(cp, enc);
+				for (k = 0; k < n; k++) {
+					if (str_append(&buf, &cap, &len, enc[k]) != 0) {
 						free(buf);
 						return NULL;
 					}
 				}
-				if (cp > 0xff) {
-					free(buf);
-					return NULL;
-				}
-				out = (char)cp;
-				ps->p += 4;
-				break;
+				ps->p++;
+				continue;
 			}
 			default:
 				free(buf);
@@ -124,16 +214,10 @@ static char *parse_string_raw(struct parser *ps)
 			}
 		}
 
-		if (len + 1 >= cap) {
-			cap *= 2;
-			nb = realloc(buf, cap);
-			if (nb == NULL) {
-				free(buf);
-				return NULL;
-			}
-			buf = nb;
+		if (str_append(&buf, &cap, &len, out) != 0) {
+			free(buf);
+			return NULL;
 		}
-		buf[len++] = out;
 		ps->p++;
 	}
 

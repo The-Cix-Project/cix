@@ -8125,6 +8125,53 @@ void container_writable_path(const char *container_root, const char *name,
 void container_root_for(const char *disk_name, char *out, size_t out_size);
 
 /*
+ * #333: does this container run DIRECTLY out of a host-side tree?
+ *
+ * Two container shapes exist and they need opposite answers for a
+ * write. An overlay container's root is assembled by the kernel inside
+ * the container's own mount namespace, so the only coherent way in
+ * from the host is /proc/<pid>/root -- writing into the upperdir of a
+ * live overlay is not supported. A container with <base>/rootfs pivots
+ * onto that directory itself (ADR-0207's btrfs snapshot) or onto an
+ * id-mapped bind of it (ADR-0179's userns presentation), and in both
+ * of those the host-side directory IS the container's tree.
+ *
+ * The distinction is not cosmetic: writing to a userns container
+ * through /proc/<pid>/root crosses the id-mapped mount, and the
+ * daemon's own fsuid does not map through it, so the open is refused
+ * with EOVERFLOW ("Value too large for defined data type") -- which is
+ * why PUT .../files returned 500 for every container on a userns-by-
+ * default host while GET on the same container worked.
+ *
+ * Measured on 192.168.15.95 at v2.57.78 before this existed:
+ *
+ *   PUT /v1/containers/jump/files    userns=true,  running -> 500 EOVERFLOW
+ *   PUT /v1/containers/cr-2/files    userns=true,  running -> 500 EOVERFLOW
+ *   PUT /v1/containers/ntp-1/files   userns=false, running -> 204
+ *   PUT /v1/containers/limtest/files userns=true,  stopped -> 204
+ *
+ * userns is the axis, not "every running container" as first reported
+ * -- the stopped case already took the host-side path and always
+ * worked.
+ *
+ * Returns 0 and fills out with the host-side root, or -1 when this
+ * container has no such tree.
+ */
+static int container_direct_rootfs(const char *container_root, const char *name, char *out,
+                                    size_t out_size)
+{
+	struct stat st;
+	char base[PATH_MAX];
+
+	snprintf(base, sizeof(base), "%s/%s/rootfs", container_root, name);
+	if (stat(base, &st) != 0 || !S_ISDIR(st.st_mode))
+		return -1;
+	snprintf(out, out_size, "%s", base);
+	return 0;
+}
+
+
+/*
  * Issue #162: where a container's tree lives when it has NO registry
  * entry -- which is what a cleanly stopped container is.
  *
@@ -16113,6 +16160,8 @@ static void handle_container_file_write(int fd, const char *name, const char *re
 	char container_root[PATH_MAX];
 	int stopped = 0;
 	char full_path[PATH_MAX];
+	char rootfs_base[PATH_MAX];
+	int have_rootfs_base = 0;
 	char target_dir[PATH_MAX];
 	char *slash;
 	int file_fd;
@@ -16183,22 +16232,54 @@ static void handle_container_file_write(int fd, const char *name, const char *re
 	{
 		int use_proc = 0;
 
-		if (!stopped && e->running) {
+		if (!stopped)
+			container_root_for(e->disk_name, container_root, sizeof(container_root));
+
+		have_rootfs_base = (container_direct_rootfs(container_root, name, rootfs_base,
+		                                             sizeof(rootfs_base)) == 0);
+		if (have_rootfs_base) {
+			/*
+			 * #333: the host-side tree the container pivoted onto,
+			 * reached without crossing its id-mapped mount. Correct
+			 * whether it is running or not, which is why this arm
+			 * does not consult e->running at all.
+			 */
+			snprintf(full_path, sizeof(full_path), "%s%s", rootfs_base, rel_path);
+		} else if (!stopped && e->running) {
 			char proc_root[64];
 
 			snprintf(proc_root, sizeof(proc_root), "/proc/%d/root", (int)e->handle.pid);
 			use_proc = (access(proc_root, F_OK) == 0);
+			if (use_proc)
+				snprintf(full_path, sizeof(full_path), "/proc/%d/root%s",
+				         (int)e->handle.pid, rel_path);
 		}
-		if (use_proc) {
-			snprintf(full_path, sizeof(full_path), "/proc/%d/root%s", (int)e->handle.pid, rel_path);
-		} else {
-			if (!stopped)
-				container_root_for(e->disk_name, container_root, sizeof(container_root));
+		if (!have_rootfs_base && !use_proc)
 			container_writable_path(container_root, name, rel_path, full_path,
 			                         sizeof(full_path));
-		}
 	}
 	json_free(root);
+
+	/*
+	 * #333: who the new file must belong to, when the request did not
+	 * say. The rootfs's OWN ownership is the answer, and it is the same
+	 * one-source-of-truth marker container_create() reads to decide
+	 * which presentation to give the container: a tree owned by host
+	 * uid 0 is presented through an id-mapped mount, so a file the
+	 * daemon creates as uid 0 already appears inside as root; a tree
+	 * owned by a subordinate base is ADR-0179's phase-2b copy, where a
+	 * uid-0 file would land on an id that does not map inside at all
+	 * and show up as nobody. Inheriting the directory's ids is right in
+	 * both, with no side state to drift.
+	 */
+	if (have_rootfs_base && owner == (uid_t)-1 && group == (gid_t)-1) {
+		struct stat rst;
+
+		if (stat(rootfs_base, &rst) == 0) {
+			owner = rst.st_uid;
+			group = rst.st_gid;
+		}
+	}
 
 	snprintf(target_dir, sizeof(target_dir), "%s", full_path);
 	slash = strrchr(target_dir, '/');
