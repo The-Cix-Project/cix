@@ -6,6 +6,37 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A container's page can show what is inside it (#398)
+
+The container detail page showed which image a container uses and not which packages are in it,
+so "what is actually in this container" had no answer in the dashboard — you had to know the
+image name, navigate to the image, and read its manifest.
+
+The obvious implementation is the wrong one, and that is the whole of this change. An image's
+manifest is a **live** document: it moves whenever an operator changes what the image should
+contain. A container records the image version it runs from and keeps running it until it is
+recreated. So rendering the image's current manifest as "this container's packages" describes a
+different thing wearing the same shape — and it fails as a confident, plausible, up-to-date-
+looking list, which is the hardest kind of wrong to notice. #395 already cost a debugging round
+to exactly that: `fastfetch` read `installed`, the versions matched, and the binary was not in
+the container at all.
+
+So the version's own manifest is now recorded beside its rootfs when the version is produced,
+and `GET /v1/images/{name}/versions/{version}/manifest` reads it back. This stores no new fact —
+an image version *is* a hash of its manifest (ADR-0108), so the manifest is what identifies the
+version; writing it down only stops it becoming unrecoverable once the live document moves on.
+A version produced before snapshots existed returns 404 rather than falling back to the live
+manifest, deliberately: the fallback would hand back the wrong answer with nothing marking it as
+wrong, which is the failure this exists to prevent.
+
+The tab is labelled for what it is. A manifest entry records that a package was installed into an
+image version; it is not evidence the bytes reached this container, and the panel points at the
+console for that question rather than implying it answers it. Recording the snapshot is
+non-fatal — losing the ability to answer "what was in this version" is worth a logged warning,
+never a failed install.
+
+`cixctl image manifest show --image=NAME --version=VERSION` is the same thing from the CLI.
+
 ### Writing a file into a running container works again, on every container (#333)
 
 `PUT /v1/containers/{name}/files` returned `500 {"error":"failed to write file"}` for every
@@ -33,6 +64,24 @@ the container's host-side rootfs whenever it has one — which for a container t
 presentation) **is** the container's tree, not a copy of it. `/proc/<pid>/root` stays the route
 for an overlay-backed container, where it is the only coherent one: an overlay root is assembled
 inside the container's mount namespace and writing into a live upperdir is not supported.
+
+**Amended after `v2.57.79` shipped the first form of this, which preferred the host-side tree
+outright.** That was wrong for anything MOUNTED inside the container: `/run` is a tmpfs and a
+volume is a bind mount, and both shadow the host-side directory completely, so a write there
+lands where nothing inside will ever look — and returns 204 doing it. Caught by the endpoint's
+own `X-Cix-Source` header (#394): a `/run` file written that way read back as `writable`, meaning
+the container's own view did not have it. `/proc/<pid>/root` is tried first again, and the
+host-side tree is used only on `EOVERFLOW` — the exact signature of crossing the id-mapped
+mount, and not a signature anything else here produces, so falling through on it alone cannot
+mask a real failure.
+
+When the host-side route is forced and the target is shadowed anyway, the answer is a **409 with
+nothing written**, not a 204. The test is direct: compare the parent directory's `(st_dev,
+st_ino)` in the container's own view against the host-side one — a bind or id-mapped mount of
+the same directory shares both, so the rootfs this fallback exists for compares equal and passes,
+while anything mounted over it does not. Checked *before* the write, never after: a write that
+has already happened cannot be undone without destroying what the file held, and overwriting an
+existing file is exactly what this endpoint is for.
 
 Omitting `owner`/`group` now inherits the rootfs directory's own ownership rather than leaving
 the file root-owned. That is the same one-source-of-truth marker `container_create()` already

@@ -18,6 +18,7 @@ void handle_image_create(int fd, const char *body, size_t body_len);
 void handle_image_delete(int fd, const char *name);
 void handle_image_get_one(int fd, const char *name);
 void handle_image_list(int fd);
+void handle_image_version_manifest(int fd, const char *name, const char *version);
 void handle_image_manifest_set(int fd, const char *name, const char *body, size_t body_len);
 void handle_image_manifest_unset(int fd, const char *name, const char *package);
 void handle_image_recipe_add(int fd, const char *body, size_t body_len);

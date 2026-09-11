@@ -4002,6 +4002,12 @@ for (const tabButton of document.querySelectorAll(".tab-bar .tab-button")) {
 		}
 		if (tabName === "config" && currentContainerDetailName !== null)
 			loadContainerRecipe(currentContainerDetailName);
+		/* #398: same on-open-only rule as the recipe above -- a
+		 * version's manifest is immutable, so re-fetching it on the
+		 * two-second detail poll would be a request every two seconds
+		 * for bytes that cannot have changed. */
+		if (tabName === "packages" && currentContainerDetailName !== null)
+			loadContainerPackages(currentContainerDetailName);
 		if (tabButton.id === "cd-tab-summary" && currentContainerDetailName !== null)
 			startStatsPolling(currentContainerDetailName);
 		else if (statsContainerName !== null)
@@ -4066,6 +4072,87 @@ async function loadContainerRecipe(name) {
 		statusEl.textContent = err && err.status === 404
 			? "No recipe \u2014 this container was created directly through the API, not applied from one."
 			: "Could not load the recipe: " + (err && err.message ? err.message : "unknown error");
+	}
+}
+
+/*
+ * #398: what this container's image version DECLARES.
+ *
+ * Read from GET /v1/images/{name}/versions/{version}/manifest, keyed on
+ * the container's own pinned image_version -- never the image's current
+ * manifest. Those two agree while the container is current and diverge
+ * silently afterwards, and rendering the live one as "this container's
+ * packages" would be wrong in exactly the way that is hardest to
+ * notice: a confident, plausible, up-to-date-looking list.
+ *
+ * The panel says DECLARES rather than CONTAINS, deliberately. A
+ * manifest entry records that a package was installed into an image
+ * version; it is not evidence the bytes reached this container. That
+ * distinction cost a full debugging round in #395 -- fastfetch read
+ * `installed`, the versions matched, and the binary was not in the
+ * container at all -- so the page points at the console for the
+ * filesystem question rather than implying it answers it.
+ */
+async function loadContainerPackages(name) {
+	const statusEl = document.getElementById("cd-packages-status");
+	const tbody = document.querySelector("#cd-packages tbody");
+	const c = cache.containers.find((x) => x.name === name);
+
+	if (statusEl === null || tbody === null)
+		return;
+	tbody.textContent = "";
+	if (!c || !c.image) {
+		statusEl.textContent = "This container has no image.";
+		return;
+	}
+	if (!c.image_version) {
+		statusEl.textContent =
+			"This container records no image version, so there is no manifest to read. It has "
+			+ "not been started yet, or predates pinned image versions.";
+		return;
+	}
+	{
+		const link = document.getElementById("cd-packages-console-link");
+
+		if (link !== null)
+			link.href = "#containers/" + encodeURIComponent(name);
+	}
+	statusEl.textContent = "Loading\u2026";
+	try {
+		const d = await apiRequest("GET",
+		                           CIX_API.getImageVersionManifest(c.image, c.image_version));
+		const rows = Array.isArray(d.manifest) ? d.manifest : [];
+
+		statusEl.textContent = "Declared by image " + c.image + " at version " + c.image_version
+			+ " \u2014 the version this container is pinned to and runs from.";
+		if (rows.length === 0) {
+			const tr = document.createElement("tr");
+			const td = document.createElement("td");
+
+			td.colSpan = 3;
+			td.textContent = "This image version declares no packages.";
+			tr.appendChild(td);
+			tbody.appendChild(tr);
+			return;
+		}
+		rows.forEach((r) => {
+			const tr = document.createElement("tr");
+
+			[r.package, r.version, r.mode].forEach((v) => {
+				const td = document.createElement("td");
+
+				td.textContent = v === undefined || v === null ? "-" : String(v);
+				tr.appendChild(td);
+			});
+			tbody.appendChild(tr);
+		});
+	} catch (err) {
+		statusEl.textContent = err && err.status === 404
+			? "No manifest was recorded for version " + c.image_version + ". Versions produced "
+				+ "before per-version manifests have none, and the image's CURRENT manifest is "
+				+ "deliberately not shown in its place \u2014 it would describe what the image "
+				+ "holds now, which is a different question."
+			: "Could not load the manifest: " + (err && err.message ? err.message : "unknown error");
 	}
 }
 
