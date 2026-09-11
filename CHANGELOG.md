@@ -6,6 +6,48 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### An artifact approval reaches the fleet, not just the host that earned it (#403)
+
+`approve_published_artifact()` (#306) writes `pkg_artifact_sha256=` into the **daemon's** copy of
+a recipe when an artifact publishes — the one moment the bytes are known to be both built here
+and accepted by the cache, so the right place to earn it. Nothing carried it back to git, and git
+is what a freshly installed host syncs from. Measured on 192.168.15.95, 2026-09-11: the latest
+revision of 16 of 107 non-probe packages was approved on the box and not in git, among them
+`glibc`, `openssl`, `zlib`, `linux-headers` and `linux-pam`. A new host was rebuilding the base of
+the system from source with the finished Cix-built artifacts already sitting in the cache — #306's
+cold-box problem returning for every machine except the one that happened to publish.
+
+The 16 are carried into git, each fetched from the box's own copy and checked two ways before
+writing: the daemon's content minus its approval line must be byte-identical to git's, and the
+checksum must equal what the artifact server records for that exact `(name, version, release)`.
+All 17 files verified, zero mismatches, nothing carried forward from another revision and nothing
+computed locally. `tools/carry-artifact-approvals.sh` is the same two checks as a step, so this is
+not "and then somebody remembers to" a second time — which is the bug, stated in its own ticket.
+
+**The direction only works one way, and only for a bare line.** `pkg_recipe_add()` accepts an
+incoming recipe differing from the stored one by exactly one added `pkg_artifact_sha256=` line and
+nothing else (`recipe_adds_only_artifact_sha256()`), so an approval that reaches git reaches every
+host on its next ordinary sync — and nothing carries one the other way. The rule is literal.
+`glibc 2.44-6`'s approval had been in git since 2026-08-30 and had never reached the box, because
+the commit that added it added an eleven-line comment beside it: the diff was twelve lines, and a
+full sync (`added 27, skipped 1255`) left the box unapproved. With only the comment removed, the
+next sync applied it. The commentary now lives in that commit's message, where it costs nothing.
+
+This was nearly written up from the wrong cause twice: `"state":"never"` showed the box had never
+synced at all, a second independent reason the approval had not arrived, and the first draft
+attributed the whole case to a hand-carried line from #325 that glibc was never part of.
+
+None of this decides where an approval should live. `pkg_artifact_sha256=` is artifact state
+stored inside recipe content; git owns recipes, the cache owns artifacts, and ADR-0107's
+immutability rule still needs an exception carved for this one line. #403 carries that question,
+and the constraint found here — that the one fact anybody would want to write beside a checksum is
+the thing that silently disables it — is an argument for moving approval onto the artifact itself.
+
+Two side-findings recorded rather than fixed, both in #404: the sync merge runs in a helper
+process (ADR-0278) whose log writes never reach the log store, so a sync that changed 27 recipes
+left one audit line behind; and that `added: 27` is unexplained — no version was new and no
+approval state changed — with the cause not establishable from outside for exactly that reason.
+
 ### A container's page can show what is inside it (#398)
 
 The container detail page showed which image a container uses and not which packages are in it,
