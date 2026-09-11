@@ -574,6 +574,16 @@ enum pkg_error pkg_seed_stage(const char *dest_dir, char *err, size_t err_size);
  * from the manifests at any time, so a restart drops pending work
  * rather than resuming a stale intention.
  */
+/*
+ * Re-derives the rolling-rebuild queue from the images that are
+ * actually behind a rolling package (#373). Called once at startup: the
+ * queue is in-memory, so a restart between a publish and the drain lost
+ * it entirely. Derived rather than persisted -- an image that is behind
+ * is discoverable, so this is recoverable state, and deriving it also
+ * repairs a queue lost to a crash.
+ */
+void pkg_rebuild_queue_rederive(void);
+
 void pkg_rebuild_queue_write_json(struct json_writer *w);
 
 /*
