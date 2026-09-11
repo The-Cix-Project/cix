@@ -8670,6 +8670,28 @@ paths:
         path.
 
 
+        A successful push queues a second one: the artifact's detached
+        minisign signature, uploaded beside it as
+        <name>-<version>-<arch>.tar.gz.minisig (ADR-0279). Its trusted
+        comment is "cix pkg <name>@<version> sha256=<hex>", which binds
+        the signature to that exact revision and those exact bytes --
+        minisign's global signature covers the comment, so none of the
+        three can be edited afterwards. This is what lets a host that
+        did not build the package install it without rebuilding, and
+        without the recipe needing a pkg_artifact_sha256 line that only
+        ever reached the publishing host (#403).
+
+
+        Artifact first, then signature -- the reverse of the ISO rule,
+        because an ISO may not be published unsigned and a package may.
+        A host with no release key publishes the artifact and logs that
+        it went out unsigned; the publish is not failed for it. If the
+        signature push itself fails, the artifact stays published and
+        the log says so by name, because an artifact whose signature
+        never arrived looks complete and is silently rebuilt everywhere
+        else.
+
+
         This operation was implemented and in use by the CLI before it
         appeared here; it entered the contract during the ADR-0218
         cutover, whose generated dispatch would otherwise have

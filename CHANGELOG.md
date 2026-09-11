@@ -6,6 +6,47 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### An artifact is published with its own signature beside it (#403)
+
+ADR-0279's publishing half. When an artifact push succeeds — the same `201`/`200`/`204` moment
+that has always written `pkg_artifact_sha256=` into this host's own recipe store — a second push
+is queued: the artifact's detached minisign signature, uploaded beside it as
+`<name>-<version>-<arch>.tar.gz.minisig`.
+
+The difference is where the fact ends up. The approval line reaches only the host that built the
+package, which is the whole of #403: 16 packages measured approved on 192.168.15.95 and nowhere
+else, `glibc`, `openssl` and `zlib` among them, so every other host rebuilt the base of the
+system from source with the finished artifacts already in the cache. A signature travels with the
+artifact, so any host that can fetch one can verify it.
+
+**The trusted comment is what makes it an approval of a build rather than of some bytes.** It
+reads `cix pkg <name>@<version> sha256=<hex>`, naming the package, the exact revision and the
+artifact's digest, and minisign's global signature covers it — so none of the three can be edited
+afterwards. Without that binding a signature over `glibc@2.44-17` verifies perfectly as
+`2.44-16`, because the key is the same.
+
+Signing happens in the push child, not on the reactor. Ed25519 is PureEdDSA, so openssl reads the
+whole artifact, and a hundred-megabyte tarball would stall the loop for as long as that takes
+(ADR-0247). The child already computed the digest there for the same reason.
+
+A signature is pushed as an ordinary artifact push, with one `kind` field on the queue entry,
+rather than a second upload path beside the first — which would have been a parallel
+implementation of fork-hash-PUT-reap for a file in the same directory going to the same server.
+The queue, the stall guard, the status file and the reaper are untouched. The one thing the kind
+does change is the approval gate: a signature is only ever queued after its artifact's own push
+succeeded, so the person who approved that publish has already approved this, and asking again
+would hold it behind an approval nobody made twice.
+
+Artifact first, then signature — the reverse of the ISO rule, and deliberate: an ISO may not be
+published unsigned, a package may, so there is nothing to refuse and the signature can only be
+made once the bytes are accepted. A host with no release key publishes and logs that it went out
+unsigned. A signature push that fails leaves the artifact published and names it in the log,
+because an artifact whose signature never arrived looks complete and is silently rebuilt
+everywhere else.
+
+Depends on cix-cache#12, which landed first: the store spelled its signature suffix
+`.iso.minisig` as one literal, so `store_name_is_valid()` refused a package signature outright.
+
 ### A recipe is never stored or served carrying a live credential (#405)
 
 `GET /v1/pkg/recipes/{name}` needs no authentication and returns a recipe's stored bytes

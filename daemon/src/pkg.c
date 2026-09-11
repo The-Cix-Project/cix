@@ -10960,6 +10960,12 @@ static void cache_tarball_path(const char *name, const char *version, char *out,
 	snprintf(out, out_size, "%s/%s-%s.tar.gz", g_cache_dir, name, version);
 }
 
+/* Beside the artifact it signs, named the way the cache names it. */
+static void cache_signature_path(const char *name, const char *version, char *out, size_t out_size)
+{
+	snprintf(out, out_size, "%s/%s-%s.tar.gz.minisig", g_cache_dir, name, version);
+}
+
 static int save_cache_config(void)
 {
 	struct json_writer w;
@@ -11728,10 +11734,26 @@ static int pkg_artifact_is_configured(void)
 /* Distinct from any curl exit status, so the reaper can tell a failed
  * digest apart from a failed upload. */
 #define PKG_PUSH_EXIT_SHA_FAILED 90
+#define PKG_PUSH_EXIT_SIGN_FAILED 91
+
+/*
+ * A signature is pushed as an ordinary artifact push (ADR-0279).
+ *
+ * The alternative was a second upload path beside this one, which would
+ * have been a parallel implementation of fork-hash-PUT-reap for an
+ * object that is a file in the same cache directory going to the same
+ * server. One kind field reuses the queue, the approval gate, the
+ * stall guard, the status file and the reaper exactly as they are.
+ */
+enum pkg_push_kind {
+	PKG_PUSH_ARTIFACT = 0,
+	PKG_PUSH_SIGNATURE
+};
 
 struct pkg_push_job {
 	char name[PKG_NAME_MAX];
 	char version[PKG_VERSION_MAX];
+	enum pkg_push_kind kind;
 };
 
 static struct pkg_push_job g_push_queue[PKG_PUSH_QUEUE_MAX];
@@ -11899,7 +11921,8 @@ static void push_status_path(char *out, size_t out_size)
  * because a host that silently publishes nothing looks exactly like a
  * host with nothing to publish (the same trap issue #125 set).
  */
-static void pkg_artifact_push_enqueue(const char *name, const char *version)
+static void pkg_artifact_push_enqueue_kind(const char *name, const char *version,
+                                            enum pkg_push_kind kind)
 {
 	if (!g_artifact_push_enabled) {
 		/*
@@ -11950,7 +11973,13 @@ static void pkg_artifact_push_enqueue(const char *name, const char *version)
 	}
 	snprintf(g_push_queue[g_push_queue_count].name, PKG_NAME_MAX, "%s", name);
 	snprintf(g_push_queue[g_push_queue_count].version, PKG_VERSION_MAX, "%s", version);
+	g_push_queue[g_push_queue_count].kind = kind;
 	g_push_queue_count++;
+}
+
+static void pkg_artifact_push_enqueue(const char *name, const char *version)
+{
+	pkg_artifact_push_enqueue_kind(name, version, PKG_PUSH_ARTIFACT);
 }
 
 /*
@@ -12378,6 +12407,7 @@ enum pkg_error pkg_artifact_publish(const char *name)
 int pkg_artifact_push_try_start(pid_t *out_pid, int *out_pidfd, char *out_desc, size_t desc_size)
 {
 	char tarball[PATH_MAX];
+	char artifact[PATH_MAX];
 	char status_path[PATH_MAX];
 	char url[PKGARTIFACT_URL_MAX];
 	char auth_header[PKGARTIFACT_TOKEN_MAX + 32];
@@ -12412,6 +12442,17 @@ int pkg_artifact_push_try_start(pid_t *out_pid, int *out_pidfd, char *out_desc, 
 		for (i = 0; i < g_push_queue_count; i++) {
 			char t[PKG_APPROVAL_TARGET_MAX];
 
+			/* A signature is only ever queued after its artifact's
+			 * own push succeeded, so the person who approved that
+			 * publish has already approved this. Asking again would
+			 * hold the signature behind a second approval for a
+			 * decision nobody made twice -- and an artifact whose
+			 * signature never arrives is worse than one that was
+			 * never published, because it looks complete. */
+			if (g_push_queue[i].kind == PKG_PUSH_SIGNATURE) {
+				pick = i;
+				break;
+			}
 			snprintf(t, sizeof(t), "%s@%s", g_push_queue[i].name, g_push_queue[i].version);
 			if (!gate_holds(PKG_GATE_PUBLISH, t)) {
 				pick = i;
@@ -12425,16 +12466,26 @@ int pkg_artifact_push_try_start(pid_t *out_pid, int *out_pidfd, char *out_desc, 
 		for (i = pick + 1; i < g_push_queue_count; i++)
 			g_push_queue[i - 1] = g_push_queue[i];
 		g_push_queue_count--;
-		{
+		if (g_push_current.kind != PKG_PUSH_SIGNATURE) {
 			char t[PKG_APPROVAL_TARGET_MAX];
 
 			snprintf(t, sizeof(t), "%s@%s", g_push_current.name, g_push_current.version);
 			approval_consume(PKG_GATE_PUBLISH, t);
 		}
 
-		cache_tarball_path(g_push_current.name, g_push_current.version, tarball,
-		                   sizeof(tarball));
-		if (stat(tarball, &st) == 0)
+		/*
+		 * Both kinds are gated on the ARTIFACT being present, because
+		 * both are made from it: the signature does not exist yet and
+		 * is produced in the child below, over these same bytes.
+		 */
+		cache_tarball_path(g_push_current.name, g_push_current.version, artifact,
+		                   sizeof(artifact));
+		if (g_push_current.kind == PKG_PUSH_SIGNATURE)
+			cache_signature_path(g_push_current.name, g_push_current.version, tarball,
+			                      sizeof(tarball));
+		else
+			snprintf(tarball, sizeof(tarball), "%s", artifact);
+		if (stat(artifact, &st) == 0)
 			break;
 		/*
 		 * Two different causes, and the message used to assert the
@@ -12458,6 +12509,20 @@ int pkg_artifact_push_try_start(pid_t *out_pid, int *out_pidfd, char *out_desc, 
 	}
 	pkg_artifact_build_request(g_push_current.name, g_push_current.version, url, sizeof(url),
 	                           auth_header, sizeof(auth_header));
+	if (g_push_current.kind == PKG_PUSH_SIGNATURE) {
+		size_t ulen = strlen(url);
+
+		/* The sibling name the cache expects: the artifact's own name
+		 * with .minisig on it, so stem, release and architecture parse
+		 * identically on both (cix-cache#12). */
+		if (ulen + 8 >= sizeof(url)) {
+			logstore_write("cixd", "error",
+			                "artifact push: %s@%s signature URL too long -- not published",
+			                g_push_current.name, g_push_current.version);
+			return 0;
+		}
+		snprintf(url + ulen, sizeof(url) - ulen, ".minisig");
+	}
 	push_status_path(status_path, sizeof(status_path));
 	unlink(status_path);
 
@@ -12470,6 +12535,31 @@ int pkg_artifact_push_try_start(pid_t *out_pid, int *out_pidfd, char *out_desc, 
 	if (pid == 0) {
 		char sha[65];
 		char sha_header[96];
+
+		/*
+		 * Signing happens HERE, in the child, for the same reason the
+		 * digest does: Ed25519 is PureEdDSA, so openssl reads the
+		 * whole artifact, and a hundred-megabyte tarball would stall
+		 * the reactor for as long as that takes (ADR-0247).
+		 *
+		 * The trusted comment is what makes this an approval of a
+		 * particular build rather than of some bytes: it names the
+		 * package, the exact revision and the artifact's digest, and
+		 * minisign's global signature covers it, so none of the three
+		 * can be edited afterwards. Without it a signature over
+		 * glibc@2.44-17 verifies perfectly as 2.44-16 (ADR-0279).
+		 */
+		if (g_push_current.kind == PKG_PUSH_SIGNATURE) {
+			char art_sha[65];
+			char comment[PKG_NAME_MAX + PKG_VERSION_MAX + 96];
+
+			if (pkg_run_capture_sha256(artifact, art_sha, sizeof(art_sha)) != 0)
+				_exit(PKG_PUSH_EXIT_SHA_FAILED);
+			snprintf(comment, sizeof(comment), "cix pkg %s@%s sha256=%s",
+			          g_push_current.name, g_push_current.version, art_sha);
+			if (releasekey_sign_file(artifact, tarball, comment) != RELEASEKEY_OK)
+				_exit(PKG_PUSH_EXIT_SIGN_FAILED);
+		}
 
 		/* Digest in the child, deliberately: hashing a large tarball
 		 * on the daemon's own thread would stall the event loop for
@@ -12520,8 +12610,19 @@ int pkg_artifact_push_try_start(pid_t *out_pid, int *out_pidfd, char *out_desc, 
 	*out_pid = pid;
 	*out_pidfd = pidfd;
 	snprintf(out_desc, desc_size, "%s@%s", g_push_current.name, g_push_current.version);
-	logstore_write("cixd", "info", "artifact push: uploading %s@%s (%lld bytes) to %s",
-	                g_push_current.name, g_push_current.version, (long long)st.st_size, url);
+	/*
+	 * st is the ARTIFACT's stat, which is the right size for an
+	 * artifact push and would be a false one for a signature -- the
+	 * signature does not exist yet when this line is written, because
+	 * the child that makes it has only just been forked.
+	 */
+	if (g_push_current.kind == PKG_PUSH_SIGNATURE)
+		logstore_write("cixd", "info",
+		                "artifact push: signing %s@%s (%lld bytes) and uploading to %s",
+		                g_push_current.name, g_push_current.version, (long long)st.st_size, url);
+	else
+		logstore_write("cixd", "info", "artifact push: uploading %s@%s (%lld bytes) to %s",
+		                g_push_current.name, g_push_current.version, (long long)st.st_size, url);
 	return 1;
 }
 
@@ -12675,12 +12776,50 @@ void pkg_artifact_push_completed(int exit_status)
 		                g_push_current.name, g_push_current.version);
 		return;
 	}
+	if (WIFEXITED(exit_status) && WEXITSTATUS(exit_status) == PKG_PUSH_EXIT_SIGN_FAILED) {
+		/* The artifact is published and unsigned. Said plainly,
+		 * because a host that cannot verify it will build from source
+		 * instead and never explain why. */
+		logstore_write("cixd", "error",
+		                "artifact push: %s@%s is published but could NOT be signed -- other "
+		                "hosts will rebuild it from source rather than trust it. Check the "
+		                "release key with GET /v1/system/release-key.",
+		                g_push_current.name, g_push_current.version);
+		return;
+	}
 	if (code == 201 || code == 200 || code == 204) {
+		if (g_push_current.kind == PKG_PUSH_SIGNATURE) {
+			logstore_write("cixd", "info",
+			                "artifact push: %s@%s signature published (HTTP %ld) -- any host "
+			                "trusting this key can now install it without rebuilding",
+			                g_push_current.name, g_push_current.version, code);
+			return;
+		}
 		logstore_write("cixd", "info", "artifact push: %s@%s published (HTTP %ld)",
 		                g_push_current.name, g_push_current.version, code);
 		/* The bytes are now both built here and accepted by the cache,
 		 * which is the only moment an approval is honestly earnable. */
 		approve_published_artifact(g_push_current.name, g_push_current.version);
+		/*
+		 * And the same moment, recorded where it travels (ADR-0279).
+		 * The line above reaches only this host's own recipe store;
+		 * the signature reaches every host that can fetch the
+		 * artifact, which is the whole of #403.
+		 *
+		 * Artifact first, then signature -- the reverse of the ISO
+		 * rule, and deliberate: an ISO may not be published unsigned,
+		 * a package may, so there is nothing to refuse here and the
+		 * signature can only be made once the bytes are accepted.
+		 */
+		if (releasekey_is_set())
+			pkg_artifact_push_enqueue_kind(g_push_current.name, g_push_current.version,
+			                                PKG_PUSH_SIGNATURE);
+		else
+			logstore_write("cixd", "info",
+			                "artifact push: %s@%s published unsigned -- this host holds no "
+			                "release key, so other hosts will rebuild it from source rather "
+			                "than trust it",
+			                g_push_current.name, g_push_current.version);
 		return;
 	}
 	if (code == 409) {
