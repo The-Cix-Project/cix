@@ -1186,6 +1186,10 @@ enum conn_kind {
 	CONN_CONSOLE_RESPAWN_TIMER,
 	CONN_CONSOLE_WS,        /* GET /v1/containers/{name}/console -- client-facing WebSocket half */
 	CONN_CONSOLE_PTY,       /* same session's other half -- the exec'd shell's pty master fd */
+	CONN_CONSOLE_EXEC_REAP, /* pidfd for the console session's exec'd process, watched ONLY so
+	                          * that reaping it never blocks the reactor (#399). exec.c's own
+	                          * comment claimed this watch already existed; it did not, and the
+	                          * blocking waitpid() that stood in for it is the bug. */
 	CONN_PKG_BUILD_LOG_WS,  /* GET /v1/pkg/build/log -- live-tail of the in-flight build's own
 	                          * output pipe (task #676), a one-way relay of CONN_PKG_BUILD_OUTPUT's
 	                          * existing capture, not an exec/PTY session like CONN_CONSOLE_WS */
@@ -1228,7 +1232,7 @@ struct conn {
 	int output_line_len;                    /* CONN_CONTAINER_OUTPUT only */
 	int service_index;                      /* CONN_CONTAINER_OUTPUT only: which service's pipe, -1 = cix-init's own stdio */
 	time_t escalate_started_at;             /* CONN_STOP_ESCALATE_TIMER only: the incarnation it was armed for */
-	pid_t pkg_fetch_pid;                    /* CONN_PKG_FETCH / CONN_BOOTROOT_ASSEMBLE / CONN_ISO_ASSEMBLE / CONN_BOOTSTRAP_FETCH / CONN_DISK_FORMAT / CONN_STORAGE_MIGRATE / CONN_CONTAINER_STORAGE_MIGRATE */
+	pid_t pkg_fetch_pid;                    /* CONN_PKG_FETCH / CONN_BOOTROOT_ASSEMBLE / CONN_ISO_ASSEMBLE / CONN_BOOTSTRAP_FETCH / CONN_DISK_FORMAT / CONN_STORAGE_MIGRATE / CONN_CONTAINER_STORAGE_MIGRATE / CONN_CONSOLE_EXEC_REAP */
 	int pkg_chain_idx;                      /* CONN_PKG_FETCH / CONN_PKG_BUILD_OUTPUT / CONN_PKG_BUILD_LOG_WS -- ADR-0157 Phase 2: which g_chains[] slot this conn belongs to */
 	enum storage_kind storage_migrate_kind; /* CONN_STORAGE_MIGRATE only */
 	char container_storage_migrate_name[REGISTRY_NAME_MAX]; /* CONN_CONTAINER_STORAGE_MIGRATE only */
@@ -1395,8 +1399,31 @@ static void console_session_teardown(struct console_exec_session *sess)
 		return;
 	sess->torn_down = 1;
 
+	/*
+	 * Signal, never wait (#399, and ADR-0180's rule applied to the
+	 * second place that broke it).
+	 *
+	 * This used to be kill() followed by waitpid(pid, NULL, 0), on the
+	 * reasoning that SIGKILL is instant. It is not: a task in
+	 * uninterruptible D-state only ever PENDS a SIGKILL, so the wait is
+	 * unbounded -- and this is a single-threaded epoll loop, so an
+	 * unbounded wait here is a total control-plane outage for as long
+	 * as it lasts. ADR-0180 established exactly this for container
+	 * delete after it froze a real host twice; the console path kept
+	 * the old shape because exec.c's comment said the grandchild was
+	 * "reaped via pidfd, the same convention every other child it
+	 * tracks already uses". No such registration existed, so this
+	 * blocking wait WAS the reaper, on a long-lived process, on the
+	 * reactor.
+	 *
+	 * The child is now watched by its own pidfd from the moment the
+	 * session is built (register_console_exec_reap()), so the reap
+	 * happens when the process actually dies, off this path entirely.
+	 * Measured signature this closes: wchan "do_wait" with no request
+	 * in flight -- three times on 192.168.15.95 on 2026-09-10/11, the
+	 * last for 366 seconds, ending only in a hand reset.
+	 */
 	kill(sess->exec_pid, SIGKILL);
-	waitpid(sess->exec_pid, NULL, 0);
 
 	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, sess->ws_conn->fd, NULL);
 	if (sess->ws_conn->ssl != NULL) {
@@ -23505,6 +23532,72 @@ static int term_dimension_parse(const char *text, unsigned short *out)
 	return 1;
 }
 
+/*
+ * #399: the console session's exec'd process, watched by pidfd purely so
+ * that reaping it is never something the event loop has to wait for.
+ *
+ * EPOLLIN on a pidfd means the process has already exited, so the
+ * waitpid() in the handler collects a zombie and returns immediately --
+ * the same "safe by construction" shape the handle_*_event() family uses,
+ * and the property the blocking wait this replaces did not have.
+ *
+ * Nothing else is attached to this conn: it deliberately does NOT hold a
+ * pointer to the console_exec_session, because the session is normally
+ * freed first (the client disconnects, teardown runs, the process is
+ * signalled) and the reap then happens afterwards against a struct that
+ * no longer exists. Carrying only the pid makes the two lifetimes
+ * independent, which is the whole point.
+ */
+static void register_console_exec_reap(pid_t pid)
+{
+	struct conn *rc;
+	struct cix_epoll_event ev;
+	int pidfd = sys_pidfd_open(pid, 0);
+
+	if (pidfd < 0) {
+		/*
+		 * Degraded, and said out loud rather than silently restoring
+		 * the bug. Without a pidfd there is no non-blocking way to
+		 * learn when this process dies, and cixd runs as pid 1 with no
+		 * generic orphan reaper -- so the cost of carrying on is one
+		 * zombie entry, and the cost of waiting instead is a control
+		 * plane that stops answering. The zombie is the better trade,
+		 * and it is bounded by the number of console sessions.
+		 */
+		logstore_write("cixd", "warn",
+		                "console: pidfd_open failed for the session process (%s) -- it will not "
+		                "be reaped until this daemon restarts (#399)",
+		                strerror(errno));
+		return;
+	}
+
+	rc = calloc(1, sizeof(*rc));
+	if (rc == NULL) {
+		close(pidfd);
+		return;
+	}
+	rc->kind = CONN_CONSOLE_EXEC_REAP;
+	rc->fd = pidfd;
+	rc->pkg_fetch_pid = pid;
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = rc;
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, pidfd, &ev) != 0) {
+		close(pidfd);
+		free(rc);
+	}
+}
+
+/* The watched console process has exited; collect it. Never blocks --
+ * see register_console_exec_reap(). */
+static void handle_console_exec_reap_event(struct conn *cc)
+{
+	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	waitpid(cc->pkg_fetch_pid, NULL, 0);
+	close(cc->fd);
+	free(cc);
+}
+
 static enum console_route_result try_console_upgrade(struct conn *cc, const struct http_request *req)
 {
 	static const char suffix[] = CONSOLE_SUFFIX;
@@ -23789,6 +23882,15 @@ static enum console_route_result try_console_upgrade(struct conn *cc, const stru
 	if (cgroup_procs_fd >= 0)
 		close(cgroup_procs_fd);
 
+	/*
+	 * #399: watch the exec'd process for exit BEFORE any path below can
+	 * want to kill it. Registered here, at the single point where the
+	 * child is known to exist, so that every subsequent failure path
+	 * and the eventual session teardown can all signal-and-move-on
+	 * rather than blocking the reactor on a wait.
+	 */
+	register_console_exec_reap(exec_pid);
+
 	rlen = snprintf(response, sizeof(response),
 	                 "HTTP/1.1 101 Switching Protocols\r\n"
 	                 "Upgrade: websocket\r\n"
@@ -23798,7 +23900,8 @@ static enum console_route_result try_console_upgrade(struct conn *cc, const stru
 	                 accept_val);
 	if (rlen < 0 || (size_t)rlen >= sizeof(response)) {
 		kill(exec_pid, SIGKILL);
-		waitpid(exec_pid, NULL, 0);
+		/* #399: no wait here either -- the pidfd registered right
+		 * after exec_into_container() succeeded does the reap. */
 		close(master_fd);
 		respond_error(cc->fd, 500, "Internal Server Error", "failed to build handshake response");
 		return CONSOLE_FAILED;
@@ -23812,7 +23915,8 @@ static enum console_route_result try_console_upgrade(struct conn *cc, const stru
 	if (tls_write_all(cc->fd, response, (size_t)rlen) != 0) {
 		/* Client already gone -- nothing left to respond with. */
 		kill(exec_pid, SIGKILL);
-		waitpid(exec_pid, NULL, 0);
+		/* #399: no wait here either -- the pidfd registered right
+		 * after exec_into_container() succeeded does the reap. */
 		close(master_fd);
 		return CONSOLE_FAILED;
 	}
@@ -23823,7 +23927,8 @@ static enum console_route_result try_console_upgrade(struct conn *cc, const stru
 		free(sess);
 		free(pty_cc);
 		kill(exec_pid, SIGKILL);
-		waitpid(exec_pid, NULL, 0);
+		/* #399: no wait here either -- the pidfd registered right
+		 * after exec_into_container() succeeded does the reap. */
 		close(master_fd);
 		/* The 101 response is already on the wire -- there's no
 		 * meaningful HTTP error left to send after a successful
@@ -27308,6 +27413,8 @@ static int cixd_main(int argc, char **argv)
 				handle_console_ws_event(cc);
 			else if (cc->kind == CONN_CONSOLE_PTY)
 				handle_console_pty_event(cc, events[j].events);
+			else if (cc->kind == CONN_CONSOLE_EXEC_REAP)
+				handle_console_exec_reap_event(cc);
 			else if (cc->kind == CONN_PKG_BUILD_LOG_WS)
 				handle_pkg_build_log_ws_event(cc);
 			else if (cc->kind == CONN_KMSG)

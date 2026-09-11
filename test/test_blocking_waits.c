@@ -59,8 +59,29 @@ static const struct budget g_budgets[] = {
 	 * EPOLLIN already means the child exited, so the wait collects a
 	 * zombie and returns at once. Most of the rest reap the short-lived
 	 * intermediate of a double fork, which exits immediately by design.
+	 *
+	 * 26 -> 23 (#399). Four waits on the console session's exec'd
+	 * process are gone -- one in console_session_teardown() and three on
+	 * try_console_upgrade()'s error paths -- replaced by one pidfd
+	 * callback, CONN_CONSOLE_EXEC_REAP.
+	 *
+	 * Those four are why this comment is worth reading before raising
+	 * any number here. The count was honest and the JUSTIFICATION was
+	 * not: none of the four was a pidfd callback or a double-fork
+	 * intermediate, they waited on a long-lived shell after a SIGKILL,
+	 * and a SIGKILL to a task in uninterruptible D-state is only
+	 * PENDED. So the budget passed while holding an unbounded wait on
+	 * the reactor, which is precisely what it exists to prevent. It cost
+	 * three stalls on 192.168.15.95 on 2026-09-10/11 -- two of nine
+	 * seconds, one of 366 that ended in a hand reset.
+	 *
+	 * The rule the number stands for, stated so the next raise has to
+	 * argue against it: a wait is in budget only if the child is
+	 * ALREADY KNOWN TO HAVE EXITED (a pidfd callback) or CANNOT OUTLIVE
+	 * the call by design (a double-fork intermediate, a bounded external
+	 * tool). "We send it a signal first" is not in that set.
 	 */
-	{ "daemon/src/main.c", 26, "pidfd callbacks + double-fork intermediates" },
+	{ "daemon/src/main.c", 23, "pidfd callbacks + double-fork intermediates" },
 	{ "daemon/src/pkg.c", 10, "build helpers and fetch intermediates" },
 	{ "daemon/src/targz.c", 4, "tar/gzip pipeline, bounded by the archive" },
 	{ "daemon/src/diskpart.c", 4, "sfdisk/blkid, bounded external tools" },
@@ -79,7 +100,7 @@ static const struct budget g_budgets[] = {
 #define BUDGET_COUNT ((int)(sizeof(g_budgets) / sizeof(g_budgets[0])))
 
 /* The whole-daemon ceiling, so a new FILE cannot slip past the table. */
-#define TOTAL_ALLOWED 62
+#define TOTAL_ALLOWED 59
 
 static int is_comment(const char *line)
 {

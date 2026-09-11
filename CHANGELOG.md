@@ -6,6 +6,63 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The console session's exec'd process is reaped off the reactor, and a stall record names the child (#399)
+
+**The control plane stopped answering for 366 seconds on 2026-09-11 and had to be reset
+by hand.** Two smaller instances of the same thing, nine seconds each, had already
+happened that evening and gone unexamined.
+
+What the record said was `{"event":"stall","state":"S","wchan":"do_wait","activity":""}`.
+`do_wait` is the kernel's wait-for-a-child function, and the empty `activity` means no
+request was in flight -- so the daemon was blocked reaping a child, from the event loop
+rather than from a handler. What the record did NOT say was *which* child, and that is
+the whole of why this took a source-reading exercise to narrow: every blocking wait in
+the daemon had to be enumerated and correlated against the log store, whose last entry
+before a six-minute silence turned out to be jump's sshd readiness timeout.
+
+**The site: `console_session_teardown()` did `kill(pid, SIGKILL)` and then
+`waitpid(pid, NULL, 0)`.** A SIGKILL to a task in uninterruptible D-state is only
+PENDED, so that wait is unbounded -- and cixd is one epoll loop with no threads, so an
+unbounded wait there is a total outage for its duration. ADR-0180 established exactly
+this for container delete after it froze a real host twice, and fixed it by signalling
+without waiting and letting the already-registered pidfd watch complete the teardown.
+
+**The console path kept the old shape because a comment said it was safe.**
+`daemon/src/exec.c` stated that the grandchild was "reaped via pidfd, the same
+convention every other child it tracks already uses". No such registration existed
+anywhere -- the blocking `waitpid()` *was* the reaper. The comment read as
+documentation of an existing property, so nobody checked it, and it is corrected in
+place rather than deleted: a comment asserting a mechanism is a claim about the code,
+and this one went unverified long enough to cost a reset.
+
+Fixed by registering a pidfd for the exec'd process at the single point where it is
+known to exist (`register_console_exec_reap()`, `CONN_CONSOLE_EXEC_REAP`), so the reap
+happens on EPOLLIN -- where the process has already exited and the wait returns at
+once. Four blocking waits go: one in teardown and three on `try_console_upgrade()`'s
+error paths, all of which now signal and move on.
+
+**`test_blocking_waits` passed throughout, and that is the more important finding.**
+Its count for `main.c` was right; its stated reason -- "pidfd callbacks + double-fork
+intermediates" -- was not true of those four, which waited on a long-lived shell. The
+budget is lowered 26 -> 23 (total 62 -> 59), and the rule the number stands for is now
+written next to it: a wait is in budget only if the child is already known to have
+exited, or cannot outlive the call by design. "We send it a signal first" is not in
+that set.
+
+**And the instrument, so the next one is a readout rather than an excavation.**
+`stallwatch` now records the daemon's own children with each stall -- pid, comm, state
+and wchan for each, capped at twelve. It walks `/proc` from a separate process, which
+is the only vantage point that works when the daemon is the thing that is stuck. The
+child failing to exit is the answer, and its own state says why. An empty array is
+equally informative: the wait is on a child that has already gone. Exposed through
+`GET /v1/system/stalls` (records are spliced verbatim, so no reader change), gated by
+`test_stallwatch`, which is in `SELFTESTS` and so actually runs.
+
+Not established, and deliberately not written anywhere as though it were: that this
+site is what caused the three stalls observed. It is the one unbounded reactor wait
+that matches their signature, and it is a real defect regardless -- but no record from
+those events named the child, which is precisely the gap the stallwatch change closes.
+
 ### os-release reaches containers, and three dashboard fixes (#387, ADR-0274)
 
 **os-release was shipped and then measured, and the measurement moved it.** After

@@ -18,7 +18,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/system/hostauth/sessions` | Every active session (username, expires-in) -- never a raw token, before or after issuance (ADR-0152) |
 | DELETE | `/system/hostauth/sessions/{username}` | Revoke every active session for that user -- "log out everywhere" |
 | GET | `/system/boot` | Build version/time, A/B slot, kernel version (`uname`) |
-| GET | `/system/stalls` | Times the control plane stopped going round its own loop, recorded by a watchdog process (issue #100) |
+| GET | `/system/stalls` | Times the control plane stopped going round its own loop, recorded by a watchdog process (issue #100) — each record names the daemon's own child processes and what each was doing, so a `wchan` of `do_wait` says *which* wait (issue #399) |
 | GET | `/system/kernel-policy` | Which kernel line this box tracks, what that channel currently points at, and how far behind the running kernel is (issue #65) |
 | PUT | `/system/kernel-policy` | Set the channel — `pinned` / `longterm` / `stable` / `mainline` |
 | POST | `/system/kernel-policy/refresh` | Re-ask kernel.org what each channel is at (202; the fetch is async) |

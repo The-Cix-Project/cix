@@ -1,5 +1,6 @@
 #include "stallwatch.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <stdarg.h>
 #include <fcntl.h>
@@ -223,6 +224,132 @@ static char read_proc_state(pid_t pid)
 	return close_paren[2];
 }
 
+/*
+ * The children of the watched process, and what each of them is doing.
+ *
+ * A `wchan` of "do_wait" says the daemon is blocked in waitpid()/waitid().
+ * It does not say WHICH wait, and that turned out to be the whole
+ * difficulty: on 2026-09-11 a six-minute wedge on 192.168.15.95 had to be
+ * narrowed by reading the daemon's source for every blocking wait site and
+ * correlating against the log store, because the record said only that a
+ * wait was in progress. Three stalls with the identical signature -- two of
+ * 9 seconds that recovered, one of 366 seconds that did not and needed the
+ * box reset -- and no record anywhere could name the process being waited
+ * on.
+ *
+ * The child that is failing to exit IS the answer, and it is one readdir
+ * away. A process blocked in do_wait has children; one of them is not
+ * exiting, and its own state and wchan say why (a D-state child only PENDS
+ * a SIGKILL, which is exactly the mechanism ADR-0180 describes).
+ *
+ * Done here rather than in the daemon for the reason this whole process
+ * exists: the daemon is the thing that is stuck, so it cannot report on
+ * itself. Bounded on purpose -- at most STALL_CHILDREN_MAX are recorded,
+ * because a record that cannot be written is worth less than a partial one.
+ */
+#define STALL_CHILDREN_MAX 12
+
+/* One child, as read out of /proc/<pid>/stat. `comm` is the executable
+ * name the kernel reports, without its parentheses. */
+struct stall_child {
+	pid_t pid;
+	char state;
+	char comm[32];
+	char wchan[64];
+};
+
+/*
+ * Parses /proc/<pid>/stat for the fields this needs: comm, state, ppid.
+ * Returns 0 and fills *out on success, -1 if the process is gone or the
+ * line does not parse. `comm` is arbitrary text chosen by the process and
+ * may itself contain spaces and parentheses, so it is delimited by the
+ * FIRST '(' and the LAST ')' -- the same rule read_proc_state() uses.
+ */
+static int read_proc_stat_fields(pid_t pid, char *comm, size_t comm_size, char *state, pid_t *ppid)
+{
+	char path[64];
+	char buf[1024];
+	int fd;
+	ssize_t n;
+	char *open_paren, *close_paren, *p;
+	size_t comm_len;
+
+	snprintf(path, sizeof(path), "/proc/%d/stat", (int)pid);
+	fd = open(path, O_RDONLY);
+	if (fd < 0)
+		return -1;
+	n = read(fd, buf, sizeof(buf) - 1);
+	close(fd);
+	if (n <= 0)
+		return -1;
+	buf[n] = '\0';
+
+	open_paren = strchr(buf, '(');
+	close_paren = strrchr(buf, ')');
+	if (open_paren == NULL || close_paren == NULL || close_paren <= open_paren)
+		return -1;
+
+	comm_len = (size_t)(close_paren - open_paren - 1);
+	if (comm_len >= comm_size)
+		comm_len = comm_size - 1;
+	memcpy(comm, open_paren + 1, comm_len);
+	comm[comm_len] = '\0';
+
+	/* " S ppid ..." follows the closing parenthesis. */
+	p = close_paren + 1;
+	while (*p == ' ')
+		p++;
+	if (*p == '\0')
+		return -1;
+	*state = *p;
+	p++;
+	while (*p == ' ')
+		p++;
+	*ppid = (pid_t)strtol(p, NULL, 10);
+	return 0;
+}
+
+/*
+ * Fills `out` with up to STALL_CHILDREN_MAX children of `parent`, newest
+ * information first-come. Returns how many were recorded.
+ *
+ * Walks /proc rather than /proc/<pid>/task/<tid>/children, which is
+ * CONFIG_PROC_CHILDREN-dependent and documented as unreliable for a
+ * process that is actively reaping. A full /proc walk is a few hundred
+ * opens during an outage -- irrelevant next to the outage.
+ */
+static int read_children(pid_t parent, struct stall_child *out, int max)
+{
+	DIR *d = opendir("/proc");
+	struct dirent *ent;
+	int count = 0;
+
+	if (d == NULL)
+		return 0;
+	while (count < max && (ent = readdir(d)) != NULL) {
+		pid_t pid, ppid = 0;
+		char state = '?';
+		char comm[32];
+
+		if (ent->d_name[0] < '0' || ent->d_name[0] > '9')
+			continue;
+		pid = (pid_t)strtol(ent->d_name, NULL, 10);
+		if (pid <= 0 || pid == parent)
+			continue;
+		if (read_proc_stat_fields(pid, comm, sizeof(comm), &state, &ppid) != 0)
+			continue;
+		if (ppid != parent)
+			continue;
+		out[count].pid = pid;
+		out[count].state = state;
+		snprintf(out[count].comm, sizeof(out[count].comm), "%s", comm);
+		read_wchan(pid, out[count].wchan, sizeof(out[count].wchan));
+		count++;
+	}
+	closedir(d);
+	return count;
+}
+
 static void json_escape(const char *in, char *out, size_t out_size)
 {
 	size_t o = 0;
@@ -249,12 +376,15 @@ static void append_line(const char *line, int len);
 
 static void append_record(const char *event, long long seconds, pid_t watched)
 {
-	char line[1024];
+	char line[4096];
 	char wchan[128];
 	char activity[STALL_ACTIVITY_MAX];
 	char esc_activity[STALL_ACTIVITY_MAX * 2];
 	char esc_wchan[256];
+	struct stall_child children[STALL_CHILDREN_MAX];
+	int child_count;
 	int len;
+	int i;
 
 	read_wchan(watched, wchan, sizeof(wchan));
 	snprintf(activity, sizeof(activity), "%s", g_shared->activity);
@@ -263,11 +393,46 @@ static void append_record(const char *event, long long seconds, pid_t watched)
 
 	len = snprintf(line, sizeof(line),
 	               "{\"ts\":%lld,\"event\":\"%s\",\"seconds\":%lld,\"state\":\"%c\","
-	               "\"wchan\":\"%s\",\"activity\":\"%s\"}\n",
+	               "\"wchan\":\"%s\",\"activity\":\"%s\"",
 	               (long long)time(NULL), event, seconds, read_proc_state(watched), esc_wchan,
 	               esc_activity);
-	if (len <= 0)
+	if (len <= 0 || (size_t)len >= sizeof(line))
 		return;
+
+	/*
+	 * Who the daemon is waiting on. Always recorded, not only when the
+	 * wchan happens to be a wait: "the daemon was stalled and had no
+	 * children at all" is just as much an answer as naming one, and it
+	 * is an answer this record could not previously give either.
+	 */
+	child_count = read_children(watched, children, STALL_CHILDREN_MAX);
+	len += snprintf(line + len, sizeof(line) - (size_t)len, ",\"children\":[");
+	if (len <= 0 || (size_t)len >= sizeof(line))
+		return;
+	for (i = 0; i < child_count; i++) {
+		char esc_comm[sizeof(children[i].comm) * 2];
+		char esc_cwchan[sizeof(children[i].wchan) * 2];
+		int n;
+
+		json_escape(children[i].comm, esc_comm, sizeof(esc_comm));
+		json_escape(children[i].wchan, esc_cwchan, sizeof(esc_cwchan));
+		n = snprintf(line + len, sizeof(line) - (size_t)len,
+		             "%s{\"pid\":%d,\"comm\":\"%s\",\"state\":\"%c\",\"wchan\":\"%s\"}",
+		             i > 0 ? "," : "", (int)children[i].pid, esc_comm, children[i].state,
+		             esc_cwchan);
+		/* A child that does not fit is dropped rather than truncating
+		 * the record into unparseable JSON. */
+		if (n <= 0 || (size_t)(len + n) >= sizeof(line) - 8)
+			break;
+		len += n;
+	}
+	{
+		int n = snprintf(line + len, sizeof(line) - (size_t)len, "]}\n");
+
+		if (n <= 0 || (size_t)(len + n) >= sizeof(line))
+			return;
+		len += n;
+	}
 
 	append_line(line, len);
 }
