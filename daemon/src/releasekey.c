@@ -528,9 +528,25 @@ enum releasekey_error releasekey_verify_file(const char *path, const char *sig_p
 	memcpy(key_id_want, blob + 2, RELEASEKEY_ID_LEN);
 	memcpy(sig, blob + 2 + RELEASEKEY_ID_LEN, ED25519_SIG_LEN);
 
-	n = unb64(lines[3], gsig, sizeof(gsig));
-	if (n != ED25519_SIG_LEN)
-		return RELEASEKEY_ERR_BAD_SIG;
+	/*
+	 * Decoded through a larger buffer, not straight into gsig[64].
+	 *
+	 * EVP_DecodeBlock writes the PADDED length -- 66 bytes for the 88
+	 * base64 characters a 64-byte signature becomes -- so a destination
+	 * sized to the signature is two bytes short and unb64()'s own guard
+	 * refuses the whole decode. That failed closed, which is the right
+	 * direction, but it failed closed for EVERYTHING: measured on
+	 * 192.168.15.95, every verification returned "not a parseable
+	 * minisign signature", including one this daemon had just written.
+	 */
+	{
+		unsigned char gbuf[96];
+
+		n = unb64(lines[3], gbuf, sizeof(gbuf));
+		if (n != ED25519_SIG_LEN)
+			return RELEASEKEY_ERR_BAD_SIG;
+		memcpy(gsig, gbuf, ED25519_SIG_LEN);
+	}
 
 	clen = strlen(lines[2] + 17);
 	if (clen >= sizeof(comment))
