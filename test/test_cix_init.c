@@ -619,27 +619,100 @@ static int test_declared_restart(void)
 		return -1;
 	clock_gettime(CLOCK_MONOTONIC, &t1);
 	/*
-	 * 1000ms, not 1500, and the difference is a real property of
-	 * cix-init rather than slack: its restart_at is computed from
-	 * now_seconds(), which truncates, so a declared 2-second delay
-	 * fires anywhere in (1.0s, 2.0s] depending on where the exit landed
-	 * inside a second. A real build measured 1262ms.
+	 * 1900ms, and the number moved here because cix-init's own timing
+	 * did (#361).
 	 *
-	 * So this asserts the contract that actually holds today -- a
-	 * declared 2s delay is never shorter than 1s -- which is still
-	 * decisive against the failure that matters here, a restart with no
-	 * delay applied at all. The imprecision itself is #361: at
-	 * restart_delay_seconds=1 the same truncation permits a delay of
-	 * very nearly zero, which defeats the point of a backoff.
+	 * It used to be 1000, and that was not slack -- it was the real
+	 * contract of a second-granular clock. restart_at came off
+	 * now_seconds(), which truncates, so a declared 2-second delay
+	 * fired anywhere in (1.0s, 2.0s] depending on where the exit landed
+	 * inside a second; a real build measured 1262ms. Asserting 1000 was
+	 * the honest floor for that design, and it was also why the bug
+	 * underneath stayed invisible: at restart_delay_seconds=1 the same
+	 * truncation permits very nearly ZERO delay, and a test whose floor
+	 * is "at least one second less than declared" cannot see that.
+	 *
+	 * Deadlines are milliseconds now, so the floor is the declared
+	 * delay itself, less only real scheduling slack -- the supervisor
+	 * polls on a 250ms timeout, so a restart can land up to one poll
+	 * late but never early. 1900 is that: decisive about the delay
+	 * being applied, with 100ms of room for the poll boundary.
 	 */
-	if (elapsed_ms(&t0, &t1) < 1000) {
-		fprintf(stderr, "  FAIL: restarted after %ldms, declared delay was 2s -- a 2s delay "
-		                "is never shorter than 1s even with second-granular timing (#361)\n",
+	if (elapsed_ms(&t0, &t1) < 1900) {
+		fprintf(stderr, "  FAIL: restarted after %ldms, declared delay was 2s -- deadlines are "
+		                "milliseconds, so a declared delay is a floor and not an approximation "
+		                "(#361)\n",
 		        elapsed_ms(&t0, &t1));
 		return -1;
 	}
-	printf("  restarted after %ldms (declared 2s; second-granular, see #361)\n",
-	       elapsed_ms(&t0, &t1));
+	printf("  restarted after %ldms (declared 2s)\n", elapsed_ms(&t0, &t1));
+	if (send_command(&r, CIXINIT_OP_SHUTDOWN, -1) != 0)
+		return -1;
+	if (wait_exit(&r, &status) != 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+		fprintf(stderr, "  FAIL: shutdown of a restarting daemon did not exit 0 (0x%x)\n", status);
+		return -1;
+	}
+	init_close(&r);
+	return 0;
+}
+
+/*
+ * #361, the case the two-second one structurally cannot catch.
+ *
+ * A declared delay of ONE second is where second-granular deadlines
+ * stopped being imprecise and started being absent: restart_at came off
+ * a truncating clock, so an exit at wall-clock X.9 gave restart_at =
+ * X+1, reached 0.1s later. A crash-looping service was respawned as
+ * fast as it could fail, which is the hammering the backoff exists to
+ * prevent -- and restart_delay_seconds=1 is a legal, natural value to
+ * declare.
+ *
+ * The existing two-second case could never see this. Its floor had to
+ * be 1000ms to hold against a truncating clock, and "at least one
+ * second less than declared" is satisfied by a delay of zero when the
+ * declaration is one second. So the bug lived inside the assertion's
+ * own slack, which is why this case exists separately rather than as a
+ * tighter number on the old one.
+ */
+static int test_one_second_restart_delay(void)
+{
+	struct cixinit_service svcs[1];
+	struct init_run r;
+	struct cixinit_report rep;
+	struct timespec t0, t1;
+	int status;
+	static const char *const crash_argv[] = { "/bin/sh", "-c", "exit 9", NULL };
+
+	printf("7b. a ONE-second declared delay is a real second (#361)\n");
+	svc_init(&svcs[0], "twitchy", CIXINIT_TYPE_DAEMON, crash_argv);
+	svcs[0].restart_delay_seconds = 1;
+	if (init_spawn(&r, svcs, 1, 0) != 0)
+		return -1;
+	if (wait_for(&r, 0, CIXINIT_EV_EXITED, &rep) < 0 || rep.a != CIXINIT_EXIT_KIND_EXITED ||
+	    rep.b != 9)
+		return -1;
+	clock_gettime(CLOCK_MONOTONIC, &t0);
+	/* The wire field is seconds and stays seconds, whatever the
+	 * internal deadline unit is -- that is asserted here too, because a
+	 * millisecond value leaking outward would read as a 1000-second
+	 * backoff to anything consuming it. */
+	if (wait_for(&r, 0, CIXINIT_EV_RESTART_IN, &rep) < 0 || rep.a != 1 || rep.b != 1) {
+		fprintf(stderr, "  FAIL: RESTART_IN reported a=%d b=%d, want a=1 (SECONDS) b=1\n",
+		        rep.a, rep.b);
+		return -1;
+	}
+	if (wait_for(&r, 0, CIXINIT_EV_STARTED, &rep) < 0)
+		return -1;
+	clock_gettime(CLOCK_MONOTONIC, &t1);
+	/* 900ms: the declared second, less room for the supervisor's own
+	 * 250ms poll boundary. A restart can land late, never early. */
+	if (elapsed_ms(&t0, &t1) < 900) {
+		fprintf(stderr, "  FAIL: restarted after %ldms, declared delay was 1s -- a backoff "
+		                "that rounds down to nothing is not a backoff (#361)\n",
+		        elapsed_ms(&t0, &t1));
+		return -1;
+	}
+	printf("  restarted after %ldms (declared 1s)\n", elapsed_ms(&t0, &t1));
 	if (send_command(&r, CIXINIT_OP_SHUTDOWN, -1) != 0)
 		return -1;
 	if (wait_exit(&r, &status) != 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
@@ -919,6 +992,7 @@ int main(void)
 	fails += test_graph_and_shutdown() != 0;
 	fails += test_failed_oneshot() != 0;
 	fails += test_declared_restart() != 0;
+	fails += test_one_second_restart_delay() != 0;
 	fails += test_bad_hello() != 0;
 	fails += test_exec_failure() != 0;
 	fails += test_fd_hygiene() != 0;

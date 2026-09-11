@@ -310,14 +310,44 @@ static void die(const char *why)
 /* ------------------------------------------------------------------ */
 /* Time and signals.                                                   */
 
-static long now_seconds(void)
+/*
+ * #361: MILLISECONDS, not seconds.
+ *
+ * Every deadline here used to come off a whole-second clock, so a
+ * declared delay was honoured only to within a second of itself: the
+ * true range for a declared N was (N-1, N]. Harmless at N=2 and not at
+ * N=1, where an exit late in a second restarts after ~0 and the backoff
+ * stops existing -- which is exactly the hammering it is there to
+ * prevent, on a service crash-looping against a missing dependency.
+ * Measured at v2.57.28: a declared 2-second delay restarted after
+ * 1262 ms.
+ *
+ * The same truncation applied to the ready probe, the command probe and
+ * the stop timeout, where a 1-second stop timeout could SIGKILL a
+ * service that was about to exit cleanly.
+ *
+ * Every deadline field below is in these units, and a declared
+ * *_seconds is multiplied by 1000 where it is STORED, never where it is
+ * compared -- one conversion site per deadline, so a comparison cannot
+ * be left in the wrong unit. The wire is unaffected: see
+ * CIXINIT_EV_RESTART_IN's own site for the one field that reports
+ * seconds outward.
+ *
+ * The main loop polls on a fixed 250 ms timeout rather than one derived
+ * from these deadlines, so nothing else needed converting with them --
+ * and that 250 ms is what gives a millisecond deadline real effect.
+ *
+ * long is 64-bit here, so a millisecond monotonic clock has no range
+ * concern worth guarding.
+ */
+static long now_ms(void)
 {
 	struct timespec ts;
 
 	ts.tv_sec = 0;
 	ts.tv_nsec = 0;
 	sc2(SYS_clock_gettime, CLOCK_MONOTONIC, (long)&ts);
-	return ts.tv_sec;
+	return ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
 static volatile int g_sigchld;
@@ -363,11 +393,11 @@ struct svc {
 	enum svc_state state;
 	long pid;             /* the running child, or 0 */
 	int out_fd;           /* its stdout/stderr pipe, from argv */
-	long probe_deadline;  /* monotonic: report CIXINIT_FAIL_PROBE after this */
+	long probe_deadline;  /* monotonic ms: report CIXINIT_FAIL_PROBE after this */
 	long probe_pid;       /* a running CIXINIT_READY_COMMAND child, or 0 */
-	long probe_pid_deadline;
-	long restart_at;      /* monotonic: ST_RESTART_WAIT respawns at this second */
-	long stop_sent_at;    /* monotonic: when stop_signal went out, 0 = not sent */
+	long probe_pid_deadline; /* monotonic ms */
+	long restart_at;      /* monotonic ms: ST_RESTART_WAIT respawns at this point */
+	long stop_sent_at;    /* monotonic ms: when stop_signal went out, 0 = not sent */
 	int killed;           /* SIGKILL already sent after stop_timeout_seconds */
 	int operator_stopped; /* CIXINIT_OP_STOP in force */
 	int restart_after_stop; /* CIXINIT_OP_RESTART: go straight back to ST_PENDING on exit */
@@ -628,7 +658,9 @@ static void start_service(int idx)
 	s->stop_sent_at = 0;
 	s->killed = 0;
 	s->probe_pid = 0;
-	s->probe_deadline = now_seconds() + (s->def.ready_timeout_seconds > 0 ? s->def.ready_timeout_seconds : 30);
+	s->probe_deadline = now_ms() +
+	                    (s->def.ready_timeout_seconds > 0 ? s->def.ready_timeout_seconds : 30) *
+	                            1000L;
 	report(idx, CIXINIT_EV_STARTED, (int)pid, 0);
 	if (s->def.ready_kind == CIXINIT_READY_NONE) {
 		s->state = ST_READY;
@@ -683,7 +715,7 @@ static void probe_command_spawn(struct svc *s)
 		sc1(SYS_exit_group, 127);
 	}
 	s->probe_pid = pid;
-	s->probe_pid_deadline = now_seconds() + 5; /* ADR-0260: the command probe's own timeout */
+	s->probe_pid_deadline = now_ms() + 5000L; /* ADR-0260: the command probe's own timeout */
 }
 
 static void probe_service(int idx, long now)
@@ -796,11 +828,11 @@ static void send_stop(struct svc *s, long now)
 
 static void escalate_stop(struct svc *s, long now)
 {
-	int timeout = s->def.stop_timeout_seconds > 0 ? s->def.stop_timeout_seconds : 10;
+	long timeout_ms = (s->def.stop_timeout_seconds > 0 ? s->def.stop_timeout_seconds : 10) * 1000L;
 
 	if (s->pid <= 0 || s->stop_sent_at == 0 || s->killed)
 		return;
-	if (now - s->stop_sent_at >= timeout) {
+	if (now - s->stop_sent_at >= timeout_ms) {
 		sc2(SYS_kill, s->pid, SIGKILL);
 		s->killed = 1;
 	}
@@ -885,9 +917,15 @@ static void service_exited(int idx, int kind, int value, long now)
 	switch (s->def.on_exit) {
 	case CIXINIT_ON_EXIT_RESTART:
 		s->state = ST_RESTART_WAIT;
-		s->restart_at = now + (s->def.restart_delay_seconds > 0 ? s->def.restart_delay_seconds : 1);
+		s->restart_at = now +
+		                (s->def.restart_delay_seconds > 0 ? s->def.restart_delay_seconds : 1) *
+		                        1000L;
 		s->restarts++;
-		report(idx, CIXINIT_EV_RESTART_IN, (int)(s->restart_at - now), s->restarts);
+		/* The wire field stays in SECONDS -- cixd and test_cix_init both
+		 * read it as one -- so only the internal deadline changed unit.
+		 * The division is exact: restart_at - now is the declared seconds
+		 * multiplied by 1000 and nothing else. */
+		report(idx, CIXINIT_EV_RESTART_IN, (int)((s->restart_at - now) / 1000), s->restarts);
 		break;
 	case CIXINIT_ON_EXIT_FAIL_CONTAINER:
 		begin_shutdown(mapped_status(s));
@@ -1189,7 +1227,7 @@ int cix_main(long argc, char **argv)
 	report(-1, CIXINIT_EV_UP, CIXINIT_VERSION, g_count);
 
 	for (;;) {
-		long now = now_seconds();
+		long now = now_ms();
 		struct pollfd p;
 		long rc;
 
