@@ -6,6 +6,32 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### fastfetch prints information again: a config is the module list, not an addition to it
+
+**Revision 3 shipped a fastfetch that drew the Cix mark and said nothing beside it.**
+Measured in `jump`: `fastfetch` printed thirteen lines of logo and not one information
+line; the same binary with `--config none` printed the full default set -- OS, kernel,
+uptime, shell, terminal, CPU, GPU, memory, swap, disk, local IP, locale.
+
+The cause is that fastfetch's default module list is compiled into the binary and is
+consulted only when no config is found. `/usr/share/fastfetch/presets/` carries
+alternative presets (`all`, `archey`, `neofetch`, ...) and no `default.jsonc` for a
+config to inherit from. So the moment revision 3 installed
+`/etc/fastfetch/config.jsonc` to select the Cix logo, that file *became* the module
+list -- and it declared none.
+
+Revision 4 declares the set explicitly: the default order minus the desktop modules
+(DE, WM, theme, icons, font, cursor, player, media), which a platform with no desktop
+should not be asking about. The config was written and rendered inside a real container
+before the revision was cut, rather than after a build cycle.
+
+**Why no gate caught it.** Revision 3 had two build-time gates and both passed
+`--structure Title`. `--structure` overrides the config's module list, so every gate
+ran against a selection the shipped file could never produce. Revision 4 adds a gate
+that runs the binary against *the config it is about to install* and requires a
+`Kernel:` line back -- `uname` being the one module that needs nothing from the build
+container. The older gates are kept; they test different things.
+
 ### The console session's exec'd process is reaped off the reactor, and a stall record names the child (#399)
 
 **The control plane stopped answering for 366 seconds on 2026-09-11 and had to be reset
