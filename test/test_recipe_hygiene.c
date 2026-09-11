@@ -31,6 +31,7 @@
  * -- which is accepted here as correct, cannot go stale, and costs the
  * reader nothing they could not already derive.
  */
+#include <ctype.h>
 #include <dirent.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -146,6 +147,89 @@ static int comment_is_stale(const char *path, const char *name, const char *vers
 	return stale;
 }
 
+/*
+ * No recipe may carry a live credential (#405).
+ *
+ * A recipe that self-fetches from the private Gitea writes the literal
+ * {{REPO_TOKEN}} where the credential goes and the daemon substitutes
+ * its own stored token at fetch time (#60). Before that existed, the
+ * token was pasted in by hand -- and 24 such recipes were still sitting
+ * in the daemon's store on 192.168.15.95 on 2026-09-11, where
+ * GET /v1/pkg/recipes/{name} served them verbatim and needed no
+ * authentication. One curl, no credentials, a token with push access.
+ *
+ * The daemon now redacts on both sides of persistence, so a recipe
+ * cannot be stored or served with one in it. This is the other half:
+ * git should never carry one either, and nothing checked. It passes
+ * today -- 448 recipe files use the placeholder and none holds a
+ * credential -- so it is a guard against the regression, not a cleanup.
+ *
+ * Matches conservatively: a line with a scheme, and somewhere in it a
+ * colon followed by 20 or more hex digits followed by '@'. A real token
+ * is 40 hex; a sha256 in pkg_sha256= has no '@' after it and no scheme
+ * on the line.
+ */
+static int looks_like_credential(const char *line)
+{
+	const char *p;
+
+	if (strstr(line, "://") == NULL)
+		return 0;
+	for (p = line; *p != '\0'; p++) {
+		const char *q;
+		int n = 0;
+
+		if (*p != ':')
+			continue;
+		for (q = p + 1; isxdigit((unsigned char)*q); q++)
+			n++;
+		if (n >= 20 && *q == '@')
+			return 1;
+	}
+	return 0;
+}
+
+static void scan_credentials(const char *dir)
+{
+	DIR *d = opendir(dir);
+	struct dirent *ent;
+
+	if (d == NULL)
+		return;
+	while ((ent = readdir(d)) != NULL) {
+		char path[2048];
+		struct stat st;
+		FILE *f;
+		char line[4096];
+		int ln = 0;
+
+		if (ent->d_name[0] == '.')
+			continue;
+		snprintf(path, sizeof(path), "%s/%s", dir, ent->d_name);
+		if (stat(path, &st) != 0)
+			continue;
+		if (S_ISDIR(st.st_mode)) {
+			scan_credentials(path);
+			continue;
+		}
+		f = fopen(path, "r");
+		if (f == NULL)
+			continue;
+		while (fgets(line, sizeof(line), f) != NULL) {
+			ln++;
+			if (looks_like_credential(line))
+				fail("%s:%d carries what looks like a credential in a URL.\n"
+				     "       Write {{REPO_TOKEN}} where the token goes -- the daemon\n"
+				     "       substitutes its own at fetch time (#60). A recipe holding a\n"
+				     "       live one is served by GET /v1/pkg/recipes to anyone who can\n"
+				     "       reach the daemon, with no authentication (#405).",
+				     path, ln);
+		}
+		fclose(f);
+	}
+	closedir(d);
+}
+
 int main(void)
 {
 	DIR *d = opendir("recipes/package");
@@ -203,6 +287,8 @@ int main(void)
 		     "       If one was FIXED -- which is the direction this list is supposed to\n"
 		     "       move -- remove it from g_stale_comment[] and lower the count with it.",
 		     found, STALE_COUNT);
+
+	scan_credentials("recipes");
 
 	if (g_failures > 0) {
 		fprintf(stderr, "RECIPE HYGIENE: FAIL (%d)\n", g_failures);

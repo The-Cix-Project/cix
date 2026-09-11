@@ -8096,6 +8096,14 @@ paths:
         parameter selects a specific published version; omitted resolves to the
         highest available version for name (ADR-0107). Still never sourced/executed
         here.
+
+        content is redacted before it is returned: the daemon's own repo auth token
+        is put back as the {{REPO_TOKEN}} placeholder it is substituted from at fetch
+        time (#60). This endpoint needs no authentication and serves a recipe's stored
+        bytes, and 24 recipes written before that placeholder existed carried a live
+        token with push access to the private repository (#405). A published recipe
+        is immutable (ADR-0107), so those files are unchanged and it is the response
+        that no longer carries what is in them.
       operationId: getPkgRecipe
       x-cix-expose: [cli, web]
       parameters:
