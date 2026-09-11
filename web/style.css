@@ -3034,11 +3034,36 @@ pre {
  * kind of parallel implementation this project avoids. Only what those
  * do not already cover is defined here.
  */
+/*
+ * The capacity strip is five small figures, not five general cards.
+ * .stats-grid's own minmax(260px, 1fr) is tuned for the host-stats
+ * cards, which hold canvases -- at that floor the fifth card wrapped
+ * onto a row of its own. Measured against the deployed page over CDP,
+ * grid width by viewport, rows the five cards occupy:
+ *
+ *            1920   1440   1366   1280
+ *   260px      2      2      2      2
+ *   240px      1      2      2      2
+ *   220px      1      1      2      2
+ *   200px      1      1      1      2
+ *
+ * 200px holds one row down to 1366, which covers the common laptop
+ * widths, and wraps below that -- which is what wrapping is for. Set
+ * here rather than on .stats-grid, because every other page using that
+ * class wants the wider floor.
+ */
+#bo-capacity {
+	grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+}
+
 .bo-figure {
 	font-size: 1.6rem;
 	font-weight: 600;
 	font-variant-numeric: tabular-nums;
 	line-height: 1.2;
+	/* A figure must never be what decides the card's width: it wraps
+	 * inside its own box instead. Belt to the grid's braces. */
+	overflow-wrap: anywhere;
 }
 
 .bo-note {

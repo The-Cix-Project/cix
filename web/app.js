@@ -13889,6 +13889,31 @@ function boCard(title, value, note) {
 	return card;
 }
 
+/*
+ * cpu_max is the raw cgroup v2 "quota period" pair, in microseconds --
+ * "100000 100000". Shown verbatim it was both the widest thing in the
+ * capacity strip (~190px at 1.6rem, which is what forced those cards
+ * wide enough to wrap) and the least readable: nothing about those two
+ * numbers says "one core" until you divide them.
+ *
+ * So the figure is the quotient and the raw pair moves to the note,
+ * where it stays available for anyone reconciling it against the
+ * cgroup. "max <period>" is the kernel's own spelling for no limit.
+ */
+function boCpu(raw) {
+	const parts = String(raw || "").trim().split(/\s+/);
+
+	if (parts.length !== 2 || parts[0] === "max")
+		return "unlimited";
+	const quota = Number(parts[0]), period = Number(parts[1]);
+
+	if (!isFinite(quota) || !isFinite(period) || period <= 0)
+		return String(raw);
+	const cores = quota / period;
+
+	return (cores < 10 ? cores.toFixed(1) : String(Math.round(cores))) + " CPU";
+}
+
 /* Bytes as something a person reads. 0 means unlimited here, which is
  * the cgroup convention this field already uses. */
 function boBytes(n) {
@@ -13963,8 +13988,10 @@ async function refreshBuildOverview() {
 	    "a further install is refused 409 at zero"));
 	cap.appendChild(boCard("Memory budget", boBytes(config.memory_max),
 	    "shared by every build at once, not per build"));
-	cap.appendChild(boCard("CPU budget", config.cpu_max || "unlimited",
-	    "raw cgroup v2 \u201cquota period\u201d, shared"));
+	cap.appendChild(boCard("CPU budget", boCpu(config.cpu_max),
+	    config.cpu_max
+	        ? "shared by every build at once -- cgroup v2 quota period: " + config.cpu_max
+	        : "no cgroup cpu.max is set"));
 
 	/* Fan out over the running jobs. Failures are per-card rather than
 	 * fatal: one job disappearing between the two reads -- which is
