@@ -87,98 +87,20 @@ void image_version_rootfs_path(const char *name, const char *version, char *out,
  * beside the rootfs stores no new fact, it just stops the fact being
  * unrecoverable once the live document moves on.
  *
- * Versions produced before this file existed have no snapshot, and the
- * read below reports that as a plain NOT_FOUND rather than falling
- * back to the live manifest. A fallback here would reintroduce exactly
- * the wrong answer this exists to prevent, with nothing marking it.
+ * Versions produced before this file existed have no snapshot, and
+ * image_manifest_version_write_json() reports that as a plain
+ * NOT_FOUND rather than falling back to the live manifest. A fallback
+ * there would reintroduce exactly the wrong answer this exists to
+ * prevent, with nothing marking it.
+ *
+ * This is the path helper; the two functions that read and write
+ * through it sit further down, beside image_manifest_write_json(),
+ * because one of them needs load_state() and load_state() is defined
+ * below here.
  */
 static void version_manifest_path(const char *name, const char *version, char *out, size_t out_size)
 {
 	snprintf(out, out_size, "%s/%s/%s/manifest.json", g_images_dir, name, version);
-}
-
-enum image_error image_manifest_snapshot_write(const char *name, const char *version)
-{
-	struct image_state st;
-	struct json_writer w;
-	char path[PATH_MAX];
-	int i, rc;
-
-	if (!image_name_is_valid(name) || version == NULL || version[0] == '\0')
-		return IMAGE_ERR_NOT_FOUND;
-	if (load_state(name, &st) != 0)
-		return IMAGE_ERR_NOT_FOUND;
-
-	jw_init(&w);
-	jw_obj_open(&w);
-	jw_key(&w, "version");
-	jw_str(&w, version);
-	jw_key(&w, "packages");
-	jw_arr_open(&w);
-	for (i = 0; i < st.package_count; i++) {
-		jw_obj_open(&w);
-		jw_key(&w, "package");
-		jw_str(&w, st.packages[i].package);
-		jw_key(&w, "mode");
-		jw_str(&w, mode_str(st.packages[i].mode));
-		jw_key(&w, "version");
-		jw_str(&w, st.packages[i].version);
-		jw_obj_close(&w);
-	}
-	jw_arr_close(&w);
-	jw_obj_close(&w);
-
-	version_manifest_path(name, version, path, sizeof(path));
-	rc = persist_atomic_write(path, w.buf, w.len);
-	jw_free(&w);
-	return rc == 0 ? IMAGE_OK : IMAGE_ERR_PERSIST_FAILED;
-}
-
-enum image_error image_manifest_version_write_json(const char *name, const char *version,
-                                                    struct json_writer *w)
-{
-	char path[PATH_MAX];
-	char *buf;
-	size_t len;
-	struct json_value *root;
-	const struct json_value *jpackages;
-	size_t i;
-
-	if (!image_name_is_valid(name) || version == NULL || version[0] == '\0')
-		return IMAGE_ERR_NOT_FOUND;
-	version_manifest_path(name, version, path, sizeof(path));
-	if (persist_read_file(path, &buf, &len) != 0 || buf == NULL)
-		return IMAGE_ERR_NOT_FOUND;
-	root = json_parse(buf, len);
-	free(buf);
-	if (root == NULL || root->type != JSON_OBJECT) {
-		json_free(root);
-		return IMAGE_ERR_NOT_FOUND;
-	}
-	jpackages = json_object_get(root, "packages");
-	jw_arr_open(w);
-	if (jpackages != NULL && jpackages->type == JSON_ARRAY) {
-		for (i = 0; i < jpackages->u.array.count; i++) {
-			const struct json_value *item = jpackages->u.array.items[i];
-			const char *package = json_as_string(json_object_get(item, "package"));
-			const char *mode_field = json_as_string(json_object_get(item, "mode"));
-			const char *pkg_version = json_as_string(json_object_get(item, "version"));
-
-			if (package == NULL || mode_field == NULL || pkg_version == NULL)
-				continue;
-			jw_obj_open(w);
-			jw_key(w, "package");
-			jw_str(w, package);
-			jw_key(w, "mode");
-			jw_str(w, mode_field);
-			jw_key(w, "version");
-			jw_str(w, pkg_version);
-			jw_obj_close(w);
-		}
-	}
-	jw_arr_close(w);
-	json_free(root);
-	return IMAGE_OK;
 }
 
 int image_hash_manifest_string(const char *s, char *out_hash, size_t out_hash_size)
@@ -679,6 +601,90 @@ enum image_error image_manifest_write_json(const char *name, struct json_writer 
 		jw_obj_close(w);
 	}
 	jw_arr_close(w);
+	return IMAGE_OK;
+}
+
+enum image_error image_manifest_snapshot_write(const char *name, const char *version)
+{
+	struct image_state st;
+	struct json_writer w;
+	char path[PATH_MAX];
+	int i, rc;
+
+	if (!image_name_is_valid(name) || version == NULL || version[0] == '\0')
+		return IMAGE_ERR_NOT_FOUND;
+	if (load_state(name, &st) != 0)
+		return IMAGE_ERR_NOT_FOUND;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "version");
+	jw_str(&w, version);
+	jw_key(&w, "packages");
+	jw_arr_open(&w);
+	for (i = 0; i < st.package_count; i++) {
+		jw_obj_open(&w);
+		jw_key(&w, "package");
+		jw_str(&w, st.packages[i].package);
+		jw_key(&w, "mode");
+		jw_str(&w, mode_str(st.packages[i].mode));
+		jw_key(&w, "version");
+		jw_str(&w, st.packages[i].version);
+		jw_obj_close(&w);
+	}
+	jw_arr_close(&w);
+	jw_obj_close(&w);
+
+	version_manifest_path(name, version, path, sizeof(path));
+	rc = persist_atomic_write(path, w.buf, w.len);
+	jw_free(&w);
+	return rc == 0 ? IMAGE_OK : IMAGE_ERR_PERSIST_FAILED;
+}
+
+enum image_error image_manifest_version_write_json(const char *name, const char *version,
+                                                    struct json_writer *w)
+{
+	char path[PATH_MAX];
+	char *buf;
+	size_t len;
+	struct json_value *root;
+	const struct json_value *jpackages;
+	size_t i;
+
+	if (!image_name_is_valid(name) || version == NULL || version[0] == '\0')
+		return IMAGE_ERR_NOT_FOUND;
+	version_manifest_path(name, version, path, sizeof(path));
+	if (persist_read_file(path, &buf, &len) != 0 || buf == NULL)
+		return IMAGE_ERR_NOT_FOUND;
+	root = json_parse(buf, len);
+	free(buf);
+	if (root == NULL || root->type != JSON_OBJECT) {
+		json_free(root);
+		return IMAGE_ERR_NOT_FOUND;
+	}
+	jpackages = json_object_get(root, "packages");
+	jw_arr_open(w);
+	if (jpackages != NULL && jpackages->type == JSON_ARRAY) {
+		for (i = 0; i < jpackages->u.array.count; i++) {
+			const struct json_value *item = jpackages->u.array.items[i];
+			const char *package = json_as_string(json_object_get(item, "package"));
+			const char *mode_field = json_as_string(json_object_get(item, "mode"));
+			const char *pkg_version = json_as_string(json_object_get(item, "version"));
+
+			if (package == NULL || mode_field == NULL || pkg_version == NULL)
+				continue;
+			jw_obj_open(w);
+			jw_key(w, "package");
+			jw_str(w, package);
+			jw_key(w, "mode");
+			jw_str(w, mode_field);
+			jw_key(w, "version");
+			jw_str(w, pkg_version);
+			jw_obj_close(w);
+		}
+	}
+	jw_arr_close(w);
+	json_free(root);
 	return IMAGE_OK;
 }
 
