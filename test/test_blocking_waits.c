@@ -97,7 +97,13 @@ static const struct budget g_budgets[] = {
 	 * primitive had were NOT in budget, this gate caught those too, and
 	 * they were removed rather than accommodated. */
 	{ "daemon/src/main.c", 24, "pidfd callbacks + double-fork intermediates" },
-	{ "daemon/src/pkg.c", 10, "build helpers and fetch intermediates" },
+	/* 10 -> 11 for ADR-0279's signature fetch: the artifact tier now
+	 * pulls <artifact>.minisig alongside the artifact and waits for
+	 * that curl. In budget for the same reason every other one in this
+	 * file is -- it runs inside the FORKED fetch child (start_fetch_for
+	 * has already forked by then), so no request handler and no reactor
+	 * pass can reach it, and the wait it blocks is the child's own. */
+	{ "daemon/src/pkg.c", 11, "build helpers and fetch intermediates" },
 	{ "daemon/src/targz.c", 4, "tar/gzip pipeline, bounded by the archive" },
 	{ "daemon/src/diskpart.c", 4, "sfdisk/blkid, bounded external tools" },
 	{ "daemon/src/exec.c", 2, "namespace-join intermediates" },

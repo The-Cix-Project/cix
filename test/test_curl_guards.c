@@ -134,12 +134,19 @@ int main(void)
 	 * nothing passes trivially, and "the pattern moved and this test
 	 * silently stopped looking at anything" is the way a static check
 	 * rots -- the same reason test_apigen pins its operation count.
-	 * Ten sites today: six in pkg.c, four in main.c. If that changes,
-	 * change this number deliberately.
+	 * Twelve sites today: eight in pkg.c, four in main.c. If that
+	 * changes, change this number deliberately.
+	 *
+	 * 10 -> 12 for ADR-0279's signature fetch, which adds the two
+	 * arms -- with and without an Authorization header -- that pull
+	 * <artifact>.minisig beside the artifact. Both carry
+	 * PKG_CURL_STALL_GUARD_ARGS, which is what this test is really
+	 * checking; the count exists so a new fetch cannot arrive without
+	 * someone confirming that.
 	 */
-	if (sites != 10) {
+	if (sites != 12) {
 		fprintf(stderr,
-		        "FAIL: found %d curl argv sites, expected 10 -- if a call site was genuinely "
+		        "FAIL: found %d curl argv sites, expected 12 -- if a call site was genuinely "
 		        "added or removed, update this number deliberately; a silently different "
 		        "count is how an unguarded fetch hides\n",
 		        sites);
