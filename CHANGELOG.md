@@ -63,9 +63,13 @@ its reach.
 
 Seven are now approved (the eighth is a test fixture), through the ordinary `POST /v1/pkg/recipes`
 path — the same add-only edit the daemon performs on itself, held to the same
-`recipe_adds_only_artifact_sha256()` predicate. The checksums are the cache's own record of bytes a
-Cix host built and published; nothing was computed over anything else, and an install verifies the
-checksum regardless, so a wrong one fails closed rather than installing.
+`recipe_adds_only_artifact_sha256()` predicate. The checksums are the cache's own recorded sha256
+for each artifact — which is a measurement of what the cache holds, and only *by the cache's trust
+model* a statement about where those bytes came from. That distinction is worth keeping: the
+daemon approves at publish time precisely because that is the moment provenance is known first-hand,
+and approving from the store's contents is a step removed from it. Nothing was computed over
+anything else, and an install verifies the checksum regardless, so a wrong one fails closed rather
+than installing — but fail-closed covers the bytes, not their origin.
 
 Proved rather than assumed: installing `freetype` into a scratch image afterwards reported
 `artifact_cached: true` and invoked no compiler, for a package that an hour earlier could only be
