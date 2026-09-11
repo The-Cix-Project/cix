@@ -68,3 +68,4 @@ pkg_install() {
 	make install DESTDIR="$PKG_DESTDIR"
 	rm -rf "$PKG_DESTDIR/usr/share" "$PKG_DESTDIR/usr/lib"/*.la
 }
+pkg_artifact_sha256="94d64ccd9f143c7f4c94c2612ebced4d3346ac2bf792fc096de29c7a75f8ec2e"

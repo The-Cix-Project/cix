@@ -224,3 +224,4 @@ pkg_install() {
 	# (docs/guides/writing-recipes.md): ship a .pc exactly when you ship
 	# the dev files it describes.
 }
+pkg_artifact_sha256="2eec4b20df2485de3300257082d188b51ac4ab095b2c82bee1b65aa35e478524"

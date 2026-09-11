@@ -521,3 +521,4 @@ CRTGATE
 	       "$PKG_DESTDIR/lib/x86_64-linux-gnu/libm.so.6"
 	find "$PKG_DESTDIR" -name 'ld-linux-x86-64.so.2' -exec ls -la {} \;
 }
+pkg_artifact_sha256="8c9ce05c5e6fd71087366c3f02129b28393a1d928c3bbc677f59d17f878adeeb"

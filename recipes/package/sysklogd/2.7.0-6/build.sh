@@ -148,3 +148,4 @@ pkg_install() {
 	touch "$PKG_DESTDIR/var/log/messages"
 	printf '*.*\t/var/log/messages\n' > "$PKG_DESTDIR/etc/syslog.conf"
 }
+pkg_artifact_sha256="cc4286e00a68f28e30c30bb02ec124f1a84945dddc9d16e537cdc6850c0bfd8d"

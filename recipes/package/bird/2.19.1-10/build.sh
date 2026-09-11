@@ -161,3 +161,4 @@ pkg_build() {
 pkg_install() {
 	make install DESTDIR="$PKG_DESTDIR"
 }
+pkg_artifact_sha256="abac23dd2ca1e504a377b67893cd9dcf5b36a57866322c3f6affb510a079251b"

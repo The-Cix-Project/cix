@@ -119,3 +119,4 @@ pkg_install() {
 	# than requiring a later archaeology pass to find out.
 	echo "installed $(wc -c < "$dir/rtw8822b_fw.bin") bytes to /lib/firmware/rtw88/rtw8822b_fw.bin"
 }
+pkg_artifact_sha256="e991ccf9149f7539c7d382901480ba9cbb2d38286bbee1425b67e663f8542784"

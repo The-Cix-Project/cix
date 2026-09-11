@@ -170,3 +170,4 @@ pkg_install() {
 	make install DESTDIR="$PKG_DESTDIR"
 	rm -rf "$PKG_DESTDIR/usr/share/man" "$PKG_DESTDIR/usr/lib"/*.a
 }
+pkg_artifact_sha256="c79f66f9ce3aa84236b46c9001eb617ac9d57fbd9c263ebb023e9581af38e284"

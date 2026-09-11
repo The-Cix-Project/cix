@@ -137,3 +137,4 @@ pkg_install() {
 	test -L "$PKG_DESTDIR/usr/lib/pkgconfig/libcrypt.pc"
 	test -e "$PKG_DESTDIR/usr/lib/pkgconfig/libxcrypt.pc"
 }
+pkg_artifact_sha256="3e5bfd6361adb5ebd4463e382e92669eded22ca024fde8414b78d0365bb6c940"

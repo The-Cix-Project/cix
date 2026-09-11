@@ -36,18 +36,7 @@ pkg_source="https://mirrors.kernel.org/gnu/libc/glibc-2.44.tar.xz"
 pkg_sha256="37f600f2bef3c5e8300147059568b2a2e40a7ad6ccc65ce942556d49429cc667"
 pkg_depends=""
 
-# The checksum lives here, in git, because the artifact server is never
-# a trust boundary -- it serves bytes, this line approves them.
-#
-# These exact bytes were built on 192.168.15.95 -- a real Cix host, with
-# this platform's own gcc, against its own kernel headers -- installed
-# there into cix-builder and cix-hosttools, and published from there.
-# Nothing about this artifact came off a foreign machine, which is the
-# whole reason it can be the seed that closes the glibc floor (#186):
-# an image gets its C library by installing THIS, rather than by having
-# four files copied out of whatever distribution the build host runs.
 pkg_artifact_sha256="e1d0a3ace7fcb86f1430872130e4e101a87912f8039a2c056478e62f249bba2c"
-
 # ADR-0199/0209: composed from exactly these, no fallback (#168).
 # bison and python are glibc's own documented build requirements, not
 # guesses: it generates parser code and runs Python scripts during the
