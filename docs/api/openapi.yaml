@@ -10225,7 +10225,13 @@ paths:
     get:
       summary: Inspect one package's current state (fetching/building/installed/failed)
       operationId: getPkg
-      x-cix-expose: []
+      # web since #407: Software > Build > Overview fans out over
+      # active_job_names to show one card per in-flight build, and this
+      # is where the per-job detail lives (state, image, stage,
+      # build_container, last_output_seconds_ago). The list endpoint
+      # returns every package on the host, which is the wrong shape and
+      # the wrong volume for "what are the N running builds doing".
+      x-cix-expose: [web]
       parameters:
         - $ref: "#/components/parameters/PkgName"
       responses:
