@@ -7093,13 +7093,71 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 	if (!e->cache_hit) {
 		for (i = 0; i < recipe.source_count; i++) {
 			char src_path[PATH_MAX];
+			struct stat sst;
+			const char *why = NULL;
 
 			snprintf(src_path, sizeof(src_path), "%s/%s-%s-%d.src", g_sources_dir, e->name,
 			         recipe.version, i);
-			if (pkg_run_capture_sha256(src_path, sha_out, sizeof(sha_out)) != 0 ||
-			    strcasecmp(sha_out, recipe.sha256[i]) != 0) {
-				pkg_fail(e, is_final_upgrade, PIPELINE_FETCH, "checksum mismatch (source %d)",
-				         i);
+			/*
+			 * #332: this reported only that two hashes differed, and
+			 * threw away every fact that would say WHY.
+			 *
+			 * Worse, it collapsed two unrelated causes into one
+			 * sentence: pkg_run_capture_sha256() failing (the file is
+			 * absent, unreadable, or empty -- nothing was ever
+			 * fetched to this path) read as "checksum mismatch",
+			 * which sends the reader to look at the recipe's sha256
+			 * and at upstream. Both are then found to be correct,
+			 * because neither was ever involved. That is exactly the
+			 * shape of #380, where a dependency failed the source
+			 * checksum while a standalone recipe fetched the SAME url
+			 * against the SAME sha and built.
+			 *
+			 * The three facts that separate the real causes are the
+			 * byte count, the computed hash and the path -- a short
+			 * file is a truncated transfer, a full-size file with the
+			 * wrong hash is a substituted body, and an absent file is
+			 * a fetch that never wrote here at all. None survived.
+			 *
+			 * They go to the log store, which has room for two full
+			 * hashes and a path; e->error is 256 bytes and carries a
+			 * summary with enough of each hash to tell them apart.
+			 */
+			if (stat(src_path, &sst) != 0 || !S_ISREG(sst.st_mode)) {
+				logstore_write("cixd", "error",
+				                "pkg %s@%s: source %d was never written -- %s is absent (%s). "
+				                "The recipe's sha256 is not involved in this failure; the "
+				                "fetch did not put a file at the path the check reads.",
+				                e->name, recipe.version, i, src_path, strerror(errno));
+				pkg_fail(e, is_final_upgrade, PIPELINE_FETCH,
+				         "source %d was never written to %s -- no bytes arrived, so this is a "
+				         "fetch failure and not a checksum one",
+				         i, src_path);
+				g_chains[chain_idx].name[0] = '\0';
+				g_chains[chain_idx].dep_queue_count = 0;
+				return 0;
+			}
+			/* Cleared first: a failed capture leaves sha_out untouched,
+			 * and a stale value from the previous source would be
+			 * reported as this one's computed hash. */
+			sha_out[0] = '\0';
+			if (pkg_run_capture_sha256(src_path, sha_out, sizeof(sha_out)) != 0)
+				why = "could not be hashed";
+			else if (strcasecmp(sha_out, recipe.sha256[i]) != 0)
+				why = "hashes to the wrong value";
+			if (why != NULL) {
+				logstore_write("cixd", "error",
+				                "pkg %s@%s: source %d %s. path=%s bytes=%lld computed=%s "
+				                "declared=%s url=%s",
+				                e->name, recipe.version, i, why, src_path,
+				                (long long)sst.st_size,
+				                sha_out[0] != '\0' ? sha_out : "(none)", recipe.sha256[i],
+				                recipe.source[i][0] != '\0' ? recipe.source[i] : "(none)");
+				pkg_fail(e, is_final_upgrade, PIPELINE_FETCH,
+				         "checksum mismatch (source %d): %lld bytes hash to %.12s..., recipe "
+				         "declares %.12s... -- full hashes, path and url in the log store",
+				         i, (long long)sst.st_size,
+				         sha_out[0] != '\0' ? sha_out : "(unreadable)", recipe.sha256[i]);
 				g_chains[chain_idx].name[0] = '\0';
 				g_chains[chain_idx].dep_queue_count = 0;
 				return 0;
