@@ -17283,6 +17283,17 @@ static void respond_pkg_error(int fd, enum pkg_error err)
 		              "requested -- omit build_image to use the declared one, or check the "
 		              "recipe's pkg_build_image= (the daemon log names both)");
 		break;
+	case PKG_ERR_DEP_UNRESOLVABLE:
+		respond_error(fd, 400, "Bad Request",
+		              "a dependency of this package could not be resolved -- the package and "
+		              "its own recipe are fine; the daemon log names the dependency and why");
+		break;
+	case PKG_ERR_NO_SUCH_BUILD_IMAGE:
+		respond_error(fd, 404, "Not Found",
+		              "the build image this hostbuild needs does not exist -- the package and "
+		              "its recipe are fine; create the build image first (the daemon log "
+		              "names it)");
+		break;
 	case PKG_ERR_NO_BUILD_IMAGE:
 		respond_error(fd, 400, "Bad Request",
 		              "this recipe declares no pkg_build_image=, so a build_image must be "
@@ -20243,6 +20254,26 @@ static void handle_pkg_install(int fd, const char *body, size_t body_len)
 	jkeep = json_object_get(root, "keep_on_failure");
 	keep_on_failure = (jkeep != NULL && jkeep->type == JSON_BOOL && jkeep->u.boolean);
 
+	/*
+	 * #384: this exact target is already converging, so a second job for
+	 * it would take a second chain slot to do the same work -- the same
+	 * shape as #382, which really did put ten copies of one job into all
+	 * ten slots, reached by hand rather than by the drain.
+	 *
+	 * Here and not in pkg_install_start(): the rolling drain reads a
+	 * failed start as "try the rest of this image's manifest" and then
+	 * pops the image as caught up, so refusing down there would drop a
+	 * converging image out of the queue. "You already asked for this" is
+	 * only the honest answer to a request.
+	 */
+	if (pkg_job_in_flight_for(name, image, 0)) {
+		json_free(root);
+		respond_error(fd, 409, "Conflict",
+		              "a job for this package and image is already running -- watch it with "
+		              "GET /v1/pkg/{name}, or cancel it with POST /v1/pkg/cancel");
+		return;
+	}
+
 	perr = pkg_install_start(name, image, version, upgrade, keep_on_failure, started_name,
 	                          sizeof(started_name), &pid, &pidfd, &chain_idx);
 	if (perr != PKG_OK) {
@@ -20339,6 +20370,29 @@ static void handle_pkg_hostbuild(int fd, const char *body, size_t body_len)
 	/* ADR-0175/issue #35: see handle_pkg_install()'s own identical field. */
 	jkeep = json_object_get(root, "keep_on_failure");
 	keep_on_failure = (jkeep != NULL && jkeep->type == JSON_BOOL && jkeep->u.boolean);
+
+	/*
+	 * #362: one hostbuild at a time, whatever package it names.
+	 *
+	 * Two of these 13 seconds apart put 192.168.15.95 into a
+	 * kernel-panic reboot loop -- cixd is pid 1 and the kernel command
+	 * line carries panic=10, so a cixd death is a reboot, and there were
+	 * three before the builds died with the host. ADR-0165's
+	 * shared-parent cgroup budget was in place and did not prevent it.
+	 *
+	 * Until then the only thing standing between an operator and that
+	 * outcome was a sentence in CLAUDE.md, which a script or a dashboard
+	 * button walks past without ever seeing. Refusing here is a check
+	 * that does not depend on anyone having read the rule.
+	 */
+	if (pkg_job_in_flight_for(NULL, NULL, 1)) {
+		json_free(root);
+		respond_error(fd, 409, "Conflict",
+		              "a hostbuild is already running -- only one at a time, because two "
+		              "concurrent hostbuilds have panic-rebooted a host (#362); wait for it "
+		              "to finish, or cancel it with POST /v1/pkg/cancel");
+		return;
+	}
 
 	perr = pkg_hostbuild_start(name, build_image, version, upgrade, NULL, keep_on_failure, &pid,
 	                            &pidfd, &chain_idx);

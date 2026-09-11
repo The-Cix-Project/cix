@@ -6,6 +6,66 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### One hostbuild at a time, and no second job for a target already building (#362, #384, #317, #318)
+
+**Two `POST /v1/pkg/hostbuild` calls 13 seconds apart put 192.168.15.95 into a kernel-panic
+reboot loop.** `cixd` is pid 1 and the kernel command line carries `panic=10`, so a `cixd`
+death is a reboot; there were three, about six minutes into the doubled build, and the
+build was lost with them. ADR-0165's shared-parent cgroup budget was in place and did not
+prevent it.
+
+Until now the only thing standing between an operator and that outcome was a sentence in
+`CLAUDE.md`. A rule that lives only in a document is one a script, a dashboard button, or a
+person who has not read it walks straight past — and the API accepted the second request
+with `202` and no warning. A hostbuild now refuses with `409` while any other hostbuild is
+running, **whatever package it names**: the guard is deliberately coarser than per-package,
+because the pair that caused this would have been accepted by a per-package rule had they
+named different packages, and a hostbuild compiles the whole control plane. Ordinary
+parallel installs are untouched — ADR-0157's build slots work exactly as before.
+
+The same admission gap by hand is #384: `pkg_install_start()` refused a duplicate only when
+the entry was already `installed`, so `fetching` and `building` were not covered and a
+second `POST /v1/pkg/install` for a target already converging took a second slot to do the
+same work — the shape of #382, reached manually instead of through the drain. Also `409`
+now.
+
+**Both checks live in the request handlers, not in `pkg_install_start()`**, which is the
+obvious place and the wrong one: the rolling drain reads a failed start as "try the rest of
+this image's manifest" and then pops the image as caught up, so a refusal down there would
+silently drop a converging image out of the queue.
+
+Two error messages that named the wrong cause went with them, since both sat in the same
+handlers:
+
+- **#317** — a hostbuild whose **build image** is missing answered `404 no such package`
+  about a package that is present and current, sending the reader to check the recipe, the
+  version and the catalogue, none of which was wrong. It now has its own answer, and the
+  log names the build image.
+- **#318** — an unresolvable **dependency** answered `no such recipe, or it failed to
+  parse` about the package asked for, whose recipe parses fine. `resolve_chain()` already
+  builds a precise message saying what it could not resolve; that message was being thrown
+  away at the `return`. It now reaches the log store and the API answer points at the
+  dependency.
+
+**Not gated by a selftest, stated rather than glossed:** asserting a `409` needs a real
+build in flight, and the selftest environment is a build container without the privileges
+to create one — `test_pkg` is not in `SELFTESTS` for exactly that reason. Verified live on
+192.168.15.95 instead, against a real release build.
+
+### test_cix_init's shutdown bound measures cix-init, not the box's load (#376)
+
+The bound was 2000 ms of wall clock and it failed the v2.57.49 hostbuild selftest at
+2828 ms — while that same box was compiling the control plane. The shutdown was correct;
+the box was busy. A bound that fails a release for being measured during a build is not
+measuring `cix-init`.
+
+What matters is that shutdown does not *wait*. `cixd` asks `cix-init` to shut down over the
+control socket and SIGKILLs it after a 15-second grace, so the failure worth catching is
+"it sat there until the grace ran out" — 15 s, not 2.1 s. The bound is now a third of that
+grace, which no scheduling delay plausibly reaches and nothing that waited can come in
+under. Anything over the old 2000 ms is still printed as a note, so a real slowdown stays
+visible in the build log rather than being absorbed by the wider bound.
+
 ### A slow-pass record reports its own window, not the daemon's all-time worst (#366)
 
 Every `slow-pass` record carried `pass_worst_work_millis`, which is a monotonic maximum

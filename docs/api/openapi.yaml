@@ -9616,13 +9616,22 @@ paths:
         "400":
           description: >
             name missing; no such recipe / it failed to parse; or a dependency it names
-            (transitively) is missing its own recipe or forms a circular dependency
+            (transitively) is missing its own recipe or forms a circular dependency.
+
+
+            #318: the dependency case is now distinguished in the message rather than
+            reported as though the package's own recipe were at fault, and the daemon log
+            names the dependency and why it could not be resolved.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "409":
-          description: Already installed (see upgrade), or another install is already in progress
+          description: >
+            Already installed (see upgrade); another install is already in progress; or
+            (#384) a job for this same package and image is already running -- a second
+            one would take another build slot to do the same work, so it is refused
+            rather than accepted
           content:
             application/json:
               schema:
@@ -9819,13 +9828,22 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "404":
-          description: build_image does not exist
+          description: >
+            build_image does not exist. #317: this is now its own answer rather than the
+            generic "no such package", which said the package was missing while the
+            package was present and current and the BUILD IMAGE was the thing absent
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "409":
-          description: Already installed under this name, or another install/hostbuild is already in progress
+          description: >
+            Already installed under this name; another install is in progress; or (#362)
+            a hostbuild is already running. Only ONE hostbuild runs at a time, whatever
+            package it names: two concurrent ones put a host into a kernel-panic reboot
+            loop, and cixd is pid 1 with panic=10 on its command line, so a cixd death is
+            a reboot. This is deliberately coarser than the per-target rule on
+            /pkg/install -- a hostbuild compiles the whole control plane
           content:
             application/json:
               schema:

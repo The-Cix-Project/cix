@@ -319,9 +319,9 @@ The kind is set in the single function that records a failure, and it is a **req
 | GET | `/pkg/{name}/artifact/export` | That export's state (`none`/`building`/`ready`/`failed`), its `version`, `artifact_path`, and `artifact_name` |
 | GET | `/pkg/{name}/artifact/export/download` | Bytes of a ready export, in bounded chunks (`?offset=&length=`, clamped to 8 MiB) |
 | POST | `/pkg/{name}/artifact/publish` | Publish an already-built artifact to the configured artifact server without rebuilding it (issue #171) -- builds the tarball from the installed tree first when a hostbuild's doesn't exist yet. Async (202) |
-| POST | `/pkg/install` | Start installing a package (async — returns immediately) |
+| POST | `/pkg/install` | Start installing a package (async — returns immediately) | A second job for a package+image that is already building is refused `409` rather than taking another build slot to do the same work (#384); an unresolvable **dependency** answers `400` naming the dependency rather than blaming the package's own recipe (#318).
 | POST | `/pkg/update-all` | Start an upgrade for the first installed package whose recipe has drifted |
-| POST | `/pkg/hostbuild` | Start a hostbuild job — build a standalone artifact instead of merging into an image |
+| POST | `/pkg/hostbuild` | Start a hostbuild job — build a standalone artifact instead of merging into an image. **One at a time, whatever package it names** (#362): a second one is refused `409`. Two concurrent hostbuilds put a host into a kernel-panic reboot loop — `cixd` is pid 1 and the kernel command line carries `panic=10`, so a `cixd` death is a reboot, and ADR-0165's shared-parent cgroup budget was in place and did not prevent it. A missing **build image** now answers `404` in its own words rather than the generic "no such package" (#317) |
 | GET | `/pkg/hostbuild/{name}` | Inspect one hostbuild job's current state |
 | POST | `/pkg/resume` | Continue a `keep_on_failure`-preserved build container in place, without a fetch/extract restart |
 | GET | `/pkg/rebuilds` | Image rebuilds this host has queued but not started — what publishing a recipe committed it to (issue #236) |
