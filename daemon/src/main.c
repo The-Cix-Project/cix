@@ -23477,6 +23477,11 @@ static void dispatch(int fd, const struct http_request *req)
 
 			if (!hostauth_peek_token(bearer, g_req_user, sizeof(g_req_user)))
 				g_req_user[0] = '\0';
+			else
+				/* #379: a served request is activity, whatever its
+				 * method. Sliding only on writes logged out a client
+				 * that polled a build to completion. */
+				hostauth_touch_token(bearer);
 		}
 	}
 
