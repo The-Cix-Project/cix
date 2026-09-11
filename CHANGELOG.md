@@ -6,6 +6,71 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Writing a file into a running container works again, on every container (#333)
+
+`PUT /v1/containers/{name}/files` returned `500 {"error":"failed to write file"}` for every
+running container tried and every path tried, while `GET` on the same container and the same
+path worked. ADR-0153's whole point is editing a file in an existing container without a
+recreate, so this was the feature not working rather than a corner of it.
+
+The error names it now, and the name is the diagnosis: `open(/proc/163/root/run/probe333.txt)
+failed: Value too large for defined data type` — `EOVERFLOW`. The daemon was reaching into the
+container through `/proc/<pid>/root`, which crosses the container's **id-mapped mount**, and the
+daemon's own fsuid does not map through it.
+
+The axis is userns, not "every running container" as first reported. Measured on 192.168.15.95
+at `v2.57.78`:
+
+    PUT .../jump/files      userns=true,  running -> 500 EOVERFLOW
+    PUT .../cr-2/files      userns=true,  running -> 500 EOVERFLOW
+    PUT .../ntp-1/files     userns=false, running -> 204
+    PUT .../limtest/files   userns=true,  stopped -> 204
+
+The two clean cases say where the fix is. The stopped one already wrote to the host-side tree
+and always worked; the non-userns one has no id-mapped mount to cross. So a write now goes to
+the container's host-side rootfs whenever it has one — which for a container that pivoted onto
+`<base>/rootfs` (ADR-0207's btrfs snapshot) or onto an id-mapped bind of it (ADR-0179's userns
+presentation) **is** the container's tree, not a copy of it. `/proc/<pid>/root` stays the route
+for an overlay-backed container, where it is the only coherent one: an overlay root is assembled
+inside the container's mount namespace and writing into a live upperdir is not supported.
+
+Omitting `owner`/`group` now inherits the rootfs directory's own ownership rather than leaving
+the file root-owned. That is the same one-source-of-truth marker `container_create()` already
+reads to choose a presentation: a tree owned by host uid 0 is id-mapped, so a uid-0 file is
+already root inside; a tree owned by a subordinate base is ADR-0179's phase-2b copy, where a
+uid-0 file would land on an id that does not map inside at all and read as nobody.
+
+Half of this issue was the diagnostic, and it is worth naming separately: four syscalls shared
+one message, so `failed to write file` was the whole of what an operator got for an open, a
+short write, a chmod or a chown. Each step names itself and carries `strerror(errno)` now,
+captured before `close()` can overwrite it. The endpoint had been reported broken for three days
+and could not say why — the fix took one measurement once it could.
+
+### A JSON body that escapes non-ASCII is no longer rejected as invalid (#386)
+
+`\uXXXX` decoded to a **single byte** and anything above `0xFF` was refused outright. With no
+partial-success mode in `json_parse()`, one such escape anywhere failed the entire body, and the
+caller answered `400 invalid JSON body` — true of the body as this parser saw it, and misleading
+about why.
+
+That was correctly scoped when written: this file's own writer emits `\u00XX` only for control
+characters below `0x20`, and nothing here produced anything else. What changed is that the parser
+also faces bodies written by other clients — and `ensure_ascii=True` is the **default** for
+Python's `json.dumps`. So a client written the obvious way, in the language this project's own
+probe and deploy scripts are written in, produced bodies the API rejected. Concretely: a recipe
+could not contain a logo, box-drawing output, an accented name in a comment, or a UTF-8 fixture.
+
+`\uXXXX` now decodes to UTF-8, with UTF-16 surrogate pairs reassembled into one codepoint and
+malformed ones (a lone half, a non-low second half) refused rather than silently replaced.
+Nothing about the old behaviour is lost: every codepoint below `0x80` encodes to the identical
+single byte, which is the entire range this file's writer emits, so `capture_output` round-trips
+byte-for-byte as before.
+
+`test_json` pins both halves, and both are the kind that regress quietly — the sub-`0x80` range
+fails as *wrong bytes* rather than as an error, and so does a surrogate pair that decodes as two
+replacement characters. It is a pure parse with no syscalls, so unlike most of this suite it can
+run in a build container and sits in `SELFTESTS` (#224).
+
 ### A console session whose process dies now ends, instead of going silent forever (#331)
 
 Five releases failed on `test_console_exec` with the same shape: a `101 Switching
