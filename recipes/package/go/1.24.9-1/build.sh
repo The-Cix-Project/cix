@@ -27,6 +27,7 @@ pkg_name="go"
 pkg_version="1.24.9-1"
 pkg_source="https://dl.google.com/go/go1.24.9.src.tar.gz"
 pkg_sha256="c72f81ba54fe00efe7f3e7499d400979246881b13b775e9a9bb85541c11be695"
+pkg_artifact_sha256="43b0a74295aa5740d622fd8e0f4464d4b4dec3f02e8335379865dd92ef61d540"
 pkg_depends=""
 #
 # ADR-0199/0209: composed from exactly these, no fallback (#168).

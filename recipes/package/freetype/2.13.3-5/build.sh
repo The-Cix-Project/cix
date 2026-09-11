@@ -18,6 +18,7 @@ pkg_name="freetype"
 pkg_version="2.13.3-5"
 pkg_source="https://download.savannah.gnu.org/releases/freetype/freetype-2.13.3.tar.xz"
 pkg_sha256="0550350666d427c74daeb85d5ac7bb353acba5f76956395995311a9c6f063289"
+pkg_artifact_sha256="1e3e35460847ca7d636a96a073cb7fd882d783647012afca8cf9d6ad37dd5468"
 pkg_depends="zlib"
 
 # ADR-0199/0209: composed from exactly these, no fallback (#168).

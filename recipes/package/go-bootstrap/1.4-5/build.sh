@@ -31,6 +31,7 @@ pkg_name="go-bootstrap"
 pkg_version="1.4-5"
 pkg_source="https://dl.google.com/go/go1.4-bootstrap-20171003.tar.gz"
 pkg_sha256="f4ff5b5eb3a3cae1c993723f3eab519c5bae18866b5e5f96fe1102f0cb5c3e52"
+pkg_artifact_sha256="500b87836b723b751d3102cf7dd8104ed6fc5fb89265625e9864cd9126f342c6"
 pkg_depends=""
 #
 # ADR-0199/0209: composed from exactly these, with no fallback to
