@@ -24171,9 +24171,35 @@ static struct conn *register_console_exec_reap(pid_t pid)
 static void handle_console_exec_reap_event(struct conn *cc)
 {
 	struct console_exec_session *sess = cc->exec_session;
+	char how[64];
+	int status = 0;
 
 	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
-	waitpid(cc->pkg_fetch_pid, NULL, 0);
+	/*
+	 * #331: HOW it exited, not just that it did.
+	 *
+	 * This discarded the status, and that was the one fact worth
+	 * keeping. A process that dies unexpectedly after a successful
+	 * execve() has a small number of possible explanations and the
+	 * status distinguishes them: a signal names its killer (SIGKILL
+	 * points outward -- an OOM kill, a cgroup, something reaping it;
+	 * SIGSEGV points at the program), while an ordinary exit means it
+	 * chose to, and 127 in particular means the shell could not find
+	 * what it was asked to run.
+	 *
+	 * Measured repeatedly in the selftest: the exec'd process is absent
+	 * from the container seconds after the session opened, for a
+	 * program whose own header says it never returns. Nothing so far
+	 * says which of those it is, because nobody kept the status.
+	 */
+	if (waitpid(cc->pkg_fetch_pid, &status, 0) != cc->pkg_fetch_pid)
+		snprintf(how, sizeof(how), "could not be waited for (%s)", strerror(errno));
+	else if (WIFSIGNALED(status))
+		snprintf(how, sizeof(how), "killed by signal %d", WTERMSIG(status));
+	else if (WIFEXITED(status))
+		snprintf(how, sizeof(how), "exited %d", WEXITSTATUS(status));
+	else
+		snprintf(how, sizeof(how), "ended with raw status 0x%x", (unsigned)status);
 	close(cc->fd);
 	cc->exec_session = NULL;
 	free(cc);
@@ -24181,9 +24207,9 @@ static void handle_console_exec_reap_event(struct conn *cc)
 	if (sess != NULL && !sess->torn_down) {
 		sess->reap_conn = NULL; /* this conn is gone; do not signal it */
 		logstore_write("cixd", "info",
-		                "console: the exec'd process (pid %d) exited -- ending the session "
-		                "rather than leaving the client waiting on it (#331)",
-		                (int)sess->exec_pid);
+		                "console: the exec'd process (pid %d) %s -- ending the session rather "
+		                "than leaving the client waiting on it (#331)",
+		                (int)sess->exec_pid, how);
 		console_session_teardown(sess);
 	}
 }
