@@ -253,7 +253,31 @@ static int url_encode_component(const char *in, char *out, size_t out_size)
  * constructor sets no request headers), so the command is a query
  * parameter now and lives in `path` like every other one.
  */
-static int do_ws_handshake(const struct cix_client *c, const char *label, const char *path)
+/*
+ * Bytes that arrived after the handshake response are FRAME bytes, and
+ * dropping them loses the session's first output (#331).
+ *
+ * The read loop below fills a buffer until it sees the header
+ * terminator. One read() can return the 101 and the first websocket
+ * frame together -- the server writes the 101 and then relays whatever
+ * the exec'd process has already produced, and a process that reports
+ * at startup produces it immediately -- so the two coalesce into one
+ * TCP segment routinely. Everything past "\r\n\r\n" used to be
+ * discarded with the response buffer, and the caller then read from a
+ * socket those bytes had already left.
+ *
+ * It presents as an intermittent hang rather than as corruption,
+ * because whether the frame is eaten depends entirely on whether it
+ * arrives before the reader stops. In cixctl console it costs the
+ * shell prompt; in cixctl pkg build-log, the first log lines; in
+ * test_console_exec it cost the ONLY frame the test was waiting for,
+ * five times in the last ten releases, which is how this was found.
+ *
+ * So the leftover is handed back, seeded straight into the caller's
+ * frame buffer, and parsed before anything else is read.
+ */
+static int do_ws_handshake(const struct cix_client *c, const char *label, const char *path,
+                            struct client_ws_buf *out_leftover)
 {
 	int fd;
 	char key[64];
@@ -290,6 +314,8 @@ static int do_ws_handshake(const struct cix_client *c, const char *label, const 
 		return -1;
 	}
 
+	if (out_leftover != NULL)
+		out_leftover->len = 0;
 	while (got < sizeof(resp) - 1) {
 		n = read(fd, resp + got, sizeof(resp) - 1 - got);
 		if (n <= 0) {
@@ -336,6 +362,37 @@ static int do_ws_handshake(const struct cix_client *c, const char *label, const 
 		json_free(errjson);
 		close(fd);
 		return -1;
+	}
+	/*
+	 * Handed back by LENGTH, not as a string: these are frame bytes and
+	 * may contain NUL, so resp is read as a buffer here even though the
+	 * header search above treats it as text. `got` is the real count.
+	 */
+	if (out_leftover != NULL) {
+		char *body = strstr(resp, "\r\n\r\n");
+
+		if (body != NULL) {
+			size_t off = (size_t)(body - resp) + 4;
+
+			if (got > off) {
+				size_t extra = got - off;
+
+				if (extra > sizeof(out_leftover->buf)) {
+					/* Cannot happen with resp[2048] against a
+					 * 64 KiB frame buffer, and is refused rather
+					 * than truncated because half a frame is worse
+					 * than none: the parser would resynchronise on
+					 * arbitrary bytes. */
+					fprintf(stderr, "%s: handshake response carried more trailing data than "
+					                 "the frame buffer holds\n",
+					        label);
+					close(fd);
+					return -1;
+				}
+				memcpy(out_leftover->buf, resp + off, extra);
+				out_leftover->len = extra;
+			}
+		}
 	}
 	return fd;
 }
@@ -427,13 +484,57 @@ static int set_raw_mode(int fd, struct termios *saved)
 	return 0;
 }
 
-static void relay(int ws_fd)
+/*
+ * Parses and writes out every whole frame the buffer already holds.
+ *
+ * One copy, because there were two identical ones -- relay() and
+ * cix_pkg_build_log_run() -- and #331's fix has to run in a third place
+ * (before the first poll, over what arrived with the handshake). A
+ * third transcription of the same loop is how one of them ends up
+ * missing a case.
+ *
+ * Returns 0 to keep going, -1 when the session is over: a malformed
+ * frame, a close frame, or stdout gone.
+ */
+static int drain_frames(struct client_ws_buf *inbuf)
+{
+	for (;;) {
+		int opcode;
+		unsigned char *payload;
+		size_t payload_len, frame_len;
+		int r = try_parse_server_frame(inbuf, &opcode, &payload, &payload_len, &frame_len);
+
+		if (r == 0)
+			return 0;
+		if (r < 0)
+			return -1;
+		if (opcode == 0x1 || opcode == 0x2) {
+			if (cix_write_all(STDOUT_FILENO, payload, payload_len) != 0)
+				return -1;
+		} else if (opcode == 0x8) {
+			consume(inbuf, frame_len);
+			return -1;
+		}
+		consume(inbuf, frame_len);
+	}
+}
+
+static void relay(int ws_fd, struct client_ws_buf *inbuf_seed)
 {
 	struct client_ws_buf inbuf;
 	struct pollfd fds[2];
 	unsigned char iobuf[4096];
 
-	inbuf.len = 0;
+	inbuf = *inbuf_seed;
+
+	/*
+	 * #331: whatever came in with the handshake is already in here, and
+	 * it has to be written out BEFORE the first poll. Parsing it only
+	 * after the next read is the same hang by another route -- when the
+	 * first frame was the only one coming, the next read never returns.
+	 */
+	if (inbuf.len > 0 && drain_frames(&inbuf) != 0)
+		return;
 
 	fds[0].fd = STDIN_FILENO;
 	fds[0].events = POLLIN;
@@ -477,12 +578,8 @@ static void relay(int ws_fd)
 		}
 
 		if (fds[1].revents & (POLLIN | POLLHUP | POLLERR)) {
-			ssize_t n;
-			int opcode;
-			unsigned char *payload;
-			size_t payload_len, frame_len;
+			ssize_t n = read(ws_fd, iobuf, sizeof(iobuf));
 
-			n = read(ws_fd, iobuf, sizeof(iobuf));
 			if (n <= 0)
 				break;
 			if (inbuf.len + (size_t)n > sizeof(inbuf.buf))
@@ -490,22 +587,8 @@ static void relay(int ws_fd)
 			memcpy(inbuf.buf + inbuf.len, iobuf, (size_t)n);
 			inbuf.len += (size_t)n;
 
-			for (;;) {
-				int r = try_parse_server_frame(&inbuf, &opcode, &payload, &payload_len, &frame_len);
-
-				if (r == 0)
-					break;
-				if (r < 0)
-					return;
-				if (opcode == 0x1 || opcode == 0x2) {
-					if (cix_write_all(STDOUT_FILENO, payload, payload_len) != 0)
-						return;
-				} else if (opcode == 0x8) {
-					consume(&inbuf, frame_len);
-					return;
-				}
-				consume(&inbuf, frame_len);
-			}
+			if (drain_frames(&inbuf) != 0)
+				return;
 		}
 	}
 }
@@ -518,6 +601,7 @@ int cix_console_run(const struct cix_client *c, const char *container_name,
 	int have_saved;
 	struct sigaction sa, saved_winch;
 	int have_saved_winch;
+	struct client_ws_buf seed;
 
 	{
 		char path[512];
@@ -559,7 +643,7 @@ int cix_console_run(const struct cix_client *c, const char *container_name,
 
 		(void)sep;
 
-		fd = do_ws_handshake(c, "console", path);
+		fd = do_ws_handshake(c, "console", path, &seed);
 	}
 	if (fd < 0)
 		return -1;
@@ -574,7 +658,7 @@ int cix_console_run(const struct cix_client *c, const char *container_name,
 	sa.sa_flags = 0;
 	have_saved_winch = sigaction(SIGWINCH, &sa, &saved_winch) == 0;
 
-	relay(fd);
+	relay(fd, &seed);
 
 	if (have_saved_winch)
 		sigaction(SIGWINCH, &saved_winch, NULL);
@@ -617,16 +701,17 @@ int cix_pkg_build_log_run(const struct cix_client *c, const char *name, const ch
 		snprintf(path, sizeof(path), "%s", CIX_API_pkgBuildLog);
 	}
 
-	fd = do_ws_handshake(c, "pkg build-log", path);
+	fd = do_ws_handshake(c, "pkg build-log", path, &inbuf);
 	if (fd < 0)
 		return -1;
 
-	inbuf.len = 0;
+	/* #331: seeded by the handshake, and drained before the first read
+	 * for the same reason relay() does -- the first log lines routinely
+	 * arrive in the same segment as the 101. */
+	if (inbuf.len > 0 && drain_frames(&inbuf) != 0)
+		goto done;
 	for (;;) {
 		ssize_t n = read(fd, iobuf, sizeof(iobuf));
-		int opcode;
-		unsigned char *payload;
-		size_t payload_len, frame_len;
 
 		if (n <= 0)
 			break;
@@ -635,22 +720,8 @@ int cix_pkg_build_log_run(const struct cix_client *c, const char *name, const ch
 		memcpy(inbuf.buf + inbuf.len, iobuf, (size_t)n);
 		inbuf.len += (size_t)n;
 
-		for (;;) {
-			int r = try_parse_server_frame(&inbuf, &opcode, &payload, &payload_len, &frame_len);
-
-			if (r == 0)
-				break;
-			if (r < 0)
-				goto done;
-			if (opcode == 0x1 || opcode == 0x2) {
-				if (cix_write_all(STDOUT_FILENO, payload, payload_len) != 0)
-					goto done;
-			} else if (opcode == 0x8) {
-				consume(&inbuf, frame_len);
-				goto done;
-			}
-			consume(&inbuf, frame_len);
-		}
+		if (drain_frames(&inbuf) != 0)
+			goto done;
 	}
 
 done:
