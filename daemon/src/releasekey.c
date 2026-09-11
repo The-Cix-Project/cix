@@ -328,6 +328,15 @@ static const unsigned char g_ed25519_spki_prefix[12] = { 0x30, 0x2a, 0x30, 0x05,
  * downstream is off by one. It also accepts only whole 4-character
  * groups, which is why a length that is not a multiple of four is
  * rejected before it is handed over rather than after.
+ *
+ * `out` must hold (strlen(in) / 4) * 3 bytes -- that PADDED length, not
+ * the number of bytes you expect back. Sizing it to the expected result
+ * is the mistake this paragraph exists for: a 64-byte signature needs
+ * 66 bytes here, and a destination of exactly 64 makes the guard below
+ * refuse the decode. It fails closed, which is the right direction and
+ * is also indistinguishable from a malformed file -- so a programming
+ * error presents as "nothing verifies", which is how it reached a real
+ * build (#403).
  */
 static int unb64(const char *in, unsigned char *out, size_t out_size)
 {
