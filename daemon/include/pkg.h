@@ -582,6 +582,15 @@ enum pkg_error pkg_seed_stage(const char *dest_dir, char *err, size_t err_size);
  * is discoverable, so this is recoverable state, and deriving it also
  * repairs a queue lost to a crash.
  */
+/*
+ * Closes every still-open run as failed, because the daemon is stopping
+ * (#375). Called once on the shutdown path. ADR-0272 compliant: the
+ * daemon stopping is a real outcome, written once and never amended --
+ * not a half-record. Does not cover a panic or power cut, where nothing
+ * can be written at the time.
+ */
+void pkg_runs_close_open_at_shutdown(void);
+
 void pkg_rebuild_queue_rederive(void);
 
 void pkg_rebuild_queue_write_json(struct json_writer *w);

@@ -7734,6 +7734,53 @@ static void pkg_run_close(struct pkg_entry *e)
 	pkg_runs_save();
 }
 
+/*
+ * #375: close every run that is still open, because the daemon is
+ * stopping and they will not finish.
+ *
+ * A build in flight is live state -- ADR-0272 is explicit that the run
+ * store holds no run whose outcome is unknown, and that writing a
+ * half-record and amending it later is the mutable second copy that ADR
+ * exists to prevent. So this is not a half-record: the daemon stopping
+ * IS the outcome, and it is written once, at the moment it becomes
+ * true, and never touched again. That is the same contract every other
+ * run record has.
+ *
+ * PIPELINE_FAILED with a real reason rather than PIPELINE_CANCELLED,
+ * which would say somebody asked for this. Nobody did.
+ *
+ * This covers a clean stop: a reboot, an update, a SIGTERM -- which is
+ * how this daemon almost always goes down, deploys included. It does
+ * NOT cover a panic or a power cut, where nothing can be written at the
+ * time. Closing that hole needs durable knowledge that a run was open,
+ * and the obvious place to put it is the run store, which ADR-0272
+ * forbids. Stated here rather than half-solved; see #375.
+ */
+void pkg_runs_close_open_at_shutdown(void)
+{
+	int i, closed = 0;
+
+	for (i = 0; i < PKG_MAX_PACKAGES; i++) {
+		struct pkg_entry *e = &g_packages[i];
+
+		if (!e->in_use || e->run_started_at == 0)
+			continue;
+		if (e->error[0] == '\0')
+			snprintf(e->error, sizeof(e->error),
+			         "the daemon stopped while this was %s",
+			         e->state == PKG_STATE_FETCHING ? "fetching" : "building");
+		e->state = PKG_STATE_FAILED;
+		e->status = PIPELINE_FAILED;
+		pkg_run_close(e);
+		closed++;
+	}
+	if (closed > 0)
+		logstore_write("cixd", "info",
+		                "pkg: closed %d in-flight run(s) as failed -- the daemon is stopping "
+		                "and they will not finish (#375)",
+		                closed);
+}
+
 static void pkg_runs_load(void)
 {
 	char path[PATH_MAX];

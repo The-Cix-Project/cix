@@ -27732,6 +27732,10 @@ static int cixd_main(int argc, char **argv)
 		SSL_CTX_free(g_tls_ctx);
 	}
 	close(g_epfd);
+	/* #375: a build in flight will not finish, and "it was building
+	 * when the box went down" is exactly the history an operator looks
+	 * for afterwards. Written once, here, where it becomes true. */
+	pkg_runs_close_open_at_shutdown();
 	printf("cixd shutting down\n");
 	fflush(stdout);
 
