@@ -9915,10 +9915,23 @@ static void pkg_sync_extract_done(int exit_status, void *ctx)
 	pkg_sync_completed(exit_status == 0 ? 0 : -2);
 }
 
+/*
+ * ADR-0278, corrected: the child does the extraction AND the merge.
+ *
+ * The first version forked only the extraction, on the assumption that
+ * unpacking the archive was the expensive half. Measured after deploy:
+ * a real sync still stalled the loop 4991 ms. The merge -- roughly 1300
+ * recipe files read, parsed and written -- is where the time goes.
+ */
 static int pkg_sync_extract_work(void *arg)
 {
+	int rc;
+
 	(void)arg;
-	return pkg_sync_extract();
+	rc = pkg_sync_extract();
+	if (rc != 0)
+		return rc;
+	return pkg_sync_merge();
 }
 
 /*
@@ -9959,12 +9972,12 @@ static void handle_pkg_sync_fetch_event(struct conn *cc)
 	if (!pkg_sync_fetch_done(exit_status))
 		return;
 	if (helper_run(pkg_sync_extract_work, NULL, pkg_sync_extract_done, NULL,
-	                "pkg.sync archive extraction") != 0) {
+	                "pkg.sync extract and recipe merge") != 0) {
 		logstore_write("cixd", "warn",
 		                "pkg.sync: could not fork the extraction helper (%s) -- extracting on "
 		                "the event loop instead, which stalls it (#367)",
 		                strerror(errno));
-		pkg_sync_completed(pkg_sync_extract());
+		pkg_sync_completed(pkg_sync_extract_work(NULL));
 	}
 }
 

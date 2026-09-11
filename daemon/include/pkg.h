@@ -1388,6 +1388,15 @@ enum pkg_error pkg_sync_start(pid_t *out_pid, int *out_pidfd);
  */
 int pkg_sync_fetch_done(int exit_status);
 int pkg_sync_extract(void);
+/*
+ * The merge -- every recipe in the extracted tree, added to the
+ * catalogue. Forkable like pkg_sync_extract() and for the same reason,
+ * with one caveat that is the whole of ADR-0278's rule: it queues
+ * rolling rebuilds into an in-memory queue a child cannot hand back, so
+ * pkg_sync_completed() rebuilds that queue with
+ * pkg_rebuild_queue_rederive() instead. Tallies travel through a file.
+ */
+int pkg_sync_merge(void);
 void pkg_sync_completed(int exit_status);
 
 /* {"state":"never"|"running"|"success"|"failed","last_attempt":

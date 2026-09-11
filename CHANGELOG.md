@@ -54,6 +54,35 @@ occurrence will now present as a prompt close with a log line naming the pid ins
 thirty-second silence. That is the difference between a bug that can be investigated and one
 that cannot.
 
+### Correction: the sync's heavy half was the MERGE, not the extraction (#367, ADR-0278)
+
+The entry below says the extraction was where the five seconds went. **That was an
+assumption and it was wrong.** Measured on 192.168.15.95 after deploying it — a real
+`POST /v1/pkg/sync`, with the extraction already running in a helper:
+
+```
+loop before:  worst_pass_ms=592   activity="GET /v1/pkg/recipes"
+sync:         success, 27 added, 1247 skipped
+loop after:   worst_pass_ms=4991  activity=""     slow_passes=1
+```
+
+Still ~5 seconds, still with an empty `activity`. The archive unpacks quickly; the **merge**
+is the cost — roughly 1300 recipe files read, parsed and written, one at a time.
+
+The one thing that had stopped the merge being forkable is that `pkg_recipe_add()` calls
+`queue_rolling_rebuilds_for()`, which fills an **in-memory** queue a child cannot hand back.
+That is exactly what `pkg_rebuild_queue_rederive()` reconstructs — the function added for
+#373 an hour earlier, for an unrelated reason — so the parent rebuilds the queue after the
+child finishes rather than the child trying to return it. One source of truth, and no new
+mechanism.
+
+Tallies come back through a file: a fork cannot return an int triple, and the exit status
+has room for one small number.
+
+The shape ADR-0278 argued for was right and the call site it was applied at was too narrow.
+Recorded as its own entry rather than by editing the one below, because "we measured the
+wrong half first" is the useful part.
+
 ### pkg.sync no longer freezes the control plane for five seconds every six hours (#367, #368, ADR-0278)
 
 Measured on 192.168.15.95 across four days, taking the first appearance of each new
