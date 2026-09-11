@@ -120,8 +120,14 @@ static const struct budget g_budgets[] = {
 
 #define BUDGET_COUNT ((int)(sizeof(g_budgets) / sizeof(g_budgets[0])))
 
-/* The whole-daemon ceiling, so a new FILE cannot slip past the table. */
-#define TOTAL_ALLOWED 60
+/* The whole-daemon ceiling, so a new FILE cannot slip past the table.
+ *
+ * Deliberately a SECOND number rather than a sum of the table: a sum
+ * would rise on its own whenever a per-file budget did, which is the
+ * one thing a ceiling must not do. Raising it is a separate, visible
+ * act -- 60 -> 61 here for ADR-0279's signature fetch in pkg.c, the
+ * same wait the per-file entry above explains. */
+#define TOTAL_ALLOWED 61
 
 static int is_comment(const char *line)
 {
