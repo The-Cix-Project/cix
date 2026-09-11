@@ -661,6 +661,46 @@ int hostauth_check_token(const char *token, char *out_username, size_t out_usern
 	return 0;
 }
 
+/*
+ * #379: a client that only reads is still a client.
+ *
+ * The idle window slid only in hostauth_check_token(), which runs on
+ * the WRITE gate. A client that logged in, started a long job and then
+ * polled `GET /v1/pkg/{name}` every ten seconds was therefore idle by
+ * this module's reckoning the whole time, and was logged out mid-job --
+ * measured on 192.168.15.95 at the fifteen-minute mark, which is
+ * exactly the default timeout.
+ *
+ * "Idle" has to mean "not talking to the daemon", not "not writing".
+ * So the per-request path touches the session after it has peeked a
+ * valid token, for any method.
+ *
+ * Deliberately NOT folded into hostauth_peek_token(): that function is
+ * also `GET /v1/whoami`'s introspection ("is my token still valid"),
+ * and an answer to a question should not change the thing it answers
+ * about. Separate function, called from the one place that knows a real
+ * request is being served.
+ *
+ * A no-op under idle_timeout_seconds == 0, where sessions are
+ * single-use and expires_at is meaningless by contract.
+ */
+void hostauth_touch_token(const char *token)
+{
+	time_t now = time(NULL);
+	int i;
+
+	if (token == NULL || token[0] == '\0' || g_config.idle_timeout_seconds == 0)
+		return;
+	for (i = 0; i < HOSTAUTH_SESSION_MAX; i++) {
+		if (!g_sessions[i].in_use || strcmp(g_sessions[i].token, token) != 0)
+			continue;
+		if (g_sessions[i].expires_at <= now)
+			return; /* already lapsed -- reaping stays with the real check */
+		g_sessions[i].expires_at = now + (time_t)g_config.idle_timeout_seconds;
+		return;
+	}
+}
+
 int hostauth_peek_token(const char *token, char *out_username, size_t out_username_size)
 {
 	int i;

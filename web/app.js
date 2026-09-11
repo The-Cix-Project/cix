@@ -2425,16 +2425,22 @@ function renderTree() {
 			 * asking "where did this stop?" is asking about the stage,
 			 * so the stages are what the tree should offer.
 			 *
-			 * Selectable like every other group: clicking Pipeline
+			 * Selectable like every other group: clicking Materializer
 			 * opens its own overview.
+			 *
+			 * #323, from the owner: named for what it DOES -- turn
+			 * declarations into artifacts -- rather than for the
+			 * abstraction it belongs to. The hash stays "pipeline";
+			 * this is a label change, not a route change, and the
+			 * pipeline model underneath keeps its name.
 			 */
-			label: "Pipeline",
+			label: "Materializer",
 			group: true,
 			hash: "pipeline",
 			icon: "software",
 			children: [
 				{ label: "Catalogue", hash: "pkg-recipes", icon: "recipes" },
-				{ label: "Integration", hash: "pkg-build-config", icon: "packages" },
+				{ label: "Build", hash: "pkg-build-config", icon: "packages" },
 				{ label: "Deployment", hash: "update", icon: "update" },
 			],
 		},

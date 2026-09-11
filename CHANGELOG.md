@@ -6,6 +6,35 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A client that only reads is no longer logged out mid-job (#379)
+
+The idle window slid only in `hostauth_check_token()`, which runs on the **write** gate. A
+client that logged in, started a package install and then polled `GET /v1/pkg/{name}` every
+ten seconds was idle by this module's reckoning the entire time, and was logged out at the
+fifteen-minute mark — which is exactly the default `idle_timeout_seconds`. Measured on
+192.168.15.95 during a real verification run, where it killed the poller mid-build.
+
+"Idle" has to mean "not talking to the daemon", not "not writing". The per-request path now
+touches the session after it peeks a valid token, for any method.
+
+Deliberately a separate function rather than folding this into `hostauth_peek_token()`: that
+one also serves `GET /v1/whoami`'s introspection — "is my token still valid" — and an answer
+should not change the thing it answers about. It stays a pure read; `hostauth_touch_token()`
+is called from the one place that knows a real request is being served. No-op under
+`idle_timeout_seconds == 0`, where sessions are single-use and the expiry is meaningless by
+contract.
+
+### Dashboard: Materializer, Build, Log (#323)
+
+Three renames from the owner. The Pipeline group is named for what it **does** — turn
+declarations into artifacts — rather than for the abstraction it belongs to, so it is
+**Materializer**. Its Integration page becomes **Build**, named for the thing rather than
+the category. And that page's first tab, which was also called Build, becomes **Log**, named
+for its own content rather than for the page it sits in.
+
+Labels only. The `pipeline` hash, the routes and the pipeline model underneath all keep
+their names — this is what the tree calls things, not what the system is.
+
 ### One hostbuild at a time, and no second job for a target already building (#362, #384, #317, #318)
 
 **Two `POST /v1/pkg/hostbuild` calls 13 seconds apart put 192.168.15.95 into a kernel-panic

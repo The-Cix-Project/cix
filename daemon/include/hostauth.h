@@ -219,6 +219,14 @@ int hostauth_check_token(const char *token, char *out_username, size_t out_usern
  * this can never itself invalidate a session, which repeatedly calling
  * hostauth_check_token() for the same purpose would, under a single-
  * use config. */
+/*
+ * Slides a live session's idle window without consuming or validating
+ * it (#379). Called once per served request, after a successful peek,
+ * so that a client which only ever reads is not treated as idle. No-op
+ * under idle_timeout_seconds == 0 (single-use sessions).
+ */
+void hostauth_touch_token(const char *token);
+
 int hostauth_peek_token(const char *token, char *out_username, size_t out_username_size);
 
 /* {"sessions":[{"username":...,"expires_in_seconds":<int or null>}, ...]}
