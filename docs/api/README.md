@@ -1745,6 +1745,8 @@ GET /v1/containers/jumpbox1
 }
 ```
 
+**The field is `captured_output`, and a container object has no `output` field at all.** Worth stating plainly, because reading the wrong name is indistinguishable from a capture that produced nothing, and that cost two separate investigations before it was noticed (#358). There *is* an `output` field in this API — on the **command-exec** result, a different object — which is what makes the mistake easy. If `captured_output` looks empty, check the key name first and whether the process actually wrote anything second; those are the two answers, and the daemon cannot tell them apart for you.
+
 `captured_output` is `null` (not `""`) when `capture_output` was never requested — the two are deliberately distinguishable: `null` means "opted out," `""` means "opted in, nothing written yet." It keeps growing live while the container runs and simply stops once the process (and every descendant it forked) exits and the capture pipe's write end fully closes — not a live tail (see the build-log WebSocket below, or the console endpoint above, for that), just a diagnostic snapshot worth reading after the fact. Bytes past the 4096-byte cap are silently dropped, not the earliest ones — generous enough for a real startup failure's own error text, bounded so one runaway-logging container can't grow a registry entry unbounded.
 
 ## Live-tailing an in-flight package build (task #676, ADR-0101)
