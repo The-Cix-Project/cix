@@ -13838,7 +13838,12 @@ components:
             Null while running and on timeout.
         output:
           type: string
-          description: stdout and stderr interleaved, exactly as written -- no pty, so nothing is echoed or edited.
+          description: >-
+            stdout and stderr interleaved, exactly as written -- no pty, so nothing
+            is echoed or edited. This is the EXEC result's field; a container object
+            has no "output" at all, its equivalent is captured_output. Reading the
+            wrong one of those is indistinguishable from a capture that produced
+            nothing, and cost two investigations before anyone noticed (#358).
         truncated:
           type: boolean
           description: >
