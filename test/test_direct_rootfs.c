@@ -311,6 +311,44 @@ int main(void)
 	      "a container write must never appear in the image rootfs");
 
 	/*
+	 * 3b. #333: a write to a path SHADOWED by a mount inside the
+	 * container must go through the container's own view, not into the
+	 * host-side rootfs underneath it.
+	 *
+	 * /run is a tmpfs (src/mountns.c), so <base>/rootfs/run and the
+	 * container's own /run are different directories wearing the same
+	 * path. A release really did prefer the host-side tree outright for
+	 * exactly this container shape, and the result was a 204 for a file
+	 * nothing inside would ever see -- caught afterwards, in production,
+	 * by the GET path's own X-Cix-Source header reading "writable"
+	 * instead of "container".
+	 *
+	 * Both halves are asserted, because either alone passes for the
+	 * wrong reason: the container must be able to read it back, AND the
+	 * host-side directory underneath the tmpfs must be empty. A test
+	 * that only read it back would pass on the broken build too, since
+	 * the GET path has a host-side fallback of its own.
+	 */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "PUT", "/v1/containers/dt/files?path=%2Frun%2Fshadowed.conf",
+	                       "{\"content\":\"under-the-tmpfs\\n\"}", &r) != 0 ||
+	    r.status != 204) {
+		fprintf(stderr, "FAIL: PUT /run/shadowed.conf, status=%d\n", r.status);
+		failures++;
+	}
+	cix_response_free(&r);
+	CHECK(get_file_is(&client, "/v1/containers/dt/files?path=%2Frun%2Fshadowed.conf",
+	                  "under-the-tmpfs\n") == 0,
+	      "a write under the container's own tmpfs must be readable from inside it");
+	{
+		char shadow_base[PATH_MAX];
+
+		snprintf(shadow_base, sizeof(shadow_base), "%s/containers/dt", g_data_dir);
+		CHECK(!path_exists("%s%s", shadow_base, "/rootfs/run/shadowed.conf"),
+		      "a write under a tmpfs must not land in the host-side rootfs beneath it");
+	}
+
+	/*
 	 * 4. Restart reuse: stop, then start, then read the live-written
 	 * state back from the RUNNING container. If the restart had
 	 * re-provisioned the rootfs instead of reusing it, state.conf
