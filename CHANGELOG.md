@@ -53,6 +53,27 @@ because cixd is single-threaded".
 (#368) — unbounded by nature, and quiet so far only because the one volume on that host
 holds 27 KB.
 
+
+**The gate caught the first draft of this, which is the part worth recording.**
+`helper_run()` originally waited on the child in three error paths — pidfd_open failing,
+the allocation failing, the epoll registration failing — and `test_blocking_waits` refused
+the build: *63 blocking waits across the tracked files, ceiling is 59*. By the rule written
+beside that number, a wait is in budget only if the child has already exited or cannot
+outlive the call, and a just-forked helper unpacking an archive is neither.
+
+All three are gone rather than accommodated. The allocation moved *before* the fork, so the
+one plausible failure now costs nothing. The other two go through
+`abandon_unwatchable_helper()`: kill the child, try once to reap it with `WNOHANG`, and if
+it has not gone, log and move on. SIGKILL does not make waiting safe — a task in
+uninterruptible I/O only *pends* it, which is the lesson #399 cost a 366-second freeze to
+learn, and unpacking an archive is exactly that kind of work. That leaves a zombie on a
+pid-1 daemon with no generic reaper: a real leak, stated rather than hidden, costing one
+process slot in a situation that already means fd or memory exhaustion, against a frozen
+control plane on a host with no other way in.
+
+Budget 59 → 61, for the completion handler's pidfd wait and one `WNOHANG` that by
+definition does not wait.
+
 ### A file read now says which tree answered (#394)
 
 `GET /v1/containers/{name}/files` answered `200` with 2 MB of valid ELF for

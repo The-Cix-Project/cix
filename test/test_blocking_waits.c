@@ -81,7 +81,14 @@ static const struct budget g_budgets[] = {
 	 * the call by design (a double-fork intermediate, a bounded external
 	 * tool). "We send it a signal first" is not in that set.
 	 */
-	{ "daemon/src/main.c", 23, "pidfd callbacks + double-fork intermediates" },
+	/* 23 -> 25 (ADR-0278, #367): helper_run()'s completion handler waits
+	 * on a pidfd EPOLLIN, where the child is already gone, and
+	 * abandon_unwatchable_helper() waits WNOHANG, which by definition
+	 * does not wait. Both are in budget by the rule below; the three
+	 * blocking waits the first draft of that primitive had were NOT,
+	 * this gate caught them, and they were removed rather than
+	 * accommodated by raising this number. */
+	{ "daemon/src/main.c", 25, "pidfd callbacks + double-fork intermediates + WNOHANG" },
 	{ "daemon/src/pkg.c", 10, "build helpers and fetch intermediates" },
 	{ "daemon/src/targz.c", 4, "tar/gzip pipeline, bounded by the archive" },
 	{ "daemon/src/diskpart.c", 4, "sfdisk/blkid, bounded external tools" },
@@ -100,7 +107,7 @@ static const struct budget g_budgets[] = {
 #define BUDGET_COUNT ((int)(sizeof(g_budgets) / sizeof(g_budgets[0])))
 
 /* The whole-daemon ceiling, so a new FILE cannot slip past the table. */
-#define TOTAL_ALLOWED 59
+#define TOTAL_ALLOWED 61
 
 static int is_comment(const char *line)
 {

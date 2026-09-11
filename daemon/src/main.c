@@ -23918,6 +23918,40 @@ static int term_dimension_parse(const char *text, unsigned short *out)
  * independent, which is the whole point.
  */
 /*
+ * A helper was forked and then could not be watched -- pidfd_open() or
+ * the epoll registration failed. Get rid of it WITHOUT blocking the
+ * reactor.
+ *
+ * The child is now redundant: helper_run() is about to return -1 and
+ * its caller will do the same work inline, so this process must not be
+ * left racing that one over the same files.
+ *
+ * A plain waitpid() here would be the obvious thing and it is exactly
+ * what ADR-0247 forbids -- the child is doing real filesystem work and
+ * can take seconds. Worse, SIGKILL does not make waiting safe: a task
+ * in uninterruptible I/O only PENDS the signal (the lesson #399 cost a
+ * 366-second control-plane freeze to learn), and unpacking an archive
+ * is precisely the kind of work that sits in D-state.
+ *
+ * So: kill it, try once to reap it without waiting, and if it has not
+ * gone yet, say so and move on. That leaves a zombie on a pid-1 daemon
+ * with no generic reaper, which is a real leak and is stated rather
+ * than hidden -- but it costs one process slot in a situation that
+ * already means fd or memory exhaustion, against a frozen control
+ * plane on a host with no other way in. The trade is not close.
+ */
+static void abandon_unwatchable_helper(pid_t pid, const char *what)
+{
+	kill(pid, SIGKILL);
+	if (waitpid(pid, NULL, WNOHANG) == pid)
+		return;
+	logstore_write("cixd", "warn",
+	                "helper for %s could not be watched and has not exited yet (pid %d) -- "
+	                "killed and left unreaped rather than blocking the reactor (ADR-0278)",
+	                what != NULL ? what : "an unnamed task", (int)pid);
+}
+
+/*
  * ADR-0278 (#368/#367): run `work` in a forked child and call `done` on
  * the event loop when it finishes.
  *
@@ -23959,9 +23993,26 @@ static int helper_run(int (*work)(void *), void *work_arg, void (*done)(int, voi
 	pid_t pid;
 	int pidfd;
 
-	pid = fork();
-	if (pid < 0)
+	/*
+	 * Allocated BEFORE the fork, so the one failure that is actually
+	 * plausible costs nothing: a helper that cannot be watched is a
+	 * helper that should never have been started. Every setup step that
+	 * can be done without a pid is done without one.
+	 */
+	hc = calloc(1, sizeof(*hc));
+	if (hc == NULL) {
+		errno = ENOMEM;
 		return -1;
+	}
+
+	pid = fork();
+	if (pid < 0) {
+		int saved = errno;
+
+		free(hc);
+		errno = saved;
+		return -1;
+	}
 	if (pid == 0) {
 		/* The child must never return through the caller's stack: it
 		 * shares every fd and every atexit handler with a daemon that
@@ -23973,19 +24024,9 @@ static int helper_run(int (*work)(void *), void *work_arg, void (*done)(int, voi
 	if (pidfd < 0) {
 		int saved = errno;
 
-		/* Nothing is watching it, so reap it here rather than leaving a
-		 * zombie on a pid-1 daemon with no generic reaper. Blocking is
-		 * acceptable only because the alternative is a permanent leak
-		 * and this path means the process table is already in trouble. */
-		waitpid(pid, NULL, 0);
+		abandon_unwatchable_helper(pid, what);
+		free(hc);
 		errno = saved;
-		return -1;
-	}
-	hc = calloc(1, sizeof(*hc));
-	if (hc == NULL) {
-		close(pidfd);
-		waitpid(pid, NULL, 0);
-		errno = ENOMEM;
 		return -1;
 	}
 	hc->kind = CONN_HELPER;
@@ -24001,8 +24042,8 @@ static int helper_run(int (*work)(void *), void *work_arg, void (*done)(int, voi
 		int saved = errno;
 
 		close(pidfd);
+		abandon_unwatchable_helper(pid, what);
 		free(hc);
-		waitpid(pid, NULL, 0);
 		errno = saved;
 		return -1;
 	}
