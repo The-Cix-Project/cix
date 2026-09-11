@@ -483,10 +483,69 @@ static const char *read_stop_name(enum read_stop s)
 	}
 }
 
+/*
+ * Bytes that arrived in the same read() as the 101, held until the
+ * frame reader asks for them (#331).
+ *
+ * Every upgrade site below reads into a response buffer until it sees
+ * "\r\n\r\n" and then stops looking. One read() routinely returns the
+ * handshake response AND the first websocket frame, because the daemon
+ * writes the 101 and then relays whatever the exec'd process has
+ * already produced -- and console_term_child reports before it does
+ * anything else. Everything past the header terminator used to be
+ * dropped with the response buffer, and recv_ws_frame() then read from
+ * a socket those bytes had already left.
+ *
+ * It failed as a HANG, not as corruption: the test waited 30 seconds
+ * for a frame that had already been delivered and thrown away, while
+ * the exec'd process sat in pause() having written it. Five of the last
+ * ten cix releases failed this way, in clusters, which is what made it
+ * read as flakiness in the daemon rather than a bug in the reader.
+ *
+ * Deliberately reset by ws_take_leftover() at every upgrade rather than
+ * only filled: a scenario that left bytes here would otherwise feed
+ * them to the NEXT scenario's frame parser, which is a worse and much
+ * stranger failure than the one being fixed.
+ */
+static unsigned char g_ws_pushback[4096];
+static size_t g_ws_pushback_len;
+
+/*
+ * Records whatever `resp` holds past the end of the headers. `got` is
+ * the byte count, not strlen: these are frame bytes and may contain
+ * NUL.
+ */
+static void ws_take_leftover(const char *resp, size_t got, const char *headers_end)
+{
+	size_t off;
+
+	g_ws_pushback_len = 0;
+	if (headers_end == NULL)
+		return;
+	off = (size_t)(headers_end - resp) + 4;
+	if (got <= off)
+		return;
+	if (got - off > sizeof(g_ws_pushback))
+		return; /* cannot happen with the response buffers in use here */
+	memcpy(g_ws_pushback, resp + off, got - off);
+	g_ws_pushback_len = got - off;
+}
+
 static int read_full(int fd, void *buf, size_t want)
 {
 	unsigned char *p = buf;
 	size_t got = 0;
+
+	/* Anything the handshake over-read is consumed first, in order,
+	 * before the socket is touched. */
+	if (g_ws_pushback_len > 0) {
+		size_t take = g_ws_pushback_len < want ? g_ws_pushback_len : want;
+
+		memcpy(p, g_ws_pushback, take);
+		memmove(g_ws_pushback, g_ws_pushback + take, g_ws_pushback_len - take);
+		g_ws_pushback_len -= take;
+		got = take;
+	}
 
 	while (got < want) {
 		ssize_t n = read(fd, p + got, want - got);
@@ -1001,6 +1060,7 @@ int main(void)
 				if (headers_end != NULL)
 					break;
 			}
+			ws_take_leftover(resp, got, headers_end);
 			if (headers_end == NULL || strncmp(resp, "HTTP/1.1 101", 12) != 0) {
 				CHECK(0, "terminal-geometry request upgraded to a websocket");
 				close(fd);
@@ -1125,6 +1185,7 @@ int main(void)
 			if (headers_end != NULL)
 				break;
 		}
+		ws_take_leftover(resp, got, headers_end);
 		if (headers_end == NULL || strncmp(resp, "HTTP/1.1 101", 12) != 0) {
 			CHECK(0, "console-input request upgraded to a websocket");
 		} else {
@@ -1220,6 +1281,7 @@ int main(void)
 			if (headers_end != NULL)
 				break;
 		}
+		ws_take_leftover(resp, got, headers_end);
 		CHECK(headers_end != NULL && strncmp(resp, "HTTP/1.1 101", 12) == 0,
 		      "live-resize session upgraded");
 
@@ -1356,6 +1418,7 @@ int main(void)
 			if (headers_end != NULL)
 				break;
 		}
+		ws_take_leftover(resp, got, headers_end);
 		CHECK(headers_end != NULL, "received a complete handshake response");
 		CHECK(strncmp(resp, "HTTP/1.1 101", 12) == 0, "handshake response is 101 Switching Protocols");
 		CHECK(strstr(resp, "Sec-WebSocket-Accept: " TEST_WS_ACCEPT) != NULL,
