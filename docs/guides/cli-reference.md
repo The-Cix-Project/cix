@@ -357,6 +357,7 @@ The value splits on spaces, so an argument containing a literal space cannot be 
 | `image ls` / `image show NAME` / `image rm NAME` | List / inspect one (manifest, current version, and full version history) / remove (refused for `base`, in-use, or still has packages) |
 | `image manifest set --image=NAME --package=NAME --mode=pinned\|rolling --version=VERSION` | Upsert one manifest entry (ADR-0107) -- `pinned` never auto-advances, `rolling` auto-rebuilds onto a newer recipe version as soon as one is published |
 | `image manifest rm --image=NAME --package=NAME` | Remove one manifest entry |
+| `image manifest show --image=NAME --version=VERSION` | What one image **version** holds -- the `name@version` pairs installed into it, snapshotted when it was produced (#398). Not the declared manifest above: that is live intent, and a `rolling` entry's version there is a *floor* rather than a fact, so it cannot say what a container pinned to that version actually has. A version produced before snapshots existed has none and returns 404 rather than falling back |
 | `image recipe add --name=NAME --file=PATH` | Publish a declarative image recipe (ADR-0123) -- recipe name and image name are 1:1; bulk-declares a manifest in one shot instead of one `image manifest set` per package |
 | `image recipe show NAME` | Print a recipe's own raw content |
 | `image recipe rm NAME` | Remove a stored image recipe |

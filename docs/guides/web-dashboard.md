@@ -73,7 +73,8 @@ The theme toggle at the right end is a plain icon in the page's own text color â
 
 ```
 Containers                       (tabs: Overview / <per-container detail>)
-  <one leaf per container>
+  <one leaf per container>       (tabs: Summary / Hardware / Options / Configuration /
+                                        Packages / Console)
 Networks
   <one leaf per network>
 Storage          (tabs: Overview / Placement / System Backup / Volume Backups / Volumes)
@@ -81,9 +82,9 @@ Storage          (tabs: Overview / Placement / System Backup / Volume Backups / 
     <one leaf per partition on it>
       <volumes held on that partition>
     <volumes held on the disk itself>
-Pipeline         (tabs: Overview / Errors)
+Software         (tabs: Overview / Errors)
   Catalogue      (tabs: Package Recipes / Image Recipes / Container Recipes / Repo & Sync)
-  Integration    (tabs: Build / Local Packages / Local Images / Remote Cache)
+  Build          (tabs: Log / Local Packages / Local Images / Remote Cache)
   Deployment     (tabs: Update / Reconcile / Rolling Restart)
 Services         (the health of every registered service)
   PKI            (tabs: Root CA / Intermediate CA / Certificates)
