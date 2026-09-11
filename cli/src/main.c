@@ -10075,23 +10075,23 @@ static void fmt_version_manifest(const struct json_value *v)
 
 	printf("%s @ %s\n", json_str_field(v, "name"), json_str_field(v, "version"));
 	if (manifest == NULL || manifest->type != JSON_ARRAY || manifest->u.array.count == 0) {
-		printf("  (this version declares no packages)\n");
+		printf("  (this version holds no packages)\n");
 		return;
 	}
 	for (i = 0; i < manifest->u.array.count; i++) {
 		const struct json_value *e = manifest->u.array.items[i];
 
-		printf("  %-24s %-16s %s\n", json_str_field(e, "package"),
-		       json_str_field(e, "version"), json_str_field(e, "mode"));
+		printf("  %-24s %s\n", json_str_field(e, "package"), json_str_field(e, "version"));
 	}
 }
 
 /*
- * #398: what one specific image VERSION declares, as opposed to what
- * the image declares now. A container runs a pinned version and keeps
- * running it, so this is the only honest answer to "what is in that
- * container" -- `image show` reports the live manifest, which is a
- * different question with the same shape.
+ * #398: what one specific image VERSION holds -- the name@version pairs
+ * installed into it, snapshotted when it was produced. A container runs
+ * a pinned version and keeps running it, so this is the only honest
+ * answer to "what is in that container". `image show` reports the
+ * declared manifest, which is live intent and whose version field is a
+ * floor for a rolling entry rather than a fact.
  */
 static int cmd_image_manifest_show(const struct cix_client *c, int json_mode, int argc,
                                     char **argv)

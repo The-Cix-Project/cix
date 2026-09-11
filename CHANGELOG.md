@@ -21,19 +21,25 @@ looking list, which is the hardest kind of wrong to notice. #395 already cost a 
 to exactly that: `fastfetch` read `installed`, the versions matched, and the binary was not in
 the container at all.
 
-So the version's own manifest is now recorded beside its rootfs when the version is produced,
-and `GET /v1/images/{name}/versions/{version}/manifest` reads it back. This stores no new fact —
-an image version *is* a hash of its manifest (ADR-0108), so the manifest is what identifies the
-version; writing it down only stops it becoming unrecoverable once the live document moves on.
+So the version's own **installed set** — the sorted `name@version` pairs — is now recorded beside
+its rootfs when the version is produced, and `GET /v1/images/{name}/versions/{version}/manifest`
+reads it back. That set is the same one `image_produce_new_version()` hashes to derive the
+version (ADR-0108), so the snapshot is a copy of the version's own identity rather than a second
+account of it that can drift.
+
+Not the *declared* manifest, which was the first attempt and was wrong twice over: it moves
+whenever an operator edits it, and a `rolling` entry's `version` field there is a **floor** rather
+than a fact, so it cannot say which version of a package anything holds. The snapshot carries no
+`mode` for the same reason — a mode is a property of the declaration, not of a version.
+
 A version produced before snapshots existed returns 404 rather than falling back to the live
 manifest, deliberately: the fallback would hand back the wrong answer with nothing marking it as
 wrong, which is the failure this exists to prevent.
 
-The tab is labelled for what it is. A manifest entry records that a package was installed into an
-image version; it is not evidence the bytes reached this container, and the panel points at the
-console for that question rather than implying it answers it. Recording the snapshot is
-non-fatal — losing the ability to answer "what was in this version" is worth a logged warning,
-never a failed install.
+What the tab still cannot say is whether the bytes reached this container — an installed record
+is not a filesystem reading — and it points at the console for that question rather than implying
+it answers it. Recording the snapshot is non-fatal: losing the ability to answer "what was in
+this version" is worth a logged warning, never a failed install.
 
 `cixctl image manifest show --image=NAME --version=VERSION` is the same thing from the CLI.
 
@@ -44,10 +50,17 @@ running container tried and every path tried, while `GET` on the same container 
 path worked. ADR-0153's whole point is editing a file in an existing container without a
 recreate, so this was the feature not working rather than a corner of it.
 
-The error names it now, and the name is the diagnosis: `open(/proc/163/root/run/probe333.txt)
-failed: Value too large for defined data type` — `EOVERFLOW`. The daemon was reaching into the
-container through `/proc/<pid>/root`, which crosses the container's **id-mapped mount**, and the
-daemon's own fsuid does not map through it.
+The error names it now: `open(/proc/163/root/run/probe333.txt) failed: Value too large for
+defined data type` — `EOVERFLOW`, from creating a file through a running userns container's
+`/proc/<pid>/root`.
+
+**The kernel-side mechanism is not established**, and this entry says so rather than recording a
+plausible one. The obvious explanation — crossing an id-mapped mount whose map does not admit the
+daemon's fsuid — does not survive its own check: `jump`'s rootfs is owned by 1345184,
+`container_create()` sets `spec.userns_idmap` only when that owner is 0 (ADR-0179's two
+presentations), and `src/container.c` applies `MOUNT_ATTR_IDMAP` to the rootfs only under that
+flag. The tree that failed is not id-mapped. What *is* established is the axis and the errno, and
+the fix depends on nothing more.
 
 The axis is userns, not "every running container" as first reported. Measured on 192.168.15.95
 at `v2.57.78`:
