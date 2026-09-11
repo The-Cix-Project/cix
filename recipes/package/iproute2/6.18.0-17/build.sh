@@ -41,6 +41,7 @@ pkg_name="iproute2"
 pkg_version="6.18.0-17"
 pkg_source="https://www.kernel.org/pub/linux/utils/net/iproute2/iproute2-6.18.0.tar.xz"
 pkg_sha256="6ba520e1975e4c50dc931eeae91ea37c198b8a173744885f8895b84325f9d456"
+pkg_artifact_sha256="70a97fdbd2f34988073300f969fa440c2068c7e1e40d7e9539e5df1d16e2f74d"
 pkg_depends="libmnl elfutils libcap zlib"
 #
 # zlib is here because libelf's compressed-debug-info support pulls it

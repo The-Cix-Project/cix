@@ -43,6 +43,39 @@ this version" is worth a logged warning, never a failed install.
 
 `cixctl image manifest show --image=NAME --version=VERSION` is the same thing from the CLI.
 
+### Seven packages stop compiling from source for no reason (#325)
+
+`approve_published_artifact()` (#306) writes `pkg_artifact_sha256=` into a recipe the moment its
+artifact is accepted by the cache, which is the one moment the bytes are known to be both built
+here and published. That closed the mechanism. It could not reach anything published **before**
+it existed, and that residue was never measured.
+
+Measured now, across all 108 packages on 192.168.15.95 — highest revision of each, cross-referenced
+against the cache on the exact `(version, release)` tuple rather than the bare version, which was
+the first and wrong cut. 25 recipes carry no approval; **17 of those have no artifact for that
+revision at all**, which is an ordinary state and not this bug. The remaining 8 are the symptom:
+the artifact is sitting in the cache and every host builds the package from source anyway.
+
+Every one of the 8 was published before 2026-09-06, the day the automation landed — freetype and
+iproute2 on 09-01, go-bootstrap/go/gitea/ca-certificates on 09-03, hostapd on 09-04. **No artifact
+published after that date is unapproved**, so the automation has no hole; these were simply out of
+its reach.
+
+Seven are now approved (the eighth is a test fixture), through the ordinary `POST /v1/pkg/recipes`
+path — the same add-only edit the daemon performs on itself, held to the same
+`recipe_adds_only_artifact_sha256()` predicate. The checksums are the cache's own record of bytes a
+Cix host built and published; nothing was computed over anything else, and an install verifies the
+checksum regardless, so a wrong one fails closed rather than installing.
+
+Proved rather than assumed: installing `freetype` into a scratch image afterwards reported
+`artifact_cached: true` and invoked no compiler, for a package that an hour earlier could only be
+built.
+
+This also surfaced that the daemon's recipe store and this repo **disagree about approvals** — the
+daemon writes them for itself and nothing carries them back, so a freshly installed box, which
+syncs from git, gets the poorer copy and rebuilds what the cache already holds. The seven above are
+carried back here; the general case is #403.
+
 ### Writing a file into a running container works again, on every container (#333)
 
 `PUT /v1/containers/{name}/files` returned `500 {"error":"failed to write file"}` for every

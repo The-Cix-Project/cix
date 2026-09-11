@@ -41,6 +41,7 @@ pkg_name="gitea"
 pkg_version="1.24.7-4"
 pkg_source="https://dl.gitea.com/gitea/1.24.7/gitea-src-1.24.7.tar.gz"
 pkg_sha256="76a91742902fc353369e948b93666018ffe7eb0c565241a944c14f3d9232d808"
+pkg_artifact_sha256="89acd61cc4b48117e150ec4f916cae14f3ec6be5b2eaf8512ee9242500d40246"
 pkg_depends=""
 #
 # ADR-0199/0209: composed from exactly these, with no fallback (#168).
