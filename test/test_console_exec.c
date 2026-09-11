@@ -212,13 +212,28 @@ static int raw_connect(int port)
 	 * request, on its own connection -- passed.
 	 *
 	 * A longer ceiling costs nothing when the test passes and changes
-	 * no assertion. It only means a genuine failure is reported eight
-	 * seconds later.
+	 * no assertion. It only means a genuine failure is reported later.
+	 *
+	 * Raised 10 -> 60 after two more release-blocking failures (#331):
+	 * v2.57.64 and v2.57.66 both died on this scenario at ~10226 ms,
+	 * which is the ceiling itself. That is the tell. The test never
+	 * learned how much longer the child actually needed, so "slow" and
+	 * "never produced a byte at all" were indistinguishable -- the same
+	 * failure mode the READ_TIMEOUT/READ_PEER_CLOSED split was added to
+	 * fix, one level up. Both runs also printed clean loop figures
+	 * (worst_pass_ms=22, slow_passes=0), so the daemon was turning
+	 * normally throughout and this is CPU starvation of the container's
+	 * child while the same box compiles the control plane.
+	 *
+	 * At 60 s a slow child passes and a genuinely broken one still
+	 * fails, which is the distinction worth having. The cost of the
+	 * larger ceiling is paid only by a run that was going to fail
+	 * anyway.
 	 */
 	{
 		struct timeval tv;
 
-		tv.tv_sec = 10;
+		tv.tv_sec = 60;
 		tv.tv_usec = 0;
 		setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 	}

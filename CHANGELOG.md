@@ -6,6 +6,25 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### test_console_exec's first-byte ceiling was the number it kept failing at (#331)
+
+Two consecutive releases died on this test, v2.57.64 and v2.57.66, each at **~10226 ms** —
+which is the 10-second `SO_RCVTIMEO` ceiling itself. That is the tell: the test never
+learned how much longer the container's child actually needed, so "slow" and "never
+produced a byte at all" were indistinguishable. It is the same failure mode the
+`READ_TIMEOUT`/`READ_PEER_CLOSED` split was added to fix, one level up — a previous attempt
+had already raised this ceiling 2 s → 10 s, which could not distinguish them either.
+
+Both runs printed clean loop figures alongside the failure (`worst_pass_ms=22`,
+`slow_passes=0`), so the daemon was turning normally for the whole ten seconds. This is CPU
+starvation of the container's child while the same two-CPU box compiles the control plane,
+not a daemon fault.
+
+Ceiling raised to 60 s. A slow child now passes and a genuinely broken one still fails,
+which is the distinction worth having; the larger ceiling is paid for only by a run that was
+going to fail anyway. Same reasoning as #376's shutdown bound, and the comment already in
+that function had made the argument correctly — it was only the number that had not kept up.
+
 ### A build in flight when the daemon stops now leaves a run behind (#375)
 
 "It was building and the box went down" is exactly the history an operator looks for
