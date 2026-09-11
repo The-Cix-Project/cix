@@ -1387,6 +1387,13 @@ enum pkg_error pkg_sync_start(pid_t *out_pid, int *out_pidfd);
  * loop.
  */
 int pkg_sync_fetch_done(int exit_status);
+/*
+ * Where a sync deposits the release-signing public keys it finds in the
+ * repository's docs/keys/ (ADR-0279). Set once at startup; unset means
+ * a sync adopts nothing and no artifact signature can be verified.
+ */
+void pkg_trusted_keys_init(const char *dir);
+
 int pkg_sync_extract(void);
 /*
  * The merge -- every recipe in the extracted tree, added to the

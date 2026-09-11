@@ -15,6 +15,7 @@
 #include "persist.h"
 #include "treecopy.h"
 #include "pki.h"
+#include "releasekey.h"
 #include "test_image_fixture.h"
 
 #include <ctype.h>
@@ -10097,6 +10098,17 @@ static char g_repo_kind[PKGREPO_KIND_MAX] = "gitea";
 static char g_repo_ref[PKGREPO_REF_MAX] = "master";
 static char g_repo_auth_token[PKGREPO_TOKEN_MAX];
 
+/*
+ * Where adopted release-signing public keys live (ADR-0279).
+ *
+ * Set once at startup. A sync copies docs/keys/ out of the repository
+ * tarball into it, which is how this host learns which keys may approve
+ * an artifact -- the owner's decision being that the key comes from git
+ * via sync, so git stays the trust root and holds one published key
+ * rather than a checksum line per recipe.
+ */
+static char g_trusted_keys_dir[PATH_MAX];
+
 static const char *pkg_repo_token(void)
 {
 	return g_repo_auth_token;
@@ -10629,6 +10641,11 @@ static void sync_walk_container_recipes(const char *containers_root, int *added,
  * Returns 0 on success. Callable from a helper child or, if the fork
  * fails, inline from the parent: it behaves identically either way.
  */
+void pkg_trusted_keys_init(const char *dir)
+{
+	snprintf(g_trusted_keys_dir, sizeof(g_trusted_keys_dir), "%s", dir);
+}
+
 int pkg_sync_extract(void)
 {
 	char tarball_path[PATH_MAX];
@@ -10817,6 +10834,30 @@ int pkg_sync_merge(void)
 	 */
 	snprintf(containers_root, sizeof(containers_root), "%s/recipes/deployment", extract_dir);
 	sync_walk_container_recipes(containers_root, &added, &skipped, &failed);
+
+	/*
+	 * The signing keys travel in the same tarball and were thrown away
+	 * with it (ADR-0279). A repository with no docs/keys/ adopts
+	 * nothing and is not an error -- an operator running their own
+	 * recipe repo need not publish keys at all, and then this host
+	 * simply verifies no artifact signature and builds from source,
+	 * which is correct rather than degraded.
+	 */
+	if (g_trusted_keys_dir[0] != '\0') {
+		char keys_root[PATH_MAX];
+		int adopted;
+
+		snprintf(keys_root, sizeof(keys_root), "%s/docs/keys", extract_dir);
+		adopted = releasekey_trust_adopt(keys_root, g_trusted_keys_dir);
+		if (adopted < 0)
+			logstore_write("cixd", "warn",
+			                "pkg sync: could not write the trusted-key store at %s -- "
+			                "artifact signatures cannot be verified until it is writable",
+			                g_trusted_keys_dir);
+		else if (adopted > 0)
+			logstore_write("cixd", "info", "pkg sync: %d release signing key%s trusted",
+			                adopted, adopted == 1 ? "" : "s");
+	}
 
 	{
 		char *rm_argv[] = { (char *)PKG_RM_BIN, "-rf", extract_dir, NULL };
