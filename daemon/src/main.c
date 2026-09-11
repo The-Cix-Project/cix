@@ -1324,6 +1324,18 @@ struct conn {
 struct console_exec_session {
 	struct conn *ws_conn;
 	struct conn *pty_conn;
+	/*
+	 * #331: the CONN_CONSOLE_EXEC_REAP watching this session's exec'd
+	 * process, so the two can clear each other.
+	 *
+	 * The reap conn learns the process has exited; the session is what
+	 * a client is waiting on. Without the link the daemon knew the
+	 * process was gone and told nobody -- measured in a selftest where
+	 * the exec'd program (one that never exits on its own) was absent
+	 * from the container 31 seconds into a session that had answered
+	 * 101, with the client still waiting for a first byte.
+	 */
+	struct conn *reap_conn;
 	pid_t exec_pid;
 	int torn_down;
 	unsigned char pty_out[CONSOLE_PTY_OUT_MAX];
@@ -1416,6 +1428,14 @@ static void console_session_teardown(struct console_exec_session *sess)
 	if (sess->torn_down)
 		return;
 	sess->torn_down = 1;
+	/* #331: the reap conn outlives this struct -- it is freed by its own
+	 * pidfd event, which may never come for a process that is still
+	 * running. Drop its back-pointer so it cannot reach a session that
+	 * is being freed. */
+	if (sess->reap_conn != NULL) {
+		sess->reap_conn->exec_session = NULL;
+		sess->reap_conn = NULL;
+	}
 
 	/*
 	 * Signal, never wait (#399, and ADR-0180's rule applied to the
@@ -24078,7 +24098,7 @@ static void handle_helper_event(struct conn *hc)
 		done(exit_status, ctx);
 }
 
-static void register_console_exec_reap(pid_t pid)
+static struct conn *register_console_exec_reap(pid_t pid)
 {
 	struct conn *rc;
 	struct cix_epoll_event ev;
@@ -24098,13 +24118,13 @@ static void register_console_exec_reap(pid_t pid)
 		                "console: pidfd_open failed for the session process (%s) -- it will not "
 		                "be reaped until this daemon restarts (#399)",
 		                strerror(errno));
-		return;
+		return NULL;
 	}
 
 	rc = calloc(1, sizeof(*rc));
 	if (rc == NULL) {
 		close(pidfd);
-		return;
+		return NULL;
 	}
 	rc->kind = CONN_CONSOLE_EXEC_REAP;
 	rc->fd = pidfd;
@@ -24115,21 +24135,62 @@ static void register_console_exec_reap(pid_t pid)
 	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, pidfd, &ev) != 0) {
 		close(pidfd);
 		free(rc);
+		return NULL;
 	}
+	return rc;
 }
 
 /* The watched console process has exited; collect it. Never blocks --
  * see register_console_exec_reap(). */
+/*
+ * The console session's exec'd process has exited.
+ *
+ * #399 registered this watch so the reap would never block the reactor,
+ * and that is still its first job. #331 gave it a second one: END THE
+ * SESSION.
+ *
+ * A console session is a client waiting for bytes from one process.
+ * When that process dies the session can never produce another byte,
+ * and until now the daemon knew and told nobody -- the websocket stayed
+ * open and silent, indefinitely. Measured in a selftest against
+ * console_term_child, a program whose own header says it "never
+ * returns": 31 seconds into a session that had answered 101, the
+ * container held only cix-init and its service, and the exec'd process
+ * was simply not there. The client was waiting on a corpse.
+ *
+ * Why the process died is NOT established and nothing here claims it.
+ * The log store carries no OOM record for it. What is established is
+ * that whatever kills it, the session must not sit silent afterwards --
+ * "your process is gone" is an answer; silence is not, and it is
+ * indistinguishable from a session that simply has nothing to say yet.
+ *
+ * The two conns clear each other: the session drops its pointer here
+ * before teardown, and console_session_teardown() drops this one, so
+ * neither can free a struct the other still holds.
+ */
 static void handle_console_exec_reap_event(struct conn *cc)
 {
+	struct console_exec_session *sess = cc->exec_session;
+
 	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	waitpid(cc->pkg_fetch_pid, NULL, 0);
 	close(cc->fd);
+	cc->exec_session = NULL;
 	free(cc);
+
+	if (sess != NULL && !sess->torn_down) {
+		sess->reap_conn = NULL; /* this conn is gone; do not signal it */
+		logstore_write("cixd", "info",
+		                "console: the exec'd process (pid %d) exited -- ending the session "
+		                "rather than leaving the client waiting on it (#331)",
+		                (int)sess->exec_pid);
+		console_session_teardown(sess);
+	}
 }
 
 static enum console_route_result try_console_upgrade(struct conn *cc, const struct http_request *req)
 {
+	struct conn *reap_cc = NULL; /* #331: the watch on the exec'd process */
 	static const char suffix[] = CONSOLE_SUFFIX;
 	size_t suffix_len = sizeof(suffix) - 1;
 	const char *path_name;
@@ -24419,7 +24480,11 @@ static enum console_route_result try_console_upgrade(struct conn *cc, const stru
 	 * and the eventual session teardown can all signal-and-move-on
 	 * rather than blocking the reactor on a wait.
 	 */
-	register_console_exec_reap(exec_pid);
+	/* #331: kept, and the conn is remembered so the session can be
+	 * linked to it once it exists a few lines below. Registered HERE,
+	 * before anything that can return early, for #399's reason: the
+	 * reap must not depend on a later step succeeding. */
+	reap_cc = register_console_exec_reap(exec_pid);
 
 	rlen = snprintf(response, sizeof(response),
 	                 "HTTP/1.1 101 Switching Protocols\r\n"
@@ -24499,6 +24564,13 @@ static enum console_route_result try_console_upgrade(struct conn *cc, const stru
 	sess->pty_conn = pty_cc;
 	sess->exec_pid = exec_pid;
 	sess->torn_down = 0;
+	/* #331: now that the session exists, tell the reap watch about it,
+	 * so this session ends when its process does instead of sitting
+	 * open and silent. NULL when the watch could not be registered --
+	 * degraded exactly as #399 describes, not a new failure. */
+	sess->reap_conn = reap_cc;
+	if (reap_cc != NULL)
+		reap_cc->exec_session = sess;
 
 	ev.events = EPOLLIN;
 	ev.data.ptr = pty_cc;

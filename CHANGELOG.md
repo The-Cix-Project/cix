@@ -6,6 +6,54 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A console session whose process dies now ends, instead of going silent forever (#331)
+
+Five releases failed on `test_console_exec` with the same shape: a `101 Switching
+Protocols`, then nothing, for as long as anything waited. Three rounds of diagnostics were
+needed and each answered a question that turned out not to be the one.
+
+- `report_loop_health()` said the daemon was fine — `worst_pass_ms` 19–24 while a session
+  sat silent for thirty seconds. Not the event loop.
+- #372's step diagnostics said the exec succeeded — nothing was ever logged, so the
+  intermediate child cleared all four of its failure paths, wrote its pid back, and the
+  daemon had every reason to believe the session was healthy.
+- A live probe on a real host said the path works: 40 consecutive console sessions, all
+  clean, the first byte already present when the handshake completed.
+
+**The fourth diagnostic answered it in one line.** On a first-byte failure the test now
+prints the container's processes:
+
+```
+procs: pid=920 comm=cix-init     state=S wchan=do_sys_poll      cmd=/sbin/cix-init 15 17 19
+procs: pid=921 comm=daemon_child state=S wchan=hrtimer_nanosleep cmd=/bin/daemon_child 300 0
+```
+
+The init and its service, and **nothing else**. The exec'd process was not there — 31
+seconds into a session that had answered 101. `console_term_child`'s own header says it
+"never returns"; it sits in `pause()` until the daemon kills it. So it had died after a
+successful `execve()`, and the client was waiting on a corpse.
+
+**Why it died is not established and nothing here claims it.** The log store carries no OOM
+record. What is established is the defect that turns that death into a hang: the daemon
+*knew*. #399 had already registered a pidfd watch on that process so the reap could not
+block the reactor — and the watch reaped it and told nobody. The websocket stayed open and
+silent, indefinitely.
+
+A console session is a client waiting for bytes from one process. When that process dies the
+session can never produce another byte. "Your process is gone" is an answer; silence is not,
+and it is indistinguishable from a session that simply has nothing to say yet — which is
+exactly why this took five releases to corner.
+
+The reap now ends the session. The two conns clear each other's back-pointers, because they
+have independent lifetimes: the session can be torn down first by an ordinary close, and the
+reap conn is freed by its own pidfd event, which never arrives for a process that is still
+running.
+
+This does not close #331 — the underlying death is still unexplained, and the next
+occurrence will now present as a prompt close with a log line naming the pid instead of a
+thirty-second silence. That is the difference between a bug that can be investigated and one
+that cannot.
+
 ### pkg.sync no longer freezes the control plane for five seconds every six hours (#367, #368, ADR-0278)
 
 Measured on 192.168.15.95 across four days, taking the first appearance of each new
