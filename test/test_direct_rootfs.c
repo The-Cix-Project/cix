@@ -475,19 +475,21 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		cix_client_request(&client, "POST", "/v1/containers/dt/stop", NULL, &r);
 		cix_response_free(&r);
+		/* Same terminal condition the #162 wait above uses: 404 if the
+		 * entry is gone, or a def-backed "stopped" record. "exited" is
+		 * NOT it -- a container with a restart policy settles as
+		 * stopped, and waiting for the wrong word times out against a
+		 * container that has already finished stopping. */
 		for (i = 0; i < 100; i++) {
 			memset(&r, 0, sizeof(r));
-			if (cix_client_request(&client, "GET", "/v1/containers/dt", NULL, &r) == 0 &&
-			    r.json != NULL) {
-				const char *st_f = json_str_field(r.json, "status");
-
-				if (st_f != NULL && strcmp(st_f, "exited") == 0) {
-					cix_response_free(&r);
-					break;
-				}
+			cix_client_request(&client, "GET", "/v1/containers/dt", NULL, &r);
+			if (r.status == 404 ||
+			    (r.body != NULL && strstr(r.body, "\"status\":\"stopped\"") != NULL)) {
+				cix_response_free(&r);
+				break;
 			}
 			cix_response_free(&r);
-			usleep(200000);
+			usleep(100000);
 		}
 		CHECK(i < 100, "dt never finished stopping before the pin-move case");
 
