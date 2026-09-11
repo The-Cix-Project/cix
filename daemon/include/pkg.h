@@ -1370,6 +1370,24 @@ enum pkg_error pkg_sync_start(pid_t *out_pid, int *out_pidfd);
  * recipe can. Records combined added/skipped counts and any error for
  * pkg_sync_write_json_status().
  */
+/*
+ * ADR-0278: a sync is now three steps rather than one, so the heavy one
+ * can run in a helper process instead of on the event loop (#367).
+ *
+ * pkg_sync_fetch_done() records the fetch's outcome and returns 1 when
+ * there is an archive to unpack, 0 when the sync is already over.
+ *
+ * pkg_sync_extract() is the forkable half -- filesystem effects only,
+ * so it is identical run in a child or inline in the parent. Returns 0,
+ * -1 (could not create the extraction directory) or -2 (extraction
+ * failed).
+ *
+ * pkg_sync_completed() takes that return and does the rest: merging
+ * every recipe found, which touches in-memory state and must run on the
+ * loop.
+ */
+int pkg_sync_fetch_done(int exit_status);
+int pkg_sync_extract(void);
 void pkg_sync_completed(int exit_status);
 
 /* {"state":"never"|"running"|"success"|"failed","last_attempt":

@@ -1186,6 +1186,17 @@ enum conn_kind {
 	CONN_CONSOLE_RESPAWN_TIMER,
 	CONN_CONSOLE_WS,        /* GET /v1/containers/{name}/console -- client-facing WebSocket half */
 	CONN_CONSOLE_PTY,       /* same session's other half -- the exec'd shell's pty master fd */
+	/*
+	 * ADR-0278 (#368): a piece of work running in a forked helper, its
+	 * pidfd watched so the reactor learns when it finishes.
+	 *
+	 * The daemon already had this shape in three separate places --
+	 * procfuse_start(), the build containers, diskformat.c -- each with
+	 * its own fork, its own conn kind and its own completion handler.
+	 * A fourth hand-rolled copy is how a fifth happens, so this is the
+	 * one implementation the rest use.
+	 */
+	CONN_HELPER,
 	CONN_CONSOLE_EXEC_REAP, /* pidfd for the console session's exec'd process, watched ONLY so
 	                          * that reaping it never blocks the reactor (#399). exec.c's own
 	                          * comment claimed this watch already existed; it did not, and the
@@ -1234,6 +1245,13 @@ struct conn {
 	time_t escalate_started_at;             /* CONN_STOP_ESCALATE_TIMER only: the incarnation it was armed for */
 	pid_t pkg_fetch_pid;                    /* CONN_PKG_FETCH / CONN_BOOTROOT_ASSEMBLE / CONN_ISO_ASSEMBLE / CONN_BOOTSTRAP_FETCH / CONN_DISK_FORMAT / CONN_STORAGE_MIGRATE / CONN_CONTAINER_STORAGE_MIGRATE / CONN_CONSOLE_EXEC_REAP */
 	int pkg_chain_idx;                      /* CONN_PKG_FETCH / CONN_PKG_BUILD_OUTPUT / CONN_PKG_BUILD_LOG_WS -- ADR-0157 Phase 2: which g_chains[] slot this conn belongs to */
+	/* CONN_HELPER (ADR-0278): what to call when the helper exits, and
+	 * with what. The context is an opaque pointer the caller owns --
+	 * this layer never frees it, because only the caller knows whether
+	 * it is heap, static, or an index dressed up as a pointer. */
+	void (*helper_done)(int exit_status, void *ctx);
+	void *helper_ctx;
+	const char *helper_what; /* for the log line when it fails -- a literal, never freed */
 	enum storage_kind storage_migrate_kind; /* CONN_STORAGE_MIGRATE only */
 	char container_storage_migrate_name[REGISTRY_NAME_MAX]; /* CONN_CONTAINER_STORAGE_MIGRATE only */
 	char restart_name[REGISTRY_NAME_MAX];   /* CONN_RESTART_TIMER only */
@@ -3956,6 +3974,10 @@ static void report_default_image_seed_result(void);
 /* Forward declaration -- defined further down beside the other reactor
  * registrations, which all sit after the startup helpers that use them. */
 static void register_pkg_fetch_pidfd(pid_t pid, int pidfd, int chain_idx);
+/* ADR-0278: defined next to the other pidfd handlers, used well above
+ * them -- pkg.sync's completion is the first caller. */
+static int helper_run(int (*work)(void *), void *work_arg, void (*done)(int, void *), void *ctx,
+                      const char *what);
 
 /* Gives the default image a C library if it has none and one can be
  * installed without building anything (#189, see pkg_seed_default_
@@ -9861,9 +9883,46 @@ static void register_pkg_sync_fetch_pidfd(pid_t pid, int pidfd)
 	}
 }
 
-/* Reaps the curl child pkg_sync_start() spawned and hands its exit
- * status to pkg_sync_completed(), which does the real work (extract +
- * merge-add every recipe found). */
+/* The extraction helper finished (ADR-0278). Its exit status is 0 when
+ * pkg_sync_extract() succeeded; anything else means it did not, and the
+ * distinction between "no directory" and "extraction failed" is carried
+ * by that function's own return, which the child encodes as a non-zero
+ * exit. Reported as a generic extraction failure here, which is what
+ * the state field said before the split too. */
+static void pkg_sync_extract_done(int exit_status, void *ctx)
+{
+	(void)ctx;
+	pkg_sync_completed(exit_status == 0 ? 0 : -2);
+}
+
+static int pkg_sync_extract_work(void *arg)
+{
+	(void)arg;
+	return pkg_sync_extract();
+}
+
+/*
+ * Reaps the curl child pkg_sync_start() spawned, then runs the archive
+ * extraction in a HELPER PROCESS rather than on the loop (ADR-0278,
+ * #367).
+ *
+ * This handler used to call pkg_sync_completed() straight through, and
+ * that function extracted the whole recipe repository before merging
+ * it. Measured on 192.168.15.95: 5062-6116 ms of frozen event loop at
+ * 03:23, 09:23, 15:23 and 21:23, four days running -- every stall
+ * carrying an empty `activity`, which is what identified it as
+ * scheduled work rather than a request. During that window nothing is
+ * served: no API, no dashboard, no console, no container lifecycle
+ * event, on a pid-1 daemon whose loop is the only way in.
+ *
+ * The merge itself stays here. It calls pkg_recipe_add() and reads
+ * g_sync_refetch_*, so a fork would update a copy and throw it away --
+ * and it is the cheap half regardless.
+ *
+ * A failed fork is not a lost sync: the extraction runs inline, exactly
+ * as it always did. That is worse for latency and correct for the
+ * result, which is the right way round.
+ */
 static void handle_pkg_sync_fetch_event(struct conn *cc)
 {
 	int status;
@@ -9877,7 +9936,16 @@ static void handle_pkg_sync_fetch_event(struct conn *cc)
 	close(cc->fd);
 	free(cc);
 
-	pkg_sync_completed(exit_status);
+	if (!pkg_sync_fetch_done(exit_status))
+		return;
+	if (helper_run(pkg_sync_extract_work, NULL, pkg_sync_extract_done, NULL,
+	                "pkg.sync archive extraction") != 0) {
+		logstore_write("cixd", "warn",
+		                "pkg.sync: could not fork the extraction helper (%s) -- extracting on "
+		                "the event loop instead, which stalls it (#367)",
+		                strerror(errno));
+		pkg_sync_completed(pkg_sync_extract());
+	}
 }
 
 
@@ -23849,6 +23917,126 @@ static int term_dimension_parse(const char *text, unsigned short *out)
  * no longer exists. Carrying only the pid makes the two lifetimes
  * independent, which is the whole point.
  */
+/*
+ * ADR-0278 (#368/#367): run `work` in a forked child and call `done` on
+ * the event loop when it finishes.
+ *
+ * The rule this exists to enforce is ADR-0247's -- the reactor does not
+ * block -- for work that is neither a request nor a subprocess. The
+ * daemon's one event loop is the only way into an installed host: cixd
+ * is pid 1, there is no shell, and for as long as a pass is inside a
+ * synchronous nftw() or tarball extraction nothing is served. Measured:
+ * pkg.sync's own extract froze it for 5-6 seconds every six hours, on a
+ * threshold the daemon itself calls slow at 750 ms.
+ *
+ * A helper PROCESS and not a thread, and the reasoning is recorded so
+ * it is not re-litigated (#368): threading cixd would have to contend
+ * with 215 mutable global tables, 21 places that document a dependence
+ * on being single-threaded, and ~74 fork/clone sites whose children do
+ * non-async-signal-safe work before execve. exec.c says it outright --
+ * "setenv() after fork() is safe here specifically because cixd is
+ * single-threaded". There is no small version of that change, in a
+ * process where a crash is a kernel panic.
+ *
+ * WHAT THE CHILD MAY DO. It is a fork, so it sees a copy of every
+ * global and can change none of them that the parent will ever read.
+ * Work moved in here must therefore be *filesystem-effecting only* --
+ * extract an archive, walk a tree, measure a directory -- and any
+ * in-memory consequence belongs in `done`, which runs in the parent.
+ * Getting that split wrong is silent: the child updates its copy, exits
+ * 0, and the parent carries on with the old value.
+ *
+ * Returns 0 when the helper is running and `done` will be called
+ * exactly once; -1 (with errno set, and `done` NOT called) when the
+ * fork or the watch could not be set up, so the caller can fall back to
+ * doing the work inline rather than losing it.
+ */
+static int helper_run(int (*work)(void *), void *work_arg, void (*done)(int, void *), void *ctx,
+                      const char *what)
+{
+	struct conn *hc;
+	struct cix_epoll_event ev;
+	pid_t pid;
+	int pidfd;
+
+	pid = fork();
+	if (pid < 0)
+		return -1;
+	if (pid == 0) {
+		/* The child must never return through the caller's stack: it
+		 * shares every fd and every atexit handler with a daemon that
+		 * is pid 1. _exit(), always. */
+		_exit(work(work_arg) == 0 ? 0 : 1);
+	}
+
+	pidfd = sys_pidfd_open(pid, 0);
+	if (pidfd < 0) {
+		int saved = errno;
+
+		/* Nothing is watching it, so reap it here rather than leaving a
+		 * zombie on a pid-1 daemon with no generic reaper. Blocking is
+		 * acceptable only because the alternative is a permanent leak
+		 * and this path means the process table is already in trouble. */
+		waitpid(pid, NULL, 0);
+		errno = saved;
+		return -1;
+	}
+	hc = calloc(1, sizeof(*hc));
+	if (hc == NULL) {
+		close(pidfd);
+		waitpid(pid, NULL, 0);
+		errno = ENOMEM;
+		return -1;
+	}
+	hc->kind = CONN_HELPER;
+	hc->fd = pidfd;
+	hc->pkg_fetch_pid = pid;
+	hc->helper_done = done;
+	hc->helper_ctx = ctx;
+	hc->helper_what = what;
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = hc;
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, pidfd, &ev) != 0) {
+		int saved = errno;
+
+		close(pidfd);
+		free(hc);
+		waitpid(pid, NULL, 0);
+		errno = saved;
+		return -1;
+	}
+	return 0;
+}
+
+/*
+ * The helper exited. EPOLLIN on a pidfd means it is already gone, so
+ * the waitpid() here returns at once -- the same property every other
+ * pidfd handler in this file relies on.
+ */
+static void handle_helper_event(struct conn *hc)
+{
+	void (*done)(int, void *) = hc->helper_done;
+	void *ctx = hc->helper_ctx;
+	const char *what = hc->helper_what;
+	int status = 0;
+	int exit_status;
+
+	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, hc->fd, NULL);
+	if (waitpid(hc->pkg_fetch_pid, &status, 0) == hc->pkg_fetch_pid && WIFEXITED(status))
+		exit_status = WEXITSTATUS(status);
+	else
+		exit_status = -1;
+	close(hc->fd);
+	free(hc);
+
+	if (exit_status != 0)
+		logstore_write("cixd", "warn", "helper for %s exited %d",
+		                what != NULL ? what : "an unnamed task", exit_status);
+	if (done != NULL)
+		done(exit_status, ctx);
+}
+
 static void register_console_exec_reap(pid_t pid)
 {
 	struct conn *rc;
@@ -27729,6 +27917,8 @@ static int cixd_main(int argc, char **argv)
 				handle_console_pty_event(cc, events[j].events);
 			else if (cc->kind == CONN_CONSOLE_EXEC_REAP)
 				handle_console_exec_reap_event(cc);
+			else if (cc->kind == CONN_HELPER)
+				handle_helper_event(cc);
 			else if (cc->kind == CONN_PKG_BUILD_LOG_WS)
 				handle_pkg_build_log_ws_event(cc);
 			else if (cc->kind == CONN_KMSG)
