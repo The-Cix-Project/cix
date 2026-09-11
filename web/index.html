@@ -2478,12 +2478,43 @@
 
 		<section class="view" id="view-integration" hidden>
 			<div class="tab-bar">
-				<button type="button" class="tab-button active" data-tab="pkg-build-config">Log</button>
+				<button type="button" class="tab-button active" data-tab="build-overview">Overview</button>
+				<button type="button" class="tab-button" data-tab="pkg-build-config">Log</button>
 				<button type="button" class="tab-button" data-tab="packages">Local Packages</button>
 				<button type="button" class="tab-button" data-tab="images">Local Images</button>
 				<button type="button" class="tab-button" data-tab="pkg-cache">Remote Cache</button>
 			</div>
-<div class="tab-panel" data-tab="pkg-build-config">
+<div class="tab-panel" data-tab="build-overview">
+
+			<p class="hint">
+				What the build system is doing right now, which the Log tab beside this one
+				could only answer after the fact. Capacity was always <em>settable</em> there
+				and never <em>observable</em>: <code>max_concurrent_jobs</code> is a form
+				field, while how many of those slots are in use, and by what, appears in
+				<code>GET /v1/system/pkg-build-config</code>'s <code>active_jobs</code> /
+				<code>active_job_names</code> and was shown nowhere
+				(<a href="https://git.home.arpa/itdlabs/cix/issues/407">#407</a>).
+			</p>
+
+			<div class="stats-grid" id="bo-capacity"></div>
+
+			<h3>In flight</h3>
+			<p class="hint" id="bo-builds-hint">
+				One card per running build. <strong>Click a card to read its log.</strong> Each
+				names the container it is running in &mdash; <code>__pkgbuild-&lt;slot&gt;</code>,
+				reported by <code>PkgEntry.build_container</code> &mdash; so the container API
+				applies to a live build: <code>GET /containers/{name}/stats</code> for real CPU
+				and memory, <code>/processes</code> for what the build is actually executing,
+				which is the honest answer to &ldquo;is this configure loop stuck&rdquo;.
+			</p>
+			<div class="stats-grid" id="bo-builds"></div>
+
+			<div id="bo-log-wrap" hidden>
+				<h3 id="bo-log-title">Build log</h3>
+				<pre id="bo-log" class="bo-log">Loading&hellip;</pre>
+			</div>
+			</div>
+<div class="tab-panel" data-tab="pkg-build-config" hidden>
 			<form id="pbc-form">
 				<label>
 					Max concurrent jobs

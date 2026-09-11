@@ -626,6 +626,30 @@ static int json_bool_field(const struct json_value *obj, const char *key)
 	return v != NULL && v->type == JSON_BOOL && v->u.boolean;
 }
 
+/*
+ * Issue #407: PkgEntry.build_container must be non-null EXACTLY while a
+ * build is in flight, and the gate is the whole correctness of the
+ * field. Nothing clears the daemon's own build_container_name when a
+ * build ends -- only a later job claiming the same chain slot does --
+ * so a dropped state gate does not fail loudly. It reports a
+ * torn-down container for an installed package, and after slot reuse
+ * reports a container running an unrelated build. Both read as
+ * plausible.
+ *
+ * Checked inside poll_pkg_state() rather than as a case of its own,
+ * because that helper already observes every state transition of every
+ * install this file performs -- so the gate is asserted dozens of
+ * times across real builds for free, in both directions, which is
+ * worth more than one dedicated test of a single package.
+ *
+ * NOTE: test_pkg is NOT in the Makefile's SELFTESTS list, so nothing
+ * here runs in a release gate (#224 -- the suite's build container
+ * cannot create containers). The live half of this field was verified
+ * by reading GET /v1/pkg/{name} mid-build on 192.168.15.95; this
+ * assertion is the regression net for anyone editing the serializer.
+ */
+static int g_build_container_gate_fails;
+
 static int poll_pkg_state(const struct cix_client *c, const char *name, char *out_state,
                            size_t out_state_size, int max_attempts)
 {
@@ -651,6 +675,30 @@ static int poll_pkg_state(const struct cix_client *c, const char *name, char *ou
 		 * r -- state itself points into r.json's tree and would be a
 		 * dangling pointer the instant cix_response_free() runs. */
 		snprintf(out_state, out_state_size, "%s", state);
+		{
+			/* #407's gate, both directions. Read before the free,
+			 * for the same dangling-pointer reason as above. */
+			const struct json_value *bc =
+			        json_object_get(r.json, "build_container");
+
+			if (bc == NULL) {
+				fprintf(stderr, "FAIL: %s has no build_container field\n", name);
+				g_build_container_gate_fails++;
+			} else if (strcmp(out_state, "building") == 0) {
+				if (bc->type != JSON_STRING ||
+				    strncmp(bc->u.string, "__pkgbuild-", 11) != 0) {
+					fprintf(stderr,
+					        "FAIL: %s is building but build_container is not a "
+					        "__pkgbuild-* name\n", name);
+					g_build_container_gate_fails++;
+				}
+			} else if (bc->type != JSON_NULL) {
+				fprintf(stderr,
+				        "FAIL: %s is '%s' but build_container is non-null -- the "
+				        "state gate is gone\n", name, out_state);
+				g_build_container_gate_fails++;
+			}
+		}
 		cix_response_free(&r);
 		if (strcmp(out_state, "fetching") != 0 && strcmp(out_state, "building") != 0)
 			return 0;
@@ -5293,6 +5341,17 @@ skip_resume:
 			}
 			cix_response_free(&r);
 		}
+	}
+
+	/* #407: every build_container gate violation poll_pkg_state() saw,
+	 * across every install above. Reported as one line rather than
+	 * folded into ok at the point of failure, so the count is visible
+	 * -- a gate that broke for one package and not another says
+	 * something different from one that broke for all of them. */
+	if (g_build_container_gate_fails != 0) {
+		fprintf(stderr, "FAIL: %d build_container state-gate violation(s)\n",
+		        g_build_container_gate_fails);
+		ok = 0;
 	}
 
 	if (stop_daemon(daemon_pid) != 0) {

@@ -3024,3 +3024,68 @@ pre {
 	.delivery-graph { flex-direction: column; }
 	.dg-lane { min-width: 0; }
 }
+
+/*
+ * Software > Build > Overview (#407).
+ *
+ * Layout is .stats-grid/.stats-card, reused rather than reinvented --
+ * these are the same "a figure with a label" boxes the host stats page
+ * draws, and a second card system for the same shape is exactly the
+ * kind of parallel implementation this project avoids. Only what those
+ * do not already cover is defined here.
+ */
+.bo-figure {
+	font-size: 1.6rem;
+	font-weight: 600;
+	font-variant-numeric: tabular-nums;
+	line-height: 1.2;
+}
+
+.bo-note {
+	margin: 0.35rem 0 0;
+	font-size: 0.75rem;
+}
+
+/* A running build is clickable, and has to look it. */
+.bo-build {
+	cursor: pointer;
+}
+
+.bo-build:hover,
+.bo-build:focus-visible {
+	border-color: var(--accent, var(--border));
+}
+
+/* Key/value pairs inside a build card. Two columns so the values line
+ * up down the card rather than ragging after labels of varying width. */
+.bo-kv {
+	display: grid;
+	grid-template-columns: auto 1fr;
+	gap: 0.15rem 0.6rem;
+	margin: 0;
+	font-size: 0.8rem;
+}
+
+.bo-kv dt {
+	color: var(--muted);
+}
+
+.bo-kv dd {
+	margin: 0;
+	overflow-wrap: anywhere;
+	font-variant-numeric: tabular-nums;
+}
+
+/* The log tail. Scrolls in its own box: a build log is long, and the
+ * page must not scroll sideways because one configure line was wide. */
+.bo-log {
+	max-height: 22rem;
+	overflow: auto;
+	background: var(--panel);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	padding: 0.6rem 0.8rem;
+	font-size: 0.78rem;
+	line-height: 1.45;
+	white-space: pre;
+}

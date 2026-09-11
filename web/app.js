@@ -1538,6 +1538,7 @@ const CATEGORY_VIEWS = {
 	"daemon-config": "view-control-plane",
 	"host-swap": "view-host",
 	"rolling-restart": "view-deployment",
+	"build-overview": "view-integration",
 	"pkg-build-config": "view-integration",
 	"hostauth-sessions": "view-host",
 	"host-stats": "view-host",
@@ -2452,7 +2453,7 @@ function renderTree() {
 			icon: "software",
 			children: [
 				{ label: "Catalogue", hash: "pkg-recipes", icon: "recipes" },
-				{ label: "Build", hash: "pkg-build-config", icon: "packages" },
+				{ label: "Build", hash: "build-overview", icon: "packages" },
 				{ label: "Deployment", hash: "update", icon: "update" },
 			],
 		},
@@ -13849,6 +13850,201 @@ async function refreshPipeline() {
 	    " performed by hand";
 }
 
+/* ---------- Software > Build > Overview (#407) ---------- */
+
+/*
+ * What the build system is doing right now.
+ *
+ * Deliberately assembled from two existing endpoints rather than a new
+ * one. GET /system/pkg-build-config already reports capacity and, since
+ * #246, the slots actually in use -- chain_reap_stale() runs first there
+ * specifically so an operator does not read "10 of 10 in use" on an idle
+ * box. active_job_names is "name@image, name@image", which is exactly
+ * the key GET /pkg/{name} takes, so the fan-out needs no new route.
+ *
+ * The only daemon change #407 needed was PkgEntry.build_container: the
+ * container a build is running in existed inside the daemon and was
+ * reported only when a FAILED build's container was deliberately kept
+ * (kept_build_container, ADR-0175). The container of a build that was
+ * working fine -- the one worth looking inside -- had no name in the API.
+ */
+function boCard(title, value, note) {
+	const card = document.createElement("div");
+	const h = document.createElement("h3");
+	const v = document.createElement("div");
+
+	card.className = "stats-card";
+	h.textContent = title;
+	v.className = "bo-figure";
+	v.textContent = value;
+	card.appendChild(h);
+	card.appendChild(v);
+	if (note) {
+		const n = document.createElement("div");
+
+		n.className = "hint bo-note";
+		n.textContent = note;
+		card.appendChild(n);
+	}
+	return card;
+}
+
+/* Bytes as something a person reads. 0 means unlimited here, which is
+ * the cgroup convention this field already uses. */
+function boBytes(n) {
+	const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+	let v = Number(n), i = 0;
+
+	if (!isFinite(v) || v <= 0)
+		return "unlimited";
+	while (v >= 1024 && i < units.length - 1) {
+		v /= 1024;
+		i++;
+	}
+	return (v < 10 ? v.toFixed(1) : Math.round(v)) + " " + units[i];
+}
+
+async function boShowLog(name, image) {
+	const wrap = document.getElementById("bo-log-wrap");
+	const pre = document.getElementById("bo-log");
+	const title = document.getElementById("bo-log-title");
+
+	wrap.hidden = false;
+	title.textContent = "Build log \u2014 " + name + "@" + image;
+	pre.textContent = "Loading\u2026";
+	try {
+		const logs = await apiRequest("GET", CIX_API.listBuildLogs());
+		/* Newest first, and a log is named "<pkg>-<version>-<epoch>.log",
+		 * so prefix-match the package rather than guess its version. */
+		const mine = (logs.logs || []).filter((l) => l.file.indexOf(name + "-") === 0);
+
+		if (mine.length === 0) {
+			pre.textContent =
+			    "No build log for " + name + " yet. A log appears once the build writes its "
+			    + "first output; until then the build is still composing its environment.";
+			return;
+		}
+		const text = await apiRequestRaw("GET", CIX_API.getBuildLog(mine[0].file));
+		const str = typeof text === "string" ? text : JSON.stringify(text);
+		const lines = str.split("\n");
+
+		/* The tail: a build's interesting output is the last thing it
+		 * printed, and a full configure run is megabytes. */
+		pre.textContent = lines.slice(Math.max(0, lines.length - 400)).join("\n");
+		pre.scrollTop = pre.scrollHeight;
+	} catch (e) {
+		pre.textContent = "Could not read the build log: " + (e && e.message ? e.message : e);
+	}
+}
+
+async function refreshBuildOverview() {
+	const cap = document.getElementById("bo-capacity");
+	const list = document.getElementById("bo-builds");
+	const hint = document.getElementById("bo-builds-hint");
+	let config;
+
+	if (cap === null || list === null)
+		return;
+	try {
+		config = await apiRequest("GET", CIX_API.getSystemPkgBuildConfig());
+	} catch (e) {
+		return; /* best-effort, same as every other refresher here */
+	}
+
+	const max = Number(config.max_concurrent_jobs) || 0;
+	const busy = Number(config.active_jobs) || 0;
+
+	cap.textContent = "";
+	cap.appendChild(boCard("Build slots", String(max),
+	    "max_concurrent_jobs -- set on the Log tab"));
+	cap.appendChild(boCard("In use", busy + " of " + max,
+	    busy === 0 ? "nothing is building" : config.active_job_names));
+	cap.appendChild(boCard("Free", String(Math.max(0, max - busy)),
+	    "a further install is refused 409 at zero"));
+	cap.appendChild(boCard("Memory budget", boBytes(config.memory_max),
+	    "shared by every build at once, not per build"));
+	cap.appendChild(boCard("CPU budget", config.cpu_max || "unlimited",
+	    "raw cgroup v2 \u201cquota period\u201d, shared"));
+
+	/* Fan out over the running jobs. Failures are per-card rather than
+	 * fatal: one job disappearing between the two reads -- which is
+	 * ordinary, a build can finish mid-refresh -- must not blank the
+	 * whole page. */
+	const names = (config.active_job_names || "").split(",")
+	    .map((x) => x.trim()).filter((x) => x.length > 0);
+
+	list.textContent = "";
+	if (names.length === 0) {
+		const idle = document.createElement("p");
+
+		idle.className = "hint";
+		idle.textContent = "No build is in flight.";
+		list.appendChild(idle);
+		if (hint)
+			hint.hidden = true;
+		document.getElementById("bo-log-wrap").hidden = true;
+		return;
+	}
+	if (hint)
+		hint.hidden = false;
+
+	for (const key of names) {
+		const at = key.lastIndexOf("@");
+		const name = at < 0 ? key : key.slice(0, at);
+		const image = at < 0 ? "" : key.slice(at + 1);
+		const card = document.createElement("div");
+		const h = document.createElement("h3");
+
+		card.className = "stats-card bo-build";
+		card.tabIndex = 0;
+		card.setAttribute("role", "button");
+		card.title = "Read this build's log";
+		h.textContent = key;
+		card.appendChild(h);
+
+		const dl = document.createElement("dl");
+
+		dl.className = "bo-kv";
+		const add = (k, v) => {
+			const dt = document.createElement("dt");
+			const dd = document.createElement("dd");
+
+			dt.textContent = k;
+			dd.textContent = v;
+			dl.appendChild(dt);
+			dl.appendChild(dd);
+		};
+
+		try {
+			const e = await apiRequest("GET", CIX_API.getPkg(key));
+
+			add("state", e.state || "?");
+			add("image", e.image || image);
+			add("version", e.version || e.available_version || "\u2014");
+			add("container", e.build_container || "\u2014 (not started)");
+			add("last output", e.last_output_seconds_ago === null ||
+			    e.last_output_seconds_ago === undefined
+			        ? "\u2014"
+			        : e.last_output_seconds_ago + "s ago");
+			add("hostbuild", e.is_hostbuild ? "yes" : "no");
+			if (e.stage)
+				add("stage", e.stage);
+		} catch (err) {
+			add("state", "could not read this job");
+			add("why", err && err.message ? err.message : String(err));
+		}
+		card.appendChild(dl);
+		card.addEventListener("click", () => boShowLog(name, image));
+		card.addEventListener("keydown", (ev) => {
+			if (ev.key === "Enter" || ev.key === " ") {
+				ev.preventDefault();
+				boShowLog(name, image);
+			}
+		});
+		list.appendChild(card);
+	}
+}
+
 const VIEW_REFRESHERS = {
 	pipeline: [refreshPipeline],
 	"pipeline-errors": [refreshPipeline],
@@ -13861,6 +14057,7 @@ const VIEW_REFRESHERS = {
 	packages: [refreshPkgList, refreshImages],
 	"pkg-repo": [refreshPkgRepoConfig, refreshPkgSyncStatus],
 	"pkg-cache": [refreshPkgCacheConfig, refreshPkgCacheStatus, refreshPkgArtifactConfig],
+	"build-overview": [refreshBuildOverview],
 	"pkg-build-config": [refreshPkgBuildConfig],
 	update: [refreshImages, refreshPkgList],
 	devices: [refreshDevices, refreshDeviceMaps, refreshKmod, refreshKmodConfig],

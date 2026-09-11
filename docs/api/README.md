@@ -1759,6 +1759,17 @@ ADR-0157 Phase 2: several builds can genuinely be in flight at once, up to `pkg-
 
 `cixctl pkg build-log [--name=NAME [--image=IMAGE]]` is the CLI client — no raw terminal mode, no input relay (this stream is one-way), just prints each chunk to stdout as it arrives and exits cleanly once the daemon's own CLOSE frame lands. `--name`/`--image` map straight onto the query parameters above and are what make the command usable while several builds are running, which a recipe publish causes by itself. Without them the bare command is refused with `400 multiple builds in progress` and no way to comply ([#245](https://git.home.arpa/itdlabs/cix/issues/245)) — the endpoint had accepted both parameters since ADR-0157 Phase 2 and the CLI simply never sent them.
 
+### Which container a running build is in (`build_container`, issue #407)
+
+`PkgEntry` carries `build_container` — the registry container this build is running in right now, `__pkgbuild-<chain index>` (ADR-0157 Phase 2). With up to `max_concurrent_jobs` builds in flight, the chain slot a given job took was previously not discoverable at all: the name existed inside the daemon (`build_container_name`, assigned when the fetch completes and the container is created) and was reported only in the one case where a *failed* build's container was deliberately kept (`kept_build_container`, ADR-0175). So the container of a build that was working fine — the one an operator actually wants to look inside — had no name in the API.
+
+With it, everything the container API already offers applies to a live build: `GET /v1/containers/{name}/stats` for real CPU/memory/disk, `GET /v1/containers/{name}/processes` for what the build is actually running (which is the honest answer to "is this configure loop stuck"), and the console for a look inside. None of that is new machinery; it was simply unreachable without the name.
+
+Non-null **exactly while `state` is `"building"`**. It is null during `"fetching"`, because the container does not exist yet — it is created after the source is fetched and its checksum verified — and null again once the build leaves that state. The last part is a deliberate gate, not an accident of bookkeeping: the daemon clears its own `build_container_name` only when a later job claims the same chain slot, so reporting the field unconditionally would show an installed package still sitting in a container that has since been torn down, or — once that slot is reused — one now running an unrelated build. Gated on state, the field can only ever name a container that exists and belongs to this job.
+
+`build_container` and `kept_build_container` are opposites and a row can never carry both: the first is a container that exists *because the build is still running*, the second one that outlived its build *because it failed with `keep_on_failure`*.
+
+
 ## DNS: records + a real dnsmasq container
 
 DNS records are a REST resource; the actual name resolution is done by a real DNS server (dnsmasq recommended) running as a normal containerized workload — not hand-rolled, the same reasoning BIRD wasn't hand-rolled for routing (ADR-0007's "no external libraries" rule is about this project's own platform components, not about workloads a container runs).

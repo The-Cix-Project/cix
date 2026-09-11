@@ -18115,6 +18115,31 @@ components:
             fetching/building state is reconciled to failed
             ("interrupted by a daemon restart", issue #56), since the
             job it describes no longer exists.
+        build_container:
+          type: string
+          nullable: true
+          description: >
+            The registry container this build is running in RIGHT NOW --
+            "__pkgbuild-<chain index>" (ADR-0157 Phase 2) -- so an operator
+            watching a build can reach it with GET /containers/{name}/stats,
+            GET /containers/{name}/processes or the console, without having to
+            guess which of the max_concurrent_jobs chain slots it took.
+
+
+            Non-null exactly while state is "building". null during "fetching"
+            (the container does not exist yet -- it is created once the source
+            is fetched and verified), and null once the build has left that
+            state. That last part is deliberate rather than incidental: the
+            daemon's own build_container_name is cleared only when a later job
+            claims the same chain slot, so reporting it unconditionally would
+            show an installed package still sitting in a container that has
+            been torn down, or worse, one now running somebody else's build.
+            Gated on state, it can only ever name a container that exists.
+
+
+            Distinct from kept_build_container below, which is the opposite
+            case: a container that OUTLIVED its build because it failed with
+            keep_on_failure. A row can never have both.
         kept_build_container:
           type: string
           nullable: true
