@@ -6,6 +6,53 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### pkg.sync no longer freezes the control plane for five seconds every six hours (#367, #368, ADR-0278)
+
+Measured on 192.168.15.95 across four days, taking the first appearance of each new
+high-water mark:
+
+```
+09-07 03:23:15   6116 ms      09-09 21:23:15   5421 ms
+09-08 21:23:14   5842 ms      09-10 03:23:14   5235 ms
+09-09 15:23:13   5062 ms
+```
+
+`03:23`, `09:23`, `15:23`, `21:23` — a six-hour period at the same minute, aligned with the
+`recipe-sync` schedule, and **every record carrying an empty `activity`**, which is what
+identifies it as scheduled work rather than a request handler. Seven times the 750 ms the
+daemon itself calls slow.
+
+Five seconds is not a blip on this daemon. `cixd` is pid 1 on a host with no shell, and for
+that window nothing is served — no API, no dashboard, no console, no container lifecycle
+event. It is also perfectly regular and entirely self-inflicted.
+
+**The extraction moves into a forked helper; the merge does not.** ADR-0278 adds one
+primitive — `helper_run()` — rather than a fourth hand-rolled fork-and-poll beside the three
+the daemon already had (`procfuse_start()`, the build containers, `diskformat.c`). A fork
+sees a copy of every global and can change none the parent will read, so only
+filesystem-effecting work may move: `pkg_sync_extract()` unpacks the archive and that is its
+whole effect, while the recipe merge calls `pkg_recipe_add()` and reads `g_sync_refetch_*`
+and therefore stays on the loop — where it is the cheap half anyway, a few hundred small
+files.
+
+Getting that split wrong fails **silently** — the child updates its copy, exits 0, and the
+parent carries on with the old value — which is why ADR-0278 states the rule rather than
+leaving it to be inferred at each call site.
+
+**A failed fork is not a lost sync.** `helper_run()` returns -1 without calling back, and
+the caller extracts inline exactly as before: worse for latency, correct for the result,
+which is the right way round.
+
+Threads were ruled out on measurement, recorded so it is not re-argued: 215 mutable global
+tables, 21 places documenting a dependence on being single-threaded, and ~74 fork/clone
+sites doing non-async-signal-safe work before `execve` — in a process where a crash is a
+kernel panic. `exec.c` says it outright: "setenv() after fork() is safe here specifically
+because cixd is single-threaded".
+
+`GET /v1/volumes/{name}/usage`'s `nftw()` walk is the same shape and the next intended user
+(#368) — unbounded by nature, and quiet so far only because the one volume on that host
+holds 27 KB.
+
 ### A file read now says which tree answered (#394)
 
 `GET /v1/containers/{name}/files` answered `200` with 2 MB of valid ELF for

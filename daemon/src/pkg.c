@@ -10416,7 +10416,74 @@ static void sync_walk_container_recipes(const char *containers_root, int *added,
 	closedir(names_d);
 }
 
-void pkg_sync_completed(int exit_status)
+/*
+ * ADR-0278 (#367): the forkable half of a sync -- clear the extraction
+ * directory and unpack the archive into it.
+ *
+ * Split out because this is where the five seconds went. The archive is
+ * the whole recipe repository and unpacking it ran synchronously on the
+ * event loop, every six hours, on a daemon that is pid 1 and whose loop
+ * is the only way into the host. Measured stalls of 5062-6116 ms at
+ * 03:23, 09:23, 15:23 and 21:23 across four days, against a threshold
+ * the daemon itself calls slow at 750 ms.
+ *
+ * Everything here is filesystem-effecting ONLY, which is what makes it
+ * safe to run in a fork: it touches no global the parent will read
+ * afterwards. The recipe merge below is the opposite -- it calls
+ * pkg_recipe_add() and reads g_sync_refetch_* -- so it stays in the
+ * parent, where it is also fast (a few hundred small files).
+ *
+ * Returns 0 on success. Callable from a helper child or, if the fork
+ * fails, inline from the parent: it behaves identically either way.
+ */
+int pkg_sync_extract(void)
+{
+	char tarball_path[PATH_MAX];
+	char extract_dir[PATH_MAX];
+
+	sync_state_path(tarball_path, sizeof(tarball_path));
+	snprintf(extract_dir, sizeof(extract_dir), "%s/sync-extract", g_pkg_dir);
+	{
+		char *rm_argv[] = { (char *)PKG_RM_BIN, "-rf", extract_dir, NULL };
+
+		run_subprocess(PKG_RM_BIN, rm_argv);
+	}
+	if (persist_mkdir_p(extract_dir) != 0)
+		return -1;
+	if (extract_tarball(tarball_path, extract_dir) != 0)
+		return -2;
+	return 0;
+}
+
+/*
+ * The fetch finished. Records the outcome and says whether the caller
+ * should now run pkg_sync_extract() (1) or whether this sync is already
+ * over (0) -- ADR-0278 split the extraction out so it can go into a
+ * helper process, and this is the part that must run on the loop
+ * because it owns the sync's state.
+ */
+int pkg_sync_fetch_done(int exit_status)
+{
+	char tarball_path[PATH_MAX];
+
+	g_sync_pid = -1;
+	sync_state_path(tarball_path, sizeof(tarball_path));
+	if (exit_status != 0) {
+		g_sync_last_state = SYNC_FAILED;
+		snprintf(g_sync_last_error, sizeof(g_sync_last_error), "fetch failed (curl exit %d)",
+		         exit_status);
+		unlink(tarball_path);
+		return 0;
+	}
+	return 1;
+}
+
+/*
+ * The extraction finished (in a helper, or inline when the fork
+ * failed). `rc` is pkg_sync_extract()'s own return. Everything from
+ * here on touches in-memory state and therefore runs on the loop.
+ */
+void pkg_sync_completed(int rc)
 {
 	char tarball_path[PATH_MAX];
 	char extract_dir[PATH_MAX];
@@ -10427,33 +10494,14 @@ void pkg_sync_completed(int exit_status)
 	struct dirent *name_de;
 	int added = 0, skipped = 0, failed = 0;
 
-	g_sync_pid = -1;
 	sync_state_path(tarball_path, sizeof(tarball_path));
-
-	if (exit_status != 0) {
-		g_sync_last_state = SYNC_FAILED;
-		snprintf(g_sync_last_error, sizeof(g_sync_last_error), "fetch failed (curl exit %d)",
-		         exit_status);
-		unlink(tarball_path);
-		return;
-	}
-
 	snprintf(extract_dir, sizeof(extract_dir), "%s/sync-extract", g_pkg_dir);
-	{
-		char *rm_argv[] = { (char *)PKG_RM_BIN, "-rf", extract_dir, NULL };
 
-		run_subprocess(PKG_RM_BIN, rm_argv);
-	}
-	if (persist_mkdir_p(extract_dir) != 0) {
+	if (rc != 0) {
 		g_sync_last_state = SYNC_FAILED;
-		snprintf(g_sync_last_error, sizeof(g_sync_last_error),
-		         "could not create extraction directory");
-		unlink(tarball_path);
-		return;
-	}
-	if (extract_tarball(tarball_path, extract_dir) != 0) {
-		g_sync_last_state = SYNC_FAILED;
-		snprintf(g_sync_last_error, sizeof(g_sync_last_error), "archive extraction failed");
+		snprintf(g_sync_last_error, sizeof(g_sync_last_error), "%s",
+		         rc == -1 ? "could not create extraction directory"
+		                  : "archive extraction failed");
 		unlink(tarball_path);
 		return;
 	}
