@@ -6,6 +6,46 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### cix-build-system builds on a Cix host (cix-build-system#124)
+
+CBS's `Makefile` links `-larchive -lzstd -ldl`, and neither library was packaged, so CBS could not
+be built on a Cix host at all. Three recipes close that, all TCC, all on 192.168.15.95:
+
+- **`zstd` 1.5.7-3** — the library only, which is the scope CBS's own `zstd.cbs` declares. It is
+  load-bearing rather than incidental: CBS's `package.c` compresses CIXPKG payloads at level 19 and
+  `cixpkg.c` reads frames back, and CBS's ADR-0012 fixes zstd as the format's compression rather
+  than leaving it selectable.
+- **`libarchive` 3.8.1-4** — zlib, lzma and zstd filters, every other optional dependency
+  explicitly disabled rather than left to whatever configure finds. CBS's `archive.c` is the only
+  consumer and uses fifteen `archive_read_*`/`archive_entry_*` symbols, but it calls
+  `archive_read_support_filter_all()`, so which compressed source tarballs CBS can open is decided
+  in this recipe and nowhere else.
+- **`cbs` v0.1.23-2** — built with CBS's own `-std=c11 -Wall -Wextra -Werror -pedantic` passed
+  through unchanged. The gate runs `cbs --version`, then `cbs check` and `cbs explain --json`
+  against `cbs.cbs`, a real recipe rather than a fixture — CBS's own suite is fixture-only, so
+  "it builds" and "it parses a real recipe" are separate claims and only the second is worth
+  much. `explain --json` is additionally the exact call cix-build-system#132 proposes cixd would
+  make, so the gate exercises the one interface an integration would depend on.
+
+**This packages CBS; it does not integrate it.** Nothing in the daemon invokes `cbs`, no recipe
+format discriminator exists, and cix-build-system#132 is open. What it establishes is the thing
+that had to come first and could not be reasoned about: CBS compiles and runs under this
+platform's pinned compiler, against this platform's own libraries.
+
+Three build failures along the way shared one cause, now recorded in `CLAUDE.md`: **TCC predefines
+neither `__GNUC__` nor `_MSC_VER`**, so headers dispatching on those two send it down a fallback
+arm written for a hypothetical compiler and exercised by nobody. The libarchive case is the one
+worth reading — the tempting fix (`-D__GNUC__`) compiles and silently unpacks a BLAKE2 parameter
+struct from 32 bytes to 36, producing a wrong RAR5 hash that verifies cleanly. The recipe instead
+brackets the structs with real `#pragma pack` lines and gates the result with a `_Static_assert`,
+which is what failed its own `-2` revision before any object was compiled.
+
+Two recipe-authoring notes, both earned: a composed build environment contains precisely what
+`pkg_build_depends` declares, and reasoning that a build "has no configure script so `sed` is not
+reached" is a guess (zstd `-1` compiled ~120 objects and then died generating `libzstd.pc`); and
+backticks inside a double-quoted `pkg_*` assignment are command substitution, which made zstd `-2`
+fail with the very error message its changelog was quoting.
+
 ### test_releasekey's oracle stops skipping (#406)
 
 `test_releasekey` is in `SELFTESTS`, so it gates every release. Its first action is to skip
