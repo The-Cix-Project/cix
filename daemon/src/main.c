@@ -12852,22 +12852,31 @@ static int create_container_from_body(const char *body, size_t body_len,
 	 * A container is the right owner because BUILD_ID is a fact about
 	 * the HOST the container is running on, and that is knowable only
 	 * here. Same reasoning that made /etc/passwd container-instance
-	 * content rather than image baseline. Recorded in file_paths[] so
-	 * a restart re-renders it, which is what keeps it true across a
-	 * host upgrade; if no slot is free the file is still staged, just
-	 * not refreshed, which is strictly better than absent.
+	 * content rather than image baseline.
+	 *
+	 * Deliberately NOT recorded in file_paths[]. That array is the
+	 * caller's own files[] -- it is echoed back in the create response
+	 * and replayed on restart -- and putting a platform file in it
+	 * would be wrong twice. It would change what every create response
+	 * reports for every container (test_container_files asserts the
+	 * echo is exactly what was sent, and caught this). And replay
+	 * re-stages PERSISTED content, so an entry here would pin the
+	 * BUILD_ID captured at creation rather than refresh it: the
+	 * mechanism that looks like it keeps the file current is the one
+	 * that would freeze it.
+	 *
+	 * So this writes the file and stops. A container reports the build
+	 * it was created under, which is accurate at creation and can go
+	 * stale if the host upgrades beneath a long-lived container --
+	 * a real limit, stated rather than papered over, and smaller than
+	 * the image-level freeze it replaces (#393).
 	 */
 	{
 		char osr[OSRELEASE_MAX];
 
-		if (osrelease_render(osr, sizeof(osr), CIX_BUILD_VERSION) == 0 &&
-		    stage_container_file(stage_dir, "/etc/os-release", osr, 0644, (uid_t)-1, (gid_t)-1,
-		                          stage_id_offset) == 0 &&
-		    file_count < CONTAINER_MAX_FILES) {
-			snprintf(file_paths[file_count], sizeof(file_paths[file_count]), "%s",
-			         "/etc/os-release");
-			file_count++;
-		}
+		if (osrelease_render(osr, sizeof(osr), CIX_BUILD_VERSION) == 0)
+			(void)stage_container_file(stage_dir, "/etc/os-release", osr, 0644, (uid_t)-1,
+			                            (gid_t)-1, stage_id_offset);
 	}
 
 	/* spec was zeroed before the rootfs provisioning above, which sets

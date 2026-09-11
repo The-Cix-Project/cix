@@ -32,9 +32,17 @@ prevent it.
 A container is the right owner because `BUILD_ID` is a fact about the
 *host the container is running on*, which is knowable only at creation.
 That is the same reasoning that made `/etc/passwd` container-instance
-content rather than image baseline. It is recorded in `file_paths[]`, so
-a restart re-renders it and the answer stays true across a host upgrade.
-The image copy is kept: it is what an exported image carries.
+content rather than image baseline. The image copy is kept: it is what
+an exported image carries.
+
+It is deliberately **not** recorded in the container's `files[]`. That
+array is the caller's own, echoed in the create response and replayed on
+restart — and replay re-stages *persisted* content, so an entry there
+would pin the `BUILD_ID` captured at creation rather than refresh it.
+The mechanism that looks like it keeps the file current is the one that
+would freeze it. A container therefore reports the build it was created
+under, which can go stale beneath a long-lived container: a real limit,
+and a smaller one than the image-level freeze it replaces (#393).
 
 ## Context
 
