@@ -6,6 +6,37 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A build in flight when the daemon stops now leaves a run behind (#375)
+
+"It was building and the box went down" is exactly the history an operator looks for
+afterwards, and it was the one history the run store could not show. A run opens when a job
+begins and closes at its outcome; a daemon that stopped in between recorded nothing.
+
+**#375's own scoping was wrong, and reading the code is what showed it.** The issue proposed
+"two additive keys in the installed-state JSON plus their parse" — persisting
+`run_started_at` and `run_trigger` so the entry reloads with its run intact. But
+`save_state()` skips any entry that is not `PKG_STATE_INSTALLED`, so an entry that was
+fetching or building is not persisted **at all**; there is no entry to reload the keys onto.
+The issue was careful to say it was read from the code and not measured, and this is the
+part that reading further changes.
+
+**ADR-0272 forbids the other obvious fix, and says so in advance:** "writing a half-record
+and amending it later would create exactly the mutable second copy this ADR exists to
+avoid. The store therefore contains no run whose outcome is unknown." So appending an open
+run and finalising it later is out.
+
+What is left is the honest reading: **the daemon stopping is itself an outcome.** It is
+written once, at the moment it becomes true, and never amended — the same contract every
+other run record has. The shutdown path now closes each open run as `failed` with a real
+reason ("the daemon stopped while this was building"), not `cancelled`, which would say
+somebody asked for it. Nobody did.
+
+That covers a clean stop — a reboot, an update, a SIGTERM — which is how this daemon almost
+always goes down, every deploy included. It does **not** cover a panic or a power cut, where
+nothing can be written at the time. Closing that hole needs durable knowledge that a run was
+open, and the natural place to keep it is the run store, which ADR-0272 forbids. Stated
+rather than half-solved; #375 stays open for exactly that case.
+
 ### The rolling-rebuild queue is re-derived at startup instead of being lost (#373)
 
 The queue of images waiting for a rolling rebuild was in-memory only. A daemon restart
