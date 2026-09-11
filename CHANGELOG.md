@@ -6,6 +6,65 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### test_releasekey's oracle stops skipping (#406)
+
+`test_releasekey` is in `SELFTESTS`, so it gates every release. Its first action is to skip
+entirely when stock `minisign` is absent — and minisign was in no recipe and in no image, so it
+had skipped on **every release since ADR-0220**. A test that prints one `SKIP` line and exits 0
+inside a gate is invisible in a log that checks the exit status, and the release-signature format
+— the last thing between a substituted installer ISO and a machine that boots it — had therefore
+never been checked on a Cix host. ADR-0279 made that sharper by adding a verifier of our own:
+both directions now matter, and neither is worth anything if the only verifier present is the one
+under test.
+
+Two new packages, both TCC. `libsodium` 1.0.20 was checked against the two documented hazards
+before the recipe was written rather than after: `__builtin_bswap16/32/64` are still missing from
+the pinned compiler (#208) and are the dangerous kind, since undefined symbols are legal in a
+shared library — libsodium uses none of them; and `__int128`, which TCC does not implement, is
+probed for rather than assumed, so configure selects the portable limb code. `minisign` is
+compiled by invoking tcc on its four source files directly, because upstream's CMake is not in
+this build image and does nothing here but locate libsodium.
+
+**One of the three libsodium revisions was upstream's latent bug, not a TCC gap**, and it is worth
+recording. `private/common.h` defines `ACQUIRE_FENCE` as `__atomic_thread_fence` under
+`HAVE_GCC_MEMORY_FENCES` and as `atomic_thread_fence(memory_order_acquire)` under
+`HAVE_C11_MEMORY_FENCES` — and includes `<stdatomic.h>` nowhere, although configure's own C11
+probe does. GCC defines both macros and takes the first arm, so the second is dead code on every
+compiler upstream builds with. Measured on the box: `C11 memory fences... yes`, `gcc memory
+fences... no`, then `hash_sha256_cp.c:159: error: 'memory_order_acquire' undeclared`. TCC is
+simply the first compiler to be one and not the other. Fixed by supplying the header the branch
+needs, not by letting the probe fail — that also builds, and silently removes a memory fence from
+a crypto library.
+
+The other revisions were the composed build environment saying what it did not contain, twice:
+libsodium's first died on a missing `grep`, minisign's on missing `linux-headers` (glibc's
+`<limits.h>` reaches `<linux/limits.h>` through `bits/local_lim.h`, so compiling *any* C against
+this glibc needs them). That is the lesson `wireless-regdb 2026.09.03-2` documents at length, and
+these recipes made it anyway.
+
+**Installing minisign into `cix-builder` was necessary and not sufficient**, which is the same
+lesson a third time: the selftest container is composed from `cix`'s own `pkg_build_depends`, not
+from cix-builder's installed set, so the test kept skipping while reporting `PASS`. minisign is
+now declared there.
+
+Proven by `probe-minisign`, because the release log cannot answer it — the harness prints a test's
+stdout only on failure, so a run that skipped and a run that exercised stock minisign produce the
+identical `test_releasekey PASS` line. The probe runs the test's own `command -v` check and then a
+real sign/verify round trip:
+
+```
+probe-minisign: minisign found at /usr/bin/minisign
+minisign 0.12
+Signature and comment signature verified
+probe-minisign: a real sign/verify round trip completed
+```
+
+Its first revision fetched GNU hello from `ftp.gnu.org` and never reached `pkg_build()` —
+`curl: (35) OpenSSL SSL_connect: SSL_ERROR_SYSCALL`. That host's refusal of this site is recorded
+in CLAUDE.md as history after being re-measured as working on 2026-09-04; this is a third data
+point and it is failing again. Moved to `mirrors.kernel.org` with `pkg_sha256` unchanged, which is
+what makes such a swap a non-event.
+
 ### Bytes that arrive with the 101 are frame bytes, not rubbish (#331)
 
 Every WebSocket client here read the handshake response into a buffer until it saw `\r\n\r\n`,
