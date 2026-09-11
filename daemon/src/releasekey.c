@@ -668,3 +668,29 @@ int releasekey_trust_adopt(const char *src_dir, const char *dst_dir)
 	closedir(d);
 	return adopted;
 }
+
+int releasekey_trust_count(const char *dir)
+{
+	DIR *d;
+	struct dirent *ent;
+	int n = 0;
+
+	if (dir == NULL)
+		return 0;
+	d = opendir(dir);
+	if (d == NULL)
+		return 0;
+	while ((ent = readdir(d)) != NULL) {
+		char path[PATH_MAX];
+		unsigned char id[RELEASEKEY_ID_LEN], pub[ED25519_PUB_LEN];
+
+		if (ent->d_name[0] == '.')
+			continue;
+		if ((size_t)snprintf(path, sizeof(path), "%s/%s", dir, ent->d_name) >= sizeof(path))
+			continue;
+		if (read_public_key_file(path, id, pub) == 0)
+			n++;
+	}
+	closedir(d);
+	return n;
+}

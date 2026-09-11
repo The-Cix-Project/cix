@@ -148,6 +148,19 @@ enum releasekey_error releasekey_verify_file(const char *path, const char *sig_p
  */
 int releasekey_trust_adopt(const char *src_dir, const char *dst_dir);
 
+/*
+ * How many minisign public keys `dir` holds -- 0 for an absent or empty
+ * store, and never negative.
+ *
+ * Asked before reaching for the artifact tier on a recipe that carries
+ * no checksum: with no trusted key there is nothing a signature could
+ * be checked against, so fetching one would be a request made to learn
+ * something already known. Counts by PARSE, like the adopter, so a
+ * README or a certificate sitting in the directory is not mistaken for
+ * an ability to verify.
+ */
+int releasekey_trust_count(const char *dir);
+
 const char *releasekey_strerror(enum releasekey_error e);
 
 #endif /* RELEASEKEY_H */
