@@ -419,6 +419,22 @@ static int g_gate_deploy;
 static struct pkg_approval g_approvals[PKG_APPROVAL_MAX];
 static int g_approval_count;
 static char g_recipes_dir[PATH_MAX];
+
+/*
+ * Where adopted release-signing public keys live (ADR-0279).
+ *
+ * Set once at startup. A sync copies docs/keys/ out of the repository
+ * tarball into it, which is how this host learns which keys may approve
+ * an artifact -- the owner's decision being that the key comes from git
+ * via sync, so git stays the trust root and holds one published key
+ * rather than a checksum line per recipe.
+ *
+ * Defined HERE and not beside the push queue that fills it: the install
+ * path reads it some four thousand lines earlier, and a static defined
+ * after its first use is a compile error rather than a warning -- which
+ * is exactly how v2.57.92's first build ended.
+ */
+static char g_trusted_keys_dir[PATH_MAX];
 static char g_sources_dir[PATH_MAX];
 static char g_installed_state_path[PATH_MAX];
 static char g_containers_dir[PATH_MAX];
@@ -10206,16 +10222,6 @@ static char g_repo_kind[PKGREPO_KIND_MAX] = "gitea";
 static char g_repo_ref[PKGREPO_REF_MAX] = "master";
 static char g_repo_auth_token[PKGREPO_TOKEN_MAX];
 
-/*
- * Where adopted release-signing public keys live (ADR-0279).
- *
- * Set once at startup. A sync copies docs/keys/ out of the repository
- * tarball into it, which is how this host learns which keys may approve
- * an artifact -- the owner's decision being that the key comes from git
- * via sync, so git stays the trust root and holds one published key
- * rather than a checksum line per recipe.
- */
-static char g_trusted_keys_dir[PATH_MAX];
 
 static const char *pkg_repo_token(void)
 {
