@@ -65,6 +65,7 @@
 #include "quotamap.h"
 #include "registry.h"
 #include "containerpath.h"
+#include "osrelease.h"
 #include "targz.h"
 #include "rtnetlink.h"
 #include "siteconfig.h"
@@ -12822,6 +12823,50 @@ static int create_container_from_body(const char *body, size_t body_len,
 			json_free(root);
 			snprintf(err_msg, err_msg_size, "failed to stage dns_servers");
 			return 500;
+		}
+	}
+
+	/*
+	 * ADR-0274: /etc/os-release, staged into every container at
+	 * creation and re-staged on every restart, from the DAEMON's own
+	 * build version.
+	 *
+	 * pkg_seed_image_baseline() also writes this, and that copy is not
+	 * enough on its own for two reasons found by deploying it.
+	 *
+	 * It only lands when an image produces a NEW VERSION. Every image
+	 * that already existed when os-release shipped therefore has none,
+	 * and gets none until something changes its package manifest --
+	 * and by ADR-0155 reinstalling a package at the same version
+	 * reproduces the same manifest hash, dedups, and throws the
+	 * re-seeded tree away. Measured on the box: `jump` answered
+	 * `{"error":"no such file"}` after a host running the feature had
+	 * been deployed and rebooted.
+	 *
+	 * And BUILD_ID would freeze. An image seeded once carries that
+	 * build's version for the rest of its life, so a host upgrading
+	 * past it would disagree with its own containers about what they
+	 * are -- the exact drift ADR-0274 exists to prevent, reintroduced
+	 * by the mechanism meant to prevent it.
+	 *
+	 * A container is the right owner because BUILD_ID is a fact about
+	 * the HOST the container is running on, and that is knowable only
+	 * here. Same reasoning that made /etc/passwd container-instance
+	 * content rather than image baseline. Recorded in file_paths[] so
+	 * a restart re-renders it, which is what keeps it true across a
+	 * host upgrade; if no slot is free the file is still staged, just
+	 * not refreshed, which is strictly better than absent.
+	 */
+	{
+		char osr[OSRELEASE_MAX];
+
+		if (osrelease_render(osr, sizeof(osr), CIX_BUILD_VERSION) == 0 &&
+		    stage_container_file(stage_dir, "/etc/os-release", osr, 0644, (uid_t)-1, (gid_t)-1,
+		                          stage_id_offset) == 0 &&
+		    file_count < CONTAINER_MAX_FILES) {
+			snprintf(file_paths[file_count], sizeof(file_paths[file_count]), "%s",
+			         "/etc/os-release");
+			file_count++;
 		}
 	}
 

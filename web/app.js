@@ -13317,7 +13317,21 @@ function renderDeliveryGraph(data) {
 	}
 
 	const q = (document.getElementById("dg-search") || {}).value || "";
-	const problemsOnly = !!(document.getElementById("dg-problems-only") || {}).checked;
+	/*
+	 * The control is "View all", and it is OFF by default -- so the
+	 * page opens showing only what needs attention, and seeing
+	 * everything is the deliberate act. This is a pipeline for
+	 * operators: the common question is "what is wrong", and a page
+	 * that answers it without being asked is worth more than one
+	 * that opens on a full list nobody scrolled.
+	 *
+	 * Stated positively on purpose. "Problems only", unchecked, made
+	 * the box's OFF state the one that showed more -- a negative
+	 * checkbox, where reading the label tells you what you get by
+	 * ticking it and leaves you to infer the rest.
+	 */
+	const viewAll = !!(document.getElementById("dg-view-all") || {}).checked;
+	const problemsOnly = !viewAll;
 	const needle = q.trim().toLowerCase();
 	const stagesFor = {};
 	for (const k of data.kinds)
@@ -13600,7 +13614,7 @@ async function openPipelineDrawer(kind, row) {
  */
 function wirePipelineControls() {
 	const search = document.getElementById("dg-search");
-	const only = document.getElementById("dg-problems-only");
+	const only = document.getElementById("dg-view-all");
 	const close = document.getElementById("dg-drawer-close");
 	const rerender = () => {
 		if (cache.pipeline)

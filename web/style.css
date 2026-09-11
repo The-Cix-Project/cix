@@ -102,7 +102,20 @@
 }
 
 :root {
-	color-scheme: light dark;
+	/*
+	 * The palette here is light, so this says light -- not "light
+	 * dark". `color-scheme` is what the browser paints its OWN
+	 * chrome from: scrollbars, form controls, the canvas behind the
+	 * page. Declaring both values tells it to follow the SYSTEM
+	 * preference, which it then keeps doing after the header's
+	 * theme toggle has changed every other colour on the page. A
+	 * light dashboard with dark scrollbars is that mismatch, and it
+	 * is invisible in the token set because no token controls it.
+	 *
+	 * So it is set once per theme state, in the same three places
+	 * the palette is.
+	 */
+	color-scheme: light;
 	--bg: #eae5d8;
 	--panel: var(--paper);
 	--text: var(--carbon);
@@ -146,6 +159,7 @@
 
 @media (prefers-color-scheme: dark) {
 	:root {
+		color-scheme: dark;
 		--bg: var(--carbon);
 		--panel: var(--ferrite);
 		--text: var(--paper);
@@ -191,6 +205,7 @@
  * variable/mixin trick -- this is plain CSS, no preprocessor.
  */
 :root[data-theme="light"] {
+	color-scheme: light;
 	--bg: #eae5d8;
 	--panel: var(--paper);
 	--text: var(--carbon);
@@ -225,6 +240,7 @@
 }
 
 :root[data-theme="dark"] {
+	color-scheme: dark;
 	--bg: var(--carbon);
 	--panel: var(--ferrite);
 	--text: var(--paper);

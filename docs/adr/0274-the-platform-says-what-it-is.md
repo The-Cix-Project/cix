@@ -6,6 +6,36 @@ Accepted
 
 Issue [#387](https://git.home.arpa/itdlabs/cix/issues/387).
 
+**Amended 2026-09-11, after deploying it.** The decision stands; one of
+its two stagers was not sufficient. "One renderer, two stagers"
+(`mkbootroot` for the host root, `pkg_seed_image_baseline()` for images)
+is now **one renderer, three stagers** — container creation stages it
+too, from the running daemon's own build version.
+
+Two things the deploy showed, neither visible on paper:
+
+**An image stager only fires when an image produces a new version.**
+Every image that already existed when this shipped has no
+`/etc/os-release` and gets none until something changes its package
+manifest — and by [ADR-0155](0155-an-image-version-is-a-manifest-hash.md)
+reinstalling a package at its own version reproduces the same manifest
+hash, dedups, and discards the re-seeded tree. Measured on
+192.168.15.95 after deploying and rebooting into the feature: `jump`
+answered `{"error":"no such file"}`.
+
+**`BUILD_ID` would freeze.** An image seeded once carries that build's
+version for the rest of its life, so a host upgrading past it disagrees
+with its own containers about what they are — the precise drift this
+ADR was written to prevent, reintroduced by the mechanism meant to
+prevent it.
+
+A container is the right owner because `BUILD_ID` is a fact about the
+*host the container is running on*, which is knowable only at creation.
+That is the same reasoning that made `/etc/passwd` container-instance
+content rather than image baseline. It is recorded in `file_paths[]`, so
+a restart re-renders it and the answer stays true across a host upgrade.
+The image copy is kept: it is what an exported image carries.
+
 ## Context
 
 Cix shipped no `/etc/os-release`. Neither the control-plane root nor any

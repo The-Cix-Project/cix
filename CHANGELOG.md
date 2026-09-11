@@ -6,6 +6,41 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### os-release reaches containers, and three dashboard fixes (#387, ADR-0274)
+
+**os-release was shipped and then measured, and the measurement moved it.** After
+deploying v2.57.58 and rebooting, `GET /v1/containers/jump/files?path=/etc/os-release`
+answered `{"error":"no such file"}`. `pkg_seed_image_baseline()` writes it only when
+an image produces a NEW VERSION, so every image that predates the feature has none --
+and ADR-0155 means reinstalling a package at its own version reproduces the manifest
+hash, dedups, and discards the re-seeded tree. There was no path by which an existing
+image would ever acquire it.
+
+The second defect was worse and had not surfaced yet: **`BUILD_ID` would freeze.** An
+image seeded once carries that build's version for life, so a host upgrading past it
+would disagree with its own containers about what they are -- exactly the drift
+ADR-0274 was written to prevent, reintroduced by the mechanism meant to prevent it.
+
+Container creation now stages it, from the running daemon's `CIX_BUILD_VERSION`, and
+records it in `file_paths[]` so a restart re-renders it. `BUILD_ID` is a fact about the
+host a container runs on, knowable only at creation -- the same reasoning that made
+`/etc/passwd` container-instance content rather than image baseline. The image copy is
+kept for exported images. ADR-0274 amended: one renderer, three stagers.
+
+**Light mode had dark scrollbars.** `web/style.css` declared `color-scheme: light dark`
+once, in the bare `:root`, and never again. That property is what the browser paints its
+OWN chrome from -- scrollbars, form controls, the canvas behind the page -- and both
+values means "follow the system preference", which it kept doing after the theme toggle
+had changed every other colour. Invisible in the token set, because no token controls
+it. Now declared in all three theme states, beside the palette it belongs to.
+
+**The pipeline's filter is "View all", off by default.** It read "Problems only",
+unchecked -- a negative checkbox whose OFF state showed *more*, where the label tells
+you what ticking it gives you and leaves you to infer the rest. Stated positively, the
+default inverts: the page opens on what needs attention, and seeing everything is the
+deliberate act. For an operator the common question is "what is wrong", and a page that
+answers it unasked beats one that opens on a list nobody scrolled.
+
 ### Two selftest gates that failed on correct recipes and a correct ADR
 
 The v2.57.55 hostbuild failed its selftest twice over, and neither failure was
