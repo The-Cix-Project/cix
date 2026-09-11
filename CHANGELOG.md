@@ -43,6 +43,38 @@ this version" is worth a logged warning, never a failed install.
 
 `cixctl image manifest show --image=NAME --version=VERSION` is the same thing from the CLI.
 
+### A declared restart delay is now the delay you declared (#361)
+
+`cix-init` computed every deadline from a whole-second clock, so a declared delay was honoured
+only to within a second of itself — the true range for a declared *N* was `(N-1, N]`. A release
+build measured a declared 2-second delay restarting after **1262 ms**.
+
+At `N = 2` that is sloppy. At `N = 1` it is the feature not existing: an exit late in a second
+restarts after ~0, so a service crash-looping against a missing dependency is respawned as fast as
+it can fail — exactly the hammering a backoff is for. `restart_delay_seconds` defaults to 2 in the
+API, and 1 is a legal, natural thing to declare.
+
+Deadlines are milliseconds now. A declared `*_seconds` is multiplied by 1000 where it is **stored**
+and never where it is compared, so one conversion site per deadline and no comparison can be left
+in the wrong unit. The same truncation applied to the ready probe, the command probe and the stop
+timeout, where a 1-second stop timeout could `SIGKILL` a service that was about to exit cleanly;
+all four move together.
+
+The wire is unchanged: `CIXINIT_EV_RESTART_IN` still reports **seconds**, because `cixd` and
+`test_cix_init` both read it as one. Nothing else needed converting — the supervisor's main loop
+polls on a fixed 250 ms timeout rather than one derived from these deadlines, and that 250 ms is
+what gives a millisecond deadline real effect.
+
+**The old test could not have caught this, and that is worth stating.** Its floor was 1000 ms,
+which was not slack but the honest contract of a truncating clock — and "at least one second less
+than declared" is satisfied by a delay of *zero* when the declaration is one second. The bug lived
+inside the assertion's own slack. So the two-second case tightens to 1900 ms, and a separate
+one-second case is added rather than folded into it; that one also asserts `RESTART_IN` still
+reports `1`, since a millisecond value leaking outward would read as a 1000-second backoff to
+anything consuming it.
+
+`test_cix_init` is in `SELFTESTS`, so both run on the box.
+
 ### Seven packages stop compiling from source for no reason (#325)
 
 `approve_published_artifact()` (#306) writes `pkg_artifact_sha256=` into a recipe the moment its
