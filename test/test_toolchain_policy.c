@@ -127,6 +127,49 @@ static int version_newer(const char *a, const char *b)
 }
 
 /*
+ * Does this recipe DECLARE gcc?
+ *
+ * `pkg_toolchain="gcc"` is the authoritative answer and is checked
+ * first, because the scan below can only see a compiler a recipe names
+ * out loud -- and a recipe need not name one at all. `cmake` runs
+ * `./bootstrap`, `fastfetch` runs `cmake`; both build with g++ or gcc,
+ * both declare it with a measured reason, and neither writes a
+ * compiler anywhere in pkg_build(). They were counted as TCC recipes
+ * and broke the total, which failed every build's selftest while both
+ * recipes were entirely correct.
+ *
+ * So the two signals answer different questions and both are kept. A
+ * declaration is what a recipe says; the scan is what it does. Their
+ * union is the set of gcc recipes, and the scan's real job is the case
+ * the declaration cannot cover -- a recipe that reaches for gcc
+ * WITHOUT declaring it, which is the undetected move ADR-0224 exists
+ * to make impossible.
+ *
+ * Read before pkg_build(), where the metadata lives.
+ */
+static int recipe_declares_gcc(const char *path)
+{
+	FILE *f = fopen(path, "r");
+	char line[4096];
+	int declares = 0;
+
+	if (f == NULL)
+		return 0;
+	while (fgets(line, sizeof(line), f) != NULL) {
+		if (strncmp(line, "pkg_build()", 11) == 0)
+			break;
+		/* 19, not 20: fgets() keeps the newline, so comparing the
+		 * terminator too would never match. */
+		if (strncmp(line, "pkg_toolchain=\"gcc\"", 19) == 0) {
+			declares = 1;
+			break;
+		}
+	}
+	fclose(f);
+	return declares;
+}
+
+/*
  * Does this recipe's pkg_build() actually invoke the gcc toolchain?
  *
  * Scans from pkg_build() onward, skipping comment lines. Anything
@@ -210,7 +253,7 @@ int main(void)
 			continue;
 
 		snprintf(path, sizeof(path), "%s/%s/build.sh", pkgdir, latest);
-		if (!recipe_uses_gcc(path))
+		if (!recipe_declares_gcc(path) && !recipe_uses_gcc(path))
 			continue;
 		found++;
 		if (!known_gcc_recipe(ent->d_name)) {

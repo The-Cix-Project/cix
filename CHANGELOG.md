@@ -6,6 +6,41 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Two selftest gates that failed on correct recipes and a correct ADR
+
+The v2.57.55 hostbuild failed its selftest twice over, and neither failure was
+about the code being built.
+
+**`test_docindex`.** ADR-0274 and ADR-0275 were written with `# ADR-NNNN: Title`
+-- the H1 shape this corpus drifted into once, and which `docs/adr/0000-adr-process.md`
+and `test_docindex` no longer accept. `test_docindex` is a `SELFTESTS` member, so
+every release built from those commits fails:
+
+```
+FAIL: docs/adr/0274-the-platform-says-what-it-is.md: first line must be "# 0274 - Title"
+```
+
+Fixed with the ADR-0275 amendment above.
+
+**`test_toolchain_policy`: `found 26 recipes building with gcc, this test expects 28`.**
+Both missing names were `cmake` and `fastfetch`, and **both recipes were entirely
+correct** -- each declares `pkg_toolchain="gcc"` with a measured reason. The
+detector was wrong. `recipe_uses_gcc()` scans `pkg_build()` for compiler command
+text, and neither recipe names a compiler anywhere: cmake runs `./bootstrap`,
+fastfetch runs `cmake`, and each build system detects its own toolchain. A
+correct recipe that never writes the word `gcc` was therefore counted as TCC.
+
+The file already records this class of miss, from btop: "an undetected gcc recipe
+is worse than a miscounted one". The fix then was to add `CXX=g++` to the markers,
+which still cannot see a recipe that names no compiler at all.
+
+`recipe_declares_gcc()` now reads `pkg_toolchain=` and the count is the union of
+declared and observed. The two signals answer different questions and both are
+kept: **a declaration is what a recipe says, the scan is what it does.** The
+scan's real job is the case a declaration cannot cover -- a recipe reaching for
+gcc *without* declaring it, which is the undetected move ADR-0224 exists to
+prevent. That assertion is untouched.
+
 ### A package must declare every library it links (#389, ADR-0276)
 
 `cmake@4.4.3-2` declared `pkg_depends=""` and built against openssl. openssl was
