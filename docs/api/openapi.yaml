@@ -3061,6 +3061,42 @@ paths:
                         activity:
                           type: string
                           description: The request being served when the loop went quiet.
+                        children:
+                          type: array
+                          description: >
+                            The daemon's own child processes at the moment of
+                            the record, and what each was doing (#399). A
+                            `wchan` of `do_wait` says the daemon is blocked in
+                            waitpid()/waitid() but not on WHICH child, and that
+                            gap is what made a six-minute wedge on 2026-09-11
+                            take a source-reading exercise to narrow: three
+                            stalls with an identical signature, two of nine
+                            seconds that recovered and one of 366 that did not,
+                            and no record anywhere naming the process being
+                            waited on. The child that is failing to exit is the
+                            answer, and its own `state` says why -- a `D` child
+                            only PENDS the SIGKILL sent to it. An empty array
+                            during a `do_wait` is equally informative: it means
+                            the wait is on a child that has already gone.
+                            Recorded on stall events, not on `slow-pass`, and
+                            capped at twelve entries.
+                          items:
+                            type: object
+                            properties:
+                              pid:
+                                type: integer
+                              comm:
+                                type: string
+                                description: The executable name the kernel reports for this child.
+                              state:
+                                type: string
+                                description: >
+                                  Process state, same alphabet as the daemon's own
+                                  above -- D is the uninterruptible sleep that
+                                  cannot be killed and so cannot be waited out.
+                              wchan:
+                                type: string
+                                description: Kernel function this child is sleeping in.
                   threshold_seconds:
                     type: integer
                   loop:

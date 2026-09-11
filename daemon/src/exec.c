@@ -559,7 +559,18 @@ int exec_into_container(pid_t target_pid, int cgroup_procs_fd, char *const cmd_a
 		 * reaps the grandchild itself via pidfd, the same convention
 		 * every other child it tracks already uses; this intermediate
 		 * process's own brief zombie window is reaped by the daemon's
-		 * ordinary child-reaping path right below. */
+		 * ordinary child-reaping path right below.
+		 *
+		 * #399: that first sentence described an intention, not the
+		 * code. No pidfd was ever registered for the grandchild -- the
+		 * only thing reaping it was a blocking waitpid() on the
+		 * reactor in console_session_teardown(), which is the bug that
+		 * comment made invisible: it read as documentation of an
+		 * existing safety property, so nobody looked. The registration
+		 * now exists (register_console_exec_reap() in main.c), and the
+		 * sentence is true. Kept in this shape deliberately -- a
+		 * comment asserting a mechanism is a claim about the code, and
+		 * this one went unchecked long enough to freeze a real host. */
 		if (write(pipefd[1], &grandchild, sizeof(grandchild)) != (ssize_t)sizeof(grandchild))
 			fprintf(stderr, "exec_into_container: pipe write: %s\n", strerror(errno));
 		close(pipefd[1]);

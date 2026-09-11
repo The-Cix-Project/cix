@@ -232,6 +232,35 @@ int main(void)
 						fprintf(stderr, "FAIL: stall record carries no wchan\n");
 						ok = 0;
 					}
+					/*
+					 * #399: and WHICH child, when the wchan is a wait.
+					 *
+					 * A wchan of "do_wait" says the daemon is blocked in
+					 * waitpid()/waitid() and nothing more. Three stalls
+					 * on 192.168.15.95 on 2026-09-10/11 carried exactly
+					 * that and no way to tell them apart; narrowing the
+					 * 366-second one took reading every blocking-wait
+					 * site in the daemon and correlating against the log
+					 * store, because the process being waited on was
+					 * named nowhere.
+					 *
+					 * Asserted as PRESENT, not non-empty: an empty array
+					 * is a real and useful answer (the wait is on a child
+					 * that has already gone), and a stall this test
+					 * induces need not have children at all. What must
+					 * never happen again is the field being absent, which
+					 * is the state that cost the investigation.
+					 */
+					{
+						const struct json_value *kids = json_object_get(s, "children");
+
+						if (kids == NULL || kids->type != JSON_ARRAY) {
+							fprintf(stderr,
+							        "FAIL: stall record does not say which children the "
+							        "daemon has -- a bare \"do_wait\" names no process\n");
+							ok = 0;
+						}
+					}
 				}
 				if (strcmp(event, "recovered") == 0)
 					saw_recovered = 1;
