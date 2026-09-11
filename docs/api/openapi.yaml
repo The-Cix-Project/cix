@@ -8682,6 +8682,18 @@ paths:
         ever reached the publishing host (#403).
 
 
+        On the install side a signature is an approval in its own
+        right: the artifact tier is tried when either the recipe
+        carries a pkg_artifact_sha256 or this host holds a trusted key,
+        and where both exist both must pass. A recipe with a checksum
+        behaves exactly as ADR-0122 made it, so the artifacts published
+        unsigned stay installable; a recipe with none now has a way in
+        at all, which is the cold-box case (#306, #403). The trusted
+        comment is compared in full against one built from the bytes
+        just downloaded, so a signature that does not name exactly this
+        package, revision and digest is refused.
+
+
         Artifact first, then signature -- the reverse of the ISO rule,
         because an ISO may not be published unsigned and a package may.
         A host with no release key publishes the artifact and logs that

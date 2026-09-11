@@ -5962,7 +5962,20 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 		 * "build from source like always," so the real per-source
 		 * loop below still runs unconditionally in that case.
 		 */
-		if (recipe.artifact_sha256[0] != '\0' && pkg_artifact_is_configured()) {
+		/*
+		 * ADR-0279: a checksum in the recipe is no longer the only way
+		 * in. A signature published beside the artifact is an approval
+		 * too, and it is the one that travels -- the checksum reaches
+		 * only the host that built the package, which is #403.
+		 *
+		 * So the tier is tried when EITHER exists: a recipe that
+		 * carries a checksum, or a host that holds a key some
+		 * signature could be checked against. Both gates are applied
+		 * below and, where both are present, both must pass.
+		 */
+		if (pkg_artifact_is_configured() &&
+		    (recipe.artifact_sha256[0] != '\0' ||
+		     releasekey_trust_count(g_trusted_keys_dir) > 0)) {
 			char artifact_url[768];
 			char artifact_header[320];
 			char artifact_path[PATH_MAX];
@@ -5980,6 +5993,7 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 			pid_t sub;
 			int status = -1;
 			int sha_ok = 0;
+			int sig_ok = 0;
 
 			pkg_artifact_build_request(recipe.name, recipe.version, artifact_url,
 			                            sizeof(artifact_url), artifact_header,
@@ -6008,8 +6022,77 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 			if (sub > 0 && waitpid(sub, &status, 0) == sub && WIFEXITED(status) &&
 			    WEXITSTATUS(status) == 0)
 				sha_ok = pkg_run_capture_sha256(artifact_path, sha_out, sizeof(sha_out)) == 0;
-			if (sha_ok && strcasecmp(sha_out, recipe.artifact_sha256) == 0) {
-				_exit(0); /* verified -- pkg_fetch_completed() stages straight from this file */
+
+			/*
+			 * The signature gate (ADR-0279).
+			 *
+			 * Fetched only once the artifact is here and hashed:
+			 * there is nothing to verify otherwise, and the digest is
+			 * half of what the trusted comment has to agree with.
+			 *
+			 * The comment is compared against a string built here
+			 * rather than parsed, and compared in FULL. A signature
+			 * whose comment does not say exactly which package,
+			 * revision and bytes it approves is not an approval of
+			 * this artifact -- it is an approval of something, and
+			 * accepting it on the strength of the key alone is how a
+			 * genuine glibc@2.44-16 artifact gets installed as
+			 * 2.44-17. minisign's global signature covers the comment,
+			 * so agreeing with it means the signer said this.
+			 */
+			if (sha_ok && releasekey_trust_count(g_trusted_keys_dir) > 0) {
+				char sig_path[PATH_MAX];
+				char sig_url[832];
+				char comment[PKG_NAME_MAX + PKG_VERSION_MAX + 96];
+				char want[PKG_NAME_MAX + PKG_VERSION_MAX + 96];
+				pid_t ssub;
+				int sstatus = -1;
+
+				snprintf(sig_path, sizeof(sig_path), "%s.minisig", artifact_path);
+				snprintf(sig_url, sizeof(sig_url), "%s.minisig", artifact_url);
+				unlink(sig_path);
+				ssub = fork();
+				if (ssub == 0) {
+					if (artifact_header[0] != '\0') {
+						char *argv[] = { (char *)PKG_CURL_BIN, "-fsSL",
+							          PKG_CURL_STALL_GUARD_ARGS, "-H", artifact_header,
+							          "-o", sig_path, sig_url, NULL };
+
+						execve(PKG_CURL_BIN, argv, environ);
+					} else {
+						char *argv[] = { (char *)PKG_CURL_BIN, "-fsSL",
+							          PKG_CURL_STALL_GUARD_ARGS, "-o", sig_path, sig_url,
+							          NULL };
+
+						execve(PKG_CURL_BIN, argv, environ);
+					}
+					_exit(127);
+				}
+				if (ssub > 0 && waitpid(ssub, &sstatus, 0) == ssub && WIFEXITED(sstatus) &&
+				    WEXITSTATUS(sstatus) == 0 &&
+				    releasekey_verify_file(artifact_path, sig_path, g_trusted_keys_dir, comment,
+				                            sizeof(comment)) == RELEASEKEY_OK) {
+					snprintf(want, sizeof(want), "cix pkg %s@%s sha256=%s", recipe.name,
+					          recipe.version, sha_out);
+					if (strcmp(comment, want) == 0)
+						sig_ok = 1;
+				}
+				unlink(sig_path);
+			}
+
+			/*
+			 * Where both approvals exist, both must agree. A recipe
+			 * with a checksum keeps exactly the behaviour ADR-0122
+			 * gave it -- 624 artifacts are published unsigned and must
+			 * stay installable -- and a recipe without one now has a
+			 * way in at all, which is the cold-box case #306 and #403
+			 * are both about.
+			 */
+			if (recipe.artifact_sha256[0] != '\0') {
+				if (sha_ok && strcasecmp(sha_out, recipe.artifact_sha256) == 0)
+					_exit(0); /* verified -- pkg_fetch_completed() stages from this file */
+			} else if (sig_ok) {
+				_exit(0);
 			}
 			/*
 			 * Issue #149: an artifact that downloaded fine but failed
@@ -6039,18 +6122,43 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 				fetch_note_sidecar_path(recipe.name, note_path, sizeof(note_path));
 				nfd = open(note_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
 				if (nfd >= 0) {
-					char note[512];
-					int n = snprintf(note, sizeof(note),
-					                  "artifact for %s@%s downloaded but failed checksum "
-					                  "(recipe approves %.16s..., cache served %.16s...) -- "
-					                  "falling back to source; if this recipe version is "
-					                  "already published, an edited pkg_artifact_sha256 "
-					                  "cannot take effect, bump pkg_version instead",
-					                  recipe.name, recipe.version, recipe.artifact_sha256,
-					                  sha_out);
-					ssize_t written = write(nfd, note, (size_t)n);
+					char note[640];
+					int n;
 
-					(void)written;
+					/*
+					 * Two different disappointments, and they need
+					 * different sentences. A checksum mismatch means
+					 * the cache is serving bytes this recipe does not
+					 * approve. A signature that did not verify means
+					 * this host cannot establish that Cix published
+					 * them at all -- and for a recipe with no checksum
+					 * that is the ONLY gate, so saying "failed
+					 * checksum" there would name a field the recipe
+					 * does not have (ADR-0279).
+					 */
+					if (recipe.artifact_sha256[0] != '\0')
+						n = snprintf(note, sizeof(note),
+						              "artifact for %s@%s downloaded but failed checksum "
+						              "(recipe approves %.16s..., cache served %.16s...) -- "
+						              "falling back to source; if this recipe version is "
+						              "already published, an edited pkg_artifact_sha256 "
+						              "cannot take effect, bump pkg_version instead",
+						              recipe.name, recipe.version, recipe.artifact_sha256,
+						              sha_out);
+					else
+						n = snprintf(note, sizeof(note),
+						              "artifact for %s@%s downloaded but its signature did "
+						              "not verify against this host's trusted keys -- "
+						              "falling back to source. Either it was published "
+						              "unsigned, or it was signed by a key this host does "
+						              "not trust: `cixctl pkg sync` adopts the keys "
+						              "published in docs/keys/",
+						              recipe.name, recipe.version);
+					if (n > 0) {
+						ssize_t written = write(nfd, note, (size_t)n);
+
+						(void)written;
+					}
 					close(nfd);
 				}
 			}
