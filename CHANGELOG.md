@@ -6,6 +6,30 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A slow-pass record reports its own window, not the daemon's all-time worst (#366)
+
+Every `slow-pass` record carried `pass_worst_work_millis`, which is a monotonic maximum
+for the life of the daemon and is never reset — so after the first record, the size and
+the activity in every later one described a pass that had nothing to do with the passes
+being recorded. Measured on 192.168.15.95 while investigating #399: four records spanning
+36 minutes all reported `worst_pass_ms: 989` while their own `slow_passes` counts moved
+1, 2, 3, 4. A brief hiccup and a minute-long stall were indistinguishable in the single
+field that exists to tell them apart.
+
+The all-time figure is deliberate and stays — it is the health reading, and its own
+comment explains why tracking it always (rather than only once something is wrong) makes
+it self-verifying. What was wrong is that a *record* reused it. There is now a second
+pair, the worst pass and activity **since the last record**, written by the daemon and
+cleared by the watchdog when it writes one. That direction of sharing already exists
+(`probe_count` moves the same way), so no new rule. A pass landing between the read and
+the clear loses one sample — a slightly low figure in one window, never a wrong one.
+
+**Not gated by a selftest, stated rather than glossed:** `test_stallwatch` drives the
+read path by writing records into the store, and has no way to make the daemon's own loop
+turn slowly. Asserting this needs either a way to induce a real slow pass or a new field
+exposed purely for testing, and neither is worth it for a reporting fix whose effect is
+visible directly — successive records on a real host stop carrying an identical constant.
+
 ### Rolling updates reach running containers for the first time (#401, ADR-0277)
 
 **`follow_rolling` has never applied to a running container**, and the reason is one

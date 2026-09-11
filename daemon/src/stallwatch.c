@@ -95,6 +95,28 @@ struct stall_shared {
 	volatile unsigned long long slow_pass_count;
 	char pass_worst_activity[STALL_ACTIVITY_MAX];
 	/*
+	 * #366: the worst pass SINCE THE LAST slow-pass record, and what it
+	 * was doing -- distinct from pass_worst_* above, which is an
+	 * all-time maximum for the life of the daemon and is exposed as a
+	 * health figure.
+	 *
+	 * A record carried that all-time maximum, so every slow-pass record
+	 * after the first reported a number and an activity that had
+	 * nothing to do with the passes it was recording: measured on
+	 * 192.168.15.95, four records 36 minutes apart all said
+	 * `worst_pass_ms: 989` while their own counts moved 1, 2, 3, 4. A
+	 * small stall and a minute-long one were indistinguishable in the
+	 * one field that is supposed to tell them apart.
+	 *
+	 * Written by the daemon, read and CLEARED by the watchdog process
+	 * when it writes a record -- the same direction probe_count already
+	 * moves, so no new sharing rule. A pass landing between the read and
+	 * the clear loses one sample, which costs a slightly low figure in
+	 * one window and never a wrong one.
+	 */
+	volatile long long slow_window_worst_millis;
+	char slow_window_worst_activity[STALL_ACTIVITY_MAX];
+	/*
 	 * What this pass has served so far, cleared at the start of each
 	 * one.
 	 *
@@ -888,9 +910,16 @@ static void watchdog_main(pid_t watched)
 			    (last_slow_report == 0 || now - last_slow_report >= STALL_REPEAT_SECONDS)) {
 				char activity[STALL_ACTIVITY_MAX];
 
-				snprintf(activity, sizeof(activity), "%s", g_shared->pass_worst_activity);
-				append_slow_pass_record((long long)g_shared->pass_worst_work_millis, slow_now,
-				                         activity);
+				long long window_worst = (long long)g_shared->slow_window_worst_millis;
+
+				/* #366: this window's own worst pass, not the daemon's
+				 * all-time one. Cleared here so the next record is
+				 * about the next window. */
+				snprintf(activity, sizeof(activity), "%s",
+				         g_shared->slow_window_worst_activity);
+				g_shared->slow_window_worst_millis = 0;
+				g_shared->slow_window_worst_activity[0] = '\0';
+				append_slow_pass_record(window_worst, slow_now, activity);
 				last_slow_report = now;
 				last_slow_count = slow_now;
 			}
@@ -1017,8 +1046,16 @@ void stallwatch_pass_end(void)
 		snprintf(g_shared->pass_worst_activity, STALL_ACTIVITY_MAX, "%s",
 		         g_shared->pass_activity);
 	}
-	if (work >= SLOW_PASS_MILLIS)
+	if (work >= SLOW_PASS_MILLIS) {
 		g_shared->slow_pass_count++;
+		/* #366: the worst of THIS reporting window, which is what a
+		 * record is about. */
+		if (work > g_shared->slow_window_worst_millis) {
+			g_shared->slow_window_worst_millis = work;
+			snprintf(g_shared->slow_window_worst_activity, STALL_ACTIVITY_MAX, "%s",
+			         g_shared->pass_activity);
+		}
+	}
 }
 
 void stallwatch_heartbeat(void)
