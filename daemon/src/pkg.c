@@ -880,6 +880,55 @@ static const char *normalize_image(const char *image)
 }
 
 /*
+ * Is a job already running for this exact target, or (hostbuild=1) is
+ * ANY hostbuild already running?  #362 and #384.
+ *
+ * Both are admission questions and both belong in the request handler
+ * rather than in pkg_install_start(): the rolling drain treats a failed
+ * start as "try the rest of this image's manifest" and then pops the
+ * image as caught up if nothing started, so a refusal down there would
+ * drop a converging image out of the queue (#384 says this explicitly,
+ * having nearly made that mistake).
+ *
+ * The hostbuild arm is deliberately coarser than the target arm. Two
+ * hostbuilds 13 seconds apart put 192.168.15.95 into a kernel-panic
+ * reboot loop -- cixd is pid 1 and the command line carries panic=10,
+ * so a cixd death is three reboots and a lost build (#362). A hostbuild
+ * compiles the whole control plane, which is the heaviest thing this
+ * platform ever runs, and ADR-0165's shared-parent cgroup budget was in
+ * place and did not prevent it. So one at a time, whatever package it
+ * names -- not merely one per package, which would have accepted that
+ * exact pair had they been different packages.
+ *
+ * Ordinary concurrent installs are untouched: ADR-0157's parallel build
+ * slots stay exactly as they are, and only a SECOND job for the SAME
+ * target is refused.
+ *
+ * Reads the chain slots, like image_has_job_in_flight() above, so the
+ * answer comes from what is actually running rather than from an entry
+ * that may lag it.
+ */
+int pkg_job_in_flight_for(const char *name, const char *image, int hostbuild)
+{
+	int i;
+
+	chain_reap_stale();
+	for (i = 0; i < PKG_MAX_CONCURRENT_JOBS; i++) {
+		if (g_chains[i].name[0] == '\0')
+			continue;
+		if (hostbuild) {
+			if (g_chains[i].is_hostbuild)
+				return 1;
+			continue;
+		}
+		if (name != NULL && image != NULL && strcmp(g_chains[i].name, name) == 0 &&
+		    strcmp(g_chains[i].image, normalize_image(image)) == 0)
+			return 1;
+	}
+	return 0;
+}
+
+/*
  * ADR-0157 Phase 2: which in-flight chain (if any) is building the
  * given top-level target -- used by main.c's own GET /v1/pkg/build/log
  * WebSocket-upgrade handler to resolve a caller-supplied ?name=&image=
@@ -6037,8 +6086,15 @@ enum pkg_error pkg_install_start(const char *name, const char *image, const char
 	g_chains[chain_idx].dep_queue_count = 0;
 	if (resolve_chain(name, version, g_chains[chain_idx].image, 1, g_chains[chain_idx].dep_queue,
 	                   &g_chains[chain_idx].dep_queue_count, visiting, &visiting_count, err,
-	                   sizeof(err)) != 0)
-		return PKG_ERR_INVALID_RECIPE;
+	                   sizeof(err)) != 0) {
+		/* #318: resolve_chain() names exactly what it could not
+		 * resolve, and that message used to be discarded here -- so the
+		 * caller was told "no such recipe, or it failed to parse" about
+		 * the package it asked for, whose recipe is fine. */
+		logstore_write("cixd", "error", "pkg install %s@%s: %s", name,
+		                g_chains[chain_idx].image, err);
+		return PKG_ERR_DEP_UNRESOLVABLE;
+	}
 
 	g_chains[chain_idx].dep_queue_pos = 0;
 	g_chains[chain_idx].dep_queue_is_upgrade = (e != NULL && e->state == PKG_STATE_INSTALLED);
@@ -6130,8 +6186,16 @@ enum pkg_error pkg_hostbuild_start(const char *name, const char *build_image, co
 	 * hermetic environment is always build_image's latest built state,
 	 * matching pkg_fetch_completed()'s own resolution below. */
 	if (image_current_version(build_image, build_image_version, sizeof(build_image_version)) !=
-	    IMAGE_OK)
-		return PKG_ERR_NOT_FOUND;
+	    IMAGE_OK) {
+		/* #317: the BUILD IMAGE is what is missing, not the package.
+		 * This used to return PKG_ERR_NOT_FOUND, i.e. "no such
+		 * package", about a package that is present and current. */
+		logstore_write("cixd", "error",
+		                "pkg hostbuild %s: build image \"%s\" does not exist -- create it "
+		                "first",
+		                name, build_image);
+		return PKG_ERR_NO_SUCH_BUILD_IMAGE;
+	}
 
 	/*
 	 * ADR-0094: same "409 with no way out" gap pkg_install_start()

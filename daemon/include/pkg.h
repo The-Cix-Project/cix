@@ -321,6 +321,29 @@ enum pkg_error {
 	 * would say the package does not exist when it plainly does.
 	 */
 	PKG_ERR_NOT_BUILDING,
+	/*
+	 * #317: a hostbuild's BUILD IMAGE does not exist. The package and
+	 * its recipe are both fine, and reporting PKG_ERR_NOT_FOUND said
+	 * "no such package" about a package that is present and current --
+	 * which sends the reader to check the recipe, the version and the
+	 * catalogue, none of which is wrong. Measured on 192.168.15.95:
+	 * `POST /pkg/hostbuild {"name":"kernel","version":"6.18.40-24"}`
+	 * answered 404 "no such package" while the real cause was a missing
+	 * `kernel-builder`. Same failure the two build-image codes above
+	 * already exist to prevent, one step further along.
+	 */
+	PKG_ERR_NO_SUCH_BUILD_IMAGE,
+	/*
+	 * #318: a DEPENDENCY could not be resolved. The package asked for
+	 * is fine, and reporting PKG_ERR_INVALID_RECIPE said "no such
+	 * recipe, or it failed to parse" about a recipe that parses --
+	 * sending the reader to inspect the wrong file. resolve_chain()
+	 * already builds a precise message naming what it could not
+	 * resolve; that message was being discarded at the return. It now
+	 * reaches the log store, and this code makes the API answer point
+	 * at the dependency rather than at the package.
+	 */
+	PKG_ERR_DEP_UNRESOLVABLE,
 	PKG_ERR_TARGET_IMAGE_NOT_FOUND /* pkg_image_recipe_apply_start(): the recipe itself parsed
 	                                 * fine, but the image it names doesn't exist yet -- distinct
 	                                 * from PKG_ERR_INVALID_RECIPE (a genuine parse failure) and
@@ -1605,6 +1628,17 @@ int pkg_recipe_list_versions(const char *name, char versions[][PKG_VERSION_MAX],
 int pkg_recipe_latest_version(const char *name, char *out, size_t out_size);
 /* Installed package names, de-duplicated -- the same package in three
  * images is one piece of software, not three. */
+/*
+ * Admission check for a new job: is one already running for this exact
+ * target (hostbuild=0, name+image), or is ANY hostbuild already running
+ * (hostbuild=1, name/image ignored)?  #362 and #384.
+ *
+ * Called from the REST handlers, NOT from pkg_install_start() -- the
+ * rolling drain reads a failed start as "this image is caught up", so a
+ * refusal there would silently drop a converging image from the queue.
+ */
+int pkg_job_in_flight_for(const char *name, const char *image, int hostbuild);
+
 int pkg_installed_list_names(char names[][PKG_IMAGE_NAME_MAX], int max);
 
 /*
