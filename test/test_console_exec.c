@@ -189,6 +189,39 @@ static const char *proc_str(const struct json_value *obj, const char *key)
 	return (v != NULL && v->type == JSON_STRING) ? v->u.string : NULL;
 }
 
+/*
+ * #331: what the DAEMON saw, alongside what the test saw.
+ *
+ * The daemon's reap of the exec'd process now records how it ended --
+ * a signal names its killer, an ordinary exit means it chose to, 127
+ * means the shell could not find what it was asked to run. That line
+ * goes to the log store, which this test otherwise never reads, so the
+ * one fact that distinguishes those was visible only to someone who
+ * went looking for it afterwards on a live host.
+ */
+static void report_console_log(struct cix_client *c)
+{
+	struct cix_response lr;
+	size_t i;
+
+	memset(&lr, 0, sizeof(lr));
+	if (cix_client_request(c, "GET", "/v1/system/logs?regex=console%3A&tail=6", NULL, &lr) != 0 ||
+	    lr.status != 200 || lr.json == NULL || lr.json->type != JSON_ARRAY) {
+		fprintf(stderr, "  dlog: GET /v1/system/logs unavailable (status=%d)\n", lr.status);
+		cix_response_free(&lr);
+		return;
+	}
+	for (i = 0; i < lr.json->u.array.count; i++) {
+		const char *msg = proc_str(lr.json->u.array.items[i], "msg");
+
+		if (msg != NULL)
+			fprintf(stderr, "  dlog: %.180s\n", msg);
+	}
+	if (lr.json->u.array.count == 0)
+		fprintf(stderr, "  dlog: the daemon logged nothing about any console session\n");
+	cix_response_free(&lr);
+}
+
 static void report_container_processes(struct cix_client *c, const char *container)
 {
 	struct cix_response pr;
@@ -1014,6 +1047,7 @@ int main(void)
 					        acc_len > 0 ? acc : "(nothing)");
 					report_loop_health(&client);
 				report_container_processes(&client, "consoletest");
+				report_console_log(&client);
 				}
 				CHECK(found, geom[gi].what);
 			}
@@ -1125,6 +1159,7 @@ int main(void)
 				        acc_len > 0 ? acc : "(nothing)");
 				report_loop_health(&client);
 				report_container_processes(&client, "consoletest");
+				report_console_log(&client);
 			}
 			CHECK(ready, "the exec'd process reached its read() and said so");
 			CHECK(echoed,
@@ -1209,6 +1244,7 @@ int main(void)
 				        acc_len > 0 ? acc : "(nothing)");
 				report_loop_health(&client);
 				report_container_processes(&client, "consoletest");
+				report_console_log(&client);
 			}
 			CHECK(saw_first, "the initial report arrived before any resize");
 
