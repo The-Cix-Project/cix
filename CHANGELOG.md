@@ -6,6 +6,34 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Four silent failures in the exec child now say what happened (#372)
+
+`exec_into_container()`'s intermediate child has five ways to die and only one of them
+reported anything. #108 gave a failed `execve()` a way home — it writes its errno down a
+pipe the daemon is already reading — and the four earlier exits wrote nothing:
+
+- the namespace join was refused
+- there is no identity inside the container's user namespace
+- the container's own `/dev/pts/<n>` would not open
+- `fork()` was exhausted
+
+All four arrived at the caller as one blanket `ECHILD` — "something failed", naming a
+syscall that was never made. Two of them printed their reason to `stderr`, which this daemon
+does not mirror into the log store, so on a real host the reason was simply gone. This is
+the same failure the `errno`-without-a-syscall trap in CLAUDE.md describes: an absent cause
+says "something failed", a stale one sends two rounds of work in the wrong direction.
+
+The fix reuses the channel that already exists rather than adding one. The protocol carries
+two writes — the grandchild pid, then an optional errno — and a **negative pid is impossible
+for a real child**, which the daemon already treats as failure. So it is free to carry which
+step died. No second channel, no change to the success path, and a daemon reading an older
+child still sees "failure" exactly as before. A zero-byte read still means the child died
+without saying anything, which is what `ECHILD` honestly describes, and that case is
+unchanged.
+
+Found while investigating #331 and explicitly **not** its cause — these produce a failed
+upgrade, not the 101-then-silence that #331 shows.
+
 ### test_console_exec's first-byte ceiling was the number it kept failing at (#331)
 
 Two consecutive releases died on this test, v2.57.64 and v2.57.66, each at **~10226 ms** —
