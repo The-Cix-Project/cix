@@ -158,6 +158,67 @@ static void report_loop_health(struct cix_client *c)
 	cix_response_free(&lr);
 }
 
+/*
+ * #331: WHICH process is not producing output, and what is it doing?
+ *
+ * report_loop_health() above answered "is the daemon stuck" and the
+ * answer has been a consistent no -- worst_pass_ms 19-24 while a
+ * session sat silent for thirty seconds. #372's step diagnostics then
+ * ruled out the four ways the intermediate child can fail before the
+ * grandchild exists: nothing is ever logged, so the exec succeeds and
+ * the daemon believes the session is healthy.
+ *
+ * That leaves the exec'd process itself, and nothing has ever looked at
+ * it. GET /v1/system/processes carries state and wchan for every
+ * process the daemon can see, tagged with the container it belongs to
+ * -- the same reading stallwatch takes of the daemon, pointed at the
+ * thing that is actually silent.
+ *
+ * A process in R with an empty wchan is running and choosing not to
+ * write; one in D names the kernel function it is stuck in; an empty
+ * list means it is not there at all and the 101 was a lie. Those are
+ * three different bugs and this test could not tell them apart.
+ */
+static void report_container_processes(struct cix_client *c, const char *container)
+{
+	struct cix_response pr;
+	size_t i;
+	int shown = 0;
+
+	memset(&pr, 0, sizeof(pr));
+	if (cix_client_request(c, "GET", "/v1/system/processes", NULL, &pr) != 0 ||
+	    pr.status != 200 || pr.json == NULL || pr.json->type != JSON_ARRAY) {
+		fprintf(stderr, "  procs: GET /v1/system/processes unavailable (status=%d)\n",
+		        pr.status);
+		cix_response_free(&pr);
+		return;
+	}
+	for (i = 0; i < pr.json->u.array.count; i++) {
+		const struct json_value *p = pr.json->u.array.items[i];
+		const char *cn = json_str_field(p, "container");
+		const char *comm = json_str_field(p, "comm");
+		const char *state = json_str_field(p, "state");
+		const char *wchan = json_str_field(p, "wchan");
+		const char *cmdl = json_str_field(p, "command_line");
+		const struct json_value *pid = json_object_get(p, "pid");
+
+		if (cn == NULL || strcmp(cn, container) != 0)
+			continue;
+		fprintf(stderr, "  procs: pid=%ld comm=%s state=%s wchan=%s cmd=%.60s\n",
+		        pid != NULL && pid->type == JSON_NUMBER ? (long)pid->u.number : -1L,
+		        comm != NULL ? comm : "?", state != NULL ? state : "?",
+		        (wchan != NULL && wchan[0] != '\0') ? wchan : "(none)",
+		        cmdl != NULL ? cmdl : "?");
+		shown++;
+	}
+	if (shown == 0)
+		fprintf(stderr,
+		        "  procs: NO process in container %s -- the session was reported healthy and "
+		        "there is nothing behind it\n",
+		        container);
+	cix_response_free(&pr);
+}
+
 static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 {
 	int i;
@@ -942,6 +1003,7 @@ int main(void)
 					                    : "20 frames without a match",
 					        acc_len > 0 ? acc : "(nothing)");
 					report_loop_health(&client);
+				report_container_processes(&client, "consoletest");
 				}
 				CHECK(found, geom[gi].what);
 			}
@@ -1052,6 +1114,7 @@ int main(void)
 				                    : "40 frames without a match",
 				        acc_len > 0 ? acc : "(nothing)");
 				report_loop_health(&client);
+				report_container_processes(&client, "consoletest");
 			}
 			CHECK(ready, "the exec'd process reached its read() and said so");
 			CHECK(echoed,
@@ -1135,6 +1198,7 @@ int main(void)
 				                          : "20 frames without a match",
 				        acc_len > 0 ? acc : "(nothing)");
 				report_loop_health(&client);
+				report_container_processes(&client, "consoletest");
 			}
 			CHECK(saw_first, "the initial report arrived before any resize");
 
