@@ -225,15 +225,26 @@ static int raw_connect(int port)
 	 * normally throughout and this is CPU starvation of the container's
 	 * child while the same box compiles the control plane.
 	 *
-	 * At 60 s a slow child passes and a genuinely broken one still
-	 * fails, which is the distinction worth having. The cost of the
-	 * larger ceiling is paid only by a run that was going to fail
-	 * anyway.
+	 * Then 60 broke it differently, and that is what found the real
+	 * constraint: the fixture container was created with
+	 * `daemon_child 30`, so it exits cleanly after THIRTY seconds. A
+	 * 60-second read ceiling outlives the container it is reading from.
+	 * v2.57.68 waited 29906 ms and ended PEER CLOSED, then reported ten
+	 * more failures from scenarios whose container had simply gone.
+	 * The fixture's own lifetime was the ceiling on this whole test all
+	 * along, and nothing said so -- which is also why moving 2 -> 10
+	 * never settled it.
+	 *
+	 * So: the container now lives 300 s (see its create body), and this
+	 * sits at 30 -- three times the figure the real failures clustered
+	 * at, and a tenth of the fixture's life, so a slow child passes, a
+	 * broken one still fails, and neither can be confused with the
+	 * fixture expiring underneath the test.
 	 */
 	{
 		struct timeval tv;
 
-		tv.tv_sec = 60;
+		tv.tv_sec = 30;
 		tv.tv_usec = 0;
 		setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 	}
@@ -488,7 +499,23 @@ int main(void)
 	                       "{\"name\":\"second\",\"cmd\":[\"/bin/dual_console_child\"]},"
 	                       "{\"name\":\"term\",\"cmd\":[\"/bin/console_term_child\"]},"
 	                       "{\"name\":\"input\",\"cmd\":[\"/bin/console_input_child\"]}],"
-	                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}]}",
+	                       /* #331: 30 seconds was the REAL ceiling on this whole test, and
+	                        * nothing said so. daemon_child's argv[1] is how long it
+	                        * lives, every scenario below runs against this container,
+	                        * and on a box compiling the control plane the scenarios do
+	                        * not all fit inside half a minute. When they did not, the
+	                        * container exited cleanly at 30s and the remaining reads
+	                        * failed as PEER CLOSED -- reported as eleven separate
+	                        * assertion failures including "Sec-WebSocket-Accept matches
+	                        * the RFC 6455 worked example", which cannot fail for any
+	                        * reason of its own and was simply downstream of a container
+	                        * that had gone.
+	                        *
+	                        * 300s is not a timeout anything is measured against: the
+	                        * test deletes the container when it finishes, so this only
+	                        * bounds how long a HUNG run waits before the fixture gives
+	                        * up on it. */
+	                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"300\",\"0\"]}]}",
 	                       &r) != 0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: POST consoletest, status=%d\n", r.status);
@@ -554,7 +581,7 @@ int main(void)
 	                       "\"consoles\":[{\"name\":\"gone\","
 	                       "\"cmd\":[\"/bin/definitely-not-in-this-image\"]}],"
 	                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\","
-	                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}]}",
+	                       "\"cmd\":[\"/bin/daemon_child\",\"300\",\"0\"]}]}",
 	                       &r) != 0 ||
 	    r.status != 201) {
 		CHECK(0, "POST misscon (a container declaring a console whose binary is absent)");
@@ -654,7 +681,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"nocon\",\"image\":\"consoletest\","
-	                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}]}",
+	                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"300\",\"0\"]}]}",
 	                       &r) != 0 ||
 	    r.status != 201) {
 		CHECK(0, "POST nocon (a container declaring no console)");
