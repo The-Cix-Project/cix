@@ -6078,8 +6078,14 @@ paths:
   /images/{name}/versions/{version}/manifest:
     get:
       summary: >
-        The manifest one specific image VERSION was produced from -- what
-        that version declares, as it stood when it was made (#398).
+        What one specific image VERSION holds: the sorted name@version pairs
+        installed into it, snapshotted when the version was produced (#398).
+
+        Deliberately not the image's declared manifest. That is live operator
+        intent and moves; a "rolling" entry's version there is a FLOOR rather
+        than a fact, so it cannot say which version of a package anything
+        actually holds. This is the same set the version is a hash of
+        (ADR-0108), so it is a copy of the version's own identity.
 
         The image-level manifest is a live document: it moves whenever an
         operator changes what the image should contain. A container records
@@ -6119,14 +6125,11 @@ paths:
                       properties:
                         package:
                           type: string
-                        mode:
-                          type: string
-                          enum: [pinned, rolling]
                         version:
                           type: string
         "404":
           description: >
-            No such image, or no manifest recorded for this version. A version
+            No such image, or no snapshot recorded for this version. A version
             produced before snapshots existed has none, and this deliberately
             does NOT fall back to the image's live manifest -- that would hand
             back a wrong answer with nothing marking it as wrong.
@@ -11285,8 +11288,8 @@ paths:
           description: >-
             The path is shadowed inside the container by a mount -- a tmpfs such
             as /run, or a volume -- so the host-side tree is a different directory
-            wearing the same path, and this container's id-mapped rootfs cannot be
-            written through /proc/<pid>/root either. Nothing was written. Returned
+            wearing the same path, and a write through /proc/<pid>/root into this
+            container is refused with EOVERFLOW. Nothing was written. Returned
             instead of a 204 that would be invisible to the container.
           content:
             application/json:

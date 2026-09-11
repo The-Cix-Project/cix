@@ -8136,12 +8136,21 @@ void container_root_for(const char *disk_name, char *out, size_t out_size);
  * id-mapped bind of it (ADR-0179's userns presentation), and in both
  * of those the host-side directory IS the container's tree.
  *
- * The distinction is not cosmetic: writing to a userns container
- * through /proc/<pid>/root crosses the id-mapped mount, and the
- * daemon's own fsuid does not map through it, so the open is refused
- * with EOVERFLOW ("Value too large for defined data type") -- which is
- * why PUT .../files returned 500 for every container on a userns-by-
- * default host while GET on the same container worked.
+ * The distinction is not cosmetic: an open(O_CREAT) through
+ * /proc/<pid>/root into a running USERNS container is refused with
+ * EOVERFLOW ("Value too large for defined data type"), which is why
+ * PUT .../files returned 500 for every container on a userns-by-default
+ * host while GET on the same container worked.
+ *
+ * THE KERNEL-SIDE MECHANISM IS NOT ESTABLISHED, and it is worth saying
+ * so rather than writing down a plausible one. The obvious explanation
+ * -- crossing an id-mapped mount whose map does not admit the daemon's
+ * fsuid -- does not survive its own check: jump's rootfs is owned by
+ * 1345184, container_create() sets spec.userns_idmap only when that
+ * owner is 0 (ADR-0179's two presentations), and src/container.c only
+ * applies MOUNT_ATTR_IDMAP to the rootfs under that flag. So the tree
+ * that failed is not id-mapped. What IS established is the axis and the
+ * errno, and the fix depends on nothing more than those.
  *
  * Measured on 192.168.15.95 at v2.57.78 before this existed:
  *
@@ -16352,13 +16361,13 @@ static void handle_container_file_write(int fd, const char *name, const char *re
 			return;
 		}
 		/*
-		 * EOVERFLOW and only EOVERFLOW falls through. It is the exact
-		 * signature of crossing the container's id-mapped mount with
-		 * an fsuid that does not map through it (ADR-0179's userns
-		 * presentation), which is precisely the case the host-side
-		 * tree answers correctly -- and it is not a signature anything
-		 * else here produces, so falling through on it alone cannot
-		 * mask a real failure.
+		 * EOVERFLOW and only EOVERFLOW falls through. It is the
+		 * measured signature of creating a file through a running
+		 * userns container's /proc/<pid>/root -- see
+		 * container_direct_rootfs() above, including why the obvious
+		 * id-mapping explanation for it does not hold -- and it is not
+		 * a signature anything else on this path produces, so falling
+		 * through on it alone cannot mask a real failure.
 		 */
 	}
 
@@ -16435,9 +16444,9 @@ static void handle_container_file_write(int fd, const char *name, const char *re
 				snprintf(errmsg, sizeof(errmsg),
 				         "%s is shadowed inside this container by a mount (a tmpfs such "
 				         "as /run, or a volume), so a host-side write would not be "
-				         "visible to it -- and this container's id-mapped rootfs cannot "
-				         "be written through /proc/<pid>/root. Nothing was written. Use "
-				         "a path in the container's own rootfs, or write to the volume "
+				         "visible to it -- and a write through /proc/<pid>/root into this "
+				         "container is refused with EOVERFLOW. Nothing was written. Use a "
+				         "path in the container's own rootfs, or write to the volume "
 				         "itself.",
 				         rel_path);
 				logstore_write_container(name, "error", "PUT files: %s", errmsg);

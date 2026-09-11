@@ -4076,22 +4076,22 @@ async function loadContainerRecipe(name) {
 }
 
 /*
- * #398: what this container's image version DECLARES.
+ * #398: what this container's image version holds.
  *
  * Read from GET /v1/images/{name}/versions/{version}/manifest, keyed on
  * the container's own pinned image_version -- never the image's current
- * manifest. Those two agree while the container is current and diverge
- * silently afterwards, and rendering the live one as "this container's
+ * declared manifest. Those diverge two ways: the declaration moves
+ * whenever an operator edits it, and a `rolling` entry's version there
+ * is a floor rather than a fact. Rendering either as "this container's
  * packages" would be wrong in exactly the way that is hardest to
  * notice: a confident, plausible, up-to-date-looking list.
  *
- * The panel says DECLARES rather than CONTAINS, deliberately. A
- * manifest entry records that a package was installed into an image
- * version; it is not evidence the bytes reached this container. That
- * distinction cost a full debugging round in #395 -- fastfetch read
- * `installed`, the versions matched, and the binary was not in the
- * container at all -- so the page points at the console for the
- * filesystem question rather than implying it answers it.
+ * What it still cannot say is whether the bytes REACHED this container.
+ * An installed record is not a filesystem reading, and that distinction
+ * cost a full debugging round in #395 -- fastfetch read `installed`,
+ * the versions matched, and the binary was not in the container at all
+ * -- so the page points at the console for that question rather than
+ * implying it answers it.
  */
 async function loadContainerPackages(name) {
 	const statusEl = document.getElementById("cd-packages-status");
@@ -4123,14 +4123,14 @@ async function loadContainerPackages(name) {
 		                           CIX_API.getImageVersionManifest(c.image, c.image_version));
 		const rows = Array.isArray(d.manifest) ? d.manifest : [];
 
-		statusEl.textContent = "Declared by image " + c.image + " at version " + c.image_version
-			+ " \u2014 the version this container is pinned to and runs from.";
+		statusEl.textContent = "Installed into image " + c.image + " at version "
+			+ c.image_version + " \u2014 the version this container is pinned to and runs from.";
 		if (rows.length === 0) {
 			const tr = document.createElement("tr");
 			const td = document.createElement("td");
 
-			td.colSpan = 3;
-			td.textContent = "This image version declares no packages.";
+			td.colSpan = 2;
+			td.textContent = "This image version holds no packages.";
 			tr.appendChild(td);
 			tbody.appendChild(tr);
 			return;
@@ -4138,7 +4138,7 @@ async function loadContainerPackages(name) {
 		rows.forEach((r) => {
 			const tr = document.createElement("tr");
 
-			[r.package, r.version, r.mode].forEach((v) => {
+			[r.package, r.version].forEach((v) => {
 				const td = document.createElement("td");
 
 				td.textContent = v === undefined || v === null ? "-" : String(v);

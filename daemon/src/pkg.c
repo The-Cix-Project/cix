@@ -2631,6 +2631,65 @@ static const char *build_image_manifest_string(const char *image)
 }
 
 /*
+ * #398: write down what this version holds, beside the version itself.
+ *
+ * The same installed set build_image_manifest_string() above turns into
+ * the version hash -- so this records the version's own identity rather
+ * than a second, independently-drifting account of it. Deliberately NOT
+ * the declared manifest.json: that is live operator intent, it moves
+ * whenever someone changes what the image should contain, and a
+ * `rolling` entry's version there is a floor rather than a fact.
+ *
+ * A container records the image version it runs from and keeps running
+ * it until it is recreated, so this is the only thing that can answer
+ * "what is in that container". Reading the live manifest for that
+ * question describes the image as it is now -- a different question
+ * wearing the same shape, and one that fails as a plausible,
+ * up-to-date-looking list rather than as an error (#395).
+ *
+ * Returns 0, or -1 with the caller deciding how much that matters.
+ */
+static int pkg_version_snapshot_write(const char *image, const char *version)
+{
+	struct manifest_ref refs[PKG_MAX_PACKAGES];
+	int count = 0, i, rc;
+	struct json_writer w;
+	char path[PATH_MAX];
+
+	for (i = 0; i < PKG_MAX_PACKAGES; i++) {
+		if (g_packages[i].in_use && g_packages[i].state == PKG_STATE_INSTALLED &&
+		    strcmp(g_packages[i].image, image) == 0) {
+			refs[count].name = g_packages[i].name;
+			refs[count].version = g_packages[i].version;
+			count++;
+		}
+	}
+	qsort(refs, (size_t)count, sizeof(refs[0]), manifest_ref_cmp);
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "version");
+	jw_str(&w, version);
+	jw_key(&w, "packages");
+	jw_arr_open(&w);
+	for (i = 0; i < count; i++) {
+		jw_obj_open(&w);
+		jw_key(&w, "package");
+		jw_str(&w, refs[i].name);
+		jw_key(&w, "version");
+		jw_str(&w, refs[i].version);
+		jw_obj_close(&w);
+	}
+	jw_arr_close(&w);
+	jw_obj_close(&w);
+
+	image_version_manifest_path(image, version, path, sizeof(path));
+	rc = persist_atomic_write(path, w.buf, w.len);
+	jw_free(&w);
+	return rc;
+}
+
+/*
  * The one shared copy-forward mechanism (ADR-0107/0108) behind every
  * mutation of an image's own package set -- pkg_build_completed()'s
  * install/upgrade merge and pkg_delete()'s uninstall both go through
@@ -3099,11 +3158,11 @@ static int image_produce_new_version(const char *image,
 	 * it; losing the ability to answer "what was in this version" is
 	 * worth a logged warning, never a failed install.
 	 */
-	if (image_manifest_snapshot_write(image, new_version) != IMAGE_OK)
+	if (pkg_version_snapshot_write(image, new_version) != 0)
 		logstore_write("cixd", "warn",
-		               "image %s: could not record the manifest snapshot for version %s -- "
-		               "the version is fine, but what it declares will not be answerable "
-		               "once the live manifest moves on (#398)",
+		               "image %s: could not record the package snapshot for version %s -- the "
+		               "version is fine, but what it holds will not be answerable once the "
+		               "installed set moves on (#398)",
 		               image, new_version);
 	return 0;
 }

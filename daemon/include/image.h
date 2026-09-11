@@ -206,23 +206,31 @@ enum image_error image_manifest_read(const char *name, struct image_manifest_ent
 enum image_error image_manifest_write_json(const char *name, struct json_writer *w);
 
 /*
- * #398: the manifest a specific VERSION was produced from, snapshotted
- * beside that version's rootfs when it was produced.
+ * #398: what a specific image VERSION holds, snapshotted beside that
+ * version's rootfs when it was produced.
  *
- * The image-level manifest above is live -- it moves whenever an
- * operator changes what the image should contain. A container records
- * the version it runs from and keeps running it, so answering "what is
- * in this container" from the live manifest describes the image as it
- * is now, which is a different question wearing the same shape.
+ * NOT the declared manifest above, which is a different document. That
+ * one is live operator intent and moves whenever an operator changes
+ * what the image should contain; worse, a `rolling` entry's version
+ * there is a FLOOR rather than a fact, so it cannot say which version
+ * of a package anything actually holds. What is recorded instead is
+ * the INSTALLED SET -- the same sorted name@version pairs
+ * image_produce_new_version() hashes to derive the version (ADR-0108)
+ * -- so the snapshot is a copy of the version's own identity.
  *
- * image_manifest_snapshot_write() records it; the _version_ read
- * returns it as a JSON array in the same element shape as
- * image_manifest_write_json(). A version produced before snapshots
- * existed returns IMAGE_ERR_NOT_FOUND, deliberately: falling back to
- * the live manifest would hand back the wrong answer with nothing
- * marking it as the wrong one.
+ * A container records the version it runs from and keeps running it,
+ * which is why this exists at all: "what is in this container" cannot
+ * be answered from anything that moves.
+ *
+ * pkg_version_snapshot_write() records it (in pkg.c, next to the
+ * installed set it reads); this returns it as a JSON array of
+ * {package, version}. There is no mode: mode is a property of the
+ * declaration, not of a version. A version produced before snapshots
+ * existed returns IMAGE_ERR_NOT_FOUND, deliberately -- falling back to
+ * the live manifest would hand back a wrong answer with nothing
+ * marking it as wrong.
  */
-enum image_error image_manifest_snapshot_write(const char *name, const char *version);
+void image_version_manifest_path(const char *name, const char *version, char *out, size_t out_size);
 enum image_error image_manifest_version_write_json(const char *name, const char *version,
                                                     struct json_writer *w);
 
