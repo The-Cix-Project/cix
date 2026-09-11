@@ -6075,6 +6075,66 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /images/{name}/versions/{version}/manifest:
+    get:
+      summary: >
+        The manifest one specific image VERSION was produced from -- what
+        that version declares, as it stood when it was made (#398).
+
+        The image-level manifest is a live document: it moves whenever an
+        operator changes what the image should contain. A container records
+        the version it runs from and keeps running it, so "what is in this
+        container" has to be answered from the version, not from the image
+        as it is now. Reading the live manifest for that question describes
+        a different thing wearing the same shape.
+
+        This describes what the version DECLARES. It is not proof the bytes
+        reached any particular container -- see GET /containers/{name}/files
+        and its X-Cix-Source header (#394) for that question.
+      operationId: getImageVersionManifest
+      x-cix-expose: [cli, web]
+      parameters:
+        - $ref: "#/components/parameters/ImageName"
+        - name: version
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The manifest recorded for this version
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  version:
+                    type: string
+                  manifest:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        package:
+                          type: string
+                        mode:
+                          type: string
+                          enum: [pinned, rolling]
+                        version:
+                          type: string
+        "404":
+          description: >
+            No such image, or no manifest recorded for this version. A version
+            produced before snapshots existed has none, and this deliberately
+            does NOT fall back to the image's live manifest -- that would hand
+            back a wrong answer with nothing marking it as wrong.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /images/{name}/manifest:
     post:
       summary: >
@@ -11221,6 +11281,17 @@ paths:
       responses:
         "204":
           description: File written successfully.
+        "409":
+          description: >-
+            The path is shadowed inside the container by a mount -- a tmpfs such
+            as /run, or a volume -- so the host-side tree is a different directory
+            wearing the same path, and this container's id-mapped rootfs cannot be
+            written through /proc/<pid>/root either. Nothing was written. Returned
+            instead of a 204 that would be invisible to the container.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "400":
           description: Missing/unsafe path, or a missing "content" field.
           content:

@@ -10068,6 +10068,63 @@ static int cmd_image_manifest_rm(const struct cix_client *c, int json_mode, int 
 	return emit(&r, json_mode, fmt_removed);
 }
 
+static void fmt_version_manifest(const struct json_value *v)
+{
+	const struct json_value *manifest = json_object_get(v, "manifest");
+	size_t i;
+
+	printf("%s @ %s\n", json_str_field(v, "name"), json_str_field(v, "version"));
+	if (manifest == NULL || manifest->type != JSON_ARRAY || manifest->u.array.count == 0) {
+		printf("  (this version declares no packages)\n");
+		return;
+	}
+	for (i = 0; i < manifest->u.array.count; i++) {
+		const struct json_value *e = manifest->u.array.items[i];
+
+		printf("  %-24s %-16s %s\n", json_str_field(e, "package"),
+		       json_str_field(e, "version"), json_str_field(e, "mode"));
+	}
+}
+
+/*
+ * #398: what one specific image VERSION declares, as opposed to what
+ * the image declares now. A container runs a pinned version and keeps
+ * running it, so this is the only honest answer to "what is in that
+ * container" -- `image show` reports the live manifest, which is a
+ * different question with the same shape.
+ */
+static int cmd_image_manifest_show(const struct cix_client *c, int json_mode, int argc,
+                                    char **argv)
+{
+	const char *image = NULL;
+	const char *version = NULL;
+	int i;
+	char path[300];
+	struct cix_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--image=", 8) == 0)
+			image = argv[i] + 8;
+		else if (strncmp(argv[i], "--version=", 10) == 0)
+			version = argv[i] + 10;
+		else {
+			fprintf(stderr, "cixctl: unknown image manifest show option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (image == NULL || version == NULL) {
+		fprintf(stderr, "usage: cixctl image manifest show --image=NAME --version=VERSION\n");
+		return 2;
+	}
+
+	snprintf(path, sizeof(path), CIX_API_getImageVersionManifest, image, version);
+	if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_version_manifest);
+}
+
 static int cmd_image_manifest(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
@@ -10076,7 +10133,8 @@ static int cmd_image_manifest(const struct cix_client *c, int json_mode, int arg
 		fprintf(stderr,
 		        "usage: cixctl image manifest set --image=NAME --package=NAME "
 		        "--mode=pinned|rolling --version=VERSION\n"
-		        "       cixctl image manifest rm --image=NAME --package=NAME\n");
+		        "       cixctl image manifest rm --image=NAME --package=NAME\n"
+		        "       cixctl image manifest show --image=NAME --version=VERSION\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -10084,6 +10142,8 @@ static int cmd_image_manifest(const struct cix_client *c, int json_mode, int arg
 		return cmd_image_manifest_set(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "rm") == 0)
 		return cmd_image_manifest_rm(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "show") == 0)
+		return cmd_image_manifest_show(c, json_mode, argc - 1, argv + 1);
 
 	fprintf(stderr, "cixctl: unknown image manifest subcommand '%s'\n", sub);
 	return 2;

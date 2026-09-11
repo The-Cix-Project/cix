@@ -402,6 +402,48 @@ void handle_image_delete(int fd, const char *name)
 }
 
 /*
+ * GET /v1/images/{name}/versions/{version}/manifest (#398): what one
+ * specific version DECLARES, read from the snapshot written beside
+ * that version's rootfs when it was produced.
+ *
+ * A container records the image version it runs from and keeps running
+ * it until recreated, so this -- not the image's live manifest -- is
+ * the only honest source for "what is in this container". The two
+ * agree while the container is current and diverge silently afterwards,
+ * which is the failure mode worth engineering against: a wrong answer
+ * that looks exactly like a right one.
+ *
+ * A version produced before snapshots existed 404s rather than falling
+ * back. See image_manifest_version_write_json() for why the fallback
+ * would be worse than the gap.
+ */
+void handle_image_version_manifest(int fd, const char *name, const char *version)
+{
+	struct json_writer w;
+	enum image_error ierr;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "name");
+	jw_str(&w, name);
+	jw_key(&w, "version");
+	jw_str(&w, version);
+	jw_key(&w, "manifest");
+	ierr = image_manifest_version_write_json(name, version, &w);
+	if (ierr != IMAGE_OK) {
+		jw_free(&w);
+		respond_error(fd, 404, "Not Found",
+		              "no manifest recorded for this image version -- either the image or the "
+		              "version does not exist, or the version predates per-version manifest "
+		              "snapshots (#398)");
+		return;
+	}
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/*
  * POST /v1/images/{name}/manifest (ADR-0107): upserts one {package,
  * mode, version} entry into name's own manifest -- operator-declared
  * package intent, independent of whatever the image's rootfs currently

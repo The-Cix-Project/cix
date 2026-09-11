@@ -905,9 +905,16 @@ static const char *const n_image_manifest_set_flags[] = {
 	NULL
 };
 
+static const char *const n_image_manifest_show_flags[] = {
+	"--image=",
+	"--version=",
+	NULL
+};
+
 static const struct cli_node n_image_manifest_subs[] = {
 	{ "rm", n_image_manifest_rm_flags, NULL },
 	{ "set", n_image_manifest_set_flags, NULL },
+	{ "show", n_image_manifest_show_flags, NULL },
 	{ NULL, NULL, NULL },
 };
 

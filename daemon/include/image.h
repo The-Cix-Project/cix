@@ -206,6 +206,27 @@ enum image_error image_manifest_read(const char *name, struct image_manifest_ent
 enum image_error image_manifest_write_json(const char *name, struct json_writer *w);
 
 /*
+ * #398: the manifest a specific VERSION was produced from, snapshotted
+ * beside that version's rootfs when it was produced.
+ *
+ * The image-level manifest above is live -- it moves whenever an
+ * operator changes what the image should contain. A container records
+ * the version it runs from and keeps running it, so answering "what is
+ * in this container" from the live manifest describes the image as it
+ * is now, which is a different question wearing the same shape.
+ *
+ * image_manifest_snapshot_write() records it; the _version_ read
+ * returns it as a JSON array in the same element shape as
+ * image_manifest_write_json(). A version produced before snapshots
+ * existed returns IMAGE_ERR_NOT_FOUND, deliberately: falling back to
+ * the live manifest would hand back the wrong answer with nothing
+ * marking it as the wrong one.
+ */
+enum image_error image_manifest_snapshot_write(const char *name, const char *version);
+enum image_error image_manifest_version_write_json(const char *name, const char *version,
+                                                    struct json_writer *w);
+
+/*
  * Upserts one entry into name's manifest: package already present ->
  * its mode/version updated in place; otherwise appended.
  * IMAGE_ERR_INVALID_PACKAGE / IMAGE_ERR_INVALID_VERSION on bad input,

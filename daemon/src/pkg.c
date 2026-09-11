@@ -3085,6 +3085,26 @@ static int image_produce_new_version(const char *image,
 
 	if (image_record_version(image, new_version) != IMAGE_OK)
 		return produce_fail(image, NULL, "recording the new version", 0);
+	/*
+	 * #398: keep the manifest this version was hashed from, beside the
+	 * version itself. Written AFTER image_record_version() so it can
+	 * never describe a version that failed to become real, and after
+	 * the dedup branch above as well -- a version reached that way
+	 * already has its own snapshot from when it was first produced,
+	 * and the manifest is identical by construction (it is what the
+	 * hash is OF), so rewriting it would be a second write of the same
+	 * bytes.
+	 *
+	 * Non-fatal. The version exists and the image is usable without
+	 * it; losing the ability to answer "what was in this version" is
+	 * worth a logged warning, never a failed install.
+	 */
+	if (image_manifest_snapshot_write(image, new_version) != IMAGE_OK)
+		logstore_write("cixd", "warn",
+		               "image %s: could not record the manifest snapshot for version %s -- "
+		               "the version is fine, but what it declares will not be answerable "
+		               "once the live manifest moves on (#398)",
+		               image, new_version);
 	return 0;
 }
 

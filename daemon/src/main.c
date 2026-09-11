@@ -16144,6 +16144,93 @@ static void handle_container_file_delete(int fd, const char *name, const char *r
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
 }
 
+/*
+ * #333: one file write, and which step of it failed.
+ *
+ * Four different syscalls used to share one error message, so "failed
+ * to write file" was the whole of what an operator got -- for an open
+ * that was refused, a short write, a chmod or a chown, with no errno
+ * and no way to tell a read-only mount from a permission problem from
+ * an id-mapping one. The endpoint was reported broken on every running
+ * container and the report could not say why, which is most of why it
+ * stayed open for three days; the fix took one measurement once it
+ * could name EOVERFLOW.
+ *
+ * errno is captured immediately, before close() or anything else can
+ * overwrite it. Factored out because the caller now attempts the write
+ * at up to two different paths and both attempts must report
+ * identically.
+ */
+struct file_write_result {
+	const char *step;
+	int err;
+};
+
+/* The directory component of a path, or "/" when there is none. */
+static void path_parent(const char *path, char *out, size_t out_size)
+{
+	char *slash;
+
+	snprintf(out, out_size, "%s", path);
+	slash = strrchr(out, '/');
+	if (slash == out)
+		out[1] = '\0';
+	else if (slash != NULL)
+		*slash = '\0';
+}
+
+static int write_one_file(const char *full_path, const char *content, size_t content_len,
+                           long mode, uid_t owner, gid_t group, struct file_write_result *res)
+{
+	char target_dir[PATH_MAX];
+	char *slash;
+	int file_fd;
+
+	res->step = NULL;
+	res->err = 0;
+
+	snprintf(target_dir, sizeof(target_dir), "%s", full_path);
+	slash = strrchr(target_dir, '/');
+	if (slash != NULL)
+		*slash = '\0';
+	if (persist_mkdir_p(target_dir) != 0) {
+		res->step = "mkdir";
+		res->err = errno;
+		return -1;
+	}
+
+	file_fd = open(full_path, O_CREAT | O_TRUNC | O_WRONLY, (mode_t)mode);
+	if (file_fd < 0) {
+		res->step = "open";
+		res->err = errno;
+		return -1;
+	}
+	if (content_len > 0 && write(file_fd, content, content_len) != (ssize_t)content_len) {
+		res->step = "write";
+		res->err = errno;
+	} else if (fchmod(file_fd, (mode_t)mode) != 0) {
+		res->step = "fchmod";
+		res->err = errno;
+	} else if ((owner != (uid_t)-1 || group != (gid_t)-1) &&
+	           fchown(file_fd, owner, group) != 0) {
+		res->step = "fchown";
+		res->err = errno;
+	}
+	close(file_fd);
+	return res->step != NULL ? -1 : 0;
+}
+
+static void file_write_fail(int fd, const char *name, const struct file_write_result *res,
+                             const char *path, char *content)
+{
+	char errmsg[512];
+
+	free(content);
+	snprintf(errmsg, sizeof(errmsg), "%s(%s) failed: %s", res->step, path, strerror(res->err));
+	logstore_write_container(name, "error", "PUT files: %s", errmsg);
+	respond_error(fd, 500, "Internal Server Error", errmsg);
+}
+
 static void handle_container_file_write(int fd, const char *name, const char *rel_path,
                                          const char *body, size_t body_len)
 {
@@ -16161,10 +16248,11 @@ static void handle_container_file_write(int fd, const char *name, const char *re
 	int stopped = 0;
 	char full_path[PATH_MAX];
 	char rootfs_base[PATH_MAX];
+	char proc_path[PATH_MAX];
 	int have_rootfs_base = 0;
-	char target_dir[PATH_MAX];
-	char *slash;
-	int file_fd;
+	int have_proc = 0;
+	int wrote_through_proc = 0;
+	struct file_write_result wr;
 
 	if (e == NULL) {
 		/*
@@ -16219,125 +16307,149 @@ static void handle_container_file_write(int fd, const char *name, const char *re
 	group = jgroup != NULL ? (gid_t)json_as_number(jgroup) : (gid_t)-1;
 	content_len = strlen(content);
 
-	/*
-	 * Same running-but-already-dead case the GET path above documents:
-	 * running == 1 only means this daemon hasn't processed the exit yet.
-	 * A container that died the instant it started is a zombie whose
-	 * /proc/<pid>/root is already a dangling link, so writing through it
-	 * fails; its own upper layer is the correct target then. Probing
-	 * /proc/<pid>/root is safe and unambiguous -- the daemon still holds
-	 * the pidfd, so the pid cannot have been recycled by an unrelated
-	 * process.
-	 */
-	{
-		int use_proc = 0;
-
-		if (!stopped)
-			container_root_for(e->disk_name, container_root, sizeof(container_root));
-
-		have_rootfs_base = (container_direct_rootfs(container_root, name, rootfs_base,
-		                                             sizeof(rootfs_base)) == 0);
-		if (have_rootfs_base) {
-			/*
-			 * #333: the host-side tree the container pivoted onto,
-			 * reached without crossing its id-mapped mount. Correct
-			 * whether it is running or not, which is why this arm
-			 * does not consult e->running at all.
-			 */
-			snprintf(full_path, sizeof(full_path), "%s%s", rootfs_base, rel_path);
-		} else if (!stopped && e->running) {
-			char proc_root[64];
-
-			snprintf(proc_root, sizeof(proc_root), "/proc/%d/root", (int)e->handle.pid);
-			use_proc = (access(proc_root, F_OK) == 0);
-			if (use_proc)
-				snprintf(full_path, sizeof(full_path), "/proc/%d/root%s",
-				         (int)e->handle.pid, rel_path);
-		}
-		if (!have_rootfs_base && !use_proc)
-			container_writable_path(container_root, name, rel_path, full_path,
-			                         sizeof(full_path));
-	}
 	json_free(root);
 
-	/*
-	 * #333: who the new file must belong to, when the request did not
-	 * say. The rootfs's OWN ownership is the answer, and it is the same
-	 * one-source-of-truth marker container_create() reads to decide
-	 * which presentation to give the container: a tree owned by host
-	 * uid 0 is presented through an id-mapped mount, so a file the
-	 * daemon creates as uid 0 already appears inside as root; a tree
-	 * owned by a subordinate base is ADR-0179's phase-2b copy, where a
-	 * uid-0 file would land on an id that does not map inside at all
-	 * and show up as nobody. Inheriting the directory's ids is right in
-	 * both, with no side state to drift.
-	 */
-	if (have_rootfs_base && owner == (uid_t)-1 && group == (gid_t)-1) {
-		struct stat rst;
+	if (!stopped)
+		container_root_for(e->disk_name, container_root, sizeof(container_root));
+	have_rootfs_base = (container_direct_rootfs(container_root, name, rootfs_base,
+	                                             sizeof(rootfs_base)) == 0);
+	if (!stopped && e->running) {
+		char proc_root[64];
 
-		if (stat(rootfs_base, &rst) == 0) {
-			owner = rst.st_uid;
-			group = rst.st_gid;
+		/*
+		 * Same running-but-already-dead case the GET path above
+		 * documents: running == 1 only means this daemon has not
+		 * processed the exit yet, and a zombie's /proc/<pid>/root is a
+		 * dangling link. Probing it is safe and unambiguous -- the
+		 * daemon still holds the pidfd, so the pid cannot have been
+		 * recycled by an unrelated process.
+		 */
+		snprintf(proc_root, sizeof(proc_root), "/proc/%d/root", (int)e->handle.pid);
+		if (access(proc_root, F_OK) == 0) {
+			have_proc = 1;
+			snprintf(proc_path, sizeof(proc_path), "/proc/%d/root%s", (int)e->handle.pid,
+			         rel_path);
 		}
 	}
 
-	snprintf(target_dir, sizeof(target_dir), "%s", full_path);
-	slash = strrchr(target_dir, '/');
-	if (slash != NULL)
-		*slash = '\0';
-	if (persist_mkdir_p(target_dir) != 0) {
-		free(content);
-		respond_error(fd, 500, "Internal Server Error", "failed to create parent directory");
-		return;
-	}
-
 	/*
-	 * #333: four different syscalls used to share one error message, so
-	 * "failed to write file" was the whole of what an operator got --
-	 * for an open that was refused, a short write, a chmod, or a chown,
-	 * with no errno and no way to tell a read-only mount from a
-	 * permission problem from an id-mapping one. The endpoint was
-	 * reported failing on EVERY running container and the report could
-	 * not say why, which is most of why it stayed open.
+	 * #333, first attempt: through the container's OWN view of its
+	 * filesystem.
 	 *
-	 * Each step now names itself and carries strerror(errno). errno is
-	 * captured immediately, before close() or anything else can
-	 * overwrite it.
+	 * This has to be tried first, and the reason is not the id-mapping
+	 * this issue is about -- it is everything MOUNTED inside the
+	 * container. /run is a tmpfs, and a volume is a bind mount; both
+	 * shadow the corresponding directory in the host-side tree
+	 * completely. A write that goes host-side for such a path lands on
+	 * a directory nothing inside the container will ever look at, and
+	 * reports 204 while doing it.
 	 */
-	{
-		const char *step = NULL;
-		int saved_errno = 0;
-
-		file_fd = open(full_path, O_CREAT | O_TRUNC | O_WRONLY, (mode_t)mode);
-		if (file_fd < 0) {
-			step = "open";
-			saved_errno = errno;
-		} else if (content_len > 0 &&
-		           write(file_fd, content, content_len) != (ssize_t)content_len) {
-			step = "write";
-			saved_errno = errno;
-		} else if (fchmod(file_fd, (mode_t)mode) != 0) {
-			step = "fchmod";
-			saved_errno = errno;
-		} else if ((owner != (uid_t)-1 || group != (gid_t)-1) &&
-		           fchown(file_fd, owner, group) != 0) {
-			step = "fchown";
-			saved_errno = errno;
+	if (have_proc) {
+		if (write_one_file(proc_path, content, content_len, mode, owner, group, &wr) == 0) {
+			wrote_through_proc = 1;
+		} else if (wr.err != EOVERFLOW) {
+			file_write_fail(fd, name, &wr, proc_path, content);
+			return;
 		}
-		if (step != NULL) {
-			char errmsg[512];
+		/*
+		 * EOVERFLOW and only EOVERFLOW falls through. It is the exact
+		 * signature of crossing the container's id-mapped mount with
+		 * an fsuid that does not map through it (ADR-0179's userns
+		 * presentation), which is precisely the case the host-side
+		 * tree answers correctly -- and it is not a signature anything
+		 * else here produces, so falling through on it alone cannot
+		 * mask a real failure.
+		 */
+	}
 
-			if (file_fd >= 0)
-				close(file_fd);
-			free(content);
-			snprintf(errmsg, sizeof(errmsg), "%s(%s) failed: %s", step, full_path,
-			         strerror(saved_errno));
-			logstore_write_container(name, "error", "PUT files: %s", errmsg);
-			respond_error(fd, 500, "Internal Server Error", errmsg);
+	if (!wrote_through_proc) {
+		if (have_rootfs_base) {
+			snprintf(full_path, sizeof(full_path), "%s%s", rootfs_base, rel_path);
+			/*
+			 * Who the new file must belong to, when the request did
+			 * not say. The rootfs's OWN ownership is the answer, and
+			 * it is the same one-source-of-truth marker
+			 * container_create() reads to decide which presentation
+			 * to give the container: a tree owned by host uid 0 is
+			 * presented through an id-mapped mount, so a file the
+			 * daemon creates as uid 0 already appears inside as root;
+			 * a tree owned by a subordinate base is ADR-0179's
+			 * phase-2b copy, where a uid-0 file would land on an id
+			 * that does not map inside at all and read as nobody.
+			 */
+			if (owner == (uid_t)-1 && group == (gid_t)-1) {
+				struct stat rst;
+
+				if (stat(rootfs_base, &rst) == 0) {
+					owner = rst.st_uid;
+					group = rst.st_gid;
+				}
+			}
+		} else {
+			container_writable_path(container_root, name, rel_path, full_path,
+			                         sizeof(full_path));
+		}
+		/*
+		 * Before writing anything: would this land somewhere the
+		 * container can SEE?
+		 *
+		 * Asked rather than assumed, because the honest answer is not
+		 * always yes. A path under a tmpfs (/run) or a volume bind
+		 * mount is shadowed inside the container, so the host-side
+		 * tree is a DIFFERENT directory wearing the same path, and a
+		 * write there reports 204 while being invisible to the only
+		 * process that matters. That is the confident wrong answer
+		 * this endpoint has already been burned by (#394).
+		 *
+		 * The test is direct: compare the parent directory's identity
+		 * -- (st_dev, st_ino) -- in the container's own view against
+		 * the host-side one. A bind or id-mapped mount of the same
+		 * directory shares both, so the id-mapped rootfs this fallback
+		 * exists for compares EQUAL and passes. Anything mounted over
+		 * it is a different inode, a different superblock, or both.
+		 *
+		 * Checked BEFORE the write, never after: a write that has
+		 * already happened cannot be taken back without destroying
+		 * whatever the file held before it, and an overwrite of an
+		 * existing file is exactly what this endpoint is for.
+		 *
+		 * Only meaningful for a RUNNING container. A stopped one has
+		 * no view to compare against and its mounts do not exist yet
+		 * -- the next start assembles them over a tree this write is
+		 * genuinely part of. A parent that cannot be stat()ed on
+		 * either side is not evidence of shadowing and does not
+		 * refuse: mkdir below creates it, host-side, which is right
+		 * for a directory the container does not have either.
+		 */
+		if (have_proc) {
+			char proc_parent[PATH_MAX], host_parent[PATH_MAX];
+			struct stat ps, hs;
+
+			path_parent(proc_path, proc_parent, sizeof(proc_parent));
+			path_parent(full_path, host_parent, sizeof(host_parent));
+			if (stat(proc_parent, &ps) == 0 && stat(host_parent, &hs) == 0 &&
+			    (ps.st_dev != hs.st_dev || ps.st_ino != hs.st_ino)) {
+				char errmsg[640];
+
+				free(content);
+				snprintf(errmsg, sizeof(errmsg),
+				         "%s is shadowed inside this container by a mount (a tmpfs such "
+				         "as /run, or a volume), so a host-side write would not be "
+				         "visible to it -- and this container's id-mapped rootfs cannot "
+				         "be written through /proc/<pid>/root. Nothing was written. Use "
+				         "a path in the container's own rootfs, or write to the volume "
+				         "itself.",
+				         rel_path);
+				logstore_write_container(name, "error", "PUT files: %s", errmsg);
+				respond_error(fd, 409, "Conflict", errmsg);
+				return;
+			}
+		}
+		if (write_one_file(full_path, content, content_len, mode, owner, group, &wr) != 0) {
+			file_write_fail(fd, name, &wr, full_path, content);
 			return;
 		}
 	}
-	close(file_fd);
 	free(content);
 
 	http_set_blocking(fd);
@@ -23208,6 +23320,11 @@ static void op_getImage(const struct api_ctx *ctx)
 static void op_deleteImage(const struct api_ctx *ctx)
 {
 	handle_image_delete(ctx->fd, ctx->p[0]);
+}
+
+static void op_getImageVersionManifest(const struct api_ctx *ctx)
+{
+	handle_image_version_manifest(ctx->fd, ctx->p[0], ctx->p[1]);
 }
 
 static void op_setImageManifestEntry(const struct api_ctx *ctx)
