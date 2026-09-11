@@ -147,8 +147,8 @@ int main(void)
 		char tree[512], libsrc[512], appsrc[512], libpath[512], apppath[512];
 		char needed[ELFCHECK_MAX_NEEDED][ELFCHECK_SONAME_MAX];
 		char bad_file[512], bad_soname[ELFCHECK_SONAME_MAX];
-		char provided[1][ELFCHECK_SONAME_MAX];
-		int n;
+		char provided[ELFCHECK_MAX_NEEDED][ELFCHECK_SONAME_MAX];
+		int n, np;
 
 		check(elfcheck_is_soname("libssl.so.3") == 1, "libssl.so.3 is a soname");
 		check(elfcheck_is_soname("libfoo.so") == 1, "libfoo.so is a soname");
@@ -195,17 +195,44 @@ int main(void)
 					dep_slot = i;
 			check(dep_slot >= 0, "the fixture records its own dependency in DT_NEEDED");
 			if (dep_slot >= 0) {
+				/*
+				 * The fixture links the C library too, and the
+				 * caller is what accounts for that: pkg.c adds
+				 * PKG_BASE_LIBC to the provided list implicitly,
+				 * exactly as buildenv_resolve_tools() does, because
+				 * no recipe declares libc and every binary needs it.
+				 *
+				 * So the baseline here is "everything this binary
+				 * needs EXCEPT the dependency under test", built
+				 * from the binary's own DT_NEEDED rather than from a
+				 * hardcoded `libc.so.6`. Getting this wrong is not
+				 * hypothetical -- the first version of this test
+				 * passed an empty list and failed, because the
+				 * checker correctly reported libc as undeclared.
+				 */
+				np = 0;
+				for (i = 0; i < n; i++) {
+					if (i == dep_slot)
+						continue;
+					snprintf(provided[np], sizeof(provided[np]), "%s", needed[i]);
+					np++;
+				}
+
 				/* The library is IN the tree, so the tree satisfies
-				 * itself and nothing is undeclared -- even though
-				 * `provided` is empty. */
-				r = elfcheck_undeclared_links(tree, NULL, 0, bad_file, sizeof(bad_file),
-				                               bad_soname, sizeof(bad_soname));
+				 * itself: an internal dependency needs no
+				 * declaration. */
+				r = elfcheck_undeclared_links(tree,
+				                               (const char (*)[ELFCHECK_SONAME_MAX])provided, np,
+				                               bad_file, sizeof(bad_file), bad_soname,
+				                               sizeof(bad_soname));
 				check(r == 0, "a tree providing its own library declares nothing and is clean");
 
 				/* Remove it: now the need is real and unaccounted for. */
 				unlink(libpath);
-				r = elfcheck_undeclared_links(tree, NULL, 0, bad_file, sizeof(bad_file),
-				                               bad_soname, sizeof(bad_soname));
+				r = elfcheck_undeclared_links(tree,
+				                               (const char (*)[ELFCHECK_SONAME_MAX])provided, np,
+				                               bad_file, sizeof(bad_file), bad_soname,
+				                               sizeof(bad_soname));
 				check(r == 1, "a needed soname nothing provides is caught");
 				check(strcmp(bad_soname, needed[dep_slot]) == 0,
 				      "and the missing soname is named");
@@ -215,17 +242,19 @@ int main(void)
 				/* Declared: the same tree, now accounted for. This is
 				 * the cmake@4.4.3-3 case -- nothing about the binary
 				 * changed, only what it declares. */
-				snprintf(provided[0], sizeof(provided[0]), "%s", needed[dep_slot]);
-				r = elfcheck_undeclared_links(tree, (const char (*)[ELFCHECK_SONAME_MAX])provided,
-				                               1, bad_file, sizeof(bad_file), bad_soname,
+				snprintf(provided[np], sizeof(provided[np]), "%s", needed[dep_slot]);
+				r = elfcheck_undeclared_links(tree,
+				                               (const char (*)[ELFCHECK_SONAME_MAX])provided,
+				                               np + 1, bad_file, sizeof(bad_file), bad_soname,
 				                               sizeof(bad_soname));
 				check(r == 0, "declaring the provider clears it");
 
 				/* An unrelated declaration does not: the gate is
 				 * about the soname, not about declaring something. */
-				snprintf(provided[0], sizeof(provided[0]), "libsomethingelse.so.9");
-				r = elfcheck_undeclared_links(tree, (const char (*)[ELFCHECK_SONAME_MAX])provided,
-				                               1, bad_file, sizeof(bad_file), bad_soname,
+				snprintf(provided[np], sizeof(provided[np]), "libsomethingelse.so.9");
+				r = elfcheck_undeclared_links(tree,
+				                               (const char (*)[ELFCHECK_SONAME_MAX])provided,
+				                               np + 1, bad_file, sizeof(bad_file), bad_soname,
 				                               sizeof(bad_soname));
 				check(r == 1, "declaring an unrelated library does not clear it");
 			}
