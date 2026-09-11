@@ -10456,6 +10456,46 @@ int pkg_sync_extract(void)
 }
 
 /*
+ * Where the forked half leaves its tallies for the parent.
+ *
+ * A fork cannot hand back an int triple through memory, and the exit
+ * status has room for one small number, not three. A file is the least
+ * machinery that carries them, and the extraction directory is already
+ * this sync's own scratch space.
+ */
+static void sync_counts_path(char *out, size_t out_size)
+{
+	snprintf(out, out_size, "%s/sync-extract.counts", g_pkg_dir);
+}
+
+static void sync_counts_write(int added, int skipped, int failed)
+{
+	char path[PATH_MAX];
+	char buf[64];
+	int len = snprintf(buf, sizeof(buf), "%d %d %d\n", added, skipped, failed);
+
+	if (len <= 0)
+		return;
+	sync_counts_path(path, sizeof(path));
+	persist_atomic_write(path, buf, (size_t)len);
+}
+
+static void sync_counts_read(int *added, int *skipped, int *failed)
+{
+	char path[PATH_MAX];
+	char *buf = NULL;
+	size_t len = 0;
+
+	*added = *skipped = *failed = 0;
+	sync_counts_path(path, sizeof(path));
+	if (persist_read_file(path, &buf, &len) == 0 && buf != NULL) {
+		sscanf(buf, "%d %d %d", added, skipped, failed);
+		free(buf);
+	}
+	unlink(path);
+}
+
+/*
  * The fetch finished. Records the outcome and says whether the caller
  * should now run pkg_sync_extract() (1) or whether this sync is already
  * over (0) -- ADR-0278 split the extraction out so it can go into a
@@ -10483,9 +10523,29 @@ int pkg_sync_fetch_done(int exit_status)
  * failed). `rc` is pkg_sync_extract()'s own return. Everything from
  * here on touches in-memory state and therefore runs on the loop.
  */
-void pkg_sync_completed(int rc)
+/*
+ * ADR-0278 (#367), corrected: the forkable half is the WHOLE of this,
+ * not just the extraction.
+ *
+ * The first attempt moved only `extract_tarball()` into a helper on the
+ * assumption that unpacking the archive was where the five seconds
+ * went. Measured after deploying it: a real sync still froze the loop
+ * for 4991 ms. The merge is the heavy half -- roughly 1300 recipe files
+ * read, parsed and written -- and the extraction was never the problem.
+ *
+ * The one thing that stopped this being forkable is
+ * pkg_recipe_add()'s call to queue_rolling_rebuilds_for(), which
+ * mutates the in-memory rebuild queue: a child would fill its copy and
+ * exit. That is exactly what pkg_rebuild_queue_rederive() (#373)
+ * reconstructs, from the images and their drift, so the parent rebuilds
+ * the queue after the child finishes rather than the child trying to
+ * hand it back. One source of truth, and the function already exists.
+ *
+ * The tallies come back through a file, because a fork cannot return an
+ * int triple and the exit status has room for one small number.
+ */
+int pkg_sync_merge(void)
 {
-	char tarball_path[PATH_MAX];
 	char extract_dir[PATH_MAX];
 	char recipes_root[PATH_MAX];
 	char images_root[PATH_MAX];
@@ -10494,18 +10554,7 @@ void pkg_sync_completed(int rc)
 	struct dirent *name_de;
 	int added = 0, skipped = 0, failed = 0;
 
-	sync_state_path(tarball_path, sizeof(tarball_path));
 	snprintf(extract_dir, sizeof(extract_dir), "%s/sync-extract", g_pkg_dir);
-
-	if (rc != 0) {
-		g_sync_last_state = SYNC_FAILED;
-		snprintf(g_sync_last_error, sizeof(g_sync_last_error), "%s",
-		         rc == -1 ? "could not create extraction directory"
-		                  : "archive extraction failed");
-		unlink(tarball_path);
-		return;
-	}
-	unlink(tarball_path);
 
 	snprintf(recipes_root, sizeof(recipes_root), "%s/recipes/package", extract_dir);
 	names_d = opendir(recipes_root);
@@ -10586,6 +10635,43 @@ void pkg_sync_completed(int rc)
 	 * inherit a refetch an operator asked for once. */
 	g_sync_refetch_name[0] = '\0';
 	g_sync_refetch_version[0] = '\0';
+
+	sync_counts_write(added, skipped, failed);
+	return 0;
+}
+
+/*
+ * The sync's last step, on the loop: adopt the tallies the merge left
+ * behind, rebuild the rolling queue the child could not hand back, and
+ * record the outcome.
+ */
+void pkg_sync_completed(int rc)
+{
+	int added = 0, skipped = 0, failed = 0;
+	char tarball_path[PATH_MAX];
+
+	sync_state_path(tarball_path, sizeof(tarball_path));
+	unlink(tarball_path);
+
+	if (rc != 0) {
+		g_sync_last_state = SYNC_FAILED;
+		snprintf(g_sync_last_error, sizeof(g_sync_last_error), "%s",
+		         rc == -1 ? "could not create extraction directory"
+		                  : "archive extraction or recipe merge failed");
+		return;
+	}
+
+	sync_counts_read(&added, &skipped, &failed);
+
+	/* One-shot: cleared here so the periodic background sync can never
+	 * inherit a refetch an operator asked for once. The child cleared
+	 * its own copy; this is the one that lasts. */
+	g_sync_refetch_name[0] = '\0';
+	g_sync_refetch_version[0] = '\0';
+
+	/* #373's derivation, used for the reason it was built: the child
+	 * queued rebuilds into a copy of the queue that died with it. */
+	pkg_rebuild_queue_rederive();
 
 	g_sync_last_state = SYNC_SUCCESS;
 	g_sync_last_added = added;
