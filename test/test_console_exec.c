@@ -179,6 +179,16 @@ static void report_loop_health(struct cix_client *c)
  * list means it is not there at all and the 101 was a lie. Those are
  * three different bugs and this test could not tell them apart.
  */
+/* This file has no json_str_field() -- that helper is local to other
+ * test files -- so field reads go through json_object_get() directly,
+ * the same way report_loop_health() above does. */
+static const char *proc_str(const struct json_value *obj, const char *key)
+{
+	const struct json_value *v = json_object_get(obj, key);
+
+	return (v != NULL && v->type == JSON_STRING) ? v->u.string : NULL;
+}
+
 static void report_container_processes(struct cix_client *c, const char *container)
 {
 	struct cix_response pr;
@@ -195,11 +205,11 @@ static void report_container_processes(struct cix_client *c, const char *contain
 	}
 	for (i = 0; i < pr.json->u.array.count; i++) {
 		const struct json_value *p = pr.json->u.array.items[i];
-		const char *cn = json_str_field(p, "container");
-		const char *comm = json_str_field(p, "comm");
-		const char *state = json_str_field(p, "state");
-		const char *wchan = json_str_field(p, "wchan");
-		const char *cmdl = json_str_field(p, "command_line");
+		const char *cn = proc_str(p, "container");
+		const char *comm = proc_str(p, "comm");
+		const char *state = proc_str(p, "state");
+		const char *wchan = proc_str(p, "wchan");
+		const char *cmdl = proc_str(p, "command_line");
 		const struct json_value *pid = json_object_get(p, "pid");
 
 		if (cn == NULL || strcmp(cn, container) != 0)
