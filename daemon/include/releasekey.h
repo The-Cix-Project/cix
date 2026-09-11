@@ -28,7 +28,10 @@ enum releasekey_error {
 	RELEASEKEY_ERR_BAD_KEY,     /* not a parseable Ed25519 private key */
 	RELEASEKEY_ERR_NOT_SET,     /* no key installed */
 	RELEASEKEY_ERR_IO,          /* could not read/write a file */
-	RELEASEKEY_ERR_SIGN         /* openssl refused to sign */
+	RELEASEKEY_ERR_SIGN,        /* openssl refused to sign */
+	RELEASEKEY_ERR_BAD_SIG,     /* the signature file is not parseable minisign */
+	RELEASEKEY_ERR_UNKNOWN_KEY, /* no trusted key carries the signature's key id */
+	RELEASEKEY_ERR_VERIFY       /* parsed and attributed, but does not match these bytes */
 };
 
 /* <data-dir>/keys/cix-release.key, alongside the Secure Boot pair. */
@@ -83,6 +86,41 @@ enum releasekey_error releasekey_key_id_hex(char *out, size_t out_size);
  */
 enum releasekey_error releasekey_sign_file(const char *path, const char *sig_path,
                                             const char *trusted_comment);
+
+/*
+ * Verifies `sig_path` over `path` against the public keys in
+ * `trusted_dir`, and hands back the signature's trusted comment.
+ *
+ * The counterpart to releasekey_sign_file(), added for ADR-0279: an
+ * artifact's approval travels as a signature beside it, so a host that
+ * did not build something still has to decide whether to trust it.
+ * Until this existed the daemon could sign and never check -- every
+ * verifier was a person with stock minisign on a laptop.
+ *
+ * Both signatures are checked, and the second is the one with teeth:
+ * the global signature covers `signature || trusted_comment`, so a
+ * comment naming which package and revision these bytes are cannot be
+ * edited without invalidating everything. Checking only the first would
+ * accept a genuine artifact relabelled as a different one, which is
+ * precisely the attack ADR-0279's revision binding exists to stop.
+ *
+ * `trusted_dir` holds minisign-format public keys, one per file, the
+ * shape docs/keys/ already publishes. EVERY key there is trusted,
+ * retired ones included -- a retired key is kept so the artifacts it
+ * signed stay verifiable, and dropping it would un-approve history. A
+ * signature whose key id matches none of them is RELEASEKEY_ERR_
+ * UNKNOWN_KEY, a hard failure: an unknown signer is never a reason to
+ * fall through to trusting the bytes. An empty or absent directory
+ * verifies nothing, and says so, rather than accepting anything.
+ *
+ * out_trusted_comment receives the comment only when the return is
+ * RELEASEKEY_OK -- there is no such thing as a trusted comment from a
+ * signature that did not verify, and handing one back on failure is how
+ * a caller ends up reading an attacker's text.
+ */
+enum releasekey_error releasekey_verify_file(const char *path, const char *sig_path,
+                                              const char *trusted_dir,
+                                              char *out_trusted_comment, size_t out_size);
 
 const char *releasekey_strerror(enum releasekey_error e);
 
