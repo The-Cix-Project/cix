@@ -27720,6 +27720,16 @@ static int cixd_main(int argc, char **argv)
 	if (boot_subsystem_init(init_mode, "signing_keys", signingkeys_init(SIGNING_KEYS_DIR)) != 0)
 		return 1;
 	releasekey_init(SIGNING_KEYS_DIR);
+	/* A sibling of the private signing key, not a mixture with it
+	 * (ADR-0279): what this host may sign with and what it will trust
+	 * are different questions, and one directory holding both invites
+	 * the answer to one being read as the answer to the other. */
+	{
+		char trusted[PATH_MAX];
+
+		snprintf(trusted, sizeof(trusted), "%s/trusted", SIGNING_KEYS_DIR);
+		pkg_trusted_keys_init(trusted);
+	}
 	if (boot_subsystem_init(init_mode, "siteconfig", siteconfig_init(SITE_CONFIG_PATH)) != 0)
 		return 1;
 	reconcile_instance_dns_record();

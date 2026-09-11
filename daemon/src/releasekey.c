@@ -3,6 +3,7 @@
 #include "opensslrun.h"
 
 #include <dirent.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <stdio.h>
@@ -600,4 +601,70 @@ enum releasekey_error releasekey_verify_file(const char *path, const char *sig_p
 		memcpy(out_trusted_comment, comment, clen + 1);
 	}
 	return RELEASEKEY_OK;
+}
+
+int releasekey_trust_adopt(const char *src_dir, const char *dst_dir)
+{
+	DIR *d;
+	struct dirent *ent;
+	int adopted = 0;
+
+	if (src_dir == NULL || dst_dir == NULL)
+		return -1;
+	if (mkdir(dst_dir, 0755) != 0 && errno != EEXIST)
+		return -1;
+
+	d = opendir(src_dir);
+	if (d == NULL)
+		return 0; /* nothing published to adopt is not a failure */
+	while ((ent = readdir(d)) != NULL) {
+		char src[PATH_MAX], dst[PATH_MAX], tmp[PATH_MAX];
+		unsigned char id[RELEASEKEY_ID_LEN], pub[ED25519_PUB_LEN];
+		char buf[4096];
+		FILE *in, *out;
+		size_t n;
+		int ok;
+
+		if (ent->d_name[0] == '.')
+			continue;
+		if ((size_t)snprintf(src, sizeof(src), "%s/%s", src_dir, ent->d_name) >= sizeof(src))
+			continue;
+		/* By parse, not by filename: docs/keys/ also carries a
+		 * certificate and a PGP block, and neither belongs here. */
+		if (read_public_key_file(src, id, pub) != 0)
+			continue;
+		if ((size_t)snprintf(dst, sizeof(dst), "%s/%s", dst_dir, ent->d_name) >= sizeof(dst))
+			continue;
+		if ((size_t)snprintf(tmp, sizeof(tmp), "%s.new", dst) >= sizeof(tmp))
+			continue;
+
+		in = fopen(src, "rb");
+		if (in == NULL)
+			continue;
+		out = fopen(tmp, "wb");
+		if (out == NULL) {
+			fclose(in);
+			continue;
+		}
+		ok = 1;
+		while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
+			if (fwrite(buf, 1, n, out) != n) {
+				ok = 0;
+				break;
+			}
+		}
+		fclose(in);
+		if (fclose(out) != 0)
+			ok = 0;
+		/* Renamed into place so a trust store is never read
+		 * half-written -- the same convention the recipe store uses,
+		 * and it matters more here. */
+		if (!ok || rename(tmp, dst) != 0) {
+			unlink(tmp);
+			continue;
+		}
+		adopted++;
+	}
+	closedir(d);
+	return adopted;
 }

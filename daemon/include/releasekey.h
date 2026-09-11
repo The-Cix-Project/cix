@@ -122,6 +122,32 @@ enum releasekey_error releasekey_verify_file(const char *path, const char *sig_p
                                               const char *trusted_dir,
                                               char *out_trusted_comment, size_t out_size);
 
+/*
+ * Copies every minisign public key in `src_dir` into `dst_dir`,
+ * returning how many are now trusted, or -1 if dst_dir cannot be made.
+ *
+ * This is how a host learns which keys to trust (ADR-0279): the sync
+ * tarball is the whole repository, so docs/keys/ already arrives on
+ * every sync and was discarded. The owner's decision was that the key
+ * comes from git via sync, which makes this the one place it enters.
+ *
+ * Only files that PARSE as a minisign public key are taken. docs/keys/
+ * also holds an X.509 certificate and a PGP block, and a trust store
+ * that accumulated those would be a directory of things nobody checks
+ * the meaning of. Deciding by parse rather than by filename means a key
+ * is trusted because it is one.
+ *
+ * Merge, never replace. A retired key is kept precisely so the
+ * artifacts it signed stay verifiable, and docs/keys/ is append-only
+ * for that reason -- so a key absent from a sync is not evidence it
+ * should stop being trusted, and dropping it would un-approve history.
+ * Revoking one is therefore deliberately NOT expressible here; it would
+ * need a mechanism that says "revoked" rather than one that says
+ * "absent", and inferring the first from the second is how a mirror
+ * outage becomes a fleet-wide trust failure.
+ */
+int releasekey_trust_adopt(const char *src_dir, const char *dst_dir);
+
 const char *releasekey_strerror(enum releasekey_error e);
 
 #endif /* RELEASEKEY_H */
