@@ -14180,6 +14180,14 @@ components:
             "image_version" on the create request. Stable from then on
             unless follow_rolling patches it and the container is
             restarted onto the new pin (ADR-0124).
+
+
+            ADR-0277: restarting onto a new pin REBUILDS the container's
+            rootfs from that version -- the old tree is discarded, so
+            anything written inside the container and not on a volume is
+            lost at that point. Until ADR-0277 the tree was seeded once
+            and reused forever, which made this field a claim the
+            container was not honouring (#401).
         follow_rolling:
           type: boolean
           description: >

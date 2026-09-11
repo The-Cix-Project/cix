@@ -6,6 +6,54 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Rolling updates reach running containers for the first time (#401, ADR-0277)
+
+**`follow_rolling` has never applied to a running container**, and the reason is one
+`stat()`. ADR-0207 gave each container its own writable rootfs and decided the storage
+mode from one fact on disk: if `<base>/rootfs` exists, keep it — because that tree *is*
+the container's state and re-snapshotting would discard every write it ever made. Sound,
+and written in the code to this day. What it could not say is which image version the
+kept tree came from, because when it was written there was only one answer.
+
+Once `follow_rolling` could move a pin there were two, and nothing distinguished them.
+`lowerdir` was computed from the new pin one line earlier and then ignored. So the tree
+was seeded once, on first start, and reused forever. `apply_rolling_container_restarts()`
+did its half correctly — patched the pin, armed a restart — and the container came back
+on the old tree. Userns is the default (ADR-0179) and btrfs is the substrate (ADR-0207),
+so this is every container on a real host.
+
+Measured on 192.168.15.95: `fastfetch@2.68.1-4` installed into `jumpbox`, whose version
+moved `a976195c…` → `6ba75bd0…`. `GET /v1/containers/jump` reported the new version while
+its init was still pid 1946 **from boot**. A full stop+start gave a new pid and still the
+previous revision's binary, while a container created fresh from the same image, reporting
+the same version, had the new one. The image was right, the container was not, and the one
+field an operator would check agreed with the wrong answer.
+
+The rootfs now records what it was seeded from, in `<base>/rootfs.version` — beside the
+tree, not inside it, since inside would be visible to the container and would travel with
+a snapshot of it. An existing rootfs is kept only while that matches the pin; when it does
+not, the tree is deleted and seeded again from the new version. **In-container writes do
+not survive an image version change** — stated rather than discovered: anything that must
+outlive a version belongs on a volume, which is what the rest of the platform already
+assumes (`files[]` re-staged every start, data on volumes, an image is its declared
+packages plus the baseline).
+
+A rootfs with no marker is **adopted**, not rebuilt. Its origin cannot be recovered, and a
+silent mass re-seed of every container on the first boot after this lands would be a worse
+surprise than one more cycle of a staleness that already exists. Such a container corrects
+itself the next time its image version moves.
+
+Before changing it, the blast radius was measured rather than assumed: three of the
+fourteen deployments on that host set `follow_rolling`, and none keeps state in its own
+rootfs — `jump` has home directories on a volume, `ldap-1`/`ldap-2` hold users and groups
+in cixd's own persisted state and have them rendered in by `ldap_record_sync_all()`.
+
+`test_direct_rootfs` gates both directions now, and is in `SELFTESTS`: the existing case
+proves writes survive a same-version restart, the new one proves they do not survive a
+version change. `openapi.yaml`'s `image_version` description said the field follows the
+pin "and the container is restarted onto the new pin" — true as written and false in
+practice until now; it now says what the rebuild does and what it costs.
+
 ### fastfetch prints information again: a config is the module list, not an addition to it
 
 **Revision 3 shipped a fastfetch that drew the Cix mark and said nothing beside it.**
