@@ -67,24 +67,38 @@ unchanged.
 Found while investigating #331 and explicitly **not** its cause — these produce a failed
 upgrade, not the 101-then-silence that #331 shows.
 
-### test_console_exec's first-byte ceiling was the number it kept failing at (#331)
+### test_console_exec: the fixture's own 30-second life was the real ceiling (#331)
 
-Two consecutive releases died on this test, v2.57.64 and v2.57.66, each at **~10226 ms** —
-which is the 10-second `SO_RCVTIMEO` ceiling itself. That is the tell: the test never
-learned how much longer the container's child actually needed, so "slow" and "never
-produced a byte at all" were indistinguishable. It is the same failure mode the
-`READ_TIMEOUT`/`READ_PEER_CLOSED` split was added to fix, one level up — a previous attempt
-had already raised this ceiling 2 s → 10 s, which could not distinguish them either.
+Three releases in a row died here, and the diagnosis took two goes.
 
-Both runs printed clean loop figures alongside the failure (`worst_pass_ms=22`,
-`slow_passes=0`), so the daemon was turning normally for the whole ten seconds. This is CPU
-starvation of the container's child while the same two-CPU box compiles the control plane,
-not a daemon fault.
+**First reading.** v2.57.64 and v2.57.66 both failed at **~10226 ms** — the 10-second
+`SO_RCVTIMEO` ceiling itself. The test never learned how much longer the container's child
+actually needed, so "slow" and "never produced a byte" were the same answer. Both runs
+printed clean loop figures beside the failure (`worst_pass_ms=22`, `slow_passes=0`), ruling
+out the event loop and pointing at CPU starvation while the same two-CPU box compiles the
+control plane. Raised 10 → 60.
 
-Ceiling raised to 60 s. A slow child now passes and a genuinely broken one still fails,
-which is the distinction worth having; the larger ceiling is paid for only by a run that was
-going to fail anyway. Same reasoning as #376's shutdown bound, and the comment already in
-that function had made the argument correctly — it was only the number that had not kept up.
+**Which broke it differently, and that is what found the real constraint.** v2.57.68 waited
+**29906 ms** and ended `PEER CLOSED`, followed by ten more failures — including "Sec-WebSocket-Accept
+matches the RFC 6455 worked example", a pure computation that cannot fail on its own. The
+log line underneath said it: `consoletest: exited (status 0, signal 0) after 30s`.
+
+The fixture container is created with `daemon_child 30`. **It exits cleanly after thirty
+seconds, and every scenario in the file runs against it.** A 60-second read ceiling outlives
+the container it is reading from, so a slow first byte stopped being a timeout and became a
+dead container plus a cascade of unrelated-looking failures.
+
+That 30 seconds was the ceiling on this entire test all along and nothing said so — which is
+also why moving the socket timeout 2 → 10 never settled anything. The read ceiling was never
+the binding constraint.
+
+Fixed at both ends: all three fixture containers now live 300 s, and the read ceiling sits at
+30 s — three times the figure the real failures clustered at, a tenth of the fixture's life.
+A slow child passes, a broken one still fails, and neither can be confused with the fixture
+expiring underneath the test.
+
+The `READ_TIMEOUT`/`READ_PEER_CLOSED` split added for an earlier round of this is what made
+the second diagnosis possible at all: the two failures look identical without it.
 
 ### A build in flight when the daemon stops now leaves a run behind (#375)
 
