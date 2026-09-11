@@ -1394,6 +1394,41 @@ static void str_replace_all(char *buf, size_t cap, const char *needle, const cha
 	}
 }
 
+/*
+ * The daemon's own repo token, put back as the placeholder it came from.
+ *
+ * #405: the token is substituted into a source URL by parse_recipe()
+ * and must never leave this process in any other form. It did.
+ * GET /v1/pkg/recipes/{name} serves a recipe's raw stored bytes, it
+ * needs no authentication, and 24 stored recipes on 192.168.15.95
+ * carried the live token in their own text -- so a token with push
+ * access to the private repository was readable with one curl and no
+ * credentials. Measured 2026-09-11: cix v2.55.12 through v2.57.7,
+ * kernel 7.2.3-3 through -7, and two probe recipes.
+ *
+ * Those were written by hand before #60 gave recipes {{REPO_TOKEN}};
+ * the current kernel recipe and every cix release from v2.57.8 already
+ * carry the placeholder, so nothing writes them any more. That is why
+ * the redaction is on BOTH sides of persistence and not just one. On
+ * the way in, so a recipe carrying a live token is never stored again
+ * -- the write path is fixed by convention today and a convention is
+ * not a guarantee. On the way out, so the recipes that already exist
+ * stop being served: ADR-0107 makes a published recipe immutable, so
+ * those files stay exactly as they are and the endpoint stops handing
+ * out what is inside them.
+ *
+ * Shrinks in place -- a token is 40 characters and the placeholder is
+ * 14, so no reallocation and no truncation is possible here.
+ */
+static void redact_repo_token(char *buf, size_t cap)
+{
+	const char *tok = pkg_repo_token();
+
+	if (buf == NULL || tok == NULL || tok[0] == '\0')
+		return;
+	str_replace_all(buf, cap, tok, "{{REPO_TOKEN}}");
+}
+
 static int parse_recipe(const char *path, struct pkg_recipe *out)
 {
 	char *buf;
@@ -5030,6 +5065,11 @@ enum pkg_error pkg_recipe_get(const char *name, const char *version, struct json
 		return PKG_ERR_NOT_FOUND;
 	if (persist_read_file(recipe_path, &content, &content_len) != 0 || content == NULL)
 		return PKG_ERR_PERSIST_FAILED;
+	/* #405: this endpoint needs no authentication and serves the
+	 * recipe's stored bytes verbatim, so a recipe written before #60
+	 * put a live token here. Redacted on the way out, which is what
+	 * covers the ones already on disk. */
+	redact_repo_token(content, content_len + 1);
 
 	jw_obj_open(w);
 	jw_key(w, "name");
@@ -5509,6 +5549,7 @@ static int recipe_adds_only_artifact_sha256(const char *stored, const char *upda
 
 enum pkg_error pkg_recipe_add(const char *name, const char *content)
 {
+	char *redacted;
 	char name_dir[PATH_MAX];
 	char version_dir[PATH_MAX];
 	char staging_path[PATH_MAX];
@@ -5529,11 +5570,24 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content)
 	if (snprintf(staging_path, sizeof(staging_path), "%s/.%s.recipe.new", g_recipes_dir, name) >=
 	    (int)sizeof(staging_path))
 		return PKG_ERR_INVALID_NAME;
-	if (persist_atomic_write(staging_path, content, strlen(content)) != 0)
+	/* #405: never store a live repo token. Everything below -- the
+	 * write, the immutability check and the approval comparison --
+	 * works on the redacted copy, so a caller that submits an expanded
+	 * URL gets the same recipe a caller that submits the placeholder
+	 * does, rather than a second, secret-bearing version of it. */
+	redacted = strdup(content);
+	if (redacted == NULL)
 		return PKG_ERR_PERSIST_FAILED;
+	redact_repo_token(redacted, strlen(redacted) + 1);
+	content = redacted;
+	if (persist_atomic_write(staging_path, content, strlen(content)) != 0) {
+		free(redacted);
+		return PKG_ERR_PERSIST_FAILED;
+	}
 
 	if (parse_recipe(staging_path, &parsed) != 0 || strcmp(parsed.name, name) != 0) {
 		unlink(staging_path);
+		free(redacted);
 		return PKG_ERR_INVALID_RECIPE;
 	}
 
@@ -5555,6 +5609,7 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content)
 			only_approval = recipe_adds_only_artifact_sha256(stored, content);
 			free(stored);
 		}
+		free(redacted);
 		if (!only_approval) {
 			unlink(staging_path);
 			return PKG_ERR_DUPLICATE;
@@ -5568,6 +5623,7 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content)
 		                parsed.version);
 		return PKG_OK;
 	}
+	free(redacted);
 
 	if (persist_mkdir_p(version_dir) != 0) {
 		unlink(staging_path);

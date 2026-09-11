@@ -6,6 +6,42 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A recipe is never stored or served carrying a live credential (#405)
+
+`GET /v1/pkg/recipes/{name}` needs no authentication and returns a recipe's stored bytes
+verbatim. Measured on 192.168.15.95, 2026-09-11: **24 stored recipes carried a live Gitea
+token with push access to the private repository** — `cix` v2.55.12 through v2.57.7, `kernel`
+7.2.3-3 through -7, and two probe recipes. One `curl`, no credentials, no header:
+
+```
+$ curl -sk -o out.json -w "HTTP %{http_code}\n" \
+    "https://192.168.15.95/v1/pkg/recipes/kernel?version=7.2.3-3"
+HTTP 200
+```
+
+Those were written by hand before #60 gave recipes the `{{REPO_TOKEN}}` placeholder, which the
+daemon substitutes at fetch time. The window is bounded and closed — `kernel` 7.2.3-9 and every
+`cix` release from v2.57.8 carry the placeholder, and all 448 recipe files in git use it. So
+nothing was still writing these. They were simply still being served, and nothing looked.
+
+The token is now redacted on **both** sides of persistence. On the way out, which is what covers
+the 24 that already exist: ADR-0107 makes a published recipe immutable, so those files stay
+exactly as they are and the endpoint stops handing out what is inside them. On the way in, so one
+cannot be stored again — the write path is correct by convention today, and a convention is not a
+guarantee. Both sides work on the daemon's own configured token, so a daemon with none configured
+redacts nothing and a recipe without one is byte-for-byte unchanged.
+
+`test_recipe_hygiene` gains the other half: no file under `recipes/` may contain a URL with a
+credential in it. It passes today across 1384 files, so it is a guard against the regression
+rather than a cleanup. The rule is deliberately narrow — a line with a scheme, containing a colon
+followed by 20 or more hex digits followed by `@` — and was validated against the real token it
+must catch and against the `pkg_sha256=` and plain-URL lines it must not.
+
+It surfaced sideways, while comparing the daemon's recipe store against git for #403: 16 recipes
+"differed beyond the approval line", and the difference was the credential. The comment at the
+substitution site claimed the token "is never persisted into any recipe or the catalog" — a
+comment asserting a safety property that did not hold, which is why nobody checked it.
+
 ### An artifact approval reaches the fleet, not just the host that earned it (#403)
 
 `approve_published_artifact()` (#306) writes `pkg_artifact_sha256=` into the **daemon's** copy of
