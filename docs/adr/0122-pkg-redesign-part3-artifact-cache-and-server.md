@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted. Amended by [ADR-0279](0279-an-artifact-carries-its-own-approval.md): the artifact tier gains a second, independent gate — a minisign signature published beside the artifact — because `pkg_artifact_sha256=` is earned by the daemon at publish time and never reached git, so every host except the publisher rebuilt from source (#403). The two cache tiers here, and the recipe checksum as a git-tracked pin, are unchanged.
 
 ## Context
 
