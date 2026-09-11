@@ -1,6 +1,7 @@
 #include "exec.h"
 
 #include "iohelpers.h"
+#include "logstore.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -215,6 +216,62 @@ int exec_resize_pty(int pty_master_fd, unsigned short cols, unsigned short rows)
 	 * a real graphical terminal knows, nothing here has it, and no
 	 * terminal-handling program requires it. */
 	return ioctl(pty_master_fd, TIOCSWINSZ, &wsz) == 0 ? 0 : -1;
+}
+
+/*
+ * #372: which step in the intermediate failed, and with what errno.
+ *
+ * #108 gave a failed execve() a way home -- it writes its errno down a
+ * pipe the daemon is already reading. It was the ONLY failure in that
+ * child that reported anything. Four earlier exits wrote nothing, so a
+ * namespace join refused, no identity inside the container's userns, a
+ * /dev/pts/<n> that will not open, and an exhausted fork all arrived at
+ * the caller as one blanket ECHILD. Two of them printed to stderr,
+ * which this daemon never mirrors into the log store, so on a real host
+ * the reason was simply gone.
+ *
+ * The protocol already carries two writes: the grandchild pid, then an
+ * optional errno. A NEGATIVE pid is impossible for a real child and the
+ * daemon already treats it as failure, so it is free to carry which
+ * step died -- no second channel, no change to the success path, and an
+ * old daemon reading a new child still sees "failure" exactly as
+ * before.
+ */
+enum exec_step {
+	EXEC_STEP_JOIN_NS = -1,
+	EXEC_STEP_BECOME_ROOT = -2,
+	EXEC_STEP_OPEN_SLAVE = -3,
+	EXEC_STEP_FORK = -4
+};
+
+static const char *exec_step_name(pid_t step)
+{
+	switch ((int)step) {
+	case EXEC_STEP_JOIN_NS:
+		return "joining the container's namespaces";
+	case EXEC_STEP_BECOME_ROOT:
+		return "taking root inside the container's user namespace";
+	case EXEC_STEP_OPEN_SLAVE:
+		return "opening the pty slave inside the container";
+	case EXEC_STEP_FORK:
+		return "forking the process to exec";
+	default:
+		return "an unnamed step";
+	}
+}
+
+/*
+ * Report a step failure and die. Runs in the intermediate child, so it
+ * may only use async-signal-safe-ish primitives and must never return.
+ */
+static void exec_step_fail(int pipe_w, enum exec_step step, int err)
+{
+	pid_t code = (pid_t)step;
+	int e = err;
+
+	(void)!write(pipe_w, &code, sizeof(code));
+	(void)!write(pipe_w, &e, sizeof(e));
+	_exit(127);
 }
 
 int exec_into_container(pid_t target_pid, int cgroup_procs_fd, char *const cmd_argv[],
@@ -438,9 +495,9 @@ int exec_into_container(pid_t target_pid, int cgroup_procs_fd, char *const cmd_a
 		close(master_fd); /* only the daemon-side relay ever touches the master */
 
 		if (join_namespaces(user_fd, mnt_fd, uts_fd, net_fd, pid_fd) != 0)
-			_exit(127);
+			exec_step_fail(pipefd[1], EXEC_STEP_JOIN_NS, errno);
 		if (user_fd >= 0 && become_container_root() != 0)
-			_exit(127);
+			exec_step_fail(pipefd[1], EXEC_STEP_BECOME_ROOT, errno);
 		close(mnt_fd); close(uts_fd); close(net_fd); close(pid_fd); if (user_fd >= 0) close(user_fd);
 
 		/*
@@ -450,17 +507,12 @@ int exec_into_container(pid_t target_pid, int cgroup_procs_fd, char *const cmd_a
 		 * grandchild needs this fd to survive its own execve().
 		 */
 		slave_fd = open(slave_path, O_RDWR);
-		if (slave_fd < 0) {
-			fprintf(stderr, "exec_into_container: open %s in container: %s\n", slave_path,
-			        strerror(errno));
-			_exit(127);
-		}
+		if (slave_fd < 0)
+			exec_step_fail(pipefd[1], EXEC_STEP_OPEN_SLAVE, errno);
 
 		grandchild = fork();
-		if (grandchild < 0) {
-			fprintf(stderr, "exec_into_container: fork (grandchild): %s\n", strerror(errno));
-			_exit(127);
-		}
+		if (grandchild < 0)
+			exec_step_fail(pipefd[1], EXEC_STEP_FORK, errno);
 
 		if (grandchild == 0) {
 			/* Now a real member of the container's own pid namespace
@@ -596,6 +648,32 @@ int exec_into_container(pid_t target_pid, int cgroup_procs_fd, char *const cmd_a
 		waitpid(intermediate, NULL, 0);
 
 		if (n != (ssize_t)sizeof(grandchild_pid) || grandchild_pid <= 0) {
+			/*
+			 * #372: a negative pid is a STEP CODE, written by
+			 * exec_step_fail() with the real errno behind it. Four
+			 * distinct causes used to arrive here as one blanket
+			 * ECHILD -- "something failed", for a syscall that was
+			 * never made -- and two of them had printed their reason
+			 * to stderr, which this daemon does not mirror into the
+			 * log store, so on a real host it was gone.
+			 *
+			 * A zero-byte read still means the child died without
+			 * saying anything, which is what ECHILD honestly
+			 * describes; that case is kept exactly as it was.
+			 */
+			int step_errno = 0;
+
+			if (n == (ssize_t)sizeof(grandchild_pid) && grandchild_pid < 0 &&
+			    read(pipefd[0], &step_errno, sizeof(step_errno)) ==
+			        (ssize_t)sizeof(step_errno)) {
+				logstore_write("cixd", "error",
+				                "exec into container: failed while %s: %s",
+				                exec_step_name(grandchild_pid), strerror(step_errno));
+				close(pipefd[0]);
+				close(master_fd);
+				errno = step_errno != 0 ? step_errno : ECHILD;
+				return -1;
+			}
 			close(pipefd[0]);
 			close(master_fd);
 			errno = ECHILD;
