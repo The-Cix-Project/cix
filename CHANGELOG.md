@@ -6,6 +6,35 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A stop now says whether it will survive a reboot (#348)
+
+An operator stopped `ar-1` precisely so it could not claim the radio during a boot-race
+test. The host rebooted, the container came back up, took `wlan0`, and the experiment
+recorded a failure that never happened.
+
+**The behaviour is correct and stays.** `containerdef_autostart_all()` honours the stopped
+flag for `restart: "unless-stopped"` and brings `"always"`/`"on-failure"` back up
+unconditionally — which is what the API documentation says and what the policy names it
+borrows from mean. The flag is persisted and reloaded properly; #348's open question of
+"not persisted at all, or persisted and ignored" resolves to neither, it is persisted and
+honoured exactly where the contract says.
+
+**What was wrong was a comment, and it is the third of its kind this week.** The stop
+handler's own comment described the flag as "what keeps a `restart:"always"` definition
+down across daemon restarts". It never did. A comment asserting a property the code does
+not have is worse than no comment: it is what a reader believes, and it is what this issue
+was filed from. (The other two: `exec.c` claiming a pidfd reaper that was never built,
+#399; and the os-release block claiming and denying re-staging in the same comment, #393.)
+
+**And the consequence was invisible at the moment of acting.** `POST /containers/{name}/stop`
+now answers `survives_reboot`, so an operator learns the answer when they stop the
+container rather than after a reboot, and the daemon logs a line naming the policy and what
+to use instead. Nothing about which containers restart changed.
+
+While documenting it: the response schema listed `status` as `enum: [stopped]` while the
+running branch has always answered `"stopping"` (ADR-0180's asynchronous teardown). Now
+both.
+
 ### A client that only reads is no longer logged out mid-job (#379)
 
 The idle window slid only in `hostauth_check_token()`, which runs on the **write** gate. A

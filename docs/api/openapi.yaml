@@ -10660,13 +10660,30 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [name, status]
+                required: [name, status, survives_reboot]
                 properties:
                   name:
                     type: string
                   status:
                     type: string
-                    enum: [stopped]
+                    enum: [stopped, stopping]
+                    description: >
+                      "stopping" for a container that was running -- the kill completes
+                      asynchronously (ADR-0180) -- and "stopped" for one that was already
+                      down. The enum previously listed only "stopped" while the running
+                      branch has always answered "stopping".
+                  survives_reboot:
+                    type: boolean
+                    description: >
+                      Whether THIS stop outlives a host reboot (#348). True only for
+                      restart "unless-stopped" (the flag is carried through boot autostart)
+                      and "no" (never autostarts at all). False for "always" and
+                      "on-failure", which are brought back up unconditionally on the next
+                      daemon start -- documented behaviour, and previously discoverable
+                      only by rebooting and finding the container running again. An
+                      operator stopped a container specifically so it could not claim a
+                      radio during a boot-race test; it restarted, took the interface, and
+                      the experiment recorded a failure that never happened.
         "404":
           description: No container with this name
           content:
