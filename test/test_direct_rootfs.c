@@ -437,6 +437,100 @@ int main(void)
 		}
 		cix_response_free(&cr);
 	}
+
+	/*
+	 * ADR-0277: the rootfs is kept across a restart only while it still
+	 * matches the image version the container is pinned to. The check
+	 * just above proves the matching case (writes survive); this proves
+	 * the other one, which had no coverage at all and was the whole of
+	 * #401 -- a container whose image version moved came back on the old
+	 * tree, silently, making follow_rolling inert.
+	 *
+	 * The pin is moved by rewriting the seed marker rather than by
+	 * publishing a second image version: the branch under test reads
+	 * exactly that file, and a fixture that produces a real second
+	 * version would test image versioning as well, for no extra
+	 * coverage of this.
+	 */
+	{
+		char base[PATH_MAX], marker[PATH_MAX], seeded[128];
+		FILE *mf;
+		int i;
+		size_t n = 0;
+
+		snprintf(base, sizeof(base), "%s/containers/dt", g_data_dir);
+		snprintf(marker, sizeof(marker), "%s/rootfs.version", base);
+
+		mf = fopen(marker, "r");
+		if (mf != NULL) {
+			n = fread(seeded, 1, sizeof(seeded) - 1, mf);
+			fclose(mf);
+		}
+		seeded[n] = '\0';
+		CHECK(n > 0, "a seeded rootfs must record the image version it came from -- without "
+		             "that file nothing can tell a current tree from a stale one");
+		CHECK(path_exists("%s%s", base, "/rootfs/etc/state.conf"),
+		      "the live write should still be on disk before the pin is moved");
+
+		memset(&r, 0, sizeof(r));
+		cix_client_request(&client, "POST", "/v1/containers/dt/stop", NULL, &r);
+		cix_response_free(&r);
+		for (i = 0; i < 100; i++) {
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/containers/dt", NULL, &r) == 0 &&
+			    r.json != NULL) {
+				const char *st_f = json_str_field(r.json, "status");
+
+				if (st_f != NULL && strcmp(st_f, "exited") == 0) {
+					cix_response_free(&r);
+					break;
+				}
+			}
+			cix_response_free(&r);
+			usleep(200000);
+		}
+		CHECK(i < 100, "dt never finished stopping before the pin-move case");
+
+		mf = fopen(marker, "w");
+		if (mf != NULL) {
+			fputs("a-version-this-container-was-not-seeded-from", mf);
+			fclose(mf);
+		} else {
+			CHECK(0, "could not rewrite the seed marker");
+		}
+
+		for (i = 0; i < 50; i++) {
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/containers/dt/start", NULL, &r) == 0 &&
+			    r.status == 200) {
+				cix_response_free(&r);
+				break;
+			}
+			cix_response_free(&r);
+			usleep(200000);
+		}
+		CHECK(i < 50, "start after the pin move never succeeded");
+
+		CHECK(!path_exists("%s%s", base, "/rootfs/etc/state.conf"),
+		      "a rootfs seeded from a DIFFERENT image version must be rebuilt, so the write "
+		      "it carried is gone -- this failing means the container came back on its old "
+		      "tree and follow_rolling is inert again (#401)");
+		CHECK(path_exists("%s%s", base, "/rootfs/bin/daemon_child"),
+		      "the rebuilt rootfs must carry the image's own binary");
+		CHECK(path_exists("%s%s", base, "/rootfs/etc/seed.conf"),
+		      "files[] must be staged again into the rebuilt rootfs");
+
+		n = 0;
+		mf = fopen(marker, "r");
+		if (mf != NULL) {
+			n = fread(seeded, 1, sizeof(seeded) - 1, mf);
+			fclose(mf);
+		}
+		seeded[n] = '\0';
+		CHECK(n > 0 && strcmp(seeded, "a-version-this-container-was-not-seeded-from") != 0,
+		      "the rebuild must record the version it actually seeded from, or the next "
+		      "start rebuilds all over again (got \"%s\")", seeded);
+	}
 	memset(&r, 0, sizeof(r));
 	cix_client_request(&client, "PUT", "/v1/system/daemon-config",
 	                   "{\"userns_default\": false}", &r);

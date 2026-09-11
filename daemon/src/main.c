@@ -11245,6 +11245,113 @@ static void workload_cgroup_path(const char *name, char *out, size_t out_size)
 	snprintf(out, out_size, "%s/%s", CGROUP_WORKLOAD_PARENT, name);
 }
 
+/*
+ * ADR-0277: which image version a container's own rootfs was seeded
+ * from, recorded beside that rootfs.
+ *
+ * ADR-0207 gave a container its own writable rootfs -- a btrfs
+ * snapshot of the image, or a copy where snapshots are not possible --
+ * and decided the storage mode from one fact on disk: if
+ * <base>/rootfs exists, keep it. The reasoning was sound and is
+ * written in the branch below ("re-snapshotting would silently
+ * discard every write it ever made"), and it had a consequence nobody
+ * traced: the tree is seeded ONCE, on first start, and reused forever
+ * regardless of which image version the container is later pinned to.
+ *
+ * That made follow_rolling (ADR-0124) inert for every container in
+ * this mode -- which, since userns is the default (ADR-0179) and
+ * btrfs is the substrate (ADR-0207), is every container on a real
+ * host. apply_rolling_container_restarts() did its half correctly:
+ * it patched the pin and restarted the container, which then came
+ * back on the old tree. The API reported the new version, the
+ * container ran the old one, and nothing anywhere disagreed out loud.
+ * Measured on 192.168.15.95 (#401): a package installed into an
+ * image, the container reporting the new version, a full stop+start,
+ * and the old binary still in place -- while a container freshly
+ * created from the same image and the same reported version had the
+ * new one.
+ *
+ * So the rootfs needs to say what it was made from. One line, in a
+ * file beside it rather than inside it: inside would be visible to
+ * the container and would travel with a snapshot of it, and both are
+ * wrong for a fact about provenance.
+ */
+#define ROOTFS_SEED_MARKER_REL "rootfs.version"
+
+static void rootfs_seed_version_path(const char *container_base, char *out, size_t out_size)
+{
+	snprintf(out, out_size, "%s/%s", container_base, ROOTFS_SEED_MARKER_REL);
+}
+
+static int rootfs_seed_version_read(const char *container_base, char *out, size_t out_size)
+{
+	char path[PATH_MAX];
+	char *buf = NULL;
+	size_t len = 0;
+
+	rootfs_seed_version_path(container_base, path, sizeof(path));
+	if (persist_read_file(path, &buf, &len) != 0 || buf == NULL)
+		return -1;
+	while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\r'))
+		len--;
+	if (len == 0 || len >= out_size) {
+		free(buf);
+		return -1;
+	}
+	memcpy(out, buf, len);
+	out[len] = '\0';
+	free(buf);
+	return 0;
+}
+
+static int rootfs_seed_version_write(const char *container_base, const char *version)
+{
+	char path[PATH_MAX];
+
+	rootfs_seed_version_path(container_base, path, sizeof(path));
+	return persist_atomic_write(path, version, strlen(version));
+}
+
+/*
+ * 1 when an existing <base>/rootfs was seeded from a different image
+ * version than `want`, i.e. the caller must discard it and seed again.
+ * 0 means keep what is there.
+ *
+ * A rootfs with no marker predates the marker, and its real origin
+ * cannot be recovered. It is ADOPTED at the version it is pinned to
+ * rather than rebuilt: a silent mass re-seed of every container on the
+ * first boot after this lands would be a far worse surprise than one
+ * more cycle of a staleness that already exists. A container that had
+ * already drifted stays drifted until its image version next moves, at
+ * which point it rebuilds correctly like any other. From the adoption
+ * on, the marker is real and every later change is caught.
+ */
+static int rootfs_needs_reseed(const char *name, const char *container_base, const char *want)
+{
+	char seeded[IMAGE_VERSION_MAX];
+
+	if (rootfs_seed_version_read(container_base, seeded, sizeof(seeded)) != 0) {
+		if (rootfs_seed_version_write(container_base, want) != 0)
+			logstore_write("cixd", "warn",
+			                "%s: could not record which image version its rootfs was seeded "
+			                "from (%s) -- it will be adopted again on the next start",
+			                name, strerror(errno));
+		else
+			logstore_write("cixd", "info",
+			                "%s: adopted its existing rootfs as image version %s -- it "
+			                "predates the seed marker, so its real origin is unknown",
+			                name, want);
+		return 0;
+	}
+	if (strcmp(seeded, want) == 0)
+		return 0;
+	logstore_write("cixd", "info",
+	                "%s: rootfs was seeded from image version %s and this container is now "
+	                "pinned to %s -- rebuilding it from the new version",
+	                name, seeded, want);
+	return 1;
+}
+
 static int create_container_from_body(const char *body, size_t body_len,
                                        struct registry_entry **out_entry,
                                        char out_restart_policy[16], int *out_restart_delay_seconds,
@@ -12493,6 +12600,25 @@ static int create_container_from_body(const char *body, size_t body_len,
 		struct stat rst;
 
 		snprintf(userns_rootfs, sizeof(userns_rootfs), "%s/rootfs", container_base);
+		/*
+		 * ADR-0277: an existing rootfs is kept only while it still
+		 * matches the image version this container is pinned to.
+		 * When the pin has moved the tree is discarded and seeded
+		 * again below -- that is what makes follow_rolling actually
+		 * apply. Safe here because a userns container can always be
+		 * re-seeded: the snapshot path and the copy+chown fallback
+		 * are both below.
+		 */
+		if (stat(userns_rootfs, &rst) == 0 &&
+		    rootfs_needs_reseed(name, container_base, resolved_image_version)) {
+			if (cix_btrfs_subvol_delete_or_rmtree(userns_rootfs) != 0) {
+				json_free(root);
+				snprintf(err_msg, err_msg_size,
+				         "could not discard the rootfs seeded from the previous image "
+				         "version");
+				return 500;
+			}
+		}
 		if (stat(userns_rootfs, &rst) == 0) {
 			/*
 			 * Revival: the rootfs IS this container's state; which
@@ -12516,6 +12642,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 			 * sharing). One storage model, two presentations.
 			 */
 			spec.userns_idmap = 1;
+			rootfs_seed_version_write(container_base, resolved_image_version);
 			if (disk_quota_bytes > 0) {
 				if (cix_btrfs_qgroup_limit_excl(userns_rootfs,
 				                                 (unsigned long long)disk_quota_bytes) !=
@@ -12547,6 +12674,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 				         "failed to copy image rootfs for userns container");
 				return 500;
 			}
+			rootfs_seed_version_write(container_base, resolved_image_version);
 			if (g_test_userns_idmap) {
 				/* Leave the copy host-0-owned and id-map it: that is
 				 * byte-for-byte the presentation a btrfs snapshot gets,
@@ -12579,24 +12707,47 @@ static int create_container_from_body(const char *body, size_t body_len,
 		 * reads its files from its rootfs, not from an overlay
 		 * upperdir it will never mount. The on-disk presence of
 		 * <base>/rootfs is the mode marker: a revived container whose
-		 * rootfs exists keeps it (that IS its state -- re-snapshotting
-		 * would silently discard every write it ever made); a fresh
-		 * create on btrfs snapshots the image's subvolume (O(1),
-		 * copy-on-write); anything else stays on the classic overlay
-		 * path until phase 4. A failed snapshot (e.g. image store and
+		 * rootfs exists keeps it, PROVIDED it was seeded from the image
+		 * version this container is still pinned to -- ADR-0277, which
+		 * amended this rule after the unconditional form made
+		 * follow_rolling inert (see rootfs_needs_reseed()). When the
+		 * pin has moved the tree is discarded and seeded again, so the
+		 * writes it carried are lost by design: a container's rootfs
+		 * is derived from its image, and anything that must outlive an
+		 * image version belongs on a volume. A fresh create on btrfs
+		 * snapshots the image's subvolume (O(1), copy-on-write);
+		 * anything else stays on the classic overlay path until phase 4. A failed snapshot (e.g. image store and
 		 * container storage on different filesystems, which
 		 * SNAP_CREATE_V2 cannot cross) falls back to overlay LOUDLY --
 		 * the overlay-on-btrfs upperdir path (ADR-0103) is still fully
 		 * functional, so the fallback is honest, not hidden.
 		 */
 		struct stat rst;
+		/*
+		 * ADR-0277: discard a rootfs whose image version has moved,
+		 * so the seeding below runs again against the new one. Guarded
+		 * by can_seed because, unlike the userns branch, this one has
+		 * no copy fallback: discarding a tree we could not then
+		 * replace would drop the container onto the overlay path with
+		 * an empty upperdir, which is worse than the staleness.
+		 */
+		int can_seed = (g_test_direct_rootfs || cix_btrfs_is_backing(container_base));
 
 		snprintf(direct_rootfs_dir, sizeof(direct_rootfs_dir), "%s/rootfs", container_base);
+		if (can_seed && stat(direct_rootfs_dir, &rst) == 0 && S_ISDIR(rst.st_mode) &&
+		    rootfs_needs_reseed(name, container_base, resolved_image_version) &&
+		    cix_btrfs_subvol_delete_or_rmtree(direct_rootfs_dir) != 0) {
+			json_free(root);
+			snprintf(err_msg, err_msg_size,
+			         "could not discard the rootfs seeded from the previous image version");
+			return 500;
+		}
 		if (stat(direct_rootfs_dir, &rst) == 0 && S_ISDIR(rst.st_mode)) {
 			direct_mode = 1;
-		} else if (g_test_direct_rootfs || cix_btrfs_is_backing(container_base)) {
+		} else if (can_seed) {
 			if (cix_btrfs_snapshot_or_copy(lowerdir, direct_rootfs_dir) == 0) {
 				direct_mode = 1;
+				rootfs_seed_version_write(container_base, resolved_image_version);
 			} else {
 				logstore_write("cixd", "warn",
 				                "container %s: could not snapshot the image rootfs (%s) -- "
