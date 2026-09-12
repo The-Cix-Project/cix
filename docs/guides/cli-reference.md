@@ -408,6 +408,7 @@ The value splits on spaces, so an argument containing a literal space cannot be 
 | `ldap user ls` / `ldap user rm NAME` | List / remove |
 | `ldap config show` | Show the current `start_uid`/`start_gid` auto-allocation floor (task #748), the client-login settings, and `effective_client_uri` — what `ldap_client` containers are actually handed right now, after derivation from registered servers and after dropping any that are drained or unhealthy (issue #84) |
 | `ldap config set --start-uid=N --start-gid=N` | Set the floor -- takes effect for future auto-allocations only, does not renumber existing users/groups |
+| `ldap config set [--client-tls \| --no-client-tls] [--client-tls-port=N]` | Whether clients configured from here reach LDAP over TLS, and on which port (default 636). Flips `effective_client_uri` between `ldaps://` and `ldap://`, which is what the rendered `nslcd.conf` and the `{{LDAP:URI}}` token both resolve to. Does **not** affect the daemon's own bind, which has no TLS support — see [`security.md`](security.md#ldap-over-tls) (#414) |
 
 ## PKI
 

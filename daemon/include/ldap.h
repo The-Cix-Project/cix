@@ -362,6 +362,8 @@ void ldap_user_forget_owner(const char *container_name);
  */
 #define LDAP_CONFIG_DEFAULT_START_UID 10000
 #define LDAP_CONFIG_DEFAULT_START_GID 10000
+/* glauth's own sample config default for its [ldaps] listener (#414). */
+#define LDAP_CONFIG_DEFAULT_TLS_PORT 636
 
 struct ldap_config {
 	int start_uid;
@@ -389,6 +391,22 @@ struct ldap_config {
 	char base_dn[256];
 	char bind_dn[256];
 	char bind_password[256];
+	/*
+	 * Issue #414: whether clients reach this platform's LDAP over TLS.
+	 * One answer for the whole client population rather than a
+	 * per-server one, because these settings exist to be handed to
+	 * every client identically -- a mixed fleet where some containers
+	 * use TLS and some do not is not a configuration, it is a
+	 * migration, and it is expressed by moving this flag once.
+	 *
+	 * Governs only the clients configured FROM here (nslcd.conf,
+	 * {{LDAP:URI}}). The daemon's own bind (ldapclient.c, reached via
+	 * hostauth) is a separate client with no TLS support at all, and
+	 * is unaffected -- see the note on ldap_effective_client_uri().
+	 * client_tls_port is glauth's own sample default, 636.
+	 */
+	int client_tls;
+	int client_tls_port;
 };
 
 /* Loads persisted start_uid/start_gid (if any) at startup, alongside
@@ -412,6 +430,11 @@ enum ldap_record_error ldap_config_set(int start_uid, int start_gid);
  * that field unchanged; an empty string clears it). Persists alongside
  * start_uid/start_gid in the same state file.
  */
+/* client_tls/client_tls_port: -1 leaves each unchanged. A port is only
+ * meaningful with TLS on, but both are stored independently so an
+ * operator can set the port first and flip the flag as one step. */
+enum ldap_record_error ldap_config_set_client_tls(int client_tls, int client_tls_port);
+
 enum ldap_record_error ldap_config_set_client(const char *client_uri, const char *base_dn,
                                                const char *bind_dn, const char *bind_password);
 

@@ -6,6 +6,61 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### LDAP over TLS (#414)
+
+`ldap-1`/`ldap-2` shipped with `[ldaps] enabled = false` in every recipe version, so every LDAP bind
+on this platform crossed the wire in cleartext — including `jump`'s `AuthorizedKeysCommand`, which
+binds with the `svc-nslcd` service-account password on every SSH login.
+
+Certificates from Cix's own PKI are the right answer, and for LDAPS `pki_issue` is already the
+correct lifetime: unlike an SSH host key (#397), a TLS client verifies the **CA**, not the specific
+leaf, so a leaf that rotates on a rolling rebuild is invisible to a correctly configured client. But
+it was not a recipe flip. Two blockers, both in Cix's own code:
+
+- **`pki_cert_create()` emitted `DNS:` SANs unconditionally** (`subjectAltName=DNS:%s`). A TLS client
+  checks the name it *dialled* against the matching SAN **type**, and an address dialled as an
+  address is never matched against a `DNS:` SAN however identical the string looks. Now an IPv4
+  literal becomes an `IP:` SAN — tested with `inet_pton()` rather than a digits-and-dots heuristic,
+  which would wrongly promote `10.0.0.1.local`.
+- **`ldap_effective_client_uri()` hardcoded `ldap://` and the plaintext port**, so a client had no
+  way to be told about TLS.
+
+Together those meant a cert issued to `ldap-1` carried `DNS:ldap-1` and no address, while the client
+dialled `ldaps://192.168.150.103` — verification fails against a certificate that looks correct.
+
+- **`pki_issue` now issues for the container's name plus every address it is reachable at**, read
+  from `spec.nets[]` rather than hand-typed into a separate `POST /v1/pki/certs` call: the address is
+  declared once, in the container's own body, and a second copy is what drifts the first time a
+  container moves. Every attachment, not `nets[0]`. Known limit, recorded rather than solved — a
+  container whose address later changes hits `PKI_ERR_DUPLICATE` and keeps its stale IP SAN until the
+  cert is deleted.
+- **`client_tls`/`client_tls_port` on `/v1/ldap/config`** (`cixctl ldap config set --client-tls
+  [--client-tls-port=N]`, default 636 — glauth's own sample-config default). One answer for the whole
+  client population: a fleet where some containers use TLS and some do not is a migration, not a
+  configuration. Defaults false, which is what every existing install is actually doing.
+- **Both consumers pick it up from that one derivation** — the `nslcd.conf` the daemon renders and the
+  `{{LDAP:URI}}` recipe token. `nslcd.conf` also gains `tls_cacertfile` when TLS is on, because nslcd
+  runs `tls_reqcert demand` and refuses every connection without a trust anchor rather than falling
+  back. The path is `PKG_IMAGE_CA_BUNDLE_PATH`, now a named constant rather than a literal spelled
+  once in `pkg.c` (which writes it) and once here (which reads it) — a pair that drifts silently,
+  because the reader just finds no file.
+- **`ldap-1`/`ldap-2` 1.4.0** enable glauth's `[ldaps]` listener on 636 against the delivered
+  `/etc/cix-tls/tls.{crt,key}`, with a `waitkey` oneshot gating glauth on the key actually arriving —
+  the same gate `jump` uses, reused rather than reinvented. **`jump` 1.11.0** exports `LDAPTLS_CACERT`
+  so `ldapsearch` can verify.
+- **The plaintext listener on 3893 stays up**, deliberately. `cixd` is itself an LDAP client —
+  `hostauth_login()` dials `ldapclient.c`, a hand-rolled BER-over-raw-socket implementation with no
+  TLS at all — so `client_tls` neither affects nor protects the daemon's own bind. Measured on
+  192.168.15.95: `ldap_enabled: false`, `ldap_servers: []`, so that bind is not in use there and
+  turning LDAPS on could not lock anyone out of the control plane. Giving `ldapclient.c` TLS and then
+  removing the plaintext listener is tracked as #416, with the two traps that work will hit recorded
+  in it (verifying an IP needs `X509_VERIFY_PARAM_set1_ip_asc()`, not `SSL_set1_host()`; and `cixd`'s
+  trust anchor is its own CA, not the image-side bundle).
+- **`test_pki`** asserts the SAN types against openssl's own parse of the issued certificate rather
+  than against the string built to make it — a malformed `subjectAltName` is silently dropped by
+  openssl rather than refused, so the string being right and the certificate being wrong is a real
+  outcome, and the certificate is what a client sees.
+
 ### A container can be given a certificate it does not own (`pki_cert`, #397, ADR-0280)
 
 `jump`'s SSH host key changed on every rolling rebuild, so every operator connecting to the jump

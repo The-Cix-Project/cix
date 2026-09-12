@@ -16843,6 +16843,40 @@ components:
           nullable: true
         bind_password_set:
           type: boolean
+        client_tls:
+          type: boolean
+          default: false
+          description: >
+            Whether clients configured from here reach LDAP over TLS. When
+            true, effective_client_uri names ldaps:// on client_tls_port
+            instead of ldap:// on 3893, and the nslcd.conf the daemon
+            renders for an ldap_client container also gets a
+            tls_cacertfile line pointing at the CA bundle already staged
+            into every image (ADR-0051) -- nslcd runs tls_reqcert demand,
+            so without a trust anchor it refuses every connection rather
+            than falling back. One answer for the whole client
+            population: a fleet where some containers use TLS and some do
+            not is a migration, not a configuration, and it is expressed
+            by moving this flag once. Defaults false, which is what every
+            existing install is actually doing.
+
+            Governs ONLY the clients configured from here (nslcd.conf and
+            the {{LDAP:URI}} token). The daemon's own bind -- hostauth
+            dialling ldapclient.c -- is a separate client that speaks
+            LDAP over a raw socket with no TLS support at all, so this
+            flag neither affects nor protects it, and the plaintext
+            listener must keep running while both exist (#416).
+        client_tls_port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+          default: 636
+          description: >
+            Port named in effective_client_uri when client_tls is true.
+            636 is the standard LDAPS port and glauth's own sample-config
+            default for its [ldaps] listener. Stored independently of
+            client_tls so the port can be set first and the flag flipped
+            as one step.
         effective_client_uri:
           type: [string, "null"]
           description: >

@@ -12259,6 +12259,10 @@ static int cmd_ldap_config_set(const struct cix_client *c, int json_mode, int ar
 	 * optional here (absent = unchanged, "" = clear), same contract
 	 * as the PUT itself. */
 	const char *client_uri = NULL, *base_dn = NULL, *bind_dn = NULL, *bind_password = NULL;
+	/* #414: -1 == "leave it", so a body that does not mention TLS cannot
+	 * turn it off as a side effect of setting something else. */
+	int client_tls = -1;
+	long client_tls_port = -1;
 	int i;
 	struct json_writer w;
 	struct cix_response r;
@@ -12276,6 +12280,12 @@ static int cmd_ldap_config_set(const struct cix_client *c, int json_mode, int ar
 			bind_dn = argv[i] + 10;
 		else if (strncmp(argv[i], "--bind-password=", 16) == 0)
 			bind_password = argv[i] + 16;
+		else if (strcmp(argv[i], "--client-tls") == 0)
+			client_tls = 1;
+		else if (strcmp(argv[i], "--no-client-tls") == 0)
+			client_tls = 0;
+		else if (strncmp(argv[i], "--client-tls-port=", 18) == 0)
+			client_tls_port = strtol(argv[i] + 18, NULL, 10);
 		else {
 			fprintf(stderr, "cixctl: unknown ldap config set option '%s'\n", argv[i]);
 			return 2;
@@ -12283,10 +12293,11 @@ static int cmd_ldap_config_set(const struct cix_client *c, int json_mode, int ar
 	}
 
 	if (start_uid < 0 && start_gid < 0 && client_uri == NULL && base_dn == NULL &&
-	    bind_dn == NULL && bind_password == NULL) {
+	    bind_dn == NULL && bind_password == NULL && client_tls < 0 && client_tls_port < 0) {
 		fprintf(stderr,
 		        "usage: cixctl ldap config set [--start-uid=N --start-gid=N] "
-		        "[--client-uri=URIS] [--base-dn=DN] [--bind-dn=DN] [--bind-password=PW]\n");
+		        "[--client-uri=URIS] [--base-dn=DN] [--bind-dn=DN] [--bind-password=PW]\n"
+		        "       [--client-tls | --no-client-tls] [--client-tls-port=N]\n");
 		return 2;
 	}
 	if ((start_uid < 0) != (start_gid < 0)) {
@@ -12317,6 +12328,14 @@ static int cmd_ldap_config_set(const struct cix_client *c, int json_mode, int ar
 	if (bind_password != NULL) {
 		jw_key(&w, "bind_password");
 		jw_str(&w, bind_password);
+	}
+	if (client_tls >= 0) {
+		jw_key(&w, "client_tls");
+		jw_bool(&w, client_tls);
+	}
+	if (client_tls_port >= 0) {
+		jw_key(&w, "client_tls_port");
+		jw_int(&w, client_tls_port);
 	}
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';

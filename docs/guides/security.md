@@ -34,6 +34,31 @@ cixctl container run --name=web --image=myapp --pki-issue --pki-cert-dir=/etc/ci
 
 Issues a cert named after the container and writes `tls.crt`/`tls.key` (mode `0600`) directly into its filesystem at creation time — one-time delivery, no live resync, since a cert doesn't change after a container starts (a chain rotation, below, explicitly redelivers). Deleting the container automatically removes its cert too. Requires the CA to already be bootstrapped.
 
+### LDAP over TLS
+
+`ldap-1`/`ldap-2` run glauth. Turning on TLS is two independent steps, and they are independent on purpose — the servers can serve TLS long before any client is told to use it, so nothing is cut over blind.
+
+**1. The servers serve it.** `ldap-1`/`ldap-2` at 1.4.0 set `pki_issue: true` and enable glauth's `[ldaps]` listener on 636 (glauth's own sample-config default) against the delivered `/etc/cix-tls/tls.{crt,key}`. A `waitkey` oneshot gates glauth on the key actually arriving, so the server never starts without an identity. The plaintext listener on 3893 is untouched and keeps running.
+
+Prove it before going further, from any container that has the CA bundle:
+
+```sh
+openssl s_client -connect 192.168.150.103:636 \
+    -CAfile /etc/ssl/certs/cix-ca-bundle.pem </dev/null
+```
+
+`Verify return code: 0 (ok)` is the gate. The certificate's SANs should list the container's **IP** as well as its name — see [`docs/api/README.md`](../api/README.md#sans-a-cert-is-verified-against-the-name-you-dialled) for why the IP is what matters here.
+
+**2. The clients use it.**
+
+```sh
+cixctl ldap config set --client-tls --client-tls-port=636
+```
+
+`effective_client_uri` then reads `ldaps://<ip>:636/` instead of `ldap://<ip>:3893/`, and every consumer picks it up from that one derivation: the `nslcd.conf` the daemon renders for an `ldap_client` container (which also gains a `tls_cacertfile` line, since nslcd runs `tls_reqcert demand` and refuses everything without a trust anchor), and the `{{LDAP:URI}}` recipe token. Containers are restaged on their next create.
+
+**What this does not cover.** The daemon's own LDAP bind — `hostauth` dialling `ldapclient.c` — speaks LDAP over a raw socket with no TLS support at all, so `client_tls` neither affects nor protects it. It is disabled on installs that authenticate locally (`ldap_enabled: false`), but where it is on, the plaintext listener has to keep running. That is why step 1 leaves 3893 alone, and why turning it off is tracked separately as #416 rather than bundled in here.
+
 ### An identity that must outlive the container: `--pki-cert`
 
 `--pki-issue` is right for a leaf TLS certificate, because a cert identifying a service *should* stop working once that service is gone — and a TLS client verifies the CA rather than the specific leaf, so the cert being reissued on every rebuild costs it nothing.

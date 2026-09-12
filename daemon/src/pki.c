@@ -4,6 +4,7 @@
 #include "dns.h"
 #include "persist.h"
 
+#include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -592,9 +593,32 @@ enum pki_error pki_cert_create(const char *name, const char *const *sans, int sa
 	snprintf(subj, sizeof(subj), "/CN=%s", name);
 	snprintf(days_str, sizeof(days_str), "%d", days);
 
-	off = (size_t)snprintf(sanbuf, sizeof(sanbuf), "subjectAltName=DNS:%s", sans[0]);
-	for (i = 1; i < san_count && off < sizeof(sanbuf); i++)
-		off += (size_t)snprintf(sanbuf + off, sizeof(sanbuf) - off, ",DNS:%s", sans[i]);
+	/*
+	 * An IPv4 literal becomes an IP: SAN, everything else a DNS: SAN
+	 * (#414). Not cosmetic: a TLS client checks the name it DIALLED
+	 * against the matching SAN type, and an address dialled as an
+	 * address is never matched against a DNS SAN no matter what the
+	 * string says. This whole function emitted DNS: unconditionally,
+	 * which was invisible while every cert was verified by hostname --
+	 * and is exactly what stops LDAPS working here, because
+	 * ldap_effective_client_uri() hands clients the registered
+	 * servers' live IPs rather than names.
+	 *
+	 * inet_pton() is the test rather than a character scan: it accepts
+	 * precisely what an IP SAN may contain and rejects "10.0.0.1.local",
+	 * which a "digits and dots" heuristic would wrongly promote.
+	 */
+	for (i = 0; i < san_count && off < sizeof(sanbuf); i++) {
+		struct in_addr probe;
+		const char *kind = inet_pton(AF_INET, sans[i], &probe) == 1 ? "IP" : "DNS";
+
+		if (i == 0)
+			off = (size_t)snprintf(sanbuf, sizeof(sanbuf), "subjectAltName=%s:%s", kind,
+			                        sans[i]);
+		else
+			off += (size_t)snprintf(sanbuf + off, sizeof(sanbuf) - off, ",%s:%s", kind,
+			                         sans[i]);
+	}
 
 	/* 1. leaf keypair */
 	argv[0] = (char *)PKI_OPENSSL_BIN;

@@ -69,6 +69,17 @@
 #define PKG_DEFAULT_IMAGE "base"
 
 /*
+ * The CA trust bundle pkg_seed_image_baseline() stages into every image
+ * (ADR-0051), as the image's own filesystem sees it. Named here rather
+ * than spelled twice because a second consumer arrived: the nslcd.conf
+ * the daemon renders for an ldap_client container points at this exact
+ * file for tls_cacertfile (#414), and a path that is written in one
+ * place and read in another is the kind of pair that drifts silently --
+ * the reader simply finds no file and fails closed.
+ */
+#define PKG_IMAGE_CA_BUNDLE_PATH "/etc/ssl/certs/cix-ca-bundle.pem"
+
+/*
  * The C library every composed build environment gets, whether or not a
  * recipe names it (#186).
  *

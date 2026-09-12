@@ -4950,7 +4950,7 @@ enum pkg_error pkg_seed_image_baseline(const char *rootfs_path)
 		struct stat dst_st;
 		enum pki_error perr;
 
-		snprintf(bundle_dst, sizeof(bundle_dst), "%s/etc/ssl/certs/cix-ca-bundle.pem",
+		snprintf(bundle_dst, sizeof(bundle_dst), "%s" PKG_IMAGE_CA_BUNDLE_PATH,
 		         target_rootfs);
 		if (stat(bundle_dst, &dst_st) != 0) {
 			char bundle_dir[PATH_MAX];

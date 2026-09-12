@@ -13153,9 +13153,25 @@ static int create_container_from_body(const char *body, size_t body_len,
 				snprintf(authz + off, sizeof(authz) - off, "))\n");
 			}
 
+			/*
+			 * #414: with TLS on, nslcd needs a trust anchor. It
+			 * already runs tls_reqcert demand (nslcd's own default,
+			 * visible in its debug output), so without a CA file it
+			 * refuses every connection rather than falling back --
+			 * the safe failure, and an opaque one.
+			 *
+			 * The path is the bundle pkg_seed_image_baseline()
+			 * stages into every image (ADR-0051), not something this
+			 * container has to carry: it is already there, in every
+			 * image, before any of this runs. Emitted only when TLS
+			 * is on, so a plaintext deployment's nslcd.conf is
+			 * byte-identical to what it was.
+			 */
 			snprintf(nslcd, sizeof(nslcd),
-			         "uri %s\nbase %s\nbinddn %s\nbindpw %s\npam_authc_ppolicy no\n%s",
-			         effective_uri, lc->base_dn, lc->bind_dn, lc->bind_password, authz);
+			         "uri %s\nbase %s\nbinddn %s\nbindpw %s\npam_authc_ppolicy no\n%s%s",
+			         effective_uri, lc->base_dn, lc->bind_dn, lc->bind_password,
+			         lc->client_tls ? "tls_cacertfile " PKG_IMAGE_CA_BUNDLE_PATH "\n" : "",
+			         authz);
 		}
 		if (stage_container_file(stage_dir, "/etc/nslcd.conf", nslcd, 0600, (uid_t)-1,
 		                          (gid_t)-1, stage_id_offset) != 0) {
@@ -13761,13 +13777,49 @@ static int create_container_from_body(const char *body, size_t body_len,
 		 * pki_issue doesn't require networks, unlike dns_register, since
 		 * delivery via /proc/<pid>/root/ works for any running container
 		 * regardless of networking. */
-		const char *pki_sans[1];
+		const char *pki_sans[PKI_MAX_SANS];
+		char pki_san_ips[PKI_MAX_SANS][INET_ADDRSTRLEN];
+		int pki_san_count = 0;
+		int ni;
 		struct json_writer scratch;
 		enum pki_error perr;
 
-		pki_sans[0] = entry->name;
+		/*
+		 * The container's own name, plus every address it is actually
+		 * reachable at (#414). A TLS client verifies the name it
+		 * DIALLED, and this platform hands LDAP clients the registered
+		 * servers' live IPs (ldap_effective_client_uri()), so a cert
+		 * carrying only the container name cannot verify however
+		 * correct it looks.
+		 *
+		 * Derived from spec.nets[] rather than left for an operator to
+		 * type into a POST /v1/pki/certs call: the address is declared
+		 * once, in this container's own body, and a second hand-written
+		 * copy is precisely the kind of duplicate that drifts the first
+		 * time a container moves. Every attachment, not nets[0] -- a
+		 * container on two networks is reachable on both.
+		 *
+		 * Known limit, recorded rather than solved: a container whose
+		 * address later changes hits PKI_ERR_DUPLICATE below and keeps
+		 * the cert it already has, stale IP SAN included. Deleting the
+		 * cert (or the container) reissues it.
+		 */
+		pki_sans[pki_san_count++] = entry->name;
+		for (ni = 0; ni < spec.net_count && pki_san_count < PKI_MAX_SANS; ni++) {
+			struct in_addr a4;
+
+			if (spec.nets[ni].container_ip_be == 0)
+				continue;
+			a4.s_addr = spec.nets[ni].container_ip_be;
+			if (inet_ntop(AF_INET, &a4, pki_san_ips[pki_san_count],
+			              sizeof(pki_san_ips[pki_san_count])) == NULL)
+				continue;
+			pki_sans[pki_san_count] = pki_san_ips[pki_san_count];
+			pki_san_count++;
+		}
 		jw_init(&scratch);
-		perr = pki_cert_create(entry->name, pki_sans, 1, pki_days, entry->name, &scratch);
+		perr = pki_cert_create(entry->name, pki_sans, pki_san_count, pki_days, entry->name,
+		                        &scratch);
 		jw_free(&scratch);
 
 		/* PKI_ERR_DUPLICATE means a cert for this name already exists --
