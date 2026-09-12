@@ -417,7 +417,7 @@ static void redeliver_pki_certs_after_reset(void)
 			}
 		}
 
-		derr = pki_cert_deliver(names[i], names[i], entry->handle.pid, cert_dir_buf);
+		derr = pki_cert_deliver(names[i], names[i], cert_dir_buf);
 		if (derr != PKI_OK)
 			fprintf(stderr, "%s: pki reset redelivery failed (err=%d)\n", names[i],
 			        (int)derr);

@@ -13200,9 +13200,19 @@ components:
             container is still created successfully -- it never overwrites
             a colliding cert. The cert's owner field is set to this
             container's name, and it is automatically removed when the
-            container is deleted. Delivery is one-time (no live resync) --
-            reused verbatim from POST /pki/certs's own reasoning, since a
-            cert doesn't change after a container starts.
+            container is deleted. The cert is issued for the container's
+            name AND every address it is reachable at, read from its own
+            networks[] -- a TLS client verifies the name it dialled, and
+            an address dialled as an address is never matched against a
+            DNS SAN (#414).
+
+            The cert is STAGED into the container's tree before it
+            starts, like every other file the daemon writes for it, so it
+            is already present when the container's first process runs.
+            It used to be written in after the container was running,
+            which raced that process; a container that asks for a TLS
+            identity and cannot be given one now fails to create (500)
+            rather than starting without it.
         pki_cert:
           type: string
           description: >
@@ -13227,8 +13237,11 @@ components:
             mutually exclusive with pki_issue (400) since both write
             tls.crt/tls.key into pki_cert_dir. Delivery is repeated on every
             start, because each fresh container instance starts with a fresh
-            filesystem; it is best-effort past that point, exactly like
-            pki_issue. See ADR-0280.
+            filesystem. Like pki_issue, the cert is staged into the tree
+            before the container starts rather than written in afterwards,
+            and a container that cannot be given the identity it asked for
+            fails to create (500) rather than starting without it. See
+            ADR-0280.
         pki_cert_dir:
           type: string
           default: "/etc/cix-tls"

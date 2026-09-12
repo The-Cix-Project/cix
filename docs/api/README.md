@@ -2080,7 +2080,7 @@ POST /v1/containers
 
 A bare name is qualified with this install's site suffix exactly as `POST /v1/pki/certs` qualifies the name it creates (ADR-0052), so the two always agree and a deployment recipe never has to hardcode one install's domain — the same inconsistency ADR-0092 fixed for `dns_register`.
 
-The delivered files are identical to `pki_issue`'s — `tls.crt` (leaf + intermediate chain) and `tls.key` at chmod 0600 — so a service config written for one works unchanged with the other.
+Both are **staged into the container's tree before it starts**, like every other file the daemon writes for it, rather than written in once it is running — so the file is already there when the container's first process runs, and a container that asks for a TLS identity and cannot be given one fails to create rather than starting without it (#414). The delivered files are identical to `pki_issue`'s — `tls.crt` (leaf + intermediate chain) and `tls.key` at chmod 0600 — so a service config written for one works unchanged with the other.
 
 **The motivating case is an SSH host key.** SSH is trust-on-first-use: the client pins the exact key bytes and treats any change as a possible attack. Measured on 192.168.15.95 (2026-09-12), `jump` with `pki_issue` moved from `2048 SHA256:nCR2Epsa...` to `2048 SHA256:H8urRHcL...` across a single `follow_rolling` rebuild — a rolling rebuild is a delete-and-recreate (`apply` cannot recreate in place while the address is still held, `409`), and the delete took the owned cert with it. TLS does not have this problem: a TLS client verifies the CA, not the specific leaf, so `pki_issue` remains correct for LDAPS, HTTPS and friends.
 

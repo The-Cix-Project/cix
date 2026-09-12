@@ -11986,14 +11986,12 @@ static int create_container_from_body(const char *body, size_t body_len,
 	 * genuine conflict with no sane resolution -- refuse it rather than
 	 * let whichever block runs second silently win.
 	 *
-	 * Existence is checked here, before the container is created, because
-	 * the alternative is a container that starts successfully and then
-	 * finds nothing to deliver: pki_cert_deliver()'s own PKI_ERR_NOT_FOUND
-	 * is reported to stderr and is non-fatal by design (the pki_issue path
-	 * below relies on that leniency for its respawn race), so a typo'd
-	 * cert name would produce a running container missing the identity it
-	 * asked for, with no 4xx anywhere. Named explicitly in the message so
-	 * the operator sees WHICH cert is missing.
+	 * Existence is checked here rather than left to the staging step, so a
+	 * typo'd cert name is a 400 that NAMES the missing certificate rather
+	 * than a 500 about staging. Both refuse to create the container --
+	 * since #414 a container that asked for a TLS identity and did not
+	 * get one does not start at all -- but only this one can say what is
+	 * actually wrong.
 	 */
 	if (pki_cert_buf[0] != '\0') {
 		if (pki_issue) {
@@ -13239,6 +13237,142 @@ static int create_container_from_body(const char *body, size_t body_len,
 	}
 
 	/*
+	 * The container's TLS identity, staged before clone3() rather than
+	 * pushed in after the container is already running (#414).
+	 *
+	 * It used to be delivered from the post-pidfd block below, which
+	 * created a startup race the daemon then expected every image to
+	 * work around: the container's own services start while
+	 * pki_cert_create() is still running three openssl subprocesses, so
+	 * a service that reads its key at startup can find nothing there.
+	 * jump papered over that with a `waitkey` oneshot spinning on the
+	 * file, and ldap-1/ldap-2 could not: the ldap image is glibc plus
+	 * glauth with no shell in it at all, so there was nothing to spin
+	 * with. `execve(/usr/bin/bash) failed, errno 2`, measured on
+	 * 192.168.15.95 on 2026-09-12.
+	 *
+	 * The race did not need to exist. pki_cert_deliver() stopped using
+	 * a pid at #269, when it moved to writing through the container's
+	 * host-side tree -- from then on the parameter was vestigial and
+	 * nothing about delivery actually required a running container. So
+	 * the cert is now staged exactly like every other file the daemon
+	 * writes for a container, and is simply already there when the
+	 * container's first process execve()s.
+	 *
+	 * Deliberately AFTER the files[] loop above: a daemon-delivered
+	 * cert wins over a body-declared file at the same path, which is
+	 * what the post-pidfd write did by being last, and silently
+	 * reversing that would be a regression.
+	 */
+	if (pki_issue || pki_cert_buf[0] != '\0') {
+		const char *cert_name = pki_cert_buf[0] != '\0' ? pki_cert_buf : name;
+		char *key_pem = NULL, *chain_pem = NULL;
+		enum pki_error perr = PKI_OK;
+		int created_here = 0;
+
+		if (pki_issue) {
+			const char *pki_sans[PKI_MAX_SANS];
+			char pki_san_ips[PKI_MAX_SANS][INET_ADDRSTRLEN];
+			int pki_san_count = 0;
+			int ni;
+			struct json_writer scratch;
+
+			/*
+			 * The container's own name, plus every address it is
+			 * actually reachable at (#414). A TLS client verifies the
+			 * name it DIALLED, and this platform hands LDAP clients
+			 * the registered servers' live IPs
+			 * (ldap_effective_client_uri()), so a cert carrying only
+			 * the container name cannot verify however correct it
+			 * looks.
+			 *
+			 * From net_attachments[], which is populated well before
+			 * this point -- spec.nets[] is not filled in until after
+			 * clone3() is prepared, further down. Read from the
+			 * container's own declared networks rather than left for
+			 * an operator to type into a POST /v1/pki/certs call: the
+			 * address is declared once, and a second hand-written copy
+			 * is what drifts the first time a container moves.
+			 *
+			 * Known limit, recorded rather than solved: a container
+			 * whose address later changes hits PKI_ERR_DUPLICATE and
+			 * keeps the cert it has, stale IP SAN included. Deleting
+			 * the cert (or the container) reissues it.
+			 */
+			pki_sans[pki_san_count++] = name;
+			for (ni = 0; ni < net_count && pki_san_count < PKI_MAX_SANS; ni++) {
+				struct in_addr a4;
+
+				if (net_attachments[ni].ip_be == 0)
+					continue;
+				a4.s_addr = net_attachments[ni].ip_be;
+				if (inet_ntop(AF_INET, &a4, pki_san_ips[pki_san_count],
+				              sizeof(pki_san_ips[pki_san_count])) == NULL)
+					continue;
+				pki_sans[pki_san_count] = pki_san_ips[pki_san_count];
+				pki_san_count++;
+			}
+			jw_init(&scratch);
+			perr = pki_cert_create(name, pki_sans, pki_san_count, pki_days, name, &scratch);
+			jw_free(&scratch);
+
+			/* DUPLICATE means a cert for this name already exists --
+			 * expected on every restart-always respawn after the first,
+			 * and on any recreate of a same-named container. Harmless:
+			 * the existing one is what gets staged. Any other error has
+			 * no cert to fall back on. */
+			if (perr == PKI_OK)
+				created_here = 1;
+			else if (perr != PKI_ERR_DUPLICATE)
+				logstore_write("pki", "err",
+				               "%s: pki_issue requested but cert issuance failed (err=%d)",
+				               name, (int)perr);
+		}
+
+		if (perr == PKI_OK || perr == PKI_ERR_DUPLICATE) {
+			enum pki_error rerr = pki_cert_read_pem(cert_name, &key_pem, &chain_pem);
+
+			if (rerr != PKI_OK) {
+				logstore_write("pki", "err",
+				               "%s: could not read certificate \"%s\" to stage it (err=%d)",
+				               name, cert_name, (int)rerr);
+			} else {
+				char crt_path[PATH_MAX], key_path[PATH_MAX];
+				int staged;
+
+				snprintf(crt_path, sizeof(crt_path), "%s/tls.crt", pki_cert_dir_buf);
+				snprintf(key_path, sizeof(key_path), "%s/tls.key", pki_cert_dir_buf);
+				staged = stage_container_file(stage_dir, crt_path, chain_pem, 0644,
+				                               (uid_t)-1, (gid_t)-1, stage_id_offset) == 0 &&
+				          stage_container_file(stage_dir, key_path, key_pem, 0600,
+				                               (uid_t)-1, (gid_t)-1, stage_id_offset) == 0;
+				free(key_pem);
+				free(chain_pem);
+				if (!staged) {
+					/*
+					 * A container that asked for a TLS identity and did
+					 * not get one is not a container that should start:
+					 * whatever it runs would either fail opaquely or,
+					 * worse, serve without the identity it was told it
+					 * had. Fail the create, and drop a cert this call
+					 * issued so a retry is not met with DUPLICATE --
+					 * only one this call issued, since shredding a
+					 * pre-existing cert here would destroy the very
+					 * identity pki_cert exists to keep (#397).
+					 */
+					if (created_here)
+						pki_cert_delete(cert_name);
+					json_free(root);
+					snprintf(err_msg, err_msg_size,
+					         "failed to stage the TLS certificate into %s",
+					         pki_cert_dir_buf);
+					return 500;
+				}
+			}
+		}
+	}
+
+	/*
 	 * ADR-0274: /etc/os-release, staged into every container at
 	 * creation and re-staged on every restart, from the DAEMON's own
 	 * build version.
@@ -13771,141 +13905,14 @@ static int create_container_from_body(const char *body, size_t body_len,
 			        entry->name, (int)derr);
 	}
 
-	if (pki_issue) {
-		/* CN/SAN = the container's own name, matching pki_cert_create()'s
-		 * existing manual-call default-SAN-to-name behavior. No IP SAN --
-		 * pki_issue doesn't require networks, unlike dns_register, since
-		 * delivery via /proc/<pid>/root/ works for any running container
-		 * regardless of networking. */
-		const char *pki_sans[PKI_MAX_SANS];
-		char pki_san_ips[PKI_MAX_SANS][INET_ADDRSTRLEN];
-		int pki_san_count = 0;
-		int ni;
-		struct json_writer scratch;
-		enum pki_error perr;
-
-		/*
-		 * The container's own name, plus every address it is actually
-		 * reachable at (#414). A TLS client verifies the name it
-		 * DIALLED, and this platform hands LDAP clients the registered
-		 * servers' live IPs (ldap_effective_client_uri()), so a cert
-		 * carrying only the container name cannot verify however
-		 * correct it looks.
-		 *
-		 * Derived from spec.nets[] rather than left for an operator to
-		 * type into a POST /v1/pki/certs call: the address is declared
-		 * once, in this container's own body, and a second hand-written
-		 * copy is precisely the kind of duplicate that drifts the first
-		 * time a container moves. Every attachment, not nets[0] -- a
-		 * container on two networks is reachable on both.
-		 *
-		 * Known limit, recorded rather than solved: a container whose
-		 * address later changes hits PKI_ERR_DUPLICATE below and keeps
-		 * the cert it already has, stale IP SAN included. Deleting the
-		 * cert (or the container) reissues it.
-		 */
-		pki_sans[pki_san_count++] = entry->name;
-		for (ni = 0; ni < spec.net_count && pki_san_count < PKI_MAX_SANS; ni++) {
-			struct in_addr a4;
-
-			if (spec.nets[ni].container_ip_be == 0)
-				continue;
-			a4.s_addr = spec.nets[ni].container_ip_be;
-			if (inet_ntop(AF_INET, &a4, pki_san_ips[pki_san_count],
-			              sizeof(pki_san_ips[pki_san_count])) == NULL)
-				continue;
-			pki_sans[pki_san_count] = pki_san_ips[pki_san_count];
-			pki_san_count++;
-		}
-		jw_init(&scratch);
-		perr = pki_cert_create(entry->name, pki_sans, pki_san_count, pki_days, entry->name,
-		                        &scratch);
-		jw_free(&scratch);
-
-		/* PKI_ERR_DUPLICATE means a cert for this name already exists --
-		 * expected and harmless on every restart-always respawn after the
-		 * first (each respawn gets a fresh pid, so delivery still needs to
-		 * run again even though creation itself is a no-op the second time
-		 * onward). Confirmed as a real, not hypothetical, failure mode:
-		 * without this, a container whose process starts and reads its own
-		 * TLS cert before pki_cert_deliver() finishes writing it (a real
-		 * race -- register_container_pidfd() above runs before this whole
-		 * block) would crash-loop forever under restart-always, since every
-		 * respawn after the first hit DUPLICATE and never reached delivery
-		 * at all. Any other error still aborts -- a genuinely failed
-		 * create (OPENSSL_FAILED, PERSIST_FAILED, ...) has no existing cert
-		 * to fall back to delivering. */
-		if (perr != PKI_OK && perr != PKI_ERR_DUPLICATE) {
-			fprintf(stderr,
-			        "%s: pki_issue requested but cert issuance failed (err=%d)\n",
-			        entry->name, (int)perr);
-		} else {
-			enum pki_error derr2 =
-			    pki_cert_deliver(entry->name, entry->name, entry->handle.pid,
-			                      pki_cert_dir_buf);
-
-			if (derr2 != PKI_OK)
-				fprintf(stderr,
-				        "%s: pki_issue cert issued but delivery into the container failed (err=%d)\n",
-				        entry->name, (int)derr2);
-		}
-	}
-
 	/*
-	 * ADR-0280/#397: deliver a DURABLE identity this container does not
-	 * own. The sibling of pki_issue above, and deliberately delivery-only
-	 * -- it never creates and never sets owner_container, which is the
-	 * entire point: pki_cert_forget_owner() only shreds a cert whose
-	 * owner equals the container being deleted, so an unowned cert
-	 * survives every delete/recreate cycle and the identity outlives the
-	 * container instance.
-	 *
-	 * That distinction is what jump's SSH host key needs. A leaf TLS cert
-	 * SHOULD die with its service (a dead service must not keep a live
-	 * credential), which is why pki_issue owns what it creates. An SSH
-	 * host key must not: SSH is trust-on-first-use, so the client pins
-	 * these exact bytes and any change is indistinguishable from an
-	 * attack. Measured on 192.168.15.95, 2026-09-12: with pki_issue,
-	 * jump's host key went 2048 SHA256:nCR2Epsa... -> SHA256:H8urRHcL...
-	 * across one follow_rolling rebuild, because a rolling rebuild is a
-	 * delete+recreate (apply cannot recreate in place -- the address is
-	 * still held, 409) and the delete took the cert with it.
-	 *
-	 * Runs on every start, not just the first: delivery writes into the
-	 * container's tree and a fresh instance starts with a fresh tree, so
-	 * a respawn needs it again -- the same reason the pki_issue block
-	 * above tolerates PKI_ERR_DUPLICATE and always reaches delivery.
-	 * Best-effort past creation, matching pki_issue exactly; existence
-	 * was already gated with a 400 at validation time, so reaching
-	 * PKI_ERR_NOT_FOUND here means the cert was deleted between the
-	 * check and the start.
+	 * pki_issue / pki_cert are handled at STAGING time, well above --
+	 * the certificate is written into the container's tree before
+	 * clone3(), not pushed into it once it is already running (#414).
+	 * Nothing remains to do here, and that is the point: the block that
+	 * used to live at this spot is what created the startup race every
+	 * image was then expected to work around.
 	 */
-	if (pki_cert_buf[0] != '\0') {
-		enum pki_error derr3 =
-		    pki_cert_deliver(pki_cert_buf, entry->name, entry->handle.pid, pki_cert_dir_buf);
-
-		/*
-		 * The log store, not just stderr. This daemon does not mirror
-		 * stderr into GET /v1/system/logs, so a stderr-only diagnostic
-		 * is invisible to every operator-facing surface -- which is
-		 * exactly how this failure presented when the delivery was
-		 * genuinely broken (#397, measured 2026-09-12): the container
-		 * came up, its own gate reported "was never delivered by the
-		 * PKI" 30 seconds later, and the daemon's reason for not
-		 * delivering existed nowhere an operator could read it. The
-		 * container says what it did not receive; only the daemon
-		 * knows why.
-		 */
-		if (derr3 != PKI_OK) {
-			logstore_write("pki", "err",
-			               "%s: pki_cert \"%s\" delivery into the container failed (err=%d)",
-			               entry->name, pki_cert_buf, (int)derr3);
-			fprintf(stderr,
-			        "%s: pki_cert \"%s\" delivery into the container failed (err=%d)\n",
-			        entry->name, pki_cert_buf, (int)derr3);
-		}
-	}
-
 	if (ldap_provision) {
 		/* task #727: a service/bind identity for this container itself --
 		 * NOT a human login account (those are created directly via
