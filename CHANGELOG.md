@@ -6,6 +6,46 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Every tool the installer runs is finally visible on the screen (bare-metal install)
+
+A real bare-metal install failed with:
+
+```
+/usr/sbin/sfdisk failed (status 0x100)
+partitioning did not complete successfully -- aborting
+```
+
+and **nothing else**. Not sfdisk's error, not even its usual "Created a new partition" lines. The
+operator had a monitor, the failure was readable thanks to the PID-1 parking fix, and it still
+could not be diagnosed, because the one thing that knew what went wrong never reached the screen.
+
+**The cause is the console.** The installer boots with `console=tty0 console=ttyS0`, and when more
+than one `console=` is given the kernel points `/dev/console` at the LAST one -- `ttyS0`. Our own
+messages appear because `dual_printf()` writes to `/dev/tty0` and `/dev/ttyS0` explicitly rather
+than trusting fd 1. A child process cannot do that: it inherits fd 1 and fd 2, so every tool this
+installer runs -- sfdisk, mkfs.vfat, mkfs.btrfs, mokutil -- has been writing to a serial port that
+a machine plugged into a monitor does not have.
+
+`run_subprocess()` and `run_subprocess_stdin()` now give the child a pipe for both streams and
+relay it through `dual_printf()`, prefixed with the tool's own name so it is obvious which lines
+are the tool's. stderr as well as stdout, because a tool's diagnosis is usually on stderr and that
+is the half that matters here.
+
+Two remaining writes that bypassed the dual console are converted with it: the `partitioning ...
+MiB total ...` summary, which was a plain `printf()`, and `auto_partition()`'s "could not read the
+size of" error, which was an `fprintf(stderr, ...)`. Both were invisible on exactly the hardware
+they were written for. There are now none left in the file.
+
+**What this does not do is explain the sfdisk failure**, and it is worth being plain about that:
+the cause is still unknown, and this is what makes the next attempt able to answer it in one trip
+rather than several. Two candidates were tested and eliminated first, against a 40 GiB image
+carrying a Windows-shaped GPT and a real NTFS signature: sfdisk rewrote that table and **exited 0**,
+so neither an existing partition table nor a leftover filesystem signature is the trigger, and no
+speculative `--wipe`/`--force` flag was added on the strength of a guess. An earlier reading of the
+`nvme0n1: p1 p2 p3 p4 p5` line as a post-write rescan was also wrong and is corrected here: with no
+sfdisk output at all, that line is the kernel probing the machine's existing partitions at boot,
+and nothing yet shows that any table was written.
+
 ### The installer can see a real machine's built-in Ethernet (#429 follow-on)
 
 It could not, and the reason was structural rather than a bug in the listing: the five NIC

@@ -152,21 +152,93 @@ extern char **environ;
  * the kernel will call the disk next boot.
  */
 
+/*
+ * Relay a child's merged stdout+stderr onto both consoles.
+ *
+ * This exists because a child's output was invisible on real hardware.
+ * The installer boots with `console=tty0 console=ttyS0`, and when more
+ * than one console= is given the kernel points /dev/console at the LAST
+ * one -- so every tool this installer runs wrote to the serial port.
+ * A bare-metal machine plugged into a monitor has no serial port, and
+ * the operator saw nothing at all: an sfdisk that failed reported only
+ * our own "sfdisk failed (status 0x100)", with sfdisk's own explanation
+ * of WHY discarded. Measured on a real install, 2026-09-12, where that
+ * left the failure undiagnosable.
+ *
+ * dual_printf() is what makes our own messages visible, because it
+ * writes to /dev/tty0 and /dev/ttyS0 explicitly rather than trusting
+ * fd 1. A child cannot do that, so its output is piped back here and
+ * put through the same function -- prefixed, so it is obvious which
+ * lines are the tool's rather than the installer's.
+ */
+static void relay_child_output(int fd, const char *bin)
+{
+	const char *base = strrchr(bin, '/');
+	char buf[512];
+	size_t held = 0;
+	ssize_t n;
+
+	base = (base != NULL) ? base + 1 : bin;
+	while ((n = read(fd, buf + held, sizeof(buf) - 1 - held)) != 0) {
+		char *line;
+		char *nl;
+
+		if (n < 0) {
+			if (errno == EINTR)
+				continue;
+			break;
+		}
+		held += (size_t)n;
+		buf[held] = '\0';
+		line = buf;
+		while ((nl = strchr(line, '\n')) != NULL) {
+			*nl = '\0';
+			dual_printf("  [%s] %s\n", base, line);
+			line = nl + 1;
+		}
+		/* Carry a partial last line over into the next read. */
+		held = strlen(line);
+		memmove(buf, line, held + 1);
+		if (held == sizeof(buf) - 1) {
+			dual_printf("  [%s] %s\n", base, buf);
+			held = 0;
+		}
+	}
+	if (held > 0)
+		dual_printf("  [%s] %s\n", base, buf);
+}
+
 static int run_subprocess(const char *bin, char *const argv[])
 {
 	pid_t pid;
 	int status;
+	int out_pipe[2];
 
+	if (pipe2(out_pipe, O_CLOEXEC) != 0) {
+		dual_perror("pipe2");
+		return -1;
+	}
 	pid = fork();
 	if (pid < 0) {
 		dual_perror("fork");
+		close(out_pipe[0]);
+		close(out_pipe[1]);
 		return -1;
 	}
 	if (pid == 0) {
+		/* Both streams down the pipe: a tool's diagnosis is usually on
+		 * stderr, and it is the half that matters most here. */
+		dup2(out_pipe[1], STDOUT_FILENO);
+		dup2(out_pipe[1], STDERR_FILENO);
+		close(out_pipe[0]);
+		close(out_pipe[1]);
 		execve(bin, argv, environ);
 		dual_perror(bin);
 		_exit(127);
 	}
+	close(out_pipe[1]);
+	relay_child_output(out_pipe[0], bin);
+	close(out_pipe[0]);
 	if (waitpid(pid, &status, 0) != pid) {
 		dual_perror("waitpid");
 		return -1;
@@ -231,6 +303,7 @@ static int run_subprocess_capture(const char *bin, char *const argv[], char *out
 static int run_subprocess_stdin(const char *bin, char *const argv[], const char *script)
 {
 	int pipefd[2];
+	int out_pipe[2];
 	pid_t pid;
 	int status;
 	size_t len = strlen(script);
@@ -239,21 +312,40 @@ static int run_subprocess_stdin(const char *bin, char *const argv[], const char 
 
 	if (pipe2(pipefd, O_CLOEXEC) != 0)
 		return -1;
-	pid = fork();
-	if (pid < 0) {
+	if (pipe2(out_pipe, O_CLOEXEC) != 0) {
 		close(pipefd[0]);
 		close(pipefd[1]);
 		return -1;
 	}
-	if (pid == 0) {
-		dup2(pipefd[0], STDIN_FILENO);
+	pid = fork();
+	if (pid < 0) {
 		close(pipefd[0]);
 		close(pipefd[1]);
+		close(out_pipe[0]);
+		close(out_pipe[1]);
+		return -1;
+	}
+	if (pid == 0) {
+		dup2(pipefd[0], STDIN_FILENO);
+		dup2(out_pipe[1], STDOUT_FILENO);
+		dup2(out_pipe[1], STDERR_FILENO);
+		close(pipefd[0]);
+		close(pipefd[1]);
+		close(out_pipe[0]);
+		close(out_pipe[1]);
 		execve(bin, argv, environ);
 		dual_perror(bin);
 		_exit(127);
 	}
 	close(pipefd[0]);
+	close(out_pipe[1]);
+	/*
+	 * The whole script first, then the output. Safe in this order only
+	 * because the script is small -- a few hundred bytes against a
+	 * 64 KiB pipe buffer -- so the write cannot block waiting for a
+	 * child that is itself blocked writing output nobody is reading
+	 * yet. A larger script would need both pipes polled together.
+	 */
 	while (written < len) {
 		n = write(pipefd[1], script + written, len - written);
 		if (n < 0) {
@@ -265,6 +357,8 @@ static int run_subprocess_stdin(const char *bin, char *const argv[], const char 
 		written += (size_t)n;
 	}
 	close(pipefd[1]);
+	relay_child_output(out_pipe[0], bin);
+	close(out_pipe[0]);
 	if (waitpid(pid, &status, 0) != pid) {
 		dual_perror("waitpid");
 		return -1;
@@ -508,7 +602,7 @@ static int auto_partition(const char *disk)
 	long remaining_mib, data_mib;
 
 	if (total_mib <= 0) {
-		fprintf(stderr, "cix-install: could not read the size of %s\n", disk);
+		dual_printf("cix-install: could not read the size of %s\n", disk);
 		return -1;
 	}
 	/* A few MiB for the GPT itself at both ends, plus alignment slack.
@@ -530,9 +624,9 @@ static int auto_partition(const char *disk)
 	if (data_mib > AUTO_DATA_MAX_MIB)
 		data_mib = AUTO_DATA_MAX_MIB;
 
-	printf("partitioning %s: %ld MiB total, %ld MiB system, %ld MiB data, %ld MiB left "
-	       "unallocated for you to use\n",
-	       disk, total_mib, system_mib, data_mib, remaining_mib - data_mib);
+	dual_printf("partitioning %s: %ld MiB total, %ld MiB system, %ld MiB data, %ld MiB left "
+	            "unallocated for you to use\n",
+	            disk, total_mib, system_mib, data_mib, remaining_mib - data_mib);
 
 	snprintf(script, sizeof(script),
 	         "label: gpt\n"
