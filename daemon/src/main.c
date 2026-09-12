@@ -13041,6 +13041,29 @@ static int create_container_from_body(const char *body, size_t body_len,
 	}
 
 	if (jfiles != NULL) {
+		/*
+		 * #419: if this container declares itself an LDAP server, the
+		 * managed listener values are applied to its config's staged
+		 * TEXT, here, before clone3(). Not afterwards: glauth binds
+		 * its listeners at startup and its config watcher reloads only
+		 * the record datastore, so a listener written into a live
+		 * config is never adopted -- and every path that brings a
+		 * container up replays this same body, so a restart would
+		 * otherwise re-stage the recipe's own value over the managed
+		 * one and glauth would read that. Measured on 192.168.15.95,
+		 * v2.57.114, before this existed: both live configs read
+		 * `[ldap] enabled = true` while 3893 stayed refused, and a
+		 * real stop/start of ldap-1 did not change it.
+		 *
+		 * Same ordering fix pki_cert_deliver() needed in #414, for the
+		 * same reason: a service reads its identity once, at startup.
+		 */
+		const struct json_value *jldapsrv = json_object_get(root, "ldap_server");
+		const char *ldap_cfg_path =
+		    (jldapsrv != NULL && jldapsrv->type == JSON_OBJECT) ?
+		        json_as_string(json_object_get(jldapsrv, "config_path")) :
+		        NULL;
+
 		for (i = 0; i < jfiles->u.array.count; i++) {
 			const struct json_value *item = jfiles->u.array.items[i];
 			const char *path = json_as_string(json_object_get(item, "path"));
@@ -13051,8 +13074,37 @@ static int create_container_from_body(const char *body, size_t body_len,
 			long mode = mode_str != NULL ? strtol(mode_str, NULL, 8) : 0644;
 			uid_t owner = jowner != NULL ? (uid_t)json_as_number(jowner) : (uid_t)-1;
 			gid_t group = jgroup != NULL ? (gid_t)json_as_number(jgroup) : (gid_t)-1;
-			if (stage_container_file(stage_dir, path, content, (mode_t)mode, owner,
-			                          group, stage_id_offset) != 0) {
+			char *rendered = NULL;
+			size_t rendered_len = 0;
+			int staged;
+
+			if (ldap_cfg_path != NULL && path != NULL && content != NULL &&
+			    strcmp(path, ldap_cfg_path) == 0 &&
+			    ldap_render_listeners(content, strlen(content), &rendered, &rendered_len) ==
+			        1) {
+				/* stage_container_file() takes a NUL-terminated
+				 * string; the render returns a length, so terminate a
+				 * copy rather than assuming. */
+				char *z = malloc(rendered_len + 1);
+
+				if (z == NULL) {
+					free(rendered);
+					json_free(root);
+					snprintf(err_msg, err_msg_size, "failed to stage files");
+					return 500;
+				}
+				memcpy(z, rendered, rendered_len);
+				z[rendered_len] = '\0';
+				free(rendered);
+				staged = stage_container_file(stage_dir, path, z, (mode_t)mode, owner, group,
+				                               stage_id_offset);
+				free(z);
+			} else {
+				free(rendered);
+				staged = stage_container_file(stage_dir, path, content, (mode_t)mode, owner,
+				                               group, stage_id_offset);
+			}
+			if (staged != 0) {
 				json_free(root);
 				snprintf(err_msg, err_msg_size, "failed to stage files");
 				return 500;

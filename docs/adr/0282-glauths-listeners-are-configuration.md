@@ -73,10 +73,23 @@ deliberate no-op when the line is missing.
      recipe's own value and the re-render arrives too late. Verified with a real
      stop/start: the config then read `enabled = true` and 3893 was still refused.
 
-  Closing that needs the render to run during staging, before `clone3()` (the same
-  ordering `pki_cert_deliver()` needed in #414), plus a deliberate restart of each
-  registered server on a listener change. The restart disrupts the service that
-  authenticates the control plane, so it is its own decision; #419 stays open.
+  Both are closed. The render also runs during **staging**, before `clone3()` —
+  the same ordering `pki_cert_deliver()` needed in #414, and for the same reason:
+  a service reads its identity once, at startup. Every path that brings a
+  container up replays that body, so a create, a restart, an autostart and a
+  rolling rebuild all now stage the managed value rather than the recipe's.
+
+  A **running** server therefore adopts a listener change when it restarts, and
+  `cixctl ldap config set --restart-servers` does that one at a time, each back
+  before the next is touched. **Off by default**, decided with the owner: this is
+  the directory that authenticates the control plane, and a plain config PUT
+  should not disrupt it. It is composed from the existing stop/start endpoints
+  rather than a new one — the capability is already in the API and this is the
+  client sequencing it, the same way `hostauth-config set` composes a GET and a
+  PUT. No new daemon seam, and no second implementation of "how a container
+  stops", which is deliberately one thing (`registry_remove()` plus the reactor
+  teardown, shared by `handle_stop()`, the rolling restart and the storage
+  migration).
 - A recipe's `[ldap]`/`[ldaps]` stanzas become initial values that the daemon
   owns after the first PUT. `recipes/deployment/README.md` says so, because an
   operator editing TOML that gets overwritten would otherwise file a bug.
