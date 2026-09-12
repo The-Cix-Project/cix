@@ -1578,6 +1578,233 @@ int main(void)
 		cix_response_free(&r);
 	}
 
+	/*
+	 * #415/ADR-0281: the store survives leaving the box and coming back.
+	 *
+	 * The assertion that matters is the last one -- every restored
+	 * certificate's SERIAL matches what was there before. A restore that
+	 * produced a working CA with freshly generated leaves would satisfy
+	 * "certs are present" and still have rotated every identity, which
+	 * is the exact failure ADR-0280 exists to prevent.
+	 *
+	 * The wrong-passphrase case is checked too, because AES-256-CBC has
+	 * no integrity tag: a wrong passphrase decrypts to garbage rather
+	 * than failing, so import validating what it decoded is load-bearing
+	 * rather than defensive.
+	 */
+	{
+		/* static: a bundle carrying a dozen leaves is a couple of
+		 * hundred KB of base64, which does not belong on the stack.
+		 * Sizes are literals rather than pki.h constants -- this test
+		 * links the CLIENT sources, not the daemon's, so it has no
+		 * pki.h; a serial is 40 hex chars and a DNS name 253. */
+		static char bundle[262144];
+		char serial_before[8][128];
+		char name_before[8][256];
+		int n_before = 0;
+		int i;
+
+		/* What is in the store right now, to compare against. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "GET", "/v1/pki/certs", NULL, &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: GET /v1/pki/certs before export, status=%d\n", r.status);
+			ok = 0;
+		} else {
+			const struct json_value *arr = json_object_get(r.json, "certs");
+			size_t k;
+
+			if (arr != NULL && arr->type == JSON_ARRAY) {
+				for (k = 0; k < arr->u.array.count && n_before < 8; k++) {
+					const char *nm =
+					    json_str_field(arr->u.array.items[k], "name");
+					const char *se =
+					    json_str_field(arr->u.array.items[k], "serial");
+
+					if (nm == NULL || se == NULL)
+						continue;
+					snprintf(name_before[n_before], sizeof(name_before[0]), "%s", nm);
+					snprintf(serial_before[n_before], sizeof(serial_before[0]), "%s",
+					         se);
+					n_before++;
+				}
+			}
+		}
+		cix_response_free(&r);
+		if (n_before == 0) {
+			fprintf(stderr, "FAIL: no certs to export -- the test cannot prove a restore\n");
+			ok = 0;
+		}
+
+		/* An empty passphrase is refused: it is the only thing
+		 * protecting the CA key in the bundle. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/pki/export", "{\"passphrase\":\"\"}",
+		                       &r) != 0 ||
+		    r.status != 400) {
+			fprintf(stderr, "FAIL: export with an empty passphrase expected 400, got %d\n",
+			        r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		bundle[0] = '\0';
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/pki/export",
+		                       "{\"passphrase\":\"correct horse battery staple\"}", &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: POST /v1/pki/export, status=%d\n", r.status);
+			ok = 0;
+		} else {
+			const char *b = json_str_field(r.json, "bundle");
+
+			if (b == NULL || strlen(b) >= sizeof(bundle)) {
+				fprintf(stderr, "FAIL: export bundle missing or too large\n");
+				ok = 0;
+			} else {
+				snprintf(bundle, sizeof(bundle), "%s", b);
+			}
+		}
+		cix_response_free(&r);
+
+		/* Importing over a live CA is refused -- replacing a trust root
+		 * would invalidate every cert this install has issued. */
+		if (bundle[0] != '\0') {
+			struct json_writer bw;
+
+			jw_init(&bw);
+			jw_obj_open(&bw);
+			jw_key(&bw, "passphrase");
+			jw_str(&bw, "correct horse battery staple");
+			jw_key(&bw, "bundle");
+			jw_str(&bw, bundle);
+			jw_obj_close(&bw);
+			bw.buf[bw.len] = '\0';
+
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/pki/import", bw.buf, &r) != 0 ||
+			    r.status != 409) {
+				fprintf(stderr,
+				        "FAIL: import over a bootstrapped CA expected 409, got %d\n",
+				        r.status);
+				ok = 0;
+			}
+			cix_response_free(&r);
+
+			/*
+			 * Now the real thing: stop the daemon, remove the store,
+			 * restart, and import. Done through the daemon's own
+			 * lifecycle rather than by deleting certs over the API,
+			 * because "a fresh install" is the case this exists for and
+			 * an empty PKI_DIR is what that actually looks like.
+			 */
+			if (stop_daemon(daemon_pid) != 0) {
+				fprintf(stderr, "FAIL: daemon did not stop cleanly before wipe\n");
+				ok = 0;
+			} else {
+				char cmd[PATH_MAX + 32];
+
+				snprintf(cmd, sizeof(cmd), "rm -rf '%s'", g_pki_state_dir);
+				if (system(cmd) != 0)
+					fprintf(stderr, "note: could not remove %s\n", g_pki_state_dir);
+				daemon_pid = start_daemon();
+				if (daemon_pid <= 0) {
+					fprintf(stderr, "FAIL: daemon did not restart after wipe\n");
+					jw_free(&bw);
+					ok = 0;
+					goto pki_import_done;
+				}
+
+				/* A wrong passphrase must be refused, not half-applied. */
+				{
+					struct json_writer badw;
+
+					jw_init(&badw);
+					jw_obj_open(&badw);
+					jw_key(&badw, "passphrase");
+					jw_str(&badw, "not the passphrase");
+					jw_key(&badw, "bundle");
+					jw_str(&badw, bundle);
+					jw_obj_close(&badw);
+					badw.buf[badw.len] = '\0';
+					memset(&r, 0, sizeof(r));
+					if (cix_client_request(&client, "POST", "/v1/pki/import",
+					                        badw.buf, &r) != 0 ||
+					    r.status != 400) {
+						fprintf(stderr,
+						        "FAIL: import with a wrong passphrase expected 400, got %d\n",
+						        r.status);
+						ok = 0;
+					}
+					cix_response_free(&r);
+					jw_free(&badw);
+				}
+				/* And must have left nothing behind -- a failed import
+				 * that bootstrapped the CA would make the retry below
+				 * a 409. */
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "POST", "/v1/pki/import", bw.buf, &r) != 0 ||
+				    r.status != 200) {
+					fprintf(stderr, "FAIL: POST /v1/pki/import, status=%d\n", r.status);
+					ok = 0;
+				} else if ((int)json_as_number(json_object_get(r.json, "certs_restored")) !=
+				            n_before) {
+					fprintf(stderr, "FAIL: import restored %d certs, expected %d\n",
+					        (int)json_as_number(json_object_get(r.json, "certs_restored")),
+					        n_before);
+					ok = 0;
+				}
+				cix_response_free(&r);
+
+				/* Served immediately, from the reloaded index -- not
+				 * only after the next restart. */
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "GET", "/v1/pki/certs", NULL, &r) != 0 ||
+				    r.status != 200) {
+					fprintf(stderr, "FAIL: GET /v1/pki/certs after import, status=%d\n",
+					        r.status);
+					ok = 0;
+				} else {
+					const struct json_value *arr = json_object_get(r.json, "certs");
+
+					for (i = 0; i < n_before; i++) {
+						const char *got = NULL;
+						size_t k;
+
+						if (arr == NULL || arr->type != JSON_ARRAY)
+							break;
+						for (k = 0; k < arr->u.array.count; k++) {
+							const char *nm =
+							    json_str_field(arr->u.array.items[k], "name");
+
+							if (nm != NULL && strcmp(nm, name_before[i]) == 0) {
+								got = json_str_field(arr->u.array.items[k],
+								                      "serial");
+								break;
+							}
+						}
+						if (got == NULL) {
+							fprintf(stderr,
+							        "FAIL: cert %s absent after import\n",
+							        name_before[i]);
+							ok = 0;
+						} else if (strcmp(got, serial_before[i]) != 0) {
+							fprintf(stderr,
+							        "FAIL: cert %s serial changed across export/import "
+							        "(%s -> %s) -- the identity was regenerated, not "
+							        "restored\n",
+							        name_before[i], serial_before[i], got);
+							ok = 0;
+						}
+					}
+				}
+				cix_response_free(&r);
+			}
+			jw_free(&bw);
+		}
+	}
+pki_import_done:
+
 	/* cleanup */
 	cix_client_request(&client, "DELETE", "/v1/pki/certs/persisted.internal", NULL, &r);
 	cix_response_free(&r);

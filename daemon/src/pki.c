@@ -906,6 +906,17 @@ int pki_cert_exists(const char *name)
 	return cert_find(name) != NULL;
 }
 
+int pki_cert_count(void)
+{
+	int i, n = 0;
+
+	for (i = 0; i < PKI_MAX_CERTS; i++) {
+		if (g_certs[i].name[0] != '\0')
+			n++;
+	}
+	return n;
+}
+
 void pki_cert_forget_owner(const char *container_name)
 {
 	struct pki_cert_record *rec = cert_find(container_name);
@@ -1012,6 +1023,449 @@ enum pki_error pki_ca_reset(const char *root_common_name, const char *intermedia
 	jw_obj_close(w);
 
 	free(snapshot);
+	return PKI_OK;
+}
+
+/*
+ * Taking the CA off the box, and putting it back (#415, ADR-0281).
+ *
+ * PKI_DIR is /config/state/pki, on the cix-config partition -- so the
+ * CA survives a reboot, an A/B update and a rolling rebuild, and does
+ * NOT survive a reinstall: cix-install.c mkfs's that partition. Before
+ * this existed there was no way at all to carry a CA across one, and
+ * "back it up at the host level" was not an answer on a host that is
+ * shell-less by charter. A key in exactly this position was already
+ * lost that way once, on 2026-09-06.
+ *
+ * A passphrase, not plain bytes. The bundle carries the root CA's
+ * private key -- the one thing this API has never returned, on any
+ * endpoint. ADR-0281 supersedes that narrowly rather than abandoning
+ * it: the key leaves only through this one endpoint, only encrypted
+ * under a passphrase the daemon never stores, so an exported bundle
+ * sitting on an operator's laptop is not the trust root.
+ *
+ * The passphrase reaches openssl through a 0600 file, never argv:
+ * -pass pass:<secret> puts it in /proc/<pid>/cmdline, readable for as
+ * long as the child lives. The file is in PKI_DIR, which already holds
+ * every private key on the box, so it adds no exposure that partition
+ * does not already carry, and it is unlinked on every exit path.
+ *
+ * -aes-256-cbc with pbkdf2 at 600000 iterations, sha256, salted. Every
+ * one of those is stated explicitly because `openssl enc` defaults
+ * have changed across versions and a bundle that cannot be decrypted
+ * by the next release is not a backup. CBC rather than an AEAD mode
+ * because `openssh enc` refuses AEAD outright -- so the bundle has no
+ * integrity tag, and import compensates by validating what it decodes
+ * (see pki_import()) rather than trusting that it decrypted.
+ */
+
+#define PKI_EXPORT_CIPHER "-aes-256-cbc"
+#define PKI_EXPORT_ITER "600000"
+
+/* One temp file under PKI_DIR, created O_EXCL at 0600. Returns 0 on
+ * success. suffix distinguishes the three this module needs open at
+ * once, so a concurrent export cannot collide with an import. */
+static int pki_tmp_create(const char *suffix, char *out_path, size_t out_size, const char *data,
+                           size_t data_len)
+{
+	int fd;
+
+	if ((size_t)snprintf(out_path, out_size, "%s/.export-%s.%d", g_pki_dir, suffix,
+	                     (int)getpid()) >= out_size)
+		return -1;
+	unlink(out_path);
+	fd = open(out_path, O_WRONLY | O_CREAT | O_EXCL, 0600);
+	if (fd < 0)
+		return -1;
+	if (data != NULL && data_len > 0) {
+		ssize_t n = write(fd, data, data_len);
+
+		if (n < 0 || (size_t)n != data_len) {
+			close(fd);
+			unlink(out_path);
+			return -1;
+		}
+	}
+	close(fd);
+	return 0;
+}
+
+/* Reads a PEM file straight into a json_writer string value, or writes
+ * JSON null when it is absent. Absent is legitimate: an install may
+ * never have bootstrapped an intermediate. */
+static int pki_export_file_field(struct json_writer *w, const char *key, const char *path)
+{
+	char *buf = NULL;
+	size_t len;
+
+	jw_key(w, key);
+	if (persist_read_file(path, &buf, &len) != 0 || buf == NULL) {
+		jw_null(w);
+		free(buf);
+		return 0;
+	}
+	jw_str(w, buf);
+	free(buf);
+	return 0;
+}
+
+enum pki_error pki_export(const char *passphrase, struct json_writer *w)
+{
+	char plain_path[PATH_MAX], enc_path[PATH_MAX], pass_path[PATH_MAX];
+	char pass_arg[PATH_MAX + 16];
+	char *argv[16];
+	char errbuf[4096];
+	char *cipher = NULL;
+	size_t cipher_len;
+	struct json_writer plain;
+	enum pki_error result = PKI_OK;
+	int i, j;
+
+	if (passphrase == NULL || passphrase[0] == '\0')
+		return PKI_ERR_INVALID_NAME;
+	if (!pki_ca_bootstrapped())
+		return PKI_ERR_NOT_BOOTSTRAPPED;
+
+	/* The whole store, not just the CA. A leaf is re-derivable from the
+	 * CA only if something reissues it -- and the certs ADR-0280 exists
+	 * for are precisely the ones nothing reissues: an unowned cert is a
+	 * durable identity (jump's SSH host key), and restoring the CA
+	 * without it would rotate exactly the key #397 was filed to stop
+	 * rotating. Owned leaves are carried too, and that is deliberate:
+	 * when autostart recreates ldap-1, its pki_issue hits DUPLICATE and
+	 * keeps the restored cert rather than issuing a new one. */
+	jw_init(&plain);
+	jw_obj_open(&plain);
+	jw_key(&plain, "version");
+	jw_int(&plain, 1);
+	pki_export_file_field(&plain, "ca_key", g_ca_key_path);
+	pki_export_file_field(&plain, "ca_cert", g_ca_cert_path);
+	pki_export_file_field(&plain, "intermediate_key", g_intermediate_key_path);
+	pki_export_file_field(&plain, "intermediate_cert", g_intermediate_cert_path);
+	jw_key(&plain, "certs");
+	jw_arr_open(&plain);
+	for (i = 0; i < PKI_MAX_CERTS; i++) {
+		struct pki_cert_record *rec = &g_certs[i];
+		char key_path[PATH_MAX], crt_path[PATH_MAX];
+
+		if (rec->name[0] == '\0')
+			continue;
+		snprintf(key_path, sizeof(key_path), "%s/%s.key", g_certs_dir, rec->name);
+		snprintf(crt_path, sizeof(crt_path), "%s/%s.crt", g_certs_dir, rec->name);
+		jw_obj_open(&plain);
+		jw_key(&plain, "name");
+		jw_str(&plain, rec->name);
+		jw_key(&plain, "serial");
+		jw_str(&plain, rec->serial);
+		jw_key(&plain, "not_after");
+		jw_str(&plain, rec->not_after);
+		jw_key(&plain, "sans");
+		jw_arr_open(&plain);
+		for (j = 0; j < rec->san_count; j++)
+			jw_str(&plain, rec->sans[j]);
+		jw_arr_close(&plain);
+		jw_key(&plain, "owner");
+		jw_str(&plain, rec->owner_container);
+		pki_export_file_field(&plain, "key_pem", key_path);
+		pki_export_file_field(&plain, "cert_pem", crt_path);
+		jw_obj_close(&plain);
+	}
+	jw_arr_close(&plain);
+	jw_obj_close(&plain);
+
+	if (pki_tmp_create("pass", pass_path, sizeof(pass_path), passphrase, strlen(passphrase)) != 0 ||
+	    pki_tmp_create("plain", plain_path, sizeof(plain_path), plain.buf, plain.len) != 0 ||
+	    pki_tmp_create("enc", enc_path, sizeof(enc_path), NULL, 0) != 0) {
+		jw_free(&plain);
+		unlink(pass_path);
+		unlink(plain_path);
+		return PKI_ERR_PERSIST_FAILED;
+	}
+	jw_free(&plain);
+
+	snprintf(pass_arg, sizeof(pass_arg), "file:%s", pass_path);
+	i = 0;
+	argv[i++] = (char *)PKI_OPENSSL_BIN;
+	argv[i++] = "enc";
+	argv[i++] = (char *)PKI_EXPORT_CIPHER;
+	argv[i++] = "-pbkdf2";
+	argv[i++] = "-iter";
+	argv[i++] = (char *)PKI_EXPORT_ITER;
+	argv[i++] = "-md";
+	argv[i++] = "sha256";
+	argv[i++] = "-salt";
+	argv[i++] = "-a";
+	argv[i++] = "-A";
+	argv[i++] = "-in";
+	argv[i++] = plain_path;
+	argv[i++] = "-out";
+	argv[i++] = enc_path;
+	argv[i++] = "-pass";
+	argv[i++] = pass_arg;
+	argv[i] = NULL;
+	if (pki_run_openssl(argv, errbuf, sizeof(errbuf)) != 0) {
+		fprintf(stderr, "pki: export encryption failed: %s\n", errbuf);
+		result = PKI_ERR_OPENSSL_FAILED;
+	} else if (persist_read_file(enc_path, &cipher, &cipher_len) != 0 || cipher == NULL) {
+		result = PKI_ERR_PERSIST_FAILED;
+	}
+
+	unlink(pass_path);
+	unlink(plain_path);
+	unlink(enc_path);
+	if (result != PKI_OK) {
+		free(cipher);
+		return result;
+	}
+
+	/* -A gives one base64 line, but openssl still terminates it. */
+	while (cipher_len > 0 &&
+	       (cipher[cipher_len - 1] == '\n' || cipher[cipher_len - 1] == '\r'))
+		cipher[--cipher_len] = '\0';
+
+	jw_obj_open(w);
+	jw_key(w, "bundle");
+	jw_str(w, cipher);
+	jw_key(w, "cipher");
+	jw_str(w, PKI_EXPORT_CIPHER " pbkdf2 iter=" PKI_EXPORT_ITER " md=sha256");
+	jw_obj_close(w);
+	free(cipher);
+	return PKI_OK;
+}
+
+/* Writes one PEM field out of the decoded bundle. A null/absent field
+ * is skipped, not an error -- an install with no intermediate exports
+ * two JSON nulls and must import cleanly. */
+static int pki_import_file_field(const struct json_value *obj, const char *key, const char *path,
+                                  mode_t mode, int required)
+{
+	const char *pem = json_as_string(json_object_get(obj, key));
+
+	if (pem == NULL)
+		return required ? -1 : 0;
+	if (persist_atomic_write(path, pem, strlen(pem)) != 0)
+		return -1;
+	chmod(path, mode);
+	return 0;
+}
+
+/*
+ * CBC gives no integrity tag, so a wrong passphrase does not fail --
+ * it produces garbage. openssl's own padding check rejects most of it,
+ * but "decrypted to something" is not "decrypted to our bundle", so
+ * the decoded blob is validated before a single byte reaches the
+ * store: it must parse as JSON, carry the version this code knows, and
+ * its ca_key and ca_cert must be a matching pair. The pair check is
+ * the one that actually pins it -- openssl derives a public key from
+ * each and they must be byte-identical, which no corrupted input
+ * produces by accident.
+ */
+static int pki_import_pair_matches(const char *key_path, const char *cert_path)
+{
+	char from_key[8192] = { 0 }, from_cert[8192] = { 0 };
+	char *argv[8];
+	int i;
+
+	i = 0;
+	argv[i++] = (char *)PKI_OPENSSL_BIN;
+	argv[i++] = "pkey";
+	argv[i++] = "-in";
+	argv[i++] = (char *)key_path;
+	argv[i++] = "-pubout";
+	argv[i] = NULL;
+	if (pki_run_openssl(argv, from_key, sizeof(from_key)) != 0 || from_key[0] == '\0')
+		return 0;
+
+	i = 0;
+	argv[i++] = (char *)PKI_OPENSSL_BIN;
+	argv[i++] = "x509";
+	argv[i++] = "-in";
+	argv[i++] = (char *)cert_path;
+	argv[i++] = "-noout";
+	argv[i++] = "-pubkey";
+	argv[i] = NULL;
+	if (pki_run_openssl(argv, from_cert, sizeof(from_cert)) != 0 || from_cert[0] == '\0')
+		return 0;
+
+	return strcmp(from_key, from_cert) == 0;
+}
+
+enum pki_error pki_import(const char *passphrase, const char *bundle)
+{
+	char enc_path[PATH_MAX], plain_path[PATH_MAX], pass_path[PATH_MAX];
+	char pass_arg[PATH_MAX + 16];
+	char *argv[16];
+	char errbuf[4096];
+	char *plain = NULL;
+	size_t plain_len;
+	struct json_value *root = NULL;
+	const struct json_value *jcerts;
+	enum pki_error result = PKI_OK;
+	size_t ci;
+	int i;
+
+	if (passphrase == NULL || passphrase[0] == '\0' || bundle == NULL || bundle[0] == '\0')
+		return PKI_ERR_INVALID_NAME;
+	/*
+	 * Refused outright when a CA already exists, matching
+	 * pki_ca_create()'s own one-shot posture: silently replacing a live
+	 * trust root would invalidate every certificate this install has
+	 * issued, and nothing about "import a backup" says an operator
+	 * meant that. The intended case is a freshly installed box, which
+	 * has no CA at all -- pkg.c's own seeding already treats
+	 * NOT_BOOTSTRAPPED as "the common state on a fresh install".
+	 */
+	if (pki_ca_bootstrapped())
+		return PKI_ERR_ALREADY_BOOTSTRAPPED;
+
+	if (pki_tmp_create("pass", pass_path, sizeof(pass_path), passphrase, strlen(passphrase)) != 0 ||
+	    pki_tmp_create("enc", enc_path, sizeof(enc_path), bundle, strlen(bundle)) != 0 ||
+	    pki_tmp_create("plain", plain_path, sizeof(plain_path), NULL, 0) != 0) {
+		unlink(pass_path);
+		unlink(enc_path);
+		return PKI_ERR_PERSIST_FAILED;
+	}
+
+	snprintf(pass_arg, sizeof(pass_arg), "file:%s", pass_path);
+	i = 0;
+	argv[i++] = (char *)PKI_OPENSSL_BIN;
+	argv[i++] = "enc";
+	argv[i++] = "-d";
+	argv[i++] = (char *)PKI_EXPORT_CIPHER;
+	argv[i++] = "-pbkdf2";
+	argv[i++] = "-iter";
+	argv[i++] = (char *)PKI_EXPORT_ITER;
+	argv[i++] = "-md";
+	argv[i++] = "sha256";
+	argv[i++] = "-a";
+	argv[i++] = "-A";
+	argv[i++] = "-in";
+	argv[i++] = enc_path;
+	argv[i++] = "-out";
+	argv[i++] = plain_path;
+	argv[i++] = "-pass";
+	argv[i++] = pass_arg;
+	argv[i] = NULL;
+	if (pki_run_openssl(argv, errbuf, sizeof(errbuf)) != 0) {
+		/* Overwhelmingly the wrong passphrase. Not logged with the
+		 * openssl text, which says "bad decrypt" and nothing an
+		 * operator can act on beyond what the status code says. */
+		unlink(pass_path);
+		unlink(enc_path);
+		unlink(plain_path);
+		return PKI_ERR_OPENSSL_FAILED;
+	}
+	if (persist_read_file(plain_path, &plain, &plain_len) != 0 || plain == NULL)
+		result = PKI_ERR_PERSIST_FAILED;
+	unlink(pass_path);
+	unlink(enc_path);
+	unlink(plain_path);
+	if (result != PKI_OK)
+		return result;
+
+	root = json_parse(plain, plain_len);
+	free(plain);
+	if (root == NULL || root->type != JSON_OBJECT ||
+	    (int)json_as_number(json_object_get(root, "version")) != 1 ||
+	    json_as_string(json_object_get(root, "ca_key")) == NULL ||
+	    json_as_string(json_object_get(root, "ca_cert")) == NULL) {
+		json_free(root);
+		return PKI_ERR_OPENSSL_FAILED;
+	}
+	jcerts = json_object_get(root, "certs");
+	if (jcerts == NULL || jcerts->type != JSON_ARRAY ||
+	    jcerts->u.array.count > PKI_MAX_CERTS) {
+		json_free(root);
+		return PKI_ERR_OPENSSL_FAILED;
+	}
+
+	/*
+	 * ORDER IS THE SAFETY PROPERTY HERE, and it is why this needs no
+	 * staging directory. pki_ca_bootstrapped() is true only once BOTH
+	 * ca.crt and ca.key exist, so everything else is written first and
+	 * the CA key last. A failure at any point therefore leaves an
+	 * install that still reads as not-bootstrapped -- so the guard
+	 * above still lets a corrected retry through, rather than locking
+	 * the operator out of their own import with a 409 over a
+	 * half-written store.
+	 */
+	if (persist_mkdir_p(g_certs_dir) != 0) {
+		json_free(root);
+		return PKI_ERR_PERSIST_FAILED;
+	}
+	memset(g_certs, 0, sizeof(g_certs));
+	for (ci = 0; ci < jcerts->u.array.count && result == PKI_OK; ci++) {
+		const struct json_value *item = jcerts->u.array.items[ci];
+		const char *cname = json_as_string(json_object_get(item, "name"));
+		char key_path[PATH_MAX], crt_path[PATH_MAX];
+
+		if (cname == NULL || cname[0] == '\0' || strchr(cname, '/') != NULL ||
+		    strstr(cname, "..") != NULL) {
+			result = PKI_ERR_INVALID_NAME;
+			break;
+		}
+		if (snprintf(key_path, sizeof(key_path), "%s/%s.key", g_certs_dir, cname) >=
+		        (int)sizeof(key_path) ||
+		    snprintf(crt_path, sizeof(crt_path), "%s/%s.crt", g_certs_dir, cname) >=
+		        (int)sizeof(crt_path)) {
+			result = PKI_ERR_INVALID_NAME;
+			break;
+		}
+		if (pki_import_file_field(item, "key_pem", key_path, 0600, 1) != 0 ||
+		    pki_import_file_field(item, "cert_pem", crt_path, 0644, 1) != 0) {
+			result = PKI_ERR_PERSIST_FAILED;
+			break;
+		}
+		if (parse_persisted_entry(item, &g_certs[ci]) != 0) {
+			result = PKI_ERR_OPENSSL_FAILED;
+			break;
+		}
+	}
+	if (result == PKI_OK && save_state() != 0)
+		result = PKI_ERR_PERSIST_FAILED;
+
+	if (result == PKI_OK &&
+	    (pki_import_file_field(root, "intermediate_key", g_intermediate_key_path, 0600, 0) != 0 ||
+	     pki_import_file_field(root, "intermediate_cert", g_intermediate_cert_path, 0644, 0) != 0))
+		result = PKI_ERR_PERSIST_FAILED;
+
+	/* ca.crt, then ca.key -- last, for the reason above. */
+	if (result == PKI_OK &&
+	    (pki_import_file_field(root, "ca_cert", g_ca_cert_path, 0644, 1) != 0 ||
+	     pki_import_file_field(root, "ca_key", g_ca_key_path, 0600, 1) != 0))
+		result = PKI_ERR_PERSIST_FAILED;
+	json_free(root);
+
+	if (result == PKI_OK && !pki_import_pair_matches(g_ca_key_path, g_ca_cert_path)) {
+		/* Decrypted, parsed, and still not our bundle. Take the CA key
+		 * back out so the install reads as not-bootstrapped again and
+		 * a retry is possible. */
+		unlink(g_ca_key_path);
+		unlink(g_ca_cert_path);
+		memset(g_certs, 0, sizeof(g_certs));
+		save_state();
+		return PKI_ERR_OPENSSL_FAILED;
+	}
+	if (result != PKI_OK) {
+		unlink(g_ca_key_path);
+		memset(g_certs, 0, sizeof(g_certs));
+		save_state();
+		return result;
+	}
+
+	/*
+	 * g_certs[] was rebuilt in memory above rather than left for the
+	 * next restart to read: pki_ca_bootstrapped() is stat-based and
+	 * flips the instant the files land, so a stale in-memory index
+	 * would make GET /v1/pki/certs answer "empty" on an install that
+	 * had just successfully imported a dozen -- and it would look like
+	 * a successful import, which is the dangerous shape. Re-read from
+	 * the file that was just written, so what is served is what is
+	 * persisted rather than what this function happened to build.
+	 */
+	memset(g_certs, 0, sizeof(g_certs));
+	if (load_state() != 0)
+		return PKI_ERR_PERSIST_FAILED;
 	return PKI_OK;
 }
 

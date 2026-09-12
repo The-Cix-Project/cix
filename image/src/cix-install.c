@@ -927,6 +927,50 @@ static void list_interfaces(char *first, size_t first_size)
 	dual_printf("\n");
 }
 
+/*
+ * Does cix-config already carry a CA? (#415, ADR-0281)
+ *
+ * PKI state lives at /config/state/pki, and this installer formats the
+ * partition it lives on -- so a reinstall destroyed the trust root and
+ * every certificate under it. ADR-0281 gives an operator a way to carry
+ * one across deliberately (cixctl pki export), and this covers the
+ * operator who did not: if the partition already holds a CA, it is kept
+ * rather than formatted.
+ *
+ * Mounted READ-ONLY, and the answer is a single stat. The installer is
+ * the one component whose failure mode is "the box does not boot", so it
+ * reads nothing it does not need and writes nothing here at all.
+ *
+ * A mount failure means NOT preserved, deliberately: a fresh disk has no
+ * filesystem to mount, and a partition whose geometry moved has garbage
+ * at the new offset. Both must be formatted, and both present as "mount
+ * failed" -- so the safe answer and the common answer are the same one.
+ *
+ * Preservation is announced, never silent. That distinction is the whole
+ * reason this is safe to default on: an installer that quietly keeps
+ * state is a hazard of its own kind, because the operator cannot tell
+ * which install they are looking at afterwards. --wipe-config is the
+ * override for an operator who genuinely wants the disk clean.
+ */
+static int config_partition_has_pki(const char *config_dev)
+{
+	struct stat st;
+	int found;
+
+	if (mkdir(CONFIG_MOUNT, 0755) != 0 && errno != EEXIST)
+		return 0;
+	if (mount(config_dev, CONFIG_MOUNT, "btrfs", MS_RDONLY, NULL) != 0) {
+		/* ext4 only because a box installed before cix-config became
+		 * btrfs still has one, and that is exactly the install whose CA
+		 * is most worth not destroying. */
+		if (mount(config_dev, CONFIG_MOUNT, "ext4", MS_RDONLY, NULL) != 0)
+			return 0;
+	}
+	found = stat(CONFIG_MOUNT "/state/pki/ca.key", &st) == 0 && st.st_size > 0;
+	umount(CONFIG_MOUNT);
+	return found;
+}
+
 int main(int argc, char **argv)
 {
 	const char *disk = NULL;
@@ -935,6 +979,10 @@ int main(int argc, char **argv)
 	const char *iface = NULL;
 	int prefix = -1;
 	int skip_partition = 0;
+	/* #415: force cix-config to be formatted even when it already holds
+	 * a CA. Opt-IN, because the destructive direction is the one that
+	 * should need saying out loud. */
+	int wipe_config = 0;
 	/*
 	 * Whether to stage the Secure Boot key enrolment: "auto" (default)
 	 * enrols only when the firmware is enforcing, "always" regardless,
@@ -978,6 +1026,8 @@ int main(int argc, char **argv)
 			iface = argv[i] + 12;
 		else if (strcmp(argv[i], "--skip-partition") == 0)
 			skip_partition = 1;
+		else if (strcmp(argv[i], "--wipe-config") == 0)
+			wipe_config = 1;
 		else if (strcmp(argv[i], "--") != 0) {
 			/*
 			 * Anything unrecognised is fatal, and that is a safety
@@ -1049,7 +1099,7 @@ int main(int argc, char **argv)
 	    prefix <= 0 || prefix > 32) {
 		dual_printf("usage: %s [--disk=/dev/sdX] [--ip=A.B.C.D] [--prefix=N] "
 		            "[--gateway=A.B.C.D] [--interface=IFNAME] [--skip-partition]\n"
-		            "       [--enroll-key=auto|always|never]\n"
+		            "       [--enroll-key=auto|always|never] [--wipe-config]\n"
 		            "  Every flag is optional: anything omitted is asked for on the console,\n"
 		            "  with this machine's own disks and interfaces listed. Pass them all to\n"
 		            "  install unattended.\n"
@@ -1060,7 +1110,11 @@ int main(int argc, char **argv)
 		            "  use afterwards. --skip-partition: the disk is already partitioned\n"
 		            "  by other means -- it must carry five GPT partitions named exactly\n"
 		            "  cix-esp, cix-root-a, cix-root-b, cix-config and cix-containers,\n"
-		            "  since roles are read back from those names.)\n",
+		            "  since roles are read back from those names.\n"
+		            "  --wipe-config: format cix-config even if it already holds a CA. By\n"
+		            "  default an existing CA on that partition is KEPT, not destroyed,\n"
+		            "  and the installer says so when it does -- see cixctl pki export for\n"
+		            "  carrying one across deliberately.)\n",
 		            argv[0]);
 		return 2;
 	}
@@ -1110,12 +1164,22 @@ int main(int argc, char **argv)
 
 	if (mkfs_vfat(esp_dev) != 0)
 		return 1;
-	/* with_mixed = 0: at AUTO_CONFIG_SIZE_MIB (512) this is comfortably
-	 * above btrfs's ~109 MiB minimum for separate data/metadata
-	 * profiles, so it gets the normal layout like every other
-	 * filesystem here. --mixed was never desirable, only necessary. */
-	if (mkfs_btrfs(config_dev, "cix-config", 0) != 0)
-		return 1;
+	/* #415: an existing CA on this partition is kept, not destroyed --
+	 * loudly, so the operator knows which install they are looking at
+	 * afterwards. --wipe-config forces the format. */
+	if (!wipe_config && config_partition_has_pki(config_dev)) {
+		dual_printf("cix-install: cix-config already holds a CA "
+		            "(/state/pki/ca.key) -- KEEPING this partition, not formatting it.\n");
+		dual_printf("cix-install: the existing PKI, DNS records, networks and container "
+		            "definitions on it are preserved. Pass --wipe-config to format instead.\n");
+	} else {
+		/* with_mixed = 0: at AUTO_CONFIG_SIZE_MIB (512) this is comfortably
+		 * above btrfs's ~109 MiB minimum for separate data/metadata
+		 * profiles, so it gets the normal layout like every other
+		 * filesystem here. --mixed was never desirable, only necessary. */
+		if (mkfs_btrfs(config_dev, "cix-config", 0) != 0)
+			return 1;
+	}
 	/* Full "cix-containers" fits now -- the old mkfs_ext4() call here
 	 * had to truncate to "cix-container" for EXT2_LABEL_LEN (16);
 	 * btrfs labels carry 255. Cosmetic either way: partitions are

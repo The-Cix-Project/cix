@@ -6,6 +6,87 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The CA can leave the box, encrypted, and come back (#415, ADR-0281)
+
+PKI state lives at `/config/state/pki`, on the `cix-config` partition — a deliberate placement, and a
+good one: the CA survives a reboot, an A/B update and a rolling rebuild. And `cix-install.c` formats
+that partition, so **a reinstall destroyed the root CA, the intermediate, and every leaf under them**,
+with nothing to carry one across and nothing warning about it.
+
+ADR-0033 had decided this, explicitly and with the owner, weighing three options and choosing to keep
+the "never leaves via API" guarantee absolute — on the stated grounds that "PKI backup is a genuinely
+separate, host-level concern (`/var/lib/cix/pki/`, backed up directly, outside the API)". That
+reasoning was sound. Its premise stopped being true, in two steps nobody connected:
+
+- `/var/lib/cix/pki/` became `/config/state/pki` when state moved to the config partition (#250).
+- More decisively, **there is nowhere to back it up *from*.** The host is shell-less and API-only by
+  charter, so "backed up directly, outside the API" names an operation an operator cannot perform
+  here.
+
+So the guarantee stayed absolute while the alternative it depended on quietly disappeared. The
+release signing key was lost to a reinstall on 2026-09-06 — a key in precisely this position,
+protected by precisely this reasoning. And ADR-0280 raised the cost: a certificate is now a durable
+identity, so an SSH host key that survives every rolling rebuild and then changes on a reinstall is
+only partly fixed.
+
+- **`POST /v1/pki/export` / `POST /v1/pki/import`** (`cixctl pki export --out=PATH`, `pki import
+  --in=PATH`). The whole store — root, intermediate, and every leaf with its private key —
+  AES-256-CBC encrypted under a passphrase the daemon never stores. The whole store and not just the
+  CA because the certs ADR-0280 exists for are exactly the ones nothing would reissue; restoring only
+  the CA would rotate the very SSH host key that decision was made to keep stable. Owned leaves come
+  too, which is what makes a restore hold for `pki_issue` containers.
+- **This narrowly supersedes "the CA private key is never returned over the API, in any endpoint,
+  ever."** It is returned by that one endpoint, only encrypted, only to a caller supplying a
+  passphrase. Every other endpoint is unchanged, and ADR-0033's *other* half — the PKI stays out of
+  `/system/backup` — is kept: that bundle is offered to the dashboard as a download, and a file that
+  sometimes contains the trust root is the wrong thing to hand around.
+- **Every cipher parameter is stated on both sides** (`-aes-256-cbc -pbkdf2 -iter 600000 -md sha256
+  -salt`) rather than left to a default, because `openssl enc` defaults have moved across versions and
+  a bundle a later release cannot decrypt is not a backup. They are reported in the response too, so a
+  bundle can be opened by hand with a plain `openssl` — which is the situation a disaster-recovery
+  artifact has to survive.
+- **Import validates what it decoded rather than trusting that it decoded.** `openssl enc` refuses
+  AEAD modes, so CBC leaves no integrity tag and a wrong passphrase decrypts to garbage instead of
+  failing: the blob must parse, carry a known version, and its CA key and cert must be a matching
+  pair, checked by deriving a public key from each. A wrong passphrase is a `400`, not a `500` — it is
+  the caller's input, and the message says what to check rather than asserting a cause that was never
+  established.
+- **Ordering replaces staging.** Leaves first, then the intermediate, then `ca.crt`, and the CA
+  private key **last** — `pki_ca_bootstrapped()` needs both files, so a failure at any point leaves an
+  install that still reads as not-bootstrapped and a corrected retry still gets through, rather than
+  meeting a `409` over a half-written store. The in-memory index is reloaded from the file just
+  written: `pki_ca_bootstrapped()` is `stat`-based and flips the instant the files land, so a stale
+  index would make `GET /pki/certs` answer "empty" on an install that had just restored a dozen — and
+  it would look like a *successful* import.
+- **Import is refused with `409` when a CA already exists**, matching `POST /pki/ca`'s one-shot
+  posture. A real gap is stated rather than hidden: `pki reset` regenerates rather than deletes, so
+  there is no path from a bootstrapped CA back to an imported one. Import before anything bootstraps.
+- **The passphrase never touches `argv`** — `-pass pass:` is readable in `/proc/<pid>/cmdline` for the
+  life of the child, so it reaches `openssl` through a `0600` file, and `cixctl` prompts (twice, when
+  typed — a mistyped passphrase produces a bundle nobody can open, discovered at the reinstall it was
+  needed for) or reads `--passphrase-file=`.
+- **`cix-install --wipe-config`, and a new default.** The installer mounts `cix-config` read-only,
+  looks for `/state/pki/ca.key`, and if it finds one **keeps the partition instead of formatting it**,
+  saying so on the console. A mount failure means "format", which is correct for both a fresh disk and
+  a partition whose geometry moved — the safe answer and the common answer are the same one.
+  Announced every time, because an installer that *silently* preserves state is a hazard of its own
+  kind; `--wipe-config` forces the format, and the destructive direction is the one that has to be said
+  out loud. This covers the operator who never exported, and is not a substitute for exporting: it only
+  helps while the disk is intact.
+- **`GET /system/backup` now reports `"pki_included": false`** — a field whose only job is to name an
+  absence. A backup that silently omits the trust root reads as complete.
+- **`test_pki`** exports, stops the daemon, removes `PKI_DIR`, restarts, imports, and asserts every
+  restored certificate's **serial** matches. A restore that produced a working CA with freshly
+  generated leaves would satisfy "certs are present" and still have rotated every identity. The
+  wrong-passphrase path is asserted too, and that a failed import left nothing behind — otherwise the
+  retry would be a `409`.
+
+One factual correction along the way: ADR-0033's parenthetical said "the CA private key (and every
+issued leaf's own key) is never returned over the API". A leaf's key **is** returned, exactly once, by
+the call that issues it — `POST /pki/certs` and `POST /pki/reset` both do it and both document it.
+Only the CA's and the intermediate's were ever withheld. Corrected in place in the contract and
+annotated in ADR-0033.
+
 ### LDAP over TLS (#414)
 
 `ldap-1`/`ldap-2` shipped with `[ldaps] enabled = false` in every recipe version, so every LDAP bind
