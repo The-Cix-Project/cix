@@ -412,6 +412,15 @@ static void redeliver_pki_certs_after_reset(void)
 		 * infer from a TLS failure later.
 		 */
 		if (entry == NULL || !entry->running) {
+			/* Both streams, for the reason ldap_record_sync_all()'s own
+			 * comment gives: stderr is not mirrored into the log store,
+			 * and a test harness capturing a forked cixd sees ONLY
+			 * stderr -- so a log-store-only line is invisible exactly
+			 * where it matters most. Writing to the store alone here
+			 * cost a probe cycle on #417, which is that comment being
+			 * right and me not having read it. */
+			fprintf(stderr, "pki reset: %s not running -- certificate NOT refreshed\n",
+			        names[i]);
 			logstore_write("cixd", "warn",
 			                "pki reset: %s was not running, so its delivered certificate "
 			                "was NOT refreshed -- it holds one signed by the CA this reset "
@@ -425,6 +434,8 @@ static void redeliver_pki_certs_after_reset(void)
 			 * not warn. It is logged at all because "nothing happened"
 			 * and "nothing was meant to happen" are indistinguishable
 			 * without it. */
+			fprintf(stderr, "pki reset: %s owns no cert of its own -- nothing to redeliver\n",
+			        names[i]);
 			logstore_write("cixd", "info",
 			                "pki reset: %s owns no certificate under its own name, nothing "
 			                "to redeliver",
@@ -447,6 +458,8 @@ static void redeliver_pki_certs_after_reset(void)
 		}
 
 		derr = pki_cert_deliver(names[i], names[i], cert_dir_buf);
+		fprintf(stderr, "pki reset: redeliver %s -> %s: %s\n", names[i], cert_dir_buf,
+		        derr == PKI_OK ? "ok" : "FAILED");
 		if (derr != PKI_OK)
 			logstore_write("cixd", "error",
 			                "pki reset: redelivering %s's certificate into %s failed "

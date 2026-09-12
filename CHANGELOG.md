@@ -6,6 +6,59 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Cert issuance depended on stack contents (#414, #417)
+
+`pki_cert_create()` read `off` before it was ever written. #414 folded what had been an assignment
+before the SAN loop plus an append inside it into one loop whose *guard* reads `off` — so the first
+read happened before any write. When the stack garbage there was >= `sizeof(sanbuf)`, the loop body
+never ran and an **uninitialised `sanbuf`** went to openssl as `-addext`, which then parsed whatever
+was in it as an extension name.
+
+Measured in a build container on 192.168.15.95 (`probe-test-pki/1`, against v2.57.116):
+
+```
+pki: req (leaf bareleaf.lab1.corp.internal) failed: Duplicate extension: p.internal
+pki: req (leaf explicit.other)              failed: Duplicate extension: p.internal
+pki: req (leaf resettest)                   failed: Duplicate extension: ernal
+pki: req (leaf host)                        failed: Duplicate extension:
+```
+
+Three different tails of an unrelated domain string left on the stack by an earlier call, plus an empty
+one. So certificate issuance worked or failed according to stack contents — and it happens to work on
+the live host, which is why this shipped in #414 and stood through #415, #416 and #419. TCC's
+`-Wall -Werror` does not diagnose the uninitialised read.
+
+Now one `snprintf` with the separator as the only per-iteration difference, `off` initialised at the
+top, and a truncation check so a too-long SAN list fails loudly instead of carrying an offset past the
+end of the buffer.
+
+**`test_pki` asserts exactly this, and does not run.** That is #417, and this is the second escaped bug
+from it — after the `argv[16]` overflow in #415, which `test_pki` also asserted.
+
+### `make selftest` did not build cix-init (#417)
+
+`cix-init` is ADR-0260's PID 1, and `container_create()` refuses outright without it
+(*"cix-init is not beside this daemon's executable"*). Every container-creating test in the gate needs
+it, and `SELFTEST_HELPERS` did not list it — the `cix` recipe happens to build it in an earlier step,
+so the gate worked while the target did not stand on its own.
+
+Found the hard way: a probe that built `cixd`, `daemon_child` and one test binary saw **every** container
+create fail, which reads as a build-container limitation and is not one. That misreading is most of why
+#417 looked like "test_pki needs things a build container cannot do".
+
+With `cix-init` built, `test_pki` goes from 9 failures in a build container to 2 — both in the test's own
+harness rather than the platform, and both recorded on #417, which stays open for them:
+`durablehost` round 2 recreates immediately after a DELETE and hits the async-teardown race
+(ADR-0180) as a 409, and `resetlive`'s post-reset redelivery check fails for a reason not yet
+established.
+
+Also: `redeliver_pki_certs_after_reset()`'s two skip branches were bare `continue`s. A CA reset destroys
+the signer of every already-delivered certificate, so a container skipped there keeps serving one signed
+by a CA that no longer exists — worth being told about rather than inferring from a TLS failure later.
+They log now, to **both** stderr and the log store, for the reason `ldap_record_sync_all()`'s own comment
+already gives: a test harness capturing a forked `cixd` sees only stderr. Writing to the store alone cost
+a probe cycle, which is that comment being right and me not having read it.
+
 ### glauth's listeners are configuration now (#419, ADR-0282)
 
 Which listeners a registered glauth served — plain LDAP, LDAPS, and on which ports — was literal TOML
