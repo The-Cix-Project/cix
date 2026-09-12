@@ -11533,6 +11533,29 @@ static int rootfs_needs_reseed(const char *name, const char *container_base, con
 	return 1;
 }
 
+/*
+ * Format the "this name is taken" rejection (#417, and #148's lesson
+ * applied to the name rather than the address).
+ *
+ * Container deletion is asynchronous (ADR-0180): DELETE returns once
+ * the teardown is under way, so recreating under the same name
+ * immediately afterwards legitimately races the entry on its way out.
+ * The flat "already exists" reads as "something else took this name"
+ * and sends the reader looking for a container that `container ls`
+ * does not show. registry_ip_holder() already draws exactly this
+ * distinction for a held address; the name had been left behind.
+ */
+static void name_conflict_msg(const char *name, char *err_msg, size_t err_msg_size)
+{
+	const struct registry_entry *e = registry_find(name);
+
+	if (e != NULL && e->teardown_kind != REGISTRY_TEARDOWN_NONE)
+		snprintf(err_msg, err_msg_size,
+		          "a container with this name is still shutting down -- retry shortly");
+	else
+		snprintf(err_msg, err_msg_size, "a container with this name already exists");
+}
+
 static int create_container_from_body(const char *body, size_t body_len,
                                        struct registry_entry **out_entry,
                                        char out_restart_policy[16], int *out_restart_delay_seconds,
@@ -12710,7 +12733,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 
 	if (registry_find(name) != NULL) {
 		json_free(root);
-		snprintf(err_msg, err_msg_size, "a container with this name already exists");
+		name_conflict_msg(name, err_msg, err_msg_size);
 		return 409;
 	}
 
@@ -13901,7 +13924,9 @@ static int create_container_from_body(const char *body, size_t body_len,
 	if (rerr == REGISTRY_ERR_DUPLICATE) {
 		if (output_pipe[0] >= 0)
 			close(output_pipe[0]);
-		snprintf(err_msg, err_msg_size, "a container with this name already exists");
+		/* name_copy, not `name`: json_free(root) above invalidated
+		 * the latter -- see its own comment. */
+		name_conflict_msg(name_copy, err_msg, err_msg_size);
 		return 409;
 	}
 	if (rerr == REGISTRY_ERR_FULL) {

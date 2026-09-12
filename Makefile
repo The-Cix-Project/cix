@@ -136,7 +136,7 @@ DAEMON_SELFTESTS = \
 	$(DAEMON_SELFTESTS_2)
 
 #
-# Twenty-nine more (#224), measured rather than assumed.
+# Thirty more (#224), measured rather than assumed.
 #
 # The full set of tests that run nowhere was built with "make all" and
 # run twice in a build container, 73 each time. Both runs were
@@ -155,8 +155,21 @@ DAEMON_SELFTESTS = \
 # The 22 that fail are not mysteries: eleven want the hand-fetched
 # build-inputs trees (a real kernel image, the ADR-0209 artifact floor),
 # five want something the image has not got (dnsmasq, a GPU, loop
-# devices, Debian host libraries), and six are unexplained and worth
+# devices, Debian host libraries), and six were unexplained and worth
 # investigating rather than papering over. #224 records each.
+#
+# test_pki is the thirtieth, and came out of that unexplained six
+# (#417). It was not failing for an environment reason at all: every
+# container create in it failed because `make selftest` did not build
+# cix-init, container_create() refuses outright without it, and the
+# recipe happened to build it in an earlier step -- so the gate worked
+# while the target did not stand on its own. Fixing that unmasked three
+# real defects the exclusion had been hiding (an argv overrun in PKI
+# export/import, an uninitialised SAN offset that corrupted extension
+# names, and a post-CA-reset redelivery that wrote into a running
+# container with persist_atomic_write(), the one writer #276 measured as
+# invisible through a mounted overlay). An excluded test does not stop
+# costing; it stops reporting.
 #
 DAEMON_SELFTESTS_2 = \
 	$(BUILD)/test_artifact_export \
@@ -184,6 +197,7 @@ DAEMON_SELFTESTS_2 = \
 	$(BUILD)/test_networks \
 	$(BUILD)/test_ntp \
 	$(BUILD)/test_overlay \
+	$(BUILD)/test_pki \
 	$(BUILD)/test_syslogfwd \
 	$(BUILD)/test_system_backup \
 	$(BUILD)/test_userns_run \

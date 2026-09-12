@@ -891,9 +891,28 @@ enum pki_error pki_cert_deliver(const char *name, const char *container_name,
 		return PKI_ERR_PERSIST_FAILED;
 	}
 
+	/*
+	 * IN PLACE, not a rename (#276, #417). This is the one call site
+	 * that writes into a container whose overlay is already mounted,
+	 * and persist_atomic_write() renames a NEW inode over the path --
+	 * which lands in the upper layer while the merged mount the
+	 * container reads through keeps resolving the inode it already
+	 * holds. The write succeeds, the API reports success, and the
+	 * container goes on serving the certificate signed by the CA that
+	 * was just destroyed. persist_write_file_inplace()'s own comment
+	 * carries the measurement of that mechanism: the first write to a
+	 * path is visible and every later one is not.
+	 *
+	 * That is exactly the shape here -- creation stages tls.crt before
+	 * clone3() (#414), so by the time this runs the path has already
+	 * been read at least once. test_pki's resetlive check compares the
+	 * delivered bytes through /proc/<pid>/root before and after a CA
+	 * reset and is what gates this; it failed on v2.57.121, whose
+	 * delivery used an atomic write.
+	 */
 	if (persist_mkdir_p(parent) != 0 ||
-	    persist_atomic_write(dst_crt, chain_pem, strlen(chain_pem)) != 0 ||
-	    persist_atomic_write(dst_key, key_pem, strlen(key_pem)) != 0) {
+	    persist_write_file_inplace(dst_crt, chain_pem, strlen(chain_pem)) != 0 ||
+	    persist_write_file_inplace(dst_key, key_pem, strlen(key_pem)) != 0) {
 		result = PKI_ERR_PERSIST_FAILED;
 	} else {
 		chmod(dst_key, 0600);
