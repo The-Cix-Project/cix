@@ -69,38 +69,58 @@ static const char *err_of(const struct cix_response *r)
 }
 
 /*
- * POST /v1/containers, retrying past the asynchronous-teardown 409
- * (ADR-0180, #417).
+ * DELETE a container and wait for it to actually be gone (ADR-0180,
+ * #417, #413).
  *
- * DELETE returns as soon as the teardown is under way, so recreating
- * under the same name immediately afterwards -- which is precisely
- * what a delete+recreate test does, and what a rolling rebuild does on
- * a real host -- races the entry on its way out and is rejected with
- * "still shutting down". That is correct daemon behaviour and a bug in
- * a caller that treats the first answer as final. Waits up to 20s,
- * which is above REGISTRY_TEARDOWN's own SIGKILL grace and well below
- * any plausible gate timeout.
+ * Teardown is asynchronous: DELETE returns once it is under way, and
+ * until it finishes the name is still taken. docs/api/README.md states
+ * the protocol for this in as many words -- "Chain on the settled
+ * state, not on the response: poll the container's own GET to 404
+ * (delete) or status \"stopped\" (stop) first" -- and this test was
+ * not following it, which is why its delete+recreate round raced.
  *
- * Returns like cix_client_request(): 0 with `out` filled in. Every
- * status other than the teardown 409 is returned on the first try, so
- * a real conflict still fails fast.
+ * A first attempt at this retried the CREATE past a 409 whose message
+ * said "shutting down". That was worse than it looks: it made the test
+ * depend on the daemon's error PROSE, and the one time it mattered the
+ * message read "already exists" instead, so the retry never fired and
+ * the gate failed with the race intact. Polling the resource's own
+ * status is what the contract offers; a string in an error body is not
+ * an interface. (Why that particular 409 reported no teardown in
+ * progress is a separate, open question -- #421.)
+ *
+ * Returns 0 once GET says 404, -1 if it never does.
  */
-static int post_container_retrying(const struct cix_client *c, const char *body,
-                                    struct cix_response *out)
+static int delete_container_and_wait(const struct cix_client *c, const char *name)
 {
-	int i;
+	char path[128];
+	int waited = 0;
 
-	for (i = 0; i < 80; i++) {
-		memset(out, 0, sizeof(*out));
-		if (cix_client_request(c, "POST", "/v1/containers", body, out) != 0)
-			return -1;
-		if (out->status != 409 || strstr(err_of(out), "shutting down") == NULL)
-			return 0;
-		cix_response_free(out);
-		usleep(250000);
+	snprintf(path, sizeof(path), "/v1/containers/%s", name);
+	{
+		struct cix_response r;
+
+		memset(&r, 0, sizeof(r));
+		cix_client_request(c, "DELETE", path, NULL, &r);
+		cix_response_free(&r);
 	}
-	memset(out, 0, sizeof(*out));
-	return cix_client_request(c, "POST", "/v1/containers", body, out);
+	for (;;) {
+		struct cix_response r;
+		int status = 0;
+
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(c, "GET", path, NULL, &r) == 0)
+			status = r.status;
+		cix_response_free(&r);
+		if (status == 404)
+			return 0;
+		if (waited >= 30000) {
+			fprintf(stderr, "%s: still present %dms after DELETE (GET status=%d)\n", name,
+			        waited, status);
+			return -1;
+		}
+		usleep(250000);
+		waited += 250;
+	}
 }
 
 static int json_has_field(const struct json_value *obj, const char *key)
@@ -1566,10 +1586,13 @@ int main(void)
 		cix_response_free(&r);
 
 		/* Delete the container -- the delete+recreate a rolling rebuild
-		 * performs, and the exact point at which an owned cert dies. */
-		memset(&r, 0, sizeof(r));
-		cix_client_request(&client, "DELETE", "/v1/containers/durablehost", NULL, &r);
-		cix_response_free(&r);
+		 * performs, and the exact point at which an owned cert dies.
+		 * Waited out to 404 rather than fired and forgotten: the
+		 * recreate below needs the name actually free (#413). */
+		if (delete_container_and_wait(&client, "durablehost") != 0) {
+			fprintf(stderr, "FAIL: durablehost did not go away after DELETE\n");
+			ok = 0;
+		}
 
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "GET", "/v1/pki/certs/durable-id", NULL, &r) != 0 ||
@@ -1582,11 +1605,12 @@ int main(void)
 		cix_response_free(&r);
 
 		/* Round 2: the same identity, byte for byte. */
-		if (post_container_retrying(&client,
-		                             "{\"name\":\"durablehost\",\"image\":\"pkitest\","
-		                             "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"20\"]}],"
-		                             "\"pki_cert\":\"durable-id\"}",
-		                             &r) != 0 ||
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/containers",
+		                       "{\"name\":\"durablehost\",\"image\":\"pkitest\","
+		                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"20\"]}],"
+		                       "\"pki_cert\":\"durable-id\"}",
+		                       &r) != 0 ||
 		    r.status != 201) {
 			fprintf(stderr, "FAIL: POST durablehost round 2, status=%d: %s\n", r.status,
 			        err_of(&r));

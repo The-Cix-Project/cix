@@ -6,6 +6,34 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A delete+recreate test waits for 404, not for an error message (#413, #417, #421)
+
+v2.57.123's gate failed on `test_pki`, in the code #417 had added a cycle earlier:
+
+```
+FAIL: POST durablehost round 2, status=409: a container with this name already exists
+FAIL: pki_cert key not captured on both rounds
+```
+
+`post_container_retrying()` retried a create past a 409 **whose message said "shutting down"**.
+That made a test depend on the daemon's error *prose*, and the one time it mattered the message
+was the other branch — the one that reports no teardown in progress — so the retry never fired.
+Replaced with `delete_container_and_wait()`, which does what `docs/api/README.md` has documented
+all along: *"Chain on the settled state, not on the response: poll the container's own `GET` to
+404 (delete) or status `"stopped"` (stop) first."* No string matching anywhere. A `GET` is an
+interface; an error body is not.
+
+Why that 409 reported `teardown_kind == REGISTRY_TEARDOWN_NONE` for a name that did not free up is
+**not established** — every path in `handle_container_delete()` that leaves an entry behind sets
+the field, and the field is never cleared on exit. Filed as **#421** with the evidence rather than
+guessed at; it is no longer blocking anything, but `name_conflict_msg()`'s distinction, `GET`'s
+`"deleting"` status and the #119 stall watchdog all key on that field, so a state it does not
+describe is invisible to all three.
+
+This is the second time in two changes that the gate caught something no amount of reading would
+have: the exclusion in #417 hid three defects, and the fix for one of them was itself wrong in a
+way only a real run showed.
+
 ### A TCP readiness probe could never report ready (#413)
 
 `cix-init`'s `probe_connect()` opened `SOCK_STREAM | SOCK_NONBLOCK`, called `connect()`, and read
