@@ -1064,7 +1064,16 @@ enum pki_error pki_ca_reset(const char *root_common_name, const char *intermedia
 
 /* One temp file under PKI_DIR, created O_EXCL at 0600. Returns 0 on
  * success. suffix distinguishes the three this module needs open at
- * once, so a concurrent export cannot collide with an import. */
+ * once, so a concurrent export cannot collide with an import.
+ *
+ * O_EXCL is load-bearing rather than decorative: it refuses to write
+ * through a symlink or into a file something else planted, and these
+ * files hold a passphrase and the decrypted CA key. That means the
+ * open must be allowed to FAIL, so the only stale file it can trip
+ * over -- one left by a previous daemon whose pid this process reuses
+ * -- is cleared and the create retried exactly once, rather than
+ * unlinking unconditionally first (which would make O_EXCL dead code
+ * and this comment false). */
 static int pki_tmp_create(const char *suffix, char *out_path, size_t out_size, const char *data,
                            size_t data_len)
 {
@@ -1073,8 +1082,11 @@ static int pki_tmp_create(const char *suffix, char *out_path, size_t out_size, c
 	if ((size_t)snprintf(out_path, out_size, "%s/.export-%s.%d", g_pki_dir, suffix,
 	                     (int)getpid()) >= out_size)
 		return -1;
-	unlink(out_path);
 	fd = open(out_path, O_WRONLY | O_CREAT | O_EXCL, 0600);
+	if (fd < 0 && errno == EEXIST) {
+		unlink(out_path);
+		fd = open(out_path, O_WRONLY | O_CREAT | O_EXCL, 0600);
+	}
 	if (fd < 0)
 		return -1;
 	if (data != NULL && data_len > 0) {
