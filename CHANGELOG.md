@@ -6,6 +6,20 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The CLI tree guard runs both ways, and 33 flags stop being invisible (#437)
+
+Reported as *"it does not do second or third parameter completion"*. The completion engine was never the problem — it walks three levels correctly, and `network create <TAB>` has always offered its six flags. The data was incomplete, and the guard that was supposed to keep it honest only looked one way.
+
+`test_clitree` verified that every flag in `cmdtree.h` exists in the parser, but not the reverse, and its own comment argued the reverse could not be done: "a flag literal cannot be attributed to its command by scanning alone", the gap dismissed as "a missing convenience". Measured: **239 distinct flag literals in `cli/src/main.c` against 207 in the table — 33 flags the parser accepts and completion never offered.** Not a convenience. `cixctl logs` offered none of its six (`--source=`, `--level=`, `--regex=`, `--since=`, `--container=`, `--tail=`); `ldap config set` offered none of its nine TLS flags; `ldap user add`/`update` offered none of the fourteen they share. `pki export` and `pki import` (ADR-0281) were absent as whole subcommands — a gap the old guard structurally could not see, since it only ever asked whether what the table claims exists in the source.
+
+All 33 are now in the tree, placed by attributing each literal to its enclosing function — which is also how the shared ones were placed correctly: `ldap user add` and `update` both hand their arguments to `build_ldap_user_body()`, so the flags live in neither `cmd_` function and belong on both nodes.
+
+Two new checks close the direction: every flag literal in `main.c` must be somewhere in the table, and every subcommand the source routes must be too. The attribution problem the old comment named is real and is sidestepped rather than solved — these ask "anywhere in the table", not "on the right node", because 85 of the table's 274 paths have no matching `cmd_*` function at all (those commands switch on their subcommand inline), so name-based attribution would invent failures rather than find them. The weaker guarantee is stated plainly in the test rather than implied.
+
+Two details that decide whether a guard like this is usable. **Comments are stripped before scanning**: `main.c` discusses `"--name"` in a comment about completion, and without stripping, prose describing a flag counts as the flag existing — the exact false negative that lets a real gap through. **Flag shape is validated, not assumed**: a scanner that took everything up to the next quote reported 19 usage banners as missing flags (`"--gateway=A.B.C.D --interface=IFNAME] [--wait]\n"` among them), and a guard that cries wolf gets switched off.
+
+`--json` is the one exemption, in an explicit list rather than behind a rule: it is parsed in `main()` before dispatch and is valid with every command, so hanging it off any single node would be a lie and hanging it off all of them would drown every completion.
+
 ### A booted box can be moved to any interface, address, subnet or gateway
 
 Asked for directly: *"I want it so that a machine that's booted (not from the ISO), we can switch the binding of cixd around."* It could not be done. `NET_CONF_PATH` appeared exactly twice in `daemon/src/main.c` — the `#define` and one parse at boot. `cix-install` wrote `net.conf` once; nothing in the daemon ever wrote it. So an installed box's management address was fixed at install time, and the installer's own "cixd will answer on 127.0.0.1 until one is set" named a setting path that did not exist.

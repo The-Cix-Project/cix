@@ -172,6 +172,7 @@ static const char *const n_backup_config_set_flags[] = {
 	"--disable",
 	"--disk=",
 	"--enable",
+	"--interval-hours=",
 	NULL
 };
 
@@ -283,6 +284,8 @@ static const char *const n_hostauth_config_set_flags[] = {
 	"--ldap-enable",
 	"--ldap-port=",
 	"--ldap-server=",
+	"--ldap-tls",
+	"--no-ldap-tls",
 	NULL
 };
 
@@ -426,6 +429,16 @@ static const struct cli_node n_storage_role_subs[] = {
 static const char *const n_logs_config_flags[] = {
 	"--max-bytes=",
 	"--min-level=",
+	NULL
+};
+
+static const char *const n_logs_flags[] = {
+	"--container=",
+	"--level=",
+	"--regex=",
+	"--since=",
+	"--source=",
+	"--tail=",
 	NULL
 };
 
@@ -738,6 +751,7 @@ static const char *const n_container_migrate_storage_flags[] = {
 };
 
 static const char *const n_container_network_attach_flags[] = {
+	"--ifname=",
 	"--ip=",
 	"--network=",
 	NULL
@@ -802,6 +816,7 @@ static const char *const n_container_run_flags[] = {
 	"--optional-device=",
 	"--pids-max=",
 	"--pki-cert-dir=",
+	"--pki-cert=",
 	"--pki-days=",
 	"--pki-issue",
 	"--ready=",
@@ -1041,7 +1056,16 @@ static const char *const n_ldap_config_set_flags[] = {
 	"--base-dn=",
 	"--bind-dn=",
 	"--bind-password=",
+	"--client-tls",
 	"--client-uri=",
+	"--no-client-tls",
+	"--no-server-plaintext",
+	"--no-server-tls",
+	"--restart-servers",
+	"--server-plaintext",
+	"--server-plaintext-port=",
+	"--server-tls",
+	"--server-tls-port=",
 	"--start-gid=",
 	"--start-uid=",
 	NULL
@@ -1087,11 +1111,35 @@ static const struct cli_node n_ldap_server_subs[] = {
 	{ NULL, NULL, NULL },
 };
 
+/*
+ * add and update share these: both hand their arguments to
+ * build_ldap_user_body(), so the parser genuinely accepts the same set
+ * on each. Attributing them was what the reverse check made possible --
+ * the flags live in the shared helper, not in either cmd_ function.
+ */
+static const char *const n_ldap_user_body_flags[] = {
+	"--can-search",
+	"--disabled",
+	"--givenname=",
+	"--homedirectory=",
+	"--loginshell=",
+	"--mail=",
+	"--name=",
+	"--new-name=",
+	"--password=",
+	"--primarygroup=",
+	"--secondary-groups=",
+	"--sn=",
+	"--ssh-key=",
+	"--uidnumber=",
+	NULL
+};
+
 static const struct cli_node n_ldap_user_subs[] = {
-	{ "add", NULL, NULL },
+	{ "add", n_ldap_user_body_flags, NULL },
 	{ "ls", NULL, NULL },
 	{ "rm", NULL, NULL },
-	{ "update", NULL, NULL },
+	{ "update", n_ldap_user_body_flags, NULL },
 	{ NULL, NULL, NULL },
 };
 
@@ -1150,9 +1198,23 @@ static const char *const n_pki_reset_flags[] = {
 	NULL
 };
 
+static const char *const n_pki_export_flags[] = {
+	"--out=",
+	"--passphrase-file=",
+	NULL
+};
+
+static const char *const n_pki_import_flags[] = {
+	"--in=",
+	"--passphrase-file=",
+	NULL
+};
+
 static const struct cli_node n_pki_subs[] = {
 	{ "ca", NULL, n_pki_ca_subs },
 	{ "cert", NULL, n_pki_cert_subs },
+	{ "export", n_pki_export_flags, NULL },
+	{ "import", n_pki_import_flags, NULL },
 	{ "intermediate", NULL, n_pki_intermediate_subs },
 	{ "reset", n_pki_reset_flags, NULL },
 	{ NULL, NULL, NULL },
@@ -1294,6 +1356,7 @@ static const char *const n_pkg_repo_config_set_flags[] = {
 	"--clear-token",
 	"--kind=",
 	"--ref=",
+	"--sync-interval=",
 	"--token=",
 	"--url=",
 	NULL
@@ -1404,7 +1467,7 @@ static const struct cli_node CLI_TREE[] = {
 	{ "routes", NULL, n_routes_subs },
 	{ "storage", NULL, n_storage_subs },
 	{ "storage-role", NULL, n_storage_role_subs },
-	{ "logs", NULL, n_logs_subs },
+	{ "logs", n_logs_flags, n_logs_subs },
 	{ "dhcp", n_dhcp_flags, n_dhcp_subs },
 	{ "ksm", n_ksm_flags, n_ksm_subs },
 	{ "zswap", n_zswap_flags, n_zswap_subs },
