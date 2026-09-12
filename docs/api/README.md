@@ -1310,7 +1310,7 @@ Cix lets you register redundant backend servers for four subsystems &mdash; LDAP
 ```json
 {"servers": [
   {"kind": "ldap", "container": "ldap-1", "state": "healthy", "in_service": true,
-   "drained": false, "probe": "tcp:3893", "last_check_at": 1787400000,
+   "drained": false, "probe": "tcp:636", "last_check_at": 1787400000,
    "last_ok_at": 1787400000, "consecutive_failures": 0, "last_error": null}
 ]}
 ```
