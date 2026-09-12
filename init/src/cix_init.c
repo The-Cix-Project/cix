@@ -107,6 +107,7 @@ void cix_sigreturn(void);
 #define SYS_getpid 39
 #define SYS_socket 41
 #define SYS_connect 42
+#define SYS_getsockopt 55
 #define SYS_fork 57
 #define SYS_execve 59
 #define SYS_exit 60
@@ -139,6 +140,9 @@ void cix_sigreturn(void);
 
 #define WNOHANG 1
 #define POLLIN 1
+#define POLLOUT 4
+#define POLLERR 8
+#define POLLHUP 16
 #define POLLNVAL 32
 
 #define SIGHUP 1
@@ -158,6 +162,8 @@ void cix_sigreturn(void);
 #define SOCK_STREAM 1
 #define SOCK_NONBLOCK 04000
 #define SOCK_CLOEXEC 02000000
+#define SOL_SOCKET 1
+#define SO_ERROR 4
 
 #define CLOCK_MONOTONIC 1
 #define PR_SET_CHILD_SUBREAPER 36
@@ -197,6 +203,7 @@ static long sc1(long n, long a) { return cix_syscall6(n, a, 0, 0, 0, 0, 0); }
 static long sc2(long n, long a, long b) { return cix_syscall6(n, a, b, 0, 0, 0, 0); }
 static long sc3(long n, long a, long b, long c) { return cix_syscall6(n, a, b, c, 0, 0, 0); }
 static long sc4(long n, long a, long b, long c, long d) { return cix_syscall6(n, a, b, c, d, 0, 0); }
+static long sc5(long n, long a, long b, long c, long d, long e) { return cix_syscall6(n, a, b, c, d, e, 0); }
 
 /* ------------------------------------------------------------------ */
 /* What the compiler calls behind our back: struct copies and clears   */
@@ -396,6 +403,7 @@ struct svc {
 	long probe_deadline;  /* monotonic ms: report CIXINIT_FAIL_PROBE after this */
 	long probe_pid;       /* a running CIXINIT_READY_COMMAND child, or 0 */
 	long probe_pid_deadline; /* monotonic ms */
+	int probe_fd;         /* CIXINIT_READY_TCP: the in-flight connect, or -1 (#413) */
 	long restart_at;      /* monotonic ms: ST_RESTART_WAIT respawns at this point */
 	long stop_sent_at;    /* monotonic ms: when stop_signal went out, 0 = not sent */
 	int killed;           /* SIGKILL already sent after stop_timeout_seconds */
@@ -579,6 +587,7 @@ static void read_table(void)
 		s->state = ST_PENDING;
 		s->pid = 0;
 		s->probe_pid = 0;
+		s->probe_fd = -1;
 		s->stop_sent_at = 0;
 		s->killed = 0;
 		s->operator_stopped = 0;
@@ -589,6 +598,21 @@ static void read_table(void)
 
 /* ------------------------------------------------------------------ */
 /* Starting a service.                                                 */
+
+/*
+ * Drop a TCP readiness probe's in-flight connect (#413).
+ *
+ * Called wherever a service stops being something we are probing --
+ * a fresh spawn, an exit -- so a long-lived container cannot
+ * accumulate half-open sockets in pid 1.
+ */
+static void probe_fd_release(struct svc *s)
+{
+	if (s->probe_fd >= 0) {
+		sc1(SYS_close, s->probe_fd);
+		s->probe_fd = -1;
+	}
+}
 
 static void child_exec(struct svc *s)
 {
@@ -658,6 +682,7 @@ static void start_service(int idx)
 	s->stop_sent_at = 0;
 	s->killed = 0;
 	s->probe_pid = 0;
+	probe_fd_release(s);
 	s->probe_deadline = now_ms() +
 	                    (s->def.ready_timeout_seconds > 0 ? s->def.ready_timeout_seconds : 30) *
 	                            1000L;
@@ -671,22 +696,115 @@ static void start_service(int idx)
 /* ------------------------------------------------------------------ */
 /* Readiness probes.                                                   */
 
-static int probe_connect(int family, const void *addr, long addrlen)
+/*
+ * AF_UNIX readiness: connect() answers synchronously, so one call is
+ * the whole probe.
+ *
+ * Measured in a build container on 192.168.15.95, kernel 7.2.3,
+ * 2026-09-12 (recipes/package/probe-ready-tcp/3): a non-blocking
+ * AF_UNIX connect to a listening socket returns 0. This function used
+ * to serve AF_INET too, on the stated belief that "a local connect
+ * completes synchronously on success or refusal" -- which is true of
+ * AF_UNIX and false of TCP. See probe_tcp() below for what that cost.
+ */
+static int probe_connect_unix(const void *addr, long addrlen)
 {
-	long fd = sc3(SYS_socket, family, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+	long fd = sc3(SYS_socket, AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
 	long rc;
 
 	if (fd < 0)
 		return 0;
 	rc = sc3(SYS_connect, fd, (long)addr, addrlen);
 	sc1(SYS_close, fd);
-	/*
-	 * A local connect completes synchronously on success or refusal;
-	 * EINPROGRESS only means "not this turn", and the next turn tries
-	 * again from scratch rather than tracking a half-open socket in
-	 * pid 1.
-	 */
 	return rc == 0;
+}
+
+/*
+ * TCP readiness: a connect started on one turn, completed on a later
+ * one (#413).
+ *
+ * A non-blocking TCP connect returns EINPROGRESS even when the peer is
+ * listening locally and the handshake has already finished -- the
+ * SYN-ACK is processed at release_sock(), after the syscall has decided
+ * what to return. So the single-call, "0 means ready, close the fd
+ * either way" shape this used to have could never report ready for
+ * AF_INET, on any kernel. Every tcp_port probe in the platform ended in
+ * its timeout, which cix-init then treats as ready -- so the failure
+ * was recorded and discarded rather than being visible as a failure.
+ *
+ * Measured in a build container on 192.168.15.95, kernel 7.2.3,
+ * 2026-09-12 (recipes/package/probe-ready-tcp/3), against a listener on
+ * 127.0.0.1:
+ *
+ *   connect(SOCK_NONBLOCK)  -> -1 EINPROGRESS
+ *   poll(POLLOUT, 0) after  -> revents 0x4 (POLLOUT), SO_ERROR 0
+ *
+ * and against a port with nothing listening -- which also returns
+ * EINPROGRESS, so connect() alone cannot tell the two apart:
+ *
+ *   poll(POLLOUT, 0) after  -> revents 0x1c (POLLOUT|POLLERR|POLLHUP),
+ *                              SO_ERROR 111 ECONNREFUSED
+ *
+ * Hence both checks: POLLOUT alone is not success, because a refused
+ * connection sets it too. SO_ERROR must be read exactly once -- reading
+ * it clears the pending error, which the probe above confirmed by
+ * reading twice and getting 111 then 0.
+ *
+ * The fd is carried in probe_fd rather than the answer being taken
+ * inline, the same way probe_pid carries a command probe across turns.
+ * Both measurements above show the handshake finished inside connect()
+ * for a local peer, so an inline poll would have worked for loopback --
+ * but ready_addr_be is the container's own non-loopback address
+ * (cixinit_table.c), that case could not be measured in a build
+ * container, which has no such address, and carrying the fd is correct
+ * for any address without assuming anything about timing.
+ */
+static int probe_tcp(struct svc *s, const struct sockaddr_in *a)
+{
+	struct pollfd p;
+	int soerr = 0;
+	int soerr_len = (int)sizeof(soerr);
+	long rc;
+
+	if (s->probe_fd < 0) {
+		long fd = sc3(SYS_socket, AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+
+		if (fd < 0)
+			return 0; /* out of descriptors; try again next turn */
+		rc = sc3(SYS_connect, fd, (long)a, (long)sizeof(*a));
+		if (rc == 0) {
+			sc1(SYS_close, fd);
+			return 1;
+		}
+		if (rc != -EINPROGRESS) {
+			/* Refused, unreachable, no route: nothing is listening
+			 * yet. Start over next turn. */
+			sc1(SYS_close, fd);
+			return 0;
+		}
+		s->probe_fd = (int)fd;
+	}
+
+	p.fd = s->probe_fd;
+	p.events = POLLOUT;
+	p.revents = 0;
+	if (sc3(SYS_poll, (long)&p, 1, 0) <= 0)
+		return 0; /* still in flight */
+
+	if ((p.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
+		probe_fd_release(s);
+		return 0;
+	}
+	if ((p.revents & POLLOUT) == 0)
+		return 0;
+	if (sc5(SYS_getsockopt, s->probe_fd, SOL_SOCKET, SO_ERROR, (long)&soerr,
+	         (long)&soerr_len) != 0 ||
+	    soerr != 0) {
+		probe_fd_release(s);
+		return 0;
+	}
+	probe_fd_release(s);
+	return 1;
 }
 
 static void probe_command_spawn(struct svc *s)
@@ -730,7 +848,7 @@ static void probe_service(int idx, long now)
 		a.sin_family = AF_INET;
 		a.sin_port = (unsigned short)(((s->def.ready_port & 0xff) << 8) | ((s->def.ready_port >> 8) & 0xff));
 		a.sin_addr = s->def.ready_addr_be != 0 ? s->def.ready_addr_be : 0x0100007f; /* 127.0.0.1 */
-		ready = probe_connect(AF_INET, &a, (long)sizeof(a));
+		ready = probe_tcp(s, &a);
 	} else if (s->def.ready_kind == CIXINIT_READY_SOCKET) {
 		struct sockaddr_un a;
 		size_t len = cix_strlen(s->def.ready_path);
@@ -740,7 +858,7 @@ static void probe_service(int idx, long now)
 		if (len >= sizeof(a.sun_path))
 			len = sizeof(a.sun_path) - 1;
 		memcpy(a.sun_path, s->def.ready_path, len);
-		ready = probe_connect(AF_UNIX, &a, (long)(2 + len + 1));
+		ready = probe_connect_unix(&a, (long)(2 + len + 1));
 	} else if (s->def.ready_kind == CIXINIT_READY_COMMAND) {
 		if (s->probe_pid == 0)
 			probe_command_spawn(s);
@@ -761,6 +879,7 @@ static void probe_service(int idx, long now)
 		 */
 		report(idx, CIXINIT_EV_FAILED, CIXINIT_FAIL_PROBE, 0);
 		say2("ready probe timed out, treating as ready: ", s->def.name);
+		probe_fd_release(s); /* a TCP probe's connect may still be in flight */
 		s->state = ST_READY;
 		report(idx, CIXINIT_EV_READY, 1, 0);
 	}
@@ -877,6 +996,7 @@ static void service_exited(int idx, int kind, int value, long now)
 		sc2(SYS_kill, s->probe_pid, SIGKILL);
 		s->probe_pid = 0;
 	}
+	probe_fd_release(s);
 	report(idx, CIXINIT_EV_EXITED, kind, value);
 
 	if (g_shutting_down) {

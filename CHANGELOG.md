@@ -6,6 +6,68 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A TCP readiness probe could never report ready (#413)
+
+`cix-init`'s `probe_connect()` opened `SOCK_STREAM | SOCK_NONBLOCK`, called `connect()`, and read
+**only `rc == 0`** as ready — closing the fd either way. A non-blocking TCP connect returns
+`EINPROGRESS` even when the peer is listening locally and the handshake has already finished, so
+that shape could never return 1 for `AF_INET`, on any kernel. Every `tcp_port` probe in the
+platform has always ended in its timeout, and `cix-init` treats a timed-out probe as ready — so
+the failure was recorded and then discarded, on every start.
+
+Measured in a build container on 192.168.15.95, kernel 7.2.3
+(`recipes/package/probe-ready-tcp/3`), against a listener on 127.0.0.1:
+
+```
+[1] nonblocking connect to a LISTENING loopback port
+    connect rc=-1 errno=115 (Operation now in progress)
+    cix-init would report not ready, and retry
+[2] poll(POLLOUT, timeout 0) on that same fd, immediately
+    poll rc=1 revents=0x4 (POLLOUT=yes POLLERR=no POLLHUP=no)
+    SO_ERROR=0 (connected)
+[5] control: nonblocking AF_UNIX connect to a listening socket
+    connect rc=0 errno=0 (none)
+```
+
+The AF_UNIX control is why this was invisible: `nslcd`'s `socket:` probe goes through the same
+function and works, because AF_UNIX `connect()` really does answer synchronously. The function's
+own comment asserted that of TCP too — "a local connect completes synchronously on success or
+refusal" — with nothing naming what measured it.
+
+**`probe_connect()` is now two functions.** `probe_connect_unix()` keeps the one-call shape, which
+is correct for AF_UNIX. `probe_tcp()` carries the in-flight connect in a new `probe_fd` on
+`struct svc`, exactly as `probe_pid` already carries a command probe across turns: `connect()`,
+then `poll(POLLOUT, 0)` and `getsockopt(SO_ERROR)` on the same fd. Both checks are needed —
+a port with **nothing** listening also returns `EINPROGRESS`, and its `poll` sets `POLLOUT`
+alongside `POLLERR|POLLHUP` with `SO_ERROR` 111:
+
+```
+[3] control: nonblocking connect to a port nothing listens on
+    connect rc=-1 errno=115 (Operation now in progress)
+    immediately: poll rc=1 revents=0x1c SO_ERROR=111 (Connection refused)
+    an inline poll(0) would report not ready (correct)
+```
+
+`SO_ERROR` is read exactly once, because reading it clears the pending error — the probe confirmed
+that by reading twice and getting 111 then 0. The fd is carried rather than polled inline because
+`ready_addr_be` is the container's **own non-loopback address**, and a build container has no such
+address to measure with; carrying it is correct for any address without assuming anything about
+timing.
+
+**#413's stated cause was wrong, and the issue is corrected.** It was filed as OpenSSH's
+`PerSourcePenalties` defeating `jump`'s `ready: {tcp_port: 22}`. Every penalty line in it carries a
+client *source port*, so those connections were **accepted** — had `connect()` returned 0 the
+service would have been reported ready on the first turn. The penalty is what a probe retrying
+forever looks like from sshd's side, not what stops it. No `sshd_config` change: the probe becomes
+meaningful and the abuse protection stays on.
+
+**The gate did not discriminate, and now does.** `test_container_restart` is in `DAEMON_SELFTESTS_2`
+and asserted only that `depR` started before `depS` and that its `ready_probe` is echoed back — all
+of which a probe that times out at 10 s satisfies. It now asserts the pair: `depR`'s listener ends
+with **no** failure (the positive), and `neverready`'s ends with `probe-timeout` (the negative
+control, since nothing ever listens on its port). Either half alone is consistent with a broken
+test; the pair is not.
+
 ### `test_pki` is a release gate, and the third escaped bug is fixed (#417)
 
 `test_pki` is now in the Makefile's `DAEMON_SELFTESTS_2`, so it runs on every `cix` build.

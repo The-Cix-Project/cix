@@ -85,6 +85,60 @@ static long json_num_field(const struct json_value *obj, const char *key)
 	return (long)json_as_number(json_object_get(obj, key));
 }
 
+/*
+ * services[idx].failure.reason, or "" when the service carries no
+ * failure (#413). A readiness probe that times out is REPORTED and then
+ * treated as ready so dependents proceed, so the probe's own verdict is
+ * only ever visible here -- the container is "ready" either way, which
+ * is exactly how a probe that could never pass went unnoticed for the
+ * whole life of the tcp_port kind.
+ */
+static const char *svc_fail_reason(const struct cix_response *r, int idx)
+{
+	const struct json_value *svc = service_at(r, idx);
+	const struct json_value *f = svc != NULL ? json_object_get(svc, "failure") : NULL;
+	const char *reason;
+
+	if (f == NULL || f->type != JSON_OBJECT)
+		return "";
+	reason = json_str_field(f, "reason");
+	return reason != NULL ? reason : "";
+}
+
+/*
+ * Wait until services[idx].failure.reason on `name` equals `want`,
+ * and copy whatever it actually was into `out` either way. `want` of
+ * "" means "no failure at all".
+ */
+static int wait_svc_fail_reason(const struct cix_client *c, const char *name, int idx,
+                                 const char *want, int timeout_ms, char *out, size_t out_size)
+{
+	char path[128];
+	int waited = 0;
+
+	snprintf(path, sizeof(path), "/v1/containers/%s", name);
+	snprintf(out, out_size, "%s", "(never read)");
+	for (;;) {
+		struct cix_response r;
+
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(c, "GET", path, NULL, &r) == 0 && r.status == 200) {
+			const char *got = svc_fail_reason(&r, idx);
+
+			snprintf(out, out_size, "%s", got);
+			if (strcmp(got, want) == 0) {
+				cix_response_free(&r);
+				return 0;
+			}
+		}
+		cix_response_free(&r);
+		if (waited >= timeout_ms)
+			return -1;
+		usleep(250000);
+		waited += 250;
+	}
+}
+
 static pid_t start_daemon(void)
 {
 	pid_t pid;
@@ -1175,6 +1229,47 @@ int main(void)
 			        "depS (pid %ld) -- depends_on ordering looks wrong\n",
 			        pid_r, pid_s);
 			ok = 0;
+		}
+
+		/*
+		 * #413: the probe must actually PASS, not time out.
+		 *
+		 * Everything above this is satisfied by a probe that never
+		 * succeeds: cix-init reports the timeout and then treats the
+		 * service as ready, so depS still waits and still starts
+		 * second. That is how a tcp_port probe that could never report
+		 * ready -- a non-blocking connect returns EINPROGRESS even for
+		 * a listening local peer, and only rc == 0 was read as success
+		 * -- survived in the gate while failing on every single start
+		 * of every container that used one.
+		 *
+		 * The pair is the assertion, not either half: a positive alone
+		 * is consistent with a test that reads nothing, and a negative
+		 * alone is consistent with a probe that never passes. depR's
+		 * listener must end with NO failure (its 2s-delayed listener is
+		 * within the 10s timeout), and neverready's must end with
+		 * probe-timeout, because nothing ever listens on its port.
+		 */
+		{
+			char got[64];
+
+			if (wait_svc_fail_reason(&client, "depR", 0, "", 15000, got, sizeof(got)) != 0) {
+				fprintf(stderr,
+				        "FAIL: depR's listener reports failure \"%s\" -- its tcp_port "
+				        "readiness probe did not pass, it timed out and was treated as "
+				        "ready (#413)\n",
+				        got);
+				ok = 0;
+			}
+			if (wait_svc_fail_reason(&client, "neverready", 0, "probe-timeout", 10000, got,
+			                          sizeof(got)) != 0) {
+				fprintf(stderr,
+				        "FAIL: neverready's service reports failure \"%s\", expected "
+				        "probe-timeout -- nothing listens on its port, so a probe that "
+				        "reports ready is a false positive\n",
+				        got);
+				ok = 0;
+			}
 		}
 	}
 	if (container_exists(&client, "neverready") != 1 ||
