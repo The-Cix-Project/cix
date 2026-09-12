@@ -69,18 +69,29 @@ resolves through nslcd (`uid=10002(claude) gid=10002(cix-admins)`).
 **Closing that port exposed a bug it had been hiding.** `cixd`'s own server-health probe was fixed at
 `HOSTAUTH_LDAP_DEFAULT_PORT`, so the moment 3893 stopped being served both LDAP servers reported
 `unhealthy`, `in_service=no`, `connect: Connection refused` — against a door that had been deliberately
-closed. Clients kept working, because `ldap_effective_client_uri()` falls back to the unfiltered list
+closed. Fixed and verified on v2.57.112: both now read `healthy in_service=yes probe=tcp:636 fails=0`,
+with DNS unaffected at `tcp:53`. Clients kept working, because `ldap_effective_client_uri()` falls back to the unfiltered list
 when filtering would leave nothing, so the only symptom was a health view that was simply wrong, which
 is exactly the kind of thing an operator acts on. The probe now reads a new `ldap_client_port()` — the
 same accessor the client URI reads, extracted so the two cannot disagree — via a `port_now` hook on the
 health kind table, consulted per sweep because the setting is API-changeable while the daemon runs.
 
 **One diagnostic was measured useless and fixed.** Pointing `ldap_tls` at the plaintext port logged
-`TLS handshake to 192.168.150.103:3893 failed (no OpenSSL error queued)` — true and actionable by
-nobody. An empty error queue is the *normal* outcome there: a plaintext peer answers a ClientHello with
-LDAP bytes or a close, which surfaces as `SSL_ERROR_SYSCALL` with the cause in `errno`. `ldap_tls_log()`
-now reports `SSL_get_error()` and `errno` when the queue is empty, and says "is that port serving TLS?"
-for the closed-during-handshake case.
+`TLS handshake to 192.168.150.103:3893 failed (no OpenSSL error queued)` — true, and actionable by
+nobody. An empty error queue is the *normal* outcome against a peer that is not speaking TLS, not a
+rarity: the real cause is in `SSL_get_error()` and `errno`, which `ldap_tls_log()` now reports.
+
+Re-measured on v2.57.112 against a port that is open and does not speak TLS (dnsmasq's TCP 53, since
+3893 is now refused at the TCP layer and never reaches a handshake at all):
+
+```
+TLS handshake to 192.168.150.101:53 failed: timed out mid-handshake (SSL_get_error=2)
+```
+
+`SSL_ERROR_WANT_READ` — the server accepted the connection and never answered the ClientHello, so the
+socket's own `SO_RCVTIMEO` ended it. That branch is measured. The `SSL_ERROR_SYSCALL` branch (which
+adds "is that port serving TLS?" for a peer that closes mid-handshake) is written from the OpenSSL
+contract and was not triggered live.
 
 ### `pki export` built a 17-argument command line into `argv[16]` (#415, #417)
 
