@@ -171,6 +171,42 @@ enum ldap_server_error ldap_server_register(const char *container_name, const ch
 		memset(&g_bindings[slot], 0, sizeof(g_bindings[slot]));
 		return LDAP_SERVER_ERR_PERSIST_FAILED;
 	}
+
+	/*
+	 * #418: render the record set into the newly-registered server
+	 * before returning, the way dns_server_register() has always
+	 * written its own hosts file. A registered glauth whose config
+	 * carries no [[users]] stanzas refuses every bind with an ordinary
+	 * invalidCredentials, while reporting "running" with a valid
+	 * certificate -- so the failure is authentication rejections, not
+	 * a container that visibly fails to start.
+	 *
+	 * This lived in handle_ldap_server_create() instead, so only the
+	 * POST /ldap/servers path got it. A container whose own DEFINITION
+	 * declares the role (ADR-0151's register_declared_server_roles(),
+	 * which is how a deployment applies one) registered and rendered
+	 * nothing. Measured on 192.168.15.95, 2026-09-12: after recreating
+	 * ldap-2 from its recipe, its config had 0 [[users]] stanzas
+	 * against untouched ldap-1's 3, and an ldapsearch bind with the
+	 * correct password returned 49 there and 0 here. Both containers
+	 * carry follow_rolling, so an ordinary image update silently
+	 * emptied the directory it rebuilt.
+	 *
+	 * It is here rather than at the two call sites because
+	 * ldap_record_sync_all()'s own comment ALREADY claimed
+	 * "ldap_server_register() calls this too, so a fresh/replacement
+	 * instance always starts current". That sentence was false for as
+	 * long as it existed, and it is why nobody checked -- it read as
+	 * documentation of a guarantee. Putting the call where the comment
+	 * says it is makes the claim true instead of deleting it.
+	 *
+	 * Best-effort, unlike DNS's own DNS_SERVER_ERR_WRITE_FAILED: this
+	 * renders EVERY binding, so failing the registration on another
+	 * server's write would refuse a correct request for an unrelated
+	 * reason. A per-binding failure already warns to both stderr and
+	 * the log store (see ldap_record_sync_all()).
+	 */
+	ldap_record_sync_all();
 	return LDAP_SERVER_OK;
 }
 
@@ -1191,9 +1227,18 @@ static int ldap_write_config_file(const char *full_path)
  * server_sync_all()'s own "every binding, full re-render" behavior --
  * normally there's just one, but nothing here assumes that). Best-
  * effort per binding: a server that's unreachable right now is simply
- * skipped and stays stale until it next registers (ldap_server_
- * register() calls this too, so a fresh/replacement instance always
- * starts current). */
+ * skipped and stays stale until it next registers -- ldap_server_
+ * register() calls this, so a fresh/replacement instance always starts
+ * current.
+ *
+ * That last sentence was FALSE from when it was written until #418
+ * (2026-09-12): the call lived in handle_ldap_server_create(), so it
+ * held for POST /ldap/servers and not for a container declaring the
+ * role in its own definition. It is true now because the call was moved
+ * into ldap_server_register() rather than the comment being softened --
+ * recorded here because a comment asserting a guarantee is what the
+ * next reader believes instead of reading the code, and this one cost a
+ * live directory. */
 void ldap_record_sync_all(void)
 {
 	int i;

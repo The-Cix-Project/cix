@@ -830,6 +830,99 @@ int main(void)
 	cix_client_request(&client, "DELETE", "/v1/containers/writetest2", NULL, &r);
 	cix_response_free(&r);
 
+	/*
+	 * 10 (#418). A container whose own definition declares the
+	 * ldap_server role must come up with the record set already
+	 * rendered into its config file.
+	 *
+	 * It did not. create_container_persisted() ends with
+	 * resync_managed_services(), and register_declared_server_roles()
+	 * runs AFTER that -- so the sync iterated bindings that did not yet
+	 * include this container, and the write that would have seeded it
+	 * lived only in handle_ldap_server_create() (POST /ldap/servers).
+	 * Measured on 192.168.15.95, 2026-09-12: a recreated ldap-2 had 0
+	 * [[users]] stanzas against an untouched ldap-1's 3, and an
+	 * ldapsearch bind with the CORRECT password returned 49 there and 0
+	 * here. Both carry follow_rolling, so an ordinary image update
+	 * silently emptied the directory it rebuilt -- while the container
+	 * reported "running", listened, and presented a valid certificate.
+	 *
+	 * Asserted against the staged file on the host rather than the
+	 * files API, which does not necessarily read the container's own
+	 * tree (#394). The check is that the user's own name appears: an
+	 * empty [[users]] section and a populated one are the whole
+	 * difference between every bind failing and every bind working, and
+	 * "the file exists" cannot tell them apart.
+	 */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "POST", "/v1/ldap/groups",
+	                       "{\"name\":\"seedgroup\",\"gidnumber\":8100}", &r) != 0 ||
+	    r.status != 201) {
+		fprintf(stderr, "FAIL: create group seedgroup, status=%d\n", r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "POST", "/v1/ldap/users",
+	                       "{\"name\":\"seeduser\",\"uidnumber\":8100,"
+	                       "\"primarygroup\":8100,\"password\":\"seed-pw\"}",
+	                       &r) != 0 ||
+	    r.status != 201) {
+		fprintf(stderr, "FAIL: create user seeduser, status=%d\n", r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(
+	        &client, "POST", "/v1/containers",
+	        "{\"name\":\"ldapseed\",\"image\":\"filestest\","
+	        "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"]}],"
+	        "\"ldap_server\":{\"config_path\":\"/etc/glauth.cfg\"},"
+	        "\"files\":[{\"path\":\"/etc/glauth.cfg\","
+	        "\"content\":\"watchconfig = true\\n\\n[backend]\\n  datastore = \\\"config\\\"\\n\"}]}",
+	        &r) != 0 ||
+	    r.status != 201) {
+		fprintf(stderr, "FAIL: POST ldapseed, status=%d\n", r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+	{
+		char cfg_path[PATH_MAX];
+		FILE *f;
+
+		snprintf(cfg_path, sizeof(cfg_path), "%s/ldapseed/upper/etc/glauth.cfg",
+		         g_containers_dir);
+		f = fopen(cfg_path, "r");
+		if (f == NULL) {
+			fprintf(stderr, "FAIL: ldapseed's glauth config not staged at all\n");
+			ok = 0;
+		} else {
+			char buf[8192];
+			size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+			int has_stanza, has_user;
+
+			buf[n] = '\0';
+			fclose(f);
+			has_stanza = strstr(buf, "[[users]]") != NULL;
+			has_user = strstr(buf, "seeduser") != NULL;
+			if (!has_stanza || !has_user) {
+				fprintf(stderr,
+				        "FAIL: a declared ldap_server role came up unseeded "
+				        "([[users]]=%d seeduser=%d) -- every bind against it would be "
+				        "refused with invalidCredentials (#418)\n",
+				        has_stanza, has_user);
+				ok = 0;
+			}
+		}
+	}
+
+	memset(&r, 0, sizeof(r));
+	cix_client_request(&client, "DELETE", "/v1/containers/ldapseed", NULL, &r);
+	cix_response_free(&r);
+
 	if (stop_daemon(daemon_pid) != 0) {
 		fprintf(stderr, "FAIL: daemon did not exit cleanly on SIGTERM (second instance)\n");
 		ok = 0;

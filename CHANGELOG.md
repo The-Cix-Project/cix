@@ -6,6 +6,47 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A recreated LDAP server came up with no user records (#418)
+
+Deleting and recreating an `ldap_server` container — which is what a `follow_rolling` image update does,
+and what the documented recovery path is — left its glauth config with **no `[[users]]` or `[[groups]]`
+stanzas at all**. Every bind against it was refused with an ordinary `invalidCredentials` while the
+container reported `running`, listened on its port, and presented a valid certificate. Measured on
+192.168.15.95, 2026-09-12, with the untouched replica as the control:
+
+```
+                      users stanzas   ldapsearch, CORRECT password
+ldap-1 (untouched)          3         ldaps://192.168.150.103:636 -> 0
+ldap-2 (recreated)          0         ldaps://192.168.150.104:636 -> 49
+```
+
+**The cause is an ordering, and #270 is why it looked covered.** `create_container_persisted()` ends
+with `resync_managed_services()` — added by #270 precisely so a recreate comes back with what the
+daemon manages for it — and `register_declared_server_roles()` runs *after* that. So the sync iterated
+bindings that did not yet include the new container, and a delete had already forgotten the old
+binding. The write that would have seeded it lived only in `handle_ldap_server_create()`, the
+`POST /ldap/servers` path.
+
+**A false comment is why nobody checked.** `ldap_record_sync_all()`'s own comment read "*a server
+that's unreachable right now is simply skipped and stays stale until it next registers
+(`ldap_server_register()` calls this too, so a fresh/replacement instance always starts current)*".
+That sentence was wrong for as long as it existed, and it read as documentation of a guarantee. The fix
+puts the call **where the comment says it is** rather than softening the comment — `ldap_server_register()`
+now renders, exactly as `dns_server_register()` always has (checked: DNS writes its own hosts file
+inside its register, which is why DNS never had this bug). Best-effort rather than DNS's
+`ERR_WRITE_FAILED`, because it renders every binding and another server's write should not refuse a
+correct registration; a per-binding failure already warns to both stderr and the log store.
+
+Self-healing by accident was the worst property: *any* later user or group write re-renders the full
+set to every registered server, so the window closed on the next unrelated directory write and left no
+trace of having been open.
+
+Gated by `test_container_files`, which **is** in `SELFTESTS` — it creates a container declaring the role
+with a minimal glauth config in `files[]` and asserts the seeded user's own name appears in the staged
+file. Read from the host path rather than the files API, which does not necessarily read the
+container's own tree (#394); and asserting the *name*, not the file's existence, because an empty and a
+populated `[[users]]` section are the whole difference between every bind failing and every bind working.
+
 ### The daemon's own LDAP bind speaks TLS (#416)
 
 `cixd` is an LDAP client, and `daemon/src/ldapclient.c` — a hand-rolled LDAPv3 bind over a raw socket
