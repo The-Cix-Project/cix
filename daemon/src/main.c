@@ -11714,8 +11714,26 @@ static int create_container_from_body(const char *body, size_t body_len,
 	                                                  "/etc/cix-tls");
 	if (jpki_days != NULL)
 		pki_days = (int)json_as_number(jpki_days);
-	snprintf(pki_cert_buf, sizeof(pki_cert_buf), "%s",
-	         json_as_string(jpki_cert) != NULL ? json_as_string(jpki_cert) : "");
+	/*
+	 * Qualified here, once, so the existence check below and the delivery
+	 * further down cannot disagree about which cert was meant.
+	 *
+	 * siteconfig_qualify() (ADR-0052) is what POST /v1/pki/certs applies
+	 * to the name it creates, so a lookup that skipped it would resolve a
+	 * bare name to a cert that path never created: on an install with a
+	 * site name set, creating "jump-ssh" yields "jump-ssh.<site>.<suffix>"
+	 * and a literal lookup would 400. Same inconsistency ADR-0092 fixed
+	 * for dns_register, and the same fix -- a deployment recipe says
+	 * "jump-ssh" and stays portable across installs rather than hardcoding
+	 * one site's domain. Measured on 192.168.15.95, 2026-09-12: site_name
+	 * is "" there, so qualification is a no-op and the cert really is
+	 * named "jump-ssh" -- which is exactly why this would have gone
+	 * unnoticed until the first install that set one.
+	 */
+	if (json_as_string(jpki_cert) != NULL)
+		siteconfig_qualify(json_as_string(jpki_cert), pki_cert_buf, sizeof(pki_cert_buf));
+	else
+		pki_cert_buf[0] = '\0';
 
 	/* Task #727: auto-provisioning hook. ldap_user_buf left empty
 	 * (rather than defaulted here) when omitted -- the firing block

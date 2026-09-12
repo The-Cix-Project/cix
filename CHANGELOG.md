@@ -50,6 +50,12 @@ lifetime-agnostic, and nothing could ask for it.
 - **Delivery repeats on every start**, where `pki_issue`'s is documented as one-time. Not an
   inconsistency: a fresh container instance starts with a fresh filesystem, so the file must be
   written again — the same repetition `pki_issue` already relies on for `restart: "always"` respawns.
+- **A bare name is qualified with the site suffix**, exactly as `POST /v1/pki/certs` qualifies the
+  name it creates (`siteconfig_qualify()`, ADR-0052), so the two cannot disagree and a deployment
+  recipe stays portable instead of hardcoding one install's domain. Qualification is gated on
+  `site_name`, `""` on 192.168.15.95 (measured 2026-09-12) — a no-op there, which is exactly why it
+  would have gone unnoticed until the first install that set one. Same class of inconsistency
+  ADR-0092 fixed for `dns_register`.
 - **`jump` 1.10.0** swaps `pki_issue: true` for `pki_cert: "jump-ssh"`. The delivered file layout is
   identical, so 1.9.0's `HostKey /etc/cix-tls/tls.key` and its `waitkey` gate needed no change.
 - **`test_pki`** asserts the point that matters: the delivered key bytes are compared across a

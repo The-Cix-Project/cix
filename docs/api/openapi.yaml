@@ -13218,8 +13218,12 @@ components:
             and a rotated key is indistinguishable from an attack. A leaf TLS
             certificate usually wants the opposite and should use pki_issue,
             because a TLS client verifies the CA rather than the specific
-            leaf. Requires the CA to be bootstrapped and the named cert to
-            already exist (400 naming the missing cert otherwise), and is
+            leaf. A bare name (no ".") is qualified with this install's site
+            suffix exactly as POST /pki/certs qualifies the name it creates
+            (ADR-0052), so the two always agree and a deployment recipe need
+            not hardcode one install's domain. Requires the CA to be
+            bootstrapped and the named cert to already exist (400 naming the
+            missing cert otherwise), and is
             mutually exclusive with pki_issue (400) since both write
             tls.crt/tls.key into pki_cert_dir. Delivery is repeated on every
             start, because each fresh container instance starts with a fresh
