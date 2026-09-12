@@ -403,7 +403,7 @@ static void redeliver_pki_certs_after_reset(void)
 		if (!pki_cert_owned_by(names[i], names[i]))
 			continue;
 
-		snprintf(cert_dir_buf, sizeof(cert_dir_buf), "/etc/cix-tls");
+		snprintf(cert_dir_buf, sizeof(cert_dir_buf), PKI_CONTAINER_CERT_DIR);
 		def = containerdef_find(names[i]);
 		if (def != NULL) {
 			struct json_value *body_root = json_parse(def->body, def->body_len);

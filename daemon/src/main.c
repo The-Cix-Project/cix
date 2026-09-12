@@ -11733,7 +11733,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	pki_issue = (jpki_issue != NULL && jpki_issue->type == JSON_BOOL && jpki_issue->u.boolean);
 	snprintf(pki_cert_dir_buf, sizeof(pki_cert_dir_buf), "%s",
 	         json_as_string(jpki_cert_dir) != NULL ? json_as_string(jpki_cert_dir) :
-	                                                  "/etc/cix-tls");
+	                                                  PKI_CONTAINER_CERT_DIR);
 	if (jpki_days != NULL)
 		pki_days = (int)json_as_number(jpki_days);
 	/*

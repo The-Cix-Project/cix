@@ -4,6 +4,7 @@
 #include "subid.h"
 #include "hostauth.h"
 #include "persist.h"
+#include "pki.h"
 #include "registry.h"
 #include "serverhealth.h"
 
@@ -39,7 +40,14 @@ static struct ldap_config g_config = {
 	 * flag that silently changed the port clients dial would break
 	 * them on upgrade. The port is glauth's own sample default. */
 	.client_tls = 0,
-	.client_tls_port = LDAP_CONFIG_DEFAULT_TLS_PORT,
+	/* #419: unmanaged until an operator PUTs a server_* field -- the
+	 * ports still carry real defaults, because ldap_client_port()
+	 * reads them whether or not the render is allowed to write. */
+	.listeners_managed = 0,
+	.server_plaintext = 1,
+	.server_plaintext_port = HOSTAUTH_LDAP_DEFAULT_PORT,
+	.server_tls = 0,
+	.server_tls_port = LDAP_CONFIG_DEFAULT_TLS_PORT,
 };
 static char g_config_state_path[PATH_MAX];
 
@@ -591,9 +599,34 @@ int ldap_config_init(const char *state_path)
 
 		if (jv != NULL && jv->type == JSON_BOOL)
 			g_config.client_tls = jv->u.boolean;
-		jv = json_object_get(root, "client_tls_port");
+		/*
+		 * #419: absent in state written before this existed, which is
+		 * the state every already-installed host is in -- so
+		 * listeners_managed stays 0 and the render leaves both
+		 * sections exactly as that host's own configs already have
+		 * them. A client_tls_port key may also be present from before;
+		 * it is deliberately not read, because the port clients get is
+		 * the server's own now. The one value that could be lost is a
+		 * non-default client_tls_port, and it is reported in the
+		 * changelog rather than silently migrated -- there is nothing
+		 * honest to migrate it INTO until the server's real port is
+		 * known, which is the whole point of this change.
+		 */
+		jv = json_object_get(root, "listeners_managed");
+		if (jv != NULL && jv->type == JSON_BOOL)
+			g_config.listeners_managed = jv->u.boolean;
+		jv = json_object_get(root, "server_plaintext");
+		if (jv != NULL && jv->type == JSON_BOOL)
+			g_config.server_plaintext = jv->u.boolean;
+		jv = json_object_get(root, "server_plaintext_port");
 		if (jv != NULL && jv->type == JSON_NUMBER)
-			g_config.client_tls_port = (int)jv->u.number;
+			g_config.server_plaintext_port = (int)jv->u.number;
+		jv = json_object_get(root, "server_tls");
+		if (jv != NULL && jv->type == JSON_BOOL)
+			g_config.server_tls = jv->u.boolean;
+		jv = json_object_get(root, "server_tls_port");
+		if (jv != NULL && jv->type == JSON_NUMBER)
+			g_config.server_tls_port = (int)jv->u.number;
 	}
 	json_free(root);
 	return 0;
@@ -646,8 +679,16 @@ static enum ldap_record_error ldap_config_persist(void)
 	jw_str(&w, g_config.bind_password);
 	jw_key(&w, "client_tls");
 	jw_bool(&w, g_config.client_tls);
-	jw_key(&w, "client_tls_port");
-	jw_int(&w, g_config.client_tls_port);
+	jw_key(&w, "listeners_managed");
+	jw_bool(&w, g_config.listeners_managed);
+	jw_key(&w, "server_plaintext");
+	jw_bool(&w, g_config.server_plaintext);
+	jw_key(&w, "server_plaintext_port");
+	jw_int(&w, g_config.server_plaintext_port);
+	jw_key(&w, "server_tls");
+	jw_bool(&w, g_config.server_tls);
+	jw_key(&w, "server_tls_port");
+	jw_int(&w, g_config.server_tls_port);
 	jw_obj_close(&w);
 	rc = persist_atomic_write(g_config_state_path, w.buf, w.len);
 	jw_free(&w);
@@ -672,22 +713,119 @@ enum ldap_record_error ldap_config_set(int start_uid, int start_gid)
 	return rc;
 }
 
-enum ldap_record_error ldap_config_set_client_tls(int client_tls, int client_tls_port)
+/*
+ * Every registered, running server must already hold a delivered leaf
+ * before server_tls can be turned on. glauth told to serve TLS with no
+ * certificate exits on its next config reload, so accepting the PUT
+ * would take down a working server -- strictly worse than refusing a
+ * setting. Checked once here rather than again at render time: one
+ * gate, and the operator gets a named container instead of a fleet-wide
+ * "something is missing".
+ *
+ * Returns 0 when every server is ready, or -1 with out_container filled.
+ */
+static int servers_have_tls_certs(char *out_container, size_t out_container_size)
+{
+	int i;
+
+	for (i = 0; i < LDAP_SERVER_MAX; i++) {
+		struct registry_entry *entry;
+		char cert_path[PATH_MAX];
+		struct stat st;
+
+		if (g_bindings[i].container_name[0] == '\0')
+			continue;
+		entry = registry_find(g_bindings[i].container_name);
+		if (entry == NULL || !entry->running)
+			continue; /* already warned about loudly by the render */
+		container_file_host_path(g_bindings[i].container_name, entry->disk_name,
+		                          PKI_CONTAINER_CERT_DIR "/tls.crt", cert_path,
+		                          sizeof(cert_path));
+		if (stat(cert_path, &st) != 0 || st.st_size == 0) {
+			if (out_container != NULL)
+				snprintf(out_container, out_container_size, "%s",
+				          g_bindings[i].container_name);
+			return -1;
+		}
+	}
+	return 0;
+}
+
+enum ldap_record_error ldap_config_set_listeners(int client_tls, int server_plaintext,
+                                                  int server_plaintext_port, int server_tls,
+                                                  int server_tls_port, char *out_container,
+                                                  size_t out_container_size)
 {
 	struct ldap_config saved = g_config;
 	enum ldap_record_error rc;
+	int touched_server = 0;
 
 	if (client_tls >= 0)
 		g_config.client_tls = client_tls != 0;
-	if (client_tls_port >= 0) {
-		if (client_tls_port < 1 || client_tls_port > 65535)
-			return LDAP_RECORD_ERR_INVALID_FIELD;
-		g_config.client_tls_port = client_tls_port;
+	if (server_plaintext >= 0) {
+		g_config.server_plaintext = server_plaintext != 0;
+		touched_server = 1;
 	}
-	rc = ldap_config_persist();
-	if (rc != LDAP_RECORD_OK)
+	if (server_tls >= 0) {
+		g_config.server_tls = server_tls != 0;
+		touched_server = 1;
+	}
+	if (server_plaintext_port >= 0) {
+		g_config.server_plaintext_port = server_plaintext_port;
+		touched_server = 1;
+	}
+	if (server_tls_port >= 0) {
+		g_config.server_tls_port = server_tls_port;
+		touched_server = 1;
+	}
+
+	if (g_config.server_plaintext_port < 1 || g_config.server_plaintext_port > 65535 ||
+	    g_config.server_tls_port < 1 || g_config.server_tls_port > 65535 ||
+	    g_config.server_plaintext_port == g_config.server_tls_port) {
 		g_config = saved;
-	return rc;
+		return LDAP_RECORD_ERR_INVALID_FIELD;
+	}
+	/* "Serving nothing" and "clients pointed at a disabled listener"
+	 * are the same rule hostauth_set_config() applies to ldap_enabled:
+	 * a saved state that cannot work is never accepted, because it
+	 * reads as correct afterwards. */
+	if (!g_config.server_plaintext && !g_config.server_tls) {
+		g_config = saved;
+		return LDAP_RECORD_ERR_INVALID_FIELD;
+	}
+	if ((g_config.client_tls && !g_config.server_tls) ||
+	    (!g_config.client_tls && !g_config.server_plaintext)) {
+		g_config = saved;
+		return LDAP_RECORD_ERR_INVALID_FIELD;
+	}
+	/* Only when TURNING it on: a fleet that is already serving TLS has
+	 * certificates by construction, and re-checking would refuse an
+	 * unrelated PUT because some other container is momentarily
+	 * mid-restart. */
+	if (g_config.server_tls && !saved.server_tls &&
+	    servers_have_tls_certs(out_container, out_container_size) != 0) {
+		g_config = saved;
+		return LDAP_RECORD_ERR_NO_SERVER_CERT;
+	}
+
+	if (touched_server)
+		g_config.listeners_managed = 1;
+
+	rc = ldap_config_persist();
+	if (rc != LDAP_RECORD_OK) {
+		g_config = saved;
+		return rc;
+	}
+	/* Push the new listener state into every registered server now,
+	 * rather than waiting for the next user/group write to carry it --
+	 * the whole deliverable of #419 is that flipping a listener is one
+	 * PUT, not a recipe edit and a recreate. glauth's own config
+	 * watcher reloads on the write; no signal is sent (its
+	 * watchconfig = true is confirmed against upstream's own
+	 * startConfigWatcher()). */
+	if (touched_server)
+		ldap_record_sync_all();
+	return LDAP_RECORD_OK;
 }
 
 enum ldap_record_error ldap_config_set_client(const char *client_uri, const char *base_dn,
@@ -753,8 +891,16 @@ void ldap_config_write_json_open(struct json_writer *w)
 		jw_null(w);
 	jw_key(w, "client_tls");
 	jw_bool(w, g_config.client_tls);
-	jw_key(w, "client_tls_port");
-	jw_int(w, g_config.client_tls_port);
+	jw_key(w, "listeners_managed");
+	jw_bool(w, g_config.listeners_managed);
+	jw_key(w, "server_plaintext");
+	jw_bool(w, g_config.server_plaintext);
+	jw_key(w, "server_plaintext_port");
+	jw_int(w, g_config.server_plaintext_port);
+	jw_key(w, "server_tls");
+	jw_bool(w, g_config.server_tls);
+	jw_key(w, "server_tls_port");
+	jw_int(w, g_config.server_tls_port);
 	jw_key(w, "bind_password_set");
 	jw_bool(w, g_config.bind_password[0] != '\0');
 }
@@ -1113,6 +1259,274 @@ static int rewrite_basedn(const char *prefix, size_t prefix_len, const char *new
 	return 1;
 }
 
+/*
+ * #419: rewrites one TOML section's own key/value lines inside the
+ * operator-authored prefix, so glauth's [ldap]/[ldaps] listeners are
+ * configuration rather than literal recipe text. Same ownership terms
+ * ADR-0148 set for baseDN, one step further: the operator's file
+ * supplies the initial value and the API owns it from then on.
+ *
+ * Deliberately less conservative than rewrite_basedn(), which is a
+ * no-op when the line is absent because inventing a baseDN would be
+ * inventing policy. Here an absent section IS the normal state of a
+ * hand-written config, and leaving it alone would mean the switch
+ * silently does nothing -- the #418 failure shape. So: a key present
+ * in the section is rewritten in place, a key absent is inserted at the
+ * section's end, and an absent section is appended whole.
+ *
+ * THE SECTION HEADER MUST MATCH EXACTLY, not by prefix. "[ldap]" is a
+ * prefix of "[ldaps]", so a strncmp here would rewrite the wrong
+ * section's `enabled` and produce the exact inverse of what was asked
+ * -- on every registered server at once, on one PUT. The header is
+ * therefore matched at column 0 with its closing bracket and only
+ * horizontal whitespace to end of line.
+ *
+ * Returns 0 with *out_buf/*out_len set to a fresh malloc'd prefix
+ * (caller frees), or -1 on allocation failure.
+ */
+static const char *section_bound(const char *p, const char *end, const char *name)
+{
+	size_t nlen = strlen(name);
+	const char *line = p;
+
+	while (line < end) {
+		const char *nl = memchr(line, '\n', (size_t)(end - line));
+		const char *eol = nl != NULL ? nl : end;
+
+		if ((size_t)(eol - line) >= nlen + 2 && line[0] == '[' &&
+		    strncmp(line + 1, name, nlen) == 0 && line[1 + nlen] == ']') {
+			const char *t = line + 2 + nlen;
+
+			while (t < eol && (*t == ' ' || *t == '\t' || *t == '\r'))
+				t++;
+			if (t == eol)
+				return line;
+		}
+		if (nl == NULL)
+			break;
+		line = nl + 1;
+	}
+	return NULL;
+}
+
+/* End of the section starting at `hdr`: the next line that begins a new
+ * table at column 0 ('[' in the first column), or `end`. */
+static const char *section_end(const char *hdr, const char *end)
+{
+	const char *nl = memchr(hdr, '\n', (size_t)(end - hdr));
+	const char *line = nl != NULL ? nl + 1 : end;
+
+	while (line < end) {
+		if (*line == '[')
+			return line;
+		nl = memchr(line, '\n', (size_t)(end - line));
+		if (nl == NULL)
+			break;
+		line = nl + 1;
+	}
+	return end;
+}
+
+/* The "  key = ..." line for `key` within [sec_start, sec_end), or NULL.
+ * Leading whitespace is skipped, so glauth's own two-space indentation
+ * and an unindented spelling both match. */
+static const char *section_key_line(const char *sec_start, const char *sec_end, const char *key,
+                                     const char **out_line_end)
+{
+	size_t klen = strlen(key);
+	const char *nl = memchr(sec_start, '\n', (size_t)(sec_end - sec_start));
+	const char *line = nl != NULL ? nl + 1 : sec_end;
+
+	while (line < sec_end) {
+		const char *le = memchr(line, '\n', (size_t)(sec_end - line));
+		const char *eol = le != NULL ? le : sec_end;
+		const char *t = line;
+
+		while (t < eol && (*t == ' ' || *t == '\t'))
+			t++;
+		if ((size_t)(eol - t) > klen && strncmp(t, key, klen) == 0) {
+			const char *a = t + klen;
+
+			while (a < eol && (*a == ' ' || *a == '\t'))
+				a++;
+			if (a < eol && *a == '=') {
+				*out_line_end = le != NULL ? le + 1 : eol;
+				return line;
+			}
+		}
+		if (le == NULL)
+			break;
+		line = le + 1;
+	}
+	return NULL;
+}
+
+struct kv {
+	const char *key;
+	char value[128];
+};
+
+static int rewrite_section(const char *prefix, size_t prefix_len, const char *section,
+                            const struct kv *kvs, int kv_count, char **out_buf, size_t *out_len)
+{
+	const char *end = prefix + prefix_len;
+	const char *hdr = section_bound(prefix, end, section);
+	char *buf;
+	size_t cap = prefix_len + 512 + (size_t)kv_count * 160;
+	size_t n = 0;
+	int i;
+
+	buf = malloc(cap);
+	if (buf == NULL)
+		return -1;
+
+	if (hdr == NULL) {
+		/* No such section: append it whole, with a blank line before
+		 * it so the result stays readable TOML rather than merely
+		 * valid. A trailing newline is added first if the file lacks
+		 * one, so the header cannot land mid-line. */
+		memcpy(buf, prefix, prefix_len);
+		n = prefix_len;
+		if (n > 0 && buf[n - 1] != '\n')
+			buf[n++] = '\n';
+		n += (size_t)snprintf(buf + n, cap - n, "\n[%s]\n", section);
+		for (i = 0; i < kv_count; i++)
+			n += (size_t)snprintf(buf + n, cap - n, "  %s = %s\n", kvs[i].key,
+			                       kvs[i].value);
+		*out_buf = buf;
+		*out_len = n;
+		return 0;
+	}
+
+	{
+		const char *sec_end = section_end(hdr, end);
+		const char *hdr_nl = memchr(hdr, '\n', (size_t)(end - hdr));
+		const char *body = hdr_nl != NULL ? hdr_nl + 1 : sec_end;
+
+		/* everything up to and including the header line */
+		memcpy(buf, prefix, (size_t)(body - prefix));
+		n = (size_t)(body - prefix);
+
+		/* the section body, with matched keys replaced in place */
+		{
+			const char *line = body;
+
+			while (line < sec_end) {
+				const char *le = memchr(line, '\n', (size_t)(sec_end - line));
+				const char *next = le != NULL ? le + 1 : sec_end;
+				const char *t = line;
+				int replaced = 0;
+
+				while (t < (le != NULL ? le : sec_end) && (*t == ' ' || *t == '\t'))
+					t++;
+				for (i = 0; i < kv_count; i++) {
+					size_t klen = strlen(kvs[i].key);
+					const char *a = t + klen;
+					const char *eol = le != NULL ? le : sec_end;
+
+					if ((size_t)(eol - t) <= klen || strncmp(t, kvs[i].key, klen) != 0)
+						continue;
+					while (a < eol && (*a == ' ' || *a == '\t'))
+						a++;
+					if (a >= eol || *a != '=')
+						continue;
+					n += (size_t)snprintf(buf + n, cap - n, "  %s = %s\n", kvs[i].key,
+					                       kvs[i].value);
+					replaced = 1;
+					break;
+				}
+				if (!replaced) {
+					memcpy(buf + n, line, (size_t)(next - line));
+					n += (size_t)(next - line);
+				}
+				line = next;
+			}
+		}
+
+		/* keys the section did not already carry */
+		for (i = 0; i < kv_count; i++) {
+			const char *le = NULL;
+
+			if (section_key_line(hdr, sec_end, kvs[i].key, &le) == NULL)
+				n += (size_t)snprintf(buf + n, cap - n, "  %s = %s\n", kvs[i].key,
+				                       kvs[i].value);
+		}
+
+		/* everything from the next table onward, untouched */
+		memcpy(buf + n, sec_end, (size_t)(end - sec_end));
+		n += (size_t)(end - sec_end);
+	}
+	*out_buf = buf;
+	*out_len = n;
+	return 0;
+}
+
+/*
+ * Renders both listener sections into the prefix. A no-op -- byte for
+ * byte -- while listeners_managed is false, which is the state of every
+ * install that predates #419: a default derived from nothing would
+ * otherwise rewrite two live, working listeners on the first boot after
+ * upgrade, and glauth's config watcher would apply it within seconds.
+ * Same skip ldap_write_config_file() already performs for baseDN when
+ * ldap_base_dn has never been set.
+ *
+ * cert/key are written only when [ldaps] is being created: an existing
+ * section's own paths are whatever that container was built with, and
+ * this has no per-container knowledge of them (pki_cert_dir is a create
+ * parameter the registry does not record). The default is the one
+ * PKI_CONTAINER_CERT_DIR names, which is where pki_issue delivers.
+ *
+ * The listen value is rewritten whole to "0.0.0.0:<port>". Preserving a
+ * custom bind address was considered and rejected: parsing it back out
+ * to keep the host half would make this function the authority on a
+ * value the API cannot express, and a half-owned field is how baseDN
+ * drifted in the first place (ADR-0148).
+ */
+static int rewrite_listeners(const char *prefix, size_t prefix_len, char **out_buf,
+                             size_t *out_len)
+{
+	struct kv plain[2], tls[4];
+	char *stage = NULL;
+	size_t stage_len = 0;
+
+	if (!g_config.listeners_managed || prefix_len == 0)
+		return 0;
+
+	plain[0].key = "enabled";
+	snprintf(plain[0].value, sizeof(plain[0].value), "%s",
+	          g_config.server_plaintext ? "true" : "false");
+	plain[1].key = "listen";
+	snprintf(plain[1].value, sizeof(plain[1].value), "\"0.0.0.0:%d\"",
+	          g_config.server_plaintext_port);
+
+	tls[0].key = "enabled";
+	snprintf(tls[0].value, sizeof(tls[0].value), "%s", g_config.server_tls ? "true" : "false");
+	tls[1].key = "listen";
+	snprintf(tls[1].value, sizeof(tls[1].value), "\"0.0.0.0:%d\"", g_config.server_tls_port);
+	tls[2].key = "cert";
+	snprintf(tls[2].value, sizeof(tls[2].value), "\"%s/tls.crt\"", PKI_CONTAINER_CERT_DIR);
+	tls[3].key = "key";
+	snprintf(tls[3].value, sizeof(tls[3].value), "\"%s/tls.key\"", PKI_CONTAINER_CERT_DIR);
+
+	if (rewrite_section(prefix, prefix_len, "ldap", plain, 2, &stage, &stage_len) != 0)
+		return -1;
+	{
+		char *final = NULL;
+		size_t final_len = 0;
+		/* cert/key only when creating the section -- see above. */
+		int tls_kvs = section_bound(stage, stage + stage_len, "ldaps") != NULL ? 2 : 4;
+
+		if (rewrite_section(stage, stage_len, "ldaps", tls, tls_kvs, &final, &final_len) != 0) {
+			free(stage);
+			return -1;
+		}
+		free(stage);
+		*out_buf = final;
+		*out_len = final_len;
+	}
+	return 1;
+}
+
 static int ldap_write_config_file(const char *full_path)
 {
 	char *current = NULL;
@@ -1181,6 +1595,25 @@ static int ldap_write_config_file(const char *full_path)
 				current = rewritten_prefix;
 				prefix_len = rewritten_len; /* current is now exactly the (rewritten) prefix */
 			}
+		}
+	}
+
+	/* #419: and the listener sections, on the same terms -- after
+	 * baseDN so both operate on the same prefix, and a no-op while
+	 * listeners_managed is false. */
+	{
+		char *relisten = NULL;
+		size_t relisten_len = 0;
+		int lrc = rewrite_listeners(current, prefix_len, &relisten, &relisten_len);
+
+		if (lrc < 0) {
+			free(current);
+			return -1;
+		}
+		if (lrc == 1) {
+			free(current);
+			current = relisten;
+			prefix_len = relisten_len;
 		}
 	}
 
@@ -1939,9 +2372,11 @@ static const char *ldap_uri_registered_server(const char *uri, char names[][LDAP
 	/* #414: with TLS on, an explicitly-configured list names the TLS
 	 * port, and rejecting it here would silently drop every entry --
 	 * health filtering would then pass nothing through and the list
-	 * would look empty rather than wrong. */
-	if (port != HOSTAUTH_LDAP_DEFAULT_PORT &&
-	    !(g_config.client_tls && port == g_config.client_tls_port))
+	 * would look empty rather than wrong. #419: both accepted ports
+	 * come from the server config now, so a URI naming the port the
+	 * server really listens on is recognised whichever listener it is
+	 * -- previously the plaintext arm was the hardcoded 3893. */
+	if (port != g_config.server_plaintext_port && port != g_config.server_tls_port)
 		return NULL;
 
 	for (i = 0; i < count; i++) {
@@ -2019,12 +2454,18 @@ void ldap_filter_configured_client_uri(const char *configured, char *out, size_t
  * unfiltered-list fallback below meant clients kept working, so the
  * only visible symptom was a health view that was simply wrong, which
  * is the kind of thing an operator acts on.
+ *
+ * #419 then made the answer honest rather than merely shared: it read
+ * client_tls_port and HOSTAUTH_LDAP_DEFAULT_PORT, neither of which was
+ * the port the server was actually listening on -- nothing checked, and
+ * nothing could, while the listener config was literal TOML inside a
+ * recipe. It reads the server configuration now, which the daemon owns.
  */
 int ldap_client_port(void)
 {
 	const struct ldap_config *lc = ldap_config_get();
 
-	return lc->client_tls ? lc->client_tls_port : HOSTAUTH_LDAP_DEFAULT_PORT;
+	return lc->client_tls ? lc->server_tls_port : lc->server_plaintext_port;
 }
 
 int ldap_effective_client_uri(char *out, size_t out_size)

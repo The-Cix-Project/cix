@@ -301,6 +301,16 @@ enum pki_error pki_write_trust_bundle_file(const char *dest_path);
 enum pki_error pki_trust_bundle_pem(char **out_pem, size_t *out_len);
 
 /*
+ * Where a container's own delivered leaf lands by default, inside that
+ * container: `pki_cert_dir` on POST /containers overrides it per
+ * container. One definition because three places read it -- the create
+ * parser's default, the console PKI bootstrap, and #419's glauth
+ * [ldaps] render, which has to name a cert path when it creates that
+ * section and must not invent a second convention for it.
+ */
+#define PKI_CONTAINER_CERT_DIR "/etc/cix-tls"
+
+/*
  * #415 / ADR-0281: carries the whole store off the box and back.
  *
  * PKI_DIR is on the cix-config partition, which cix-install formats --

@@ -30,4 +30,6 @@ cixctl container recipe add echo-web --file=container.json
 cixctl container apply-recipe echo-web --secret=DEPLOY_TOKEN=a-real-value-never-committed
 ```
 
+**One caveat for `ldap-1`/`ldap-2` (#419, [ADR-0282](../../docs/adr/0282-glauths-listeners-are-configuration.md)).** Their `glauth.cfg` content here is an *initial* value for two things the daemon owns once configured: the `[[users]]`/`[[groups]]` tail (always re-rendered from Cix's own record store) and, after the first `PUT /v1/ldap/config` carrying a `server_*` field, the `[ldap]`/`[ldaps]` `enabled` and `listen` lines. `baseDN` is the same (ADR-0148). Editing those here after that point is editing something that gets overwritten — change a listener with `cixctl ldap config set --server-tls | --no-server-plaintext | --server-tls-port=N`, which needs no recipe version and no container recreate. Everything else in the file is yours and is preserved byte-for-byte.
+
 See [`docs/adr/0151-container-recipes.md`](../../docs/adr/0151-container-recipes.md) for the design rationale and [`docs/api/README.md`](../../docs/api/README.md) for the full request/response contract.

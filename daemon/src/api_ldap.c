@@ -1,4 +1,5 @@
 #include "api_ldap.h"
+#include "pki.h"
 
 #include "apiresp.h"
 #include "apiroute.h"
@@ -188,7 +189,10 @@ void handle_ldap_config_put(int fd, const char *body, size_t body_len)
 		const char *bind_dn = json_as_string(json_object_get(root, "bind_dn"));
 		const char *bind_password = json_as_string(json_object_get(root, "bind_password"));
 		const struct json_value *jtls = json_object_get(root, "client_tls");
-		const struct json_value *jtlsport = json_object_get(root, "client_tls_port");
+		const struct json_value *jsplain = json_object_get(root, "server_plaintext");
+		const struct json_value *jsplainport = json_object_get(root, "server_plaintext_port");
+		const struct json_value *jstls = json_object_get(root, "server_tls");
+		const struct json_value *jstlsport = json_object_get(root, "server_tls_port");
 
 		if (juid != NULL || jgid != NULL) {
 			start_uid = (int)json_as_number(juid);
@@ -211,22 +215,64 @@ void handle_ldap_config_put(int fd, const char *body, size_t body_len)
 				return;
 			}
 		}
-		/* #414: a third independent group, same absent-means-unchanged
-		 * rule as the two above. -1 is the "leave it" sentinel, which is
-		 * why an absent field is not simply read as 0 -- that would turn
-		 * TLS off on every body that did not mention it. */
-		if (jtls != NULL || jtlsport != NULL) {
+		/*
+		 * #414/#419: a third independent group, same absent-means-
+		 * unchanged rule as the two above. -1 is the "leave it"
+		 * sentinel, which is why an absent field is not simply read as
+		 * 0 -- that would turn TLS off on every body that did not
+		 * mention it.
+		 *
+		 * The five fields go to ONE setter because they are one
+		 * decision: the combinations that must be refused (clients
+		 * pointed at a disabled listener, a server serving nothing)
+		 * span the client flag and both server flags, so validating
+		 * them separately would accept an invalid pair applied in two
+		 * calls.
+		 */
+		if (jtls != NULL || jsplain != NULL || jsplainport != NULL || jstls != NULL ||
+		    jstlsport != NULL) {
+			char offender[64] = "";
 			int tls = jtls != NULL && jtls->type == JSON_BOOL ? (jtls->u.boolean ? 1 : 0) :
 			                                                     -1;
-			int tlsport = jtlsport != NULL && jtlsport->type == JSON_NUMBER ?
-			                  (int)jtlsport->u.number :
-			                  -1;
+			int splain = jsplain != NULL && jsplain->type == JSON_BOOL ?
+			                 (jsplain->u.boolean ? 1 : 0) :
+			                 -1;
+			int stls = jstls != NULL && jstls->type == JSON_BOOL ?
+			               (jstls->u.boolean ? 1 : 0) :
+			               -1;
+			int splainport = jsplainport != NULL && jsplainport->type == JSON_NUMBER ?
+			                     (int)jsplainport->u.number :
+			                     -1;
+			int stlsport = jstlsport != NULL && jstlsport->type == JSON_NUMBER ?
+			                   (int)jstlsport->u.number :
+			                   -1;
 
-			rerr = ldap_config_set_client_tls(tls, tlsport);
+			rerr = ldap_config_set_listeners(tls, splain, splainport, stls, stlsport,
+			                                  offender, sizeof(offender));
+			if (rerr == LDAP_RECORD_ERR_NO_SERVER_CERT) {
+				char msg[256];
+
+				snprintf(msg, sizeof(msg),
+				          "server_tls needs a delivered certificate on every registered "
+				          "server, and container \"%s\" has none at %s/tls.crt -- glauth "
+				          "exits on reload if told to serve TLS without one. Give that "
+				          "container pki_issue or --pki-cert first.",
+				          offender, PKI_CONTAINER_CERT_DIR);
+				json_free(root);
+				respond_error(fd, 409, "Conflict", msg);
+				return;
+			}
 			if (rerr != LDAP_RECORD_OK) {
 				json_free(root);
-				respond_error(fd, 400, "Bad Request",
-				              "client_tls must be a boolean and client_tls_port a port number 1-65535");
+				/* Names which combination is wrong: "invalid field" on
+				 * a five-field group is the kind of 400 that costs a
+				 * round trip to interpret. */
+				respond_error(
+				    fd, 400, "Bad Request",
+				    "ports must be 1-65535 and different from each other; at least one "
+				    "listener must stay enabled; and client_tls must name a listener that "
+				    "is enabled (client_tls true needs server_tls true, client_tls false "
+				    "needs server_plaintext true)");
 				return;
 			}
 		}
