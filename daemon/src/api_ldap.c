@@ -83,11 +83,11 @@ void handle_ldap_server_create(int fd, const char *body, size_t body_len)
 		return;
 	}
 
-	/* Task #726: populate the freshly-registered server's own config
-	 * file from Cix's own record store, the dns_server_sync_all()
-	 * analog -- a fresh/replacement glauth instance starts current
-	 * instead of empty. */
-	ldap_record_sync_all();
+	/* Task #726's sync (populate the freshly-registered server's config
+	 * from Cix's own record store) is inside ldap_server_register()
+	 * now, not here -- #418: living here meant it ran for this endpoint
+	 * and not for a container declaring the role in its own definition,
+	 * which is how a deployment applies one. */
 
 	/* container_name/config_path still point into root -- build the
 	 * response before freeing it (see handle_dns_server_create()'s own

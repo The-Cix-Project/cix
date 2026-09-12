@@ -14215,9 +14215,20 @@ static int create_container_persisted(const char *body, size_t body_len,
 		free(persisted_body);
 	}
 
-	/* A recreate is the case this was found in: the container comes
+	/*
+	 * A recreate is the case this was found in: the container comes
 	 * back with whatever its definition stages, and nothing had
-	 * re-pushed what the daemon manages for it (#270). */
+	 * re-pushed what the daemon manages for it (#270).
+	 *
+	 * This runs BEFORE register_declared_server_roles(), which is the
+	 * caller's next step -- so it cannot cover a role the container
+	 * declares in its own definition: the binding does not exist yet
+	 * when this iterates them, and a delete-and-recreate forgot the
+	 * old one. That gap was #418, and the fix is that each register
+	 * renders its own server (dns_server_register() always did;
+	 * ldap_server_register() now does too), not a second sync bolted
+	 * on after registration here.
+	 */
 	resync_managed_services();
 
 	*out_entry = entry;
