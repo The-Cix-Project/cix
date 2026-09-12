@@ -210,6 +210,20 @@ static int stage_module_file(const char *src_base, const char *dst_base, const c
 	}
 	if (stat(src, &st) != 0 || !S_ISREG(st.st_mode))
 		return 0;
+	/*
+	 * Already staged this run, so skip it and do not count it again.
+	 *
+	 * The five closures overlap heavily -- libphy and mdio_bus are
+	 * depended on by three modules each -- so without this the same
+	 * file is copied several times and the count reported at the end
+	 * is copies rather than distinct files. It said "18 NIC module
+	 * files" for a set whose union is nine, which is a number that
+	 * means something other than what it says. The stage directory is
+	 * created fresh per build (persist_fresh_output_dir), so an
+	 * existing destination can only be one this run already wrote.
+	 */
+	if (stat(dst, &st) == 0)
+		return 0;
 	if (ensure_parents_under(dst_base, rel) != 0)
 		return -1;
 	if (test_image_fixture_copy_file(src, dst) != 0)
