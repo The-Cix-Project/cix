@@ -3468,6 +3468,51 @@ static void write_pkg_json(const struct pkg_entry *e, struct json_writer *w)
 		jw_str(w, pipeline_status_name(e->status));
 	else
 		jw_null(w);
+	/*
+	 * Issue #423: when this job started, and how long it has been
+	 * going. Both clocks already existed on the entry -- ADR-0272's
+	 * run_started_at and the stall detector's build_started_at -- and
+	 * neither was ever reported, so an operator watching a build could
+	 * see that output was 60 seconds old and not that the build was in
+	 * its fortieth minute.
+	 *
+	 * Two of them because they answer different questions. run_started_at
+	 * is when the JOB began, fetching included, which is what "how long
+	 * has this been running" means to somebody waiting for it;
+	 * build_started_at is when compilation began, and a run that never
+	 * got past fetching has no build start at all. Absolute epoch
+	 * seconds, so a client can render a real start time -- something a
+	 * relative "seconds ago" cannot do.
+	 *
+	 * run_seconds is the same span computed HERE, and it is not
+	 * redundant. A dashboard ticking a counter from an absolute
+	 * timestamp differences the daemon's clock against the browser's,
+	 * so any skew between them shows up as a wrong elapsed time from
+	 * the very first frame. Handing the client a server-computed
+	 * baseline to tick locally has no skew in it, which is the same
+	 * reason last_output_seconds_ago below is relative.
+	 *
+	 * Gated on an OPEN run (run_started_at != 0, which ADR-0272 defines
+	 * as exactly that) rather than on a state, so a finished entry
+	 * reports null instead of a start time for a job that is over --
+	 * the same discipline build_container below is gated by, and for
+	 * the same reason: a stale timestamp reads as a live one.
+	 */
+	jw_key(w, "run_started_at");
+	if (e->run_started_at > 0)
+		jw_int(w, (long long)e->run_started_at);
+	else
+		jw_null(w);
+	jw_key(w, "build_started_at");
+	if (e->run_started_at > 0 && e->build_started_at > 0)
+		jw_int(w, (long long)e->build_started_at);
+	else
+		jw_null(w);
+	jw_key(w, "run_seconds");
+	if (e->run_started_at > 0)
+		jw_int(w, (long long)(time(NULL) - e->run_started_at));
+	else
+		jw_null(w);
 	/* Issue #58: the first-class hang-vs-slow signal -- null unless a
 	 * build is in flight and has produced at least one byte. */
 	jw_key(w, "last_output_seconds_ago");

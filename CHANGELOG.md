@@ -6,6 +6,51 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A build says when it started and how long it has been going, the log viewer closes, and capacity reads as a proportion (#423, #433, #422)
+
+Three things the owner asked for while watching builds all afternoon.
+
+**#423 -- a build in flight reported that its output was 60 seconds old, but not that it was in
+its fortieth minute.** Both clocks already existed on the entry and neither was ever reported:
+ADR-0272's `run_started_at` (set once when a job starts, cleared when the run closes, so non-zero
+means exactly "this entry has an open run") and the stall detector's `build_started_at`. So this
+is exposure, not new state.
+
+`GET /v1/pkg` and `GET /v1/pkg/hostbuild/{name}` now carry `run_started_at`, `build_started_at`
+and `run_seconds`. The two clocks are separate because they answer different questions -- a run
+that never got past fetching has no build start at all, and those are among the runs most worth
+looking at. All three are `null` unless a run is open, gated on `run_started_at != 0` rather than
+on a state, so a finished entry never reports the start time of a job that is over -- the same
+discipline `build_container` is gated by, for the same reason: a stale timestamp reads as a live
+one.
+
+**`run_seconds` is not redundant against `run_started_at`, and that is the one design point worth
+stating.** A dashboard ticking a counter from an absolute timestamp differences the daemon's clock
+against the browser's, so any skew between them shows as a wrong elapsed time from the very first
+frame. The absolute value renders the start time -- which a relative figure cannot -- and the
+server-computed span is the baseline a local counter advances from. `boTickElapsed()` therefore
+advances by the difference between *local* clock readings and never by differencing the two
+machines, because a local clock measures its own elapsed time correctly whatever it is set to.
+One interval for the whole document, so ten build cards step together.
+
+**#433 -- the build log viewer could not be closed.** It was a bare `<pre id="build-log-view"
+hidden>` whose `hidden` was only ever cleared: nothing in the entire file set it back, and there
+was no close control, so once opened it stayed open for the life of the page. It now sits in a
+panel with a bar carrying a Close button and the name of the log on screen, which the bare `<pre>`
+never showed either, and Escape closes it. Both routes call one `closeBuildLog()`, so there is a
+single definition of "closed" rather than two that can disagree.
+
+The rest of #433 stays open and is the larger half: it is still an inline panel rather than a
+movable window, and it still does not follow the tail -- `showBuildLog()` does one `fetch()` with
+no interval, so a running build's log is a frozen snapshot of the moment it was opened, and it
+reads the persisted file rather than the live endpoint.
+
+**#422 -- capacity now reads as a proportion.** "7 of 10" needs mental arithmetic before it means
+anything; the percentage is the figure that decides whether to start another build, and 100% is
+what explains the `409` the next install would get. `active_jobs` and `max_concurrent_jobs` were
+already in `GET /v1/system/pkg-build-config`, so this is frontend arithmetic with no daemon
+change.
+
 ### The #408 gate proves it fires, and two recipe scanners stop having a length limit (#408, #405)
 
 Two defects in the gate shipped one release earlier, both found by asking the questions the

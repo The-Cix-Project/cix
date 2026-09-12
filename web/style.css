@@ -2266,6 +2266,38 @@ body.console-popout #content-scroll {
  * container so a 2 MB tail never makes the page itself scroll
  * sideways, and monospace because build output is column-aligned by
  * whatever produced it. */
+/*
+ * #433: the bar above the log, carrying the close control and the name
+ * of the log on screen. It sits flush on top of .log-view below, so
+ * the two read as one panel -- matching borders, and the radii meet
+ * rather than doubling up.
+ */
+.log-view-bar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0.75rem;
+	padding: 0.4rem 0.6rem;
+	background: var(--panel);
+	border: 1px solid var(--border);
+	border-bottom: none;
+	border-radius: 6px 6px 0 0;
+}
+
+.log-view-title {
+	font-family: "JetBrains Mono", "DejaVu Sans Mono", ui-monospace, SFMono-Regular, Menlo,
+		Consolas, "Liberation Mono", monospace;
+	font-size: 0.75rem;
+	color: var(--muted);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+#build-log-panel .log-view {
+	border-radius: 0 0 6px 6px;
+}
+
 .log-view {
 	max-height: 60vh;
 	overflow: auto;
@@ -3113,4 +3145,13 @@ pre {
 	font-size: 0.78rem;
 	line-height: 1.45;
 	white-space: pre;
+}
+
+/*
+ * A counter whose digits change every second (#423). Proportional
+ * digits make the whole line jitter as the value ticks; tabular ones
+ * hold their column.
+ */
+.bo-elapsed {
+	font-variant-numeric: tabular-nums;
 }

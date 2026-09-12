@@ -18500,6 +18500,42 @@ components:
             worth retrying, a build that did not work is a real defect
             and retrying changes nothing. `stage` says which without
             anyone having to pattern-match an error string.
+        run_started_at:
+          type: integer
+          nullable: true
+          description: >
+            Unix epoch seconds at which this entry's current job
+            started, fetching included (#423). `null` when no run is
+            open -- which ADR-0272 defines as exactly
+            `run_started_at == 0`, so a finished entry reports nothing
+            rather than the start time of a job that is over.
+
+            Absolute rather than relative because a relative figure
+            cannot render a start time, and "it began at 18:22" is the
+            thing an operator compares against everything else that
+            happened on the box.
+        build_started_at:
+          type: integer
+          nullable: true
+          description: >
+            Unix epoch seconds at which COMPILATION began -- distinct
+            from `run_started_at` above, because a run that never got
+            past fetching has no build start at all, and those are
+            among the runs most worth looking at. `null` until the
+            build phase begins, and whenever no run is open.
+        run_seconds:
+          type: integer
+          nullable: true
+          description: >
+            How long the current run has been going, in seconds,
+            computed by the daemon (#423). `null` when no run is open.
+
+            Not redundant against `run_started_at`. A client ticking a
+            counter from an absolute timestamp differences the daemon's
+            clock against its own, so any skew between them appears as
+            a wrong elapsed time from the first frame; a
+            server-computed baseline to tick locally has no skew in it.
+            Same reason `last_output_seconds_ago` below is relative.
         last_output_seconds_ago:
           type: integer
           nullable: true

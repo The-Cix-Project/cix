@@ -2548,7 +2548,21 @@
 					<tr><td colspan="4" class="empty">Loading&hellip;</td></tr>
 				</tbody>
 			</table>
-			<pre id="build-log-view" class="log-view" hidden></pre>
+			<!--
+			  #433: the viewer was a bare <pre hidden> that only ever
+			  had hidden cleared -- nothing in the whole file set it
+			  back, and there was no close control, so once opened it
+			  stayed open for the life of the page. The bar carries the
+			  close, and names which log is on screen, which the bare
+			  <pre> never did either.
+			-->
+			<div id="build-log-panel" hidden>
+				<div class="log-view-bar">
+					<span id="build-log-title" class="log-view-title"></span>
+					<button type="button" id="build-log-close" class="button-small">Close</button>
+				</div>
+				<pre id="build-log-view" class="log-view"></pre>
+			</div>
 			<p class="hint">ADR-0157: how many <code>pkg install</code>/<code>pkg hostbuild</code> jobs may genuinely run at once, each in its own build container. Lowering this doesn't disrupt jobs already in flight -- only future ones once the new, lower ceiling is reached.</p>
 			<p class="hint">Issue #85: these are an <strong>aggregate</strong> budget, carried by one parent cgroup every build container is a leaf of -- not a per-build ceiling. A per-build number is not a budget: with max concurrent jobs at 10 it silently meant ten times what it said, and on a real 2-CPU box four concurrent builds at 1.5 CPU each demanded 6 CPUs, starved the daemon off the run queue and took the machine out of reach entirely. Whatever this says is now what all builds together can use.</p>
 			<p class="hint">ADR-0165 (superseded in shape by the above): the memory/CPU ceiling applied to build containers -- the same cgroup mechanism a regular container's own <code>--memory-max=</code>/<code>--cpu-max=</code> already uses. Found missing the hard way: a burst of concurrent installs with no ceiling hung a real box's daemon entirely. CPU quota is microseconds of CPU time per 100000-microsecond period -- "100000 100000" is one full CPU's worth, "50000 100000" is half a CPU.</p>
