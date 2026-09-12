@@ -148,6 +148,87 @@ static int comment_is_stale(const char *path, const char *name, const char *vers
 }
 
 /*
+ * No pkg_* assignment may contain command substitution (#408).
+ *
+ * The build container sources the recipe, so a backtick or $( inside a
+ * pkg_* value is EXECUTED there. zstd@1.5.7-2's changelog quoted the
+ * error its predecessor hit -- `sed: command not found` -- in
+ * backticks, so the build ran `sed:` as a program and died with
+ * "/build/recipe.sh: line 44: sed:: command not found", which is the
+ * very message it was quoting, for an entirely different reason. The
+ * obvious reading is that the sed fix did not take.
+ *
+ * POST /v1/pkg/recipes accepted it (204) and ADR-0107 makes a
+ * published revision immutable, so 1.5.7-2 is permanently a recipe
+ * that cannot build. It has happened at least three times: tcc's own
+ * rc-22 changelog records that rc-21 "never ran -- its own changelog
+ * used backticks".
+ *
+ * Not a host-side execution risk, and worth stating so nobody
+ * re-derives it: parse_recipe() reads pkg_* fields with
+ * extract_line_value(), a line scan, never `sh -c`. The damage is
+ * confined to the build container -- which is where the build is.
+ *
+ * Matched only at column 0, which is what the daemon's own line scan
+ * parses and what the shell executes at top level. An indented
+ * pkg_foo=$(...) inside pkg_build() is ordinary shell in a function
+ * body and is correctly ignored. An escaped \` or \$( is not
+ * substitution and is allowed -- tcc's changelogs use \$? deliberately.
+ *
+ * Measured 2026-09-12: eight recipe revisions carry this, every one of
+ * them SUPERSEDED (zstd 1.5.7-2 < 1.5.7-3, tcc rc-21/rc-22 < rc-29,
+ * glibc 2.44-15 < 2.44-16, libcap 2.78-9 < 2.78-13, iproute2
+ * 6.18.0-5/-9 < 6.18.0-17, probe-test-pki 2 < 7), so scanning latest
+ * revisions only -- which this test already does -- needs no
+ * grandfathered list at all and starts clean.
+ */
+static int substitution_in_pkg_value(const char *path, char *out_field, size_t field_size,
+                                     char *out_what, size_t what_size)
+{
+	FILE *f = fopen(path, "r");
+	char line[8192];
+	int found = 0;
+
+	if (f == NULL)
+		return 0;
+	while (!found && fgets(line, sizeof(line), f) != NULL) {
+		const char *eq;
+		size_t i;
+
+		if (strncmp(line, "pkg_", 4) != 0)
+			continue; /* column 0 only -- see the comment above */
+		eq = strchr(line, '=');
+		if (eq == NULL)
+			continue;
+		for (i = 0; i < (size_t)(eq - line); i++) {
+			if (!islower((unsigned char)line[i]) && !isdigit((unsigned char)line[i]) &&
+			    line[i] != '_')
+				break;
+		}
+		if (i != (size_t)(eq - line))
+			continue; /* not a plain pkg_name= assignment */
+
+		for (i = (size_t)(eq - line); line[i] != '\0'; i++) {
+			int escaped = (i > 0 && line[i - 1] == '\\');
+
+			if (line[i] == '`' && !escaped) {
+				snprintf(out_what, what_size, "a backtick");
+				found = 1;
+			} else if (line[i] == '$' && line[i + 1] == '(' && !escaped) {
+				snprintf(out_what, what_size, "$(");
+				found = 1;
+			}
+			if (found) {
+				snprintf(out_field, field_size, "%.*s", (int)(eq - line), line);
+				break;
+			}
+		}
+	}
+	fclose(f);
+	return found;
+}
+
+/*
  * No recipe may carry a live credential (#405).
  *
  * A recipe that self-fetches from the private Gitea writes the literal
@@ -268,6 +349,21 @@ int main(void)
 			continue;
 
 		snprintf(path, sizeof(path), "%s/%s/build.sh", pkgdir, latest);
+
+		{
+			char field[256] = "", what[32] = "";
+
+			if (substitution_in_pkg_value(path, field, sizeof(field), what, sizeof(what)))
+				fail("%s@%s's %s= contains %s -- command substitution.\n"
+				     "       The build container sources the recipe, so this is EXECUTED\n"
+				     "       there: zstd@1.5.7-2 quoted `sed: command not found` in its\n"
+				     "       changelog and its build died running `sed:` (#408). A published\n"
+				     "       revision is immutable (ADR-0107), so it can never be fixed.\n"
+				     "       Quote it differently -- single quotes inside the value, or drop\n"
+				     "       the backticks -- before publishing.",
+				     ent->d_name, latest, field, what);
+		}
+
 		if (!comment_is_stale(path, ent->d_name, latest, named, sizeof(named)))
 			continue;
 		found++;

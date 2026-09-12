@@ -2904,7 +2904,7 @@ paths:
                   nullable: true
                   description: >
                     Issue #28. Places the swap file on a real disk carrying
-                    the "swap" diskrole (POST /diskroles first) instead of
+                    the "swap" storage role (POST /storage-roles first) instead of
                     the default OS-disk location -- validated at this exact
                     call (present, mounted, correct role), the same "real
                     validation at the point of real use" posture
@@ -4762,12 +4762,12 @@ paths:
         is also listed as its own ordinary entry (`is_partition`/
         `parent_disk`), alongside the whole disk itself -- a partition
         is independently addressable everywhere a whole disk name is
-        accepted (POST /diskroles, POST /disks/{name}/format). `is_os_disk`
+        accepted (POST /storage-roles, POST /disks/{name}/format). `is_os_disk`
         flags the one disk (and, transitively, every one of its own
         partitions) holding this platform's own fixed ESP/root-a/root-b/
         config/containers partition layout -- never a candidate for role
         assignment or formatting; every other disk or partition is
-        available for a role (POST /diskroles) and, once role-assigned,
+        available for a role (POST /storage-roles) and, once role-assigned,
         formatting (POST /disks/{disk_name}/format). A container's own
         storage disk is selected at creation time (POST /containers'
         `disk` field, ADR-0102) -- moving an *existing* container's storage
@@ -4819,7 +4819,7 @@ paths:
       summary: Destructively formats (mkfs.ext4 or mkfs.btrfs) and mounts a disk that already has an assigned role
       description: >
         Multi-disk management Phase C. Deliberately a SEPARATE, explicit
-        action from POST /diskroles (role assignment never has a
+        action from POST /storage-roles (role assignment never has a
         destructive side effect of its own) -- confirmed with the
         operator during design. The request body's `confirm_disk_name`
         must match disk_name in the URL exactly, a deliberate double-
@@ -4830,7 +4830,7 @@ paths:
         (GET /disks), must not be part of the fixed OS layout -- the OS
         disk itself, or one of its first four partitions (the ESP, both
         root slots and /config) -- and must already have a role assigned
-        (POST /diskroles). An operator-created partition in the OS
+        (POST /storage-roles). An operator-created partition in the OS
         disk's reserved free space is NOT part of that layout and can be
         formatted like any other, which is the point of being allowed to
         create one at all (issue #9) -- format is never allowed to
@@ -4899,7 +4899,7 @@ paths:
       summary: Detaches an already-mounted, non-OS disk from the running system, without touching its content
       description: >
         Found live (issue #34): a disk with its role already removed
-        (DELETE /diskroles/{name}) had no way to actually be let go of
+        (DELETE /storage-roles/{name}) had no way to actually be let go of
         -- it stayed mounted forever, and a real, currently-mounted-
         but-role-less disk was found to correlate with a genuine
         mountns_pivot() EXDEV failure in every subsequent container
@@ -5281,7 +5281,7 @@ paths:
         partition_name that doesn't currently exist, isn't actually a
         partition, doesn't belong to disk_name, is part of the OS disk,
         still has a role assigned (remove the role first, POST
-        /diskroles), or is currently mounted.
+        /storage-roles), or is currently mounted.
       operationId: deleteStoragePartition
       x-cix-expose: [cli, web]
       parameters:
@@ -5442,7 +5442,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [diskroles]
+                required: [storage_roles]
                 properties:
                   storage_roles:
                     type: array
@@ -13202,7 +13202,7 @@ components:
             workdir/merged) should live on, in place of the default
             OS-disk containers directory (task #638, ADR-0102). The
             disk must already carry the "container-storage" role
-            (POST /diskroles) -- 400 if it doesn't exist, isn't
+            (POST /storage-roles) -- 400 if it doesn't exist, isn't
             mounted, or lacks that role; this is the one thing that
             makes the role (assignable since Phase B) actually
             connect to anything. Omit for the default placement.
@@ -16503,7 +16503,7 @@ components:
           nullable: true
           description: >
             The role assigned to this disk or partition, or null. Joined
-            here so a client does not have to fetch GET /diskroles and
+            here so a client does not have to fetch GET /storage-roles and
             match by name itself -- which every client was doing.
             use.
           description: The real current mountpoint when mounted is true; empty string otherwise.

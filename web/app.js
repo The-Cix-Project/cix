@@ -3827,6 +3827,34 @@ function dataChanged(key, data) {
 }
 
 /*
+ * True when a panel can be left exactly as it is: the payload is
+ * identical to what it was last rendered from, AND it actually has
+ * rows to keep (#432).
+ *
+ * Both halves matter. Without the payload check a refresh tick blanks
+ * and rebuilds a table that has not changed, which costs the reader
+ * their scroll position -- the page shrinks to a fraction of its
+ * height while the tables are empty, the browser clamps scrollTop to
+ * the new maximum, and the rebuilt-taller table cannot give the offset
+ * back. Opening the build log made that obvious because the log box is
+ * tall, but every table on a polled page was doing it.
+ *
+ * Without the has-rows check the guard has the opposite failure: a
+ * panel whose DOM is empty but whose payload matches a previous render
+ * would be skipped and stay empty. That is the same distinction
+ * showLoadingIfEmpty() below already draws, for the same reason.
+ *
+ * dataChanged() records the signature as a side effect, so this must
+ * be called once per render attempt and its answer acted on.
+ */
+function unchangedAndRendered(tbody, key, data)
+{
+	const changed = dataChanged(key, data);
+
+	return !changed && tbody !== null && tbody.querySelector("tr") !== null;
+}
+
+/*
  * "Loading" belongs to a panel that has never had content, not to
  * every refresh of one that has. Blanking a populated table before a
  * fetch is what made Processes flash empty twice a second.
@@ -3963,7 +3991,19 @@ for (const tabButton of document.querySelectorAll(".tab-bar .tab-button")) {
 		 * (that page renders all of its content for any of its own
 		 * addresses) -- are left alone.
 		 */
-		if (tabButtonFor(tabName) !== null && parseHash().category !== tabName)
+		/*
+		 * A container detail's tabs are per-container panels, never
+		 * addresses, so they are exempt wholesale rather than by name
+		 * (#425). "packages" collides with the top-level #packages
+		 * route, so the rule above rewrote the location and the router
+		 * obliged -- clicking Packages on a container landed on the
+		 * global Packages view, and loadContainerPackages() right
+		 * below never got the chance to matter. Exempting the tab bar
+		 * rather than blacklisting the word is what stops the next
+		 * tab whose name happens to be a route from doing it again.
+		 */
+		if (tabBar.parentElement.id !== "view-container-detail" &&
+		    tabButtonFor(tabName) !== null && parseHash().category !== tabName)
 			location.hash = "#" + tabName;
 		if (tabName === "console") {
 			/*
@@ -5232,6 +5272,11 @@ async function detachInterface(networkName, ifname) {
 function renderImages(images) {
 	const body = document.getElementById("images-body");
 
+	/* #432: shares the pkg-build-config refresh tick with the build-log
+	 * table, so guarding only that one still collapsed the page height
+	 * and still lost the reader's place. */
+	if (unchangedAndRendered(body, "images", images))
+		return;
 	body.textContent = "";
 	if (images.length === 0) {
 		const row = document.createElement("tr");
@@ -7719,6 +7764,12 @@ async function refreshBuildLogs() {
 		const data = await apiRequest("GET", CIX_API.listBuildLogs());
 		const logs = data.logs || [];
 
+		/* #432: a log list changes when a build writes one, which is
+		 * rare next to the refresh tick -- so in practice this table
+		 * stops being rebuilt at all, and the log you just opened
+		 * stops taking your scroll position with it. */
+		if (unchangedAndRendered(body, "build-logs", logs))
+			return;
 		body.textContent = "";
 		if (logs.length === 0) {
 			const tr = document.createElement("tr");
