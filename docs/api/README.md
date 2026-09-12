@@ -887,6 +887,7 @@ POST /v1/containers
   One thing this count does **not** tell you, because it cannot: these files are answered from the **reader's** own cgroup. All six can be bound and a process that entered the container's namespaces from outside without also joining its cgroup will still read the host's memory and CPU count. The binds decide *which files are visible*; the reader's cgroup decides *what they say*.
 - `dns_register` is optional, default `false` — see [DNS: records + a real dnsmasq container](#dns-records--a-real-dnsmasq-container) below. Requires `networks` to be set (`400` otherwise).
 - `pki_issue`/`pki_cert_dir`/`pki_days` are optional, default `false`/`/etc/cix-tls`/`365` — see [PKI: a CA chain and issued leaf certificates](#pki-a-ca-chain-and-issued-leaf-certificates) below. Requires the CA to already be bootstrapped (`400` otherwise); does **not** require `networks`.
+- `pki_cert` is optional and names an already-existing cert to deliver instead of issuing one — a durable identity the container does not own, see [A durable identity the container does not own: `pki_cert`](#a-durable-identity-the-container-does-not-own-pki_cert) below. Mutually exclusive with `pki_issue` (`400`).
 - `ldap_provision`/`ldap_user`/`ldap_group`/`ldap_uid`/`ldap_secret_dir` are optional, default `false`/(container's own name)/(required when `ldap_provision` is true)/(auto-allocated)/`/etc/cix-ldap` — see [Automatic provisioning: ldap_provision](#automatic-provisioning-ldap_provision) below. Requires `ldap_group` to name an existing LDAP group (`400` otherwise); does **not** require `networks`.
 - `files` is optional: up to 16 `{"path", "content", "mode", "owner", "group"}` entries, staged directly into the container's own upperdir before its process ever `execve()`s. `mode` is an octal permission string, default `"0644"`. `owner`/`group` (ADR-0144) are real, raw numeric uid/gid — never a username (no NSS lookup happens this early, and no ordering dependency on some other staged file like `/etc/passwd` existing first) — both default to root (this daemon's own real euid/egid). The one real reason to reach for these: a file only one specific non-root container process should be able to read (e.g. a bind credential a script running as a dedicated, non-root `AuthorizedKeysCommandUser` needs but nothing else in the container should) — `mode` alone can restrict *what* is allowed, but only `owner` can restrict *who*.
 
@@ -2036,6 +2037,42 @@ POST /v1/containers
 `pki_cert_dir` and `pki_days` are optional (shown defaults). This issues a cert named `web` (CN and sole SAN) and writes `tls.crt`/`tls.key` (chmod 0600) into `/etc/cix-tls` **inside the `web` container's own filesystem** — the same `/proc/<pid>/root/<path>` mechanism `POST /v1/dns/servers` already uses to reach into a running container (ADR-0013), just delivering a cert+key instead of a hosts file. Unlike DNS server bindings, delivery is **one-time**: there's no live resync, since a cert doesn't change after a container starts — except after a `/pki/reset` (below), which explicitly redelivers to every still-live container that owns a reissued leaf. `GET /v1/pki/certs/web` shows `"owner": "web"`; deleting the `web` container automatically removes its cert (both the index entry and the on-disk key/cert files) — a manually-created cert is never touched by any container's deletion, even if it happens to share that container's name but wasn't the one that created it.
 
 Unlike `dns_register`, `pki_issue` does **not** require `networks` — the cert identifies the container by name, not by IP, and delivery works for any running container regardless of networking. It **does** require the CA to already be bootstrapped, checked upfront as a `400` (you can't issue a cert with no CA). A *name collision* discovered only at issuance time (e.g. a stale cert persisted from a same-named container created before a daemon restart) is best-effort instead: issuance is silently skipped rather than overwriting it, and the container is still created successfully.
+
+### A durable identity the container does not own: `pki_cert`
+
+`pki_issue` is the right default for a leaf TLS certificate, because a cert that identifies a service *should* stop working when that service is gone. But it is the wrong tool for an identity that has to outlive any single container instance, and the reason is in the record's own shape:
+
+```c
+/* daemon/src/pki.c */
+	/* Empty: created directly via POST /v1/pki/certs, not tied to any
+	 * container's lifecycle. Non-empty: this container's name -- the
+	 * cert is auto-deleted when it's deleted (pki_cert_forget_owner()). */
+	char owner_container[DNS_NAME_MAX];
+```
+
+A cert's **identity** is its name and SANs. Its **lifetime** is `owner_container`, and nothing else reads that field — only `pki_cert_owned_by()` and `pki_cert_forget_owner()`, which shreds a cert solely when its owner equals the container being deleted. An unowned cert therefore matches no container name and survives every delete.
+
+`pki_cert` delivers such a cert by name, creating nothing and owning nothing:
+
+```
+POST /v1/pki/certs
+{"name": "jump-ssh", "sans": ["jump-ssh"], "days": 730}
+
+POST /v1/containers
+{
+  "name": "jump",
+  "image": "jump",
+  "pki_cert": "jump-ssh",
+  "pki_cert_dir": "/etc/cix-tls",
+  "follow_rolling": true
+}
+```
+
+The delivered files are identical to `pki_issue`'s — `tls.crt` (leaf + intermediate chain) and `tls.key` at chmod 0600 — so a service config written for one works unchanged with the other.
+
+**The motivating case is an SSH host key.** SSH is trust-on-first-use: the client pins the exact key bytes and treats any change as a possible attack. Measured on 192.168.15.95 (2026-09-12), `jump` with `pki_issue` moved from `2048 SHA256:nCR2Epsa...` to `2048 SHA256:H8urRHcL...` across a single `follow_rolling` rebuild — a rolling rebuild is a delete-and-recreate (`apply` cannot recreate in place while the address is still held, `409`), and the delete took the owned cert with it. TLS does not have this problem: a TLS client verifies the CA, not the specific leaf, so `pki_issue` remains correct for LDAPS, HTTPS and friends.
+
+Two `400`s, both checked before the container is created: the named cert must already exist (the message names which one is missing), and `pki_cert` is mutually exclusive with `pki_issue` — both write `tls.crt`/`tls.key` into `pki_cert_dir`, so declaring both is a conflict with no sane resolution. Unlike `pki_issue`, delivery repeats on **every** start rather than once, because each fresh container instance starts with a fresh filesystem. See ADR-0280.
 
 This install also always keeps a `"host"` leaf current for itself, auto-(re)issued whenever `PUT /system/site` changes this install's identity, or whenever the CA chain changes at all — nothing an operator needs to request separately. Its own `"owner"` is `"__host"` (ADR-0128), a reserved sentinel distinguishing "owned by the daemon itself" from a plain `null` owner — the CLI and web dashboard both render it as "host (this daemon)" rather than the raw sentinel string. Same sentinel on the auto-maintained instance DNS record mentioned above.
 

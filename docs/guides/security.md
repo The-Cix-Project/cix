@@ -29,10 +29,25 @@ cixctl pki cert create --name=svc.internal --sans=svc.internal,svc --days=365
 **Automatic issuance straight into a container**, instead of issuing separately and figuring out delivery:
 
 ```sh
-cixctl container run --name=web --image=myapp --pki-issue --pki-cert-dir=/etc/cix-tls --pki-days=365--service=main=/usr/bin/some-binary
+cixctl container run --name=web --image=myapp --pki-issue --pki-cert-dir=/etc/cix-tls --pki-days=365 --service=main=/usr/bin/some-binary
 ```
 
 Issues a cert named after the container and writes `tls.crt`/`tls.key` (mode `0600`) directly into its filesystem at creation time — one-time delivery, no live resync, since a cert doesn't change after a container starts (a chain rotation, below, explicitly redelivers). Deleting the container automatically removes its cert too. Requires the CA to already be bootstrapped.
+
+### An identity that must outlive the container: `--pki-cert`
+
+`--pki-issue` is right for a leaf TLS certificate, because a cert identifying a service *should* stop working once that service is gone — and a TLS client verifies the CA rather than the specific leaf, so the cert being reissued on every rebuild costs it nothing.
+
+An **SSH host key is the opposite case.** SSH is trust-on-first-use: the client pins the exact key bytes in `known_hosts` and reports any change as a possible attack. A cert owned by the container is deleted along with it, and a `--follow-rolling` rebuild is a delete-and-recreate, so an SSH host key delivered via `--pki-issue` changes on every image update and warns every operator who connects.
+
+Create the identity once, then hand it to the container without giving it ownership:
+
+```sh
+cixctl pki cert create --name=jump-ssh --sans=jump-ssh --days=730
+cixctl container run --name=jump --image=jump --pki-cert=jump-ssh --pki-cert-dir=/etc/cix-tls ...
+```
+
+The delivered files are identical to `--pki-issue`'s, so a service config written for one works unchanged with the other. Nothing deletes the cert when the container goes — which is the point, and also means retiring the service means `pki cert rm` deliberately. The named cert must already exist and the two flags are mutually exclusive; both are refused with a `400` before the container is created. See [ADR-0280](../adr/0280-a-certificates-identity-and-its-lifetime-are-separate-concerns.md).
 
 This install also always keeps its own `"host"` leaf current, auto-reissued whenever site identity or the CA chain changes — nothing to request separately.
 

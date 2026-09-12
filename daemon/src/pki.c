@@ -853,6 +853,11 @@ int pki_cert_owned_by(const char *name, const char *owner)
 	return rec != NULL && strcmp(rec->owner_container, owner) == 0;
 }
 
+int pki_cert_exists(const char *name)
+{
+	return cert_find(name) != NULL;
+}
+
 void pki_cert_forget_owner(const char *container_name)
 {
 	struct pki_cert_record *rec = cert_find(container_name);

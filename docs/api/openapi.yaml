@@ -13203,13 +13203,36 @@ components:
             container is deleted. Delivery is one-time (no live resync) --
             reused verbatim from POST /pki/certs's own reasoning, since a
             cert doesn't change after a container starts.
+        pki_cert:
+          type: string
+          description: >
+            Name of an ALREADY-EXISTING certificate (see POST /pki/certs) to
+            deliver into this container at every start. Unlike pki_issue this
+            never creates a cert and never takes ownership of one, which is
+            the entire point: a cert's owner field is what causes it to be
+            deleted along with the container, so a cert delivered this way
+            survives every delete/recreate cycle and its identity outlives
+            any single container instance. Use it for an identity that must
+            stay stable across a rolling rebuild -- an SSH host key being the
+            motivating case, since SSH pins the exact key bytes on first use
+            and a rotated key is indistinguishable from an attack. A leaf TLS
+            certificate usually wants the opposite and should use pki_issue,
+            because a TLS client verifies the CA rather than the specific
+            leaf. Requires the CA to be bootstrapped and the named cert to
+            already exist (400 naming the missing cert otherwise), and is
+            mutually exclusive with pki_issue (400) since both write
+            tls.crt/tls.key into pki_cert_dir. Delivery is repeated on every
+            start, because each fresh container instance starts with a fresh
+            filesystem; it is best-effort past that point, exactly like
+            pki_issue. See ADR-0280.
         pki_cert_dir:
           type: string
           default: "/etc/cix-tls"
           description: >
             Destination directory inside the container (its own filesystem
             view) that the cert (tls.crt) and key (tls.key, chmod 0600)
-            are written into when pki_issue is true. Ignored otherwise.
+            are written into when pki_issue or pki_cert is set. Ignored
+            otherwise.
         pki_days:
           type: integer
           default: 365

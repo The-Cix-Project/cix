@@ -230,7 +230,7 @@ container run --name=NAME --image=IMAGE
     [--network=NAME[:IP] ...] [--ip-forward]
     [--userns] [--ldap-client] [--ldap-allow-group=NAME ...] [--capture-output]
     [--dns-register]
-    [--pki-issue] [--pki-cert-dir=PATH] [--pki-days=N]
+    [--pki-issue | --pki-cert=NAME] [--pki-cert-dir=PATH] [--pki-days=N]
     [--ldap-provision] [--ldap-user=NAME] [--ldap-group=NAME] [--ldap-uid=N] [--ldap-secret-dir=PATH]
     [--route=DEST/PREFIX:VIA ...]
     [--device=ID ...] [--optional-device=ID ...] [--interface=IFNAME ...]
