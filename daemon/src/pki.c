@@ -609,16 +609,44 @@ enum pki_error pki_cert_create(const char *name, const char *const *sans, int sa
 	 * precisely what an IP SAN may contain and rejects "10.0.0.1.local",
 	 * which a "digits and dots" heuristic would wrongly promote.
 	 */
+	/*
+	 * off is initialised HERE, and that is the whole point of the line.
+	 * #414 folded what had been an assignment before the loop plus an
+	 * append inside it into one loop whose guard reads `off` -- so the
+	 * first read happened before any write. When the garbage on the
+	 * stack was >= sizeof(sanbuf) the loop body never ran at all and
+	 * an UNINITIALISED sanbuf went to openssl as -addext, which then
+	 * parsed whatever was there as an extension name.
+	 *
+	 * Measured in a build container on 192.168.15.95, 2026-09-12
+	 * (probe-test-pki/1, against v2.57.116): four consecutive
+	 * issuances failed with "Duplicate extension: p.internal",
+	 * "Duplicate extension: ernal" and "Duplicate extension: " --
+	 * three different tails of an unrelated domain string left on the
+	 * stack by an earlier call. Cert issuance therefore worked or
+	 * failed depending on stack contents, and it happens to work on
+	 * the live host, which is why this shipped and stood.
+	 *
+	 * One snprintf rather than two branches: the separator is the only
+	 * thing that differs per iteration, and a single write is one less
+	 * place for the offset to be got wrong.
+	 */
+	off = 0;
 	for (i = 0; i < san_count && off < sizeof(sanbuf); i++) {
 		struct in_addr probe;
 		const char *kind = inet_pton(AF_INET, sans[i], &probe) == 1 ? "IP" : "DNS";
+		int n = snprintf(sanbuf + off, sizeof(sanbuf) - off, "%s%s:%s",
+		                  i == 0 ? "subjectAltName=" : ",", kind, sans[i]);
 
-		if (i == 0)
-			off = (size_t)snprintf(sanbuf, sizeof(sanbuf), "subjectAltName=%s:%s", kind,
-			                        sans[i]);
-		else
-			off += (size_t)snprintf(sanbuf + off, sizeof(sanbuf) - off, ",%s:%s", kind,
-			                         sans[i]);
+		/* snprintf returns what it WOULD have written, so a truncated
+		 * SAN list must stop here rather than carry an offset past the
+		 * end into the next iteration. sanbuf is sized for
+		 * PKI_MAX_SANS full-length names, so this is a backstop. */
+		if (n < 0 || (size_t)n >= sizeof(sanbuf) - off) {
+			fprintf(stderr, "pki: SAN list for leaf %s does not fit\n", name);
+			return PKI_ERR_INVALID_NAME;
+		}
+		off += (size_t)n;
 	}
 
 	/* 1. leaf keypair */
