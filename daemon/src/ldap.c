@@ -34,6 +34,12 @@ static char g_groups_state_path[PATH_MAX];
 static struct ldap_config g_config = {
 	.start_uid = LDAP_CONFIG_DEFAULT_START_UID,
 	.start_gid = LDAP_CONFIG_DEFAULT_START_GID,
+	/* #414: plaintext until an operator turns TLS on -- the honest
+	 * default, since that is what every existing box is doing and a
+	 * flag that silently changed the port clients dial would break
+	 * them on upgrade. The port is glauth's own sample default. */
+	.client_tls = 0,
+	.client_tls_port = LDAP_CONFIG_DEFAULT_TLS_PORT,
 };
 static char g_config_state_path[PATH_MAX];
 
@@ -542,6 +548,17 @@ int ldap_config_init(const char *state_path)
 		if ((v = json_as_string(json_object_get(root, "bind_password"))) != NULL)
 			snprintf(g_config.bind_password, sizeof(g_config.bind_password), "%s", v);
 	}
+	/* #414: absent in older state files -- plaintext then, which is
+	 * what those boxes were actually doing, so no migration. */
+	{
+		const struct json_value *jv = json_object_get(root, "client_tls");
+
+		if (jv != NULL && jv->type == JSON_BOOL)
+			g_config.client_tls = jv->u.boolean;
+		jv = json_object_get(root, "client_tls_port");
+		if (jv != NULL && jv->type == JSON_NUMBER)
+			g_config.client_tls_port = (int)jv->u.number;
+	}
 	json_free(root);
 	return 0;
 }
@@ -591,6 +608,10 @@ static enum ldap_record_error ldap_config_persist(void)
 	jw_str(&w, g_config.bind_dn);
 	jw_key(&w, "bind_password");
 	jw_str(&w, g_config.bind_password);
+	jw_key(&w, "client_tls");
+	jw_bool(&w, g_config.client_tls);
+	jw_key(&w, "client_tls_port");
+	jw_int(&w, g_config.client_tls_port);
 	jw_obj_close(&w);
 	rc = persist_atomic_write(g_config_state_path, w.buf, w.len);
 	jw_free(&w);
@@ -612,6 +633,24 @@ enum ldap_record_error ldap_config_set(int start_uid, int start_gid)
 		g_config.start_uid = old_uid;
 		g_config.start_gid = old_gid;
 	}
+	return rc;
+}
+
+enum ldap_record_error ldap_config_set_client_tls(int client_tls, int client_tls_port)
+{
+	struct ldap_config saved = g_config;
+	enum ldap_record_error rc;
+
+	if (client_tls >= 0)
+		g_config.client_tls = client_tls != 0;
+	if (client_tls_port >= 0) {
+		if (client_tls_port < 1 || client_tls_port > 65535)
+			return LDAP_RECORD_ERR_INVALID_FIELD;
+		g_config.client_tls_port = client_tls_port;
+	}
+	rc = ldap_config_persist();
+	if (rc != LDAP_RECORD_OK)
+		g_config = saved;
 	return rc;
 }
 
@@ -676,6 +715,10 @@ void ldap_config_write_json_open(struct json_writer *w)
 		jw_str(w, g_config.bind_dn);
 	else
 		jw_null(w);
+	jw_key(w, "client_tls");
+	jw_bool(w, g_config.client_tls);
+	jw_key(w, "client_tls_port");
+	jw_int(w, g_config.client_tls_port);
 	jw_key(w, "bind_password_set");
 	jw_bool(w, g_config.bind_password[0] != '\0');
 }
@@ -1848,7 +1891,12 @@ static const char *ldap_uri_registered_server(const char *uri, char names[][LDAP
 			port = atoi(colon + 1);
 		}
 	}
-	if (port != HOSTAUTH_LDAP_DEFAULT_PORT)
+	/* #414: with TLS on, an explicitly-configured list names the TLS
+	 * port, and rejecting it here would silently drop every entry --
+	 * health filtering would then pass nothing through and the list
+	 * would look empty rather than wrong. */
+	if (port != HOSTAUTH_LDAP_DEFAULT_PORT &&
+	    !(g_config.client_tls && port == g_config.client_tls_port))
 		return NULL;
 
 	for (i = 0; i < count; i++) {
@@ -1943,8 +1991,25 @@ int ldap_effective_client_uri(char *out, size_t out_size)
 			a.s_addr = se->nets[0].ip_be;
 			if (inet_ntop(AF_INET, &a, ipbuf, sizeof(ipbuf)) == NULL)
 				continue;
-			written = snprintf(out + off, out_size - off, "%sldap://%s:%d/",
-			                    off > 0 ? " " : "", ipbuf, HOSTAUTH_LDAP_DEFAULT_PORT);
+			/*
+			 * Scheme and port together (#414) -- they are one
+			 * decision, and splitting them produces a URI that
+			 * names TLS on a plaintext port or the reverse.
+			 *
+			 * This is the client population configured FROM here:
+			 * nslcd.conf and {{LDAP:URI}}. The daemon's OWN bind
+			 * does not come through this function -- hostauth
+			 * dials ldapclient.c, which speaks LDAP over a raw
+			 * socket with no TLS support whatsoever, so turning
+			 * this on does not and cannot affect it. That is why
+			 * the plaintext listener has to keep running while
+			 * both exist; see #416.
+			 */
+			written = snprintf(out + off, out_size - off, "%s%s://%s:%d/",
+			                    off > 0 ? " " : "",
+			                    g_config.client_tls ? "ldaps" : "ldap", ipbuf,
+			                    g_config.client_tls ? g_config.client_tls_port :
+			                                           HOSTAUTH_LDAP_DEFAULT_PORT);
 			if (written > 0 && (size_t)written < out_size - off)
 				off += (size_t)written;
 		}

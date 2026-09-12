@@ -1303,6 +1303,89 @@ int main(void)
 	}
 
 	/*
+	 * #414: an IPv4 SAN must be emitted as IP:, not DNS:.
+	 *
+	 * A TLS client checks the name it DIALLED against the matching SAN
+	 * type -- an address dialled as an address is never matched against
+	 * a DNS: SAN however identical the string looks. This function
+	 * emitted DNS: for everything, which was invisible while every cert
+	 * was verified by hostname and is exactly what stopped LDAPS
+	 * working: ldap_effective_client_uri() hands clients the registered
+	 * servers' live IPs.
+	 *
+	 * Asserted against openssl's own parse of the issued certificate,
+	 * not against the string we built -- the string being right and the
+	 * certificate being wrong is a real outcome (a malformed
+	 * subjectAltName is silently dropped by openssl rather than
+	 * refused), and the certificate is what a client sees.
+	 */
+	{
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/pki/certs",
+		                       "{\"name\":\"sanmix\",\"sans\":[\"sanmix\",\"10.11.12.13\",\"sanmix.example\"]}",
+		                       &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: POST sanmix cert, status=%d\n", r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		{
+			char crt_path[PATH_MAX];
+			char out[8192] = { 0 };
+			FILE *f;
+			size_t n = 0;
+
+			snprintf(crt_path, sizeof(crt_path), "%s/certs/sanmix.crt", g_pki_state_dir);
+			{
+				char cmd[PATH_MAX + 96];
+
+				snprintf(cmd, sizeof(cmd),
+				         "/usr/bin/openssl x509 -in '%s' -noout -ext subjectAltName 2>&1",
+				         crt_path);
+				f = popen(cmd, "r");
+				if (f == NULL) {
+					fprintf(stderr, "FAIL: could not run openssl for sanmix\n");
+					ok = 0;
+				} else {
+					n = fread(out, 1, sizeof(out) - 1, f);
+					pclose(f);
+					out[n] = '\0';
+				}
+			}
+			if (n > 0) {
+				if (strstr(out, "IP Address:10.11.12.13") == NULL) {
+					fprintf(stderr,
+					        "FAIL: 10.11.12.13 is not an IP SAN -- a client dialling "
+					        "that address cannot verify this cert. openssl says: %s\n",
+					        out);
+					ok = 0;
+				}
+				if (strstr(out, "DNS:sanmix.example") == NULL ||
+				    strstr(out, "DNS:sanmix,") == NULL) {
+					fprintf(stderr,
+					        "FAIL: the non-numeric SANs are not DNS SANs. openssl says: %s\n",
+					        out);
+					ok = 0;
+				}
+				/* The address must not ALSO appear as a DNS SAN: that is
+				 * what the old unconditional DNS: emission produced, and
+				 * it verifies against nothing. */
+				if (strstr(out, "DNS:10.11.12.13") != NULL) {
+					fprintf(stderr,
+					        "FAIL: 10.11.12.13 emitted as a DNS SAN. openssl says: %s\n",
+					        out);
+					ok = 0;
+				}
+			}
+		}
+
+		memset(&r, 0, sizeof(r));
+		cix_client_request(&client, "DELETE", "/v1/pki/certs/sanmix", NULL, &r);
+		cix_response_free(&r);
+	}
+
+	/*
 	 * ADR-0280/#397: a container may be given an identity it does NOT
 	 * own, and that identity survives the container.
 	 *

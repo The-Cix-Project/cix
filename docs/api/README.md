@@ -2038,6 +2038,16 @@ POST /v1/containers
 
 Unlike `dns_register`, `pki_issue` does **not** require `networks` — the cert identifies the container by name, not by IP, and delivery works for any running container regardless of networking. It **does** require the CA to already be bootstrapped, checked upfront as a `400` (you can't issue a cert with no CA). A *name collision* discovered only at issuance time (e.g. a stale cert persisted from a same-named container created before a daemon restart) is best-effort instead: issuance is silently skipped rather than overwriting it, and the container is still created successfully.
 
+### SANs: a cert is verified against the name you dialled
+
+`pki_cert_create()` emits an `IP:` SAN for any SAN that parses as an IPv4 literal and a `DNS:` SAN for everything else. That distinction is not cosmetic — a TLS client checks the name it **dialled** against the matching SAN *type*, and an address dialled as an address is never matched against a `DNS:` SAN however identical the string looks.
+
+`pki_issue` therefore issues for the container's name **plus every address it is actually reachable at**, read from the container's own `networks[]` rather than typed by hand into a separate `POST /pki/certs` call — the address is declared once, in the container body, and a second copy is what drifts the first time a container moves. Up to `PKI_MAX_SANS` (8) entries: the name, then up to seven addresses.
+
+This is what makes LDAPS work here (#414): `effective_client_uri` hands clients the registered servers' **live IPs**, so a cert carrying only `DNS:ldap-1` cannot verify no matter how correct it looks.
+
+One limit, recorded rather than solved: a container whose address later changes hits `PKI_ERR_DUPLICATE` on its next start and keeps the cert it already has, stale IP SAN included. Delete the cert (or the container) to reissue.
+
 ### A durable identity the container does not own: `pki_cert`
 
 `pki_issue` is the right default for a leaf TLS certificate, because a cert that identifies a service *should* stop working when that service is gone. But it is the wrong tool for an identity that has to outlive any single container instance, and the reason is in the record's own shape:
