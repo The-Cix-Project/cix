@@ -1,4 +1,3 @@
-#define _GNU_SOURCE
 #include "netconf.h"
 
 #include <errno.h>
