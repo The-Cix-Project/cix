@@ -39,11 +39,35 @@ evidence the issue asks for minus the rename itself:
 deliberately not their values: a test daemon is not an installed system, so every one is correctly
 empty, and asserting values there would be a test of the fixture.
 
-**#305 stays open.** Its own last line defines done as a real boot on renamed hardware, and closing
-on a proxy is exactly what that line says not to do. The route not taken: packaging QEMU and OVMF
-to boot an installed image on a different bus is a gcc-class effort to verify a resolver that
-provably has no name assumption — the escalation the cost rule exists to stop. The remaining step
-is one hypervisor change on the owner's side, and this field is what will make its result readable.
+**#305 is closed, verified on renamed hardware the same day.** The owner moved the OS disk from
+virtio bus 0 to bus 2; another disk took the lower slot, so the OS disk came back as **`vdb`
+instead of `vda`** — the exact failure the issue was filed for, on the machine that produced the
+panic. It booted normally, and this field is how that was read in two seconds instead of a console
+session:
+
+```
+esp        /dev/vdb1        /dev/vdb   vdb   32.0 GiB  os-disk    protected
+root_a     /dev/vdb2        /dev/vdb1  vdb1  mounted@/boot
+root_b     /dev/vdb3        /dev/vdb4  vdb4  mounted@/config
+config     /dev/vdb4        /dev/vdb5  vdb5  mounted@/var/lib/cix
+containers /dev/vdb5        /dev/vda   vda   15.0 GiB  assignable   <- took the old name
+```
+
+`is_os_disk` followed the disk rather than the name, so #140's protected-layout rule moved with it.
+12 containers running and ready with no service failures, 8 registered servers healthy, and an
+LDAP-backed control-plane login returning 200 — so `/config` and `/var/lib/cix` are not merely
+mounted but carrying the live state.
+
+The route not taken: packaging QEMU and OVMF to boot an installed image on a different bus would
+have been a gcc-class effort to verify a resolver that provably has no name assumption — the
+escalation the cost rule exists to stop. One hypervisor change answered it instead.
+
+**#427 was found while verifying and is open:** the resolver stops at the first label match in
+`readdir` order, with no tie-break and no preference for the disk root was mounted from. Two disks
+carrying `cix-config` — a replaced disk left in the chassis, a clone, a second install — and the
+platform mounts whichever comes first, silently. A consequence of this fix and a good trade against
+a reboot-loop panic, but it is the assumption the fix introduced. It is also why verifying #305 by
+installing onto the box's spare 100 GiB `sda` would have been the wrong move.
 
 ### The teardown-aware 409 read freed memory, and said the wrong thing (#421)
 
