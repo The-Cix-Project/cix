@@ -6,6 +6,63 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A container can be given a certificate it does not own (`pki_cert`, #397, ADR-0280)
+
+`jump`'s SSH host key changed on every rolling rebuild, so every operator connecting to the jump
+host saw SSH's host-key-changed warning. The first fix stopped generating a throwaway key inside
+the container and pointed sshd at the platform's own PKI instead (jump 1.9.0: a `waitkey` oneshot
+gating sshd on the delivered key, `HostKey /etc/cix-tls/tls.key`). That worked — sshd loaded the
+PKI key and served with no host-key error — and it did not fix the problem. Measured on
+192.168.15.95, 2026-09-12: across one `follow_rolling` rebuild the host key still went
+`2048 SHA256:nCR2Epsa...` -> `2048 SHA256:H8urRHcL...`, and jump's certificate `not_after` moved
+`Sep 11 03:24:51 2027` -> `Sep 12 00:04:42 2027`.
+
+Not a bug. `pki_issue` sets the new cert's `owner_container` to the container's own name, and
+`pki_cert_forget_owner()` deletes a cert whose owner matches the container being deleted. A rolling
+rebuild is a delete-and-recreate — `apply` cannot recreate in place while the address is still held
+(`409 ip is held by container "jump"`) — so every rebuild shredded the certificate and issued a
+fresh one. The platform did exactly what it was asked to.
+
+The actual gap was conceptual: two identities with different lifetimes were being served by one
+field. A leaf TLS certificate *should* die with its service, because a decommissioned service must
+not keep a live credential, and TLS clients verify the CA rather than the specific leaf so rotation
+costs them nothing. An SSH host key must not: SSH is trust-on-first-use, the client pins the exact
+key bytes, and there is no CA in the loop to absorb a change.
+
+The PKI record already separated the two concerns; only the API did not. Identity is `name` plus
+`sans[]`; lifetime is `owner_container`, read by nothing but `pki_cert_owned_by()` and
+`pki_cert_forget_owner()`. An unowned cert — which `POST /v1/pki/certs` has always created, and
+whose record comment already described it as "not tied to any container's lifecycle" — matches no
+container name and survives every delete. `pki_cert_deliver()` never consulted the owner either;
+its only precondition is `cert_find(name) != NULL`. The delivery mechanism was already
+lifetime-agnostic, and nothing could ask for it.
+
+- **`POST /v1/containers` gains `pki_cert`** (`main.c`): deliver the already-existing certificate of
+  this name into this container. Creates nothing, owns nothing. `pki_issue` is unchanged and remains
+  the default for a leaf TLS certificate.
+- **`pki_cert_exists()`** (`pki.c`/`pki.h`), so existence is checked before the container is created.
+- **Two `400`s, both up-front.** The named cert must exist, with the message naming which one is
+  missing; and `pki_cert` is mutually exclusive with `pki_issue`, since both write
+  `tls.crt`/`tls.key` into `pki_cert_dir` and letting the second writer silently win would be a
+  stop-gap. Checking existence at delivery time instead would produce a container that starts
+  successfully and quietly lacks the identity it asked for, because delivery failures are
+  best-effort by design.
+- **Delivery repeats on every start**, where `pki_issue`'s is documented as one-time. Not an
+  inconsistency: a fresh container instance starts with a fresh filesystem, so the file must be
+  written again — the same repetition `pki_issue` already relies on for `restart: "always"` respawns.
+- **`jump` 1.10.0** swaps `pki_issue: true` for `pki_cert: "jump-ssh"`. The delivered file layout is
+  identical, so 1.9.0's `HostKey /etc/cix-tls/tls.key` and its `waitkey` gate needed no change.
+- **`test_pki`** asserts the point that matters: the delivered key bytes are compared across a
+  delete-and-recreate and must be identical. `pki_issue` fails that check by design. Also covers
+  both `400`s, that the 400'd container was not created, and that delivery leaves the cert's owner
+  `null`. Noted in-comment that `test_pki` is not in `SELFTESTS` (it needs a real container, which a
+  build container cannot create, #224) — the contract side is gated by `test_api_surfaces`.
+
+An SSH certificate authority would remove trust-on-first-use altogether rather than stabilise the
+key, and an OpenSSH certificate is not an X.509 certificate — a distinct signed object with
+SSH-format fields, which this X.509 CA cannot issue without new machinery. Left as its own decision
+(ADR-0280 records it as considered, not rejected).
+
 ### cix-build-system builds on a Cix host (cix-build-system#124)
 
 CBS's `Makefile` links `-larchive -lzstd -ldl`, and neither library was packaged, so CBS could not

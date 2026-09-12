@@ -1302,6 +1302,189 @@ int main(void)
 		cix_response_free(&r);
 	}
 
+	/*
+	 * ADR-0280/#397: a container may be given an identity it does NOT
+	 * own, and that identity survives the container.
+	 *
+	 * The assertion that actually matters here is the last one: the
+	 * delivered key bytes must be IDENTICAL across a delete+recreate.
+	 * That is the whole point of the field -- an SSH host key is pinned
+	 * by every client that has ever connected, so "a cert was delivered"
+	 * proves nothing on its own. pki_issue fails exactly this check by
+	 * design (its cert is shredded with the container by
+	 * pki_cert_forget_owner()), which is what made jump's host key
+	 * rotate on every rolling rebuild: measured on 192.168.15.95,
+	 * 2026-09-12, 2048 SHA256:nCR2Epsa... -> 2048 SHA256:H8urRHcL...
+	 * across one rebuild.
+	 *
+	 * NOTE: test_pki is NOT in the Makefile's SELFTESTS list, so this
+	 * does not run as a release gate -- it needs a real container, which
+	 * a build container cannot create (#224). Run it directly on a Cix
+	 * host. The contract side (the pki_cert field's presence in
+	 * openapi.yaml) IS gated, by test_api_surfaces.
+	 */
+	{
+		char first_key[8192] = { 0 };
+		char second_key[8192] = { 0 };
+
+		/* An unowned cert: created directly, tied to no container. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/pki/certs",
+		                       "{\"name\":\"durable-id\",\"sans\":[\"durable-id\"]}", &r) != 0 ||
+		    r.status != 201 || json_object_get(r.json, "owner") == NULL ||
+		    json_object_get(r.json, "owner")->type != JSON_NULL) {
+			fprintf(stderr, "FAIL: POST durable-id cert, status=%d\n", r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		/* Both fields at once is a conflict, not a precedence question. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/containers",
+		                       "{\"name\":\"bothpki\",\"image\":\"pkitest\","
+		                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\"]}],"
+		                       "\"pki_issue\":true,\"pki_cert\":\"durable-id\"}",
+		                       &r) != 0 ||
+		    r.status != 400) {
+			fprintf(stderr, "FAIL: pki_cert + pki_issue expected 400, got %d\n", r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		/* A cert that does not exist is refused before the container is
+		 * created, not discovered at delivery time (where a failure is
+		 * best-effort and would leave a running container silently
+		 * missing the identity it asked for). */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/containers",
+		                       "{\"name\":\"nosuchpki\",\"image\":\"pkitest\","
+		                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\"]}],"
+		                       "\"pki_cert\":\"no-such-cert\"}",
+		                       &r) != 0 ||
+		    r.status != 400) {
+			fprintf(stderr, "FAIL: pki_cert naming a missing cert expected 400, got %d\n",
+			        r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "GET", "/v1/containers/nosuchpki", NULL, &r) == 0 &&
+		    r.status == 200) {
+			fprintf(stderr, "FAIL: nosuchpki was created despite the 400\n");
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		/* Round 1: deliver it, and read the key back through
+		 * /proc/<pid>/root/ rather than trusting the 201. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/containers",
+		                       "{\"name\":\"durablehost\",\"image\":\"pkitest\","
+		                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"20\"]}],"
+		                       "\"pki_cert\":\"durable-id\"}",
+		                       &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: POST durablehost (pki_cert), status=%d\n", r.status);
+			ok = 0;
+		} else {
+			int pid = (int)json_as_number(json_object_get(r.json, "pid"));
+			char proc_path[160];
+			struct stat st;
+			FILE *f;
+
+			snprintf(proc_path, sizeof(proc_path), "/proc/%d/root/etc/cix-tls/tls.key", pid);
+			if (stat(proc_path, &st) != 0 || (st.st_mode & 0777) != 0600) {
+				fprintf(stderr, "FAIL: pki_cert tls.key missing or not 0600 (%s)\n",
+				        proc_path);
+				ok = 0;
+			}
+			f = fopen(proc_path, "r");
+			if (f == NULL) {
+				fprintf(stderr, "FAIL: could not read delivered pki_cert key\n");
+				ok = 0;
+			} else {
+				size_t n = fread(first_key, 1, sizeof(first_key) - 1, f);
+
+				fclose(f);
+				first_key[n] = '\0';
+			}
+		}
+		cix_response_free(&r);
+
+		/* The cert must NOT have been adopted: delivery never sets an
+		 * owner, which is precisely what keeps it alive below. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "GET", "/v1/pki/certs/durable-id", NULL, &r) != 0 ||
+		    r.status != 200 || json_object_get(r.json, "owner") == NULL ||
+		    json_object_get(r.json, "owner")->type != JSON_NULL) {
+			fprintf(stderr, "FAIL: durable-id gained an owner from delivery\n");
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		/* Delete the container -- the delete+recreate a rolling rebuild
+		 * performs, and the exact point at which an owned cert dies. */
+		memset(&r, 0, sizeof(r));
+		cix_client_request(&client, "DELETE", "/v1/containers/durablehost", NULL, &r);
+		cix_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "GET", "/v1/pki/certs/durable-id", NULL, &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr,
+			        "FAIL: durable-id did not survive its container's deletion (status=%d)\n",
+			        r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		/* Round 2: the same identity, byte for byte. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/containers",
+		                       "{\"name\":\"durablehost\",\"image\":\"pkitest\","
+		                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"20\"]}],"
+		                       "\"pki_cert\":\"durable-id\"}",
+		                       &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: POST durablehost round 2, status=%d\n", r.status);
+			ok = 0;
+		} else {
+			int pid = (int)json_as_number(json_object_get(r.json, "pid"));
+			char proc_path[160];
+			FILE *f;
+
+			snprintf(proc_path, sizeof(proc_path), "/proc/%d/root/etc/cix-tls/tls.key", pid);
+			f = fopen(proc_path, "r");
+			if (f == NULL) {
+				fprintf(stderr, "FAIL: pki_cert key not redelivered on recreate\n");
+				ok = 0;
+			} else {
+				size_t n = fread(second_key, 1, sizeof(second_key) - 1, f);
+
+				fclose(f);
+				second_key[n] = '\0';
+			}
+		}
+		cix_response_free(&r);
+
+		if (first_key[0] == '\0' || second_key[0] == '\0') {
+			fprintf(stderr, "FAIL: pki_cert key not captured on both rounds\n");
+			ok = 0;
+		} else if (strcmp(first_key, second_key) != 0) {
+			fprintf(stderr,
+			        "FAIL: pki_cert key CHANGED across delete+recreate -- the identity is "
+			        "not durable, which is the entire purpose of the field\n");
+			ok = 0;
+		}
+
+		memset(&r, 0, sizeof(r));
+		cix_client_request(&client, "DELETE", "/v1/containers/durablehost", NULL, &r);
+		cix_response_free(&r);
+		memset(&r, 0, sizeof(r));
+		cix_client_request(&client, "DELETE", "/v1/pki/certs/durable-id", NULL, &r);
+		cix_response_free(&r);
+	}
+
 	/* cleanup */
 	cix_client_request(&client, "DELETE", "/v1/pki/certs/persisted.internal", NULL, &r);
 	cix_response_free(&r);

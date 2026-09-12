@@ -151,6 +151,15 @@ enum pki_error pki_cert_delete(const char *name);
  * JSON-serialized metadata shape. */
 int pki_cert_owned_by(const char *name, const char *owner);
 
+/* 1 if a cert named `name` is in the index, 0 otherwise. Says nothing
+ * about ownership -- deliberately, since a cert's identity (its name
+ * and SANs) and its lifetime (owner_container) are separate concerns
+ * (ADR-0280). Exists so a caller can validate "deliver the cert called
+ * X into this container" up-front and refuse with a 400 naming the
+ * missing cert, rather than creating the container and discovering at
+ * delivery time that there is nothing to deliver. */
+int pki_cert_exists(const char *name);
+
 /* Best-effort cleanup on container deletion: deletes name's cert iff
  * it exists and its owner_container is name itself (via
  * pki_cert_delete() -- one deletion code path, not two). Safe no-op

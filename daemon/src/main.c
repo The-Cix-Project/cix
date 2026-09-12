@@ -11072,6 +11072,8 @@ static const char *container_body_unknown_key(const struct json_value *root)
 		"name", "image", "image_version", "services", "networks", "ip_forward", "ksm",
 		"capture_output", "routes", "devices", "interfaces", "cap_add", "files",
 		"sysctls", "env", "dns_servers", "dns_register", "pki_issue", "pki_cert_dir",
+		/* ADR-0280/#397: deliver a pre-existing, unowned cert by name. */
+		"pki_cert",
 		"pki_days", "disk", "ldap_provision", "ldap_user", "ldap_group", "ldap_uid",
 		"ldap_secret_dir", "restart", "restart_delay_seconds", "follow_rolling",
 		"follow_rolling_jitter_seconds", "depends_on", "memory_max", "memory_swap_max",
@@ -11609,9 +11611,10 @@ static int create_container_from_body(const char *body, size_t body_len,
 	int dns_server_count = 0;
 	const struct json_value *jdns_register;
 	int dns_register = 0;
-	const struct json_value *jpki_issue, *jpki_cert_dir, *jpki_days;
+	const struct json_value *jpki_issue, *jpki_cert_dir, *jpki_days, *jpki_cert;
 	int pki_issue = 0;
 	char pki_cert_dir_buf[PATH_MAX];
+	char pki_cert_buf[DNS_NAME_MAX];
 	int pki_days = 365;
 	const struct json_value *jldap_provision, *jldap_user, *jldap_group, *jldap_uid,
 	    *jldap_secret_dir;
@@ -11682,6 +11685,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	jpki_issue = json_object_get(root, "pki_issue");
 	jpki_cert_dir = json_object_get(root, "pki_cert_dir");
 	jpki_days = json_object_get(root, "pki_days");
+	jpki_cert = json_object_get(root, "pki_cert");
 	jdisk = json_object_get(root, "disk");
 	name = json_as_string(jname);
 	image = json_as_string(jimage);
@@ -11710,6 +11714,8 @@ static int create_container_from_body(const char *body, size_t body_len,
 	                                                  "/etc/cix-tls");
 	if (jpki_days != NULL)
 		pki_days = (int)json_as_number(jpki_days);
+	snprintf(pki_cert_buf, sizeof(pki_cert_buf), "%s",
+	         json_as_string(jpki_cert) != NULL ? json_as_string(jpki_cert) : "");
 
 	/* Task #727: auto-provisioning hook. ldap_user_buf left empty
 	 * (rather than defaulted here) when omitted -- the firing block
@@ -11954,6 +11960,43 @@ static int create_container_from_body(const char *body, size_t body_len,
 		json_free(root);
 		snprintf(err_msg, err_msg_size, "pki_issue requires the CA to be bootstrapped -- POST /v1/pki/ca first");
 		return 400;
+	}
+	/*
+	 * ADR-0280/#397. pki_cert names an ALREADY-EXISTING cert to deliver;
+	 * pki_issue creates a fresh one owned by this container. Both write
+	 * tls.crt/tls.key into the same pki_cert_dir, so declaring both is a
+	 * genuine conflict with no sane resolution -- refuse it rather than
+	 * let whichever block runs second silently win.
+	 *
+	 * Existence is checked here, before the container is created, because
+	 * the alternative is a container that starts successfully and then
+	 * finds nothing to deliver: pki_cert_deliver()'s own PKI_ERR_NOT_FOUND
+	 * is reported to stderr and is non-fatal by design (the pki_issue path
+	 * below relies on that leniency for its respawn race), so a typo'd
+	 * cert name would produce a running container missing the identity it
+	 * asked for, with no 4xx anywhere. Named explicitly in the message so
+	 * the operator sees WHICH cert is missing.
+	 */
+	if (pki_cert_buf[0] != '\0') {
+		if (pki_issue) {
+			json_free(root);
+			snprintf(err_msg, err_msg_size,
+			         "pki_cert and pki_issue are mutually exclusive -- both deliver tls.crt/tls.key into pki_cert_dir");
+			return 400;
+		}
+		if (!pki_ca_bootstrapped()) {
+			json_free(root);
+			snprintf(err_msg, err_msg_size,
+			         "pki_cert requires the CA to be bootstrapped -- POST /v1/pki/ca first");
+			return 400;
+		}
+		if (!pki_cert_exists(pki_cert_buf)) {
+			json_free(root);
+			snprintf(err_msg, err_msg_size,
+			         "pki_cert names no existing certificate \"%s\" -- create it first with POST /v1/pki/certs",
+			         pki_cert_buf);
+			return 400;
+		}
 	}
 	if (ldap_provision) {
 		/* Group must exist -- ldap_user_create() would reject an
@@ -13735,6 +13778,45 @@ static int create_container_from_body(const char *body, size_t body_len,
 				        "%s: pki_issue cert issued but delivery into the container failed (err=%d)\n",
 				        entry->name, (int)derr2);
 		}
+	}
+
+	/*
+	 * ADR-0280/#397: deliver a DURABLE identity this container does not
+	 * own. The sibling of pki_issue above, and deliberately delivery-only
+	 * -- it never creates and never sets owner_container, which is the
+	 * entire point: pki_cert_forget_owner() only shreds a cert whose
+	 * owner equals the container being deleted, so an unowned cert
+	 * survives every delete/recreate cycle and the identity outlives the
+	 * container instance.
+	 *
+	 * That distinction is what jump's SSH host key needs. A leaf TLS cert
+	 * SHOULD die with its service (a dead service must not keep a live
+	 * credential), which is why pki_issue owns what it creates. An SSH
+	 * host key must not: SSH is trust-on-first-use, so the client pins
+	 * these exact bytes and any change is indistinguishable from an
+	 * attack. Measured on 192.168.15.95, 2026-09-12: with pki_issue,
+	 * jump's host key went 2048 SHA256:nCR2Epsa... -> SHA256:H8urRHcL...
+	 * across one follow_rolling rebuild, because a rolling rebuild is a
+	 * delete+recreate (apply cannot recreate in place -- the address is
+	 * still held, 409) and the delete took the cert with it.
+	 *
+	 * Runs on every start, not just the first: delivery writes into the
+	 * container's tree and a fresh instance starts with a fresh tree, so
+	 * a respawn needs it again -- the same reason the pki_issue block
+	 * above tolerates PKI_ERR_DUPLICATE and always reaches delivery.
+	 * Best-effort past creation, matching pki_issue exactly; existence
+	 * was already gated with a 400 at validation time, so reaching
+	 * PKI_ERR_NOT_FOUND here means the cert was deleted between the
+	 * check and the start.
+	 */
+	if (pki_cert_buf[0] != '\0') {
+		enum pki_error derr3 =
+		    pki_cert_deliver(pki_cert_buf, entry->handle.pid, pki_cert_dir_buf);
+
+		if (derr3 != PKI_OK)
+			fprintf(stderr,
+			        "%s: pki_cert \"%s\" delivery into the container failed (err=%d)\n",
+			        entry->name, pki_cert_buf, (int)derr3);
 	}
 
 	if (ldap_provision) {

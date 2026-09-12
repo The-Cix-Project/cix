@@ -89,7 +89,7 @@ static void print_usage(FILE *out)
 	        "      [--ip-forward] [--ksm] [--dns-register] [--userns] [--ldap-client] [--capture-output]\n"
 	        "      [--ldap-allow-group=NAME ...]  -- with --ldap-client, restricts login to\n"
 	        "                                        members of these LDAP groups\n"
-	        "      [--pki-issue] [--pki-cert-dir=PATH]\n"
+	        "      [--pki-issue | --pki-cert=NAME] [--pki-cert-dir=PATH]\n"
 	        "      [--pki-days=N] [--ldap-provision] [--ldap-user=NAME] [--ldap-group=NAME]\n"
 	        "      [--ldap-uid=N] [--ldap-secret-dir=PATH]\n"
 	        "      [--route=DEST/PREFIX:VIA ...] [--device=ID ...] [--optional-device=ID ...]\n"
@@ -8786,6 +8786,7 @@ static int cmd_run(const struct cix_client *c, int json_mode, int argc, char **a
 	int ldap_client = 0;
 	int capture_output = 0;
 	int pki_issue = 0;
+	const char *pki_cert = NULL;
 	const char *pki_cert_dir = NULL;
 	long pki_days = -1;
 	int ldap_provision = 0;
@@ -8994,6 +8995,11 @@ static int cmd_run(const struct cix_client *c, int json_mode, int argc, char **a
 			pki_issue = 1;
 		} else if (strncmp(argv[i], "--pki-cert-dir=", 15) == 0) {
 			pki_cert_dir = argv[i] + 15;
+		} else if (strncmp(argv[i], "--pki-cert=", 11) == 0) {
+			/* Checked after --pki-cert-dir= purely for readability -- the
+			 * two cannot be confused, since they differ at offset 10
+			 * ('=' vs '-') and both prefixes are compared in full. */
+			pki_cert = argv[i] + 11;
 		} else if (strncmp(argv[i], "--pki-days=", 11) == 0) {
 			pki_days = atol(argv[i] + 11);
 		} else if (strcmp(argv[i], "--ldap-provision") == 0) {
@@ -9093,7 +9099,7 @@ static int cmd_run(const struct cix_client *c, int json_mode, int argc, char **a
 		        "[--pids-max=N] [--cpu-max=\"QUOTA PERIOD\"] [--cpuset=0-1,3] "
 		        "[--disk-quota=BYTES] [--disk=NAME] "
 		        "[--network=NAME[:IP] ...] [--ip-forward] [--dns-register] "
-		        "[--pki-issue] [--pki-cert-dir=PATH] [--pki-days=N] "
+		        "[--pki-issue | --pki-cert=NAME] [--pki-cert-dir=PATH] [--pki-days=N] "
 		        "[--ldap-provision] [--ldap-user=NAME] [--ldap-group=NAME] "
 		        "[--ldap-uid=N] [--ldap-secret-dir=PATH] "
 		        "[--route=DEST/PREFIX:VIA ...] [--device=ID ...] [--optional-device=ID ...] "
@@ -9224,14 +9230,25 @@ static int cmd_run(const struct cix_client *c, int json_mode, int argc, char **a
 	if (pki_issue) {
 		jw_key(&w, "pki_issue");
 		jw_bool(&w, 1);
-		if (pki_cert_dir != NULL) {
-			jw_key(&w, "pki_cert_dir");
-			jw_str(&w, pki_cert_dir);
-		}
 		if (pki_days >= 0) {
 			jw_key(&w, "pki_days");
 			jw_int(&w, pki_days);
 		}
+	}
+	/* ADR-0280/#397: deliver an existing, unowned cert instead of issuing
+	 * one. Mutually exclusive with --pki-issue, rejected by the daemon
+	 * with a 400 -- not re-checked here, so the contract has one place
+	 * that decides rather than two that can disagree. */
+	if (pki_cert != NULL) {
+		jw_key(&w, "pki_cert");
+		jw_str(&w, pki_cert);
+	}
+	/* Applies to whichever of the two is set; pki_days is pki_issue's
+	 * alone, since an unowned cert's validity was chosen when the
+	 * operator created it. */
+	if ((pki_issue || pki_cert != NULL) && pki_cert_dir != NULL) {
+		jw_key(&w, "pki_cert_dir");
+		jw_str(&w, pki_cert_dir);
 	}
 	if (ldap_provision) {
 		jw_key(&w, "ldap_provision");
