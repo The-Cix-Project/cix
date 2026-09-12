@@ -281,6 +281,26 @@ enum pki_error pki_ca_reset(const char *root_common_name, const char *intermedia
 enum pki_error pki_write_trust_bundle_file(const char *dest_path);
 
 /*
+ * The same chain pki_write_trust_bundle_file() writes, returned in
+ * memory instead: *out_pem is a malloc'd, NUL-terminated PEM the
+ * caller frees, and *out_len (optional) its length. The file writer
+ * is implemented on top of this, so there is one composition of
+ * root+intermediate rather than two that can disagree.
+ *
+ * This exists for a caller that needs the current anchor *at the
+ * moment it dials* rather than a copy on disk: #416's LDAPS bind in
+ * hostauth.c, which verifies a directory server against this host's
+ * own CA. A file staged once at startup would go stale the next time
+ * the chain changed (a CA reset, an intermediate bootstrap, ADR-0281's
+ * import), and a stale trust anchor fails as a refused connection with
+ * a correct certificate on the wire -- so the chain is read fresh, and
+ * a login is rare enough that the read costs nothing worth saving.
+ *
+ * PKI_ERR_NOT_BOOTSTRAPPED if no root exists yet.
+ */
+enum pki_error pki_trust_bundle_pem(char **out_pem, size_t *out_len);
+
+/*
  * #415 / ADR-0281: carries the whole store off the box and back.
  *
  * PKI_DIR is on the cix-config partition, which cix-install formats --

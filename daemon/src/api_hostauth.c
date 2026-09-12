@@ -185,7 +185,8 @@ void handle_hostauth_config_get(int fd)
 void handle_hostauth_config_put(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root;
-	const struct json_value *jgroups, *jidle, *jldapen, *jldapservers, *jldapport, *jldapbasedn;
+	const struct json_value *jgroups, *jidle, *jldapen, *jldapservers, *jldapport, *jldaptls,
+	    *jldapbasedn;
 	const char *admin_groups[HOSTAUTH_ADMIN_GROUPS_MAX];
 	const char *ldap_servers[HOSTAUTH_LDAP_MAX_SERVERS];
 	int admin_group_count = 0;
@@ -193,6 +194,7 @@ void handle_hostauth_config_put(int fd, const char *body, size_t body_len)
 	int ldap_enabled = 0;
 	int ldap_server_count = 0;
 	int ldap_port = HOSTAUTH_LDAP_DEFAULT_PORT;
+	int ldap_tls = 0;
 	const char *ldap_base_dn = "";
 	enum hostauth_config_error err;
 	size_t i;
@@ -262,6 +264,18 @@ void handle_hostauth_config_put(int fd, const char *body, size_t body_len)
 		}
 		ldap_port = (int)json_as_number(jldapport);
 	}
+	/* #416: the daemon's OWN bind, not ldap.c's client_tls (which is
+	 * the container clients'). Optional and defaulting to 0, like every
+	 * other ldap_* field here. */
+	jldaptls = json_object_get(root, "ldap_tls");
+	if (jldaptls != NULL) {
+		if (jldaptls->type != JSON_BOOL) {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request", "ldap_tls must be a boolean");
+			return;
+		}
+		ldap_tls = jldaptls->u.boolean ? 1 : 0;
+	}
 	jldapbasedn = json_object_get(root, "ldap_base_dn");
 	if (jldapbasedn != NULL) {
 		ldap_base_dn = json_as_string(jldapbasedn);
@@ -295,7 +309,7 @@ void handle_hostauth_config_put(int fd, const char *body, size_t body_len)
 	}
 
 	err = hostauth_set_config(admin_groups, admin_group_count, idle_timeout_seconds, ldap_enabled,
-	                           ldap_servers, ldap_server_count, ldap_port, ldap_base_dn);
+	                           ldap_servers, ldap_server_count, ldap_port, ldap_tls, ldap_base_dn);
 	json_free(root);
 	if (err != HOSTAUTH_CONFIG_OK) {
 		if (err == HOSTAUTH_CONFIG_ERR_INVALID_FIELD)
@@ -304,6 +318,11 @@ void handle_hostauth_config_put(int fd, const char *body, size_t body_len)
 			              "ldap_servers at most 3 entries, ldap_port in 1..65535, and "
 			              "ldap_enabled requires at least one ldap_servers entry plus a "
 			              "non-empty ldap_base_dn");
+		else if (err == HOSTAUTH_CONFIG_ERR_NO_CA)
+			respond_error(fd, 409, "Conflict",
+			              "ldap_tls with ldap_enabled needs a root CA to verify the directory "
+			              "against, and this host has not bootstrapped one -- POST /v1/pki/ca "
+			              "first, or set ldap_tls false if this directory really is plaintext");
 		else
 			respond_error(fd, 500, "Internal Server Error", "could not persist host-auth config");
 		return;

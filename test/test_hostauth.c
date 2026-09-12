@@ -816,6 +816,130 @@ int main(void)
 			ok = 0;
 		}
 		cix_response_free(&r);
+
+		/*
+		 * 13g (#416): ldap_tls for the DAEMON'S OWN bind. This daemon
+		 * has no CA -- every daemon-linked test starts against a fresh
+		 * mkdtemp data directory, so nothing has bootstrapped one --
+		 * which is exactly the state the guard exists for.
+		 *
+		 * Asking for TLS together with ldap_enabled is refused 409,
+		 * not 400: no single field is wrong, the combination is, and
+		 * the operator's fix (bootstrap the CA) is not something a
+		 * generic invalid-field message would name. Accepting it would
+		 * save a config where every login silently failed its
+		 * handshake and fell back to local records -- a state that
+		 * reads as correct and does nothing it says.
+		 */
+		{
+			char tls_token[128] = "";
+
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/login",
+			                       "{\"username\":\"root_admin\",\"password\":\"correct "
+			                       "horse battery staple\"}",
+			                       &r) == 0 &&
+			    r.status == 200) {
+				const char *t = json_str_field(r.json, "token");
+
+				snprintf(tls_token, sizeof(tls_token), "%s", t != NULL ? t : "");
+			} else {
+				fprintf(stderr, "FAIL: re-login for ldap_tls scenario, status=%d\n", r.status);
+				ok = 0;
+			}
+			cix_response_free(&r);
+
+			if (tls_token[0] != '\0') {
+				memset(&r, 0, sizeof(r));
+				if (request_with_token(
+				        &client, "PUT", "/v1/system/hostauth-config", tls_token,
+				        "{\"admin_groups\":[\"admins\"],\"idle_timeout_seconds\":0,"
+				        "\"ldap_enabled\":true,\"ldap_servers\":[\"127.0.0.1\"],"
+				        "\"ldap_port\":18189,\"ldap_tls\":true,"
+				        "\"ldap_base_dn\":\"dc=glauth,dc=com\"}",
+				        &r) != 0 ||
+				    r.status != 409) {
+					fprintf(stderr,
+					        "FAIL: ldap_tls with ldap_enabled and no CA expected 409, "
+					        "got %d\n",
+					        r.status);
+					ok = 0;
+				} else {
+					/* This endpoint has a SECOND 409 (the #370
+					 * gating guard, checked before the setter runs),
+					 * so a bare status check could pass for entirely
+					 * the wrong reason. The message has to name the
+					 * cause. */
+					const char *e = json_str_field(r.json, "error");
+
+					if (e == NULL || strstr(e, "ldap_tls") == NULL) {
+						fprintf(stderr,
+						        "FAIL: ldap_tls 409 did not name ldap_tls as the cause: "
+						        "%s\n",
+						        e != NULL ? e : "(no error field)");
+						ok = 0;
+					}
+				}
+				cix_response_free(&r);
+			}
+
+			/*
+			 * The same flag WITHOUT ldap_enabled is accepted, so the
+			 * ordering is the operator's to choose: set the flag
+			 * first, bootstrap the CA, then enable the backend. GET
+			 * echoes it, which also proves the field survives the
+			 * save/load round trip rather than only the response.
+			 */
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/login",
+			                       "{\"username\":\"root_admin\",\"password\":\"correct "
+			                       "horse battery staple\"}",
+			                       &r) == 0 &&
+			    r.status == 200) {
+				const char *t = json_str_field(r.json, "token");
+
+				snprintf(tls_token, sizeof(tls_token), "%s", t != NULL ? t : "");
+			} else {
+				tls_token[0] = '\0';
+			}
+			cix_response_free(&r);
+
+			if (tls_token[0] != '\0') {
+				memset(&r, 0, sizeof(r));
+				if (request_with_token(
+				        &client, "PUT", "/v1/system/hostauth-config", tls_token,
+				        "{\"admin_groups\":[\"admins\"],\"idle_timeout_seconds\":0,"
+				        "\"ldap_enabled\":false,\"ldap_servers\":[],"
+				        "\"ldap_port\":18189,\"ldap_tls\":true,"
+				        "\"ldap_base_dn\":\"dc=glauth,dc=com\"}",
+				        &r) != 0 ||
+				    r.status != 200) {
+					fprintf(stderr,
+					        "FAIL: ldap_tls without ldap_enabled expected 200, got %d\n",
+					        r.status);
+					ok = 0;
+				}
+				cix_response_free(&r);
+
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "GET", "/v1/system/hostauth-config", NULL,
+				                        &r) != 0 ||
+				    r.status != 200) {
+					fprintf(stderr, "FAIL: GET hostauth-config after ldap_tls, status=%d\n",
+					        r.status);
+					ok = 0;
+				} else {
+					const struct json_value *jtls = json_object_get(r.json, "ldap_tls");
+
+					if (jtls == NULL || jtls->type != JSON_BOOL || !jtls->u.boolean) {
+						fprintf(stderr,
+						        "FAIL: GET hostauth-config did not echo ldap_tls true\n");
+						ok = 0;
+					}
+				}
+				cix_response_free(&r);
+			}
+		}
 	}
 
 	/*

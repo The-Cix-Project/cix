@@ -1,7 +1,10 @@
 #include "ldapclient.h"
+#include "logstore.h"
 
+#include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <netdb.h>
 #include <poll.h>
 #include <stdio.h>
@@ -9,6 +12,11 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
+
+#include <openssl/err.h>
+#include <openssl/pem.h>
+#include <openssl/ssl.h>
+#include <openssl/x509v3.h>
 
 /*
  * A minimal hand-rolled BER (ITU-T X.690) encoder/decoder plus just
@@ -176,6 +184,163 @@ static int ber_parse_tlv(const unsigned char *buf, size_t buflen, struct ber_tlv
  * + poll), then back to blocking with SO_RCVTIMEO/SO_SNDTIMEO for the
  * rest of the exchange ---- */
 
+/*
+ * One LDAP connection, plaintext or LDAPS. Everything below that used
+ * to take a bare `int fd` takes this instead, so TLS is a property of
+ * the connection rather than a side table keyed by descriptor -- this
+ * module owns its own, deliberately NOT tlsconn.c's map, which is the
+ * HTTPS *server's*, capped at TLS_CONN_MAX and shaped for the epoll
+ * loop. ssl/ctx are NULL on a plaintext connection and every helper
+ * branches on ssl, so the plaintext path is unchanged code.
+ */
+struct ldap_conn {
+	int fd;
+	SSL *ssl;
+	SSL_CTX *ctx;
+};
+
+/* Writes the OpenSSL error queue to the log store, drained so a later
+ * failure cannot inherit this one's text. stderr is not enough: cixd
+ * never mirrors it into the log store, and a TLS failure here is a
+ * connect-class error that falls back to local authentication -- an
+ * unexplained fallback is indistinguishable from a wrong password. */
+static void ldap_tls_log(const char *what, const char *host, int port)
+{
+	unsigned long e = ERR_get_error();
+	char msg[256];
+
+	if (e == 0) {
+		logstore_write("ldap", "error", "%s to %s:%d failed (no OpenSSL error queued)", what,
+		                host, port);
+		return;
+	}
+	ERR_error_string_n(e, msg, sizeof(msg));
+	logstore_write("ldap", "error", "%s to %s:%d failed: %s", what, host, port, msg);
+	ERR_clear_error();
+}
+
+/* Adds every certificate in a PEM bundle to ctx's trust store. The
+ * bundle is root, or root+intermediate (pki_trust_bundle_pem()), so
+ * the loop matters -- reading one certificate and stopping would
+ * silently drop the intermediate on an install that has one, and the
+ * chain would then fail to verify against a correct server. Returns
+ * the number added, or -1. */
+static int ldap_tls_add_anchors(SSL_CTX *ctx, const char *ca_pem, size_t ca_pem_len)
+{
+	BIO *bio;
+	X509_STORE *store = SSL_CTX_get_cert_store(ctx);
+	int added = 0;
+
+	if (store == NULL || ca_pem == NULL || ca_pem_len == 0 || ca_pem_len > INT_MAX)
+		return -1;
+	bio = BIO_new_mem_buf(ca_pem, (int)ca_pem_len);
+	if (bio == NULL)
+		return -1;
+	for (;;) {
+		X509 *x = PEM_read_bio_X509(bio, NULL, NULL, NULL);
+
+		if (x == NULL)
+			break;
+		if (X509_STORE_add_cert(store, x) == 1)
+			added++;
+		X509_free(x);
+	}
+	BIO_free(bio);
+	/* PEM_read_bio_X509 ends by queueing a "no start line" error when it
+	 * runs out of input. That is the normal terminating condition, not a
+	 * failure, and leaving it queued would make the next real error
+	 * report it instead. */
+	ERR_clear_error();
+	return added > 0 ? added : -1;
+}
+
+/*
+ * Starts TLS on an already-connected socket. Verification is pinned to
+ * the string the operator CONFIGURED, not to whichever getaddrinfo
+ * result answered -- and by the matching SAN type, because a TLS client
+ * checks the name it dialled: an address dialled as an address is never
+ * matched against a DNS: SAN, so X509_VERIFY_PARAM_set1_host() fails
+ * against a correct certificate when the server was reached by IP.
+ * hostauth's ldap_servers entries are documented as "a host or IP", so
+ * both are real cases and the kind is decided by inet_pton rather than
+ * assumed (#414 decides the SAN kind the same way when issuing).
+ */
+static int ldap_tls_start(struct ldap_conn *c, const char *host, int port, const char *ca_pem,
+                           size_t ca_pem_len)
+{
+	struct in_addr a4;
+	struct in6_addr a6;
+	int is_ip = inet_pton(AF_INET, host, &a4) == 1 || inet_pton(AF_INET6, host, &a6) == 1;
+	X509_VERIFY_PARAM *vp;
+
+	c->ctx = SSL_CTX_new(TLS_client_method());
+	if (c->ctx == NULL) {
+		ldap_tls_log("TLS context setup", host, port);
+		return -1;
+	}
+	SSL_CTX_set_min_proto_version(c->ctx, TLS1_2_VERSION);
+	/* Without this, verification is advisory: the handshake completes
+	 * and SSL_get_verify_result() has to be consulted separately. */
+	SSL_CTX_set_verify(c->ctx, SSL_VERIFY_PEER, NULL);
+	if (ldap_tls_add_anchors(c->ctx, ca_pem, ca_pem_len) < 0) {
+		logstore_write("ldap", "error",
+		                "TLS to %s:%d: no usable certificate in the CA trust bundle", host,
+		                port);
+		return -1;
+	}
+
+	c->ssl = SSL_new(c->ctx);
+	if (c->ssl == NULL || SSL_set_fd(c->ssl, c->fd) != 1) {
+		ldap_tls_log("TLS setup", host, port);
+		return -1;
+	}
+	vp = SSL_get0_param(c->ssl);
+	if (vp == NULL) {
+		logstore_write("ldap", "error", "TLS to %s:%d: no verify parameters", host, port);
+		return -1;
+	}
+	if (is_ip) {
+		if (X509_VERIFY_PARAM_set1_ip_asc(vp, host) != 1) {
+			ldap_tls_log("TLS address verification setup", host, port);
+			return -1;
+		}
+	} else {
+		X509_VERIFY_PARAM_set_hostflags(vp, X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
+		if (X509_VERIFY_PARAM_set1_host(vp, host, 0) != 1) {
+			ldap_tls_log("TLS hostname verification setup", host, port);
+			return -1;
+		}
+		/* SNI only for a real name -- RFC 6066 forbids a literal
+		 * address in server_name, and glauth would reject it. */
+		SSL_set_tlsext_host_name(c->ssl, host);
+	}
+	if (SSL_connect(c->ssl) != 1) {
+		ldap_tls_log("TLS handshake", host, port);
+		return -1;
+	}
+	return 0;
+}
+
+static void ldap_conn_close(struct ldap_conn *c)
+{
+	if (c->ssl != NULL) {
+		/* One-way shutdown: the close() below ends the connection
+		 * regardless, and waiting for the peer's close_notify would
+		 * block for up to the socket timeout on every single login. */
+		SSL_shutdown(c->ssl);
+		SSL_free(c->ssl);
+		c->ssl = NULL;
+	}
+	if (c->ctx != NULL) {
+		SSL_CTX_free(c->ctx);
+		c->ctx = NULL;
+	}
+	if (c->fd >= 0) {
+		close(c->fd);
+		c->fd = -1;
+	}
+}
+
 static int ldapclient_connect(const char *host, int port, int timeout_ms)
 {
 	char portstr[16];
@@ -245,34 +410,79 @@ static int ldapclient_connect(const char *host, int port, int timeout_ms)
 	return fd;
 }
 
-static int send_all(int fd, const unsigned char *buf, size_t len)
+/*
+ * Opens a connection, plaintext or LDAPS. ca_pem non-NULL selects TLS;
+ * it is the caller's trust anchor (hostauth passes the live chain from
+ * pki_trust_bundle_pem(), read at dial time rather than staged to a
+ * file that a CA reset or ADR-0281 import would leave stale). On
+ * failure the connection is fully closed and -1 returned, so no caller
+ * has to unwind a half-open one.
+ */
+static int ldap_conn_open(struct ldap_conn *c, const char *host, int port, int timeout_ms,
+                           const char *ca_pem, size_t ca_pem_len)
+{
+	c->fd = -1;
+	c->ssl = NULL;
+	c->ctx = NULL;
+	c->fd = ldapclient_connect(host, port, timeout_ms);
+	if (c->fd < 0)
+		return -1;
+	if (ca_pem != NULL && ldap_tls_start(c, host, port, ca_pem, ca_pem_len) != 0) {
+		ldap_conn_close(c);
+		return -1;
+	}
+	return 0;
+}
+
+static int send_all(struct ldap_conn *c, const unsigned char *buf, size_t len)
 {
 	size_t sent = 0;
 
 	while (sent < len) {
-		ssize_t n = send(fd, buf + sent, len - sent, MSG_NOSIGNAL);
+		ssize_t n;
 
-		if (n <= 0) {
-			if (n < 0 && errno == EINTR)
-				continue;
-			return -1;
+		if (c->ssl != NULL) {
+			/* SSL_write is all-or-nothing for the length given (no
+			 * SSL_MODE_ENABLE_PARTIAL_WRITE set), so a short count is
+			 * an error rather than a resumption point. */
+			int w = SSL_write(c->ssl, buf + sent, (int)(len - sent));
+
+			if (w <= 0)
+				return -1;
+			n = w;
+		} else {
+			n = send(c->fd, buf + sent, len - sent, MSG_NOSIGNAL);
+			if (n <= 0) {
+				if (n < 0 && errno == EINTR)
+					continue;
+				return -1;
+			}
 		}
 		sent += (size_t)n;
 	}
 	return 0;
 }
 
-static int recv_full(int fd, unsigned char *buf, size_t need)
+static int recv_full(struct ldap_conn *c, unsigned char *buf, size_t need)
 {
 	size_t got = 0;
 
 	while (got < need) {
-		ssize_t n = recv(fd, buf + got, need - got, 0);
+		ssize_t n;
 
-		if (n <= 0) {
-			if (n < 0 && errno == EINTR)
-				continue;
-			return -1;
+		if (c->ssl != NULL) {
+			int r = SSL_read(c->ssl, buf + got, (int)(need - got));
+
+			if (r <= 0)
+				return -1;
+			n = r;
+		} else {
+			n = recv(c->fd, buf + got, need - got, 0);
+			if (n <= 0) {
+				if (n < 0 && errno == EINTR)
+					continue;
+				return -1;
+			}
 		}
 		got += (size_t)n;
 	}
@@ -282,13 +492,13 @@ static int recv_full(int fd, unsigned char *buf, size_t need)
 /* reads exactly one full LDAPMessage TLV off the wire (tag + definite-form
  * length + content), framing purely from the BER length -- LDAP over TCP
  * has no other message framing */
-static int ber_read_message(int fd, unsigned char *buf, size_t bufcap, size_t *out_len)
+static int ber_read_message(struct ldap_conn *c, unsigned char *buf, size_t bufcap, size_t *out_len)
 {
 	unsigned char lenbyte;
 	size_t pos = 2;
 	size_t content_len;
 
-	if (recv_full(fd, buf, 2) != 0)
+	if (recv_full(c, buf, 2) != 0)
 		return -1;
 	lenbyte = buf[1];
 	if (lenbyte < 0x80) {
@@ -298,7 +508,7 @@ static int ber_read_message(int fd, unsigned char *buf, size_t bufcap, size_t *o
 
 		if (nbytes == 0 || (size_t)nbytes > sizeof(size_t) || 2 + (size_t)nbytes > bufcap)
 			return -1;
-		if (recv_full(fd, buf + 2, (size_t)nbytes) != 0)
+		if (recv_full(c, buf + 2, (size_t)nbytes) != 0)
 			return -1;
 		content_len = 0;
 		{
@@ -311,7 +521,7 @@ static int ber_read_message(int fd, unsigned char *buf, size_t bufcap, size_t *o
 	}
 	if (pos + content_len > bufcap)
 		return -1;
-	if (content_len > 0 && recv_full(fd, buf + pos, content_len) != 0)
+	if (content_len > 0 && recv_full(c, buf + pos, content_len) != 0)
 		return -1;
 	*out_len = pos + content_len;
 	return 0;
@@ -365,7 +575,7 @@ static int build_bind_request(long message_id, const char *dn, const char *passw
 	return wrap_ldap_message(message_id, &op, out, outcap, outlen);
 }
 
-static void send_unbind(int fd, long message_id)
+static void send_unbind(struct ldap_conn *c, long message_id)
 {
 	struct ber_buf msgcontent, message;
 	unsigned char idbytes[sizeof(long) + 1];
@@ -385,7 +595,7 @@ static void send_unbind(int fd, long message_id)
 
 	/* best-effort per RFC 4511 4.3 -- the immediately-following close() is
 	 * what actually ends the session either way */
-	send_all(fd, message.data, message.len);
+	send_all(c, message.data, message.len);
 }
 
 static int build_equality_filter(struct ber_buf *out, const char *attr, const char *value)
@@ -504,9 +714,11 @@ static enum ldapclient_error parse_ldap_result_message(const unsigned char *buf,
 
 /* ---- public API ---- */
 
-enum ldapclient_error ldapclient_bind(const char *host, int port, const char *dn, const char *password, int timeout_ms, int *out_ldap_result_code)
+enum ldapclient_error ldapclient_bind(const char *host, int port, const char *dn,
+                                       const char *password, int timeout_ms, const char *ca_pem,
+                                       size_t ca_pem_len, int *out_ldap_result_code)
 {
-	int fd;
+	struct ldap_conn c;
 	unsigned char sendbuf[LDAP_MSG_MAX];
 	unsigned char recvbuf[LDAP_MSG_MAX];
 	size_t sendlen, recvlen;
@@ -516,27 +728,26 @@ enum ldapclient_error ldapclient_bind(const char *host, int port, const char *dn
 	if (out_ldap_result_code)
 		*out_ldap_result_code = -1;
 
-	fd = ldapclient_connect(host, port, timeout_ms);
-	if (fd < 0)
+	if (ldap_conn_open(&c, host, port, timeout_ms, ca_pem, ca_pem_len) != 0)
 		return LDAPCLIENT_ERR_CONNECT;
 
 	if (build_bind_request(1, dn, password, sendbuf, sizeof(sendbuf), &sendlen) != 0) {
-		close(fd);
+		ldap_conn_close(&c);
 		return LDAPCLIENT_ERR_PROTOCOL;
 	}
-	if (send_all(fd, sendbuf, sendlen) != 0) {
-		close(fd);
+	if (send_all(&c, sendbuf, sendlen) != 0) {
+		ldap_conn_close(&c);
 		return LDAPCLIENT_ERR_CONNECT;
 	}
-	if (ber_read_message(fd, recvbuf, sizeof(recvbuf), &recvlen) != 0) {
-		close(fd);
+	if (ber_read_message(&c, recvbuf, sizeof(recvbuf), &recvlen) != 0) {
+		ldap_conn_close(&c);
 		return LDAPCLIENT_ERR_CONNECT;
 	}
 
 	err = parse_ldap_result_message(recvbuf, recvlen, LDAP_TAG_BIND_RESPONSE, &result_code);
 
-	send_unbind(fd, 2);
-	close(fd);
+	send_unbind(&c, 2);
+	ldap_conn_close(&c);
 
 	if (err != LDAPCLIENT_OK)
 		return err;
@@ -547,9 +758,10 @@ enum ldapclient_error ldapclient_bind(const char *host, int port, const char *dn
 
 enum ldapclient_error ldapclient_bind_and_search(const char *host, int port, const char *bind_dn, const char *bind_password,
                                                   const char *base_dn, const char *const attrs[][2], int attr_count,
-                                                  int timeout_ms, int *out_match_count, int *out_ldap_result_code)
+                                                  int timeout_ms, const char *ca_pem, size_t ca_pem_len,
+                                                  int *out_match_count, int *out_ldap_result_code)
 {
-	int fd;
+	struct ldap_conn c;
 	unsigned char sendbuf[LDAP_MSG_MAX];
 	unsigned char recvbuf[LDAP_MSG_MAX];
 	size_t sendlen, recvlen;
@@ -566,43 +778,42 @@ enum ldapclient_error ldapclient_bind_and_search(const char *host, int port, con
 	if (attr_count < 1 || attr_count > 8)
 		return LDAPCLIENT_ERR_PROTOCOL;
 
-	fd = ldapclient_connect(host, port, timeout_ms);
-	if (fd < 0)
+	if (ldap_conn_open(&c, host, port, timeout_ms, ca_pem, ca_pem_len) != 0)
 		return LDAPCLIENT_ERR_CONNECT;
 
 	if (build_bind_request(1, bind_dn, bind_password, sendbuf, sizeof(sendbuf), &sendlen) != 0) {
-		close(fd);
+		ldap_conn_close(&c);
 		return LDAPCLIENT_ERR_PROTOCOL;
 	}
-	if (send_all(fd, sendbuf, sendlen) != 0) {
-		close(fd);
+	if (send_all(&c, sendbuf, sendlen) != 0) {
+		ldap_conn_close(&c);
 		return LDAPCLIENT_ERR_CONNECT;
 	}
-	if (ber_read_message(fd, recvbuf, sizeof(recvbuf), &recvlen) != 0) {
-		close(fd);
+	if (ber_read_message(&c, recvbuf, sizeof(recvbuf), &recvlen) != 0) {
+		ldap_conn_close(&c);
 		return LDAPCLIENT_ERR_CONNECT;
 	}
 	err = parse_ldap_result_message(recvbuf, recvlen, LDAP_TAG_BIND_RESPONSE, &bind_result);
 	if (err != LDAPCLIENT_OK) {
-		send_unbind(fd, 3);
-		close(fd);
+		send_unbind(&c, 3);
+		ldap_conn_close(&c);
 		return err;
 	}
 	if (bind_result != 0) {
 		if (out_ldap_result_code)
 			*out_ldap_result_code = bind_result;
-		send_unbind(fd, 3);
-		close(fd);
+		send_unbind(&c, 3);
+		ldap_conn_close(&c);
 		return LDAPCLIENT_ERR_LDAP_RESULT;
 	}
 
 	if (build_search_request(2, base_dn, attrs, attr_count, sendbuf, sizeof(sendbuf), &sendlen) != 0) {
-		send_unbind(fd, 3);
-		close(fd);
+		send_unbind(&c, 3);
+		ldap_conn_close(&c);
 		return LDAPCLIENT_ERR_PROTOCOL;
 	}
-	if (send_all(fd, sendbuf, sendlen) != 0) {
-		close(fd);
+	if (send_all(&c, sendbuf, sendlen) != 0) {
+		ldap_conn_close(&c);
 		return LDAPCLIENT_ERR_CONNECT;
 	}
 
@@ -610,7 +821,7 @@ enum ldapclient_error ldapclient_bind_and_search(const char *host, int port, con
 	for (;;) {
 		struct ber_tlv op;
 
-		if (ber_read_message(fd, recvbuf, sizeof(recvbuf), &recvlen) != 0) {
+		if (ber_read_message(&c, recvbuf, sizeof(recvbuf), &recvlen) != 0) {
 			err = LDAPCLIENT_ERR_CONNECT;
 			break;
 		}
@@ -638,8 +849,8 @@ enum ldapclient_error ldapclient_bind_and_search(const char *host, int port, con
 		break;
 	}
 
-	send_unbind(fd, 3);
-	close(fd);
+	send_unbind(&c, 3);
+	ldap_conn_close(&c);
 
 	if (err != LDAPCLIENT_OK)
 		return err;
