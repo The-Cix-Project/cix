@@ -566,7 +566,17 @@ static void fmt_boot(const struct json_value *v)
 	if (pd != NULL && pd->type == JSON_OBJECT) {
 		static const char *const keys[] = { "esp", "root_a", "root_b", "config",
 		                                     "containers" };
+		const char *root_disk = json_str_field(pd, "root_disk");
 		size_t i;
+
+		/*
+		 * The disk those five were resolved on (#427). First, because
+		 * it is what makes the five below trustworthy: with two disks
+		 * carrying the same GPT label, five plausible device paths
+		 * off the wrong disk look exactly like five off the right one.
+		 */
+		printf("%-11s %s\n", "root disk",
+		       (root_disk != NULL && root_disk[0] != '\0') ? root_disk : "(undetermined)");
 
 		for (i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
 			const char *dev = json_str_field(pd, keys[i]);

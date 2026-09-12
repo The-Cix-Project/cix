@@ -384,8 +384,18 @@ int main(void)
 			ok = 0;
 		} else {
 			const struct json_value *pd = json_object_get(r.json, "platform_devices");
+			/*
+			 * root_disk (#427) is asserted as part of the same shape
+			 * and for the same reason: it is the tie-break that
+			 * decides which disk the other five came off, so losing
+			 * it silently would leave five device paths that cannot
+			 * be checked. Its VALUE is environment-dependent -- a
+			 * real disk on an installed host, "" wherever / is not
+			 * on a block device -- so only the type is asserted,
+			 * exactly as for the five.
+			 */
 			static const char *const keys[] = { "esp", "root_a", "root_b", "config",
-			                                     "containers" };
+			                                     "containers", "root_disk" };
 			size_t k;
 
 			if (pd == NULL || pd->type != JSON_OBJECT) {

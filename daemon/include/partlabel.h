@@ -48,6 +48,43 @@ void partlabel_read(const char *parent_dev_path, unsigned int partno, char *out,
 void partlabel_parent_name(const char *part_name, char *out, size_t out_size);
 
 /*
+ * The whole-disk name the RUNNING ROOT filesystem lives on -- "vdb" --
+ * or -1 with out emptied when it cannot be determined.
+ *
+ * This is the tie-break #427 needed. A GPT label is not unique: attach
+ * a second Cix disk, or a clone of this one, and two partitions carry
+ * cix-config. The label itself says nothing about which of them the
+ * platform belongs to, and partlabel_find() below used to answer with
+ * whichever readdir(3) happened to yield first -- an answer that can
+ * differ between two boots of the same machine.
+ *
+ * The kernel already decided, though. It mounted one specific partition
+ * as /, and cix-install writes all five platform partitions on a single
+ * disk, so the disk carrying / is the disk carrying the other four.
+ * This reads that decision back instead of repeating the lookup that
+ * made it: stat("/") names the device the root filesystem is on, and
+ * /sys/dev/block/<major>:<minor> is a symlink whose basename is that
+ * device's kernel name. Measured in this sandbox, 2026-09-12:
+ * /sys/dev/block/259:1 -> ../../devices/.../nvme0n1/nvme0n1p1.
+ *
+ * Deliberately NOT root=PARTUUID= out of /proc/cmdline. Resolving a
+ * PARTUUID means scanning every disk and comparing GUIDs, which has the
+ * identical first-match ambiguity one level down -- a cloned disk
+ * duplicates PARTUUIDs too -- so it would narrow the problem without
+ * closing it. This platform also has no initramfs at all
+ * (image/src/mkinstalleriso.c:14), so / is the real root partition
+ * rather than something pivoted away from one.
+ *
+ * Whether that device is a partition or a whole disk is the kernel's
+ * answer too -- whether it has its own "partition" file -- never a
+ * guess from the name. Name-stripping alone is actively wrong here:
+ * this sandbox's root is the dm volume dm-71, and
+ * partlabel_parent_name("dm-71") is "dm-", a disk that does not exist
+ * (both measured 2026-09-12).
+ */
+int partlabel_root_disk(char *out, size_t out_size);
+
+/*
  * Resolve a GPT partition label to the device path holding it, by
  * walking /sys/class/block and reading each partition's own GPT entry.
  *
@@ -56,10 +93,49 @@ void partlabel_parent_name(const char *part_name, char *out, size_t out_size);
  * it rather than falling back to a guess, because a guess is what this
  * module exists to remove.
  *
+ * Two passes, in this order (#427):
+ *
+ *   1. the disk the running root is on, from partlabel_root_disk()
+ *      above -- the platform's own five partitions are all on it by
+ *      construction, so a label found there is the right one even when
+ *      another disk carries the same label;
+ *   2. every disk, which is what this did before the first pass
+ *      existed.
+ *
+ * The second pass is not a stop-gap, it is load-bearing in two real
+ * cases. cix-recover runs as pid 1 from ISO media, where / is on the
+ * optical device and no platform label is on that disk at all; and a
+ * root that is not on a block device has no disk to scope to. Both
+ * must keep resolving, so this never returns -1 where the all-disks
+ * scan alone would have returned 0. Reaching the second pass with two
+ * disks matching is still first-match -- by then there is nothing left
+ * to prefer.
+ *
  * Requires /sys mounted; boot_init() mounts it well before the first
  * call. Reads only, and opens each disk O_RDONLY.
  */
 int partlabel_find(const char *label, char *out, size_t out_size);
+
+/*
+ * partlabel_find()'s scan with its three implicit inputs made explicit:
+ * <sys_class_block> is the directory enumerated, <dev_dir> the
+ * directory the returned device path is built in, and <only_disk> the
+ * whole-disk name to restrict the search to -- NULL searches every
+ * disk.
+ *
+ * It exists so the scoping rule can be tested at all. The real scan
+ * walks /sys/class/block and this sandbox has no block device nodes, so
+ * a test against the real paths can only ever assert refusals -- which
+ * is all test_partlabel.c could assert before this existed. With the
+ * paths as parameters, two crafted GPTs carrying the SAME label can be
+ * put in front of it and the tie-break actually checked.
+ *
+ * Production code calls partlabel_find(), which owns the policy of
+ * which disk to prefer; this is for that function and for the test.
+ * Same shape and same reason as disk.h's disk_fill_mount_status_from().
+ */
+int partlabel_find_in(const char *sys_class_block, const char *dev_dir, const char *only_disk,
+                      const char *label, char *out, size_t out_size);
 
 /*
  * The unique partition GUID (PARTUUID) for partition <partno> of the

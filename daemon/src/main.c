@@ -1038,6 +1038,16 @@ static void migrate_diskroles_out_of_state_dir(void)
  * hardware if it turns out to be needed there.
  */
 static char ESP_DEVICE[64];        /* cix-esp        -- resolved by label, #305 */
+/*
+ * The whole disk those five labels are resolved on (#427) -- "vdb" --
+ * or "" when the running root is not on a block device and there is no
+ * disk to prefer. Set once by resolve_platform_devices() below and
+ * reported by GET /v1/system/boot, because on a shell-less host the
+ * daemon is the only thing that can see the host's own root: a build
+ * container's / is its own overlay, so no probe recipe can measure
+ * this.
+ */
+static char PLATFORM_ROOT_DISK[64];
 #define ESP_DIR "/boot"
 #define ESP_LOADER_ENTRIES_DIR ESP_DIR "/loader/entries"
 /*
@@ -1945,6 +1955,28 @@ static int bootstrap_management_network(void)
  * new is that it says so: on a real box stderr is the serial console,
  * which is the one place someone watching a boot can actually read.
  */
+/*
+ * A platform partition that turned up on a disk other than the one / is
+ * on. Not an error -- partlabel_find() falls back to every disk exactly
+ * so a machine in that shape still boots -- but it is not the layout
+ * cix-install writes, so it is said out loud on the console instead of
+ * being left for someone to infer from a device name months later.
+ */
+static void warn_if_off_root_disk(const char *label, const char *device)
+{
+	char parent[64];
+	const char *base;
+
+	if (PLATFORM_ROOT_DISK[0] == '\0' || device[0] == '\0')
+		return;
+	base = strrchr(device, '/');
+	base = (base != NULL) ? base + 1 : device;
+	partlabel_parent_name(base, parent, sizeof(parent));
+	if (strcmp(parent, PLATFORM_ROOT_DISK) != 0)
+		fprintf(stderr, "cix: warning: %s is on disk %s, not on the root disk %s\n", label,
+		        parent, PLATFORM_ROOT_DISK);
+}
+
 static void resolve_platform_devices(void)
 {
 	static const struct {
@@ -1960,9 +1992,24 @@ static void resolve_platform_devices(void)
 	};
 	size_t i;
 
+	/*
+	 * Which disk to believe when a label is not unique (#427). Printed
+	 * as well as used: it is the one line that makes the five below
+	 * auditable on a real boot, and a serial console is where someone
+	 * watching a boot can actually read it.
+	 */
+	if (partlabel_root_disk(PLATFORM_ROOT_DISK, sizeof(PLATFORM_ROOT_DISK)) == 0)
+		fprintf(stderr,
+		        "cix: the running root is on disk %s -- platform labels resolve there first\n",
+		        PLATFORM_ROOT_DISK);
+	else
+		fprintf(stderr, "cix: the running root's disk is unknown -- platform labels resolve "
+		                "across every disk\n");
+
 	for (i = 0; i < sizeof(map) / sizeof(map[0]); i++) {
 		if (partlabel_find(map[i].label, map[i].out, map[i].size) == 0) {
 			fprintf(stderr, "cix: %s is %s\n", map[i].label, map[i].out);
+			warn_if_off_root_disk(map[i].label, map[i].out);
 			continue;
 		}
 		map[i].out[0] = '\0';
@@ -2365,6 +2412,14 @@ static void handle_system_boot(int fd)
 	jw_str(&w, CONFIG_DEVICE);
 	jw_key(&w, "containers");
 	jw_str(&w, CONTAINERS_DEVICE);
+	/*
+	 * The disk the five above were resolved on (#427), "" when the
+	 * running root is not on a block device. Reported because it is
+	 * the tie-break itself: five device paths look identically
+	 * plausible whether or not they came off the right disk.
+	 */
+	jw_key(&w, "root_disk");
+	jw_str(&w, PLATFORM_ROOT_DISK);
 	jw_obj_close(&w);
 	/*
 	 * Real freshness signal for `pkg hostbuild cix --deploy`
