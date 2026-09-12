@@ -6,6 +6,47 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Two disks carrying the same platform label no longer resolve by luck (#427)
+
+`partlabel_find()` stopped at the first partition whose GPT label matched, in `readdir(3)` order,
+with nothing preferring the disk the platform actually belongs to. Attach a second Cix disk — or a
+clone of this one — and two partitions carry `cix-config`; which one gets mounted at `/config` was
+then whatever the directory yielded first, and that is not a contract. The same machine could
+resolve differently across two boots, and #305's own fix is what made this reachable: resolving by
+label is correct precisely because a label survives a rename, and the cost of that is that a label
+is not unique.
+
+The kernel had already decided, though, and the fix reads that decision back rather than repeating
+the lookup that made it. `partlabel_root_disk()` takes `stat("/")`'s `st_dev` to
+`/sys/dev/block/<major>:<minor>`, whose basename is the device's kernel name; `cix-install` writes
+all five platform partitions on one disk, so the disk carrying `/` is the disk carrying the rest.
+`partlabel_find()` now searches that disk first and every disk only after. `GET /v1/system/boot`'s
+`platform_devices` gains **`root_disk`** naming the disk that answered, and `cixctl boot` prints it
+above the five devices — five plausible device paths read off the wrong disk look exactly like five
+off the right one, so the tie-break itself has to be visible.
+
+Three things measured rather than assumed, each of which would have been wrong as a guess:
+
+- **`root=PARTUUID=` off `/proc/cmdline` was rejected**, not overlooked. Resolving a PARTUUID means
+  scanning every disk and comparing GUIDs, which carries the identical first-match ambiguity one
+  level down — a cloned disk duplicates PARTUUIDs too. It would have narrowed the problem while
+  looking like it closed it. There is also no initramfs anywhere in this platform
+  (`image/src/mkinstalleriso.c:14`), so `/` is always the real root partition.
+- **Partition-or-whole-disk is the kernel's answer, never the name's.** This sandbox's own root is
+  the dm volume `dm-71`, and `partlabel_parent_name("dm-71")` is `"dm-"` — a disk that does not
+  exist. `/sys/dev/block/252:71/partition` is absent, which is how the code knows to use the name
+  as-is (measured 2026-09-12).
+- **The all-disks fallback is load-bearing, not a stop-gap.** `cix-recover` runs as pid 1 from ISO
+  media, where `/` is the optical device and carries no platform label at all. Scoping without a
+  fallback would have broken recovery — the one tool that exists for a machine that will not boot.
+
+`test_partlabel` could previously only assert the scan's *refusals*: it walks `/sys/class/block`,
+and this sandbox has no block device nodes to hang a second GPT off. `partlabel_find_in()` takes the
+sysfs directory, the `/dev` directory and the disk to restrict to as parameters (the same shape and
+the same reason as `disk_fill_mount_status_from()`), so the test now builds two crafted GPTs that
+both carry `cix-config` and asserts the tie-break in *both* directions — a bug that ignored the
+restriction outright would still pass one of them by luck.
+
 ### Which device backs each platform partition is now an API fact (#305)
 
 `GET /v1/system/boot` gains `platform_devices` — `esp`, `root_a`, `root_b`, `config`,

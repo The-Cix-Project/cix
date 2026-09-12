@@ -7,6 +7,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <unistd.h>
 
 void partlabel_parent_name(const char *part_name, char *out, size_t out_size)
@@ -84,17 +86,72 @@ void partlabel_read(const char *parent_dev_path, unsigned int partno, char *out,
 	out[n] = '\0';
 }
 
-int partlabel_find(const char *label, char *out, size_t out_size)
+int partlabel_root_disk(char *out, size_t out_size)
+{
+	struct stat st;
+	char sys_path[64];
+	char partfile[PATH_MAX];
+	char link[PATH_MAX];
+	const char *base;
+	ssize_t n;
+
+	if (out == NULL || out_size == 0)
+		return -1;
+	out[0] = '\0';
+
+	if (stat("/", &st) != 0)
+		return -1;
+	if (snprintf(sys_path, sizeof(sys_path), "/sys/dev/block/%u:%u",
+	             (unsigned int)major(st.st_dev), (unsigned int)minor(st.st_dev)) >=
+	    (int)sizeof(sys_path))
+		return -1;
+
+	/*
+	 * A root that is not on a block device -- an overlay, a tmpfs, an
+	 * NFS mount -- has an anonymous st_dev with no sysfs node, and the
+	 * readlink fails. That is a real answer rather than an error: the
+	 * caller has nothing to scope to and searches every disk.
+	 */
+	n = readlink(sys_path, link, sizeof(link) - 1);
+	if (n <= 0)
+		return -1;
+	link[n] = '\0';
+	base = strrchr(link, '/');
+	base = (base != NULL) ? base + 1 : link;
+	if (base[0] == '\0')
+		return -1;
+
+	/*
+	 * Partition or whole disk is the kernel's call, not the name's: a
+	 * partition has its own "partition" file and its parent disk is
+	 * the answer, while a root sitting directly on a whole device
+	 * means that device IS the answer. Splitting the name
+	 * unconditionally would be wrong for exactly the second case --
+	 * this sandbox's own root is dm-71, whose "parent" by name is the
+	 * nonexistent disk "dm-" (measured 2026-09-12).
+	 */
+	if (snprintf(partfile, sizeof(partfile), "%s/partition", sys_path) >= (int)sizeof(partfile))
+		return -1;
+	if (access(partfile, F_OK) == 0)
+		partlabel_parent_name(base, out, out_size);
+	else
+		snprintf(out, out_size, "%s", base);
+	return (out[0] != '\0') ? 0 : -1;
+}
+
+int partlabel_find_in(const char *sys_class_block, const char *dev_dir, const char *only_disk,
+                      const char *label, char *out, size_t out_size)
 {
 	DIR *d;
 	struct dirent *ent;
 	int found = 0;
 
-	if (label == NULL || label[0] == '\0' || out == NULL || out_size == 0)
+	if (sys_class_block == NULL || dev_dir == NULL || label == NULL || label[0] == '\0' ||
+	    out == NULL || out_size == 0)
 		return -1;
 	out[0] = '\0';
 
-	d = opendir("/sys/class/block");
+	d = opendir(sys_class_block);
 	if (d == NULL)
 		return -1;
 
@@ -117,8 +174,8 @@ int partlabel_find(const char *label, char *out, size_t out_size)
 		 * of the name is the kernel's own answer to the question, and
 		 * it is right for nvme and loop naming without special cases.
 		 */
-		if (snprintf(partfile, sizeof(partfile), "/sys/class/block/%s/partition", ent->d_name) >=
-		    (int)sizeof(partfile))
+		if (snprintf(partfile, sizeof(partfile), "%s/%s/partition", sys_class_block,
+		             ent->d_name) >= (int)sizeof(partfile))
 			continue;
 		f = fopen(partfile, "r");
 		if (f == NULL)
@@ -145,13 +202,22 @@ int partlabel_find(const char *label, char *out, size_t out_size)
 		if (suffix[0] == '\0')
 			continue;
 
-		if (snprintf(parent_dev, sizeof(parent_dev), "/dev/%s", parent_name) >=
+		/*
+		 * The tie-break (#427). Restricting the search by parent disk
+		 * here, rather than filtering the answer afterwards, is what
+		 * makes a duplicate label on another disk unreachable instead
+		 * of merely unlikely.
+		 */
+		if (only_disk != NULL && strcmp(parent_name, only_disk) != 0)
+			continue;
+
+		if (snprintf(parent_dev, sizeof(parent_dev), "%s/%s", dev_dir, parent_name) >=
 		    (int)sizeof(parent_dev))
 			continue;
 
 		partlabel_read(parent_dev, partno, name, sizeof(name));
 		if (name[0] != '\0' && strcmp(name, label) == 0) {
-			if (snprintf(out, out_size, "/dev/%s", ent->d_name) < (int)out_size)
+			if (snprintf(out, out_size, "%s/%s", dev_dir, ent->d_name) < (int)out_size)
 				found = 1;
 			else
 				out[0] = '\0';
@@ -160,6 +226,32 @@ int partlabel_find(const char *label, char *out, size_t out_size)
 
 	closedir(d);
 	return found ? 0 : -1;
+}
+
+int partlabel_find(const char *label, char *out, size_t out_size)
+{
+	char root_disk[64];
+
+	/*
+	 * The root disk first (#427): two disks can carry the same GPT
+	 * label -- a second Cix disk, or a clone of this one -- and the
+	 * platform's own five partitions are all on the disk the kernel
+	 * mounted / from, so a match there is the right one by
+	 * construction.
+	 */
+	if (partlabel_root_disk(root_disk, sizeof(root_disk)) == 0 &&
+	    partlabel_find_in("/sys/class/block", "/dev", root_disk, label, out, out_size) == 0)
+		return 0;
+
+	/*
+	 * Then every disk, which is what this function was before the
+	 * pass above and is still the only answer in two real cases:
+	 * cix-recover runs from ISO media, where / is the optical device
+	 * and carries no platform label; and a root on something that is
+	 * not a block device has no disk to scope to. So this cannot
+	 * return -1 where the old code returned 0.
+	 */
+	return partlabel_find_in("/sys/class/block", "/dev", NULL, label, out, out_size);
 }
 
 void partlabel_read_uuid(const char *parent_dev_path, unsigned int partno, char *out,

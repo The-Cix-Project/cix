@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 static int g_fail;
@@ -93,6 +94,59 @@ static int write_gpt(const char *path)
 		return -1;
 	}
 	fclose(f);
+	return 0;
+}
+
+/*
+ * One line into a file, for the fake sysfs below: a partition's
+ * "partition" file, holding its number.
+ */
+static int write_number(const char *path, unsigned int n)
+{
+	FILE *f = fopen(path, "w");
+
+	if (f == NULL)
+		return -1;
+	fprintf(f, "%u\n", n);
+	return fclose(f) == 0 ? 0 : -1;
+}
+
+/*
+ * TWO disks carrying the SAME five labels, and a /sys/class/block shaped
+ * directory describing their partitions -- the situation #427 is about
+ * and the one the real scan could never be handed here, since this
+ * sandbox has no block device nodes to attach a second GPT to.
+ *
+ * <dir>/diskA and <dir>/diskB are real GPTs; <dir>/sys/diskA4 and
+ * <dir>/sys/diskB4 are the partition directories the scan enumerates.
+ * Partition 4 is cix-config and partition 1 is cix-esp on BOTH, so
+ * every label in the platform's layout is ambiguous by construction.
+ */
+static int build_two_disk_tree(const char *dir, char *sys_dir, size_t sys_dir_size)
+{
+	static const char *const disks[] = { "diskA", "diskB" };
+	static const unsigned int parts[] = { 1, 4 };
+	size_t i, j;
+	char path[512];
+
+	if (snprintf(sys_dir, sys_dir_size, "%s/sys", dir) >= (int)sys_dir_size)
+		return -1;
+	if (mkdir(sys_dir, 0755) != 0)
+		return -1;
+
+	for (i = 0; i < sizeof(disks) / sizeof(disks[0]); i++) {
+		snprintf(path, sizeof(path), "%s/%s", dir, disks[i]);
+		if (write_gpt(path) != 0)
+			return -1;
+		for (j = 0; j < sizeof(parts) / sizeof(parts[0]); j++) {
+			snprintf(path, sizeof(path), "%s/%s%u", sys_dir, disks[i], parts[j]);
+			if (mkdir(path, 0755) != 0)
+				return -1;
+			snprintf(path, sizeof(path), "%s/%s%u/partition", sys_dir, disks[i], parts[j]);
+			if (write_number(path, parts[j]) != 0)
+				return -1;
+		}
+	}
 	return 0;
 }
 
@@ -202,6 +256,118 @@ int main(void)
 	      "an unknown label returns -1 and clears the buffer");
 	check(partlabel_find(NULL, out, sizeof(out)) == -1, "a NULL label is refused");
 	check(partlabel_find("", out, sizeof(out)) == -1, "an empty label is refused");
+
+	/*
+	 * The root disk, which is the tie-break itself (#427). What it
+	 * answers depends entirely on where this runs -- a real partition
+	 * in an installed system, a dm volume in this sandbox, nothing at
+	 * all in a container whose / is an overlay -- so what is asserted
+	 * is the invariant that holds everywhere: it either succeeds with
+	 * a bare disk NAME, or it fails with the buffer cleared. Never a
+	 * path, never a leftover.
+	 */
+	strcpy(out, "poison");
+	{
+		int rc = partlabel_root_disk(out, sizeof(out));
+
+		check(rc == 0 ? (out[0] != '\0' && strchr(out, '/') == NULL) : out[0] == '\0',
+		      "the root disk is a bare disk name, or cleanly absent");
+		printf("  (root disk here: %s)\n", rc == 0 ? out : "none");
+	}
+	check(partlabel_root_disk(NULL, 8) == -1, "a NULL root-disk buffer is refused");
+	check(partlabel_root_disk(out, 0) == -1, "a zero-length root-disk buffer is refused");
+
+	/*
+	 * The duplicate-label tie-break, against two disks that both
+	 * carry cix-config (#427). Before the scoping existed this was
+	 * decided by readdir(3) order, which is not a contract and can
+	 * differ between two boots of the same machine -- so /config
+	 * could be mounted from the wrong disk, and the platform would
+	 * have no way to tell.
+	 */
+	{
+		char dir[] = "/tmp/cix_partlabel_dup_XXXXXX";
+		char sys_dir[512];
+		char expect[512];
+
+		if (mkdtemp(dir) == NULL) {
+			fprintf(stderr, "FAIL: mkdtemp for the duplicate-label tree\n");
+			return 1;
+		}
+		if (build_two_disk_tree(dir, sys_dir, sizeof(sys_dir)) != 0) {
+			fprintf(stderr, "FAIL: could not build the two-disk tree\n");
+			return 1;
+		}
+
+		/*
+		 * Both directions. A scoping bug that ignored only_disk
+		 * entirely would still pass one of these by luck, so passing
+		 * both is what proves the restriction is real.
+		 */
+		snprintf(expect, sizeof(expect), "%s/diskB4", dir);
+		check(partlabel_find_in(sys_dir, dir, "diskB", "cix-config", out, sizeof(out)) == 0 &&
+		          strcmp(out, expect) == 0,
+		      "cix-config scoped to diskB resolves on diskB");
+		snprintf(expect, sizeof(expect), "%s/diskA4", dir);
+		check(partlabel_find_in(sys_dir, dir, "diskA", "cix-config", out, sizeof(out)) == 0 &&
+		          strcmp(out, expect) == 0,
+		      "the same label scoped to diskA resolves on diskA");
+
+		/* A second label, so the answer is not partition 4 by accident. */
+		snprintf(expect, sizeof(expect), "%s/diskB1", dir);
+		check(partlabel_find_in(sys_dir, dir, "diskB", "cix-esp", out, sizeof(out)) == 0 &&
+		          strcmp(out, expect) == 0,
+		      "cix-esp scoped to diskB resolves to diskB's own partition 1");
+
+		/*
+		 * Unscoped is still first-match, and deliberately not
+		 * asserted to be either disk: readdir order is not a
+		 * contract, and pinning it here would assert the very thing
+		 * #427 says cannot be relied on. What must hold is that the
+		 * answer is one of the two real candidates.
+		 */
+		{
+			char a[512], b[512];
+
+			snprintf(a, sizeof(a), "%s/diskA4", dir);
+			snprintf(b, sizeof(b), "%s/diskB4", dir);
+			check(partlabel_find_in(sys_dir, dir, NULL, "cix-config", out, sizeof(out)) == 0 &&
+			          (strcmp(out, a) == 0 || strcmp(out, b) == 0),
+			      "unscoped, an ambiguous label still resolves to one of them");
+		}
+
+		/* A disk that is not in the tree resolves nothing, rather than falling
+		 * back to a disk that is -- the scoping has to be a restriction, not a
+		 * preference. */
+		strcpy(out, "poison");
+		check(partlabel_find_in(sys_dir, dir, "diskC", "cix-config", out, sizeof(out)) == -1 &&
+		          out[0] == '\0',
+		      "scoped to a disk that has no such label, nothing resolves");
+		check(partlabel_find_in(sys_dir, dir, "diskA", "cix-not-a-label", out, sizeof(out)) == -1,
+		      "an unknown label on a real disk resolves nothing");
+		check(partlabel_find_in(NULL, dir, NULL, "cix-config", out, sizeof(out)) == -1 &&
+		          partlabel_find_in(sys_dir, NULL, NULL, "cix-config", out, sizeof(out)) == -1,
+		      "a NULL sysfs or /dev directory is refused");
+
+		{
+			char path[512];
+			size_t i;
+			static const char *const leaves[] = { "diskA1", "diskA4", "diskB1", "diskB4" };
+
+			for (i = 0; i < sizeof(leaves) / sizeof(leaves[0]); i++) {
+				snprintf(path, sizeof(path), "%s/%s/partition", sys_dir, leaves[i]);
+				unlink(path);
+				snprintf(path, sizeof(path), "%s/%s", sys_dir, leaves[i]);
+				rmdir(path);
+			}
+			rmdir(sys_dir);
+			snprintf(path, sizeof(path), "%s/diskA", dir);
+			unlink(path);
+			snprintf(path, sizeof(path), "%s/diskB", dir);
+			unlink(path);
+			rmdir(dir);
+		}
+	}
 
 	printf("PARTLABEL RESULT: %s\n", g_fail ? "FAIL" : "PASS");
 	return g_fail;
