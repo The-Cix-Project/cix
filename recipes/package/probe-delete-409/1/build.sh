@@ -59,8 +59,8 @@
 #
 pkg_name="probe-delete-409"
 pkg_version="1"
-pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/PROBE_REF.tar.gz"
-pkg_sha256="PROBE_SHA"
+pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/v2.57.125.tar.gz"
+pkg_sha256="0fd868f0093b8cf95652ba708b0f4dabb91851da3721d79faa9329995abc7485"
 pkg_build_depends="bash coreutils make tcc linux-headers openssl gcc binutils sed grep gawk"
 pkg_build_caps="CAP_SYS_ADMIN"
 pkg_build_image="cix-builder"
