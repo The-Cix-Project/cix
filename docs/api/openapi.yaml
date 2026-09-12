@@ -264,6 +264,20 @@ paths:
                   maximum: 65535
                   default: 3893
                   description: Shared port every entry in ldap_servers is queried on (glauth's own real default is 3893).
+                ldap_tls:
+                  type: boolean
+                  default: false
+                  description: >
+                    When true the daemon's own LDAP bind runs over TLS
+                    (LDAPS -- TLS from the first byte, not StartTLS),
+                    verifying the server against this host's own CA. This
+                    is a separate switch from the `client_tls` field on
+                    PUT /ldap/config: that one configures the LDAP clients
+                    inside containers (nslcd, ldapsearch), while this one
+                    configures cixd itself, which is a different client
+                    reaching a possibly different port. Refused when
+                    ldap_enabled is true and no root CA is bootstrapped --
+                    there would be nothing to verify against.
                 ldap_base_dn:
                   type: string
                   description: >
@@ -289,10 +303,14 @@ paths:
                 $ref: "#/components/schemas/Error"
         "409":
           description: >
-            Refused: write-gating is active now and this config would turn it off,
-            because no enabled user is in any of the admin_groups given (#370).
-            Setting admin_groups BEFORE the admin users exist is allowed -- gating is
-            inactive throughout that, and only turning ACTIVE gating off is refused.
+            Refused, for either of two reasons. Write-gating is active now and this
+            config would turn it off, because no enabled user is in any of the
+            admin_groups given (#370) -- setting admin_groups BEFORE the admin users
+            exist is allowed, since gating is inactive throughout that, and only
+            turning ACTIVE gating off is refused. Or ldap_tls was asked for together
+            with ldap_enabled on a host that has not bootstrapped a root CA (#416),
+            leaving nothing to verify the directory against; ldap_tls alone, without
+            ldap_enabled, is accepted so the flag can be set before the backend is.
           content:
             application/json:
               schema:
@@ -14685,7 +14703,7 @@ components:
 
     HostauthConfig:
       type: object
-      required: [admin_groups, idle_timeout_seconds, ldap_enabled, ldap_servers, ldap_port, ldap_base_dn]
+      required: [admin_groups, idle_timeout_seconds, ldap_enabled, ldap_servers, ldap_port, ldap_tls, ldap_base_dn]
       properties:
         admin_groups:
           type: array
@@ -14701,6 +14719,8 @@ components:
             type: string
         ldap_port:
           type: integer
+        ldap_tls:
+          type: boolean
         ldap_base_dn:
           type: string
         gating_active:

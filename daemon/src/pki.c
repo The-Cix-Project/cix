@@ -1543,12 +1543,16 @@ enum pki_error pki_import(const char *passphrase, const char *bundle)
 	return PKI_OK;
 }
 
-enum pki_error pki_write_trust_bundle_file(const char *dest_path)
+enum pki_error pki_trust_bundle_pem(char **out_pem, size_t *out_len)
 {
 	char *root_pem = NULL, *intermediate_pem = NULL, *bundle = NULL;
 	size_t root_len, intermediate_len = 0, bundle_len;
-	enum pki_error result = PKI_OK;
 
+	if (out_pem == NULL)
+		return PKI_ERR_INVALID_NAME;
+	*out_pem = NULL;
+	if (out_len != NULL)
+		*out_len = 0;
 	if (!pki_ca_bootstrapped())
 		return PKI_ERR_NOT_BOOTSTRAPPED;
 
@@ -1574,11 +1578,24 @@ enum pki_error pki_write_trust_bundle_file(const char *dest_path)
 		memcpy(bundle + root_len, intermediate_pem, intermediate_len);
 	bundle[bundle_len] = '\0';
 
-	if (persist_atomic_write(dest_path, bundle, bundle_len) != 0)
-		result = PKI_ERR_PERSIST_FAILED;
-
 	free(root_pem);
 	free(intermediate_pem);
+	*out_pem = bundle;
+	if (out_len != NULL)
+		*out_len = bundle_len;
+	return PKI_OK;
+}
+
+enum pki_error pki_write_trust_bundle_file(const char *dest_path)
+{
+	char *bundle = NULL;
+	size_t bundle_len = 0;
+	enum pki_error result = pki_trust_bundle_pem(&bundle, &bundle_len);
+
+	if (result != PKI_OK)
+		return result;
+	if (persist_atomic_write(dest_path, bundle, bundle_len) != 0)
+		result = PKI_ERR_PERSIST_FAILED;
 	free(bundle);
 	return result;
 }

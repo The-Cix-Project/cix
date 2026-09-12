@@ -57,7 +57,22 @@ cixctl ldap config set --client-tls --client-tls-port=636
 
 `effective_client_uri` then reads `ldaps://<ip>:636/` instead of `ldap://<ip>:3893/`, and every consumer picks it up from that one derivation: the `nslcd.conf` the daemon renders for an `ldap_client` container (which also gains a `tls_cacertfile` line, since nslcd runs `tls_reqcert demand` and refuses everything without a trust anchor), and the `{{LDAP:URI}}` recipe token. Containers are restaged on their next create.
 
-**What this does not cover.** The daemon's own LDAP bind — `hostauth` dialling `ldapclient.c` — speaks LDAP over a raw socket with no TLS support at all, so `client_tls` neither affects nor protects it. It is disabled on installs that authenticate locally (`ldap_enabled: false`), but where it is on, the plaintext listener has to keep running. That is why step 1 leaves 3893 alone, and why turning it off is tracked separately as #416 rather than bundled in here.
+**3. The daemon uses it too — a separate switch, because it is a separate client.**
+
+```sh
+cixctl hostauth-config set --ldap-tls --ldap-port=636
+```
+
+`cixd` is itself an LDAP client: `POST /login` with `ldap_enabled: true` binds against each entry in `ldap_servers`. Until #416 `ldapclient.c` had no TLS at all, so `client_tls` neither affected nor protected that bind, and the plaintext listener had to keep running on any install where it was in use. It now speaks LDAPS, verified against **this host's own CA** — read from the PKI store at the moment it dials, not from a file staged at startup that a CA reset or an [ADR-0281](../adr/0281-the-ca-leaves-the-box-encrypted-or-it-is-lost.md) import would leave stale.
+
+The two switches stay separate on purpose. `client_tls` configures the clients inside containers; `--ldap-tls` configures the daemon. They can point at different ports, and a single flag could never correctly serve both — see [`docs/api/README.md`](../api/README.md#ldap-over-tls-two-switches-two-different-clients).
+
+Two guards worth knowing:
+
+- `--ldap-tls` together with `ldap_enabled` on a host with no root CA is refused **409** — there would be nothing to verify against, and a saved config where every login silently fails its handshake is worse than a refused one. The flag alone, without `ldap_enabled`, is accepted, so you can set it first and enable the backend after bootstrapping the CA.
+- If the CA is reset out from under an already-saved `ldap_tls` config, the daemon does **not** quietly fall back to a plaintext bind. It declines to bind at all, logs why, and `POST /login` falls through to the local user records — a configuration that asked for TLS never becomes a cleartext credential on the wire.
+
+A failed handshake is a connect-class failure, so the next configured server is tried and, if none answers, local authentication applies. The OpenSSL error text goes to the log store (`GET /system/logs`, source `ldap`), because an unexplained fallback looks exactly like a wrong password.
 
 ### An identity that must outlive the container: `--pki-cert`
 

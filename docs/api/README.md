@@ -14,7 +14,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | POST | `/logout` | Invalidate the current session (idempotent) |
 | GET | `/whoami` | Is the caller's own bearer token currently authenticated -- read-only, never consumes a single-use session (ADR-0164) |
 | GET | `/system/hostauth-config` | Current admin-group list, session idle timeout, live-LDAP backend config |
-| PUT | `/system/hostauth-config` | Replace host-auth config (full replacement of admin_groups/idle_timeout_seconds; ldap_* fields optional) |
+| PUT | `/system/hostauth-config` | Replace host-auth config (full replacement of admin_groups/idle_timeout_seconds; ldap_* fields optional, including `ldap_tls` for the daemon's own bind) |
 | GET | `/system/hostauth/sessions` | Every active session (username, expires-in) -- never a raw token, before or after issuance (ADR-0152) |
 | DELETE | `/system/hostauth/sessions/{username}` | Revoke every active session for that user -- "log out everywhere" |
 | GET | `/system/boot` | Build version/time, A/B slot, kernel version (`uname`) |
@@ -1324,6 +1324,17 @@ Cix lets you register redundant backend servers for four subsystems &mdash; LDAP
 This applies to an **explicitly configured `client_uri`** as well, not only to the list derived from registered servers (issue #84). It did not until that fix: an explicit list returned verbatim before any filtering ran, so every rule above was silently inert on any box that had one set &mdash; which included the real one, where draining a server changed nothing about what clients received. Health is keyed by container name and `client_uri` is free-form URIs, so each URI is mapped back to a registered server by resolving that server's live IP; two conservative rules bound it. A URI that maps to **no** registered server is left strictly alone (an operator may legitimately point at a directory this platform does not manage, and dropping it on evidence that does not exist would be far worse than not filtering), and a URI on a **different port** than the one health actually probes maps to nothing either &mdash; same IP, different port, is a different service, and dropping it on the strength of a probe that never touched it would be a guess dressed up as a health decision.
 
 `GET /v1/ldap/config` reports **`effective_client_uri`** alongside the configured `client_uri`: what clients are handed right now, after derivation and after filtering. Configuration and effect are two different questions, and #84 stayed invisible for as long as it existed precisely because nothing anywhere answered the second one.
+
+### LDAP over TLS: two switches, two different clients
+
+There are two independent TLS switches, because there are two independent populations of LDAP client, and conflating them is how a change protects one and silently leaves the other in clear.
+
+- **`client_tls` / `client_tls_port` on `PUT /v1/ldap/config`** (#414) configure the clients *inside containers* — `nslcd`, `ldapsearch`, anything handed the `{{LDAP:URI}}` token. With `client_tls: true`, `effective_client_uri` names `ldaps://<ip>:<client_tls_port>` instead of `ldap://<ip>:3893`, and the certificate the server presents carries the container's IP as an `IP:` SAN, not just its name — a TLS client checks the name it *dialled* against the matching SAN type, so a server reached by address needs an address SAN or verification fails against an otherwise-correct certificate. `client_tls_port` is settable independently of `client_tls`, so the port can be set first and the flag flipped second.
+- **`ldap_tls` on `PUT /v1/system/hostauth-config`** (#416) configures *cixd itself*. The daemon is an LDAP client too: `POST /login` with `ldap_enabled: true` performs a real bind against each entry in `ldap_servers`, and until #416 that bind had no TLS support at all — so `client_tls` neither affected nor protected it, and a bind credential still crossed the wire in clear on any install where it was in use. Both are LDAPS (TLS from the first byte, not StartTLS).
+
+The daemon verifies against **its own CA**, not an image's staged trust bundle: `cixd` runs on the host root and *is* the certificate authority, so it loads the current chain from the PKI store directly rather than from a file on disk that could go stale after a CA reset or import. `PUT /system/hostauth-config` refuses `ldap_tls: true` together with `ldap_enabled: true` when no root CA is bootstrapped — there would be nothing to verify against, and "enabled with nothing to bind against" is never a valid saved state.
+
+A failed handshake is a *connect-class* failure, so `POST /login` moves on to the next configured server and, if none answers, falls back to the local user records — a misconfigured `ldap_tls` degrades to local authentication rather than locking an operator out. The cause is written to the log store with the OpenSSL error text, because an unexplained fallback is indistinguishable from a wrong password.
 
 `PUT /v1/system/server-health/{kind}/{container}` with `{"drained": true|false}` is the operator override for maintenance. Draining is an *intent*, so unlike the observed health state it is persisted across a daemon restart; health itself is re-established by the next probe.
 

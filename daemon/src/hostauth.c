@@ -2,6 +2,8 @@
 #include "ldap.h"
 #include "ldapclient.h"
 #include "persist.h"
+#include "pki.h"
+#include "logstore.h"
 
 #include <fcntl.h>
 #include <limits.h>
@@ -24,10 +26,16 @@ struct hostauth_config {
 	char ldap_servers[HOSTAUTH_LDAP_MAX_SERVERS][HOSTAUTH_LDAP_HOST_MAX];
 	int ldap_server_count;
 	int ldap_port;
+	/* #416: the daemon's OWN bind runs over TLS. Separate from
+	 * ldap.c's client_tls, which configures the LDAP clients inside
+	 * containers -- a different client population reaching a possibly
+	 * different port, so one flag could never correctly serve both. */
+	int ldap_tls;
 	char ldap_base_dn[HOSTAUTH_LDAP_BASE_DN_MAX];
 };
 
-static struct hostauth_config g_config = { { { 0 } }, 0, 900, 0, { { 0 } }, 0, HOSTAUTH_LDAP_DEFAULT_PORT, { 0 } };
+static struct hostauth_config g_config = { { { 0 } },      0, 900, 0, { { 0 } }, 0,
+                                            HOSTAUTH_LDAP_DEFAULT_PORT, 0, { 0 } };
 static char g_config_path[PATH_MAX];
 
 struct hostauth_session {
@@ -56,7 +64,8 @@ static int load_config(void)
 	char *buf;
 	size_t len;
 	struct json_value *root;
-	const struct json_value *jgroups, *jidle, *jldapen, *jldapservers, *jldapport, *jldapbasedn;
+	const struct json_value *jgroups, *jidle, *jldapen, *jldapservers, *jldapport, *jldaptls,
+	    *jldapbasedn;
 
 	if (persist_read_file(g_config_path, &buf, &len) != 0)
 		return -1;
@@ -111,6 +120,11 @@ static int load_config(void)
 	jldapport = json_object_get(root, "ldap_port");
 	if (jldapport != NULL)
 		g_config.ldap_port = (int)json_as_number(jldapport);
+	/* #416: absent in older state files -- plaintext then, which is what
+	 * those boxes were actually doing, so no migration. */
+	jldaptls = json_object_get(root, "ldap_tls");
+	if (jldaptls != NULL && jldaptls->type == JSON_BOOL)
+		g_config.ldap_tls = jldaptls->u.boolean;
 	jldapbasedn = json_object_get(root, "ldap_base_dn");
 	if (jldapbasedn != NULL && json_as_string(jldapbasedn) != NULL)
 		snprintf(g_config.ldap_base_dn, sizeof(g_config.ldap_base_dn), "%s", json_as_string(jldapbasedn));
@@ -165,7 +179,7 @@ const char *hostauth_ldap_base_dn(void)
 enum hostauth_config_error hostauth_set_config(const char *const *admin_groups, int admin_group_count,
                                                 int idle_timeout_seconds, int ldap_enabled,
                                                 const char *const *ldap_servers, int ldap_server_count,
-                                                int ldap_port, const char *ldap_base_dn)
+                                                int ldap_port, int ldap_tls, const char *ldap_base_dn)
 {
 	struct hostauth_config old = g_config;
 	int i;
@@ -180,6 +194,15 @@ enum hostauth_config_error hostauth_set_config(const char *const *admin_groups, 
 		return HOSTAUTH_CONFIG_ERR_INVALID_FIELD;
 	if (ldap_enabled && (ldap_server_count == 0 || ldap_base_dn == NULL || ldap_base_dn[0] == '\0'))
 		return HOSTAUTH_CONFIG_ERR_INVALID_FIELD;
+	/* #416: the same "enabled with nothing to bind against can never be
+	 * a valid saved state" rule as the line above. TLS verification
+	 * against this host's own CA is impossible before that CA exists,
+	 * and accepting the config would mean every login silently failing
+	 * its handshake and falling back -- a saved state that looks
+	 * correct and does nothing it says. Checked only when ldap_enabled,
+	 * so the flag can be set ahead of enabling the backend. */
+	if (ldap_enabled && ldap_tls && !pki_ca_bootstrapped())
+		return HOSTAUTH_CONFIG_ERR_NO_CA;
 
 	memset(g_config.admin_groups, 0, sizeof(g_config.admin_groups));
 	for (i = 0; i < admin_group_count; i++)
@@ -193,6 +216,7 @@ enum hostauth_config_error hostauth_set_config(const char *const *admin_groups, 
 		snprintf(g_config.ldap_servers[i], sizeof(g_config.ldap_servers[0]), "%s", ldap_servers[i]);
 	g_config.ldap_server_count = ldap_server_count;
 	g_config.ldap_port = ldap_port;
+	g_config.ldap_tls = ldap_tls ? 1 : 0;
 	snprintf(g_config.ldap_base_dn, sizeof(g_config.ldap_base_dn), "%s", ldap_base_dn != NULL ? ldap_base_dn : "");
 
 	if (save_config() != 0) {
@@ -244,6 +268,8 @@ void hostauth_write_config_json(struct json_writer *w)
 	jw_arr_close(w);
 	jw_key(w, "ldap_port");
 	jw_int(w, g_config.ldap_port);
+	jw_key(w, "ldap_tls");
+	jw_bool(w, g_config.ldap_tls);
 	jw_key(w, "ldap_base_dn");
 	jw_str(w, g_config.ldap_base_dn);
 	/*
@@ -481,32 +507,67 @@ static int build_login_bind_dn(const char *username, char *out_dn, size_t out_dn
 static int try_ldap_login(const char *username, const char *password, int *out_answered)
 {
 	char dn[HOSTAUTH_USERNAME_MAX + HOSTAUTH_GROUP_NAME_MAX + HOSTAUTH_LDAP_BASE_DN_MAX + 8];
+	char *ca_pem = NULL;
+	size_t ca_pem_len = 0;
+	int authenticated = 0;
 	int i;
 
 	*out_answered = 0;
 	if (build_login_bind_dn(username, dn, sizeof(dn)) != 0)
 		return 0;
 
+	/*
+	 * #416: the trust chain is read ONCE per login, not once per
+	 * server -- and here rather than at startup, because the CA can
+	 * change under a running daemon (pki_ca_reset(), an intermediate
+	 * bootstrap, ADR-0281's import) and a stale anchor fails as a
+	 * refused connection against a perfectly correct certificate. A
+	 * login is rare enough (this module's own comment says so about
+	 * connection pooling) that the read costs nothing worth saving.
+	 *
+	 * No chain while ldap_tls is on means this function does NOT bind
+	 * at all: it returns with *out_answered still 0, which is the
+	 * established "no server gave a usable answer" outcome, so
+	 * hostauth_login() falls back to the local user records. It
+	 * deliberately does not fall back to a plaintext bind -- that
+	 * would send the credential in clear on the strength of a
+	 * configuration that asked for the opposite. hostauth_set_config()
+	 * already refuses this combination; a CA reset under an
+	 * already-saved config is how it can still be reached.
+	 */
+	if (g_config.ldap_tls &&
+	    (pki_trust_bundle_pem(&ca_pem, &ca_pem_len) != PKI_OK || ca_pem == NULL)) {
+		logstore_write("hostauth", "error",
+		                "ldap_tls is on but no CA trust chain is available -- not binding at "
+		                "all rather than binding in clear; bootstrap the CA, or set "
+		                "ldap_tls false if this directory really is plaintext");
+		free(ca_pem);
+		return 0;
+	}
+
 	for (i = 0; i < g_config.ldap_server_count; i++) {
 		int result_code = -1;
-		enum ldapclient_error err = ldapclient_bind(g_config.ldap_servers[i], g_config.ldap_port, dn,
-		                                             password, HOSTAUTH_LDAP_TIMEOUT_MS, &result_code);
+		enum ldapclient_error err =
+		    ldapclient_bind(g_config.ldap_servers[i], g_config.ldap_port, dn, password,
+		                     HOSTAUTH_LDAP_TIMEOUT_MS, ca_pem, ca_pem_len, &result_code);
 
 		if (err == LDAPCLIENT_OK) {
 			*out_answered = 1;
-			return 1;
+			authenticated = 1;
+			break;
 		}
 		if (err == LDAPCLIENT_ERR_LDAP_RESULT) {
 			/* a real, well-formed rejection (invalidCredentials or
 			 * similar) from a directory that IS reachable -- this is
 			 * authoritative, not "try the next server" */
 			*out_answered = 1;
-			return 0;
+			break;
 		}
 		/* LDAPCLIENT_ERR_CONNECT/PROTOCOL: this server didn't give a
 		 * usable answer at all -- fall through and try the next one */
 	}
-	return 0;
+	free(ca_pem);
+	return authenticated;
 }
 
 enum hostauth_login_result hostauth_login(const char *username, const char *password,

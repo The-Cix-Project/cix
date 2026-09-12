@@ -1,6 +1,8 @@
 #ifndef LDAPCLIENT_H
 #define LDAPCLIENT_H
 
+#include <stddef.h>
+
 /*
  * ADR-0144: a minimal, hand-rolled LDAPv3 client -- simple bind plus
  * one-shot search -- for this daemon's own host-authentication LDAP
@@ -17,12 +19,23 @@
  * filter shape is a top-level AND of one or more equality-match terms
  * (exactly "(&(uid=X)(memberOf=Y))", this module's one real use case
  * -- "does this exact user, once authenticated, also match this
- * group-membership term"). No SASL, no TLS/StartTLS, no referrals, no
- * paged results, no generic filter grammar -- a real, audited general-
- * purpose LDAP client (OpenLDAP's own libldap) is what
- * container-side PAM/NSS work (ADR-0142 Section... ADR-0144's later
- * container-LDAP parts) uses instead, inside the isolated container
- * runtime, not this trusted daemon process.
+ * group-membership term"). No SASL, no referrals, no paged results, no
+ * generic filter grammar -- a real, audited general-purpose LDAP
+ * client (OpenLDAP's own libldap) is what container-side PAM/NSS work
+ * (ADR-0142 Section... ADR-0144's later container-LDAP parts) uses
+ * instead, inside the isolated container runtime, not this trusted
+ * daemon process.
+ *
+ * TLS: supported since #416, and this comment used to say it was not.
+ * LDAPS only -- TLS from the first byte, on its own port -- never
+ * StartTLS, which would need the extended-operation machinery this
+ * module deliberately does not have, and which buys nothing when the
+ * port is ours to choose. Both calls below take a CA trust bundle in
+ * memory; NULL selects the plaintext path, unchanged. The anchor is
+ * passed in rather than read here so this module keeps knowing nothing
+ * about where trust comes from -- hostauth.c hands it the live chain
+ * from pki_trust_bundle_pem(), because on this platform the daemon
+ * verifying the directory IS the CA that issued its certificate.
  */
 
 enum ldapclient_error {
@@ -48,10 +61,20 @@ enum ldapclient_error {
  * set to the real RFC 4511 value, e.g. 49 = invalidCredentials) for
  * any other well-formed response -- the caller's job to decide
  * whether that means "wrong password" or something else.
+ *
+ * ca_pem/ca_pem_len: a PEM trust bundle (one or more certificates) to
+ * verify the server against, which turns this into an LDAPS bind. NULL
+ * means plaintext. Verification is pinned to `host` as given -- by IP
+ * SAN when it parses as an address, by DNS SAN otherwise -- so a
+ * server reached by address needs an address SAN in its certificate.
+ * A handshake or verification failure is LDAPCLIENT_ERR_CONNECT, the
+ * same class as an unreachable server (the caller's next server is the
+ * right response either way), with the OpenSSL text written to the log
+ * store rather than only to stderr.
  */
 enum ldapclient_error ldapclient_bind(const char *host, int port, const char *dn,
-                                       const char *password, int timeout_ms,
-                                       int *out_ldap_result_code);
+                                       const char *password, int timeout_ms, const char *ca_pem,
+                                       size_t ca_pem_len, int *out_ldap_result_code);
 
 /*
  * Binds as bind_dn/bind_password (same real BindRequest as
@@ -72,7 +95,8 @@ enum ldapclient_error ldapclient_bind(const char *host, int port, const char *dn
 enum ldapclient_error ldapclient_bind_and_search(const char *host, int port, const char *bind_dn,
                                                   const char *bind_password, const char *base_dn,
                                                   const char *const attrs[][2], int attr_count,
-                                                  int timeout_ms, int *out_match_count,
+                                                  int timeout_ms, const char *ca_pem,
+                                                  size_t ca_pem_len, int *out_match_count,
                                                   int *out_ldap_result_code);
 
 #endif /* LDAPCLIENT_H */

@@ -6,6 +6,63 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The daemon's own LDAP bind speaks TLS (#416)
+
+`cixd` is an LDAP client, and `daemon/src/ldapclient.c` — a hand-rolled LDAPv3 bind over a raw socket
+(ADR-0144) — had no TLS at all. So #414's `client_tls`, which gives LDAPS to the clients the platform
+*configures* (nslcd, `{{LDAP:URI}}`, jump's `ldapsearch`), neither affected nor protected the daemon's
+own bind: on any install with `ldap_enabled: true`, a bind credential still crossed the wire in clear,
+and glauth's plaintext listener on 3893 had to keep running because of it.
+
+`ldap_tls` on `PUT /v1/system/hostauth-config` (`cixctl hostauth-config set --ldap-tls`) now runs that
+bind over LDAPS. Deliberately a **second** switch rather than a reuse of `client_tls`: the container
+clients and the daemon are different client populations reaching possibly different ports, and one
+flag could never correctly serve both.
+
+Three things were designed rather than defaulted:
+
+- **The trust anchor is the daemon's own CA, read at dial time.** `cixd` runs on the host root and *is*
+  the certificate authority, so the image-side `/etc/ssl/certs/cix-ca-bundle.pem` is the wrong file and
+  a copy staged at startup would be the wrong shape — the chain changes under a running daemon (a CA
+  reset, an intermediate bootstrap, ADR-0281's import), and a stale anchor fails as a refused
+  connection against a perfectly correct certificate. New `pki_trust_bundle_pem()` returns the chain in
+  memory, and `pki_write_trust_bundle_file()` is reimplemented on top of it so there is one composition
+  of root+intermediate rather than two that can disagree.
+- **Verification is pinned to the configured string, by the matching SAN type.** `ldap_servers` entries
+  are documented as "a host or IP", and a TLS client checks the name it *dialled* — an address dialled
+  as an address is never matched against a `DNS:` SAN, so `X509_VERIFY_PARAM_set1_host()` fails against
+  a correct certificate when the server was reached by IP. The kind is decided by `inet_pton`, the same
+  way #414 decides which SAN kind to issue, and against the configured string rather than whichever
+  `getaddrinfo` result answered.
+- **TLS is a property of the connection, not a side table.** A `struct ldap_conn` carries `fd`/`ssl`/`ctx`
+  and every helper that took a bare descriptor takes it instead. It is explicitly not `tlsconn.c`'s
+  fd→SSL map, which is the HTTPS *server's*, capped at `TLS_CONN_MAX` and shaped for the epoll loop.
+
+Two guards, both the "enabled with nothing to bind against can never be a valid saved state" rule that
+`hostauth_set_config()` already applied to `ldap_enabled`. `ldap_tls` with `ldap_enabled` on a host with
+no root CA is refused **409** (a new `HOSTAUTH_CONFIG_ERR_NO_CA`, distinct from invalid-field because no
+single field is wrong and the fix — bootstrap the CA — is not something a generic message would name);
+the flag alone is accepted, so the ordering is the operator's to choose. And if the CA is reset out from
+under an already-saved config, `try_ldap_login()` declines to bind **at all** rather than falling back to
+plaintext — a configuration that asked for TLS never becomes a cleartext credential on the wire.
+
+A handshake or verification failure is connect-class, so the next server is tried and local records
+still apply if none answers. The OpenSSL text goes to the log store, not only stderr, because
+`cixd` never mirrors stderr there and an unexplained fallback is indistinguishable from a wrong
+password.
+
+`ldapclient.h`'s own header comment said "no TLS/StartTLS"; that claim is now false and was corrected in
+the same change. StartTLS is still deliberately absent — it would need extended-operation machinery this
+module does not have, and buys nothing when the port is ours to choose.
+
+Gated by `test_hostauth` (which is in `SELFTESTS`, unlike `test_pki` — see #417): the 409, the
+flag-without-enabled acceptance, and the save/load round trip. The 409 assertion checks the error text
+names `ldap_tls`, because this endpoint has a second 409 (#370's gating guard, evaluated first) and a
+bare status check would pass for the wrong reason.
+
+**Still open in #416:** turning glauth's plaintext 3893 off. That is a live-service change to
+`ldap-1`/`ldap-2` and is tracked separately from the daemon work.
+
 ### `pki export` built a 17-argument command line into `argv[16]` (#415, #417)
 
 `POST /v1/pki/export` returned an opaque 500 on 192.168.15.95 running v2.57.109, with nothing in the

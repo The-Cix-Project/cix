@@ -272,10 +272,15 @@ static void print_usage(FILE *out)
 	        "               backend settings (ADR-0144)\n"
 	        "  hostauth-config set [--admin-group=NAME ...] [--idle-timeout-seconds=N]\n"
 	        "               [--ldap-enable | --ldap-disable] [--ldap-server=HOST ...]\n"
-	        "               [--ldap-port=N] [--ldap-base-dn=NAME]\n"
+	        "               [--ldap-port=N] [--ldap-tls | --no-ldap-tls]\n"
+	        "               [--ldap-base-dn=NAME]\n"
 	        "               -- read-modify-write; only the flags given are changed, everything\n"
 	        "               else keeps its current value. Write-gating activates the instant\n"
-	        "               a real user is a member of one of admin_groups\n"
+	        "               a real user is a member of one of admin_groups.\n"
+	        "               --ldap-tls (#416) runs the DAEMON's own bind over LDAPS,\n"
+	        "               verified against this host's own CA -- a different switch from\n"
+	        "               `ldap config set --client-tls`, which configures the LDAP\n"
+	        "               clients inside containers\n"
 	        "  hostauth-sessions ls  -- every active session (username, expires-in) -- never\n"
 	        "               a raw token, before or after issuance\n"
 	        "  hostauth-sessions revoke USERNAME  -- log that user out everywhere (ADR-0152)\n"
@@ -8423,6 +8428,7 @@ static void fmt_hostauth_config(const struct json_value *v)
 	const struct json_value *jgroups = json_object_get(v, "admin_groups");
 	const struct json_value *jldap_enabled = json_object_get(v, "ldap_enabled");
 	const struct json_value *jservers = json_object_get(v, "ldap_servers");
+	const struct json_value *jldap_tls = json_object_get(v, "ldap_tls");
 	const char *base_dn = json_str_field(v, "ldap_base_dn");
 	size_t i;
 
@@ -8444,8 +8450,10 @@ static void fmt_hostauth_config(const struct json_value *v)
 	} else {
 		printf("-");
 	}
-	printf(" ldap_port=%ld ldap_base_dn=%s\n",
+	printf(" ldap_port=%ld ldap_tls=%s ldap_base_dn=%s\n",
 	       (long)json_as_number(json_object_get(v, "ldap_port")),
+	       (jldap_tls != NULL && jldap_tls->type == JSON_BOOL && jldap_tls->u.boolean) ? "true"
+	                                                                                   : "false",
 	       base_dn != NULL && base_dn[0] != '\0' ? base_dn : "-");
 }
 
@@ -8466,6 +8474,7 @@ static int cmd_hostauth_config_set(const struct cix_client *c, int json_mode, in
 	int admin_group_count = -1; /* -1: not given, keep current */
 	const char *idle_timeout = NULL;
 	int want_ldap_enabled = -1; /* -1: untouched, 0: disable, 1: enable */
+	int want_ldap_tls = -1;     /* same tri-state, for #416's own TLS switch */
 	const char *ldap_servers[3];
 	int ldap_server_count = -1;
 	const char *ldap_port = NULL;
@@ -8498,6 +8507,10 @@ static int cmd_hostauth_config_set(const struct cix_client *c, int json_mode, in
 			ldap_servers[ldap_server_count++] = argv[i] + 14;
 		} else if (strncmp(argv[i], "--ldap-port=", 12) == 0) {
 			ldap_port = argv[i] + 12;
+		} else if (strcmp(argv[i], "--ldap-tls") == 0) {
+			want_ldap_tls = 1;
+		} else if (strcmp(argv[i], "--no-ldap-tls") == 0) {
+			want_ldap_tls = 0;
 		} else if (strncmp(argv[i], "--ldap-base-dn=", 15) == 0) {
 			ldap_base_dn = argv[i] + 15;
 		} else {
@@ -8510,11 +8523,13 @@ static int cmd_hostauth_config_set(const struct cix_client *c, int json_mode, in
 	if (ldap_server_count == 0)
 		ldap_server_count = -1;
 	if (admin_group_count == -1 && idle_timeout == NULL && want_ldap_enabled == -1 &&
-	    ldap_server_count == -1 && ldap_port == NULL && ldap_base_dn == NULL) {
+	    ldap_server_count == -1 && ldap_port == NULL && want_ldap_tls == -1 &&
+	    ldap_base_dn == NULL) {
 		fprintf(stderr,
 		        "usage: cixctl hostauth-config set [--admin-group=NAME ...] "
 		        "[--idle-timeout-seconds=N] [--ldap-enable | --ldap-disable] "
-		        "[--ldap-server=HOST ...] [--ldap-port=N] [--ldap-base-dn=NAME]\n");
+		        "[--ldap-server=HOST ...] [--ldap-port=N] "
+		        "[--ldap-tls | --no-ldap-tls] [--ldap-base-dn=NAME]\n");
 		return 2;
 	}
 
@@ -8577,6 +8592,13 @@ static int cmd_hostauth_config_set(const struct cix_client *c, int json_mode, in
 	jw_int(&w, ldap_port != NULL
 	               ? atol(ldap_port)
 	               : (long)json_as_number(json_object_get(current, "ldap_port")));
+	{
+		const struct json_value *jcur_tls = json_object_get(current, "ldap_tls");
+		int cur_tls = jcur_tls != NULL && jcur_tls->type == JSON_BOOL && jcur_tls->u.boolean;
+
+		jw_key(&w, "ldap_tls");
+		jw_bool(&w, want_ldap_tls != -1 ? want_ldap_tls : cur_tls);
+	}
 	{
 		const char *cur_base_dn = json_str_field(current, "ldap_base_dn");
 

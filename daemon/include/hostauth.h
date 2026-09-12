@@ -65,6 +65,12 @@ enum hostauth_config_error {
 	HOSTAUTH_CONFIG_OK = 0,
 	HOSTAUTH_CONFIG_ERR_INVALID_FIELD,
 	HOSTAUTH_CONFIG_ERR_PERSIST_FAILED,
+	/* #416: ldap_tls asked for with ldap_enabled, on a host with no
+	 * root CA. Distinct from INVALID_FIELD because no single field is
+	 * wrong -- the combination is, and the operator's fix is to
+	 * bootstrap the CA, which a generic "invalid field" would not
+	 * name. */
+	HOSTAUTH_CONFIG_ERR_NO_CA,
 };
 
 /* Full replacement, matching daemon-config's own "only fields given
@@ -90,11 +96,19 @@ enum hostauth_config_error {
  * 0..HOSTAUTH_LDAP_MAX_SERVERS; ldap_port is outside 1..65535; or
  * ldap_enabled is true while ldap_server_count == 0 or ldap_base_dn is
  * empty -- "enabled with nothing to bind against" can never be a valid
- * saved state. */
+ * saved state.
+ *
+ * ldap_tls (#416) runs the daemon's own bind over LDAPS, verified
+ * against this host's own CA. HOSTAUTH_CONFIG_ERR_NO_CA when asked for
+ * together with ldap_enabled on a host that has not bootstrapped one,
+ * by the same rule -- it is settable ahead of enabling the backend, so
+ * the ordering an operator prefers is theirs to choose. Note this is
+ * NOT ldap.c's client_tls: that configures the LDAP clients inside
+ * containers, this configures cixd. */
 enum hostauth_config_error hostauth_set_config(const char *const *admin_groups, int admin_group_count,
                                                 int idle_timeout_seconds, int ldap_enabled,
                                                 const char *const *ldap_servers, int ldap_server_count,
-                                                int ldap_port, const char *ldap_base_dn);
+                                                int ldap_port, int ldap_tls, const char *ldap_base_dn);
 void hostauth_write_config_json(struct json_writer *w);
 
 /* Called by ldap_group_rename() (ADR-0147) before it commits an LDAP
