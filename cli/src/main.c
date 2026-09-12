@@ -24,6 +24,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <termios.h>
+#include <sys/stat.h> /* chmod(): the exported PKI bundle is 0600 */
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -12724,6 +12725,238 @@ static int cmd_pki_reset(const struct cix_client *c, int json_mode, int argc, ch
 	return emit(&r, json_mode, fmt_pki_reset);
 }
 
+/* Defined further down, beside `login`'s own prompt; declared here
+ * because pki export/import need the same no-echo read and this CLI is
+ * one translation unit in source order. */
+static int read_line_noecho(const char *prompt, char *out, size_t out_size);
+
+/*
+ * #415/ADR-0281. The passphrase is NEVER accepted on argv: argv is
+ * world-readable through /proc/<pid>/cmdline for as long as the process
+ * lives, and this one opens the trust root. Prompted interactively, or
+ * read from a file for automation -- the same two routes `cixctl login`
+ * already offers for a password.
+ */
+static int pki_passphrase_read(const char *file, char *out, size_t out_size, const char *prompt)
+{
+	if (file != NULL) {
+		FILE *f = fopen(file, "r");
+		size_t n;
+
+		if (f == NULL) {
+			fprintf(stderr, "cixctl: cannot read passphrase file '%s'\n", file);
+			return -1;
+		}
+		if (fgets(out, (int)out_size, f) == NULL) {
+			fclose(f);
+			fprintf(stderr, "cixctl: passphrase file '%s' is empty\n", file);
+			return -1;
+		}
+		fclose(f);
+		n = strlen(out);
+		while (n > 0 && (out[n - 1] == '\n' || out[n - 1] == '\r'))
+			out[--n] = '\0';
+	} else if (read_line_noecho(prompt, out, out_size) != 0) {
+		fprintf(stderr, "cixctl: could not read passphrase\n");
+		return -1;
+	}
+	if (out[0] == '\0') {
+		fprintf(stderr, "cixctl: passphrase may not be empty\n");
+		return -1;
+	}
+	return 0;
+}
+
+static int cmd_pki_export(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	const char *pass_file = NULL, *out_file = NULL;
+	char passphrase[512];
+	char confirm[512];
+	struct json_writer w;
+	struct cix_response r;
+	int i, rc = 0;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--passphrase-file=", 18) == 0)
+			pass_file = argv[i] + 18;
+		else if (strncmp(argv[i], "--out=", 6) == 0)
+			out_file = argv[i] + 6;
+		else {
+			fprintf(stderr, "cixctl: unknown pki export option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (pki_passphrase_read(pass_file, passphrase, sizeof(passphrase),
+	                         "Passphrase to encrypt the bundle: ") != 0)
+		return 1;
+	/* Confirmed when typed, not when read from a file: a mistyped
+	 * passphrase produces a bundle nobody can ever open, and the
+	 * operator would not find out until the reinstall they needed it
+	 * for. */
+	if (pass_file == NULL) {
+		if (read_line_noecho("Repeat passphrase: ", confirm, sizeof(confirm)) != 0)
+			return 1;
+		if (strcmp(passphrase, confirm) != 0) {
+			fprintf(stderr, "cixctl: passphrases do not match\n");
+			return 1;
+		}
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "passphrase");
+	jw_str(&w, passphrase);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+	if (cix_client_request(c, CIX_API_exportPki_METHOD, CIX_API_exportPki, w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+	if (r.status != 200) {
+		const char *msg = json_str_field(r.json, "error");
+
+		fprintf(stderr, "cixctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
+		        r.status);
+		cix_response_free(&r);
+		return 1;
+	}
+	if (json_mode) {
+		printf("%s\n", r.body);
+	} else {
+		const char *bundle = json_str_field(r.json, "bundle");
+		const char *cipher = json_str_field(r.json, "cipher");
+
+		if (bundle == NULL) {
+			fprintf(stderr, "cixctl: response carried no bundle\n");
+			rc = 1;
+		} else if (out_file != NULL) {
+			FILE *f = fopen(out_file, "w");
+
+			if (f == NULL) {
+				fprintf(stderr, "cixctl: cannot write '%s'\n", out_file);
+				rc = 1;
+			} else {
+				fprintf(f, "%s\n", bundle);
+				fclose(f);
+				/* 0600 after close: the bundle holds the CA
+				 * private key, and a default-umask file in an
+				 * operator's home is the wrong resting place
+				 * for it. */
+				chmod(out_file, 0600);
+				printf("wrote %s (%s)\n", out_file, cipher != NULL ? cipher : "encrypted");
+				printf("Keep this off the box. Without the passphrase it cannot be restored.\n");
+			}
+		} else {
+			printf("%s\n", bundle);
+		}
+	}
+	cix_response_free(&r);
+	return rc;
+}
+
+static int cmd_pki_import(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	const char *pass_file = NULL, *in_file = NULL;
+	char passphrase[512];
+	char *bundle = NULL;
+	size_t cap = 0, len = 0;
+	struct json_writer w;
+	struct cix_response r;
+	FILE *f;
+	int i, ch;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--passphrase-file=", 18) == 0)
+			pass_file = argv[i] + 18;
+		else if (strncmp(argv[i], "--in=", 5) == 0)
+			in_file = argv[i] + 5;
+		else {
+			fprintf(stderr, "cixctl: unknown pki import option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (in_file == NULL) {
+		fprintf(stderr, "usage: cixctl pki import --in=PATH [--passphrase-file=PATH]\n");
+		return 2;
+	}
+	f = fopen(in_file, "r");
+	if (f == NULL) {
+		fprintf(stderr, "cixctl: cannot read '%s'\n", in_file);
+		return 1;
+	}
+	/* Grown rather than a fixed buffer: the bundle is one base64 line
+	 * whose length scales with the number of certs in the store, and a
+	 * silently truncated trust root is the worst possible failure here. */
+	while ((ch = fgetc(f)) != EOF) {
+		if (ch == '\n' || ch == '\r')
+			continue;
+		if (len + 1 >= cap) {
+			size_t ncap = cap == 0 ? 8192 : cap * 2;
+			char *nb = realloc(bundle, ncap);
+
+			if (nb == NULL) {
+				free(bundle);
+				fclose(f);
+				fprintf(stderr, "cixctl: out of memory reading bundle\n");
+				return 1;
+			}
+			bundle = nb;
+			cap = ncap;
+		}
+		bundle[len++] = (char)ch;
+	}
+	fclose(f);
+	if (bundle == NULL || len == 0) {
+		free(bundle);
+		fprintf(stderr, "cixctl: '%s' is empty\n", in_file);
+		return 1;
+	}
+	bundle[len] = '\0';
+
+	if (pki_passphrase_read(pass_file, passphrase, sizeof(passphrase),
+	                         "Passphrase for the bundle: ") != 0) {
+		free(bundle);
+		return 1;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "passphrase");
+	jw_str(&w, passphrase);
+	jw_key(&w, "bundle");
+	jw_str(&w, bundle);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+	free(bundle);
+	if (cix_client_request(c, CIX_API_importPki_METHOD, CIX_API_importPki, w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+	if (r.status != 200) {
+		const char *msg = json_str_field(r.json, "error");
+
+		fprintf(stderr, "cixctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
+		        r.status);
+		cix_response_free(&r);
+		return 1;
+	}
+	if (json_mode) {
+		printf("%s\n", r.body);
+	} else {
+		printf("restored %d certificate(s); intermediate: %s\n",
+		       (int)json_as_number(json_object_get(r.json, "certs_restored")),
+		       json_as_number(json_object_get(r.json, "intermediate_restored")) != 0 ? "yes" :
+		                                                                                "no");
+		printf("Containers holding certs from the previous store are not restaged -- recreate them, or reboot.\n");
+	}
+	cix_response_free(&r);
+	return 0;
+}
+
 static int cmd_pki(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
@@ -12737,7 +12970,11 @@ static int cmd_pki(const struct cix_client *c, int json_mode, int argc, char **a
 		                "               [--intermediate-days=N] [--leaf-days=N]  -- wipes and\n"
 		                "               regenerates the whole CA chain, reissuing every leaf\n"
 		                "               currently tracked; defaults name each tier after this\n"
-		                "               install's own domain_suffix (cixctl site show)\n");
+		                "               install's own domain_suffix (cixctl site show)\n"
+		                "       cixctl pki export [--out=PATH] [--passphrase-file=PATH]\n"
+		                "               -- the whole store, encrypted, to carry across a reinstall\n"
+		                "       cixctl pki import --in=PATH [--passphrase-file=PATH]\n"
+		                "               -- restore it into an install that has no CA yet\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -12749,6 +12986,10 @@ static int cmd_pki(const struct cix_client *c, int json_mode, int argc, char **a
 		return cmd_pki_cert(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "reset") == 0)
 		return cmd_pki_reset(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "export") == 0)
+		return cmd_pki_export(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "import") == 0)
+		return cmd_pki_import(c, json_mode, argc - 1, argv + 1);
 
 	fprintf(stderr, "cixctl: unknown pki subcommand '%s'\n", sub);
 	return 2;

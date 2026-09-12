@@ -34,4 +34,8 @@ void handle_pki_intermediate_create(int fd, const char *body, size_t body_len);
 void handle_pki_intermediate_get(int fd);
 void handle_pki_reset(int fd, const char *body, size_t body_len);
 
+/* #415/ADR-0281: the whole store off the box and back, passphrase-encrypted. */
+void handle_pki_export(int fd, const char *body, size_t body_len);
+void handle_pki_import(int fd, const char *body, size_t body_len);
+
 #endif /* API_PKI_H */

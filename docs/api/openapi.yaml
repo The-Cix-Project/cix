@@ -690,11 +690,23 @@ paths:
         re-running pkg install for whatever pkg_installed records,
         since everything is compiled from source -- this is the
         "shopping list," not the built bytes); and PKI, which is never
-        referenced by this endpoint at all -- the CA private key (and
-        every issued leaf's own key) is never returned over the API by
-        existing, deliberate design (see /pki/ca, /pki/certs), and
-        backing it up is a separate, host-level concern entirely, not
-        partially folded into this mechanism.
+        referenced by this endpoint at all.
+
+        PKI stays out because this bundle is not a secret-bearing
+        artifact and should not become one: it is offered to the web
+        dashboard as a download, and a JSON file that sometimes contains
+        the root CA private key is the wrong thing to hand around. That
+        separation is unchanged. What changed is that it now has a
+        DESTINATION rather than being deferred to a "host level" that
+        does not exist on a shell-less host: POST /pki/export carries the
+        whole store, passphrase-encrypted (#415, ADR-0281). Take both if
+        you want to restore an install.
+
+        Note the CA's and the intermediate's private keys are the ones
+        never returned by the ordinary endpoints; an individual LEAF's
+        key is returned, exactly once, by the call that issues it (see
+        POST /pki/certs, POST /pki/reset) -- an earlier version of this
+        summary said otherwise.
       operationId: getSystemBackup
       x-cix-expose: [cli, web]
       responses:
@@ -7801,6 +7813,152 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /pki/export:
+    post:
+      summary: The whole PKI store, encrypted under an operator passphrase, to carry across a reinstall
+      description: >
+        PKI state lives on the cix-config partition, which the installer
+        formats -- so a reinstall destroys the CA and every certificate
+        under it. Before this endpoint there was no way to carry one
+        across, and "back it up at the host level" was not an answer on a
+        host that is shell-less by charter. A key in exactly this
+        position was already lost that way once (#415).
+
+        Returns the ENTIRE store -- the root, the intermediate if one is
+        bootstrapped, and every leaf with its own private key -- as one
+        AES-256-CBC bundle, base64-encoded, encrypted under the supplied
+        passphrase. The daemon never stores the passphrase; a lost one
+        means a lost bundle.
+
+        The whole store rather than just the CA, deliberately: the
+        certificates ADR-0280 exists for are precisely the ones nothing
+        would reissue. An unowned cert is a durable identity -- an SSH
+        host key -- so restoring only the CA would rotate the very key
+        #397 was filed to stop rotating. Owned leaves are carried too,
+        and that is what makes a restore hold for pki_issue containers as
+        well: when autostart recreates one, its issuance hits the
+        existing cert and keeps it rather than generating a new key.
+
+        This NARROWLY SUPERSEDES "the CA private key is never returned
+        over the API, in any endpoint, ever" (ADR-0281). It leaves only
+        through this one endpoint, only encrypted, only for a caller who
+        supplies a passphrase. Because the passphrase travels in the
+        request body, call this over HTTPS.
+      operationId: exportPki
+      x-cix-expose: [cli]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [passphrase]
+              properties:
+                passphrase:
+                  type: string
+                  description: >
+                    Encrypts the bundle. Never stored by the daemon, and
+                    never recoverable from it -- without it the bundle is
+                    not restorable. An empty passphrase is a 400.
+      responses:
+        "200":
+          description: The encrypted bundle
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bundle:
+                    type: string
+                    description: Base64, single line. Feed back verbatim to POST /pki/import.
+                  cipher:
+                    type: string
+                    description: >
+                      The parameters this bundle was encrypted with, recorded
+                      so a bundle can still be opened by hand with a plain
+                      openssl if this platform is unavailable -- which is the
+                      situation a disaster-recovery artifact must survive.
+        "400":
+          description: >
+            Empty passphrase, or no CA is bootstrapped so there is nothing
+            to export -- 400 rather than 409 for the latter, matching every
+            other PKI endpoint's treatment of "not bootstrapped yet".
+        "500":
+          description: Encryption or file I/O failed
+
+  /pki/import:
+    post:
+      summary: Restores a store from POST /pki/export, into an install that has no CA yet
+      description: >
+        The reverse of POST /pki/export. Writes the root, the
+        intermediate if the bundle carries one, and every leaf back into
+        the store, then reloads the in-memory index so GET /pki/certs
+        reflects it immediately rather than after a restart.
+
+        Refused with 409 when a CA is already bootstrapped, the same
+        one-shot posture POST /pki/ca has: replacing a live trust root
+        would invalidate every certificate this install has issued, and
+        nothing about "import a backup" says an operator meant that. The
+        intended target is a freshly installed box, which has no CA at
+        all. There is deliberately no replace mode -- note that POST
+        /pki/reset regenerates rather than deletes, so there is no path
+        from a bootstrapped CA to an imported one; an install that needs
+        one must import before anything bootstraps.
+
+        AES-256-CBC carries no integrity tag, so a wrong passphrase does
+        not fail cleanly -- it decrypts to garbage. The decoded bundle is
+        therefore validated before any byte reaches the store: it must
+        parse, carry a known version, and its CA key and certificate must
+        be a matching pair, checked by deriving a public key from each.
+        The CA private key is written LAST, so a failure at any point
+        leaves an install that still reads as not-bootstrapped and a
+        corrected retry still gets through rather than meeting a 409 over
+        a half-written store.
+
+        Takes effect immediately for the PKI itself. Containers holding
+        certs delivered from the previous store are not restaged --
+        recreate them (or reboot) to have the restored certs staged in.
+      operationId: importPki
+      x-cix-expose: [cli]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [passphrase, bundle]
+              properties:
+                passphrase:
+                  type: string
+                bundle:
+                  type: string
+                  description: The `bundle` string from POST /pki/export, verbatim.
+      responses:
+        "200":
+          description: The store was restored
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  certs_restored:
+                    type: integer
+                  intermediate_restored:
+                    type: boolean
+        "400":
+          description: >
+            Empty passphrase or bundle; a cert name in the bundle that is
+            not a safe filename; or the bundle did not decrypt and
+            validate -- overwhelmingly the wrong passphrase, which is a
+            caller error and reported as one rather than as a 500. The two
+            are not distinguishable from outside: AES-256-CBC has no
+            integrity tag, so a wrong passphrase and a corrupted bundle
+            both present as "decoded to something that is not a bundle".
+        "409":
+          description: A CA is already bootstrapped -- this install has a trust root already
+        "500":
+          description: File I/O failed while writing the store.
+
   /pki/reset:
     post:
       summary: Wipes and regenerates the entire CA chain, reissuing every currently-tracked leaf
@@ -13641,6 +13799,14 @@ components:
         version:
           type: integer
           description: Bundle format version (currently always 1). Response-only -- ignored on restore.
+        pki_included:
+          type: boolean
+          description: >
+            Always false, and present precisely so this bundle NAMES what
+            it does not carry (#415). A backup that silently omits the
+            trust root reads as complete, and an operator only discovers
+            otherwise at the reinstall they needed it for. Response-only;
+            ignored on restore. The PKI is carried by POST /pki/export.
         container_defs:
           type: string
           description: Raw content of container_defs.json (every persisted container's exact create request, verbatim -- ADR-0025).

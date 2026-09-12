@@ -76,6 +76,36 @@ The delivered files are identical to `--pki-issue`'s, so a service config writte
 
 This install also always keeps its own `"host"` leaf current, auto-reissued whenever site identity or the CA chain changes — nothing to request separately.
 
+## Carrying the CA across a reinstall
+
+PKI state lives at `/config/state/pki`, on the `cix-config` partition. That means the CA survives a reboot, an A/B update and a rolling rebuild — and **`cix-install` formats that partition**, so before this existed a reinstall destroyed the trust root and every certificate under it. "Back it up at the host level" was not an answer on a host that is shell-less by charter; a key in exactly this position was already lost that way once.
+
+Two independent protections, because they cover different failures.
+
+**Export it, before you need it.** This is the one that survives a dead disk or a move to new hardware:
+
+```sh
+cixctl pki export --out=cix-ca-backup.enc
+```
+
+It prompts for a passphrase (twice — a mistyped one produces a bundle nobody can ever open, and you would not find out until the reinstall you needed it for). The bundle is the **whole store** — root, intermediate if you have one, and every leaf with its private key — AES-256-CBC encrypted. The daemon never stores the passphrase, so **losing it loses the bundle**. Keep the file off the box; `cixctl` writes it `0600` for you.
+
+The whole store rather than just the CA is deliberate: the certificates [`--pki-cert`](#an-identity-that-must-outlive-the-container---pki-cert) exists for are exactly the ones nothing would reissue. An SSH host key is a durable identity, so restoring only the CA would rotate precisely the key that mechanism exists to keep stable. Owned leaves come too, which is what makes a restore hold for `--pki-issue` containers as well — when one is recreated, its issuance finds the restored cert and keeps it.
+
+Restore into a **fresh** install, before anything bootstraps a CA:
+
+```sh
+cixctl pki import --in=cix-ca-backup.enc
+```
+
+**Order matters, and there is no way round it.** Import is refused with `409` once a CA exists, the same one-shot posture `pki ca bootstrap` has — replacing a live trust root would invalidate every certificate the install has issued. `pki reset` regenerates rather than deletes, so there is **no path from a bootstrapped CA back to an imported one**. Import first, then `cixctl system restore` for the rest.
+
+Since the passphrase travels in the request body, make that call over **HTTPS**.
+
+Containers still holding certs delivered from the previous store are not restaged by an import — recreate them, or reboot.
+
+**And if you forgot to export**, the installer covers the common case on its own: it mounts `cix-config` read-only, and if it finds a CA there it **keeps the partition rather than formatting it**, saying so on the console. That only helps when the disk is intact and the layout unchanged, which is why it is not a substitute for an export. `--wipe-config` forces the format.
+
 ## Turning on HTTPS for the daemon itself
 
 Requires a bootstrapped root CA first (`cixctl pki ca bootstrap`, above) — the daemon reuses its own already-issued `"host"` leaf rather than a separate certificate:

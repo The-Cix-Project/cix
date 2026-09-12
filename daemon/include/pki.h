@@ -160,6 +160,13 @@ int pki_cert_owned_by(const char *name, const char *owner);
  * delivery time that there is nothing to deliver. */
 int pki_cert_exists(const char *name);
 
+/* How many certs the in-memory index holds. Reported by POST /pki/import
+ * so an operator sees what a restore actually put back, read from the
+ * index AFTER it was reloaded from disk rather than counted from the
+ * bundle -- the bundle says what was asked for, the index says what is
+ * now being served. */
+int pki_cert_count(void);
+
 /* Best-effort cleanup on container deletion: deletes name's cert iff
  * it exists and its owner_container is name itself (via
  * pki_cert_delete() -- one deletion code path, not two). Safe no-op
@@ -272,6 +279,42 @@ enum pki_error pki_ca_reset(const char *root_common_name, const char *intermedia
  * identity." PKI_ERR_NOT_BOOTSTRAPPED if no root exists yet.
  */
 enum pki_error pki_write_trust_bundle_file(const char *dest_path);
+
+/*
+ * #415 / ADR-0281: carries the whole store off the box and back.
+ *
+ * PKI_DIR is on the cix-config partition, which cix-install formats --
+ * so before this existed a reinstall destroyed the CA and every
+ * certificate under it, and "back it up at the host level" was not an
+ * answer on a host that is shell-less by charter.
+ *
+ * pki_export() writes {"bundle": <base64>, "cipher": <description>}
+ * into w. The bundle is the entire store -- root, intermediate if one
+ * exists, and every leaf with its private key -- AES-256-CBC encrypted
+ * under passphrase, which the daemon never stores. The whole store and
+ * not just the CA, because the certs ADR-0280 exists for are exactly
+ * the ones nothing would reissue: an unowned cert is a durable identity
+ * and restoring only the CA would rotate the very key #397 was filed to
+ * stop rotating.
+ *
+ * This is a deliberate, narrow supersession of "the CA private key is
+ * never returned over the API, on any endpoint, ever" -- see ADR-0281.
+ * It leaves only here, only encrypted, only to a caller who supplies a
+ * passphrase. PKI_ERR_NOT_BOOTSTRAPPED if there is no CA to export;
+ * PKI_ERR_INVALID_NAME on an empty passphrase.
+ *
+ * pki_import() is the reverse and is refused with
+ * PKI_ERR_ALREADY_BOOTSTRAPPED when a CA already exists -- replacing a
+ * live trust root would invalidate every certificate this install has
+ * issued, and nothing about "import a backup" says an operator meant
+ * that. It validates what it decrypts rather than trusting that it
+ * decrypted (CBC carries no integrity tag, so a wrong passphrase yields
+ * garbage rather than an error), and writes the CA key LAST so any
+ * failure leaves an install that still reads as not-bootstrapped and a
+ * corrected retry still gets through.
+ */
+enum pki_error pki_export(const char *passphrase, struct json_writer *w);
+enum pki_error pki_import(const char *passphrase, const char *bundle);
 
 /* Metadata only (name/serial/not_after/sans/owner) -- no cert_pem, no key_pem. */
 void pki_write_json_list(struct json_writer *w);

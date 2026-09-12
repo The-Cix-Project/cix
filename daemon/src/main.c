@@ -3264,6 +3264,17 @@ static void do_system_backup(struct json_writer *w)
 	jw_obj_open(w);
 	jw_key(w, "version");
 	jw_int(w, 1);
+	/*
+	 * #415: this bundle names what it does not carry. Hardcoded false
+	 * and that is the point -- the PKI is deliberately not here (this is
+	 * offered to the dashboard as a download, and a file that sometimes
+	 * contains the root CA private key is the wrong thing to hand
+	 * around), but a backup that silently omits the trust root READS as
+	 * complete, and an operator finds out otherwise at the reinstall
+	 * they needed it for. POST /pki/export is the other half.
+	 */
+	jw_key(w, "pki_included");
+	jw_bool(w, 0);
 
 	jw_key(w, "container_defs");
 	if (persist_read_file(CONTAINER_DEFS_STATE_PATH, &buf, &len) == 0 && buf != NULL) {
@@ -22666,6 +22677,18 @@ static void op_createPkiCert(const struct api_ctx *ctx)
 static void op_resetPki(const struct api_ctx *ctx)
 {
 	handle_pki_reset(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* POST /v1/pki/export */
+static void op_exportPki(const struct api_ctx *ctx)
+{
+	handle_pki_export(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* POST /v1/pki/import */
+static void op_importPki(const struct api_ctx *ctx)
+{
+	handle_pki_import(ctx->fd, ctx->req->body, ctx->req->body_len);
 }
 
 /* POST /v1/pkg/bootstrap */

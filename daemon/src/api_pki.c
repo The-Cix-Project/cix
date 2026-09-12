@@ -424,6 +424,93 @@ static void redeliver_pki_certs_after_reset(void)
 	}
 }
 
+/*
+ * #415 / ADR-0281. Both take their passphrase in the request BODY, never
+ * a query parameter: a query string is logged by every intermediary that
+ * logs a request line, and this one opens the trust root.
+ */
+void handle_pki_export(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root = json_parse(body, body_len);
+	const char *passphrase;
+	struct json_writer w;
+	enum pki_error perr;
+
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	passphrase = json_as_string(json_object_get(root, "passphrase"));
+	if (passphrase == NULL || passphrase[0] == '\0') {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request",
+		              "passphrase is required and may not be empty -- it is the only thing protecting the CA private key in the bundle");
+		return;
+	}
+
+	jw_init(&w);
+	perr = pki_export(passphrase, &w);
+	json_free(root);
+	if (perr != PKI_OK) {
+		jw_free(&w);
+		respond_pki_error(fd, perr);
+		return;
+	}
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+void handle_pki_import(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root = json_parse(body, body_len);
+	const char *passphrase, *bundle;
+	struct json_writer w;
+	enum pki_error perr;
+
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	passphrase = json_as_string(json_object_get(root, "passphrase"));
+	bundle = json_as_string(json_object_get(root, "bundle"));
+	if (passphrase == NULL || passphrase[0] == '\0' || bundle == NULL || bundle[0] == '\0') {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "passphrase and bundle are both required");
+		return;
+	}
+
+	perr = pki_import(passphrase, bundle);
+	json_free(root);
+	if (perr != PKI_OK) {
+		/*
+		 * Not respond_pki_error(): that maps OPENSSL_FAILED to 500, and
+		 * here the overwhelming cause is a wrong passphrase, which is
+		 * the caller's input and not a server fault. The two are not
+		 * distinguishable from outside -- AES-256-CBC has no integrity
+		 * tag, so a wrong passphrase and a corrupted bundle both present
+		 * as "decoded to something that is not a bundle" -- so the
+		 * message says what the operator can actually check rather than
+		 * asserting a cause that was never established.
+		 */
+		if (perr == PKI_ERR_OPENSSL_FAILED)
+			respond_error(fd, 400, "Bad Request",
+			              "the bundle did not decrypt and validate -- check the passphrase, and that the bundle is the complete single-line string POST /v1/pki/export returned");
+		else
+			respond_pki_error(fd, perr);
+		return;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "certs_restored");
+	jw_int(&w, pki_cert_count());
+	jw_key(&w, "intermediate_restored");
+	jw_bool(&w, pki_intermediate_bootstrapped());
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
 void handle_pki_reset(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root = NULL;
