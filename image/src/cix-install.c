@@ -567,6 +567,7 @@ static int populate_esp(const char *esp_mount, const char *ip, const char *root_
 	char path[512];
 	char loader_conf[512];
 	char root_partuuid[64];
+	char bind_opt[96];
 
 	/*
 	 * The root= this writes is the single line that decides whether
@@ -642,6 +643,25 @@ static int populate_esp(const char *esp_mount, const char *ip, const char *root_
 	if (ensure_dir(path) != 0)
 		return -1;
 	snprintf(path, sizeof(path), "%s/loader/entries/cix-a+%d.conf", esp_mount, ROOT_A_TRIES);
+	/*
+	 * --bind= only when an address was given. Installing without a
+	 * management address is allowed, and the result is a deliberate
+	 * state rather than a broken one: cixd's own DEFAULT_BIND is
+	 * "127.0.0.1" (daemon/src/main.c:157, used at :27740 when no
+	 * --bind= is passed), and boot_init() brings `lo` administratively
+	 * up precisely so that bind can succeed -- its comment records that
+	 * a fresh kernel boot leaves lo down and the bind fails
+	 * EADDRNOTAVAIL until something sets it up.
+	 *
+	 * So an entry with no --bind= gives a running daemon answering on
+	 * loopback, reachable locally, waiting to be told which address it
+	 * should carry. NOT every interface: an earlier version of this
+	 * comment claimed cixd binds all of them when nothing pins it,
+	 * which is false -- checked against DEFAULT_BIND rather than
+	 * assumed.
+	 */
+	snprintf(bind_opt, sizeof(bind_opt), "%s%s", (ip != NULL && ip[0] != '\0') ? " --bind=" : "",
+	         (ip != NULL && ip[0] != '\0') ? ip : "");
 	snprintf(loader_conf, sizeof(loader_conf),
 	         "title Cix (A)\n"
 	         "sort-key cix\n"
@@ -651,8 +671,8 @@ static int populate_esp(const char *esp_mount, const char *ip, const char *root_
 	          * proven to come up -- see the daemon's own entry writer
 	          * for the measurement that reverted this. */
 	         "options console=tty0 console=ttyS0 root=PARTUUID=%s rw panic=10 init=/bin/cixd "
-	         "-- --init-mode --slot=a --bind=%s\n",
-	         root_partuuid, ip);
+	         "-- --init-mode --slot=a%s\n",
+	         root_partuuid, bind_opt);
 	if (write_text_file(path, loader_conf) != 0)
 		return -1;
 
@@ -894,9 +914,24 @@ static int pick_disk(char *out, size_t out_size)
 	}
 }
 
-/* The NICs this machine has, so an operator does not have to guess a
+/*
+ * The NICs this machine has, so an operator does not have to guess a
  * name. Virtual interfaces are skipped: /sys/class/net/<if>/device only
- * exists for a real one, which is the same test used elsewhere. */
+ * exists for a real one, which is the same test used elsewhere.
+ *
+ * `lo` is listed too, and deliberately, even though it fails that test.
+ * It is a legitimate answer -- "install this box now, commit to an
+ * address later" -- and it is the ONLY answer available on a machine
+ * whose real NIC is not listed here at all, which happens for a plain
+ * measured reason: the NIC drivers are kernel modules and this
+ * installer carries no module tree, so only built-in drivers
+ * (virtio_net) produce an interface. Hiding the one choice that always
+ * works, on the screen where the operator needs a choice that works,
+ * was the gap.
+ *
+ * It is listed LAST and labelled, so it reads as the fallback it is
+ * rather than as a candidate for a machine that has a real NIC here.
+ */
 static void list_interfaces(char *first, size_t first_size)
 {
 	DIR *d = opendir("/sys/class/net");
@@ -912,7 +947,7 @@ static void list_interfaces(char *first, size_t first_size)
 		struct stat pst;
 
 		if (e->d_name[0] == '.' || strcmp(e->d_name, "lo") == 0)
-			continue;
+			continue; /* lo is printed after the loop, labelled */
 		snprintf(probe, sizeof(probe), "/sys/class/net/%s/device", e->d_name);
 		if (stat(probe, &pst) != 0)
 			continue;
@@ -923,7 +958,18 @@ static void list_interfaces(char *first, size_t first_size)
 	}
 	closedir(d);
 	if (n == 0)
-		dual_printf("  (none found)\n");
+		dual_printf("  (no real NIC visible -- see the note above about module drivers)\n");
+	dual_printf("  lo                (loopback, 127.0.0.1 -- install now, set the real\n");
+	dual_printf("                     address later)\n");
+	/*
+	 * The default offered at the prompt stays the first REAL NIC when
+	 * there is one: an operator with an e1000 in front of them should
+	 * be able to press Enter. lo becomes the default only when nothing
+	 * real was found, which is the case where it is also the only
+	 * workable answer.
+	 */
+	if (first[0] == '\0')
+		snprintf(first, first_size, "lo");
 	dual_printf("\n");
 }
 
@@ -971,7 +1017,7 @@ static int config_partition_has_pki(const char *config_dev)
 	return found;
 }
 
-int main(int argc, char **argv)
+static int install_main(int argc, char **argv)
 {
 	const char *disk = NULL;
 	const char *ip = NULL;
@@ -1072,31 +1118,132 @@ int main(int argc, char **argv)
 
 			dual_printf("\nThis address is how you reach the installed system: the REST API "
 			            "is its only control surface, so it has to be right.\n");
+			/*
+			 * Blank is a real answer now, and the screen says so.
+			 *
+			 * Two reasons it has to be. On real hardware the built-in
+			 * Ethernet is frequently NOT listed below at all: the NIC
+			 * drivers are kernel modules and this installer carries no
+			 * module tree, so only virtio NICs (built in) appear --
+			 * measured on a real bare-metal attempt, 2026-09-12. And an
+			 * operator may simply not have decided the address yet.
+			 *
+			 * Installing with none is a deliberate state, not a broken
+			 * one: cixd's DEFAULT_BIND is 127.0.0.1 and boot_init()
+			 * brings `lo` up for exactly that, so the box comes up
+			 * running and answering on loopback. The installed system
+			 * DOES load the NIC drivers -- load_boot_modules()
+			 * modprobes e1000e, igb, ixgbe, r8169 and tg3 -- so the
+			 * interface that is invisible here is present there, which
+			 * is why deferring the decision works at all.
+			 */
+			dual_printf("\nPick the interface to manage this box on. `lo` (127.0.0.1) is a\n");
+			dual_printf("real choice: it installs a box that comes up running, answering on\n");
+			dual_printf("loopback, with no address committed to yet.\n");
+			dual_printf("\nA gateway is optional -- leave it blank for a box reachable only on\n");
+			dual_printf("its own subnet, which is the normal case for a LAN-local machine.\n");
+			dual_printf("\nNote: a built-in Ethernet port may not be listed below even though\n");
+			dual_printf("this machine has one -- its driver is a kernel module and this\n");
+			dual_printf("installer carries no module tree. The installed system loads it.\n");
 			list_interfaces(first_iface, sizeof(first_iface));
 
 			if (iface == NULL) {
-				prompt_default("Management interface", first_iface, iface_buf,
+				prompt_default("Management interface (blank for none)", first_iface, iface_buf,
 				               sizeof(iface_buf));
 				iface = iface_buf;
 			}
-			if (ip == NULL) {
-				prompt_default("Management IP address", "", ip_buf, sizeof(ip_buf));
-				ip = ip_buf;
-			}
-			if (prefix <= 0) {
-				prompt_default("Prefix length", "24", prefix_buf, sizeof(prefix_buf));
-				prefix = atoi(prefix_buf);
-			}
-			if (gateway == NULL) {
-				prompt_default("Default gateway", "", gw_buf, sizeof(gw_buf));
-				gateway = gw_buf;
+			/*
+			 * A blank interface means "no management network": stop
+			 * asking, rather than walking the operator through three
+			 * more questions whose answers would be discarded.
+			 */
+			if (iface[0] == '\0') {
+				/* Nothing chosen at all -- same outcome as picking lo,
+				 * and accepted rather than re-asked: the operator has
+				 * already been told what loopback means. */
+				ip = "";
+				gateway = "";
+				prefix = 0;
+			} else {
+				int is_lo = strcmp(iface, "lo") == 0;
+
+				/*
+				 * Loopback answers its own questions. 127.0.0.1/8 is
+				 * the only sensible address on it and there is no
+				 * gateway to reach, so offering the operator three
+				 * prompts they cannot meaningfully answer differently
+				 * would be theatre -- the defaults are the answers.
+				 */
+				if (ip == NULL) {
+					prompt_default("Management IP address", is_lo ? "127.0.0.1" : "", ip_buf,
+					               sizeof(ip_buf));
+					ip = ip_buf;
+				}
+				if (prefix <= 0) {
+					prompt_default("Prefix length", is_lo ? "8" : "24", prefix_buf,
+					               sizeof(prefix_buf));
+					prefix = atoi(prefix_buf);
+				}
+				/*
+				 * Gateway is optional and skipped entirely for
+				 * loopback. Blank means no default route -- correct
+				 * for a LAN-local box, and the only correct answer for
+				 * lo.
+				 */
+				if (gateway == NULL) {
+					if (is_lo) {
+						gateway = "";
+					} else {
+						prompt_default("Default gateway (blank for none)", "", gw_buf,
+						               sizeof(gw_buf));
+						gateway = gw_buf;
+					}
+				}
 			}
 		}
 	}
 
-	if (unknown_arg || disk == NULL || ip == NULL || gateway == NULL || iface == NULL ||
-	    ip[0] == '\0' || gateway[0] == '\0' || iface[0] == '\0' ||
-	    prefix <= 0 || prefix > 32) {
+	/*
+	 * The disk is required; the management network is optional but
+	 * ALL-OR-NOTHING. A half-given network -- an interface with no
+	 * address, an address with no gateway -- is a typo rather than an
+	 * intention, and bootstrap_management_network() would refuse it at
+	 * first boot anyway (it validates all three and returns -1), which
+	 * is a failure an operator would meet after the install rather than
+	 * during it. So it is refused here, where they can still fix it.
+	 *
+	 * "Nothing" is the blank-interface answer, and is a real install:
+	 * cixd comes up on 127.0.0.1 (DEFAULT_BIND) with `lo` brought up by
+	 * boot_init(), and the address is set at first boot.
+	 */
+	{
+		int net_given = (iface != NULL && iface[0] != '\0') || (ip != NULL && ip[0] != '\0') ||
+		                (gateway != NULL && gateway[0] != '\0') || prefix > 0;
+		/*
+		 * A gateway is NOT part of completeness. A box reachable only
+		 * on its own subnet is an ordinary, correct configuration --
+		 * and it is the only correct one for lo, which has nowhere to
+		 * route to. What is required is the interface, the address and
+		 * the prefix: those three together are a working management
+		 * network, and any one of them missing is a typo.
+		 */
+		int net_complete = iface != NULL && iface[0] != '\0' && ip != NULL && ip[0] != '\0' &&
+		                   prefix > 0 && prefix <= 32;
+
+		if (net_given && !net_complete) {
+			dual_printf("\ncix-install: a management network needs --interface=, --ip= and "
+			            "--prefix= together (--gateway= is optional), or none of them.\n");
+			dual_printf("Given: interface=%s ip=%s prefix=%d gateway=%s\n",
+			            (iface != NULL && iface[0] != '\0') ? iface : "(none)",
+			            (ip != NULL && ip[0] != '\0') ? ip : "(none)", prefix,
+			            (gateway != NULL && gateway[0] != '\0') ? gateway : "(none)");
+			dual_printf("Leave all four out to install with no management network and set "
+			            "the address at first boot.\n");
+			return 1;
+		}
+	}
+
+	if (unknown_arg || disk == NULL) {
 		dual_printf("usage: %s [--disk=/dev/sdX] [--ip=A.B.C.D] [--prefix=N] "
 		            "[--gateway=A.B.C.D] [--interface=IFNAME] [--skip-partition]\n"
 		            "       [--enroll-key=auto|always|never] [--wipe-config]\n"
@@ -1244,7 +1391,15 @@ int main(int argc, char **argv)
 		dual_perror("mount config");
 		return 1;
 	}
-	{
+	/*
+	 * net.conf only when there is a network to record. Its ABSENCE is
+	 * how the installed system knows none was chosen:
+	 * bootstrap_management_network() returns 0 -- a deliberate no-op,
+	 * not a failure -- when it cannot parse one, so the daemon comes up
+	 * on loopback and waits. Writing an empty or partial file instead
+	 * would turn that clean "none" into a parse error on every boot.
+	 */
+	if (ip != NULL && ip[0] != '\0' && iface != NULL && iface[0] != '\0') {
 		char net_conf_path[600];
 		char net_conf[320];
 
@@ -1255,6 +1410,9 @@ int main(int argc, char **argv)
 			umount(CONFIG_MOUNT);
 			return 1;
 		}
+	} else {
+		dual_printf("cix-install: no management network configured -- cixd will answer on "
+		            "127.0.0.1 until one is set.\n");
 	}
 	if (umount(CONFIG_MOUNT) != 0) {
 		dual_perror("umount config");
@@ -1370,6 +1528,18 @@ int main(int argc, char **argv)
 	dual_printf("=====================================================================\n");
 	dual_printf("  Installation complete. Remove the installation media, then press\n");
 	dual_printf("  Enter to reboot into the newly-installed system.\n");
+	/*
+	 * An operator who chose loopback must be told what they have, on
+	 * the last screen before this box becomes shell-less and reachable
+	 * only over an API. Said here as well as at the prompt, because
+	 * the prompt was several minutes and a disk format ago.
+	 */
+	if (ip == NULL || ip[0] == '\0' || strcmp(ip, "127.0.0.1") == 0) {
+		dual_printf("\n");
+		dual_printf("  This box has NO external management address: cixd will answer on\n");
+		dual_printf("  127.0.0.1 only. It will boot, run, and be healthy -- but nothing on\n");
+		dual_printf("  the network can reach it until it is given an address.\n");
+	}
 	dual_printf("=====================================================================\n");
 
 	/*
@@ -1389,4 +1559,47 @@ int main(int argc, char **argv)
 	reboot(RB_AUTOBOOT);
 	dual_perror("reboot");
 	return 1;
+}
+
+/*
+ * PID 1 must never return, not even on success (#131).
+ *
+ * install_main() above has 31 paths that report a real problem and
+ * return non-zero. As PID 1 every one of them was an instant
+ * `Attempted to kill init!` kernel panic with a full stack trace --
+ * which scrolls the installer's own message, the one saying what
+ * actually went wrong, off the top of the screen. An operator on real
+ * hardware with a monitor and no serial cable therefore saw the
+ * installer "crash" with nothing to report, which is exactly how this
+ * was found: reported from a real bare-metal attempt, 2026-09-12.
+ *
+ * The success path already knew this and parked on
+ * dual_console_wait_for_key() before rebooting. Only the failures did
+ * not, so the one outcome that most needs to be readable was the one
+ * outcome that destroyed its own evidence.
+ *
+ * Same shape as cix-recover's main(), deliberately: two PID-1 tools,
+ * one convention. Parks forever rather than rebooting, because a
+ * reboot would take the error off the screen just as surely as the
+ * panic did -- and there is nothing to lose by waiting, the install
+ * did not complete.
+ */
+int main(int argc, char **argv)
+{
+	int rc = install_main(argc, argv);
+
+	/*
+	 * Only reached on failure: the success path reboots and never
+	 * comes back here.
+	 */
+	dual_printf("\n=====================================================================\n");
+	dual_printf("  cix-install FAILED (rc=%d). The reason is printed above this banner --\n", rc);
+	dual_printf("  scroll up if you need it, or photograph the screen.\n");
+	dual_printf("\n");
+	dual_printf("  Nothing further will happen: this machine is parked deliberately so\n");
+	dual_printf("  the error stays readable. It is safe to power off or reset.\n");
+	dual_printf("=====================================================================\n");
+	sync();
+	for (;;)
+		pause();
 }

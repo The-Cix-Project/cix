@@ -6,6 +6,51 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### An installer failure is readable, loopback is a valid management choice, and a gateway is optional (#131, bare-metal install)
+
+All three from one real bare-metal attempt, reported live: the installer could not see the
+machine's built-in Ethernet, then "went away for a long time" and crashed with nothing on screen.
+
+**`cix-install` had 31 error paths that returned from `main()` while running as PID 1.** Returning
+from PID 1 is an instant `Attempted to kill init!` kernel panic with a full stack trace, which
+scrolls the installer's own message -- the one saying what actually went wrong -- off the top of
+the screen. So the one outcome that most needed to be readable was the one outcome that destroyed
+its own evidence, and an operator with a monitor and no serial cable saw a crash with nothing to
+report.
+
+The *success* path already knew this and parked on `dual_console_wait_for_key()` before rebooting;
+only the failures did not. `install_main()` is now wrapped by a `main()` that parks forever on a
+banner naming the return code and telling the operator the reason is above it -- deliberately
+parking rather than rebooting, because a reboot would take the error off the screen just as surely
+as the panic did. Same shape as `cix-recover`'s `main()`: two PID-1 tools, one convention (#131).
+
+**`lo` is now a listed, selectable management interface.** It was explicitly skipped, on the
+reasoning that the list shows real NICs -- but on real hardware the built-in Ethernet frequently
+is not there either: `CONFIG_E1000E`, `IGB`, `IXGBE`, `R8169` and `TIGON3` are all `=m` and the
+installer carries no module tree, so only built-in drivers (`virtio_net`) produce an interface at
+all. Hiding the one choice that always works, on the screen where the operator needs a choice that
+works, was the gap. It is listed last and labelled, defaults its own answers (127.0.0.1, /8, no
+gateway -- the only sensible ones), and becomes the offered default only when no real NIC was
+found.
+
+Choosing it is a deliberate state rather than a degraded one, and checking that corrected a claim
+I had written into a comment on the way: **cixd's `DEFAULT_BIND` is `127.0.0.1`**
+(`daemon/src/main.c:157`, used at `:27740`), not every interface, and `boot_init()` brings `lo`
+administratively up precisely so that bind can succeed -- its own comment records that a fresh
+kernel boot leaves `lo` down and the bind fails `EADDRNOTAVAIL` until something sets it up. So the
+box comes up running and answering on loopback, waiting to be told which address it should carry.
+
+**A gateway is optional, end to end.** A box reachable only on its own subnet is an ordinary
+configuration, and it is the only correct one for a loopback address, which has nowhere to route
+to. Three places had to agree: the installer no longer counts a gateway toward a complete network
+(interface, address and prefix do), `parse_net_conf()` no longer requires the line to exist, and
+`bootstrap_management_network()` treats an empty gateway as a valid "none" instead of failing
+`inet_pton` -- which mattered more than it looks, because that function returning -1 fails
+`boot_init()` and exits cixd, and exiting as PID 1 is the same kernel panic again. A gateway that
+is *present and unparseable* stays an error: that is a typo in a value someone meant, and silently
+dropping it would leave a box without the route it was configured to have. `rtnl_route_add_default_ipv4()`
+is skipped entirely when there is no gateway, rather than adding a route to 0.0.0.0.
+
 ### The platform's own containers are out of the container list by default (#426)
 
 `GET /v1/containers` returned every registry entry with no filtering, so while builds were running
