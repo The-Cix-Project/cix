@@ -11,7 +11,7 @@
 # only to stderr, which cixd never mirrors into the log store, so the
 # 500 had no recorded cause -- they log now.
 #
-# v2.57.110 adds one correction to v2.57.108's own code: pki_tmp_create()
+# v2.57.109 added one correction to v2.57.108's own code: pki_tmp_create()
 # unlinked its path and then created it O_EXCL, so the flag guarding the
 # files that hold the export passphrase and the decrypted CA key could
 # never actually fail. Now it can, and only a leftover from a previous
