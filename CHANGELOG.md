@@ -6,6 +6,25 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### `pki export` built a 17-argument command line into `argv[16]` (#415, #417)
+
+`POST /v1/pki/export` returned an opaque 500 on 192.168.15.95 running v2.57.109, with nothing in the
+log store. `pki_export()` and `pki_import()` each assigned 17 openssl arguments and a NULL terminator
+into `char *argv[16]`, writing two pointers past the end of their own stack frame. `-Wall -Werror`
+cannot see a runtime index, so it compiled clean, passed the gate, and shipped.
+
+Every other openssl invocation in `daemon/src/pki.c` uses `argv[24]` with fixed indices; all five were
+checked while fixing this and are in range (highest index 16). The two new ones are `argv[24]` to
+match, and every incremental append now goes through `argv_push()`, which bounds-checks against the
+array's own capacity and reserves the terminator — so a future added flag fails the invocation loudly
+instead of overwriting the frame.
+
+Two things made this invisible rather than merely wrong. The export failure paths wrote only to
+stderr, which `cixd` never mirrors into the log store, so a 500 had no recorded cause anywhere; they
+log now. And `test/test_pki.c` already asserted that this export returns 200 — it is excluded from
+`SELFTESTS`, so the assertion was right, in the right file, and never executed. That exclusion is
+**#417**, filed rather than papered over by adding a test that fails in a build container.
+
 ### The CA can leave the box, encrypted, and come back (#415, ADR-0281)
 
 PKI state lives at `/config/state/pki`, on the `cix-config` partition — a deliberate placement, and a
