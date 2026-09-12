@@ -70,14 +70,14 @@ static const char *err_of(const struct cix_response *r)
 
 /*
  * DELETE a container and wait for it to actually be gone (ADR-0180,
- * #417, #413).
+ * #417, #413, #421).
  *
  * Teardown is asynchronous: DELETE returns once it is under way, and
  * until it finishes the name is still taken. docs/api/README.md states
- * the protocol for this in as many words -- "Chain on the settled
- * state, not on the response: poll the container's own GET to 404
- * (delete) or status \"stopped\" (stop) first" -- and this test was
- * not following it, which is why its delete+recreate round raced.
+ * the protocol in as many words -- "Chain on the settled state, not on
+ * the response: poll the container's own GET to 404 (delete) or status
+ * \"stopped\" (stop) first" -- and this test was not following it,
+ * which is why its delete+recreate round raced.
  *
  * A first attempt at this retried the CREATE past a 409 whose message
  * said "shutting down". That was worse than it looks: it made the test
@@ -85,10 +85,21 @@ static const char *err_of(const struct cix_response *r)
  * message read "already exists" instead, so the retry never fired and
  * the gate failed with the race intact. Polling the resource's own
  * status is what the contract offers; a string in an error body is not
- * an interface. (Why that particular 409 reported no teardown in
- * progress is a separate, open question -- #421.)
+ * an interface.
  *
- * Returns 0 once GET says 404, -1 if it never does.
+ * The DELETE's own outcome is CHECKED and printed, which is #421's
+ * whole subject: both earlier versions of this discarded it, so every
+ * explanation of that 409 had to assume the DELETE was even delivered.
+ * It need not have been -- cix_client_request() retries a transport
+ * failure three times 250ms apart and then returns -1 having produced
+ * no HTTP exchange at all, which on a single-threaded daemon busy
+ * elsewhere (this test runs POST /v1/pki/reset, which forks openssl
+ * repeatedly) is a real possibility rather than a hypothetical. A
+ * container that is simply still there is exactly what "a container
+ * with this name already exists" is for.
+ *
+ * Returns 0 once GET says 404, -1 otherwise -- immediately on a DELETE
+ * that did not land, rather than after a 30s wait that names nothing.
  */
 static int delete_container_and_wait(const struct cix_client *c, const char *name)
 {
@@ -98,26 +109,42 @@ static int delete_container_and_wait(const struct cix_client *c, const char *nam
 	snprintf(path, sizeof(path), "/v1/containers/%s", name);
 	{
 		struct cix_response r;
+		int rc;
 
 		memset(&r, 0, sizeof(r));
-		cix_client_request(c, "DELETE", path, NULL, &r);
+		rc = cix_client_request(c, "DELETE", path, NULL, &r);
+		/* One line per delete, unconditionally: the point of #421 is
+		 * that this datum was missing when it was needed. */
+		fprintf(stderr, "%s: DELETE rc=%d status=%d\n", name, rc, rc == 0 ? r.status : -1);
+		if (rc != 0 || (r.status != 204 && r.status != 404)) {
+			fprintf(stderr, "FAIL: DELETE %s did not land: rc=%d status=%d: %s\n", name, rc,
+			        rc == 0 ? r.status : -1, rc == 0 ? err_of(&r) : "(no response at all)");
+			cix_response_free(&r);
+			return -1;
+		}
 		cix_response_free(&r);
 	}
 	for (;;) {
 		struct cix_response r;
-		int status = 0;
+		int status = 0, rc;
 
 		memset(&r, 0, sizeof(r));
-		if (cix_client_request(c, "GET", path, NULL, &r) == 0)
+		rc = cix_client_request(c, "GET", path, NULL, &r);
+		if (rc == 0)
 			status = r.status;
-		cix_response_free(&r);
-		if (status == 404)
+		if (status == 404) {
+			cix_response_free(&r);
 			return 0;
+		}
 		if (waited >= 30000) {
-			fprintf(stderr, "%s: still present %dms after DELETE (GET status=%d)\n", name,
-			        waited, status);
+			fprintf(stderr,
+			        "%s: still present %dms after a 204 DELETE (GET rc=%d status=%d): %s\n",
+			        name, waited, rc, status,
+			        rc == 0 && r.body != NULL ? r.body : "(no body)");
+			cix_response_free(&r);
 			return -1;
 		}
+		cix_response_free(&r);
 		usleep(250000);
 		waited += 250;
 	}
