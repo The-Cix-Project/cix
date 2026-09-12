@@ -176,7 +176,13 @@ static void cfg_packages(struct json_writer *w) { pkg_write_json_config(w); }
 static void cfg_images(struct json_writer *w) { image_write_json_list(w); }
 static void cfg_image_recipes(struct json_writer *w) { image_recipe_write_json_list(w); }
 static void cfg_container_recipes(struct json_writer *w) { container_recipe_write_json_list(w); }
-static void cfg_containers(struct json_writer *w) { registry_write_json_list(w); }
+/*
+ * #426: without the platform's own build containers. A running-config
+ * document describes configuration, and a __pkgbuild-<n> is a
+ * transient job the daemon created for itself -- it is gone by the
+ * time anyone replays this, so including it only ever misled.
+ */
+static void cfg_containers(struct json_writer *w) { registry_write_json_list(w, 0, NULL); }
 
 struct config_section {
 	const char *name;

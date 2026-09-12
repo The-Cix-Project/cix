@@ -4634,9 +4634,36 @@ paths:
 
   /containers:
     get:
-      summary: List all containers known to this daemon
+      summary: List containers, excluding the platform's own by default
+      description: >
+        The operator's containers. The platform's own -- names
+        prefixed `__`, which today means exactly the build containers
+        `__pkgbuild-<chain index>` -- are left out unless
+        `include_internal` asks for them (#426).
+
+        Up to `max_concurrent_jobs` build containers exist at once, ten
+        on a real host, so a busy box listed ten machine-owned entries
+        among a dozen real ones with nothing distinguishing them but
+        the name.
+
+        The filter is here rather than in each client deliberately. A
+        dashboard-side filter would have given the web a view `cixctl
+        container ls` could not have, and "what counts as internal"
+        would then exist twice, in two languages, free to drift.
       operationId: listContainers
       x-cix-expose: [cli, web]
+      parameters:
+        - name: include_internal
+          in: query
+          required: false
+          schema:
+            type: string
+          description: >
+            `1`, `true` or `yes` includes the platform's own
+            containers. Anything else -- including a bare
+            `?include_internal=` -- is false, because a malformed
+            value meaning "show everything" would be the wrong way
+            round for a flag whose purpose is to show less.
       responses:
         "200":
           description: Container list
@@ -4644,12 +4671,26 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [containers]
+                required: [containers, hidden_internal]
                 properties:
                   containers:
                     type: array
                     items:
                       $ref: "#/components/schemas/Container"
+                  hidden_internal:
+                    type: integer
+                    description: >
+                      How many of the platform's own containers this
+                      response left out -- `0` when `include_internal`
+                      was given, or when none exist (#426).
+
+                      Reported so they do not silently vanish. An
+                      operator watching a build who cannot find
+                      `__pkgbuild-0` should be told it is hidden and
+                      that `include_internal` brings it back, rather
+                      than being left to conclude the container is
+                      gone -- the wrong conclusion to draw while
+                      debugging a build.
     post:
       summary: Create and start a container
       description: >

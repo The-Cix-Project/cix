@@ -1342,6 +1342,25 @@ main {
 	margin-bottom: 0.75rem;
 }
 
+/*
+ * #426: a checkbox and its label reading as one control, so the label
+ * is clickable and the box does not float away from its words.
+ */
+.inline-toggle {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.4rem;
+	cursor: pointer;
+	user-select: none;
+}
+
+/* A note beside a control rather than under it -- the hidden-count
+ * line, which is absent (not blank) when nothing is hidden. */
+.hint-inline {
+	color: var(--muted);
+	font-size: 0.8rem;
+}
+
 .list-toolbar input[type="search"] {
 	flex: 1 1 auto;
 	min-width: 12rem;

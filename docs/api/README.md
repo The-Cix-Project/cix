@@ -110,7 +110,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/syslog/targets` | List all registered syslog forward targets |
 | POST | `/syslog/targets` | Register a running container as an optional syslog forward target |
 | DELETE | `/syslog/targets/{container}` | Unregister a syslog forward target |
-| GET | `/containers` | List all containers this daemon knows about |
+| GET | `/containers` | List containers; the platform's own are excluded unless `?include_internal=1` |
 | POST | `/containers` | Create and start a container |
 | GET | `/containers/{name}` | Inspect one container |
 | PATCH | `/containers/{name}` | Edit the stored definition in place — services, env, files, limits, volumes (issue #11). Applies at next start |
@@ -910,6 +910,12 @@ Response (`201`):
 ```
 
 `exit_status` is the raw `waitid()` status and is ambiguous on its own — **`term_signal`** disambiguates it (issue #78): `0` means the container exited normally and `exit_status` is a real exit code; a nonzero `term_signal` is the signal that killed it, and `exit_status` is then that same signal number, *not* an exit code. Because a deliberate `stop`/`delete` `SIGKILL`s the container, `term_signal` is `9` for any container stopped or deleted while running — the reliable way to tell that apart from a genuine `exit 9`. Both are `null` while running.
+
+**The platform's own containers are excluded by default (#426).** `GET /v1/containers` lists the operator's containers; names prefixed `__` — which today means exactly the build containers, `__pkgbuild-<chain index>` — are left out unless `?include_internal=1` (`true`/`yes` also work; anything else, a bare `?include_internal=` included, is false, because a malformed value meaning "show everything" would be the wrong way round for a flag whose purpose is to show less). Up to `max_concurrent_jobs` build containers exist at once, ten on a real host, so a busy box listed ten machine-owned entries among a dozen real ones with nothing to distinguish them but the name.
+
+The response carries **`hidden_internal`**, the count left out, so they never silently vanish: an operator watching a build who cannot find `__pkgbuild-0` should be told it is hidden and that the parameter brings it back, rather than concluding the container is gone — the wrong conclusion to draw while debugging a build.
+
+The filter is on the endpoint rather than in each client on purpose. A dashboard-side filter would have given the web a view `cixctl container ls` could not have, and "what counts as internal" would then exist twice, in two languages, free to drift. `cixctl container ls --all` and the dashboard's *Show the platform's own build containers* toggle both go through this one parameter. `show running-config` excludes them unconditionally — a `__pkgbuild-<n>` is a transient job the daemon created for itself, gone by the time anyone replays the document.
 
 `exit_reason` (ADR-0080) is a human-readable why once `exit_status` is non-null — either the container's own real diagnostic text (e.g. `"child: execve(/usr/bin/foo): No such file or directory"`), a signal string (e.g. `"killed by signal 9 (SIGKILL)"`) when `term_signal` is set, or, when neither is available, a fixed category string (e.g. `"clean exit"`, `"overlay: mount(2) itself failed"`). `GET .../{name}` and `GET /v1/containers` both include it the same way; a failure that also reaches `500` at creation time (before any process exists) is instead surfaced directly in that response's own error message and in `GET /system/logs`.
 

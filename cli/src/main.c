@@ -83,6 +83,7 @@ static void print_usage(FILE *out)
 	        "  backup-config snapshot-now  -- write the same bundle GET /system/backup\n"
 	        "               produces to the configured disk right now, regardless of schedule\n"
 	        "  container ls  -- every provisioned container and its current state\n"
+	        "                   (--all also shows the platform's own build containers)\n"
 	        "  container run --name=NAME --image=IMAGE [--memory-max=BYTES] [--pids-max=N]\n"
 	        "      [--memory-swap-max=BYTES]  -- 0 means this container may not swap at all;\n"
 	        "                                    omit it to leave swap unlimited\n"
@@ -4278,11 +4279,19 @@ static int cmd_update(const struct cix_client *c, int json_mode, int argc, char 
 	return emit(&r, json_mode, fmt_update);
 }
 
-static int cmd_ps(const struct cix_client *c, int json_mode)
+/*
+ * #426: the platform's own build containers are excluded by default,
+ * and --all asks for them. The filter is the endpoint's, not this
+ * program's -- so the CLI and the dashboard cannot disagree about what
+ * "ours" means, and neither has a view the other cannot get.
+ */
+static int cmd_ps(const struct cix_client *c, int json_mode, int include_internal)
 {
 	struct cix_response r;
+	const char *path = include_internal ? CIX_API_listContainers "?include_internal=1"
+	                                     : CIX_API_listContainers;
 
-	if (cix_client_request(c, CIX_API_listContainers_METHOD, CIX_API_listContainers, NULL, &r) != 0) {
+	if (cix_client_request(c, CIX_API_listContainers_METHOD, path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -4781,8 +4790,22 @@ static int cmd_container(const struct cix_client *c, int json_mode, int argc, ch
 	 * device). There are no top-level container verbs -- see docs/guides/
 	 * cli-reference.md and issue #74.
 	 */
-	if (argc >= 1 && strcmp(argv[0], "ls") == 0)
-		return cmd_ps(c, json_mode);
+	if (argc >= 1 && strcmp(argv[0], "ls") == 0) {
+		int include_internal = 0;
+		int i;
+
+		for (i = 1; i < argc; i++) {
+			if (strcmp(argv[i], "--all") == 0) {
+				include_internal = 1;
+			} else {
+				fprintf(stderr, "usage: cixctl container ls [--all]\n"
+				                "       --all includes the platform's own build "
+				                "containers (#426)\n");
+				return 2;
+			}
+		}
+		return cmd_ps(c, json_mode, include_internal);
+	}
 	if (argc >= 1 && strcmp(argv[0], "drift") == 0)
 		return cmd_container_drift(c, json_mode);
 	if (argc >= 1 && strcmp(argv[0], "run") == 0)
@@ -4814,7 +4837,7 @@ static int cmd_container(const struct cix_client *c, int json_mode, int argc, ch
 	if (argc >= 1 && strcmp(argv[0], "migrate-storage-status") == 0)
 		return cmd_migrate_storage_status(c, json_mode, argc - 1, argv + 1);
 	fprintf(stderr,
-	        "usage: cixctl container ls | drift | run ... | start NAME | stop NAME |\n"
+	        "usage: cixctl container ls [--all] | drift | run ... | start NAME | stop NAME |\n"
 	        "         pause NAME |\n"
 	        "         unpause NAME | rm NAME | inspect NAME | stats NAME |\n"
 	        "         console NAME [--console=NAME] |\n"
