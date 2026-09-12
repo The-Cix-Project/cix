@@ -841,7 +841,17 @@ $(BUILD)/test_console_pki_bootstrap: test/test_console_pki_bootstrap.c test/test
 $(BUILD)/test_console_pkg_bootstrap: test/test_console_pkg_bootstrap.c test/test_disk_image.c test/test_image_fixture.c | $(BUILD)
 	$(CC) $(CFLAGS) -Itest $^ -o $@
 
-$(BUILD)/cix-install: image/src/cix-install.c image/src/dual_console.c daemon/src/treecopy.c daemon/src/partlabel.c | $(BUILD)
+# kmod.c: cix-install loads the NIC drivers before listing interfaces
+# (#429 follow-on), through the same kmod_load() the daemon uses rather
+# than a second way to run modprobe -- which this codebase refused once
+# already, when two places knew how to spell modprobe's path.
+#
+# json.c comes with it: kmod.c also renders module state as JSON for
+# the daemon's endpoints (70 jw_*/json_as_string call sites), so the
+# object needs the writer even though cix-install never calls that
+# half. cix-recover links json.c for its own reasons, so this is the
+# established shape rather than a new kind of dependency.
+$(BUILD)/cix-install: image/src/cix-install.c image/src/dual_console.c daemon/src/treecopy.c daemon/src/partlabel.c daemon/src/kmod.c daemon/src/json.c | $(BUILD)
 	$(CC) $(CFLAGS) -Idaemon/include $^ -o $@
 
 #

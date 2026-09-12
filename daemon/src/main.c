@@ -8,6 +8,7 @@
 #include "diskformat.h"
 #include "diskpart.h"
 #include "diskrole.h"
+#include "bootmodules.h"
 #include "kmod.h"
 #include "kmodconfig.h"
 #include "sysctlconfig.h"
@@ -1669,15 +1670,23 @@ static int parse_net_conf(const char *path, char *out_ip, size_t ip_size, int *o
  */
 static void load_boot_modules(void)
 {
-	static const char *const boot_modules[] = {
-		/* NICs -- covers common real-hardware chipsets bootstrap_
-		 * management_network() below might need probed first. */
-		"e1000e", "igb", "ixgbe", "r8169", "tg3",
-		/* USB -- never needed for root or the mgmt network itself,
-		 * loaded here anyway since this is the one, single curated
-		 * list this daemon ever runs modprobe against. */
-		"ehci-hcd", "usb-storage",
-	};
+	/*
+	 * The NIC list comes from bootmodules.h, shared with cix-install,
+	 * which needs the identical set before it lists interfaces for an
+	 * operator to choose from. A second copy here would fail in the
+	 * worst way if it drifted: the installer offering a NIC this
+	 * daemon cannot bring up, or this daemon finding one the installer
+	 * never let anyone choose.
+	 *
+	 * ehci-hcd and usb-storage USED to be appended here. Both are
+	 * built into the kernel as of #429 -- they had to be, since a
+	 * module cannot be loaded before root is mounted and there is no
+	 * initramfs -- so modprobing them is now a no-op against a
+	 * built-in driver. Dropped rather than left to fail harmlessly:
+	 * a list that names things it does not need is a list nobody
+	 * trusts.
+	 */
+	static const char *const boot_modules[] = CIX_NIC_MODULES;
 	size_t i;
 
 	for (i = 0; i < sizeof(boot_modules) / sizeof(boot_modules[0]); i++) {
@@ -8434,6 +8443,58 @@ static void pkg_completion_followup(int chained, pid_t pkg_pid, int pkg_pidfd, i
 	}
 }
 
+/*
+ * Where the kernel's module tree is, and where the module tools are.
+ *
+ * Two callers need the identical answers: the bootroot assembly, which
+ * stages them onto the control-plane root, and the installer-ISO build,
+ * which stages the NIC subset onto the media so cix-install can list a
+ * real machine's built-in Ethernet at all (#429 follow-on). They were
+ * resolved inline in the first, and a second copy in the second would
+ * be two places that know where a kernel artifact keeps its modules --
+ * free to drift, and drifting silently, since the failure is an empty
+ * interface list rather than an error.
+ *
+ * Both leave out empty when the thing is not there, which every caller
+ * treats as "stage nothing" rather than as a failure: a control plane
+ * with no module tree still boots, and an ISO with none still installs
+ * on virtio.
+ */
+static void resolve_kernel_modules_dir(char *out, size_t out_size)
+{
+	struct stat st;
+
+	out[0] = '\0';
+	/*
+	 * ARTIFACTS_DIR/kernel is the kernel package's own hostbuild
+	 * artifact directory, a sibling of the "cix" package's.
+	 * kernel.recipe's pkg_install() runs modules_install followed by
+	 * depmod -b, so this is a complete, dependency-indexed tree --
+	 * modules.dep and its .bin indexes included -- rather than a bag
+	 * of .ko files modprobe cannot resolve.
+	 */
+	if (snprintf(out, out_size, "%s/kernel/lib/modules", ARTIFACTS_DIR) >= (int)out_size)
+		out[0] = '\0';
+	else if (stat(out, &st) != 0 || !S_ISDIR(st.st_mode))
+		out[0] = '\0';
+}
+
+static void resolve_kmod_bin_dir(char *out, size_t out_size)
+{
+	char kmod_version[IMAGE_VERSION_MAX];
+	char kmod_root[PATH_MAX];
+	struct stat st;
+
+	out[0] = '\0';
+	if (image_current_version(KMOD_IMAGE, kmod_version, sizeof(kmod_version)) != IMAGE_OK)
+		return;
+	image_version_rootfs_path(KMOD_IMAGE, kmod_version, kmod_root, sizeof(kmod_root));
+	if (snprintf(out, out_size, "%s/usr/bin", kmod_root) >= (int)out_size)
+		out[0] = '\0';
+	else if (stat(out, &st) != 0 || !S_ISDIR(st.st_mode))
+		out[0] = '\0';
+}
+
 static void spawn_cix_bootroot_assembly(const char *artifact_dir)
 {
 	char mkbootroot_bin[PATH_MAX];
@@ -8577,16 +8638,8 @@ static void spawn_cix_bootroot_assembly(const char *artifact_dir)
 	 * is silent. It is still why a deploy should pass the kernel_path
 	 * out of the same artifact this staged from.
 	 */
-	modules_dir[0] = '\0';
+	resolve_kernel_modules_dir(modules_dir, sizeof(modules_dir));
 	{
-		struct stat modules_st;
-
-		if (snprintf(modules_dir, sizeof(modules_dir), "%s/kernel/lib/modules", ARTIFACTS_DIR) >=
-		    (int)sizeof(modules_dir))
-			modules_dir[0] = '\0';
-		else if (stat(modules_dir, &modules_st) != 0 || !S_ISDIR(modules_st.st_mode))
-			modules_dir[0] = '\0';
-
 		if (modules_dir[0] != '\0')
 			logstore_write("cixd", "info", "cix bootroot assembly: staging kernel modules from %s",
 			               modules_dir);
@@ -8610,21 +8663,8 @@ static void spawn_cix_bootroot_assembly(const char *artifact_dir)
 	 * missing" and "the tree is missing" are different diagnoses that
 	 * should not be collapsed into one silence.
 	 */
-	kmod_bin_dir[0] = '\0';
+	resolve_kmod_bin_dir(kmod_bin_dir, sizeof(kmod_bin_dir));
 	{
-		char kmod_version[IMAGE_VERSION_MAX];
-		char kmod_root[PATH_MAX];
-		struct stat kmod_st;
-
-		if (image_current_version(KMOD_IMAGE, kmod_version, sizeof(kmod_version)) == IMAGE_OK) {
-			image_version_rootfs_path(KMOD_IMAGE, kmod_version, kmod_root, sizeof(kmod_root));
-			if (snprintf(kmod_bin_dir, sizeof(kmod_bin_dir), "%s/usr/bin", kmod_root) >=
-			    (int)sizeof(kmod_bin_dir))
-				kmod_bin_dir[0] = '\0';
-			else if (stat(kmod_bin_dir, &kmod_st) != 0 || !S_ISDIR(kmod_st.st_mode))
-				kmod_bin_dir[0] = '\0';
-		}
-
 		if (kmod_bin_dir[0] != '\0')
 			logstore_write("cixd", "info", "cix bootroot assembly: staging module tools from %s",
 			               kmod_bin_dir);
@@ -9419,7 +9459,16 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 	char signing_cert_der[PATH_MAX];
 	char stage_dir[PATH_MAX];
 	char kernel_args[512];
-	char *argv[15];
+	char iso_modules_dir[PATH_MAX];
+	char iso_kmod_bin_dir[PATH_MAX];
+	/*
+	 * 17, for argv[0..15] and the NULL terminator. It was 15, which
+	 * held exactly the previous 14 arguments and that NULL -- so the
+	 * two added below would have written past the end of the array.
+	 * That is not hypothetical: #415 was a real argv overflow on this
+	 * same pattern, found in a crash rather than in review.
+	 */
+	char *argv[17];
 	pid_t pid;
 	int pidfd;
 	int output_pipe[2];
@@ -9515,6 +9564,33 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 	argv[11] = kernel_args;
 	argv[12] = isotools_root;
 	/*
+	 * The kernel module tree and the module tools (#429 follow-on).
+	 *
+	 * mkinstalleriso stages the NIC drivers' dependency closure and
+	 * modprobe onto the media, so cix-install can load them before it
+	 * lists interfaces. Without this the installer could only ever show
+	 * interfaces whose driver is built into the kernel -- virtio_net --
+	 * and a real machine's built-in Ethernet was absent from the
+	 * screen entirely, which blocked a bare-metal install on
+	 * 2026-09-12.
+	 *
+	 * Both resolved through the same helpers the bootroot assembly
+	 * uses, deliberately: one answer to "where does a kernel artifact
+	 * keep its modules", not two. Either may come back "" and that is
+	 * not a failure -- mkinstalleriso says so on its own output and
+	 * builds media that still installs on virtio.
+	 *
+	 * argc is checked exactly on the callee (`argc != 16`), and this
+	 * pair takes it from 14 to 16. See the seed_dir comment below for
+	 * why that is worth being careful about: this call site once passed
+	 * one argument fewer than mkinstalleriso required, and every
+	 * POST /v1/system/iso on a real host answered with a fragment of
+	 * mkinstalleriso's usage text -- an error message made of
+	 * documentation.
+	 */
+	resolve_kernel_modules_dir(iso_modules_dir, sizeof(iso_modules_dir));
+	resolve_kmod_bin_dir(iso_kmod_bin_dir, sizeof(iso_kmod_bin_dir));
+	/*
 	 * The package seed directory (#189 part 2), "" for none -- the same
 	 * convention mkbootroot uses for an absent optional input.
 	 *
@@ -9559,7 +9635,9 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 		}
 	}
 	argv[13] = seed_dir;
-	argv[14] = NULL;
+	argv[14] = iso_modules_dir;
+	argv[15] = iso_kmod_bin_dir;
+	argv[16] = NULL;
 
 	/*
 	 * Capture the child's stdout and stderr. Not fatal if it fails --

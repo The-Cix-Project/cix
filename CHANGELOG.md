@@ -6,6 +6,61 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The installer can see a real machine's built-in Ethernet (#429 follow-on)
+
+It could not, and the reason was structural rather than a bug in the listing: the five NIC
+chipsets this platform supports are kernel **modules**, and the installer ISO carried no module
+tree and no module tools. So the only interfaces `cix-install` could ever list were those whose
+driver is built into the kernel -- in practice `virtio_net` alone. A real machine with a built-in
+Ethernet port and no virtio showed `(none found)`, and the operator had nothing to choose.
+Reported from a bare-metal attempt, 2026-09-12.
+
+`mkinstalleriso` now stages the NIC drivers and `modprobe` onto the media, and `cix-install` loads
+them before listing interfaces -- through `kmod_load()`, the same function the daemon uses, rather
+than a second way to run modprobe (this codebase already refused that once, when two places knew
+how to spell modprobe's path). The five module names live in `include/bootmodules.h` and are
+shared with `cixd`'s own `load_boot_modules()`: a drifted copy would fail in the worst available
+way, offering an interface the installed system then cannot bring up, or vice versa.
+
+**Staged by dependency closure, read out of the kernel's own `modules.dep`, and that detail is the
+whole reason this works.** Measured against a published kernel artifact:
+
+```
+e1000e   363.6 KiB  e1000e.ko
+igb      361.0 KiB  igb.ko
+ixgbe    891.1 KiB  ixgbe.ko + mdio.ko + mdio_devres.ko + libphy.ko + mdio_bus.ko
+r8169    511.8 KiB  r8169.ko + mdio_devres.ko + libphy.ko + mdio_bus.ko
+tg3      555.4 KiB  tg3.ko  + libphy.ko + mdio_bus.ko
+union: 9 files, 2.06 MiB   (+ 422 KiB of modules.* metadata modprobe resolves through)
+```
+
+A hand-written list of "the five .ko files" would have loaded `e1000e` and `igb` and failed
+`ixgbe`, `r8169` and `tg3` -- and a module that cannot load presents to an operator exactly like
+staging nothing at all. Reading the dep file also means a future kernel that changes those
+dependencies is followed rather than silently diverged from. The rest of the tree is deliberately
+left out: it now carries `amdgpu` and the `rtw88` family as modules, and media for choosing a NIC
+has no use for a GPU driver.
+
+Neither input is fatal by its absence. Media built without them still installs perfectly well on
+virtio, and `cix-install` says on screen which of the two it lacks -- "the tree is missing" and
+"the tools are missing" are different diagnoses, and collapsing them into one silence is how an
+operator ends up staring at an empty list with nothing to explain it.
+
+Two things found while wiring the call site, both the kind that do not survive review by reading:
+
+- **`char *argv[15]` held exactly the previous 14 arguments and their NULL**, so the two added here
+  would have written past the end of the array. #415 was a real argv overflow on this same
+  pattern, found in a crash rather than in review. It is now 17.
+- **`kmod.c` needs `json.c`.** It renders module state as JSON for the daemon's endpoints (70
+  `jw_*`/`json_as_string` sites), so the object needs the writer even though `cix-install` never
+  calls that half -- `cix-recover` already links `json.c`, so this is the established shape. Its
+  apparent `run_openssl` reference turned out to be a comment.
+
+`resolve_kernel_modules_dir()` and `resolve_kmod_bin_dir()` are extracted rather than copied: the
+bootroot assembly already resolved both inline, and a second copy would have been two places that
+know where a kernel artifact keeps its modules, free to drift and drifting silently, since the
+symptom is an empty interface list rather than an error.
+
 ### An installer failure is readable, loopback is a valid management choice, and a gateway is optional (#131, bare-metal install)
 
 All three from one real bare-metal attempt, reported live: the installer could not see the

@@ -29,6 +29,7 @@
  * itself, which deliberately never links test/, since it runs on a
  * real target disk as production code).
  */
+#include "bootmodules.h"
 #include "persist.h"
 #include "libdirs.h"
 #include "test_image_fixture.h"
@@ -116,6 +117,234 @@ static int ensure_dir_under(const char *root, const char *rel)
 	return ensure_dir(path);
 }
 
+
+/*
+ * mkdir -p for the PARENT directories of a relative path under root.
+ *
+ * ensure_dir() above makes one level. Module paths nest deeply
+ * (kernel/drivers/net/ethernet/intel/e1000e/e1000e.ko), and the whole
+ * point of staging them by dependency closure is that this code does
+ * not know the shape in advance -- it reads it out of modules.dep --
+ * so it cannot create the levels by name.
+ */
+static int ensure_parents_under(const char *root, const char *rel)
+{
+	char path[1024];
+	size_t base_len;
+	size_t i;
+
+	if (snprintf(path, sizeof(path), "%s/%s", root, rel) >= (int)sizeof(path)) {
+		fprintf(stderr, "path too long: %s/%s\n", root, rel);
+		return -1;
+	}
+	base_len = strlen(root) + 1;
+	for (i = base_len; path[i] != '\0'; i++) {
+		if (path[i] != '/')
+			continue;
+		path[i] = '\0';
+		if (mkdir(path, 0755) != 0 && errno != EEXIST) {
+			perror(path);
+			return -1;
+		}
+		path[i] = '/';
+	}
+	return 0;
+}
+
+/*
+ * Stage the NIC drivers, and only them, onto the installer media
+ * (#429 follow-on).
+ *
+ * Why this exists: the five NIC chipsets this platform supports are
+ * kernel MODULES, and this media used to carry no module tree at all.
+ * So the only interfaces cix-install could ever list were built-in
+ * drivers -- meaning virtio_net -- and a real machine with a built-in
+ * Ethernet port showed "(none found)". Measured on a bare-metal
+ * attempt, 2026-09-12: the operator had nothing to choose.
+ *
+ * Why by dependency closure rather than the whole tree: measured
+ * against a published kernel artifact, the five closures come to 9
+ * files and 2.06 MiB, against a tree that now also carries amdgpu and
+ * the rtw88 family as modules. Media for choosing a NIC has no use for
+ * a GPU driver.
+ *
+ * Why read modules.dep instead of listing the files: the closures are
+ * not guessable and getting them wrong fails silently in the worst
+ * way. Measured: ixgbe needs mdio, mdio_devres, libphy and mdio_bus;
+ * r8169 needs mdio_devres, libphy, mdio_bus; tg3 needs libphy and
+ * mdio_bus. A hand-written list of "the five .ko files" would have
+ * loaded e1000e and igb and failed the other three -- which presents
+ * to an operator exactly like staging nothing. Reading the kernel's
+ * own dep file also means a future kernel that changes those deps is
+ * followed automatically rather than silently diverged from.
+ *
+ * The modules.* metadata is staged whole (422 KiB): modprobe needs
+ * modules.dep and its .bin indexes to resolve anything at all. Those
+ * index every module in the kernel, most of which are deliberately
+ * absent here -- harmless, because a lookup for one of ours resolves
+ * to files that are present, and nothing asks for the rest.
+ */
+/*
+ * Copy one module file, named relative to the kernel's own module
+ * directory, into the staged tree at the same relative path.
+ *
+ * A path that is not there is skipped rather than failing: modules.dep
+ * lists dependencies by relative path and a built-in dependency has no
+ * file at all, which is an ordinary state and not an error. Counted
+ * only when a file was really copied, so the number printed at the end
+ * means something.
+ */
+static int stage_module_file(const char *src_base, const char *dst_base, const char *rel,
+                             int *count)
+{
+	char src[1152];
+	char dst[1152];
+	struct stat st;
+
+	if (rel == NULL || rel[0] == '\0')
+		return 0;
+	if (snprintf(src, sizeof(src), "%s/%s", src_base, rel) >= (int)sizeof(src) ||
+	    snprintf(dst, sizeof(dst), "%s/%s", dst_base, rel) >= (int)sizeof(dst)) {
+		fprintf(stderr, "module path too long: %s\n", rel);
+		return -1;
+	}
+	if (stat(src, &st) != 0 || !S_ISREG(st.st_mode))
+		return 0;
+	if (ensure_parents_under(dst_base, rel) != 0)
+		return -1;
+	if (test_image_fixture_copy_file(src, dst) != 0)
+		return -1;
+	(*count)++;
+	return 0;
+}
+
+static int stage_nic_modules(const char *stage_dir, const char *modules_dir)
+{
+	static const char *const nics[] = CIX_NIC_MODULES;
+	char kver[128] = "";
+	char src_base[1024];
+	char dst_base[1024];
+	char dep_path[1152];
+	char rel_base[256];
+	DIR *d;
+	struct dirent *de;
+	FILE *f;
+	char *line = NULL;
+	size_t line_cap = 0;
+	int staged = 0;
+	size_t i;
+
+	/* Exactly one version directory in practice; take the first real
+	 * one and say which, so a tree with an unexpected shape is visible
+	 * in the build log rather than silently half-staged. */
+	d = opendir(modules_dir);
+	if (d == NULL) {
+		perror(modules_dir);
+		return -1;
+	}
+	while ((de = readdir(d)) != NULL) {
+		if (de->d_name[0] == '.')
+			continue;
+		snprintf(kver, sizeof(kver), "%s", de->d_name);
+		break;
+	}
+	closedir(d);
+	if (kver[0] == '\0') {
+		fprintf(stderr, "no kernel version directory under %s\n", modules_dir);
+		return -1;
+	}
+
+	if (snprintf(src_base, sizeof(src_base), "%s/%s", modules_dir, kver) >=
+	        (int)sizeof(src_base) ||
+	    snprintf(rel_base, sizeof(rel_base), "lib/modules/%s", kver) >= (int)sizeof(rel_base) ||
+	    snprintf(dst_base, sizeof(dst_base), "%s/%s", stage_dir, rel_base) >=
+	        (int)sizeof(dst_base)) {
+		fprintf(stderr, "module staging path too long\n");
+		return -1;
+	}
+	if (ensure_dir_under(stage_dir, "lib") != 0 ||
+	    ensure_dir_under(stage_dir, "lib/modules") != 0 || ensure_dir(dst_base) != 0)
+		return -1;
+
+	/* The metadata modprobe resolves through. */
+	d = opendir(src_base);
+	if (d == NULL) {
+		perror(src_base);
+		return -1;
+	}
+	while ((de = readdir(d)) != NULL) {
+		char src[1152], dst[1152];
+		struct stat st;
+
+		if (strncmp(de->d_name, "modules.", 8) != 0)
+			continue;
+		snprintf(src, sizeof(src), "%s/%s", src_base, de->d_name);
+		if (stat(src, &st) != 0 || !S_ISREG(st.st_mode))
+			continue;
+		snprintf(dst, sizeof(dst), "%s/%s", dst_base, de->d_name);
+		if (test_image_fixture_copy_file(src, dst) != 0) {
+			closedir(d);
+			return -1;
+		}
+	}
+	closedir(d);
+
+	/* The closures, straight out of modules.dep. */
+	snprintf(dep_path, sizeof(dep_path), "%s/modules.dep", src_base);
+	f = fopen(dep_path, "r");
+	if (f == NULL) {
+		perror(dep_path);
+		return -1;
+	}
+	while (getline(&line, &line_cap, f) > 0) {
+		char *colon = strchr(line, ':');
+		const char *slash;
+		char *tok;
+		int wanted = 0;
+
+		if (colon == NULL)
+			continue;
+		*colon = '\0';
+		slash = strrchr(line, '/');
+		slash = (slash != NULL) ? slash + 1 : line;
+		for (i = 0; i < sizeof(nics) / sizeof(nics[0]); i++) {
+			size_t n = strlen(nics[i]);
+
+			/* "<name>.ko", and "<name>.ko.xz" and friends, without
+			 * matching "<name>something.ko". */
+			if (strncmp(slash, nics[i], n) == 0 && strncmp(slash + n, ".ko", 3) == 0) {
+				wanted = 1;
+				break;
+			}
+		}
+		if (!wanted)
+			continue;
+
+		/*
+		 * The module itself, then every dependency after the colon.
+		 * Two plain passes rather than one clever walk over both: the
+		 * module path is the whole of `line` now that the colon is a
+		 * NUL, and the dependencies are an ordinary space-separated
+		 * list.
+		 */
+		if (stage_module_file(src_base, dst_base, line, &staged) != 0) {
+			free(line);
+			fclose(f);
+			return -1;
+		}
+		for (tok = strtok(colon + 1, " \t\n"); tok != NULL; tok = strtok(NULL, " \t\n")) {
+			if (stage_module_file(src_base, dst_base, tok, &staged) != 0) {
+				free(line);
+				fclose(f);
+				return -1;
+			}
+		}
+	}
+	free(line);
+	fclose(f);
+	printf("staged %d NIC module files for kernel %s\n", staged, kver);
+	return 0;
+}
 
 static int write_text_file(const char *path, const char *content)
 {
@@ -302,13 +531,25 @@ int main(int argc, char **argv)
 	char xorriso_bin[600];
 	char isotools_bin_dir[600];
 	char isotools_lib_dir[2048];
+	const char *modules_dir;
+	const char *kmod_bin_dir;
 
-	if (argc != 14) {
+	if (argc != 16) {
 		fprintf(stderr,
 		        "usage: %s <staging-dir> <cix-install-bin> <cix-recover-bin> "
 		        "<cix-boot.efi> <bzImage> <control-plane-squashfs> <signing-key> "
 		        "<signing-cert.crt> <signing-cert.cer> <out.iso> <kernel-args> "
-		        "<isotools-root> <seed-dir>\n"
+		        "<isotools-root> <seed-dir> <kernel-modules-dir> <kmod-bin-dir>\n"
+		        "  kernel-modules-dir: the kernel hostbuild artifact's own lib/modules, or\n"
+		        "  \"\" for none. The NIC drivers this platform supports are modules, so\n"
+		        "  without them cix-install can only list interfaces whose driver is built\n"
+		        "  into the kernel -- virtio_net -- and a real machine's built-in Ethernet\n"
+		        "  is absent from the installer screen entirely (#429). Only the five NIC\n"
+		        "  modules and their dependency closure are staged, read out of the tree's\n"
+		        "  own modules.dep; the rest of the tree, which now includes amdgpu, is not\n"
+		        "  something media for choosing a NIC has any use for.\n"
+		        "  kmod-bin-dir: the kmod image's usr/bin, or \"\" for none -- modprobe and\n"
+		        "  friends, without which a staged tree cannot be loaded.\n"
 		        "  cix-recover-bin: the break-glass recovery tool (ADR-0146), staged as\n"
 		        "  a second GRUB menu entry on the SAME media -- boots straight to a\n"
 		        "  console prompt, no kernel-args needed (it takes none).\n"
@@ -363,6 +604,8 @@ int main(int argc, char **argv)
 	kernel_args = argv[11];
 	snprintf(g_isotools_root, sizeof(g_isotools_root), "%s", argv[12]);
 	seed_dir = argv[13];
+	modules_dir = argv[14];
+	kmod_bin_dir = argv[15];
 
 	snprintf(g_grub_mkrescue_bin, sizeof(g_grub_mkrescue_bin), "%s/bin/grub-mkrescue",
 	         g_isotools_root);
@@ -794,6 +1037,55 @@ int main(int argc, char **argv)
 			return 1;
 		}
 		printf("staged the package seed from %s\n", seed_dir);
+	}
+
+	/*
+	 * The NIC drivers and the tools to load them (#429 follow-on).
+	 *
+	 * Two independent capabilities, reported separately, for the same
+	 * reason the bootroot assembly reports them separately: "the tree
+	 * is missing" and "the tools are missing" are different diagnoses
+	 * and collapsing them into one silence is how an operator ends up
+	 * staring at an empty interface list with nothing to explain it.
+	 *
+	 * Neither is fatal to the ISO. Media that cannot load a NIC driver
+	 * still installs perfectly well on virtio, and on real hardware the
+	 * operator can still choose `lo` and come back to the network
+	 * later -- so refusing the build here would trade a working,
+	 * slightly-less-capable ISO for no ISO at all.
+	 */
+	if (modules_dir != NULL && modules_dir[0] != '\0') {
+		if (stage_nic_modules(stage_dir, modules_dir) != 0) {
+			fprintf(stderr, "staging NIC modules from %s failed\n", modules_dir);
+			return 1;
+		}
+	} else {
+		printf("no kernel module tree given -- cix-install will list only NIC drivers "
+		       "built into the kernel\n");
+	}
+
+	if (kmod_bin_dir != NULL && kmod_bin_dir[0] != '\0') {
+		char kmod_dst[PATH_MAX];
+
+		if (ensure_dir_under(stage_dir, "usr") != 0 ||
+		    ensure_dir_under(stage_dir, "usr/bin") != 0)
+			return 1;
+		snprintf(kmod_dst, sizeof(kmod_dst), "%s/usr/bin", stage_dir);
+		/*
+		 * Flat copy, dereferencing symlinks: modprobe/depmod/insmod and
+		 * the rest are all symlinks to one real kmod binary, and this
+		 * lands real bytes at each name. kmod dispatches on argv[0], so
+		 * it behaves identically whether the name was reached through a
+		 * symlink or is a copy -- the same trade mkbootroot makes, for
+		 * the same reason.
+		 */
+		if (test_image_fixture_copy_dir_files(kmod_bin_dir, kmod_dst) != 0) {
+			fprintf(stderr, "staging module tools from %s failed\n", kmod_bin_dir);
+			return 1;
+		}
+		printf("staged module tools from %s\n", kmod_bin_dir);
+	} else {
+		printf("no module tools given -- a staged module tree could not be loaded\n");
 	}
 
 	/*
