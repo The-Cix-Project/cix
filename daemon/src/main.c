@@ -12393,10 +12393,11 @@ static int create_container_from_body(const char *body, size_t body_len,
 			for (a = 0; cname[a] != '\0'; a++) {
 				if (!isalnum((unsigned char)cname[a]) && cname[a] != '_' &&
 				    cname[a] != '-') {
-					json_free(root);
+					/* Message before the free: cname points into root (#421). */
 					snprintf(err_msg, err_msg_size,
 					         "console name '%s' may use only letters, digits, - and _",
 					         cname);
+					json_free(root);
 					return 400;
 				}
 			}
@@ -12407,18 +12408,20 @@ static int create_container_from_body(const char *body, size_t body_len,
 			 */
 			for (dup = 0; dup < console_count; dup++) {
 				if (strcmp(consoles[dup].name, cname) == 0) {
-					json_free(root);
+					/* Message before the free: cname points into root (#421). */
 					snprintf(err_msg, err_msg_size,
 					         "console name '%s' is declared more than once", cname);
+					json_free(root);
 					return 400;
 				}
 			}
 			if (jcmd == NULL || jcmd->type != JSON_ARRAY || jcmd->u.array.count < 1 ||
 			    jcmd->u.array.count > REGISTRY_CONSOLE_ARGC_MAX) {
-				json_free(root);
+				/* Message before the free: cname points into root (#421). */
 				snprintf(err_msg, err_msg_size,
 				         "console '%s' needs a cmd array of 1 to %d strings", cname,
 				         REGISTRY_CONSOLE_ARGC_MAX);
+				json_free(root);
 				return 400;
 			}
 			snprintf(consoles[console_count].name, sizeof(consoles[console_count].name),
@@ -12427,10 +12430,11 @@ static int create_container_from_body(const char *body, size_t body_len,
 				const char *arg = json_as_string(jcmd->u.array.items[a]);
 
 				if (arg == NULL || strlen(arg) >= REGISTRY_CONSOLE_ARG_MAX) {
-					json_free(root);
+					/* Message before the free: cname points into root (#421). */
 					snprintf(err_msg, err_msg_size,
 					         "console '%s' argv[%d] must be a string under %d bytes",
 					         cname, (int)a, REGISTRY_CONSOLE_ARG_MAX);
+					json_free(root);
 					return 400;
 				}
 				snprintf(consoles[console_count].argv[a],
@@ -12444,11 +12448,12 @@ static int create_container_from_body(const char *body, size_t body_len,
 			 * the message can say why.
 			 */
 			if (consoles[console_count].argv[0][0] != '/') {
-				json_free(root);
+				/* Message before the free: cname points into root (#421). */
 				snprintf(err_msg, err_msg_size,
 				         "console '%s' argv[0] must be an absolute path -- it is exec'd "
 				         "directly, with no shell to resolve a bare name",
 				         cname);
+				json_free(root);
 				return 400;
 			}
 			consoles[console_count].argc = (int)jcmd->u.array.count;
@@ -12732,8 +12737,25 @@ static int create_container_from_body(const char *body, size_t body_len,
 	}
 
 	if (registry_find(name) != NULL) {
-		json_free(root);
+		/*
+		 * Message BEFORE the free, not after (#421). `name` is
+		 * json_as_string(jname), pointing into root's own string
+		 * storage -- the same use-after-free the create path's other
+		 * 409 site documents at length and solves with name_copy.
+		 * v2.57.122 put name_conflict_msg() after json_free(), so its
+		 * registry_find() compared against freed heap, found nothing,
+		 * and reported "already exists" for a container the daemon
+		 * knew was tearing down.
+		 *
+		 * Measured on 192.168.15.95 in a build container, 2026-09-12
+		 * (recipes/package/probe-delete-409/2): 92 of 100 racing
+		 * delete+recreate rounds answered "a container with this name
+		 * already exists" while GET on that same container reported
+		 * "status":"deleting" -- one field, two answers, because only
+		 * one of the two reads was looking at live memory.
+		 */
 		name_conflict_msg(name, err_msg, err_msg_size);
+		json_free(root);
 		return 409;
 	}
 

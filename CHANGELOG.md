@@ -6,6 +6,65 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The teardown-aware 409 read freed memory, and said the wrong thing (#421)
+
+Root cause of #421, measured rather than reasoned: **a use-after-free I introduced in v2.57.122.**
+
+`create_container_from_body()`'s pre-flight name check read
+
+```c
+if (registry_find(name) != NULL) {
+	json_free(root);
+	name_conflict_msg(name, err_msg, err_msg_size);
+	return 409;
+}
+```
+
+`name` is `json_as_string(jname)` — a pointer into `root`'s own string storage. So
+`name_conflict_msg()`'s `registry_find()` compared against **freed heap**, found nothing, and took
+the "a container with this name already exists" branch for a container the daemon knew perfectly
+well was tearing down. The same create path's *other* 409 site documents this exact hazard at
+length and solves it with a `name_copy`; the new call landed 1200 lines earlier and walked into it.
+
+Measured in a build container on 192.168.15.95, 2026-09-12
+(`recipes/package/probe-delete-409/2` — 100 deliberate delete-then-immediately-recreate rounds):
+
+```
+[1120ms] iter 84: recreate rc=0 status=409 err=a container with this name already exists
+                  (DELETE was rc=0 status=204)
+      holder at the 409: GET status=200 container_status=deleting pid=210
+=== 100 iterations: 92 recreate conflicts, 0 deletes that did not land ===
+```
+
+**One field, two answers, at the same instant.** `GET`'s `"status"` is derived from
+`teardown_kind` (`registry.c`: `teardown_kind == REGISTRY_TEARDOWN_DELETE ? "deleting"`) and read
+`deleting`; `name_conflict_msg()` read the same field as `NONE`. That is what made it unexplainable
+from the code — the two reads were not looking at the same memory.
+
+Fixed by formatting the message **before** the free. **Four more instances of the identical bug,
+pre-existing and found by auditing for the pattern**, are fixed the same way: the console
+validation block's `cname` is also `json_as_string(...)`, and five of its `400` messages formatted
+it after `json_free(root)` — a garbled console name in a rejection, cosmetic in effect and a read
+of freed memory in fact.
+
+**Correcting v2.57.122's entry below:** it says both name-conflict rejections "now say *still
+shutting down — retry shortly* when the holder is mid-teardown". They did not. The code was there
+and the lookup behind it was reading freed memory, so in 92 of 100 races the operator got the flat
+message the change existed to remove. That claim was written from reading the diff rather than from
+running it, which is precisely what this project's own rule about claims and their evidence is for.
+
+**Now gated.** `test_container_restart` (in `DAEMON_SELFTESTS_2`) races a delete+recreate up to 40
+times and asserts the 409's message says the holder is shutting down. It has to race — nothing can
+hold a container in teardown on demand — so a run that never opens the window is reported as a
+failure rather than a silent skip, at a measured 92% hit rate per attempt. A test that asserted
+nothing is what let this ship.
+
+Three probe revisions, and the first two are worth recording because each answered a different
+question than the one asked: `probe-delete-409/1` ran `test_pki` five times and passed five times
+— because v2.57.124 had already replaced the racing recreate with a poll to 404, so it measured
+the fix and not the cause. It did establish that every DELETE landed and that teardown completes in
+under a second, which is why the window is small enough to have shown once in three gate runs.
+
 ### A delete+recreate test waits for 404, not for an error message (#413, #417, #421)
 
 v2.57.123's gate failed on `test_pki`, in the code #417 had added a cycle earlier:
