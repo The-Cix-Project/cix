@@ -551,10 +551,29 @@ static void fmt_boot(const struct json_value *v)
 {
 	const char *slot = json_str_field(v, "slot");
 	const char *kernel = json_str_field(v, "kernel_version");
+	const struct json_value *pd = json_object_get(v, "platform_devices");
 
 	printf("build:   %s (%s)\n", json_str_field(v, "build_version"), json_str_field(v, "build_time"));
 	printf("slot:    %s\n", (slot != NULL) ? slot : "(none)");
 	printf("kernel:  %s\n", (kernel != NULL) ? kernel : "(unknown)");
+	/*
+	 * #305: which device each platform partition resolved to by GPT
+	 * label this boot. Printed on one line per partition rather than
+	 * folded away, because the whole point is that these change when a
+	 * disk comes back under a different name, and this is the only
+	 * place outside a serial console that says what they are.
+	 */
+	if (pd != NULL && pd->type == JSON_OBJECT) {
+		static const char *const keys[] = { "esp", "root_a", "root_b", "config",
+		                                     "containers" };
+		size_t i;
+
+		for (i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
+			const char *dev = json_str_field(pd, keys[i]);
+
+			printf("%-8s %s\n", keys[i], (dev != NULL && dev[0] != '\0') ? dev : "(not found)");
+		}
+	}
 }
 
 static void fmt_container_line(const struct json_value *v)

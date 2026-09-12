@@ -6,6 +6,45 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Which device backs each platform partition is now an API fact (#305)
+
+`GET /v1/system/boot` gains `platform_devices` — `esp`, `root_a`, `root_b`, `config`,
+`containers`, each the block device that partition resolved to **this boot** from its GPT label.
+`cixctl boot` prints one line per partition.
+
+#305 is the bug where a fully-installed host panics in a reboot loop if its disk comes back under
+a different name: five partitions and the loader entry assumed `/dev/vda`. The resolver
+(`partlabel.c`) and the `root=PARTUUID=` loader entries shipped earlier; what was missing was any
+way to *see* the result. `resolve_platform_devices()` writes it to stderr, which on an installed
+box is the serial console — and a controller changing underneath a machine is precisely when
+nobody has one to hand. The log store is not an option either: these resolve before anything is
+mounted, and the store lives on the very partition being resolved.
+
+Measured on 192.168.15.95 while working out what #305 still needed, and recorded because it is the
+evidence the issue asks for minus the rename itself:
+
+- both live loader entries read `root=PARTUUID=…`, and the running slot booted from one
+  (`GET /v1/system/esp`, `is_running_slot: true`) — the kernel finds root by UUID, not by name
+- `partlabel_find()` enumerates all of `/sys/class/block`, filters to partitions by the kernel's
+  own `partition` file and reads the GPT off the derived parent: no candidate list, no name
+  assumption, so `sda3` resolves exactly as `vda3` does
+- a resolution miss leaves the device empty and takes the pre-existing absent-partition path. It
+  is **not** a new panic route, which matters for a PID 1
+- `test_partlabel` is gated and already asserts `sda4`→`sda` and `nvme0n1p2`→`nvme0n1`
+- the box carries a real `sda` (100 GiB) alongside its `vda` OS disk, so the parser reads a
+  non-virtio disk on every boot, and the kernel's own
+  `BTRFS: device label cix-config … /dev/vda4 … scanned by cixd (1)` shows the resolution ran
+
+`test_daemon` (gated) asserts the field's shape — all five keys present as strings — and
+deliberately not their values: a test daemon is not an installed system, so every one is correctly
+empty, and asserting values there would be a test of the fixture.
+
+**#305 stays open.** Its own last line defines done as a real boot on renamed hardware, and closing
+on a proxy is exactly what that line says not to do. The route not taken: packaging QEMU and OVMF
+to boot an installed image on a different bus is a gcc-class effort to verify a resolver that
+provably has no name assumption — the escalation the cost rule exists to stop. The remaining step
+is one hypervisor change on the owner's side, and this field is what will make its result readable.
+
 ### The teardown-aware 409 read freed memory, and said the wrong thing (#421)
 
 Root cause of #421, measured rather than reasoned: **a use-after-free I introduced in v2.57.122.**

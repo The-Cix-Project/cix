@@ -2338,6 +2338,35 @@ static void handle_system_boot(int fd)
 	else
 		jw_null(&w);
 	/*
+	 * What each platform partition resolved to THIS BOOT (#305).
+	 *
+	 * resolve_platform_devices() reads these out of the GPT by label,
+	 * so a disk that comes back as sda instead of vda changes every
+	 * one of these strings and nothing else. Until this field existed
+	 * the result was visible only on stderr -- the serial console on
+	 * an installed box, which is precisely what nobody has to hand
+	 * when a controller changes underneath a machine. The log store is
+	 * not an option for it either: these are resolved before anything
+	 * is mounted, and the store lives on the very partition being
+	 * resolved.
+	 *
+	 * Empty strings are the normal answer for a dev daemon that is not
+	 * an installed system, and the thing to look at on one that is.
+	 */
+	jw_key(&w, "platform_devices");
+	jw_obj_open(&w);
+	jw_key(&w, "esp");
+	jw_str(&w, ESP_DEVICE);
+	jw_key(&w, "root_a");
+	jw_str(&w, ROOT_A_DEVICE);
+	jw_key(&w, "root_b");
+	jw_str(&w, ROOT_B_DEVICE);
+	jw_key(&w, "config");
+	jw_str(&w, CONFIG_DEVICE);
+	jw_key(&w, "containers");
+	jw_str(&w, CONTAINERS_DEVICE);
+	jw_obj_close(&w);
+	/*
 	 * Real freshness signal for `pkg hostbuild cix --deploy`
 	 * (task #737, ADR-0058-follow-on comment in
 	 * g_bootroot_assembly_started's own doc comment above): a client

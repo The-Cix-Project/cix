@@ -357,6 +357,55 @@ int main(void)
 		}
 		cix_response_free(&r);
 
+		/*
+		 * #305: GET /system/boot reports which device backs each of
+		 * the platform's five partitions, resolved from the GPT
+		 * labels rather than assumed from a device name.
+		 *
+		 * What is asserted here is the SHAPE, and deliberately not the
+		 * values: this daemon is not an installed system, so
+		 * resolve_platform_devices() never ran and every device is
+		 * correctly the empty string. The values are only meaningful
+		 * on a real installed host, and asserting them here would be
+		 * a test of the fixture.
+		 *
+		 * The shape still matters. This field exists because the
+		 * resolution was otherwise visible only on the serial console,
+		 * and a disk that comes back under a different name -- the
+		 * reboot-loop panic #305 was filed for -- is exactly when
+		 * nobody has one. A field that silently stopped being
+		 * reported would take the only remote way to check a rename
+		 * with it, and nothing else would notice.
+		 */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "GET", "/v1/system/boot", NULL, &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: #305 GET system/boot, status=%d\n", r.status);
+			ok = 0;
+		} else {
+			const struct json_value *pd = json_object_get(r.json, "platform_devices");
+			static const char *const keys[] = { "esp", "root_a", "root_b", "config",
+			                                     "containers" };
+			size_t k;
+
+			if (pd == NULL || pd->type != JSON_OBJECT) {
+				fprintf(stderr, "FAIL: #305 system/boot has no platform_devices object\n");
+				ok = 0;
+			} else {
+				for (k = 0; k < sizeof(keys) / sizeof(keys[0]); k++) {
+					const struct json_value *d = json_object_get(pd, keys[k]);
+
+					if (d == NULL || d->type != JSON_STRING) {
+						fprintf(stderr,
+						        "FAIL: #305 platform_devices.%s missing or not a string\n",
+						        keys[k]);
+						ok = 0;
+					}
+				}
+			}
+		}
+		cix_response_free(&r);
+
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "PUT", "/v1/system/zswap",
 		                       "{\"max_pool_percent\":0}", &r) != 0 ||
