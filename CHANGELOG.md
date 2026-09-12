@@ -6,6 +6,38 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The #408 gate proves it fires, and two recipe scanners stop having a length limit (#408, #405)
+
+Two defects in the gate shipped one release earlier, both found by asking the questions the
+project's own rules require rather than by anything failing.
+
+**It passed without being able to fail.** `test_recipe_hygiene` scans latest revisions, all eight
+existing violations are in superseded ones, so the new check went green the moment it was written
+-- exactly the shape that hides a predicate which has quietly stopped matching anything. This
+project learned that lesson by shipping regression tests that could not have failed, and the rule
+it wrote down is to reintroduce the bug and prove the test catches it. Rather than do that once by
+hand, the eight real files are now a **positive control** the gate runs on every invocation: it
+must flag all eight, and it says the result is meaningless if it does not. They are safe as
+permanent fixtures precisely because a published revision is immutable (ADR-0107) and every one is
+already superseded, so nothing will bump them out from under the test.
+
+**Both recipe scanners had a line-length blind spot, and one of them is a security gate.** The new
+check read with `fgets()` into 8192 bytes. Measured across the tree: **twenty `pkg_*` lines are
+longer than 8191 characters**, the longest 20152 -- `tcc@0.9.28rc-29`'s changelog, which *is* a
+latest revision the gate scans, and `tcc` is the package where this bug happened twice. `fgets()`
+splits such a line, the continuation does not start with `pkg_`, and everything past the split
+went unexamined: a silent false negative on exactly the long-changelog packages most likely to
+quote a shell error in backticks.
+
+The credential gate (#405) had the same shape at 4096 bytes, and **38 lines in the tree are longer
+than that**. A token pasted past the cut on a long changelog line was not examined, and because
+the remainder arrives as a separate "line", the URL and the token could land either side of the
+split with neither fragment matching. A gate with a length limit is a gate with a way past it.
+
+Both now read with `getline()`, the same way `logstore.c:552` already does. The substitution
+predicate was re-validated against all 1404 recipe files with no length limit at all: exactly the
+eight known revisions, zero latest.
+
 ### Four cheap fixes: a contract error, a publish-time gate, a tab collision and the scroll jump (#420, #408, #425, #432)
 
 Picked for being genuinely cheap and genuinely real, batched into one release so four small
