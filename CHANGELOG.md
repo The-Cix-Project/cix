@@ -6,6 +6,51 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The installer ISO can boot from a USB stick (#429)
+
+It could not, and the reason was a kernel module. `CONFIG_USB_STORAGE=m` and
+`CONFIG_USB_EHCI_HCD=m` need userspace to load them; this platform has no initramfs, so at
+root-mount time there is no userspace and no module, and the stick never becomes a block device at
+all. A real bare-metal attempt panicked with `Cannot open root device "sr0" or
+unknown-block(0,0)` and listed only the machine's existing NVMe partitions — NVMe being `=y`. GRUB
+had read that same stick without trouble, because GRUB uses UEFI firmware block services rather
+than Linux drivers, which is exactly what makes the media look healthy right up to the panic.
+
+Both are now `=y`, and `CONFIG_USB_UAS=y` joins them — it was absent from the config entirely, not
+`=m`, and it is the transport many USB 3.0 sticks bind instead of `usb-storage`. All three are
+asserted by the kernel recipe's own `olddefconfig` gate, so a silent return to `=m` fails the
+build instead of shipping a kernel that cannot boot the media this platform hands to operators.
+
+This is the rule the config already applied to every other storage driver, in kernel
+`6.18.40-20`'s own changelog: *"All built in rather than modules, because an EFI-stub kernel with
+no initramfs cannot load a module off a disk it cannot yet see."* `SATA_AHCI`, the SCSI HBAs,
+`NVME` and the VIRTIO set are all `=y` on that reasoning. A USB stick holding the installer is
+that same disk — so this was not a new principle, it was an unnoticed exception to an existing
+one.
+
+**Two comments asserted the opposite and are corrected where they sit**, because they are what a
+reader believed instead of reading the config. One called mass storage *"external USB drives —
+never root, never needed at boot"*. The other said `USB_STORAGE` *"still safely stays =m, since it
+only adds a new SCSI transport, not the disk driver itself"* — true about the layering, false
+about what it implied, since a transport that is a module is unavailable at root-mount time
+exactly like a disk driver that is.
+
+`mkinstalleriso` now emits four GRUB entries rather than two — install and recover, each for USB
+(`root=/dev/sda`) and optical (`root=/dev/sr0`) — with **`rootwait` on every one of them**. That
+flag is mandatory rather than defensive: USB enumeration is asynchronous, so without it the root
+mount races the stick appearing and fails intermittently even with the driver built in. On optical
+media it costs nothing. `docs/guides/installing.md` gained the `dd` step and the entry choice; it
+had only ever described attaching the ISO as an optical drive, so USB boot was an unimplemented
+capability rather than a regression.
+
+Naming `/dev/sda` is knowingly the same class of hardcode #305 was filed for, and it ships as a
+visible operator choice — a wrong pick fails legibly and installs nothing — rather than as the end
+state. #430 carries the measured reason `PARTUUID=` cannot replace it yet, read off the published
+`2.57.127` artifact: the GPT has **no partition covering the ISO9660 filesystem** (only `Gap0` at
+LBA 64–1455, the ESP, and `Gap1`), there is no partition-offset volume descriptor at byte 65537,
+and the disk GUID xorriso generates differs on every build (`d27ef9f4…` for 2.55.16 against
+`3edd5e48…` for 2.57.127), so a baked-in UUID would be wrong the moment the ISO is rebuilt.
+
 ### Two disks carrying the same platform label no longer resolve by luck (#427)
 
 `partlabel_find()` stopped at the first partition whose GPT label matched, in `readdir(3)` order,
