@@ -3,6 +3,7 @@
 #include "registry.h"
 #include "dns.h"
 #include "persist.h"
+#include "logstore.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -1062,6 +1063,37 @@ enum pki_error pki_ca_reset(const char *root_common_name, const char *intermedia
 #define PKI_EXPORT_CIPHER "-aes-256-cbc"
 #define PKI_EXPORT_ITER "600000"
 
+/* Capacity of an argv array, in slots, for argv_push() below. */
+#define ARGV_CAP(a) ((int)(sizeof(a) / sizeof((a)[0])))
+
+/*
+ * Appends one argument to an incrementally-built openssl command line,
+ * bounds-checked against the array's own capacity and always leaving
+ * room for the NULL terminator. Returns 0, or -1 when the array is
+ * full -- callers OR the results together and check once, then abandon
+ * the invocation rather than writing past their own stack frame.
+ *
+ * This exists because of a measured bug, not a hypothetical one: the
+ * first cut of pki_export() and pki_import() (#415) built a
+ * 17-argument command line into `char *argv[16]`, so the 17th argument
+ * and the NULL terminator landed two pointers past the end of the
+ * frame. -Wall -Werror cannot see a runtime index, so it compiled
+ * clean, shipped, and presented as an opaque 500 from
+ * POST /v1/pki/export with nothing in the log store -- measured on
+ * 192.168.15.95 running v2.57.109, 2026-09-12. The five older openssl
+ * invocations in this file assign fixed indices into `argv[24]` and
+ * were all verified in range (max index 16) while fixing this; they
+ * are left as they are, and anything built incrementally goes through
+ * here.
+ */
+static int argv_push(char **argv, int *n, int cap, const char *val)
+{
+	if (*n >= cap - 1)
+		return -1;
+	argv[(*n)++] = (char *)val;
+	return 0;
+}
+
 /* One temp file under PKI_DIR, created O_EXCL at 0600. Returns 0 on
  * success. suffix distinguishes the three this module needs open at
  * once, so a concurrent export cannot collide with an import.
@@ -1125,13 +1157,16 @@ enum pki_error pki_export(const char *passphrase, struct json_writer *w)
 {
 	char plain_path[PATH_MAX], enc_path[PATH_MAX], pass_path[PATH_MAX];
 	char pass_arg[PATH_MAX + 16];
-	char *argv[16];
+	/* 24, matching every other openssl invocation in this file. The
+	 * command line below is 17 arguments plus a NULL; argv_push()
+	 * enforces the bound rather than this number being trusted. */
+	char *argv[24];
 	char errbuf[4096];
 	char *cipher = NULL;
 	size_t cipher_len;
 	struct json_writer plain;
 	enum pki_error result = PKI_OK;
-	int i, j;
+	int i, j, pushed;
 
 	if (passphrase == NULL || passphrase[0] == '\0')
 		return PKI_ERR_INVALID_NAME;
@@ -1197,29 +1232,45 @@ enum pki_error pki_export(const char *passphrase, struct json_writer *w)
 
 	snprintf(pass_arg, sizeof(pass_arg), "file:%s", pass_path);
 	i = 0;
-	argv[i++] = (char *)PKI_OPENSSL_BIN;
-	argv[i++] = "enc";
-	argv[i++] = (char *)PKI_EXPORT_CIPHER;
-	argv[i++] = "-pbkdf2";
-	argv[i++] = "-iter";
-	argv[i++] = (char *)PKI_EXPORT_ITER;
-	argv[i++] = "-md";
-	argv[i++] = "sha256";
-	argv[i++] = "-salt";
-	argv[i++] = "-a";
-	argv[i++] = "-A";
-	argv[i++] = "-in";
-	argv[i++] = plain_path;
-	argv[i++] = "-out";
-	argv[i++] = enc_path;
-	argv[i++] = "-pass";
-	argv[i++] = pass_arg;
-	argv[i] = NULL;
-	if (pki_run_openssl(argv, errbuf, sizeof(errbuf)) != 0) {
-		fprintf(stderr, "pki: export encryption failed: %s\n", errbuf);
-		result = PKI_ERR_OPENSSL_FAILED;
-	} else if (persist_read_file(enc_path, &cipher, &cipher_len) != 0 || cipher == NULL) {
+	pushed = 0;
+	pushed |= argv_push(argv, &i, ARGV_CAP(argv), PKI_OPENSSL_BIN);
+	pushed |= argv_push(argv, &i, ARGV_CAP(argv), "enc");
+	pushed |= argv_push(argv, &i, ARGV_CAP(argv), PKI_EXPORT_CIPHER);
+	pushed |= argv_push(argv, &i, ARGV_CAP(argv), "-pbkdf2");
+	pushed |= argv_push(argv, &i, ARGV_CAP(argv), "-iter");
+	pushed |= argv_push(argv, &i, ARGV_CAP(argv), PKI_EXPORT_ITER);
+	pushed |= argv_push(argv, &i, ARGV_CAP(argv), "-md");
+	pushed |= argv_push(argv, &i, ARGV_CAP(argv), "sha256");
+	pushed |= argv_push(argv, &i, ARGV_CAP(argv), "-salt");
+	pushed |= argv_push(argv, &i, ARGV_CAP(argv), "-a");
+	pushed |= argv_push(argv, &i, ARGV_CAP(argv), "-A");
+	pushed |= argv_push(argv, &i, ARGV_CAP(argv), "-in");
+	pushed |= argv_push(argv, &i, ARGV_CAP(argv), plain_path);
+	pushed |= argv_push(argv, &i, ARGV_CAP(argv), "-out");
+	pushed |= argv_push(argv, &i, ARGV_CAP(argv), enc_path);
+	pushed |= argv_push(argv, &i, ARGV_CAP(argv), "-pass");
+	pushed |= argv_push(argv, &i, ARGV_CAP(argv), pass_arg);
+	if (pushed != 0) {
+		logstore_write("pki", "error",
+		                "export: openssl command line does not fit argv[%d]",
+		                ARGV_CAP(argv));
 		result = PKI_ERR_PERSIST_FAILED;
+	} else {
+		argv[i] = NULL;
+		if (pki_run_openssl(argv, errbuf, sizeof(errbuf)) != 0) {
+			/* logstore, not just stderr: cixd's stderr is never
+			 * mirrored into the log store, so an openssl failure
+			 * reported only there leaves POST /v1/pki/export as a
+			 * 500 with no recorded cause anywhere -- which is
+			 * exactly how the argv overflow above hid. */
+			logstore_write("pki", "error", "export encryption failed: %s", errbuf);
+			result = PKI_ERR_OPENSSL_FAILED;
+		} else if (persist_read_file(enc_path, &cipher, &cipher_len) != 0 ||
+		            cipher == NULL) {
+			logstore_write("pki", "error",
+			                "export: could not read back the encrypted bundle");
+			result = PKI_ERR_PERSIST_FAILED;
+		}
 	}
 
 	unlink(pass_path);
@@ -1306,7 +1357,8 @@ enum pki_error pki_import(const char *passphrase, const char *bundle)
 {
 	char enc_path[PATH_MAX], plain_path[PATH_MAX], pass_path[PATH_MAX];
 	char pass_arg[PATH_MAX + 16];
-	char *argv[16];
+	/* 24, see pki_export()'s own note on this number. */
+	char *argv[24];
 	char errbuf[4096];
 	char *plain = NULL;
 	size_t plain_len;
@@ -1314,7 +1366,7 @@ enum pki_error pki_import(const char *passphrase, const char *bundle)
 	const struct json_value *jcerts;
 	enum pki_error result = PKI_OK;
 	size_t ci;
-	int i;
+	int i, pushed;
 
 	if (passphrase == NULL || passphrase[0] == '\0' || bundle == NULL || bundle[0] == '\0')
 		return PKI_ERR_INVALID_NAME;
@@ -1340,23 +1392,33 @@ enum pki_error pki_import(const char *passphrase, const char *bundle)
 
 	snprintf(pass_arg, sizeof(pass_arg), "file:%s", pass_path);
 	i = 0;
-	argv[i++] = (char *)PKI_OPENSSL_BIN;
-	argv[i++] = "enc";
-	argv[i++] = "-d";
-	argv[i++] = (char *)PKI_EXPORT_CIPHER;
-	argv[i++] = "-pbkdf2";
-	argv[i++] = "-iter";
-	argv[i++] = (char *)PKI_EXPORT_ITER;
-	argv[i++] = "-md";
-	argv[i++] = "sha256";
-	argv[i++] = "-a";
-	argv[i++] = "-A";
-	argv[i++] = "-in";
-	argv[i++] = enc_path;
-	argv[i++] = "-out";
-	argv[i++] = plain_path;
-	argv[i++] = "-pass";
-	argv[i++] = pass_arg;
+	pushed = 0;
+	pushed |= argv_push(argv, &i, ARGV_CAP(argv), PKI_OPENSSL_BIN);
+	pushed |= argv_push(argv, &i, ARGV_CAP(argv), "enc");
+	pushed |= argv_push(argv, &i, ARGV_CAP(argv), "-d");
+	pushed |= argv_push(argv, &i, ARGV_CAP(argv), PKI_EXPORT_CIPHER);
+	pushed |= argv_push(argv, &i, ARGV_CAP(argv), "-pbkdf2");
+	pushed |= argv_push(argv, &i, ARGV_CAP(argv), "-iter");
+	pushed |= argv_push(argv, &i, ARGV_CAP(argv), PKI_EXPORT_ITER);
+	pushed |= argv_push(argv, &i, ARGV_CAP(argv), "-md");
+	pushed |= argv_push(argv, &i, ARGV_CAP(argv), "sha256");
+	pushed |= argv_push(argv, &i, ARGV_CAP(argv), "-a");
+	pushed |= argv_push(argv, &i, ARGV_CAP(argv), "-A");
+	pushed |= argv_push(argv, &i, ARGV_CAP(argv), "-in");
+	pushed |= argv_push(argv, &i, ARGV_CAP(argv), enc_path);
+	pushed |= argv_push(argv, &i, ARGV_CAP(argv), "-out");
+	pushed |= argv_push(argv, &i, ARGV_CAP(argv), plain_path);
+	pushed |= argv_push(argv, &i, ARGV_CAP(argv), "-pass");
+	pushed |= argv_push(argv, &i, ARGV_CAP(argv), pass_arg);
+	if (pushed != 0) {
+		logstore_write("pki", "error",
+		                "import: openssl command line does not fit argv[%d]",
+		                ARGV_CAP(argv));
+		unlink(pass_path);
+		unlink(enc_path);
+		unlink(plain_path);
+		return PKI_ERR_PERSIST_FAILED;
+	}
 	argv[i] = NULL;
 	if (pki_run_openssl(argv, errbuf, sizeof(errbuf)) != 0) {
 		/* Overwhelmingly the wrong passphrase. Not logged with the
