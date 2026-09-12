@@ -1,8 +1,10 @@
-# ADR-0280: A certificate's identity and its lifetime are separate concerns
+# 0280 — A certificate's identity and its lifetime are separate concerns
 
-- **Status:** Accepted
-- **Date:** 2026-09-12
-- **Issue:** [#397](https://git.home.arpa/itdlabs/cix/issues/397)
+## Status
+
+Accepted
+
+Issue [#397](https://git.home.arpa/itdlabs/cix/issues/397). Builds on [ADR-0052](0052-server-side-default-name-qualification.md) (bare-name qualification, applied here to the cert a container names) and follows [ADR-0092](0092-dns-register-missing-site-qualification.md) in fixing the same class of inconsistency. Does not change [ADR-0049](0049-pki-ca-reset-regeneration.md) or the ownership semantics `pki_issue` has always had.
 
 ## Context
 
