@@ -56,6 +56,27 @@ dialled `ldaps://192.168.150.103` — verification fails against a certificate t
   removing the plaintext listener is tracked as #416, with the two traps that work will hit recorded
   in it (verifying an IP needs `X509_VERIFY_PARAM_set1_ip_asc()`, not `SSL_set1_host()`; and `cixd`'s
   trust anchor is its own CA, not the image-side bundle).
+**Verified live on 192.168.15.95, v2.57.106.** Both servers came up first try with no gate:
+
+```
+glauth: LDAP server listening  address=0.0.0.0:3893
+glauth: LDAPS server listening address=0.0.0.0:636
+```
+
+The cert carries the address, derived from the container's own body — `sans: ['ldap-2', '192.168.150.104']` — and the SAN is genuinely matched rather than nominally present. From inside `jump`, against the CA bundle already in the image:
+
+```
+openssl s_client -connect 192.168.150.104:636 -verify_ip 192.168.150.104  ->  Verify return code: 0 (ok)
+openssl s_client -connect 192.168.150.104:636 -verify_ip 192.168.150.99   ->  Verify return code: 64 (IP address mismatch)
+```
+
+The negative control matters: a bare `Verify return code: 0` only proves the chain verifies, since `s_client` does not check the dialled name unless told to. `effective_client_uri` then read `ldaps://192.168.150.103:636/ ldaps://192.168.150.104:636/`, and both clients were exercised end to end:
+
+- **nslcd** — a console login to `jump` runs PAM -> nslcd -> LDAP bind and returned `uid=10002(claude) gid=10002(cix-admins)`. Had the TLS bind failed, the login would have been refused; the LDAP-provided identity coming back *is* the proof.
+- **ldapsearch** — with `LDAPTLS_CACERT` set, `result: 50 Insufficient access`, an LDAP *protocol* response, so the handshake completed and glauth then refused an anonymous bind. Without it, `certificate verify failed (unable to get local issuer certificate)`. The CA setting is load-bearing and verification is not being skipped.
+
+`jump`'s SSH host key was `SHA256:8WBlc1vO...` before the staging rework and after it, across a reboot — #397 did not regress, which also proves staged delivery works on a `userns: true` container.
+
 - **`test_pki`** asserts the SAN types against openssl's own parse of the issued certificate rather
   than against the string built to make it — a malformed `subjectAltName` is silently dropped by
   openssl rather than refused, so the string being right and the certificate being wrong is a real
