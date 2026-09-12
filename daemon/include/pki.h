@@ -173,11 +173,17 @@ void pki_cert_forget_owner(const char *container_name);
  * pki_cert_create() succeeded first -- this is a separate step, not
  * part of issuance itself) into a running container's own filesystem:
  * writes <dest_dir>/tls.crt and <dest_dir>/tls.key (chmod 0600 on the
- * key) via /proc/<pid>/root/<dest_dir>/..., the same
- * /proc/<pid>/root/ pattern dns_server_register() already established
- * (ADR-0013) for reaching into a running container from outside it.
- * One-time: unlike DNS server bindings, there is no live-resync
- * mechanism here -- a cert doesn't change after a container starts.
+ * key) through the container's HOST-side tree. NOT /proc/<pid>/root/ --
+ * that is what this did until #269, and it fails on a btrfs-backed
+ * userns container whose rootfs is an id-mapped mount the daemon has no
+ * mapped identity in. The pid parameter went unused from that point and
+ * was removed in #414.
+ *
+ * This is the narrow case now. A container being CREATED has its cert
+ * STAGED into its tree before clone3() (pki_cert_read_pem() below), so
+ * the only caller left is the post-CA-reset redelivery, where the
+ * container is by definition already running and there is no staging
+ * directory to write into.
  * `name` identifies the CERTIFICATE; `container_name` identifies the
  * container whose tree is written into. They are separate because
  * ADR-0280 lets a container be handed a cert named something else
@@ -191,8 +197,25 @@ void pki_cert_forget_owner(const char *container_name);
  * convention) if an intermediate has been bootstrapped, the leaf
  * alone otherwise -- transparent to every existing caller.
  */
-enum pki_error pki_cert_deliver(const char *name, const char *container_name, pid_t pid,
+enum pki_error pki_cert_deliver(const char *name, const char *container_name,
                                  const char *dest_dir);
+
+/*
+ * Reads an already-issued cert out of the store: *out_key_pem is the
+ * private key, *out_chain_pem the leaf plus intermediate (standard
+ * fullchain.pem order) when an intermediate is bootstrapped, the leaf
+ * alone otherwise. Both are malloc'd NUL-terminated strings the caller
+ * frees; both are left NULL on any error.
+ *
+ * Exists because a cert reaches a container two different ways and only
+ * the PEM building is common (#414). A container being CREATED gets it
+ * STAGED into its tree before clone3(), like every other file the
+ * daemon writes for it -- there is no race to lose and no running
+ * process to reach into. A container already RUNNING when the CA is
+ * reset gets it written through pki_cert_deliver() instead. Two writers,
+ * two real reasons, one builder.
+ */
+enum pki_error pki_cert_read_pem(const char *name, char **out_key_pem, char **out_chain_pem);
 
 /*
  * Wipes and regenerates the entire CA chain (root, plus the

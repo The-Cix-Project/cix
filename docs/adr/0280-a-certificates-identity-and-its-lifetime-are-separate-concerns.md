@@ -114,10 +114,11 @@ Conflating the two is what produced a correct implementation of the wrong thing.
   naming the missing certificate. Checking at delivery time instead would produce
   a container that starts successfully and quietly lacks the identity it asked
   for, because delivery failures are best-effort by design.
-- Delivery repeats on every start, where `pki_issue`'s is described as one-time.
-  This is not an inconsistency: a fresh container instance starts with a fresh
-  filesystem, so the file must be written again. `pki_issue` already relies on the
-  same repetition for its `restart: "always"` respawns.
+- Delivery repeats on every start, where `pki_issue`'s was originally described
+  as one-time. Not an inconsistency: a fresh container instance starts with a
+  fresh filesystem, so the file must be written again. Superseded in mechanism by
+  #414, which stages both before `clone3()` rather than writing them in after the
+  container is running — the repetition is unchanged, the race is gone.
 - **`pki_cert_deliver()` needed its two names separated, and that was found by
   deploying rather than by reasoning.** It took one `name` parameter and used it
   both to find the certificate (`cert_find()`, the `g_certs_dir` paths) and to

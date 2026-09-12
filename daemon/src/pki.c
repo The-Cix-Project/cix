@@ -764,16 +764,14 @@ enum pki_error pki_cert_create(const char *name, const char *const *sans, int sa
 	return PKI_OK;
 }
 
-enum pki_error pki_cert_deliver(const char *name, const char *container_name, pid_t pid,
-                                 const char *dest_dir)
+enum pki_error pki_cert_read_pem(const char *name, char **out_key_pem, char **out_chain_pem)
 {
 	char src_key[PATH_MAX], src_crt[PATH_MAX];
-	char dst_key[PATH_MAX], dst_crt[PATH_MAX];
-	char parent[PATH_MAX + 32];
 	char *key_pem = NULL, *cert_pem = NULL, *intermediate_pem = NULL, *chain_pem = NULL;
 	size_t key_pem_len, cert_pem_len, intermediate_pem_len = 0, chain_len;
-	enum pki_error result = PKI_OK;
 
+	*out_key_pem = NULL;
+	*out_chain_pem = NULL;
 	if (cert_find(name) == NULL)
 		return PKI_ERR_NOT_FOUND;
 
@@ -788,8 +786,7 @@ enum pki_error pki_cert_deliver(const char *name, const char *container_name, pi
 
 	/* tls.crt is the real, complete chain a TLS server needs (leaf +
 	 * intermediate, standard fullchain.pem order) when an intermediate
-	 * has been bootstrapped -- the leaf alone otherwise, unchanged from
-	 * before this existed. */
+	 * has been bootstrapped -- the leaf alone otherwise. */
 	if (pki_intermediate_bootstrapped() &&
 	    (persist_read_file(g_intermediate_cert_path, &intermediate_pem, &intermediate_pem_len) !=
 	         0 ||
@@ -812,37 +809,46 @@ enum pki_error pki_cert_deliver(const char *name, const char *container_name, pi
 		memcpy(chain_pem + cert_pem_len, intermediate_pem, intermediate_pem_len);
 	chain_pem[chain_len] = '\0';
 
+	free(cert_pem);
+	free(intermediate_pem);
+	*out_key_pem = key_pem;
+	*out_chain_pem = chain_pem;
+	return PKI_OK;
+}
+
+enum pki_error pki_cert_deliver(const char *name, const char *container_name,
+                                 const char *dest_dir)
+{
+	char dst_key[PATH_MAX], dst_crt[PATH_MAX];
+	char parent[PATH_MAX + 32];
+	char *key_pem = NULL, *chain_pem = NULL;
+	enum pki_error result;
+
+	result = pki_cert_read_pem(name, &key_pem, &chain_pem);
+	if (result != PKI_OK)
+		return result;
+
 	/*
-	 * The container's tree on the HOST side (#269). Delivering a
-	 * certificate through the container's own /proc/<pid>/root view
-	 * fails on a btrfs-backed userns container, whose rootfs is an
-	 * id-mapped mount the daemon has no mapped identity in -- so an
-	 * issued certificate would simply never arrive.
+	 * The container's tree on the HOST side (#269). Delivering through
+	 * the container's own /proc/<pid>/root view fails on a btrfs-backed
+	 * userns container, whose rootfs is an id-mapped mount the daemon
+	 * has no mapped identity in -- so an issued certificate would simply
+	 * never arrive. The entry is consulted for its disk, which is what
+	 * decides where the tree is.
 	 *
-	 * The entry is consulted for its disk, which is what decides where
-	 * the tree is; pid does not say.
+	 * container_name, NOT name (#397): `name` identifies the
+	 * CERTIFICATE, the tree belongs to the CONTAINER. They were equal
+	 * for every caller until ADR-0280 let a container be handed a cert
+	 * named something else, and delivering "jump-ssh" into "jump" then
+	 * computed the host path of a container that does not exist.
+	 *
+	 * This writes into a LIVE container, which is now the narrow case:
+	 * container creation stages the cert before clone3() instead
+	 * (#414), so the only caller left is the post-CA-reset redelivery,
+	 * where the container is by definition already running and there is
+	 * no staging directory to write into.
 	 */
 	{
-		/*
-		 * container_name, NOT name (#397). These are two different
-		 * things and this function conflated them: `name` identifies
-		 * the CERTIFICATE (it is what cert_find() and the g_certs_dir
-		 * paths above are keyed on), while the tree being written into
-		 * belongs to the CONTAINER. They were equal for the entire
-		 * life of this function, because its only callers were
-		 * pki_issue -- which names a cert after the container it
-		 * issues for -- and the post-reset redelivery, which replays
-		 * exactly those. So the conflation could not be observed until
-		 * ADR-0280 allowed a container to be handed a cert with a
-		 * different name: delivering "jump-ssh" into "jump" computed
-		 * the host path of a container called "jump-ssh", which does
-		 * not exist, and the delivery failed with PERSIST_FAILED.
-		 * Measured on 192.168.15.95, 2026-09-12 -- the container came
-		 * up, its waitkey gate timed out after 30s reporting the key
-		 * "was never delivered by the PKI", and the daemon-side reason
-		 * went only to stderr, which this platform does not mirror
-		 * into the log store.
-		 */
 		const struct registry_entry *re = registry_find(container_name);
 
 		container_file_host_path(container_name, re != NULL ? re->disk_name : "", dest_dir,
@@ -852,22 +858,19 @@ enum pki_error pki_cert_deliver(const char *name, const char *container_name, pi
 	    snprintf(dst_crt, sizeof(dst_crt), "%s/tls.crt", parent) >= (int)sizeof(dst_crt) ||
 	    snprintf(dst_key, sizeof(dst_key), "%s/tls.key", parent) >= (int)sizeof(dst_key)) {
 		free(key_pem);
-		free(cert_pem);
-		free(intermediate_pem);
 		free(chain_pem);
 		return PKI_ERR_PERSIST_FAILED;
 	}
 
-	if (persist_mkdir_p(parent) != 0 || persist_atomic_write(dst_crt, chain_pem, chain_len) != 0 ||
-	    persist_atomic_write(dst_key, key_pem, key_pem_len) != 0) {
+	if (persist_mkdir_p(parent) != 0 ||
+	    persist_atomic_write(dst_crt, chain_pem, strlen(chain_pem)) != 0 ||
+	    persist_atomic_write(dst_key, key_pem, strlen(key_pem)) != 0) {
 		result = PKI_ERR_PERSIST_FAILED;
 	} else {
 		chmod(dst_key, 0600);
 	}
 
 	free(key_pem);
-	free(cert_pem);
-	free(intermediate_pem);
 	free(chain_pem);
 	return result;
 }
