@@ -119,6 +119,13 @@ Conflating the two is what produced a correct implementation of the wrong thing.
 - The operator now owns a real lifecycle decision: nothing deletes an unowned
   certificate automatically, so retiring a service means deleting its certificate
   deliberately.
+- A bare `pki_cert` name is qualified with the site suffix exactly as
+  `POST /v1/pki/certs` qualifies the name it creates (`siteconfig_qualify()`,
+  ADR-0052), so the two cannot disagree and a deployment recipe stays portable
+  instead of hardcoding one install's domain. Qualification is gated on
+  `site_name`, which is `""` on 192.168.15.95 (measured 2026-09-12) — so this
+  is a no-op there and would have gone unnoticed until the first install that
+  set one. Same class of inconsistency ADR-0092 fixed for `dns_register`.
 - The delivered file layout is identical to `pki_issue`'s, so a service
   configuration written against one works unchanged against the other. jump 1.9.0's
   `HostKey /etc/cix-tls/tls.key` needed no change.
