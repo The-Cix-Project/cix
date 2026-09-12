@@ -181,15 +181,19 @@ int main(void)
 	check_scalars_are_quoted();
 
 	/*
-	 * 1. The real spec. Not a smoke test: 263 is cross-checked against
-	 * an independent count, so a parser that quietly dropped a section
-	 * would show up here rather than as a missing route much later.
+	 * 1. The real spec. Not a smoke test: the number is cross-checked
+	 * against an independent count, so a parser that quietly dropped a
+	 * section would show up here rather than as a missing route much
+	 * later. (The comment said 263 long after the assertion had moved
+	 * past it -- a stale number in a comment about guarding a number.)
+	 *
+	 * 301 as of #415: POST /pki/export and POST /pki/import.
 	 */
 	status = run_apigen("docs/api/openapi.yaml", NULL, out, sizeof(out));
 	if (status != 0)
 		fail("apigen rejected the real spec: %.300s", out);
-	else if (atoi(out) != 299)
-		fail("apigen found %d operations in the real spec, expected 299 -- if the spec "
+	else if (atoi(out) != 301)
+		fail("apigen found %d operations in the real spec, expected 301 -- if the spec "
 		     "genuinely changed, update this number deliberately; a silently different "
 		     "count is how a lost route hides",
 		     atoi(out));
@@ -289,10 +293,10 @@ int main(void)
 			fclose(f);
 			unlink(hdr_path);
 		}
-		if (defines != 299)
-			fail("CLI header has %d path defines, expected one per operation (299)", defines);
-		if (methods != 299)
-			fail("CLI header has %d method defines, expected one per operation (299)", methods);
+		if (defines != 301)
+			fail("CLI header has %d path defines, expected one per operation (301)", defines);
+		if (methods != 301)
+			fail("CLI header has %d method defines, expected one per operation (301)", methods);
 		if (braces != 0)
 			fail("%d CLI path define(s) still contain '{' -- a parameter was not converted "
 			     "to %%s and would put a literal brace in the URL",
