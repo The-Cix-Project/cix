@@ -78,6 +78,20 @@ delivery failure is written to the log store as well. `test_pki`'s cert and cont
 deliberately differ and would have caught it; `test_pki` is not in `SELFTESTS` (#224), so it did not
 run.
 
+**Verified live on 192.168.15.95, v2.57.104.** Read from `ssh-keyscan` inside the container — the
+key sshd actually serves, which is what a client pins — not from the files API, which does not
+necessarily read the container's own tree:
+
+```
+round 1 (before delete):  2048 SHA256:8WBlc1vO1kxY1xmA+RR8IvjKmGIDEdn4ojQpCxPYEJw
+round 2 (after recreate): 2048 SHA256:8WBlc1vO1kxY1xmA+RR8IvjKmGIDEdn4ojQpCxPYEJw
+```
+
+Identical. The `pki_issue` key measured immediately before the cut-over was
+`2048 SHA256:H8urRHcLE1jeIyamRCznDWOY6qWj9ZtgHEv171XtmpM`, and that one moved on every rebuild. The
+mechanism is visible in one delete: `jump` (owner `jump`) was shredded with its container while
+`jump-ssh` (owner `null`) survived — same PKI, same store, only the owner field differs.
+
 An SSH certificate authority would remove trust-on-first-use altogether rather than stabilise the
 key, and an OpenSSH certificate is not an X.509 certificate — a distinct signed object with
 SSH-format fields, which this X.509 CA cannot issue without new machinery. Left as its own decision
