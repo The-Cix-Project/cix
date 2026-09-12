@@ -10,9 +10,13 @@
  * kept failing during this phase's own empirical spike, the same
  * "real software, not hand-rolled" posture as every other external
  * tool this project shells out to), and the kernel then mounts the
- * ISO9660 media itself directly as root (root=/dev/sr0
- * rootfstype=iso9660 -- no initramfs, no squashfs, the same posture
- * every other root filesystem in this phase already has). This is a
+ * ISO9660 media itself directly as root (rootfstype=iso9660 -- no
+ * initramfs, no squashfs, the same posture every other root filesystem
+ * in this phase already has). With no initramfs there is nothing to
+ * discover the media, so the device is named on the kernel command
+ * line and the menu therefore carries one entry per media kind:
+ * /dev/sda for a USB stick, /dev/sr0 for an optical drive (#429, and
+ * #430 for what it would take to name it by PARTUUID instead). This is a
  * one-time, install-media-only bootloader role -- distinct from, and
  * not a reopening of, systemd-boot's own deliberate role on the
  * *installed* target disk (ADR-0014's counted A/B mechanism), which
@@ -880,16 +884,51 @@ int main(int argc, char **argv)
 	         "insmod all_video\n"
 	         "set gfxpayload=keep\n"
 	         "\n"
-	         "menuentry \"Cix Install\" {\n"
-	         "    linux /boot/cix-bzImage console=tty0 console=ttyS0 root=/dev/sr0 "
-	         "rootfstype=iso9660 ro init=/bin/cix-install -- %s\n"
+	         /*
+	          * Four entries, because the kernel has to be told which
+	          * device holds this filesystem and the answer differs by
+	          * media (#429). An optical drive is /dev/sr0; a USB stick
+	          * is a SCSI disk, /dev/sda on a machine with no other
+	          * SCSI/SATA disk. USB is listed first because it is what
+	          * people actually boot in practice, and a wrong choice
+	          * fails immediately and legibly ("Cannot open root
+	          * device") rather than silently installing anything.
+	          *
+	          * rootwait is on EVERY entry, not just the USB ones. USB
+	          * enumeration is asynchronous, so without it the root
+	          * mount races the stick appearing and fails
+	          * intermittently even with usb-storage built in; on
+	          * optical media it costs nothing.
+	          *
+	          * root=/dev/sda is knowingly the same class of hardcode
+	          * #305 was filed for -- a name the kernel assigns by
+	          * enumeration order. It is here as a visible operator
+	          * choice rather than a silent panic, and #430 carries the
+	          * measured reason PARTUUID cannot be used on this media
+	          * yet: its GPT has no partition covering the ISO9660
+	          * filesystem at all (only Gap0/ESP/Gap1), and the disk
+	          * GUID xorriso generates differs on every build.
+	          */
+	         "menuentry \"Cix Install (USB media)\" {\n"
+	         "    linux /boot/cix-bzImage console=tty0 console=ttyS0 root=/dev/sda "
+	         "rootfstype=iso9660 rootwait ro init=/bin/cix-install -- %s\n"
 	         "}\n"
 	         "\n"
-	         "menuentry \"Cix Recovery (reset host-auth admin_groups)\" {\n"
+	         "menuentry \"Cix Install (CD/DVD media)\" {\n"
 	         "    linux /boot/cix-bzImage console=tty0 console=ttyS0 root=/dev/sr0 "
-	         "rootfstype=iso9660 ro init=/bin/cix-recover\n"
+	         "rootfstype=iso9660 rootwait ro init=/bin/cix-install -- %s\n"
+	         "}\n"
+	         "\n"
+	         "menuentry \"Cix Recovery, USB media (reset host-auth admin_groups)\" {\n"
+	         "    linux /boot/cix-bzImage console=tty0 console=ttyS0 root=/dev/sda "
+	         "rootfstype=iso9660 rootwait ro init=/bin/cix-recover\n"
+	         "}\n"
+	         "\n"
+	         "menuentry \"Cix Recovery, CD/DVD media (reset host-auth admin_groups)\" {\n"
+	         "    linux /boot/cix-bzImage console=tty0 console=ttyS0 root=/dev/sr0 "
+	         "rootfstype=iso9660 rootwait ro init=/bin/cix-recover\n"
 	         "}\n",
-	         kernel_args);
+	         kernel_args, kernel_args);
 	snprintf(grub_cfg_path, sizeof(grub_cfg_path), "%s/boot/grub/grub.cfg", stage_dir);
 	if (write_text_file(grub_cfg_path, grub_cfg) != 0)
 		return 1;
