@@ -246,7 +246,19 @@ DAEMON_SELFTESTS_2 = \
 #
 # Enumerating them all costs a few seconds of tcc and removes the whole
 # class of mistake, which is worth more than a tidy list (#224).
+#
+# cix-init is first because it is not a test helper at all -- it is
+# ADR-0260's PID 1, and container_create() refuses outright without it
+# ("cix-init is not beside this daemon's executable"). Every
+# container-creating test in the gate therefore needs it, and `make
+# selftest` did not build it: the cix recipe happens to build it in an
+# earlier step, so the gate worked while the target did not stand on its
+# own. Measured the hard way on #417 -- a probe that built cixd and one
+# test binary saw every single container create fail, which reads as a
+# build-container limitation and is not one.
+#
 SELFTEST_HELPERS = \
+	$(BUILD)/cix-init \
 	$(BUILD)/console_input_child \
 	$(BUILD)/console_term_child \
 	$(BUILD)/daemon_child \
