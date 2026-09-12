@@ -6,6 +6,68 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### glauth's listeners are configuration now (#419, ADR-0282)
+
+Which listeners a registered glauth served — plain LDAP, LDAPS, and on which ports — was literal TOML
+inside each deployment recipe's `files[]` blob, while `client_tls`/`client_tls_port` were real API
+fields. Two halves of one decision, only one of them in the API, and nothing connecting them:
+`client_tls_port: 636` against a server whose `[ldaps]` section said `9999` was an accepted
+configuration that handed every client a URI nothing answered. Raised by the owner while reviewing #416,
+where turning the plaintext listener off had meant hand-editing TOML for both replicas, publishing two
+deployment versions, and delete-and-recreating both containers.
+
+`PUT /v1/ldap/config` owns the listeners now (`server_plaintext`, `server_plaintext_port`,
+`server_tls`, `server_tls_port`), rendered into each registered server's own config file and picked up
+by glauth's config watcher. **`cixctl ldap config set --no-server-plaintext` is the whole operation** —
+no recipe edit, no recreate, no restart. Same ownership terms ADR-0148 set for `baseDN`, one step
+further.
+
+**`client_tls_port` is gone.** There is one port per listener, and the port clients are given *is* the
+server's own — `ldap_client_port()` returns `server_tls_port` or `server_plaintext_port`. It existed
+only because the server's listener config was recipe text and therefore unknowable from the API, which
+is also why nothing could check it. `client_tls` now selects *which enabled listener* clients are
+pointed at, and naming a disabled one is a 400. That makes the mismatch unrepresentable rather than
+merely validated against, which is why this shape was chosen over adding server fields beside the
+client ones. The one thing a migration could lose is a non-default `client_tls_port`; 192.168.15.95's
+was 636, the default, and there is nothing honest to migrate it *into* until the server's real port is
+known.
+
+**`listeners_managed` is what makes this safe to deploy onto a running install**, and the first design
+did not have it. A host upgrading to this build has no `server_*` fields persisted, so they would come
+up as defaults derived from nothing; autostart brings the servers up, ADR-0146's post-autostart resync
+runs, the render rewrites both live configs, and glauth's watcher applies it within seconds.
+`server_tls` defaulting false drops LDAPS on both replicas and every nslcd client loses authentication;
+`server_plaintext` defaulting true silently undoes #416. So the render touches neither section until an
+operator PUTs a `server_*` field — exactly the skip `ldap_write_config_file()` already performs for
+`baseDN` when `ldap_base_dn` has never been set. It is reported in `GET`, not inferred, so "not managed
+yet" is visible instead of looking like "managed, and happens to match".
+
+Three things in the render worth naming:
+
+- **`[ldap]` is a prefix of `[ldaps]`.** The section header is matched exactly at column 0 with its
+  closing bracket, never by `strncmp` — a prefix match would rewrite the wrong section's `enabled` and
+  produce the exact inverse of what was asked, on every registered server at once, from one PUT.
+- **An absent section is created**, unlike ADR-0148's `baseDN` rewrite, which is a deliberate no-op
+  when the line is missing. An absent `[ldaps]` is the normal state of a hand-written config, and
+  leaving it alone would mean the switch silently did nothing — the #418 failure shape.
+- **`cert`/`key` are written only when creating `[ldaps]`**, from `PKI_CONTAINER_CERT_DIR` — extracted
+  to one definition as a by-product, since `/etc/cix-tls` was duplicated in `main.c` and `api_pki.c`
+  and is now read in a third place. An existing section's own paths are left untouched, because
+  `pki_cert_dir` is a create parameter the registry does not record.
+
+Guards: both listeners off is a 400 (a server that serves nothing is never a valid saved state, the
+same rule `hostauth_set_config()` applies to `ldap_enabled`); the two ports must differ; and turning
+`server_tls` on while a registered, running server has no delivered certificate is a **409 naming that
+container**, because glauth exits on its next config reload if told to serve TLS without one — taking
+down a working server is strictly worse than refusing a setting. The 400 message says which
+combination is wrong rather than "invalid field", which on a five-field group costs a round trip to
+interpret.
+
+Gated by `test_container_files`: that the unmanaged render is byte-exact (no section appears at all),
+that a refused PUT does not flip `listeners_managed`, that one PUT renders `enabled`/`listen` and
+creates an absent section, and that the listener rewrite does not eat the `[[users]]` tail the #418
+case asserts — the prefix rewrite and the record render share one file and one write.
+
 ### A recreated LDAP server came up with no user records (#418)
 
 Deleting and recreating an `ldap_server` container — which is what a `follow_rolling` image update does,

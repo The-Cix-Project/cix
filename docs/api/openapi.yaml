@@ -7559,9 +7559,19 @@ paths:
                 $ref: "#/components/schemas/LdapConfig"
     put:
       summary: >
-        Set the start_uid/start_gid floor. Takes effect immediately for the
-        next auto-allocated uidnumber/gidnumber; does not renumber any
-        existing user or group. Both fields are required and must be > 0.
+        Set the start_uid/start_gid floor, the client login settings, and
+        (#419) which listeners each registered glauth serves. Every group
+        of fields is independently optional -- an absent field is left
+        unchanged, never reset -- but start_uid and start_gid come as a
+        pair and must both be > 0 when either is given.
+
+
+        The server_* fields are rendered straight into each registered,
+        running server's own config file and picked up by glauth's config
+        watcher, so a listener changes without editing a recipe or
+        recreating a container. Until the first PUT carrying one of them,
+        listeners_managed is false and the daemon writes none of them --
+        see that field.
       operationId: updateLdapConfig
       x-cix-expose: [cli, web]
       requestBody:
@@ -7578,7 +7588,24 @@ paths:
               schema:
                 $ref: "#/components/schemas/LdapConfig"
         "400":
-          description: start_uid or start_gid not a positive integer
+          description: >
+            start_uid or start_gid not a positive integer; a port outside
+            1-65535, or the two listener ports equal; both listeners
+            disabled (a server that serves nothing is never a valid saved
+            state); or client_tls naming a listener that is disabled,
+            which would hand every client a URI nothing answers (#419).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >
+            server_tls is being turned on while a registered, running
+            server has no delivered certificate to serve it with (#419).
+            glauth exits on reload if told to serve TLS without one, so
+            the whole PUT is refused rather than taking down a working
+            server; the message names the container. Deliver one with
+            pki_issue / --pki-cert on that container first.
           content:
             application/json:
               schema:
@@ -17042,13 +17069,27 @@ components:
           nullable: true
         bind_password_set:
           type: boolean
+        listeners_managed:
+          type: boolean
+          description: >
+            Whether an operator has ever set the server_* fields. False
+            means the daemon has NEVER written `[ldap]`/`[ldaps]` into a
+            registered server's config and will not, leaving whatever
+            that server's own config already says -- the same posture the
+            baseDN rewrite takes when ldap_base_dn has never been set
+            (ADR-0148), and for the same reason: a default derived from
+            nothing would rewrite a working listener on the first boot
+            after upgrade. Reported rather than inferred, so "not managed
+            yet" is visible instead of looking like "managed, and
+            happens to match". One PUT carrying any server_* field flips
+            it to true permanently.
         client_tls:
           type: boolean
           default: false
           description: >
             Whether clients configured from here reach LDAP over TLS. When
-            true, effective_client_uri names ldaps:// on client_tls_port
-            instead of ldap:// on 3893, and the nslcd.conf the daemon
+            true, effective_client_uri names ldaps:// on server_tls_port
+            instead of ldap:// on server_plaintext_port, and the nslcd.conf the daemon
             renders for an ldap_client container also gets a
             tls_cacertfile line pointing at the CA bundle already staged
             into every image (ADR-0051) -- nslcd runs tls_reqcert demand,
@@ -17063,19 +17104,50 @@ components:
             the {{LDAP:URI}} token). The daemon's own bind -- hostauth
             dialling ldapclient.c -- is a separate client that speaks
             LDAP over a raw socket with no TLS support at all, so this
-            flag neither affects nor protects it, and the plaintext
-            listener must keep running while both exist (#416).
-        client_tls_port:
+            flag governs only what clients are TOLD; ldap_tls on
+            PUT /system/hostauth-config (#416) is the daemon's own bind.
+            Refused (400) when it names a listener that server_tls /
+            server_plaintext has disabled -- handing every client a URI
+            nothing answers is not a configuration this accepts.
+        server_plaintext:
+          type: boolean
+          default: true
+          description: >
+            Whether each registered glauth serves plain LDAP -- rendered
+            into its own config as `[ldap] enabled`. #419: the listeners
+            used to be literal TOML inside each deployment recipe, so
+            they were not configuration at all and nothing checked that
+            client_tls_port named a port the server was listening on.
+            The daemon owns these values now, on the same terms ADR-0148
+            established for baseDN.
+        server_plaintext_port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+          default: 3893
+          description: Rendered as `[ldap] listen = "0.0.0.0:<port>"`. glauth's own default is 3893.
+        server_tls:
+          type: boolean
+          default: false
+          description: >
+            Whether each registered glauth serves LDAPS -- rendered as
+            `[ldaps] enabled`. Turning it on is refused (409) when a
+            registered, running server has no delivered certificate at
+            PKI_CONTAINER_CERT_DIR: glauth exits on reload if told to
+            serve TLS without one, which is worse than the setting not
+            applying.
+        server_tls_port:
           type: integer
           minimum: 1
           maximum: 65535
           default: 636
           description: >
-            Port named in effective_client_uri when client_tls is true.
-            636 is the standard LDAPS port and glauth's own sample-config
-            default for its [ldaps] listener. Stored independently of
-            client_tls so the port can be set first and the flag flipped
-            as one step.
+            Rendered as `[ldaps] listen = "0.0.0.0:<port>"`. 636 is the
+            standard LDAPS port and glauth's own sample default. This is
+            also the port clients are given when client_tls is true --
+            there is one port per listener, and the separate
+            client_tls_port that used to exist was a second source of
+            truth for the same number (#419).
         effective_client_uri:
           type: [string, "null"]
           description: >

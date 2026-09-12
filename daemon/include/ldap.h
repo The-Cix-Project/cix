@@ -215,6 +215,11 @@ enum ldap_record_error {
 	LDAP_RECORD_ERR_FULL,
 	LDAP_RECORD_ERR_NOT_FOUND,
 	LDAP_RECORD_ERR_GROUP_NOT_FOUND, /* primarygroup doesn't name a real group */
+	/* #419: server_tls asked for while a registered, running server has
+	 * no delivered certificate. Distinct from INVALID_FIELD because the
+	 * field is fine and the fleet is not, and the operator's fix is to
+	 * deliver a cert to a named container. */
+	LDAP_RECORD_ERR_NO_SERVER_CERT,
 	LDAP_RECORD_ERR_PERSIST_FAILED
 };
 
@@ -400,13 +405,39 @@ struct ldap_config {
 	 * migration, and it is expressed by moving this flag once.
 	 *
 	 * Governs only the clients configured FROM here (nslcd.conf,
-	 * {{LDAP:URI}}). The daemon's own bind (ldapclient.c, reached via
-	 * hostauth) is a separate client with no TLS support at all, and
-	 * is unaffected -- see the note on ldap_effective_client_uri().
-	 * client_tls_port is glauth's own sample default, 636.
+	 * {{LDAP:URI}}). The daemon's own bind has its own switch,
+	 * hostauth's ldap_tls (#416).
+	 *
+	 * There is no client_tls_port. #419 removed it: there is one port
+	 * per listener, and the port clients are given IS the server's own
+	 * (see ldap_client_port()). It existed only because the server's
+	 * listener config was literal TOML in a recipe and therefore
+	 * unknowable from here -- which also meant nothing checked that it
+	 * named a port the server was listening on.
 	 */
 	int client_tls;
-	int client_tls_port;
+	/*
+	 * #419: which listeners each registered glauth actually serves,
+	 * rendered into its own config file as [ldap]/[ldaps] enabled and
+	 * listen. The daemon owns these on the terms ADR-0148 set for
+	 * baseDN: the operator's file is the initial value, the API is the
+	 * source of truth from then on.
+	 *
+	 * listeners_managed is the whole reason this is safe to deploy onto
+	 * a running install. False until an operator PUTs one of the
+	 * server_* fields, and while false the render touches neither
+	 * section -- exactly the skip ldap_write_config_file() already
+	 * performs for baseDN when ldap_base_dn has never been set, and for
+	 * the identical reason: the first boot after upgrade would
+	 * otherwise rewrite two live, working listeners from defaults
+	 * derived from nothing. The ports still hold real defaults while
+	 * unmanaged, because ldap_client_port() reads them.
+	 */
+	int listeners_managed;
+	int server_plaintext;
+	int server_plaintext_port;
+	int server_tls;
+	int server_tls_port;
 };
 
 /* Loads persisted start_uid/start_gid (if any) at startup, alongside
@@ -430,10 +461,25 @@ enum ldap_record_error ldap_config_set(int start_uid, int start_gid);
  * that field unchanged; an empty string clears it). Persists alongside
  * start_uid/start_gid in the same state file.
  */
-/* client_tls/client_tls_port: -1 leaves each unchanged. A port is only
- * meaningful with TLS on, but both are stored independently so an
- * operator can set the port first and flip the flag as one step. */
-enum ldap_record_error ldap_config_set_client_tls(int client_tls, int client_tls_port);
+/*
+ * #419: the listener configuration plus which of them clients are
+ * pointed at, set together because they are one decision and the
+ * combinations that must be refused span both. -1 leaves a field
+ * unchanged; any non-(-1) server_* argument marks the configuration
+ * managed from then on.
+ *
+ * LDAP_RECORD_ERR_INVALID_FIELD for: a port outside 1..65535; the two
+ * ports equal; both listeners disabled; or client_tls naming a
+ * disabled listener. LDAP_RECORD_ERR_NO_SERVER_CERT when server_tls is
+ * being turned on and out_container names a registered, running server
+ * with no delivered certificate -- glauth exits on reload if told to
+ * serve TLS without one, so the whole change is refused rather than
+ * taking down a working server. out_container may be NULL.
+ */
+enum ldap_record_error ldap_config_set_listeners(int client_tls, int server_plaintext,
+                                                  int server_plaintext_port, int server_tls,
+                                                  int server_tls_port, char *out_container,
+                                                  size_t out_container_size);
 
 enum ldap_record_error ldap_config_set_client(const char *client_uri, const char *base_dn,
                                                const char *bind_dn, const char *bind_password);
@@ -512,10 +558,13 @@ int ldap_group_count(void);
  * module already depends on the registry for exactly that. Returns 1
  * when out holds a usable URI, 0 when there is nothing to point at.
  */
-/* The port the LDAP service is reachable on right now -- client_tls_port
- * when client_tls is on, HOSTAUTH_LDAP_DEFAULT_PORT otherwise. Both the
- * client URI above and cixd's own server-health probe read it, so the
- * probe can never test a port the clients were not given (#416). */
+/* The port the LDAP service is reachable on right now: the TLS
+ * listener's own port when client_tls is on, the plaintext listener's
+ * otherwise (#419 -- it used to read client_tls_port and
+ * HOSTAUTH_LDAP_DEFAULT_PORT, neither of which was the server's actual
+ * port). Both the client URI above and cixd's own server-health probe
+ * read it, so the probe can never test a port the clients were not
+ * given (#416). */
 int ldap_client_port(void);
 
 int ldap_effective_client_uri(char *out, size_t out_size);

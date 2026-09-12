@@ -52,6 +52,23 @@ static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 	return -1;
 }
 
+/* Whole-file substring test: these assertions are about what the daemon
+ * rendered, and a line-oriented read would miss a value written with
+ * different indentation than expected. */
+static int file_contains(const char *path, const char *needle)
+{
+	static char buf[65536];
+	FILE *f = fopen(path, "r");
+	size_t n;
+
+	if (f == NULL)
+		return 0;
+	n = fread(buf, 1, sizeof(buf) - 1, f);
+	fclose(f);
+	buf[n] = '\0';
+	return strstr(buf, needle) != NULL;
+}
+
 static pid_t start_daemon(void)
 {
 	pid_t pid;
@@ -916,6 +933,158 @@ int main(void)
 				        has_stanza, has_user);
 				ok = 0;
 			}
+		}
+	}
+
+	/*
+	 * 11 (#419). The listener sections are configuration, not literal
+	 * recipe text -- and the unmanaged state is byte-exact, which is
+	 * the half that keeps this safe to deploy onto a running install.
+	 */
+	{
+		char cfg_path[PATH_MAX];
+
+		snprintf(cfg_path, sizeof(cfg_path), "%s/ldapseed/upper/etc/glauth.cfg",
+		         g_containers_dir);
+
+		/*
+		 * 11a. listeners_managed is false until an operator asks, and
+		 * while false the render must not have touched either section.
+		 * ldapseed's staged config carries no [ldap]/[ldaps] at all, so
+		 * the test is that none appeared: a default derived from
+		 * nothing is exactly what would rewrite two live, working
+		 * listeners on the first boot after an upgrade.
+		 */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "GET", "/v1/ldap/config", NULL, &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: GET ldap/config, status=%d\n", r.status);
+			ok = 0;
+		} else {
+			const struct json_value *m = json_object_get(r.json, "listeners_managed");
+
+			if (m == NULL || m->type != JSON_BOOL || m->u.boolean) {
+				fprintf(stderr, "FAIL: listeners_managed should start false\n");
+				ok = 0;
+			}
+		}
+		cix_response_free(&r);
+
+		if (file_contains(cfg_path, "[ldap]") || file_contains(cfg_path, "[ldaps]")) {
+			fprintf(stderr,
+			        "FAIL: an unmanaged render wrote a listener section -- on a real host "
+			        "that rewrites live listeners from defaults derived from nothing "
+			        "(#419)\n");
+			ok = 0;
+		}
+
+		/* 11b. Refusals, before anything is applied: both listeners off,
+		 * and clients pointed at a disabled listener. Each would be a
+		 * saved state that cannot work. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "PUT", "/v1/ldap/config",
+		                       "{\"server_plaintext\":false,\"server_tls\":false}", &r) != 0 ||
+		    r.status != 400) {
+			fprintf(stderr, "FAIL: both listeners off expected 400, got %d\n", r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "PUT", "/v1/ldap/config",
+		                       "{\"client_tls\":true,\"server_tls\":false,"
+		                       "\"server_plaintext\":true}",
+		                       &r) != 0 ||
+		    r.status != 400) {
+			fprintf(stderr,
+			        "FAIL: client_tls naming a disabled listener expected 400, got %d\n",
+			        r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "PUT", "/v1/ldap/config",
+		                       "{\"server_plaintext_port\":3893,\"server_tls_port\":3893}",
+		                       &r) != 0 ||
+		    r.status != 400) {
+			fprintf(stderr, "FAIL: two listeners on one port expected 400, got %d\n",
+			        r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		/* Still unmanaged: a refused PUT must not have flipped it. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "GET", "/v1/ldap/config", NULL, &r) == 0 &&
+		    r.status == 200) {
+			const struct json_value *m = json_object_get(r.json, "listeners_managed");
+
+			if (m != NULL && m->type == JSON_BOOL && m->u.boolean) {
+				fprintf(stderr, "FAIL: a refused PUT marked the listeners managed\n");
+				ok = 0;
+			}
+		}
+		cix_response_free(&r);
+
+		/*
+		 * 11c. The deliverable: one PUT turns a listener on, with no
+		 * recipe edit and no container recreate. ldapseed has no
+		 * [ldap] section, so this also covers creating one -- the case
+		 * a hand-written config starts in, where leaving it alone
+		 * would mean the switch silently did nothing.
+		 *
+		 * server_tls stays off: turning it on is refused without a
+		 * delivered certificate (glauth exits on reload otherwise),
+		 * and this container has none. That refusal is the box's own
+		 * verification rather than this test's -- the fixture image
+		 * has no PKI.
+		 */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "PUT", "/v1/ldap/config",
+		                       "{\"server_plaintext\":true,\"server_plaintext_port\":3893,"
+		                       "\"client_tls\":false}",
+		                       &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: enabling the plaintext listener, status=%d\n", r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		if (!file_contains(cfg_path, "[ldap]") ||
+		    !file_contains(cfg_path, "enabled = true") ||
+		    !file_contains(cfg_path, "\"0.0.0.0:3893\"")) {
+			fprintf(stderr, "FAIL: the [ldap] listener was not rendered into the config\n");
+			ok = 0;
+		}
+
+		/* 11d. And off again -- the same call in reverse, which is what
+		 * makes it a switch rather than a one-way migration. The
+		 * [ldaps] section has to come up first, since one listener must
+		 * stay enabled; it is created by the same render. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "PUT", "/v1/ldap/config",
+		                       "{\"server_tls_port\":636,\"server_plaintext\":true}", &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: setting the TLS port, status=%d\n", r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		if (!file_contains(cfg_path, "[ldaps]") ||
+		    !file_contains(cfg_path, "\"0.0.0.0:636\"") ||
+		    !file_contains(cfg_path, "/tls.crt\"")) {
+			fprintf(stderr,
+			        "FAIL: a created [ldaps] section must carry listen and a cert path\n");
+			ok = 0;
+		}
+
+		/* The managed section must not have eaten the [[users]] tail
+		 * that #418's own case asserted -- the prefix rewrite and the
+		 * record render share one file and one write. */
+		if (!file_contains(cfg_path, "seeduser")) {
+			fprintf(stderr, "FAIL: the listener render dropped the rendered user records\n");
+			ok = 0;
 		}
 	}
 

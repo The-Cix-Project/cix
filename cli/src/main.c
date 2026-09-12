@@ -186,6 +186,22 @@ static void print_usage(FILE *out)
 	        "               [--primarygroup=N] [--secondary-groups=N,N,...] ...\n"
 	        "  ldap user ls\n"
 	        "  ldap user rm NAME\n"
+	        "  ldap config show  -- uid/gid floor, the client login settings, and which\n"
+	        "               listeners the registered servers serve\n"
+	        "  ldap config set [--start-uid=N --start-gid=N] [--client-uri=URIS]\n"
+	        "      [--base-dn=DN] [--bind-dn=DN] [--bind-password=PW]\n"
+	        "      [--client-tls | --no-client-tls]\n"
+	        "      [--server-plaintext | --no-server-plaintext] [--server-plaintext-port=N]\n"
+	        "      [--server-tls | --no-server-tls] [--server-tls-port=N]\n"
+	        "               -- only the flags given change. The --server-* flags (#419) are\n"
+	        "               rendered into every registered server's own glauth config and\n"
+	        "               picked up by its config watcher, so turning a listener on or off\n"
+	        "               is one call -- no recipe edit, no container recreate. Until the\n"
+	        "               first --server-* flag is set, `listeners_managed` is false and\n"
+	        "               each server's own config still decides. --client-tls selects\n"
+	        "               WHICH enabled listener clients are pointed at, and is refused if\n"
+	        "               that listener is off; the daemon's own bind is a separate switch\n"
+	        "               (`hostauth-config set --ldap-tls`, #416)\n"
 	        "  login [--username=NAME] [--password=PASS]  -- ADR-0144: authenticates against\n"
 	        "               the daemon's own host-auth backend (prompts for whichever of\n"
 	        "               username/password isn't given as a flag, with echo off for the\n"
@@ -1144,6 +1160,26 @@ static void fmt_ldap_config_line(const struct json_value *v)
 	printf("bind_dn=%s\n", bind_dn != NULL ? bind_dn : "(unset)");
 	printf("bind_password=%s\n",
 	       (pwset != NULL && pwset->type == JSON_BOOL && pwset->u.boolean) ? "(set)" : "(unset)");
+	/* #419: what the servers actually serve, and whether the daemon is
+	 * the one saying so. "unmanaged" is reported rather than hidden --
+	 * it means each server's own config still decides, and the values
+	 * printed are only what a first PUT would apply. */
+	{
+		const struct json_value *managed = json_object_get(v, "listeners_managed");
+		const struct json_value *splain = json_object_get(v, "server_plaintext");
+		const struct json_value *stls = json_object_get(v, "server_tls");
+		const struct json_value *ctls = json_object_get(v, "client_tls");
+		int is_managed = managed != NULL && managed->type == JSON_BOOL && managed->u.boolean;
+
+		printf("listeners=%s ldap=%s:%ld ldaps=%s:%ld clients_use=%s\n",
+		       is_managed ? "managed" : "unmanaged (each server's own config decides)",
+		       (splain != NULL && splain->type == JSON_BOOL && splain->u.boolean) ? "on" :
+		                                                                            "off",
+		       (long)json_as_number(json_object_get(v, "server_plaintext_port")),
+		       (stls != NULL && stls->type == JSON_BOOL && stls->u.boolean) ? "on" : "off",
+		       (long)json_as_number(json_object_get(v, "server_tls_port")),
+		       (ctls != NULL && ctls->type == JSON_BOOL && ctls->u.boolean) ? "ldaps" : "ldap");
+	}
 }
 
 static void fmt_ldap_group_line(const struct json_value *v)
@@ -12294,7 +12330,9 @@ static int cmd_ldap_config_set(const struct cix_client *c, int json_mode, int ar
 	/* #414: -1 == "leave it", so a body that does not mention TLS cannot
 	 * turn it off as a side effect of setting something else. */
 	int client_tls = -1;
-	long client_tls_port = -1;
+	/* #419: which listeners the SERVERS run. Same -1 sentinel. */
+	int server_plaintext = -1, server_tls = -1;
+	long server_plaintext_port = -1, server_tls_port = -1;
 	int i;
 	struct json_writer w;
 	struct cix_response r;
@@ -12316,8 +12354,18 @@ static int cmd_ldap_config_set(const struct cix_client *c, int json_mode, int ar
 			client_tls = 1;
 		else if (strcmp(argv[i], "--no-client-tls") == 0)
 			client_tls = 0;
-		else if (strncmp(argv[i], "--client-tls-port=", 18) == 0)
-			client_tls_port = strtol(argv[i] + 18, NULL, 10);
+		else if (strcmp(argv[i], "--server-plaintext") == 0)
+			server_plaintext = 1;
+		else if (strcmp(argv[i], "--no-server-plaintext") == 0)
+			server_plaintext = 0;
+		else if (strncmp(argv[i], "--server-plaintext-port=", 24) == 0)
+			server_plaintext_port = strtol(argv[i] + 24, NULL, 10);
+		else if (strcmp(argv[i], "--server-tls") == 0)
+			server_tls = 1;
+		else if (strcmp(argv[i], "--no-server-tls") == 0)
+			server_tls = 0;
+		else if (strncmp(argv[i], "--server-tls-port=", 18) == 0)
+			server_tls_port = strtol(argv[i] + 18, NULL, 10);
 		else {
 			fprintf(stderr, "cixctl: unknown ldap config set option '%s'\n", argv[i]);
 			return 2;
@@ -12325,11 +12373,15 @@ static int cmd_ldap_config_set(const struct cix_client *c, int json_mode, int ar
 	}
 
 	if (start_uid < 0 && start_gid < 0 && client_uri == NULL && base_dn == NULL &&
-	    bind_dn == NULL && bind_password == NULL && client_tls < 0 && client_tls_port < 0) {
+	    bind_dn == NULL && bind_password == NULL && client_tls < 0 && server_plaintext < 0 &&
+	    server_tls < 0 && server_plaintext_port < 0 && server_tls_port < 0) {
 		fprintf(stderr,
 		        "usage: cixctl ldap config set [--start-uid=N --start-gid=N] "
 		        "[--client-uri=URIS] [--base-dn=DN] [--bind-dn=DN] [--bind-password=PW]\n"
-		        "       [--client-tls | --no-client-tls] [--client-tls-port=N]\n");
+		        "       [--client-tls | --no-client-tls]\n"
+		        "       [--server-plaintext | --no-server-plaintext] "
+		        "[--server-plaintext-port=N]\n"
+		        "       [--server-tls | --no-server-tls] [--server-tls-port=N]\n");
 		return 2;
 	}
 	if ((start_uid < 0) != (start_gid < 0)) {
@@ -12365,9 +12417,21 @@ static int cmd_ldap_config_set(const struct cix_client *c, int json_mode, int ar
 		jw_key(&w, "client_tls");
 		jw_bool(&w, client_tls);
 	}
-	if (client_tls_port >= 0) {
-		jw_key(&w, "client_tls_port");
-		jw_int(&w, client_tls_port);
+	if (server_plaintext >= 0) {
+		jw_key(&w, "server_plaintext");
+		jw_bool(&w, server_plaintext);
+	}
+	if (server_plaintext_port >= 0) {
+		jw_key(&w, "server_plaintext_port");
+		jw_int(&w, server_plaintext_port);
+	}
+	if (server_tls >= 0) {
+		jw_key(&w, "server_tls");
+		jw_bool(&w, server_tls);
+	}
+	if (server_tls_port >= 0) {
+		jw_key(&w, "server_tls_port");
+		jw_int(&w, server_tls_port);
 	}
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
