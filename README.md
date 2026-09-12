@@ -2,6 +2,10 @@
 
 **Systems, directly.**
 
+The Cix source is available under the [Apache License, Version 2.0](LICENSE).
+Contributions follow the [DCO-based contribution guide](CONTRIBUTING.md); the
+Cix name and marks are governed separately by [TRADEMARK.md](TRADEMARK.md).
+
 Cix OS is a rolling-release hardware and workload orchestration platform, compiled entirely from source: a hand-rolled container runtime on raw Linux namespaces and cgroups, OverlayFS-based image layering, a 100% custom C networking data plane, and a REST control layer for the host, containers, hardware, disks, networks, DNS, PKI, and more — no runc, no Open vSwitch, no eBPF-based networking dataplane, compiled exclusively with the Tiny C Compiler (TCC). Every capability, including hardware itself, is a first-class API resource; containers are where all real work happens, the host is the thinnest possible layer underneath them. Full charter: [`docs/mission/MISSION.md`](docs/mission/MISSION.md).
 
 ## The Name
