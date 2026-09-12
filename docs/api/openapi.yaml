@@ -510,7 +510,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [build_version, build_time, slot, kernel_version]
+                required: [build_version, build_time, slot, kernel_version, platform_devices]
                 properties:
                   build_version:
                     type: string
@@ -537,6 +537,42 @@ paths:
                       The running kernel's `uname(2)` release string
                       (e.g. `6.18.40`), or `null` if `uname(2)` itself
                       failed.
+                  platform_devices:
+                    type: object
+                    description: >
+                      Which block device backs each of the platform's
+                      own five partitions, as resolved THIS BOOT from
+                      the GPT partition labels rather than assumed from
+                      a device name (#305). An empty string means no
+                      partition carrying that label was found on any
+                      disk -- normal for a dev/test daemon that is not
+                      an installed system, and the signal to look at
+                      for an installed one.
+
+                      This exists because the resolution was otherwise
+                      visible only on the serial console, and the
+                      failure it guards against -- a disk that comes
+                      back under a different name -- is exactly the
+                      situation in which nobody has a serial console
+                      handy. The names are the fixed labels
+                      `cix-install.c` writes; only the devices change.
+                    required: [esp, root_a, root_b, config, containers]
+                    properties:
+                      esp:
+                        type: string
+                        description: Device carrying the `cix-esp` label, or `""`.
+                      root_a:
+                        type: string
+                        description: Device carrying the `cix-root-a` label, or `""`.
+                      root_b:
+                        type: string
+                        description: Device carrying the `cix-root-b` label, or `""`.
+                      config:
+                        type: string
+                        description: Device carrying the `cix-config` label, or `""`.
+                      containers:
+                        type: string
+                        description: Device carrying the `cix-containers` label, or `""`.
   /system/shutdown:
     post:
       summary: >
