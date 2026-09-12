@@ -1,5 +1,5 @@
 #
-# v2.57.137: a booted box can be moved to any interface, address,
+# v2.57.138: a booted box can be moved to any interface, address,
 # subnet or gateway
 #
 # Asked for directly: "I want it so that a machine that's booted (not
@@ -36,9 +36,9 @@
 # See ADR-0283.
 #
 pkg_name="cix"
-pkg_version="v2.57.137"
-pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/v2.57.137.tar.gz"
-pkg_sha256="5f871bd0edbb7e1ea1435ac8338ed19393ded61eb3338771535a7a32f727dbfa"
+pkg_version="v2.57.138"
+pkg_source="https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/v2.57.138.tar.gz"
+pkg_sha256="c11cf0747a4270e27bc4058d42dd4bce8270201fb10a17f2c1f800cc1a38e799"
 pkg_build_depends="bash coreutils make tcc linux-headers openssl gcc binutils minisign"
 pkg_build_caps="CAP_SYS_ADMIN"
 # ADR-0208: cix-builder's one job is building Cix. This said
