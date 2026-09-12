@@ -1308,6 +1308,116 @@ int main(void)
 		ok = 0;
 	}
 
+	/*
+	 * #421: a recreate that races an in-flight teardown must SAY so.
+	 *
+	 * The 409 itself was never in doubt -- the name really is taken
+	 * while the previous container tears down (ADR-0180). What was
+	 * broken is what the rejection said: v2.57.122 added
+	 * name_conflict_msg() to distinguish "still shutting down" from a
+	 * genuine clash, and put the call AFTER json_free(root) in the
+	 * create path's pre-flight guard. `name` is json_as_string(jname),
+	 * a pointer into that tree, so registry_find() compared against
+	 * freed heap, found nothing, and reported the flat "already
+	 * exists" for a container the daemon knew was tearing down --
+	 * measured on 192.168.15.95, 2026-09-12, in 92 of 100 racing
+	 * rounds, with GET on the same container reporting
+	 * "status":"deleting" at the same instant
+	 * (recipes/package/probe-delete-409/2).
+	 *
+	 * So this asserts the MESSAGE, which is the part that was wrong,
+	 * and it has to race to do it -- there is no way to hold a
+	 * container in teardown on demand. Up to 40 attempts: the probe
+	 * measured a 92% hit rate per attempt, so never once opening the
+	 * window is not a plausible outcome, and is reported as a failure
+	 * rather than a silent skip, because a test that asserted nothing
+	 * is what let this ship.
+	 *
+	 * The holder's own GET is not required to still say "deleting" by
+	 * the time it is read -- an 0s teardown can finish first, which the
+	 * probe also saw. The message was formed while the entry existed,
+	 * so the message is the invariant.
+	 */
+	{
+		const char *body = "{\"name\":\"racemsg\",\"image\":\"restarttest\","
+		                    "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\","
+		                    "\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"]}],"
+		                    "\"restart\":\"no\"}";
+		int attempt, saw_conflict = 0;
+
+		for (attempt = 0; attempt < 40 && !saw_conflict; attempt++) {
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/containers", body, &r) != 0 ||
+			    r.status != 201) {
+				fprintf(stderr, "FAIL: POST racemsg (attempt %d), status=%d\n", attempt,
+				        r.status);
+				cix_response_free(&r);
+				ok = 0;
+				break;
+			}
+			cix_response_free(&r);
+
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "DELETE", "/v1/containers/racemsg", NULL, &r) != 0 ||
+			    (r.status != 204 && r.status != 404)) {
+				fprintf(stderr, "FAIL: DELETE racemsg did not land, status=%d\n", r.status);
+				cix_response_free(&r);
+				ok = 0;
+				break;
+			}
+			cix_response_free(&r);
+
+			/* Immediately, with nothing in between -- that is the race. */
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/containers", body, &r) == 0 &&
+			    r.status == 409) {
+				const char *err = json_str_field(r.json, "error");
+
+				saw_conflict = 1;
+				if (err == NULL || strstr(err, "shutting down") == NULL) {
+					fprintf(stderr,
+					        "FAIL: a recreate racing an in-flight teardown was refused with "
+					        "\"%s\" -- it must say the holder is still shutting down, or the "
+					        "reader goes looking for a container `container ls` does not show "
+					        "(#421)\n",
+					        err != NULL ? err : "(no error field)");
+					ok = 0;
+				}
+			}
+			cix_response_free(&r);
+
+			/* Settle before the next attempt, whichever way it went. */
+			{
+				int waited = 0;
+
+				for (;;) {
+					int status = 0;
+
+					memset(&r, 0, sizeof(r));
+					if (cix_client_request(&client, "DELETE", "/v1/containers/racemsg", NULL,
+					                        &r) == 0)
+						status = r.status;
+					cix_response_free(&r);
+					memset(&r, 0, sizeof(r));
+					if (cix_client_request(&client, "GET", "/v1/containers/racemsg", NULL, &r) ==
+					    0)
+						status = r.status;
+					cix_response_free(&r);
+					if (status == 404 || waited >= 20000)
+						break;
+					usleep(250000);
+					waited += 250;
+				}
+			}
+		}
+		if (!saw_conflict && ok) {
+			fprintf(stderr,
+			        "FAIL: 40 delete+recreate races never once hit the teardown 409, so the "
+			        "message this case exists to check was never exercised (#421)\n");
+			ok = 0;
+		}
+	}
+
 	/* cleanup -- enumerate rather than name, see test_cleanup.h */
 	if (test_cleanup_containers_and_network(&client, READY_NETWORK_NAME) != 0)
 		ok = 0;
