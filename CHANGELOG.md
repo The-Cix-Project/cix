@@ -60,8 +60,27 @@ flag-without-enabled acceptance, and the save/load round trip. The 409 assertion
 names `ldap_tls`, because this endpoint has a second 409 (#370's gating guard, evaluated first) and a
 bare status check would pass for the wrong reason.
 
-**Still open in #416:** turning glauth's plaintext 3893 off. That is a live-service change to
-`ldap-1`/`ldap-2` and is tracked separately from the daemon work.
+**And the plaintext listener came down.** `ldap-1`/`ldap-2` at **1.6.0** set `[ldap] enabled = false`,
+keeping only `[ldaps]` on 636, applied one container at a time so the other carried service throughout.
+Verified on 192.168.15.95, 2026-09-12: an `ldapsearch` bind over `ldaps://…:636` succeeds against both
+servers, the same bind over `ldap://…:3893` is refused by both, and `id claude` inside `jump` still
+resolves through nslcd (`uid=10002(claude) gid=10002(cix-admins)`).
+
+**Closing that port exposed a bug it had been hiding.** `cixd`'s own server-health probe was fixed at
+`HOSTAUTH_LDAP_DEFAULT_PORT`, so the moment 3893 stopped being served both LDAP servers reported
+`unhealthy`, `in_service=no`, `connect: Connection refused` — against a door that had been deliberately
+closed. Clients kept working, because `ldap_effective_client_uri()` falls back to the unfiltered list
+when filtering would leave nothing, so the only symptom was a health view that was simply wrong, which
+is exactly the kind of thing an operator acts on. The probe now reads a new `ldap_client_port()` — the
+same accessor the client URI reads, extracted so the two cannot disagree — via a `port_now` hook on the
+health kind table, consulted per sweep because the setting is API-changeable while the daemon runs.
+
+**One diagnostic was measured useless and fixed.** Pointing `ldap_tls` at the plaintext port logged
+`TLS handshake to 192.168.150.103:3893 failed (no OpenSSL error queued)` — true and actionable by
+nobody. An empty error queue is the *normal* outcome there: a plaintext peer answers a ClientHello with
+LDAP bytes or a close, which surfaces as `SSL_ERROR_SYSCALL` with the cause in `errno`. `ldap_tls_log()`
+now reports `SSL_get_error()` and `errno` when the queue is empty, and says "is that port serving TLS?"
+for the closed-during-handshake case.
 
 ### `pki export` built a 17-argument command line into `argv[16]` (#415, #417)
 

@@ -38,7 +38,7 @@ Issues a cert named after the container and writes `tls.crt`/`tls.key` (mode `06
 
 `ldap-1`/`ldap-2` run glauth. Turning on TLS is two independent steps, and they are independent on purpose — the servers can serve TLS long before any client is told to use it, so nothing is cut over blind.
 
-**1. The servers serve it.** `ldap-1`/`ldap-2` at 1.4.0 set `pki_issue: true` and enable glauth's `[ldaps]` listener on 636 (glauth's own sample-config default) against the delivered `/etc/cix-tls/tls.{crt,key}`. A `waitkey` oneshot gates glauth on the key actually arriving, so the server never starts without an identity. The plaintext listener on 3893 is untouched and keeps running.
+**1. The servers serve it.** `ldap-1`/`ldap-2` at 1.4.0 set `pki_issue: true` and enable glauth's `[ldaps]` listener on 636 (glauth's own sample-config default) against the delivered `/etc/cix-tls/tls.{crt,key}`. A `waitkey` oneshot gates glauth on the key actually arriving, so the server never starts without an identity. (1.5.0 drops that oneshot — the cert is staged before `clone3()`, so there is nothing to wait for; the `ldap` image is `glibc + glauth` with no shell, and a shell-based gate crash-looped it.) **1.6.0 sets `[ldap] enabled = false`**, so the plaintext listener on 3893 is gone — see step 4 below for what had to be true first.
 
 Prove it before going further, from any container that has the CA bundle:
 
@@ -73,6 +73,8 @@ Two guards worth knowing:
 - If the CA is reset out from under an already-saved `ldap_tls` config, the daemon does **not** quietly fall back to a plaintext bind. It declines to bind at all, logs why, and `POST /login` falls through to the local user records — a configuration that asked for TLS never becomes a cleartext credential on the wire.
 
 A failed handshake is a connect-class failure, so the next configured server is tried and, if none answers, local authentication applies. The OpenSSL error text goes to the log store (`GET /system/logs`, source `ldap`), because an unexplained fallback looks exactly like a wrong password.
+
+**4. Then, and only then, the plaintext listener comes down.** With every client population on LDAPS — the containers via `effective_client_uri`, the daemon via `ldap_tls` — `ldap-1`/`ldap-2` at 1.6.0 set `[ldap] enabled = false` and keep only `[ldaps]` on 636. Verified on 192.168.15.95, 2026-09-12: an `ldapsearch` bind over `ldaps://…:636` succeeds against both servers, the same bind over `ldap://…:3893` is refused by both, and `id claude` inside `jump` still resolves through nslcd. Order matters here in one direction only — turning 3893 off before the clients moved would have broken authentication, while leaving it on after they moved only left an unused door open.
 
 ### An identity that must outlive the container: `--pki-cert`
 

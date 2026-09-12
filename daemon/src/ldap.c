@@ -1959,6 +1959,29 @@ void ldap_filter_configured_client_uri(const char *configured, char *out, size_t
  *     better than handing it nothing at all -- the client retries, and
  *     an empty URI list would turn a partial outage into a total one.
  */
+/*
+ * The one port the LDAP service is reachable on right now. Extracted
+ * (#416) because two places need the same answer and a second copy of
+ * the conditional is a second source of truth: the client URI below,
+ * and cixd's own server-health probe, which opens a TCP connection to
+ * decide whether a server is in service.
+ *
+ * That probe used to be hardcoded to HOSTAUTH_LDAP_DEFAULT_PORT, which
+ * was correct only while the plaintext listener was always up. When
+ * ldap-1/ldap-2 1.6.0 turned it off, both servers immediately reported
+ * unhealthy with "connect: Connection refused" against a port nothing
+ * was serving any more -- measured on 192.168.15.95, 2026-09-12. The
+ * unfiltered-list fallback below meant clients kept working, so the
+ * only visible symptom was a health view that was simply wrong, which
+ * is the kind of thing an operator acts on.
+ */
+int ldap_client_port(void)
+{
+	const struct ldap_config *lc = ldap_config_get();
+
+	return lc->client_tls ? lc->client_tls_port : HOSTAUTH_LDAP_DEFAULT_PORT;
+}
+
 int ldap_effective_client_uri(char *out, size_t out_size)
 {
 	const struct ldap_config *lc = ldap_config_get();
@@ -1994,22 +2017,25 @@ int ldap_effective_client_uri(char *out, size_t out_size)
 			/*
 			 * Scheme and port together (#414) -- they are one
 			 * decision, and splitting them produces a URI that
-			 * names TLS on a plaintext port or the reverse.
+			 * names TLS on a plaintext port or the reverse. The
+			 * port comes from ldap_client_port() so cixd's own
+			 * health probe cannot disagree with what clients are
+			 * told (#416).
 			 *
 			 * This is the client population configured FROM here:
 			 * nslcd.conf and {{LDAP:URI}}. The daemon's OWN bind
 			 * does not come through this function -- hostauth
-			 * dials ldapclient.c, which speaks LDAP over a raw
-			 * socket with no TLS support whatsoever, so turning
-			 * this on does not and cannot affect it. That is why
-			 * the plaintext listener has to keep running while
-			 * both exist; see #416.
+			 * dials ldapclient.c, which has its own ldap_tls
+			 * switch on PUT /system/hostauth-config (#416), for a
+			 * client that may be pointed at a different port
+			 * entirely. Both being on LDAPS is what allowed
+			 * ldap-1/ldap-2 1.6.0 to turn the plaintext listener
+			 * off at all.
 			 */
 			written = snprintf(out + off, out_size - off, "%s%s://%s:%d/",
 			                    off > 0 ? " " : "",
 			                    g_config.client_tls ? "ldaps" : "ldap", ipbuf,
-			                    g_config.client_tls ? g_config.client_tls_port :
-			                                           HOSTAUTH_LDAP_DEFAULT_PORT);
+			                    ldap_client_port());
 			if (written > 0 && (size_t)written < out_size - off)
 				off += (size_t)written;
 		}
