@@ -1631,7 +1631,15 @@ static int parse_net_conf(const char *path, char *out_ip, size_t ip_size, int *o
 		}
 	}
 	fclose(f);
-	return (have_ip && have_prefix && have_gateway && have_interface) ? 0 : -1;
+	/*
+	 * The gateway line is optional, matching the fact that a gateway
+	 * is. have_gateway is still tracked -- a caller may want to know
+	 * whether the operator said "none" or said nothing -- but it does
+	 * not decide whether this file describes a usable network. An
+	 * interface, an address and a prefix do.
+	 */
+	(void)have_gateway;
+	return (have_ip && have_prefix && have_interface) ? 0 : -1;
 }
 
 /*
@@ -1800,7 +1808,25 @@ static int bootstrap_management_network(void)
 		fprintf(stderr, "bootstrap_management_network: invalid ip %s\n", ip);
 		return -1;
 	}
-	if (inet_pton(AF_INET, upstream_gateway, &gw) != 1) {
+	/*
+	 * An ABSENT gateway is a valid configuration, not a parse failure.
+	 *
+	 * A box reachable only on its own subnet needs no default route,
+	 * and a loopback management address has nowhere to route to at all
+	 * -- both are ordinary installs, and cix-install now offers them.
+	 * Before this, an empty gateway= in net.conf failed inet_pton,
+	 * returned -1, failed boot_init, and exited cixd -- which as PID 1
+	 * is a kernel panic. The same shape as issue #133's missing uplink
+	 * NIC, which is already handled a few lines below for exactly that
+	 * reason.
+	 *
+	 * A gateway that is PRESENT and unparseable stays an error: that is
+	 * a typo in a value someone meant, and silently dropping it would
+	 * leave a box without the route it was configured to have.
+	 */
+	if (upstream_gateway[0] == '\0') {
+		gw.s_addr = 0;
+	} else if (inet_pton(AF_INET, upstream_gateway, &gw) != 1) {
 		fprintf(stderr, "bootstrap_management_network: invalid gateway %s\n", upstream_gateway);
 		return -1;
 	}
@@ -1915,7 +1941,13 @@ static int bootstrap_management_network(void)
 		perror("rtnl_open");
 		return -1;
 	}
-	if (rtnl_route_add_default_ipv4(rtfd, gw.s_addr) != 0) {
+	/*
+	 * No gateway, no default route. Adding one to 0.0.0.0 would be a
+	 * route to nowhere, and the absence is deliberate: a box reachable
+	 * only on its own subnet is an ordinary install, and a loopback
+	 * management address has nothing to route to.
+	 */
+	if (gw.s_addr != 0 && rtnl_route_add_default_ipv4(rtfd, gw.s_addr) != 0) {
 		perror("bootstrap_management_network: default route");
 		rtnl_close(rtfd);
 		return -1;
@@ -1923,7 +1955,8 @@ static int bootstrap_management_network(void)
 	rtnl_close(rtfd);
 
 	printf("init-mode: %s network %s/%d via %s, bind=%s, upstream gateway %s\n", net->name, subnet_str,
-	       prefix, iface, ip, upstream_gateway);
+	       prefix, iface, ip,
+	       upstream_gateway[0] != '\0' ? upstream_gateway : "(none -- no default route)");
 	fflush(stdout);
 	return 0;
 }
