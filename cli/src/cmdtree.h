@@ -152,6 +152,21 @@ static const struct cli_node n_daemon_config_subs[] = {
 	{ NULL, NULL, NULL },
 };
 
+static const char *const n_management_network_set_flags[] = {
+	"--gateway=",
+	"--interface=",
+	"--ip=",
+	"--no-gateway",
+	"--prefix=",
+	NULL
+};
+
+static const struct cli_node n_management_network_subs[] = {
+	{ "set", n_management_network_set_flags, NULL },
+	{ "show", NULL, NULL },
+	{ NULL, NULL, NULL },
+};
+
 static const char *const n_backup_config_set_flags[] = {
 	"--clear-disk",
 	"--disable",
@@ -1372,6 +1387,7 @@ static const struct cli_node CLI_TREE[] = {
 	{ "restore", n_restore_flags, NULL },
 	{ "site", NULL, n_site_subs },
 	{ "daemon-config", NULL, n_daemon_config_subs },
+	{ "management-network", NULL, n_management_network_subs },
 	{ "backup-config", NULL, n_backup_config_subs },
 	{ "rolling-config", NULL, n_rolling_config_subs },
 	{ "pkg-build-config", NULL, n_pkg_build_config_subs },
