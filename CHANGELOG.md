@@ -6,6 +6,67 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Four cheap fixes: a contract error, a publish-time gate, a tab collision and the scroll jump (#420, #408, #425, #432)
+
+Picked for being genuinely cheap and genuinely real, batched into one release so four small
+changes cost one build.
+
+**#420 -- the API contract named a route it does not declare.** `openapi.yaml` declares
+`/storage-roles`; its own prose said `POST /diskroles` nine times, `README.md` thirteen, and the
+README's endpoint table listed `/diskroles` as the route. That wrong name reached the public
+website, taken from this text. Worse than the issue described, and found by reading rather than
+assumed: the `GET /storage-roles` response schema said **`required: [diskroles]`** against a
+declared property of `storage_roles` -- a `required` list naming a property that does not exist,
+which makes the document invalid and would trip a strict validator or a generated client. The live
+API returns `{"storage_roles":[]}`, measured, so the schema was wrong about reality too. All 22
+route references, the schema, and 3 uses of the bare noun "diskrole" are corrected; `apigen` still
+reads the contract and emits the same 301 endpoints.
+
+**#408 -- a recipe that can never build can no longer be written.** The build container sources
+the recipe, so a backtick or `$(` inside a `pkg_*` value is executed there. `zstd@1.5.7-2` quoted
+the error its predecessor hit -- `` `sed: command not found` `` -- in its changelog, so the build
+ran `sed:` as a program and died with the very message it was quoting, for an entirely different
+reason. `POST /v1/pkg/recipes` accepted it with a 204 and ADR-0107 makes a published revision
+immutable, so that revision is permanently unbuildable. It has happened at least three times:
+`tcc@0.9.28rc-22`'s own changelog records that rc-21 *"never ran -- its own changelog used
+backticks"*.
+
+`test_recipe_hygiene` now refuses it. Two things made this cheap rather than fiddly: the test
+already scans only each package's **latest** revision, and all eight existing violations are in
+**superseded** revisions (measured: zstd 1.5.7-2 < 1.5.7-3, tcc rc-21/rc-22 < rc-29, glibc 2.44-15
+< 2.44-16, libcap 2.78-9 < 2.78-13, iproute2 6.18.0-5/-9 < 6.18.0-17, probe-test-pki 2 < 7). So
+the gate starts clean with **no grandfathered list at all** -- unlike the artifact-comment check it
+sits beside. The predicate was validated against all 1404 recipe files before shipping: it flags
+exactly those eight and zero latest revisions. It matches at column 0 only, which is what the
+daemon's own `extract_line_value()` line scan parses and what the shell executes at top level, so
+an indented `pkg_foo=$(...)` inside `pkg_build()` is ordinary shell and correctly ignored, and an
+escaped `` \` `` or `\$(` is allowed because tcc's changelogs use `\$?` deliberately.
+
+**#425 -- a container's Packages tab went to the global Packages view.** The generic tab handler
+navigates when a tab name is also an address, which is deliberate: every tab on a collapsed page
+is named after the address it replaced. A container detail's tabs are *not* addresses, and the
+handler's own comment says they are left alone -- but it identified them by name, and `packages`
+collides with the top-level `#packages` route. So the handler rewrote the location, the router
+obliged, and `loadContainerPackages()` sitting three lines below never got the chance to matter.
+Container-detail tab bars are now exempt **wholesale** rather than by name, which is what stops the
+next tab whose name happens to be a route from doing this again.
+
+**#432 -- the dashboard stopped losing your scroll position on every refresh tick.** Tables were
+blanked with `body.textContent = ""` and rebuilt whether or not anything had changed -- 46 such
+sites against 8 uses of the `dataChanged()` guard that exists to prevent exactly this, and whose
+own neighbouring comment already records the failure mode (*"Blanking a populated table before a
+fetch is what made Processes flash empty twice a second"*). Opening a build log made it obvious
+because the log box is tall: the page shrinks to a fraction of its height while the tables are
+empty, the browser clamps `scrollTop` to the new maximum, and the rebuilt-taller table cannot give
+the offset back.
+
+A new `unchangedAndRendered()` helper skips a render only when the payload is identical **and** the
+panel actually has rows -- both halves load-bearing, since the payload check alone would leave an
+empty panel empty forever, which is the same distinction `showLoadingIfEmpty()` already draws.
+Applied to the build-log list and to the images table, because they share the `pkg-build-config`
+tick and guarding only one still collapsed the page. The other 44 sites stay open on #432; the
+helper is there for them.
+
 ### The installer ISO can boot from a USB stick (#429)
 
 It could not, and the reason was a kernel module. `CONFIG_USB_STORAGE=m` and
