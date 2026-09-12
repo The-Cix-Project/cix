@@ -6,6 +6,7 @@
 #include "http.h"
 #include "json.h"
 #include "pki.h"
+#include "logstore.h"
 #include "siteconfig.h"
 #include "dns.h"
 #include "registry.h"
@@ -398,10 +399,38 @@ static void redeliver_pki_certs_after_reset(void)
 		char cert_dir_buf[PATH_MAX];
 		enum pki_error derr;
 
-		if (entry == NULL || !entry->running)
+		/*
+		 * Both skips below were bare continues, and that silence cost a
+		 * probe cycle (#417): test_pki's own reset case failed with
+		 * "resetlive's delivered tls.crt was not redelivered after
+		 * reset" while nothing anywhere said which of the two branches
+		 * had declined to deliver, or that any had. A CA reset destroys
+		 * the signer of every cert already delivered into a container,
+		 * so a container skipped here keeps serving a certificate
+		 * signed by a CA that no longer exists -- which is exactly the
+		 * situation an operator needs told about rather than left to
+		 * infer from a TLS failure later.
+		 */
+		if (entry == NULL || !entry->running) {
+			logstore_write("cixd", "warn",
+			                "pki reset: %s was not running, so its delivered certificate "
+			                "was NOT refreshed -- it holds one signed by the CA this reset "
+			                "destroyed until it is recreated",
+			                names[i]);
 			continue;
-		if (!pki_cert_owned_by(names[i], names[i]))
+		}
+		if (!pki_cert_owned_by(names[i], names[i])) {
+			/* Ordinary for most containers -- only one that owns a cert
+			 * under its own name has anything to redeliver -- so info,
+			 * not warn. It is logged at all because "nothing happened"
+			 * and "nothing was meant to happen" are indistinguishable
+			 * without it. */
+			logstore_write("cixd", "info",
+			                "pki reset: %s owns no certificate under its own name, nothing "
+			                "to redeliver",
+			                names[i]);
 			continue;
+		}
 
 		snprintf(cert_dir_buf, sizeof(cert_dir_buf), PKI_CONTAINER_CERT_DIR);
 		def = containerdef_find(names[i]);
@@ -419,8 +448,13 @@ static void redeliver_pki_certs_after_reset(void)
 
 		derr = pki_cert_deliver(names[i], names[i], cert_dir_buf);
 		if (derr != PKI_OK)
-			fprintf(stderr, "%s: pki reset redelivery failed (err=%d)\n", names[i],
-			        (int)derr);
+			logstore_write("cixd", "error",
+			                "pki reset: redelivering %s's certificate into %s failed "
+			                "(err=%d) -- it is still holding one signed by the destroyed CA",
+			                names[i], cert_dir_buf, (int)derr);
+		else
+			logstore_write("cixd", "info", "pki reset: redelivered %s's certificate into %s",
+			                names[i], cert_dir_buf);
 	}
 }
 
