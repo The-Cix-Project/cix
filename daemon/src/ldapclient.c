@@ -199,24 +199,60 @@ struct ldap_conn {
 	SSL_CTX *ctx;
 };
 
-/* Writes the OpenSSL error queue to the log store, drained so a later
+/*
+ * Writes why a TLS step failed to the log store, drained so a later
  * failure cannot inherit this one's text. stderr is not enough: cixd
  * never mirrors it into the log store, and a TLS failure here is a
  * connect-class error that falls back to local authentication -- an
- * unexplained fallback is indistinguishable from a wrong password. */
-static void ldap_tls_log(const char *what, const char *host, int port)
+ * unexplained fallback is indistinguishable from a wrong password.
+ *
+ * ssl/rc are the failing SSL_connect()'s own, or NULL/0 for a step
+ * that has no SSL yet. They matter because an EMPTY error queue is a
+ * real and common outcome, not a rarity: measured on 192.168.15.95,
+ * 2026-09-12, pointing ldap_tls at glauth's PLAINTEXT port logged
+ * "no OpenSSL error queued" twice and named nothing an operator could
+ * act on. A plaintext peer answers a ClientHello with LDAP bytes (or
+ * a close), which surfaces as SSL_ERROR_SYSCALL with the real cause
+ * in errno and nothing in the queue at all. So the queue is reported
+ * when it has something, and SSL_get_error()+errno when it does not.
+ */
+static void ldap_tls_log(const char *what, const char *host, int port, SSL *ssl, int rc)
 {
 	unsigned long e = ERR_get_error();
 	char msg[256];
 
-	if (e == 0) {
-		logstore_write("ldap", "error", "%s to %s:%d failed (no OpenSSL error queued)", what,
-		                host, port);
+	if (e != 0) {
+		ERR_error_string_n(e, msg, sizeof(msg));
+		ERR_clear_error();
+		logstore_write("ldap", "error", "%s to %s:%d failed: %s", what, host, port, msg);
 		return;
 	}
-	ERR_error_string_n(e, msg, sizeof(msg));
-	logstore_write("ldap", "error", "%s to %s:%d failed: %s", what, host, port, msg);
-	ERR_clear_error();
+	if (ssl != NULL) {
+		int se = SSL_get_error(ssl, rc);
+		const char *name;
+
+		switch (se) {
+		case SSL_ERROR_SYSCALL:
+			/* The usual shape of "that port is not speaking TLS":
+			 * rc == 0 is a clean EOF from a peer that answered the
+			 * ClientHello with something else and hung up. */
+			logstore_write("ldap", "error",
+			                "%s to %s:%d failed: %s -- is that port serving TLS?", what,
+			                host, port,
+			                rc == 0 ? "connection closed during the handshake"
+			                         : strerror(errno));
+			return;
+		case SSL_ERROR_ZERO_RETURN: name = "peer closed the TLS session"; break;
+		case SSL_ERROR_WANT_READ:
+		case SSL_ERROR_WANT_WRITE: name = "timed out mid-handshake"; break;
+		default: name = "unknown TLS error"; break;
+		}
+		logstore_write("ldap", "error", "%s to %s:%d failed: %s (SSL_get_error=%d)", what,
+		                host, port, name, se);
+		return;
+	}
+	logstore_write("ldap", "error", "%s to %s:%d failed, with no error reported", what, host,
+	                port);
 }
 
 /* Adds every certificate in a PEM bundle to ctx's trust store. The
@@ -275,7 +311,7 @@ static int ldap_tls_start(struct ldap_conn *c, const char *host, int port, const
 
 	c->ctx = SSL_CTX_new(TLS_client_method());
 	if (c->ctx == NULL) {
-		ldap_tls_log("TLS context setup", host, port);
+		ldap_tls_log("TLS context setup", host, port, NULL, 0);
 		return -1;
 	}
 	SSL_CTX_set_min_proto_version(c->ctx, TLS1_2_VERSION);
@@ -291,7 +327,7 @@ static int ldap_tls_start(struct ldap_conn *c, const char *host, int port, const
 
 	c->ssl = SSL_new(c->ctx);
 	if (c->ssl == NULL || SSL_set_fd(c->ssl, c->fd) != 1) {
-		ldap_tls_log("TLS setup", host, port);
+		ldap_tls_log("TLS setup", host, port, NULL, 0);
 		return -1;
 	}
 	vp = SSL_get0_param(c->ssl);
@@ -301,22 +337,26 @@ static int ldap_tls_start(struct ldap_conn *c, const char *host, int port, const
 	}
 	if (is_ip) {
 		if (X509_VERIFY_PARAM_set1_ip_asc(vp, host) != 1) {
-			ldap_tls_log("TLS address verification setup", host, port);
+			ldap_tls_log("TLS address verification setup", host, port, NULL, 0);
 			return -1;
 		}
 	} else {
 		X509_VERIFY_PARAM_set_hostflags(vp, X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
 		if (X509_VERIFY_PARAM_set1_host(vp, host, 0) != 1) {
-			ldap_tls_log("TLS hostname verification setup", host, port);
+			ldap_tls_log("TLS hostname verification setup", host, port, NULL, 0);
 			return -1;
 		}
 		/* SNI only for a real name -- RFC 6066 forbids a literal
 		 * address in server_name, and glauth would reject it. */
 		SSL_set_tlsext_host_name(c->ssl, host);
 	}
-	if (SSL_connect(c->ssl) != 1) {
-		ldap_tls_log("TLS handshake", host, port);
-		return -1;
+	{
+		int rc = SSL_connect(c->ssl);
+
+		if (rc != 1) {
+			ldap_tls_log("TLS handshake", host, port, c->ssl, rc);
+			return -1;
+		}
 	}
 	return 0;
 }

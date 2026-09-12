@@ -512,6 +512,12 @@ int ldap_group_count(void);
  * module already depends on the registry for exactly that. Returns 1
  * when out holds a usable URI, 0 when there is nothing to point at.
  */
+/* The port the LDAP service is reachable on right now -- client_tls_port
+ * when client_tls is on, HOSTAUTH_LDAP_DEFAULT_PORT otherwise. Both the
+ * client URI above and cixd's own server-health probe read it, so the
+ * probe can never test a port the clients were not given (#416). */
+int ldap_client_port(void);
+
 int ldap_effective_client_uri(char *out, size_t out_size);
 
 #endif /* LDAP_SERVER_H */

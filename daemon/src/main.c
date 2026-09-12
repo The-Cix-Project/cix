@@ -4983,6 +4983,16 @@ static struct conn g_serverhealth_timer_conn;
 struct serverhealth_kind_spec {
 	const char *kind;
 	int port;
+	/* Non-NULL when the port is not a constant: the LDAP service moves
+	 * between its plaintext and TLS ports with ldap/config's own
+	 * client_tls (#416), and a probe fixed at the plaintext port went
+	 * on testing it after ldap-1/ldap-2 1.6.0 stopped serving it --
+	 * both servers reporting "connect: Connection refused" against a
+	 * door that had been deliberately closed. Consulted per sweep
+	 * rather than cached, since the setting is API-changeable while
+	 * the daemon runs. `port` is the fallback and stays meaningful:
+	 * 0 still means "no TCP service to probe". */
+	int (*port_now)(void);
 	int (*list)(char out[][REGISTRY_NAME_MAX], int max);
 };
 
@@ -5004,10 +5014,10 @@ static int serverhealth_list_syslog(char out[][REGISTRY_NAME_MAX], int max)
 }
 
 static const struct serverhealth_kind_spec g_serverhealth_kinds[] = {
-	{ "ldap", HOSTAUTH_LDAP_DEFAULT_PORT, serverhealth_list_ldap },
-	{ "dns", 53, serverhealth_list_dns },
-	{ "ntp", 0, serverhealth_list_ntp },
-	{ "syslog", 0, serverhealth_list_syslog },
+	{ "ldap", HOSTAUTH_LDAP_DEFAULT_PORT, ldap_client_port, serverhealth_list_ldap },
+	{ "dns", 53, NULL, serverhealth_list_dns },
+	{ "ntp", 0, NULL, serverhealth_list_ntp },
+	{ "syslog", 0, NULL, serverhealth_list_syslog },
 };
 
 /*
@@ -5161,6 +5171,7 @@ static void serverhealth_sweep(void)
 		const struct serverhealth_kind_spec *spec = &g_serverhealth_kinds[k];
 		char names[SERVERHEALTH_MAX][REGISTRY_NAME_MAX];
 		int count = spec->list(names, SERVERHEALTH_MAX);
+		int port = spec->port_now != NULL ? spec->port_now() : spec->port;
 		int i;
 
 		for (i = 0; i < count; i++) {
@@ -5168,18 +5179,18 @@ static void serverhealth_sweep(void)
 
 			if (!serverhealth_resolve_ip(names[i], ip, sizeof(ip))) {
 				serverhealth_record_result(spec->kind, names[i],
-				                            spec->port > 0 ? "tcp" : "process", 0,
+				                            port > 0 ? "tcp" : "process", 0,
 				                            "container is not running, or has no address");
 				continue;
 			}
-			if (spec->port == 0) {
+			if (port == 0) {
 				/* UDP service: the honest check available without
 				 * speaking its protocol is that its container is
 				 * genuinely up, and the record says exactly that. */
 				serverhealth_record_result(spec->kind, names[i], "process", 1, NULL);
 				continue;
 			}
-			serverhealth_start_tcp_probe(spec->kind, names[i], ip, spec->port);
+			serverhealth_start_tcp_probe(spec->kind, names[i], ip, port);
 		}
 	}
 }
