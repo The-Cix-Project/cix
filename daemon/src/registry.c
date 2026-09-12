@@ -1054,14 +1054,32 @@ int registry_device_holders(const char *device_id, char out[][DEVICE_HOLDER_NAME
 	return count;
 }
 
-void registry_write_json_list(struct json_writer *w)
+int registry_name_is_internal(const char *name)
 {
+	return name != NULL && name[0] == '_' && name[1] == '_';
+}
+
+void registry_write_json_list(struct json_writer *w, int include_internal, int *out_hidden)
+{
+	int hidden = 0;
 	int i;
 
 	jw_arr_open(w);
 	for (i = 0; i < REGISTRY_MAX_CONTAINERS; i++) {
-		if (g_entries[i].in_use)
-			registry_write_json_one(&g_entries[i], w);
+		if (!g_entries[i].in_use)
+			continue;
+		/*
+		 * #426: the platform's own build containers are excluded by
+		 * default. Up to max_concurrent_jobs of them exist at once --
+		 * ten on a real box -- so a busy host showed ten
+		 * machine-owned rows among a dozen real ones, with no way to
+		 * tell them apart except by reading the names.
+		 */
+		if (!include_internal && registry_name_is_internal(g_entries[i].name)) {
+			hidden++;
+			continue;
+		}
+		registry_write_json_one(&g_entries[i], w);
 	}
 	/*
 	 * Inactive-but-defined containers (ADR-0045, extended by ADR-0181's
@@ -1077,8 +1095,16 @@ void registry_write_json_list(struct json_writer *w)
 	 * registry is visible -- containerdef.c stays free of any
 	 * back-dependency on this module.
 	 */
+	/*
+	 * Inactive DEFS are never internal: a build container is registered
+	 * under a synthetic image and has no def at all ("a genuinely
+	 * def-less internal container", main.c's own stop handler), so
+	 * nothing here needs the filter above.
+	 */
 	containerdef_write_json_inactive_list(w, registry_name_is_live);
 	jw_arr_close(w);
+	if (out_hidden != NULL)
+		*out_hidden = hidden;
 }
 
 /* ------------------------------------------------------------------ */

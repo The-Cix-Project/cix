@@ -199,6 +199,22 @@
 		<!-- Containers -->
 		<section class="view" id="view-containers" hidden>
 			<div class="view-list">
+				<!--
+				  #426: the platform's own build containers are hidden by
+				  default. Up to max_concurrent_jobs of them exist at
+				  once -- ten on a real host -- so a busy box showed ten
+				  machine-owned rows among the operator's own. The
+				  choice is remembered per browser; the daemon does the
+				  filtering, so `cixctl container ls --all` is the same
+				  view from the CLI.
+				-->
+				<div class="list-toolbar">
+					<label class="inline-toggle">
+						<input type="checkbox" id="containers-show-internal">
+						Show the platform's own build containers
+					</label>
+					<span id="containers-hidden-note" class="hint-inline"></span>
+				</div>
 				<table id="containers">
 					<thead>
 						<tr>

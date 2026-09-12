@@ -2645,9 +2645,50 @@ function renderContainers(containers) {
 	}
 }
 
+/*
+ * #426: whether to show the platform's own build containers. Remembered
+ * per browser, default off -- the owner asked for off by default, and
+ * on a box with ten chain slots that is the difference between a dozen
+ * rows and twenty-two.
+ *
+ * localStorage in a try/catch because a private window or blocked site
+ * data makes the accessor itself throw, and the list must still render.
+ */
+function containersShowInternal() {
+	const box = document.getElementById("containers-show-internal");
+
+	if (box !== null)
+		return box.checked;
+	try {
+		return localStorage.getItem("cix-containers-show-internal") === "1";
+	} catch (e) {
+		return false;
+	}
+}
+
 async function refreshContainers() {
-	const data = await apiRequest("GET", CIX_API.listContainers());
+	const showInternal = containersShowInternal();
+	/* The daemon filters, not this function -- so `cixctl container ls`
+	 * sees exactly the same set and there is one definition of
+	 * "internal" rather than two (#426). */
+	const data = await apiRequest("GET", CIX_API.listContainers() +
+	    (showInternal ? "?include_internal=1" : ""));
+	const note = document.getElementById("containers-hidden-note");
+
 	cache.containers = data.containers;
+	/*
+	 * Say how many were left out. An operator watching a build who
+	 * cannot find __pkgbuild-0 should be told it is hidden, not left to
+	 * conclude the container is gone -- which is the wrong conclusion
+	 * to draw while debugging a build.
+	 */
+	if (note !== null) {
+		const hidden = Number(data.hidden_internal) || 0;
+
+		note.textContent = hidden > 0
+		    ? hidden + (hidden === 1 ? " platform container hidden" : " platform containers hidden")
+		    : "";
+	}
 	renderContainers(cache.containers);
 }
 
@@ -14011,6 +14052,27 @@ function boTickElapsed() {
 }
 
 setInterval(boTickElapsed, 1000);
+
+/* #426: restore the remembered choice, then refresh on every change. */
+document.addEventListener("DOMContentLoaded", () => {
+	const box = document.getElementById("containers-show-internal");
+
+	if (box === null)
+		return;
+	try {
+		box.checked = localStorage.getItem("cix-containers-show-internal") === "1";
+	} catch (e) {
+		/* no stored preference available -- the default (off) stands */
+	}
+	box.addEventListener("change", () => {
+		try {
+			localStorage.setItem("cix-containers-show-internal", box.checked ? "1" : "0");
+		} catch (e) {
+			/* the choice just will not survive a reload */
+		}
+		refreshContainers();
+	});
+});
 
 /*
  * #433: close the build-log viewer. Escape as well as the button,

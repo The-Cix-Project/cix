@@ -6,6 +6,47 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The platform's own containers are out of the container list by default (#426)
+
+`GET /v1/containers` returned every registry entry with no filtering, so while builds were running
+it listed `__pkgbuild-<chain index>` alongside the operator's containers -- one per chain slot, up
+to `max_concurrent_jobs`, which is **ten** on a real host. A busy box showed ten machine-owned
+rows among a dozen real ones, distinguishable only by reading the names.
+
+They are now excluded unless `?include_internal=1` asks for them, and the response carries
+`hidden_internal` saying how many were left out. That count is the part worth defending: an
+operator watching a build who cannot find `__pkgbuild-0` should be told it is hidden and that the
+parameter brings it back, not left to conclude the container is gone -- the wrong conclusion to
+draw while debugging a build.
+
+**The filter is on the endpoint, and that was the real decision in the issue rather than an
+implementation detail.** A dashboard-side filter was the obvious cheap move and would have given
+the web a view `cixctl container ls` could not have, while putting "what counts as internal" in
+two languages free to drift. So `registry_name_is_internal()` is the single definition, the
+endpoint owns the filtering, and both surfaces reach it the same way: `cixctl container ls --all`
+and the dashboard's *Show the platform's own build containers* toggle (remembered per browser,
+default off, as asked).
+
+Three things settled by reading rather than assuming:
+
+- **`__` is the right rule, and only one container ever matches it.** `PKG_BUILD_CONTAINER_NAME`
+  is `"__pkgbuild"`; `PKG_HOSTBUILD_IMAGE` (`"__hostbuild"`) and `"__buildenv-<hash>"` are *image*
+  names, so they never appear in a container list at all. A prefix rather than an exact list
+  because `__` is already this codebase's convention for a synthetic machine-owned name, so
+  anything added under it later is filtered without this having to learn its name.
+- **Inactive defs need no filter.** A build container is registered under a synthetic image and has
+  no def at all -- "a genuinely def-less internal container", in the stop handler's own words -- so
+  `containerdef_write_json_inactive_list()` can never emit one and only the live registry list
+  needed changing.
+- **Nothing depended on the old behaviour.** `test_pkg`'s `__pkgbuild` references read the *pkg
+  entry's* `build_container` field, not the list; and the tests that do list containers create
+  their own ordinary names, which no prefix rule touches. Reaching a build container directly by
+  name (#407's whole point) is unaffected -- this filters a listing, not a lookup.
+
+`show running-config` now excludes them unconditionally rather than by parameter: a `__pkgbuild-<n>`
+is a transient job the daemon created for itself and is gone by the time anyone replays the
+document, so including it only ever misled.
+
 ### A build says when it started and how long it has been going, the log viewer closes, and capacity reads as a proportion (#423, #433, #422)
 
 Three things the owner asked for while watching builds all afternoon.

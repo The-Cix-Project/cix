@@ -820,7 +820,36 @@ int registry_device_live_detach(struct registry_entry *e, const char *id,
 void registry_clear_pending_device(struct registry_entry *e, const char *ref);
 
 void registry_write_json_one(const struct registry_entry *entry, struct json_writer *w);
-void registry_write_json_list(struct json_writer *w);
+/*
+ * True for a container this platform owns rather than the operator
+ * (#426): the "__" prefix, which today means exactly the build
+ * containers, "__pkgbuild-<chain index>".
+ *
+ * One definition, because the filter has to be the same on every
+ * surface. A dashboard-side regex would have given the web a
+ * capability `cixctl container ls` does not have, and two regexes in
+ * two languages drift -- so this is the single answer to "is this
+ * ours", and both surfaces reach it through the endpoint's own query
+ * parameter.
+ *
+ * A prefix rather than an exact list on purpose: "__" is already this
+ * codebase's convention for a synthetic, machine-owned name
+ * (PKG_BUILD_CONTAINER_NAME, PKG_HOSTBUILD_IMAGE, "__buildenv-<hash>"),
+ * so anything added later under it is filtered without this having to
+ * learn its name. Note the last two are IMAGE names, not containers --
+ * only "__pkgbuild-<n>" ever appears in a container list.
+ */
+int registry_name_is_internal(const char *name);
+
+/*
+ * The container list. <include_internal> keeps the platform's own
+ * entries in (see registry_name_is_internal() above); when it is 0
+ * they are left out and, if <out_hidden> is non-NULL, counted there so
+ * the caller can say how many rather than letting them silently
+ * vanish -- an operator who cannot find __pkgbuild-0 while watching a
+ * build should be told it is hidden, not left to conclude it is gone.
+ */
+void registry_write_json_list(struct json_writer *w, int include_internal, int *out_hidden);
 
 /*
  * #356: the names of running containers whose device grants include

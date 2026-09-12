@@ -6817,14 +6817,43 @@ static void handle_hostproc_kill(int fd, const char *pid_str)
 	}
 }
 
-static void handle_list(int fd)
+static void handle_list(int fd, const char *path)
 {
 	struct json_writer w;
+	char flag[16];
+	int include_internal = 0;
+	int hidden = 0;
+
+	/*
+	 * #426: the platform's own containers are out by default, in on
+	 * request. The filter lives here rather than in each client
+	 * because API-First is absolute: a dashboard-side filter would
+	 * have given the web a view `cixctl container ls` could not have,
+	 * and the definition of "ours" would then exist twice.
+	 *
+	 * Accepts the spellings a person actually types -- 1/true/yes --
+	 * and treats anything else, including a bare ?include_internal=,
+	 * as false. A malformed value meaning "show me everything" would
+	 * be the wrong way round for a flag whose whole purpose is to
+	 * reduce what is shown.
+	 */
+	if (url_query_param(path, "include_internal", flag, sizeof(flag)) == 0 &&
+	    (strcmp(flag, "1") == 0 || strcmp(flag, "true") == 0 || strcmp(flag, "yes") == 0))
+		include_internal = 1;
 
 	jw_init(&w);
 	jw_obj_open(&w);
 	jw_key(&w, "containers");
-	registry_write_json_list(&w);
+	registry_write_json_list(&w, include_internal, &hidden);
+	/*
+	 * How many were left out, so they do not silently vanish. An
+	 * operator watching a build who cannot find __pkgbuild-0 should be
+	 * told it is hidden and how to ask for it, not left to conclude
+	 * the container is gone -- which is exactly the wrong conclusion
+	 * to draw while debugging a build.
+	 */
+	jw_key(&w, "hidden_internal");
+	jw_int(&w, hidden);
 	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
@@ -22641,7 +22670,7 @@ static void op_postSystemIso(const struct api_ctx *ctx)
 /* GET /v1/containers */
 static void op_listContainers(const struct api_ctx *ctx)
 {
-	handle_list(ctx->fd);
+	handle_list(ctx->fd, ctx->req->path);
 }
 
 /* POST /v1/containers */

@@ -377,6 +377,48 @@ int main(void)
 		 * reported would take the only remote way to check a rename
 		 * with it, and nothing else would notice.
 		 */
+		/*
+		 * #426: the container list excludes the platform's own entries
+		 * and says how many it left out.
+		 *
+		 * The VALUE cannot be asserted here -- a test daemon has no
+		 * build running, so nothing is hidden and hidden_internal is
+		 * 0. What is asserted is that the field exists and is a
+		 * number, and that include_internal is accepted rather than
+		 * rejected as an unknown parameter. The filter itself is
+		 * verified against a real __pkgbuild-N on a live host, which
+		 * is the only place one exists.
+		 *
+		 * Worth gating even so: this field is the only thing standing
+		 * between a hidden container and an operator concluding it is
+		 * gone, and a field that silently stopped being reported would
+		 * take that with it.
+		 */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "GET", "/v1/containers", NULL, &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: #426 GET containers, status=%d\n", r.status);
+			ok = 0;
+		} else {
+			const struct json_value *h = json_object_get(r.json, "hidden_internal");
+
+			if (h == NULL || h->type != JSON_NUMBER) {
+				fprintf(stderr, "FAIL: #426 containers has no numeric hidden_internal\n");
+				ok = 0;
+			}
+		}
+		cix_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "GET", "/v1/containers?include_internal=1", NULL, &r) !=
+		        0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: #426 include_internal=1 should be accepted, status=%d\n",
+			        r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "GET", "/v1/system/boot", NULL, &r) != 0 ||
 		    r.status != 200) {
