@@ -178,12 +178,21 @@ void pki_cert_forget_owner(const char *container_name);
  * (ADR-0013) for reaching into a running container from outside it.
  * One-time: unlike DNS server bindings, there is no live-resync
  * mechanism here -- a cert doesn't change after a container starts.
+ * `name` identifies the CERTIFICATE; `container_name` identifies the
+ * container whose tree is written into. They are separate because
+ * ADR-0280 lets a container be handed a cert named something else
+ * entirely -- they were equal for every caller before that, which is
+ * exactly why this function used to take one parameter for both and
+ * silently wrote to a nonexistent container's path when they differed
+ * (#397).
+ *
  * tls.crt is the real, complete chain a TLS server needs to present
  * (leaf + intermediate, in that order -- the standard fullchain.pem
  * convention) if an intermediate has been bootstrapped, the leaf
  * alone otherwise -- transparent to every existing caller.
  */
-enum pki_error pki_cert_deliver(const char *name, pid_t pid, const char *dest_dir);
+enum pki_error pki_cert_deliver(const char *name, const char *container_name, pid_t pid,
+                                 const char *dest_dir);
 
 /*
  * Wipes and regenerates the entire CA chain (root, plus the

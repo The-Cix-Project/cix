@@ -13789,7 +13789,8 @@ static int create_container_from_body(const char *body, size_t body_len,
 			        entry->name, (int)perr);
 		} else {
 			enum pki_error derr2 =
-			    pki_cert_deliver(entry->name, entry->handle.pid, pki_cert_dir_buf);
+			    pki_cert_deliver(entry->name, entry->name, entry->handle.pid,
+			                      pki_cert_dir_buf);
 
 			if (derr2 != PKI_OK)
 				fprintf(stderr,
@@ -13829,12 +13830,28 @@ static int create_container_from_body(const char *body, size_t body_len,
 	 */
 	if (pki_cert_buf[0] != '\0') {
 		enum pki_error derr3 =
-		    pki_cert_deliver(pki_cert_buf, entry->handle.pid, pki_cert_dir_buf);
+		    pki_cert_deliver(pki_cert_buf, entry->name, entry->handle.pid, pki_cert_dir_buf);
 
-		if (derr3 != PKI_OK)
+		/*
+		 * The log store, not just stderr. This daemon does not mirror
+		 * stderr into GET /v1/system/logs, so a stderr-only diagnostic
+		 * is invisible to every operator-facing surface -- which is
+		 * exactly how this failure presented when the delivery was
+		 * genuinely broken (#397, measured 2026-09-12): the container
+		 * came up, its own gate reported "was never delivered by the
+		 * PKI" 30 seconds later, and the daemon's reason for not
+		 * delivering existed nowhere an operator could read it. The
+		 * container says what it did not receive; only the daemon
+		 * knows why.
+		 */
+		if (derr3 != PKI_OK) {
+			logstore_write("pki", "err",
+			               "%s: pki_cert \"%s\" delivery into the container failed (err=%d)",
+			               entry->name, pki_cert_buf, (int)derr3);
 			fprintf(stderr,
 			        "%s: pki_cert \"%s\" delivery into the container failed (err=%d)\n",
 			        entry->name, pki_cert_buf, (int)derr3);
+		}
 	}
 
 	if (ldap_provision) {

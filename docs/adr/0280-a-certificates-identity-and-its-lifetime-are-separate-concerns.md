@@ -118,6 +118,22 @@ Conflating the two is what produced a correct implementation of the wrong thing.
   This is not an inconsistency: a fresh container instance starts with a fresh
   filesystem, so the file must be written again. `pki_issue` already relies on the
   same repetition for its `restart: "always"` respawns.
+- **`pki_cert_deliver()` needed its two names separated, and that was found by
+  deploying rather than by reasoning.** It took one `name` parameter and used it
+  both to find the certificate (`cert_find()`, the `g_certs_dir` paths) and to
+  locate the container's tree (`registry_find()`, `container_file_host_path()`).
+  Those were equal for the entire life of the function, because every caller
+  named the cert after the container it issued for — so the conflation was not
+  observable until this decision allowed them to differ. Delivering `jump-ssh`
+  into `jump` computed the host path of a container named `jump-ssh`, which does
+  not exist, and delivered nothing. Measured on 192.168.15.95, 2026-09-12: the
+  container started, its `waitkey` gate timed out after 30 seconds reporting the
+  key "was never delivered by the PKI", and the daemon's own reason reached only
+  stderr, which this platform does not mirror into the log store — so the
+  container could say what it did not receive and nothing could say why. The
+  signature now takes both names, and the delivery failure is written to the log
+  store. `test_pki`'s cert and container names deliberately differ and would
+  have caught this; it is not in `SELFTESTS` (#224), so it did not run.
 - The operator now owns a real lifecycle decision: nothing deletes an unowned
   certificate automatically, so retiring a service means deleting its certificate
   deliberately.
