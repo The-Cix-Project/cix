@@ -12503,9 +12503,10 @@ static int cmd_ldap_config_set(const struct cix_client *c, int json_mode, int ar
 			char path[256];
 			int tries;
 
-			snprintf(path, sizeof(path), "/v1/containers/%s/stop", names[k]);
+			snprintf(path, sizeof(path), CIX_API_stopContainer, names[k]);
 			memset(&sr, 0, sizeof(sr));
-			if (cix_client_request(c, "POST", path, NULL, &sr) != 0 || sr.status / 100 != 2) {
+			if (cix_client_request(c, CIX_API_stopContainer_METHOD, path, NULL, &sr) != 0 ||
+			    sr.status / 100 != 2) {
 				fprintf(stderr, "cixctl: stopping %s failed (HTTP %d) -- stopping here, "
 				                 "later servers left running\n",
 				        names[k], sr.status);
@@ -12518,10 +12519,11 @@ static int cmd_ldap_config_set(const struct cix_client *c, int json_mode, int ar
 			 * start can legitimately 409 for a moment ("ip is held by
 			 * ... still shutting down"). Retried rather than reported,
 			 * because it is the expected path, not a failure. */
-			snprintf(path, sizeof(path), "/v1/containers/%s/start", names[k]);
+			snprintf(path, sizeof(path), CIX_API_startContainer, names[k]);
 			for (tries = 0; tries < 40; tries++) {
 				memset(&sr, 0, sizeof(sr));
-				if (cix_client_request(c, "POST", path, NULL, &sr) == 0 &&
+				if (cix_client_request(c, CIX_API_startContainer_METHOD, path, NULL, &sr) ==
+				        0 &&
 				    sr.status / 100 == 2) {
 					cix_response_free(&sr);
 					break;
