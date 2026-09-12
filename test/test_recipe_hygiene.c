@@ -59,6 +59,39 @@ static const char *const g_stale_comment[] = {
 };
 #define STALE_COUNT ((int)(sizeof(g_stale_comment) / sizeof(g_stale_comment[0])))
 
+/*
+ * The eight revisions that carry command substitution in a pkg_* value
+ * (#408), used here as a POSITIVE CONTROL: the gate must flag every
+ * one of them.
+ *
+ * A gate is only worth its line count if it is known to fire. This one
+ * scans latest revisions, all eight of these are superseded, and so it
+ * passes the moment it is written -- which is exactly the shape that
+ * hides a predicate that has quietly stopped matching anything. The
+ * lesson is this project's own, learned by shipping regression tests
+ * that could not have failed: reintroduce the bug and prove the test
+ * catches it.
+ *
+ * These make that proof permanent rather than a thing someone did once.
+ * They are the real files, unchanged, and they cannot change: a
+ * published revision is immutable (ADR-0107) and every one is already
+ * superseded, so nothing will ever bump them out from under this. If a
+ * future edit breaks the escape handling or the column-0 rule, these
+ * fail instead of the gate silently going blind.
+ */
+static const char *const g_substitution_fixture[] = {
+	"recipes/package/glibc/2.44-15/build.sh",
+	"recipes/package/iproute2/6.18.0-5/build.sh",
+	"recipes/package/iproute2/6.18.0-9/build.sh",
+	"recipes/package/libcap/2.78-9/build.sh",
+	"recipes/package/probe-test-pki/2/build.sh",
+	"recipes/package/tcc/0.9.28rc-21/build.sh",
+	"recipes/package/tcc/0.9.28rc-22/build.sh",
+	"recipes/package/zstd/1.5.7-2/build.sh",
+};
+#define SUBSTITUTION_FIXTURE_COUNT \
+	((int)(sizeof(g_substitution_fixture) / sizeof(g_substitution_fixture[0])))
+
 static int g_failures;
 
 static void fail(const char *fmt, ...)
@@ -186,12 +219,24 @@ static int substitution_in_pkg_value(const char *path, char *out_field, size_t f
                                      char *out_what, size_t what_size)
 {
 	FILE *f = fopen(path, "r");
-	char line[8192];
+	char *line = NULL;
+	size_t line_cap = 0;
 	int found = 0;
 
 	if (f == NULL)
 		return 0;
-	while (!found && fgets(line, sizeof(line), f) != NULL) {
+	/*
+	 * getline(), not a fixed buffer. Measured 2026-09-12: twenty
+	 * pkg_* lines in this tree are longer than 8191 characters and
+	 * the longest is 20152 (tcc@0.9.28rc-29's changelog, which IS a
+	 * latest revision this scans). fgets() would split such a line,
+	 * the continuation would not start with "pkg_", and the rest of
+	 * it would go unexamined -- a silent false negative on precisely
+	 * the packages whose changelogs are long enough to quote a shell
+	 * error, which is where this bug happened twice. Same reason
+	 * logstore.c:552 reads with getline().
+	 */
+	while (!found && getline(&line, &line_cap, f) > 0) {
 		const char *eq;
 		size_t i;
 
@@ -224,6 +269,7 @@ static int substitution_in_pkg_value(const char *path, char *out_field, size_t f
 			}
 		}
 	}
+	free(line);
 	fclose(f);
 	return found;
 }
@@ -281,7 +327,8 @@ static void scan_credentials(const char *dir)
 		char path[2048];
 		struct stat st;
 		FILE *f;
-		char line[4096];
+		char *line = NULL;
+		size_t line_cap = 0;
 		int ln = 0;
 
 		if (ent->d_name[0] == '.')
@@ -296,7 +343,19 @@ static void scan_credentials(const char *dir)
 		f = fopen(path, "r");
 		if (f == NULL)
 			continue;
-		while (fgets(line, sizeof(line), f) != NULL) {
+		/*
+		 * getline(), because this one is a security gate and a fixed
+		 * buffer gave it a blind spot. Measured 2026-09-12: 38 lines
+		 * in this tree are longer than 4095 characters, so a token
+		 * pasted past that point on a long pkg_changelog line was
+		 * simply not examined -- fgets() hands back the first 4095
+		 * bytes and the remainder arrives as a separate "line" this
+		 * loop scans, which happens to be why it was not a total
+		 * miss, but the URL and the token could land either side of
+		 * the split and neither fragment would match. A gate with a
+		 * length limit is a gate with a way past it.
+		 */
+		while (getline(&line, &line_cap, f) > 0) {
 			ln++;
 			if (looks_like_credential(line))
 				fail("%s:%d carries what looks like a credential in a URL.\n"
@@ -306,6 +365,7 @@ static void scan_credentials(const char *dir)
 				     "       reach the daemon, with no authentication (#405).",
 				     path, ln);
 		}
+		free(line);
 		fclose(f);
 	}
 	closedir(d);
@@ -320,6 +380,35 @@ int main(void)
 	if (d == NULL) {
 		fprintf(stderr, "FAIL: cannot open recipes/package -- run from the repository root\n");
 		return 1;
+	}
+
+	/*
+	 * The positive control first, so a blind predicate fails loudly
+	 * before the scan below reports a clean sweep it did not earn.
+	 */
+	{
+		int i;
+
+		for (i = 0; i < SUBSTITUTION_FIXTURE_COUNT; i++) {
+			char field[256] = "", what[32] = "";
+			struct stat fst;
+
+			if (stat(g_substitution_fixture[i], &fst) != 0) {
+				fail("positive control missing: %s.\n"
+				     "       These are immutable published revisions (ADR-0107) and should\n"
+				     "       never disappear. If one genuinely had to go, delete it here and\n"
+				     "       lower SUBSTITUTION_FIXTURE_COUNT with it -- do not leave the\n"
+				     "       control unable to run.",
+				     g_substitution_fixture[i]);
+				continue;
+			}
+			if (!substitution_in_pkg_value(g_substitution_fixture[i], field, sizeof(field),
+			                               what, sizeof(what)))
+				fail("positive control FAILED: %s carries command substitution in a pkg_*\n"
+				     "       value and the check did not flag it. The gate is blind -- every\n"
+				     "       \"clean\" result below is meaningless until this passes (#408).",
+				     g_substitution_fixture[i]);
+		}
 	}
 
 	while ((ent = readdir(d)) != NULL) {
