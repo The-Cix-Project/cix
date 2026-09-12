@@ -76,14 +76,7 @@ A failed handshake is a connect-class failure, so the next configured server is 
 
 **4. Then, and only then, the plaintext listener comes down.** With every client population on LDAPS — the containers via `effective_client_uri`, the daemon via `ldap_tls` — `ldap-1`/`ldap-2` at 1.6.0 set `[ldap] enabled = false` and keep only `[ldaps]` on 636. Verified on 192.168.15.95, 2026-09-12: an `ldapsearch` bind over `ldaps://…:636` succeeds against both servers, the same bind over `ldap://…:3893` is refused by both, and `id claude` inside `jump` still resolves through nslcd. Order matters here in one direction only — turning 3893 off before the clients moved would have broken authentication, while leaving it on after they moved only left an unused door open.
 
-**Applying 1.6.0 means recreating the container, and recreation currently leaves the server with no user records at all** — every bind fails `invalidCredentials` until the next unrelated directory write re-renders the set ([#418](https://git.home.arpa/itdlabs/cix/issues/418)). Trigger one deliberately right afterwards rather than waiting to be surprised by it:
-
-```sh
-cixctl ldap group add --name=rerender-probe --gidnumber=19999
-cixctl ldap group rm rerender-probe
-```
-
-Do one server at a time, so the other keeps serving while you do. This step goes away when #418 is fixed.
+Applying 1.6.0 means recreating the container. Do one server at a time, so the other keeps serving while you do. The recreated server comes back with the record set already rendered into its config — it did not before v2.57.113, which is [#418](https://git.home.arpa/itdlabs/cix/issues/418): a recreated LDAP server came up with no user records and refused every bind with `invalidCredentials` while looking perfectly healthy.
 
 ### An identity that must outlive the container: `--pki-cert`
 
