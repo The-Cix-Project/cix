@@ -193,14 +193,19 @@ static void print_usage(FILE *out)
 	        "      [--client-tls | --no-client-tls]\n"
 	        "      [--server-plaintext | --no-server-plaintext] [--server-plaintext-port=N]\n"
 	        "      [--server-tls | --no-server-tls] [--server-tls-port=N]\n"
+	        "      [--restart-servers]\n"
 	        "               -- only the flags given change. The --server-* flags (#419) are\n"
-	        "               rendered into every registered server's own glauth config and\n"
-	        "               picked up by its config watcher, so turning a listener on or off\n"
-	        "               is one call -- no recipe edit, no container recreate. Until the\n"
-	        "               first --server-* flag is set, `listeners_managed` is false and\n"
-	        "               each server's own config still decides. --client-tls selects\n"
-	        "               WHICH enabled listener clients are pointed at, and is refused if\n"
-	        "               that listener is off; the daemon's own bind is a separate switch\n"
+	        "               rendered into every registered server's own glauth config, and\n"
+	        "               into what is staged for it on its next start. glauth binds its\n"
+	        "               listeners at STARTUP and its config watcher reloads only records,\n"
+	        "               so a listener change reaches a running server when it restarts:\n"
+	        "               --restart-servers does that, one at a time, each back before the\n"
+	        "               next is touched. Off by default -- this is the directory that\n"
+	        "               authenticates the control plane. Until the first --server-* flag\n"
+	        "               is set, `listeners_managed` is false and each server's own config\n"
+	        "               still decides. --client-tls selects WHICH enabled listener\n"
+	        "               clients are pointed at, and is refused if that listener is off;\n"
+	        "               the daemon's own bind is a separate switch\n"
 	        "               (`hostauth-config set --ldap-tls`, #416)\n"
 	        "  login [--username=NAME] [--password=PASS]  -- ADR-0144: authenticates against\n"
 	        "               the daemon's own host-auth backend (prompts for whichever of\n"
@@ -12333,6 +12338,7 @@ static int cmd_ldap_config_set(const struct cix_client *c, int json_mode, int ar
 	/* #419: which listeners the SERVERS run. Same -1 sentinel. */
 	int server_plaintext = -1, server_tls = -1;
 	long server_plaintext_port = -1, server_tls_port = -1;
+	int restart_servers = 0;
 	int i;
 	struct json_writer w;
 	struct cix_response r;
@@ -12366,6 +12372,8 @@ static int cmd_ldap_config_set(const struct cix_client *c, int json_mode, int ar
 			server_tls = 0;
 		else if (strncmp(argv[i], "--server-tls-port=", 18) == 0)
 			server_tls_port = strtol(argv[i] + 18, NULL, 10);
+		else if (strcmp(argv[i], "--restart-servers") == 0)
+			restart_servers = 1;
 		else {
 			fprintf(stderr, "cixctl: unknown ldap config set option '%s'\n", argv[i]);
 			return 2;
@@ -12381,7 +12389,8 @@ static int cmd_ldap_config_set(const struct cix_client *c, int json_mode, int ar
 		        "       [--client-tls | --no-client-tls]\n"
 		        "       [--server-plaintext | --no-server-plaintext] "
 		        "[--server-plaintext-port=N]\n"
-		        "       [--server-tls | --no-server-tls] [--server-tls-port=N]\n");
+		        "       [--server-tls | --no-server-tls] [--server-tls-port=N]\n"
+		        "       [--restart-servers]\n");
 		return 2;
 	}
 	if ((start_uid < 0) != (start_gid < 0)) {
@@ -12442,6 +12451,94 @@ static int cmd_ldap_config_set(const struct cix_client *c, int json_mode, int ar
 		return 1;
 	}
 	jw_free(&w);
+
+	/*
+	 * #419: glauth binds its listeners at startup, and its config
+	 * watcher reloads only the record datastore -- so a listener change
+	 * reaches a RUNNING server only when that server restarts and
+	 * re-reads the (now managed) config staged for it. Opt-in and off
+	 * by default, because this is the directory that authenticates the
+	 * control plane and a plain config PUT should never disrupt it.
+	 *
+	 * Sequenced deliberately: one server at a time, each brought back
+	 * before the next is touched, so a healthy replica is always
+	 * serving. Composed from the stop/start endpoints rather than a new
+	 * one -- the capability already exists over REST, and this is the
+	 * client sequencing it, the same way `hostauth-config set` composes
+	 * a GET and a PUT.
+	 */
+	if (restart_servers && r.status == 200) {
+		struct cix_response sr;
+		char names[8][128];
+		int count = 0, k;
+
+		cix_response_free(&r);
+		memset(&sr, 0, sizeof(sr));
+		if (cix_client_request(c, CIX_API_listLdapServers_METHOD, CIX_API_listLdapServers,
+		                        NULL, &sr) != 0 ||
+		    sr.status != 200) {
+			fprintf(stderr, "cixctl: config saved, but listing LDAP servers failed (HTTP %d) "
+			                 "-- nothing was restarted\n",
+			        sr.status);
+			cix_response_free(&sr);
+			return 1;
+		}
+		{
+			const struct json_value *arr = json_object_get(sr.json, "servers");
+			size_t j;
+
+			if (arr != NULL && arr->type == JSON_ARRAY) {
+				for (j = 0; j < arr->u.array.count && count < 8; j++) {
+					const char *n =
+					    json_str_field(arr->u.array.items[j], "container");
+
+					if (n != NULL)
+						snprintf(names[count++], sizeof(names[0]), "%s", n);
+				}
+			}
+		}
+		cix_response_free(&sr);
+
+		for (k = 0; k < count; k++) {
+			char path[256];
+			int tries;
+
+			snprintf(path, sizeof(path), "/v1/containers/%s/stop", names[k]);
+			memset(&sr, 0, sizeof(sr));
+			if (cix_client_request(c, "POST", path, NULL, &sr) != 0 || sr.status / 100 != 2) {
+				fprintf(stderr, "cixctl: stopping %s failed (HTTP %d) -- stopping here, "
+				                 "later servers left running\n",
+				        names[k], sr.status);
+				cix_response_free(&sr);
+				return 1;
+			}
+			cix_response_free(&sr);
+
+			/* A stop releases the container's IP asynchronously, so the
+			 * start can legitimately 409 for a moment ("ip is held by
+			 * ... still shutting down"). Retried rather than reported,
+			 * because it is the expected path, not a failure. */
+			snprintf(path, sizeof(path), "/v1/containers/%s/start", names[k]);
+			for (tries = 0; tries < 40; tries++) {
+				memset(&sr, 0, sizeof(sr));
+				if (cix_client_request(c, "POST", path, NULL, &sr) == 0 &&
+				    sr.status / 100 == 2) {
+					cix_response_free(&sr);
+					break;
+				}
+				cix_response_free(&sr);
+				usleep(500000);
+			}
+			if (tries == 40) {
+				fprintf(stderr, "cixctl: %s did not come back after its stop -- start it "
+				                 "manually before touching the remaining servers\n",
+				        names[k]);
+				return 1;
+			}
+			printf("restarted %s\n", names[k]);
+		}
+		return 0;
+	}
 
 	return emit(&r, json_mode, fmt_ldap_config_line);
 }

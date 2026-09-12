@@ -35,14 +35,20 @@ both verified:
    re-render lands after it. Restarting therefore does not help either: verified with a real
    stop/start of `ldap-1`, after which the config read `enabled = true` and 3893 was still refused.
 
-So the API, the validation, the guards and the render are in; what is missing is making a running
-glauth adopt the value. That needs the render to happen during staging, before `clone3()` — the same
-ordering fix `pki_cert_deliver()` needed in #414 — plus a deliberate restart of each registered server
-when a listener changes. The restart is a real disruption to the service that authenticates the
-control plane, so it is a decision rather than an implementation detail, and #419 stays open for it.
+Both are fixed. The render also runs during **staging**, before `clone3()` — the same ordering
+`pki_cert_deliver()` needed in #414, for the same reason: a service reads its identity once, at
+startup. Every path that brings a container up replays that body, so a create, a restart, an autostart
+and a rolling rebuild all stage the managed value instead of the recipe's.
 
-Nothing regressed: the box's listeners are exactly as #416 left them, and `listeners_managed` is what
-guaranteed that.
+A running server adopts a listener change when it restarts, and **`cixctl ldap config set
+--restart-servers`** does that one at a time, each back before the next is touched. Off by default,
+decided with the owner: this is the directory that authenticates the control plane, and a plain config
+PUT should not disrupt it. Composed from the existing stop/start endpoints rather than a new one — the
+capability is already in the API and this is the client sequencing it, the same way `hostauth-config
+set` composes a GET and a PUT, so there is no second implementation of "how a container stops".
+
+Nothing regressed while this was being found: the box's listeners stayed exactly as #416 left them, and
+`listeners_managed` is what guaranteed that.
 
 **`client_tls_port` is gone.** There is one port per listener, and the port clients are given *is* the
 server's own — `ldap_client_port()` returns `server_tls_port` or `server_plaintext_port`. It existed

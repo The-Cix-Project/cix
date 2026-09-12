@@ -1527,6 +1527,32 @@ static int rewrite_listeners(const char *prefix, size_t prefix_len, char **out_b
 	return 1;
 }
 
+/*
+ * Public form of rewrite_listeners(), for staging (#419).
+ *
+ * The render below reaches a container that is already running, and
+ * that is not enough on its own: glauth binds its listeners at startup
+ * and its config watcher reloads only the record datastore, so a
+ * listener written into a live config is not adopted. Worse, a restart
+ * re-stages files[] from the persisted definition -- the recipe's own
+ * value -- and resync_managed_services() runs after the container is
+ * already up, so the re-render always lands after glauth has read its
+ * config. Both measured on 192.168.15.95, v2.57.114: `[ldap] enabled`
+ * read true in both live configs while 3893 stayed refused, and a real
+ * stop/start of ldap-1 did not change that.
+ *
+ * So the values are rendered into the staged content too, before
+ * clone3(), which is the same ordering fix pki_cert_deliver() needed in
+ * #414. Returns 1 with *out_buf/*out_len set (caller frees), 0 when
+ * there is nothing to do (listeners unmanaged, or empty content), -1 on
+ * allocation failure.
+ */
+int ldap_render_listeners(const char *content, size_t content_len, char **out_buf,
+                          size_t *out_len)
+{
+	return rewrite_listeners(content, content_len, out_buf, out_len);
+}
+
 static int ldap_write_config_file(const char *full_path)
 {
 	char *current = NULL;

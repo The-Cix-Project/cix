@@ -567,6 +567,16 @@ int ldap_group_count(void);
  * given (#416). */
 int ldap_client_port(void);
 
+/* #419: applies the managed [ldap]/[ldaps] values to a glauth config's
+ * text, for staging it into a container BEFORE clone3() -- glauth binds
+ * its listeners at startup and its config watcher does not, so a value
+ * written into a live config is never adopted. Returns 1 with
+ * *out_buf/*out_len set (caller frees), 0 when there is nothing to do
+ * (listeners not managed yet, or empty content), -1 on allocation
+ * failure. */
+int ldap_render_listeners(const char *content, size_t content_len, char **out_buf,
+                          size_t *out_len);
+
 int ldap_effective_client_uri(char *out, size_t out_size);
 
 #endif /* LDAP_SERVER_H */
