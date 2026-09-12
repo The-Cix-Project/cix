@@ -571,7 +571,10 @@ static void fmt_boot(const struct json_value *v)
 		for (i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
 			const char *dev = json_str_field(pd, keys[i]);
 
-			printf("%-8s %s\n", keys[i], (dev != NULL && dev[0] != '\0') ? dev : "(not found)");
+			/* 11, not 8: "containers" is ten characters and an
+			 * under-width field silently stops aligning rather than
+			 * truncating, which is what shipped in v2.57.127. */
+			printf("%-11s%s\n", keys[i], (dev != NULL && dev[0] != '\0') ? dev : "(not found)");
 		}
 	}
 }
