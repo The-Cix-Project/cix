@@ -6,6 +6,36 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A booted box can be moved to any interface, address, subnet or gateway
+
+Asked for directly: *"I want it so that a machine that's booted (not from the ISO), we can switch the binding of cixd around."* It could not be done. `NET_CONF_PATH` appeared exactly twice in `daemon/src/main.c` — the `#define` and one parse at boot. `cix-install` wrote `net.conf` once; nothing in the daemon ever wrote it. So an installed box's management address was fixed at install time, and the installer's own "cixd will answer on 127.0.0.1 until one is set" named a setting path that did not exist.
+
+`GET`/`PUT /v1/system/management-network` and `cixctl management-network show|set` now carry the four values a booted box comes up on — interface, address, prefix, gateway. The change applies live and is then persisted, in that order, so a box that answers after the call is a box that answers after a reboot; if a step fails after the listeners have moved, `net.conf` is deliberately not written, leaving the box reachable now and returning to the last working configuration on reboot.
+
+On a box with no management network, this creates one — the primary path for an install done with a blank interface, and the other half of the installer's offer to defer the decision.
+
+Refused before anything moves: a malformed address, a prefix outside 8–30, the subnet or broadcast address, `0.0.0.0/8` or `127.0.0.0/8` (loopback is a fine thing to be *bound* to but cannot be a management *network* — it cannot carry an uplink and there is nothing to route), an interface the kernel does not have, a gateway outside the new subnet or equal to the new address, and — when the subnet itself changes — containers still attached to the management network, which the refusal names. Moving within the same subnet is never blocked on that ground.
+
+Reuses what already existed rather than growing a parallel path: `rebind_listener()` for the live socket move, and ADR-0068's `CONN_BIND_IP_CLEANUP` timer to drop the superseded address a couple of seconds later — removing it synchronously strands the client whose connection has that very address as its local endpoint, which ADR-0068 measured. One new primitive, `network_set_address()`, re-addresses a network in place rather than creating a replacement, so a box that moves three times does not accumulate three networks.
+
+`net.conf`'s format moved into `daemon/src/netconf.c`, linked by both `cixd` and `cix-install`. It had been defined twice — a `snprintf()` in the installer, a static parser in the daemon — which was survivable only while there was exactly one writer; adding a second without unifying it would have been two definitions of one file in two programs. The write is atomic (temp file, `fsync`, `rename`), since a half-written `net.conf` is a box that does not come back.
+
+See [ADR-0283](docs/adr/0283-the-management-address-is-changeable-on-a-running-box.md).
+
+### The installer forces mkfs.btrfs, so installing over a used disk works
+
+A real bare-metal install onto an `nvme0n1` that already carried a Windows layout partitioned cleanly and then died:
+
+```
+/dev/nvme0n1p4 appears to contain an existing filesystem ...
+ERROR: use the -f option to force overwrite
+mkfs.btrfs failed (status 0x100)
+```
+
+`sfdisk` writes a new partition table but does not erase filesystem signatures inside the extents it hands out, so any install over a previously-used disk hits this — which is most of them.
+
+The daemon had already found and fixed this exact bug in `diskformat.c`, quoting btrfs-progs' own option table (`OPTLINE("-f, --force", ...)`) and its `test_dev_for_mkfs(file, force_overwrite)`. The installer kept a copy of the disproven claim: *"No force flag: mkfs.btrfs always overwrites an existing signature when run non-interactively ... no `-F` equivalent exists to pass."* The flag is lowercase `-f`; `-F` is ext4's spelling, which is what made "no `-F` equivalent" read as true. Both the code and the comment are fixed — the comment was the thing that stopped anyone checking.
+
 ### Every tool the installer runs is finally visible on the screen (bare-metal install)
 
 A real bare-metal install failed with:

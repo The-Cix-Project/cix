@@ -95,6 +95,14 @@ Omitting `--skip-partition` is the default: `cix-install` writes the layout itse
 
 It then formats, writes the system, and reboots into a running `cixd` at the IP you gave it — reachable at that address directly (`cixd` binds to the exact IP given via `--ip=`, not just loopback).
 
+**You can also install with no network at all.** Leave the interface blank (or pick `lo`) and the box comes up running, answering on `127.0.0.1`, with no address committed to. Set one once it has booted, from the console:
+
+```
+cixctl management-network set --interface=eth0 --ip=192.168.15.95 --prefix=24 --gateway=192.168.15.1
+```
+
+That applies immediately and persists, so the box comes back on it after a reboot — and it is the same command for moving an already-addressed box to a different interface, address or subnet later ([ADR-0283](../adr/0283-the-management-address-is-changeable-on-a-running-box.md)). This is useful when the machine's NIC driver is a kernel module the installer has not loaded yet, so the port you want is not in the installer's list: install on loopback, boot, and set it then, when every driver is present.
+
 ### Installing over a serial console
 
 Fully supported, and often the only console a rack or hypervisor VM offers. Both

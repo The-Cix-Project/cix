@@ -283,6 +283,11 @@ static void print_usage(FILE *out)
 	        "  site set [--instance-name=NAME] [--site-name=NAME] [--domain-suffix=NAME]\n"
 	        "  daemon-config show  -- cixd's own listen port, HTTP/HTTPS exposure, and\n"
 	        "               which network is currently its management one\n"
+	        "  management-network show  -- the interface/address/prefix/gateway this box\n"
+	        "                              answers on, live and across reboots\n"
+	        "  management-network set --ip=A.B.C.D --prefix=N [--interface=IF]\n"
+	        "                         [--gateway=A.B.C.D | --no-gateway]\n"
+	        "                         -- move cixd to another interface, address or subnet\n"
 	        "  daemon-config set [--port=N] [--https-port=N] [--enable-http] [--disable-http]\n"
 	        "               [--enable-https] [--disable-https] [--management-network=NAME]\n"
 	        "               [--bind-ip=A.B.C.D | --clear-bind-ip]\n"
@@ -7317,6 +7322,147 @@ static int cmd_site(const struct cix_client *c, int json_mode, int argc, char **
 		return cmd_site_set(c, json_mode, argc - 1, argv + 1);
 
 	fprintf(stderr, "cixctl: unknown site subcommand '%s'\n", sub);
+	return 2;
+}
+
+static void fmt_management_network(const struct json_value *v)
+{
+	const struct json_value *jconf = json_object_get(v, "configured");
+	const char *iface = json_str_field(v, "interface");
+	const char *ip = json_str_field(v, "ip");
+	const char *gw = json_str_field(v, "gateway");
+	const char *net = json_str_field(v, "network");
+	int configured = jconf != NULL && jconf->type == JSON_BOOL && jconf->u.boolean;
+
+	if (!configured) {
+		printf("no management network configured -- cixd is answering on its loopback "
+		       "default\n");
+		printf("  set one with: cixctl management-network set --interface=IF --ip=A.B.C.D "
+		       "--prefix=N\n");
+		return;
+	}
+	printf("interface=%s ip=%s/%ld gateway=%s network=%s\n", iface != NULL ? iface : "?",
+	       ip != NULL ? ip : "?", (long)json_as_number(json_object_get(v, "prefix")),
+	       (gw != NULL && gw[0] != '\0') ? gw : "(none -- no default route)",
+	       net != NULL ? net : "?");
+}
+
+static int cmd_management_network_show(const struct cix_client *c, int json_mode)
+{
+	struct cix_response r;
+
+	if (cix_client_request(c, CIX_API_getManagementNetwork_METHOD, CIX_API_getManagementNetwork,
+	                        NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_management_network);
+}
+
+/*
+ * Sends only what was given. ip and prefix are required by the contract
+ * -- they are the address being moved to, and there is no sensible
+ * "keep the current one" for the one field the whole command exists to
+ * change. interface and gateway are genuinely optional server-side and
+ * are omitted when not given, which means "keep".
+ *
+ * --no-gateway sends an explicit null, which is how an operator removes
+ * a default route: a box reachable only on its own subnet. Omitting
+ * --gateway= entirely keeps whatever is persisted, so the two cannot be
+ * the same flag.
+ */
+static int cmd_management_network_set(const struct cix_client *c, int json_mode, int argc,
+                                      char **argv)
+{
+	const char *ip = NULL;
+	const char *prefix = NULL;
+	const char *iface = NULL;
+	const char *gateway = NULL;
+	int no_gateway = 0;
+	int i;
+	struct json_writer w;
+	struct cix_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--ip=", 5) == 0)
+			ip = argv[i] + 5;
+		else if (strncmp(argv[i], "--prefix=", 9) == 0)
+			prefix = argv[i] + 9;
+		else if (strncmp(argv[i], "--interface=", 12) == 0)
+			iface = argv[i] + 12;
+		else if (strncmp(argv[i], "--gateway=", 10) == 0)
+			gateway = argv[i] + 10;
+		else if (strcmp(argv[i], "--no-gateway") == 0)
+			no_gateway = 1;
+		else {
+			fprintf(stderr, "cixctl: unknown management-network set option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (gateway != NULL && no_gateway) {
+		fprintf(stderr, "cixctl: --gateway= and --no-gateway are mutually exclusive\n");
+		return 2;
+	}
+	if (ip == NULL || prefix == NULL) {
+		fprintf(stderr, "usage: cixctl management-network set --ip=A.B.C.D --prefix=N "
+		                "[--interface=IF] [--gateway=A.B.C.D | --no-gateway]\n");
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "ip");
+	jw_str(&w, ip);
+	jw_key(&w, "prefix");
+	jw_int(&w, atol(prefix));
+	if (iface != NULL) {
+		jw_key(&w, "interface");
+		jw_str(&w, iface);
+	}
+	if (gateway != NULL) {
+		jw_key(&w, "gateway");
+		jw_str(&w, gateway);
+	} else if (no_gateway) {
+		jw_key(&w, "gateway");
+		jw_null(&w);
+	}
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	/*
+	 * The daemon rebinds to the new address before replying, and it
+	 * replies over this same already-accepted connection (that ordering
+	 * is the daemon's, see ADR-0068) -- so this request completes
+	 * normally even though the address it was sent to is on its way
+	 * out. Subsequent commands need --host= pointed at the new address.
+	 */
+	if (cix_client_request(c, CIX_API_putManagementNetwork_METHOD, CIX_API_putManagementNetwork,
+	                        w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+
+	return emit(&r, json_mode, fmt_management_network);
+}
+
+static int cmd_management_network(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: cixctl management-network show\n"
+		                "       cixctl management-network set --ip=A.B.C.D --prefix=N "
+		                "[--interface=IF] [--gateway=A.B.C.D | --no-gateway]\n");
+		return 2;
+	}
+	sub = argv[0];
+	if (strcmp(sub, "show") == 0)
+		return cmd_management_network_show(c, json_mode);
+	if (strcmp(sub, "set") == 0)
+		return cmd_management_network_set(c, json_mode, argc - 1, argv + 1);
+	fprintf(stderr, "cixctl: unknown management-network subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -16954,6 +17100,8 @@ static int dispatch_command(const struct cix_client *client, int json_mode, cons
 		return cmd_site(client, json_mode, argc, argv);
 	if (strcmp(cmd, "daemon-config") == 0)
 		return cmd_daemon_config(client, json_mode, argc, argv);
+	if (strcmp(cmd, "management-network") == 0)
+		return cmd_management_network(client, json_mode, argc, argv);
 	if (strcmp(cmd, "backup-config") == 0)
 		return cmd_backup_config(client, json_mode, argc, argv);
 	if (strcmp(cmd, "rolling-config") == 0)

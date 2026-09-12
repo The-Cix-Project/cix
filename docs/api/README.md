@@ -47,6 +47,8 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | PUT | `/system/site` | Set this install's site identity |
 | GET | `/system/daemon-config` | cixd's own listen port, HTTP/HTTPS exposure, and which network is currently its management one |
 | PUT | `/system/daemon-config` | Live-reconfigure the listen port, HTTP/HTTPS listeners, or repoint the management network -- no restart |
+| GET | `/system/management-network` | The interface, address, prefix and gateway this box answers on |
+| PUT | `/system/management-network` | Move cixd to another interface, address, subnet or gateway -- live, and across reboots |
 | GET | `/system/iso` | Status of the most recent server-side installer ISO build, including `iso_bytes` — the size was absent, which is how an installer grew from 71.7 MiB to 217.9 MiB with nobody counting |
 | POST | `/system/iso` | Assemble a fresh installer ISO server-side, non-blocking — the media carries a package seed so a fresh box can bootstrap without a network ([ADR-0229](../adr/0229-installer-media-carries-a-package-seed.md)) |
 | GET | `/system/signing-keys` | Whether this host holds a Secure Boot signing key pair, and which identity |
@@ -663,6 +665,39 @@ PUT /v1/system/daemon-config
 Starts a second, independent listener on `https_port` (default `443`), reusing the already-issued PKI `"host"` leaf certificate (see [PKI](#pki-a-ca-chain-and-issued-leaf-certificates) below) — `500` if no root CA has been bootstrapped yet (`POST /pki/ca`), since there's no certificate to serve TLS with. Sent this way — an explicit `PUT`, as opposed to the one-time boot-time attempt — it's also how to bring HTTPS live *immediately*, with no reboot, right after bootstrapping PKI on a fresh install: the handler checks whether the listener is actually running, not just the persisted flag, so re-sending `{"https_enabled": true}` even though it's already the default still starts it for real once a certificate exists. `http_enabled` and `https_enabled` can each be toggled off, but never both in the same request (`400`) — cixd must always have at least one live listener, since (installed) it runs as real PID 1 with no "restart" to fall back on. Every change here — port, network repoint, HTTP/HTTPS toggle — is live immediately and also persisted, so it survives a real reboot.
 
 Since cixd is PID 1 on an installed system, there is no way to reach it again over the network if it's ever pointed at an address you can't get to — double-check reachability of a new `management_network` (or a firewalled `https_port`) before relying on it as your only way in; physical console access (`docs/guides/installing.md`'s "Console login") is always the fallback.
+
+### Moving the box: interface, address, subnet, gateway
+
+```
+GET /v1/system/management-network
+```
+
+```json
+{"configured": true, "interface": "eth0", "ip": "192.168.15.95", "prefix": 24,
+ "gateway": "192.168.15.1", "network": "management"}
+```
+
+```
+PUT /v1/system/management-network
+{"interface": "eth0", "ip": "10.20.0.5", "prefix": 24, "gateway": "10.20.0.1"}
+```
+
+This is the answer to "where does this box listen", and it is a different question from `daemon-config`'s. `daemon-config` owns the listener's *ports* and which *named network* carries the management flag; this owns the four values a booted box actually comes up on — and, unlike everything else in `daemon-config`, those four were previously not changeable at all. `net.conf` on the config partition was written once by `cix-install` and read once per boot; nothing in the daemon ever wrote it. A box installed on the wrong address, or deliberately installed on loopback to decide later, had no route to a different one short of reinstalling.
+
+**Applies live, then persists, in that order.** A box that answers after this call is a box that answers after a reboot. Concretely: validate everything, attach the interface to the management bridge if it changed, add the new address to that bridge, rebind both listeners (each created and added to `epoll` before the old is torn down, so a failure rolls back to the still-working listener), replace the default route, update the network registry so it cannot drift from the kernel, and write `net.conf` last. If a step fails after the listeners have moved, `net.conf` is *not* written — so the box is reachable now on the new address and returns to the previous working configuration on reboot, which is the safe direction to fail in.
+
+**The superseded address is removed a couple of seconds later, not immediately.** The connection carrying this very request usually has the old address as its own local endpoint, and deleting it can leave the client waiting forever for a response the kernel accepted and can no longer deliver — measured, and the same finding ADR-0068 records for `bind_ip`. Both addresses are briefly live on the bridge; that overlap is what makes the handover safe.
+
+**On a box with no management network yet, this creates one.** That is the primary path for an install done with a blank interface, not an edge case — it is how "configure it on first boot" actually happens.
+
+Fields are kept when omitted: leave out `interface` to stay on the current one, leave out `gateway` to keep the persisted one (silently dropped if the new subnet no longer contains it — you did not ask for it this time, so it is not a reason to fail the move). Send `"gateway": null` to remove the default route outright, which is correct for a box reachable only on its own subnet.
+
+Any `bind_ip` is cleared, since a dedicated bind address is only meaningful relative to a subnet this call may have just changed — set it again afterwards if wanted.
+
+**Refused (`400`) when the change could not work**, before anything moves: a malformed address, a prefix outside 8–30, the subnet or broadcast address itself, an address in `0.0.0.0/8` or `127.0.0.0/8` (loopback is a legitimate thing for cixd to be *bound* to, but it is not a management *network* — it cannot carry an uplink and there is nothing to route), an interface the kernel does not have, a gateway outside the new subnet or equal to the new address, or — when the *subnet* itself changes — containers still attached to the management network, since their addresses would stop belonging to the network they are attached to. That last refusal names them. Moving *within* the same subnet is never blocked on that ground.
+
+`cixctl management-network show` and `cixctl management-network set --ip=A.B.C.D --prefix=N [--interface=IF] [--gateway=A.B.C.D | --no-gateway]` are the CLI surface. After a move, point subsequent commands at the new address with `--host=`.
+
 
 ## Per-source-IP throttling for failed HTTPS handshakes (ADR-0134)
 

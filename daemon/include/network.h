@@ -160,6 +160,27 @@ enum network_error network_create(const char *name, const char *subnet_str, int 
  */
 enum network_error network_delete(const char *name);
 
+/*
+ * Re-address an existing network in place -- new subnet/prefix/address,
+ * same name, same bridge. Backs PUT /v1/system/management-network.
+ *
+ * Adds the new address to the bridge and persists, but deliberately
+ * leaves the OLD address live and hands it back through out_old_* --
+ * the caller must defer removing it, because dropping it under the
+ * connection carrying the reply strands that client (ADR-0068). Both
+ * addresses being briefly present is what makes the handover safe.
+ * out_old_address_be is 0 when there is nothing to clean up (the
+ * network had no address, or this was a no-op).
+ *
+ * Resets the allocation window when the subnet changes; a window is a
+ * pair of host-parts within one subnet, meaningless in another.
+ * Knows nothing of containers -- refusing a subnet change that would
+ * strand attached containers is the caller's job.
+ */
+enum network_error network_set_address(const char *name, const char *subnet_str, int prefix_len,
+                                        const char *address_str, uint32_t *out_old_address_be,
+                                        int *out_old_prefix_len);
+
 struct network_def *network_find(const char *name);
 
 /*
