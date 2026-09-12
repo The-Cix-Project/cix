@@ -6,6 +6,44 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### `test_pki` is a release gate, and the third escaped bug is fixed (#417)
+
+`test_pki` is now in the Makefile's `DAEMON_SELFTESTS_2`, so it runs on every `cix` build.
+
+The exclusion was not costing nothing. It had been on the belief that a build container cannot
+create a container (#224); the actual reason every create inside `test_pki` failed was that
+`make selftest` did not build `cix-init`, which `container_create()` refuses outright without —
+fixed in the entry below. With creation working, the test went from 9 failures to 2, and the
+remaining two were what the exclusion had been hiding:
+
+**A post-CA-reset redelivery never reached the running container.** `test_pki`'s `resetlive`
+check reads the delivered `tls.crt` through `/proc/<pid>/root` before and after
+`POST /v1/pki/reset` and asserts the bytes changed; on v2.57.121 they did not.
+`pki_cert_deliver()` wrote with `persist_atomic_write()`, which renames a new inode over the
+path — the one writer #276 measured as invisible through a mounted overlay, because the rename
+lands in the upper layer while the merged mount the container reads through keeps resolving the
+inode it already holds. Reading those two together: after a CA reset a running container went on
+serving a certificate signed by the CA that had just been destroyed, while the API and the log
+store both reported the redelivery as successful. That is a diagnosis rather than a third
+measurement, and the gate is what settles it. `pki_cert_deliver()` is the only call site that writes into a container
+whose overlay is already mounted — creation stages the cert before `clone3()` (#414) — and it now
+uses `persist_write_file_inplace()`, the function that exists for exactly this destination.
+
+**The test recreated a container immediately after deleting it.** Teardown is asynchronous
+(ADR-0180): `DELETE` returns once it is under way, so `durablehost`'s round 2 legitimately raced
+the entry on its way out and was refused 409. Correct daemon behaviour, a bug in the caller —
+`post_container_retrying()` now waits out that one status for up to 20 seconds and returns every
+other status on the first try, so a real conflict still fails fast.
+
+**And the 409 that refused it said the wrong thing.** "A container with this name already exists"
+reads as "something else took this name" and sends the reader looking for a container that
+`container ls` does not show. `registry_ip_holder()` has drawn exactly this distinction for a held
+*address* since #148; the name had been left behind. Both name-conflict rejections now say "still
+shutting down -- retry shortly" when the holder is mid-teardown.
+
+Three real defects shipped behind this exclusion, counting #415's `argv[16]` overflow and #414's
+uninitialised SAN offset. An excluded test does not stop costing; it stops reporting.
+
 ### Cert issuance depended on stack contents (#414, #417)
 
 `pki_cert_create()` read `off` before it was ever written. #414 folded what had been an assignment

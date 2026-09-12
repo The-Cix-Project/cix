@@ -4653,7 +4653,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "409":
-          description: A container with this name already exists
+          description: >-
+            A container with this name already exists. The message distinguishes
+            a name held by a container that is still shutting down (teardown is
+            asynchronous -- retry shortly) from a genuine conflict (#417).
           content:
             application/json:
               schema:
@@ -6775,7 +6778,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "409":
-          description: A container with this name already exists
+          description: >-
+            A container with this name already exists. The message distinguishes
+            a name held by a container that is still shutting down (teardown is
+            asynchronous -- retry shortly) from a genuine conflict (#417).
           content:
             application/json:
               schema:

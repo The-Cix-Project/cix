@@ -134,7 +134,8 @@ Conflating the two is what produced a correct implementation of the wrong thing.
   container could say what it did not receive and nothing could say why. The
   signature now takes both names, and the delivery failure is written to the log
   store. `test_pki`'s cert and container names deliberately differ and would
-  have caught this; it is not in `SELFTESTS` (#224), so it did not run.
+  have caught this; it was not in `SELFTESTS` (#224) at the time, so it did not
+  run. It is now, from #417.
 - The operator now owns a real lifecycle decision: nothing deletes an unowned
   certificate automatically, so retiring a service means deleting its certificate
   deliberately.

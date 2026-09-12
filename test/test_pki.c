@@ -60,12 +60,47 @@ static int str_eq(const char *a, const char *b)
 /* The server's own reason, for a failure message that would otherwise be
  * a bare status. A 500 from POST /containers has a cause and printing
  * only the number costs a whole round trip to find it -- which it did,
- * while working out why test_pki cannot join the build gate (#417). */
+ * while working out why test_pki could not join the build gate (#417). */
 static const char *err_of(const struct cix_response *r)
 {
 	const char *e = r->json != NULL ? json_str_field(r->json, "error") : NULL;
 
 	return e != NULL ? e : "(no error field in the response)";
+}
+
+/*
+ * POST /v1/containers, retrying past the asynchronous-teardown 409
+ * (ADR-0180, #417).
+ *
+ * DELETE returns as soon as the teardown is under way, so recreating
+ * under the same name immediately afterwards -- which is precisely
+ * what a delete+recreate test does, and what a rolling rebuild does on
+ * a real host -- races the entry on its way out and is rejected with
+ * "still shutting down". That is correct daemon behaviour and a bug in
+ * a caller that treats the first answer as final. Waits up to 20s,
+ * which is above REGISTRY_TEARDOWN's own SIGKILL grace and well below
+ * any plausible gate timeout.
+ *
+ * Returns like cix_client_request(): 0 with `out` filled in. Every
+ * status other than the teardown 409 is returned on the first try, so
+ * a real conflict still fails fast.
+ */
+static int post_container_retrying(const struct cix_client *c, const char *body,
+                                    struct cix_response *out)
+{
+	int i;
+
+	for (i = 0; i < 80; i++) {
+		memset(out, 0, sizeof(*out));
+		if (cix_client_request(c, "POST", "/v1/containers", body, out) != 0)
+			return -1;
+		if (out->status != 409 || strstr(err_of(out), "shutting down") == NULL)
+			return 0;
+		cix_response_free(out);
+		usleep(250000);
+	}
+	memset(out, 0, sizeof(*out));
+	return cix_client_request(c, "POST", "/v1/containers", body, out);
 }
 
 static int json_has_field(const struct json_value *obj, const char *key)
@@ -1420,13 +1455,15 @@ int main(void)
 	 * every caller before ADR-0280 named the cert after the container.
 	 * With differing names it wrote to the host path of a container that
 	 * does not exist and delivered nothing. This test's names would have
-	 * caught it; it shipped because the test does not run as a gate.
+	 * caught it; it shipped because the test did not run as a gate.
 	 *
-	 * NOTE: test_pki is NOT in the Makefile's SELFTESTS list, so this
-	 * does not run as a release gate -- it needs a real container, which
-	 * a build container cannot create (#224). Run it directly on a Cix
-	 * host. The contract side (the pki_cert field's presence in
-	 * openapi.yaml) IS gated, by test_api_surfaces.
+	 * This IS a release gate now (#417). It was excluded on the belief
+	 * that a build container cannot create a container (#224); the real
+	 * reason every create in here failed was that `make selftest` did
+	 * not build cix-init, which container_create() refuses outright
+	 * without. Three real defects had shipped behind that exclusion,
+	 * including the conflation this block's own differing names were
+	 * written to catch.
 	 */
 	{
 		char first_key[8192] = { 0 };
@@ -1545,12 +1582,11 @@ int main(void)
 		cix_response_free(&r);
 
 		/* Round 2: the same identity, byte for byte. */
-		memset(&r, 0, sizeof(r));
-		if (cix_client_request(&client, "POST", "/v1/containers",
-		                       "{\"name\":\"durablehost\",\"image\":\"pkitest\","
-		                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"20\"]}],"
-		                       "\"pki_cert\":\"durable-id\"}",
-		                       &r) != 0 ||
+		if (post_container_retrying(&client,
+		                             "{\"name\":\"durablehost\",\"image\":\"pkitest\","
+		                             "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"20\"]}],"
+		                             "\"pki_cert\":\"durable-id\"}",
+		                             &r) != 0 ||
 		    r.status != 201) {
 			fprintf(stderr, "FAIL: POST durablehost round 2, status=%d: %s\n", r.status,
 			        err_of(&r));
