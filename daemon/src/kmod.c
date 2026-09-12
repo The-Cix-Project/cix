@@ -13,7 +13,9 @@
 
 extern char **environ;
 
-#define KMOD_MODPROBE_BIN "/usr/bin/modprobe"
+/* KMOD_MODPROBE_BIN now lives in kmod.h -- cix-install checks for it
+ * before offering to load NIC drivers, and two copies of a path are
+ * exactly the kind of drift this codebase refuses. */
 #define KMOD_MODINFO_BIN "/usr/bin/modinfo"
 #define KMOD_MAX_OPTION_TOKENS 16
 #define KMOD_MODINFO_OUT_MAX 8192

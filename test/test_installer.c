@@ -601,6 +601,22 @@ int main(void)
 			                (char *)SIGNING_CERT_DER,      installer_iso,
 			                kernel_args,                   isotools_root,
 			                seed_root,
+			                /*
+			                 * #429 follow-on: the kernel module tree and
+			                 * the module tools. Both "" here -- this
+			                 * fixture has neither, and mkinstalleriso
+			                 * treats their absence as "stage nothing"
+			                 * rather than as a failure, so the media it
+			                 * builds is exactly what it was before plus
+			                 * two explicit "none" answers.
+			                 *
+			                 * Passed rather than omitted because the
+			                 * callee checks its argument count exactly.
+			                 * A caller one argument short is how every
+			                 * POST /v1/system/iso on a real host once
+			                 * answered with a fragment of usage text.
+			                 */
+			                (char *)"",                    (char *)"",
 			                NULL };
 
 		if (build_isotools_fixture(workdir, isotools_root, sizeof(isotools_root)) != 0) {

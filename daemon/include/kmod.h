@@ -36,6 +36,15 @@ int kmod_name_is_valid(const char *name);
  * "modprobe -r could not unload this module" and no reason at all.
  * Reporting the tool's own words is not the same as parsing them for
  * a status code, which this file still deliberately does not do. */
+/*
+ * The one path this platform runs modprobe from. In the header rather
+ * than kmod.c because cix-install needs to test whether it exists
+ * before offering to load NIC drivers off installer media, and a
+ * second spelling of the path in a second file is precisely the drift
+ * this codebase refuses elsewhere.
+ */
+#define KMOD_MODPROBE_BIN "/usr/bin/modprobe"
+
 int kmod_load(const char *name, const char *options, char *out, size_t out_size);
 
 /* modprobe -r <name>. Same success/failure convention as kmod_load(). */

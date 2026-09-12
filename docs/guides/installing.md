@@ -44,10 +44,14 @@ sudo build/mkinstalleriso build/iso_stage build/cix-install build/cix-recover \
      build/cix-install.iso \
      "" \
      /path/to/isotools-artifact \
-     /path/to/seed                                     # or "" for no package seed
+     /path/to/seed \                                   # or "" for no package seed
+     /path/to/kernel-hostbuild-artifact/lib/modules \  # or "" to skip NIC drivers
+     /path/to/kmod-usr-bin                             # or "" to skip modprobe
 ```
 
-The last two arguments are worth a word. **isotools-root** is the harvested `isotools` hostbuild artifact (ADR-0064) holding `grub-mkrescue`, `xorriso`, `sbsign`, `mokutil`, shim and their libraries — it is an argument rather than something read off the build machine precisely so this tool can run on a real Cix host, which has none of those at Debian's absolute paths. This example previously omitted it altogether and would not have run.
+The last four arguments are worth a word. **isotools-root** is the harvested `isotools` hostbuild artifact (ADR-0064) holding `grub-mkrescue`, `xorriso`, `sbsign`, `mokutil`, shim and their libraries — it is an argument rather than something read off the build machine precisely so this tool can run on a real Cix host, which has none of those at Debian's absolute paths. This example previously omitted it altogether and would not have run.
+
+**kernel-modules-dir** and **kmod-bin-dir** are the same two inputs `mkbootroot` takes above, and they matter here for a different reason (#429): the five NIC drivers this platform supports are kernel *modules*, so without them `cix-install` can only list interfaces whose driver is built into the kernel — in practice `virtio_net` alone. On a real machine with a built-in Ethernet port and no virtio, the installer's interface list came up empty and the operator had nothing to choose. Only the NIC modules and their dependency closure are staged (9 files, ~2 MiB, read out of the tree's own `modules.dep` rather than hardcoded — `ixgbe`, `r8169` and `tg3` all pull in `libphy`/`mdio_bus`, and a hand-written file list missed them), plus `modprobe` to load them with. Both `""` produce media that still installs fine on virtio, and `cix-install` says on screen which of the two it lacks.
 
 **seed** is optional (`""` for none) and is what makes a freshly installed box able to run a container without a network: a directory of `recipes/` and `artifacts/` copied onto the installed system's own package directories, from which the daemon installs a C library into the default image at first boot (#189). Without it, a fresh install comes up healthy but its default image has no C library, and `POST /v1/containers` refuses with a message naming what to install.
 

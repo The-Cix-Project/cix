@@ -22,6 +22,8 @@
  * cix-containers.
  */
 #include "dual_console.h"
+#include "bootmodules.h"
+#include "kmod.h"
 #include "partlabel.h"
 #include "treecopy.h"
 
@@ -915,6 +917,51 @@ static int pick_disk(char *out, size_t out_size)
 }
 
 /*
+ * Load the NIC drivers, so the list below can show a real machine's
+ * built-in Ethernet.
+ *
+ * The five chipsets are kernel modules rather than built in (see
+ * image/kernel/qemu-part1.config), which is fine for the installed
+ * system -- cixd modprobes exactly this list at boot, from the same
+ * header -- and was fatal here: this installer used to carry no module
+ * tree and no module tools, so the ONLY interfaces it could ever list
+ * were the built-in drivers, meaning virtio_net. A real machine with a
+ * built-in NIC and no virtio therefore showed "(none found)", and the
+ * operator had nothing to choose. Measured on a bare-metal attempt,
+ * 2026-09-12.
+ *
+ * Best-effort, per module, and quiet about the ordinary failures: no
+ * single machine has all five chipsets, so most of these loads are
+ * expected to do nothing useful. What matters is that the one matching
+ * this machine gets a chance to bind before the list is read.
+ *
+ * The absence of module tools is reported rather than silently
+ * tolerated: it is the difference between "this machine has no NIC the
+ * platform supports" and "this media cannot look", and an operator
+ * staring at an empty list deserves to know which.
+ */
+static void load_nic_modules(void)
+{
+	static const char *const mods[] = CIX_NIC_MODULES;
+	struct stat st;
+	size_t i;
+
+	if (stat(KMOD_MODPROBE_BIN, &st) != 0) {
+		dual_printf("\n  (this media carries no module tools, so only NIC drivers built into\n");
+		dual_printf("   the kernel can appear below -- see #429)\n");
+		return;
+	}
+	dual_printf("\nLoading NIC drivers");
+	for (i = 0; i < sizeof(mods) / sizeof(mods[0]); i++) {
+		char out[256] = "";
+
+		dual_printf(" %s", mods[i]);
+		(void)kmod_load(mods[i], NULL, out, sizeof(out));
+	}
+	dual_printf(" -- done\n");
+}
+
+/*
  * The NICs this machine has, so an operator does not have to guess a
  * name. Virtual interfaces are skipped: /sys/class/net/<if>/device only
  * exists for a real one, which is the same test used elsewhere.
@@ -1145,6 +1192,7 @@ static int install_main(int argc, char **argv)
 			dual_printf("\nNote: a built-in Ethernet port may not be listed below even though\n");
 			dual_printf("this machine has one -- its driver is a kernel module and this\n");
 			dual_printf("installer carries no module tree. The installed system loads it.\n");
+			load_nic_modules();
 			list_interfaces(first_iface, sizeof(first_iface));
 
 			if (iface == NULL) {
