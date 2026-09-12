@@ -58,9 +58,25 @@ deliberate no-op when the line is missing.
 
 ## Consequences
 
-- Turning a listener on or off is one API call. No recipe edit, no container
-  recreate, no restart — glauth's own `watchconfig` picks up the write, which is
-  already how record changes reach it.
+- The API is the one place a listener is configured, and the render puts it into
+  every registered server's config file. **It does not yet take effect on a
+  running server**, measured on 192.168.15.95 (v2.57.114): `[ldap] enabled = true`
+  was written into both live configs and port 3893 stayed refused. Two causes,
+  both verified and both outside what this ADR decided:
+
+  1. glauth's `watchconfig` reloads the record datastore, not its listeners — it
+     never binds or unbinds a socket, so a listener change needs the process
+     restarted. The assumption that the watcher covered this came from record
+     syncs having always worked without a signal, which is a different thing.
+  2. `handle_start()` re-stages `files[]` from the persisted definition and calls
+     `resync_managed_services()` *after* that, so a restarted glauth reads the
+     recipe's own value and the re-render arrives too late. Verified with a real
+     stop/start: the config then read `enabled = true` and 3893 was still refused.
+
+  Closing that needs the render to run during staging, before `clone3()` (the same
+  ordering `pki_cert_deliver()` needed in #414), plus a deliberate restart of each
+  registered server on a listener change. The restart disrupts the service that
+  authenticates the control plane, so it is its own decision; #419 stays open.
 - A recipe's `[ldap]`/`[ldaps]` stanzas become initial values that the daemon
   owns after the first PUT. `recipes/deployment/README.md` says so, because an
   operator editing TOML that gets overwritten would otherwise file a bug.

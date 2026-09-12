@@ -17,10 +17,32 @@ where turning the plaintext listener off had meant hand-editing TOML for both re
 deployment versions, and delete-and-recreating both containers.
 
 `PUT /v1/ldap/config` owns the listeners now (`server_plaintext`, `server_plaintext_port`,
-`server_tls`, `server_tls_port`), rendered into each registered server's own config file and picked up
-by glauth's config watcher. **`cixctl ldap config set --no-server-plaintext` is the whole operation** —
-no recipe edit, no recreate, no restart. Same ownership terms ADR-0148 set for `baseDN`, one step
-further.
+`server_tls`, `server_tls_port`), rendered into each registered server's own config file. Same
+ownership terms ADR-0148 set for `baseDN`, one step further.
+
+**The render is correct and does not yet take effect on a running server** — measured on
+192.168.15.95, v2.57.114, and stated here rather than in a follow-up because the first draft of this
+entry claimed "no recipe edit, no recreate, no restart" and that is false. `--server-plaintext` wrote
+`[ldap] enabled = true` into both live configs, and port 3893 stayed refused. Two independent causes,
+both verified:
+
+1. **glauth's config watcher reloads data, not listeners.** It picks up `[[users]]`/`[[groups]]`
+   changes — which is why record syncs have always worked without a signal — but does not bind or
+   unbind a socket, so a listener change needs the process restarted.
+2. **A restart re-stages `files[]` from the persisted definition, over the rendered file.**
+   `handle_start()` calls `create_container_from_body(def->body, ...)` and only *then*
+   `resync_managed_services()`, so glauth reads the recipe's own `enabled = false` at startup and the
+   re-render lands after it. Restarting therefore does not help either: verified with a real
+   stop/start of `ldap-1`, after which the config read `enabled = true` and 3893 was still refused.
+
+So the API, the validation, the guards and the render are in; what is missing is making a running
+glauth adopt the value. That needs the render to happen during staging, before `clone3()` — the same
+ordering fix `pki_cert_deliver()` needed in #414 — plus a deliberate restart of each registered server
+when a listener changes. The restart is a real disruption to the service that authenticates the
+control plane, so it is a decision rather than an implementation detail, and #419 stays open for it.
+
+Nothing regressed: the box's listeners are exactly as #416 left them, and `listeners_managed` is what
+guaranteed that.
 
 **`client_tls_port` is gone.** There is one port per listener, and the port clients are given *is* the
 server's own — `ldap_client_port()` returns `server_tls_port` or `server_plaintext_port`. It existed
