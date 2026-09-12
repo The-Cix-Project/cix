@@ -32,17 +32,6 @@ static char g_data_dir[PATH_MAX];
 static char g_pki_state_dir[PATH_MAX];
 static char g_pki_image_root[PATH_MAX];
 
-/* The server's own reason, for a failure message that would otherwise be
- * a bare status. A 500 from POST /containers has a cause and printing
- * only the number costs a whole round trip to find it -- which it did,
- * while working out why test_pki cannot join the build gate (#417). */
-static const char *err_of(const struct cix_response *r)
-{
-	const char *e = r->json != NULL ? json_str_field(r->json, "error") : NULL;
-
-	return e != NULL ? e : "(no error field in the response)";
-}
-
 static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 {
 	int i;
@@ -66,6 +55,17 @@ static const char *json_str_field(const struct json_value *obj, const char *key)
 static int str_eq(const char *a, const char *b)
 {
 	return a != NULL && b != NULL && strcmp(a, b) == 0;
+}
+
+/* The server's own reason, for a failure message that would otherwise be
+ * a bare status. A 500 from POST /containers has a cause and printing
+ * only the number costs a whole round trip to find it -- which it did,
+ * while working out why test_pki cannot join the build gate (#417). */
+static const char *err_of(const struct cix_response *r)
+{
+	const char *e = r->json != NULL ? json_str_field(r->json, "error") : NULL;
+
+	return e != NULL ? e : "(no error field in the response)";
 }
 
 static int json_has_field(const struct json_value *obj, const char *key)
