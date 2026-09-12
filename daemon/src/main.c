@@ -21,6 +21,7 @@
 #include "hostproc.h"
 #include "logstore.h"
 #include "partlabel.h"
+#include "netconf.h"
 #include "ntp.h"
 #include "ping.h"
 #include "resolv.h"
@@ -1598,51 +1599,6 @@ static int mount_or_fail(const char *source, const char *target, const char *fst
  * ADR-0018.
  */
 
-/* Parses the simple key=value net.conf cix-install writes to the
- * config partition (image/src/cix-install.c's populate step) --
- * ip=/prefix=/gateway=/interface=, one per line. interface= (Part 0.5)
- * is the physical NIC to attach to the management network -- an explicit,
- * operator-chosen GRUB field rather than find_nic()'s old "whichever
- * readdir() returns first" guess. */
-static int parse_net_conf(const char *path, char *out_ip, size_t ip_size, int *out_prefix,
-                           char *out_gateway, size_t gateway_size, char *out_interface,
-                           size_t interface_size)
-{
-	FILE *f;
-	char line[256];
-	int have_ip = 0, have_prefix = 0, have_gateway = 0, have_interface = 0;
-
-	f = fopen(path, "r");
-	if (f == NULL)
-		return -1;
-	while (fgets(line, sizeof(line), f) != NULL) {
-		line[strcspn(line, "\n")] = '\0';
-		if (strncmp(line, "ip=", 3) == 0) {
-			snprintf(out_ip, ip_size, "%s", line + 3);
-			have_ip = 1;
-		} else if (strncmp(line, "prefix=", 7) == 0) {
-			*out_prefix = atoi(line + 7);
-			have_prefix = 1;
-		} else if (strncmp(line, "gateway=", 8) == 0) {
-			snprintf(out_gateway, gateway_size, "%s", line + 8);
-			have_gateway = 1;
-		} else if (strncmp(line, "interface=", 10) == 0) {
-			snprintf(out_interface, interface_size, "%s", line + 10);
-			have_interface = 1;
-		}
-	}
-	fclose(f);
-	/*
-	 * The gateway line is optional, matching the fact that a gateway
-	 * is. have_gateway is still tracked -- a caller may want to know
-	 * whether the operator said "none" or said nothing -- but it does
-	 * not decide whether this file describes a usable network. An
-	 * interface, an address and a prefix do.
-	 */
-	(void)have_gateway;
-	return (have_ip && have_prefix && have_interface) ? 0 : -1;
-}
-
 /*
  * Part 3 (bare-metal-readiness plan, ADR-0061): loads a curated,
  * boot-critical module list via the real, freshly-staged
@@ -1809,8 +1765,8 @@ static int bootstrap_management_network(void)
 	enum network_error nerr;
 	int rtfd;
 
-	if (parse_net_conf(NET_CONF_PATH, ip, sizeof(ip), &prefix, upstream_gateway,
-	                    sizeof(upstream_gateway), iface, sizeof(iface)) != 0)
+	if (netconf_parse(NET_CONF_PATH, ip, sizeof(ip), &prefix, upstream_gateway,
+	                   sizeof(upstream_gateway), iface, sizeof(iface)) != 0)
 		return 0;
 
 	if (inet_pton(AF_INET, ip, &addr) != 1) {
@@ -6119,6 +6075,436 @@ static void handle_daemon_config_get(int fd)
 	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
+}
+
+/*
+ * GET/PUT /v1/system/management-network.
+ *
+ * Where this box answers: interface, address, prefix, default gateway.
+ * Distinct from daemon-config, which owns the listener's ports and
+ * which named network carries the management flag; this owns the four
+ * values a booted box actually comes up on.
+ *
+ * It exists because until now there was no way to change them on a
+ * running system at all. net.conf was written once by cix-install and
+ * read once per boot by bootstrap_management_network(); nothing in the
+ * daemon wrote it (NET_CONF_PATH appeared exactly twice in this file --
+ * the #define and the one parse). So a box installed on the wrong
+ * address, or installed deliberately on loopback to decide later, had
+ * no route to a different one short of reinstalling.
+ *
+ * Apply live, then persist, in that order, so that a box which answers
+ * after this call is a box which answers after a reboot -- and so a
+ * failure part-way leaves the persisted config describing the state
+ * that still works rather than one that does not.
+ */
+
+/*
+ * Host-order netmask for a prefix length. network.c has its own static
+ * copy for its own validation; this is the same three lines rather than
+ * a new cross-module export, and a prefix of 0 is never reached here
+ * (the caller has already refused anything outside 8-30).
+ */
+static uint32_t mgmt_mask_for_prefix(int prefix_len)
+{
+	return prefix_len == 0 ? 0u : (0xffffffffu << (32 - prefix_len));
+}
+
+static void management_network_write_json(int fd)
+{
+	struct json_writer w;
+	struct network_def *mgmt;
+	char ip[INET_ADDRSTRLEN] = "";
+	char gw[INET_ADDRSTRLEN] = "";
+	char nc_ip[64] = "", nc_gw[64] = "", nc_iface[IFNAMSIZ] = "";
+	int nc_prefix = 0;
+	int have_nc;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+
+	mgmt = network_find_management();
+	/*
+	 * net.conf is what the NEXT boot will use, so the interface and
+	 * gateway are read back from it rather than re-derived: the
+	 * registry knows the bridge and its address, but the uplink
+	 * attachment is best-effort at boot (a NIC absent on this boot is
+	 * skipped, not fatal) and the default route is kernel state with
+	 * no Cix-side record. Reporting the persisted answer is the honest
+	 * one for a resource whose whole purpose is "what will this box
+	 * come up on".
+	 */
+	have_nc = netconf_parse(NET_CONF_PATH, nc_ip, sizeof(nc_ip), &nc_prefix, nc_gw, sizeof(nc_gw),
+	                         nc_iface, sizeof(nc_iface)) == 0;
+
+	if (mgmt != NULL && mgmt->has_address) {
+		struct in_addr a;
+
+		a.s_addr = mgmt->address_be;
+		inet_ntop(AF_INET, &a, ip, sizeof(ip));
+	} else if (have_nc) {
+		snprintf(ip, sizeof(ip), "%s", nc_ip);
+	}
+	if (have_nc)
+		snprintf(gw, sizeof(gw), "%s", nc_gw);
+
+	jw_key(&w, "configured");
+	jw_bool(&w, mgmt != NULL || have_nc);
+	jw_key(&w, "interface");
+	jw_str(&w, have_nc ? nc_iface : "");
+	jw_key(&w, "ip");
+	jw_str(&w, ip);
+	jw_key(&w, "prefix");
+	jw_int(&w, mgmt != NULL ? mgmt->prefix_len : nc_prefix);
+	jw_key(&w, "gateway");
+	jw_str(&w, gw);
+	jw_key(&w, "network");
+	jw_str(&w, mgmt != NULL ? mgmt->name : "");
+
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_management_network_get(int fd)
+{
+	management_network_write_json(fd);
+}
+
+static void handle_management_network_put(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const struct json_value *jip, *jprefix, *jiface, *jgw;
+	char new_ip[INET_ADDRSTRLEN] = "";
+	char new_iface[IFNAMSIZ] = "";
+	char new_gw[INET_ADDRSTRLEN] = "";
+	char subnet_str[INET_ADDRSTRLEN];
+	char old_iface[IFNAMSIZ] = "";
+	char cur_ip[64] = "", cur_gw[64] = "", cur_iface[IFNAMSIZ] = "";
+	int cur_prefix = 0;
+	int have_cur;
+	int new_prefix = 0;
+	int have_gw_key = 0;
+	int iface_changed = 0;
+	uint32_t ip_be = 0, gw_be = 0, subnet_be = 0, mask;
+	uint32_t old_addr_be = 0;
+	int old_addr_prefix = 0;
+	struct in_addr a;
+	struct network_def *mgmt;
+	char mgmt_name[NETWORK_NAME_MAX];
+	enum network_error nerr;
+	int rtfd;
+	int creating;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+
+	jip = json_object_get(root, "ip");
+	jprefix = json_object_get(root, "prefix");
+	jiface = json_object_get(root, "interface");
+	jgw = json_object_get(root, "gateway");
+
+	if (jip == NULL || json_as_string(jip) == NULL) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "ip is required and must be a string");
+		return;
+	}
+	snprintf(new_ip, sizeof(new_ip), "%s", json_as_string(jip));
+	if (jprefix == NULL) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "prefix is required");
+		return;
+	}
+	new_prefix = (int)json_as_number(jprefix);
+	if (jiface != NULL) {
+		if (json_as_string(jiface) == NULL) {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request", "interface must be a string");
+			return;
+		}
+		snprintf(new_iface, sizeof(new_iface), "%s", json_as_string(jiface));
+	}
+	if (jgw != NULL) {
+		have_gw_key = 1;
+		if (jgw->type != JSON_NULL) {
+			if (json_as_string(jgw) == NULL) {
+				json_free(root);
+				respond_error(fd, 400, "Bad Request", "gateway must be a string or null");
+				return;
+			}
+			snprintf(new_gw, sizeof(new_gw), "%s", json_as_string(jgw));
+		}
+	}
+	json_free(root);
+
+	/* ---- validate everything before anything moves ---- */
+
+	if (new_prefix < 8 || new_prefix > 30) {
+		respond_error(fd, 400, "Bad Request", "prefix must be 8-30");
+		return;
+	}
+	if (inet_pton(AF_INET, new_ip, &a) != 1) {
+		respond_error(fd, 400, "Bad Request", "ip is not a valid IPv4 address");
+		return;
+	}
+	ip_be = a.s_addr;
+	/*
+	 * 0.0.0.0/8 and 127.0.0.0/8 are refused deliberately. A loopback
+	 * address is a legitimate thing for cixd to be bound to -- it is
+	 * what an install with no network chosen comes up on -- but it is
+	 * not a management NETWORK: it cannot carry an uplink (loopback
+	 * cannot be enslaved to a bridge) and there is nothing to route.
+	 * Refusing it here keeps this endpoint's promise honest; going
+	 * BACK to loopback-only is what the (already existing) daemon-
+	 * config bind change is for.
+	 */
+	if ((ntohl(ip_be) >> 24) == 127 || (ntohl(ip_be) >> 24) == 0) {
+		respond_error(fd, 400, "Bad Request",
+		               "ip must be a routable address, not 0.0.0.0/8 or 127.0.0.0/8");
+		return;
+	}
+	mask = mgmt_mask_for_prefix(new_prefix);
+	subnet_be = htonl(ntohl(ip_be) & mask);
+	if (ntohl(ip_be) == (ntohl(subnet_be) | ~mask)) {
+		respond_error(fd, 400, "Bad Request", "ip is the subnet's broadcast address");
+		return;
+	}
+	if (ip_be == subnet_be) {
+		respond_error(fd, 400, "Bad Request", "ip is the subnet address itself");
+		return;
+	}
+	a.s_addr = subnet_be;
+	if (inet_ntop(AF_INET, &a, subnet_str, sizeof(subnet_str)) == NULL) {
+		respond_error(fd, 500, "Internal Server Error", "could not render the subnet");
+		return;
+	}
+
+	if (have_gw_key && new_gw[0] != '\0') {
+		if (inet_pton(AF_INET, new_gw, &a) != 1) {
+			respond_error(fd, 400, "Bad Request", "gateway is not a valid IPv4 address");
+			return;
+		}
+		gw_be = a.s_addr;
+		if ((ntohl(gw_be) & mask) != (ntohl(ip_be) & mask)) {
+			respond_error(fd, 400, "Bad Request", "gateway is outside the new subnet");
+			return;
+		}
+		if (gw_be == ip_be) {
+			respond_error(fd, 400, "Bad Request", "gateway is the same address as ip");
+			return;
+		}
+	}
+
+	have_cur = netconf_parse(NET_CONF_PATH, cur_ip, sizeof(cur_ip), &cur_prefix, cur_gw,
+	                          sizeof(cur_gw), cur_iface, sizeof(cur_iface)) == 0;
+	if (new_iface[0] == '\0') {
+		if (!have_cur || cur_iface[0] == '\0') {
+			respond_error(fd, 400, "Bad Request",
+			               "interface is required: this box has no management interface to keep");
+			return;
+		}
+		snprintf(new_iface, sizeof(new_iface), "%s", cur_iface);
+	}
+	if (if_nametoindex(new_iface) == 0) {
+		char msg[256];
+
+		snprintf(msg, sizeof(msg), "no interface named \"%s\" on this host", new_iface);
+		respond_error(fd, 400, "Bad Request", msg);
+		return;
+	}
+	if (have_cur)
+		snprintf(old_iface, sizeof(old_iface), "%s", cur_iface);
+	iface_changed = old_iface[0] != '\0' && strcmp(old_iface, new_iface) != 0;
+
+	/* Gateway not mentioned at all: keep whatever is persisted. */
+	if (!have_gw_key && have_cur && cur_gw[0] != '\0') {
+		snprintf(new_gw, sizeof(new_gw), "%s", cur_gw);
+		if (inet_pton(AF_INET, new_gw, &a) == 1) {
+			gw_be = a.s_addr;
+			/* A kept gateway that no longer belongs to the new subnet
+			 * is silently dropped rather than refused: the operator
+			 * did not ask for it this time, and refusing would make a
+			 * plain address move fail for a reason it never mentioned. */
+			if ((ntohl(gw_be) & mask) != (ntohl(ip_be) & mask)) {
+				gw_be = 0;
+				new_gw[0] = '\0';
+			}
+		} else {
+			new_gw[0] = '\0';
+		}
+	}
+
+	mgmt = network_find_management();
+	creating = (mgmt == NULL);
+
+	/*
+	 * The containers guard. A subnet change strands anything holding an
+	 * address in the old one -- their IPs stop belonging to the network
+	 * they are attached to. Refuse rather than half-break them. A move
+	 * WITHIN the same subnet is fine and is not blocked.
+	 */
+	if (!creating && registry_network_in_use(mgmt->name)) {
+		int subnet_changing = (mgmt->base_be != subnet_be || mgmt->prefix_len != new_prefix);
+
+		if (subnet_changing) {
+			char names[REGISTRY_MAX_CONTAINERS][REGISTRY_NAME_MAX];
+			char msg[512];
+			size_t off;
+			int n, i, listed = 0;
+
+			off = (size_t)snprintf(msg, sizeof(msg),
+			                        "refusing to move the management network to a different "
+			                        "subnet while containers are attached to it: ");
+			n = registry_list_names(names, REGISTRY_MAX_CONTAINERS);
+			for (i = 0; i < n && off < sizeof(msg) - 1; i++) {
+				struct registry_entry *e = registry_find(names[i]);
+				int j;
+
+				if (e == NULL)
+					continue;
+				for (j = 0; j < e->net_count; j++) {
+					if (strcmp(e->nets[j].name, mgmt->name) != 0)
+						continue;
+					off += (size_t)snprintf(msg + off, sizeof(msg) - off, "%s%s",
+					                         listed > 0 ? ", " : "", names[i]);
+					listed++;
+					break;
+				}
+			}
+			if (off < sizeof(msg) - 1)
+				snprintf(msg + off, sizeof(msg) - off,
+				          ". Detach or delete them, or move within the same subnet.");
+			respond_error(fd, 400, "Bad Request", msg);
+			return;
+		}
+	}
+
+	/* ---- apply ---- */
+
+	if (creating) {
+		nerr = network_create(MGMT_NETWORK_NAME, subnet_str, new_prefix, new_ip, NULL, NULL,
+		                       &mgmt);
+		if (nerr != NETWORK_OK) {
+			char msg[160];
+
+			snprintf(msg, sizeof(msg), "could not create the management network (error %d)",
+			          (int)nerr);
+			respond_error(fd, 500, "Internal Server Error", msg);
+			return;
+		}
+	}
+	snprintf(mgmt_name, sizeof(mgmt_name), "%s", mgmt->name);
+
+	if (iface_changed || creating) {
+		nerr = network_attach_interface(mgmt_name, new_iface, 0);
+		if (nerr != NETWORK_OK && nerr != NETWORK_ERR_INTERFACE_ATTACHED) {
+			char msg[200];
+
+			snprintf(msg, sizeof(msg),
+			          "could not attach \"%s\" to the management network (error %d)", new_iface,
+			          (int)nerr);
+			if (creating)
+				network_delete(mgmt_name);
+			respond_error(fd, 500, "Internal Server Error", msg);
+			return;
+		}
+	}
+
+	if (!creating) {
+		nerr = network_set_address(mgmt_name, subnet_str, new_prefix, new_ip, &old_addr_be,
+		                            &old_addr_prefix);
+		if (nerr != NETWORK_OK) {
+			char msg[200];
+
+			snprintf(msg, sizeof(msg), "could not re-address the management network (error %d)",
+			          (int)nerr);
+			respond_error(fd, 500, "Internal Server Error", msg);
+			return;
+		}
+	}
+
+	/*
+	 * bind_ip (ADR-0068) is a dedicated address inside the management
+	 * network's own subnet. That subnet may have just changed under it,
+	 * so it is cleared rather than silently carried onto a bridge the
+	 * operator never chose it for -- the same rule that ADR already
+	 * applies when management_network is repointed.
+	 */
+	if (daemon_config_bind_ip() != NULL)
+		(void)daemon_config_set_bind_ip(NULL);
+
+	if (g_listener_conn.fd < 0) {
+		if (start_http_listener(new_ip, g_port) != 0) {
+			respond_error(fd, 500, "Internal Server Error", "could not start http listener");
+			return;
+		}
+		snprintf(g_bind_addr_buf, sizeof(g_bind_addr_buf), "%s", new_ip);
+		g_bind_addr = g_bind_addr_buf;
+	} else if (rebind_listener(new_ip, g_port) != 0) {
+		respond_error(fd, 500, "Internal Server Error", "listener rebind failed");
+		return;
+	}
+	if (g_https_listener_conn.fd >= 0 &&
+	    rebind_https_listener(g_bind_addr, daemon_config_https_port()) != 0) {
+		respond_error(fd, 500, "Internal Server Error", "https listener rebind failed");
+		return;
+	}
+
+	/*
+	 * Default route last among the live changes, and a failure here is
+	 * reported without unwinding the rebind. Unwinding would mean
+	 * pulling the address the operator is now talking to, which is the
+	 * hang ADR-0068 measured; and the box IS reachable on the new
+	 * address at this point. net.conf is not written on this path, so
+	 * a reboot returns to the previous, working configuration.
+	 */
+	rtfd = rtnl_open();
+	if (rtfd < 0) {
+		respond_error(fd, 500, "Internal Server Error", "could not open rtnetlink socket");
+		return;
+	}
+	if (have_cur && cur_gw[0] != '\0') {
+		struct in_addr og;
+
+		if (inet_pton(AF_INET, cur_gw, &og) == 1)
+			(void)rtnl_route_del_ipv4(rtfd, 0, 0, og.s_addr); /* ENOENT is fine */
+	}
+	if (gw_be != 0 && rtnl_route_add_default_ipv4(rtfd, gw_be) != 0) {
+		rtnl_close(rtfd);
+		respond_error(fd, 500, "Internal Server Error",
+		               "address moved and listeners rebound, but the default route could not be "
+		               "set -- not persisted, so a reboot returns to the previous configuration");
+		return;
+	}
+	rtnl_close(rtfd);
+
+	if (netconf_write(NET_CONF_PATH, new_ip, new_prefix, new_gw, new_iface) != 0) {
+		respond_error(fd, 500, "Internal Server Error",
+		               "applied live, but could not persist it to net.conf -- a reboot would "
+		               "return to the previous configuration");
+		return;
+	}
+
+	logstore_write("cixd", "info",
+	                "management network moved to %s/%d on %s (gateway %s)", new_ip, new_prefix,
+	                new_iface, new_gw[0] != '\0' ? new_gw : "none");
+
+	management_network_write_json(fd);
+
+	/*
+	 * Only now, and deferred: the reply above has been written but the
+	 * kernel has not necessarily put those bytes on the wire, and this
+	 * connection's local endpoint may be the very address being
+	 * removed. Dropping it here leaves the client waiting forever for
+	 * a response that was "successfully written" -- measured, ADR-0068.
+	 */
+	if (old_addr_be != 0 && old_addr_be != ip_be)
+		arm_bind_ip_cleanup_timer(mgmt_name, old_addr_be, old_addr_prefix);
+	if (iface_changed)
+		(void)network_detach_interface(mgmt_name, old_iface);
 }
 
 static void handle_daemon_config_put(int fd, const char *body, size_t body_len)
@@ -22246,6 +22632,18 @@ static void op_getDaemonConfig(const struct api_ctx *ctx)
 static void op_putDaemonConfig(const struct api_ctx *ctx)
 {
 	handle_daemon_config_put(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/system/management-network */
+static void op_getManagementNetwork(const struct api_ctx *ctx)
+{
+	handle_management_network_get(ctx->fd);
+}
+
+/* PUT /v1/system/management-network */
+static void op_putManagementNetwork(const struct api_ctx *ctx)
+{
+	handle_management_network_put(ctx->fd, ctx->req->body, ctx->req->body_len);
 }
 
 /* GET /v1/system/routes */

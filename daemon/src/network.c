@@ -504,6 +504,133 @@ enum network_error network_create(const char *name, const char *subnet_str, int 
 	return NETWORK_OK;
 }
 
+/*
+ * Re-address an existing network in place: new subnet, new prefix, new
+ * host address, same name and same bridge.
+ *
+ * Exists for PUT /v1/system/management-network, which moves a booted
+ * box onto a different network. Re-addressing rather than creating a
+ * replacement network is deliberate: the management network is
+ * referenced by name in persisted state and by the is_management flag,
+ * and a box that changed address three times would otherwise accumulate
+ * three networks, only one of them real.
+ *
+ * Does NOT remove the old address from the bridge. The caller gets it
+ * back through out_old_* and is expected to defer that removal by a
+ * couple of seconds, because deleting an address out from under the
+ * connection carrying the reply leaves the client waiting forever for
+ * bytes the kernel accepted and can no longer deliver -- measured, and
+ * the reason ADR-0068's own cleanup is on a timer. Both addresses being
+ * briefly live on the bridge is exactly what makes the handover safe.
+ *
+ * The caller is responsible for refusing this when containers still
+ * hold addresses in the old subnet; this function has no view of the
+ * registry. It does reset the allocation window when the subnet moves,
+ * since a window is a pair of host-parts within one specific subnet and
+ * carrying it across would silently re-point it at different addresses.
+ */
+enum network_error network_set_address(const char *name, const char *subnet_str, int prefix_len,
+                                        const char *address_str, uint32_t *out_old_address_be,
+                                        int *out_old_prefix_len)
+{
+	struct in_addr addr;
+	uint32_t address_be = 0;
+	struct network_def *e;
+	uint32_t old_base_be;
+	int old_prefix_len;
+	uint32_t old_address_be;
+	int old_has_address;
+	int old_alloc_start, old_alloc_end;
+	int subnet_changed;
+	int i;
+	int fd;
+
+	e = network_find(name);
+	if (e == NULL)
+		return NETWORK_ERR_NOT_FOUND;
+
+	if (prefix_len < 8 || prefix_len > 30 || inet_pton(AF_INET, subnet_str, &addr) != 1)
+		return NETWORK_ERR_INVALID_SUBNET;
+	if ((ntohl(addr.s_addr) & ~mask_for_prefix(prefix_len)) != 0)
+		return NETWORK_ERR_INVALID_SUBNET;
+	if (address_str == NULL || address_str[0] == '\0')
+		return NETWORK_ERR_INVALID_ADDRESS;
+	if (address_str_is_valid(address_str, addr.s_addr, prefix_len, &address_be) != 0)
+		return NETWORK_ERR_INVALID_ADDRESS;
+
+	/* Overlap is checked against every OTHER network -- self-overlap is
+	 * the normal case here (an address change inside the same subnet)
+	 * and must not be reported as a conflict. */
+	for (i = 0; i < NETWORK_MAX; i++) {
+		if (!g_networks[i].in_use || &g_networks[i] == e)
+			continue;
+		if (ranges_overlap(addr.s_addr, prefix_len, g_networks[i].base_be,
+		                    g_networks[i].prefix_len))
+			return NETWORK_ERR_OVERLAP;
+	}
+
+	old_base_be = e->base_be;
+	old_prefix_len = e->prefix_len;
+	old_address_be = e->address_be;
+	old_has_address = e->has_address;
+	old_alloc_start = e->alloc_start_host;
+	old_alloc_end = e->alloc_end_host;
+	subnet_changed = (old_base_be != addr.s_addr || old_prefix_len != prefix_len);
+
+	/* Idempotent: the same subnet and the same address is a no-op
+	 * rather than a spurious EEXIST from rtnl_addr_add_ipv4()'s own
+	 * NLM_F_EXCL, the same reasoning ADR-0068 applies to bind_ip. */
+	if (!subnet_changed && old_has_address && old_address_be == address_be) {
+		if (out_old_address_be != NULL)
+			*out_old_address_be = 0;
+		if (out_old_prefix_len != NULL)
+			*out_old_prefix_len = 0;
+		return NETWORK_OK;
+	}
+
+	fd = rtnl_open();
+	if (fd < 0)
+		return NETWORK_ERR_CREATE_FAILED;
+	if (rtnl_addr_add_ipv4(fd, e->name, address_be, prefix_len) != 0 && errno != EEXIST) {
+		rtnl_close(fd);
+		return NETWORK_ERR_CREATE_FAILED;
+	}
+	rtnl_close(fd);
+
+	e->base_be = addr.s_addr;
+	e->prefix_len = prefix_len;
+	e->address_be = address_be;
+	e->has_address = 1;
+	if (subnet_changed) {
+		e->alloc_start_host = 0;
+		e->alloc_end_host = 0;
+	}
+
+	if (save_state() != 0) {
+		/* Same posture as network_create(): a kernel change we cannot
+		 * remember is worse than no change, so put both back. */
+		int rfd = rtnl_open();
+
+		if (rfd >= 0) {
+			rtnl_addr_del_ipv4(rfd, e->name, address_be, prefix_len);
+			rtnl_close(rfd);
+		}
+		e->base_be = old_base_be;
+		e->prefix_len = old_prefix_len;
+		e->address_be = old_address_be;
+		e->has_address = old_has_address;
+		e->alloc_start_host = old_alloc_start;
+		e->alloc_end_host = old_alloc_end;
+		return NETWORK_ERR_CREATE_FAILED;
+	}
+
+	if (out_old_address_be != NULL)
+		*out_old_address_be = old_has_address ? old_address_be : 0;
+	if (out_old_prefix_len != NULL)
+		*out_old_prefix_len = old_prefix_len;
+	return NETWORK_OK;
+}
+
 enum network_error network_delete(const char *name)
 {
 	struct network_def *e = network_find(name);

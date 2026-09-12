@@ -1128,6 +1128,105 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /system/management-network:
+    get:
+      summary: The management network cixd answers on -- interface, address, prefix, gateway
+      description: >
+        The boot-persisted answer to "where does this box listen", read
+        back as one resource. Distinct from GET /system/daemon-config,
+        which reports the listener's ports and which named network is
+        flagged management; this one reports the actual interface,
+        address, prefix and default gateway that a booted box comes up
+        on, i.e. exactly the four values PUT below sets and persists.
+        configured is false on a box installed with no management
+        network at all (the installer's "blank interface" choice) --
+        cixd is then answering on its compiled-in loopback default and
+        every other field is empty. Always 200s.
+      operationId: getManagementNetwork
+      x-cix-expose: [cli]
+      responses:
+        "200":
+          description: The current management network
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ManagementNetwork"
+    put:
+      summary: Move cixd to another interface, address, subnet or gateway -- live, and across reboots
+      description: >
+        Applies live and persists, in that order, so a box that answers
+        after this call is a box that answers after a reboot. Before
+        this existed, the management address was written once by
+        cix-install and could not be changed on a running system at
+        all: net.conf was read at boot and written by nothing.
+        <br/><br/>
+        Everything is validated before anything moves. Then: the
+        interface is attached to the management bridge if it changed,
+        the new address is added to that bridge, both listeners are
+        rebound (each created and added to epoll before the old is torn
+        down, so a failure rolls back to the still-working listener),
+        the default route is replaced, the network registry is updated
+        so it cannot drift from the kernel, and net.conf is written
+        last. The request that triggered the change always finishes
+        normally over its own already-accepted connection; the
+        superseded address is removed from the bridge a couple of
+        seconds later rather than immediately, because deleting the
+        address under the connection carrying the reply strands the
+        client (measured -- see ADR-0068).
+        <br/><br/>
+        On a box with no management network yet, this creates one --
+        that is the primary path for a box installed with a blank
+        interface, not an edge case.
+        <br/><br/>
+        Any bind_ip (ADR-0068) is cleared, since a dedicated bind
+        address is relative to a subnet that this call may have just
+        changed. Set it again afterwards if wanted.
+        <br/><br/>
+        Refused (400) when the change could not work: a malformed
+        address, a prefix outside 8-30, the subnet or broadcast
+        address, an address in 0.0.0.0/8 or 127.0.0.0/8, an interface
+        the kernel does not have, a gateway outside the new subnet or
+        equal to the new address, or -- when the subnet itself changes
+        -- containers still attached to the management network, which
+        would be stranded in the old subnet. The refusal names them.
+      operationId: putManagementNetwork
+      x-cix-expose: [cli]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ManagementNetworkPutRequest"
+      responses:
+        "200":
+          description: The applied and persisted management network
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ManagementNetwork"
+        "400":
+          description: >
+            ip missing or malformed, prefix outside 8-30, ip is the
+            subnet or broadcast address, ip in 0.0.0.0/8 or
+            127.0.0.0/8, interface not present on this host, gateway
+            malformed, outside the new subnet, or equal to ip, or the
+            subnet changed while containers are still attached to the
+            management network
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: >
+            The rtnetlink socket could not be opened, the interface
+            could not be attached to the management bridge, the address
+            could not be assigned, a listener failed to rebind, or the
+            change applied live but could not be persisted to net.conf
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /system/routes:
     get:
       summary: The box's own real kernel IPv4 routing table (ADR-0066)
@@ -17577,6 +17676,67 @@ components:
           type: string
           description: Physical NIC name to attach to the "management" network, e.g. "eth0".
 
+    ManagementNetwork:
+      type: object
+      required: [configured, interface, ip, prefix, gateway, network]
+      properties:
+        configured:
+          type: boolean
+          description: >
+            False on a box installed with no management network (the
+            installer's blank-interface choice): cixd is answering on
+            its compiled-in loopback default, and every field below is
+            empty. A PUT creates one.
+        interface:
+          type: string
+          description: >
+            The host interface attached to the management bridge. Empty
+            when configured is false.
+        ip:
+          type: string
+          description: >
+            The address cixd binds to and the address the management
+            bridge carries. Empty when configured is false.
+        prefix:
+          type: integer
+          description: Prefix length of the management subnet, or 0 when unconfigured.
+        gateway:
+          type: string
+          description: >
+            The default gateway, or empty for a box reachable only on
+            its own subnet -- an ordinary configuration, not an
+            incomplete one.
+        network:
+          type: string
+          description: >
+            The name of the network carrying this configuration (the
+            one flagged is_management). Empty when configured is false.
+    ManagementNetworkPutRequest:
+      type: object
+      required: [ip, prefix]
+      properties:
+        ip:
+          type: string
+          description: >
+            The address cixd should answer on. Must be a real host
+            address in the subnet implied by prefix -- not the subnet
+            or broadcast address, and not in 0.0.0.0/8 or 127.0.0.0/8.
+        prefix:
+          type: integer
+          description: Prefix length, 8-30.
+        interface:
+          type: string
+          description: >
+            The host interface to manage the box on. Omit to keep the
+            current one. Must exist on this host.
+        gateway:
+          type: string
+          nullable: true
+          description: >
+            Default gateway, which must lie inside the new subnet and
+            differ from ip. Omit to keep the current one; pass an empty
+            string or null to remove the default route, which is
+            correct for a box reachable only on its own subnet.
     DaemonConfig:
       type: object
       required: [port, bind, bind_ip, management_network, http_enabled, https_enabled, https_port]

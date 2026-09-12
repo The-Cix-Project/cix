@@ -25,6 +25,7 @@
 #include "bootmodules.h"
 #include "kmod.h"
 #include "partlabel.h"
+#include "netconf.h"
 #include "treecopy.h"
 
 #include <dirent.h>
@@ -518,10 +519,31 @@ static int mkfs_ext4(const char *device, const char *label, int with_quota)
 /*
  * ADR-0207 phase 4: btrfs is the install default for the platform's
  * own writable partitions -- the substrate the whole snapshot-rootfs +
- * idmapped-userns model runs on. No force flag: mkfs.btrfs always
- * overwrites an existing signature when run non-interactively
- * (confirmed in diskformat.c's own #103 investigation -- no "-F"
- * equivalent exists to pass). No quota flags either: btrfs quota is
+ * idmapped-userns model runs on.
+ *
+ * FORCES (-f), and the comment that used to stand here is why it has
+ * to. It claimed "No force flag: mkfs.btrfs always overwrites an
+ * existing signature when run non-interactively (confirmed in
+ * diskformat.c's own #103 investigation -- no \"-F\" equivalent
+ * exists to pass)". Every part of that was false, and diskformat.c had
+ * already found and corrected the same false claim in its own copy --
+ * see its mkfs comment, which quotes btrfs-progs' own option table
+ * (OPTLINE("-f, --force", ...)) and its test_dev_for_mkfs(file,
+ * force_overwrite), which refuses outright when a filesystem is
+ * present and force is false. The flag is lowercase -f; -F is ext4's
+ * spelling, which is what made "no -F equivalent" read as true.
+ *
+ * Measured on real bare metal, 2026-09-12: installing onto an
+ * nvme0n1 that already carried a Windows layout partitioned cleanly
+ * and then died at "/dev/nvme0n1p4 appears to contain an existing
+ * filesystem ... ERROR: use the -f option to force overwrite",
+ * mkfs.btrfs exiting 0x100. sfdisk writes a new table but does not
+ * erase filesystem signatures inside the extents it hands out, so any
+ * install over a used disk hits this -- which is most of them. The
+ * operator has already confirmed the partitioning by this point; that
+ * confirmation is exactly what -f expresses.
+ *
+ * No quota flags: btrfs quota is
  * qgroups, enabled at runtime by cixd's own cix_btrfs_qgroup_limit_
  * excl() per container, not a mkfs-time feature bit like ext4's
  * prjquota was. with_mixed ("--mixed", data+metadata block groups
@@ -536,13 +558,13 @@ static int mkfs_ext4(const char *device, const char *label, int with_quota)
 static int mkfs_btrfs(const char *device, const char *label, int with_mixed)
 {
 	if (with_mixed) {
-		char *argv[] = { (char *)MKFS_BTRFS_BIN, "-q", "-L", (char *)label,
+		char *argv[] = { (char *)MKFS_BTRFS_BIN, "-q", "-f", "-L", (char *)label,
 			          "--mixed", (char *)device, NULL };
 
 		return run_subprocess(MKFS_BTRFS_BIN, argv);
 	}
 	{
-		char *argv[] = { (char *)MKFS_BTRFS_BIN, "-q", "-L", (char *)label,
+		char *argv[] = { (char *)MKFS_BTRFS_BIN, "-q", "-f", "-L", (char *)label,
 			          (char *)device, NULL };
 
 		return run_subprocess(MKFS_BTRFS_BIN, argv);
@@ -1543,18 +1565,21 @@ static int install_main(int argc, char **argv)
 	 */
 	if (ip != NULL && ip[0] != '\0' && iface != NULL && iface[0] != '\0') {
 		char net_conf_path[600];
-		char net_conf[320];
 
 		snprintf(net_conf_path, sizeof(net_conf_path), "%s/net.conf", CONFIG_MOUNT);
-		snprintf(net_conf, sizeof(net_conf), "ip=%s\nprefix=%d\ngateway=%s\ninterface=%s\n", ip, prefix,
-		         gateway, iface);
-		if (write_text_file(net_conf_path, net_conf) != 0) {
+		/* netconf_write() rather than a local snprintf: cixd writes
+		 * this same file now (PUT /v1/system/management-network), and
+		 * two programs writing one format from two definitions of it
+		 * is the drift this project's maxims refuse. */
+		if (netconf_write(net_conf_path, ip, prefix, gateway, iface) != 0) {
+			dual_perror("write net.conf");
 			umount(CONFIG_MOUNT);
 			return 1;
 		}
 	} else {
-		dual_printf("cix-install: no management network configured -- cixd will answer on "
-		            "127.0.0.1 until one is set.\n");
+		dual_printf("cix-install: no management network configured -- cixd will answer on\n");
+		dual_printf("  127.0.0.1. Set one on the booted box with:\n");
+		dual_printf("    cixctl management-network set --interface=eth0 --ip=<addr> --prefix=24\n");
 	}
 	if (umount(CONFIG_MOUNT) != 0) {
 		dual_perror("umount config");
