@@ -7807,10 +7807,25 @@ async function refreshBuildLogs() {
 	}
 }
 
+/* #433: the one place that closes the viewer. Both the button and
+ * Escape route here, so there is a single definition of "closed"
+ * rather than two that can disagree. */
+function closeBuildLog() {
+	const panel = document.getElementById("build-log-panel");
+
+	if (panel !== null)
+		panel.hidden = true;
+}
+
 async function showBuildLog(file) {
 	const view = document.getElementById("build-log-view");
+	const panel = document.getElementById("build-log-panel");
+	const title = document.getElementById("build-log-title");
 
-	view.hidden = false;
+	if (panel !== null)
+		panel.hidden = false;
+	if (title !== null)
+		title.textContent = file;
 	view.textContent = "Loading…";
 	try {
 		/* Fetched directly rather than through apiRequest(): the
@@ -13951,6 +13966,72 @@ function boCard(title, value, note) {
  * where it stays available for anyone reconciling it against the
  * cgroup. "max <period>" is the kernel's own spelling for no limit.
  */
+/*
+ * A duration a person reads, from a count of seconds (#423). Minutes
+ * and seconds up to an hour, then hours and minutes -- a build in its
+ * fortieth minute should say so rather than "2413s".
+ */
+function boDuration(seconds) {
+	const n = Math.max(0, Math.floor(Number(seconds) || 0));
+	const h = Math.floor(n / 3600);
+	const m = Math.floor((n % 3600) / 60);
+	const sec = n % 60;
+
+	if (h > 0)
+		return h + "h " + String(m).padStart(2, "0") + "m";
+	if (m > 0)
+		return m + "m " + String(sec).padStart(2, "0") + "s";
+	return sec + "s";
+}
+
+/*
+ * Ticks every elapsed counter on the page once a second (#423).
+ *
+ * Each counter carries the daemon's own figure and the local clock
+ * reading at the moment it was received, and advances by the
+ * difference between local readings -- never by differencing a daemon
+ * timestamp against this browser's clock, which would turn any skew
+ * between the two into a wrong elapsed time from the first frame. Only
+ * the ADVANCE is local, and a local clock measures its own elapsed
+ * time correctly whatever it is set to.
+ *
+ * One interval for the whole document rather than one per card: the
+ * build overview can hold ten of these at once, and they should all
+ * step together.
+ */
+function boTickElapsed() {
+	for (const el of document.querySelectorAll(".bo-elapsed")) {
+		const base = Number(el.dataset.baseSeconds);
+		const at = Number(el.dataset.baseAt);
+
+		if (!Number.isFinite(base) || !Number.isFinite(at))
+			continue;
+		el.textContent = boDuration(base + (Date.now() - at) / 1000);
+	}
+}
+
+setInterval(boTickElapsed, 1000);
+
+/*
+ * #433: close the build-log viewer. Escape as well as the button,
+ * because a panel covering what you were reading should close the way
+ * every other dismissable thing on the page does -- and because the
+ * bug being fixed is that it could not be closed at all.
+ */
+document.addEventListener("DOMContentLoaded", () => {
+	const btn = document.getElementById("build-log-close");
+
+	if (btn !== null)
+		btn.addEventListener("click", closeBuildLog);
+});
+
+document.addEventListener("keydown", (event) => {
+	const panel = document.getElementById("build-log-panel");
+
+	if (event.key === "Escape" && panel !== null && !panel.hidden)
+		closeBuildLog();
+});
+
 function boCpu(raw) {
 	const parts = String(raw || "").trim().split(/\s+/);
 
@@ -14033,7 +14114,13 @@ async function refreshBuildOverview() {
 	cap.textContent = "";
 	cap.appendChild(boCard("Build slots", String(max),
 	    "max_concurrent_jobs -- set on the Log tab"));
-	cap.appendChild(boCard("In use", busy + " of " + max,
+	/* #422: the proportion, not just the pair. "7 of 10" needs mental
+	 * arithmetic before it means anything; a percentage is the figure
+	 * an operator actually wants when deciding whether to start
+	 * another build, and 100% is the number that explains the 409 the
+	 * next install would get. */
+	cap.appendChild(boCard("In use",
+	    busy + " of " + max + (max > 0 ? " (" + Math.round((busy / max) * 100) + "%)" : ""),
 	    busy === 0 ? "nothing is building" : config.active_job_names));
 	cap.appendChild(boCard("Free", String(Math.max(0, max - busy)),
 	    "a further install is refused 409 at zero"));
@@ -14100,6 +14187,33 @@ async function refreshBuildOverview() {
 			add("image", e.image || image);
 			add("version", e.version || e.available_version || "\u2014");
 			add("container", e.build_container || "\u2014 (not started)");
+			/*
+			 * #423: when it started, and how long it has been going.
+			 *
+			 * The counter ticks from run_seconds, the daemon's own
+			 * figure, rather than from Date.now() - run_started_at:
+			 * the second form differences this browser's clock against
+			 * the daemon's, so any skew shows as a wrong elapsed time
+			 * immediately. The absolute timestamp is used only to
+			 * render the start time, which is what it is good for.
+			 */
+			if (e.run_started_at)
+				add("started", new Date(e.run_started_at * 1000).toLocaleTimeString());
+			if (e.run_seconds !== null && e.run_seconds !== undefined) {
+				const dd = document.createElement("dd");
+				const dt = document.createElement("dt");
+
+				dt.textContent = "running";
+				dd.className = "bo-elapsed";
+				dd.dataset.baseSeconds = String(e.run_seconds);
+				dd.dataset.baseAt = String(Date.now());
+				dd.textContent = boDuration(e.run_seconds);
+				dl.appendChild(dt);
+				dl.appendChild(dd);
+			}
+			if (e.build_started_at)
+				add("compiling since",
+				    new Date(e.build_started_at * 1000).toLocaleTimeString());
 			add("last output", e.last_output_seconds_ago === null ||
 			    e.last_output_seconds_ago === undefined
 			        ? "\u2014"
