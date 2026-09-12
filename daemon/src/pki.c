@@ -740,7 +740,8 @@ enum pki_error pki_cert_create(const char *name, const char *const *sans, int sa
 	return PKI_OK;
 }
 
-enum pki_error pki_cert_deliver(const char *name, pid_t pid, const char *dest_dir)
+enum pki_error pki_cert_deliver(const char *name, const char *container_name, pid_t pid,
+                                 const char *dest_dir)
 {
 	char src_key[PATH_MAX], src_crt[PATH_MAX];
 	char dst_key[PATH_MAX], dst_crt[PATH_MAX];
@@ -798,10 +799,30 @@ enum pki_error pki_cert_deliver(const char *name, pid_t pid, const char *dest_di
 	 * the tree is; pid does not say.
 	 */
 	{
-		const struct registry_entry *re = registry_find(name);
+		/*
+		 * container_name, NOT name (#397). These are two different
+		 * things and this function conflated them: `name` identifies
+		 * the CERTIFICATE (it is what cert_find() and the g_certs_dir
+		 * paths above are keyed on), while the tree being written into
+		 * belongs to the CONTAINER. They were equal for the entire
+		 * life of this function, because its only callers were
+		 * pki_issue -- which names a cert after the container it
+		 * issues for -- and the post-reset redelivery, which replays
+		 * exactly those. So the conflation could not be observed until
+		 * ADR-0280 allowed a container to be handed a cert with a
+		 * different name: delivering "jump-ssh" into "jump" computed
+		 * the host path of a container called "jump-ssh", which does
+		 * not exist, and the delivery failed with PERSIST_FAILED.
+		 * Measured on 192.168.15.95, 2026-09-12 -- the container came
+		 * up, its waitkey gate timed out after 30s reporting the key
+		 * "was never delivered by the PKI", and the daemon-side reason
+		 * went only to stderr, which this platform does not mirror
+		 * into the log store.
+		 */
+		const struct registry_entry *re = registry_find(container_name);
 
-		container_file_host_path(name, re != NULL ? re->disk_name : "", dest_dir, parent,
-		                          sizeof(parent));
+		container_file_host_path(container_name, re != NULL ? re->disk_name : "", dest_dir,
+		                          parent, sizeof(parent));
 	}
 	if (parent[0] == '\0' ||
 	    snprintf(dst_crt, sizeof(dst_crt), "%s/tls.crt", parent) >= (int)sizeof(dst_crt) ||

@@ -1317,6 +1317,16 @@ int main(void)
 	 * 2026-09-12, 2048 SHA256:nCR2Epsa... -> 2048 SHA256:H8urRHcL...
 	 * across one rebuild.
 	 *
+	 * The cert is named "durable-id" and the container "durablehost", and
+	 * that difference is LOAD-BEARING -- do not tidy them into matching
+	 * names. pki_cert_deliver() took one `name` parameter and used it both
+	 * to find the certificate and to locate the container's tree, a
+	 * conflation invisible for the whole life of the function because
+	 * every caller before ADR-0280 named the cert after the container.
+	 * With differing names it wrote to the host path of a container that
+	 * does not exist and delivered nothing. This test's names would have
+	 * caught it; it shipped because the test does not run as a gate.
+	 *
 	 * NOTE: test_pki is NOT in the Makefile's SELFTESTS list, so this
 	 * does not run as a release gate -- it needs a real container, which
 	 * a build container cannot create (#224). Run it directly on a Cix

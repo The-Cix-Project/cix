@@ -64,6 +64,20 @@ lifetime-agnostic, and nothing could ask for it.
   `null`. Noted in-comment that `test_pki` is not in `SELFTESTS` (it needs a real container, which a
   build container cannot create, #224) — the contract side is gated by `test_api_surfaces`.
 
+**One bug, found by deploying rather than by reasoning.** `pki_cert_deliver()` took a single `name`
+parameter and used it for two different things: finding the certificate (`cert_find()`, the
+`g_certs_dir` paths) and locating the container's tree (`registry_find()`,
+`container_file_host_path()`). Every caller before this named the cert after the container it issued
+for, so the two were always equal and the conflation could not be observed. Delivering `jump-ssh`
+into `jump` computed the host path of a container named `jump-ssh`, which does not exist, and
+delivered nothing. Measured on 192.168.15.95, 2026-09-12: `jump` started, its `waitkey` gate timed
+out after 30 seconds reporting the key `was never delivered by the PKI`, and the daemon's reason
+reached only stderr — which this platform does not mirror into the log store, so the container could
+say what it had not received and nothing could say why. The signature now takes both names, and the
+delivery failure is written to the log store as well. `test_pki`'s cert and container names
+deliberately differ and would have caught it; `test_pki` is not in `SELFTESTS` (#224), so it did not
+run.
+
 An SSH certificate authority would remove trust-on-first-use altogether rather than stabilise the
 key, and an OpenSSH certificate is not an X.509 certificate — a distinct signed object with
 SSH-format fields, which this X.509 CA cannot issue without new machinery. Left as its own decision
