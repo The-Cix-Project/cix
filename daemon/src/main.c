@@ -51,6 +51,7 @@
 #include "zswap.h"
 #include "dhcp.h"
 #include "procfuse.h"
+#include "proctitle.h"
 #include "stallwatch.h"
 #include "exec.h"
 #include "http.h"
@@ -29855,7 +29856,13 @@ static int cixd_main(int argc, char **argv)
  */
 int main(int argc, char **argv)
 {
-	int rc = cixd_main(argc, argv);
+	int rc;
+
+	/* Record the argv area before anything forks, so procfuse and the
+	 * watchdog can set their own /proc/<pid>/cmdline (#456). */
+	proctitle_init(argc, argv);
+
+	rc = cixd_main(argc, argv);
 
 	if (!g_pid1_mode)
 		return rc;
