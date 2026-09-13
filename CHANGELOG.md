@@ -6,6 +6,30 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A container's `df` reports its own quota, not the pool (#452, ADR-0286 tier 2, kernel 7.2.3-12)
+
+`df` inside a container showed the whole 16 GiB btrfs pool for a rootfs with a
+512 MiB quota, because `btrfs_statfs()` reads the superblock totals and never
+consults the per-subvolume qgroup — even though the limit is set and the daemon
+reads it. A 44-line kernel patch to `fs/btrfs` adds `btrfs_qgroup_statfs_limit()`,
+which looks up the level-0 qgroup for the subvolume `statfs` was called on, and has
+`btrfs_statfs()` override `f_blocks`/`f_bfree`/`f_bavail` with its limit when one is
+set (`MAX_EXCL`, matching what `cix_btrfs_qgroup_limit_excl()` sets). A no-op
+wherever no limit is set, so host disk reporting is unchanged.
+
+Verified live on 192.168.15.95: `df -T / /home` inside `jump` now reports 512 MiB
+for `/` and 2 GiB for `/home` — each subvolume's own quota — where before both read
+16 GiB. With tier 1's `/proc/partitions`, a container now sees its own disk.
+
+Two implementation notes worth keeping. The patch is applied to the pinned 7.2.3
+source with `awk`/`cat`, not `patch(1)`: `kernel-builder` carries no `patch`, and a
+hostbuild's `pkg_build_depends` composes nothing into the build image (ADR-0199).
+And the kernel *version* string stays `7.2.3` across a recipe-revision bump, so
+deploying it needs `kernel_path` passed to `/system/update` explicitly (an omitted
+kernel auto-fills the old one) and `uname`'s build date — not the version — to
+confirm the new kernel booted. `/sys/block` remains the host's: `lsblk` still shows
+the host's disks, a recorded open gap.
+
 ### Forked children name themselves, instead of a crowd of identical "cixd" and "cix-init" (#456)
 
 `GET /v1/system/processes` and the watchdog's stall records showed three processes
