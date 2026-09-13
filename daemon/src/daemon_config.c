@@ -34,14 +34,14 @@ static int g_userns_default = 1; /* defaults to 1 too (ADR-0171) -- every fresh 
                               * posture ADR-0163/ADR-0169 already established
                               * elsewhere in this codebase. */
 static int g_https_port;    /* 0: no persisted override, main.c falls back to DEFAULT_HTTPS_PORT */
-static char g_bind_ip[DAEMON_CONFIG_BIND_IP_MAX]; /* empty: no dedicated bind_ip set (ADR-0068) */
+static char g_management_address[DAEMON_CONFIG_MANAGEMENT_ADDRESS_MAX]; /* empty: loopback-only (ADR-0287) */
 
 static int load_state(void)
 {
 	char *buf;
 	size_t len;
 	struct json_value *root;
-	const struct json_value *jport, *jhttp, *jhttps, *jhttps_port, *jbind_ip;
+	const struct json_value *jport, *jhttp, *jhttps, *jhttps_port, *jmgmt;
 
 	if (persist_read_file(g_state_path, &buf, &len) != 0)
 		return -1;
@@ -93,13 +93,27 @@ static int load_state(void)
 		g_https_port = port;
 	}
 
-	jbind_ip = json_object_get(root, "bind_ip");
-	if (jbind_ip != NULL && jbind_ip->type == JSON_STRING) {
-		const char *ip = json_as_string(jbind_ip);
+	/*
+	 * The single truth (ADR-0287). On a pre-ADR-0287 box the key is
+	 * absent; migrate the one legacy input this module can see -- an
+	 * explicit bind_ip -- into it. The other legacy case (bind_ip was
+	 * null and the address came from whichever network was flagged
+	 * management) is migrated in main.c's boot path, which alone can
+	 * resolve that network's address; it calls
+	 * daemon_config_set_management_address() there. The legacy bind_ip
+	 * key is never written again once this box saves state.
+	 */
+	jmgmt = json_object_get(root, "management_address");
+	if (jmgmt == NULL || jmgmt->type != JSON_STRING)
+		jmgmt = json_object_get(root, "bind_ip"); /* legacy, migrate once */
+	if (jmgmt != NULL && jmgmt->type == JSON_STRING) {
+		const char *ip = json_as_string(jmgmt);
 
-		if (ip != NULL && snprintf(g_bind_ip, sizeof(g_bind_ip), "%s", ip) >= (int)sizeof(g_bind_ip)) {
+		if (ip != NULL && ip[0] != '\0' &&
+		    snprintf(g_management_address, sizeof(g_management_address), "%s", ip) >=
+		            (int)sizeof(g_management_address)) {
 			json_free(root);
-			fprintf(stderr, "%s: persisted bind_ip too long\n", g_state_path);
+			fprintf(stderr, "%s: persisted management_address too long\n", g_state_path);
 			return -1;
 		}
 	}
@@ -125,9 +139,9 @@ static int save_state(void)
 	jw_bool(&w, g_userns_default);
 	jw_key(&w, "https_port");
 	jw_int(&w, g_https_port);
-	jw_key(&w, "bind_ip");
-	if (g_bind_ip[0] != '\0')
-		jw_str(&w, g_bind_ip);
+	jw_key(&w, "management_address");
+	if (g_management_address[0] != '\0')
+		jw_str(&w, g_management_address);
 	else
 		jw_null(&w);
 	jw_obj_close(&w);
@@ -149,7 +163,7 @@ int daemon_config_init(const char *state_path)
 	g_http_enabled = 1;
 	g_https_enabled = 1;
 	g_https_port = 0;
-	g_bind_ip[0] = '\0';
+	g_management_address[0] = '\0';
 	return load_state();
 }
 
@@ -237,24 +251,25 @@ enum daemon_config_error daemon_config_set_https_port(int port)
 	return DAEMON_CONFIG_OK;
 }
 
-const char *daemon_config_bind_ip(void)
+const char *daemon_config_management_address(void)
 {
-	return g_bind_ip[0] != '\0' ? g_bind_ip : NULL;
+	return g_management_address[0] != '\0' ? g_management_address : NULL;
 }
 
-enum daemon_config_error daemon_config_set_bind_ip(const char *ip)
+enum daemon_config_error daemon_config_set_management_address(const char *address)
 {
-	char prev[DAEMON_CONFIG_BIND_IP_MAX];
+	char prev[DAEMON_CONFIG_MANAGEMENT_ADDRESS_MAX];
 
-	memcpy(prev, g_bind_ip, sizeof(prev));
-	if (ip == NULL) {
-		g_bind_ip[0] = '\0';
-	} else if (snprintf(g_bind_ip, sizeof(g_bind_ip), "%s", ip) >= (int)sizeof(g_bind_ip)) {
-		memcpy(g_bind_ip, prev, sizeof(g_bind_ip));
-		return DAEMON_CONFIG_ERR_INVALID_BIND_IP;
+	memcpy(prev, g_management_address, sizeof(prev));
+	if (address == NULL) {
+		g_management_address[0] = '\0';
+	} else if (snprintf(g_management_address, sizeof(g_management_address), "%s", address) >=
+	           (int)sizeof(g_management_address)) {
+		memcpy(g_management_address, prev, sizeof(g_management_address));
+		return DAEMON_CONFIG_ERR_INVALID_MANAGEMENT_ADDRESS;
 	}
 	if (save_state() != 0) {
-		memcpy(g_bind_ip, prev, sizeof(g_bind_ip));
+		memcpy(g_management_address, prev, sizeof(g_management_address));
 		return DAEMON_CONFIG_ERR_PERSIST_FAILED;
 	}
 	return DAEMON_CONFIG_OK;
@@ -271,11 +286,6 @@ void daemon_config_write_json(struct json_writer *w)
 	jw_bool(w, g_https_enabled);
 	jw_key(w, "https_port");
 	jw_int(w, daemon_config_https_port());
-	jw_key(w, "bind_ip");
-	if (g_bind_ip[0] != '\0')
-		jw_str(w, g_bind_ip);
-	else
-		jw_null(w);
 	jw_obj_close(w);
 }
 

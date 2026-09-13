@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted
+Superseded by [ADR-0287](0287-the-management-address-is-the-single-truth.md).
+
+The `bind_ip` this ADR added as an *optional override* on top of the management network's own address became the second of two code paths for one truth ("move the daemon's off-box address"), which is the parallel ADR-0287 removes. Its mechanism is not discarded — the add-address / deferred-remove / atomic-rebind machinery here becomes *the* single mechanism in ADR-0287, generalized from an override into the one way cixd's off-box bind address is set. The separate `bind_ip` field and its `daemon-config --bind-ip` surface are cut.
 
 ## Context
 

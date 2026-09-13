@@ -1028,21 +1028,20 @@ paths:
 
   /system/daemon-config:
     get:
-      summary: cixd's own listen port, HTTP/HTTPS exposure, and which network is currently its management one (Part 0.5)
+      summary: cixd's own listen port and HTTP/HTTPS exposure
       description: >
         A dedicated resource, distinct from generic network CRUD, since
         changing any of these fields has a real side effect -- a live
         listen-socket start/stop/rebind -- that plain network endpoints
-        were never meant to trigger. management_network is not this
-        resource's own stored state: it's reported here by querying
-        network.c's own is_management flag live (GET /networks), the
-        one source of truth for which network cixd is bound to.
-        Always 200s -- defaults (port 80, http_enabled true,
-        https_enabled true, https_port 443, ADR-0171; userns_default
-        true, ADR-0207 -- secure by default) apply until the
-        first PUT. A fresh, pre-PKI-bootstrap install just has the
-        HTTPS listener silently not come up at boot (logged, non-fatal)
-        until a host certificate exists.
+        were never meant to trigger. WHERE cixd listens off-box is not
+        here (ADR-0287): that is GET /system/management-address, and the
+        derived management flag on GET /networks. Always 200s --
+        defaults (port 80, http_enabled true, https_enabled true,
+        https_port 443, ADR-0171; userns_default true, ADR-0207 --
+        secure by default) apply until the first PUT. A fresh,
+        pre-PKI-bootstrap install just has the HTTPS listener silently
+        not come up at boot (logged, non-fatal) until a host certificate
+        exists.
       operationId: getDaemonConfig
       x-cix-expose: [cli, web]
       responses:
@@ -1053,7 +1052,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/DaemonConfig"
     put:
-      summary: Live-reconfigure cixd's listen port, HTTP/HTTPS listeners, or management network -- no restart
+      summary: Live-reconfigure cixd's listen port or HTTP/HTTPS listeners -- no restart
       description: >
         Accepts a partial body -- only the fields being changed. Since
         cixd runs as real PID 1 on an installed system (ADR-0011),
@@ -1066,23 +1065,12 @@ paths:
         both http_enabled and https_enabled false -- this daemon must
         always have at least one working listener. https_enabled=true
         fails (500) if no PKI host certificate exists yet to serve TLS
-        with (see POST /pki/ca). management_network, if given, must
-        name an existing network with has_address true (400/404
-        otherwise); repointing clears is_management from whichever
-        network previously held it and sets it on the new one, in a
-        single all-or-nothing rebind alongside any port/http/https
-        change in the same request. bind_ip (ADR-0068), if given, must
-        be a real address within the (possibly just-repointed)
-        management network's own subnet -- added to that network's
-        bridge before the rebind. Any previous bind_ip is removed from
-        its own bridge a couple of seconds later rather than
-        immediately, to avoid a real race with this same request's own
-        response delivery (see ADR-0068) -- the response itself
-        already reflects the fully-applied new state by the time it's
-        sent. port/https_port/http_enabled/https_enabled/https_port/
-        bind_ip are only persisted once their real listener/bridge
-        change has actually succeeded, so a stored value never claims
-        a state that isn't really running.
+        with (see POST /pki/ca). Moving cixd's off-box address is NOT
+        done here (ADR-0287) -- use PUT /system/management-address. The
+        fields here (port/https_port/http_enabled/https_enabled) are
+        only persisted once their real listener change has actually
+        succeeded, so a stored value never claims a state that isn't
+        really running.
       operationId: putDaemonConfig
       x-cix-expose: [cli, web]
       requestBody:
@@ -1100,18 +1088,8 @@ paths:
                 $ref: "#/components/schemas/DaemonConfig"
         "400":
           description: >
-            port/https_port out of range, both http_enabled and
-            https_enabled false, management_network not a string, the
-            named network has no address for cixd to bind to,
-            bind_ip not a string/null, bind_ip not a valid address
-            within the management network's subnet, or bind_ip given
-            with no management network to bind it within
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "404":
-          description: management_network names a network that doesn't exist
+            port/https_port out of range, or both http_enabled and
+            https_enabled false
           content:
             application/json:
               schema:
@@ -1119,109 +1097,120 @@ paths:
         "500":
           description: >
             A listener failed to start/rebind (including https_enabled
-            with no usable host certificate yet), the rtnetlink socket
-            could not be opened or bind_ip could not be assigned to the
-            bridge, or listener(s)/bridge changed live but the new
-            state could not be persisted to disk
+            with no usable host certificate yet), or listener(s) changed
+            live but the new state could not be persisted to disk
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
 
-  /system/management-network:
+  /system/management-address:
     get:
-      summary: The management network cixd answers on -- interface, address, prefix, gateway
+      summary: The single address cixd answers on off-box -- configured intent and bound reality
       description: >
-        The boot-persisted answer to "where does this box listen", read
-        back as one resource. Distinct from GET /system/daemon-config,
-        which reports the listener's ports and which named network is
-        flagged management; this one reports the actual interface,
-        address, prefix and default gateway that a booted box comes up
-        on, i.e. exactly the four values PUT below sets and persists.
-        configured is false on a box installed with no management
-        network at all (the installer's "blank interface" choice) --
-        cixd is then answering on its compiled-in loopback default and
-        every other field is empty. Always 200s.
-      operationId: getManagementNetwork
-      x-cix-expose: [cli]
+        The one source of truth for where cixd listens off-box
+        (ADR-0287). Reports the configured address (persisted intent),
+        the bound address (kernel reality), and the derived network
+        whose subnet contains it -- the same network that reports
+        management=true in GET /networks. 127.0.0.1 is always bound in
+        addition and is never part of this resource. configured=false
+        means loopback-only by choice; a configured address that failed
+        to bind is reported via a non-empty bind_unavailable, not by
+        configured=false. Always 200s.
+      operationId: getManagementAddress
+      x-cix-expose: [cli, web]
       responses:
         "200":
-          description: The current management network
+          description: The current management address
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ManagementNetwork"
+                $ref: "#/components/schemas/ManagementAddress"
     put:
-      summary: Move cixd to another interface, address, subnet or gateway -- live, and across reboots
+      summary: Set the off-box address cixd answers on -- live, and across reboots
       description: >
-        Applies live and persists, in that order, so a box that answers
-        after this call is a box that answers after a reboot. Before
-        this existed, the management address was written once by
-        cix-install and could not be changed on a running system at
-        all: net.conf was read at boot and written by nothing.
+        Sets the single management address. The network is DERIVED from
+        the address -- whichever existing network's subnet contains it
+        (subnets cannot overlap, so this is unique) -- and is never
+        named or created here. Applies live and persists, in that order,
+        so a box that answers after this call answers after a reboot.
         <br/><br/>
-        Everything is validated before anything moves. Then: the
-        interface is attached to the management bridge if it changed,
-        the new address is added to that bridge, both listeners are
-        rebound (each created and added to epoll before the old is torn
-        down, so a failure rolls back to the still-working listener),
-        the default route is replaced, the network registry is updated
-        so it cannot drift from the kernel, and net.conf is written
-        last. The request that triggered the change always finishes
-        normally over its own already-accepted connection; the
-        superseded address is removed from the bridge a couple of
+        Validated before anything moves. Then the address is added to
+        the derived network's bridge (idempotent if it is that network's
+        own address), both off-box listeners are rebound (each created
+        and added to epoll before the old is torn down, so a failure
+        rolls back to the still-working listener), and the persisted
+        state is written. The request that triggered the change always
+        finishes normally over its own already-accepted connection; the
+        superseded address is removed from its bridge a couple of
         seconds later rather than immediately, because deleting the
         address under the connection carrying the reply strands the
-        client (measured -- see ADR-0068).
+        client (measured -- ADR-0068). The network keeps its own
+        address; this never re-addresses the network.
         <br/><br/>
-        On a box with no management network yet, this creates one --
-        that is the primary path for a box installed with a blank
-        interface, not an edge case.
-        <br/><br/>
-        Any bind_ip (ADR-0068) is cleared, since a dedicated bind
-        address is relative to a subnet that this call may have just
-        changed. Set it again afterwards if wanted.
-        <br/><br/>
-        Refused (400) when the change could not work: a malformed
-        address, a prefix outside 8-30, the subnet or broadcast
-        address, an address in 0.0.0.0/8 or 127.0.0.0/8, an interface
-        the kernel does not have, a gateway outside the new subnet or
-        equal to the new address, or -- when the subnet itself changes
-        -- containers still attached to the management network, which
-        would be stranded in the old subnet. The refusal names them.
-      operationId: putManagementNetwork
-      x-cix-expose: [cli]
+        Refused (400) when the address falls in no existing network's
+        subnet ("no network contains A.B.C.D -- create one first"), is
+        malformed, is a network or broadcast address, or is in
+        0.0.0.0/8 or 127.0.0.0/8. The default upstream route is not set
+        here -- it lives in /system/routes (ADR-0067).
+      operationId: putManagementAddress
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/ManagementNetworkPutRequest"
+              $ref: "#/components/schemas/ManagementAddressPutRequest"
       responses:
         "200":
-          description: The applied and persisted management network
+          description: The applied and persisted management address
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ManagementNetwork"
+                $ref: "#/components/schemas/ManagementAddress"
         "400":
           description: >
-            ip missing or malformed, prefix outside 8-30, ip is the
-            subnet or broadcast address, ip in 0.0.0.0/8 or
-            127.0.0.0/8, interface not present on this host, gateway
-            malformed, outside the new subnet, or equal to ip, or the
-            subnet changed while containers are still attached to the
-            management network
+            address missing or malformed, in no existing network's
+            subnet, a network or broadcast address, or in 0.0.0.0/8 or
+            127.0.0.0/8
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "500":
           description: >
-            The rtnetlink socket could not be opened, the interface
-            could not be attached to the management bridge, the address
-            could not be assigned, a listener failed to rebind, or the
-            change applied live but could not be persisted to net.conf
+            The rtnetlink socket could not be opened, the address could
+            not be assigned to the bridge, a listener failed to rebind,
+            or the change applied live but could not be persisted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      summary: Reset to loopback-only -- unbind the off-box address
+      description: >
+        Clears the management address (ADR-0287). cixd's off-box
+        listeners are stopped and the address is removed from its
+        bridge, UNLESS it coincides with the derived network's own
+        address, which is never deleted out from under the network. The
+        box remains fully reachable on 127.0.0.1, which is always bound.
+        management then derives to none on every network. This is the
+        deliberate loopback-only state, distinct from a failed bind.
+        Idempotent: resetting an already-unset address is a 200 no-op.
+      operationId: deleteManagementAddress
+      x-cix-expose: [cli, web]
+      responses:
+        "200":
+          description: The management address after reset (configured false)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ManagementAddress"
+        "500":
+          description: >
+            The rtnetlink socket could not be opened, a listener could
+            not be stopped, or the change applied live but could not be
+            persisted
           content:
             application/json:
               schema:
@@ -5970,9 +5959,10 @@ paths:
         "409":
           description: >
             Still in use by at least one container, or this is the
-            management network (is_management -- repoint cixd's own
-            bind address to a different network first via
-            PUT /system/daemon-config, then delete this one)
+            management network (management=true -- reset the management
+            address first via DELETE /system/management-address, or move
+            it to another network via PUT /system/management-address,
+            then delete this one)
           content:
             application/json:
               schema:
@@ -6114,9 +6104,10 @@ paths:
                 $ref: "#/components/schemas/Error"
         "409":
           description: >
-            This is the management network (is_management) -- repoint
-            cixd's own bind address to a different network first via
-            PUT /system/daemon-config
+            This is the management network (management=true) -- reset
+            the management address first via
+            DELETE /system/management-address, or move it to another
+            network via PUT /system/management-address
           content:
             application/json:
               schema:
@@ -17013,7 +17004,7 @@ components:
 
     Network:
       type: object
-      required: [name, subnet, prefix_len, has_address, address, is_management]
+      required: [name, subnet, prefix_len, has_address, address, management]
       properties:
         name:
           type: string
@@ -17028,16 +17019,20 @@ components:
           type: string
           nullable: true
           description: The host-owned address, or null when has_address is false.
-        is_management:
+        management:
           type: boolean
           description: >
-            Whether this network's own address is cixd's own bind
-            address (Part 0.5). At most one network has this set at a
-            time; see GET /system/daemon-config for which one. While
-            true, DELETE on this network and DELETE on any of its
-            attached interfaces are refused (409) -- repoint
-            management to a different network first via
-            PUT /system/daemon-config's management_network field.
+            Whether this is the network cixd's off-box management
+            address lives in (ADR-0287). DERIVED, not stored: true iff
+            this network's subnet contains the current
+            management_address (GET /system/management-address), so it
+            can never disagree with where cixd is actually bound. At
+            most one network is management at a time. While true, DELETE
+            on this network, DELETE on any attached interface, and any
+            re-address that would move its subnet off the management
+            address are refused (409) -- reset the management address
+            first (DELETE /system/management-address) or move it to
+            another network (PUT /system/management-address).
         interfaces:
           type: array
           items:
@@ -17676,104 +17671,82 @@ components:
           type: string
           description: Physical NIC name to attach to the "management" network, e.g. "eth0".
 
-    ManagementNetwork:
+    ManagementAddress:
       type: object
-      required: [configured, interface, ip, prefix, gateway, network]
+      required: [configured, address, bound, network]
       properties:
         configured:
           type: boolean
           description: >
-            False on a box installed with no management network (the
-            installer's blank-interface choice): cixd is answering on
-            its compiled-in loopback default, and every field below is
-            empty. A PUT creates one.
-        interface:
+            Whether an off-box management address is set (ADR-0287).
+            False means loopback-only BY CHOICE: cixd answers on
+            127.0.0.1 (always) and nothing off-box, address/network are
+            empty. This is distinct from a configured address that
+            could not be bound at boot, which is reported by the
+            non-empty bind_unavailable field, not by configured=false.
+        address:
           type: string
           description: >
-            The host interface attached to the management bridge. Empty
-            when configured is false.
-        ip:
+            The configured management address -- the single persisted
+            truth for where cixd listens off-box. Empty when configured
+            is false.
+        bound:
           type: string
           description: >
-            The address cixd binds to and the address the management
-            bridge carries. Empty when configured is false.
-        prefix:
-          type: integer
-          description: Prefix length of the management subnet, or 0 when unconfigured.
-        gateway:
+            The address cixd's off-box HTTP/HTTPS listeners are actually
+            bound to right now. Equals address in the normal case; empty
+            when loopback-only or when a configured address failed to
+            bind (see bind_unavailable). The configured-intent vs
+            kernel-state split: address is intent, bound is reality.
+        bind_unavailable:
           type: string
           description: >
-            The default gateway, or empty for a box reachable only on
-            its own subnet -- an ordinary configuration, not an
-            incomplete one.
+            Non-empty ONLY when a management address is configured but
+            cixd could not bind it (the address it wanted). A box in
+            this state is up on loopback but unreachable off-box, and
+            must not be confirmed as a good A/B boot slot. Empty in the
+            normal case and in the deliberate loopback-only case.
         network:
           type: string
           description: >
-            The name of the network carrying this configuration (the
-            one flagged is_management). Empty when configured is false.
-    ManagementNetworkPutRequest:
+            The name of the network whose subnet contains the
+            management address -- derived, the same network that reports
+            management=true in GET /networks. Empty when configured is
+            false.
+    ManagementAddressPutRequest:
       type: object
-      required: [ip, prefix]
+      required: [address]
       properties:
-        ip:
+        address:
           type: string
           description: >
-            The address cixd should answer on. Must be a real host
-            address in the subnet implied by prefix -- not the subnet
-            or broadcast address, and not in 0.0.0.0/8 or 127.0.0.0/8.
-        prefix:
-          type: integer
-          description: Prefix length, 8-30.
-        interface:
-          type: string
-          description: >
-            The host interface to manage the box on. Omit to keep the
-            current one. Must exist on this host.
-        gateway:
-          type: string
-          nullable: true
-          description: >
-            Default gateway, which must lie inside the new subnet and
-            differ from ip. Omit to keep the current one; pass an empty
-            string or null to remove the default route, which is
-            correct for a box reachable only on its own subnet.
+            The IPv4 address cixd should answer on off-box. Must fall
+            within the subnet of an EXISTING network (create the network
+            first via POST /networks); the network is derived from the
+            address, never named or created here. Must be a real host
+            address -- not a network or broadcast address, not in
+            0.0.0.0/8 or 127.0.0.0/8. cixd adds it to that network's
+            bridge (idempotent if it is the network's own address) and
+            rebinds both off-box listeners to it; the previous address,
+            if any, is removed from its bridge a couple of seconds later
+            to avoid stranding this request's own reply (ADR-0068's
+            deferred-removal race, preserved).
     DaemonConfig:
       type: object
-      required: [port, bind, bind_ip, management_network, http_enabled, https_enabled, https_port]
+      required: [port, http_enabled, https_enabled, https_port]
+      description: >
+        cixd's own listener configuration -- ports and HTTP/HTTPS
+        exposure only. WHERE cixd listens off-box is no longer part of
+        this resource (ADR-0287): the single truth for that is
+        GET /system/management-address, and which network is management
+        is the derived management flag on GET /networks. 127.0.0.1 is
+        always bound regardless of any field here and is never
+        reconfigurable.
       properties:
         port:
           type: integer
           default: 80
           description: The plain-HTTP listener's port.
-        bind:
-          type: string
-          description: >
-            cixd's own current bind address -- the management_
-            network's own address, unless bind_ip is set, in which case
-            this equals bind_ip instead (both listeners, HTTP and
-            HTTPS, always share this same address; only the port
-            differs).
-        bind_ip:
-          type: string
-          nullable: true
-          description: >
-            A dedicated second address on the management network's own
-            bridge that cixd binds to instead of that network's own
-            address (ADR-0068), or null when unset (the default --
-            cixd binds to the management network's own address,
-            same as before this field existed). Decoupling the two
-            lets an operator dedicate a specific address to cixd
-            itself on a bridge shared with other traffic.
-        management_network:
-          type: string
-          nullable: true
-          description: >
-            The network currently carrying cixd's own bind address
-            (network_def.is_management, queried live from GET
-            /networks -- not a second copy of that state). Null only in
-            the unusual case no network is currently designated
-            management (e.g. a --data-dir= test invocation that never
-            bootstrapped one).
         http_enabled:
           type: boolean
           default: true
@@ -17791,36 +17764,15 @@ components:
       type: object
       description: >
         Every field is optional -- PUT accepts a partial body, only the
-        fields actually being changed. port, management_network, and
-        bind_ip may all be given together and are applied as a single
-        rebind rather than several. Repointing management_network
-        without also giving a fresh bind_ip in the same request
-        implicitly clears any previously-set bind_ip (ADR-0068) -- a
-        dedicated bind_ip only ever makes sense relative to whichever
-        network is management at the time.
+        fields actually being changed. This resource no longer moves
+        cixd's off-box address (ADR-0287): use
+        PUT /system/management-address for that. What remains here is
+        the listener ports and HTTP/HTTPS exposure.
       properties:
         port:
           type: integer
           minimum: 1
           maximum: 65535
-        management_network:
-          type: string
-          description: >
-            Name of an existing network with has_address true (see
-            POST /networks). Its own address becomes cixd's new
-            bind address for both HTTP and HTTPS, unless bind_ip is
-            also given in the same request.
-        bind_ip:
-          type: string
-          nullable: true
-          description: >
-            Set to a real IPv4 address within the (possibly just-
-            repointed) management network's own subnet to make cixd
-            bind there instead of that network's own address (ADR-
-            0068) -- added to the bridge via rtnl_addr_add_ipv4()
-            before the listener rebinds to it. Set explicitly to null
-            to clear it and revert to the management network's own
-            address. Omit the key entirely to leave it unchanged.
         http_enabled:
           type: boolean
         https_enabled:

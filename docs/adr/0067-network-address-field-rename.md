@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted. This ADR's note that `is_management` is "a plain boolean settable only via `bootstrap_management_network()` or `PUT /system/daemon-config`'s `management_network` field" is amended by [ADR-0287](0287-the-management-address-is-the-single-truth.md): the flag is renamed `management` and is now *derived* from the single management address, never set by name. The `gateway`→`address` rename this ADR made is untouched and is the vocabulary ADR-0287 follows for `management_address`.
 
 ## Context
 

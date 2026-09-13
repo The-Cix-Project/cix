@@ -11568,30 +11568,6 @@ document.getElementById("sys-site-form").addEventListener("submit", async (event
 
 let daemonConfigDirty = false;
 
-/* Rebuilds the management-network <select> from cache.networks -- only
- * has_address networks are valid repoint targets (network_set_management()
- * refuses otherwise, see daemon/src/network.c), but the currently-active
- * one is always included even if that were somehow false, so the form
- * never silently shows a value that isn't actually selected. */
-function populateManagementNetworkSelect(currentName) {
-	const select = document.getElementById("dcf-management-network");
-	const names = cache.networks
-		.filter((n) => n.has_address || n.name === currentName)
-		.map((n) => n.name);
-
-	if (currentName && !names.includes(currentName))
-		names.push(currentName);
-
-	select.textContent = "";
-	for (const name of names) {
-		const option = document.createElement("option");
-
-		option.value = name;
-		option.textContent = name;
-		select.appendChild(option);
-	}
-	select.value = currentName || "";
-}
 
 async function refreshRoutes() {
 	try {
@@ -12979,24 +12955,46 @@ async function refreshDaemonConfig() {
 		const dc = await apiRequest("GET", CIX_API.getDaemonConfig());
 
 		cache.daemonConfig = dc;
-		populateManagementNetworkSelect(dc.management_network);
 		if (!daemonConfigDirty) {
 			document.getElementById("dcf-port").value = dc.port;
 			document.getElementById("dcf-https-port").value = dc.https_port;
 			document.getElementById("dcf-http-enabled").checked = dc.http_enabled;
 			document.getElementById("dcf-https-enabled").checked = dc.https_enabled;
-			document.getElementById("dcf-bind-ip").value = dc.bind_ip || "";
 		}
-		document.getElementById("dcf-bind-hint").textContent = dc.bind_ip
-			? "Currently bound to " + dc.bind + " (dedicated bind_ip -- not the management network's own address)."
-			: "Currently bound to " + dc.bind + " (the management network's own address).";
 	} catch (e) {
 		/* Best-effort -- the form just stays at whatever was last shown. */
 	}
+	await refreshManagementAddress();
 }
 
-for (const id of ["dcf-port", "dcf-https-port", "dcf-http-enabled", "dcf-https-enabled",
-                   "dcf-management-network", "dcf-bind-ip", "dcf-clear-bind-ip"]) {
+/* The single off-box address cixd answers on (ADR-0287). Its own
+ * resource, GET/PUT/DELETE /system/management-address; the network is
+ * derived from the address, never chosen here. */
+async function refreshManagementAddress() {
+	const status = document.getElementById("mgmt-addr-status");
+
+	try {
+		const ma = await apiRequest("GET", CIX_API.getManagementAddress());
+
+		cache.managementAddress = ma;
+		if (!ma.configured) {
+			status.textContent = "Loopback-only: cixd answers on 127.0.0.1 and nothing off-box.";
+			document.getElementById("maf-address").value = "";
+		} else if (ma.bind_unavailable) {
+			status.textContent = "Configured " + ma.address + " (network " + ma.network +
+				") but NOT BOUND -- " + ma.bind_unavailable + " is not on this host; 127.0.0.1 only.";
+			document.getElementById("maf-address").value = ma.address;
+		} else {
+			status.textContent = "Bound on " + ma.bound + " (network " + ma.network +
+				"). 127.0.0.1 is always bound too.";
+			document.getElementById("maf-address").value = ma.address;
+		}
+	} catch (e) {
+		status.textContent = "Could not read the management address.";
+	}
+}
+
+for (const id of ["dcf-port", "dcf-https-port", "dcf-http-enabled", "dcf-https-enabled"]) {
 	document.getElementById(id).addEventListener("input", () => {
 		daemonConfigDirty = true;
 	});
@@ -13005,39 +13003,24 @@ for (const id of ["dcf-port", "dcf-https-port", "dcf-http-enabled", "dcf-https-e
 document.getElementById("sys-daemon-config-form").addEventListener("submit", async (event) => {
 	event.preventDefault();
 
-	const bindIpValue = document.getElementById("dcf-bind-ip").value.trim();
-	const clearBindIp = document.getElementById("dcf-clear-bind-ip").checked;
-
 	const body = {
 		port: parseInt(document.getElementById("dcf-port").value, 10),
 		https_port: parseInt(document.getElementById("dcf-https-port").value, 10),
 		http_enabled: document.getElementById("dcf-http-enabled").checked,
 		https_enabled: document.getElementById("dcf-https-enabled").checked,
-		management_network: document.getElementById("dcf-management-network").value,
 	};
 
-	if (clearBindIp)
-		body.bind_ip = null;
-	else if (bindIpValue)
-		body.bind_ip = bindIpValue;
-
-	/* This dashboard's own fetch() calls are relative to the page's own
-	 * origin (host:port it was loaded from) -- changing the plain-HTTP
-	 * port, repointing the management network to a different address,
-	 * or setting/clearing bind_ip (ADR-0068), disconnects this exact
-	 * page the moment it takes effect. Confirmed explicitly here, same
-	 * as the reboot/shutdown buttons' own confirm() guard, since
-	 * there's no way back short of navigating to the new address by
-	 * hand. */
+	/* This dashboard's fetch() calls are relative to the page's own
+	 * origin, so changing the plain-HTTP port disconnects this exact
+	 * page the moment it takes effect -- confirmed explicitly, same as
+	 * the reboot/shutdown guard. (Moving the off-box address is the
+	 * management-address form below, which has its own guard.) */
 	const cur = cache.daemonConfig;
-	const reconnectNeeded = cur &&
-		(body.port !== cur.port || body.management_network !== cur.management_network ||
-		 "bind_ip" in body);
+	const reconnectNeeded = cur && body.port !== cur.port;
 
 	if (reconnectNeeded &&
-	    !confirm("This will change the address/port this dashboard is served on -- " +
-	             "this page will lose its connection once it takes effect. You'll need to " +
-	             "reload at the new address. Continue?"))
+	    !confirm("This changes the port this dashboard is served on -- this page will lose its " +
+	             "connection once it takes effect. You'll need to reload at the new port. Continue?"))
 		return;
 
 	try {
@@ -13045,10 +13028,47 @@ document.getElementById("sys-daemon-config-form").addEventListener("submit", asy
 		clearStatus();
 		showStatus("Daemon config saved", false);
 		daemonConfigDirty = false;
-		document.getElementById("dcf-clear-bind-ip").checked = false;
 		await refreshDaemonConfig();
 	} catch (e) {
 		showStatus("Failed to save daemon config: " + e.message, true);
+	}
+});
+
+document.getElementById("sys-management-address-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+	const address = document.getElementById("maf-address").value.trim();
+
+	if (!address) {
+		showStatus("Enter an address, or use Reset to go loopback-only", true);
+		return;
+	}
+	/* Moving the off-box address disconnects this page if it is being
+	 * viewed over that address -- guard it like reboot/shutdown. */
+	if (!confirm("This sets the off-box address cixd answers on. If you are viewing this " +
+	             "dashboard over that address, this page will lose its connection and you'll " +
+	             "need to reload at the new address (127.0.0.1 always works on the box). Continue?"))
+		return;
+	try {
+		await apiRequest("PUT", CIX_API.putManagementAddress(), { address: address });
+		clearStatus();
+		showStatus("Management address set", false);
+		await refreshManagementAddress();
+	} catch (e) {
+		showStatus("Failed to set management address: " + e.message, true);
+	}
+});
+
+document.getElementById("maf-reset").addEventListener("click", async () => {
+	if (!confirm("Reset to loopback-only? cixd will stop answering off-box; it stays reachable " +
+	             "on 127.0.0.1 (the on-box console). Continue?"))
+		return;
+	try {
+		await apiRequest("DELETE", CIX_API.deleteManagementAddress());
+		clearStatus();
+		showStatus("Reset to loopback-only", false);
+		await refreshManagementAddress();
+	} catch (e) {
+		showStatus("Failed to reset management address: " + e.message, true);
 	}
 });
 

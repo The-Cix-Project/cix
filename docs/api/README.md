@@ -45,10 +45,11 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | POST | `/system/backup-config/snapshot-now` | Write a backup snapshot to the configured disk right now |
 | GET | `/system/site` | This install's declared identity (`instance_name`/`site_name`/`domain_suffix`) |
 | PUT | `/system/site` | Set this install's site identity |
-| GET | `/system/daemon-config` | cixd's own listen port, HTTP/HTTPS exposure, and which network is currently its management one |
-| PUT | `/system/daemon-config` | Live-reconfigure the listen port, HTTP/HTTPS listeners, or repoint the management network -- no restart |
-| GET | `/system/management-network` | The interface, address, prefix and gateway this box answers on |
-| PUT | `/system/management-network` | Move cixd to another interface, address, subnet or gateway -- live, and across reboots |
+| GET | `/system/daemon-config` | cixd's own listen port and HTTP/HTTPS exposure |
+| PUT | `/system/daemon-config` | Live-reconfigure the listen port or HTTP/HTTPS listeners -- no restart |
+| GET | `/system/management-address` | The single off-box address cixd answers on -- configured intent and bound reality |
+| PUT | `/system/management-address` | Set the off-box address (network derived from it) -- live, and across reboots |
+| DELETE | `/system/management-address` | Reset to loopback-only -- unbind the off-box address |
 | GET | `/system/iso` | Status of the most recent server-side installer ISO build, including `iso_bytes` — the size was absent, which is how an installer grew from 71.7 MiB to 217.9 MiB with nobody counting |
 | POST | `/system/iso` | Assemble a fresh installer ISO server-side, non-blocking — the media carries a package seed so a fresh box can bootstrap without a network ([ADR-0229](../adr/0229-installer-media-carries-a-package-seed.md)) |
 | GET | `/system/signing-keys` | Whether this host holds a Secure Boot signing key pair, and which identity |
@@ -180,9 +181,9 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/networks` | List all networks this daemon knows about |
 | POST | `/networks` | Create a network (a real bridge, persisted across restarts) |
 | GET | `/networks/{name}` | Inspect one network |
-| DELETE | `/networks/{name}` | Remove a network (refused if any container is still attached, or if it's the management network) |
+| DELETE | `/networks/{name}` | Remove a network (refused if any container is still attached, or if it carries the management address) |
 | POST | `/networks/{name}/interfaces` | Attach a real host network interface to this network's bridge |
-| DELETE | `/networks/{name}/interfaces/{ifname}` | Detach a previously-attached interface (refused for the management network) |
+| DELETE | `/networks/{name}/interfaces/{ifname}` | Detach a previously-attached interface (refused while the network carries the management address) |
 | GET | `/dhcp` | Every DHCP range and reservation (ADR-0197) |
 | GET | `/dhcp/servers` | Registered DHCP servers, and whether each also resolves its own leases |
 | POST | `/dhcp/servers` | Register a container as a DHCP server |
@@ -588,26 +589,13 @@ POST /v1/networks/internal/interfaces
 
 Enslaves a real, currently-assignable host interface (`GET /devices`'s own `"net:<ifname>"` entries — not already moved into a container's netns, not already attached anywhere via this endpoint) directly into this network's bridge — the "physical ethernet on a host-managed switch" mechanism, distinct from `interfaces` on `POST /containers` (which moves a NIC straight into one container's own netns instead). `vlan_id` 0 or omitted enslaves `eth1` itself, untagged; a nonzero `vlan_id` instead creates and enslaves an 802.1q `eth1.<vlan_id>` sub-interface, leaving `eth1` free to attach (with a different `vlan_id`) to other networks too. `DELETE /v1/networks/internal/interfaces/eth1` detaches it — releasing the interface from the bridge, or deleting the VLAN sub-interface, whichever this call originally created.
 
-## The management network and cixd's own listeners
+## The management address and cixd's own listeners
 
-At install time (`cix-install`'s `--ip=`/`--prefix=`/`--gateway=`/`--interface=` flags — see [`installing.md`](../guides/installing.md)), cixd bootstraps a real, ordinary network named `management`: the given physical interface is attached to it exactly like `POST /networks/{name}/interfaces` above, and its own address (`--ip=`/`--prefix=`) becomes cixd's own bind address. This is a deliberate design choice (Part 0.5) — the host's own management IP lives on a bridge device via the same `network_def` mechanism every other network already uses, visible at `GET /networks`, not a separate GRUB-only address invisible to the API. (`--gateway=` means something different and unrelated: the box's own *upstream* default route, i.e. the home router this box's outbound traffic egresses through — not to be confused with the management network's own `address` field, which is cixd's bind address.)
+cixd always binds `127.0.0.1` — unconditionally, on its own loopback listeners that no reconfiguration path can ever touch (so the on-box console and any local client always have a listener that cannot be reconfigured away) — **plus one off-box address of your choosing**. That off-box address is the *single source of truth* for where cixd answers from the network, and everything else about "the management network" is derived from it (ADR-0287).
 
-Exactly one network has `is_management: true` at a time (`Network`'s own field, in every `GET /networks` response). Because deleting or detaching from that network's bridge would sever the connection you're managing the box through, `DELETE /networks/{name}` and `DELETE /networks/{name}/interfaces/{ifname}` both unconditionally refuse (`409`) while `is_management` is set — there is deliberately no override/force flag on either generic endpoint. Repointing management to a different network first is the only way past this:
+At install time (`cix-install`'s `--ip=`/`--prefix=`/`--gateway=`/`--interface=` flags — see [`installing.md`](../guides/installing.md)), cixd creates a real, ordinary network from the given interface/prefix (exactly like `POST /networks` + `POST /networks/{name}/interfaces` above) and then sets its management address to the given IP. There is no special "management" network type — the host's own management IP lives on an ordinary bridge via the same `network_def` mechanism every other network uses, visible at `GET /networks`. (`--gateway=` is something different and unrelated: the box's own *upstream* default route, i.e. the home router outbound traffic egresses through — it lives in `GET /system/routes`, not on any network.)
 
-```
-GET /v1/system/daemon-config
-```
-
-```json
-{"port": 80, "bind": "192.168.50.10", "bind_ip": null, "management_network": "management", "http_enabled": true, "https_enabled": true, "https_port": 443}
-```
-
-```
-PUT /v1/system/daemon-config
-{"management_network": "lan1"}
-```
-
-Resolves `lan1`'s own existing address (it must already have one — `has_address: true`, `400` otherwise) and performs a live listen-socket rebind to it — the new socket is created, bound, and added to `epoll` *before* the old one is torn down, so a failure rolls back to the still-working previous listener rather than leaving a gap. Only once the rebind succeeds does `is_management` actually move from the old network to `lan1`. This works identically whether `lan1` has a physical NIC attached directly or gets its connectivity entirely from a container (e.g. a WiFi-AP container bridging a passed-through wireless radio) — cixd only ever cares about the network's own address, never how it's fed.
+**A network carries the management address, and this is derived, not stored.** `Network`'s own `management` boolean (in every `GET /networks` response) is `true` for exactly the network whose subnet contains the current management address — computed, never written, so it can never disagree with where cixd is actually bound. Because deleting or detaching from that network's bridge would sever the connection you manage the box through, `DELETE /networks/{name}` and `DELETE /networks/{name}/interfaces/{ifname}` both unconditionally refuse (`409`) while `management` is `true` — there is deliberately no override/force flag. Reset the management address (`DELETE /system/management-address`) or move it to another network (`PUT /system/management-address`) first. Setting the address is described under [Setting the management address](#setting-the-management-address) below; `daemon-config` no longer has anything to do with it.
 
 ### What is plugged in: the switch panel (issue #26)
 
@@ -639,21 +627,17 @@ A VLAN sub-interface is a port in its own right, carrying its `vlan_id`; its par
 
 `cixctl network ports NAME` is the CLI surface; the dashboard draws it as a switch panel on the network's own page, with a per-network traffic chart under it.
 
-### A dedicated bind IP, decoupled from the management network's own address
+### HTTP, HTTPS and the listen port
+
+`daemon-config` owns cixd's own listeners — the ports and HTTP/HTTPS exposure — and nothing else. It no longer has any say in *where* cixd binds off-box (that is the [management address](#setting-the-management-address)); a `GET` reports only:
 
 ```
-PUT /v1/system/daemon-config
-{"bind_ip": "192.168.50.20"}
+GET /v1/system/daemon-config
 ```
 
-`bind_ip` (ADR-0068) is a *second*, dedicated address on the management network's own bridge — cixd binds there instead of that network's own address, without the two being the same thing. Useful when the bridge is shared with other traffic (containers, a routing daemon) and the operator wants cixd itself pinned to a specific, separate address on it. Must be a real, unused address within the management network's own subnet (`400` otherwise); added to the bridge via a real `rtnl_addr_add_ipv4()` *before* the listener rebinds to it. Any previously-set `bind_ip` is removed from the bridge a couple of seconds *after* the response for this same request has already gone out, not synchronously — confirmed necessary the hard way (see ADR-0068): deleting it immediately can race the kernel's own delivery of the response when this exact request arrived over a connection whose local address *is* the one being removed, which is the common case for an operator reaching the daemon at wherever it's currently bound. Set explicitly to `null` to clear it and revert to the management network's own address:
-
+```json
+{"port": 80, "http_enabled": true, "https_enabled": true, "https_port": 443}
 ```
-PUT /v1/system/daemon-config
-{"bind_ip": null}
-```
-
-Repointing `management_network` without also giving a fresh `bind_ip` in the same request implicitly clears any previously-set one — a dedicated `bind_ip` only ever makes sense relative to whichever network is management at the time, so it doesn't silently follow a repoint onto a bridge it was never validated against.
 
 `port`, `http_enabled`, `https_enabled`, and `https_port` are independently settable in the same request or separately. Both `http_enabled` and `https_enabled` default to `true` on a fresh install (ADR-0171, ports 80/443) — a genuinely fresh install just has HTTPS silently not come up at boot until a PKI root CA exists (non-fatal, logged), since there's no host certificate yet to serve TLS with:
 
@@ -662,41 +646,47 @@ PUT /v1/system/daemon-config
 {"https_enabled": true}
 ```
 
-Starts a second, independent listener on `https_port` (default `443`), reusing the already-issued PKI `"host"` leaf certificate (see [PKI](#pki-a-ca-chain-and-issued-leaf-certificates) below) — `500` if no root CA has been bootstrapped yet (`POST /pki/ca`), since there's no certificate to serve TLS with. Sent this way — an explicit `PUT`, as opposed to the one-time boot-time attempt — it's also how to bring HTTPS live *immediately*, with no reboot, right after bootstrapping PKI on a fresh install: the handler checks whether the listener is actually running, not just the persisted flag, so re-sending `{"https_enabled": true}` even though it's already the default still starts it for real once a certificate exists. `http_enabled` and `https_enabled` can each be toggled off, but never both in the same request (`400`) — cixd must always have at least one live listener, since (installed) it runs as real PID 1 with no "restart" to fall back on. Every change here — port, network repoint, HTTP/HTTPS toggle — is live immediately and also persisted, so it survives a real reboot.
+Starts a second, independent listener on `https_port` (default `443`), reusing the already-issued PKI `"host"` leaf certificate (see [PKI](#pki-a-ca-chain-and-issued-leaf-certificates) below) — `500` if no root CA has been bootstrapped yet (`POST /pki/ca`), since there's no certificate to serve TLS with. Sent this way — an explicit `PUT`, as opposed to the one-time boot-time attempt — it's also how to bring HTTPS live *immediately*, with no reboot, right after bootstrapping PKI on a fresh install: the handler checks whether the listener is actually running, not just the persisted flag, so re-sending `{"https_enabled": true}` even though it's already the default still starts it for real once a certificate exists. `http_enabled` and `https_enabled` can each be toggled off, but never both in the same request (`400`) — cixd must always have at least one live listener, since (installed) it runs as real PID 1 with no "restart" to fall back on. Every change here — port or HTTP/HTTPS toggle — is live immediately and also persisted, so it survives a real reboot.
 
-Since cixd is PID 1 on an installed system, there is no way to reach it again over the network if it's ever pointed at an address you can't get to — double-check reachability of a new `management_network` (or a firewalled `https_port`) before relying on it as your only way in; physical console access (`docs/guides/installing.md`'s "Console login") is always the fallback.
+Since cixd is PID 1 on an installed system, there is no way to reach it again over the network if it's ever pointed at an address you can't get to — double-check reachability of a new management address (or a firewalled `https_port`) before relying on it as your only way in; physical console access (`docs/guides/installing.md`'s "Console login") is always the fallback, because `127.0.0.1` is always bound.
 
-### Moving the box: interface, address, subnet, gateway
+### Setting the management address
 
 ```
-GET /v1/system/management-network
+GET /v1/system/management-address
 ```
 
 ```json
-{"configured": true, "interface": "eth0", "ip": "192.168.15.95", "prefix": 24,
- "gateway": "192.168.15.1", "network": "management"}
+{"configured": true, "address": "192.168.15.95", "bound": "192.168.15.95",
+ "bind_unavailable": "", "network": "lan1"}
 ```
 
 ```
-PUT /v1/system/management-network
-{"interface": "eth0", "ip": "10.20.0.5", "prefix": 24, "gateway": "10.20.0.1"}
+PUT /v1/system/management-address
+{"address": "10.20.0.5"}
 ```
 
-This is the answer to "where does this box listen", and it is a different question from `daemon-config`'s. `daemon-config` owns the listener's *ports* and which *named network* carries the management flag; this owns the four values a booted box actually comes up on — and, unlike everything else in `daemon-config`, those four were previously not changeable at all. `net.conf` on the config partition was written once by `cix-install` and read once per boot; nothing in the daemon ever wrote it. A box installed on the wrong address, or deliberately installed on loopback to decide later, had no route to a different one short of reinstalling.
+This is the single answer to "where does this box listen off-box". You give one address; the network is **derived** from it — whichever existing network's subnet contains it (subnets cannot overlap, so this is unique). You never name or create the network here. If the address falls in no existing network, the call is refused `400` ("no network contains A.B.C.D — create one first"): create the network with `POST /networks` and attach its interface, then set the address into it. The network keeps its own `address`; this never re-addresses the network — it adds cixd's bind address to that network's bridge (a no-op if it *is* the network's own address) and binds the off-box listeners to it.
 
-**Applies live, then persists, in that order.** A box that answers after this call is a box that answers after a reboot. Concretely: validate everything, attach the interface to the management bridge if it changed, add the new address to that bridge, rebind both listeners (each created and added to `epoll` before the old is torn down, so a failure rolls back to the still-working listener), replace the default route, update the network registry so it cannot drift from the kernel, and write `net.conf` last. If a step fails after the listeners have moved, `net.conf` is *not* written — so the box is reachable now on the new address and returns to the previous working configuration on reboot, which is the safe direction to fail in.
+**Applies live, then persists, in that order.** A box that answers after this call is a box that answers after a reboot. Concretely: validate, add the address to the derived network's bridge, rebind both off-box listeners (each created and added to `epoll` before the old is torn down, so a failure rolls back to the still-working listener), and write the persisted state last. If a step fails after the listeners have moved, the persisted state is *not* written — so the box is reachable now on the new address and returns to the previous working configuration on reboot, the safe direction to fail in.
 
-**The superseded address is removed a couple of seconds later, not immediately.** The connection carrying this very request usually has the old address as its own local endpoint, and deleting it can leave the client waiting forever for a response the kernel accepted and can no longer deliver — measured, and the same finding ADR-0068 records for `bind_ip`. Both addresses are briefly live on the bridge; that overlap is what makes the handover safe.
+**The superseded address is removed a couple of seconds later, not immediately.** The connection carrying this very request usually has the old address as its own local endpoint, and deleting it can leave the client waiting forever for a response the kernel accepted and can no longer deliver — measured (ADR-0068). Both addresses are briefly live on the bridge; that overlap is what makes the handover safe.
 
-**On a box with no management network yet, this creates one.** That is the primary path for an install done with a blank interface, not an edge case — it is how "configure it on first boot" actually happens.
+**Refused (`400`) when the change could not work**, before anything moves: an address in no existing network's subnet, a malformed address, the subnet or broadcast address itself, or an address in `0.0.0.0/8` or `127.0.0.0/8`. The upstream default route is not set here — it lives in `/system/routes` (ADR-0067).
 
-Fields are kept when omitted: leave out `interface` to stay on the current one, leave out `gateway` to keep the persisted one (silently dropped if the new subnet no longer contains it — you did not ask for it this time, so it is not a reason to fail the move). Send `"gateway": null` to remove the default route outright, which is correct for a box reachable only on its own subnet.
+**Reset drops the box to loopback-only, deliberately:**
 
-Any `bind_ip` is cleared, since a dedicated bind address is only meaningful relative to a subnet this call may have just changed — set it again afterwards if wanted.
+```
+DELETE /v1/system/management-address
+```
 
-**Refused (`400`) when the change could not work**, before anything moves: a malformed address, a prefix outside 8–30, the subnet or broadcast address itself, an address in `0.0.0.0/8` or `127.0.0.0/8` (loopback is a legitimate thing for cixd to be *bound* to, but it is not a management *network* — it cannot carry an uplink and there is nothing to route), an interface the kernel does not have, a gateway outside the new subnet or equal to the new address, or — when the *subnet* itself changes — containers still attached to the management network, since their addresses would stop belonging to the network they are attached to. That last refusal names them. Moving *within* the same subnet is never blocked on that ground.
+```json
+{"configured": false, "address": "", "bound": "", "bind_unavailable": "", "network": ""}
+```
 
-`cixctl management-network show` and `cixctl management-network set --ip=A.B.C.D --prefix=N [--interface=IF] [--gateway=A.B.C.D | --no-gateway]` are the CLI surface. After a move, point subsequent commands at the new address with `--host=`.
+Clears the address, stops the off-box listeners, and removes the address from its bridge *unless it coincides with the network's own address* (never deleted out from under the network). The box stays fully reachable on `127.0.0.1`. `management` then derives to `false` on every network. This deliberate loopback-only state is distinct from a *configured* address that could not be bound at boot — that shows up as a non-empty `bind_unavailable`, and such a box must not be treated as a healthy off-box host. Reset is idempotent (a `200` no-op when already unset).
+
+`cixctl management-address show`, `cixctl management-address set A.B.C.D`, and `cixctl management-address reset` are the CLI surface. After a move, point subsequent commands at the new address with `--host=` (or just use the always-present `127.0.0.1` locally).
 
 
 ## Per-source-IP throttling for failed HTTPS handshakes (ADR-0134)
@@ -2631,7 +2621,7 @@ PATCH /v1/containers/{name}   {"env": {"TZ": "UTC"}, "files": [...]}
 
 Until now, changing a `cmd`, an env var or a staged file meant delete-and-recreate — reconstructing the whole request body by hand, with every chance to drop a field. A `PATCH` merges the fields you give into the stored definition: a key present replaces that key, a key set to `null` removes it, everything else is untouched. The merge is top-level only; a deep merge would make "how do I clear one entry of `files[]`" unanswerable.
 
-**It applies at the container's next start, and the response says so** (`"applies": "next-start"`, plus `"restart_required": true` when it is running right now). That is not a limitation being papered over: a running process's argv cannot be changed without re-exec'ing it, so "change `cmd` on a running container" is `restart` by another name. What genuinely *can* change live already does, through its own endpoints — [volumes](#persistent-volumes-issue-88-adr-0183) and [network attach](#a-dedicated-bind-ip-decoupled-from-the-management-networks-own-address).
+**It applies at the container's next start, and the response says so** (`"applies": "next-start"`, plus `"restart_required": true` when it is running right now). That is not a limitation being papered over: a running process's argv cannot be changed without re-exec'ing it, so "change `cmd` on a running container" is `restart` by another name. What genuinely *can* change live already does, through its own endpoints — [volumes](#persistent-volumes-issue-88-adr-0183) and [the management address](#setting-the-management-address).
 
 Two groups of fields are refused rather than silently ignored:
 

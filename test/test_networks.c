@@ -762,10 +762,10 @@ int main(void)
 			 * them is the thing under test. */
 			fprintf(sf,
 			        "{\"name\":\"bridgednopool\",\"subnet\":\"172.31.7.0\",\"prefix_len\":24,"
-			        "\"has_address\":false,\"is_management\":false,"
+			        "\"has_address\":false,"
 			        "\"interfaces\":[{\"ifname\":\"cixfake0\",\"vlan_id\":0}]},"
 			        "{\"name\":\"bridgedpool\",\"subnet\":\"172.31.8.0\",\"prefix_len\":24,"
-			        "\"has_address\":false,\"is_management\":false,"
+			        "\"has_address\":false,"
 			        "\"alloc_start_host\":101,\"alloc_end_host\":109,"
 			        "\"interfaces\":[{\"ifname\":\"cixfake0\",\"vlan_id\":0}]}]\n");
 			fclose(sf);

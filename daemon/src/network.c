@@ -18,6 +18,25 @@
 static struct network_def g_networks[NETWORK_MAX];
 static char g_state_path[PATH_MAX];
 
+/*
+ * ADR-0287: the single management address, as network.c's runtime view
+ * of it. The persisted truth is daemon_config's; this is set at boot and
+ * on every management-address change so the derived `management` flag,
+ * network_find_management() and the delete/detach guards answer
+ * correctly. g_have_mgmt is 0 in the loopback-only state.
+ */
+static uint32_t g_mgmt_address_be;
+static int g_have_mgmt;
+
+/*
+ * Legacy migration (ADR-0287): the address of the network that carried
+ * the old persisted "is_management": true flag, captured on load so the
+ * boot path can migrate it into the single daemon_config management
+ * address. g_have_legacy_mgmt is cleared once consumed.
+ */
+static uint32_t g_legacy_mgmt_address_be;
+static int g_have_legacy_mgmt;
+
 static int network_name_is_valid(const char *name)
 {
 	return simple_name_is_valid(name, NETWORK_NAME_MAX);
@@ -28,6 +47,21 @@ static uint32_t mask_for_prefix(int prefix_len)
 	if (prefix_len <= 0)
 		return 0;
 	return (uint32_t)0xFFFFFFFFu << (32 - prefix_len);
+}
+
+/* ADR-0287: does net's subnet contain address_be? Subnets cannot
+ * overlap, so at most one in-use network answers true for any address --
+ * which is what makes the management network unambiguously derivable. */
+static int net_contains(const struct network_def *net, uint32_t address_be)
+{
+	return (ntohl(address_be) & mask_for_prefix(net->prefix_len)) == ntohl(net->base_be);
+}
+
+/* Derived, never stored: this network is the management one iff a
+ * management address is set and this network's subnet contains it. */
+static int net_is_management(const struct network_def *net)
+{
+	return g_have_mgmt && net->in_use && net_contains(net, g_mgmt_address_be);
 }
 
 static int host_max_for_prefix(int prefix_len)
@@ -43,13 +77,17 @@ static int ranges_overlap(uint32_t a_base_be, int a_prefix, uint32_t b_base_be, 
 	return (ntohl(a_base_be) & mask) == (ntohl(b_base_be) & mask);
 }
 
+/* Persists with for_api=0 so the derived `management` field never
+ * reaches disk (ADR-0287); defined below, forward-declared here. */
+static void write_list(struct json_writer *w, int for_api);
+
 static int save_state(void)
 {
 	struct json_writer w;
 	int rc;
 
 	jw_init(&w);
-	network_write_json_list(&w);
+	write_list(&w, 0);
 	rc = persist_atomic_write(g_state_path, w.buf, w.len);
 	jw_free(&w);
 	return rc;
@@ -139,11 +177,18 @@ static int parse_persisted_entry(const struct json_value *item, struct network_d
 	slot->prefix_len = prefix_len;
 	slot->has_address = has_address;
 	slot->address_be = address_be;
-	/* Absent on any entry predating this field (Part 0.5) -- no network
-	 * was ever "management" before this existed, so absence simply
-	 * means not-management, no legacy-default reasoning needed here
-	 * the way has_address's own absence-handling above requires. */
-	slot->is_management = (jis_mgmt != NULL && jis_mgmt->type == JSON_BOOL && jis_mgmt->u.boolean);
+	/*
+	 * ADR-0287: `management` is no longer stored. A legacy entry may
+	 * still carry the old "is_management": true flag; capture that
+	 * network's address so the boot path can migrate it into the single
+	 * daemon_config management address, then never persist the flag
+	 * again. If bind_ip was also set on the old box, daemon_config's own
+	 * load already migrated it and takes precedence at boot.
+	 */
+	if (jis_mgmt != NULL && jis_mgmt->type == JSON_BOOL && jis_mgmt->u.boolean && has_address) {
+		g_legacy_mgmt_address_be = address_be;
+		g_have_legacy_mgmt = 1;
+	}
 	/* Issue #70: absent on any entry predating this field -> 0 (unset,
 	 * the full-range default), no legacy reasoning needed. */
 	{
@@ -504,133 +549,6 @@ enum network_error network_create(const char *name, const char *subnet_str, int 
 	return NETWORK_OK;
 }
 
-/*
- * Re-address an existing network in place: new subnet, new prefix, new
- * host address, same name and same bridge.
- *
- * Exists for PUT /v1/system/management-network, which moves a booted
- * box onto a different network. Re-addressing rather than creating a
- * replacement network is deliberate: the management network is
- * referenced by name in persisted state and by the is_management flag,
- * and a box that changed address three times would otherwise accumulate
- * three networks, only one of them real.
- *
- * Does NOT remove the old address from the bridge. The caller gets it
- * back through out_old_* and is expected to defer that removal by a
- * couple of seconds, because deleting an address out from under the
- * connection carrying the reply leaves the client waiting forever for
- * bytes the kernel accepted and can no longer deliver -- measured, and
- * the reason ADR-0068's own cleanup is on a timer. Both addresses being
- * briefly live on the bridge is exactly what makes the handover safe.
- *
- * The caller is responsible for refusing this when containers still
- * hold addresses in the old subnet; this function has no view of the
- * registry. It does reset the allocation window when the subnet moves,
- * since a window is a pair of host-parts within one specific subnet and
- * carrying it across would silently re-point it at different addresses.
- */
-enum network_error network_set_address(const char *name, const char *subnet_str, int prefix_len,
-                                        const char *address_str, uint32_t *out_old_address_be,
-                                        int *out_old_prefix_len)
-{
-	struct in_addr addr;
-	uint32_t address_be = 0;
-	struct network_def *e;
-	uint32_t old_base_be;
-	int old_prefix_len;
-	uint32_t old_address_be;
-	int old_has_address;
-	int old_alloc_start, old_alloc_end;
-	int subnet_changed;
-	int i;
-	int fd;
-
-	e = network_find(name);
-	if (e == NULL)
-		return NETWORK_ERR_NOT_FOUND;
-
-	if (prefix_len < 8 || prefix_len > 30 || inet_pton(AF_INET, subnet_str, &addr) != 1)
-		return NETWORK_ERR_INVALID_SUBNET;
-	if ((ntohl(addr.s_addr) & ~mask_for_prefix(prefix_len)) != 0)
-		return NETWORK_ERR_INVALID_SUBNET;
-	if (address_str == NULL || address_str[0] == '\0')
-		return NETWORK_ERR_INVALID_ADDRESS;
-	if (address_str_is_valid(address_str, addr.s_addr, prefix_len, &address_be) != 0)
-		return NETWORK_ERR_INVALID_ADDRESS;
-
-	/* Overlap is checked against every OTHER network -- self-overlap is
-	 * the normal case here (an address change inside the same subnet)
-	 * and must not be reported as a conflict. */
-	for (i = 0; i < NETWORK_MAX; i++) {
-		if (!g_networks[i].in_use || &g_networks[i] == e)
-			continue;
-		if (ranges_overlap(addr.s_addr, prefix_len, g_networks[i].base_be,
-		                    g_networks[i].prefix_len))
-			return NETWORK_ERR_OVERLAP;
-	}
-
-	old_base_be = e->base_be;
-	old_prefix_len = e->prefix_len;
-	old_address_be = e->address_be;
-	old_has_address = e->has_address;
-	old_alloc_start = e->alloc_start_host;
-	old_alloc_end = e->alloc_end_host;
-	subnet_changed = (old_base_be != addr.s_addr || old_prefix_len != prefix_len);
-
-	/* Idempotent: the same subnet and the same address is a no-op
-	 * rather than a spurious EEXIST from rtnl_addr_add_ipv4()'s own
-	 * NLM_F_EXCL, the same reasoning ADR-0068 applies to bind_ip. */
-	if (!subnet_changed && old_has_address && old_address_be == address_be) {
-		if (out_old_address_be != NULL)
-			*out_old_address_be = 0;
-		if (out_old_prefix_len != NULL)
-			*out_old_prefix_len = 0;
-		return NETWORK_OK;
-	}
-
-	fd = rtnl_open();
-	if (fd < 0)
-		return NETWORK_ERR_CREATE_FAILED;
-	if (rtnl_addr_add_ipv4(fd, e->name, address_be, prefix_len) != 0 && errno != EEXIST) {
-		rtnl_close(fd);
-		return NETWORK_ERR_CREATE_FAILED;
-	}
-	rtnl_close(fd);
-
-	e->base_be = addr.s_addr;
-	e->prefix_len = prefix_len;
-	e->address_be = address_be;
-	e->has_address = 1;
-	if (subnet_changed) {
-		e->alloc_start_host = 0;
-		e->alloc_end_host = 0;
-	}
-
-	if (save_state() != 0) {
-		/* Same posture as network_create(): a kernel change we cannot
-		 * remember is worse than no change, so put both back. */
-		int rfd = rtnl_open();
-
-		if (rfd >= 0) {
-			rtnl_addr_del_ipv4(rfd, e->name, address_be, prefix_len);
-			rtnl_close(rfd);
-		}
-		e->base_be = old_base_be;
-		e->prefix_len = old_prefix_len;
-		e->address_be = old_address_be;
-		e->has_address = old_has_address;
-		e->alloc_start_host = old_alloc_start;
-		e->alloc_end_host = old_alloc_end;
-		return NETWORK_ERR_CREATE_FAILED;
-	}
-
-	if (out_old_address_be != NULL)
-		*out_old_address_be = old_has_address ? old_address_be : 0;
-	if (out_old_prefix_len != NULL)
-		*out_old_prefix_len = old_prefix_len;
-	return NETWORK_OK;
-}
-
 enum network_error network_delete(const char *name)
 {
 	struct network_def *e = network_find(name);
@@ -639,7 +557,7 @@ enum network_error network_delete(const char *name)
 
 	if (e == NULL)
 		return NETWORK_ERR_NOT_FOUND;
-	if (e->is_management)
+	if (net_is_management(e))
 		return NETWORK_ERR_IS_MANAGEMENT;
 	if (registry_network_in_use(name))
 		return NETWORK_ERR_IN_USE;
@@ -767,7 +685,7 @@ enum network_error network_detach_interface(const char *name, const char *ifname
 
 	if (net == NULL)
 		return NETWORK_ERR_NOT_FOUND;
-	if (net->is_management)
+	if (net_is_management(net))
 		return NETWORK_ERR_IS_MANAGEMENT;
 	for (i = 0; i < net->interface_count; i++) {
 		if (strcmp(net->interfaces[i].ifname, ifname) == 0) {
@@ -807,43 +725,52 @@ enum network_error network_detach_interface(const char *name, const char *ifname
 	return NETWORK_OK;
 }
 
-struct network_def *network_find_management(void)
+struct network_def *network_find_containing(uint32_t address_be)
 {
 	int i;
 
 	for (i = 0; i < NETWORK_MAX; i++) {
-		if (g_networks[i].in_use && g_networks[i].is_management)
+		if (g_networks[i].in_use && net_contains(&g_networks[i], address_be))
 			return &g_networks[i];
 	}
 	return NULL;
 }
 
-enum network_error network_set_management(const char *name)
+struct network_def *network_find_management(void)
 {
-	struct network_def *e = network_find(name);
-	struct network_def *prev;
+	if (!g_have_mgmt)
+		return NULL;
+	return network_find_containing(g_mgmt_address_be);
+}
 
-	if (e == NULL)
-		return NETWORK_ERR_NOT_FOUND;
-	if (!e->has_address)
-		return NETWORK_ERR_INVALID_ADDRESS;
-	if (e->is_management)
-		return NETWORK_OK; /* already the management network -- idempotent */
+enum network_error network_set_management_address(const char *address)
+{
+	struct in_addr a;
 
-	prev = network_find_management();
-	if (prev != NULL)
-		prev->is_management = 0;
-	e->is_management = 1;
-
-	if (save_state() != 0) {
-		/* Roll back, same "never report success on a lie" discipline
-		 * every other mutator in this file already follows. */
-		e->is_management = 0;
-		if (prev != NULL)
-			prev->is_management = 1;
-		return NETWORK_ERR_CREATE_FAILED;
+	if (address == NULL || address[0] == '\0') {
+		/* Reset to loopback-only: clear the runtime derivation source.
+		 * Nothing to persist here -- daemon_config owns that. */
+		g_have_mgmt = 0;
+		g_mgmt_address_be = 0;
+		return NETWORK_OK;
 	}
+	if (inet_pton(AF_INET, address, &a) != 1)
+		return NETWORK_ERR_INVALID_ADDRESS;
+	if (network_find_containing(a.s_addr) == NULL)
+		return NETWORK_ERR_NOT_FOUND; /* no existing network's subnet contains it */
+	g_mgmt_address_be = a.s_addr;
+	g_have_mgmt = 1;
 	return NETWORK_OK;
+}
+
+int network_legacy_management_address(uint32_t *out_be)
+{
+	if (!g_have_legacy_mgmt)
+		return 0;
+	if (out_be != NULL)
+		*out_be = g_legacy_mgmt_address_be;
+	g_have_legacy_mgmt = 0; /* consumed once */
+	return 1;
 }
 
 int network_alloc_ip(const char *name, uint32_t *out_ip_be)
@@ -901,7 +828,7 @@ int network_alloc_ip(const char *name, uint32_t *out_ip_be)
 		 * explicitly widened the range back down to it. An internal,
 		 * cix-owned network has no external gateway, so its floor
 		 * stays 1. */
-		if (net->is_management && net->alloc_start_host == 0 && lo < 2)
+		if (net_is_management(net) && net->alloc_start_host == 0 && lo < 2)
 			lo = 2;
 		return registry_alloc_ip(net->base_be, lo, hi, exclude_be, out_ip_be);
 	}
@@ -991,7 +918,14 @@ enum network_error network_ip_available(const char *name, uint32_t ip_be)
 	return NETWORK_OK;
 }
 
-void network_write_json_one(const struct network_def *net, struct json_writer *w)
+/*
+ * ADR-0287: `management` is DERIVED, so it is emitted only in API
+ * output (for_api), never into the persisted file -- persisting a
+ * derived value would be a second source of truth that could go stale.
+ * The loader ignores it either way (it derives from the address); this
+ * just keeps the on-disk record to genuinely-stored fields.
+ */
+static void write_one(const struct network_def *net, struct json_writer *w, int for_api)
 {
 	struct in_addr a;
 	char subnet_str[INET_ADDRSTRLEN];
@@ -1007,8 +941,10 @@ void network_write_json_one(const struct network_def *net, struct json_writer *w
 	jw_int(w, net->prefix_len);
 	jw_key(w, "has_address");
 	jw_bool(w, net->has_address);
-	jw_key(w, "is_management");
-	jw_bool(w, net->is_management);
+	if (for_api) {
+		jw_key(w, "management"); /* derived, API-only */
+		jw_bool(w, net_is_management(net));
+	}
 	jw_key(w, "alloc_start_host");
 	if (net->alloc_start_host > 0)
 		jw_int(w, net->alloc_start_host);
@@ -1047,16 +983,26 @@ void network_write_json_one(const struct network_def *net, struct json_writer *w
 	jw_obj_close(w);
 }
 
-void network_write_json_list(struct json_writer *w)
+void network_write_json_one(const struct network_def *net, struct json_writer *w)
+{
+	write_one(net, w, 1); /* API callers want the derived `management` field */
+}
+
+static void write_list(struct json_writer *w, int for_api)
 {
 	int i;
 
 	jw_arr_open(w);
 	for (i = 0; i < NETWORK_MAX; i++) {
 		if (g_networks[i].in_use)
-			network_write_json_one(&g_networks[i], w);
+			write_one(&g_networks[i], w, for_api);
 	}
 	jw_arr_close(w);
+}
+
+void network_write_json_list(struct json_writer *w)
+{
+	write_list(w, 1); /* API + GET /config aggregate */
 }
 
 /* ADR-0066: a real, read-only view of the box's own kernel routing
