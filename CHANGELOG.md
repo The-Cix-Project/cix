@@ -6,6 +6,22 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### git has never been installable, and the gate that says so (#455)
+
+`pkg install git` fails, and has at every revision:
+
+```
+usr/bin/git links "libz.so.1", which nothing it declares provides -- add the package
+supplying it to pkg_depends= (having it in pkg_build_depends= only puts it in the
+build sandbox, so the link is recorded and the dependency is not)
+```
+
+`zlib` was in `pkg_build_depends` and not in `pkg_depends`, which is precisely the distinction that message exists to draw. The sandbox had zlib, configure found it, the binary linked it, and nothing recorded that the *installed* package needs it at run time. ADR-0251's elfcheck refused the install and named the cause exactly — the gate working, not failing.
+
+It went unnoticed because nothing had ever tried to install git, only to publish its recipe: there is no cached artifact for it at any version. The recipe exists for gitea's sake (gitea shells out to a real `git` at run time) and gitea would have hit the identical failure. `2.55.0-8` declares `zlib`. git links it unconditionally — there is no `NO_ZLIB` knob, unlike the `NO_RUST`/`NO_GETTEXT`/`NO_TCLTK` switches the recipe already uses because those parts genuinely are optional — so the fix is to declare it, not to disable it.
+
+Found while trying to prove #448, which is the second thing worth recording: the proof needed a package install to trigger a rolling restart, and the package chosen to trigger it turned out to be broken. `grep` — cached, and absent from a jump box that had no `grep` at all — served instead.
+
 ### A log tail stops reading once it has enough (#450)
 
 `GET /v1/system/logs?tail=300` parsed the entire log store. `logstore_tail_ex()` walked every segment from the oldest, `getline()` and `json_parse()`d every line, and kept the last N in a ring — so the cost was the size of the store, not the size of the answer. The dashboard's log panel polls exactly that every two seconds, and `cixd` is one epoll loop, so that walk is a latency floor for every other client while it runs.
@@ -17,6 +33,24 @@ Segments are now read **newest first**, each asked only for as many matches as a
 The per-segment ring lives in the still-unused head of the result array and a wrapped one is straightened in place with a three-reversal rotation, because a second buffer would be 21 MB at the 5000-entry cap. Verified by simulating the algorithm against a reference implementation over 3000 randomised segment layouts — empty segments, limits above and below the total, one to eight segments — with zero mismatches, since this sandbox cannot compile the daemon.
 
 Worth noting for anyone tempted by the obvious client-side fix: having the dashboard poll with a real `since` cursor instead of `0` would **not** have helped. The filter is applied after parsing, so the walk cost the same either way.
+
+### The #448 gate is proven on a live box, not just asserted
+
+ADR-0285's gate shipped in v2.57.142 and was unverified until now: the rolling-restart path it fixes had never been exercised on the new build. Run on 192.168.15.95 (v2.57.143), installing `grep` into `jumpbox` — which rolls every container following that image, the exact path that held the control plane for 637 seconds and ended in a hypervisor reset:
+
+```
+jump before:  status=running pid=154
+grep installed (t=15s) → jump restarted: new pid=3371 status=running ready=True
+
+health samples:       14
+non-200 responses:    0
+worst health latency: 536ms
+VERDICT: PASS
+```
+
+Every `GET /v1/health` answered, across the restart. Stated with its limits: 14 samples over ~28 seconds is enough to distinguish fixed from a 637-second freeze and is not a stress test, and the 536 ms worst sample is below the 750 ms slow-pass threshold but not nothing. Zero `registry_remove()` refusals were logged, which says the three converted callers cover the paths that actually run rather than that the new `EBUSY` branch is unreachable.
+
+Verified from inside the restarted container rather than from the files API (#394's lesson): `grep (GNU grep) 3.11`, and `ping` still working — so the `ping_group_range` sysctl survived the rolling restart.
 
 ### A listener knows where it is bound, and the dashboard survives blocked storage (#454, #453)
 
