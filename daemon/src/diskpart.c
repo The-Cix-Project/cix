@@ -424,7 +424,11 @@ struct cix_blkpg_ioctl_arg {
 };
 
 /*
- * Reads back the partition sfdisk just wrote.
+ * Reads back one partition's aligned geometry from the on-disk table.
+ *
+ * want_pno == 0 returns the highest-numbered entry (the just-appended
+ * one, since sfdisk --append always takes the next free slot); a
+ * specific want_pno returns exactly that entry (the just-resized one).
  *
  * Deliberately re-reads the table rather than trusting the size that
  * was requested: sfdisk aligns a partition to the disk's own
@@ -434,9 +438,9 @@ struct cix_blkpg_ioctl_arg {
  * a discrepancy that would not surface until something wrote near the
  * end of it.
  */
-static int read_appended_partition(const char *dev_path, int *out_pno,
-                                    unsigned long long *out_start_sector,
-                                    unsigned long long *out_sectors)
+static int read_table_partition(const char *dev_path, int want_pno, int *out_pno,
+                                 unsigned long long *out_start_sector,
+                                 unsigned long long *out_sectors)
 {
 	char buf[16384];
 	char *argv[4];
@@ -474,8 +478,18 @@ static int read_appended_partition(const char *dev_path, int *out_pno,
 		sectors = strtoull(sz + 5, NULL, 10);
 		if (sectors == 0)
 			continue;
-		/* The appended one is the highest-numbered entry: sfdisk
-		 * --append always allocates the next free slot. */
+		/* A specific partition was asked for: return it exactly. */
+		if (want_pno != 0) {
+			if (pno == want_pno) {
+				*out_pno = pno;
+				*out_start_sector = start;
+				*out_sectors = sectors;
+				return 0;
+			}
+			continue;
+		}
+		/* Otherwise the appended one is the highest-numbered entry:
+		 * sfdisk --append always allocates the next free slot. */
 		if (pno > best) {
 			best = pno;
 			*out_pno = pno;
@@ -484,6 +498,13 @@ static int read_appended_partition(const char *dev_path, int *out_pno,
 		}
 	}
 	return best > 0 ? 0 : -1;
+}
+
+static int read_appended_partition(const char *dev_path, int *out_pno,
+                                    unsigned long long *out_start_sector,
+                                    unsigned long long *out_sectors)
+{
+	return read_table_partition(dev_path, 0, out_pno, out_start_sector, out_sectors);
 }
 
 #define CIX_BLKPG_DEL_PARTITION 2
@@ -562,6 +583,47 @@ static int blkpg_add_partition(const char *dev_path, int pno, unsigned long long
 	rc = ioctl(fd, CIX_BLKPG, &arg);
 	if (rc != 0 && errno == EBUSY)
 		rc = 0; /* already registered -- the desired end state */
+	close(fd);
+	return rc == 0 ? 0 : -1;
+}
+
+#define CIX_BLKPG_RESIZE_PARTITION 3
+
+/*
+ * Tell the kernel that one partition's LENGTH changed, without the
+ * whole-disk re-read that EBUSYs while anything on the disk is mounted.
+ *
+ * The resize counterpart of blkpg_add_partition() above, and the reason
+ * a mounted partition -- the daemon's own data directory among them --
+ * can be grown online: sfdisk rewrites the table entry with
+ * --no-tell-kernel, then this updates the kernel's view of exactly this
+ * one partition. `start` must match the partition's existing start (the
+ * kernel refuses the resize otherwise); `length` is the new size. Both
+ * are BYTES, the kernel's own unit here, matching blkpg_add_partition.
+ */
+static int blkpg_resize_partition(const char *dev_path, int pno,
+                                   unsigned long long start_bytes, unsigned long long length_bytes)
+{
+	struct cix_blkpg_partition part;
+	struct cix_blkpg_ioctl_arg arg;
+	int fd;
+	int rc;
+
+	memset(&part, 0, sizeof(part));
+	memset(&arg, 0, sizeof(arg));
+	part.start = (long long)start_bytes;
+	part.length = (long long)length_bytes;
+	part.pno = pno;
+
+	arg.op = CIX_BLKPG_RESIZE_PARTITION;
+	arg.flags = 0;
+	arg.datalen = (int)sizeof(part);
+	arg.data = &part;
+
+	fd = open(dev_path, O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return -1;
+	rc = ioctl(fd, CIX_BLKPG, &arg);
 	close(fd);
 	return rc == 0 ? 0 : -1;
 }
@@ -941,6 +1003,32 @@ static int run_tool_argv(const char *bin, char *const argv[])
 }
 
 /*
+ * The pure size arithmetic of a grow, split out so it can be tested
+ * without a block device (the sandbox has none). See the header for the
+ * contract; the one subtlety is that want == current is allowed and
+ * means "the table is already this size, finish the filesystem grow" --
+ * the idempotent retry after a prior attempt grew the table but failed
+ * at the filesystem step. Only a genuine shrink (want < current) is
+ * refused.
+ */
+enum diskpart_error diskpart_resize_target(unsigned long long current_bytes,
+                                            unsigned long long room_bytes,
+                                            unsigned long long size_mib,
+                                            unsigned long long *out_want_bytes)
+{
+	unsigned long long want = size_mib * 1024ULL * 1024ULL;
+
+	if (size_mib == 0)
+		want = current_bytes + room_bytes; /* "everything after it" */
+	if (want < current_bytes)
+		return DISKPART_ERR_SHRINK_REFUSED;
+	if (want > current_bytes + room_bytes)
+		return DISKPART_ERR_NO_ROOM_AFTER;
+	*out_want_bytes = want;
+	return DISKPART_OK;
+}
+
+/*
  * Grows one partition, and the filesystem inside it.
  *
  * GROW ONLY, deliberately. Shrinking is not the mirror image of
@@ -959,13 +1047,15 @@ static int run_tool_argv(const char *bin, char *const argv[])
  *
  * btrfs really is a different flow rather than another binary name
  * (#163): `btrfs filesystem resize` operates on a MOUNTED filesystem,
- * the exact opposite of resize2fs, while the table rewrite above needs
- * it unmounted. So it arrives unmounted, the table grows, and only then
- * is it mounted at a private scratch point for the resize and unmounted
- * again -- leaving it exactly as it was found. This used to be refused
- * outright, which meant that on a platform whose own storage substrate
- * is btrfs (ADR-0207), the one filesystem that matters most could not
- * be grown at all.
+ * the exact opposite of resize2fs. An unmounted btrfs is mounted at a
+ * private scratch point for the resize and unmounted again; a partition
+ * that is ALREADY mounted -- the daemon's own data directory being the
+ * case that matters -- is grown online, in place, on its live
+ * mountpoint, and left mounted. This used to be refused outright, which
+ * meant that on a platform whose own storage substrate is btrfs
+ * (ADR-0207), the one filesystem that matters most could not be grown
+ * at all, and the data-dir partition -- which can never be unmounted --
+ * could not be grown even after that (issue #94 could not reach it).
  */
 enum diskpart_error diskpart_resize(const char *disk_name, const char *partition_name,
                                      const char *os_containers_dir, unsigned long long size_mib)
@@ -976,7 +1066,7 @@ enum diskpart_error diskpart_resize(const char *disk_name, const char *partition
 	unsigned long long part_end_sector;
 	char script[64];
 	char partno_str[16];
-	char *argv[6];
+	char *argv[7];
 	const char *partno;
 	int i, rc;
 
@@ -993,20 +1083,29 @@ enum diskpart_error diskpart_resize(const char *disk_name, const char *partition
 	/* Issue #140: only the OS disk's first four are untouchable. */
 	if (diskpart_partition_protected(part.name, part.is_os_disk))
 		return DISKPART_ERR_PROTECTED_PARTITION;
-	/*
-	 * Unmounted only. resize2fs can grow a mounted ext4 online, but
-	 * sfdisk rewriting the table underneath a live filesystem is a
-	 * different risk entirely, and the two have to happen in order.
-	 */
-	if (part.mounted)
-		return DISKPART_ERR_MOUNTED;
-	if (!find_disk(disk_name, os_containers_dir, &parent))
-		return DISKPART_ERR_NOT_FOUND;
 
 	/* Only filesystems this can actually finish the job for (#163). */
 	if (part.fs_type[0] != '\0' && strcmp(part.fs_type, "ext4") != 0 &&
 	    strcmp(part.fs_type, "btrfs") != 0)
 		return DISKPART_ERR_FS_UNSUPPORTED;
+
+	/*
+	 * Mounted is allowed for exactly one case: a mounted btrfs, grown
+	 * online in place on its live mountpoint. That is the only way the
+	 * daemon's own data directory (cixd --data-dir=, which can never be
+	 * unmounted) can ever be extended, and btrfs grows online by
+	 * design. Everything else must be unmounted -- resize2fs's fsck and
+	 * grow need the filesystem offline, and an unformatted grow has no
+	 * filesystem to protect. The table rewrite is safe either way: it
+	 * uses --no-tell-kernel + BLKPG_RESIZE_PARTITION, touching only this
+	 * one partition's kernel view, never the whole-disk re-read that
+	 * would EBUSY while anything on the disk is mounted.
+	 */
+	if (part.mounted && strcmp(part.fs_type, "btrfs") != 0)
+		return DISKPART_ERR_MOUNTED;
+
+	if (!find_disk(disk_name, os_containers_dir, &parent))
+		return DISKPART_ERR_NOT_FOUND;
 
 	/*
 	 * How much room is genuinely available: free space is only usable
@@ -1027,34 +1126,96 @@ enum diskpart_error diskpart_resize(const char *disk_name, const char *partition
 		}
 	}
 
-	want_bytes = size_mib * 1024ULL * 1024ULL;
-	if (size_mib == 0)
-		want_bytes = current_bytes + room_bytes; /* "everything after it" */
-	if (want_bytes <= current_bytes)
-		return DISKPART_ERR_SHRINK_REFUSED;
-	if (want_bytes > current_bytes + room_bytes)
-		return DISKPART_ERR_NO_ROOM_AFTER;
+	{
+		enum diskpart_error terr =
+		    diskpart_resize_target(current_bytes, room_bytes, size_mib, &want_bytes);
+		if (terr != DISKPART_OK)
+			return terr;
+	}
 
-	/* Step 1: the table entry. */
 	partno = partition_name + strlen(disk_name);
 	if (partno[0] == 'p' && partno[1] >= '0' && partno[1] <= '9')
 		partno++;
 	if (partno[0] < '0' || partno[0] > '9')
 		return DISKPART_ERR_WRONG_PARENT;
 	snprintf(partno_str, sizeof(partno_str), "%s", partno);
-	snprintf(script, sizeof(script), "size=%lluMiB\n", want_bytes / (1024ULL * 1024ULL));
 
-	argv[0] = (char *)DISKPART_SFDISK_BIN;
-	argv[1] = "-N";
-	argv[2] = partno_str;
-	argv[3] = "--force";
-	argv[4] = parent.dev_path;
-	argv[5] = NULL;
-	rc = run_sfdisk_stdin(argv, script);
-	if (rc == -2)
-		return DISKPART_ERR_SFDISK_MISSING;
-	if (rc != 0)
-		return DISKPART_ERR_SFDISK_FAILED;
+	/*
+	 * Step 1a: grow the table entry -- but only if it actually needs to
+	 * grow. On an idempotent retry (a prior attempt already grew the
+	 * table but failed later) want_bytes == the current size, so the
+	 * table is already right and sfdisk is skipped. Refusing here with
+	 * SHRINK_REFUSED -- as the earlier <= comparison did -- left the
+	 * extra space real but permanently unusable.
+	 */
+	if (want_bytes > current_bytes) {
+		snprintf(script, sizeof(script), "size=%lluMiB\n", want_bytes / (1024ULL * 1024ULL));
+
+		/*
+		 * --no-reread + --no-tell-kernel is the append path's own
+		 * mechanism (#140): sfdisk rewrites the entry on disk and
+		 * never touches the kernel's view, so the operation behaves
+		 * identically whether or not the disk carries mounted
+		 * partitions -- which is what lets a mounted data-dir grow.
+		 * --force is deliberately NOT used: sfdisk's own guard that
+		 * refuses to grow one partition over the next (and leaves the
+		 * table untouched when it does) is exactly the safety wanted,
+		 * and --force would override it. Measured on a crafted GPT
+		 * (2026-09-13): the grow succeeds without --force and an
+		 * overlapping grow is refused with the table left intact.
+		 */
+		argv[0] = (char *)DISKPART_SFDISK_BIN;
+		argv[1] = "-N";
+		argv[2] = partno_str;
+		argv[3] = "--no-reread";
+		argv[4] = "--no-tell-kernel";
+		argv[5] = parent.dev_path;
+		argv[6] = NULL;
+		rc = run_sfdisk_stdin(argv, script);
+		if (rc == -2)
+			return DISKPART_ERR_SFDISK_MISSING;
+		if (rc != 0)
+			return DISKPART_ERR_SFDISK_FAILED;
+	}
+
+	/*
+	 * Step 1b: reconcile the kernel's view with whatever the table now
+	 * says, reading back the aligned geometry sfdisk actually wrote (it
+	 * aligns to the disk's granularity) so the two cannot drift. sfdisk
+	 * -d reports 512-byte sectors, so bytes = sectors * 512, matching
+	 * the add path.
+	 *
+	 * This runs whether or not sfdisk just did -- which is what makes a
+	 * retry safe. If a previous attempt grew the table but its
+	 * per-partition notify failed, leaving the kernel on the old size,
+	 * the retry lands here with the table already big and the kernel
+	 * still small, and reconciles it. Growing the filesystem while the
+	 * kernel still reported the old size would silently resize it to the
+	 * OLD bound and report success -- the exact silent-success failure
+	 * this guards against (#163). BLKPG_RESIZE_PARTITION touches only
+	 * this one partition, so it never triggers the whole-disk re-read
+	 * that EBUSYs on a busy disk, and its own return code -- not a
+	 * re-enumerate-and-compare, which false-fired when kernel size
+	 * already == current -- is the authority on whether the kernel took
+	 * the size.
+	 */
+	{
+		int rpno;
+		unsigned long long rstart_sec = 0, rsectors = 0, table_bytes;
+
+		if (read_table_partition(parent.dev_path, atoi(partno_str), &rpno, &rstart_sec,
+		                         &rsectors) != 0)
+			return DISKPART_ERR_SFDISK_FAILED;
+		table_bytes = rsectors * 512ULL;
+		if (table_bytes > part.size_bytes &&
+		    blkpg_resize_partition(parent.dev_path, rpno, rstart_sec * 512ULL, table_bytes) != 0) {
+			snprintf(g_sfdisk_last_error, sizeof(g_sfdisk_last_error),
+			         "the table entry for partition %d was grown, but the kernel refused to "
+			         "resize its device (%s) -- a reboot will pick up the new size",
+			         rpno, strerror(errno));
+			return DISKPART_ERR_KERNEL_SIZE_STALE;
+		}
+	}
 
 	/* Step 2: the filesystem, if there is one. An unformatted
 	 * partition is finished -- there is nothing inside it to grow. */
@@ -1062,38 +1223,14 @@ enum diskpart_error diskpart_resize(const char *disk_name, const char *partition
 		return DISKPART_OK;
 
 	/*
-	 * Before growing anything: has the KERNEL actually noticed?
-	 *
-	 * sfdisk rewrote the table on disk, and then asks the kernel to
-	 * re-read it -- which fails with EBUSY while anything else on the
-	 * disk is mounted. If that happened, the kernel still reports the
-	 * old size, and both resize2fs and `btrfs filesystem resize max`
-	 * would then grow the filesystem to the OLD bound and exit 0. The
-	 * operator would be told the resize succeeded, and would have
-	 * gained nothing.
-	 *
-	 * That is the exact silent-success failure this two-step path
-	 * exists to prevent, so it is checked rather than assumed (#163).
-	 * The table on disk is already correct at this point, so a reboot
-	 * or a later retry finishes the job -- which is what the error
-	 * says.
-	 */
-	{
-		struct discovered_disk after;
-
-		if (!find_disk(partition_name, os_containers_dir, &after))
-			return DISKPART_ERR_NOT_FOUND;
-		if (after.size_bytes <= current_bytes)
-			return DISKPART_ERR_KERNEL_SIZE_STALE;
-	}
-
-	/*
 	 * btrfs grows MOUNTED, which is the opposite of resize2fs and the
 	 * reason this is its own flow rather than another binary name.
 	 *
-	 * The partition arrives here unmounted (required, so the table
-	 * could be rewritten safely) and leaves unmounted: it is mounted at
-	 * a private scratch point purely for the duration of the resize.
+	 * Two ways in. An already-mounted partition -- the daemon's own
+	 * data directory -- is grown online, in place, on its live
+	 * mountpoint and left exactly as found (it can never be unmounted).
+	 * An unmounted partition is mounted at a private scratch point
+	 * purely for the duration of the resize and unmounted again.
 	 *
 	 * The scratch point goes under os_containers_dir, which is a real
 	 * directory this daemon owns and writes to constantly. The obvious
@@ -1108,22 +1245,29 @@ enum diskpart_error diskpart_resize(const char *disk_name, const char *partition
 	 */
 	if (strcmp(part.fs_type, "btrfs") == 0) {
 		char mnt[PATH_MAX];
-		int mrc;
+		int online = part.mounted;
+		int mrc = 0;
 
-		if (snprintf(mnt, sizeof(mnt), "%s/.resize-%s", os_containers_dir, part.name) >=
-		    (int)sizeof(mnt))
-			return DISKPART_ERR_RESIZE_FS_FAILED;
-		if (mkdir(mnt, 0700) != 0 && errno != EEXIST) {
-			snprintf(g_sfdisk_last_error, sizeof(g_sfdisk_last_error),
-			         "could not create the scratch mount point %s: %s", mnt, strerror(errno));
-			return DISKPART_ERR_RESIZE_FS_FAILED;
-		}
-		if (mount(part.dev_path, mnt, "btrfs", 0, NULL) != 0) {
-			snprintf(g_sfdisk_last_error, sizeof(g_sfdisk_last_error),
-			         "could not mount %s at %s to grow it: %s", part.dev_path, mnt,
-			         strerror(errno));
-			rmdir(mnt);
-			return DISKPART_ERR_RESIZE_FS_FAILED;
+		if (online) {
+			if (snprintf(mnt, sizeof(mnt), "%s", part.mount_path) >= (int)sizeof(mnt))
+				return DISKPART_ERR_RESIZE_FS_FAILED;
+		} else {
+			if (snprintf(mnt, sizeof(mnt), "%s/.resize-%s", os_containers_dir, part.name) >=
+			    (int)sizeof(mnt))
+				return DISKPART_ERR_RESIZE_FS_FAILED;
+			if (mkdir(mnt, 0700) != 0 && errno != EEXIST) {
+				snprintf(g_sfdisk_last_error, sizeof(g_sfdisk_last_error),
+				         "could not create the scratch mount point %s: %s", mnt,
+				         strerror(errno));
+				return DISKPART_ERR_RESIZE_FS_FAILED;
+			}
+			if (mount(part.dev_path, mnt, "btrfs", 0, NULL) != 0) {
+				snprintf(g_sfdisk_last_error, sizeof(g_sfdisk_last_error),
+				         "could not mount %s at %s to grow it: %s", part.dev_path, mnt,
+				         strerror(errno));
+				rmdir(mnt);
+				return DISKPART_ERR_RESIZE_FS_FAILED;
+			}
 		}
 
 		argv[0] = (char *)DISKPART_BTRFS_BIN;
@@ -1134,11 +1278,13 @@ enum diskpart_error diskpart_resize(const char *disk_name, const char *partition
 		argv[5] = NULL;
 		rc = run_tool_argv(DISKPART_BTRFS_BIN, argv);
 
-		/* Unmounted on every outcome, including failure: leaving a
-		 * scratch mount behind would make the partition look busy to
-		 * every later operation, including the retry. */
-		mrc = umount(mnt);
-		rmdir(mnt);
+		/* A scratch mount is released on every outcome, including
+		 * failure: leaving it behind would make the partition look
+		 * busy to every later operation. A live mount is left alone. */
+		if (!online) {
+			mrc = umount(mnt);
+			rmdir(mnt);
+		}
 
 		if (rc == -2) {
 			snprintf(g_sfdisk_last_error, sizeof(g_sfdisk_last_error),

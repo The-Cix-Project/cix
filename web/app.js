@@ -6855,13 +6855,21 @@ function renderDiskRoleTab(d, role) {
 		unmountBtn.addEventListener("click", () => unmountDisk(d.name));
 		actions.appendChild(unmountBtn);
 	}
-	if (d.is_partition && !d.mounted && (d.fs_type === "" || d.fs_type === "ext4")) {
+	if (
+		d.is_partition &&
+		!d.protected &&
+		(d.fs_type === "" || d.fs_type === "ext4" || d.fs_type === "btrfs") &&
+		(!d.mounted || d.fs_type === "btrfs")
+	) {
 		/*
-		 * Grow only, and only where it can finish the job: an ext4 or
-		 * unformatted partition that is unmounted. A btrfs partition
-		 * gets no button, because growing btrfs needs it mounted and
-		 * this operation needs it unmounted -- offering a button that
-		 * would be refused is worse than not offering one.
+		 * Grow only, and only where the daemon can finish the job.
+		 * ext4, btrfs and unformatted partitions are all grown (#163);
+		 * a mounted partition is offered only when it is btrfs, which
+		 * grows online in place -- that is the one path to extending
+		 * the data directory (#94), and a mounted ext4 would be
+		 * refused. Protected partitions (the OS layout) never get a
+		 * button, since the daemon refuses them regardless: offering
+		 * one that would 409 is worse than not offering it.
 		 */
 		const growBtn = document.createElement("button");
 

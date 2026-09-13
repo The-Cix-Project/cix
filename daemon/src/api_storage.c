@@ -619,7 +619,9 @@ static void respond_diskpart_error(int fd, enum diskpart_error err)
 		              "(DELETE /v1/storage-roles/{name})");
 		break;
 	case DISKPART_ERR_MOUNTED:
-		respond_error(fd, 409, "Conflict", "this disk or partition is currently mounted");
+		respond_error(fd, 409, "Conflict",
+		              "this disk or partition is currently mounted -- unmount it first (only a "
+		              "mounted btrfs partition can be grown in place, on its live mountpoint)");
 		break;
 	case DISKPART_ERR_INVALID_PART_NAME:
 		respond_error(fd, 400, "Bad Request", "invalid partition name");

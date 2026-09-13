@@ -587,6 +587,63 @@ static int test_partition_grow(void)
 }
 
 /*
+ * The pure size arithmetic behind a grow (diskpart_resize_target), the
+ * one part of the resize path that can be exercised without a block
+ * device. The cases that matter: a normal grow, "all the room"
+ * (size_mib 0), a genuine shrink refused, an over-large request
+ * refused, and -- the one a prior bug got wrong -- the idempotent
+ * retry, where want == current must be allowed so a resize whose table
+ * step already ran can still finish its filesystem grow.
+ */
+static int test_resize_target(void)
+{
+	unsigned long long want;
+	int ok = 1;
+	const unsigned long long GiB = 1024ULL * 1024ULL * 1024ULL;
+
+	/* Grow 16 GiB -> 32 GiB with 227 GiB of room: allowed. */
+	if (diskpart_resize_target(16 * GiB, 227 * GiB, 32ULL * 1024, &want) != DISKPART_OK ||
+	    want != 32 * GiB) {
+		fprintf(stderr, "FAIL: resize_target did not grow to the requested size\n");
+		ok = 0;
+	}
+	/* size_mib 0 means "current + all the room". */
+	want = 0;
+	if (diskpart_resize_target(16 * GiB, 227 * GiB, 0, &want) != DISKPART_OK ||
+	    want != (16 + 227) * GiB) {
+		fprintf(stderr, "FAIL: resize_target(0) did not take all the free room\n");
+		ok = 0;
+	}
+	/* A genuine shrink is refused. */
+	if (diskpart_resize_target(16 * GiB, 227 * GiB, 8ULL * 1024, &want) !=
+	    DISKPART_ERR_SHRINK_REFUSED) {
+		fprintf(stderr, "FAIL: resize_target did not refuse a shrink\n");
+		ok = 0;
+	}
+	/* More than current + room is refused. */
+	if (diskpart_resize_target(16 * GiB, 1 * GiB, 64ULL * 1024, &want) !=
+	    DISKPART_ERR_NO_ROOM_AFTER) {
+		fprintf(stderr, "FAIL: resize_target did not refuse an over-large request\n");
+		ok = 0;
+	}
+	/* The idempotent retry: want == current, no room left, must be
+	 * allowed (finish the filesystem grow) -- NOT refused as a shrink. */
+	want = 0;
+	if (diskpart_resize_target(243 * GiB, 0, 243ULL * 1024, &want) != DISKPART_OK ||
+	    want != 243 * GiB) {
+		fprintf(stderr, "FAIL: resize_target refused the idempotent retry (want == current)\n");
+		ok = 0;
+	}
+	/* Same idempotent case reached via size_mib 0 with no room. */
+	want = 0;
+	if (diskpart_resize_target(243 * GiB, 0, 0, &want) != DISKPART_OK || want != 243 * GiB) {
+		fprintf(stderr, "FAIL: resize_target(0) refused a no-room finish\n");
+		ok = 0;
+	}
+	return ok;
+}
+
+/*
  * Issue #140: which partitions the OS disk protects.
  *
  * A pure predicate, tested directly -- the behaviour it governs can
@@ -996,6 +1053,8 @@ int main(void)
 	if (!test_free_space())
 		ok = 0;
 	if (!test_partition_grow())
+		ok = 0;
+	if (!test_resize_target())
 		ok = 0;
 
 	if (ok)
