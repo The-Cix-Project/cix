@@ -30,6 +30,19 @@ kernel auto-fills the old one) and `uname`'s build date — not the version — 
 confirm the new kernel booted. `/sys/block` remains the host's: `lsblk` still shows
 the host's disks, a recorded open gap.
 
+### The interactive shell opens with a banner that says which host it is (#440)
+
+`run_shell()` printed one line. The console is often the only way into a host, so
+it now opens with a real banner: `cixctl`'s own build version, the Cix build the
+host is running (version, build time, A/B slot, kernel), the project and licence
+line, and the **host's** current time in UTC -- not the client's, since a laptop
+pointed at a box with an unsynced clock is exactly the case worth surfacing. The
+host build and time each come from one HTTP call (`GET /v1/system/boot`,
+`GET /v1/system/time`) and degrade to a single `unavailable (daemon unreachable)`
+line rather than hanging the shell at startup; `cixctl`'s version and the project
+line are local and always print. `cixctl` now compiles in `build/version.h`
+(`CIX_BUILD_VERSION`), which it did not use before.
+
 ### Forked children name themselves, instead of a crowd of identical "cixd" and "cix-init" (#456)
 
 `GET /v1/system/processes` and the watchdog's stall records showed three processes

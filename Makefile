@@ -421,7 +421,7 @@ $(BUILD)/test_daemon: test/test_daemon.c test/test_image_fixture.c $(CLIENT_SRCS
 $(BUILD)/daemon_child: test/daemon_child.c | $(BUILD)
 	$(CC) $(CFLAGS) $< -o $@
 
-$(BUILD)/cixctl: cli/src/main.c client/src/console.c $(CLIENT_SRCS) $(BUILD)/generated/cix_api.h | $(BUILD)
+$(BUILD)/cixctl: cli/src/main.c client/src/console.c $(CLIENT_SRCS) $(BUILD)/generated/cix_api.h $(BUILD)/version.h | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) -I$(BUILD) cli/src/main.c client/src/console.c $(CLIENT_SRCS) -o $@
 
 $(BUILD)/test_cli: test/test_cli.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
