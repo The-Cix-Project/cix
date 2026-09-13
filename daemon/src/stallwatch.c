@@ -772,6 +772,12 @@ static void watchdog_main(pid_t watched)
 	 * just a stray process. */
 	prctl(PR_SET_PDEATHSIG, SIGKILL);
 
+	/* Name the child so it is not a second anonymous "cixd" in
+	 * GET /system/processes and its own records (#456). The watchdog
+	 * that writes "comm":"cixd" about a stall should not itself be an
+	 * unnamed cixd in that same list. 15 chars fit TASK_COMM_LEN. */
+	prctl(PR_SET_NAME, (unsigned long)"cixd [watchdog]", 0UL, 0UL, 0UL);
+
 	/*
 	 * Issue #229: a watchdog that only runs when the machine is idle
 	 * reports on the times nothing was wrong.

@@ -114,10 +114,12 @@ void cix_sigreturn(void);
 #define SYS_wait4 61
 #define SYS_kill 62
 #define SYS_fcntl 72
+#define SYS_uname 63
 #define SYS_setgid 106
 #define SYS_setuid 105
 #define SYS_setgroups 116
 #define SYS_prctl 157
+#define PR_SET_NAME 15
 #define SYS_clock_gettime 228
 #define SYS_exit_group 231
 #define SYS_openat 257
@@ -1278,11 +1280,45 @@ static int anything_left(void)
 	return 0;
 }
 
+/*
+ * Name this process after the container it is pid 1 of (#456), so that
+ * GET /system/processes and the watchdog record show "init:<name>"
+ * rather than a dozen identical "cix-init" entries -- a container whose
+ * init is wedged could not be told apart from the record otherwise.
+ *
+ * The container name needs no plumbing: cixd sets the container's UTS
+ * hostname to the container name (main.c, spec.ns.hostname = name)
+ * before this ever execs, and this runs inside that UTS namespace, so
+ * uname()'s nodename IS the container name. struct new_utsname is six
+ * back-to-back char[65] fields (sysname, nodename, ...), so nodename
+ * sits at offset 65. Best-effort and purely cosmetic: a failure here
+ * leaves the old "cix-init" comm and never touches the init's job.
+ */
+static void set_own_name(void)
+{
+	char uts[6 * 65];
+	char name[16];
+	const char *node = uts + 65;
+	const char *pfx = "init:";
+	int i = 0, j;
+
+	if (sc1(SYS_uname, (long)uts) != 0)
+		return;
+	for (j = 0; pfx[j] != '\0' && i < 15; j++)
+		name[i++] = pfx[j];
+	for (j = 0; node[j] != '\0' && i < 15; j++)
+		name[i++] = node[j];
+	name[i] = '\0';
+	sc2(SYS_prctl, PR_SET_NAME, (long)name);
+}
+
 int cix_main(long argc, char **argv)
 {
 	int i;
 
 	g_envp = argv + argc + 1;
+
+	set_own_name();
 
 	if (argc < 4)
 		die("usage: cix-init <control-fd> <report-fd> <service-0-out-fd> ... -- this is exec'd by cixd, not by hand");
