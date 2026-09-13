@@ -8,6 +8,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
@@ -330,10 +331,67 @@ int registry_ip_holder(uint32_t candidate_be, char *out_name, size_t out_name_si
 
 static void registry_mark_exited_with(struct registry_entry *entry, int status, int sig);
 
+/*
+ * Has this container already exited? Asked of the kernel, answered
+ * without waiting (ADR-0285).
+ *
+ * A pidfd becomes readable exactly when its process has exited, so a
+ * zero-timeout poll() is the whole question: POLLIN means a
+ * container_wait() on it will return immediately, anything else means
+ * it would block. This is the one fact that separates "reap a finished
+ * container" from "freeze the control plane", and until ADR-0285
+ * nothing asked it -- the code trusted e->running instead, which is a
+ * remembered flag rather than a measurement.
+ *
+ * Returns 1 exited, 0 still running, -1 if the poll itself failed (no
+ * pidfd, or an error) -- treated by callers as "cannot establish",
+ * which is deliberately NOT the same as "exited".
+ */
+static int registry_pidfd_has_exited(const struct registry_entry *entry)
+{
+	struct pollfd pfd;
+	int r;
+
+	if (entry->handle.pidfd < 0)
+		return -1;
+	pfd.fd = entry->handle.pidfd;
+	pfd.events = POLLIN;
+	pfd.revents = 0;
+	do {
+		r = poll(&pfd, 1, 0);
+	} while (r < 0 && errno == EINTR);
+	if (r < 0)
+		return -1;
+	return (r > 0 && (pfd.revents & POLLIN)) ? 1 : 0;
+}
+
+/*
+ * ADR-0285: this reaps with a blocking waitid(), so it is only ever
+ * correct on a process that has already exited. Its legitimate caller
+ * is the pidfd EPOLLIN callback, where that is guaranteed by the event
+ * itself; the precondition is re-checked here anyway rather than
+ * trusted, because the cost of being wrong is the whole control plane
+ * (#448: 637 seconds in do_wait, ended by a hypervisor reset).
+ *
+ * The check lives here, on the daemon's side, and not inside
+ * container_wait(): that function is the runtime library's public API
+ * and blocking is its correct, documented behaviour -- test/test_
+ * container_net.c waits on five containers with it, deliberately. The
+ * constraint being enforced is this daemon's single-threaded reactor,
+ * so it belongs to this daemon.
+ */
 void registry_mark_exited(struct registry_entry *entry)
 {
 	int status, sig;
 
+	if (registry_pidfd_has_exited(entry) != 1) {
+		logstore_write("cixd", "error",
+		                "registry_mark_exited(%s): pidfd says the container has not exited -- "
+		                "refusing to wait for it on the reactor (ADR-0285); the exit will be "
+		                "reaped by its own pidfd event",
+		                entry->name);
+		return;
+	}
 	if (container_wait(&entry->handle, &status, &sig) == 0)
 		registry_mark_exited_with(entry, status, sig);
 }
@@ -427,24 +485,60 @@ int registry_remove(const char *name)
 {
 	struct registry_entry *e = registry_find(name);
 
-	if (e == NULL)
+	if (e == NULL) {
+		errno = ENOENT;
 		return -1;
+	}
 
+	/*
+	 * ADR-0285. This function used to thaw, SIGKILL and then reap the
+	 * container with a blocking waitid() -- on the one thread that also
+	 * serves every HTTP request. ADR-0180 had already established that
+	 * this wait is unbounded in principle and had already frozen the
+	 * control plane twice; it built the asynchronous teardown and moved
+	 * DELETE and stop onto it, and left this branch here for everyone
+	 * else. On 2026-09-13 a rolling restart after an ordinary package
+	 * install came through it and took a live box out for eleven
+	 * minutes, ending in a hypervisor reset (#448).
+	 *
+	 * So the kill is gone. The sole job now is releasing the table slot
+	 * of a container that has already finished. Stopping one is
+	 * begin_container_stop()'s job, and there is no longer a second way
+	 * to do it.
+	 *
+	 * e->running is NOT the test -- the pidfd is. A remembered flag can
+	 * go stale (ADR-0180 says exactly this about e->paused, and made
+	 * the thaw unconditional because of it), and keying the refusal on
+	 * a stale flag would turn a working POST .../start on an
+	 * exited-but-registered container into a refusal for no gain. Ask
+	 * the kernel instead:
+	 *
+	 *   exited      -- the flag was stale; reap it and carry on, which
+	 *                  is what every caller already expects.
+	 *   running     -- refuse, loudly, and change nothing. EBUSY so a
+	 *                  caller can tell this apart from "no such name".
+	 *   unknowable  -- treated as running. A slot whose pidfd cannot be
+	 *                  polled is not one to guess about.
+	 *
+	 * The refusal is the entire point of the change. A future path that
+	 * reaches teardown the wrong way now produces a log line and a
+	 * failed operation instead of a box somebody has to walk to.
+	 */
 	if (e->running) {
-		/*
-		 * A frozen cgroup blocks signal delivery to every task in it --
-		 * SIGKILL sent to a still-frozen container would queue but never
-		 * actually terminate the process, leaving a hung, unkillable
-		 * entry. Thaw first, UNCONDITIONALLY (ADR-0180 hardening: the
-		 * old `if (e->paused)` guard trusted a flag that can in
-		 * principle go stale, and a stale flag here means this exact
-		 * wait blocks the whole daemon forever -- thawing an already-
-		 * thawed cgroup is a harmless no-op write). Failure is still
-		 * ignored (cgroup already gone/unfreezable -- the SIGKILL below
-		 * is attempted exactly as before).
-		 */
-		registry_set_paused(e, 0);
-		sys_pidfd_send_signal(e->handle.pidfd, SIGKILL);
+		int exited = registry_pidfd_has_exited(e);
+
+		if (exited != 1) {
+			logstore_write("cixd", "error",
+			                "registry_remove(%s): the container is still running -- refusing "
+			                "(ADR-0285). Stopping a container is begin_container_stop()'s job; "
+			                "this releases the slot of one that has already exited",
+			                name);
+			errno = EBUSY;
+			return -1;
+		}
+		/* Stale flag: the process is gone and nothing had reaped it
+		 * yet. registry_mark_exited() re-checks the same pidfd, so this
+		 * cannot block. */
 		registry_mark_exited(e);
 	}
 
