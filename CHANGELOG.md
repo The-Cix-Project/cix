@@ -6,6 +6,24 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The management-address migration ran before daemon_config was initialized, and parked a real box (#436, ADR-0287)
+
+The ADR-0287 daemon (v2.57.152) built clean, passed the full selftest, assembled, and deployed to 192.168.15.95 — then didn't come back. The box pinged but nothing served `.95`; the console showed the cause:
+
+```
+.tmp: Read-only file system
+bootstrap_management_network: could not persist management address
+cixd could not start, and this machine is running it as PID 1. (exit status 1)
+```
+
+`bootstrap_management_network()` now **reads** the persisted management address (its first-priority source) and **writes** it back when migrating a legacy box (`is_management` → the single `management_address`) or seeding a fresh one. But `daemon_config_init()` ran *after* the bootstrap in `main()`'s boot sequence — so the module had no path set, and the persisting write landed on the read-only squashfs root (`./.tmp`), returned -1, and as PID 1 that parked the whole control plane. The old bootstrap never persisted anything, so the ordering had never mattered. **The suite never caught it** because the entire bootstrap is gated on `init_mode`, which is false for every `--data-dir` test daemon — the migration-at-boot path runs only on a real host.
+
+- **Fix:** `daemon_config_init(DAEMON_CONFIG_PATH)` now runs **before** `bootstrap_management_network()` — the same "must run before the bootstrap" ordering `sysctlconfig_init`/`kmodconfig_init` already have. The writable state partition is mounted earlier still (`diskformat_remount_present_role_disks()`), so the migrating write lands where it should.
+- **Regression gate:** `test_bootorder` — a static scan of `main.c` (the technique `test_blocking_waits`/`test_listenbind` use for a boot-path invariant no runtime test reaches) asserting the `daemon_config_init` call precedes the `bootstrap_management_network` call. It fails on the old order.
+- **Hardening (same file, same lesson):** a default-route failure in the bootstrap no longer returns -1 either — a routing detail must never park a shell-less box (the #133 doctrine already in that function). Once `g_bind_addr` is a real address the box serves it; a missing/failed default route is logged and the boot continues, and a pre-existing route (`EEXIST`) is treated as the desired state.
+
+Recovery of the stranded box was the documented A/B path (select the other slot at the loader / Cix Recovery); the log store on the shared config partition survived it, which is what named the cause.
+
 ### The management address is the single truth; the network is derived (#436, #441, ADR-0287)
 
 cixd's off-box listen address used to be derivable from three persisted things — a

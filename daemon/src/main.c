@@ -1979,25 +1979,43 @@ static int bootstrap_management_network(void)
 	 * Upstream default route from net.conf's gateway -- a separate
 	 * concept from the management address (ADR-0067/0287), still read
 	 * from net.conf at every boot. Absent gateway = no default route (a
-	 * subnet-only install). A PRESENT but malformed gateway stays an
-	 * error: it is a typo in a value someone meant.
+	 * subnet-only install).
+	 *
+	 * A failure here NEVER returns -1, and that is the point: g_bind_addr
+	 * is already set above, so the box is about to serve its own
+	 * address, and the operator reaches it ON its own subnet -- the
+	 * default route only matters for reaching OFF it. Returning -1 makes
+	 * the call site (`bootstrap_management_network() != 0 -> return 1`)
+	 * exit PID 1, which parks cixd and takes the console shell with it:
+	 * a routing detail would then strand a shell-less box, unreachable
+	 * even on the address it correctly bound. This is the same lesson
+	 * #133 (missing uplink) and the no-network branch above already
+	 * apply -- degraded and reachable beats dead. A pre-existing route
+	 * (EEXIST) is the desired state, not a failure; anything else is
+	 * logged so the operator can see it, and the boot continues.
 	 */
 	if (have_netconf && upstream_gateway[0] != '\0') {
 		if (inet_pton(AF_INET, upstream_gateway, &gw) != 1) {
-			fprintf(stderr, "bootstrap_management_network: invalid gateway %s\n", upstream_gateway);
-			return -1;
-		}
-		rtfd = rtnl_open();
-		if (rtfd < 0) {
-			perror("rtnl_open");
-			return -1;
-		}
-		if (rtnl_route_add_default_ipv4(rtfd, gw.s_addr) != 0) {
-			perror("bootstrap_management_network: default route");
+			fprintf(stderr, "bootstrap_management_network: invalid gateway %s -- skipping "
+			                "default route, box still reachable on its own subnet\n",
+			        upstream_gateway);
+			logstore_write("cixd", "warn",
+			                "net.conf gateway \"%s\" is not a valid IPv4 address -- no default "
+			                "route added; the box is reachable on its own subnet",
+			                upstream_gateway);
+		} else if ((rtfd = rtnl_open()) < 0) {
+			perror("rtnl_open (default route)");
+			logstore_write("cixd", "warn",
+			                "could not open rtnetlink to add the default route -- the box is "
+			                "reachable on its own subnet");
+		} else {
+			if (rtnl_route_add_default_ipv4(rtfd, gw.s_addr) != 0 && errno != EEXIST)
+				logstore_write("cixd", "warn",
+				                "could not add default route via %s (%s) -- the box is reachable "
+				                "on its own subnet but not beyond it",
+				                upstream_gateway, strerror(errno));
 			rtnl_close(rtfd);
-			return -1;
 		}
-		rtnl_close(rtfd);
 	}
 
 	printf("init-mode: management address %s on network %s%s\n", mgmt_addr,
@@ -28663,6 +28681,22 @@ static int cixd_main(int argc, char **argv)
 	 * behaves. */
 	if (init_mode)
 		apply_configured_sysctls();
+	/*
+	 * daemon_config MUST be initialized before bootstrap_management_network()
+	 * (ADR-0287). The bootstrap now READS the persisted management address
+	 * (its first-priority source) and WRITES it back when migrating a legacy
+	 * box or seeding a fresh one -- so the module needs its path set and its
+	 * state loaded first. When this ran AFTER the bootstrap, the module had
+	 * no path, and the migrating write landed on the read-only squashfs root
+	 * ("./.tmp: Read-only file system"), returned -1, and parked PID 1 on a
+	 * real box's first boot after the ADR-0287 upgrade. Tests never caught it
+	 * because the whole bootstrap is gated on init_mode, which is false under
+	 * the suite. The writable state partition is already mounted by here
+	 * (diskformat_remount_present_role_disks() above) -- the same guarantee
+	 * sysctlconfig_init/kmodconfig_init already depend on.
+	 */
+	if (boot_subsystem_init(init_mode, "daemon_config", daemon_config_init(DAEMON_CONFIG_PATH)) != 0)
+		return 1;
 	/* Only a real --init-mode boot has a GRUB-supplied net.conf to
 	 * bootstrap from (Part 0.5) -- a plain/test invocation has no
 	 * management network and simply keeps whatever --bind= it was given. */
@@ -28675,8 +28709,6 @@ static int cixd_main(int argc, char **argv)
 	 * modprobe to run in a plain/test invocation. */
 	if (init_mode)
 		load_configured_modules();
-	if (boot_subsystem_init(init_mode, "daemon_config", daemon_config_init(DAEMON_CONFIG_PATH)) != 0)
-		return 1;
 	/* A persisted port change (PUT /v1/system/daemon-config) survives a
 	 * real reboot -- but an explicit --port= on argv (every test/dev
 	 * invocation always passes one, to avoid colliding with other
