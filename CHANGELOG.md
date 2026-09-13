@@ -53,7 +53,7 @@ the parent's — the procfuse server and watchdog both reported the daemon's own
 (`/sbin/cix-init 18 20 22`). A small setproctitle-style helper (`proctitle.c`)
 rewrites the argv area in place: `main()` records its extent once before any fork,
 and each child overwrites its own copy (copy-on-write, so the parent is untouched)
-— `cixd [procfuse]`, `cixd [watchdog]`, and `cix-init:<container>` for the init.
+— `cixd [procfuse]`, `cixd [watchdog]`, and `cix-init [<container>]` for the init (matching the bracket style; `comm` stays `init:<name>` because its 15-char limit would truncate the container name in brackets).
 
 ### A container's `/proc/partitions` shows only its own backing device (#452, ADR-0286 tier 1)
 
