@@ -119,6 +119,8 @@ This was written after a real incident: a kernel was compiled in the dev sandbox
 
 The REST daemon is the **only** process with direct access to the runtime library (`container.h`) and any other host/network/DNS/PKI primitive. The CLI and the web dashboard are pure REST API clients — they hold no namespace, cgroup, mount, rtnetlink, or filesystem logic of their own, and never link against the runtime library directly. Every capability either surface offers must first exist as a REST endpoint; a CLI or web feature with no corresponding endpoint is not allowed to exist. This applies to every subsystem as it's built (containers, networking, DNS, PKI), not just the ones designed so far.
 
+Every change to the web dashboard follows [docs/guides/web-ux-guidelines.md](docs/guides/web-ux-guidelines.md) — the dashboard's design system: one widget per job, one source of truth for a resource's state and actions (every surface reads it, never re-derives it), and the decision logic that says which widget is correct so one is never swapped for another. It is binding, not advisory; if it is genuinely inadequate for a new need, change that document in the same commit rather than routing around it. The reference is `diskActionEligibility()` in `web/app.js` — one function decides a disk's actions, and both its detail page and its tree right-click menu render from it.
+
 ## Environment notes
 
 - `pivot_root` and `clone3` have no glibc wrappers — call via `syscall(SYS_pivot_root, ...)` / `syscall(SYS_clone3, ...)`. `struct clone_args` is self-declared in `include/linux_compat.h` (never `#include <linux/sched.h>` — it clashes with glibc's `<sched.h>` over `CLONE_*` macros).
