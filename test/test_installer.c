@@ -1209,17 +1209,33 @@ int main(void)
 			return 1;
 		}
 
-		/* Session 4: the same target disk, a completely independent
+		/*
+		 * Session 4: the same target disk, a completely independent
 		 * QEMU process/boot, Secure Boot still enforced (the same
-		 * ovmf_vars, already MOK-confirmed by session 2). A NIC is
-		 * still required even though this check has nothing to do with
-		 * networking: the ESP's own loader entry (written by session
-		 * 1's install) bakes in --bind=<the configured static IP> on
-		 * cixd's kernel command line unconditionally, on every boot
-		 * of this disk -- omitting the NIC here means that address is
-		 * never actually assigned to any interface, so cixd's own
-		 * bind() fails and PID 1 exits, panicking the kernel (found
-		 * directly by first omitting it here). */
+		 * ovmf_vars, already MOK-confirmed by session 2).
+		 *
+		 * The NIC is kept because a realistic boot of this disk has
+		 * one: net.conf names an address that lives on it. It is no
+		 * longer REQUIRED, and the reason it used to be is worth
+		 * keeping, because it described a real defect that was sitting
+		 * here in a comment while a live box was lost to it.
+		 *
+		 * It read: "the ESP's own loader entry bakes in --bind=<the
+		 * configured static IP> on cixd's kernel command line
+		 * unconditionally, on every boot of this disk -- omitting the
+		 * NIC here means that address is never actually assigned to
+		 * any interface, so cixd's own bind() fails and PID 1 exits,
+		 * panicking the kernel (found directly by first omitting it
+		 * here)."
+		 *
+		 * Both halves have since been fixed, in the wrong order. #131
+		 * replaced the panic with a deliberate park, so the symptom
+		 * stopped looking like a kernel bug while remaining fatal. Then
+		 * ADR-0284 made a bind failure non-fatal outright (cixd always
+		 * binds loopback, so it keeps its console) and #443 removed the
+		 * --bind= from the entry altogether, so net.conf is the one
+		 * place the address lives.
+		 */
 		{
 			struct qemu_boot_opts opts;
 

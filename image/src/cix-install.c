@@ -685,7 +685,6 @@ static int populate_esp(const char *esp_mount, const char *ip, const char *root_
 	char path[512];
 	char loader_conf[512];
 	char root_partuuid[64];
-	char bind_opt[96];
 
 	/*
 	 * The root= this writes is the single line that decides whether
@@ -762,24 +761,31 @@ static int populate_esp(const char *esp_mount, const char *ip, const char *root_
 		return -1;
 	snprintf(path, sizeof(path), "%s/loader/entries/cix-a+%d.conf", esp_mount, ROOT_A_TRIES);
 	/*
-	 * --bind= only when an address was given. Installing without a
-	 * management address is allowed, and the result is a deliberate
-	 * state rather than a broken one: cixd's own DEFAULT_BIND is
-	 * "127.0.0.1" (daemon/src/main.c:157, used at :27740 when no
-	 * --bind= is passed), and boot_init() brings `lo` administratively
-	 * up precisely so that bind can succeed -- its comment records that
-	 * a fresh kernel boot leaves lo down and the bind fails
-	 * EADDRNOTAVAIL until something sets it up.
+	 * No --bind= in the entry (#443). The management address belongs to
+	 * net.conf, which the daemon reads at boot and which its listener
+	 * binds (ADR-0284). This used to write the address here as well,
+	 * and that second copy is what cost a real box: PUT /v1/system/
+	 * management-network updated net.conf and the network registry, the
+	 * loader entry kept the old address, and because the listener bound
+	 * the argv value rather than net.conf's, the next boot tried an
+	 * address that was no longer on the bridge -- EADDRNOTAVAIL, and as
+	 * PID 1 that is issue #131's park banner with the console shell
+	 * gone along with it.
 	 *
-	 * So an entry with no --bind= gives a running daemon answering on
-	 * loopback, reachable locally, waiting to be told which address it
-	 * should carry. NOT every interface: an earlier version of this
-	 * comment claimed cixd binds all of them when nothing pins it,
-	 * which is false -- checked against DEFAULT_BIND rather than
-	 * assumed.
+	 * Nothing is lost by dropping it. It was never usable as a
+	 * deliberate boot-time override, because cix-boot (ADR-0215) has no
+	 * edit-at-menu; and a box whose net.conf names an address it cannot
+	 * bind now comes up answering on 127.0.0.1 with a working console
+	 * shell, so the recovery this copy might have served does not need
+	 * it. The --bind= FLAG remains for test and dev invocations, which
+	 * have no net.conf at all.
+	 *
+	 * Installing with no management address stays a deliberate,
+	 * supported state: net.conf is simply not written (see the populate
+	 * step), bootstrap_management_network() finds nothing to do, and
+	 * cixd's own DEFAULT_BIND answers on loopback -- which boot_init()
+	 * brings up precisely so that bind can succeed.
 	 */
-	snprintf(bind_opt, sizeof(bind_opt), "%s%s", (ip != NULL && ip[0] != '\0') ? " --bind=" : "",
-	         (ip != NULL && ip[0] != '\0') ? ip : "");
 	snprintf(loader_conf, sizeof(loader_conf),
 	         "title Cix (A)\n"
 	         "sort-key cix\n"
@@ -789,8 +795,8 @@ static int populate_esp(const char *esp_mount, const char *ip, const char *root_
 	          * proven to come up -- see the daemon's own entry writer
 	          * for the measurement that reverted this. */
 	         "options console=tty0 console=ttyS0 root=PARTUUID=%s rw panic=10 init=/bin/cixd "
-	         "-- --init-mode --slot=a%s\n",
-	         root_partuuid, bind_opt);
+	         "-- --init-mode --slot=a\n",
+	         root_partuuid);
 	if (write_text_file(path, loader_conf) != 0)
 		return -1;
 
