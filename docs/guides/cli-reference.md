@@ -262,6 +262,7 @@ Each flag maps directly to the matching `ContainerCreateRequest` field — see [
 | `network ports NAME` | What is plugged into this network's bridge right now, per port, with each port's own counters (issue #26). The list is the kernel's, so a port nothing can account for prints as `unattributed` rather than being left out |
 | `network attach-interface NAME --interface=IFNAME [--vlan=N]` | Enslave a real host interface to this network's bridge; `--vlan=` creates an 802.1q sub-interface instead |
 | `network detach-interface NAME --interface=IFNAME` | Detach |
+| `network flap-interface IFNAME` | Bring a host NIC down then straight back up to recover a stuck link (a carrier that came up wrong, a bridge port wedged in blocking). Flap-only — it never leaves the interface down. Run it from the console; against an off-box address riding the flapped NIC the reply may not return even though the flap succeeded |
 
 
 

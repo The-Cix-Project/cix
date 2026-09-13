@@ -137,6 +137,8 @@ static void print_usage(FILE *out)
 	        "               bridge; --vlan= creates and enslaves an 802.1q sub-interface\n"
 	        "               instead, leaving the parent free for other VLANs/networks\n"
 	        "  network detach-interface NAME --interface=IFNAME\n"
+	        "  network flap-interface IFNAME  -- bring a host NIC down then up to recover a\n"
+	        "               stuck link (flap-only; never leaves it down). Run from the console.\n"
 	        "  image create --name=NAME  -- an empty image, C runtime pre-seeded, ready for\n"
 	        "               pkg install --image=NAME\n"
 	        "  image ls\n"
@@ -9869,6 +9871,43 @@ static int cmd_network_detach_interface(const struct cix_client *c, int json_mod
 	return emit(&r, json_mode, fmt_removed);
 }
 
+static void fmt_interface_flap(const struct json_value *v)
+{
+	const char *iface = json_str_field(v, "interface");
+	const char *status = json_str_field(v, "status");
+
+	printf("%s: %s (down then up)\n", iface != NULL ? iface : "?",
+	       status != NULL ? status : "?");
+}
+
+/*
+ * `cixctl network flap-interface IFNAME` -- POST /system/interfaces/{name}/flap.
+ * Takes a raw host interface name, no network: a flap is on the NIC itself,
+ * not a bridge membership. Grouped under `network` because that is where an
+ * operator recovering an interface looks (alongside attach/detach-interface),
+ * even though the endpoint it drives is a system one.
+ */
+static int cmd_network_flap_interface(const struct cix_client *c, int json_mode, int argc,
+                                       char **argv)
+{
+	const char *ifname;
+	struct cix_response r;
+	char path[256];
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: cixctl network flap-interface IFNAME\n");
+		return 2;
+	}
+	ifname = argv[0];
+
+	snprintf(path, sizeof(path), CIX_API_flapSystemInterface, ifname);
+	if (cix_client_request(c, CIX_API_flapSystemInterface_METHOD, path, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_interface_flap);
+}
+
 /*
  * Issue #26: a network's ports, the way a switch panel shows them.
  * The list is the kernel's -- everything actually on the bridge -- so a
@@ -10122,6 +10161,8 @@ static int cmd_network(const struct cix_client *c, int json_mode, int argc, char
 		return cmd_network_attach_interface(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "detach-interface") == 0)
 		return cmd_network_detach_interface(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "flap-interface") == 0)
+		return cmd_network_flap_interface(c, json_mode, argc - 1, argv + 1);
 
 	fprintf(stderr, "cixctl: unknown network subcommand '%s'\n", sub);
 	return 2;

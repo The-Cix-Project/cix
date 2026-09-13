@@ -24200,6 +24200,88 @@ static void op_detachNetworkInterface(const struct api_ctx *ctx)
 	handle_network_detach_interface(ctx->fd, ctx->p[0], ctx->p[1]);
 }
 
+/*
+ * POST /v1/system/interfaces/{name}/flap -- bring a host NIC down then
+ * straight back up over rtnetlink. Flap-only by design: there is no bare
+ * "set down", because a down-only call is exactly how an operator strands
+ * a shell-less box on the interface they are trying to fix. `if_nametoindex()`
+ * is namespace-correct and answers existence in one call; a bogus or
+ * over-long name returns 0, which is the 404. No sleep between down and up
+ * (the reactor is single-threaded, ADR-0247): the two are ordered netlink
+ * messages and the kernel renegotiates carrier on the up.
+ */
+static void handle_system_interface_flap(int fd, const char *ifname)
+{
+	int rtfd;
+	struct json_writer w;
+
+	if (ifname == NULL || ifname[0] == '\0') {
+		respond_error(fd, 400, "Bad Request", "interface name required");
+		return;
+	}
+	if (strcmp(ifname, "lo") == 0) {
+		/*
+		 * ADR-0284: the console shell, the watchdog probe and cixd's own
+		 * always-on listeners all ride 127.0.0.1, and no reconfiguration
+		 * path may touch loopback. A flap is flap-only so it would not
+		 * strand anything, but bouncing lo has no legitimate use and every
+		 * footgun -- refuse it outright rather than leave the one path that
+		 * can disturb loopback open.
+		 */
+		respond_error(fd, 400, "Bad Request",
+		              "refusing to flap loopback -- the console and watchdog ride 127.0.0.1");
+		return;
+	}
+	if (if_nametoindex(ifname) == 0) {
+		respond_error(fd, 404, "Not Found", "no interface by that name on this host");
+		return;
+	}
+	rtfd = rtnl_open();
+	if (rtfd < 0) {
+		respond_error(fd, 500, "Internal Server Error", "could not open rtnetlink socket");
+		return;
+	}
+	if (rtnl_link_set_down(rtfd, ifname) != 0) {
+		rtnl_close(rtfd);
+		respond_error(fd, 500, "Internal Server Error", "could not bring the interface down");
+		return;
+	}
+	if (rtnl_link_set_up(rtfd, ifname) != 0) {
+		/*
+		 * Down succeeded, up did not -- the interface is momentarily
+		 * down. Report it honestly rather than pretend success; a retry,
+		 * or the next boot's own bring-up, sets it up again. This is the
+		 * one window the flap-only design cannot fully close, and it is
+		 * far narrower than a bare set-down endpoint would leave open.
+		 */
+		rtnl_close(rtfd);
+		logstore_write("cixd", "error",
+		               "flapped interface %s down but could NOT bring it back up -- it is down",
+		               ifname);
+		respond_error(fd, 500, "Internal Server Error",
+		              "brought the interface down but could not bring it back up");
+		return;
+	}
+	rtnl_close(rtfd);
+	logstore_write("cixd", "info", "flapped interface %s (down then up)", ifname);
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "interface");
+	jw_str(&w, ifname);
+	jw_key(&w, "status");
+	jw_str(&w, "flapped");
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/* POST /v1/system/interfaces/{name}/flap */
+static void op_flapSystemInterface(const struct api_ctx *ctx)
+{
+	handle_system_interface_flap(ctx->fd, ctx->p[0]);
+}
+
 /* -- images ----------------------------------------------------- */
 
 static void op_getImage(const struct api_ctx *ctx)

@@ -894,6 +894,7 @@ static const struct cli_node n_network_subs[] = {
 	{ "attach-interface", n_network_attach_interface_flags, NULL },
 	{ "create", n_network_create_flags, NULL },
 	{ "detach-interface", n_network_detach_interface_flags, NULL },
+	{ "flap-interface", NULL, NULL },
 	{ "ls", NULL, NULL },
 	{ "ports", NULL, NULL },
 	{ "rm", NULL, NULL },

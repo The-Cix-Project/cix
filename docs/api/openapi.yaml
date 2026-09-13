@@ -1216,6 +1216,57 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /system/interfaces/{name}/flap:
+    post:
+      summary: Flap a host network interface -- bring it administratively down then up
+      description: >
+        Brings the named host interface down and then straight back up
+        over rtnetlink -- one atomic recovery action for a NIC that has a
+        link but no connectivity (a stuck carrier, or a bridge port wedged
+        in blocking). It is flap-only, deliberately never a bare
+        "set down": an operator can never leave an interface down and
+        strand a box on it. Safe from the console, which talks to
+        127.0.0.1 and is unaffected. Run against an off-box address that
+        rides this same interface, the reply may not return even though
+        the flap succeeded -- the interface is momentarily down -- so
+        reconnect and re-check rather than treating a dropped reply as a
+        failure.
+      operationId: flapSystemInterface
+      x-cix-expose: [cli]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: the host interface name, e.g. eth0
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The interface was brought down and back up.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [interface, status]
+                properties:
+                  interface:
+                    type: string
+                  status:
+                    type: string
+                    enum: [flapped]
+        "404":
+          description: No interface by that name exists on this host.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: rtnetlink error bringing the interface down or back up.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /system/routes:
     get:
       summary: The box's own real kernel IPv4 routing table (ADR-0066)
