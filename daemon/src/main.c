@@ -1392,6 +1392,46 @@ static volatile sig_atomic_t g_shutdown_action = SHUTDOWN_ACTION_POWEROFF;
  * slot that cannot serve them.
  */
 static char g_uplink_unattached[64];
+/*
+ * Non-empty when cixd could not bind the box's chosen management
+ * address, holding the address it wanted. The daemon keeps running --
+ * the loopback listeners below are unconditional -- so this is not a
+ * fallback state to recover from, it is a fact to report: the box is up
+ * and nothing off this machine can reach it.
+ *
+ * Same role g_uplink_unattached plays for a missing NIC (ADR-0256), and
+ * used for the same decision: a boot in this state must not be
+ * confirmed as a good A/B slot on the strength of having bound a socket.
+ */
+static char g_bind_unavailable[64];
+
+/*
+ * 127.0.0.1 is ALWAYS bound, in addition to whatever address the box was
+ * given. Asked for directly by the owner, after an address change left a
+ * box bound to nothing:
+ *
+ *   "the simple fix is to always bind to 127.0.0.1 and to bind to
+ *    another address based on what was chosen for the box. this way a
+ *    failure of this sort can never happen."
+ *
+ * cixd is PID 1 and there is no other shell on the box: the only local
+ * surface is the interactive cixctl that cixd itself forks onto the
+ * consoles (spawn_console_shell(), /dev/tty0 and /dev/ttyS0), and that
+ * cixctl talks to cixd over TCP like any other client. So the console is
+ * only ever as available as cixd's most reliable listener -- and until
+ * now its target was the management address, which means every console
+ * session was one address change away from breaking. It broke.
+ *
+ * These are never rebound and never stopped: PUT /system/daemon-config
+ * and PUT /system/management-network move the management listeners only.
+ * An operator cannot turn the local surface off by reconfiguring the
+ * remote one, which is the entire point.
+ *
+ * Skipped when the chosen address IS loopback (an install with no
+ * management network), because then the pair above already is it.
+ */
+static struct conn g_lo_listener_conn;
+static struct conn g_lo_https_listener_conn;
 
 
 /*
@@ -4461,22 +4501,28 @@ static void handle_uevent_event(struct conn *cc)
 		reconcile_live_device_revocations();
 }
 
-static int start_http_listener(const char *bind_addr, int port)
+/*
+ * Takes the conn to own the socket, so the loopback listeners (always
+ * present -- see cixd_main()) use this same implementation rather than a
+ * second copy of it. The accept path dispatches on conn->kind, never on
+ * which global it is, so an additional listener needs nothing else.
+ */
+static int start_http_listener(struct conn *c, const char *bind_addr, int port)
 {
 	struct cix_epoll_event ev;
 	int fd = create_listen_socket(bind_addr, port);
 
 	if (fd < 0)
 		return -1;
-	g_listener_conn.kind = CONN_LISTENER;
-	g_listener_conn.fd = fd;
+	c->kind = CONN_LISTENER;
+	c->fd = fd;
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
-	ev.data.ptr = &g_listener_conn;
+	ev.data.ptr = c;
 	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
 		perror("start_http_listener: epoll_ctl ADD");
 		close(fd);
-		g_listener_conn.fd = -1;
+		c->fd = -1;
 		return -1;
 	}
 	printf("cixd listening on %s:%d\n", bind_addr, port);
@@ -4501,7 +4547,7 @@ static void stop_http_listener(void)
  * (stop_https_listener() only tears down the socket) -- re-enabling
  * HTTPS doesn't need to re-read the host cert off disk every time.
  */
-static int start_https_listener(const char *bind_addr, int port)
+static int start_https_listener(struct conn *c, const char *bind_addr, int port)
 {
 	struct cix_epoll_event ev;
 	int fd;
@@ -4515,15 +4561,15 @@ static int start_https_listener(const char *bind_addr, int port)
 	if (fd < 0)
 		return -1;
 
-	g_https_listener_conn.kind = CONN_LISTENER_TLS;
-	g_https_listener_conn.fd = fd;
+	c->kind = CONN_LISTENER_TLS;
+	c->fd = fd;
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
-	ev.data.ptr = &g_https_listener_conn;
+	ev.data.ptr = c;
 	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
 		perror("start_https_listener: epoll_ctl ADD");
 		close(fd);
-		g_https_listener_conn.fd = -1;
+		c->fd = -1;
 		return -1;
 	}
 	printf("cixd listening (https) on %s:%d\n", bind_addr, port);
@@ -4538,6 +4584,27 @@ static void stop_https_listener(void)
 	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, g_https_listener_conn.fd, NULL);
 	close(g_https_listener_conn.fd);
 	g_https_listener_conn.fd = -1;
+}
+
+/*
+ * Starts whichever listeners the config enables, at one address.
+ * Returns 0 if at least one came up, -1 if none did -- the caller
+ * decides whether that is fatal or a reason to fall back.
+ *
+ * Both are attempted even when the first fails: an HTTPS-only box (no
+ * host certificate yet is the common case for HTTP-only, but the
+ * reverse is a real configuration) must not be judged unreachable
+ * because the listener it does not use refused to start.
+ */
+static int start_listeners(struct conn *http, struct conn *https, const char *addr, int port)
+{
+	if (daemon_config_http_enabled() && start_http_listener(http, addr, port) != 0)
+		fprintf(stderr, "could not start the HTTP listener on %s:%d\n", addr, port);
+	if (daemon_config_https_enabled() &&
+	    start_https_listener(https, addr, daemon_config_https_port()) != 0)
+		fprintf(stderr, "could not start the HTTPS listener on %s:%d\n", addr,
+		        daemon_config_https_port());
+	return (http->fd >= 0 || https->fd >= 0) ? 0 : -1;
 }
 
 static int rebind_https_listener(const char *new_bind_addr, int new_port)
@@ -5567,26 +5634,47 @@ static void start_boot_confirm_timer(const char *slot)
  * fails later must never reboot itself, or a pulled cable becomes a
  * reboot loop.
  */
+/*
+ * Two ways a boot can be RUNNING and reachable from nowhere but itself:
+ * no uplink attached (#133), or the chosen management address could not
+ * be bound (2026-09-13 -- cixd keeps serving on loopback, see the
+ * listener block in cixd_main()). Either way the slot must not be
+ * confirmed on the strength of having bound a socket (ADR-0256).
+ *
+ * The guard is what keeps this safe: it applies ONLY while the boot is
+ * unconfirmed. A slot that has already been accepted and whose NIC
+ * fails later must never reboot itself, or a pulled cable becomes a
+ * reboot loop.
+ */
 static void maybe_confirm_boot(const char *slot)
 {
-	if (g_uplink_unattached[0] == '\0') {
+	char why[192];
+
+	if (g_uplink_unattached[0] != '\0')
+		snprintf(why, sizeof(why), "uplink \"%s\" is not attached", g_uplink_unattached);
+	else if (g_bind_unavailable[0] != '\0')
+		snprintf(why, sizeof(why), "the chosen management address %s could not be bound",
+		          g_bind_unavailable);
+	else
+		why[0] = '\0';
+
+	if (why[0] == '\0') {
 		if (confirm_boot(slot) != 0)
 			fprintf(stderr, "confirm_boot failed for slot %s (continuing anyway)\n", slot);
 		return;
 	}
 	if (!boot_is_unconfirmed(slot)) {
 		logstore_write("cixd", "error",
-		                "uplink \"%s\" is not attached, so this host is only reachable on "
-		                "itself -- slot %s was already confirmed, so it is kept: a "
-		                "confirmed slot never reboots itself over a link fault",
-		                g_uplink_unattached, slot);
+		                "%s, so this host is only reachable on itself -- slot %s was already "
+		                "confirmed, so it is kept: a confirmed slot never reboots itself over "
+		                "a fault it can survive",
+		                why, slot);
 		return;
 	}
 	logstore_write("cixd", "error",
-	                "uplink \"%s\" is not attached, so this boot is NOT reachable and will "
-	                "not be confirmed yet -- retrying for %d seconds, then falling back to "
-	                "the other slot",
-	                g_uplink_unattached, BOOT_CONFIRM_RETRY_SECONDS * BOOT_CONFIRM_MAX_ATTEMPTS);
+	                "%s, so this boot is NOT reachable and will not be confirmed yet -- "
+	                "retrying for %d seconds, then falling back to the other slot",
+	                why, BOOT_CONFIRM_RETRY_SECONDS * BOOT_CONFIRM_MAX_ATTEMPTS);
 	start_boot_confirm_timer(slot);
 }
 
@@ -6413,6 +6501,54 @@ static void handle_management_network_put(int fd, const char *body, size_t body_
 		}
 	}
 
+	/*
+	 * Before adding a second address to the bridge: make sure removing
+	 * the first one later will PROMOTE it rather than delete it.
+	 *
+	 * Measured on this platform's own kernel, 2026-09-13, with two
+	 * addresses on one link and the primary then deleted:
+	 *   promote_secondaries=0 -> the secondary is FLUSHED
+	 *   promote_secondaries=1 -> the secondary is promoted and survives
+	 * and with the two addresses in DIFFERENT subnets, the second one
+	 * survives either way, because it is a primary in its own right
+	 * rather than a secondary of the one being removed.
+	 *
+	 * So this only bites a same-subnet move -- which is the most
+	 * ordinary use of this endpoint -- and it bites it completely: the
+	 * deferred cleanup removes the old address and the kernel silently
+	 * takes the new one with it, leaving the bridge with no host
+	 * address at all and the box reachable from nowhere. That is not a
+	 * hypothetical; it is how a real box was lost while verifying this
+	 * endpoint.
+	 *
+	 * A same-subnet move therefore REFUSES rather than risking it if
+	 * the knob cannot be set. A cross-subnet move proceeds either way,
+	 * because the measurement says it is unaffected.
+	 */
+	if (!creating) {
+		int same_subnet = (mgmt->base_be == subnet_be && mgmt->prefix_len == new_prefix);
+		char ps_path[320];
+		int ps_fd;
+		int ps_ok = 0;
+
+		if (snprintf(ps_path, sizeof(ps_path),
+		              "/proc/sys/net/ipv4/conf/%s/promote_secondaries", mgmt_name) <
+		    (int)sizeof(ps_path)) {
+			ps_fd = open(ps_path, O_WRONLY);
+			if (ps_fd >= 0) {
+				ps_ok = write(ps_fd, "1\n", 2) == 2;
+				close(ps_fd);
+			}
+		}
+		if (!ps_ok && same_subnet) {
+			respond_error(fd, 500, "Internal Server Error",
+			               "refusing a same-subnet move: could not set promote_secondaries on "
+			               "the management bridge, and without it removing the old address "
+			               "would take the new one with it and leave this host unreachable");
+			return;
+		}
+	}
+
 	if (!creating) {
 		nerr = network_set_address(mgmt_name, subnet_str, new_prefix, new_ip, &old_addr_be,
 		                            &old_addr_prefix);
@@ -6437,7 +6573,7 @@ static void handle_management_network_put(int fd, const char *body, size_t body_
 		(void)daemon_config_set_bind_ip(NULL);
 
 	if (g_listener_conn.fd < 0) {
-		if (start_http_listener(new_ip, g_port) != 0) {
+		if (start_http_listener(&g_listener_conn, new_ip, g_port) != 0) {
 			respond_error(fd, 500, "Internal Server Error", "could not start http listener");
 			return;
 		}
@@ -6708,7 +6844,7 @@ static void handle_daemon_config_put(int fd, const char *body, size_t body_len)
 	 * running versus what's being asked for. */
 	if (want_http) {
 		if (g_listener_conn.fd < 0) {
-			if (start_http_listener(new_bind, new_port) != 0) {
+			if (start_http_listener(&g_listener_conn, new_bind, new_port) != 0) {
 				respond_error(fd, 500, "Internal Server Error", "could not start http listener");
 				return;
 			}
@@ -6743,7 +6879,7 @@ static void handle_daemon_config_put(int fd, const char *body, size_t body_len)
 	 * already has. */
 	if (want_https) {
 		if (g_https_listener_conn.fd < 0) {
-			if (start_https_listener(g_bind_addr, new_https_port) != 0) {
+			if (start_https_listener(&g_https_listener_conn, g_bind_addr, new_https_port) != 0) {
 				if (have_https_req) {
 					respond_error(fd, 500, "Internal Server Error",
 					              "could not start https listener (no usable host cert yet?)");
@@ -27710,7 +27846,17 @@ static void spawn_console_shell(const char *tty_path)
 	char host_arg[64], port_arg[32];
 	int pidfd;
 
-	snprintf(host_arg, sizeof(host_arg), "--host=%s", g_bind_addr);
+	/*
+	 * DEFAULT_BIND, not g_bind_addr. The console shell is a real cixctl
+	 * talking to cixd over TCP, and cixd is PID 1 -- there is no other
+	 * shell on this machine, so this is the only local surface there is.
+	 * Pointing it at the management address made it only as available as
+	 * that address: every console session was one address change away
+	 * from breaking, and on 2026-09-13 one did. Loopback is
+	 * unconditionally bound (see the listener block in cixd_main()), so
+	 * this target always exists.
+	 */
+	snprintf(host_arg, sizeof(host_arg), "--host=%s", DEFAULT_BIND);
 	snprintf(port_arg, sizeof(port_arg), "--port=%d", g_port);
 
 	pid = fork();
@@ -27832,9 +27978,13 @@ static void handle_console_respawn_timer_event(struct conn *cc)
 }
 
 /*
- * listener is either &g_listener_conn (plain HTTP) or &g_https_
- * listener_conn (Part 0.5) -- both accept4() loops are identical
- * except that a connection accepted on the HTTPS listener additionally
+ * listener is one of four: the management pair (&g_listener_conn,
+ * &g_https_listener_conn) or the always-present loopback pair
+ * (&g_lo_listener_conn, &g_lo_https_listener_conn, see the listener
+ * block in cixd_main()). Nothing here cares which -- the only
+ * distinction that matters is conn->kind, CONN_LISTENER versus
+ * CONN_LISTENER_TLS (Part 0.5). Both accept4() loops are identical
+ * except that a connection accepted on an HTTPS listener additionally
  * gets a fresh SSL* wrapped around it (SSL_accept() itself happens
  * later, driven from handle_client_event() the same way ordinary HTTP
  * request parsing is already driven from there -- non-blocking, one
@@ -28636,7 +28786,10 @@ static int cixd_main(int argc, char **argv)
 	 * this call the watchdog does not probe, which is also the right
 	 * behaviour while the daemon is still starting up.
 	 */
-	stallwatch_set_probe(g_bind_addr, g_port);
+	/* Loopback, same reasoning as the console shell: the watchdog asks
+	 * "is it serving?", and it must not answer "no" because the
+	 * management address moved. */
+	stallwatch_set_probe(DEFAULT_BIND, g_port);
 	if (boot_subsystem_init(init_mode, "dns", dns_init(DNS_RECORDS_STATE_PATH, DNS_SERVERS_STATE_PATH)) != 0)
 		return 1;
 	if (boot_subsystem_init(init_mode, "ntp", ntp_init(NTP_STATE_PATH, NTP_SERVERS_STATE_PATH)) != 0)
@@ -28964,15 +29117,84 @@ static int cixd_main(int argc, char **argv)
 	 */
 	g_listener_conn.fd = -1;
 	g_https_listener_conn.fd = -1;
-	if (daemon_config_http_enabled() && start_http_listener(bind_addr, port) != 0)
-		return 1;
-	if (daemon_config_https_enabled() && start_https_listener(bind_addr, daemon_config_https_port()) != 0)
-		fprintf(stderr, "https_enabled but could not start the HTTPS listener -- continuing without it\n");
-	listen_fd = g_listener_conn.fd;
-	if (listen_fd < 0 && g_https_listener_conn.fd < 0) {
-		fprintf(stderr, "no working listener (http and https both unavailable) -- refusing to start\n");
+	g_lo_listener_conn.fd = -1;
+	g_lo_https_listener_conn.fd = -1;
+
+	/*
+	 * g_bind_addr, NOT the argv-derived local -- and the box's chosen
+	 * address is a listener ALONGSIDE loopback, never instead of it.
+	 * Both halves were paid for on a real box (2026-09-13).
+	 *
+	 * This used to bind `bind_addr`, main()'s own local, set from
+	 * --bind= or DEFAULT_BIND. bootstrap_management_network() sets
+	 * g_bind_addr from net.conf, and the flow between them is one-way
+	 * (g_bind_addr = bind_addr, above) -- so net.conf decided what
+	 * g_bind_addr SAID and argv decided what was actually BOUND. Two
+	 * variables for one fact, and the loader entry's own --bind= is a
+	 * third copy of it (cix-install.c writes it; the A/B update path
+	 * regenerates it from g_bind_addr).
+	 *
+	 * That cost a box. PUT /v1/system/management-network moved the
+	 * management address and updated net.conf and the registry -- the
+	 * two things it knew about -- and the stale --bind= in the loader
+	 * entry then won at the next boot, binding an address no longer on
+	 * the bridge: "create_listen_socket: bind: cannot assign requested
+	 * address". cixd returned non-zero, which as PID 1 is issue #131's
+	 * park banner, and since cixd also forks the console shell, parking
+	 * took away the only surface an operator could have recovered from.
+	 * Recovery needed a live ISO and an edit to the ESP.
+	 *
+	 * Binding g_bind_addr makes net.conf authoritative and demotes the
+	 * loader entry's copy to a harmless echo. The unconditional
+	 * loopback pair is what makes the whole failure class impossible
+	 * rather than merely survivable: there is no decision about which
+	 * address to run on, so there is no wrong answer to it.
+	 *
+	 * A management address that cannot be bound is therefore logged and
+	 * carried on from, not fatal. net.conf is deliberately NOT
+	 * rewritten -- the chosen address is still what the operator asked
+	 * for, so the next boot retries it rather than quietly settling for
+	 * loopback for ever.
+	 */
+	if (start_listeners(&g_listener_conn, &g_https_listener_conn, g_bind_addr, port) != 0) {
+		snprintf(g_bind_unavailable, sizeof(g_bind_unavailable), "%s", g_bind_addr);
+		fprintf(stderr,
+		        "\n*** cixd could not bind %s -- that address is not on this host.  ***\n"
+		        "*** It is still answering on %s, so the console works.       ***\n"
+		        "*** Fix it from the console with:                                 ***\n"
+		        "***   cixctl management-network set --interface=IF --ip=A.B.C.D \\    ***\n"
+		        "***        --prefix=N [--gateway=A.B.C.D]                          ***\n"
+		        "*** net.conf is unchanged, so a reboot retries %s.\n\n",
+		        g_bind_unavailable, DEFAULT_BIND, g_bind_unavailable);
+		logstore_write("cixd", "error",
+		                "could not bind the chosen management address %s -- it is not on this "
+		                "host. Still serving on %s, so the console shell works; this box is "
+		                "reachable only on itself until an address that exists is set with "
+		                "PUT /v1/system/management-network. net.conf is unchanged, so the next "
+		                "boot retries %s.",
+		                g_bind_unavailable, DEFAULT_BIND, g_bind_unavailable);
+	}
+
+	/*
+	 * And 127.0.0.1, always -- unless the chosen address already covers
+	 * it: DEFAULT_BIND itself (an install with no management network),
+	 * or the 0.0.0.0 wildcard some test invocations use. Binding
+	 * 127.0.0.1:P while 0.0.0.0:P is held fails EADDRINUSE, and
+	 * SO_REUSEADDR does not change that -- it would need SO_REUSEPORT --
+	 * so this is a real case to skip rather than a failure to tolerate.
+	 */
+	if (strcmp(g_bind_addr, DEFAULT_BIND) != 0 && strcmp(g_bind_addr, "0.0.0.0") != 0 &&
+	    start_listeners(&g_lo_listener_conn, &g_lo_https_listener_conn, DEFAULT_BIND, port) != 0)
+		fprintf(stderr, "could not bind %s -- the console shell has nothing to talk to\n",
+		        DEFAULT_BIND);
+
+	if (g_listener_conn.fd < 0 && g_https_listener_conn.fd < 0 && g_lo_listener_conn.fd < 0 &&
+	    g_lo_https_listener_conn.fd < 0) {
+		fprintf(stderr, "no working listener on %s, and none on %s either -- refusing to "
+		                "start\n", g_bind_addr, DEFAULT_BIND);
 		return 1;
 	}
+	listen_fd = g_listener_conn.fd;
 	start_kmsg_watch(); /* needs g_epfd, only just created above -- best-effort, see its own comment */
 	start_default_image_libc_seed(); /* #189 -- same posture; no-op once the image has a runtime */
 	start_uevent_watch(); /* ADR-0161 Phase C -- same g_epfd/best-effort posture as start_kmsg_watch() */
