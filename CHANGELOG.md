@@ -6,6 +6,24 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Forked children name themselves, instead of a crowd of identical "cixd" and "cix-init" (#456)
+
+`GET /v1/system/processes` and the watchdog's stall records showed three processes
+named `cixd` (the daemon, the procfuse server, the watchdog) and a dozen named
+`cix-init`, none distinguishable. During the #448 diagnosis, identifying pid 133 —
+`cixd`, `wchan fuse_dev_do_read` — as the procfuse server was an inference; the
+record did not say so. A wedged container's `cix-init` could not be told from the
+other eleven at all.
+
+Each forked child now sets its own `/proc/<pid>/comm` with `prctl(PR_SET_NAME)`:
+the procfuse server is `cixd [procfuse]`, the watchdog is `cixd [watchdog]`, and
+each container's init is `init:<container>`. `cix-init` needs no new plumbing for
+its name — the daemon already sets the container's UTS hostname to the container
+name before init execs, and init runs in that namespace, so it reads its own name
+from `uname()`. All three fit `TASK_COMM_LEN`'s 15-character budget. The
+`command_line` field being empty for these processes is a separate, still-open
+part of #456.
+
 ### A container's `/proc/partitions` shows only its own backing device (#452, ADR-0286 tier 1)
 
 A container was shown the host's entire block layer: `cat /proc/partitions`

@@ -32,6 +32,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mount.h>
+#include <sys/prctl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -1663,6 +1664,15 @@ int procfuse_start(const char *state_dir)
 		}
 		close_range(4, ~0U, 0);
 		signal(SIGPIPE, SIG_IGN);
+		/*
+		 * Name the child so it is not a third anonymous "cixd" in
+		 * GET /system/processes and the watchdog record (#456). The
+		 * whole of #448 turned on identifying this exact process --
+		 * pid 133, "cixd", wchan fuse_dev_do_read -- as the procfuse
+		 * server by inference; a name says it outright. 15 chars fit
+		 * TASK_COMM_LEN's budget exactly.
+		 */
+		prctl(PR_SET_NAME, (unsigned long)"cixd [procfuse]", 0UL, 0UL, 0UL);
 		procfuse_main(keep);
 		_exit(0);
 	}
