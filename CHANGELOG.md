@@ -6,6 +6,50 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The management address is the single truth; the network is derived (#436, #441, ADR-0287)
+
+cixd's off-box listen address used to be derivable from three persisted things — a
+`management_network` name (network.c's `is_management` flag), an optional `bind_ip`
+override (ADR-0068), and `net.conf` — with `is_management` a fourth persisted flag
+that could drift from all of them. Two code paths ("re-address the management
+network" and "set a dedicated bind_ip") did one job. That was the "something's wrong"
+the owner felt: a One-Source-of-Truth violation wearing three configuration surfaces.
+
+Now there is **one input**: a single persisted `management_address` (daemon_config).
+The network it lives in is **derived** — `network_find_containing()`, unambiguous
+because `network_create()` already forbids overlapping subnets — and that network's
+`management` flag (renamed from `is_management`, the `is_` dropped) is **computed on
+read, never stored**, so it can never disagree with where cixd is actually bound.
+127.0.0.1 is always bound in addition, unchanged.
+
+- **New resource** `GET/PUT/DELETE /v1/system/management-address` replaces the whole
+  `/system/management-network` endpoint. `PUT {"address": "A.B.C.D"}` adds the address
+  to the derived network's bridge (idempotent when it is the network's own address),
+  rebinds the off-box HTTP+HTTPS listeners, and persists — refusing `400` if the
+  address falls in no existing network ("create one first"). `DELETE` resets to
+  loopback-only, deliberately (distinct from a configured address that failed to
+  bind, reported via a non-empty `bind_unavailable`). The old 2-second deferred
+  removal of the superseded address (ADR-0068, a measured hang if done synchronously)
+  is preserved; the loopback pair is started/stopped as the off-box address crosses
+  to/from loopback.
+- **`daemon-config` is listeners only now** — `management_network`, `bind_ip` and
+  `bind` are gone from it; `GET /networks` carries the derived `management` boolean.
+- **`#436` closes here**: reapplying the persisted address at boot is now the *one*
+  boot path (a persisted address can no longer be not-reapplied), and legacy state
+  (a `bind_ip`, or an old `is_management` network's address) migrates once into the
+  single `management_address`. **`#441`** becomes the dashboard's management-address
+  panel. `network_set_address()` (the old "management move" primitive) and the
+  `management-network` CLI command are removed; the CLI gains
+  `cixctl management-address show|set|reset`.
+- Supersedes [ADR-0068](docs/adr/0068-dedicated-daemon-bind-ip.md); amends the
+  `is_management` contract of ADR-0058/0067. Contract, README, daemon, CLI, web and
+  the `test_management_address` e2e (renamed from `test_daemon_bind_ip`) all move in
+  this one change; `test_apigen`'s route count 303 → 304.
+
+Verified in the sandbox: `cixctl` builds `-Wall -Werror` clean against the
+regenerated contract, and apigen emits all three surfaces with zero references to the
+removed model. Daemon build, suite and live-on-192.168.15.95 verification pending.
+
 ### A container's `df` reports its own quota, not the pool (#452, ADR-0286 tier 2, kernel 7.2.3-12)
 
 `df` inside a container showed the whole 16 GiB btrfs pool for a rootfs with a

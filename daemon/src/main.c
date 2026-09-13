@@ -1448,10 +1448,14 @@ static char g_bind_unavailable[64];
  * now its target was the management address, which means every console
  * session was one address change away from breaking. It broke.
  *
- * These are never rebound and never stopped: PUT /system/daemon-config
- * and PUT /system/management-network move the management listeners only.
- * An operator cannot turn the local surface off by reconfiguring the
- * remote one, which is the entire point.
+ * These are never rebound and never stopped by a remote reconfiguration:
+ * PUT /system/daemon-config (ports) and PUT/DELETE /system/management-
+ * address (the off-box address, ADR-0287) move or stop the off-box
+ * listeners only. An operator cannot turn the local surface off by
+ * reconfiguring the remote one, which is the entire point. (Reset,
+ * DELETE /system/management-address, does bring the loopback pair down
+ * -- but only because the main listeners then serve loopback directly,
+ * so 127.0.0.1 never stops answering.)
  *
  * Skipped when the chosen address IS loopback (an install with no
  * management network), because then the pair above already is it.
@@ -1796,29 +1800,32 @@ static void load_configured_modules(void)
 }
 
 /*
- * Bootstraps the management network from the static IP/gateway/interface
- * configured at install time (Part 0.5, superseding the old, invisible
- * apply_static_ip()) -- creates a real, persisted network_def (visible
- * at GET /v1/networks like any other), attaches the GRUB-chosen
- * physical interface to it, and designates it the daemon's own
- * management network (network_set_management()). g_bind_addr is then
- * derived from that network's own address -- the network is the one
- * authoritative source for it from this point on, not a
- * separately-carried --bind= argument. A missing or incomplete
- * net.conf is not an error (0, not -1): parts 1/2's own test disks
- * never write one, and that must stay a normal, inert boot, not a
- * failure.
+ * Bootstraps cixd's off-box management address (ADR-0287, superseding
+ * Part 0.5's is_management model). The management address is a single
+ * persisted value in daemon_config; the network it lives in and that
+ * network's `management` flag are DERIVED from it. This function runs
+ * once at boot and establishes three things in priority order:
  *
- * Two genuinely different concepts here, not to be confused (ADR-0058,
- * ADR-0067): the management network's own address_be -- an address
- * living directly on its bridge, now doing double duty as cixd's
- * own bind address -- versus net.conf's own "gateway=" field, the
- * box's *upstream* default route (the next-hop router this box's own
- * outbound traffic egresses through), which keeps its existing,
- * unrelated meaning and mechanism (rtnl_route_add_default_ipv4())
- * below. The former was itself once called "gateway" too (ADR-0037);
- * ADR-0067 renamed it specifically to stop it colliding with this
- * second, real gateway concept in name as well as in fact.
+ *   1. A persisted address (daemon_config_management_address()) -- a
+ *      new-model box, or one whose legacy bind_ip daemon_config's own
+ *      load already migrated -- is reapplied to its network's bridge
+ *      (#436: the persisted address is reapplied at every boot) and
+ *      becomes g_bind_addr.
+ *   2. Otherwise, a legacy "is_management" network's address (captured
+ *      by network_init's load) is migrated once into daemon_config.
+ *   3. Otherwise, on a genuinely fresh install, net.conf's IP seeds the
+ *      first network AND the management address. After the first boot
+ *      net.conf no longer decides the address -- only the default route
+ *      below still reads it.
+ *
+ * A missing/incomplete net.conf with no persisted address is not an
+ * error (return 0): parts 1/2's test disks never write one, and a
+ * deliberate loopback-only install is ordinary -- 127.0.0.1 stays the
+ * only surface, which is a normal, inert boot rather than a failure.
+ *
+ * The upstream default route (net.conf's "gateway=") is a separate
+ * concept (ADR-0067) and is still applied from net.conf at every boot;
+ * operators change it afterwards via /system/routes, not here.
  */
 static int bootstrap_management_network(void)
 {
@@ -1830,60 +1837,48 @@ static int bootstrap_management_network(void)
 	struct network_def *net;
 	enum network_error nerr;
 	int rtfd;
+	const char *persisted;
+	int have_netconf;
+	char mgmt_addr[INET_ADDRSTRLEN] = "";
 
-	if (netconf_parse(NET_CONF_PATH, ip, sizeof(ip), &prefix, upstream_gateway,
-	                   sizeof(upstream_gateway), iface, sizeof(iface)) != 0)
-		return 0;
+	have_netconf = netconf_parse(NET_CONF_PATH, ip, sizeof(ip), &prefix, upstream_gateway,
+	                             sizeof(upstream_gateway), iface, sizeof(iface)) == 0;
 
-	if (inet_pton(AF_INET, ip, &addr) != 1) {
-		fprintf(stderr, "bootstrap_management_network: invalid ip %s\n", ip);
-		return -1;
-	}
-	/*
-	 * An ABSENT gateway is a valid configuration, not a parse failure.
-	 *
-	 * A box reachable only on its own subnet needs no default route,
-	 * and a loopback management address has nowhere to route to at all
-	 * -- both are ordinary installs, and cix-install now offers them.
-	 * Before this, an empty gateway= in net.conf failed inet_pton,
-	 * returned -1, failed boot_init, and exited cixd -- which as PID 1
-	 * is a kernel panic. The same shape as issue #133's missing uplink
-	 * NIC, which is already handled a few lines below for exactly that
-	 * reason.
-	 *
-	 * A gateway that is PRESENT and unparseable stays an error: that is
-	 * a typo in a value someone meant, and silently dropping it would
-	 * leave a box without the route it was configured to have.
-	 */
-	if (upstream_gateway[0] == '\0') {
-		gw.s_addr = 0;
-	} else if (inet_pton(AF_INET, upstream_gateway, &gw) != 1) {
-		fprintf(stderr, "bootstrap_management_network: invalid gateway %s\n", upstream_gateway);
-		return -1;
-	}
-	if (prefix < 8 || prefix > 30) {
-		fprintf(stderr, "bootstrap_management_network: invalid prefix %d\n", prefix);
-		return -1;
-	}
+	/* (1) persisted single truth, else (2) legacy migration. */
+	persisted = daemon_config_management_address();
+	if (persisted == NULL) {
+		uint32_t legacy_be;
 
-	mask = (uint32_t)0xFFFFFFFFu << (32 - prefix);
-	subnet.s_addr = htonl(ntohl(addr.s_addr) & mask);
-	if (inet_ntop(AF_INET, &subnet, subnet_str, sizeof(subnet_str)) == NULL) {
-		perror("bootstrap_management_network: inet_ntop");
-		return -1;
-	}
+		if (network_legacy_management_address(&legacy_be)) {
+			struct in_addr la;
 
-	/* Flag-based lookup first, not by name (ADR-0066's rename note):
-	 * an already-flagged network -- including a pre-rename box's own
-	 * legacy "mgmt" network, reloaded from persisted state by
-	 * network_init() before this ever runs -- is found here and the
-	 * create-with-the-current-default-name branch below is never
-	 * entered, so an existing box's own network is never orphaned or
-	 * duplicated by a future rename of MGMT_NETWORK_NAME. Only a
-	 * genuinely fresh install (nothing flagged yet) falls through to
-	 * create one under today's default name. */
-	net = network_find_management();
-	if (net == NULL) {
+			la.s_addr = legacy_be;
+			if (inet_ntop(AF_INET, &la, mgmt_addr, sizeof(mgmt_addr)) != NULL &&
+			    daemon_config_set_management_address(mgmt_addr) == DAEMON_CONFIG_OK)
+				persisted = daemon_config_management_address();
+		}
+	}
+	if (persisted != NULL)
+		snprintf(mgmt_addr, sizeof(mgmt_addr), "%s", persisted);
+
+	/* (3) fresh install: net.conf seeds the first network + address. */
+	if (persisted == NULL) {
+		if (!have_netconf)
+			return 0; /* loopback-only: an ordinary, inert boot */
+		if (inet_pton(AF_INET, ip, &addr) != 1) {
+			fprintf(stderr, "bootstrap_management_network: invalid ip %s\n", ip);
+			return -1;
+		}
+		if (prefix < 8 || prefix > 30) {
+			fprintf(stderr, "bootstrap_management_network: invalid prefix %d\n", prefix);
+			return -1;
+		}
+		mask = (uint32_t)0xFFFFFFFFu << (32 - prefix);
+		subnet.s_addr = htonl(ntohl(addr.s_addr) & mask);
+		if (inet_ntop(AF_INET, &subnet, subnet_str, sizeof(subnet_str)) == NULL) {
+			perror("bootstrap_management_network: inet_ntop");
+			return -1;
+		}
 		net = network_find(MGMT_NETWORK_NAME);
 		if (net == NULL) {
 			nerr = network_create(MGMT_NETWORK_NAME, subnet_str, prefix, ip, NULL, NULL, &net);
@@ -1896,22 +1891,12 @@ static int bootstrap_management_network(void)
 			if (nerr != NETWORK_OK) {
 				/*
 				 * Issue #133: a missing uplink NIC must never kill the
-				 * box. Before this, any attach failure here returned -1,
-				 * boot_init failed, cixd exited -- and PID 1 exiting is
-				 * a kernel panic, so a first boot whose configured
-				 * interface wasn't found presented as a crash with a
-				 * stack trace instead of as the one-line fact it is.
-				 * Found on a real install; the bare "(13)" it printed
-				 * didn't even say which interface it looked for, let
-				 * alone what existed -- diagnosing it took days.
-				 *
-				 * The management bridge and its address already exist
-				 * by this point (network_create above succeeded), so
-				 * cixd can still bind and serve -- including the serial
-				 * console's own interactive cixctl shell, from which an
-				 * operator can inspect and attach the uplink live once
-				 * the cause is visible. Degraded and reachable beats
-				 * dead: log precisely, keep booting.
+				 * box (PID 1 exiting is a kernel panic). The bridge and
+				 * its address already exist, so cixd can still bind and
+				 * serve the console shell. Degraded and reachable beats
+				 * dead: log precisely (ADR-0256: remembered, so the
+				 * deploy stage does not confirm this boot as healthy),
+				 * keep booting.
 				 */
 				char known[256];
 				DIR *nd = opendir("/sys/class/net");
@@ -1924,70 +1909,100 @@ static int bootstrap_management_network(void)
 					while ((ne = readdir(nd)) != NULL) {
 						if (ne->d_name[0] == '.')
 							continue;
-						off += (size_t)snprintf(known + off,
-						                        sizeof(known) - off, "%s%s",
+						off += (size_t)snprintf(known + off, sizeof(known) - off, "%s%s",
 						                        off > 0 ? " " : "", ne->d_name);
 						if (off >= sizeof(known) - 1)
 							break;
 					}
 					closedir(nd);
 				}
-				/*
-				 * ADR-0256: remembered, not merely printed. This is
-				 * the fact the deploy stage needs -- a boot that
-				 * reaches this line has not produced a reachable host,
-				 * so it must not be confirmed on the strength of
-				 * having bound a socket.
-				 */
 				snprintf(g_uplink_unattached, sizeof(g_uplink_unattached), "%s", iface);
 				fprintf(stderr,
-				        "bootstrap_management_network: cannot attach uplink \"%s\" "
-				        "(error %d) -- interfaces present: [%s]. Continuing WITHOUT an "
-				        "uplink: the API is only reachable on this machine itself; use "
-				        "the console shell to inspect and run "
+				        "bootstrap_management_network: cannot attach uplink \"%s\" (error %d) -- "
+				        "interfaces present: [%s]. Continuing WITHOUT an uplink: the API is only "
+				        "reachable on this machine itself; use the console shell to run "
 				        "\"network attach-interface\" once the cause is fixed.\n",
 				        iface, (int)nerr, known[0] != '\0' ? known : "none");
 				logstore_write("cixd", "error",
-				                "management network has NO uplink: attaching \"%s\" failed "
-				                "(error %d); interfaces present: [%s]",
+				                "management network has NO uplink: attaching \"%s\" failed (error "
+				                "%d); interfaces present: [%s]",
 				                iface, (int)nerr, known[0] != '\0' ? known : "none");
 			}
 		}
-	}
-	/* Idempotent re-affirmation on every boot after the first --
-	 * net->name is whatever this network is actually called (a legacy
-	 * "mgmt" or today's "management"), never a fixed literal. */
-	nerr = network_set_management(net->name);
-	if (nerr != NETWORK_OK) {
-		fprintf(stderr, "bootstrap_management_network: network_set_management failed (%d)\n",
-		        (int)nerr);
-		return -1;
+		snprintf(mgmt_addr, sizeof(mgmt_addr), "%s", ip);
+		if (daemon_config_set_management_address(mgmt_addr) != DAEMON_CONFIG_OK) {
+			fprintf(stderr, "bootstrap_management_network: could not persist management address\n");
+			return -1;
+		}
 	}
 
-	snprintf(g_bind_addr_buf, sizeof(g_bind_addr_buf), "%s", ip);
+	/*
+	 * Set network.c's runtime derivation and reapply the address to its
+	 * network's bridge (#436; idempotent via EEXIST). The network exists
+	 * here -- just created (fresh), reloaded by network_init (reapply),
+	 * or the legacy-flag network (migration).
+	 */
+	nerr = network_set_management_address(mgmt_addr);
+	if (nerr != NETWORK_OK) {
+		/*
+		 * The persisted address belongs to no current network (its
+		 * network was deleted out of band). Degraded, not fatal: log
+		 * and stay loopback-only rather than panicking as PID 1.
+		 */
+		fprintf(stderr,
+		        "bootstrap_management_network: management address %s is in no known network "
+		        "(error %d) -- staying loopback-only\n",
+		        mgmt_addr, (int)nerr);
+		logstore_write("cixd", "error",
+		                "management address %s is in no known network -- cixd is loopback-only "
+		                "until an address that matches a network is set",
+		                mgmt_addr);
+		return 0;
+	}
+	net = network_find_management();
+	if (net != NULL) {
+		struct in_addr ma;
+
+		if (inet_pton(AF_INET, mgmt_addr, &ma) == 1) {
+			rtfd = rtnl_open();
+			if (rtfd >= 0) {
+				(void)rtnl_addr_add_ipv4(rtfd, net->name, ma.s_addr, net->prefix_len); /* EEXIST ok */
+				rtnl_close(rtfd);
+			}
+		}
+	}
+
+	snprintf(g_bind_addr_buf, sizeof(g_bind_addr_buf), "%s", mgmt_addr);
 	g_bind_addr = g_bind_addr_buf;
 
-	rtfd = rtnl_open();
-	if (rtfd < 0) {
-		perror("rtnl_open");
-		return -1;
-	}
 	/*
-	 * No gateway, no default route. Adding one to 0.0.0.0 would be a
-	 * route to nowhere, and the absence is deliberate: a box reachable
-	 * only on its own subnet is an ordinary install, and a loopback
-	 * management address has nothing to route to.
+	 * Upstream default route from net.conf's gateway -- a separate
+	 * concept from the management address (ADR-0067/0287), still read
+	 * from net.conf at every boot. Absent gateway = no default route (a
+	 * subnet-only install). A PRESENT but malformed gateway stays an
+	 * error: it is a typo in a value someone meant.
 	 */
-	if (gw.s_addr != 0 && rtnl_route_add_default_ipv4(rtfd, gw.s_addr) != 0) {
-		perror("bootstrap_management_network: default route");
+	if (have_netconf && upstream_gateway[0] != '\0') {
+		if (inet_pton(AF_INET, upstream_gateway, &gw) != 1) {
+			fprintf(stderr, "bootstrap_management_network: invalid gateway %s\n", upstream_gateway);
+			return -1;
+		}
+		rtfd = rtnl_open();
+		if (rtfd < 0) {
+			perror("rtnl_open");
+			return -1;
+		}
+		if (rtnl_route_add_default_ipv4(rtfd, gw.s_addr) != 0) {
+			perror("bootstrap_management_network: default route");
+			rtnl_close(rtfd);
+			return -1;
+		}
 		rtnl_close(rtfd);
-		return -1;
 	}
-	rtnl_close(rtfd);
 
-	printf("init-mode: %s network %s/%d via %s, bind=%s, upstream gateway %s\n", net->name, subnet_str,
-	       prefix, iface, ip,
-	       upstream_gateway[0] != '\0' ? upstream_gateway : "(none -- no default route)");
+	printf("init-mode: management address %s on network %s%s\n", mgmt_addr,
+	       net != NULL ? net->name : "(none)",
+	       (have_netconf && upstream_gateway[0] != '\0') ? "" : " (no default route)");
 	fflush(stdout);
 	return 0;
 }
@@ -3121,7 +3136,7 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
 		          * net.conf, which boot_init() reads and which the
 		          * listener now binds (ADR-0284). Writing it here too
 		          * made it a second copy of one fact, read from the
-		          * wrong one: PUT /system/management-network updated
+		          * wrong one: a management-address change updated
 		          * net.conf and the registry, this entry kept the old
 		          * address, and the next boot bound an address that was
 		          * gone. There is no override to preserve -- cix-boot
@@ -6197,35 +6212,24 @@ static void read_meminfo(long long *total, long long *free_b, long long *avail,
  * whole request, same as container stats' own network section.
  */
 /*
- * GET/PUT /v1/system/daemon-config (Part 0.5): cixd's own listen
- * port and which network is currently its management one -- a
- * dedicated resource, distinct from generic network CRUD, since
- * changing either has a real side effect (a live listen-socket
- * rebind) that plain PUT /v1/networks/... was never meant to trigger.
- * Which network is management is NOT this module's own state (see
- * daemon_config.h) -- reported here by querying network_find_
- * management() live, the one source of truth network.c already owns.
- * PUT accepts a partial body (only the fields being changed); "port"
- * and "management_network" may be given together, applied as a
- * single rebind rather than two.
+ * GET/PUT /v1/system/daemon-config: cixd's own listen port and
+ * HTTP/HTTPS exposure -- a dedicated resource, distinct from generic
+ * network CRUD, since changing a field here has a real side effect (a
+ * live listen-socket start/stop/rebind) that plain PUT /v1/networks/...
+ * was never meant to trigger. WHERE cixd binds off-box is NOT here
+ * anymore (ADR-0287): that is the single management address, GET/PUT/
+ * DELETE /v1/system/management-address, and the derived `management`
+ * flag on GET /networks. PUT accepts a partial body (only the fields
+ * being changed).
  */
 static void handle_daemon_config_get(int fd)
 {
 	struct json_writer w;
-	struct network_def *mgmt;
 
 	jw_init(&w);
 	jw_obj_open(&w);
 	jw_key(&w, "port");
 	jw_int(&w, g_port);
-	jw_key(&w, "bind");
-	jw_str(&w, g_bind_addr);
-	mgmt = network_find_management();
-	jw_key(&w, "management_network");
-	if (mgmt != NULL)
-		jw_str(&w, mgmt->name);
-	else
-		jw_null(&w);
 	jw_key(&w, "http_enabled");
 	jw_bool(&w, g_listener_conn.fd >= 0);
 	jw_key(&w, "https_enabled");
@@ -6234,520 +6238,322 @@ static void handle_daemon_config_get(int fd)
 	jw_bool(&w, daemon_config_userns_default());
 	jw_key(&w, "https_port");
 	jw_int(&w, daemon_config_https_port());
-	jw_key(&w, "bind_ip");
-	if (daemon_config_bind_ip() != NULL)
-		jw_str(&w, daemon_config_bind_ip());
-	else
-		jw_null(&w);
+	/* WHERE cixd binds off-box is a separate resource now (ADR-0287):
+	 * GET /system/management-address. daemon-config is listeners only. */
 	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
 }
 
 /*
- * GET/PUT /v1/system/management-network.
+ * GET/PUT/DELETE /v1/system/management-address (ADR-0287).
  *
- * Where this box answers: interface, address, prefix, default gateway.
- * Distinct from daemon-config, which owns the listener's ports and
- * which named network carries the management flag; this owns the four
- * values a booted box actually comes up on.
- *
- * It exists because until now there was no way to change them on a
- * running system at all. net.conf was written once by cix-install and
- * read once per boot by bootstrap_management_network(); nothing in the
- * daemon wrote it (NET_CONF_PATH appeared exactly twice in this file --
- * the #define and the one parse). So a box installed on the wrong
- * address, or installed deliberately on loopback to decide later, had
- * no route to a different one short of reinstalling.
- *
- * Apply live, then persist, in that order, so that a box which answers
- * after this call is a box which answers after a reboot -- and so a
- * failure part-way leaves the persisted config describing the state
- * that still works rather than one that does not.
+ * The single truth for where cixd answers off-box. One address is
+ * given; the network it lives in is DERIVED from it
+ * (network_find_containing()), and that network's `management` flag is
+ * derived in turn. 127.0.0.1 is always bound in addition and is never
+ * part of this resource. This supersedes the old /system/management-
+ * network endpoint and daemon-config's management_network/bind_ip
+ * fields -- one input, not three.
  */
 
 /*
- * Host-order netmask for a prefix length. network.c has its own static
- * copy for its own validation; this is the same three lines rather than
- * a new cross-module export, and a prefix of 0 is never reached here
- * (the caller has already refused anything outside 8-30).
+ * Bring an arbitrary listener conn down. stop_http_listener() above is
+ * hardcoded to the main HTTP conn; this is the same three steps for the
+ * always-on loopback pair, which must be started or stopped as the
+ * off-box address crosses to or from loopback.
  */
-static uint32_t mgmt_mask_for_prefix(int prefix_len)
+static void stop_listener_conn(struct conn *c)
 {
-	return prefix_len == 0 ? 0u : (0xffffffffu << (32 - prefix_len));
+	if (c->fd < 0)
+		return;
+	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, c->fd, NULL);
+	close(c->fd);
+	c->fd = -1;
+	c->listen_addr[0] = '\0';
+	c->listen_port = 0;
 }
 
-static void management_network_write_json(int fd)
+static int addr_is_loopback_bind(const char *addr)
+{
+	return strcmp(addr, DEFAULT_BIND) == 0 || strcmp(addr, "0.0.0.0") == 0;
+}
+
+/*
+ * Move cixd's off-box HTTP/HTTPS listeners to target_addr (a real
+ * address, or DEFAULT_BIND for the loopback-only reset state) and keep
+ * the always-on loopback pair correct across the transition. The
+ * loopback pair (g_lo_*) runs only WHEN the off-box address is not
+ * itself loopback -- binding 127.0.0.1 twice on one port collides
+ * (EADDRINUSE, and SO_REUSEADDR does not change that) -- so crossing to
+ * or from loopback starts or stops it. Returns 0, or -1 with the
+ * off-box listeners left on the previous address. The HTTPS listener is
+ * moved only if it is currently up; a down HTTPS listener (no cert yet)
+ * is not started here.
+ */
+static int apply_bind_address(const char *target_addr)
+{
+	int was_loopback = addr_is_loopback_bind(g_bind_addr);
+	int now_loopback = addr_is_loopback_bind(target_addr);
+
+	/*
+	 * Going TO loopback (reset): free 127.0.0.1 from the loopback pair
+	 * BEFORE the main listeners rebind onto it, or that rebind hits
+	 * EADDRINUSE -- two identical 127.0.0.1:P binds collide and
+	 * SO_REUSEADDR does not help (the same rule the boot path states).
+	 * stop_listener_conn() only closes the fd; g_tls_ctx is a shared
+	 * global kept alive across stop/restart, so the HTTPS loopback conn
+	 * needs nothing more.
+	 */
+	if (now_loopback && !was_loopback) {
+		stop_listener_conn(&g_lo_listener_conn);
+		stop_listener_conn(&g_lo_https_listener_conn);
+	}
+
+	/*
+	 * Honor http_enabled/https_enabled (mirroring start_listeners()):
+	 * a listener that is down because its side is disabled stays down,
+	 * and re-PUTting the current address to retry a boot-time bind
+	 * failure brings each enabled side back -- HTTPS soft-failing when
+	 * no host cert exists yet, the same posture daemon-config uses.
+	 */
+	if (g_listener_conn.fd < 0) {
+		if (daemon_config_http_enabled() &&
+		    start_http_listener(&g_listener_conn, target_addr, g_port) != 0)
+			return -1;
+		snprintf(g_bind_addr_buf, sizeof(g_bind_addr_buf), "%s", target_addr);
+		g_bind_addr = g_bind_addr_buf;
+	} else if (rebind_listener(target_addr, g_port) != 0) {
+		return -1;
+	}
+	if (g_https_listener_conn.fd >= 0) {
+		if (rebind_https_listener(target_addr, daemon_config_https_port()) != 0)
+			return -1;
+	} else if (daemon_config_https_enabled() &&
+	           start_https_listener(&g_https_listener_conn, target_addr,
+	                                 daemon_config_https_port()) != 0) {
+		fprintf(stderr,
+		        "https_enabled but could not start the HTTPS listener on %s (no host cert "
+		        "yet?) -- continuing without it\n",
+		        target_addr);
+	}
+
+	/*
+	 * Going TO a real address from loopback: the main listeners have
+	 * vacated 127.0.0.1, so bring the always-on loopback pair up now.
+	 */
+	if (!now_loopback && was_loopback)
+		(void)start_listeners(&g_lo_listener_conn, &g_lo_https_listener_conn, DEFAULT_BIND,
+		                       g_port);
+	return 0;
+}
+
+static void management_address_write_json(int fd)
 {
 	struct json_writer w;
-	struct network_def *mgmt;
-	char ip[INET_ADDRSTRLEN] = "";
-	char gw[INET_ADDRSTRLEN] = "";
-	char nc_ip[64] = "", nc_gw[64] = "", nc_iface[IFNAMSIZ] = "";
-	int nc_prefix = 0;
-	int have_nc;
+	const char *addr = daemon_config_management_address();
+	struct network_def *mgmt = network_find_management();
+	int bound = addr != NULL && g_bind_unavailable[0] == '\0';
 
 	jw_init(&w);
 	jw_obj_open(&w);
-
-	mgmt = network_find_management();
-	/*
-	 * net.conf is what the NEXT boot will use, so the interface and
-	 * gateway are read back from it rather than re-derived: the
-	 * registry knows the bridge and its address, but the uplink
-	 * attachment is best-effort at boot (a NIC absent on this boot is
-	 * skipped, not fatal) and the default route is kernel state with
-	 * no Cix-side record. Reporting the persisted answer is the honest
-	 * one for a resource whose whole purpose is "what will this box
-	 * come up on".
-	 */
-	have_nc = netconf_parse(NET_CONF_PATH, nc_ip, sizeof(nc_ip), &nc_prefix, nc_gw, sizeof(nc_gw),
-	                         nc_iface, sizeof(nc_iface)) == 0;
-
-	if (mgmt != NULL && mgmt->has_address) {
-		struct in_addr a;
-
-		a.s_addr = mgmt->address_be;
-		inet_ntop(AF_INET, &a, ip, sizeof(ip));
-	} else if (have_nc) {
-		snprintf(ip, sizeof(ip), "%s", nc_ip);
-	}
-	if (have_nc)
-		snprintf(gw, sizeof(gw), "%s", nc_gw);
-
 	jw_key(&w, "configured");
-	jw_bool(&w, mgmt != NULL || have_nc);
-	jw_key(&w, "interface");
-	jw_str(&w, have_nc ? nc_iface : "");
-	jw_key(&w, "ip");
-	jw_str(&w, ip);
-	jw_key(&w, "prefix");
-	jw_int(&w, mgmt != NULL ? mgmt->prefix_len : nc_prefix);
-	jw_key(&w, "gateway");
-	jw_str(&w, gw);
+	jw_bool(&w, addr != NULL);
+	jw_key(&w, "address");
+	jw_str(&w, addr != NULL ? addr : "");
+	jw_key(&w, "bound");
+	jw_str(&w, bound ? addr : "");
+	jw_key(&w, "bind_unavailable");
+	jw_str(&w, g_bind_unavailable);
 	jw_key(&w, "network");
 	jw_str(&w, mgmt != NULL ? mgmt->name : "");
-
 	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
 }
 
-static void handle_management_network_get(int fd)
+static void handle_management_address_get(int fd)
 {
-	management_network_write_json(fd);
+	management_address_write_json(fd);
 }
 
-static void handle_management_network_put(int fd, const char *body, size_t body_len)
+static void handle_management_address_put(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root;
-	const struct json_value *jip, *jprefix, *jiface, *jgw;
-	char new_ip[INET_ADDRSTRLEN] = "";
-	char new_iface[IFNAMSIZ] = "";
-	char new_gw[INET_ADDRSTRLEN] = "";
-	char subnet_str[INET_ADDRSTRLEN];
-	char old_iface[IFNAMSIZ] = "";
-	char cur_ip[64] = "", cur_gw[64] = "", cur_iface[IFNAMSIZ] = "";
-	int cur_prefix = 0;
-	int have_cur;
-	int new_prefix = 0;
-	int have_gw_key = 0;
-	int iface_changed = 0;
-	uint32_t ip_be = 0, gw_be = 0, subnet_be = 0, mask;
-	uint32_t old_addr_be = 0;
-	int old_addr_prefix = 0;
+	const struct json_value *jaddr;
+	const char *raw;
+	char addr_str[INET_ADDRSTRLEN];
 	struct in_addr a;
-	struct network_def *mgmt;
-	char mgmt_name[NETWORK_NAME_MAX];
-	enum network_error nerr;
+	uint32_t addr_be, valid_be;
+	struct network_def *net, *old_mgmt;
+	uint32_t old_addr_be = 0;
+	char old_ifname[NETWORK_NAME_MAX] = "";
+	int old_prefix = 0;
+	const char *cur;
 	int rtfd;
-	int creating;
 
 	root = json_parse(body, body_len);
 	if (root == NULL) {
 		respond_error(fd, 400, "Bad Request", "invalid JSON body");
 		return;
 	}
-
-	jip = json_object_get(root, "ip");
-	jprefix = json_object_get(root, "prefix");
-	jiface = json_object_get(root, "interface");
-	jgw = json_object_get(root, "gateway");
-
-	if (jip == NULL || json_as_string(jip) == NULL) {
+	jaddr = json_object_get(root, "address");
+	raw = jaddr != NULL ? json_as_string(jaddr) : NULL;
+	if (raw == NULL) {
 		json_free(root);
-		respond_error(fd, 400, "Bad Request", "ip is required and must be a string");
+		respond_error(fd, 400, "Bad Request", "address must be a string");
 		return;
 	}
-	snprintf(new_ip, sizeof(new_ip), "%s", json_as_string(jip));
-	if (jprefix == NULL) {
+	if (snprintf(addr_str, sizeof(addr_str), "%s", raw) >= (int)sizeof(addr_str) ||
+	    inet_pton(AF_INET, addr_str, &a) != 1) {
 		json_free(root);
-		respond_error(fd, 400, "Bad Request", "prefix is required");
+		respond_error(fd, 400, "Bad Request", "address is not a valid IPv4 address");
 		return;
-	}
-	new_prefix = (int)json_as_number(jprefix);
-	if (jiface != NULL) {
-		if (json_as_string(jiface) == NULL) {
-			json_free(root);
-			respond_error(fd, 400, "Bad Request", "interface must be a string");
-			return;
-		}
-		snprintf(new_iface, sizeof(new_iface), "%s", json_as_string(jiface));
-	}
-	if (jgw != NULL) {
-		have_gw_key = 1;
-		if (jgw->type != JSON_NULL) {
-			if (json_as_string(jgw) == NULL) {
-				json_free(root);
-				respond_error(fd, 400, "Bad Request", "gateway must be a string or null");
-				return;
-			}
-			snprintf(new_gw, sizeof(new_gw), "%s", json_as_string(jgw));
-		}
 	}
 	json_free(root);
+	addr_be = a.s_addr;
 
-	/* ---- validate everything before anything moves ---- */
+	/* Loopback / unspecified are not off-box addresses -- reset to
+	 * loopback-only with DELETE, don't set one here. */
+	{
+		uint32_t h = ntohl(addr_be);
 
-	if (new_prefix < 8 || new_prefix > 30) {
-		respond_error(fd, 400, "Bad Request", "prefix must be 8-30");
-		return;
-	}
-	if (inet_pton(AF_INET, new_ip, &a) != 1) {
-		respond_error(fd, 400, "Bad Request", "ip is not a valid IPv4 address");
-		return;
-	}
-	ip_be = a.s_addr;
-	/*
-	 * 0.0.0.0/8 and 127.0.0.0/8 are refused deliberately. A loopback
-	 * address is a legitimate thing for cixd to be bound to -- it is
-	 * what an install with no network chosen comes up on -- but it is
-	 * not a management NETWORK: it cannot carry an uplink (loopback
-	 * cannot be enslaved to a bridge) and there is nothing to route.
-	 * Refusing it here keeps this endpoint's promise honest; going
-	 * BACK to loopback-only is what the (already existing) daemon-
-	 * config bind change is for.
-	 */
-	if ((ntohl(ip_be) >> 24) == 127 || (ntohl(ip_be) >> 24) == 0) {
-		respond_error(fd, 400, "Bad Request",
-		               "ip must be a routable address, not 0.0.0.0/8 or 127.0.0.0/8");
-		return;
-	}
-	mask = mgmt_mask_for_prefix(new_prefix);
-	subnet_be = htonl(ntohl(ip_be) & mask);
-	if (ntohl(ip_be) == (ntohl(subnet_be) | ~mask)) {
-		respond_error(fd, 400, "Bad Request", "ip is the subnet's broadcast address");
-		return;
-	}
-	if (ip_be == subnet_be) {
-		respond_error(fd, 400, "Bad Request", "ip is the subnet address itself");
-		return;
-	}
-	a.s_addr = subnet_be;
-	if (inet_ntop(AF_INET, &a, subnet_str, sizeof(subnet_str)) == NULL) {
-		respond_error(fd, 500, "Internal Server Error", "could not render the subnet");
-		return;
-	}
-
-	if (have_gw_key && new_gw[0] != '\0') {
-		if (inet_pton(AF_INET, new_gw, &a) != 1) {
-			respond_error(fd, 400, "Bad Request", "gateway is not a valid IPv4 address");
-			return;
-		}
-		gw_be = a.s_addr;
-		if ((ntohl(gw_be) & mask) != (ntohl(ip_be) & mask)) {
-			respond_error(fd, 400, "Bad Request", "gateway is outside the new subnet");
-			return;
-		}
-		if (gw_be == ip_be) {
-			respond_error(fd, 400, "Bad Request", "gateway is the same address as ip");
-			return;
-		}
-	}
-
-	have_cur = netconf_parse(NET_CONF_PATH, cur_ip, sizeof(cur_ip), &cur_prefix, cur_gw,
-	                          sizeof(cur_gw), cur_iface, sizeof(cur_iface)) == 0;
-	if (new_iface[0] == '\0') {
-		if (!have_cur || cur_iface[0] == '\0') {
+		if ((h >> 24) == 127 || (h >> 24) == 0) {
 			respond_error(fd, 400, "Bad Request",
-			               "interface is required: this box has no management interface to keep");
+			              "address in 0.0.0.0/8 or 127.0.0.0/8 -- reset to loopback-only with DELETE instead");
 			return;
 		}
-		snprintf(new_iface, sizeof(new_iface), "%s", cur_iface);
 	}
-	if (if_nametoindex(new_iface) == 0) {
-		char msg[256];
 
-		snprintf(msg, sizeof(msg), "no interface named \"%s\" on this host", new_iface);
-		respond_error(fd, 400, "Bad Request", msg);
+	net = network_find_containing(addr_be);
+	if (net == NULL) {
+		respond_error(fd, 400, "Bad Request",
+		              "no network contains that address -- create one first");
 		return;
 	}
-	if (have_cur)
-		snprintf(old_iface, sizeof(old_iface), "%s", cur_iface);
-	iface_changed = old_iface[0] != '\0' && strcmp(old_iface, new_iface) != 0;
-
-	/* Gateway not mentioned at all: keep whatever is persisted. */
-	if (!have_gw_key && have_cur && cur_gw[0] != '\0') {
-		snprintf(new_gw, sizeof(new_gw), "%s", cur_gw);
-		if (inet_pton(AF_INET, new_gw, &a) == 1) {
-			gw_be = a.s_addr;
-			/* A kept gateway that no longer belongs to the new subnet
-			 * is silently dropped rather than refused: the operator
-			 * did not ask for it this time, and refusing would make a
-			 * plain address move fail for a reason it never mentioned. */
-			if ((ntohl(gw_be) & mask) != (ntohl(ip_be) & mask)) {
-				gw_be = 0;
-				new_gw[0] = '\0';
-			}
-		} else {
-			new_gw[0] = '\0';
-		}
-	}
-
-	mgmt = network_find_management();
-	creating = (mgmt == NULL);
-
-	/*
-	 * The containers guard. A subnet change strands anything holding an
-	 * address in the old one -- their IPs stop belonging to the network
-	 * they are attached to. Refuse rather than half-break them. A move
-	 * WITHIN the same subnet is fine and is not blocked.
-	 */
-	if (!creating && registry_network_in_use(mgmt->name)) {
-		int subnet_changing = (mgmt->base_be != subnet_be || mgmt->prefix_len != new_prefix);
-
-		if (subnet_changing) {
-			char names[REGISTRY_MAX_CONTAINERS][REGISTRY_NAME_MAX];
-			char msg[512];
-			size_t off;
-			int n, i, listed = 0;
-
-			off = (size_t)snprintf(msg, sizeof(msg),
-			                        "refusing to move the management network to a different "
-			                        "subnet while containers are attached to it: ");
-			n = registry_list_names(names, REGISTRY_MAX_CONTAINERS);
-			for (i = 0; i < n && off < sizeof(msg) - 1; i++) {
-				struct registry_entry *e = registry_find(names[i]);
-				int j;
-
-				if (e == NULL)
-					continue;
-				for (j = 0; j < e->net_count; j++) {
-					if (strcmp(e->nets[j].name, mgmt->name) != 0)
-						continue;
-					off += (size_t)snprintf(msg + off, sizeof(msg) - off, "%s%s",
-					                         listed > 0 ? ", " : "", names[i]);
-					listed++;
-					break;
-				}
-			}
-			if (off < sizeof(msg) - 1)
-				snprintf(msg + off, sizeof(msg) - off,
-				          ". Detach or delete them, or move within the same subnet.");
-			respond_error(fd, 400, "Bad Request", msg);
-			return;
-		}
-	}
-
-	/* ---- apply ---- */
-
-	if (creating) {
-		nerr = network_create(MGMT_NETWORK_NAME, subnet_str, new_prefix, new_ip, NULL, NULL,
-		                       &mgmt);
-		if (nerr != NETWORK_OK) {
-			char msg[160];
-
-			snprintf(msg, sizeof(msg), "could not create the management network (error %d)",
-			          (int)nerr);
-			respond_error(fd, 500, "Internal Server Error", msg);
-			return;
-		}
-	}
-	snprintf(mgmt_name, sizeof(mgmt_name), "%s", mgmt->name);
-
-	if (iface_changed || creating) {
-		nerr = network_attach_interface(mgmt_name, new_iface, 0);
-		if (nerr != NETWORK_OK && nerr != NETWORK_ERR_INTERFACE_ATTACHED) {
-			char msg[200];
-
-			snprintf(msg, sizeof(msg),
-			          "could not attach \"%s\" to the management network (error %d)", new_iface,
-			          (int)nerr);
-			if (creating)
-				network_delete(mgmt_name);
-			respond_error(fd, 500, "Internal Server Error", msg);
-			return;
-		}
-	}
-
-	/*
-	 * Before adding a second address to the bridge: make sure removing
-	 * the first one later will PROMOTE it rather than delete it.
-	 *
-	 * Measured on this platform's own kernel, 2026-09-13, with two
-	 * addresses on one link and the primary then deleted:
-	 *   promote_secondaries=0 -> the secondary is FLUSHED
-	 *   promote_secondaries=1 -> the secondary is promoted and survives
-	 * and with the two addresses in DIFFERENT subnets, the second one
-	 * survives either way, because it is a primary in its own right
-	 * rather than a secondary of the one being removed.
-	 *
-	 * So this only bites a same-subnet move -- which is the most
-	 * ordinary use of this endpoint -- and it bites it completely: the
-	 * deferred cleanup removes the old address and the kernel silently
-	 * takes the new one with it, leaving the bridge with no host
-	 * address at all and the box reachable from nowhere. That is not a
-	 * hypothetical; it is how a real box was lost while verifying this
-	 * endpoint.
-	 *
-	 * A same-subnet move therefore REFUSES rather than risking it if
-	 * the knob cannot be set. A cross-subnet move proceeds either way,
-	 * because the measurement says it is unaffected.
-	 */
-	if (!creating) {
-		int same_subnet = (mgmt->base_be == subnet_be && mgmt->prefix_len == new_prefix);
-		char ps_path[320];
-		int ps_fd;
-		int ps_ok = 0;
-
-		if (snprintf(ps_path, sizeof(ps_path),
-		              "/proc/sys/net/ipv4/conf/%s/promote_secondaries", mgmt_name) <
-		    (int)sizeof(ps_path)) {
-			ps_fd = open(ps_path, O_WRONLY);
-			if (ps_fd >= 0) {
-				ps_ok = write(ps_fd, "1\n", 2) == 2;
-				close(ps_fd);
-			}
-		}
-		if (!ps_ok && same_subnet) {
-			respond_error(fd, 500, "Internal Server Error",
-			               "refusing a same-subnet move: could not set promote_secondaries on "
-			               "the management bridge, and without it removing the old address "
-			               "would take the new one with it and leave this host unreachable");
-			return;
-		}
-	}
-
-	if (!creating) {
-		nerr = network_set_address(mgmt_name, subnet_str, new_prefix, new_ip, &old_addr_be,
-		                            &old_addr_prefix);
-		if (nerr != NETWORK_OK) {
-			char msg[200];
-
-			snprintf(msg, sizeof(msg), "could not re-address the management network (error %d)",
-			          (int)nerr);
-			respond_error(fd, 500, "Internal Server Error", msg);
-			return;
-		}
-	}
-
-	/*
-	 * bind_ip (ADR-0068) is a dedicated address inside the management
-	 * network's own subnet. That subnet may have just changed under it,
-	 * so it is cleared rather than silently carried onto a bridge the
-	 * operator never chose it for -- the same rule that ADR already
-	 * applies when management_network is repointed.
-	 */
-	if (daemon_config_bind_ip() != NULL)
-		(void)daemon_config_set_bind_ip(NULL);
-
-	if (g_listener_conn.fd < 0) {
-		if (start_http_listener(&g_listener_conn, new_ip, g_port) != 0) {
-			respond_error(fd, 500, "Internal Server Error", "could not start http listener");
-			return;
-		}
-		snprintf(g_bind_addr_buf, sizeof(g_bind_addr_buf), "%s", new_ip);
-		g_bind_addr = g_bind_addr_buf;
-	} else if (rebind_listener(new_ip, g_port) != 0) {
-		respond_error(fd, 500, "Internal Server Error", "listener rebind failed");
-		return;
-	}
-	/*
-	 * new_ip, not g_bind_addr (#454). Passing the global was half of
-	 * the original defect -- rebind_listener() above has already set it
-	 * to new_ip, so the old guard compared the value against itself.
-	 * The guard is fixed to ask the listener where it is, and the call
-	 * says plainly where it should go.
-	 */
-	if (g_https_listener_conn.fd >= 0 &&
-	    rebind_https_listener(new_ip, daemon_config_https_port()) != 0) {
-		respond_error(fd, 500, "Internal Server Error", "https listener rebind failed");
+	/* A real host address within that network (not the network or
+	 * broadcast address) -- the identical rule every other address on a
+	 * Cix network already obeys. */
+	if (network_address_str_is_valid(net, addr_str, &valid_be) != 0) {
+		respond_error(fd, 400, "Bad Request",
+		              "not a usable host address in its network (network or broadcast address?)");
 		return;
 	}
 
-	/*
-	 * Default route last among the live changes, and a failure here is
-	 * reported without unwinding the rebind. Unwinding would mean
-	 * pulling the address the operator is now talking to, which is the
-	 * hang ADR-0068 measured; and the box IS reachable on the new
-	 * address at this point. net.conf is not written on this path, so
-	 * a reboot returns to the previous, working configuration.
-	 */
+	/* Where the old address currently lives, captured before anything
+	 * moves so it can be torn down from the right bridge afterwards. */
+	cur = daemon_config_management_address();
+	old_mgmt = network_find_management();
+	if (cur != NULL && old_mgmt != NULL) {
+		struct in_addr oa;
+
+		if (inet_pton(AF_INET, cur, &oa) == 1)
+			old_addr_be = oa.s_addr;
+		snprintf(old_ifname, sizeof(old_ifname), "%s", old_mgmt->name);
+		old_prefix = old_mgmt->prefix_len;
+	}
+
+	/* Add the address to the derived network's bridge (idempotent via
+	 * NLM_F_EXCL when it is that network's own address), then rebind.
+	 * Not short-circuited on "same address": re-PUTting the current
+	 * address is how an operator retries a bind that failed at boot
+	 * (g_bind_unavailable), and start/rebind below handles that. */
 	rtfd = rtnl_open();
 	if (rtfd < 0) {
 		respond_error(fd, 500, "Internal Server Error", "could not open rtnetlink socket");
 		return;
 	}
-	if (have_cur && cur_gw[0] != '\0') {
-		struct in_addr og;
-
-		if (inet_pton(AF_INET, cur_gw, &og) == 1)
-			(void)rtnl_route_del_ipv4(rtfd, 0, 0, og.s_addr); /* ENOENT is fine */
-	}
-	if (gw_be != 0 && rtnl_route_add_default_ipv4(rtfd, gw_be) != 0) {
+	if (rtnl_addr_add_ipv4(rtfd, net->name, addr_be, net->prefix_len) != 0 && errno != EEXIST) {
 		rtnl_close(rtfd);
 		respond_error(fd, 500, "Internal Server Error",
-		               "address moved and listeners rebound, but the default route could not be "
-		               "set -- not persisted, so a reboot returns to the previous configuration");
+		              "could not assign the address to its network's bridge");
 		return;
 	}
 	rtnl_close(rtfd);
 
-	if (netconf_write(NET_CONF_PATH, new_ip, new_prefix, new_gw, new_iface) != 0) {
+	if (apply_bind_address(addr_str) != 0) {
+		respond_error(fd, 500, "Internal Server Error", "listener rebind failed");
+		return;
+	}
+	g_bind_unavailable[0] = '\0'; /* bound for real now */
+
+	(void)network_set_management_address(addr_str);
+	if (daemon_config_set_management_address(addr_str) != DAEMON_CONFIG_OK) {
 		respond_error(fd, 500, "Internal Server Error",
-		               "applied live, but could not persist it to net.conf -- a reboot would "
-		               "return to the previous configuration");
+		              "address applied live but could not be persisted");
 		return;
 	}
 
-	logstore_write("cixd", "info",
-	                "management network moved to %s/%d on %s (gateway %s)", new_ip, new_prefix,
-	                new_iface, new_gw[0] != '\0' ? new_gw : "none");
-
-	management_network_write_json(fd);
+	logstore_write("cixd", "info", "management address set to %s on network %s", addr_str,
+	               net->name);
+	management_address_write_json(fd);
 
 	/*
-	 * Only now, and deferred: the reply above has been written but the
-	 * kernel has not necessarily put those bytes on the wire, and this
-	 * connection's local endpoint may be the very address being
-	 * removed. Dropping it here leaves the client waiting forever for
-	 * a response that was "successfully written" -- measured, ADR-0068.
+	 * Deferred, and only now (ADR-0068): the reply may travel over the
+	 * old address's own connection, and removing it synchronously would
+	 * strand this client. Only when it genuinely moved to a different
+	 * address on a real bridge.
 	 */
-	if (old_addr_be != 0 && old_addr_be != ip_be)
-		arm_bind_ip_cleanup_timer(mgmt_name, old_addr_be, old_addr_prefix);
-	if (iface_changed)
-		(void)network_detach_interface(mgmt_name, old_iface);
+	if (old_addr_be != 0 && old_addr_be != addr_be && old_ifname[0] != '\0')
+		arm_bind_ip_cleanup_timer(old_ifname, old_addr_be, old_prefix);
+}
+
+static void handle_management_address_delete(int fd)
+{
+	const char *cur = daemon_config_management_address();
+	struct network_def *old_mgmt;
+	uint32_t old_addr_be = 0;
+	char old_ifname[NETWORK_NAME_MAX] = "";
+	int old_prefix = 0;
+	int coincides_own = 0;
+
+	if (cur == NULL) {
+		management_address_write_json(fd); /* already loopback-only: 200 no-op */
+		return;
+	}
+
+	old_mgmt = network_find_management();
+	if (old_mgmt != NULL) {
+		struct in_addr oa;
+
+		if (inet_pton(AF_INET, cur, &oa) == 1)
+			old_addr_be = oa.s_addr;
+		snprintf(old_ifname, sizeof(old_ifname), "%s", old_mgmt->name);
+		old_prefix = old_mgmt->prefix_len;
+		/* Never delete the network's OWN address out from under it. */
+		coincides_own = old_mgmt->has_address && old_mgmt->address_be == old_addr_be;
+	}
+
+	if (apply_bind_address(DEFAULT_BIND) != 0) {
+		respond_error(fd, 500, "Internal Server Error", "could not drop the off-box listener");
+		return;
+	}
+	g_bind_unavailable[0] = '\0';
+
+	(void)network_set_management_address(NULL);
+	if (daemon_config_set_management_address(NULL) != DAEMON_CONFIG_OK) {
+		respond_error(fd, 500, "Internal Server Error",
+		              "unbound live but could not persist the reset");
+		return;
+	}
+
+	logstore_write("cixd", "info", "management address reset -- cixd is loopback-only");
+	management_address_write_json(fd);
+
+	if (old_addr_be != 0 && !coincides_own && old_ifname[0] != '\0')
+		arm_bind_ip_cleanup_timer(old_ifname, old_addr_be, old_prefix);
 }
 
 static void handle_daemon_config_put(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root;
-	const struct json_value *jport, *jnetwork, *jhttp, *jhttps, *jhttps_port, *jbind_ip;
+	const struct json_value *jport, *jhttp, *jhttps, *jhttps_port;
 	int new_port = g_port;
 	int new_https_port = daemon_config_https_port();
-	char new_bind[INET_ADDRSTRLEN];
-	char network_name[NETWORK_NAME_MAX];
-	int have_network = 0;
-	struct network_def *mgmt_target = NULL;
+	int have_https_port_req = 0;
 	int want_http = daemon_config_http_enabled();
 	int want_https = daemon_config_https_enabled();
 	int have_http_req = 0, have_https_req = 0;
-	int have_bind_ip_key = 0, bind_ip_is_null = 0, applying_new_bind_ip = 0;
-	char new_bind_ip_str[INET_ADDRSTRLEN];
-	uint32_t new_bind_ip_be = 0;
-	struct network_def *old_mgmt;
-	char old_bind_ip[INET_ADDRSTRLEN];
-	int had_old_bind_ip;
 	enum daemon_config_error derr;
 
 	root = json_parse(body, body_len);
@@ -6755,8 +6561,6 @@ static void handle_daemon_config_put(int fd, const char *body, size_t body_len)
 		respond_error(fd, 400, "Bad Request", "invalid JSON body");
 		return;
 	}
-
-	snprintf(new_bind, sizeof(new_bind), "%s", g_bind_addr);
 
 	jport = json_object_get(root, "port");
 	if (jport != NULL) {
@@ -6771,6 +6575,7 @@ static void handle_daemon_config_put(int fd, const char *body, size_t body_len)
 	jhttps_port = json_object_get(root, "https_port");
 	if (jhttps_port != NULL) {
 		new_https_port = (int)json_as_number(jhttps_port);
+		have_https_port_req = 1;
 		if (new_https_port < 1 || new_https_port > 65535) {
 			json_free(root);
 			respond_error(fd, 400, "Bad Request", "https_port must be 1-65535");
@@ -6795,6 +6600,7 @@ static void handle_daemon_config_put(int fd, const char *body, size_t body_len)
 			}
 		}
 	}
+
 	jhttp = json_object_get(root, "http_enabled");
 	if (jhttp != NULL && jhttp->type == JSON_BOOL) {
 		want_http = jhttp->u.boolean;
@@ -6805,142 +6611,27 @@ static void handle_daemon_config_put(int fd, const char *body, size_t body_len)
 		want_https = jhttps->u.boolean;
 		have_https_req = 1;
 	}
+	json_free(root);
+
 	if (!want_http && !want_https) {
-		json_free(root);
 		respond_error(fd, 400, "Bad Request", "refusing to leave both http and https disabled");
 		return;
 	}
 
-	jnetwork = json_object_get(root, "management_network");
-	if (jnetwork != NULL) {
-		const char *raw_name = json_as_string(jnetwork);
-
-		if (raw_name == NULL) {
-			json_free(root);
-			respond_error(fd, 400, "Bad Request", "management_network must be a string");
-			return;
-		}
-		mgmt_target = network_find(raw_name);
-		if (mgmt_target == NULL) {
-			json_free(root);
-			respond_error(fd, 404, "Not Found", "no such network");
-			return;
-		}
-		if (!mgmt_target->has_address) {
-			json_free(root);
-			respond_error(fd, 400, "Bad Request",
-			              "network has no address for cixd to bind to");
-			return;
-		}
-		{
-			struct in_addr a;
-
-			a.s_addr = mgmt_target->address_be;
-			inet_ntop(AF_INET, &a, new_bind, sizeof(new_bind));
-		}
-		/* Copied out before json_free() below -- both raw_name and
-		 * mgmt_target->name point into memory that call (or a future
-		 * network_set_management()-driven mutation) could invalidate. */
-		snprintf(network_name, sizeof(network_name), "%s", raw_name);
-		have_network = 1;
-	}
-
-	/* bind_ip (ADR-0068): a dedicated second address on the management
-	 * bridge, decoupled from that network's own address. A JSON `null`
-	 * explicitly clears it; the key omitted entirely means "don't touch
-	 * it". Syntax/subnet validation happens below, once the effective
-	 * target network (mgmt_target if repointing this same call, else
-	 * whichever network is already management) is known. */
-	jbind_ip = json_object_get(root, "bind_ip");
-	if (jbind_ip != NULL) {
-		have_bind_ip_key = 1;
-		if (jbind_ip->type == JSON_NULL) {
-			bind_ip_is_null = 1;
-		} else {
-			const char *raw_ip = json_as_string(jbind_ip);
-
-			if (raw_ip == NULL) {
-				json_free(root);
-				respond_error(fd, 400, "Bad Request", "bind_ip must be a string or null");
-				return;
-			}
-			snprintf(new_bind_ip_str, sizeof(new_bind_ip_str), "%s", raw_ip);
-		}
-	}
-	json_free(root);
-
-	/* Captured before any mutation below -- old_mgmt is whichever
-	 * network is management *right now* (before this request's own
-	 * repoint, if any), which is exactly where any currently-persisted
-	 * bind_ip actually lives on the real bridge. */
-	old_mgmt = network_find_management();
-	had_old_bind_ip = daemon_config_bind_ip() != NULL;
-	if (had_old_bind_ip)
-		snprintf(old_bind_ip, sizeof(old_bind_ip), "%s", daemon_config_bind_ip());
-
-	if (have_bind_ip_key && !bind_ip_is_null) {
-		struct network_def *effective_mgmt = have_network ? mgmt_target : old_mgmt;
-
-		if (effective_mgmt == NULL) {
-			respond_error(fd, 400, "Bad Request", "no management network to bind bind_ip within");
-			return;
-		}
-		if (network_address_str_is_valid(effective_mgmt, new_bind_ip_str, &new_bind_ip_be) != 0) {
-			respond_error(fd, 400, "Bad Request",
-			              "bind_ip not a valid address within the management network's subnet");
-			return;
-		}
-		/* Idempotent short-circuit: rtnl_addr_add_ipv4() uses NLM_F_EXCL,
-		 * so re-submitting the address that's already assigned would
-		 * otherwise fail as a spurious duplicate. */
-		if (!had_old_bind_ip || strcmp(old_bind_ip, new_bind_ip_str) != 0) {
-			int rtfd = rtnl_open();
-
-			if (rtfd < 0) {
-				respond_error(fd, 500, "Internal Server Error", "could not open rtnetlink socket");
-				return;
-			}
-			if (rtnl_addr_add_ipv4(rtfd, effective_mgmt->name, new_bind_ip_be,
-			                        effective_mgmt->prefix_len) != 0) {
-				rtnl_close(rtfd);
-				respond_error(fd, 500, "Internal Server Error",
-				              "could not assign bind_ip to the management bridge");
-				return;
-			}
-			rtnl_close(rtfd);
-		}
-		snprintf(new_bind, sizeof(new_bind), "%s", new_bind_ip_str);
-		applying_new_bind_ip = 1;
-	} else if (bind_ip_is_null && !have_network) {
-		/* Explicit clear, no repoint in the same call -- fall back to
-		 * the current management network's own address. */
-		if (old_mgmt != NULL) {
-			struct in_addr a;
-
-			a.s_addr = old_mgmt->address_be;
-			inet_ntop(AF_INET, &a, new_bind, sizeof(new_bind));
-		}
-	}
-	/* Neither branch: bind_ip untouched and no repoint (new_bind already
-	 * carries forward g_bind_addr unchanged), or a repoint with no fresh
-	 * bind_ip (new_bind already set to mgmt_target's own address above)
-	 * -- both leave new_bind exactly where it needs to be. */
-
-	/* HTTP transition: start/stop/rebind depending on what's currently
-	 * running versus what's being asked for. */
+	/*
+	 * daemon-config never moves cixd's off-box address (ADR-0287) --
+	 * that is PUT /system/management-address. Every rebind here stays on
+	 * the current g_bind_addr; only the port can change. The loopback
+	 * pair is likewise left where it is.
+	 */
 	if (want_http) {
 		if (g_listener_conn.fd < 0) {
-			if (start_http_listener(&g_listener_conn, new_bind, new_port) != 0) {
+			if (start_http_listener(&g_listener_conn, g_bind_addr, new_port) != 0) {
 				respond_error(fd, 500, "Internal Server Error", "could not start http listener");
 				return;
 			}
-			/* rebind_listener() normally owns updating g_bind_addr/
-			 * g_port; mirrored here for the freshly-started case,
-			 * which never goes through rebind_listener() at all. */
-			snprintf(g_bind_addr_buf, sizeof(g_bind_addr_buf), "%s", new_bind);
-			g_bind_addr = g_bind_addr_buf;
 			g_port = new_port;
-		} else if (rebind_listener(new_bind, new_port) != 0) {
+		} else if (rebind_listener(g_bind_addr, new_port) != 0) {
 			respond_error(fd, 500, "Internal Server Error", "listener rebind failed");
 			return;
 		}
@@ -6948,21 +6639,6 @@ static void handle_daemon_config_put(int fd, const char *body, size_t body_len)
 		stop_http_listener();
 	}
 
-	/* HTTPS transition, same shape. g_bind_addr is already authoritative
-	 * (either unchanged, or just updated by the HTTP branch above --
-	 * both listeners always share the same address, only the port
-	 * differs) by the time this runs.
-	 *
-	 * A failed start is only a hard error (500) when THIS request
-	 * explicitly asked for https_enabled (have_https_req) -- an
-	 * explicit ask that can't be honored deserves a clear failure.
-	 * https_enabled now defaults to true on a fresh install (ADR-0171),
-	 * so want_https is routinely true on a request that never mentioned
-	 * https at all (e.g. only port/management_network/bind_ip) -- for
-	 * that case, a pre-PKI-bootstrap install with no usable host cert
-	 * yet must not block the actually-requested change; soft-fail (log,
-	 * continue), the same non-fatal posture the boot-time attempt
-	 * already has. */
 	if (want_https) {
 		if (g_https_listener_conn.fd < 0) {
 			if (start_https_listener(&g_https_listener_conn, g_bind_addr, new_https_port) != 0) {
@@ -6983,23 +6659,8 @@ static void handle_daemon_config_put(int fd, const char *body, size_t body_len)
 		stop_https_listener();
 	}
 
-	if (have_network && network_set_management(network_name) != NETWORK_OK) {
-		/* The socket(s) already moved -- this would be a genuinely
-		 * inconsistent state (bound to target's address without
-		 * target actually being the recorded management network).
-		 * Not expected in practice (has_address was already confirmed
-		 * above), but reported plainly rather than silently claiming
-		 * success. */
-		respond_error(fd, 500, "Internal Server Error",
-		              "listener(s) rebound but could not persist management network");
-		return;
-	}
-
 	/* https_enabled persisted before http_enabled deliberately -- see
-	 * daemon_config_set_http_enabled()'s own guard: it refuses to
-	 * persist http_enabled=0 unless https_enabled is *already*
-	 * persisted true, so a single request disabling http while
-	 * enabling https has to land https first. */
+	 * daemon_config_set_http_enabled()'s own guard. */
 	if (have_https_req) {
 		derr = daemon_config_set_https_enabled(want_https);
 		if (derr != DAEMON_CONFIG_OK) {
@@ -7016,7 +6677,7 @@ static void handle_daemon_config_put(int fd, const char *body, size_t body_len)
 			return;
 		}
 	}
-	if (jhttps_port != NULL) {
+	if (have_https_port_req) {
 		derr = daemon_config_set_https_port(new_https_port);
 		if (derr != DAEMON_CONFIG_OK) {
 			respond_error(fd, 500, "Internal Server Error",
@@ -7026,56 +6687,12 @@ static void handle_daemon_config_put(int fd, const char *body, size_t body_len)
 	}
 	derr = daemon_config_set_port(new_port);
 	if (derr != DAEMON_CONFIG_OK) {
-		respond_error(fd, 500, "Internal Server Error", "listener rebound but could not persist port");
+		respond_error(fd, 500, "Internal Server Error",
+		              "listener rebound but could not persist port");
 		return;
 	}
 
-	/*
-	 * bind_ip persistence + stale-address cleanup (ADR-0068), last of
-	 * all -- the real bridge address was already added (if any) and
-	 * the listener already rebound to it above, so nothing below this
-	 * point can fail the request; only the old, now-unused address (if
-	 * this call replaced or cleared one) gets torn down, mirroring the
-	 * "create the new thing before removing the old one" ordering this
-	 * whole handler already uses for listeners.
-	 */
-	if (applying_new_bind_ip) {
-		derr = daemon_config_set_bind_ip(new_bind_ip_str);
-		if (derr != DAEMON_CONFIG_OK) {
-			respond_error(fd, 500, "Internal Server Error",
-			              "bridge address changed but could not persist bind_ip");
-			return;
-		}
-	} else if (bind_ip_is_null || (have_network && had_old_bind_ip)) {
-		derr = daemon_config_set_bind_ip(NULL);
-		if (derr != DAEMON_CONFIG_OK) {
-			respond_error(fd, 500, "Internal Server Error", "could not clear persisted bind_ip");
-			return;
-		}
-	}
-
 	handle_daemon_config_get(fd);
-
-	/*
-	 * Stale bind_ip cleanup is deferred (arm_bind_ip_cleanup_timer(),
-	 * ADR-0068), not done here synchronously -- confirmed the hard way,
-	 * not assumed: this exact request's own accepted connection can
-	 * have the about-to-be-removed address as its own *local* endpoint
-	 * (e.g. clearing bind_ip via a client connected to that very
-	 * bind_ip, the natural way an operator would do it), and deleting
-	 * the address immediately after writing the response above still
-	 * races the kernel's own async transmission of those bytes -- the
-	 * client can hang forever waiting for a response that was
-	 * "successfully" written but never actually delivered. See
-	 * arm_bind_ip_cleanup_timer()'s own comment for the full story.
-	 */
-	if (had_old_bind_ip && old_mgmt != NULL &&
-	    (!applying_new_bind_ip || strcmp(old_bind_ip, new_bind_ip_str) != 0)) {
-		struct in_addr old_addr;
-
-		if (inet_pton(AF_INET, old_bind_ip, &old_addr) == 1)
-			arm_bind_ip_cleanup_timer(old_mgmt->name, old_addr.s_addr, old_mgmt->prefix_len);
-	}
 }
 
 /*
@@ -22927,16 +22544,22 @@ static void op_putDaemonConfig(const struct api_ctx *ctx)
 	handle_daemon_config_put(ctx->fd, ctx->req->body, ctx->req->body_len);
 }
 
-/* GET /v1/system/management-network */
-static void op_getManagementNetwork(const struct api_ctx *ctx)
+/* GET /v1/system/management-address */
+static void op_getManagementAddress(const struct api_ctx *ctx)
 {
-	handle_management_network_get(ctx->fd);
+	handle_management_address_get(ctx->fd);
 }
 
-/* PUT /v1/system/management-network */
-static void op_putManagementNetwork(const struct api_ctx *ctx)
+/* PUT /v1/system/management-address */
+static void op_putManagementAddress(const struct api_ctx *ctx)
 {
-	handle_management_network_put(ctx->fd, ctx->req->body, ctx->req->body_len);
+	handle_management_address_put(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* DELETE /v1/system/management-address */
+static void op_deleteManagementAddress(const struct api_ctx *ctx)
+{
+	handle_management_address_delete(ctx->fd);
 }
 
 /* GET /v1/system/routes */
@@ -29411,7 +29034,7 @@ static int cixd_main(int argc, char **argv)
 	 * third copy of it (cix-install.c writes it; the A/B update path
 	 * regenerates it from g_bind_addr).
 	 *
-	 * That cost a box. PUT /v1/system/management-network moved the
+	 * That cost a box. A management-address change moved the
 	 * management address and updated net.conf and the registry -- the
 	 * two things it knew about -- and the stale --bind= in the loader
 	 * entry then won at the next boot, binding an address no longer on
@@ -29439,16 +29062,16 @@ static int cixd_main(int argc, char **argv)
 		        "\n*** cixd could not bind %s -- that address is not on this host.  ***\n"
 		        "*** It is still answering on %s, so the console works.       ***\n"
 		        "*** Fix it from the console with:                                 ***\n"
-		        "***   cixctl management-network set --interface=IF --ip=A.B.C.D \\    ***\n"
-		        "***        --prefix=N [--gateway=A.B.C.D]                          ***\n"
-		        "*** net.conf is unchanged, so a reboot retries %s.\n\n",
+		        "***   cixctl management-address set A.B.C.D                        ***\n"
+		        "*** (or reset to loopback-only: cixctl management-address reset)   ***\n"
+		        "*** The persisted address is unchanged, so a reboot retries %s.\n\n",
 		        g_bind_unavailable, DEFAULT_BIND, g_bind_unavailable);
 		logstore_write("cixd", "error",
 		                "could not bind the chosen management address %s -- it is not on this "
 		                "host. Still serving on %s, so the console shell works; this box is "
 		                "reachable only on itself until an address that exists is set with "
-		                "PUT /v1/system/management-network. net.conf is unchanged, so the next "
-		                "boot retries %s.",
+		                "PUT /v1/system/management-address (or reset with DELETE). The persisted "
+		                "address is unchanged, so the next boot retries %s.",
 		                g_bind_unavailable, DEFAULT_BIND, g_bind_unavailable);
 	}
 

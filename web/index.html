@@ -1221,12 +1221,8 @@
 			</div>
 <div class="tab-panel" data-tab="daemon-config">
 			<p class="hint">
-				cixd's own listen port, HTTP/HTTPS exposure, and which network
-				it's currently bound to (Part 0.5). Changes apply live -- no
-				restart -- and persist across a reboot. Repointing the
-				management network only works to a network that already has its
-				own address; double-check you can actually reach the new
-				address before saving, since a mistake here has no remote undo.
+				cixd's own listen port and HTTP/HTTPS exposure. Changes apply
+				live -- no restart -- and persist across a reboot.
 			</p>
 			<form id="sys-daemon-config-form">
 				<label>
@@ -1245,22 +1241,27 @@
 					<input type="checkbox" id="dcf-https-enabled">
 					HTTPS enabled (needs a bootstrapped PKI root CA)
 				</label>
-				<label>
-					Management network
-					<select id="dcf-management-network"></select>
-				</label>
-				<label>
-					Bind IP (optional)
-					<input type="text" id="dcf-bind-ip" placeholder="(none -- use the management network's own address)">
-				</label>
-				<label class="checkbox">
-					<input type="checkbox" id="dcf-clear-bind-ip">
-					Clear bind IP (revert to the management network's own address)
-				</label>
 				<button type="submit">Save</button>
 			</form>
-			<p class="hint" id="dcf-bind-hint"></p>
-			<p class="hint">Bind IP (ADR-0068) is a second, dedicated address on the management network's own bridge -- cixd binds there instead of that network's own address. Leave blank to make no change; check "Clear bind IP" to revert to the network's own address.</p>
+
+			<h3>Management address</h3>
+			<p class="hint" id="mgmt-addr-status">Loading&hellip;</p>
+			<form id="sys-management-address-form">
+				<label>
+					Off-box address
+					<input type="text" id="maf-address" placeholder="A.B.C.D">
+				</label>
+				<button type="submit">Set</button>
+				<button type="button" id="maf-reset">Reset to loopback-only</button>
+			</form>
+			<p class="hint">
+				The single address cixd answers on off-box (ADR-0287). The
+				network is <em>derived</em> from it, so the address must fall
+				inside an existing network's subnet -- create the network
+				first. 127.0.0.1 is always bound; reset drops the box to
+				loopback-only. A mistake here has no remote undo, so
+				double-check reachability before saving.
+			</p>
 		</div>
 <div class="tab-panel" data-tab="tls-throttle" hidden>
 			<div class="view-list">

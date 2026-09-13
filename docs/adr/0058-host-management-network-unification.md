@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted. The `is_management` contract introduced here is amended by [ADR-0287](0287-the-management-address-is-the-single-truth.md): the flag (renamed `management`) is now *derived* from the single persisted management address rather than set by name and stored, and cixd's off-box bind address is that management address directly. The core decision of this ADR — that the host's own address is a real, API-managed network rather than a special case — stands unchanged and is in fact what ADR-0287 leans on.
 
 ## Context
 

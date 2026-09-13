@@ -37,7 +37,9 @@ enum network_error {
 	NETWORK_ERR_INTERFACE_FULL,        /* this network's own interfaces[] table is full */
 	NETWORK_ERR_INTERFACE_NAME_TOO_LONG, /* "<ifname>.<vlan_id>" wouldn't fit IFNAMSIZ */
 	NETWORK_ERR_IS_MANAGEMENT /* refused: this network currently carries cixd's own
-	                            * bind address -- see network_set_management() */
+	                            * management address (derived) -- reset it first
+	                            * (daemon_config_set_management_address(NULL)) or move
+	                            * it to another network. ADR-0287. */
 };
 
 struct network_attached_interface {
@@ -59,9 +61,14 @@ struct network_def {
 	struct network_attached_interface interfaces[NETWORK_MAX_INTERFACES];
 	int interface_count;
 	int in_use;         /* 0 for free slots */
-	int is_management; /* this network's address is cixd's own bind address --
-	                     * see network_set_management(); at most one network has
-	                     * this set at a time */
+	/*
+	 * ADR-0287: there is deliberately NO stored is_management field.
+	 * Whether a network is the management one is DERIVED -- it is the
+	 * network whose subnet contains the single management address
+	 * (network_find_management()) -- so it can never disagree with where
+	 * cixd is actually bound. GET /networks reports it as `management`,
+	 * computed at write time.
+	 */
 	/*
 	 * Issue #70: the host-part window auto-allocation draws from
 	 * (network_alloc_ip()). 0 = unset (the full [1, host_max] default,
@@ -160,27 +167,6 @@ enum network_error network_create(const char *name, const char *subnet_str, int 
  */
 enum network_error network_delete(const char *name);
 
-/*
- * Re-address an existing network in place -- new subnet/prefix/address,
- * same name, same bridge. Backs PUT /v1/system/management-network.
- *
- * Adds the new address to the bridge and persists, but deliberately
- * leaves the OLD address live and hands it back through out_old_* --
- * the caller must defer removing it, because dropping it under the
- * connection carrying the reply strands that client (ADR-0068). Both
- * addresses being briefly present is what makes the handover safe.
- * out_old_address_be is 0 when there is nothing to clean up (the
- * network had no address, or this was a no-op).
- *
- * Resets the allocation window when the subnet changes; a window is a
- * pair of host-parts within one subnet, meaningless in another.
- * Knows nothing of containers -- refusing a subnet change that would
- * strand attached containers is the caller's job.
- */
-enum network_error network_set_address(const char *name, const char *subnet_str, int prefix_len,
-                                        const char *address_str, uint32_t *out_old_address_be,
-                                        int *out_old_prefix_len);
-
 struct network_def *network_find(const char *name);
 
 /*
@@ -224,10 +210,9 @@ void network_write_json_list(struct json_writer *w);
  * Validates address_str as a real, usable IPv4 address within net's
  * own subnet (not the network or broadcast address) -- the same check
  * network_create()'s own address_str argument and network_ip_
- * available() already apply, exposed here so a second, unrelated
- * address on the same subnet (ADR-0068's dedicated daemon bind_ip)
- * can be validated against the identical rule instead of a
- * hand-rolled duplicate. Does not check for collision with any
+ * available() already apply, exposed here so the single management
+ * address (ADR-0287) can be validated against the identical rule
+ * instead of a hand-rolled duplicate. Does not check for collision with any
  * already-assigned address (registry_ip_available()) -- callers that
  * need that guarantee too must still check it themselves. On success
  * writes the parsed address (network byte order) to *out_address_be.
@@ -279,29 +264,47 @@ enum network_error network_attach_interface(const char *name, const char *ifname
 enum network_error network_detach_interface(const char *name, const char *ifname);
 
 /*
- * Designates name as the one network whose own address cixd itself
- * binds to -- the API-managed counterpart to what used to be a
- * GRUB-only, invisible apply_static_ip() call (Part 0.5). Requires
- * name to already have an address (has_address, network_create()'s
- * address_str) -- that address becomes the daemon's own bind address.
- * Clears is_management from whichever other network previously held
- * it (at most one at a time) and sets it on name, in that order, then
- * persists -- never a window with zero or two management networks.
- * Does *not* itself perform the listen-socket rebind; that's the
- * caller's job once this returns NETWORK_OK (see daemon_config.c).
- * NETWORK_ERR_NOT_FOUND if no such network; NETWORK_ERR_INVALID_
- * ADDRESS if it has no address to bind to.
+ * ADR-0287: sets network.c's runtime view of the single management
+ * address -- the address cixd answers on off-box, from which the
+ * management network is derived. address is a real IPv4 dotted-quad, or
+ * NULL/empty to clear (loopback-only). Does NOT persist anything (the
+ * persisted truth is daemon_config_set_management_address()) and does
+ * NOT touch any bridge or listener -- it only updates the derivation
+ * source so network_find_management() and the delete/detach guards
+ * answer correctly. Returns NETWORK_ERR_INVALID_ADDRESS if address does
+ * not parse, NETWORK_ERR_NOT_FOUND if no existing network's subnet
+ * contains it (the caller maps that to 400 "no network contains it"),
+ * NETWORK_OK otherwise (including the clear case).
  */
-enum network_error network_set_management(const char *name);
+enum network_error network_set_management_address(const char *address);
 
 /*
- * The network currently designated by network_set_management(), or
- * NULL if none has been set yet (e.g. a --data-dir= test invocation
- * with no boot-time bootstrap). At most one entry ever has
- * is_management set -- this is a linear scan, not a cached pointer,
- * since g_networks[] can be reloaded wholesale by network_init().
+ * The in-use network whose subnet contains address_be, or NULL if none
+ * does. Subnets cannot overlap (network_create() enforces it), so at
+ * most one ever matches -- this is what makes "derive the network from
+ * the address" unambiguous (ADR-0287). Used by the management-address
+ * handler to find the bridge to add cixd's address to, and to reject an
+ * address that belongs to no network.
+ */
+struct network_def *network_find_containing(uint32_t address_be);
+
+/*
+ * The network that currently carries the management address -- the one
+ * whose subnet contains it -- or NULL when no management address is set
+ * (loopback-only) or no network contains it. Derived on demand from the
+ * runtime management address, never a stored flag (ADR-0287).
  */
 struct network_def *network_find_management(void);
+
+/*
+ * ADR-0287 migration: on load, if a legacy entry carried the old
+ * persisted "is_management": true flag and had an address, that address
+ * is captured here so main.c's boot path can migrate it into the single
+ * daemon_config management address. Returns 1 and writes *out_be when a
+ * legacy management address was seen, 0 otherwise. Consumed once at
+ * boot; the legacy flag is never persisted again.
+ */
+int network_legacy_management_address(uint32_t *out_be);
 
 /*
  * Two network utilities that were static in main.c and needed by both

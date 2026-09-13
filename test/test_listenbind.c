@@ -18,10 +18,10 @@
  * 192.168.15.95, 2026-09-13: after a live .103 -> .95 move, http
  * answered 200 on the new address and https answered nothing anywhere.
  *
- * A runtime test cannot gate this here. test_daemon_bind_ip exists and
- * is NOT in the Makefile's SELFTESTS list, because it forks a real
- * cixd and a build container cannot -- so an assertion added there
- * would never once run. This is a source scan for the same reason
+ * A runtime test cannot gate this here. test_management_address exists
+ * and forks a real cixd, which a build container cannot -- so an
+ * assertion added there would never once run in the release selftest.
+ * This is a source scan for the same reason
  * test_blocking_waits is: it asserts a property of the code that a
  * green build would otherwise hide.
  *
