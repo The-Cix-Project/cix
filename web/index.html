@@ -3051,6 +3051,11 @@
 							<input type="text" id="f-dns-servers"
 							       placeholder="(none), or comma-separated: 192.168.15.101,192.168.15.102 -- max 3, staged as /etc/resolv.conf (ADR-0143)">
 						</label>
+						<label class="wide">
+							Sysctls
+							<input type="text" id="f-sysctls"
+							       placeholder="(none), or semicolon-separated net.* keys: net.ipv4.ping_group_range=0 65534;net.ipv4.conf.all.rp_filter=0">
+						</label>
 					</fieldset>
 					<fieldset>
 						<legend>Devices</legend>
@@ -3096,11 +3101,6 @@
 						<label class="wide">
 							Depends on
 							<input type="text" id="f-depends-on" placeholder="(none), or comma-separated: db,cache">
-						</label>
-						<label class="wide">
-							Sysctls
-							<input type="text" id="f-sysctls"
-							       placeholder="(none), or semicolon-separated: net.ipv4.ip_forward=1;net.ipv4.conf.all.rp_filter=0">
 						</label>
 						<label class="wide">
 							Environment variables

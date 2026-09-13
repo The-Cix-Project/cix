@@ -6,6 +6,37 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The jump box gets the tools it is actually used for, declared rather than installed (#446, #447)
+
+The owner asked for `ping`, `ip` and `ifconfig` on `jump`. All three already existed as recipes with Cix-built artifacts in the cache (`iputils-s20180629-3`, `iproute2-6.18.0-17`, `net-tools-2.10-4`); none was in the `jumpbox` manifest. Installing them took 90 seconds and `ip`/`ifconfig` worked immediately.
+
+`ping` did not, and the reason is worth recording because nothing about it looks like a permissions problem from the outside:
+
+```
+claude@jump:~$ ping -c 2 192.168.15.254
+ping: socket: Operation not permitted
+claude@jump:~$ cat /proc/sys/net/ipv4/ping_group_range
+65534	65534
+claude@jump:~$ id
+uid=10002(claude) gid=10002(cix-admins) groups=10002(cix-admins)
+```
+
+`iputils` is built `NO_SETCAP_OR_SUID`, so `ping` has no file capability and depends entirely on the unprivileged ICMP datagram socket, which the kernel gates on `net.ipv4.ping_group_range`. gid 10002 is outside `65534 65534`, so the `SOCK_DGRAM` attempt is refused and the `SOCK_RAW` fallback reports `EPERM` — an error about a raw socket, for a program that never needed one. `jump` now carries `"sysctls": {"net.ipv4.ping_group_range": "0 65534"}` (deployment recipe `1.12.0`), and ping answers both on-subnet and out to the internet.
+
+**The upper bound is not arbitrary and this cost `jump` six minutes of downtime.** The first attempt used `0 2147483647`, the value several distributions ship. `POST /v1/containers` returned **201** with the container `"running"` and the value echoed back, and then every start died:
+
+```
+cixd error  container jump exited abnormally: child: container_net_apply_sysctl: Invalid argument
+```
+
+A container with `userns: true` only has the gids its map covers, and `2147483647` is not one of them, so the kernel refuses the write. Because the write happens in the child — after the response is sent — the caller is told the container was created, and with `on_exit: "fail-container"` on its services the container simply goes down, reporting `status: "stopped"`, `exit_reason: null` and `sysctls: {}`. The cause existed only in the log store. That is **#446**: a value the kernel will reject belongs in a 400, and a child sysctl failure belongs in the container's own `exit_reason`.
+
+**And the image recipe now declares all of it** (`recipes/image/jumpbox/2.6.0`): `iputils`, `iproute2`, `net-tools`, `inetutils` (its recipe exists for exactly this telnet client and builds nothing else), `curl`, `wget`, `git`, `ca-certificates`. Every one was installed ad hoc first, and this is the third time this file has had to correct that state — 2.2.0 did it for htop, 2.3.0 for btop. An install that is not in the manifest survives only until the next apply of the recipe, because the manifest is what an apply writes and the image version is a hash of it (ADR-0108/ADR-0155). `ca-certificates` is there because curl, wget and git all verify public TLS against a CA bundle and the platform's own `cix-ca-bundle.pem` covers the internal PKI only. Transitive dependencies stay undeclared, as `recipes/image/router` already does — an image recipe says what the image is *for*, and apply resolves each package's `pkg_depends`.
+
+**`wget` had no recipe at all**, so one is written: `recipes/package/wget/1.25.0`. Two things in it are not stylistic. `CC=tcc` is pinned because the cumulative build sandbox's bare `cc` stopped meaning TCC once gcc's output merged into it. And `-D_GL_EXTERN_INLINE_STDHEADER_BUG=1` is gnulib's own escape hatch: gnulib picks its "real C99 inline works" branch from `__STDC_VERSION__` alone when `__GNUC__` is undefined, which under TCC emits a strong external definition of every shared helper in every translation unit and fails the final link with dozens of "defined twice" symbols that appear once in the source — m4's recipe carries the full diagnosis. Source checksum verified two ways, both downloads actually done and compared: `mirrors.kernel.org` and `ftp.gnu.org` serve byte-identical 5,263,736-byte tarballs with the same sha256.
+
+**#447** is the other half, and it is why the owner could not find the field at all: the create form's Sysctls input sat in the **Lifecycle** fieldset, between "Depends on" and "Environment variables". The daemon restricts the field to `net.*` keys ([ADR-0030](docs/adr/0030-per-container-config-files-and-sysctls.md)) and it is the general form of the `ip_forward` checkbox in **Networking**; it now sits next to it, with a placeholder showing a real multi-token value rather than restating `ip_forward`. Still open in #447: there is no way to change a sysctl on a container that already exists — sysctls apply at creation, so the only route is delete-and-re-POST the whole definition, which is exactly what took `jump` offline here.
+
 ### The management address lives in one place: net.conf (#443)
 
 [ADR-0284](docs/adr/0284-cixd-always-binds-loopback.md) made a stale `--bind=` harmless. This removes it. The owner's question was the right one — why duplicate at all, unless a boot-loader override is something we actually want?
