@@ -6,6 +6,32 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A container's `/proc/partitions` shows only its own backing device (#452, ADR-0286 tier 1)
+
+A container was shown the host's entire block layer: `cat /proc/partitions`
+inside `jump` listed `vda`, `vdb` and its five partitions, a CD-ROM (`sr0`) and a
+100 GB host scratch disk (`sda`) — every device on the machine, measured on
+192.168.15.95, 2026-09-13. It read as a container, not as a machine of its own.
+
+`cix-procfuse` (ADR-0262) already serves nine per-container `/proc` and `/sys`
+files by bind-mount; `/proc/partitions` is a tenth of exactly that shape. It is
+rendered from the asking process's own `/proc/<pid>/mountinfo`: the real
+`/proc/partitions` is reused verbatim, header and all, keeping only the rows whose
+device name backs one of the container's mounts. Nothing is synthesised — the one
+row `jump` keeps is its true backing device, `vdb5`, at its true size.
+
+The match is by device **name** (`vdb5`), not the mount's `st_dev`, because a
+btrfs mount's `st_dev` is an anonymous device (`0:22`) that appears in no
+`/proc/partitions` row — the source's basename is the row's name column. Keying on
+the name also means the renderer needs no `stat()` of a device node, so its whole
+arithmetic runs in `test_procfuse` against crafted files, with no `/dev`, no root
+and no container — the environment a release is built in.
+
+This is tier 1 of ADR-0286. Tier 2 (btrfs `statfs()` reporting the qgroup limit,
+so `df` shows the quota rather than the pool) is a separate kernel-patch change.
+`/sys/block` remains the host's and is a recorded gap: `lsblk` still sees the
+host's disks.
+
 ### git has never been installable, and the gate that says so (#455)
 
 `pkg install git` fails, and has at every revision:

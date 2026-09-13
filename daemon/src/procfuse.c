@@ -1072,6 +1072,174 @@ static size_t render_cpu_range(const char *cg, char *out, size_t cap)
 }
 
 /*
+ * The set of block-device NAMES (as /proc/partitions lists them:
+ * "vdb5", not "/dev/vdb5") that back the mounts in a mountinfo file.
+ * Small fixed bound: a container mounts a handful of real filesystems,
+ * and one that somehow exceeds it has the overflow omitted rather than
+ * a growing allocation in the read path.
+ */
+#define PARTITIONS_MAX_DEVS 32
+#define PARTITIONS_NAME_MAX 64
+
+struct dev_set {
+	char name[PARTITIONS_MAX_DEVS][PARTITIONS_NAME_MAX];
+	size_t count;
+};
+
+static void dev_set_add(struct dev_set *s, const char *name)
+{
+	size_t i;
+
+	for (i = 0; i < s->count; i++)
+		if (strcmp(s->name[i], name) == 0)
+			return;
+	if (s->count >= PARTITIONS_MAX_DEVS)
+		return;
+	snprintf(s->name[s->count], PARTITIONS_NAME_MAX, "%s", name);
+	s->count++;
+}
+
+static int dev_set_has(const struct dev_set *s, const char *name)
+{
+	size_t i;
+
+	for (i = 0; i < s->count; i++)
+		if (strcmp(s->name[i], name) == 0)
+			return 1;
+	return 0;
+}
+
+/*
+ * The mount SOURCE of one mountinfo line -- the field after the " - "
+ * separator, past the filesystem type. Written into `src` (capacity
+ * `cap`); returns 0 on success, -1 when the line has no source.
+ *
+ * mountinfo after the separator is `<fstype> <source> <superopts>`, so
+ * the source is the token two past " - ".
+ */
+static int mountinfo_source(const char *line, char *src, size_t cap)
+{
+	const char *sep, *fstype, *source, *end;
+	size_t len;
+
+	sep = strstr(line, " - ");
+	if (sep == NULL)
+		return -1;
+	fstype = sep + 3;
+	while (*fstype == ' ')
+		fstype++;
+	source = fstype;
+	while (*source != '\0' && *source != ' ')
+		source++;
+	while (*source == ' ')
+		source++;
+	if (*source == '\0')
+		return -1;
+	end = source;
+	while (*end != '\0' && *end != ' ' && *end != '\n')
+		end++;
+	len = (size_t)(end - source);
+	if (len == 0 || len >= cap)
+		return -1;
+	memcpy(src, source, len);
+	src[len] = '\0';
+	return 0;
+}
+
+size_t procfuse_render_partitions_from(const char *mountinfo_path,
+                                       const char *partitions_path, char *out,
+                                       size_t cap)
+{
+	struct dev_set devs;
+	char line[PATH_MAX * 2];
+	FILE *f;
+	size_t used = 0;
+	int header_written = 0;
+
+	devs.count = 0;
+
+	/*
+	 * Gather the device name of every /dev/... source this container
+	 * mounts. A source that is not a device path (proc, sysfs, tmpfs, a
+	 * fuse tag) has no row in /proc/partitions and is skipped. The set
+	 * is keyed on the device NAME, not the line's st_dev (mountinfo
+	 * field 3), because a btrfs mount's st_dev is an ANONYMOUS device
+	 * (measured inside jump, 2026-09-13: "0:22" for a /dev/vdb5 mount)
+	 * that matches no /proc/partitions row -- whereas the source's
+	 * basename ("vdb5") is exactly the name column of the row that
+	 * describes it. This also sidesteps stat()ing a device node, which
+	 * a build container and the dev sandbox cannot do at all.
+	 */
+	f = fopen(mountinfo_path, "r");
+	if (f == NULL)
+		return 0;
+	while (fgets(line, sizeof(line), f) != NULL) {
+		char src[PATH_MAX];
+		const char *base;
+
+		if (mountinfo_source(line, src, sizeof(src)) != 0)
+			continue;
+		if (strncmp(src, "/dev/", 5) != 0)
+			continue;
+		base = strrchr(src, '/');
+		base = (base != NULL) ? base + 1 : src;
+		if (*base != '\0')
+			dev_set_add(&devs, base);
+	}
+	fclose(f);
+
+	/*
+	 * Copy the header and blank line of the real /proc/partitions
+	 * verbatim, then only the data rows whose device name this
+	 * container actually backs. Rows are appended byte-for-byte from
+	 * the source file; the sscanf is used only to decide keep-or-drop.
+	 */
+	f = fopen(partitions_path, "r");
+	if (f == NULL)
+		return 0;
+	while (fgets(line, sizeof(line), f) != NULL) {
+		unsigned int maj, min;
+		unsigned long long blocks;
+		char name[PARTITIONS_NAME_MAX];
+		size_t linelen = strlen(line);
+
+		if (sscanf(line, "%u %u %llu %63s", &maj, &min, &blocks, name) != 4) {
+			/* The header ("major minor  #blocks  name") and the blank
+			 * line that follows it: kept once, so the file opens the
+			 * same way the kernel's does. */
+			if (!header_written && used + linelen < cap) {
+				memcpy(out + used, line, linelen);
+				used += linelen;
+			}
+			continue;
+		}
+		header_written = 1;
+		if (!dev_set_has(&devs, name))
+			continue;
+		if (used + linelen >= cap)
+			break;
+		memcpy(out + used, line, linelen);
+		used += linelen;
+	}
+	fclose(f);
+	return used;
+}
+
+/*
+ * The FUSE path for /proc/partitions: the reader's mount table lives at
+ * /proc/<pid>/mountinfo, and the pid is the host-namespace pid the FUSE
+ * header carries, so the host-side server reads the container's own
+ * mount view directly.
+ */
+static size_t render_partitions(uint32_t pid, char *out, size_t cap)
+{
+	char mountinfo[64];
+
+	snprintf(mountinfo, sizeof(mountinfo), "/proc/%u/mountinfo", (unsigned)pid);
+	return procfuse_render_partitions_from(mountinfo, "/proc/partitions", out, cap);
+}
+
+/*
  * One entry point so the opcode handler never grows a second copy of
  * the file table's ordering.
  */
@@ -1111,6 +1279,11 @@ static size_t render_file(int index, uint32_t pid, char *out, size_t cap)
 {
 	char cgbuf[PATH_MAX];
 	const char *cg = NULL;
+
+	/* /proc/partitions is a function of the reader's mount namespace,
+	 * not its cgroup, so it takes the pid directly (ADR-0286 tier 1). */
+	if (index == PROCFUSE_INDEX_PARTITIONS)
+		return render_partitions(pid, out, cap);
 
 	if (cgroup_dir_for_pid(pid, cgbuf, sizeof(cgbuf)) == 0)
 		cg = cgbuf;

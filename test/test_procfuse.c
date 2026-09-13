@@ -460,6 +460,90 @@ int main(void)
 		put("cpuset.cpus.effective", "0\n");
 	}
 
+	printf("8. /proc/partitions is filtered to the container's own backing devices\n");
+	{
+		/*
+		 * ADR-0286 tier 1. The renderer takes a mountinfo path and a
+		 * partitions path, both crafted here -- no /dev node, no
+		 * stat(), no container -- because it keys on the source's
+		 * device NAME, which is exactly what makes it runnable in a
+		 * build container. The mountinfo below is jump's real shape as
+		 * measured on 192.168.15.95: btrfs / and /home on /dev/vdb5
+		 * (st_dev 0:22, an anonymous device that matches no row), plus
+		 * proc/sysfs/tmpfs sources that are not devices at all. The
+		 * partitions file is the box's real one: vda, vdb + five
+		 * partitions, a CD-ROM and a 100 GB scratch disk.
+		 */
+		char mi[512], pf[256];
+		char part[65536];
+		size_t pn;
+
+		snprintf(mi, sizeof(mi), "%s/mountinfo", g_dir);
+		snprintf(pf, sizeof(pf), "%s/partitions", g_dir);
+
+		{
+			FILE *f = fopen(mi, "w");
+			CHECK(f != NULL, "crafted mountinfo opens for write");
+			fputs("44 46 0:22 /containers/jump/rootfs / rw,relatime,idmapped - btrfs /dev/vdb5 rw,subvolid=777\n"
+			      "45 44 0:22 /volumes/jump-home /home rw,relatime,idmapped - btrfs /dev/vdb5 rw,subvolid=591\n"
+			      "168 44 0:77 / /proc rw,relatime - proc proc rw\n"
+			      "169 44 0:78 / /sys rw,relatime - sysfs sysfs rw\n"
+			      "170 44 0:79 / /run rw,relatime - tmpfs tmpfs rw\n",
+			      f);
+			fclose(f);
+		}
+		{
+			FILE *f = fopen(pf, "w");
+			CHECK(f != NULL, "crafted partitions opens for write");
+			fputs("major minor  #blocks  name\n"
+			      "\n"
+			      " 254        0   15728640 vda\n"
+			      " 254       16   33554432 vdb\n"
+			      " 254       17      65536 vdb1\n"
+			      " 254       18     163840 vdb2\n"
+			      " 254       19     163840 vdb3\n"
+			      " 254       20     524288 vdb4\n"
+			      " 254       21   16314368 vdb5\n"
+			      "  11        0    1048575 sr0\n"
+			      "   8        0  104857600 sda\n",
+			      f);
+			fclose(f);
+		}
+
+		pn = procfuse_render_partitions_from(mi, pf, part, sizeof(part));
+		part[pn < sizeof(part) ? pn : sizeof(part) - 1] = '\0';
+
+		CHECK(strstr(part, "major minor  #blocks  name") != NULL,
+		      "the kernel's own header line is preserved verbatim");
+		CHECK(strstr(part, "16314368 vdb5") != NULL,
+		      "the device that actually backs the container's mounts is kept");
+		CHECK(strstr(part, " sda\n") == NULL,
+		      "the host's scratch disk is not shown");
+		CHECK(strstr(part, " sr0\n") == NULL,
+		      "the host's CD-ROM is not shown");
+		CHECK(strstr(part, " vda\n") == NULL,
+		      "an unrelated host disk is not shown");
+		CHECK(strstr(part, " vdb\n") == NULL && strstr(part, " vdb1\n") == NULL &&
+		          strstr(part, " vdb4\n") == NULL,
+		      "sibling partitions of the pool are not shown, only the backing one");
+
+		/* A container mounting nothing on a real device (only proc/sys/
+		 * tmpfs) gets the header and no data rows -- not the host's. */
+		{
+			FILE *f = fopen(mi, "w");
+			if (f != NULL) {
+				fputs("168 44 0:77 / /proc rw,relatime - proc proc rw\n"
+				      "169 44 0:78 / /sys rw,relatime - sysfs sysfs rw\n",
+				      f);
+				fclose(f);
+			}
+			pn = procfuse_render_partitions_from(mi, pf, part, sizeof(part));
+			part[pn < sizeof(part) ? pn : sizeof(part) - 1] = '\0';
+			CHECK(strstr(part, "major minor") != NULL && strstr(part, "254") == NULL,
+			      "a container on no real device shows the header and no rows");
+		}
+	}
+
 	{
 		char cmd[512];
 

@@ -98,10 +98,22 @@
 		{ "loadavg", "/proc/loadavg" }, { "swaps", "/proc/swaps" },             \
 		{ "cpu_online", "/sys/devices/system/cpu/online" },                     \
 		{ "cpu_present", "/sys/devices/system/cpu/present" },                   \
-		{ "cpu_possible", "/sys/devices/system/cpu/possible" }                  \
+		{ "cpu_possible", "/sys/devices/system/cpu/possible" },                 \
+		{ "partitions", "/proc/partitions" }                                    \
 	}
-#define PROCFUSE_FILE_COUNT 9
+#define PROCFUSE_FILE_COUNT 10
 #define PROCFUSE_INO_FIRST 2
+
+/*
+ * The table index of the /proc/partitions entry (ADR-0286 tier 1). It
+ * is the one file whose content is a function of the reader's mount
+ * NAMESPACE rather than its cgroup, so render_file() routes it to a
+ * different renderer. Named here next to the table, rather than a bare
+ * 9 in render_file(), so that reordering the table is a visible edit at
+ * this line rather than a silent renumber that mis-serves one file's
+ * bytes as another's.
+ */
+#define PROCFUSE_INDEX_PARTITIONS 9
 
 /*
  * Where the server mounts. Under STATE_DIR rather than /tmp or /run so
@@ -153,5 +165,19 @@ void procfuse_stop(void);
  * what really serves reads, rather than a second copy of the sums.
  */
 size_t procfuse_render_for_cgroup(int index, const char *cg, char *out, size_t cap);
+
+/*
+ * Renders /proc/partitions (ADR-0286 tier 1) filtered to the block
+ * devices that back the mounts described by `mountinfo_path`, reusing
+ * the rows of `partitions_path` (the host's real /proc/partitions)
+ * verbatim so the format is byte-for-byte the kernel's own and nothing
+ * is synthesised. Split out with both paths as parameters for the same
+ * reason as procfuse_render_for_cgroup: a test drives it against
+ * crafted files with no FUSE, no root and no container. Returns the
+ * number of bytes written.
+ */
+size_t procfuse_render_partitions_from(const char *mountinfo_path,
+                                       const char *partitions_path, char *out,
+                                       size_t cap);
 
 #endif /* PROCFUSE_H */
