@@ -711,7 +711,7 @@ function updateAuthGatingBanner(active) {
 function updateAuthUi() {
 	if (authToken) {
 		authStatusEl.hidden = false;
-		authStatusEl.className = "badge badge-ok";
+		authStatusEl.className = statusBadge("ok");
 		authStatusEl.textContent = authUsername ? "logged in: " + authUsername : "logged in";
 		authActionBtn.textContent = "Log out";
 	} else {
@@ -1063,6 +1063,30 @@ async function pollServerLogs() {
  * user's own request: "it should be shown in the logs right?". */
 const STATUS_AUTO_DISMISS_MS = 5000;
 let statusTimeoutId = null;
+
+/*
+ * The one place the status-pill vocabulary lives (#459). A caller passes
+ * a semantic kind and gets the full class string; the "badge " prefix
+ * and the four valid colours live here and nowhere else, so a page
+ * cannot invent a badge class or misspell one. Mapping a domain's own
+ * state (a container "running", a format "ready") to a kind is the
+ * caller's domain knowledge; the colour that kind resolves to is fixed:
+ *   ok      -- healthy / present / running   (green)
+ *   error   -- failed / broken               (red)
+ *   paused  -- paused / idle / in progress   (amber)
+ *   unknown -- unknown / not applicable      (grey, the fallback)
+ * See docs/guides/web-ux-guidelines.md ("Status badge").
+ */
+function statusBadge(kind) {
+	switch (kind) {
+	case "ok":
+	case "error":
+	case "paused":
+		return "badge badge-" + kind;
+	default:
+		return "badge badge-unknown";
+	}
+}
 
 function showStatus(message, isError) {
 	statusBox.textContent = message;
@@ -2668,7 +2692,7 @@ function renderContainers(containers) {
 
 		statusSpan.textContent = c.status;
 		statusSpan.className =
-			"badge " + (c.status === "running" ? "badge-ok" : c.status === "paused" ? "badge-paused" : "badge-unknown");
+			statusBadge(c.status === "running" ? "ok" : c.status === "paused" ? "paused" : "unknown");
 		statusCell.appendChild(statusSpan);
 		row.appendChild(statusCell);
 
@@ -6003,7 +6027,7 @@ function deviceRow(d, mappedName) {
 	const assignableCell = document.createElement("td");
 	const badge = document.createElement("span");
 
-	badge.className = "badge " + (d.assignable ? "badge-ok" : "badge-unknown");
+	badge.className = statusBadge(d.assignable ? "ok" : "unknown");
 	badge.textContent = d.assignable ? "yes" : "no";
 	assignableCell.appendChild(badge);
 	row.appendChild(assignableCell);
@@ -6078,7 +6102,7 @@ function renderDeviceMapsTable() {
 		const statusCell = document.createElement("td");
 		const badge = document.createElement("span");
 
-		badge.className = "badge " + (m.present ? "badge-ok" : "badge-unknown");
+		badge.className = statusBadge(m.present ? "ok" : "unknown");
 		badge.textContent = m.present ? "present (" + m.resolved_ids.length + ")" : "not present";
 		statusCell.appendChild(badge);
 		row.appendChild(statusCell);
@@ -6454,7 +6478,7 @@ function diskListRow(d) {
 	if (d.is_os_disk) {
 		const badge = document.createElement("span");
 
-		badge.className = "badge badge-paused";
+		badge.className = statusBadge("paused");
 		badge.textContent = "OS disk";
 		osCell.appendChild(badge);
 	} else {
@@ -6524,7 +6548,7 @@ function diskRow(d) {
 	if (d.is_os_disk) {
 		const badge = document.createElement("span");
 
-		badge.className = "badge badge-unknown";
+		badge.className = statusBadge("unknown");
 		badge.textContent = "OS disk";
 		osCell.appendChild(badge);
 	} else {
@@ -6535,7 +6559,7 @@ function diskRow(d) {
 	const mountedCell = document.createElement("td");
 	const mountedBadge = document.createElement("span");
 
-	mountedBadge.className = "badge " + (d.mounted ? "badge-ok" : "badge-unknown");
+	mountedBadge.className = statusBadge(d.mounted ? "ok" : "unknown");
 	mountedBadge.textContent = d.mounted ? d.mount_path : "not mounted";
 	mountedCell.appendChild(mountedBadge);
 	row.appendChild(mountedCell);
@@ -6570,8 +6594,7 @@ function diskRow(d) {
 		const badge = document.createElement("span");
 
 		badge.className =
-			"badge " +
-			(formatStatus.state === "ready" ? "badge-ok" : formatStatus.state === "failed" ? "badge-error" : "badge-paused");
+			statusBadge(formatStatus.state === "ready" ? "ok" : formatStatus.state === "failed" ? "error" : "paused");
 		badge.textContent = formatStatus.state === "failed" ? "failed: " + formatStatus.error : formatStatus.state;
 		formatCell.appendChild(badge);
 	} else {
@@ -12199,7 +12222,7 @@ async function refreshSoftwareReconcile() {
 			 * flagged, not just left blank. */
 			const badge = document.createElement("span");
 
-			badge.className = "badge badge-error";
+			badge.className = statusBadge("error");
 			badge.textContent = "none";
 			badge.title = "Cannot be rebuilt from source control";
 			recipeCell.appendChild(badge);
