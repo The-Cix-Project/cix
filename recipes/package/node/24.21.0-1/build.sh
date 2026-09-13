@@ -14,12 +14,13 @@ pkg_version="24.21.0-1"
 pkg_source="https://nodejs.org/dist/v24.21.0/node-v24.21.0.tar.gz"
 pkg_sha256="622424efb5dc0c26c93fbb619ff10737ee289c605b837c88778e186925d82777"
 
-# node's own binary links libstdc++/libgcc_s (it is C++), plus libz for
-# the bundled zlib's shared link and the usual glibc set. The exact
-# runtime deps are confirmed from the built ELF on first install and
-# declared here rather than guessed -- expect gcc's runtime libs and
-# zlib. Left minimal until measured (elfcheck, ADR-0251, names anything
-# missing precisely).
+# Nothing but glibc: --partly-static (below) links libgcc and libstdc++
+# INTO the node binary, and node's bundled zlib/etc. are static already,
+# so the installed executable links only the glibc set the baseline
+# provides. That sidesteps a gcc-runtime dependency in every agent image
+# and keeps elfcheck (ADR-0251) satisfied with no declared deps.
+# Confirmed from the built ELF on first install; elfcheck names anything
+# this missed, precisely.
 pkg_depends=""
 
 # node's configure is a Python program and its build drives make + a C++
@@ -43,15 +44,14 @@ pkg_build() {
 	# probe for it. --without-corepack drops the yarn/pnpm shim we do not
 	# need; npm stays. --shared-* are left OFF so V8/zlib/etc. are the
 	# bundled, source-built copies (provenance), not host libraries.
+	# --partly-static links libgcc and libstdc++ statically into node, so
+	# the installed binary depends on glibc alone (no gcc-runtime package
+	# in the agent images, elfcheck-clean).
 	python3 ./configure \
 		--prefix=/usr \
 		--with-intl=small-icu \
 		--without-corepack \
-		--ninja=false 2>/dev/null || \
-	python3 ./configure \
-		--prefix=/usr \
-		--with-intl=small-icu \
-		--without-corepack
+		--partly-static
 
 	# -j2, not $(nproc): V8 peaks near 8 GiB of RAM at -j4 and this host
 	# has ~7.7 GiB, so a wider build risks the OOM killer mid-link. Slow
