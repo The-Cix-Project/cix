@@ -19,6 +19,7 @@
  * naturally aligned u32/u64 with explicit padding.
  */
 #include "procfuse.h"
+#include "proctitle.h"
 
 #include "logstore.h"
 
@@ -1673,6 +1674,10 @@ int procfuse_start(const char *state_dir)
 		 * TASK_COMM_LEN's budget exactly.
 		 */
 		prctl(PR_SET_NAME, (unsigned long)"cixd [procfuse]", 0UL, 0UL, 0UL);
+		/* And the longer command_line field, which is a different
+		 * string: without this the child reports the daemon's own
+		 * "/bin/cixd --init-mode ..." inherited across the fork. */
+		proctitle_set("cixd [procfuse]");
 		procfuse_main(keep);
 		_exit(0);
 	}

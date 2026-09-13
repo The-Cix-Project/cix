@@ -1,4 +1,5 @@
 #include "stallwatch.h"
+#include "proctitle.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -777,6 +778,9 @@ static void watchdog_main(pid_t watched)
 	 * that writes "comm":"cixd" about a stall should not itself be an
 	 * unnamed cixd in that same list. 15 chars fit TASK_COMM_LEN. */
 	prctl(PR_SET_NAME, (unsigned long)"cixd [watchdog]", 0UL, 0UL, 0UL);
+	/* And the command_line field, inherited as the daemon's own across
+	 * the fork otherwise (#456). */
+	proctitle_set("cixd [watchdog]");
 
 	/*
 	 * Issue #229: a watchdog that only runs when the machine is idle

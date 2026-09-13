@@ -44,9 +44,16 @@ the procfuse server is `cixd [procfuse]`, the watchdog is `cixd [watchdog]`, and
 each container's init is `init:<container>`. `cix-init` needs no new plumbing for
 its name — the daemon already sets the container's UTS hostname to the container
 name before init execs, and init runs in that namespace, so it reads its own name
-from `uname()`. All three fit `TASK_COMM_LEN`'s 15-character budget. The
-`command_line` field being empty for these processes is a separate, still-open
-part of #456.
+from `uname()`. All three fit `TASK_COMM_LEN`'s 15-character budget.
+
+The longer `command_line` field (`/proc/<pid>/cmdline`) is fixed too, because it is
+a different string read from a different place: a fork that never execs inherits
+the parent's — the procfuse server and watchdog both reported the daemon's own
+`/bin/cixd --init-mode --slot=b`, and `cix-init` showed its raw fd arguments
+(`/sbin/cix-init 18 20 22`). A small setproctitle-style helper (`proctitle.c`)
+rewrites the argv area in place: `main()` records its extent once before any fork,
+and each child overwrites its own copy (copy-on-write, so the parent is untouched)
+— `cixd [procfuse]`, `cixd [watchdog]`, and `cix-init:<container>` for the init.
 
 ### A container's `/proc/partitions` shows only its own backing device (#452, ADR-0286 tier 1)
 

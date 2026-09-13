@@ -1312,6 +1312,48 @@ static void set_own_name(void)
 	sc2(SYS_prctl, PR_SET_NAME, (long)name);
 }
 
+/*
+ * Rewrite this process's argv area so /proc/self/cmdline (and cixd's
+ * GET /system/processes command_line field) reads "cix-init:<container>"
+ * instead of "/sbin/cix-init 18 20 22" -- the daemon hands the control
+ * and report fds and each service's output fd on argv, and a screen of
+ * bare fd numbers is exactly what the owner asked not to see (#456).
+ *
+ * The argv strings are contiguous from argv[0] to the NUL after the
+ * last argument; the kernel serves cmdline from that span, so
+ * overwriting it and NUL-padding the rest is enough, and it touches
+ * nothing past the arguments (the environment begins after g_end).
+ * MUST run after the fd arguments have been parsed out of argv --
+ * nothing reads argv beyond that point. Best-effort and cosmetic.
+ */
+static void set_own_cmdline(long argc, char **argv)
+{
+	char uts[6 * 65];
+	const char *node = uts + 65;
+	const char *pfx = "cix-init:";
+	char *start, *end, *p;
+	int i;
+
+	if (argc < 1 || argv[0] == 0)
+		return;
+	start = argv[0];
+	end = argv[argc - 1];
+	while (*end != '\0') /* end of the last argument string ... */
+		end++;
+	end++; /* ... plus its NUL: the end of the argv area */
+	if (end <= start)
+		return;
+	if (sc1(SYS_uname, (long)uts) != 0)
+		return;
+	p = start;
+	for (i = 0; pfx[i] != '\0' && p < end - 1; i++)
+		*p++ = pfx[i];
+	for (i = 0; node[i] != '\0' && p < end - 1; i++)
+		*p++ = node[i];
+	while (p < end)
+		*p++ = '\0';
+}
+
 int cix_main(long argc, char **argv)
 {
 	int i;
@@ -1379,6 +1421,10 @@ int cix_main(long argc, char **argv)
 			g_svc[i].out_fd = (int)fds[2 + i];
 		set_nonblock(g_control_fd);
 	}
+
+	/* The fd arguments are parsed; nothing reads argv past here, so the
+	 * argv area is free to become "cix-init:<container>" (#456). */
+	set_own_cmdline(argc, argv);
 
 	report(-1, CIXINIT_EV_UP, CIXINIT_VERSION, g_count);
 
