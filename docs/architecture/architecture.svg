@@ -386,6 +386,9 @@
   <text x="897" y="820" text-anchor="middle" class="module-text">e.g. /var/lib/cix/</text>
   <text x="897" y="834" text-anchor="middle" class="module-text">images/&lt;name&gt;/rootfs</text>
 
+  <text x="530" y="890" text-anchor="middle" class="small-text" fill="#4a5568">Container self-view (ADR-0262/0286): cix-procfuse bind-mounts per-cgroup /proc/meminfo·cpuinfo·stat and /proc/partitions into every container — a process sees its own limits and only its own disk,</text>
+  <text x="530" y="902" text-anchor="middle" class="small-text" fill="#4a5568">not the host's; a local btrfs statfs kernel patch makes df report the subvolume's own qgroup quota (512 MiB, 2 GiB) rather than the shared pool. /sys/block is the remaining gap (#457).</text>
+
   <line x1="165" y1="768" x2="850" y2="858" stroke="#c05621" stroke-width="0.8" stroke-dasharray="2 2" opacity="0.5"/>
   <line x1="410" y1="768" x2="860" y2="858" stroke="#c05621" stroke-width="0.8" stroke-dasharray="2 2" opacity="0.5"/>
   <line x1="655" y1="768" x2="880" y2="858" stroke="#c05621" stroke-width="0.8" stroke-dasharray="2 2" opacity="0.5"/>
@@ -562,13 +565,14 @@
   <text x="1215" y="1054" text-anchor="middle" class="module-text">clone3, CLONE_INTO_CGROUP,</text>
   <text x="1215" y="1068" text-anchor="middle" class="module-text">CLONE_PIDFD, cgroup v2,</text>
   <text x="1215" y="1082" text-anchor="middle" class="module-text">OverlayFS, rtnetlink, squashfs,</text>
-  <text x="1215" y="1096" text-anchor="middle" class="module-text">BPF_CGROUP_DEVICE</text>
+  <text x="1215" y="1096" text-anchor="middle" class="module-text">BPF_CGROUP_DEVICE, FUSE (procfuse)</text>
   <text x="1215" y="1118" text-anchor="middle" class="module-text">GPU: amdgpu + KFD (mainline,</text>
   <text x="1215" y="1132" text-anchor="middle" class="module-text">AMD only — no proprietary driver,</text>
   <text x="1215" y="1146" text-anchor="middle" class="module-text">ADR-0029)</text>
   <text x="1215" y="1170" text-anchor="middle" class="module-text" font-style="italic">Same kernel builds this project's</text>
   <text x="1215" y="1184" text-anchor="middle" class="module-text" font-style="italic">own QEMU test target and the</text>
   <text x="1215" y="1198" text-anchor="middle" class="module-text" font-style="italic">real installed system (Phase 11)</text>
+  <text x="1215" y="1216" text-anchor="middle" class="module-text" fill="#c53030">+ local btrfs statfs patch → df = quota (ADR-0286)</text>
 
   <!-- daemon -> host os: a structural "IS" relationship, not a request flow.
        Kept muted/dashed like the other secondary arrows, not the bold blue
@@ -587,5 +591,6 @@
   <text x="30" y="1340" class="small-text">LDAP: glauth registration, user/group CRUD, automatic SSH + service-account provisioning (ADR-0109, ADR-0111); NTP host clock sync + container time sources (ADR-0110).</text>
   <text x="30" y="1354" class="small-text">pkg/ redesign (five parts): configurable recipe repo + sync, build-artifact cache, declarative image recipes, rolling images/containers with restart jitter (ADR-0120-125).</text>
   <text x="30" y="1368" class="small-text">Logging/web-UI epic (six parts): transparent container log capture, optional syslog forwarding, merged log panel, host stats + process list pages (ADR-0126-132).</text>
-  <text x="30" y="1382" class="small-text">Source of truth for what shipped: docs/roadmap/ROADMAP.md — for why: docs/adr/. Update this diagram whenever a change alters a box or arrow shown here (CLAUDE.md).</text>
+  <text x="30" y="1382" class="small-text">Container self-view: cix-procfuse serves per-cgroup /proc/{meminfo,cpuinfo,stat,uptime,loadavg,swaps} + sysfs cpu ranges + /proc/partitions; btrfs statfs patch reports the subvolume quota in df (ADR-0262/0286).</text>
+  <text x="30" y="1396" class="small-text">Source of truth for what shipped: docs/roadmap/ROADMAP.md — for why: docs/adr/. Update this diagram whenever a change alters a box or arrow shown here (CLAUDE.md).</text>
 </svg>
