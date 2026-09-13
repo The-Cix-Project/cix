@@ -6,6 +6,18 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A log tail stops reading once it has enough (#450)
+
+`GET /v1/system/logs?tail=300` parsed the entire log store. `logstore_tail_ex()` walked every segment from the oldest, `getline()` and `json_parse()`d every line, and kept the last N in a ring — so the cost was the size of the store, not the size of the answer. The dashboard's log panel polls exactly that every two seconds, and `cixd` is one epoll loop, so that walk is a latency floor for every other client while it runs.
+
+Measured from the watchdog's own records rather than guessed at, and the measurement is the point: **84 of 116 slow passes — 72% — named that one request**, worst pass 3162 ms. The owner had reported a recurring `slow-pass` on `GET /v1/pki/intermediate`; that endpoint accounts for 5, and `GET /v1/health` — which measures 1 ms on its own — appears in the same list. The `activity` field names whichever request was in flight when the loop was slow, so reading any single record as a cause is a mistake. The distribution is the evidence.
+
+Segments are now read **newest first**, each asked only for as many matches as are still needed, stopping as soon as the tail is full. That is what makes an early stop correct: the newest segment's last k matches *are* the store's last k. In the common case it is one segment read instead of eight. A filter that matches little still reads everything, which is unavoidable without an index and was never the case hurting anyone.
+
+The per-segment ring lives in the still-unused head of the result array and a wrapped one is straightened in place with a three-reversal rotation, because a second buffer would be 21 MB at the 5000-entry cap. Verified by simulating the algorithm against a reference implementation over 3000 randomised segment layouts — empty segments, limits above and below the total, one to eight segments — with zero mismatches, since this sandbox cannot compile the daemon.
+
+Worth noting for anyone tempted by the obvious client-side fix: having the dashboard poll with a real `since` cursor instead of `0` would **not** have helped. The filter is applied after parsing, so the walk cost the same either way.
+
 ### A listener knows where it is bound, and the dashboard survives blocked storage (#454, #453)
 
 Two unrelated defects, both found by doing rather than reasoning.

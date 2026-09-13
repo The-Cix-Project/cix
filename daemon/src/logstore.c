@@ -496,6 +496,30 @@ struct tail_entry {
 	char msg[LOGSTORE_MSG_MAX];
 };
 
+/*
+ * Rotate the first n entries left by k, in place (#450). Three
+ * reversals: reverse [0,k), reverse [k,n), reverse [0,n). Used to
+ * straighten a wrapped segment ring without a second allocation.
+ */
+static void reverse_range(struct tail_entry *a, int lo, int hi)
+{
+	while (lo < hi) {
+		struct tail_entry t = a[lo];
+
+		a[lo++] = a[hi];
+		a[hi--] = t;
+	}
+}
+
+static void rotate_left(struct tail_entry *a, int n, int k)
+{
+	if (n <= 0 || k <= 0 || k >= n)
+		return;
+	reverse_range(a, 0, k - 1);
+	reverse_range(a, k, n - 1);
+	reverse_range(a, 0, n - 1);
+}
+
 void logstore_tail(const char *source_filter, const char *level_filter, int64_t since,
                     int limit, struct json_writer *w)
 {
@@ -511,6 +535,10 @@ void logstore_tail_ex(const char *source_filter, const char *level_filter,
 	int eff_limit = (limit > 0 && limit <= 5000) ? limit : 1000;
 	struct tail_entry *ring;
 	int ring_head = 0, ring_count = 0;
+	/* Filled from the END backwards, because segments are read newest
+	 * first (#450). out_start is where the held run begins. */
+	int out_start;
+	int need;
 	int i;
 	regex_t re;
 	int have_re = 0;
@@ -536,13 +564,48 @@ void logstore_tail_ex(const char *source_filter, const char *level_filter,
 		jw_arr_close(w);
 		return;
 	}
+	out_start = eff_limit;
+	need = eff_limit;
 
-	for (i = 0; i < seg_count; i++) {
+	/*
+	 * NEWEST SEGMENT FIRST, and stop as soon as the tail is full (#450).
+	 *
+	 * This used to walk every segment from the oldest, getline() and
+	 * json_parse() every line in the whole store, and keep the last N
+	 * in a ring. So a `tail=300` paid for the entire log store, every
+	 * time. The dashboard's log panel polls
+	 * GET /v1/system/logs?since=0&tail=300 every two seconds, and cixd
+	 * is one epoll loop, so that walk is a latency floor for every
+	 * other client while it runs.
+	 *
+	 * Measured on 192.168.15.95, 2026-09-13, from the watchdog's own
+	 * slow-pass records: 84 of 116 slow passes -- 72% -- named that one
+	 * request, with a worst pass of 3162ms. (The remainder are
+	 * collateral rather than causes: `GET /v1/health`, which measures
+	 * 1ms on its own, appears in the same list, because the activity
+	 * field names whichever request was in flight when the loop was
+	 * slow.)
+	 *
+	 * Going backwards is what makes an early stop correct: the newest
+	 * segment's last k matches ARE the store's last k matches. Each
+	 * segment is asked only for as many as are still needed, and its
+	 * results land immediately before what is already held, so the
+	 * output stays in chronological order. Older segments are never
+	 * opened once the tail is full -- in the common case that is one
+	 * segment read instead of eight.
+	 *
+	 * A filter that matches little still reads everything, which is
+	 * correct and unavoidable without an index; it is also not the
+	 * case that was hurting anyone.
+	 */
+	for (i = seg_count - 1; i >= 0 && need > 0; i--) {
 		char path[600];
 		FILE *fp;
 		char *line = NULL;
 		size_t line_cap = 0;
 		ssize_t n;
+		int seg_head = 0, seg_count_matched = 0;
+		int j;
 
 		segment_path(seqs[i], path, sizeof(path));
 		fp = fopen(path, "r");
@@ -573,12 +636,16 @@ void logstore_tail_ex(const char *source_filter, const char *level_filter,
 				continue;
 			}
 
-			if (ring_count == eff_limit) {
-				idx = ring_head;
-				ring_head = (ring_head + 1) % eff_limit;
+			/* This segment's own ring, sized to what is still
+			 * needed, living in the still-unused HEAD of the result
+			 * array -- exactly `need` free slots are there by
+			 * construction, so no second allocation. */
+			if (seg_count_matched == need) {
+				idx = seg_head;
+				seg_head = (seg_head + 1) % need;
 			} else {
-				idx = ring_count;
-				ring_count++;
+				idx = seg_count_matched;
+				seg_count_matched++;
 			}
 			ring[idx].ts = ts;
 			snprintf(ring[idx].source, sizeof(ring[idx].source), "%s", src != NULL ? src : "");
@@ -590,11 +657,29 @@ void logstore_tail_ex(const char *source_filter, const char *level_filter,
 		}
 		free(line);
 		fclose(fp);
+
+		/*
+		 * The segment ring only advances seg_head once it is FULL, so
+		 * a partial segment (seg_count_matched < need) is already
+		 * linear at ring[0..m-1] and seg_head is 0. A full one may be
+		 * rotated; straighten it in place with the three-reversal
+		 * trick rather than allocating a second buffer -- at the 5000
+		 * cap a duplicate of this array would be 21MB.
+		 */
+		if (seg_head != 0)
+			rotate_left(ring, need, seg_head);
+		out_start -= seg_count_matched;
+		if (out_start != 0)
+			memmove(&ring[out_start], &ring[0],
+			        (size_t)seg_count_matched * sizeof(*ring));
+		need -= seg_count_matched;
 	}
+	ring_count = eff_limit - out_start;
+	ring_head = out_start;
 
 	jw_arr_open(w);
 	for (i = 0; i < ring_count; i++) {
-		int idx = (ring_head + i) % eff_limit;
+		int idx = ring_head + i;
 
 		jw_obj_open(w);
 		jw_key(w, "ts");
