@@ -31,7 +31,13 @@ read, never stored**, so it can never disagree with where cixd is actually bound
   bind, reported via a non-empty `bind_unavailable`). The old 2-second deferred
   removal of the superseded address (ADR-0068, a measured hang if done synchronously)
   is preserved; the loopback pair is started/stopped as the off-box address crosses
-  to/from loopback.
+  to/from loopback. That deferred removal **never tears down the network's own
+  address** — on both a move (`PUT` to a different address) and a reset, the old
+  address is removed only when it was a *dedicated* one, not when it coincides with
+  the derived network's own `address` (which the network keeps). The first on-box
+  build's selftest caught the `PUT`-move half of that guard missing, where moving
+  from a network's own address to a dedicated one scheduled the own address for
+  removal; `test_management_address` gates both halves now.
 - **`daemon-config` is listeners only now** — `management_network`, `bind_ip` and
   `bind` are gone from it; `GET /networks` carries the derived `management` boolean.
 - **`#436` closes here**: reapplying the persisted address at boot is now the *one*
