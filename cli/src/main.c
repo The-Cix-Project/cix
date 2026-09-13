@@ -4036,6 +4036,7 @@ static int cmd_logs(const struct cix_client *c, int json_mode, int argc, char **
 	char encoded_regex[256 * 3];
 	int i;
 	size_t o;
+	char sep = '?';
 	struct cix_response r;
 
 	for (i = 0; i < argc; i++) {
@@ -4057,23 +4058,35 @@ static int cmd_logs(const struct cix_client *c, int json_mode, int argc, char **
 		}
 	}
 
+	/*
+	 * sep is '?' for the first parameter and '&' for every one after
+	 * it. Every branch below used to append "<name>=<value>&" with no
+	 * separator at all, so the FIRST one ran straight onto the path:
+	 * `cixctl logs --tail=6` asked for "/v1/system/logstail=6&" and got
+	 * a 404 "no such endpoint". Bare `cixctl logs` worked, which is
+	 * what hid it -- every filter flag this command has was broken,
+	 * and the failure named the endpoint rather than the query.
+	 */
 	o = (size_t)snprintf(path, sizeof(path), CIX_API_getSystemLogs);
 	if (source != NULL)
-		o += (size_t)snprintf(path + o, sizeof(path) - o, "source=%s&", source);
+		o += (size_t)snprintf(path + o, sizeof(path) - o, "%csource=%s", sep, source), sep = '&';
 	if (level != NULL)
-		o += (size_t)snprintf(path + o, sizeof(path) - o, "level=%s&", level);
+		o += (size_t)snprintf(path + o, sizeof(path) - o, "%clevel=%s", sep, level), sep = '&';
 	if (container != NULL) {
 		url_encode_query_value(container, encoded_container, sizeof(encoded_container));
-		o += (size_t)snprintf(path + o, sizeof(path) - o, "container=%s&", encoded_container);
+		o += (size_t)snprintf(path + o, sizeof(path) - o, "%ccontainer=%s", sep,
+		                       encoded_container);
+		sep = '&';
 	}
 	if (msg_regex != NULL) {
 		url_encode_query_value(msg_regex, encoded_regex, sizeof(encoded_regex));
-		o += (size_t)snprintf(path + o, sizeof(path) - o, "regex=%s&", encoded_regex);
+		o += (size_t)snprintf(path + o, sizeof(path) - o, "%cregex=%s", sep, encoded_regex);
+		sep = '&';
 	}
 	if (tail != NULL)
-		o += (size_t)snprintf(path + o, sizeof(path) - o, "tail=%s&", tail);
+		o += (size_t)snprintf(path + o, sizeof(path) - o, "%ctail=%s", sep, tail), sep = '&';
 	if (since != NULL)
-		(void)snprintf(path + o, sizeof(path) - o, "since=%s&", since);
+		(void)snprintf(path + o, sizeof(path) - o, "%csince=%s", sep, since);
 
 	if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
