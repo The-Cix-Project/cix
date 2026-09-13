@@ -7409,13 +7409,26 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 			else if (strcasecmp(sha_out, recipe.sha256[i]) != 0)
 				why = "hashes to the wrong value";
 			if (why != NULL) {
+				/* #461: recipe.source[i] carries the token parse_recipe()
+				 * substituted for {{REPO_TOKEN}}, so logging it verbatim
+				 * writes a live repo credential into the log store
+				 * (measured on 192.168.15.95, 2026-09-13, in a cix
+				 * fetch-mismatch line). Redact it exactly as the
+				 * recipe-serving path does -- the token value becomes the
+				 * {{REPO_TOKEN}} placeholder again; the host and path, the
+				 * useful diagnostic, stay. */
+				char url_redacted[PKG_URL_MAX];
+
+				snprintf(url_redacted, sizeof(url_redacted), "%s",
+				         recipe.source[i][0] != '\0' ? recipe.source[i] : "(none)");
+				redact_repo_token(url_redacted, sizeof(url_redacted));
 				logstore_write("cixd", "error",
 				                "pkg %s@%s: source %d %s. path=%s bytes=%lld computed=%s "
 				                "declared=%s url=%s",
 				                e->name, recipe.version, i, why, src_path,
 				                (long long)sst.st_size,
 				                sha_out[0] != '\0' ? sha_out : "(none)", recipe.sha256[i],
-				                recipe.source[i][0] != '\0' ? recipe.source[i] : "(none)");
+				                url_redacted);
 				pkg_fail(e, is_final_upgrade, PIPELINE_FETCH,
 				         "checksum mismatch (source %d): %lld bytes hash to %.12s..., recipe "
 				         "declares %.12s... -- full hashes, path and url in the log store",
