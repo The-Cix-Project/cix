@@ -9,6 +9,55 @@
  */
 "use strict";
 
+/*
+ * localStorage THROWS -- it does not merely return null.
+ *
+ * Firefox raises NS_ERROR_FAILURE on any access when site data is
+ * blocked for the origin (cookie blocking, strict mode, some private
+ * windows); Chrome throws SecurityError in the same situation, and both
+ * throw on a quota failure. Reported from a real browser on
+ * 192.168.15.95:
+ *
+ *   Uncaught NS_ERROR_FAILURE  app.js:639:30
+ *
+ * which was `let authToken = storageGet("cix-auth-token")` at
+ * module scope. An uncaught throw there stops the whole script before
+ * anything initialises, so the page renders its static HTML and NOTHING
+ * loads -- a dead dashboard that looks like a data problem rather than
+ * a storage one.
+ *
+ * Ten other uses in this file each hand-rolled their own try/catch and
+ * were fine; the auth pair was written without one and took the page
+ * down. So the guard stops being a thing each call site remembers and
+ * becomes the only way this file touches storage. Every accessor
+ * degrades to "no stored value" and the dashboard works, minus the
+ * conveniences that persistence buys.
+ */
+function storageGet(key) {
+	try {
+		return storageGet(key);
+	} catch (e) {
+		return null;
+	}
+}
+
+function storageSet(key, value) {
+	try {
+		storageSet(key, value);
+		return true;
+	} catch (e) {
+		return false;
+	}
+}
+
+function storageRemove(key) {
+	try {
+		storageRemove(key);
+	} catch (e) {
+		/* Nothing stored means nothing to remove. */
+	}
+}
+
 const POLL_INTERVAL_MS = 2000;
 
 /* Latest polled data, one source of truth the tree, the summary
@@ -100,7 +149,7 @@ function setLogCollapsed(collapsed) {
 		logPanel.style.height = "";
 	} else {
 		try {
-			const saved = localStorage.getItem(LOG_HEIGHT_KEY);
+			const saved = storageGet(LOG_HEIGHT_KEY);
 
 			if (saved !== null) logPanel.style.height = saved + "px";
 		} catch (e) {
@@ -109,7 +158,7 @@ function setLogCollapsed(collapsed) {
 		}
 	}
 	try {
-		localStorage.setItem(LOG_COLLAPSE_KEY, collapsed ? "1" : "0");
+		storageSet(LOG_COLLAPSE_KEY, collapsed ? "1" : "0");
 	} catch (e) {
 		/* localStorage unavailable -- state just won't survive a reload. */
 	}
@@ -127,7 +176,7 @@ logPanelSource.addEventListener("click", (event) => {
 });
 
 try {
-	setLogCollapsed(localStorage.getItem(LOG_COLLAPSE_KEY) === "1");
+	setLogCollapsed(storageGet(LOG_COLLAPSE_KEY) === "1");
 } catch (e) {
 	/* localStorage unavailable -- default expanded. */
 }
@@ -177,7 +226,7 @@ function makeResizable(handle, opts) {
 		document.removeEventListener("mousemove", onMove);
 		document.removeEventListener("mouseup", onUp);
 		try {
-			localStorage.setItem(storageKey, String(lastSize));
+			storageSet(storageKey, String(lastSize));
 		} catch (e) {
 			/* localStorage unavailable -- won't survive a reload. */
 		}
@@ -196,7 +245,7 @@ function makeResizable(handle, opts) {
 	});
 
 	try {
-		const saved = localStorage.getItem(storageKey);
+		const saved = storageGet(storageKey);
 
 		/* skipInitialApplyIf(): for the log panel specifically, skip this
 		 * initial apply() when the panel is currently collapsed --
@@ -341,7 +390,7 @@ function applyTheme(theme) {
 	themeToggle.innerHTML = THEME_ICONS[theme];
 	themeToggle.title = "Theme: " + (theme === "dark" ? "Dark" : theme === "light" ? "Light" : "Auto") + " (click to cycle)";
 	try {
-		localStorage.setItem(THEME_KEY, theme);
+		storageSet(THEME_KEY, theme);
 	} catch (e) {
 		/* localStorage unavailable -- choice won't survive a reload,
 		 * same posture as every other localStorage-backed preference
@@ -636,8 +685,8 @@ document.getElementById("menu-about").addEventListener("click", async () => {
  * file's many call sites, the same design cix_client_set_token() gives
  * cixctl (client/include/httpclient.h).
  */
-let authToken = localStorage.getItem("cix-auth-token") || null;
-let authUsername = localStorage.getItem("cix-auth-username") || null;
+let authToken = storageGet("cix-auth-token") || null;
+let authUsername = storageGet("cix-auth-username") || null;
 
 const authStatusEl = document.getElementById("auth-status");
 const authActionBtn = document.getElementById("menu-auth-action");
@@ -675,11 +724,11 @@ function setAuth(token, username) {
 	authToken = token;
 	authUsername = username;
 	if (token) {
-		localStorage.setItem("cix-auth-token", token);
-		localStorage.setItem("cix-auth-username", username || "");
+		storageSet("cix-auth-token", token);
+		storageSet("cix-auth-username", username || "");
 	} else {
-		localStorage.removeItem("cix-auth-token");
-		localStorage.removeItem("cix-auth-username");
+		storageRemove("cix-auth-token");
+		storageRemove("cix-auth-username");
 	}
 	updateAuthUi();
 }
@@ -1468,7 +1517,7 @@ const LAST_VIEW_KEY = "cix-last-view";
 
 function saveLastView() {
 	try {
-		localStorage.setItem(LAST_VIEW_KEY, location.hash);
+		storageSet(LAST_VIEW_KEY, location.hash);
 	} catch (e) {
 		/* localStorage unavailable -- last view just won't survive a
 		 * fresh tab/reload; starts on the default view instead. */
@@ -1479,7 +1528,7 @@ function restoreLastViewIfNoHash() {
 	if (location.hash !== "")
 		return;
 	try {
-		const saved = localStorage.getItem(LAST_VIEW_KEY);
+		const saved = storageGet(LAST_VIEW_KEY);
 
 		if (saved)
 			location.hash = saved;
@@ -1872,7 +1921,7 @@ const TREE_COLLAPSE_KEY = "cix-tree-collapsed";
 
 function loadCollapsedCategories() {
 	try {
-		const raw = localStorage.getItem(TREE_COLLAPSE_KEY);
+		const raw = storageGet(TREE_COLLAPSE_KEY);
 
 		return raw ? new Set(JSON.parse(raw)) : new Set();
 	} catch (e) {
@@ -1882,7 +1931,7 @@ function loadCollapsedCategories() {
 
 function saveCollapsedCategories() {
 	try {
-		localStorage.setItem(TREE_COLLAPSE_KEY, JSON.stringify(Array.from(collapsedCategories)));
+		storageSet(TREE_COLLAPSE_KEY, JSON.stringify(Array.from(collapsedCategories)));
 	} catch (e) {
 		/* localStorage unavailable (private browsing, quota, ...) --
 		 * collapse state just won't survive a reload. */
@@ -2660,7 +2709,7 @@ function containersShowInternal() {
 	if (box !== null)
 		return box.checked;
 	try {
-		return localStorage.getItem("cix-containers-show-internal") === "1";
+		return storageGet("cix-containers-show-internal") === "1";
 	} catch (e) {
 		return false;
 	}
@@ -14060,13 +14109,13 @@ document.addEventListener("DOMContentLoaded", () => {
 	if (box === null)
 		return;
 	try {
-		box.checked = localStorage.getItem("cix-containers-show-internal") === "1";
+		box.checked = storageGet("cix-containers-show-internal") === "1";
 	} catch (e) {
 		/* no stored preference available -- the default (off) stands */
 	}
 	box.addEventListener("change", () => {
 		try {
-			localStorage.setItem("cix-containers-show-internal", box.checked ? "1" : "0");
+			storageSet("cix-containers-show-internal", box.checked ? "1" : "0");
 		} catch (e) {
 			/* the choice just will not survive a reload */
 		}

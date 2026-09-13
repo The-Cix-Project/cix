@@ -6,6 +6,28 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A listener knows where it is bound, and the dashboard survives blocked storage (#454, #453)
+
+Two unrelated defects, both found by doing rather than reasoning.
+
+**The HTTPS listener was never rebound by a management address change (#454).** Found by finally running the reboot-survival verification ADR-0283 and ADR-0284 had both asserted and neither had tested. After a live `.103 -> .95` move: `http=200` on the new address, `https=000` on both, until the next reboot rebound them from `net.conf`. The guard was
+
+```c
+if (strcmp(new_bind_addr, g_bind_addr) == 0 && new_port == daemon_config_https_port())
+```
+
+and the caller passed `g_bind_addr` — `strcmp(x, x)`, always zero, always "nothing to do". Wrong twice independently: the caller passes the global being compared against, *and* the http rebind has already overwritten that global before the https one runs.
+
+The two rebind functions were byte-identical apart from which conn they moved, which is the defect rather than a detail of it — one job, two implementations, distinguished only by a shared global neither of them owned. They are now one `rebind_listener_conn()` whose guard asks **the listener**: `struct conn` carries `listen_addr`/`listen_port`, the starters record it, the stoppers clear it (a stale record would make the next rebind decide it had nothing to do — the same bug wearing a different hat). The short-circuit stays, because the `EADDRINUSE` it prevents is real; it just asks the only thing that knows the answer.
+
+Gated by `test/test_listenbind.c`, **in `SELFTESTS`** — `test_daemon_bind_ip` is not in that list, so an assertion there would never once have run in a build container. It asserts exactly three places bind a listening socket, and that the guard reads `c->listen_addr` and never `g_bind_addr`. A fourth binding path now costs someone an edit to a number in a diff.
+
+One thing checked rather than assumed: the https *port*-change path passes `g_bind_addr` too, but `daemon_config_set_https_port()` runs after that rebind, so its port comparison was genuinely false and that path worked. Not every instance of a bad pattern is a bug.
+
+**An unguarded `localStorage` read took the whole dashboard down (#453).** Reported from a real browser: `Uncaught NS_ERROR_FAILURE` at `app.js:639`, the page rendering and no data ever loading. `localStorage` does not return null when unavailable — it **throws**, and Firefox throws on any access when site data is blocked for the origin. At module scope that stops the script before anything initialises, so a storage-permission problem presents as a dead daemon.
+
+The instructive part: ten other uses in that same file each hand-rolled a `try/catch`, and their comments say why — one at line 2654 spells out "in a try/catch because a private window or blocked site". The hazard was known, documented in the file, and still left to each call site to remember. The auth pair was written without it. So the guard stops being a convention and becomes the only route: `storageGet()`/`storageSet()`/`storageRemove()`, all 23 call sites converted, no raw `localStorage.` access left outside comments.
+
 ### The jump box gets the tools it is actually used for, declared rather than installed (#446, #447)
 
 The owner asked for `ping`, `ip` and `ifconfig` on `jump`. All three already existed as recipes with Cix-built artifacts in the cache (`iputils-s20180629-3`, `iproute2-6.18.0-17`, `net-tools-2.10-4`); none was in the `jumpbox` manifest. Installing them took 90 seconds and `ip`/`ifconfig` worked immediately.

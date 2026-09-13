@@ -1274,6 +1274,31 @@ struct conn {
 	char probe_container[REGISTRY_NAME_MAX];
 	char probe_desc[SERVERHEALTH_PROBE_MAX];
 	time_t probe_started_at;
+	/*
+	 * The address this listener is actually bound to (#454). Listener
+	 * conns only.
+	 *
+	 * Both rebind functions short-circuit when asked to rebind to where
+	 * they already are, because binding the same tuple twice is a real
+	 * EADDRINUSE that SO_REUSEADDR does not help with. They used to
+	 * make that comparison against the SHARED global g_bind_addr, which
+	 * is wrong for two independent reasons and was wrong in both at
+	 * once on the management-network path: the handler passes
+	 * g_bind_addr itself, making the test strcmp(x, x) and therefore
+	 * always true; and rebind_listener() has already overwritten
+	 * g_bind_addr with the new address by the time the https rebind is
+	 * attempted. So the https listener was never rebound by a
+	 * management address change, and stayed bound to an address that
+	 * had just been removed from the interface -- measured on
+	 * 192.168.15.95 (2026-09-13): after a live .103 -> .95 move,
+	 * http answered 200 on the new address and https answered nothing
+	 * on either, until the next reboot rebound both from net.conf.
+	 *
+	 * A listener's own bound address is a property of that listener,
+	 * so it lives on the listener.
+	 */
+	char listen_addr[64];                   /* listener conns only */
+	int listen_port;                        /* listener conns only */
 	char cleanup_ifname[NETWORK_NAME_MAX];  /* CONN_BIND_IP_CLEANUP only */
 	uint32_t cleanup_addr_be;               /* CONN_BIND_IP_CLEANUP only */
 	int cleanup_prefix_len;                 /* CONN_BIND_IP_CLEANUP only */
@@ -4093,27 +4118,59 @@ static int create_listen_socket(const char *bind_addr, int port)
  * detected up front rather than relying on SO_REUSEADDR semantics for
  * an identical rebind.
  */
-static int rebind_listener(const char *new_bind_addr, int new_port)
+/*
+ * Move ONE listener to a new address:port. The only implementation
+ * (#454).
+ *
+ * There used to be two of these, byte-identical apart from which conn
+ * they touched and which global they compared against -- and the
+ * comparison is the whole bug. Both short-circuited on
+ *
+ *     strcmp(new_addr, g_bind_addr) == 0 && new_port == <that global>
+ *
+ * against a SHARED global rather than against the listener's own state.
+ * On the management-address path that is wrong twice over: the caller
+ * passes g_bind_addr itself, making the test strcmp(x, x) and therefore
+ * always true; and the http rebind has already overwritten g_bind_addr
+ * with the new address before the https rebind is attempted. So the
+ * https listener was never rebound by a management address change. It
+ * stayed bound to an address that had just been removed from the
+ * interface, and only the next reboot -- which binds both from net.conf
+ * -- repaired it. Measured on 192.168.15.95, 2026-09-13: after a live
+ * .103 -> .95 move, http answered 200 on the new address and https
+ * answered nothing on either.
+ *
+ * The short-circuit itself is load-bearing and stays: binding the same
+ * tuple a second time while the existing listener is still open on it
+ * fails with EADDRINUSE, and SO_REUSEADDR does not help (that covers a
+ * TIME_WAIT teardown, not two simultaneously-open listeners). It just
+ * has to be asked of the listener being moved, which is the only thing
+ * that knows where it actually is.
+ *
+ * `what` names the listener in the log line and nothing else.
+ */
+static int rebind_listener_conn(struct conn *c, const char *what, const char *new_addr,
+                                 int new_port)
 {
 	int new_fd;
 	int old_fd;
 	struct cix_epoll_event ev;
 
-	if (strcmp(new_bind_addr, g_bind_addr) == 0 && new_port == g_port)
+	if (strcmp(new_addr, c->listen_addr) == 0 && new_port == c->listen_port)
 		return 0;
 
-	new_fd = create_listen_socket(new_bind_addr, new_port);
+	new_fd = create_listen_socket(new_addr, new_port);
 	if (new_fd < 0)
 		return -1;
 
-	old_fd = g_listener_conn.fd;
-	g_listener_conn.fd = new_fd;
+	old_fd = c->fd;
+	c->fd = new_fd;
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
-	ev.data.ptr = &g_listener_conn;
+	ev.data.ptr = c;
 	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, new_fd, &ev) != 0) {
-		perror("rebind_listener: epoll_ctl ADD");
-		g_listener_conn.fd = old_fd;
+		perror("rebind_listener_conn: epoll_ctl ADD");
+		c->fd = old_fd;
 		close(new_fd);
 		return -1;
 	}
@@ -4121,12 +4178,33 @@ static int rebind_listener(const char *new_bind_addr, int new_port)
 	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, old_fd, NULL);
 	close(old_fd);
 
+	snprintf(c->listen_addr, sizeof(c->listen_addr), "%s", new_addr);
+	c->listen_port = new_port;
+
+	printf("cixd rebound %s listener to %s:%d\n", what, new_addr, new_port);
+	fflush(stdout);
+	/*
+	 * In the log store as well as on the console, for the same reason
+	 * the startup "listening on ..." line exists: a console printf is
+	 * unreadable from off the box, and where a daemon is listening is
+	 * exactly the fact an operator needs when it has stopped answering.
+	 */
+	logstore_write("cixd", "info", "rebound %s listener to %s:%d", what, new_addr, new_port);
+	return 0;
+}
+
+/*
+ * The management HTTP listener. Also updates g_bind_addr/g_port, which
+ * are the daemon's own notion of the address it is reachable on --
+ * separate from where any single socket is bound, and read all over.
+ */
+static int rebind_listener(const char *new_bind_addr, int new_port)
+{
+	if (rebind_listener_conn(&g_listener_conn, "http", new_bind_addr, new_port) != 0)
+		return -1;
 	snprintf(g_bind_addr_buf, sizeof(g_bind_addr_buf), "%s", new_bind_addr);
 	g_bind_addr = g_bind_addr_buf;
 	g_port = new_port;
-
-	printf("cixd rebound listener to %s:%d\n", new_bind_addr, new_port);
-	fflush(stdout);
 	return 0;
 }
 
@@ -4541,6 +4619,13 @@ static int start_http_listener(struct conn *c, const char *bind_addr, int port)
 		c->fd = -1;
 		return -1;
 	}
+	/*
+	 * #454: a listener records where it actually is, so a later rebind
+	 * can ask IT rather than a shared global that another path may have
+	 * already moved.
+	 */
+	snprintf(c->listen_addr, sizeof(c->listen_addr), "%s", bind_addr);
+	c->listen_port = port;
 	printf("cixd listening on %s:%d\n", bind_addr, port);
 	fflush(stdout);
 	return 0;
@@ -4553,6 +4638,11 @@ static void stop_http_listener(void)
 	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, g_listener_conn.fd, NULL);
 	close(g_listener_conn.fd);
 	g_listener_conn.fd = -1;
+	/* #454: nowhere, not "still where it last was" -- a stale record
+	 * here would make a later rebind short-circuit into doing nothing,
+	 * which is the exact failure this field exists to prevent. */
+	g_listener_conn.listen_addr[0] = '\0';
+	g_listener_conn.listen_port = 0;
 }
 
 /*
@@ -4588,6 +4678,9 @@ static int start_https_listener(struct conn *c, const char *bind_addr, int port)
 		c->fd = -1;
 		return -1;
 	}
+	/* #454 -- see start_http_listener() and rebind_listener_conn(). */
+	snprintf(c->listen_addr, sizeof(c->listen_addr), "%s", bind_addr);
+	c->listen_port = port;
 	printf("cixd listening (https) on %s:%d\n", bind_addr, port);
 	fflush(stdout);
 	return 0;
@@ -4600,6 +4693,11 @@ static void stop_https_listener(void)
 	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, g_https_listener_conn.fd, NULL);
 	close(g_https_listener_conn.fd);
 	g_https_listener_conn.fd = -1;
+	/* #454, as in stop_http_listener(): a stopped listener is nowhere,
+	 * and a stale record would make a later rebind decide it had
+	 * nothing to do. */
+	g_https_listener_conn.listen_addr[0] = '\0';
+	g_https_listener_conn.listen_port = 0;
 }
 
 /*
@@ -4625,43 +4723,7 @@ static int start_listeners(struct conn *http, struct conn *https, const char *ad
 
 static int rebind_https_listener(const char *new_bind_addr, int new_port)
 {
-	int new_fd;
-	int old_fd;
-	struct cix_epoll_event ev;
-
-	/* Same no-op short-circuit rebind_listener() has, and for the same
-	 * reason: binding new_bind_addr:new_port a second time while the
-	 * existing https listener is still open on that identical tuple
-	 * fails with EADDRINUSE even with SO_REUSEADDR (that only helps
-	 * across a TIME_WAIT teardown, not two simultaneously-open
-	 * listeners) -- a real, reproducible failure this project's own
-	 * "verify before trusting" testing actually hit, not a hypothetical
-	 * edge case. */
-	if (strcmp(new_bind_addr, g_bind_addr) == 0 && new_port == daemon_config_https_port())
-		return 0;
-
-	new_fd = create_listen_socket(new_bind_addr, new_port);
-	if (new_fd < 0)
-		return -1;
-
-	old_fd = g_https_listener_conn.fd;
-	g_https_listener_conn.fd = new_fd;
-	memset(&ev, 0, sizeof(ev));
-	ev.events = EPOLLIN;
-	ev.data.ptr = &g_https_listener_conn;
-	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, new_fd, &ev) != 0) {
-		perror("rebind_https_listener: epoll_ctl ADD");
-		g_https_listener_conn.fd = old_fd;
-		close(new_fd);
-		return -1;
-	}
-
-	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, old_fd, NULL);
-	close(old_fd);
-
-	printf("cixd rebound https listener to %s:%d\n", new_bind_addr, new_port);
-	fflush(stdout);
-	return 0;
+	return rebind_listener_conn(&g_https_listener_conn, "https", new_bind_addr, new_port);
 }
 
 /*
@@ -6599,8 +6661,15 @@ static void handle_management_network_put(int fd, const char *body, size_t body_
 		respond_error(fd, 500, "Internal Server Error", "listener rebind failed");
 		return;
 	}
+	/*
+	 * new_ip, not g_bind_addr (#454). Passing the global was half of
+	 * the original defect -- rebind_listener() above has already set it
+	 * to new_ip, so the old guard compared the value against itself.
+	 * The guard is fixed to ask the listener where it is, and the call
+	 * says plainly where it should go.
+	 */
 	if (g_https_listener_conn.fd >= 0 &&
-	    rebind_https_listener(g_bind_addr, daemon_config_https_port()) != 0) {
+	    rebind_https_listener(new_ip, daemon_config_https_port()) != 0) {
 		respond_error(fd, 500, "Internal Server Error", "https listener rebind failed");
 		return;
 	}
