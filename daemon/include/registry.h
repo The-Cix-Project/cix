@@ -39,6 +39,24 @@ struct registry_console {
 #define REGISTRY_TEARDOWN_NONE 0
 #define REGISTRY_TEARDOWN_STOP 1
 #define REGISTRY_TEARDOWN_DELETE 2
+/*
+ * #448: "this incarnation is over, start the definition again once it
+ * is really dead." A rolling restart after an image update and an
+ * explicit POST .../restart are the same intent and share this one
+ * kind -- they used to share something else, registry_remove()'s
+ * synchronous kill-and-wait, which is what froze a live box.
+ */
+#define REGISTRY_TEARDOWN_RESTART 3
+/*
+ * #448: "stop it, copy its storage, then replay the definition."
+ * Container storage migration is a different intent from a restart --
+ * there is a copy pass and a disk re-pointing between the stop and the
+ * replay -- so it gets its own kind rather than being bent into
+ * RESTART. It used to stop the container with registry_remove()'s
+ * synchronous kill-and-wait, on the reactor, with no running check of
+ * any kind.
+ */
+#define REGISTRY_TEARDOWN_MIGRATE 4
 
 /* Issue #119: a teardown still incomplete this long after its SIGKILL is
  * almost certainly wedged in the kernel (a pidns init stuck reaping),
@@ -693,23 +711,38 @@ int registry_ip_holder(uint32_t candidate_be, char *out_name, size_t out_name_si
 void registry_mark_exited(struct registry_entry *entry);
 
 /*
- * Removes name from the table. If still running, sends SIGKILL via
- * the pidfd and reaps it before removing -- this blocks waiting for
- * the kernel to finish tearing the process down: microseconds in
- * practice, but NOT bounded in principle ("SIGKILL is unblockable" is
- * about signal masks, not about a task stuck in uninterruptible
- * D-state, where the kill only pends). The original comment here
- * deferred a fully-async kill+reap as "not warranted for a v1
- * skeleton" -- ADR-0180 makes exactly that call in the other
- * direction after two real production wedges (issue #67): a
- * delete/stop of a running container froze the entire single-threaded
- * daemon on this wait. Operator-facing delete/stop no longer come
- * through this running-kill branch at all (registry_begin_kill()
- * below + main.c's handle_container_event() completion); the branch
- * remains only for the internal storage-migration finalize path,
- * whose all-or-nothing job semantics genuinely want a synchronous
- * stop (tracked for async conversion on issue #67).
- * Returns 0, or -1 if no such container.
+ * Releases the table slot of a container that has ALREADY EXITED.
+ *
+ * ADR-0285: this does not stop anything. It used to SIGKILL a running
+ * container and reap it with a blocking waitid(), on the single thread
+ * that also serves every request -- unbounded in principle ("SIGKILL is
+ * unblockable" is about signal masks, not about a task in
+ * uninterruptible D-state, where the kill only pends) and unbounded in
+ * practice three times: twice before ADR-0180 (#67) and again on
+ * 2026-09-13, when a rolling restart after an ordinary package install
+ * held the control plane for eleven minutes and the box needed a
+ * hypervisor reset (#448).
+ *
+ * ADR-0180 built the asynchronous teardown and moved DELETE and stop
+ * onto it, but left the synchronous branch here for every other
+ * caller, each guarded only by a comment arguing its entry could not be
+ * running. Three of those arguments were wrong. So the branch is gone
+ * and the rule is now a mechanism: stopping a container is
+ * begin_container_stop()'s job, and this is the only way a slot is
+ * released.
+ *
+ * Given an entry still marked running it POLLS THE PIDFD rather than
+ * trusting the flag -- a remembered flag can be stale (see
+ * registry_set_paused()'s own note on e->paused), and refusing on a
+ * stale flag would break a legitimate start of an exited-but-registered
+ * container. Already exited: reaped and removed as before. Genuinely
+ * running, or a pidfd that cannot be polled: refused.
+ *
+ * Returns 0, or -1 with errno set -- ENOENT for no such container,
+ * EBUSY for one that is still running (logged, and nothing is changed).
+ * Callers that create a container of the same name immediately
+ * afterwards must check: on EBUSY the slot is still in use, and the
+ * create would otherwise report a name collision instead of the reason.
  */
 int registry_remove(const char *name);
 

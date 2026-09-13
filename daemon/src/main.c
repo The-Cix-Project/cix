@@ -15474,22 +15474,35 @@ static void handle_delete(int fd, const char *name)
  * migration's own "don't guess, surface it, never leave things half
  * done" posture.
  */
+static void container_storage_migration_after_stop(const char *name);
+
+/*
+ * ADR-0285 (#448): the stop half.
+ *
+ * This function used to stop the container itself, with
+ * registry_remove()'s SIGKILL-and-blocking-waitid() and no running
+ * check of any kind -- the same unbounded wait on the reactor that took
+ * a live box out through the rolling-restart path. A running container
+ * is now asked to stop the ordinary way and this returns; the kernel's
+ * pidfd event resumes the job in
+ * container_storage_migration_after_stop() below, which is the rest of
+ * what this function used to be, unchanged.
+ *
+ * The reactor_conn is KEPT for a running container: it is the pidfd
+ * registration, and freeing it would mean never learning the container
+ * had stopped -- a migration that hangs after the stop rather than a
+ * control plane that hangs during it.
+ */
 static void finalize_container_storage_migration(const char *name)
 {
-	char old_source_dir[PATH_MAX];
-	char target_dir[PATH_MAX];
-	char target_disk[DISKROLE_DISK_NAME_MAX];
-	char merged[PATH_MAX];
-	struct registry_entry *live;
-	struct container_def *def;
+	struct registry_entry *live = registry_find(name);
 
-	snprintf(old_source_dir, sizeof(old_source_dir), "%s",
-	         containerstoragemigrate_job_source_dir(name));
-	snprintf(target_dir, sizeof(target_dir), "%s", containerstoragemigrate_job_target_dir(name));
-	snprintf(target_disk, sizeof(target_disk), "%s", containerstoragemigrate_job_target_disk(name));
-
-	live = registry_find(name);
+	if (live != NULL && live->running) {
+		begin_container_stop(live, REGISTRY_TEARDOWN_MIGRATE);
+		return;
+	}
 	if (live != NULL) {
+		/* Exited but still registered: no stop needed, just the slot. */
 		if (live->reactor_conn != NULL) {
 			struct conn *rc = live->reactor_conn;
 
@@ -15497,8 +15510,36 @@ static void finalize_container_storage_migration(const char *name)
 			free(rc);
 			live->reactor_conn = NULL;
 		}
-		registry_remove(name);
+		if (registry_remove(name) != 0) {
+			logstore_write("cixd", "error",
+			                "%s: container-storage migration could not release the registry "
+			                "slot (%s) -- aborting the migration",
+			                name, strerror(errno));
+			return;
+		}
 	}
+	container_storage_migration_after_stop(name);
+}
+
+/*
+ * The half that needs the container's tree to be quiescent: the final
+ * copy pass, the disk re-pointing, the replay, and the abort path that
+ * restarts from the original location. Reached either directly (the
+ * container was already down) or from container_exit_finalize() when a
+ * REGISTRY_TEARDOWN_MIGRATE stop completes.
+ */
+static void container_storage_migration_after_stop(const char *name)
+{
+	char old_source_dir[PATH_MAX];
+	char target_dir[PATH_MAX];
+	char target_disk[DISKROLE_DISK_NAME_MAX];
+	char merged[PATH_MAX];
+	struct container_def *def;
+
+	snprintf(old_source_dir, sizeof(old_source_dir), "%s",
+	         containerstoragemigrate_job_source_dir(name));
+	snprintf(target_dir, sizeof(target_dir), "%s", containerstoragemigrate_job_target_dir(name));
+	snprintf(target_disk, sizeof(target_disk), "%s", containerstoragemigrate_job_target_disk(name));
 
 	/* Best-effort, same tolerant errno handling as DELETE's own crashed-
 	 * container cleanup (handle_delete() above) -- see that function's
@@ -15664,12 +15705,23 @@ static void handle_start(int fd, const char *name)
 		 * actually bring it back, not silently 200 the stale exited
 		 * entry -- so drop that record first, then replay the persisted
 		 * definition below exactly as a stopped-but-defined container's
-		 * own start already does. registry_remove() is safe on a
-		 * non-running entry (its kill/reap branch is skipped, no signal
-		 * sent to a possibly-reused pid) and frees the name/slot before
-		 * create_container_from_body() re-creates it.
+		 * own start already does.
+		 *
+		 * ADR-0285: registry_remove() no longer kills anything, and the
+		 * guard above means this entry is already not-running, so its
+		 * refusal branch cannot be reached from here. The return is
+		 * checked anyway -- an unchecked call whose safety rests on an
+		 * argument in a comment is the exact shape that produced #448,
+		 * and if that argument ever stops holding the operator should
+		 * be told why rather than shown a name collision from the
+		 * create below.
 		 */
-		registry_remove(name);
+		if (registry_remove(name) != 0) {
+			respond_error(fd, 409, "Conflict",
+			              "could not release this container's registry slot -- see the log "
+			              "store for why");
+			return;
+		}
 	}
 
 	def = containerdef_find(name);
@@ -22087,32 +22139,51 @@ static void handle_pkg_cancel(int fd, const char *body, size_t body_len)
 		int kept_ignored;
 		char hostbuild_done_name[PKG_NAME_MAX];
 
-		registry_remove(build_container_name);
-
 		/*
-		 * registry_remove() kills and reaps the container directly, so
-		 * the exit NEVER reaches handle_container_event()'s epoll-driven
-		 * path -- and that is the only place pkg_build_completed()
-		 * normally gets called. Without driving it here the container
-		 * really does die, and the entry sits in "building" forever
-		 * with its chain slot still held: a cancel that reports success
-		 * and stops nothing observable.
+		 * ADR-0285 (#448). A cancel targets a container that is, by
+		 * definition, RUNNING -- stopping a live build is the entire
+		 * point of the verb -- and this used to stop it with
+		 * registry_remove()'s SIGKILL and blocking waitid(), on the
+		 * reactor. The same unbounded wait that froze a live box
+		 * through the rolling-restart path was reachable here by a
+		 * single API call.
 		 *
-		 * handle_stop() found and documented exactly this for a manual
-		 * stop of a __pkgbuild container; this is the same case arriving
-		 * through a different verb, so it uses the same remedy rather
-		 * than a second one. exit_status is read AFTER removal on
-		 * purpose: registry_remove()'s own registry_mark_exited() sets
-		 * it, and the slot is flagged not-in-use rather than freed.
+		 * It now stops the ordinary way and returns. The 200 below
+		 * still means what it meant: the cancel is recorded in pkg's
+		 * own state (pkg_cancel() already ran and set the flag), and
+		 * the container is on its way down.
 		 *
-		 * keep_on_failure is deliberately ignored, as it is there: that
-		 * flag is about an unprompted build failure, never a
-		 * deliberately-killed one.
+		 * The block that used to follow is DELETED rather than moved,
+		 * and that is the tell that it was a parallel implementation.
+		 * It existed solely because "registry_remove() kills and reaps
+		 * the container directly, so the exit NEVER reaches
+		 * handle_container_event()'s epoll-driven path -- and that is
+		 * the only place pkg_build_completed() normally gets called".
+		 * With the async stop the exit DOES reach that path, and
+		 * container_exit_finalize() calls pkg_build_completed(),
+		 * pkg_completion_followup() and artifact_push_pump() at the top
+		 * of every container exit already. Driving them a second time
+		 * here would double-advance the chain.
 		 */
-		if (re != NULL) {
-			if (pkg_build_completed(build_container_name, re->exit_status, &pkg_pid,
-			                        &pkg_pidfd, &pkg_chain_idx, hostbuild_done_name,
-			                        &kept_ignored))
+		if (re != NULL && re->running) {
+			begin_container_stop(re, REGISTRY_TEARDOWN_STOP);
+		} else if (re != NULL) {
+			/*
+			 * Already exited (a build that finished or died between
+			 * pkg_cancel() and here): no stop to do, and no exit event
+			 * still coming, so this is the one case that must still
+			 * drive the completion itself. keep_on_failure is
+			 * deliberately ignored -- that flag is about an unprompted
+			 * build failure, never a deliberately-killed one.
+			 */
+			int exit_status = re->exit_status;
+
+			if (registry_remove(build_container_name) != 0)
+				logstore_write("cixd", "error",
+				                "%s: cancel could not release the registry slot (%s)",
+				                build_container_name, strerror(errno));
+			if (pkg_build_completed(build_container_name, exit_status, &pkg_pid, &pkg_pidfd,
+			                        &pkg_chain_idx, hostbuild_done_name, &kept_ignored))
 				register_pkg_fetch_pidfd(pkg_pid, pkg_pidfd, pkg_chain_idx);
 			else
 				try_start_queued_pkg_rebuild();
@@ -26909,6 +26980,19 @@ static void handle_restart_timer_event(struct conn *cc)
 {
 	struct container_def *def;
 	uint64_t expirations;
+	char activity[128];
+
+	/*
+	 * ADR-0285: name what this pass is doing, so the watchdog's record
+	 * can too. #448's record carried `activity: ""` -- correctly, by
+	 * that field's own definition, because it is set as a REQUEST
+	 * begins and this work arrives from a timer. One empty field was
+	 * most of why the call site took an hour to find among twenty
+	 * candidates.
+	 */
+	snprintf(activity, sizeof(activity), "restart timer %s", cc->restart_name);
+	stallwatch_activity(activity);
+
 
 	/* Required to clear the timerfd's own expiration count -- without
 	 * this read() the fd would stay perpetually EPOLLIN-readable. Its
@@ -27029,10 +27113,61 @@ static void arm_rolling_restart_timer(const char *name, int delay_seconds)
  * picks it up automatically, the same way every other consumer of a
  * persisted body already does.
  */
+/*
+ * Brings a rolled container back from its persisted definition.
+ *
+ * One implementation with two callers (ADR-0285): the rolling-restart
+ * timer uses it when the container was already down, and
+ * container_exit_finalize() uses it when a REGISTRY_TEARDOWN_RESTART
+ * stop has completed. Before this, the replay lived inline in the timer
+ * handler -- and the async path would have needed its own copy, which
+ * is exactly the shape (two implementations of one job) that caused
+ * #448 in the first place.
+ */
+static void rolling_restart_replay(const char *name, struct container_def *def)
+{
+	struct registry_entry *entry;
+	char restart_policy[16];
+	int restart_delay_seconds;
+	char depends_on[CONTAINERDEF_MAX_DEPENDS][REGISTRY_NAME_MAX];
+	int depends_on_count;
+	int follow_rolling;
+	int has_follow_rolling_jitter, follow_rolling_jitter_seconds;
+	char err_msg[256];
+
+	if (create_container_from_body(def->body, def->body_len, &entry, restart_policy,
+	                                &restart_delay_seconds, depends_on, &depends_on_count,
+	                                &follow_rolling, &has_follow_rolling_jitter,
+	                                &follow_rolling_jitter_seconds, err_msg,
+	                                sizeof(err_msg)) != 0) {
+		/*
+		 * stderr is not mirrored into the log store, and this is a
+		 * failure an operator has no other way to see: the container
+		 * was stopped deliberately and did not come back.
+		 */
+		logstore_write("cixd", "error", "%s: rolling restart failed: %s", name, err_msg);
+		fprintf(stderr, "%s: rolling restart failed: %s\n", name, err_msg);
+		return;
+	}
+	resync_managed_services();
+}
+
 static void handle_rolling_restart_timer_event(struct conn *cc)
 {
 	struct container_def *def;
 	uint64_t expirations;
+	char activity[128];
+
+	/*
+	 * ADR-0285: name what this pass is doing, so the watchdog's record
+	 * can too. #448's record carried `activity: ""` -- correctly, by
+	 * that field's own definition, because it is set as a REQUEST
+	 * begins and this work arrives from a timer. One empty field was
+	 * most of why the call site took an hour to find among twenty
+	 * candidates.
+	 */
+	snprintf(activity, sizeof(activity), "rolling restart %s", cc->restart_name);
+	stallwatch_activity(activity);
 
 	if (read(cc->fd, &expirations, sizeof(expirations)) < 0)
 		perror("read (rolling restart timerfd)");
@@ -27044,7 +27179,42 @@ static void handle_rolling_restart_timer_event(struct conn *cc)
 	if (def != NULL && !def->stopped) {
 		struct registry_entry *live = registry_find(cc->restart_name);
 
+		/*
+		 * ADR-0285 (#448). This used to tear down the pidfd
+		 * registration and then registry_remove() the container --
+		 * SIGKILL plus a blocking waitid() on the reactor. For a LIVE
+		 * container that wait is unbounded, and on 2026-09-13 it did
+		 * not come back: a `pkg install` into an image rolls every
+		 * container following it, so an ordinary install held the
+		 * control plane for eleven minutes and the box needed a
+		 * hypervisor reset.
+		 *
+		 * A running container is now asked to stop the way every other
+		 * caller asks -- begin_container_stop(), which tells cix-init
+		 * over its control socket, arms the SIGKILL escalation, and
+		 * RETURNS. The replay happens in container_exit_finalize()
+		 * when the exit actually arrives, keyed on
+		 * REGISTRY_TEARDOWN_RESTART.
+		 *
+		 * The reactor_conn is deliberately KEPT: it is the pidfd
+		 * registration, i.e. the only thing that will tell us the
+		 * container died. Freeing it here (which the old code did,
+		 * because it was about to reap synchronously) would strand the
+		 * container stopped and never replay it.
+		 */
+		if (live != NULL && live->running) {
+			begin_container_stop(live, REGISTRY_TEARDOWN_RESTART);
+			free(cc);
+			return;
+		}
 		if (live != NULL) {
+			/*
+			 * Exited but still registered -- no stop needed, just the
+			 * slot. Checked rather than assumed (ADR-0285):
+			 * registry_remove() now refuses a container it finds
+			 * running, and replaying over a held slot would 409 with a
+			 * name collision instead of the real reason.
+			 */
 			if (live->reactor_conn != NULL) {
 				struct conn *rc = live->reactor_conn;
 
@@ -27052,7 +27222,14 @@ static void handle_rolling_restart_timer_event(struct conn *cc)
 				free(rc);
 				live->reactor_conn = NULL;
 			}
-			registry_remove(cc->restart_name);
+			if (registry_remove(cc->restart_name) != 0) {
+				logstore_write("cixd", "error",
+				                "%s: rolling restart could not release the registry slot (%s) "
+				                "-- not replaying",
+				                cc->restart_name, strerror(errno));
+				free(cc);
+				return;
+			}
 		}
 		/* else: an explicit DELETE/stop already took it down during the
 		 * jitter delay -- def->stopped above already re-checked for the
@@ -27062,25 +27239,7 @@ static void handle_rolling_restart_timer_event(struct conn *cc)
 		 * below is correct: it just becomes an ordinary restart of a
 		 * currently-stopped-but-defined container. */
 
-		{
-			struct registry_entry *entry;
-			char restart_policy[16];
-			int restart_delay_seconds;
-			char depends_on[CONTAINERDEF_MAX_DEPENDS][REGISTRY_NAME_MAX];
-			int depends_on_count;
-			int follow_rolling;
-			int has_follow_rolling_jitter, follow_rolling_jitter_seconds;
-			char err_msg[256];
-			int status = create_container_from_body(
-			    def->body, def->body_len, &entry, restart_policy, &restart_delay_seconds,
-			    depends_on, &depends_on_count, &follow_rolling, &has_follow_rolling_jitter,
-			    &follow_rolling_jitter_seconds, err_msg, sizeof(err_msg));
-
-			if (status != 0)
-				fprintf(stderr, "%s: rolling restart failed: %s\n", cc->restart_name, err_msg);
-			else
-				resync_managed_services();
-		}
+		rolling_restart_replay(cc->restart_name, def);
 	}
 
 	free(cc);
@@ -27393,7 +27552,8 @@ static void container_exit_finalize(struct registry_entry *entry)
 	 * gone, same as stop's own long-standing "operator intent beats
 	 * the keep flag" rule.
 	 */
-	if (teardown_kind == REGISTRY_TEARDOWN_DELETE || teardown_kind == REGISTRY_TEARDOWN_STOP) {
+	if (teardown_kind == REGISTRY_TEARDOWN_DELETE || teardown_kind == REGISTRY_TEARDOWN_STOP ||
+	    teardown_kind == REGISTRY_TEARDOWN_RESTART || teardown_kind == REGISTRY_TEARDOWN_MIGRATE) {
 		/*
 		 * Remove only the SAME INCARNATION this completion belongs to.
 		 * The lookup is by name, and a stop followed by a quick start
@@ -27424,6 +27584,37 @@ static void container_exit_finalize(struct registry_entry *entry)
 		 */
 		if (!kept_build_container)
 			unmount_container_overlay(disk_copy, name_copy);
+		/*
+		 * ADR-0285 (#448): the two kinds that are not the end of the
+		 * story. The container is now really dead, the slot is
+		 * released and the overlay is unmounted, which is exactly the
+		 * state each of these was waiting for.
+		 *
+		 * RESTART: bring it back from its persisted definition, via
+		 * the same rolling_restart_replay() the timer handler uses
+		 * when no stop was needed.
+		 *
+		 * MIGRATE: run the half of the storage migration that needs a
+		 * quiescent tree -- the final copy pass, the disk re-pointing
+		 * and its own replay, including the abort path that restarts
+		 * from the original location.
+		 */
+		if (teardown_kind == REGISTRY_TEARDOWN_RESTART) {
+			struct container_def *rdef = containerdef_find(name_copy);
+
+			if (rdef != NULL && !rdef->stopped)
+				rolling_restart_replay(name_copy, rdef);
+			else
+				logstore_write("cixd", "info",
+				                "%s: rolling restart completed with no definition to replay "
+				                "(deleted or stopped while it was shutting down)",
+				                name_copy);
+			return;
+		}
+		if (teardown_kind == REGISTRY_TEARDOWN_MIGRATE) {
+			container_storage_migration_after_stop(name_copy);
+			return;
+		}
 		if (teardown_kind == REGISTRY_TEARDOWN_DELETE) {
 			char container_root[PATH_MAX];
 			char container_base[PATH_MAX];
@@ -29505,6 +29696,24 @@ static int cixd_main(int argc, char **argv)
 				handle_uevent_event(cc);
 			else
 				handle_client_event(cc);
+			/*
+			 * ADR-0285: one clear for every event kind, here rather
+			 * than at each handler's several exits.
+			 *
+			 * The request path already clears its own activity after
+			 * dispatch() returns, so for CONN_CLIENT this is a no-op.
+			 * What it adds is the timer handlers: a handler that SETS
+			 * activity and returns through any of four paths would
+			 * otherwise leave its label standing, and the next stall --
+			 * whatever caused it -- would be recorded against a rolling
+			 * restart that finished minutes ago. A wrong activity is
+			 * worse than the empty one #448 had, because it is
+			 * believed.
+			 *
+			 * A handler that never returns never reaches this, which is
+			 * exactly the case the field exists for.
+			 */
+			stallwatch_activity_clear();
 		}
 
 		/*
