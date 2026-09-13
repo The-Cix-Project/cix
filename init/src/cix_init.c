@@ -1330,7 +1330,7 @@ static void set_own_cmdline(long argc, char **argv)
 {
 	char uts[6 * 65];
 	const char *node = uts + 65;
-	const char *pfx = "cix-init:";
+	const char *pfx = "cix-init [";
 	char *start, *end, *p;
 	int i;
 
@@ -1345,11 +1345,15 @@ static void set_own_cmdline(long argc, char **argv)
 		return;
 	if (sc1(SYS_uname, (long)uts) != 0)
 		return;
+	/* "cix-init [<container>]", to match "cixd [procfuse]" -- the argv
+	 * area has room, unlike the 15-char comm, which stays "init:<name>". */
 	p = start;
 	for (i = 0; pfx[i] != '\0' && p < end - 1; i++)
 		*p++ = pfx[i];
 	for (i = 0; node[i] != '\0' && p < end - 1; i++)
 		*p++ = node[i];
+	if (p < end - 1)
+		*p++ = ']';
 	while (p < end)
 		*p++ = '\0';
 }
