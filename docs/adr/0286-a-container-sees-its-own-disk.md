@@ -11,7 +11,7 @@ btrfs-subvolume rootfs is what makes the chosen mechanism available.
 ## Context
 
 A container on this platform is told the truth about its memory and its CPU and
-is lied to about its disk. Measured inside `jump` on 192.168.15.103, 2026-09-13:
+is lied to about its disk. Measured inside `jump` on 192.168.15.95, 2026-09-13:
 
 ```
 claude@jump:~$ df -h
@@ -70,7 +70,7 @@ its own size, not all of them reporting one number.
 it shows the real shape:
 
 ```
-/dev/vdb5 / btrfs rw,…,idmapped,…,subvolid=764,subvol=/containers/jump/rootfs
+/dev/vdb5 / btrfs rw,…,idmapped,…,subvolid=777,subvol=/containers/jump/rootfs
 /dev/vdb5 /home btrfs rw,…,idmapped,…,subvolid=591,subvol=/volumes/jump-home
 ```
 
@@ -123,6 +123,17 @@ mountpoint, so nothing has to be invented or tracked.
 
 No kernel change, no new mechanism, and it removes `sda`, `sr0` and the host's
 partition table from a container's view.
+
+**The one entry it keeps is the real backing device at its real size** — for
+`jump`, `vdb5` at 16 GiB, the actual btrfs volume its rootfs and `/home` live on —
+and there is deliberately no synthesis. A container's `df` (after tier 2) reports
+the 512 MiB qgroup limit while its `/proc/partitions` reports the 16 GiB device,
+and that pair is not a contradiction: it is exactly how a real machine reads when a
+filesystem does not fill its medium — the partition is the physical extent, the
+quota is the logical bound. Showing the true device is more native than fabricating
+a partition sized to the quota, which is the "synthetic entry" the owner was right
+to be wary of. The cost is that the backing device's size is still visible; the
+benefit is that everything shown is true.
 
 ### 2. btrfs `statfs()` reports the subvolume's qgroup limit
 
@@ -182,6 +193,15 @@ only container rootfs and volumes are affected — which is the intent.
 needs a third mechanism, and `lsblk` reads it. A container will still see the
 host's block devices there. Recorded as a known remaining gap rather than quietly
 left out.
+
+**The opt-out is the one that already exists, and tier 1 inherits it for free.**
+`procfuse: false` on a container create declines the whole `cix-procfuse` bind set
+today (`main.c:12530`, `main.c:14590`); adding `/proc/partitions` to that set means
+a container that opts out of its own `/proc/meminfo` also opts out of its own
+`/proc/partitions`, with no second flag and no second policy. Tier 2 is a property
+of the filesystem itself and has no per-container switch — a container carrying a
+qgroup limit gets the corrected `df` unconditionally, which is correct, because the
+limit is real whether or not the container asked to be shown it.
 
 **`CONFIG_FUSE_PASSTHROUGH` is not needed and is not enabled.** It was approved for
 the FUSE-root design that this ADR declines. Turning it on is a separate decision
