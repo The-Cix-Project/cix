@@ -5946,18 +5946,29 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 	    parse_recipe(recipe_path, &recipe) != 0 || strcmp(recipe.name, name) != 0)
 		return PKG_ERR_INVALID_RECIPE;
 
-	/* ADR-0122: computed fresh for every queue entry (never left stale
-	 * from a prior one) -- a hostbuild job's own artifact never belongs
-	 * in the shared package cache (a one-shot host harvest, not
-	 * something merged into any image, see g_chains[chain_idx].is_hostbuild's
-	 * own doc), so it's never a cache candidate. Held in a local here
-	 * (rather than written straight to e->cache_hit) since e isn't
-	 * resolved/settled until just below -- a brand new entry gets a
-	 * fresh memset() that would wipe a too-early write right back out;
-	 * the forked child below reads this same local via its own
-	 * fork()-inherited copy, not e->cache_hit, for the identical
-	 * reason. */
-	cache_hit = !g_chains[chain_idx].is_hostbuild && pkg_cache_has(recipe.name, recipe.version);
+	/* ADR-0122/ADR-0289: computed fresh for every queue entry (never
+	 * left stale from a prior one). The local cache is consulted for a
+	 * hostbuild too. ADR-0122 originally excluded hostbuild here,
+	 * reasoning that a hostbuild's own artifact never belongs in a
+	 * shared package cache -- true of the OUTPUT (it is harvested to
+	 * ARTIFACTS_DIR, never merged into any image, see the harvest
+	 * branch in pkg_fetch_completed()), but the exclusion wrongly
+	 * extended to this READ. Since #129 a hostbuild publishes its
+	 * artifact, and a successful remote artifact fetch saves the
+	 * fetched tarball into the local cache (pkg_cache_save_from_file(),
+	 * further down), so the local cache legitimately holds hostbuild
+	 * packages -- and reusing those bytes lets a re-hostbuild skip a
+	 * re-download. A hostbuild that BUILDS still never writes the local
+	 * cache (its harvest branch has no pkg_cache_save() -- only the
+	 * ordinary-install branch does), so a hit here only ever comes from
+	 * a prior fetch, whose bytes are that same version and therefore
+	 * the same artifact. Held in a local here (rather than written
+	 * straight to e->cache_hit) since e isn't resolved/settled until
+	 * just below -- a brand new entry gets a fresh memset() that would
+	 * wipe a too-early write right back out; the forked child below
+	 * reads this same local via its own fork()-inherited copy, not
+	 * e->cache_hit, for the identical reason. */
+	cache_hit = pkg_cache_has(recipe.name, recipe.version);
 
 	e = pkg_find(name, g_chains[chain_idx].image);
 	is_upgrade = (e != NULL && e->state == PKG_STATE_INSTALLED);
