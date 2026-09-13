@@ -211,3 +211,15 @@ with its own justification, should one ever arise.
 which is correct: an unbounded container genuinely can use what the pool has.
 Whether every container should therefore carry a default quota is a real question
 and deliberately not answered here.
+
+**Both tiers shipped and were verified live** (2026-09-13, 192.168.15.95). Tier 1
+in cix v2.57.145; tier 2 in kernel 7.2.3-12. `df -T / /home` inside `jump` reports
+512 MiB for `/` and 2 GiB for `/home` — its actual quotas — where both read 16 GiB
+before. Two things the build taught, recorded so the next kernel patch does not
+relearn them: `kernel-builder` carries no `patch(1)` and a hostbuild's
+`pkg_build_depends` composes nothing into the build image (ADR-0199), so the patch
+is applied with `awk`/`cat`, each insertion asserting its anchor and the build
+grepping for the injected symbol so a moved anchor fails the build; and a
+recipe-revision bump leaves the kernel *version* string unchanged (`7.2.3`), so
+deploying it requires `kernel_path` passed to `/system/update` explicitly and
+`uname`'s build date — not the version — to confirm the new kernel actually booted.
