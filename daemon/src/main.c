@@ -3090,11 +3090,27 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
 		          * that the reactor does not block in the first place,
 		          * which test_blocking_waits enforces per file.
 		          */
+		         /*
+		          * No --bind= (#443). The management address belongs to
+		          * net.conf, which boot_init() reads and which the
+		          * listener now binds (ADR-0284). Writing it here too
+		          * made it a second copy of one fact, read from the
+		          * wrong one: PUT /system/management-network updated
+		          * net.conf and the registry, this entry kept the old
+		          * address, and the next boot bound an address that was
+		          * gone. There is no override to preserve -- cix-boot
+		          * has no edit-at-menu, so a cmdline copy was never
+		          * something an operator could reach for, and a box
+		          * whose net.conf is wrong now comes up on loopback
+		          * with a working console shell instead of needing one.
+		          * The --bind= FLAG stays, for test and dev invocations
+		          * that have no net.conf at all.
+		          */
 		         "options %s%sroot=PARTUUID=%s rw panic=10 init=/bin/cixd -- --init-mode "
-		         "--slot=%s --bind=%s\n",
+		         "--slot=%s\n",
 		         inactive_slot[0] == 'a' ? "A" : "B", (long)time(NULL), inactive_slot,
-		         console_opts, console_opts[0] != '\0' ? " " : "", root_partuuid, inactive_slot,
-		         g_bind_addr);
+		         console_opts, console_opts[0] != '\0' ? " " : "", root_partuuid,
+		         inactive_slot);
 	}
 
 	{
@@ -29187,6 +29203,35 @@ static int cixd_main(int argc, char **argv)
 	    start_listeners(&g_lo_listener_conn, &g_lo_https_listener_conn, DEFAULT_BIND, port) != 0)
 		fprintf(stderr, "could not bind %s -- the console shell has nothing to talk to\n",
 		        DEFAULT_BIND);
+
+	/*
+	 * Record what is actually bound. The per-listener "cixd listening
+	 * on ..." lines are printf()s to the console, which no API can read
+	 * -- so ADR-0284's central claim (loopback is always there) was
+	 * unverifiable from off the box, and an unverifiable claim is one
+	 * nobody can catch going false. This line is the check.
+	 */
+	{
+		char bound[256];
+		size_t off = 0;
+
+		bound[0] = '\0';
+		if (g_listener_conn.fd >= 0)
+			off += (size_t)snprintf(bound + off, sizeof(bound) - off, "http %s:%d",
+			                         g_bind_addr, port);
+		if (g_https_listener_conn.fd >= 0 && off < sizeof(bound) - 1)
+			off += (size_t)snprintf(bound + off, sizeof(bound) - off, "%shttps %s:%d",
+			                         off > 0 ? ", " : "", g_bind_addr,
+			                         daemon_config_https_port());
+		if (g_lo_listener_conn.fd >= 0 && off < sizeof(bound) - 1)
+			off += (size_t)snprintf(bound + off, sizeof(bound) - off, "%shttp %s:%d",
+			                         off > 0 ? ", " : "", DEFAULT_BIND, port);
+		if (g_lo_https_listener_conn.fd >= 0 && off < sizeof(bound) - 1)
+			snprintf(bound + off, sizeof(bound) - off, "%shttps %s:%d",
+			          off > 0 ? ", " : "", DEFAULT_BIND, daemon_config_https_port());
+		logstore_write("cixd", "info", "listening on %s",
+		                bound[0] != '\0' ? bound : "nothing");
+	}
 
 	if (g_listener_conn.fd < 0 && g_https_listener_conn.fd < 0 && g_lo_listener_conn.fd < 0 &&
 	    g_lo_https_listener_conn.fd < 0) {
