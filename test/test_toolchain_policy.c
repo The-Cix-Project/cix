@@ -55,7 +55,7 @@ static const char *const g_gcc_recipes[] = {
 	"btop", "binutils", "binutils-dev", "bird", "btrfs-progs", "cmake", "efivar", "elfutils",
 	"fastfetch", "gcc", "gitea", "glauth", "glibc", "gnu-efi", "go", "go-bootstrap",
 	"grub", "kernel", "keyutils", "kmod", "libblkid", "libxcrypt",
-	"linux-headers", "perl", "probe-gcc-headers", "probe-gcc-postglibc",
+	"linux-headers", "node", "perl", "probe-gcc-headers", "probe-gcc-postglibc",
 	/*
 	 * probe-wifi-driver names /usr/bin/gcc to ASK ABOUT it, not to
 	 * build with it: revision 9 runs `gcc -E -Wp,-v` to print HOSTCC's
