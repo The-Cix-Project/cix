@@ -605,7 +605,6 @@ void logstore_tail_ex(const char *source_filter, const char *level_filter,
 		size_t line_cap = 0;
 		ssize_t n;
 		int seg_head = 0, seg_count_matched = 0;
-		int j;
 
 		segment_path(seqs[i], path, sizeof(path));
 		fp = fopen(path, "r");
