@@ -5371,19 +5371,30 @@ paths:
         filesystem -- because growing only the entry leaves the extra
         space invisible to everything using the filesystem, which reads
         as the resize having silently done nothing.
-        Requires the partition to be unmounted and not part of the OS
-        layout. ext4, btrfs and unformatted partitions are all grown
-        (issue #163): btrfs needs its filesystem MOUNTED to grow, the
-        opposite of resize2fs, so it is mounted at a private scratch
-        point after the table entry grows and unmounted again, leaving
-        it exactly as it was found. Any other filesystem is refused.
-        If the table grows but the kernel is still reporting the old
-        size -- which happens when something else on the disk is in use
-        -- the filesystem is deliberately NOT grown and a 409 is
+        Not part of the OS layout (the OS disk and its first four
+        partitions are refused). A MOUNTED btrfs partition IS grown --
+        online, in place, on its live mountpoint -- which is the only
+        way the daemon's own data directory (cixd --data-dir=, mounted
+        at /var/lib/cix and never unmountable) can be extended; anything
+        else must be unmounted first (409). ext4, btrfs and unformatted
+        partitions are all grown (issue #163): btrfs needs its
+        filesystem MOUNTED to grow, the opposite of resize2fs, so an
+        unmounted one is mounted at a private scratch point after the
+        table entry grows and unmounted again, while an already-mounted
+        one is grown where it is and left mounted. Any other filesystem
+        is refused. The table entry is grown with sfdisk --no-tell-kernel
+        and the kernel is told about just this partition via
+        BLKPG_RESIZE_PARTITION (issue #94), so the grow works on a disk
+        carrying mounted partitions -- the whole-disk re-read that would
+        EBUSY is never used. If the kernel refuses the per-partition
+        resize the filesystem is deliberately NOT grown and a 409 is
         returned, because growing it then would resize it to the old
         bound and report success. Only free space IMMEDIATELY AFTER the
         partition can be used -- free space elsewhere on the disk cannot
-        extend it (see GET /disks/{name}/free-space).
+        extend it (see GET /storage/{name}/free-space). Re-issuing the
+        same request after a filesystem-grow failure is safe: the table
+        is already the right size, so it finishes the filesystem grow
+        rather than refusing as a shrink.
       operationId: resizeStoragePartition
       x-cix-expose: [cli, web]
       parameters:
@@ -5435,10 +5446,11 @@ paths:
                 $ref: "#/components/schemas/Error"
         "409":
           description: >
-            The partition is mounted, there is not enough free space
-            immediately after it, or its filesystem needs a check that
-            cannot be made automatically (the table is NOT changed in
-            that case)
+            The partition is mounted and is not btrfs (only a mounted
+            btrfs is grown in place), there is not enough free space
+            immediately after it, the kernel refused the per-partition
+            resize, or its filesystem needs a check that cannot be made
+            automatically (the table is NOT changed in that case)
           content:
             application/json:
               schema:

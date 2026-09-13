@@ -258,8 +258,30 @@ enum diskpart_error diskpart_free_space(const char *disk_name, const char *os_co
  * Grows partition_name to size_mib (0 meaning "all contiguous free
  * space immediately after it"). Grow only -- see diskpart.c for why
  * shrinking is refused rather than supported.
+ *
+ * A MOUNTED btrfs partition is grown online, in place, on its live
+ * mountpoint -- the one path that lets the daemon's own data directory
+ * (cixd --data-dir=, which can never be unmounted) be extended. Every
+ * other case is grown unmounted (DISKPART_ERR_MOUNTED otherwise). The
+ * table entry is grown with --no-tell-kernel + BLKPG_RESIZE_PARTITION
+ * so it works on a disk carrying mounted partitions; see diskpart.c.
  */
 enum diskpart_error diskpart_resize(const char *disk_name, const char *partition_name,
                                      const char *os_containers_dir, unsigned long long size_mib);
+
+/*
+ * The pure size arithmetic of a grow, split out so it can be tested
+ * without a block device: given the partition's current size and the
+ * contiguous free room immediately after it (both in bytes) and the
+ * requested size_mib (0 meaning "all that room"), sets *out_want_bytes
+ * to the target total size. Refuses a genuine shrink (want < current)
+ * and a request larger than current+room. want == current is allowed
+ * and means "the table is already this size, finish the filesystem
+ * grow" -- the idempotent retry after a prior fs-grow failure.
+ */
+enum diskpart_error diskpart_resize_target(unsigned long long current_bytes,
+                                            unsigned long long room_bytes,
+                                            unsigned long long size_mib,
+                                            unsigned long long *out_want_bytes);
 
 #endif /* DISKPART_H */
