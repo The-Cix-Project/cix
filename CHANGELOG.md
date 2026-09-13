@@ -30,6 +30,15 @@ kernel auto-fills the old one) and `uname`'s build date — not the version — 
 confirm the new kernel booted. `/sys/block` remains the host's: `lsblk` still shows
 the host's disks, a recorded open gap.
 
+### `cixctl logs` with any filter flag 404'd — the query string had a `?` per parameter (#449)
+
+`cmd_logs()` built `/v1/system/logs?source=X?level=Y?tail=N` — a `?` before every
+parameter instead of `?` for the first and `&` for the rest — so any combination of
+`--source`/`--level`/`--container`/`--since`/`--tail` produced a path the daemon's
+router did not match, and the command 404'd. It now tracks a `sep` that starts `?`
+and becomes `&` after the first parameter. (This backfills the changelog entry the
+original fix omitted, found during the 2026-09-13 backlog audit.)
+
 ### The interactive shell opens with a banner that says which host it is (#440)
 
 `run_shell()` printed one line. The console is often the only way into a host, so
