@@ -6774,6 +6774,79 @@ function renderDiskUsage(d) {
  * previously scattered between a list row and a whole-disk tab that a
  * partition never had.
  */
+/*
+ * The single source of truth for which actions a disk or partition
+ * offers. Read by BOTH the detail page (renderDiskRoleTab) and the
+ * tree's right-click menu (contextMenuItemsFor), so the two can never
+ * drift apart again -- which is exactly what happened when the online
+ * data-directory grow (#94) landed in one and not the other. Every flag
+ * mirrors a rule the daemon actually enforces; the UI never offers an
+ * action the daemon would 409.
+ */
+function diskActionEligibility(d) {
+	const e = {
+		addPartition: false,
+		assignRole: false,
+		removeRole: false,
+		format: false,
+		unmount: false,
+		grow: false,
+		del: false,
+		delDisabled: false,
+	};
+
+	if (!d)
+		return e;
+	/*
+	 * The OS disk itself: appending a partition into its free space is
+	 * safe and is the point of #140, while a role, a format and a table
+	 * rewrite are all refused -- which is why the daemon reports it
+	 * protected. Answered before the protected gate so the one legal
+	 * action is not lost with the refused ones.
+	 */
+	if (d.is_os_disk && !d.is_partition) {
+		e.addPartition = true;
+		return e;
+	}
+	/* The four structural OS partitions: nothing at all (#140). */
+	if (d.protected)
+		return e;
+	/*
+	 * A partitioned whole disk's space belongs to its partitions -- give
+	 * THOSE roles and formats on their own pages; the disk itself only
+	 * takes new partitions into any remaining free space.
+	 */
+	if (!d.is_partition && partitionsOf(d.name).length > 0) {
+		e.addPartition = true;
+		return e;
+	}
+	/* An unpartitioned whole non-OS disk, or an ordinary partition. */
+	const role = storageRoleFor(d.name);
+
+	e.assignRole = !role;
+	e.removeRole = !!role;
+	e.format = !!role;
+	e.unmount = !!d.mounted;
+	/*
+	 * Grow (partitions only): ext4, btrfs and unformatted are all grown
+	 * (#163); a mounted partition is offered only when it is btrfs,
+	 * which grows online in place -- the one path to extending the data
+	 * directory (#94). A mounted ext4 would be refused.
+	 */
+	e.grow =
+		!!d.is_partition &&
+		(d.fs_type === "" || d.fs_type === "ext4" || d.fs_type === "btrfs") &&
+		(!d.mounted || d.fs_type === "btrfs");
+	/*
+	 * Delete (partitions only). A mounted partition would 409, so it is
+	 * offered disabled with the reason rather than hidden -- naming why
+	 * beats a silently missing action.
+	 */
+	e.del = !!d.is_partition;
+	e.delDisabled = !!d.mounted;
+	return e;
+}
+
 function renderDiskRoleTab(d, role) {
 	const note = document.getElementById("dd-role-note");
 	const current = document.getElementById("dd-role-current");
@@ -6820,34 +6893,41 @@ function renderDiskRoleTab(d, role) {
 		return;
 	}
 
-	if (!role) {
+	/*
+	 * Every button below is gated by diskActionEligibility(d) -- the
+	 * same source the tree's right-click menu reads -- so the two
+	 * surfaces cannot disagree about what this disk can do.
+	 */
+	const e = diskActionEligibility(d);
+
+	if (e.assignRole) {
 		const assignBtn = document.createElement("button");
 
 		assignBtn.type = "button";
 		assignBtn.textContent = "Assign a role…";
 		assignBtn.addEventListener("click", () => openAssignRole(d.name));
 		actions.appendChild(assignBtn);
-		return;
 	}
+	if (e.removeRole) {
+		const removeBtn = document.createElement("button");
 
-	const removeBtn = document.createElement("button");
+		removeBtn.type = "button";
+		removeBtn.textContent = "Remove role";
+		removeBtn.addEventListener("click", () => removeDiskRole(d.name));
+		actions.appendChild(removeBtn);
+	}
+	if (e.format) {
+		const fsSelect = buildFsSelect(d.name);
+		const formatBtn = document.createElement("button");
 
-	removeBtn.type = "button";
-	removeBtn.textContent = "Remove role";
-	removeBtn.addEventListener("click", () => removeDiskRole(d.name));
-	actions.appendChild(removeBtn);
-
-	const fsSelect = buildFsSelect(d.name);
-	const formatBtn = document.createElement("button");
-
-	formatBtn.type = "button";
-	formatBtn.className = "button-danger";
-	formatBtn.textContent = "Format…";
-	formatBtn.addEventListener("click", () => formatDisk(d.name, fsSelect.value));
-	actions.appendChild(fsSelect);
-	actions.appendChild(formatBtn);
-
-	if (d.mounted) {
+		formatBtn.type = "button";
+		formatBtn.className = "button-danger";
+		formatBtn.textContent = "Format…";
+		formatBtn.addEventListener("click", () => formatDisk(d.name, fsSelect.value));
+		actions.appendChild(fsSelect);
+		actions.appendChild(formatBtn);
+	}
+	if (e.unmount) {
 		const unmountBtn = document.createElement("button");
 
 		unmountBtn.type = "button";
@@ -6855,22 +6935,7 @@ function renderDiskRoleTab(d, role) {
 		unmountBtn.addEventListener("click", () => unmountDisk(d.name));
 		actions.appendChild(unmountBtn);
 	}
-	if (
-		d.is_partition &&
-		!d.protected &&
-		(d.fs_type === "" || d.fs_type === "ext4" || d.fs_type === "btrfs") &&
-		(!d.mounted || d.fs_type === "btrfs")
-	) {
-		/*
-		 * Grow only, and only where the daemon can finish the job.
-		 * ext4, btrfs and unformatted partitions are all grown (#163);
-		 * a mounted partition is offered only when it is btrfs, which
-		 * grows online in place -- that is the one path to extending
-		 * the data directory (#94), and a mounted ext4 would be
-		 * refused. Protected partitions (the OS layout) never get a
-		 * button, since the daemon refuses them regardless: offering
-		 * one that would 409 is worse than not offering it.
-		 */
+	if (e.grow) {
 		const growBtn = document.createElement("button");
 
 		growBtn.type = "button";
@@ -6878,14 +6943,14 @@ function renderDiskRoleTab(d, role) {
 		growBtn.addEventListener("click", () => growPartition(d));
 		actions.appendChild(growBtn);
 	}
-	if (d.is_partition) {
+	if (e.del) {
 		const delBtn = document.createElement("button");
 
 		delBtn.type = "button";
 		delBtn.className = "button-danger";
 		delBtn.textContent = "Delete this partition";
-		delBtn.disabled = d.mounted;
-		delBtn.title = d.mounted ? "Unmount it first." : "";
+		delBtn.disabled = e.delDisabled;
+		delBtn.title = e.delDisabled ? "Unmount it first." : "";
 		delBtn.addEventListener("click", () => deletePartition(d.parent_disk, d.name));
 		actions.appendChild(delBtn);
 	}
@@ -14539,27 +14604,38 @@ function hideContextMenu() {
 	contextMenu.textContent = "";
 }
 
-function addContextMenuItem(label, danger, action) {
+function addContextMenuItem(item) {
 	const li = document.createElement("li");
 	const button = document.createElement("button");
 
 	button.type = "button";
-	button.textContent = label;
-	if (danger)
+	button.textContent = item.label;
+	if (item.danger)
 		button.className = "button-danger";
-	button.addEventListener("click", () => {
-		hideContextMenu();
-		action();
-	});
+	if (item.disabled) {
+		/* Shown, not hidden: an action the daemon would refuse right now
+		 * reads better greyed with its reason than silently absent -- the
+		 * same choice the detail page makes for a mounted partition. */
+		button.disabled = true;
+		if (item.title)
+			button.title = item.title;
+	} else {
+		button.addEventListener("click", () => {
+			hideContextMenu();
+			item.action();
+		});
+	}
 	li.appendChild(button);
 	contextMenu.appendChild(li);
 }
 
-/* Maps a tree link's own href to the (category, name, label) a
- * right-click menu needs -- only containers/networks/images have
- * individual actionable leaves today; everything else (categories,
- * DNS/PKI/Packages/System/Devices) gets no custom menu, same as the
- * tree's own per-item-detail-view boundary already established. */
+/* Maps a tree link's own href to the actions a right-click menu offers.
+ * Only the tree's individual leaves -- containers, networks, storage
+ * (disks and partitions) and volumes -- have per-item actions; the
+ * page-link nodes (Software, Services, Host and their children) get no
+ * custom menu, because they are pages, not items. A leaf's actions come
+ * from the same source its own detail page uses, never re-derived here
+ * (diskActionEligibility() is the reference for storage). */
 function contextMenuItemsFor(category, name) {
 	if (category === "containers") {
 		const c = cache.containers.find((x) => x.name === name);
@@ -14602,54 +14678,38 @@ function contextMenuItemsFor(category, name) {
 		if (!d)
 			return null;
 		/*
-		 * The OS disk itself, decided FIRST and deliberately so.
-		 *
-		 * Appending a partition into its free space is safe and is the
-		 * whole point of #140, while a role, a format and a table
-		 * rewrite are all refused. The daemon reports the disk as
-		 * protected because those three are refused, so this case has
-		 * to be answered before the protected gate below or the one
-		 * legal action disappears with them.
+		 * Every entry is gated by diskActionEligibility(d) -- the same
+		 * source the detail page's Role & Format tab reads -- so the two
+		 * offer exactly the same actions, and nothing here is re-derived.
 		 */
-		if (d.is_os_disk && !d.is_partition) {
-			return [{
-				label: "Add a partition\u2026",
-				danger: false,
-				action: () => { location.hash = "disks/" + encodeURIComponent(name); },
-			}];
-		}
-
-		/*
-		 * Issue #140: a protected partition offers nothing at all --
-		 * not a disabled entry, not one that 409s on click. The daemon
-		 * says which are protected; the UI does not re-derive the rule.
-		 */
-		if (d.protected)
-			return null;
-		const role = storageRoleFor(name);
+		const e = diskActionEligibility(d);
 		const items = [];
 
-		if (!role) {
-			items.push({ label: "Assign a role…", danger: false, action: () => openAssignRole(name) });
-		} else {
+		if (e.addPartition)
+			items.push({ label: "Add a partition\u2026", danger: false,
+			             action: () => { location.hash = "storage/" + encodeURIComponent(name); } });
+		if (e.assignRole)
+			items.push({ label: "Assign a role\u2026", danger: false, action: () => openAssignRole(name) });
+		if (e.removeRole)
 			items.push({ label: "Remove role", danger: false, action: () => removeDiskRole(name) });
+		if (e.format) {
 			items.push({ label: "Format as btrfs", danger: true, action: () => formatDisk(name, "btrfs") });
 			items.push({ label: "Format as ext4", danger: true, action: () => formatDisk(name, "ext4") });
 		}
-		if (d.mounted)
+		if (e.unmount)
 			items.push({ label: "Unmount", danger: false, action: () => unmountDisk(name) });
-		if (d.is_partition && !d.mounted && (d.fs_type === "" || d.fs_type === "ext4"))
-			items.push({ label: "Grow…", danger: false, action: () => growPartition(d) });
-		if (d.is_partition && !d.mounted)
-			items.push({ label: "Delete partition", danger: true, action: () => deletePartition(d.parent_disk, name) });
-		return items;
+		if (e.grow)
+			items.push({ label: "Grow\u2026", danger: false, action: () => growPartition(d) });
+		if (e.del)
+			items.push({ label: "Delete partition", danger: true, disabled: e.delDisabled,
+			             title: e.delDisabled ? "Unmount it first." : "",
+			             action: () => deletePartition(d.parent_disk, name) });
+		return items.length ? items : null;
 	}
 	if (category === "volumes")
 		return [{ label: "Delete volume", danger: true, action: () => deleteVolumeByName(name) }];
 	if (category === "networks")
 		return [{ label: "Remove", danger: true, action: () => removeNetwork(name) }];
-	if (category === "images")
-		return [{ label: "Remove", danger: true, action: () => removeImage(name) }];
 	return null;
 }
 
@@ -14674,7 +14734,7 @@ treeEl.addEventListener("contextmenu", (event) => {
 	event.preventDefault();
 	contextMenu.textContent = "";
 	for (const item of items)
-		addContextMenuItem(item.label, item.danger, item.action);
+		addContextMenuItem(item);
 
 	const menuWidth = 180;
 	const menuHeight = items.length * 32 + 8;
