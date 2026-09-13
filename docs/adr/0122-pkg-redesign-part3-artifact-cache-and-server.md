@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted. Amended by [ADR-0279](0279-an-artifact-carries-its-own-approval.md): the artifact tier gains a second, independent gate — a minisign signature published beside the artifact — because `pkg_artifact_sha256=` is earned by the daemon at publish time and never reached git, so every host except the publisher rebuilt from source (#403). The two cache tiers here, and the recipe checksum as a git-tracked pin, are unchanged.
+Accepted. Amended by [ADR-0279](0279-an-artifact-carries-its-own-approval.md): the artifact tier gains a second, independent gate — a minisign signature published beside the artifact — because `pkg_artifact_sha256=` is earned by the daemon at publish time and never reached git, so every host except the publisher rebuilt from source (#403). The two cache tiers here, and the recipe checksum as a git-tracked pin, are unchanged. Amended again by [ADR-0289](0289-a-hostbuild-package-is-consumed-from-the-cache-like-any-other.md): the local build-artifact cache no longer excludes a hostbuild from its **read** — that exclusion was reasoning about the hostbuild's *output* (harvested to `ARTIFACTS_DIR`, never merged into an image, still true) but sat on the read, so a hostbuild re-downloaded an artifact a prior fetch had already cached.
 
 ## Context
 
