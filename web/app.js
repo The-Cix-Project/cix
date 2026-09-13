@@ -1088,6 +1088,28 @@ function statusBadge(kind) {
 	}
 }
 
+/*
+ * The pipeline's own status vocabulary [ok, blocked, failed, cancelled,
+ * not-implemented], mapped to the shared badge kinds (#460) so the
+ * pipeline uses the one status-pill widget instead of its own outlined
+ * pipeline-badge system. "blocked" is waiting, not broken -- deliberately
+ * amber (paused), not red, so a screen of blocked rows does not read as a
+ * screen of failures.
+ */
+function pipelineStatusKind(status) {
+	switch (status) {
+	case "ok":
+		return "ok";
+	case "blocked":
+		return "paused";
+	case "failed":
+	case "cancelled":
+		return "error";
+	default:
+		return "unknown"; /* not-implemented, and anything unrecognised */
+	}
+}
+
 function showStatus(message, isError) {
 	statusBox.textContent = message;
 	statusBox.hidden = false;
@@ -14068,7 +14090,7 @@ async function refreshPipeline() {
 		const badge = document.createElement("span");
 		const text = document.createElement("span");
 
-		badge.className = "pipeline-badge pipeline-badge-" + data.deploy.status;
+		badge.className = statusBadge(pipelineStatusKind(data.deploy.status));
 		badge.textContent = "deploy / " + data.deploy.status;
 		text.className = "pipeline-deploy-text";
 		text.textContent = (data.deploy.entry ? data.deploy.entry + " -- " : "") +
@@ -14096,7 +14118,7 @@ async function refreshPipeline() {
 			if (i === 2) {
 				const badge = document.createElement("span");
 
-				badge.className = "pipeline-badge pipeline-badge-" + p.status;
+				badge.className = statusBadge(pipelineStatusKind(p.status));
 				badge.textContent = p.status;
 				td.appendChild(badge);
 			} else {

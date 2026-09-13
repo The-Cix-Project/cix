@@ -2771,37 +2771,6 @@ pre {
 	color: var(--muted);
 }
 
-.pipeline-badge {
-	display: inline-block;
-	padding: 1px 7px;
-	border-radius: 10px;
-	font-size: 0.78rem;
-	white-space: nowrap;
-	border: 1px solid var(--border);
-}
-
-.pipeline-badge-ok {
-	color: var(--ok);
-	border-color: var(--ok);
-}
-
-/* Blocked is waiting, not broken -- deliberately not the error colour,
- * so a screen of blocked rows does not read as a screen of failures. */
-.pipeline-badge-blocked {
-	color: var(--paused);
-	border-color: var(--paused);
-}
-
-.pipeline-badge-failed,
-.pipeline-badge-cancelled {
-	color: var(--error);
-	border-color: var(--error);
-}
-
-.pipeline-badge-not-implemented {
-	color: var(--muted);
-}
-
 /*
  * A tab bar with a dozen tabs is a real case here -- Pipeline has one
  * per stage of the pipeline. It wraps rather than scrolling: the tabs

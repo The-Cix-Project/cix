@@ -88,12 +88,12 @@ When in doubt, copy the shape of these — they are the canonical form of each p
 - **Context menu item, incl. disabled+reason:** `addContextMenuItem(item)`.
 - **Badge:** `.badge` + one of the four semantic modifiers.
 
-## Known debts this standard drives out
+## How this standard has already been applied
 
-These are existing violations to fold in as each area is next touched (each is a One-Source / No-Parallel fix, filed in the repo's issue tracker):
+Every place the dashboard had drifted from the principles above has been folded back — proof the standard is real, and worked examples of each rule:
 
-- **Ad-hoc badge classes** ([#459](https://git.home.arpa/itdlabs/cix/issues/459)). The `badge-*` class is currently derived inline at ~10 call sites, each with its own `state === … ? …` ladder. Collapse into one `statusBadge(state)` helper so the state→colour mapping lives once.
-- **The `pipeline-badge` parallel** ([#460](https://git.home.arpa/itdlabs/cix/issues/460)). The build pipeline invented its own `pipeline-badge` / `pipeline-badge-<status>` system instead of using `.badge`. Fold it into the one badge vocabulary.
-- **Disk action drift** — *fixed*, and the exemplar this document is built around: `diskActionEligibility` now feeds both the detail page and the right-click menu, which had disagreed about the online data-directory grow.
+- **Disk action drift** — the exemplar this document is built around. The right-click menu and the detail page decided a disk's actions separately and disagreed (the online data-directory grow reached one and not the other). `diskActionEligibility(d)` is now the single source both read (One Source of Truth).
+- **Ad-hoc badge classes** ([#459](https://git.home.arpa/itdlabs/cix/issues/459)). The `badge-*` class was built inline at nine call sites, each with its own `state === … ? …` ladder. Collapsed into one `statusBadge(kind)` helper, so the vocabulary and the state→colour mapping live once.
+- **The `pipeline-badge` parallel** ([#460](https://git.home.arpa/itdlabs/cix/issues/460)). The build pipeline had its own `pipeline-badge` status-pill system. Removed; the pipeline now uses the one `.badge` widget through `statusBadge(pipelineStatusKind(status))` (No Parallel Implementations).
 
-When you fix one, delete its bullet here in the same change — a debt list that outlives its debts is its own inconsistency.
+When a new drift is found and fixed, add it here as a worked example in the same change — and when a new violation is found but not yet fixed, file it in the issue tracker rather than leaving it only in prose.
