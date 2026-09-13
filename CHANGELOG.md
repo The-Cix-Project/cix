@@ -6,6 +6,14 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Flap a host NIC to recover a stuck link — `POST /system/interfaces/{name}/flap`
+
+An operator hit a bare-metal box whose `eth0` had a link but no connectivity (a NIC that came up in a bad state), and there was no way to bounce the interface — Cix is API-first over rtnetlink and never shells to `ip`, and the only interface verbs were `attach-interface`/`detach-interface`, which re-enslave to a bridge and set *up* but never *down*, so they can't force a carrier renegotiation. The `rtnl_link_set_down`/`set_up` primitives already existed in netplane; nothing exposed them.
+
+`POST /v1/system/interfaces/{name}/flap` brings the named host interface **down and then straight back up**, one atomic action. It is **flap-only by design** — deliberately *not* a bare "set down" — because a down-only endpoint is exactly how an operator strands a shell-less box on the interface they are trying to fix; a flap always ends with the interface up. No sleep between down and up (the reactor is single-threaded, ADR-0247): the two are ordered netlink messages and the kernel renegotiates carrier on the up. Existence is checked with `if_nametoindex()` (namespace-correct, one call), so a bogus name is a clean `404`. `cixctl network flap-interface eth0` is the client; the endpoint is `x-cix-expose: [cli]` (no web surface — there is no interface view in the dashboard). Run it from the console (which talks to `127.0.0.1`, unaffected); run it against an off-box address riding the flapped interface and the reply may not return even though the flap succeeded, so reconnect and re-check rather than reading a dropped reply as failure.
+
+`test_network_interfaces` gains a flap of the bridge it already creates (a real netdev, down+up → `200`) plus a bogus-name `404`, exercising the real rtnl path without touching anything load-bearing; `test_apigen`'s operation count moves 304 → 305.
+
 ### The management-address migration ran before daemon_config was initialized, and parked a real box (#436, ADR-0287)
 
 The ADR-0287 daemon (v2.57.152) built clean, passed the full selftest, assembled, and deployed to 192.168.15.95 — then didn't come back. The box pinged but nothing served `.95`; the console showed the cause:

@@ -28,6 +28,18 @@ Enslaves a real host interface into a network's bridge (ADR-0038) — the "physi
 
 This is a different mechanism from a NIC passed straight into one container's own network namespace at creation time (`run --interface=IFNAME`, ADR-0022) — that's exclusive, dedicated hardware for one container; attaching to a network's bridge is shared L2 connectivity any number of containers on that network can use.
 
+## Recovering a stuck NIC
+
+```sh
+cixctl network flap-interface eth0
+```
+
+Brings a host interface administratively **down and then back up** (`POST /system/interfaces/{name}/flap`), which renegotiates the carrier — the fix for a NIC that has a link but no connectivity, or a bridge port wedged in `blocking`. It is *flap-only*: there is deliberately no "set the interface down" on its own, because a down-only command is how you strand a shell-less box on the very interface you are trying to fix; a flap always ends with the interface up.
+
+Run it **from the console** (which talks to `127.0.0.1` and is unaffected). If you run it against the off-box address that rides the interface being flapped, the reply may not come back even though the flap succeeded — the interface is momentarily down — so reconnect and re-check rather than treating a dropped reply as failure. Loopback (`lo`) is refused outright.
+
+**First check whether a flap is even the right tool.** If the symptom is "eth0 exists but can't reach the LAN" *and* the driver loaded late at boot, the interface may simply never have been enslaved to the management bridge (its uplink attach failed and the boot continued — the address is on the bridge, the bridge has no port). `cixctl network ls` shows whether `eth0` is in the management network's interface list; if it is not, the fix is `cixctl network attach-interface <mgmt-net> --interface=eth0`, not a flap. Flap when the interface is attached and the link itself is stuck.
+
 An interface enslaved to a bridge this way stays visible on the host but reports `assignable: false` — read from the kernel's own `master` symlink, not from a bookkeeping table Cix maintains. An interface *moved* into a container disappears from the listing entirely. Both are ground truth rather than record-keeping, which is why neither can drift. (`--device=` grants are not like this: the same USB, PCI or GPU device can currently be granted to several containers with nothing reporting it — issue #356.)
 
 See [Giving a container a radio](#giving-a-container-a-radio) below for the wireless case, which is a third thing again.

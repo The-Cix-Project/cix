@@ -233,6 +233,26 @@ int main(void)
 	}
 	cix_response_free(&r);
 
+	/* 8. flap the bridge, a real netdev created above -- down then up,
+	 * 200 (POST /system/interfaces/{name}/flap); a bogus name 404s. This
+	 * exercises the real rtnl down+up path against a live interface
+	 * without touching anything load-bearing (the bridge has no members). */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "POST", "/v1/system/interfaces/nifnet/flap", NULL, &r) != 0 ||
+	    r.status != 200) {
+		fprintf(stderr, "FAIL: flap nifnet bridge expected 200, got %d\n", r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "POST", "/v1/system/interfaces/nosuchif0/flap", NULL, &r) != 0 ||
+	    r.status != 404) {
+		fprintf(stderr, "FAIL: flap nonexistent interface expected 404, got %d\n", r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+
 	/* cleanup */
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "DELETE", "/v1/networks/nifnet", NULL, &r) != 0 ||
