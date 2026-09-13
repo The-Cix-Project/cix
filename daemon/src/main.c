@@ -6389,6 +6389,7 @@ static void handle_management_address_put(int fd, const char *body, size_t body_
 	uint32_t old_addr_be = 0;
 	char old_ifname[NETWORK_NAME_MAX] = "";
 	int old_prefix = 0;
+	int old_coincides_own = 0;
 	const char *cur;
 	int rtfd;
 
@@ -6451,6 +6452,10 @@ static void handle_management_address_put(int fd, const char *body, size_t body_
 			old_addr_be = oa.s_addr;
 		snprintf(old_ifname, sizeof(old_ifname), "%s", old_mgmt->name);
 		old_prefix = old_mgmt->prefix_len;
+		/* If the old management address WAS the network's own address,
+		 * it must never be torn down -- the network still owns it after
+		 * the move. Same guard the reset (DELETE) handler applies. */
+		old_coincides_own = old_mgmt->has_address && old_mgmt->address_be == old_addr_be;
 	}
 
 	/* Add the address to the derived network's bridge (idempotent via
@@ -6494,7 +6499,7 @@ static void handle_management_address_put(int fd, const char *body, size_t body_
 	 * strand this client. Only when it genuinely moved to a different
 	 * address on a real bridge.
 	 */
-	if (old_addr_be != 0 && old_addr_be != addr_be && old_ifname[0] != '\0')
+	if (old_addr_be != 0 && old_addr_be != addr_be && !old_coincides_own && old_ifname[0] != '\0')
 		arm_bind_ip_cleanup_timer(old_ifname, old_addr_be, old_prefix);
 }
 
