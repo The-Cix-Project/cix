@@ -8,6 +8,7 @@
  */
 #include "console.h"
 #include "httpclient.h"
+#include "version.h" /* CIX_BUILD_VERSION -- cixctl's own build, for the shell banner (#440) */
 /*
  * ADR-0218 layer 1: every API path this client uses comes from the
  * contract, regenerated each build. A hand-typed path compiles and
@@ -24,6 +25,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <termios.h>
+#include <time.h>
 #include <sys/stat.h> /* chmod(): the exported PKI bundle is 0600 */
 #include <sys/wait.h>
 #include <unistd.h>
@@ -17814,6 +17816,70 @@ static int run_shell_fallback(const struct cix_client *client, int json_mode)
 }
 
 /*
+ * The interactive shell's opening banner (#440). The console is often
+ * the only way into a host, so it must say WHICH host: cixctl's own
+ * build, the Cix build the host is running, and -- crucially -- the
+ * HOST's clock, not this client's, since a laptop pointed at a box with
+ * an unsynced clock is exactly the case worth surfacing.
+ *
+ * cixctl's version and the project line are local and always print. The
+ * two host facts each come from one HTTP call and degrade to a single
+ * "unavailable" line rather than hanging the shell at startup:
+ * cix_client_request carries its own connect timeout, so an unreachable
+ * daemon returns an error quickly instead of blocking.
+ */
+static void print_shell_banner(const struct cix_client *client)
+{
+	struct cix_response r;
+	int have_boot = 0, have_time = 0;
+
+	printf("Cix -- Systems, directly.    (c) The Cix Project -- Apache-2.0\n");
+	printf("cixctl %s\n", CIX_BUILD_VERSION);
+
+	if (cix_client_request(client, CIX_API_getSystemBoot_METHOD, CIX_API_getSystemBoot,
+	                       NULL, &r) == 0) {
+		if (r.status >= 200 && r.status < 300 && r.json != NULL) {
+			const char *bv = json_str_field(r.json, "build_version");
+			const char *bt = json_str_field(r.json, "build_time");
+			const char *slot = json_str_field(r.json, "slot");
+			const char *kern = json_str_field(r.json, "kernel_version");
+
+			printf("host   cix %s (built %s), slot %s, kernel %s\n",
+			       (bv != NULL) ? bv : "?", (bt != NULL) ? bt : "?",
+			       (slot != NULL) ? slot : "?", (kern != NULL) ? kern : "?");
+			have_boot = 1;
+		}
+		cix_response_free(&r);
+	}
+	if (!have_boot)
+		printf("host   unavailable (daemon unreachable)\n");
+
+	if (cix_client_request(client, CIX_API_getSystemTime_METHOD, CIX_API_getSystemTime,
+	                       NULL, &r) == 0) {
+		if (r.status >= 200 && r.status < 300 && r.json != NULL) {
+			const struct json_value *ut = json_object_get(r.json, "unixtime");
+
+			if (ut != NULL && ut->type == JSON_NUMBER) {
+				time_t t = (time_t)ut->u.number;
+				struct tm tmv;
+				char buf[64];
+
+				if (gmtime_r(&t, &tmv) != NULL &&
+				    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S UTC", &tmv) > 0) {
+					printf("time   %s (host clock)\n", buf);
+					have_time = 1;
+				}
+			}
+		}
+		cix_response_free(&r);
+	}
+	if (!have_time)
+		printf("time   unavailable (daemon unreachable)\n");
+
+	printf("\n");
+}
+
+/*
  * Interactive shell: entered when cixctl is invoked with no command
  * and stdin is a real terminal (see main()) -- one persistent client,
  * one dispatch_command() call per typed line, no reconnect-per-command
@@ -17834,7 +17900,8 @@ static int run_shell(const struct cix_client *client, int json_mode)
 	char line[SHELL_LINE_MAX];
 	char *tokens[SHELL_MAX_TOKENS];
 
-	printf("cixctl interactive shell -- type a command (e.g. \"ps\"), \"help\", or \"exit\"\n");
+	print_shell_banner(client);
+	printf("Type a command (e.g. \"ps\"), \"help\", or \"exit\".\n\n");
 
 	if (shell_set_raw_mode(&saved) != 0)
 		return run_shell_fallback(client, json_mode);
