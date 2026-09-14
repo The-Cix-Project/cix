@@ -13287,12 +13287,19 @@ static int create_container_from_body(const char *body, size_t body_len,
 
 				if (sscanf(value, "%ld %ld", &lo, &hi) != 2 || lo < 0 || hi < lo ||
 				    hi >= (long)SUBID_RANGE_LEN) {
+					/* Use the stable copy in sysctl_specs[i].value, NOT
+					 * `value`: it points into `root`, which is freed
+					 * before this message is built (every other error
+					 * path here frees first too, but they use literals). */
+					char bad[CONTAINER_SYSCTL_VALUE_MAX];
+
+					snprintf(bad, sizeof(bad), "%s", sysctl_specs[i].value);
 					json_free(root);
 					snprintf(err_msg, err_msg_size,
 					         "net.ipv4.ping_group_range \"%s\" is outside this container's "
 					         "user-namespace gid range (0..%ld); the kernel would refuse it and "
 					         "the container would crash-loop -- use gids within the mapped range",
-					         value, (long)SUBID_RANGE_LEN - 1);
+					         bad, (long)SUBID_RANGE_LEN - 1);
 					return 400;
 				}
 			}
