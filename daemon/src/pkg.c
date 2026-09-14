@@ -5635,7 +5635,7 @@ static int recipe_adds_only_artifact_sha256(const char *stored, const char *upda
 	}
 }
 
-enum pkg_error pkg_recipe_add(const char *name, const char *content)
+enum pkg_error pkg_recipe_add(const char *name, const char *content, int *out_was_approval)
 {
 	char *redacted;
 	char name_dir[PATH_MAX];
@@ -5644,6 +5644,9 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content)
 	char recipe_path[PATH_MAX];
 	struct pkg_recipe parsed;
 	struct stat st;
+
+	if (out_was_approval != NULL)
+		*out_was_approval = 0;
 
 	if (!pkg_name_is_valid(name))
 		return PKG_ERR_INVALID_NAME;
@@ -5709,6 +5712,8 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content)
 		logstore_write("cixd", "info",
 		                "pkg: recipe %s@%s approved its published artifact", name,
 		                parsed.version);
+		if (out_was_approval != NULL)
+			*out_was_approval = 1; /* #404 */
 		return PKG_OK;
 	}
 	free(redacted);
@@ -10329,6 +10334,7 @@ enum sync_state { SYNC_NEVER = 0, SYNC_RUNNING, SYNC_SUCCESS, SYNC_FAILED };
 static enum sync_state g_sync_last_state = SYNC_NEVER;
 static time_t g_sync_last_attempt;
 static int g_sync_last_added;
+static int g_sync_last_approved; /* #404 */
 static int g_sync_last_skipped;
 /*
  * Issue #59: one recipe version this sync is allowed to REPLACE rather
@@ -10887,11 +10893,11 @@ static void sync_counts_path(char *out, size_t out_size)
 	snprintf(out, out_size, "%s/sync-extract.counts", g_pkg_dir);
 }
 
-static void sync_counts_write(int added, int skipped, int failed)
+static void sync_counts_write(int added, int approved, int skipped, int failed)
 {
 	char path[PATH_MAX];
-	char buf[64];
-	int len = snprintf(buf, sizeof(buf), "%d %d %d\n", added, skipped, failed);
+	char buf[80];
+	int len = snprintf(buf, sizeof(buf), "%d %d %d %d\n", added, approved, skipped, failed);
 
 	if (len <= 0)
 		return;
@@ -10899,16 +10905,16 @@ static void sync_counts_write(int added, int skipped, int failed)
 	persist_atomic_write(path, buf, (size_t)len);
 }
 
-static void sync_counts_read(int *added, int *skipped, int *failed)
+static void sync_counts_read(int *added, int *approved, int *skipped, int *failed)
 {
 	char path[PATH_MAX];
 	char *buf = NULL;
 	size_t len = 0;
 
-	*added = *skipped = *failed = 0;
+	*added = *approved = *skipped = *failed = 0;
 	sync_counts_path(path, sizeof(path));
 	if (persist_read_file(path, &buf, &len) == 0 && buf != NULL) {
-		sscanf(buf, "%d %d %d", added, skipped, failed);
+		sscanf(buf, "%d %d %d %d", added, approved, skipped, failed);
 		free(buf);
 	}
 	unlink(path);
@@ -10971,7 +10977,7 @@ int pkg_sync_merge(void)
 	char containers_root[PATH_MAX];
 	DIR *names_d;
 	struct dirent *name_de;
-	int added = 0, skipped = 0, failed = 0;
+	int added = 0, approved = 0, skipped = 0, failed = 0;
 
 	snprintf(extract_dir, sizeof(extract_dir), "%s/sync-extract", g_pkg_dir);
 
@@ -11015,14 +11021,23 @@ int pkg_sync_merge(void)
 				    strcmp(g_sync_refetch_version, vde->d_name) == 0)
 					pkg_recipe_delete(name_de->d_name, vde->d_name);
 
-				rc = pkg_recipe_add(name_de->d_name, content);
-				free(content);
-				if (rc == PKG_OK)
-					added++;
-				else if (rc == PKG_ERR_DUPLICATE)
-					skipped++;
-				else
-					failed++;
+				{
+					int was_approval = 0;
+
+					rc = pkg_recipe_add(name_de->d_name, content, &was_approval);
+					free(content);
+					/* #404: an approval applied to an already-published
+					 * version is NOT a new recipe -- count it apart so
+					 * `pkg sync` does not report an approval as an add. */
+					if (rc == PKG_OK && was_approval)
+						approved++;
+					else if (rc == PKG_OK)
+						added++;
+					else if (rc == PKG_ERR_DUPLICATE)
+						skipped++;
+					else
+						failed++;
+				}
 			}
 			closedir(vd);
 		}
@@ -11079,7 +11094,7 @@ int pkg_sync_merge(void)
 	g_sync_refetch_name[0] = '\0';
 	g_sync_refetch_version[0] = '\0';
 
-	sync_counts_write(added, skipped, failed);
+	sync_counts_write(added, approved, skipped, failed);
 	return 0;
 }
 
@@ -11090,7 +11105,7 @@ int pkg_sync_merge(void)
  */
 void pkg_sync_completed(int rc)
 {
-	int added = 0, skipped = 0, failed = 0;
+	int added = 0, approved = 0, skipped = 0, failed = 0;
 	char tarball_path[PATH_MAX];
 
 	sync_state_path(tarball_path, sizeof(tarball_path));
@@ -11104,7 +11119,7 @@ void pkg_sync_completed(int rc)
 		return;
 	}
 
-	sync_counts_read(&added, &skipped, &failed);
+	sync_counts_read(&added, &approved, &skipped, &failed);
 
 	/* One-shot: cleared here so the periodic background sync can never
 	 * inherit a refetch an operator asked for once. The child cleared
@@ -11118,6 +11133,7 @@ void pkg_sync_completed(int rc)
 
 	g_sync_last_state = SYNC_SUCCESS;
 	g_sync_last_added = added;
+	g_sync_last_approved = approved;
 	g_sync_last_skipped = skipped;
 	if (failed > 0)
 		snprintf(g_sync_last_error, sizeof(g_sync_last_error),
@@ -11143,6 +11159,8 @@ void pkg_sync_write_json_status(struct json_writer *w)
 		jw_null(w);
 	jw_key(w, "added");
 	jw_int(w, g_sync_last_added);
+	jw_key(w, "approved"); /* #404 */
+	jw_int(w, g_sync_last_approved);
 	jw_key(w, "skipped");
 	jw_int(w, g_sync_last_skipped);
 	jw_key(w, "error");

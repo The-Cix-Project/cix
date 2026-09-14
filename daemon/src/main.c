@@ -1626,6 +1626,89 @@ static void on_signal(int sig)
 	g_stop = 1;
 }
 
+/*
+ * #303: cixd runs as PID 1. A fatal signal would take the process down
+ * and the kernel would panic ("Attempted to kill init!") with no
+ * daemon-level diagnostic -- and on a shell-less host that bare panic is
+ * the only thing an operator ever sees. This catches the fatal signals,
+ * writes a one-line trace to the console (STDERR is the serial console
+ * on a real install) using ONLY async-signal-safe primitives -- no
+ * snprintf/malloc/stdio, so a crash inside any of those still produces
+ * the trace -- then syncs and reboots deliberately.
+ *
+ * Deliberately NOT a SIGCHLD/orphan reaper: cixd tracks its children by
+ * pidfd (ADR-0278) and a blanket reaper would race that. Owner decision
+ * (2026-09-14): crash handler only; broader signal ownership is a future
+ * supervisor's (ADR-0246).
+ */
+static void crash_write_str(const char *s)
+{
+	size_t n = 0;
+	ssize_t w;
+
+	if (s == NULL)
+		return;
+	while (s[n] != '\0')
+		n++;
+	w = write(STDERR_FILENO, s, n);
+	(void)w;
+}
+
+static void crash_write_strn(const char *s, size_t max)
+{
+	size_t n = 0;
+	ssize_t w;
+
+	if (s == NULL)
+		return;
+	while (n < max && s[n] != '\0')
+		n++;
+	w = write(STDERR_FILENO, s, n);
+	(void)w;
+}
+
+static void crash_write_hex(unsigned long v)
+{
+	static const char hexd[] = "0123456789abcdef";
+	char b[2 + sizeof(unsigned long) * 2];
+	size_t i;
+	ssize_t w;
+
+	b[0] = '0';
+	b[1] = 'x';
+	for (i = 0; i < sizeof(unsigned long) * 2; i++)
+		b[2 + i] = hexd[(v >> ((sizeof(unsigned long) * 2 - 1 - i) * 4)) & 0xfUL];
+	w = write(STDERR_FILENO, b, sizeof(b));
+	(void)w;
+}
+
+static void crash_handler(int sig, siginfo_t *si, void *uc)
+{
+	const char *nm;
+	const char *act;
+
+	(void)uc;
+	nm = sig == SIGSEGV ? "SIGSEGV"
+	   : sig == SIGBUS  ? "SIGBUS"
+	   : sig == SIGABRT ? "SIGABRT"
+	   : sig == SIGFPE  ? "SIGFPE"
+	   : sig == SIGILL  ? "SIGILL"
+	                    : "signal";
+	crash_write_str("\ncixd: FATAL ");
+	crash_write_str(nm);
+	crash_write_str(" at ");
+	crash_write_hex((unsigned long)(si != NULL ? si->si_addr : (void *)0));
+	act = stallwatch_current_activity();
+	if (act != NULL && act[0] != '\0') {
+		crash_write_str(" activity=");
+		crash_write_strn(act, STALLWATCH_ACTIVITY_MAX);
+	}
+	crash_write_str(" -- cixd is PID 1; syncing and rebooting (#303)\n");
+	sync();
+	reboot(RB_AUTOBOOT);
+	_exit(139);
+}
+
 static int ensure_dir(const char *path)
 {
 	if (mkdir(path, 0755) != 0 && errno != EEXIST) {
@@ -21445,7 +21528,7 @@ static void handle_pkg_recipe_add(int fd, const char *body, size_t body_len)
 		return;
 	}
 
-	perr = pkg_recipe_add(name, content);
+	perr = pkg_recipe_add(name, content, NULL);
 	json_free(root);
 	if (perr != PKG_OK) {
 		respond_pkg_recipe_error(fd, perr);
@@ -29185,6 +29268,34 @@ static int cixd_main(int argc, char **argv)
 	sa.sa_handler = on_signal;
 	sigaction(SIGTERM, &sa, NULL);
 	sigaction(SIGINT, &sa, NULL);
+
+	/*
+	 * #303: catch fatal signals so a cixd crash leaves a console trace
+	 * and a deliberate reboot, not a bare kernel init-panic. Runs on an
+	 * alternate stack (SA_ONSTACK) so a stack-overflow SIGSEGV can still
+	 * run the handler, and SA_RESETHAND so a fault INSIDE the handler
+	 * re-raises with the default disposition instead of looping. The
+	 * stack is a fixed 32 KiB rather than SIGSTKSZ, which is not a
+	 * compile-time constant on current glibc.
+	 */
+	{
+		static char crash_stack[32768];
+		stack_t ss;
+		struct sigaction ca;
+		int csig[] = { SIGSEGV, SIGBUS, SIGABRT, SIGFPE, SIGILL };
+		size_t ci;
+
+		ss.ss_sp = crash_stack;
+		ss.ss_size = sizeof(crash_stack);
+		ss.ss_flags = 0;
+		sigaltstack(&ss, NULL);
+		memset(&ca, 0, sizeof(ca));
+		ca.sa_sigaction = crash_handler;
+		ca.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_RESETHAND;
+		sigemptyset(&ca.sa_mask);
+		for (ci = 0; ci < sizeof(csig) / sizeof(csig[0]); ci++)
+			sigaction(csig[ci], &ca, NULL);
+	}
 
 	/*
 	 * SIGPIPE kills this daemon silently, and any HTTP client can
