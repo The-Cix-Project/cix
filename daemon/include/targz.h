@@ -47,9 +47,10 @@
 
 /*
  * The one place these two binary paths are spelled (One Source of
- * Truth) -- daemon/src/pkg.c's own PKG_TAR_BIN/PKG_GZIP_BIN alias
- * these rather than repeating the literals, and daemon/src/main.c's
- * export path no longer hardcodes them at all.
+ * Truth) -- daemon/src/main.c's own export path never hardcodes them.
+ * daemon/src/pkg.c no longer aliases either: extraction moved to
+ * libarchive in-process (#411), so only targz.c's own creation
+ * pipeline (tar -cf - | gzip -c, both above) still execve()s them.
  */
 #define TARGZ_TAR_BIN "/usr/bin/tar"
 #define TARGZ_GZIP_BIN "/usr/bin/gzip"
