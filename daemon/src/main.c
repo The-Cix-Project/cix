@@ -10091,7 +10091,35 @@ static void sign_finished_iso(void)
 	 * build that produced it means a verifier learns which release
 	 * these bytes are, not merely that Cix signed something.
 	 */
-	snprintf(comment, sizeof(comment), "cix installer iso, %s", CIX_BUILD_VERSION);
+	/*
+	 * #434: stamp the version the ISO's ARTIFACTS were built as, not
+	 * CIX_BUILD_VERSION (the running daemon). The ISO is assembled from
+	 * ARTIFACTS_DIR/cix (mkinstalleriso) and ARTIFACTS_DIR/kernel
+	 * (bzImage) -- hostbuild output that is routinely NEWER than the
+	 * running daemon on any box that has built a release it has not yet
+	 * deployed. Stamping the daemon's version made built_version and the
+	 * published name claim bytes the ISO does not contain, publishable
+	 * straight over a name already in the cache (measured on
+	 * 192.168.15.95, 2026-09-12: running v2.57.127, ISO assembled from
+	 * v2.57.129 artifacts, stamped v2.57.127). pkg_hostbuild_artifact_info
+	 * ("cix") returns the version ARTIFACTS_DIR/cix was harvested at --
+	 * the ISO's own true version. The fallback to CIX_BUILD_VERSION
+	 * covers only the absence of a cix hostbuild entry, where the ISO
+	 * build would already have failed its own file checks (iso_build
+	 * _start reads ARTIFACTS_DIR/cix/mkinstalleriso), so it is a belt,
+	 * not a load-bearing path.
+	 */
+	{
+		char cix_artifact_version[64];
+		char cix_artifact_dir[PATH_MAX];
+		const char *iso_version = CIX_BUILD_VERSION;
+
+		if (pkg_hostbuild_artifact_info("cix", cix_artifact_version,
+		                                sizeof(cix_artifact_version), cix_artifact_dir,
+		                                sizeof(cix_artifact_dir)) == PKG_OK)
+			iso_version = cix_artifact_version;
+		snprintf(comment, sizeof(comment), "cix installer iso, %s", iso_version);
+	}
 	rc = releasekey_sign_file(ISO_OUTPUT_PATH, sig_path, comment);
 	if (rc != RELEASEKEY_OK) {
 		logstore_write("cixd", "error", "iso assembly: signing failed: %s",
@@ -10161,7 +10189,16 @@ static void iso_publish_canonical_name(char *out, size_t out_size, const char *s
 {
 	struct utsname uts;
 	const char *arch = "unknown";
-	const char *ver = CIX_BUILD_VERSION;
+	/*
+	 * #434: the version the built ISO actually carries, read back from
+	 * its own signature (which #434 fixed to stamp the cix ARTIFACT
+	 * version, not the running daemon's). The published name must match
+	 * the signed built_version, or the cache gets bytes under a name
+	 * claiming a different release. Falls back to CIX_BUILD_VERSION only
+	 * when no ISO has been signed this session (g_iso_built_version
+	 * empty) -- in which case there is nothing to publish anyway.
+	 */
+	const char *ver = g_iso_built_version[0] != '\0' ? g_iso_built_version : CIX_BUILD_VERSION;
 
 	if (uname(&uts) == 0 && uts.machine[0] != '\0')
 		arch = uts.machine;
