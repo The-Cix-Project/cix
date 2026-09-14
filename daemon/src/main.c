@@ -13107,6 +13107,27 @@ static int create_container_from_body(const char *body, size_t body_len,
 		}
 		dns_server_count = (int)jdns_servers->u.array.count;
 	}
+	/*
+	 * #451: a container that registers its own name in DNS but is given
+	 * no resolver of its own cannot look anything up -- including the
+	 * very directory it just published itself into. ADR-0143's posture
+	 * is deliberate (no auto-wiring of dns_servers, so this is not an
+	 * error), but the silent form of it is a jump box where `ssh <name>`
+	 * fails for no stated reason (measured on 192.168.15.103,
+	 * 2026-09-13: no /etc/resolv.conf, `getent hosts` rc=2). Say it once,
+	 * at creation, where an operator scanning the log will find it. The
+	 * posture question -- whether an omitted dns_servers should DEFAULT
+	 * to a registered resolver on one of the container's own networks --
+	 * is ADR-0143's to answer; this only makes the current behaviour
+	 * visible instead of mute.
+	 */
+	if (dns_register && dns_server_count == 0)
+		logstore_write("cixd", "warn",
+		                "container %s sets dns_register but no dns_servers -- it is published "
+		                "in DNS yet cannot resolve names itself (no /etc/resolv.conf is "
+		                "staged). Set dns_servers to a resolver reachable on one of its "
+		                "networks if it needs to look up names.",
+		                name);
 	if (jsysctls != NULL) {
 		if (jsysctls->type != JSON_OBJECT || jsysctls->u.object.count > CONTAINER_MAX_SYSCTLS) {
 			json_free(root);
