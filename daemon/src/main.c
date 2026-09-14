@@ -13267,6 +13267,35 @@ static int create_container_from_body(const char *body, size_t body_len,
 			}
 			snprintf(sysctl_specs[i].key, sizeof(sysctl_specs[i].key), "%s", key);
 			snprintf(sysctl_specs[i].value, sizeof(sysctl_specs[i].value), "%s", value);
+			/*
+			 * #446: net.ipv4.ping_group_range's two gids must fall
+			 * within the container's userns gid map (0 .. SUBID_RANGE_LEN-1).
+			 * A value beyond it (e.g. "0 2147483647") is refused by the
+			 * kernel with EINVAL -- but the write happens in the CHILD,
+			 * after the 201 has been sent, so the container is reported
+			 * "running" and then crash-loops with the cause only in the
+			 * log store. The child cannot turn that into a create-time
+			 * error, so for a userns container validate it here. A
+			 * non-userns container maps the host range and needs no
+			 * check. This is the statically-checkable member of the
+			 * "sysctl value depends on the userns map" class; other
+			 * in-child rejections still surface via exit_reason (the
+			 * already-fixed half of #446).
+			 */
+			if (userns && strcmp(key, "net.ipv4.ping_group_range") == 0) {
+				long lo = -1, hi = -1;
+
+				if (sscanf(value, "%ld %ld", &lo, &hi) != 2 || lo < 0 || hi < lo ||
+				    hi >= (long)SUBID_RANGE_LEN) {
+					json_free(root);
+					snprintf(err_msg, err_msg_size,
+					         "net.ipv4.ping_group_range \"%s\" is outside this container's "
+					         "user-namespace gid range (0..%ld); the kernel would refuse it and "
+					         "the container would crash-loop -- use gids within the mapped range",
+					         value, (long)SUBID_RANGE_LEN - 1);
+					return 400;
+				}
+			}
 		}
 	}
 	if (jenv != NULL) {
